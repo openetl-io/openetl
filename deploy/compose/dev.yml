@@ -24,11 +24,13 @@ services:
 
   temporal:
     image: temporalio/temporal:1.9.1
-    command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-ip", "0.0.0.0", "--db-filename", "/home/temporal/temporal.db"]
     ports:
       - "7233:7233" # frontend
       - "8233:8233" # web UI
-    volumes: ["temporal:/data"]
+    # The image runs as uid 1000. Mounting over its home directory gives the
+    # volume that directory's owner; a new path would be owned by root.
+    volumes: ["temporal:/home/temporal"]
 
   s3:
     image: chrislusf/seaweedfs:4.51
