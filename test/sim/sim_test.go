@@ -179,6 +179,7 @@ func (w *world) job(attempt int) runner.Job {
 type seedResult struct {
 	config, trace, failure string
 	stats                  map[string]int
+	steps                  []string
 }
 
 func runSeed(kind string, seed uint64) (res seedResult) {
@@ -219,6 +220,7 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		return err
 	})
 	res.trace = strings.Join(lastN(w.sched.trace, 400), "\n")
+	res.steps = w.sched.steps
 	res.stats["attempts"] += attempts
 	res.stats["zombies"] += cfg.zombies - w.sched.zombies
 	switch {

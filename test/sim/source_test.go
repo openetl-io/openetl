@@ -139,8 +139,8 @@ type simSource struct {
 	attempt int
 }
 
-func (s *simSource) Read(_ context.Context, req source.ReadRequest, emitter source.Emitter) error {
-	out := gatedEmitter{s, emitter}
+func (s *simSource) Read(ctx context.Context, req source.ReadRequest, emitter source.Emitter) error {
+	out := gatedEmitter{ctx, s, emitter}
 	type cursor struct {
 		u   *upstream
 		pos int
@@ -163,7 +163,7 @@ func (s *simSource) Read(_ context.Context, req source.ReadRequest, emitter sour
 	}
 	for i := 0; len(open) > 0; i++ {
 		c := open[i%len(open)]
-		if err := outcome(s.w.sched.point(s.attempt, "src.fetch"), nop); err != nil {
+		if err := outcome(s.w.sched.point(ctx, s.attempt, "src.fetch"), nop); err != nil {
 			return err
 		}
 		end := min(c.pos+c.u.pageSize, len(c.u.records))
@@ -193,8 +193,8 @@ func (s *simSource) Read(_ context.Context, req source.ReadRequest, emitter sour
 
 // Committed discards what exact streams have acknowledged, as Kafka retention
 // or a replication slot would. Reading below it later is data loss.
-func (s *simSource) Committed(_ context.Context, states map[string][]byte) error {
-	return outcome(s.w.sched.point(s.attempt, "src.ack"), func() error {
+func (s *simSource) Committed(ctx context.Context, states map[string][]byte) error {
+	return outcome(s.w.sched.point(ctx, s.attempt, "src.ack"), func() error {
 		for name, state := range states {
 			u := s.w.upstreams[name]
 			if u.replay != source.Exact || state == nil {
@@ -215,11 +215,14 @@ func (s *simSource) Committed(_ context.Context, states map[string][]byte) error
 // gatedEmitter makes every Emitter call a yield point, so the connector can't
 // race other actors (such as a barrier request) between two of them.
 type gatedEmitter struct {
+	ctx context.Context
 	s   *simSource
 	out source.Emitter
 }
 
-func (g gatedEmitter) gate() error { return outcome(g.s.w.sched.point(g.s.attempt, "src.emit"), nop) }
+func (g gatedEmitter) gate() error {
+	return outcome(g.s.w.sched.point(g.ctx, g.s.attempt, "src.emit"), nop)
+}
 
 func (g gatedEmitter) Rows(stream string, rows []json.RawMessage) error {
 	if err := g.gate(); err != nil {
@@ -257,37 +260,37 @@ type simStore struct {
 	attempt int
 }
 
-func (s *simStore) call(op string, f func() error) error {
-	return outcome(s.w.sched.point(s.attempt, op), f)
+func (s *simStore) call(ctx context.Context, op string, f func() error) error {
+	return outcome(s.w.sched.point(ctx, s.attempt, op), f)
 }
 
 func (s *simStore) Get(ctx context.Context, key string) (data []byte, v checkpoint.Version, err error) {
-	if err := s.call("store.get", func() error { data, v, err = s.w.store.Get(ctx, key); return err }); err != nil {
+	if err := s.call(ctx, "store.get", func() error { data, v, err = s.w.store.Get(ctx, key); return err }); err != nil {
 		return nil, "", err
 	}
 	return data, v, nil
 }
 
 func (s *simStore) Create(ctx context.Context, key string, data []byte) (v checkpoint.Version, err error) {
-	if err := s.call("store.create", func() error { v, err = s.w.store.Create(ctx, key, data); return err }); err != nil {
+	if err := s.call(ctx, "store.create", func() error { v, err = s.w.store.Create(ctx, key, data); return err }); err != nil {
 		return "", err
 	}
 	return v, nil
 }
 
 func (s *simStore) Swap(ctx context.Context, key string, data []byte, prev checkpoint.Version) (v checkpoint.Version, err error) {
-	if err := s.call("store.swap", func() error { v, err = s.w.store.Swap(ctx, key, data, prev); return err }); err != nil {
+	if err := s.call(ctx, "store.swap", func() error { v, err = s.w.store.Swap(ctx, key, data, prev); return err }); err != nil {
 		return "", err
 	}
 	return v, nil
 }
 
 func (s *simStore) Delete(ctx context.Context, key string) error {
-	return s.call("store.delete", func() error { return s.w.store.Delete(ctx, key) })
+	return s.call(ctx, "store.delete", func() error { return s.w.store.Delete(ctx, key) })
 }
 
 func (s *simStore) List(ctx context.Context, prefix string) (keys []string, err error) {
-	if err := s.call("store.list", func() error { keys, err = s.w.store.List(ctx, prefix); return err }); err != nil {
+	if err := s.call(ctx, "store.list", func() error { keys, err = s.w.store.List(ctx, prefix); return err }); err != nil {
 		return nil, err
 	}
 	return keys, nil

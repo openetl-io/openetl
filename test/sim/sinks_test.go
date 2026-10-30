@@ -156,8 +156,8 @@ func (d *warehouseDest) Capabilities() destination.Capabilities {
 	return c
 }
 
-func (d *warehouseDest) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
-	if err := outcome(d.w.sched.point(d.attempt, "sink.open"), nop); err != nil {
+func (d *warehouseDest) Open(ctx context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
+	if err := outcome(d.w.sched.point(ctx, d.attempt, "sink.open"), nop); err != nil {
 		return nil, err
 	}
 	return &warehouseWriter{warehouseDest: d, cfg: cfg, buf: map[uint64]map[string][]row{}}, nil
@@ -169,9 +169,9 @@ type warehouseWriter struct {
 	buf map[uint64]map[string][]row // epoch → stream → rows; lost on a crash
 }
 
-func (w *warehouseWriter) Write(_ context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
+func (w *warehouseWriter) Write(ctx context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
 	rows := rowsOf(batch)
-	return outcome(w.w.sched.point(w.attempt, "sink.write"), func() error {
+	return outcome(w.w.sched.point(ctx, w.attempt, "sink.write"), func() error {
 		if w.buf[e.N] == nil {
 			w.buf[e.N] = map[string][]row{}
 		}
@@ -180,14 +180,14 @@ func (w *warehouseWriter) Write(_ context.Context, e destination.Epoch, stream s
 	})
 }
 
-func (w *warehouseWriter) PreCommit(_ context.Context, e destination.Epoch) (destination.Staged, error) {
+func (w *warehouseWriter) PreCommit(ctx context.Context, e destination.Epoch) (destination.Staged, error) {
 	st := warehouseStaged{Gen: e.Generation, N: e.N}
 	for _, s := range w.cfg.Streams {
 		rows := w.buf[e.N][s.Name]
 		if len(rows) == 0 {
 			continue
 		}
-		err := outcome(w.w.sched.point(w.attempt, "sink.stage"), func() error {
+		err := outcome(w.w.sched.point(ctx, w.attempt, "sink.stage"), func() error {
 			w.wh.mu.Lock()
 			defer w.wh.mu.Unlock()
 			w.wh.staging[stagingKey{e.Generation, e.N, s.Name}] = slices.Clone(rows)
@@ -203,12 +203,12 @@ func (w *warehouseWriter) PreCommit(_ context.Context, e destination.Epoch) (des
 }
 
 // applyScoped applies streams in one transaction per scope.
-func (w *warehouseWriter) applyScoped(st warehouseStaged, streams []stagedStream) error {
+func (w *warehouseWriter) applyScoped(ctx context.Context, st warehouseStaged, streams []stagedStream) error {
 	if w.cfg.Scope == destination.ScopePipeline {
-		return outcome(w.w.sched.point(w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, streams) })
+		return outcome(w.w.sched.point(ctx, w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, streams) })
 	}
 	for _, s := range streams {
-		err := outcome(w.w.sched.point(w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, []stagedStream{s}) })
+		err := outcome(w.w.sched.point(ctx, w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, []stagedStream{s}) })
 		if err != nil {
 			return err
 		}
@@ -216,16 +216,16 @@ func (w *warehouseWriter) applyScoped(st warehouseStaged, streams []stagedStream
 	return nil
 }
 
-func (w *warehouseWriter) Commit(_ context.Context, _ destination.Epoch, s destination.Staged) error {
+func (w *warehouseWriter) Commit(ctx context.Context, _ destination.Epoch, s destination.Staged) error {
 	var st warehouseStaged
 	if err := json.Unmarshal(s, &st); err != nil {
 		return err
 	}
-	return w.applyScoped(st, st.Streams)
+	return w.applyScoped(ctx, st, st.Streams)
 }
 
-func (w *warehouseWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
-	err := outcome(w.w.sched.point(w.attempt, "sink.recover"), func() error {
+func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
+	err := outcome(w.w.sched.point(ctx, w.attempt, "sink.recover"), func() error {
 		w.wh.mu.Lock()
 		defer w.wh.mu.Unlock()
 		if w.wh.fence > gen {
@@ -249,7 +249,7 @@ func (w *warehouseWriter) Recover(_ context.Context, gen uint64, e destination.E
 	case len(missing) == 0:
 		return destination.Applied, nil
 	case staged == len(missing):
-		if err := w.applyScoped(st, missing); err != nil {
+		if err := w.applyScoped(ctx, st, missing); err != nil {
 			return 0, err
 		}
 		return destination.Redone, nil
@@ -299,12 +299,12 @@ func (d *kafkaDest) Capabilities() destination.Capabilities {
 	return destination.Capabilities{Class: destination.TransactionalStream, Scopes: []destination.Scope{destination.ScopePipeline}}
 }
 
-func (d *kafkaDest) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
+func (d *kafkaDest) Open(ctx context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
 	kw := &kafkaWriter{kafkaDest: d, cfg: cfg}
 	for slot := range producerSlots {
 		// initTransactions fences older producers with this transactional ID
 		// and aborts their open transaction.
-		err := outcome(d.w.sched.point(d.attempt, "kafka.init"), func() error {
+		err := outcome(d.w.sched.point(ctx, d.attempt, "kafka.init"), func() error {
 			d.b.mu.Lock()
 			defer d.b.mu.Unlock()
 			d.b.epochs[slot]++
@@ -352,9 +352,9 @@ func (w *kafkaWriter) txnFor(e destination.Epoch) (*txn, error) {
 	return t, nil
 }
 
-func (w *kafkaWriter) Write(_ context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
+func (w *kafkaWriter) Write(ctx context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
 	rows := rowsOf(batch)
-	return outcome(w.w.sched.point(w.attempt, "kafka.produce"), func() error {
+	return outcome(w.w.sched.point(ctx, w.attempt, "kafka.produce"), func() error {
 		w.b.mu.Lock()
 		defer w.b.mu.Unlock()
 		t, err := w.txnFor(e)
@@ -368,9 +368,9 @@ func (w *kafkaWriter) Write(_ context.Context, e destination.Epoch, stream strin
 	})
 }
 
-func (w *kafkaWriter) PreCommit(_ context.Context, e destination.Epoch) (destination.Staged, error) {
+func (w *kafkaWriter) PreCommit(ctx context.Context, e destination.Epoch) (destination.Staged, error) {
 	slot := int(e.N % producerSlots)
-	err := outcome(w.w.sched.point(w.attempt, "kafka.flush"), func() error {
+	err := outcome(w.w.sched.point(ctx, w.attempt, "kafka.flush"), func() error {
 		w.b.mu.Lock()
 		defer w.b.mu.Unlock()
 		_, err := w.txnFor(e)
@@ -382,12 +382,12 @@ func (w *kafkaWriter) PreCommit(_ context.Context, e destination.Epoch) (destina
 	return json.Marshal(kafkaStaged{Slot: slot, Epoch: w.epochs[slot], Gen: e.Generation, N: e.N})
 }
 
-func (w *kafkaWriter) Commit(_ context.Context, _ destination.Epoch, s destination.Staged) error {
+func (w *kafkaWriter) Commit(ctx context.Context, _ destination.Epoch, s destination.Staged) error {
 	var st kafkaStaged
 	if err := json.Unmarshal(s, &st); err != nil {
 		return err
 	}
-	return outcome(w.w.sched.point(w.attempt, "kafka.commit"), func() error {
+	return outcome(w.w.sched.point(ctx, w.attempt, "kafka.commit"), func() error {
 		w.b.mu.Lock()
 		defer w.b.mu.Unlock()
 		if w.b.markers[[2]uint64{st.Gen, st.N}] {
@@ -411,12 +411,12 @@ func (w *kafkaWriter) Commit(_ context.Context, _ destination.Epoch, s destinati
 	})
 }
 
-func (w *kafkaWriter) Recover(_ context.Context, _ uint64, e destination.Epoch, _ destination.Staged) (destination.Recovery, error) {
+func (w *kafkaWriter) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ destination.Staged) (destination.Recovery, error) {
 	if e.IsZero() {
 		return destination.Applied, nil
 	}
 	var visible bool
-	err := outcome(w.w.sched.point(w.attempt, "kafka.recover"), func() error {
+	err := outcome(w.w.sched.point(ctx, w.attempt, "kafka.recover"), func() error {
 		w.b.mu.Lock()
 		defer w.b.mu.Unlock()
 		visible = w.b.markers[[2]uint64{e.Generation, e.N}]
@@ -455,9 +455,9 @@ func (d *webhookDest) Open(context.Context, destination.OpenConfig) (destination
 	return d, nil
 }
 
-func (d *webhookDest) Write(_ context.Context, _ destination.Epoch, stream string, batch arrow.RecordBatch) error {
+func (d *webhookDest) Write(ctx context.Context, _ destination.Epoch, stream string, batch arrow.RecordBatch) error {
 	rows := rowsOf(batch)
-	return outcome(d.w.sched.point(d.attempt, "hook.deliver"), func() error {
+	return outcome(d.w.sched.point(ctx, d.attempt, "hook.deliver"), func() error {
 		d.r.mu.Lock()
 		defer d.r.mu.Unlock()
 		for _, r := range rows {
@@ -469,8 +469,14 @@ func (d *webhookDest) Write(_ context.Context, _ destination.Epoch, stream strin
 }
 
 // Write returns only once the receiver has acknowledged, so there is nothing
-// left to wait for at PreCommit, and nothing to do at Commit.
-func (d *webhookDest) PreCommit(context.Context, destination.Epoch) (destination.Staged, error) {
+// left to wait for at PreCommit, and nothing to do at Commit. PreCommit is
+// still a yield point: without one, a barrier could carry the coordinator
+// through staging, the record and the next barrier request in one step, racing
+// the source side, and runs would stop being reproducible.
+func (d *webhookDest) PreCommit(ctx context.Context, _ destination.Epoch) (destination.Staged, error) {
+	if err := outcome(d.w.sched.point(ctx, d.attempt, "hook.precommit"), nop); err != nil {
+		return nil, err
+	}
 	return destination.Staged("{}"), nil
 }
 
