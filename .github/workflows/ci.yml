@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            sdk/go/go.sum
+            tools/go.sum
+      - run: make tools
+      - name: Lint
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          for m in . sdk/go; do (cd "$m" && golangci-lint run ./...); done
+      - name: Unit tests
+        run: go test -race ./... ./sdk/go/...
+      - name: SDK builds without the workspace
+        working-directory: sdk/go
+        run: GOWORK=off go build ./...
+      - name: Commit-protocol simulation (fixed seeds)
+        run: make sim SEEDS=200
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace

@@ -1,0 +1,43 @@
+# Local dependencies for `make dev` and the integration tests.
+#
+#   docker compose -f deploy/compose/dev.yml up -d
+#
+# `openetld dev` uses the local filesystem as its object store by default.
+# SeaweedFS provides an S3-compatible store with conditional writes
+# (If-Match / If-None-Match) for the checkpoint log's S3 tests.
+
+name: openetl-dev
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: openetl
+      POSTGRES_PASSWORD: openetl
+      POSTGRES_DB: openetl
+    ports: ["5432:5432"]
+    volumes: ["postgres:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "openetl"]
+      interval: 2s
+      retries: 30
+
+  temporal:
+    image: temporalio/temporal:1.9.1
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    ports:
+      - "7233:7233" # frontend
+      - "8233:8233" # web UI
+    volumes: ["temporal:/data"]
+
+  s3:
+    image: chrislusf/seaweedfs:4.51
+    # Anonymous access: development only.
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333"]
+    ports: ["8333:8333"]
+    volumes: ["s3:/data"]
+
+volumes:
+  postgres:
+  temporal:
+  s3:

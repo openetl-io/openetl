@@ -1,0 +1,26 @@
+module github.com/unsuitable001/openetl
+
+go 1.26.0
+
+toolchain go1.26.10
+
+require (
+	github.com/goccy/go-json v0.10.6 // indirect
+	github.com/google/flatbuffers v25.12.19+incompatible // indirect
+	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+	github.com/stoewer/go-strcase v1.3.1 // indirect
+	github.com/zeebo/xxh3 v1.1.0 // indirect
+	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
+	golang.org/x/sync v0.24.0
+	golang.org/x/sys v0.47.0 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
+)
+
+// sdk/go is developed in this repo. go.work covers builds, but `go mod tidy`
+// ignores workspaces, so the replace keeps tidy and GOWORK=off builds working.
+replace github.com/unsuitable001/openetl/sdk/go => ./sdk/go
+
+require (
+	github.com/apache/arrow-go/v18 v18.8.0
+	github.com/unsuitable001/openetl/sdk/go v0.0.0-00010101000000-000000000000
+)

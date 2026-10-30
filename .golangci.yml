@@ -1,0 +1,76 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - depguard
+    - errorlint
+    - gosec
+    - misspell
+    - noctx
+    - nolintlint
+    - revive
+  settings:
+    # Package boundary rules. Each one is explained in the repo layout docs.
+    depguard:
+      rules:
+        connectors-use-only-the-sdk:
+          files: ["**/connectors/**"]
+          deny:
+            - pkg: github.com/unsuitable001/openetl/internal
+              desc: connectors may import only sdk/go and third-party packages
+            - pkg: github.com/unsuitable001/openetl/gen
+              desc: connectors may import only sdk/go and third-party packages
+        sdk-is-standalone:
+          files: ["**/sdk/go/**"]
+          deny:
+            - pkg: github.com/unsuitable001/openetl/internal
+              desc: the SDK must not depend on the platform
+        data-path-has-no-control-plane:
+          files: ["**/internal/runner/**", "**/internal/connectorhost/**"]
+          deny:
+            - pkg: github.com/unsuitable001/openetl/internal/orchestration/workflows
+              desc: the data path must not depend on workflow code
+            - pkg: github.com/unsuitable001/openetl/internal/api
+              desc: the data path must not depend on the API server
+        workflows-are-deterministic:
+          files: ["**/internal/orchestration/workflows/**"]
+          deny:
+            - pkg: net/http
+              desc: workflow code must not do I/O; use an activity
+            - pkg: database/sql
+              desc: workflow code must not do I/O; use an activity
+            - pkg: os
+              desc: workflow code must not do I/O; use an activity
+        only-engineclient-talks-to-the-engine:
+          files: ["$all", "!**/internal/engineclient/**"]
+          deny:
+            - pkg: github.com/unsuitable001/openetl/gen/openetl/engine
+              desc: only internal/engineclient may use the engine protocol
+        only-llm-imports-llm-sdks:
+          files: ["$all", "!**/internal/llm/**"]
+          deny:
+            - pkg: github.com/anthropics/anthropic-sdk-go
+              desc: LLM access goes through internal/llm
+        only-gitsync-imports-go-git:
+          files: ["$all", "!**/internal/gitsync/**"]
+          deny:
+            - pkg: github.com/go-git/go-git
+              desc: git access goes through internal/gitsync
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, noctx]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/unsuitable001/openetl
