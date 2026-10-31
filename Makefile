@@ -32,8 +32,9 @@ $(BIN)/.tools: tools/go.mod tools/go.sum
 tools: $(BIN)/.tools ## Build the pinned developer tools into bin/
 
 .PHONY: dev
-dev: ## Start compose deps and run openetld dev
-	@echo "openetld doesn't exist yet (tracker item P0.4)"; exit 1
+dev: deps-up ## Start compose deps and run openetld dev
+	cargo build -p openetl-engine
+	go run ./cmd/openetld dev --engine $(CURDIR)/target/debug/openetl-engine
 
 .PHONY: deps-up deps-down
 deps-up: ## Start local dependencies (Postgres, Temporal, S3)
@@ -48,9 +49,10 @@ engine: ## Build openetl-engine
 # Clearing first drops code for deleted protos.
 .PHONY: generate
 generate: tools ## Generate code from protos and SQL
-	rm -rf gen sdk/go/protocol
+	rm -rf gen sdk/go/protocol internal/store/db
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate --template buf.gen.api.yaml
+	$(BIN)/sqlc generate -f internal/store/sqlc.yaml
 
 .PHONY: lint
 lint: tools ## Lint protos, Go and Rust
@@ -82,8 +84,9 @@ bench-boundary: ## Runner/engine boundary benchmark
 	@echo "not built yet (tracker item P0.10)"; exit 1
 
 .PHONY: e2e
-e2e: ## Full-stack scenarios against compose
-	@echo "not built yet"; exit 1
+e2e: ## Full-stack scenarios against the compose deps
+	cargo build -p openetl-engine
+	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
 
 .PHONY: clean
 clean: ## Remove build outputs

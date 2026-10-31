@@ -10,3 +10,4 @@ inputs:
   - directory: proto
     paths:
       - proto/openetl/api
+      - proto/openetl/dataplane

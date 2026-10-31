@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package openetl.dataplane.v1;
+
+import "openetl/api/v1/connection.proto";
+import "openetl/api/v1/pipeline.proto";
+
+option go_package = "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1";
+
+// DataPlaneService is what runners call on the control plane.
+service DataPlaneService {
+  // The pipeline version, and its source and destination, for one sync
+  // attempt.
+  rpc GetSyncSpec(GetSyncSpecRequest) returns (GetSyncSpecResponse);
+}
+
+message GetSyncSpecRequest {
+  string pipeline_id = 1;
+  string version = 2;
+}
+
+message GetSyncSpecResponse {
+  string org_id = 1;
+  string pipeline_id = 2;
+  string version = 3;
+  string data_plane = 4;
+  openetl.api.v1.PipelineSpec pipeline = 5;
+  openetl.api.v1.ConnectorConfig source = 6;
+  openetl.api.v1.ConnectorConfig destination = 7;
+}

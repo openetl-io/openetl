@@ -14,6 +14,7 @@ import (
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
+	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
@@ -179,16 +180,16 @@ func (j *Job) validate() error {
 	}
 	caps := j.Destination.Capabilities()
 	if !caps.SupportsScope(j.Settings.Scope) {
-		return fmt.Errorf("runner: the destination doesn't support commit scope %d", j.Settings.Scope)
+		return errs.New(errs.ConfigInvalid, "runner: the destination doesn't support commit scope %d", j.Settings.Scope)
 	}
 	seen := make(map[string]bool)
 	for _, s := range j.Streams {
 		if seen[s.Name] {
-			return fmt.Errorf("runner: stream %q configured twice", s.Name)
+			return errs.New(errs.ConfigInvalid, "runner: stream %q configured twice", s.Name)
 		}
 		seen[s.Name] = true
 		if lvl := delivery.StreamLevel(caps, s.Replay, s.Mode, j.Settings.Dedupe); lvl < j.Settings.Require {
-			return fmt.Errorf("runner: stream %q gets %v, below the required %v", s.Name, lvl, j.Settings.Require)
+			return errs.New(errs.ConfigInvalid, "runner: stream %q gets %v, below the required %v", s.Name, lvl, j.Settings.Require)
 		}
 	}
 	return nil

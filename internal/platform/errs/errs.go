@@ -5,6 +5,7 @@ package errs
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -51,6 +52,18 @@ var retryable = map[Code]bool{
 
 // Retryable reports whether an attempt that failed with c is retried.
 func (c Code) Retryable() bool { return retryable[c] }
+
+// NonRetryable returns the names of the codes that aren't retried, sorted.
+func NonRetryable() []string {
+	var names []string
+	for c, r := range retryable {
+		if !r {
+			names = append(names, c.String())
+		}
+	}
+	slices.Sort(names)
+	return names
+}
 
 // String returns the name without the enum prefix, such as "RATE_LIMITED".
 func (c Code) String() string {

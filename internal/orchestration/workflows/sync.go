@@ -1,0 +1,79 @@
+// Package workflows holds the control plane's workflows. They do no I/O;
+// activities do.
+package workflows
+
+import (
+	"time"
+
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
+
+	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/platform/errs"
+)
+
+// Workflows holds settings shared by every run. They must not change while
+// workflows are running, or replays diverge.
+type Workflows struct {
+	// The first retry delay of a failed sync attempt. Zero: 30 s.
+	AttemptRetry time.Duration
+	// How long an attempt may go without a heartbeat. Zero: 2 min.
+	AttemptHeartbeat time.Duration
+}
+
+// Sync runs one sync of a pipeline: it records the sync, runs attempts on
+// the pipeline's data plane until one succeeds or retries run out, then
+// records the outcome.
+func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.SyncResult, error) {
+	cp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:           contract.OrchestratorQueue,
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 10, NonRetryableErrorTypes: errs.NonRetryable()},
+	})
+	var started contract.StartSyncResult
+	if err := workflow.ExecuteActivity(cp, contract.StartSync, in).Get(ctx, &started); err != nil {
+		return nil, err
+	}
+
+	retry, heartbeat := w.AttemptRetry, w.AttemptHeartbeat
+	if retry == 0 {
+		retry = 30 * time.Second
+	}
+	if heartbeat == 0 {
+		heartbeat = 2 * time.Minute
+	}
+	dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:           contract.BatchQueue(started.DataPlane),
+		StartToCloseTimeout: 24 * time.Hour,
+		HeartbeatTimeout:    heartbeat,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        retry,
+			BackoffCoefficient:     2,
+			MaximumInterval:        30 * time.Minute,
+			MaximumAttempts:        5,
+			NonRetryableErrorTypes: errs.NonRetryable(),
+		},
+	})
+	var res contract.AttemptResult
+	err := workflow.ExecuteActivity(dp, contract.RunSyncAttempt, contract.AttemptInput{
+		OrgID:      in.OrgID,
+		PipelineID: in.PipelineID,
+		Version:    started.Version,
+	}).Get(ctx, &res)
+
+	finish := contract.FinishSyncInput{OrgID: in.OrgID, SyncID: started.SyncID}
+	if err != nil {
+		finish.Error = err.Error()
+	} else {
+		finish.Result = &res
+	}
+	// Recorded even if the workflow is being cancelled.
+	fctx, _ := workflow.NewDisconnectedContext(cp)
+	if ferr := workflow.ExecuteActivity(fctx, contract.FinishSync, finish).Get(fctx, nil); ferr != nil && err == nil {
+		err = ferr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &contract.SyncResult{SyncID: started.SyncID, Attempt: res}, nil
+}
