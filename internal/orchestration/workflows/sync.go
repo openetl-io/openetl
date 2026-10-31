@@ -45,6 +45,16 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 		workflow.GetLogger(ctx).Info("the pipeline is paused; not syncing")
 		return nil, nil
 	}
+	err := workflow.UpsertTypedSearchAttributes(ctx,
+		contract.OrgIDAttr.ValueSet(in.OrgID),
+		contract.WorkspaceIDAttr.ValueSet(started.WorkspaceID),
+		contract.PipelineIDAttr.ValueSet(in.PipelineID),
+		contract.DataPlaneIDAttr.ValueSet(started.DataPlane),
+		contract.ConnectorDefAttr.ValueSet(started.Connectors),
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	retry, heartbeat := w.AttemptRetry, w.AttemptHeartbeat
 	if retry == 0 {
@@ -55,7 +65,6 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 	}
 	attempts := int32(attemptLimit)
 	var res contract.AttemptResult
-	var err error
 	for drains := 0; ; drains++ {
 		dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			TaskQueue:           contract.BatchQueue(started.DataPlane),

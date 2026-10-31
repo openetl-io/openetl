@@ -192,7 +192,7 @@ func (s *Server) SyncPipeline(ctx context.Context, req *connect.Request[apiv1.Sy
 
 type connection struct {
 	name             string
-	id               uuid.UUID
+	id, workspace    uuid.UUID
 	spec             []byte
 	version          string
 	revision         int64
@@ -200,11 +200,11 @@ type connection struct {
 }
 
 func fromSource(r db.Source) connection {
-	return connection{r.Name, r.ID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime}
+	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime}
 }
 
 func fromDestination(r db.Destination) connection {
-	return connection{r.Name, r.ID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime}
+	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime}
 }
 
 func (c connection) config() (*apiv1.ConnectorConfig, error) {

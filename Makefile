@@ -11,7 +11,8 @@ TOOL_PKGS := \
 	github.com/sqlc-dev/sqlc/cmd/sqlc \
 	github.com/pressly/goose/v3/cmd/goose \
 	gotest.tools/gotestsum \
-	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+	github.com/golangci/golangci-lint/v2/cmd/golangci-lint \
+	go.temporal.io/sdk/contrib/tools/workflowcheck
 BIN := $(CURDIR)/bin
 CARGO_DENY_VERSION := 0.20.2
 
@@ -64,6 +65,7 @@ lint: tools $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION) ## Lint protos, Go and Rust
 	$(BIN)/buf lint
 	$(BIN)/buf format --diff --exit-code
 	@for m in $(GO_MODULES); do (cd $$m && $(BIN)/golangci-lint run ./...) || exit 1; done
+	$(BIN)/workflowcheck ./internal/orchestration/...
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	$(BIN)/cargo/bin/cargo-deny check --hide-inclusion-graph

@@ -60,6 +60,8 @@ func (c Code) Retryable() bool { return retryable[c] }
 // NonRetryable returns the names of the codes that aren't retried, sorted.
 func NonRetryable() []string {
 	var names []string
+	// Sorted below, so workflows can call it.
+	//workflowcheck:ignore
 	for c, r := range retryable {
 		if !r {
 			names = append(names, c.String())

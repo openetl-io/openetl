@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/operatorservice/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
@@ -54,4 +57,34 @@ func ApplicationError(err error) error {
 		opts.NextRetryDelay = e.RetryAfter
 	}
 	return temporal.NewApplicationErrorWithOptions(err.Error(), code.String(), opts)
+}
+
+// EnsureSearchAttributes adds the custom search attributes the namespace
+// lacks. It fails if one exists with another type.
+func EnsureSearchAttributes(ctx context.Context, c client.Client, namespace string, keys []temporal.SearchAttributeKey) error {
+	have, err := c.OperatorService().ListSearchAttributes(ctx, &operatorservice.ListSearchAttributesRequest{Namespace: namespace})
+	if err != nil {
+		return fmt.Errorf("temporalx: list search attributes: %w", err)
+	}
+	missing := map[string]enumspb.IndexedValueType{}
+	for _, k := range keys {
+		got, ok := have.GetCustomAttributes()[k.GetName()]
+		switch {
+		case !ok:
+			missing[k.GetName()] = k.GetValueType()
+		case got != k.GetValueType():
+			return fmt.Errorf("temporalx: search attribute %s is a %s, not a %s", k.GetName(), got, k.GetValueType())
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	_, err = c.OperatorService().AddSearchAttributes(ctx, &operatorservice.AddSearchAttributesRequest{Namespace: namespace, SearchAttributes: missing})
+	if _, ok := errors.AsType[*serviceerror.AlreadyExists](err); ok {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("temporalx: add search attributes: %w", err)
+	}
+	return nil
 }

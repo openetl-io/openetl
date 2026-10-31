@@ -34,7 +34,7 @@ func (s *Server) CheckSource(ctx context.Context, req *connect.Request[apiv1.Che
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.runOp(ctx, req.Msg.GetDataPlane(), contract.ConnectorOpInput{Op: contract.OpCheck, SourceID: c.id.String()})
+	res, err := s.runOp(ctx, req.Msg.GetDataPlane(), c, contract.ConnectorOpInput{Op: contract.OpCheck, SourceID: c.id.String()})
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (s *Server) CheckDestination(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.runOp(ctx, req.Msg.GetDataPlane(), contract.ConnectorOpInput{Op: contract.OpCheck, DestinationID: c.id.String()})
+	res, err := s.runOp(ctx, req.Msg.GetDataPlane(), c, contract.ConnectorOpInput{Op: contract.OpCheck, DestinationID: c.id.String()})
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func (s *Server) DiscoverSource(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.runOp(ctx, req.Msg.GetDataPlane(), contract.ConnectorOpInput{Op: contract.OpDiscover, SourceID: c.id.String()})
+	res, err := s.runOp(ctx, req.Msg.GetDataPlane(), c, contract.ConnectorOpInput{Op: contract.OpDiscover, SourceID: c.id.String()})
 	if err != nil {
 		return nil, err
 	}
@@ -78,16 +78,20 @@ func checkResult(r contract.ConnectorOpResult) *apiv1.CheckResult {
 	return &apiv1.CheckResult{Ok: r.Code == "", Code: r.Code, Message: r.Message, Version: r.Version}
 }
 
-// runOp runs a connector operation on the data plane, the default if dp is
-// empty, and waits for it.
-func (s *Server) runOp(ctx context.Context, dp string, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+// runOp runs a connector operation on c, on the data plane dp or the
+// default, and waits for it.
+func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	dp = cmp.Or(dp, s.DefaultDataPlane)
 	if _, err := s.Store.GetDataPlane(ctx, db.GetDataPlaneParams{OrgID: s.Tenant.Org, ID: dp}); errors.Is(err, pgx.ErrNoRows) {
 		return contract.ConnectorOpResult{}, invalid("data plane %q doesn't exist", dp)
 	} else if err != nil {
 		return contract.ConnectorOpResult{}, err
 	}
-	in.OrgID, in.DataPlane = s.Tenant.Org.String(), dp
+	cfg, err := c.config()
+	if err != nil {
+		return contract.ConnectorOpResult{}, err
+	}
+	in.OrgID, in.WorkspaceID, in.DataPlane, in.Connector = s.Tenant.Org.String(), c.workspace.String(), dp, cfg.GetConnector()
 	res, err := s.Ops.Run(ctx, in)
 	if err == nil {
 		return res, nil

@@ -35,6 +35,7 @@ jobs:
           buf lint
           buf format --diff --exit-code
           for m in . sdk/go; do (cd "$m" && golangci-lint run ./...); done
+          workflowcheck ./internal/orchestration/...
       # Informational until v0.1.0-alpha.
       - name: Breaking proto changes
         if: github.event_name == 'pull_request'

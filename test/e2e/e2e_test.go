@@ -29,9 +29,13 @@ import (
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/jackc/pgx/v5"
+	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -125,11 +129,114 @@ func setup(m *testing.M) (int, error) {
 		return 0, errors.New("the server didn't start")
 	}
 	code := m.Run()
+	if dir := os.Getenv("OPENETL_RECORD_HISTORIES"); dir != "" {
+		if err := recordHistories(ctx, dir); err != nil {
+			return code, fmt.Errorf("record histories: %w", err)
+		}
+	}
 	cancel()
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 		return code, fmt.Errorf("server: %w", err)
 	}
 	return code, nil
+}
+
+// recordHistories writes the history of every workflow that finished, for the
+// replay corpus in internal/orchestration/workflows/testdata, with this
+// machine's host name replaced.
+func recordHistories(ctx context.Context, dir string) error {
+	host, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	tc, err := client.DialContext(ctx, client.Options{HostPort: env.temporal, Namespace: env.ns})
+	if err != nil {
+		return err
+	}
+	defer tc.Close()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	req := &workflowservice.ListWorkflowExecutionsRequest{Namespace: env.ns, Query: "ExecutionStatus != 'Running'"}
+	for {
+		res, err := tc.ListWorkflow(ctx, req)
+		if err != nil {
+			return err
+		}
+		for _, w := range res.GetExecutions() {
+			h := &historypb.History{}
+			it := tc.GetWorkflowHistory(ctx, w.GetExecution().GetWorkflowId(), w.GetExecution().GetRunId(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+			for it.HasNext() {
+				ev, err := it.Next()
+				if err != nil {
+					return err
+				}
+				h.Events = append(h.Events, ev)
+			}
+			replaceText(h.ProtoReflect(), host, "host")
+			b, err := protojson.MarshalOptions{Indent: "  "}.Marshal(h)
+			if err != nil {
+				return err
+			}
+			status := strings.ToLower(strings.TrimPrefix(w.GetStatus().String(), "WORKFLOW_EXECUTION_STATUS_"))
+			name := fmt.Sprintf("%s-%s-%s.json", w.GetType().GetName(), status, w.GetExecution().GetRunId())
+			if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+				return err
+			}
+		}
+		if len(res.GetNextPageToken()) == 0 {
+			return nil
+		}
+		req.NextPageToken = res.GetNextPageToken()
+	}
+}
+
+// replaceText replaces old with new in every string and bytes field of m,
+// payloads included.
+func replaceText(m protoreflect.Message, old, new string) {
+	fix := func(fd protoreflect.FieldDescriptor, v protoreflect.Value) (protoreflect.Value, bool) {
+		switch fd.Kind() {
+		case protoreflect.StringKind:
+			return protoreflect.ValueOfString(strings.ReplaceAll(v.String(), old, new)), true
+		case protoreflect.BytesKind:
+			return protoreflect.ValueOfBytes(bytes.ReplaceAll(v.Bytes(), []byte(old), []byte(new))), true
+		case protoreflect.MessageKind, protoreflect.GroupKind:
+			replaceText(v.Message(), old, new)
+		}
+		return v, false
+	}
+	var fields []protoreflect.FieldDescriptor
+	m.Range(func(fd protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		fields = append(fields, fd)
+		return true
+	})
+	for _, fd := range fields {
+		switch v := m.Get(fd); {
+		case fd.IsList():
+			l := v.List()
+			for i := range l.Len() {
+				if nv, set := fix(fd, l.Get(i)); set {
+					l.Set(i, nv)
+				}
+			}
+		case fd.IsMap():
+			mv := v.Map()
+			var keys []protoreflect.MapKey
+			mv.Range(func(k protoreflect.MapKey, _ protoreflect.Value) bool {
+				keys = append(keys, k)
+				return true
+			})
+			for _, k := range keys {
+				if nv, set := fix(fd.MapValue(), mv.Get(k)); set {
+					mv.Set(k, nv)
+				}
+			}
+		default:
+			if nv, set := fix(fd, v); set {
+				m.Set(fd, nv)
+			}
+		}
+	}
 }
 
 // runner is an openetld runner process.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 )
@@ -23,6 +24,12 @@ func (o *Ops) Run(ctx context.Context, in contract.ConnectorOpInput) (contract.C
 		ID:                       contract.OpWorkflowID(uuid.NewString()),
 		TaskQueue:                contract.OrchestratorQueue,
 		WorkflowExecutionTimeout: 15 * time.Minute,
+		TypedSearchAttributes: temporal.NewSearchAttributes(
+			contract.OrgIDAttr.ValueSet(in.OrgID),
+			contract.WorkspaceIDAttr.ValueSet(in.WorkspaceID),
+			contract.DataPlaneIDAttr.ValueSet(in.DataPlane),
+			contract.ConnectorDefAttr.ValueSet([]string{in.Connector}),
+		),
 	}, contract.ConnectorOpWorkflow, in)
 	if err != nil {
 		return res, fmt.Errorf("ops: start %s: %w", in.Op, err)

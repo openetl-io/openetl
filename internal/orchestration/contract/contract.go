@@ -3,7 +3,11 @@
 // them without importing each other.
 package contract
 
-import "time"
+import (
+	"time"
+
+	"go.temporal.io/sdk/temporal"
+)
 
 const (
 	OrchestratorQueue = "cp.orchestrator"
@@ -22,6 +26,19 @@ const (
 const (
 	OpCheck    = "check"
 	OpDiscover = "discover"
+)
+
+// Search attributes on workflows, for finding them in Temporal. openetld
+// adds them to the namespace when it starts.
+var (
+	OrgIDAttr       = temporal.NewSearchAttributeKeyKeyword("OrgID")
+	WorkspaceIDAttr = temporal.NewSearchAttributeKeyKeyword("WorkspaceID")
+	PipelineIDAttr  = temporal.NewSearchAttributeKeyKeyword("PipelineID")
+	DataPlaneIDAttr = temporal.NewSearchAttributeKeyKeyword("DataPlaneID")
+	// The connectors the workflow runs, such as postgres.
+	ConnectorDefAttr = temporal.NewSearchAttributeKeyKeywordList("ConnectorDef")
+
+	SearchAttributes = []temporal.SearchAttributeKey{OrgIDAttr, WorkspaceIDAttr, PipelineIDAttr, DataPlaneIDAttr, ConnectorDefAttr}
 )
 
 // OpPickup is how long a connector operation waits for a runner of its data
@@ -43,10 +60,13 @@ type SyncInput struct {
 
 type StartSyncResult struct {
 	// Empty if the pipeline is paused, and no sync was recorded.
-	SyncID    string
-	Version   string
-	DataPlane string
-	Paused    bool
+	SyncID      string
+	Version     string
+	DataPlane   string
+	Paused      bool
+	WorkspaceID string
+	// Of the source and the destination.
+	Connectors []string
 }
 
 type AttemptInput struct {
@@ -80,8 +100,11 @@ type SyncResult struct {
 }
 
 type ConnectorOpInput struct {
-	OrgID     string
-	DataPlane string
+	OrgID       string
+	WorkspaceID string
+	DataPlane   string
+	// The connector's name, such as postgres.
+	Connector string
 	// OpCheck or OpDiscover, which only sources have.
 	Op string
 	// One of them.

@@ -63,6 +63,9 @@ func Run(ctx context.Context, o Options) error {
 
 	var st *store.Store
 	if o.Roles.Server || o.Roles.Orchestrator {
+		if err := temporalx.EnsureSearchAttributes(ctx, tc, cfg.TemporalNamespace, contract.SearchAttributes); err != nil {
+			return err
+		}
 		if st, err = store.Open(ctx, cfg.DatabaseURL); err != nil {
 			return err
 		}

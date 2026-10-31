@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -299,4 +300,36 @@ func TestCompletedStreamIsNotReadAgain(t *testing.T) {
 		t.Errorf("stats %s: want the second attempt to have finished", stats)
 	}
 	checkRows(t, schema(name), 2000, "users", "purchases")
+}
+
+// Syncs and connector operations can be found by their search attributes.
+func TestSearchAttributes(t *testing.T) {
+	startRunner(t)
+	name := unique("attrs")
+	apply(t, pipelineDocs(name, `{"seed": 5, "count": 10}`, `{}`)...)
+	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	if _, err := apiv1connect.NewSourceServiceClient(http.DefaultClient, env.apiURL).CheckSource(t.Context(),
+		connect.NewRequest(&apiv1.CheckSourceRequest{Name: "workspaces/default/sources/" + name})); err != nil {
+		t.Fatal(err)
+	}
+	id, err := query[string](t, `SELECT id::text FROM pipelines WHERE name = $1`, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := query[string](t, `SELECT workspace_id::text FROM sources WHERE name = $1`, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc := temporalClient(t)
+	for _, q := range []string{
+		fmt.Sprintf(`WorkflowType = 'SyncWorkflow' AND PipelineID = '%s' AND ConnectorDef = 'faker' AND ConnectorDef = 'postgres' AND DataPlaneID = 'default' AND WorkspaceID = '%s'`, id, ws),
+		fmt.Sprintf(`WorkflowType = 'ConnectorOpWorkflow' AND ConnectorDef = 'faker' AND WorkspaceID = '%s'`, ws),
+	} {
+		eventually(t, 30*time.Second, "workflows matching "+q, func() bool {
+			res, err := tc.CountWorkflow(t.Context(), &workflowservice.CountWorkflowExecutionsRequest{Namespace: env.ns, Query: q})
+			return err == nil && res.GetCount() > 0
+		})
+	}
 }
