@@ -175,7 +175,7 @@ func (w *writer) Write(ctx context.Context, e destination.Epoch, stream string, 
 	st := byStream[stream]
 	if st == nil {
 		st = &stagingTable{name: stagingName(w.cfg.Pipeline, stream, e), target: targetTable(batch.Schema(), stream)}
-		if _, err := w.pool.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+w.ident(st.name)+" ("+columnDefs(cols)+")"); err != nil {
+		if err := w.createStaging(ctx, st.name, e, cols); err != nil {
 			return fmt.Errorf("postgres: create staging for %s: %w", stream, err)
 		}
 		st.cols = cols
@@ -213,6 +213,38 @@ func (w *writer) Write(ctx context.Context, e destination.Epoch, stream string, 
 		return fmt.Errorf("postgres: stage %s: %w", stream, err)
 	}
 	return nil
+}
+
+// stagingLabel is each staging table's comment, so that Recover can find
+// what earlier generations of the pipeline staged.
+type stagingLabel struct {
+	Pipeline   string `json:"pipeline"`
+	Generation uint64 `json:"generation"`
+	Epoch      uint64 `json:"epoch"`
+}
+
+func (w *writer) createStaging(ctx context.Context, name string, e destination.Epoch, cols []column) error {
+	label, err := json.Marshal(stagingLabel{Pipeline: w.cfg.Pipeline, Generation: e.Generation, Epoch: e.N})
+	if err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+w.ident(name)+" ("+columnDefs(cols)+")"); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, "COMMENT ON TABLE "+w.ident(name)+" IS "+quoteLiteral(string(label)))
+		return err
+	})
+}
+
+// quoteLiteral quotes s as Postgres's quote_literal does, whatever
+// standard_conforming_strings is.
+func quoteLiteral(s string) string {
+	q := "'" + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), "'", "''") + "'"
+	if strings.Contains(s, `\`) {
+		q = "E" + q
+	}
+	return q
 }
 
 // widen adds columns that appeared since the staging table was created, and
@@ -356,6 +388,12 @@ func (w *writer) ensureTarget(ctx context.Context, desc staged, s stagedStream) 
 		return nil, err
 	}
 	if len(cols) == 0 {
+		// A newer generation's Recover drops what older ones staged.
+		var fence uint64
+		err := w.pool.QueryRow(ctx, "SELECT generation FROM "+w.ident("_openetl_fence")+" WHERE pipeline = $1", w.cfg.Pipeline).Scan(&fence)
+		if err == nil && fence > w.cfg.Generation {
+			return nil, fmt.Errorf("%w: fence is %d, applier is %d", destination.ErrFenced, fence, w.cfg.Generation)
+		}
 		return nil, fmt.Errorf("postgres: staging for %s in epoch %d-g%d is missing", s.Name, desc.Epoch, desc.Generation)
 	}
 	if err := w.ensureTable(ctx, s.Table, cols); err != nil {
@@ -515,19 +553,48 @@ func (w *writer) Recover(ctx context.Context, gen uint64, e destination.Epoch, s
 			present++
 		}
 	}
+	var r destination.Recovery
 	switch {
 	case len(missing) == 0:
 		w.dropStaging(ctx, desc.Streams)
-		return destination.Applied, nil
+		r = destination.Applied
 	case present == len(missing):
 		if err := w.apply(ctx, desc, missing); err != nil {
 			return 0, err
 		}
-		return destination.Redone, nil
+		r = destination.Redone
 	case present == 0 && len(missing) == len(desc.Streams):
-		return destination.Lost, nil
+		r = destination.Lost
 	default:
 		return 0, fmt.Errorf("postgres: epoch %d-g%d is partly applied and the staging for the rest is gone", desc.Epoch, desc.Generation)
+	}
+	w.dropStale(ctx, gen)
+	return r, nil
+}
+
+// dropStale drops what earlier generations of the pipeline staged. None of
+// it can be applied once HEAD's epoch is recovered: the fence stops their
+// commits. Best effort, like dropStaging.
+func (w *writer) dropStale(ctx context.Context, gen uint64) {
+	rows, err := w.pool.Query(ctx, `SELECT c.relname, d.description FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN pg_description d ON d.objoid = c.oid AND d.classoid = 'pg_class'::regclass AND d.objsubid = 0
+		WHERE n.nspname = $1 AND c.relkind = 'r' AND starts_with(c.relname, '_openetl_stage_')`, w.schema)
+	if err != nil {
+		return
+	}
+	labelled, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) ([2]string, error) {
+		var t [2]string
+		return t, r.Scan(&t[0], &t[1])
+	})
+	if err != nil {
+		return
+	}
+	for _, t := range labelled {
+		var l stagingLabel
+		if json.Unmarshal([]byte(t[1]), &l) == nil && l.Pipeline == w.cfg.Pipeline && l.Generation < gen {
+			_, _ = w.pool.Exec(ctx, "DROP TABLE IF EXISTS "+w.ident(t[0]))
+		}
 	}
 }
 

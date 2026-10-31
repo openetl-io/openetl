@@ -109,6 +109,11 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 	return temporalx.ApplicationError(a.Store.FinishSync(ctx, params))
 }
 
+func (a *Activities) DropMirrorPartitions(ctx context.Context, in contract.DropMirrorPartitionsInput) ([]string, error) {
+	dropped, err := a.Store.DropMirrorPartitions(ctx, in.Before)
+	return dropped, temporalx.ApplicationError(err)
+}
+
 func ids(a, b string) (uuid.UUID, uuid.UUID, error) {
 	x, err := uuid.Parse(a)
 	if err != nil {

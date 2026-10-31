@@ -111,9 +111,20 @@ func (s *FSStore) Delete(_ context.Context, key string) error {
 }
 
 func (s *FSStore) List(_ context.Context, prefix string) ([]string, error) {
-	var keys []string
-	err := filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
+	start := s.root
+	if i := strings.LastIndex(prefix, "/"); i > 0 {
+		p, err := s.path(prefix[:i])
 		if err != nil {
+			return nil, err
+		}
+		start = p
+	}
+	var keys []string
+	err := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if p == start && errors.Is(err, fs.ErrNotExist) {
+				return fs.SkipAll
+			}
 			return err
 		}
 		if d.IsDir() || strings.HasSuffix(p, ".lock") || strings.HasPrefix(d.Name(), ".tmp-") {

@@ -14,13 +14,25 @@ const (
 
 	SyncWorkflow        = "SyncWorkflow"
 	ConnectorOpWorkflow = "ConnectorOpWorkflow"
+	RetentionWorkflow   = "RetentionWorkflow"
 
-	StartSync      = "StartSync"
-	FinishSync     = "FinishSync"
-	RunSyncAttempt = "RunSyncAttempt"
-	CheckConnector = "CheckConnector"
-	DiscoverSource = "DiscoverSource"
+	StartSync            = "StartSync"
+	FinishSync           = "FinishSync"
+	RunSyncAttempt       = "RunSyncAttempt"
+	CheckConnector       = "CheckConnector"
+	DiscoverSource       = "DiscoverSource"
+	DropMirrorPartitions = "DropMirrorPartitions"
 )
+
+// One retention schedule runs for the whole deployment.
+const (
+	RetentionWorkflowID = "gc"
+	RetentionScheduleID = "schedule/gc"
+)
+
+// DefaultCheckpointHistory is how long the control plane keeps the
+// checkpoint mirror.
+const DefaultCheckpointHistory = 30 * 24 * time.Hour
 
 // Connector operations.
 const (
@@ -110,6 +122,21 @@ type ConnectorOpInput struct {
 	// One of them.
 	SourceID      string
 	DestinationID string
+}
+
+type RetentionInput struct {
+	// How long the checkpoint mirror keeps a day's checkpoints.
+	CheckpointHistory time.Duration
+}
+
+type RetentionResult struct {
+	// The checkpoint mirror's partitions dropped.
+	MirrorPartitions []string
+}
+
+type DropMirrorPartitionsInput struct {
+	// Days that end by then are dropped.
+	Before time.Time
 }
 
 type ConnectorOpResult struct {

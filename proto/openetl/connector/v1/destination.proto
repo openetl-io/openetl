@@ -112,7 +112,8 @@ message WriteStream {
 
 // WriteRecover raises the destination fence to the writer's generation, then
 // recovers epoch. With no epoch, it only raises the fence and reports
-// applied.
+// applied. Otherwise it may then drop whatever earlier generations staged,
+// since none of it can be applied any more.
 message WriteRecover {
   Epoch epoch = 1;
   bytes staged = 2;

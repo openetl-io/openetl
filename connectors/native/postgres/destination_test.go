@@ -229,6 +229,70 @@ func TestStaleWriterIsFenced(t *testing.T) {
 	}
 }
 
+// Recovering an epoch drops what earlier generations of the pipeline
+// staged, and nothing else.
+func TestRecoverDropsStaleStaging(t *testing.T) {
+	env := newEnv(t)
+	ctx := t.Context()
+	rows := batch(t, []arrow.Field{idField}, `[{"id": 1}]`)
+	const pipeline = `p'1\`
+	open := func(pipeline string, gen uint64) destination.Writer {
+		w, err := env.d.Open(ctx, destination.OpenConfig{Pipeline: pipeline, Generation: gen, Scope: destination.ScopePipeline,
+			Streams: []destination.Stream{{Name: "users", Mode: destination.Append}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = w.Close(context.Background()) })
+		return w
+	}
+	stage := func(w destination.Writer, pipeline string, gen, n uint64) string {
+		e := destination.Epoch{Generation: gen, N: n}
+		if err := w.Write(ctx, e, "users", rows); err != nil {
+			t.Fatal(err)
+		}
+		return pgx.Identifier{env.schema, stagingName(pipeline, "users", e)}.Sanitize()
+	}
+	exists := func(table string) bool {
+		var ok bool
+		if err := env.conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	w1, w2 := open(pipeline, 1), open("p2", 1)
+	recov(t, w1, 1, destination.Epoch{}, nil)
+	recov(t, w2, 1, destination.Epoch{}, nil)
+	head := destination.Epoch{Generation: 1, N: 1}
+	if err := w1.Write(ctx, head, "users", rows); err != nil {
+		t.Fatal(err)
+	}
+	st := precommit(t, w1, head)
+	if err := w1.Commit(ctx, head, st); err != nil {
+		t.Fatal(err)
+	}
+	stale, other := stage(w1, pipeline, 1, 2), stage(w2, "p2", 1, 1)
+	staleSt := precommit(t, w1, destination.Epoch{Generation: 1, N: 2})
+	next := open(pipeline, 2)
+	current := stage(next, pipeline, 2, 2)
+
+	recov(t, next, 2, destination.Epoch{}, nil)
+	if !exists(stale) {
+		t.Fatal("recovering no epoch dropped staging")
+	}
+	if r := recov(t, next, 2, head, st); r != destination.Applied {
+		t.Fatalf("Recover = %v, want applied", r)
+	}
+	if exists(stale) {
+		t.Error("the earlier generation's staging is left")
+	}
+	if !exists(other) || !exists(current) {
+		t.Error("Recover dropped another pipeline's staging, or its own generation's")
+	}
+	if err := w1.Commit(ctx, destination.Epoch{Generation: 1, N: 2}, staleSt); !errors.Is(err, destination.ErrFenced) {
+		t.Errorf("committing dropped staging: %v, want fenced", err)
+	}
+}
+
 func TestBatchWithoutColumns(t *testing.T) {
 	env := newEnv(t)
 	ctx := t.Context()

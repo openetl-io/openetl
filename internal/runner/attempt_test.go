@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -167,6 +168,49 @@ func TestRecordsCarryTheDataflowsReport(t *testing.T) {
 		}
 		if len(first.Snapshots) != 1 || first.Snapshots[0].URL != fmt.Sprintf("mem://chk-%d", restored) {
 			t.Errorf("the second attempt restored snapshots %+v", first.Snapshots)
+		}
+	})
+}
+
+// An attempt keeps the last records of the chain it restored, and the ones
+// it commits.
+func TestAttemptsPruneTheLog(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		store := checkpoint.NewMemStore()
+		log := checkpoint.NewLog(store, "org", "p")
+		var res runner.Result
+		for i, pages := range []int{3, 6, 9} {
+			committed := make(chan uint64, 16)
+			j := job(log, fmt.Sprintf("a%d", i), ackSource{pages: pages, committed: committed, acks: new([]string)}, runner.Passthrough{Convert: columnless}, committed)
+			j.KeepRecords = 3
+			var err error
+			if res, err = runner.RunAttempt(ctx, j); err != nil {
+				t.Fatal(err)
+			}
+		}
+		keys, err := store.List(ctx, "org/p/_checkpoints/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var older, newer []uint64
+		for _, k := range keys {
+			var e, g uint64
+			if _, err := fmt.Sscanf(strings.TrimPrefix(k, "org/p/_checkpoints/"), "%d-g%d.json", &e, &g); err != nil {
+				continue
+			}
+			switch {
+			case e > res.Restored && g == res.Generation:
+				newer = append(newer, e)
+			case e <= res.Restored:
+				older = append(older, e)
+			default:
+				t.Errorf("record %d-g%d is left", e, g)
+			}
+		}
+		if r := res.Restored; !slices.Equal(older, []uint64{r - 2, r - 1, r}) || len(newer) != res.Committed {
+			t.Fatalf("records %v up to the restored %d and %v after, want the last 3 and the %d committed", older, r, newer, res.Committed)
 		}
 	})
 }

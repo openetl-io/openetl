@@ -24,6 +24,7 @@ func TestReplayHistories(t *testing.T) {
 	r := worker.NewWorkflowReplayer()
 	r.RegisterWorkflowWithOptions(workflows.Workflows{}.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
 	r.RegisterWorkflowWithOptions(workflows.Workflows{}.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
+	r.RegisterWorkflowWithOptions(workflows.Workflows{}.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
 	for _, f := range files {
 		t.Run(filepath.Base(f), func(t *testing.T) {
 			if err := r.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.DiscardHandler)), f); err != nil {

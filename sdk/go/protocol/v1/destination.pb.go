@@ -811,7 +811,8 @@ func (x *WriteStream) GetDedupe() bool {
 
 // WriteRecover raises the destination fence to the writer's generation, then
 // recovers epoch. With no epoch, it only raises the fence and reports
-// applied.
+// applied. Otherwise it may then drop whatever earlier generations staged,
+// since none of it can be applied any more.
 type WriteRecover struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`

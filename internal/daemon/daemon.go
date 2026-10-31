@@ -136,12 +136,18 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, ready func(stri
 }
 
 func orchestrate(ctx context.Context, tc client.Client, st *store.Store, wf workflows.Workflows) error {
+	sched := &schedules.Schedules{Client: tc}
+	if err := sched.EnsureRetention(ctx, contract.RetentionInput{CheckpointHistory: contract.DefaultCheckpointHistory}); err != nil {
+		return err
+	}
 	w := worker.New(tc, contract.OrchestratorQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(wf.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
 	w.RegisterWorkflowWithOptions(wf.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
+	w.RegisterWorkflowWithOptions(wf.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
 	acts := &cpactivities.Activities{Store: st}
 	w.RegisterActivityWithOptions(acts.StartSync, activity.RegisterOptions{Name: contract.StartSync})
 	w.RegisterActivityWithOptions(acts.FinishSync, activity.RegisterOptions{Name: contract.FinishSync})
+	w.RegisterActivityWithOptions(acts.DropMirrorPartitions, activity.RegisterOptions{Name: contract.DropMirrorPartitions})
 	return runWorker(ctx, w)
 }
 

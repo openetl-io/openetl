@@ -4,6 +4,7 @@ package runner
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -71,6 +72,8 @@ type Job struct {
 	// Closing it stops the attempt at its next checkpoint with ErrDrained,
 	// unless the read has already ended, in which case it finishes.
 	Drain <-chan struct{}
+	// Records kept along the checkpoint chain, at least 2. Zero: 10.
+	KeepRecords int
 }
 
 // ErrDrained: the attempt stopped at a checkpoint because Job.Drain closed.
@@ -86,6 +89,8 @@ type Result struct {
 	// The last epoch committed, or Restored.
 	Last uint64
 }
+
+const defaultKeepRecords = 10
 
 // commitAttempts bounds in-process retries of the idempotent commit steps.
 // Recovery in the next attempt finishes what still fails.
@@ -188,6 +193,11 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		res.Restored = restored.Epoch
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
+	if n, err := sess.Prune(ctx, restored, cmp.Or(job.KeepRecords, defaultKeepRecords)); err != nil {
+		log.Warn("pruning the checkpoint log failed", "deleted", n, "err", err)
+	} else if n > 0 {
+		log.Debug("pruned the checkpoint log", "deleted", n)
+	}
 
 	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reported: map[string]*arrow.Schema{}}
 	return res, c.run(ctx, restored, canForce)
@@ -201,6 +211,8 @@ func (j *Job) validate() error {
 		return errors.New("runner: job is missing its log, source, destination or dataflow")
 	case len(j.Streams) == 0:
 		return errors.New("runner: job has no streams")
+	case j.KeepRecords < 0 || j.KeepRecords == 1:
+		return fmt.Errorf("runner: the job keeps %d checkpoint records, not at least 2", j.KeepRecords)
 	case j.Settings.Require == 0 || j.Settings.Scope == 0:
 		return errors.New("runner: job settings need Require and Scope")
 	}

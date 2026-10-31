@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -41,35 +42,55 @@ func (s *Schedules) Upsert(ctx context.Context, orgID, pipelineID string, sched 
 		Args:      []any{contract.SyncInput{OrgID: orgID, PipelineID: pipelineID}},
 		TaskQueue: contract.OrchestratorQueue,
 	}
-	id := contract.ScheduleID(pipelineID)
-	_, err := s.Client.ScheduleClient().Create(ctx, client.ScheduleOptions{
-		ID:                 id,
+	return s.upsert(ctx, client.ScheduleOptions{
+		ID:                 contract.ScheduleID(pipelineID),
 		Spec:               spec,
 		Action:             action,
 		Overlap:            enumspb.SCHEDULE_OVERLAP_POLICY_SKIP,
 		TriggerImmediately: !paused,
 		Paused:             paused,
 	})
+}
+
+// EnsureRetention creates or updates the daily RetentionWorkflow schedule.
+func (s *Schedules) EnsureRetention(ctx context.Context, in contract.RetentionInput) error {
+	return s.upsert(ctx, client.ScheduleOptions{
+		ID:   contract.RetentionScheduleID,
+		Spec: client.ScheduleSpec{Intervals: []client.ScheduleIntervalSpec{{Every: 24 * time.Hour}}, Jitter: time.Hour},
+		Action: &client.ScheduleWorkflowAction{
+			ID:        contract.RetentionWorkflowID,
+			Workflow:  contract.RetentionWorkflow,
+			Args:      []any{in},
+			TaskQueue: contract.OrchestratorQueue,
+		},
+		Overlap: enumspb.SCHEDULE_OVERLAP_POLICY_SKIP,
+	})
+}
+
+// upsert creates the schedule, or updates its spec, action and overlap
+// policy. Its other options apply only when it is created.
+func (s *Schedules) upsert(ctx context.Context, opts client.ScheduleOptions) error {
+	_, err := s.Client.ScheduleClient().Create(ctx, opts)
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, temporal.ErrScheduleAlreadyRunning) {
-		return fmt.Errorf("schedules: create %s: %w", id, err)
+		return fmt.Errorf("schedules: create %s: %w", opts.ID, err)
 	}
-	err = s.Client.ScheduleClient().GetHandle(ctx, id).Update(ctx, client.ScheduleUpdateOptions{
+	err = s.Client.ScheduleClient().GetHandle(ctx, opts.ID).Update(ctx, client.ScheduleUpdateOptions{
 		DoUpdate: func(in client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
 			sc := in.Description.Schedule
-			sc.Spec = &spec
-			sc.Action = action
+			sc.Spec = &opts.Spec
+			sc.Action = opts.Action
 			if sc.Policy == nil {
 				sc.Policy = &client.SchedulePolicies{}
 			}
-			sc.Policy.Overlap = enumspb.SCHEDULE_OVERLAP_POLICY_SKIP
+			sc.Policy.Overlap = opts.Overlap
 			return &client.ScheduleUpdate{Schedule: &sc}, nil
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("schedules: update %s: %w", id, err)
+		return fmt.Errorf("schedules: update %s: %w", opts.ID, err)
 	}
 	return nil
 }

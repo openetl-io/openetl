@@ -80,13 +80,15 @@ type config struct {
 	settings delivery.Settings
 	faults   int
 	zombies  int
+	// Checkpoint records each attempt keeps.
+	keep int
 }
 
 func (c config) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "sink=%s mode=%d scope=%d require=%v maxBytes=%d interval=%v resumeTimeout=%v faults=%d zombies=%d streams=",
+	fmt.Fprintf(&b, "sink=%s mode=%d scope=%d require=%v maxBytes=%d interval=%v resumeTimeout=%v faults=%d zombies=%d keep=%d streams=",
 		c.kind, c.mode, c.settings.Scope, c.settings.Require, c.settings.CommitMaxBytes,
-		c.settings.CommitInterval, c.settings.ResumePointTimeout, c.faults, c.zombies)
+		c.settings.CommitInterval, c.settings.ResumePointTimeout, c.faults, c.zombies, c.keep)
 	for _, s := range c.streams {
 		fmt.Fprintf(&b, "%s(%v, keyed=%v) ", s.name, s.replay, s.keyed)
 	}
@@ -128,6 +130,7 @@ func randomConfig(rng *rand.Rand, kind string) config {
 	if rng.IntN(2) == 0 {
 		c.settings.ResumePointTimeout = time.Duration(1+rng.IntN(20)) * time.Second
 	}
+	c.keep = 2 + rng.IntN(3)
 	return c
 }
 
@@ -141,6 +144,8 @@ type world struct {
 	broker    *broker
 	recv      *receiver
 	lost      error
+	// Streams forced in any record ever written, pruned ones included.
+	forced map[string]bool
 }
 
 func (w *world) markLost(err error) {
@@ -170,6 +175,7 @@ func (w *world) job(attempt int) runner.Job {
 		Destination: w.destination(attempt),
 		Dataflow:    runner.Passthrough{Convert: toArrow},
 		Settings:    w.cfg.settings,
+		KeepRecords: w.cfg.keep,
 	}
 	for _, s := range w.cfg.streams {
 		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode}
@@ -197,6 +203,7 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		wh:        newWarehouse(kind == "warehouse"),
 		broker:    newBroker(),
 		recv:      &receiver{applies: map[string]int{}},
+		forced:    map[string]bool{},
 	}
 	for _, s := range cfg.streams {
 		w.upstreams[s.name] = newUpstream(rng, s.name, s.replay)
@@ -241,8 +248,8 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 
 // check returns "" if every stream got its guarantee.
 func (w *world) check(caps destination.Capabilities, stats map[string]int) string {
-	forced := w.forcedStreams()
-	var problems []string
+	forced := w.forced
+	problems := w.checkLog()
 	for _, s := range w.cfg.streams {
 		u := w.upstreams[s.name]
 		ds := s.delivery(w.cfg.mode)
@@ -343,27 +350,27 @@ func (w *world) checkMerge(stream string, u *upstream, expected map[string]recor
 	return problems
 }
 
-// forcedStreams returns the streams forced in any record ever written.
-func (w *world) forcedStreams() map[string]bool {
-	out := map[string]bool{}
+// checkLog returns problems a next attempt would hit restoring: HEAD's
+// record, or the one before it, missing.
+func (w *world) checkLog() []string {
 	ctx := context.Background()
-	keys, _ := w.store.List(ctx, "org/pipe/_checkpoints/")
-	for _, k := range keys {
-		if strings.HasSuffix(k, "HEAD") {
-			continue
-		}
-		data, _, err := w.store.Get(ctx, k)
-		if err != nil {
-			continue
-		}
-		var rec checkpoint.Record
-		if json.Unmarshal(data, &rec) == nil {
-			for _, s := range rec.Forced {
-				out[s] = true
-			}
-		}
+	data, _, err := w.store.Get(ctx, "org/pipe/_checkpoints/HEAD")
+	if err != nil {
+		return []string{fmt.Sprintf("read HEAD: %v", err)}
 	}
-	return out
+	var head checkpoint.Head
+	if err := json.Unmarshal(data, &head); err != nil {
+		return []string{fmt.Sprintf("decode HEAD: %v", err)}
+	}
+	log := checkpoint.NewLog(w.store, "org", "pipe")
+	for ref, i := head.Record, 0; ref != nil && i < 2; i++ {
+		rec, err := log.Record(ctx, *ref)
+		if err != nil {
+			return []string{fmt.Sprintf("restoring would fail: %v", err)}
+		}
+		ref = rec.Previous
+	}
+	return nil
 }
 
 func lastN(lines []string, n int) []string {

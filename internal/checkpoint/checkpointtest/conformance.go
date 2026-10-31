@@ -92,6 +92,15 @@ func TestStore(t *testing.T, newStore func(t *testing.T) checkpoint.Store) {
 		if want := []string{prefix + "b/1", prefix + "b/2"}; !slices.Equal(got, want) {
 			t.Fatalf("List = %v, want %v", got, want)
 		}
+		got, err = s.List(ctx, prefix+"b")
+		must(t, err)
+		if want := []string{prefix + "b/1", prefix + "b/2"}; !slices.Equal(got, want) {
+			t.Fatalf("List without a trailing slash = %v, want %v", got, want)
+		}
+		got, err = s.List(ctx, prefix+"missing/")
+		if err != nil || len(got) != 0 {
+			t.Fatalf("List of a missing prefix = %v, %v; want nothing", got, err)
+		}
 	})
 
 	t.Run("Delete", func(t *testing.T) {

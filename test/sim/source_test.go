@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -273,7 +274,17 @@ func (s *simStore) Get(ctx context.Context, key string) (data []byte, v checkpoi
 }
 
 func (s *simStore) Create(ctx context.Context, key string, data []byte) (v checkpoint.Version, err error) {
-	if err := s.call(ctx, "store.create", func() error { v, err = s.w.store.Create(ctx, key, data); return err }); err != nil {
+	if err := s.call(ctx, "store.create", func() error {
+		if v, err = s.w.store.Create(ctx, key, data); err == nil && strings.HasSuffix(key, ".json") {
+			var rec checkpoint.Record
+			if json.Unmarshal(data, &rec) == nil {
+				for _, st := range rec.Forced {
+					s.w.forced[st] = true
+				}
+			}
+		}
+		return err
+	}); err != nil {
 		return "", err
 	}
 	return v, nil

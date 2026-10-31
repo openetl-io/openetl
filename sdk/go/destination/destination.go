@@ -145,7 +145,9 @@ type Writer interface {
 	Commit(ctx context.Context, e Epoch, s Staged) error
 	// Recover raises the fence to gen, then reports Applied, applies the
 	// streams whose marker is missing and reports Redone, or reports Lost.
-	// With a zero e it only raises the fence and reports Applied.
+	// With a zero e it only raises the fence and reports Applied. Otherwise it
+	// may then drop whatever earlier generations staged, since none of it can
+	// be applied any more.
 	Recover(ctx context.Context, gen uint64, e Epoch, s Staged) (Recovery, error)
 	Close(ctx context.Context) error
 }

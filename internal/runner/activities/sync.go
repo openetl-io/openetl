@@ -116,7 +116,7 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 // quarantineURL is where a pipeline's quarantined records go:
 // {org}/{pipeline}/_quarantine below the checkpoint store.
 func quarantineURL(storage, org, pipeline string) (string, error) {
-	rel := path.Join(org, pipeline, "_quarantine")
+	rel := path.Join(org, pipeline, checkpoint.QuarantineDir)
 	if !strings.Contains(storage, "://") {
 		abs, err := filepath.Abs(storage)
 		if err != nil {

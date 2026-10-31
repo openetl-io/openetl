@@ -92,12 +92,15 @@ func (r *Record) Ref() RecordRef { return RecordRef{Epoch: r.Epoch, Generation: 
 
 // Log is one pipeline's checkpoint log, under {org}/{pipeline}/_checkpoints/.
 type Log struct {
-	store  Store
+	store Store
+	// {org}/{pipeline}/
+	root   string
 	prefix string
 }
 
 func NewLog(store Store, org, pipeline string) *Log {
-	return &Log{store: store, prefix: org + "/" + pipeline + "/_checkpoints/"}
+	root := org + "/" + pipeline + "/"
+	return &Log{store: store, root: root, prefix: root + "_checkpoints/"}
 }
 
 func (l *Log) headKey() string { return l.prefix + "HEAD" }
