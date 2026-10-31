@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 )
 
