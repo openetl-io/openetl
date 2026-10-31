@@ -146,7 +146,7 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 }
 
 // A raw column that widens from int64 to float64 to string, within an epoch
-// and across epochs, widens in Postgres without losing a value.
+// and across attempts, widens in Postgres without losing a value.
 func TestWideningReachesPostgres(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
@@ -162,26 +162,28 @@ func TestWideningReachesPostgres(t *testing.T) {
 			_ = conn.Close(context.Background())
 		}
 	})
-	res, err := runnerpkg.RunAttempt(ctx, runnerpkg.Job{
-		Owner:       "a1",
-		Pipeline:    name,
-		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", name),
-		Source:      wideningSource{},
-		Streams:     []runnerpkg.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
-		Destination: pg,
-		Dataflow:    &engineclient.Dataflow{Options: engineclient.Options{Binary: env.engine}},
-		Settings: runnerpkg.Settings{
-			Require:        delivery.ExactlyOnce,
-			CommitMaxBytes: 1,
-			Scope:          destination.ScopePipeline,
-			Dedupe:         delivery.DedupeNone,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Committed < 2 {
-		t.Errorf("committed %d epochs, want the widening across two", res.Committed)
+	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", name)
+	for _, owner := range []string{"a1", "a2"} {
+		res, err := runnerpkg.RunAttempt(ctx, runnerpkg.Job{
+			Owner:       owner,
+			Pipeline:    name,
+			Log:         log,
+			Source:      wideningSource{},
+			Streams:     []runnerpkg.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
+			Destination: pg,
+			Dataflow:    &engineclient.Dataflow{Options: engineclient.Options{Binary: env.engine}},
+			Settings: runnerpkg.Settings{
+				Require: delivery.ExactlyOnce,
+				Scope:   destination.ScopePipeline,
+				Dedupe:  delivery.DedupeNone,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Committed == 0 {
+			t.Fatalf("%s committed nothing", owner)
+		}
 	}
 	got, err := query[string](t, "SELECT format_type(atttypid, atttypmod) || ' ' || (SELECT string_agg(x, ',' ORDER BY id) FROM "+
 		schema(name)+".s) FROM pg_attribute WHERE attrelid = $1::regclass AND attname = 'x'", schema(name)+".s")
@@ -193,18 +195,21 @@ func TestWideningReachesPostgres(t *testing.T) {
 	}
 }
 
+// wideningSource reads x = 1 first, then 2, 2.5 and "a", each a batch.
 type wideningSource struct{}
 
-func (wideningSource) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
-	for i, rows := range [][]string{{`{"id": 1, "x": 1}`}, {`{"id": 2, "x": 2}`}, {`{"id": 3, "x": 2.5}`}, {`{"id": 4, "x": "a"}`}} {
-		if err := out.Rows("s", []json.RawMessage{json.RawMessage(rows[0])}); err != nil {
+func (wideningSource) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
+	rows := []string{`{"id": 1, "x": 1}`}
+	if req.Streams[0].State != nil {
+		rows = []string{`{"id": 2, "x": 2}`, `{"id": 3, "x": 2.5}`, `{"id": 4, "x": "a"}`}
+	}
+	for _, r := range rows {
+		if err := out.Rows("s", []json.RawMessage{json.RawMessage(r)}); err != nil {
 			return err
 		}
-		if i == 0 || i == 3 {
-			if err := out.ResumePoint("s", fmt.Appendf(nil, "%d", i)); err != nil {
-				return err
-			}
-		}
+	}
+	if err := out.ResumePoint("s", []byte(`"read"`)); err != nil {
+		return err
 	}
 	return out.Complete("s")
 }

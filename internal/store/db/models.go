@@ -71,6 +71,20 @@ type Source struct {
 	UpdateTime  time.Time
 }
 
+type StreamSchema struct {
+	OrgID       uuid.UUID
+	PipelineID  uuid.UUID
+	Stream      string
+	Version     int32
+	Digest      string
+	Table       string
+	Columns     []byte
+	ArrowSchema []byte
+	Generation  int64
+	Epoch       int64
+	CreateTime  time.Time
+}
+
 type Sync struct {
 	OrgID      uuid.UUID
 	ID         uuid.UUID

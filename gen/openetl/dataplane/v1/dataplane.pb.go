@@ -166,6 +166,121 @@ func (x *GetSyncSpecResponse) GetDestination() *v1.ConnectorConfig {
 	return nil
 }
 
+type ReportSchemasRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	PipelineId string                 `protobuf:"bytes,1,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
+	// The checkpoint that carried the schemas.
+	Generation uint64 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Epoch      uint64 `protobuf:"varint,3,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// By stream; each an Arrow IPC stream holding only the schema.
+	Schemas       map[string][]byte `protobuf:"bytes,4,rep,name=schemas,proto3" json:"schemas,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportSchemasRequest) Reset() {
+	*x = ReportSchemasRequest{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportSchemasRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportSchemasRequest) ProtoMessage() {}
+
+func (x *ReportSchemasRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportSchemasRequest.ProtoReflect.Descriptor instead.
+func (*ReportSchemasRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ReportSchemasRequest) GetPipelineId() string {
+	if x != nil {
+		return x.PipelineId
+	}
+	return ""
+}
+
+func (x *ReportSchemasRequest) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *ReportSchemasRequest) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *ReportSchemasRequest) GetSchemas() map[string][]byte {
+	if x != nil {
+		return x.Schemas
+	}
+	return nil
+}
+
+type ReportSchemasResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The streams whose history got a new version.
+	Added         []string `protobuf:"bytes,1,rep,name=added,proto3" json:"added,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportSchemasResponse) Reset() {
+	*x = ReportSchemasResponse{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportSchemasResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportSchemasResponse) ProtoMessage() {}
+
+func (x *ReportSchemasResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportSchemasResponse.ProtoReflect.Descriptor instead.
+func (*ReportSchemasResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ReportSchemasResponse) GetAdded() []string {
+	if x != nil {
+		return x.Added
+	}
+	return nil
+}
+
 var File_openetl_dataplane_v1_dataplane_proto protoreflect.FileDescriptor
 
 const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
@@ -184,9 +299,23 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"data_plane\x18\x04 \x01(\tR\tdataPlane\x128\n" +
 	"\bpipeline\x18\x05 \x01(\v2\x1c.openetl.api.v1.PipelineSpecR\bpipeline\x127\n" +
 	"\x06source\x18\x06 \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\x06source\x12A\n" +
-	"\vdestination\x18\a \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\vdestination2v\n" +
+	"\vdestination\x18\a \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\vdestination\"\xfc\x01\n" +
+	"\x14ReportSchemasRequest\x12\x1f\n" +
+	"\vpipeline_id\x18\x01 \x01(\tR\n" +
+	"pipelineId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12\x14\n" +
+	"\x05epoch\x18\x03 \x01(\x04R\x05epoch\x12Q\n" +
+	"\aschemas\x18\x04 \x03(\v27.openetl.dataplane.v1.ReportSchemasRequest.SchemasEntryR\aschemas\x1a:\n" +
+	"\fSchemasEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"-\n" +
+	"\x15ReportSchemasResponse\x12\x14\n" +
+	"\x05added\x18\x01 \x03(\tR\x05added2\xe0\x01\n" +
 	"\x10DataPlaneService\x12b\n" +
-	"\vGetSyncSpec\x12(.openetl.dataplane.v1.GetSyncSpecRequest\x1a).openetl.dataplane.v1.GetSyncSpecResponseBGZEgithub.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1b\x06proto3"
+	"\vGetSyncSpec\x12(.openetl.dataplane.v1.GetSyncSpecRequest\x1a).openetl.dataplane.v1.GetSyncSpecResponse\x12h\n" +
+	"\rReportSchemas\x12*.openetl.dataplane.v1.ReportSchemasRequest\x1a+.openetl.dataplane.v1.ReportSchemasResponseBGZEgithub.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1b\x06proto3"
 
 var (
 	file_openetl_dataplane_v1_dataplane_proto_rawDescOnce sync.Once
@@ -200,24 +329,30 @@ func file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP() []byte {
 	return file_openetl_dataplane_v1_dataplane_proto_rawDescData
 }
 
-var file_openetl_dataplane_v1_dataplane_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_openetl_dataplane_v1_dataplane_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_openetl_dataplane_v1_dataplane_proto_goTypes = []any{
-	(*GetSyncSpecRequest)(nil),  // 0: openetl.dataplane.v1.GetSyncSpecRequest
-	(*GetSyncSpecResponse)(nil), // 1: openetl.dataplane.v1.GetSyncSpecResponse
-	(*v1.PipelineSpec)(nil),     // 2: openetl.api.v1.PipelineSpec
-	(*v1.ConnectorConfig)(nil),  // 3: openetl.api.v1.ConnectorConfig
+	(*GetSyncSpecRequest)(nil),    // 0: openetl.dataplane.v1.GetSyncSpecRequest
+	(*GetSyncSpecResponse)(nil),   // 1: openetl.dataplane.v1.GetSyncSpecResponse
+	(*ReportSchemasRequest)(nil),  // 2: openetl.dataplane.v1.ReportSchemasRequest
+	(*ReportSchemasResponse)(nil), // 3: openetl.dataplane.v1.ReportSchemasResponse
+	nil,                           // 4: openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	(*v1.PipelineSpec)(nil),       // 5: openetl.api.v1.PipelineSpec
+	(*v1.ConnectorConfig)(nil),    // 6: openetl.api.v1.ConnectorConfig
 }
 var file_openetl_dataplane_v1_dataplane_proto_depIdxs = []int32{
-	2, // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
-	3, // 1: openetl.dataplane.v1.GetSyncSpecResponse.source:type_name -> openetl.api.v1.ConnectorConfig
-	3, // 2: openetl.dataplane.v1.GetSyncSpecResponse.destination:type_name -> openetl.api.v1.ConnectorConfig
-	0, // 3: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
-	1, // 4: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	5, // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
+	6, // 1: openetl.dataplane.v1.GetSyncSpecResponse.source:type_name -> openetl.api.v1.ConnectorConfig
+	6, // 2: openetl.dataplane.v1.GetSyncSpecResponse.destination:type_name -> openetl.api.v1.ConnectorConfig
+	4, // 3: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	0, // 4: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
+	2, // 5: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
+	1, // 6: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
+	3, // 7: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
+	6, // [6:8] is the sub-list for method output_type
+	4, // [4:6] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_openetl_dataplane_v1_dataplane_proto_init() }
@@ -231,7 +366,7 @@ func file_openetl_dataplane_v1_dataplane_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_dataplane_v1_dataplane_proto_rawDesc), len(file_openetl_dataplane_v1_dataplane_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

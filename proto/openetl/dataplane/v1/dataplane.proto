@@ -12,6 +12,9 @@ service DataPlaneService {
   // The pipeline version, and its source and destination, for one sync
   // attempt.
   rpc GetSyncSpec(GetSyncSpecRequest) returns (GetSyncSpecResponse);
+  // Adds a committed checkpoint's stream schemas to the pipeline's schema
+  // history. A schema already in a stream's history is skipped.
+  rpc ReportSchemas(ReportSchemasRequest) returns (ReportSchemasResponse);
 }
 
 message GetSyncSpecRequest {
@@ -27,4 +30,18 @@ message GetSyncSpecResponse {
   openetl.api.v1.PipelineSpec pipeline = 5;
   openetl.api.v1.ConnectorConfig source = 6;
   openetl.api.v1.ConnectorConfig destination = 7;
+}
+
+message ReportSchemasRequest {
+  string pipeline_id = 1;
+  // The checkpoint that carried the schemas.
+  uint64 generation = 2;
+  uint64 epoch = 3;
+  // By stream; each an Arrow IPC stream holding only the schema.
+  map<string, bytes> schemas = 4;
+}
+
+message ReportSchemasResponse {
+  // The streams whose history got a new version.
+  repeated string added = 1;
 }

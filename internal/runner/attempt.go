@@ -70,6 +70,10 @@ type Job struct {
 	// Called on the coordinator's goroutine after each epoch commits. It
 	// must not block.
 	OnCommit func(epoch uint64)
+	// Called after an epoch commits with the schemas that changed since the
+	// last call, the attempt's first holding every stream's. Each is an
+	// Arrow IPC stream holding only the schema. It must not block.
+	OnSchemas func(e destination.Epoch, schemas map[string][]byte)
 }
 
 type Result struct {
@@ -185,7 +189,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
 
-	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied}
+	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reported: map[string]*arrow.Schema{}}
 	return res, c.run(ctx, restored, canForce)
 }
 
@@ -276,6 +280,7 @@ type coordinator struct {
 	committed   uint64                   // the last epoch committed or restored
 	ackStates   map[string][]byte        // owned by the committer: states of the committed epoch, acked after the next commit
 	applied     map[string]*arrow.Schema // owned by the committer: each stream's schema last applied
+	reported    map[string]*arrow.Schema // owned by the committer: each stream's schema last passed to OnSchemas
 	readStarts  map[string]int64
 }
 
@@ -517,6 +522,20 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		return fmt.Errorf("runner: commit epoch %d: %w", n, err)
 	}
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
+	if c.job.OnSchemas != nil {
+		changed, err := changedSchemas(c.reported, st.flow.Schemas)
+		if err != nil {
+			return fmt.Errorf("runner: epoch %d: %w", n, err)
+		}
+		if len(changed) > 0 {
+			raw := make(map[string][]byte, len(changed))
+			for _, s := range changed {
+				raw[s.Name] = st.flow.Schemas[s.Name]
+				c.reported[s.Name] = s.Schema
+			}
+			c.job.OnSchemas(e, raw)
+		}
+	}
 	select {
 	case c.events <- event{kind: evCommitted, epoch: n}:
 	case <-ctx.Done():
@@ -562,23 +581,10 @@ func applySchemas(ctx context.Context, w destination.Writer, applied map[string]
 	if !ok {
 		return nil
 	}
-	var changed []destination.StreamSchema
-	for name, b := range schemas {
-		if b == nil {
-			continue
-		}
-		s, err := decodeSchema(b)
-		if err != nil {
-			return fmt.Errorf("stream %s schema: %w", name, err)
-		}
-		if prev := applied[name]; prev == nil || !sameSchema(prev, s) {
-			changed = append(changed, destination.StreamSchema{Name: name, Schema: s})
-		}
+	changed, err := changedSchemas(applied, schemas)
+	if err != nil || len(changed) == 0 {
+		return err
 	}
-	if len(changed) == 0 {
-		return nil
-	}
-	slices.SortFunc(changed, func(a, b destination.StreamSchema) int { return strings.Compare(a.Name, b.Name) })
 	if err := sa.ApplySchema(ctx, changed); err != nil {
 		return fmt.Errorf("apply schemas: %w", err)
 	}
@@ -586,6 +592,26 @@ func applySchemas(ctx context.Context, w destination.Writer, applied map[string]
 		applied[s.Name] = s.Schema
 	}
 	return nil
+}
+
+// changedSchemas decodes the schemas that differ from those in known, sorted
+// by stream.
+func changedSchemas(known map[string]*arrow.Schema, schemas map[string][]byte) ([]destination.StreamSchema, error) {
+	var changed []destination.StreamSchema
+	for name, b := range schemas {
+		if b == nil {
+			continue
+		}
+		s, err := decodeSchema(b)
+		if err != nil {
+			return nil, fmt.Errorf("stream %s schema: %w", name, err)
+		}
+		if prev := known[name]; prev == nil || !sameSchema(prev, s) {
+			changed = append(changed, destination.StreamSchema{Name: name, Schema: s})
+		}
+	}
+	slices.SortFunc(changed, func(a, b destination.StreamSchema) int { return strings.Compare(a.Name, b.Name) })
+	return changed, nil
 }
 
 func decodeSchema(b []byte) (*arrow.Schema, error) {

@@ -36,6 +36,9 @@ const (
 	// DataPlaneServiceGetSyncSpecProcedure is the fully-qualified name of the DataPlaneService's
 	// GetSyncSpec RPC.
 	DataPlaneServiceGetSyncSpecProcedure = "/openetl.dataplane.v1.DataPlaneService/GetSyncSpec"
+	// DataPlaneServiceReportSchemasProcedure is the fully-qualified name of the DataPlaneService's
+	// ReportSchemas RPC.
+	DataPlaneServiceReportSchemasProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportSchemas"
 )
 
 // DataPlaneServiceClient is a client for the openetl.dataplane.v1.DataPlaneService service.
@@ -43,6 +46,9 @@ type DataPlaneServiceClient interface {
 	// The pipeline version, and its source and destination, for one sync
 	// attempt.
 	GetSyncSpec(context.Context, *connect.Request[v1.GetSyncSpecRequest]) (*connect.Response[v1.GetSyncSpecResponse], error)
+	// Adds a committed checkpoint's stream schemas to the pipeline's schema
+	// history. A schema already in a stream's history is skipped.
+	ReportSchemas(context.Context, *connect.Request[v1.ReportSchemasRequest]) (*connect.Response[v1.ReportSchemasResponse], error)
 }
 
 // NewDataPlaneServiceClient constructs a client for the openetl.dataplane.v1.DataPlaneService
@@ -62,17 +68,29 @@ func NewDataPlaneServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(dataPlaneServiceMethods.ByName("GetSyncSpec")),
 			connect.WithClientOptions(opts...),
 		),
+		reportSchemas: connect.NewClient[v1.ReportSchemasRequest, v1.ReportSchemasResponse](
+			httpClient,
+			baseURL+DataPlaneServiceReportSchemasProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportSchemas")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // dataPlaneServiceClient implements DataPlaneServiceClient.
 type dataPlaneServiceClient struct {
-	getSyncSpec *connect.Client[v1.GetSyncSpecRequest, v1.GetSyncSpecResponse]
+	getSyncSpec   *connect.Client[v1.GetSyncSpecRequest, v1.GetSyncSpecResponse]
+	reportSchemas *connect.Client[v1.ReportSchemasRequest, v1.ReportSchemasResponse]
 }
 
 // GetSyncSpec calls openetl.dataplane.v1.DataPlaneService.GetSyncSpec.
 func (c *dataPlaneServiceClient) GetSyncSpec(ctx context.Context, req *connect.Request[v1.GetSyncSpecRequest]) (*connect.Response[v1.GetSyncSpecResponse], error) {
 	return c.getSyncSpec.CallUnary(ctx, req)
+}
+
+// ReportSchemas calls openetl.dataplane.v1.DataPlaneService.ReportSchemas.
+func (c *dataPlaneServiceClient) ReportSchemas(ctx context.Context, req *connect.Request[v1.ReportSchemasRequest]) (*connect.Response[v1.ReportSchemasResponse], error) {
+	return c.reportSchemas.CallUnary(ctx, req)
 }
 
 // DataPlaneServiceHandler is an implementation of the openetl.dataplane.v1.DataPlaneService
@@ -81,6 +99,9 @@ type DataPlaneServiceHandler interface {
 	// The pipeline version, and its source and destination, for one sync
 	// attempt.
 	GetSyncSpec(context.Context, *connect.Request[v1.GetSyncSpecRequest]) (*connect.Response[v1.GetSyncSpecResponse], error)
+	// Adds a committed checkpoint's stream schemas to the pipeline's schema
+	// history. A schema already in a stream's history is skipped.
+	ReportSchemas(context.Context, *connect.Request[v1.ReportSchemasRequest]) (*connect.Response[v1.ReportSchemasResponse], error)
 }
 
 // NewDataPlaneServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -96,10 +117,18 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 		connect.WithSchema(dataPlaneServiceMethods.ByName("GetSyncSpec")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dataPlaneServiceReportSchemasHandler := connect.NewUnaryHandler(
+		DataPlaneServiceReportSchemasProcedure,
+		svc.ReportSchemas,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportSchemas")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.dataplane.v1.DataPlaneService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DataPlaneServiceGetSyncSpecProcedure:
 			dataPlaneServiceGetSyncSpecHandler.ServeHTTP(w, r)
+		case DataPlaneServiceReportSchemasProcedure:
+			dataPlaneServiceReportSchemasHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -111,4 +140,8 @@ type UnimplementedDataPlaneServiceHandler struct{}
 
 func (UnimplementedDataPlaneServiceHandler) GetSyncSpec(context.Context, *connect.Request[v1.GetSyncSpecRequest]) (*connect.Response[v1.GetSyncSpecResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.GetSyncSpec is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) ReportSchemas(context.Context, *connect.Request[v1.ReportSchemasRequest]) (*connect.Response[v1.ReportSchemasResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportSchemas is not implemented"))
 }
