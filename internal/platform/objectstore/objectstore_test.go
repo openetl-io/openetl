@@ -28,7 +28,7 @@ func TestOpen(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "a", "b.txt")); err != nil {
 		t.Errorf("the directory bucket didn't write under its directory: %v", err)
 	}
-	for _, loc := range []string{"", "gs://bucket", "file://host/dir", "s3://"} {
+	for _, loc := range []string{"", "ftp://bucket", "file://host/dir", "s3://", "gs://", "azblob://"} {
 		if b, err := objectstore.Open(t.Context(), loc); err == nil {
 			_ = b.Close()
 			t.Errorf("opened %q", loc)

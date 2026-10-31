@@ -18,7 +18,7 @@ type Config struct {
 	TemporalAddress   string
 	TemporalNamespace string
 	DataPlane         string
-	// A directory, or s3://bucket?….
+	// A directory, or an s3://, gs:// or azblob:// URL.
 	Checkpoints string
 	// The openetl-engine executable. Empty: next to openetld, then on PATH.
 	Engine    string
@@ -38,7 +38,7 @@ var options = []option{
 	{"temporal-address", "OPENETL_TEMPORAL_ADDRESS", "localhost:7233", "Temporal frontend host:port", func(c *Config) *string { return &c.TemporalAddress }},
 	{"temporal-namespace", "OPENETL_TEMPORAL_NAMESPACE", "default", "Temporal namespace", func(c *Config) *string { return &c.TemporalNamespace }},
 	{"data-plane", "OPENETL_DATA_PLANE", "default", "data plane ID", func(c *Config) *string { return &c.DataPlane }},
-	{"checkpoints", "OPENETL_CHECKPOINTS", ".openetl/checkpoints", "checkpoint store: a directory, or s3://bucket?region=…&endpoint=…", func(c *Config) *string { return &c.Checkpoints }},
+	{"checkpoints", "OPENETL_CHECKPOINTS", ".openetl/checkpoints", "checkpoint store: a directory, s3://bucket?region=…&endpoint=…, gs://bucket, or azblob://container?account=…&endpoint=…", func(c *Config) *string { return &c.Checkpoints }},
 	{"engine", "OPENETL_ENGINE", "", "openetl-engine executable (default: next to openetld, then on PATH)", func(c *Config) *string { return &c.Engine }},
 	{"log-level", "OPENETL_LOG_LEVEL", "info", "debug, info, warn or error", func(c *Config) *string { return &c.LogLevel }},
 	{"log-format", "OPENETL_LOG_FORMAT", "json", "json or text", func(c *Config) *string { return &c.LogFormat }},

@@ -33,8 +33,8 @@ import (
 type Sync struct {
 	API         dataplanev1connect.DataPlaneServiceClient
 	Checkpoints checkpoint.Store
-	// Where Checkpoints is: a directory, or an s3:// URL. Quarantined
-	// records go next to the checkpoints.
+	// Where Checkpoints is: a directory, or an s3://, gs:// or azblob://
+	// URL. Quarantined records go next to the checkpoints.
 	Storage string
 	Engine  engineclient.Options
 	Logger  *slog.Logger

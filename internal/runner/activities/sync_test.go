@@ -12,6 +12,8 @@ func TestQuarantineURL(t *testing.T) {
 		"cp":                                    "file://" + filepath.ToSlash(abs) + "/o/p/_quarantine",
 		"s3://b?region=r&endpoint=http://h:1":   "s3://b/o/p/_quarantine?region=r&endpoint=http://h:1",
 		"s3://b/base?endpoint=https://s3.x.com": "s3://b/base/o/p/_quarantine?endpoint=https://s3.x.com",
+		"gs://b":                                "gs://b/o/p/_quarantine",
+		"azblob://c?account=a":                  "azblob://c/o/p/_quarantine?account=a",
 	} {
 		got, err := quarantineURL(storage, "o", "p")
 		if err != nil || got != want {

@@ -42,7 +42,7 @@ dev: deps-up ## Start compose deps and run openetld dev
 	go run ./cmd/openetld dev --engine $(CURDIR)/target/debug/openetl-engine
 
 .PHONY: deps-up deps-down
-deps-up: ## Start local dependencies (Postgres, Temporal, S3)
+deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure)
 	docker compose -f deploy/compose/dev.yml up -d --wait
 deps-down: ## Stop local dependencies
 	docker compose -f deploy/compose/dev.yml down
