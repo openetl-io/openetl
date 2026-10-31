@@ -78,11 +78,24 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	if err != nil {
 		return p.explain(ctx, err)
 	}
+	engineSink := plan.Sink != runner.SinkPlan{}
+	onReady := func(r *enginev1.EpochReady) error {
+		if !engineSink {
+			return nil
+		}
+		f := runner.Frame{Kind: runner.FrameStaged, Epoch: r.GetEpoch().GetN(), Staged: r.GetStaged()}
+		select {
+		case out <- f:
+			return nil
+		case <-evCtx.Done():
+			return evCtx.Err()
+		}
+	}
 	// ev is set before evDone closes.
 	var ev eventsResult
 	evDone := make(chan struct{})
 	go func() {
-		ev = consumeEvents(events, p.log)
+		ev = consumeEvents(events, p.log, onReady)
 		close(evDone)
 	}()
 	defer func() {
@@ -95,20 +108,26 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		return err
 	}
 	defer toEngine.Close()
-	fromEngine, err := p.dialEdge(ctx, outEdge)
-	if err != nil {
-		return err
+	var fromEngine *net.UnixConn
+	if !engineSink {
+		if fromEngine, err = p.dialEdge(ctx, outEdge); err != nil {
+			return err
+		}
+		defer fromEngine.Close()
 	}
-	defer fromEngine.Close()
 
 	g, gctx := errgroup.WithContext(ctx)
 	// Unblocks reads and writes once the group is done.
 	defer context.AfterFunc(gctx, func() {
 		_ = toEngine.Close()
-		_ = fromEngine.Close()
+		if fromEngine != nil {
+			_ = fromEngine.Close()
+		}
 	})()
 	g.Go(func() error { return writeEdge(gctx, toEngine, plan.Generation, names, index, alloc, in) })
-	g.Go(func() error { return readEdge(gctx, fromEngine, plan.Generation, names, alloc, out) })
+	if fromEngine != nil {
+		g.Go(func() error { return readEdge(gctx, fromEngine, plan.Generation, names, alloc, out) })
+	}
 	g.Go(func() error {
 		select {
 		case <-evDone:
@@ -173,12 +192,16 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	}
 	req.Edges = []*enginev1.Edge{
 		{Id: inEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names},
-		{Id: outEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names},
+	}
+	if u := plan.Sink.ParquetURL; u != "" {
+		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Parquet{Parquet: &enginev1.ParquetSink{Url: u}}}
+	} else {
+		req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names})
 	}
 	return req, names, index
 }
 
-func consumeEvents(stream grpc.ServerStreamingClient[enginev1.EventsResponse], log *slog.Logger) eventsResult {
+func consumeEvents(stream grpc.ServerStreamingClient[enginev1.EventsResponse], log *slog.Logger, onReady func(*enginev1.EpochReady) error) eventsResult {
 	for {
 		resp, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -193,6 +216,9 @@ func consumeEvents(stream grpc.ServerStreamingClient[enginev1.EventsResponse], l
 		switch e := resp.GetEvent().(type) {
 		case *enginev1.EventsResponse_EpochReady:
 			log.Debug("engine epoch ready", "epoch", e.EpochReady.GetEpoch().GetN())
+			if err := onReady(e.EpochReady); err != nil {
+				return eventsResult{err: err}
+			}
 		case *enginev1.EventsResponse_Metrics:
 			for _, s := range e.Metrics.GetStreams() {
 				log.Debug("engine stream metrics", "stream", s.GetStream(), "rows_in", s.GetRowsIn(), "rows_out", s.GetRowsOut())

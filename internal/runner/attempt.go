@@ -282,6 +282,9 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		FirstEpoch: c.next,
 		Streams:    c.job.Streams,
 	}
+	if es, ok := c.job.Destination.(EngineSink); ok {
+		plan.Sink = es.EngineSink()
+	}
 	g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
 	g.Go(func() error { return sink.run(gctx) })
 	g.Go(func() error { return c.loop(gctx) })

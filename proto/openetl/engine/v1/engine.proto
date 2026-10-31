@@ -7,17 +7,18 @@ import "openetl/connector/v1/destination.proto";
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1";
 
 // EngineService is the engine's control channel, served on a Unix socket. One
-// engine process runs one job. The runner calls StartJob, then Recover if the
-// job has an engine sink, then connects the data edges (frames.proto).
+// engine process runs one job. The runner calls StartJob, then connects the
+// data edges (frames.proto).
 service EngineService {
   rpc StartJob(StartJobRequest) returns (StartJobResponse);
-  // Engine sinks only.
+  // For engine sinks that apply in the engine. The runner commits and
+  // recovers a Parquet sink from its staged descriptor.
   rpc Recover(RecoverRequest) returns (RecoverResponse);
   // A failed job ends the stream with an openetl.connector.v1.Error in the
   // status details.
   rpc Events(EventsRequest) returns (stream EventsResponse);
-  // The epoch's checkpoint is recorded, so an engine sink makes it visible.
-  // Idempotent.
+  // The epoch's checkpoint is recorded, so an engine sink that applies in the
+  // engine makes it visible. Idempotent.
   rpc Commit(CommitRequest) returns (CommitResponse);
   // Ends the job without draining, and the process exits.
   rpc Stop(StopRequest) returns (StopResponse);
@@ -76,8 +77,10 @@ message RunnerSink {
   string edge = 1;
 }
 
+// ParquetSink stages each epoch as Parquet files under url, and reports them
+// in EpochReady.staged.
 message ParquetSink {
-  // Such as s3://bucket/prefix or file:///path.
+  // file:// and an absolute path. Object stores come later.
   string url = 1;
 }
 

@@ -37,6 +37,8 @@ require (
 )
 
 require (
+	github.com/andybalholm/brotli v1.2.6 // indirect
+	github.com/apache/thrift v0.24.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.25 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.8 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.8 // indirect
@@ -46,6 +48,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.8 // indirect
 	github.com/aws/smithy-go v1.28.7 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect

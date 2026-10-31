@@ -24,6 +24,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet"
+	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/jackc/pgx/v5"
 	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -350,4 +354,105 @@ func TestRunnerKilledMidSync(t *testing.T) {
 		t.Errorf("stats %s: want the second attempt to have finished", stats)
 	}
 	checkRows(t, schema(name), 2000, "users", "purchases")
+}
+
+func docs(name, src, dst, pipeline string) []string {
+	return []string{
+		fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
+		fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
+		fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
+			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q}, "destination": {"ref": %q}, "delivery": %s}}`, name, name, name, pipeline),
+	}
+}
+
+func parquetDest(dir string) string {
+	return fmt.Sprintf(`{"connector": "parquet", "config": {"url": %q}}`, "file://"+filepath.ToSlash(dir))
+}
+
+// checkParquet fails unless each stream's committed files hold want rows,
+// each id once.
+func checkParquet(t *testing.T, dir string, want int, streams ...string) {
+	t.Helper()
+	for _, stream := range streams {
+		files, err := filepath.Glob(filepath.Join(dir, stream, "*.parquet"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := map[int64]bool{}
+		rows := 0
+		for _, name := range files {
+			f, err := os.Open(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tbl, err := pqarrow.ReadTable(t.Context(), f, parquet.NewReaderProperties(nil), pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+			_ = f.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, chunk := range tbl.Column(tbl.Schema().FieldIndices("id")[0]).Data().Chunks() {
+				for i := range chunk.Len() {
+					ids[chunk.(*array.Int64).Value(i)] = true
+					rows++
+				}
+			}
+			tbl.Release()
+		}
+		if rows != want || len(ids) != want {
+			t.Errorf("%s: %d rows and %d distinct ids in %d files, want %d each", stream, rows, len(ids), len(files), want)
+		}
+	}
+}
+
+func TestPostgresToParquet(t *testing.T) {
+	startRunner(t)
+	name := unique("postgres-parquet")
+	sch := pgx.Identifier{schema(name)}.Sanitize()
+	conn, err := pgx.Connect(t.Context(), env.dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	for _, q := range []string{
+		"CREATE SCHEMA " + sch,
+		"CREATE TABLE " + sch + ".items (id bigint PRIMARY KEY, name text, price numeric(10, 2), at timestamptz)",
+		"INSERT INTO " + sch + ".items SELECT i, 'item ' || i, i / 100.0, now() FROM generate_series(1, 5000) i",
+		"CREATE TABLE " + sch + ".events (id bigint, kind text)",
+		"INSERT INTO " + sch + ".events SELECT i, 'k' || (i % 3) FROM generate_series(1, 700) i",
+	} {
+		if _, err := conn.Exec(t.Context(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q, "chunkRows": 1000}}`, env.dbURL, schema(name))
+	apply(t, docs(name, src, parquetDest(dir), `{}`)...)
+	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	checkParquet(t, dir, 5000, "items")
+	checkParquet(t, dir, 700, "events")
+}
+
+func TestParquetEngineKilledMidSync(t *testing.T) {
+	r := startRunner(t)
+	name := unique("parquet-killed")
+	dir := t.TempDir()
+	apply(t, docs(name, `{"connector": "faker", "config": `+slowFaker+`}`, parquetDest(dir), `{"commit": {"interval": "1s"}}`)...)
+	pid := r.engine(t)
+	eventually(t, 30*time.Second, "a committed epoch", func() bool {
+		m, _ := filepath.Glob(filepath.Join(dir, "_openetl", "loads", "*", "*"))
+		return len(m) > 0
+	})
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	status, stats := waitSync(t, name, 90*time.Second)
+	if status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	if !strings.Contains(stats, `"Generation": 2`) {
+		t.Errorf("stats %s: want the second attempt to have finished", stats)
+	}
+	checkParquet(t, dir, 2000, "users", "purchases")
 }

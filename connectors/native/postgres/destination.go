@@ -1,6 +1,7 @@
-// Package postgres has the Postgres destination: append writes, staged into
-// one table per stream and epoch, and applied behind a fence row with a
-// marker per stream in _openetl_loads.
+// Package postgres has the Postgres source, which reads full snapshots of
+// tables, and the Postgres destination: append writes, staged into one table
+// per stream and epoch, and applied behind a fence row with a marker per
+// stream in _openetl_loads.
 package postgres
 
 import (

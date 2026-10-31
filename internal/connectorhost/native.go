@@ -1,5 +1,5 @@
 // Package connectorhost hosts connectors. Today that means the native
-// connectors compiled into openetld.
+// connectors compiled into openetld, and the engine's Parquet sink.
 package connectorhost
 
 import (
@@ -9,6 +9,7 @@ import (
 	"github.com/unsuitable001/openetl/connectors/native/faker"
 	"github.com/unsuitable001/openetl/connectors/native/postgres"
 	"github.com/unsuitable001/openetl/connectors/native/stdout"
+	"github.com/unsuitable001/openetl/internal/enginesink"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
@@ -18,9 +19,11 @@ import (
 // them to validate.
 var (
 	sources = map[string]func([]byte) (source.Source, error){
-		"faker": func(c []byte) (source.Source, error) { return faker.New(c) },
+		"faker":    func(c []byte) (source.Source, error) { return faker.New(c) },
+		"postgres": func(c []byte) (source.Source, error) { return postgres.NewSource(c) },
 	}
 	destinations = map[string]func([]byte) (destination.Destination, error){
+		"parquet":  func(c []byte) (destination.Destination, error) { return enginesink.NewParquet(c) },
 		"postgres": func(c []byte) (destination.Destination, error) { return postgres.NewDestination(c) },
 		"stdout":   func(c []byte) (destination.Destination, error) { return stdout.New(c) },
 	}

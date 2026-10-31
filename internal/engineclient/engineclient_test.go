@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -20,10 +21,13 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet"
+	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 
 	enginev1 "github.com/unsuitable001/openetl/gen/openetl/engine/v1"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
+	"github.com/unsuitable001/openetl/internal/enginesink"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
@@ -198,7 +202,12 @@ func TestRunPassesFramesThrough(t *testing.T) {
 	if name := extensionName(s.Field(1)); name != "arrow.json" {
 		t.Errorf("o has extension %q, want arrow.json", name)
 	}
-	if o := a[2].Batch.Column(1).(*array.String).Value(0); o != `{"k":[1]}` {
+	// A registered arrow.json type decodes as an extension array.
+	col := a[2].Batch.Column(1)
+	if ext, ok := col.(array.ExtensionArray); ok {
+		col = ext.Storage()
+	}
+	if o := col.(*array.String).Value(0); o != `{"k":[1]}` {
 		t.Errorf("o = %s", o)
 	}
 
@@ -506,5 +515,119 @@ func TestRunAttemptThroughTheEngine(t *testing.T) {
 	}
 	if len(dest.pending) != 0 {
 		t.Errorf("epochs left unapplied: %v", dest.pending)
+	}
+}
+
+// readIDs reads the id column of every Parquet file in dir, in name order.
+func readIDs(t *testing.T, dir string) []int64 {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.parquet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, name := range files {
+		f, err := os.Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tbl, err := pqarrow.ReadTable(t.Context(), f, parquet.NewReaderProperties(nil), pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+		_ = f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, chunk := range tbl.Column(tbl.Schema().FieldIndices("id")[0]).Data().Chunks() {
+			ids = append(ids, chunk.(*array.Int64).Int64Values()...)
+		}
+		tbl.Release()
+	}
+	return ids
+}
+
+func TestRunAttemptIntoParquet(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+
+	root := t.TempDir()
+	dest, err := enginesink.NewParquet([]byte(`{"url": "file://` + filepath.ToSlash(root) + `"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	commits, committed := 0, make(chan struct{})
+	waitCommits := func(ctx context.Context, n int) error {
+		for {
+			mu.Lock()
+			done, ch := commits >= n, committed
+			mu.Unlock()
+			if done {
+				return nil
+			}
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	src := &pagedSource{
+		pages: map[string][][]string{
+			"users": {
+				{`{"id": 1, "name": "a"}`, `{"id": 2, "name": "b"}`},
+				{`{"id": 3, "name": null}`},
+				{`{"id": 4, "name": "d", "extra": true}`},
+			},
+			"orders": {
+				{`{"id": 10}`},
+			},
+		},
+		afterPage: waitCommits,
+	}
+	job := runner.Job{
+		Owner:       "a1",
+		Pipeline:    "pipe",
+		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"),
+		Source:      src,
+		Destination: dest,
+		Dataflow:    &Dataflow{Options: opts},
+		Settings: runner.Settings{
+			Require:        delivery.ExactlyOnce,
+			Scope:          destination.ScopeStream,
+			Dedupe:         delivery.DedupeAuto,
+			CommitMaxBytes: 1,
+		},
+		OnCommit: func(uint64) {
+			mu.Lock()
+			defer mu.Unlock()
+			commits++
+			close(committed)
+			committed = make(chan struct{})
+		},
+	}
+	for _, s := range []string{"users", "orders"} {
+		job.Streams = append(job.Streams, runner.Stream{Name: s, Replay: source.Exact, Mode: destination.Append})
+	}
+
+	res, err := runner.RunAttempt(ctx, job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Committed != 4 {
+		t.Errorf("committed %d epochs, want 4", res.Committed)
+	}
+	if got := readIDs(t, filepath.Join(root, "users")); !slices.Equal(got, []int64{1, 2, 3, 4}) {
+		t.Errorf("users holds %v", got)
+	}
+	if got := readIDs(t, filepath.Join(root, "orders")); !slices.Equal(got, []int64{10}) {
+		t.Errorf("orders holds %v", got)
+	}
+	markers, err := filepath.Glob(filepath.Join(root, "_openetl", "loads", "*", "*"))
+	if err != nil || len(markers) != 4 {
+		t.Errorf("markers %v, %v; want one per stream and epoch with rows", markers, err)
+	}
+	if left, _ := os.ReadDir(filepath.Join(root, "_openetl", "staging")); len(left) != 0 {
+		t.Errorf("staging left behind: %v", left)
 	}
 }

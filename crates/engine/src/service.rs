@@ -22,7 +22,7 @@ use tracing::{info, warn};
 use crate::dataflow::{self, Events};
 use crate::error::JobError;
 use crate::frame;
-use crate::plan::Plan;
+use crate::plan::{Plan, Sink};
 
 /// How long the runner has to connect every edge after StartJob.
 const EDGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -75,8 +75,14 @@ impl Engine {
             job.edges.insert(e.id.clone(), tx);
             inbound.push((e.id.clone(), rx));
         }
-        let (tx, outbound) = oneshot::channel();
-        job.edges.insert(plan.outbound.id.clone(), tx);
+        let outbound = match &plan.sink {
+            Sink::Runner { edge, .. } => {
+                let (tx, rx) = oneshot::channel();
+                job.edges.insert(edge.id.clone(), tx);
+                Some(rx)
+            }
+            Sink::Parquet { .. } => None,
+        };
         *slot = Some(job);
 
         info!(
@@ -119,7 +125,7 @@ impl Engine {
 async fn run(
     plan: Arc<Plan>,
     inbound: Vec<(String, oneshot::Receiver<Edge>)>,
-    outbound: oneshot::Receiver<Edge>,
+    outbound: Option<oneshot::Receiver<Edge>>,
     events: Events,
 ) -> Result<(), JobError> {
     let connect = async {
@@ -130,10 +136,15 @@ async fn run(
                 .map_err(|_| JobError::internal(format!("edge {id} was dropped")))?;
             readers.push(edge.reader);
         }
-        let out = outbound
-            .await
-            .map_err(|_| JobError::internal("the outbound edge was dropped"))?;
-        Ok::<_, JobError>((readers, out.writer))
+        let writer = match outbound {
+            Some(rx) => Some(
+                rx.await
+                    .map_err(|_| JobError::internal("the outbound edge was dropped"))?
+                    .writer,
+            ),
+            None => None,
+        };
+        Ok::<_, JobError>((readers, writer))
     };
     let (readers, writer) = match tokio::time::timeout(EDGE_TIMEOUT, connect).await {
         Ok(Ok(conns)) => conns,

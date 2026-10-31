@@ -480,9 +480,11 @@ func (x *RunnerSink) GetEdge() string {
 	return ""
 }
 
+// ParquetSink stages each epoch as Parquet files under url, and reports them
+// in EpochReady.staged.
 type ParquetSink struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Such as s3://bucket/prefix or file:///path.
+	// file:// and an absolute path. Object stores come later.
 	Url           string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

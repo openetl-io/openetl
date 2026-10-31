@@ -1,0 +1,34 @@
+# The tables faker-to-postgres.yaml writes, as Parquet files under
+# /tmp/openetl-parquet, every hour. With `make deps-up` and `make dev` running,
+# and the faker pipeline synced once:
+#
+#   go run ./cmd/openetl apply -f examples/postgres-to-parquet.yaml
+#
+# Each table gets a directory of files, one or more per committed epoch.
+apiVersion: openetl.dev/v1alpha1
+kind: Source
+metadata:
+  name: local-postgres-faker
+spec:
+  connector: postgres
+  config:
+    dsn: postgres://openetl:openetl@localhost:5432/openetl
+    schema: faker
+---
+apiVersion: openetl.dev/v1alpha1
+kind: Destination
+metadata:
+  name: local-parquet
+spec:
+  connector: parquet
+  config:
+    url: file:///tmp/openetl-parquet
+---
+apiVersion: openetl.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: postgres-to-parquet
+spec:
+  schedule: { every: 1h }
+  source: { ref: local-postgres-faker }
+  destination: { ref: local-parquet }

@@ -1,11 +1,16 @@
-//! The P0 dataflow: every inbound stream passes through to the runner sink's
-//! edge, with raw rows normalized to Arrow and barriers forwarded in band.
+//! The P0 dataflow: every inbound stream passes through to the sink, with raw
+//! rows normalized to Arrow. A runner sink gets barriers in band; a Parquet
+//! sink stages each epoch and reports it in EpochReady.
 
+use std::future::Future;
+use std::ops::RangeInclusive;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
+use openetl_formats::ParquetStaging;
 use openetl_normalize::Normalizer;
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
@@ -22,7 +27,7 @@ use tonic::Status;
 use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
-use crate::plan::Plan;
+use crate::plan::{Plan, Sink};
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
 
@@ -49,13 +54,15 @@ enum Out {
     End(usize),
 }
 
-/// Runs the job until every stream has ended on the outbound edge and every
-/// inbound edge has closed. Failures are reported on `events` before the
-/// edges close.
+type Writer = Pin<Box<dyn Future<Output = Result<bool, JobError>> + Send>>;
+
+/// Runs the job until every stream has ended at the sink and every inbound
+/// edge has closed. `outbound` is the runner sink's edge. Failures are
+/// reported on `events` before the edges close.
 pub async fn run<R, W>(
     plan: Arc<Plan>,
     inbound: Vec<R>,
-    outbound: W,
+    outbound: Option<W>,
     events: Events,
 ) -> Result<(), JobError>
 where
@@ -65,6 +72,31 @@ where
     let counters: Arc<Vec<Counters>> =
         Arc::new(plan.streams.iter().map(|_| Counters::default()).collect());
     let (tx, rx) = mpsc::channel(16);
+    let mut writer: Writer = match (&plan.sink, outbound) {
+        (Sink::Runner { .. }, Some(w)) => Box::pin(write_edge(
+            plan.clone(),
+            w,
+            rx,
+            events.clone(),
+            counters.clone(),
+        )),
+        (Sink::Parquet { url }, None) => {
+            let (plan, url, events, counters) =
+                (plan.clone(), url.clone(), events.clone(), counters.clone());
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    write_parquet(&plan, &url, rx, &events, &counters)
+                })
+                .await
+                .map_err(|e| JobError::internal(format!("the Parquet sink failed: {e}")))?
+            })
+        }
+        _ => {
+            let e = JobError::internal("the outbound edge doesn't match the sink");
+            report(&events, &e).await;
+            return Err(e);
+        }
+    };
     let mut readers = JoinSet::new();
     for (edge, r) in inbound.into_iter().enumerate() {
         readers.spawn(read_edge(
@@ -76,8 +108,6 @@ where
         ));
     }
     drop(tx);
-    let writer = write_edge(plan.clone(), outbound, rx, events.clone(), counters.clone());
-    tokio::pin!(writer);
 
     let mut written = None;
     let res = loop {
@@ -219,6 +249,64 @@ async fn send(tx: &mpsc::Sender<Out>, out: Out) -> Result<(), JobError> {
         .map_err(|_| JobError::internal("the outbound edge stopped"))
 }
 
+/// Which epochs every stream has crossed or ended.
+struct Alignment {
+    crossed: Vec<u64>,
+    ended: Vec<bool>,
+    ready: u64,
+    highest: u64,
+}
+
+impl Alignment {
+    fn new(streams: usize, first_epoch: u64) -> Self {
+        Self {
+            crossed: vec![first_epoch - 1; streams],
+            ended: vec![false; streams],
+            ready: first_epoch - 1,
+            highest: first_epoch - 1,
+        }
+    }
+
+    fn cross(&mut self, stream: usize, n: u64) {
+        self.crossed[stream] = n;
+        self.highest = self.highest.max(n);
+    }
+
+    fn end(&mut self, stream: usize) {
+        self.ended[stream] = true;
+    }
+
+    fn done(&self) -> bool {
+        self.ended.iter().all(|e| *e)
+    }
+
+    /// The epochs that became ready since the last call.
+    fn advance(&mut self) -> RangeInclusive<u64> {
+        let aligned = (0..self.crossed.len())
+            .filter(|&s| !self.ended[s])
+            .map(|s| self.crossed[s])
+            .min()
+            .unwrap_or(self.highest)
+            .min(self.highest);
+        let ready = self.ready + 1..=aligned;
+        self.ready = self.ready.max(aligned);
+        ready
+    }
+}
+
+fn epoch_ready(plan: &Plan, n: u64, staged: Vec<u8>) -> EventsResponse {
+    EventsResponse {
+        event: Some(events_response::Event::EpochReady(EpochReady {
+            epoch: Some(Epoch {
+                generation: plan.generation,
+                n,
+            }),
+            staged,
+            snapshots: Vec::new(),
+        })),
+    }
+}
+
 /// Returns false if the inbound edges closed before every stream ended.
 async fn write_edge<W>(
     plan: Arc<Plan>,
@@ -230,17 +318,15 @@ async fn write_edge<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let id = &plan.outbound.id;
+    let Sink::Runner { edge, out_index } = &plan.sink else {
+        return Err(JobError::internal("the sink has no edge"));
+    };
+    let id = &edge.id;
     let gone = |e: std::io::Error| JobError::runner_gone(format!("edge {id}: {e}"));
     let mut w = BufWriter::with_capacity(1 << 16, w);
-    let n = plan.streams.len();
-    let mut ended = vec![false; n];
-    // Each stream's last barrier, and the last epoch reported ready.
-    let mut crossed = vec![plan.first_epoch - 1; n];
-    let mut ready = plan.first_epoch - 1;
-    let mut highest = ready;
+    let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
 
-    while ended.iter().any(|e| !e) {
+    while !align.done() {
         let item = match rx.try_recv() {
             Ok(item) => item,
             Err(TryRecvError::Empty) => {
@@ -267,8 +353,7 @@ where
             }
             Out::SchemaChange(s, payload) => (FrameKind::SchemaChange, s, payload),
             Out::Barrier(s, epoch) => {
-                crossed[s] = epoch.n;
-                highest = highest.max(epoch.n);
+                align.cross(s, epoch.n);
                 (
                     FrameKind::Barrier,
                     s,
@@ -276,36 +361,21 @@ where
                 )
             }
             Out::End(s) => {
-                ended[s] = true;
+                align.end(s);
                 (FrameKind::EndOfStream, s, Vec::new())
             }
         };
-        frame::write(&mut w, kind, plan.out_index[stream], &payload)
+        frame::write(&mut w, kind, out_index[stream], &payload)
             .await
             .map_err(gone)?;
 
-        // An epoch is ready once every stream has crossed its barrier or ended.
-        let aligned = (0..n)
-            .filter(|&s| !ended[s])
-            .map(|s| crossed[s])
-            .min()
-            .unwrap_or(highest)
-            .min(highest);
-        if aligned > ready {
+        let ready = align.advance();
+        if !ready.is_empty() {
             w.flush().await.map_err(gone)?;
-            for e in ready + 1..=aligned {
-                let ev = events_response::Event::EpochReady(EpochReady {
-                    epoch: Some(Epoch {
-                        generation: plan.generation,
-                        n: e,
-                    }),
-                    staged: Vec::new(),
-                    snapshots: Vec::new(),
-                });
-                // Engine sinks will need every EpochReady, so this waits.
-                let _ = events.send(Ok(EventsResponse { event: Some(ev) })).await;
+            for n in ready {
+                // Engine sinks need every EpochReady, so this waits.
+                let _ = events.send(Ok(epoch_ready(&plan, n, Vec::new()))).await;
             }
-            ready = aligned;
             let _ = events.try_send(Ok(metrics(&plan, &counters)));
         }
     }
@@ -313,6 +383,73 @@ where
     w.shutdown().await.map_err(gone)?;
     let _ = events.try_send(Ok(metrics(&plan, &counters)));
     Ok(true)
+}
+
+/// Stages every stream as Parquet, and reports each epoch's staged files in
+/// its EpochReady. Runs on a blocking thread. Returns false if the inbound
+/// edges closed before every stream ended.
+fn write_parquet(
+    plan: &Plan,
+    url: &str,
+    mut rx: mpsc::Receiver<Out>,
+    events: &Events,
+    counters: &[Counters],
+) -> Result<bool, JobError> {
+    let mut staging = ParquetStaging::new(url, plan.generation, plan.first_epoch, &plan.streams)
+        .map_err(sink_error)?;
+    let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
+
+    while !align.done() {
+        let Some(item) = rx.blocking_recv() else {
+            return Ok(false);
+        };
+        match item {
+            Out::Batch(s, batch) => {
+                staging.write(s, &batch).map_err(sink_error)?;
+                counters[s]
+                    .rows_out
+                    .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+            }
+            // Each batch carries its schema.
+            Out::SchemaChange(..) => {}
+            Out::Barrier(s, epoch) => {
+                let bytes = staging.seal(s).map_err(sink_error)?;
+                counters[s].bytes_out.fetch_add(bytes, Ordering::Relaxed);
+                align.cross(s, epoch.n);
+            }
+            Out::End(s) => {
+                staging.end(s).map_err(sink_error)?;
+                align.end(s);
+            }
+        }
+        let ready = align.advance();
+        if ready.is_empty() {
+            continue;
+        }
+        for n in ready {
+            let staged = serde_json::to_vec(&staging.take(n))
+                .map_err(|e| JobError::internal(format!("encode the staged descriptor: {e}")))?;
+            let _ = events.blocking_send(Ok(epoch_ready(plan, n, staged)));
+        }
+        let _ = events.try_send(Ok(metrics(plan, counters)));
+    }
+    let _ = events.try_send(Ok(metrics(plan, counters)));
+    Ok(true)
+}
+
+fn sink_error(e: openetl_formats::Error) -> JobError {
+    use openetl_formats::Error as E;
+    use std::io::ErrorKind as K;
+    let code = match &e {
+        E::Config(_) => ErrorCode::ConfigInvalid,
+        E::Io { source, .. } => match source.kind() {
+            K::PermissionDenied => ErrorCode::PermissionDenied,
+            K::StorageFull | K::QuotaExceeded => ErrorCode::DestinationQuota,
+            _ => ErrorCode::DestinationUnavailable,
+        },
+        E::Parquet { .. } => ErrorCode::Internal,
+    };
+    JobError::new(code, format!("Parquet sink: {e}"))
 }
 
 fn metrics(plan: &Plan, counters: &[Counters]) -> EventsResponse {
@@ -361,7 +498,12 @@ mod tests {
         let (to_engine, engine_in) = duplex(1 << 16);
         let (engine_out, from_engine) = duplex(1 << 16);
         let (tx, events) = mpsc::channel(64);
-        let job = tokio::spawn(run(plan, vec![BufReader::new(engine_in)], engine_out, tx));
+        let job = tokio::spawn(run(
+            plan,
+            vec![BufReader::new(engine_in)],
+            Some(engine_out),
+            tx,
+        ));
         Harness {
             to_engine,
             from_engine: BufReader::new(from_engine),
@@ -527,6 +669,78 @@ mod tests {
         let (err, st) = failure(h).await;
         assert_eq!(err.code, ErrorCode::DataInvalid);
         assert_eq!(st.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn a_parquet_sink_reports_staged_files_per_epoch() {
+        use openetl_formats::Descriptor;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        let plan = Arc::new(
+            Plan::from_request(crate::plan::tests::parquet_request(&["a", "b"], &url)).unwrap(),
+        );
+        let (mut w, engine_in) = duplex(1 << 16);
+        let (tx, mut events) = mpsc::channel(64);
+        let job = tokio::spawn(run::<_, DuplexStream>(
+            plan,
+            vec![BufReader::new(engine_in)],
+            None,
+            tx,
+        ));
+        put(
+            &mut w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"x": 1}"#, r#"{"x": 2}"#]),
+        )
+        .await;
+        put(&mut w, FrameKind::Rows, 1, rows(&[r#"{"y": "s"}"#])).await;
+        put(&mut w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(&mut w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 3.5}"#])).await;
+        put(&mut w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(&mut w, FrameKind::Barrier, 1, barrier(2)).await;
+        // Rows after the last barrier are never committed.
+        put(&mut w, FrameKind::Rows, 1, rows(&[r#"{"y": "t"}"#])).await;
+        put(&mut w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(&mut w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        job.await.unwrap().unwrap();
+
+        let mut ready = Vec::new();
+        while let Some(Ok(ev)) = events.recv().await {
+            if let Some(events_response::Event::EpochReady(r)) = ev.event {
+                let d: Descriptor = serde_json::from_slice(&r.staged).unwrap();
+                assert_eq!(d.epoch, r.epoch.unwrap().n);
+                ready.push(d);
+            }
+        }
+        let shape: Vec<Vec<(&str, u64)>> = ready
+            .iter()
+            .map(|d| {
+                d.streams
+                    .iter()
+                    .map(|s| (s.stream.as_str(), s.files.iter().map(|f| f.rows).sum()))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(shape, vec![vec![("a", 2), ("b", 1)], vec![("a", 1)]]);
+
+        let f = &ready[1].streams[0].files[0];
+        let file = std::fs::File::open(dir.path().join(&f.staged)).unwrap();
+        let batches: Vec<_> = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(batches[0].schema().field(0).data_type(), &DataType::Float64);
+        let left = std::fs::read_dir(dir.path().join("_openetl/staging/1/3/b"))
+            .unwrap()
+            .count();
+        assert_eq!(left, 0, "the unsealed file is removed");
     }
 
     #[tokio::test]

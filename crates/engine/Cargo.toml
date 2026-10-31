@@ -11,6 +11,7 @@ name = "openetl-engine"
 path = "src/main.rs"
 
 [dependencies]
+openetl-formats.workspace = true
 openetl-normalize.workspace = true
 openetl-proto.workspace = true
 arrow-array.workspace = true
@@ -19,6 +20,7 @@ arrow-ipc.workspace = true
 arrow-schema.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -26,6 +28,10 @@ tokio-util.workspace = true
 tonic.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+parquet.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

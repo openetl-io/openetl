@@ -31,17 +31,18 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // EngineService is the engine's control channel, served on a Unix socket. One
-// engine process runs one job. The runner calls StartJob, then Recover if the
-// job has an engine sink, then connects the data edges (frames.proto).
+// engine process runs one job. The runner calls StartJob, then connects the
+// data edges (frames.proto).
 type EngineServiceClient interface {
 	StartJob(ctx context.Context, in *StartJobRequest, opts ...grpc.CallOption) (*StartJobResponse, error)
-	// Engine sinks only.
+	// For engine sinks that apply in the engine. The runner commits and
+	// recovers a Parquet sink from its staged descriptor.
 	Recover(ctx context.Context, in *RecoverRequest, opts ...grpc.CallOption) (*RecoverResponse, error)
 	// A failed job ends the stream with an openetl.connector.v1.Error in the
 	// status details.
 	Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[EventsResponse], error)
-	// The epoch's checkpoint is recorded, so an engine sink makes it visible.
-	// Idempotent.
+	// The epoch's checkpoint is recorded, so an engine sink that applies in the
+	// engine makes it visible. Idempotent.
 	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
 	// Ends the job without draining, and the process exits.
 	Stop(ctx context.Context, in *StopRequest, opts ...grpc.CallOption) (*StopResponse, error)
@@ -119,17 +120,18 @@ func (c *engineServiceClient) Stop(ctx context.Context, in *StopRequest, opts ..
 // for forward compatibility.
 //
 // EngineService is the engine's control channel, served on a Unix socket. One
-// engine process runs one job. The runner calls StartJob, then Recover if the
-// job has an engine sink, then connects the data edges (frames.proto).
+// engine process runs one job. The runner calls StartJob, then connects the
+// data edges (frames.proto).
 type EngineServiceServer interface {
 	StartJob(context.Context, *StartJobRequest) (*StartJobResponse, error)
-	// Engine sinks only.
+	// For engine sinks that apply in the engine. The runner commits and
+	// recovers a Parquet sink from its staged descriptor.
 	Recover(context.Context, *RecoverRequest) (*RecoverResponse, error)
 	// A failed job ends the stream with an openetl.connector.v1.Error in the
 	// status details.
 	Events(*EventsRequest, grpc.ServerStreamingServer[EventsResponse]) error
-	// The epoch's checkpoint is recorded, so an engine sink makes it visible.
-	// Idempotent.
+	// The epoch's checkpoint is recorded, so an engine sink that applies in the
+	// engine makes it visible. Idempotent.
 	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
 	// Ends the job without draining, and the process exits.
 	Stop(context.Context, *StopRequest) (*StopResponse, error)

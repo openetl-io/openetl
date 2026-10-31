@@ -11,10 +11,20 @@ pub struct Plan {
     pub first_epoch: u64,
     pub streams: Vec<String>,
     pub inbound: Vec<EdgePlan>,
-    /// The runner sink's edge. It carries every stream.
-    pub outbound: EdgePlan,
-    /// Each stream's index on the outbound edge.
-    pub out_index: Vec<u32>,
+    pub sink: Sink,
+}
+
+#[derive(Debug)]
+pub enum Sink {
+    /// A Go sink in the runner, fed by an edge that carries every stream.
+    Runner {
+        edge: EdgePlan,
+        /// Each stream's index on the edge.
+        out_index: Vec<u32>,
+    },
+    Parquet {
+        url: String,
+    },
 }
 
 #[derive(Debug)]
@@ -46,12 +56,18 @@ impl Plan {
                 ));
             }
         }
-        let sink_edge = match req.sink.and_then(|s| s.sink) {
-            Some(sink_plan::Sink::Runner(r)) => r.edge,
-            Some(sink_plan::Sink::Parquet(_)) => {
-                return Err(JobError::config("the Parquet sink isn't supported yet"));
+        let names: Vec<String> = req.streams.iter().map(|s| s.name.clone()).collect();
+        let sink = req
+            .sink
+            .and_then(|s| s.sink)
+            .ok_or_else(|| JobError::config("the job has no sink"))?;
+        let sink_edge = match &sink {
+            sink_plan::Sink::Runner(r) => Some(r.edge.as_str()),
+            sink_plan::Sink::Parquet(p) => {
+                openetl_formats::check(&p.url, &names)
+                    .map_err(|e| JobError::config(e.to_string()))?;
+                None
             }
-            None => return Err(JobError::config("the job has no sink")),
         };
 
         let mut ids = HashSet::new();
@@ -89,7 +105,9 @@ impl Plan {
                     }
                     inbound.push(edge);
                 }
-                EdgeDirection::FromEngine if e.id == sink_edge => outbound = Some(edge),
+                EdgeDirection::FromEngine if Some(e.id.as_str()) == sink_edge => {
+                    outbound = Some(edge)
+                }
                 EdgeDirection::FromEngine => {
                     return Err(JobError::config(format!(
                         "edge {} leaves the engine but isn't the sink's",
@@ -107,24 +125,29 @@ impl Plan {
                 req.streams[i].name
             )));
         }
-        let outbound = outbound.ok_or_else(|| {
-            JobError::config(format!("the sink's edge {sink_edge:?} isn't planned"))
-        })?;
-        if outbound.streams.len() != req.streams.len() {
-            return Err(JobError::config("the sink's edge must carry every stream"));
-        }
-        let mut out_index = vec![0; req.streams.len()];
-        for (pos, &i) in outbound.streams.iter().enumerate() {
-            out_index[i] = pos as u32;
-        }
+        let sink = match sink {
+            sink_plan::Sink::Runner(r) => {
+                let edge = outbound.ok_or_else(|| {
+                    JobError::config(format!("the sink's edge {:?} isn't planned", r.edge))
+                })?;
+                if edge.streams.len() != names.len() {
+                    return Err(JobError::config("the sink's edge must carry every stream"));
+                }
+                let mut out_index = vec![0; names.len()];
+                for (pos, &i) in edge.streams.iter().enumerate() {
+                    out_index[i] = pos as u32;
+                }
+                Sink::Runner { edge, out_index }
+            }
+            sink_plan::Sink::Parquet(p) => Sink::Parquet { url: p.url },
+        };
 
         Ok(Plan {
             generation: req.generation,
             first_epoch: req.first_epoch,
-            streams: req.streams.into_iter().map(|s| s.name).collect(),
+            streams: names,
             inbound,
-            outbound,
-            out_index,
+            sink,
         })
     }
 }
@@ -171,13 +194,31 @@ pub(crate) mod tests {
         }
     }
 
+    pub(crate) fn parquet_request(streams: &[&str], url: &str) -> StartJobRequest {
+        let mut req = request(streams);
+        req.edges.pop();
+        req.sink = Some(SinkPlan {
+            sink: Some(sink_plan::Sink::Parquet(ParquetSink { url: url.into() })),
+        });
+        req
+    }
+
     #[test]
     fn maps_streams_to_edges() {
         let p = Plan::from_request(request(&["a", "b", "c"])).unwrap();
         assert_eq!(p.inbound.len(), 1);
         assert_eq!(p.inbound[0].streams, vec![0, 1, 2]);
-        assert_eq!(p.outbound.streams, vec![2, 1, 0]);
-        assert_eq!(p.out_index, vec![2, 1, 0]);
+        let Sink::Runner { edge, out_index } = p.sink else {
+            panic!("{:?}", p.sink)
+        };
+        assert_eq!(edge.streams, vec![2, 1, 0]);
+        assert_eq!(out_index, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn a_parquet_sink_has_no_outbound_edge() {
+        let p = Plan::from_request(parquet_request(&["a", "b"], "file:///tmp/x")).unwrap();
+        assert!(matches!(p.sink, Sink::Parquet { url } if url == "file:///tmp/x"));
     }
 
     type Mutation = Box<dyn Fn(&mut StartJobRequest)>;
@@ -197,12 +238,20 @@ pub(crate) mod tests {
             ),
             ("no sink", Box::new(|r| r.sink = None)),
             (
-                "parquet",
+                "parquet with an outbound edge",
                 Box::new(|r| {
-                    r.sink = Some(SinkPlan {
-                        sink: Some(sink_plan::Sink::Parquet(ParquetSink::default())),
-                    })
+                    *r = parquet_request(&["a", "b"], "file:///tmp/x");
+                    r.edges
+                        .push(edge("out", EdgeDirection::FromEngine, &["a", "b"]));
                 }),
+            ),
+            (
+                "parquet URL",
+                Box::new(|r| *r = parquet_request(&["a", "b"], "s3://bucket/x")),
+            ),
+            (
+                "parquet stream name",
+                Box::new(|r| *r = parquet_request(&["a", "b/c"], "file:///tmp/x")),
             ),
             (
                 "unknown stream",
