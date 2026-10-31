@@ -59,6 +59,7 @@ type sourcePump struct {
 
 	maxBytes      int64
 	forceAfter    time.Duration
+	requested     uint64 // the last barrier requested
 	pending       uint64 // epoch being placed; 0 if none
 	unplaced      int
 	states        map[string][]byte
@@ -70,9 +71,10 @@ type sourcePump struct {
 	forceC        <-chan time.Time
 }
 
-func newSourcePump(ctx context.Context, job *Job, restored map[string][]byte, restoredForced, canForce map[string]bool, out chan<- Frame, events chan<- event) *sourcePump {
+func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored map[string][]byte, restoredForced, canForce map[string]bool, out chan<- Frame, events chan<- event) *sourcePump {
 	p := &sourcePump{
 		ctx:        ctx,
+		requested:  restoredEpoch,
 		in:         make(chan emit),
 		barriers:   make(chan uint64, 1),
 		stopCh:     make(chan struct{}),
@@ -218,14 +220,14 @@ func (p *sourcePump) finish() error {
 	for _, st := range p.streams {
 		active = active || st.active
 	}
-	return p.notify(event{kind: evReadDone, active: active})
+	return p.notify(event{kind: evReadDone, active: active, epoch: p.requested})
 }
 
 func (p *sourcePump) request(n uint64) error {
 	if p.pending != 0 {
 		return fmt.Errorf("runner: barrier %d requested while %d is being placed", n, p.pending)
 	}
-	p.pending, p.unplaced = n, len(p.order)
+	p.requested, p.pending, p.unplaced = n, n, len(p.order)
 	p.states = make(map[string][]byte, len(p.order))
 	p.forced = nil
 	p.bytes, p.thresholdSent = 0, false

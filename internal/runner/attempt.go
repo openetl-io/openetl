@@ -203,7 +203,7 @@ const (
 	evStaged                         // the sink staged epoch
 	evReady                          // the dataflow's part of epoch is durable
 	evThreshold                      // CommitMaxBytes was reached
-	evReadDone                       // Read returned; active says whether anything is uncommitted
+	evReadDone                       // Read returned; active says whether anything emitted after barrier epoch is uncommitted
 	evCommitted                      // epoch is visible in the destination
 )
 
@@ -279,7 +279,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	fromFlow := make(chan Frame, 16)
 	c.events = make(chan event, 64)
 	c.commits = make(chan commitReq, 1)
-	c.pump = newSourcePump(gctx, c.job, states, restoredForced, canForce, toFlow, c.events)
+	c.pump = newSourcePump(gctx, c.job, c.committed, states, restoredForced, canForce, toFlow, c.events)
 	plan := Plan{
 		Pipeline:   c.job.Pipeline,
 		Owner:      c.job.Owner,
@@ -382,7 +382,9 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 		c.want = true
 		return nil
 	case evReadDone:
-		c.readDone, c.active = true, ev.active
+		// A barrier requested after the pump's last one is placed after Read
+		// ended, so it covers everything.
+		c.readDone, c.active = true, ev.active && ev.epoch == c.next-1
 		return nil
 	case evPlaced:
 		st := c.pending[ev.epoch]

@@ -317,3 +317,42 @@ func (d *countingDest) Recover(context.Context, uint64, destination.Epoch, desti
 }
 
 func (d *countingDest) Close(context.Context) error { return nil }
+
+// A barrier requested just as Read returns covers everything, so no empty
+// epoch follows it. Read's end and the commit tick coincide; which the pump
+// sees first varies, so this runs many times.
+func TestNoEmptyFinalEpoch(t *testing.T) {
+	for i := range 200 {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			j := job(checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), "a1", lateSource{after: time.Second}, runner.Passthrough{Convert: columnless}, make(chan uint64, 16))
+			j.Settings.CommitMaxBytes = 0
+			j.Settings.CommitInterval = time.Second
+			res, err := runner.RunAttempt(ctx, j)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Committed != 1 {
+				t.Fatalf("run %d committed %d epochs, want 1", i, res.Committed)
+			}
+		})
+	}
+}
+
+// lateSource completes its stream, then returns after a while.
+type lateSource struct{ after time.Duration }
+
+func (s lateSource) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
+	if err := out.Rows("s", []json.RawMessage{json.RawMessage(`{}`)}); err != nil {
+		return err
+	}
+	if err := out.ResumePoint("s", []byte("1")); err != nil {
+		return err
+	}
+	if err := out.Complete("s"); err != nil {
+		return err
+	}
+	time.Sleep(s.after)
+	return nil
+}
