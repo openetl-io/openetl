@@ -49,9 +49,14 @@ type Job struct {
 	Source      source.Reader
 	Streams     []Stream
 	Destination destination.Destination
-	Dataflow    Dataflow
-	Settings    Settings
-	Logger      *slog.Logger
+	// The destination's schema or dataset; empty for its default.
+	Namespace string
+	Dataflow  Dataflow
+	Settings  Settings
+	Logger    *slog.Logger
+	// Called on the coordinator's goroutine after each epoch commits. It
+	// must not block.
+	OnCommit func(epoch uint64)
 }
 
 type Result struct {
@@ -110,7 +115,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			}
 		}
 	}
-	cfg := destination.OpenConfig{Pipeline: job.Pipeline, Generation: res.Generation, Scope: job.Settings.Scope}
+	cfg := destination.OpenConfig{Pipeline: job.Pipeline, Generation: res.Generation, Scope: job.Settings.Scope, Namespace: job.Namespace}
 	canForce := make(map[string]bool, len(job.Streams))
 	for _, s := range job.Streams {
 		cfg.Streams = append(cfg.Streams, destination.Stream{
@@ -402,6 +407,9 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 	c.res.Committed++
 	c.res.Last = n
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
+	if c.job.OnCommit != nil {
+		c.job.OnCommit(n)
+	}
 
 	// Trail by one checkpoint, so recovery can fall back one record.
 	if ack, ok := c.job.Source.(source.Acknowledger); ok && c.ackStates != nil {

@@ -114,7 +114,9 @@ type OpenConfig struct {
 	// Applies check it against the destination fence.
 	Generation uint64
 	Scope      Scope
-	Streams    []Stream
+	// A schema or dataset. Empty: the destination's default.
+	Namespace string
+	Streams   []Stream
 }
 
 type Destination interface {

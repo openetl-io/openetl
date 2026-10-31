@@ -61,6 +61,22 @@ type Reader interface {
 	Read(ctx context.Context, req ReadRequest, out Emitter) error
 }
 
+type CatalogStream struct {
+	Name       string
+	PrimaryKey []string
+	Replay     Replay
+}
+
+type Catalog struct {
+	Streams []CatalogStream
+}
+
+// Source is a source connector bound to its config.
+type Source interface {
+	Reader
+	Discover(ctx context.Context) (Catalog, error)
+}
+
 // Acknowledger is implemented by sources that acknowledge upstream (Kafka
 // offsets, a replication slot's LSN). Committed gets one checkpoint's
 // per-stream states, once everything before them can be discarded. It runs
