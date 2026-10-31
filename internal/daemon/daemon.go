@@ -148,6 +148,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	sync := &dpactivities.Sync{
 		API:         dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL),
 		Checkpoints: cps,
+		Storage:     cfg.Checkpoints,
 		Engine:      engineclient.Options{Binary: cfg.Engine, Logger: log.With("component", "engine")},
 		Logger:      log,
 	}

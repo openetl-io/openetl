@@ -55,9 +55,11 @@ type Job struct {
 	Namespace string
 	// Tables and columns keep their source names instead of normalized ones.
 	KeepSourceNames bool
-	Dataflow        Dataflow
-	Settings        Settings
-	Logger          *slog.Logger
+	// Where the dataflow keeps records it can't take, as Plan says.
+	QuarantineURL string
+	Dataflow      Dataflow
+	Settings      Settings
+	Logger        *slog.Logger
 	// Called on the coordinator's goroutine after each epoch commits. It
 	// must not block.
 	OnCommit func(epoch uint64)
@@ -307,8 +309,9 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 			KeepSource: c.job.KeepSourceNames,
 			MaxLength:  c.job.Destination.Capabilities().MaxIdentifierLength,
 		},
-		ReadStarts: c.readStarts,
-		Schemas:    schemas,
+		QuarantineURL: c.job.QuarantineURL,
+		ReadStarts:    c.readStarts,
+		Schemas:       schemas,
 	}
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots
@@ -467,12 +470,13 @@ func (c *coordinator) committer(ctx context.Context) error {
 // loop, then acknowledges the previous epoch upstream.
 func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) error {
 	rec := &checkpoint.Record{
-		Epoch:     n,
-		Streams:   make(map[string]checkpoint.StreamState, len(st.states)),
-		Staged:    st.desc,
-		Snapshots: st.flow.Snapshots,
-		Forced:    st.forced,
-		CreatedAt: time.Now().UTC(),
+		Epoch:      n,
+		Streams:    make(map[string]checkpoint.StreamState, len(st.states)),
+		Staged:     st.desc,
+		Snapshots:  st.flow.Snapshots,
+		Quarantine: st.flow.Quarantine,
+		Forced:     st.forced,
+		CreatedAt:  time.Now().UTC(),
 	}
 	for name, state := range st.states {
 		rec.Streams[name] = checkpoint.StreamState{

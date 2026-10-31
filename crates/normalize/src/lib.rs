@@ -101,10 +101,20 @@ pub enum Error {
     Arrow(#[from] ArrowError),
 }
 
+/// A row left out of a batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejected {
+    /// The row's position among those pushed.
+    pub row: usize,
+    /// Never contains the row's contents.
+    pub reason: String,
+}
+
 #[derive(Debug)]
 pub struct Normalized {
-    /// Has the stream's current schema.
+    /// Has the stream's current schema, and every row but the rejected.
     pub batch: RecordBatch,
+    pub rejected: Vec<Rejected>,
     /// The stream's schema changed with this batch.
     pub schema_changed: bool,
     /// Each row's `_openetl_id`, if the normalizer has an identity.
@@ -159,21 +169,28 @@ impl Normalizer {
         self.identity = Some(identity);
     }
 
-    /// Converts rows, one JSON object each, to a batch. On error, the schema
-    /// is unchanged.
+    /// Converts rows, one JSON object each, to a batch. Rows that aren't JSON
+    /// objects are left out and listed. On error, the schema is unchanged.
     pub fn push<'a, I>(&mut self, rows: I) -> Result<Normalized, Error>
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
         let mut objects = Vec::new();
+        let mut rejected = Vec::new();
         for (row, raw) in rows.into_iter().enumerate() {
             // Parsing to Value first keeps contents out of the error.
-            let v: Value =
-                serde_json::from_slice(raw).map_err(|source| Error::Json { row, source })?;
-            let Value::Object(obj) = v else {
-                return Err(Error::NotAnObject { row });
+            let err = match serde_json::from_slice(raw) {
+                Ok(Value::Object(obj)) => {
+                    objects.push(obj);
+                    continue;
+                }
+                Ok(_) => Error::NotAnObject { row },
+                Err(source) => Error::Json { row, source },
             };
-            objects.push(obj);
+            rejected.push(Rejected {
+                row,
+                reason: err.to_string(),
+            });
         }
 
         let mut changed = false;
@@ -220,6 +237,7 @@ impl Normalizer {
         };
         Ok(Normalized {
             batch,
+            rejected,
             schema_changed: changed,
             ids,
         })
@@ -434,20 +452,23 @@ mod tests {
     }
 
     #[test]
-    fn bad_rows_fail_without_changing_the_schema() {
+    fn bad_rows_are_left_out_and_listed() {
         let mut n = Normalizer::default();
         push(&mut n, &[r#"{"a": 1}"#]);
         let before = n.schema();
 
-        let err = n
-            .push([br#"{"a": "x"}"#.as_slice(), br#"["secret"]"#.as_slice()])
-            .unwrap_err();
-        assert!(matches!(err, Error::NotAnObject { row: 1 }));
-        assert!(!err.to_string().contains("secret"));
-
-        let err = n.push([br#"{"a": "secret"#.as_slice()]).unwrap_err();
-        assert!(matches!(err, Error::Json { row: 0, .. }));
-        assert!(!err.to_string().contains("secret"));
+        let out = n
+            .push([
+                br#"["secret"]"#.as_slice(),
+                br#"{"a": 2}"#.as_slice(),
+                br#"{"a": "secret"#.as_slice(),
+            ])
+            .unwrap();
+        assert_eq!(out.batch.num_rows(), 1);
         assert_eq!(n.schema(), before);
+        let rows: Vec<usize> = out.rejected.iter().map(|r| r.row).collect();
+        assert_eq!(rows, vec![0, 2]);
+        assert!(out.rejected[0].reason.contains("not a JSON object"));
+        assert!(out.rejected.iter().all(|r| !r.reason.contains("secret")));
     }
 }

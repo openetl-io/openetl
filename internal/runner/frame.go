@@ -38,8 +38,9 @@ type Frame struct {
 // Ready is the dataflow's part of an epoch, recorded in its checkpoint.
 type Ready struct {
 	// What an engine sink staged.
-	Staged    destination.Staged
-	Snapshots []checkpoint.Snapshot
+	Staged     destination.Staged
+	Snapshots  []checkpoint.Snapshot
+	Quarantine []checkpoint.QuarantineFile
 	// Each stream's schema at its barrier, as an Arrow IPC stream holding
 	// only the schema.
 	Schemas map[string][]byte
@@ -56,6 +57,8 @@ type Plan struct {
 	// Zero: out feeds the destination's Writer.
 	Sink   SinkPlan
 	Naming Naming
+	// Where the dataflow keeps records it can't take; empty: they fail it.
+	QuarantineURL string
 	// Each stream's read start, in microseconds since the Unix epoch.
 	ReadStarts map[string]int64
 	// From the restored checkpoint, as Ready reported them.

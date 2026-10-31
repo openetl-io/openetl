@@ -8,6 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,8 +33,11 @@ import (
 type Sync struct {
 	API         dataplanev1connect.DataPlaneServiceClient
 	Checkpoints checkpoint.Store
-	Engine      engineclient.Options
-	Logger      *slog.Logger
+	// Where Checkpoints is: a directory, or an s3:// URL. Quarantined
+	// records go next to the checkpoints.
+	Storage string
+	Engine  engineclient.Options
+	Logger  *slog.Logger
 }
 
 // RunSyncAttempt runs one attempt of a sync. Heartbeats carry the last
@@ -71,6 +78,11 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	}
 	job.Owner = fmt.Sprintf("%s/%s/%d/%s", info.WorkflowExecution.RunID, info.ActivityID, info.Attempt, rand.Text()[:8])
 	job.Log = checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId())
+	if a.Storage != "" {
+		if job.QuarantineURL, err = quarantineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId()); err != nil {
+			return out, errs.Wrap(errs.ConfigInvalid, err, "quarantine location")
+		}
+	}
 	job.Dataflow = &engineclient.Dataflow{Options: a.Engine}
 	job.Logger = log
 
@@ -106,4 +118,23 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 		err = errs.Wrap(errs.Fenced, err, "")
 	}
 	return out, err
+}
+
+// quarantineURL is where a pipeline's quarantined records go:
+// {org}/{pipeline}/_quarantine below the checkpoint store.
+func quarantineURL(storage, org, pipeline string) (string, error) {
+	rel := path.Join(org, pipeline, "_quarantine")
+	if !strings.Contains(storage, "://") {
+		abs, err := filepath.Abs(storage)
+		if err != nil {
+			return "", err
+		}
+		return (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs) + "/" + rel}).String(), nil
+	}
+	u, err := url.Parse(storage)
+	if err != nil {
+		return "", err
+	}
+	u.Path = path.Join("/", u.Path, rel)
+	return u.String(), nil
 }

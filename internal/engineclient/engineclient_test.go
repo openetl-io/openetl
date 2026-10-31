@@ -626,6 +626,61 @@ func TestRunAttemptThroughTheEngine(t *testing.T) {
 	}
 }
 
+func TestRunAttemptQuarantinesBadRows(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+
+	dest := newMemDest()
+	src := &pagedSource{
+		pages:     map[string][][]string{"users": {{`{"id": 1, "name": "a"}`, `[2]`, `{"id": 3, "name": "c"}`}}},
+		afterPage: dest.waitCommits,
+	}
+	dir := t.TempDir()
+	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe")
+	res, err := runner.RunAttempt(ctx, runner.Job{
+		Owner:         "a1",
+		Pipeline:      "pipe",
+		Log:           log,
+		Source:        src,
+		Streams:       []runner.Stream{{Name: "users", Replay: source.Exact, Mode: destination.Append}},
+		Destination:   dest,
+		Dataflow:      &Dataflow{Options: opts},
+		QuarantineURL: "file://" + dir,
+		Settings: runner.Settings{
+			Require:        delivery.ExactlyOnce,
+			Scope:          destination.ScopePipeline,
+			Dedupe:         delivery.DedupeAuto,
+			CommitMaxBytes: 1,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dest.applied["users"]; !slices.Equal(got, []int64{1, 3}) {
+		t.Errorf("users applied %v", got)
+	}
+	var files []checkpoint.QuarantineFile
+	for n := uint64(1); n <= res.Last; n++ {
+		rec, err := log.Record(ctx, checkpoint.RecordRef{Epoch: n, Generation: res.Generation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, rec.Quarantine...)
+	}
+	if len(files) != 1 || files[0].Stream != "users" || files[0].Rows != 1 {
+		t.Fatalf("records list quarantine files %+v", files)
+	}
+	body, err := os.ReadFile(strings.TrimPrefix(files[0].URL, "file://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"record":"[2]"`) {
+		t.Errorf("the quarantine file holds %s", body)
+	}
+}
+
 // readIDs reads the id column of every Parquet file in dir, in name order.
 func readIDs(t *testing.T, dir string) []int64 {
 	t.Helper()

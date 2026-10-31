@@ -38,6 +38,10 @@ message StartJobRequest {
   // Operator state in the restored checkpoint, as EpochReady reported it.
   repeated StateSnapshot restored_snapshots = 9;
   Naming naming = 10;
+  // Where records the engine can't take are kept: file:// and an absolute
+  // path, or s3://bucket/prefix with region and endpoint as query
+  // parameters. Empty: such a record fails the job.
+  string quarantine_url = 11;
 }
 
 // Naming gives tables and columns their destination names. Names already in
@@ -144,6 +148,16 @@ message EpochReady {
   // Each stream's schema at its barrier, as an Arrow IPC stream holding only
   // the schema. Streams without one yet are missing.
   map<string, bytes> schemas = 4;
+  // Records quarantined in the epoch, one file per stream that had any.
+  repeated QuarantineFile quarantine = 5;
+}
+
+// QuarantineFile holds JSON lines, one per record: the stream, the reason
+// and the record as received.
+message QuarantineFile {
+  string stream = 1;
+  string url = 2;
+  uint64 rows = 3;
 }
 
 message StateSnapshot {

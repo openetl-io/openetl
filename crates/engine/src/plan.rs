@@ -7,6 +7,7 @@ use openetl_proto::engine::v1::{EdgeDirection, StartJobRequest, sink_plan};
 
 use crate::error::JobError;
 use crate::ipc;
+use crate::quarantine::Quarantine;
 
 /// A validated StartJobRequest.
 #[derive(Debug)]
@@ -20,6 +21,7 @@ pub struct Plan {
     /// Each stream's schema in the restored checkpoint.
     pub restored: Vec<Option<SchemaRef>>,
     pub identities: Vec<Identity>,
+    pub quarantine: Option<std::sync::Arc<Quarantine>>,
     pub inbound: Vec<EdgePlan>,
     pub sink: Sink,
 }
@@ -82,6 +84,10 @@ impl Plan {
             });
         }
         let names: Vec<String> = req.streams.iter().map(|s| s.name.clone()).collect();
+        let quarantine = match req.quarantine_url.as_str() {
+            "" => None,
+            url => Some(std::sync::Arc::new(Quarantine::open(url)?)),
+        };
         let identities = req
             .streams
             .iter()
@@ -202,6 +208,7 @@ impl Plan {
             naming,
             restored,
             identities,
+            quarantine,
             inbound,
             sink,
         })
@@ -251,6 +258,7 @@ pub(crate) mod tests {
             limits: None,
             restored_snapshots: Vec::new(),
             naming: None,
+            quarantine_url: String::new(),
         }
     }
 

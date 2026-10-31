@@ -17,6 +17,7 @@ const UUID_EXTENSION: &str = "arrow.uuid";
 #[derive(Debug)]
 pub struct Shaped {
     pub batch: RecordBatch,
+    pub rejected: Vec<crate::Rejected>,
     /// The stream's schema changed with this batch.
     pub schema_changed: bool,
 }
@@ -108,6 +109,7 @@ impl Shaper {
         };
         Ok(Shaped {
             batch: self.assemble(schema, &n.batch, ids)?,
+            rejected: n.rejected,
             schema_changed: n.schema_changed,
         })
     }

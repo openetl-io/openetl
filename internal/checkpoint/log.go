@@ -51,6 +51,14 @@ type StreamState struct {
 	Complete bool `json:"complete,omitempty"`
 }
 
+// QuarantineFile holds the records of one stream the engine quarantined in
+// an epoch.
+type QuarantineFile struct {
+	Stream string `json:"stream"`
+	URL    string `json:"url"`
+	Rows   uint64 `json:"rows"`
+}
+
 // Snapshot is one operator's state at a checkpoint.
 type Snapshot struct {
 	Operator string `json:"operator"`
@@ -67,6 +75,8 @@ type Record struct {
 	Streams   map[string]StreamState `json:"streams"`
 	Staged    []byte                 `json:"staged,omitempty"`
 	Snapshots []Snapshot             `json:"snapshots,omitempty"`
+	// Records quarantined in this epoch. Files no record lists are orphans.
+	Quarantine []QuarantineFile `json:"quarantine,omitempty"`
 	// Streams whose barrier was placed without a resume point. Restoring from
 	// this record re-reads rows that may already be applied.
 	Forced    []string  `json:"forced,omitempty"`

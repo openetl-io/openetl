@@ -85,6 +85,9 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		for _, s := range r.GetSnapshots() {
 			ready.Snapshots = append(ready.Snapshots, checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()})
 		}
+		for _, q := range r.GetQuarantine() {
+			ready.Quarantine = append(ready.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), URL: q.GetUrl(), Rows: q.GetRows()})
+		}
 		f := runner.Frame{Kind: runner.FrameReady, Epoch: r.GetEpoch().GetN(), Ready: ready}
 		select {
 		case out <- f:
@@ -187,6 +190,8 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		FirstEpoch: plan.FirstEpoch,
 		Sink:       &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Runner{Runner: &enginev1.RunnerSink{Edge: outEdge}}},
 		Naming:     &enginev1.Naming{KeepSourceNames: plan.Naming.KeepSource, MaxLength: uint32(max(plan.Naming.MaxLength, 0))}, //nolint:gosec // identifier limits are small
+
+		QuarantineUrl: plan.QuarantineURL,
 	}
 	for i, s := range plan.Streams {
 		names[i] = s.Name

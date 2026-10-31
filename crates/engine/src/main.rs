@@ -11,6 +11,7 @@ mod error;
 mod frame;
 mod ipc;
 mod plan;
+mod quarantine;
 mod service;
 
 use std::io::{Read, Write};

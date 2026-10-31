@@ -2,7 +2,7 @@
 //! rows normalized to Arrow. A runner sink gets barriers in band; a Parquet
 //! sink stages each epoch and reports it in EpochReady.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -16,8 +16,8 @@ use openetl_formats::ParquetStaging;
 use openetl_normalize::{Error as NormalizeError, Shaper};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
-    Barrier, EpochReady, EventsResponse, FrameKind, Metrics, Rows, SchemaChange, StreamMetrics,
-    events_response,
+    Barrier, EpochReady, EventsResponse, FrameKind, Metrics, QuarantineFile, Rows, SchemaChange,
+    StreamMetrics, events_response,
 };
 use prost::Message;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -44,6 +44,7 @@ struct Counters {
     bytes_in: AtomicU64,
     rows_out: AtomicU64,
     bytes_out: AtomicU64,
+    rows_quarantined: AtomicU64,
 }
 
 /// What an inbound edge hands to the outbound one. Streams are indexes into
@@ -52,8 +53,9 @@ enum Out {
     Batch(usize, RecordBatch),
     /// An encoded SchemaChange message.
     SchemaChange(usize, Vec<u8>),
-    /// With the stream's schema at the barrier.
-    Barrier(usize, Epoch, Option<SchemaRef>),
+    /// With the stream's schema at the barrier, and what it quarantined in
+    /// the epoch.
+    Barrier(usize, Epoch, Option<SchemaRef>, Option<QuarantineFile>),
     End(usize, Option<SchemaRef>),
 }
 
@@ -167,6 +169,8 @@ where
     }
     let mut next_epoch = vec![plan.first_epoch; streams.len()];
     let mut ended = vec![false; streams.len()];
+    // Each stream's quarantined lines since its last barrier, and how many.
+    let mut held: Vec<(Vec<u8>, u64)> = vec![(Vec::new(), 0); streams.len()];
     let protocol = |msg: String| JobError::internal(format!("edge {id}: {msg}"));
 
     loop {
@@ -207,6 +211,27 @@ where
                 let n = shape[local]
                     .rows(rows.rows.iter().map(Vec::as_slice))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
+                if let Some(first) = n.rejected.first() {
+                    if plan.quarantine.is_none() {
+                        return Err(JobError::new(
+                            ErrorCode::DataInvalid,
+                            format!("stream {}: {}", plan.streams[stream], first.reason),
+                        ));
+                    }
+                    let (lines, count) = &mut held[local];
+                    for r in &n.rejected {
+                        let line = serde_json::json!({
+                            "stream": plan.streams[stream],
+                            "reason": r.reason,
+                            "record": String::from_utf8_lossy(&rows.rows[r.row]),
+                        });
+                        lines.extend_from_slice(line.to_string().as_bytes());
+                        lines.push(b'\n');
+                    }
+                    *count += n.rejected.len() as u64;
+                    c.rows_quarantined
+                        .fetch_add(n.rejected.len() as u64, Ordering::Relaxed);
+                }
                 if n.schema_changed {
                     let encoded = ipc::encode_schema(&n.batch.schema())
                         .map_err(|e| JobError::internal(e.to_string()))?;
@@ -245,7 +270,18 @@ where
                     )));
                 }
                 next_epoch[local] += 1;
-                Out::Barrier(stream, epoch, shape[local].schema())
+                let (lines, rows) = std::mem::take(&mut held[local]);
+                let quarantined = match &plan.quarantine {
+                    Some(q) if rows > 0 => Some(QuarantineFile {
+                        stream: plan.streams[stream].clone(),
+                        url: q
+                            .put(epoch.generation, epoch.n, &plan.streams[stream], lines)
+                            .await?,
+                        rows,
+                    }),
+                    _ => None,
+                };
+                Out::Barrier(stream, epoch, shape[local].schema(), quarantined)
             }
             FrameKind::SchemaChange => Out::SchemaChange(stream, f.payload),
             FrameKind::EndOfStream => {
@@ -290,6 +326,7 @@ struct Alignment {
     /// Schemas at barriers whose epoch isn't ready yet.
     at_barrier: Vec<VecDeque<(u64, Option<SchemaRef>)>>,
     at_end: Vec<Option<SchemaRef>>,
+    quarantined: BTreeMap<u64, Vec<QuarantineFile>>,
 }
 
 impl Alignment {
@@ -301,13 +338,23 @@ impl Alignment {
             highest: first_epoch - 1,
             at_barrier: vec![VecDeque::new(); streams],
             at_end: vec![None; streams],
+            quarantined: BTreeMap::new(),
         }
     }
 
-    fn cross(&mut self, stream: usize, n: u64, schema: Option<SchemaRef>) {
+    fn cross(
+        &mut self,
+        stream: usize,
+        n: u64,
+        schema: Option<SchemaRef>,
+        quarantined: Option<QuarantineFile>,
+    ) {
         self.crossed[stream] = n;
         self.highest = self.highest.max(n);
         self.at_barrier[stream].push_back((n, schema));
+        if let Some(q) = quarantined {
+            self.quarantined.entry(n).or_default().push(q);
+        }
     }
 
     fn end(&mut self, stream: usize, schema: Option<SchemaRef>) {
@@ -370,6 +417,7 @@ fn epoch_ready(
             staged,
             snapshots: Vec::new(),
             schemas,
+            quarantine: align.quarantined.remove(&n).unwrap_or_default(),
         })),
     })
 }
@@ -419,8 +467,8 @@ where
                 (FrameKind::Batch, s, payload)
             }
             Out::SchemaChange(s, payload) => (FrameKind::SchemaChange, s, payload),
-            Out::Barrier(s, epoch, schema) => {
-                align.cross(s, epoch.n, schema);
+            Out::Barrier(s, epoch, schema, quarantined) => {
+                align.cross(s, epoch.n, schema, quarantined);
                 (
                     FrameKind::Barrier,
                     s,
@@ -486,10 +534,10 @@ fn write_parquet(
             }
             // Each batch carries its schema.
             Out::SchemaChange(..) => {}
-            Out::Barrier(s, epoch, schema) => {
+            Out::Barrier(s, epoch, schema, quarantined) => {
                 let bytes = staging.seal(s).map_err(sink_error)?;
                 counters[s].bytes_out.fetch_add(bytes, Ordering::Relaxed);
-                align.cross(s, epoch.n, schema);
+                align.cross(s, epoch.n, schema, quarantined);
             }
             Out::End(s, schema) => {
                 staging.end(s).map_err(sink_error)?;
@@ -532,7 +580,9 @@ async fn write_discard(
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
             }
             Out::SchemaChange(..) => {}
-            Out::Barrier(s, epoch, schema) => align.cross(s, epoch.n, schema),
+            Out::Barrier(s, epoch, schema, quarantined) => {
+                align.cross(s, epoch.n, schema, quarantined)
+            }
             Out::End(s, schema) => align.end(s, schema),
         }
         let ready = align.advance();
@@ -575,7 +625,7 @@ fn metrics(plan: &Plan, counters: &[Counters]) -> EventsResponse {
             bytes_in: c.bytes_in.load(Ordering::Relaxed),
             rows_out: c.rows_out.load(Ordering::Relaxed),
             bytes_out: c.bytes_out.load(Ordering::Relaxed),
-            rows_quarantined: 0,
+            rows_quarantined: c.rows_quarantined.load(Ordering::Relaxed),
         })
         .collect();
     EventsResponse {
@@ -872,6 +922,55 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Internal);
         assert!(!err.runner_gone);
         assert!(st.message().contains("crossed barrier"), "{err} / {st:?}");
+    }
+
+    #[tokio::test]
+    async fn bad_rows_are_quarantined_per_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = request(&["a", "b"]);
+        req.quarantine_url = format!("file://{}", dir.path().display());
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        put(
+            w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"x": 1}"#, "[1]", r#"{"x": 2}"#]),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::Rows, 0, rows(&["nope"])).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let batch = frames.iter().find(|f| f.kind == FrameKind::Batch).unwrap();
+        assert_eq!(
+            ipc::decode_batch(batch.payload.clone()).unwrap().num_rows(),
+            2
+        );
+
+        let ready = ready(&mut h.events).await;
+        assert_eq!(ready.len(), 1);
+        let q = &ready[0].quarantine;
+        assert_eq!(q.len(), 1);
+        assert_eq!((q[0].stream.as_str(), q[0].rows), ("a", 1));
+        assert!(q[0].url.ends_with("/1/1/a.jsonl"), "{}", q[0].url);
+        let text = std::fs::read_to_string(dir.path().join("1/1/a.jsonl")).unwrap();
+        let line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(line["stream"], "a");
+        assert_eq!(line["record"], "[1]");
+        assert!(
+            line["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not a JSON object")
+        );
+        // Rows after the last barrier are never committed.
+        assert!(!dir.path().join("1/2").exists());
     }
 
     #[tokio::test]
