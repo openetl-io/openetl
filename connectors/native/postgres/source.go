@@ -14,12 +14,13 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/jackc/pgx/v5"
 
+	sdk "github.com/unsuitable001/openetl/sdk/go"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 type SourceConfig struct {
 	// A connection URL or a keyword/value connection string.
-	DSN string `json:"dsn"`
+	DSN sdk.Secret `json:"dsn"`
 	// Default "public".
 	Schema string `json:"schema"`
 	// The tables to offer as streams. Empty: every table in the schema.
@@ -49,12 +50,12 @@ func NewSource(config []byte) (*Source, error) {
 		return nil, fmt.Errorf("postgres: config: %w", err)
 	}
 	switch {
-	case cfg.DSN == "":
+	case cfg.DSN.IsZero():
 		return nil, errors.New("postgres: config needs a dsn")
 	case cfg.ChunkRows <= 0 || cfg.BatchBytes <= 0:
 		return nil, errors.New("postgres: chunkRows and batchBytes must be positive")
 	}
-	cc, err := pgx.ParseConfig(cfg.DSN)
+	cc, err := pgx.ParseConfig(cfg.DSN.Reveal())
 	if err != nil {
 		return nil, fmt.Errorf("postgres: dsn: %w", err)
 	}

@@ -84,3 +84,9 @@ type Source interface {
 type Acknowledger interface {
 	Committed(ctx context.Context, states map[string][]byte) error
 }
+
+// Checker is implemented by sources that can verify their config reaches the
+// source without reading it.
+type Checker interface {
+	Check(ctx context.Context) error
+}

@@ -36,7 +36,7 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	schema := "t_" + strings.ToLower(rand.Text())[:10]
-	cfg, _ := json.Marshal(DestinationConfig{DSN: dsn(), Schema: schema})
+	cfg, _ := json.Marshal(map[string]string{"dsn": dsn(), "schema": schema})
 	d, err := NewDestination(cfg)
 	if err != nil {
 		t.Fatal(err)

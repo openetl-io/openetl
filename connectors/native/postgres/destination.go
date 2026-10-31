@@ -21,12 +21,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	sdk "github.com/unsuitable001/openetl/sdk/go"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
 
 type DestinationConfig struct {
 	// A connection URL or a keyword/value connection string.
-	DSN string `json:"dsn"`
+	DSN sdk.Secret `json:"dsn"`
 	// Used when the pipeline names no namespace. Default "public".
 	Schema string `json:"schema"`
 }
@@ -45,10 +46,10 @@ func NewDestination(config []byte) (*Destination, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("postgres: config: %w", err)
 	}
-	if cfg.DSN == "" {
+	if cfg.DSN.IsZero() {
 		return nil, errors.New("postgres: config needs a dsn")
 	}
-	pc, err := pgxpool.ParseConfig(cfg.DSN)
+	pc, err := pgxpool.ParseConfig(cfg.DSN.Reveal())
 	if err != nil {
 		return nil, fmt.Errorf("postgres: dsn: %w", err)
 	}
