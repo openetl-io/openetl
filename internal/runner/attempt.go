@@ -65,7 +65,13 @@ type Job struct {
 	// Called after an epoch commits, and after OnSchemas, with its record,
 	// which it must not modify. It must not block.
 	OnCheckpoint func(rec *checkpoint.Record)
+	// Closing it stops the attempt at its next checkpoint with ErrDrained,
+	// unless the read has already ended, in which case it finishes.
+	Drain <-chan struct{}
 }
+
+// ErrDrained: the attempt stopped at a checkpoint because Job.Drain closed.
+var ErrDrained = errors.New("runner: drained at a checkpoint")
 
 type Result struct {
 	Generation uint64
@@ -264,6 +270,8 @@ type coordinator struct {
 	readDone    bool
 	active      bool // emitted after the last barrier, so a final epoch is needed
 	committing  bool
+	draining    bool
+	drainEpoch  uint64 // the barrier requested after draining began; 0 until then
 	pending     map[uint64]*epochState
 	committed   uint64                   // the last epoch committed or restored
 	ackStates   map[string][]byte        // owned by the committer: states of the committed epoch, acked after the next commit
@@ -360,6 +368,7 @@ func (c *coordinator) loop(ctx context.Context) error {
 		defer t.Stop()
 		tick = t.C
 	}
+	drain := c.job.Drain
 	for {
 		// Events first, so decisions don't depend on select's random choice.
 		select {
@@ -374,11 +383,18 @@ func (c *coordinator) loop(ctx context.Context) error {
 			c.pump.stop()
 			return nil
 		}
+		if c.drained() {
+			c.log.Info("drained", "epoch", c.committed)
+			return ErrDrained
+		}
 		if c.shouldRequest() {
 			c.outstanding, c.want = true, false
 			c.active = c.active && !c.readDone // after Read, this barrier covers everything
 			n := c.next
 			c.next++
+			if c.draining && c.drainEpoch == 0 {
+				c.drainEpoch = n
+			}
 			c.pending[n] = &epochState{}
 			if err := c.pump.requestBarrier(n); err != nil {
 				return err
@@ -392,6 +408,9 @@ func (c *coordinator) loop(ctx context.Context) error {
 			}
 		case <-tick:
 			c.want = true
+		case <-drain:
+			drain = nil
+			c.draining, c.want = true, true
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -405,11 +424,23 @@ func (c *coordinator) shouldRequest() bool {
 	if c.outstanding || c.next-1-c.committed >= maxInFlight {
 		return false
 	}
-	return (c.want && !c.readDone) || (c.readDone && c.active)
+	if c.readDone {
+		return c.active
+	}
+	return c.want && c.drainEpoch == 0
 }
 
 func (c *coordinator) finished() bool {
-	return c.readDone && !c.active && !c.outstanding && !c.committing && c.committed == c.next-1
+	return c.readDone && !c.active && c.settled()
+}
+
+func (c *coordinator) drained() bool {
+	return c.drainEpoch != 0 && !c.readDone && c.settled()
+}
+
+// settled: no barrier is being placed and every epoch requested has committed.
+func (c *coordinator) settled() bool {
+	return !c.outstanding && !c.committing && c.committed == c.next-1
 }
 
 func (c *coordinator) handle(ctx context.Context, ev event) error {

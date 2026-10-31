@@ -18,6 +18,7 @@ import (
 
 	"connectrpc.com/connect"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
@@ -41,7 +42,9 @@ type Sync struct {
 }
 
 // RunSyncAttempt runs one attempt of a sync. Heartbeats carry the last
-// committed epoch, as a progress hint only.
+// committed epoch, as a progress hint only. When the worker stops, the
+// attempt stops at its next checkpoint and fails with DRAINING, whose
+// details are the attempt number.
 func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (contract.AttemptResult, error) {
 	log := a.Logger
 	if log == nil {
@@ -50,9 +53,13 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 	info := activity.GetInfo(ctx)
 	log = log.With("pipeline", in.PipelineID, "version", in.Version, "attempt", info.Attempt)
 	res, err := a.run(ctx, in, info, log)
-	if err != nil {
+	switch {
+	case errors.Is(err, runner.ErrDrained):
+		log.Info("sync attempt drained", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
+		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Draining.String(), temporal.ApplicationErrorOptions{Details: []any{info.Attempt}})
+	case err != nil:
 		log.Warn("sync attempt failed", "code", errs.CodeOf(err).String(), "err", err)
-	} else {
+	default:
 		log.Info("sync attempt finished", "generation", res.Generation, "recovery", res.Recovery, "restored", res.Restored, "committed", res.Committed)
 	}
 	return res, temporalx.ApplicationError(err)
@@ -85,6 +92,7 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	}
 	job.Dataflow = &engineclient.Dataflow{Options: a.Engine}
 	job.Logger = log
+	job.Drain = activity.GetWorkerStopChannel(ctx)
 
 	var last atomic.Uint64
 	job.OnCommit = last.Store

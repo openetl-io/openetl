@@ -25,6 +25,9 @@ enum ErrorCode {
   ERROR_CODE_INTERNAL = 13;
   // A newer attempt owns the pipeline.
   ERROR_CODE_FENCED = 14;
+  // The runner is shutting down. The attempt stopped at a checkpoint, and
+  // restarting it elsewhere doesn't count as a retry.
+  ERROR_CODE_DRAINING = 15;
 }
 
 // Error is a classified failure. A failed RPC carries it in the

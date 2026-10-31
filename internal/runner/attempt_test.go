@@ -429,3 +429,63 @@ func (s lateSource) Read(_ context.Context, _ source.ReadRequest, out source.Emi
 	time.Sleep(s.after)
 	return nil
 }
+
+// Draining stops the attempt at a checkpoint covering what it had read, and
+// the next attempt resumes from there.
+func TestDrainStopsAtACheckpoint(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		dest := &countingDest{}
+		drain := make(chan struct{})
+		j := job(log, "a1", slowSource{pages: 10}, runner.Passthrough{Convert: columnless}, make(chan uint64, 16))
+		j.Destination, j.Drain = dest, drain
+		j.Settings.CommitMaxBytes = 1 << 40
+		go func() {
+			time.Sleep(3500 * time.Millisecond)
+			close(drain)
+		}()
+		res, err := runner.RunAttempt(ctx, j)
+		if !errors.Is(err, runner.ErrDrained) {
+			t.Fatalf("got %v, want ErrDrained", err)
+		}
+		if res.Committed != 1 || dest.rows != 3 {
+			t.Fatalf("committed %d epochs and %d rows, want 1 and 3", res.Committed, dest.rows)
+		}
+
+		j = job(log, "a2", slowSource{pages: 10}, runner.Passthrough{Convert: columnless}, make(chan uint64, 16))
+		j.Destination = dest
+		if _, err := runner.RunAttempt(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		if dest.rows != 10 {
+			t.Fatalf("wrote %d rows, want 10", dest.rows)
+		}
+	})
+}
+
+// slowSource emits pages a second apart from its state, one row and a resume
+// point each.
+type slowSource struct{ pages int }
+
+func (s slowSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	from := 0
+	if st := req.Streams[0].State; st != nil {
+		from, _ = strconv.Atoi(string(st))
+	}
+	for i := from; i < s.pages; i++ {
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := out.Rows("s", []json.RawMessage{json.RawMessage(`{}`)}); err != nil {
+			return err
+		}
+		if err := out.ResumePoint("s", strconv.AppendInt(nil, int64(i+1), 10)); err != nil {
+			return err
+		}
+	}
+	return out.Complete("s")
+}

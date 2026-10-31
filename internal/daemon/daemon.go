@@ -154,7 +154,8 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	}
 	w := worker.New(tc, contract.BatchQueue(cfg.DataPlane), worker.Options{
 		MaxConcurrentActivityExecutionSize: 4,
-		WorkerStopTimeout:                  10 * time.Second,
+		// Attempts drain to a checkpoint for up to this long.
+		WorkerStopTimeout: 2 * time.Minute,
 	})
 	w.RegisterActivityWithOptions(sync.RunSyncAttempt, activity.RegisterOptions{Name: contract.RunSyncAttempt})
 	log.Info("runner polling", "queue", contract.BatchQueue(cfg.DataPlane), "checkpoints", cfg.Checkpoints)

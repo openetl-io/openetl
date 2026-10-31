@@ -3,6 +3,7 @@
 package workflows
 
 import (
+	"errors"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+)
+
+const (
+	attemptLimit = 5
+	// Restarts after DRAINING, which don't count against attemptLimit.
+	maxDrains = 20
 )
 
 // Workflows holds settings shared by every run. They must not change while
@@ -42,24 +49,35 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 	if heartbeat == 0 {
 		heartbeat = 2 * time.Minute
 	}
-	dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		TaskQueue:           contract.BatchQueue(started.DataPlane),
-		StartToCloseTimeout: 24 * time.Hour,
-		HeartbeatTimeout:    heartbeat,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:        retry,
-			BackoffCoefficient:     2,
-			MaximumInterval:        30 * time.Minute,
-			MaximumAttempts:        5,
-			NonRetryableErrorTypes: errs.NonRetryable(),
-		},
-	})
+	attempts := int32(attemptLimit)
 	var res contract.AttemptResult
-	err := workflow.ExecuteActivity(dp, contract.RunSyncAttempt, contract.AttemptInput{
-		OrgID:      in.OrgID,
-		PipelineID: in.PipelineID,
-		Version:    started.Version,
-	}).Get(ctx, &res)
+	var err error
+	for drains := 0; ; drains++ {
+		dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			TaskQueue:           contract.BatchQueue(started.DataPlane),
+			StartToCloseTimeout: 24 * time.Hour,
+			HeartbeatTimeout:    heartbeat,
+			RetryPolicy: &temporal.RetryPolicy{
+				InitialInterval:    retry,
+				BackoffCoefficient: 2,
+				MaximumInterval:    30 * time.Minute,
+				MaximumAttempts:    attempts,
+				// DRAINING comes back here, to restart without counting.
+				NonRetryableErrorTypes: append(errs.NonRetryable(), errs.Draining.String()),
+			},
+		})
+		err = workflow.ExecuteActivity(dp, contract.RunSyncAttempt, contract.AttemptInput{
+			OrgID:      in.OrgID,
+			PipelineID: in.PipelineID,
+			Version:    started.Version,
+		}).Get(ctx, &res)
+		attempt, ok := drained(err)
+		if !ok || drains == maxDrains {
+			break
+		}
+		// The attempts that failed before the drained one still count.
+		attempts -= attempt - 1
+	}
 
 	finish := contract.FinishSyncInput{OrgID: in.OrgID, SyncID: started.SyncID}
 	if err != nil {
@@ -76,4 +94,17 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 		return nil, err
 	}
 	return &contract.SyncResult{SyncID: started.SyncID, Attempt: res}, nil
+}
+
+// drained returns the attempt number of an attempt that failed with DRAINING.
+func drained(err error) (int32, bool) {
+	app, ok := errors.AsType[*temporal.ApplicationError](err)
+	if !ok || app.Type() != errs.Draining.String() {
+		return 0, false
+	}
+	attempt := int32(1)
+	if app.HasDetails() {
+		_ = app.Details(&attempt)
+	}
+	return attempt, true
 }

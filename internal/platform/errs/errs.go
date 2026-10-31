@@ -31,8 +31,11 @@ const (
 	ResourceExhausted      = Code(protocolv1.ErrorCode_ERROR_CODE_RESOURCE_EXHAUSTED)
 	Internal               = Code(protocolv1.ErrorCode_ERROR_CODE_INTERNAL)
 	Fenced                 = Code(protocolv1.ErrorCode_ERROR_CODE_FENCED)
+	Draining               = Code(protocolv1.ErrorCode_ERROR_CODE_DRAINING)
 )
 
+// SCHEMA_DRIFT comes only from a schema policy pausing a stream, which no
+// retry changes until approvals exist.
 var retryable = map[Code]bool{
 	Transient:              true,
 	RateLimited:            true,
@@ -40,7 +43,7 @@ var retryable = map[Code]bool{
 	AuthInvalid:            false,
 	PermissionDenied:       false,
 	ConfigInvalid:          false,
-	SchemaDrift:            true,
+	SchemaDrift:            false,
 	ContractChanged:        false,
 	DataInvalid:            true,
 	DestinationUnavailable: true,
@@ -48,6 +51,7 @@ var retryable = map[Code]bool{
 	ResourceExhausted:      true,
 	Internal:               true,
 	Fenced:                 false,
+	Draining:               true,
 }
 
 // Retryable reports whether an attempt that failed with c is retried.

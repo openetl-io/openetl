@@ -20,15 +20,16 @@ impl connector::v1::ErrorCode {
             C::Transient
             | C::RateLimited
             | C::AuthExpired
-            | C::SchemaDrift
             | C::DataInvalid
             | C::DestinationUnavailable
             | C::ResourceExhausted
-            | C::Internal => true,
+            | C::Internal
+            | C::Draining => true,
             C::Unspecified
             | C::AuthInvalid
             | C::PermissionDenied
             | C::ConfigInvalid
+            | C::SchemaDrift
             | C::ContractChanged
             | C::DestinationQuota
             | C::Fenced => false,
