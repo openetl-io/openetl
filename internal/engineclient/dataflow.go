@@ -69,7 +69,10 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		d.started(p)
 	}
 
-	req, names, index := startRequest(plan)
+	req, names, index, err := startRequest(plan)
+	if err != nil {
+		return err
+	}
 	if _, err := p.client.StartJob(ctx, req); err != nil {
 		return p.explain(ctx, err)
 	}
@@ -180,7 +183,7 @@ func (p *process) explain(ctx context.Context, err error) error {
 	return errs.Wrap(errs.Internal, err, "engineclient: control call")
 }
 
-func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[string]uint32) {
+func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[string]uint32, error) {
 	names := make([]string, len(plan.Streams))
 	index := make(map[string]uint32, len(plan.Streams))
 	req := &enginev1.StartJobRequest{
@@ -196,9 +199,14 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	for i, s := range plan.Streams {
 		names[i] = s.Name
 		index[s.Name] = uint32(i)
+		declared, err := encodeSchema(s.Schema)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("engineclient: %s declared schema: %w", s.Name, err)
+		}
 		req.Streams = append(req.Streams, &enginev1.StreamPlan{
 			Name:            s.Name,
 			PrimaryKey:      s.PrimaryKey,
+			ArrowSchema:     declared,
 			CursorField:     s.CursorField,
 			ReadStartMicros: plan.ReadStarts[s.Name],
 			RestoredSchema:  plan.Schemas[s.Name],
@@ -218,7 +226,20 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	default:
 		req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names})
 	}
-	return req, names, index
+	return req, names, index, nil
+}
+
+// encodeSchema returns an Arrow IPC stream holding only s; nil for nil.
+func encodeSchema(s *arrow.Schema) ([]byte, error) {
+	if s == nil {
+		return nil, nil
+	}
+	var buf bytes.Buffer
+	w := ipc.NewWriter(&buf, ipc.WithSchema(s))
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func consumeEvents(stream grpc.ServerStreamingClient[enginev1.EventsResponse], log *slog.Logger, onReady func(*enginev1.EpochReady) error) eventsResult {

@@ -8,7 +8,6 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/jackc/pgx/v5"
@@ -16,20 +15,27 @@ import (
 )
 
 // colBuilder decodes one column's non-null values into an Arrow builder.
-// Types without a binary decoder are read as text into a string column.
+// Types without a binary decoder are read as text into a string column;
+// numerics too, declared as decimals for the engine to parse.
 type colBuilder struct {
 	format int16
 	b      array.Builder
 	add    func(v []byte) error
+	// The column's logical type, if the builder's isn't.
+	declared arrow.DataType
 }
 
 const (
 	// Microseconds and days from 1970-01-01 to Postgres's epoch, 2000-01-01.
 	pgEpochMicros = 946_684_800_000_000
 	pgEpochDays   = 10_957
+	// infinity and -infinity are clamped to 9999-12-31 23:59:59.999999 and
+	// 0001-01-01, as microseconds and days since 1970-01-01.
+	maxTimestamp = 253_402_300_799_999_999
+	minTimestamp = -62_135_596_800_000_000
+	maxDate      = 2_932_896
+	minDate      = -719_162
 )
-
-var errInfinite = errors.New("infinite dates and timestamps aren't supported yet")
 
 func fixed(n int, f func(v []byte)) func([]byte) error {
 	return func(v []byte) error {
@@ -58,8 +64,8 @@ func newColBuilder(mem memory.Allocator, c sourceColumn) (*colBuilder, error) {
 		b := array.NewInt64Builder(mem)
 		cb.b, cb.add = b, fixed(8, func(v []byte) { b.Append(int64(be.Uint64(v))) }) //nolint:gosec // two's complement
 	case pgtype.OIDOID:
-		b := array.NewUint32Builder(mem)
-		cb.b, cb.add = b, fixed(4, func(v []byte) { b.Append(be.Uint32(v)) })
+		b := array.NewInt64Builder(mem)
+		cb.b, cb.add = b, fixed(4, func(v []byte) { b.Append(int64(be.Uint32(v))) })
 	case pgtype.Float4OID:
 		b := array.NewFloat32Builder(mem)
 		cb.b, cb.add = b, fixed(4, func(v []byte) { b.Append(math.Float32frombits(be.Uint32(v))) })
@@ -78,11 +84,14 @@ func newColBuilder(mem memory.Allocator, c sourceColumn) (*colBuilder, error) {
 			if len(v) != 4 {
 				return fmt.Errorf("a %d-byte date", len(v))
 			}
-			d := int32(be.Uint32(v)) //nolint:gosec // two's complement
-			if d == math.MaxInt32 || d == math.MinInt32 {
-				return errInfinite
+			switch d := int32(be.Uint32(v)); d { //nolint:gosec // two's complement
+			case math.MaxInt32:
+				b.Append(maxDate)
+			case math.MinInt32:
+				b.Append(minDate)
+			default:
+				b.Append(arrow.Date32(d + pgEpochDays))
 			}
-			b.Append(arrow.Date32(d + pgEpochDays))
 			return nil
 		}
 	case pgtype.TimeOID:
@@ -98,11 +107,14 @@ func newColBuilder(mem memory.Allocator, c sourceColumn) (*colBuilder, error) {
 			if len(v) != 8 {
 				return fmt.Errorf("a %d-byte timestamp", len(v))
 			}
-			us := int64(be.Uint64(v)) //nolint:gosec // two's complement
-			if us == math.MaxInt64 || us == math.MinInt64 {
-				return errInfinite
+			switch us := int64(be.Uint64(v)); us { //nolint:gosec // two's complement
+			case math.MaxInt64:
+				b.Append(maxTimestamp)
+			case math.MinInt64:
+				b.Append(minTimestamp)
+			default:
+				b.Append(arrow.Timestamp(us + pgEpochMicros))
 			}
-			b.Append(arrow.Timestamp(us + pgEpochMicros))
 			return nil
 		}
 	case pgtype.UUIDOID:
@@ -128,25 +140,22 @@ func newColBuilder(mem memory.Allocator, c sourceColumn) (*colBuilder, error) {
 			return nil
 		}
 	case pgtype.NumericOID:
-		p, s, ok := numericTypmod(c.typmod)
-		if !ok {
-			break
-		}
-		b := array.NewDecimal128Builder(mem, &arrow.Decimal128Type{Precision: p, Scale: s})
-		cb.b, cb.add = b, func(v []byte) error {
-			n, err := decodeNumeric(v, s)
-			if err != nil {
-				return err
-			}
-			b.Append(n)
-			return nil
-		}
+		cb.declared = numericType(c.typmod)
 	}
 	if cb.b == nil {
 		b := array.NewStringBuilder(mem)
 		cb.format, cb.b, cb.add = pgx.TextFormatCode, b, func(v []byte) error { b.BinaryBuilder.Append(v); return nil }
 	}
 	return cb, nil
+}
+
+// numericType is the decimal a numeric column is declared as: its own
+// precision and scale where Decimal128 holds them, otherwise decimal(38, 9).
+func numericType(typmod int32) *arrow.Decimal128Type {
+	if p, s, ok := numericTypmod(typmod); ok {
+		return &arrow.Decimal128Type{Precision: p, Scale: s}
+	}
+	return &arrow.Decimal128Type{Precision: 38, Scale: 9}
 }
 
 // numericTypmod returns a numeric column's precision and scale if Decimal128
@@ -162,57 +171,4 @@ func numericTypmod(typmod int32) (p, s int32, ok bool) {
 		s -= 0x800 // negative scales, from Postgres 15
 	}
 	return p, s, p >= 1 && p <= 38 && s >= 0 && s <= p
-}
-
-// decodeNumeric decodes numeric's binary format as an integer scaled by
-// 10^scale. Postgres stores base-10000 digits, most significant first; the
-// first has weight `weight`, and trailing zero digits are left out.
-func decodeNumeric(v []byte, scale int32) (decimal128.Num, error) {
-	var n decimal128.Num
-	if len(v) < 8 {
-		return n, fmt.Errorf("a %d-byte numeric", len(v))
-	}
-	be := binary.BigEndian
-	ndigits := int(be.Uint16(v))
-	weight := int(int16(be.Uint16(v[2:]))) //nolint:gosec // two's complement
-	sign := be.Uint16(v[4:])
-	switch sign {
-	case 0x0000, 0x4000:
-	case 0xC000:
-		return n, errors.New("NaN isn't supported yet")
-	default:
-		return n, errors.New("infinite numerics aren't supported yet")
-	}
-	if len(v) != 8+2*ndigits {
-		return n, fmt.Errorf("a %d-byte numeric with %d digits", len(v), ndigits)
-	}
-	ten4 := decimal128.FromU64(10_000)
-	exp := 0 // the power of ten that n's last digit stands for
-	for i := range ndigits {
-		d := uint64(be.Uint16(v[8+2*i:]))
-		if d >= 10_000 {
-			return n, errors.New("a numeric digit out of range")
-		}
-		low := 4*(weight-i) + int(scale) // the power of ten of d's last decimal digit, once scaled
-		switch {
-		case low >= 0:
-			n, exp = n.Mul(ten4).Add(decimal128.FromU64(d)), low
-		case low > -4:
-			cut := uint64(math.Pow10(-low))
-			if d%cut != 0 {
-				return n, fmt.Errorf("a numeric with more than %d decimal places", scale)
-			}
-			n, exp = n.Mul(decimal128.GetScaleMultiplier(4+low)).Add(decimal128.FromU64(d/cut)), 0
-		case d != 0:
-			return n, fmt.Errorf("a numeric with more than %d decimal places", scale)
-		}
-	}
-	if exp > 38 {
-		return n, errors.New("a numeric too large for its precision")
-	}
-	n = n.Mul(decimal128.GetScaleMultiplier(exp))
-	if sign == 0x4000 {
-		n = n.Negate()
-	}
-	return n, nil
 }

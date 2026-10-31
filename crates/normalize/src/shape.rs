@@ -10,14 +10,15 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
-use crate::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, Normalizer};
-
-const UUID_EXTENSION: &str = "arrow.uuid";
+use crate::{
+    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, Normalizer, Rejected, UUID_EXTENSION, coerce,
+};
 
 #[derive(Debug)]
 pub struct Shaped {
     pub batch: RecordBatch,
-    pub rejected: Vec<crate::Rejected>,
+    /// Rows left out, by their index in the input.
+    pub rejected: Vec<Rejected>,
     /// The stream's schema changed with this batch.
     pub schema_changed: bool,
 }
@@ -30,6 +31,8 @@ pub struct Shaper {
     namer: Namer,
     table: String,
     identity: Identity,
+    /// Under source names.
+    declared: Option<SchemaRef>,
     norm: Option<Normalizer>,
     /// The restored schema's source columns under their source names, until
     /// raw rows need it.
@@ -42,12 +45,14 @@ pub struct Shaper {
 }
 
 impl Shaper {
-    /// `restored` is a schema [`Shaper::schema`] returned before.
+    /// `restored` is a schema [`Shaper::schema`] returned before;
+    /// `declared` holds logical types under source names.
     pub fn new(
         naming: Naming,
         table: String,
         identity: Identity,
         restored: Option<SchemaRef>,
+        declared: Option<SchemaRef>,
     ) -> Result<Self, Error> {
         let mut namer = Namer::new(naming, &METADATA_COLUMNS);
         let mut source = None;
@@ -71,6 +76,7 @@ impl Shaper {
             namer,
             table,
             identity,
+            declared,
             norm: None,
             restored: source,
             current: restored,
@@ -90,9 +96,10 @@ impl Shaper {
         I: IntoIterator<Item = &'a [u8]>,
     {
         if self.norm.is_none() {
+            let declared = self.declared.as_deref();
             let mut n = match &self.restored {
-                Some(s) => Normalizer::with_schema(s)?,
-                None => Normalizer::default(),
+                Some(s) => Normalizer::with_schema(s, declared)?,
+                None => Normalizer::new(declared)?,
             };
             n.identify(self.identity.clone());
             self.norm = Some(n);
@@ -114,18 +121,27 @@ impl Shaper {
         })
     }
 
-    /// Renames a typed batch's columns and adds the metadata columns.
-    pub fn batch(&mut self, batch: &RecordBatch) -> Result<RecordBatch, Error> {
-        let ids = self.identity.typed(batch)?;
-        let schema = match &self.typed {
-            Some((from, to)) if *from == batch.schema() => to.clone(),
+    /// Gives a typed batch its logical and declared types, renames its
+    /// columns and adds the metadata columns.
+    pub fn batch(&mut self, batch: &RecordBatch) -> Result<Shaped, Error> {
+        let (batch, failed) = coerce::conform(batch, self.declared.as_deref())?;
+        let ids = self.identity.typed(&batch)?;
+        let (schema, changed) = match &self.typed {
+            Some((from, to)) if *from == batch.schema() => (to.clone(), false),
             _ => {
-                let to = self.shape(batch);
+                let to = self.shape(&batch);
                 self.typed = Some((batch.schema(), to.clone()));
-                to
+                (to, true)
             }
         };
-        self.assemble(schema, batch, ids)
+        Ok(Shaped {
+            batch: self.assemble(schema, &batch, ids)?,
+            rejected: failed
+                .into_iter()
+                .map(|(row, reason)| Rejected { row, reason })
+                .collect(),
+            schema_changed: changed,
+        })
     }
 
     /// The destination schema for a batch under source names.
@@ -232,7 +248,14 @@ mod tests {
     }
 
     fn shaper(restored: Option<SchemaRef>) -> Shaper {
-        Shaper::new(Naming::default(), "users".into(), identity(), restored).unwrap()
+        Shaper::new(
+            Naming::default(),
+            "users".into(),
+            identity(),
+            restored,
+            None,
+        )
+        .unwrap()
     }
 
     fn rows(s: &mut Shaper, rows: &[&str]) -> Shaped {
@@ -318,6 +341,7 @@ mod tests {
                 read_start: 0,
             },
             None,
+            None,
         )
         .unwrap();
         let n = rows(&mut s, &[r#"{"id": 1}"#]);
@@ -339,13 +363,17 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("ID", DataType::Int64, true)]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
-        let out = s.batch(&batch).unwrap();
+        let shaped = s.batch(&batch).unwrap();
+        assert!(shaped.schema_changed);
+        let out = shaped.batch;
         let mut want = vec!["id"];
         want.extend(META);
         assert_eq!(names(&out.schema()), want);
         assert_eq!(out.column(0), batch.column(0));
         assert_eq!(s.schema().unwrap(), out.schema());
-        assert_eq!(s.batch(&batch).unwrap().schema(), out.schema());
+        let again = s.batch(&batch).unwrap();
+        assert!(!again.schema_changed);
+        assert_eq!(again.batch.schema(), out.schema());
         assert_ne!(ids(&out)[0], ids(&out)[1]);
     }
 
@@ -358,7 +386,8 @@ mod tests {
             ],
             HashMap::from([(SOURCE_NAMES_KEY.to_owned(), r#"{"x_2":"x"}"#.to_owned())]),
         ));
-        let err = Shaper::new(Naming::default(), "t".into(), identity(), Some(bad)).unwrap_err();
+        let err =
+            Shaper::new(Naming::default(), "t".into(), identity(), Some(bad), None).unwrap_err();
         assert!(matches!(err, Error::Restored(_)), "{err}");
     }
 }

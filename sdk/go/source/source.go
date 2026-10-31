@@ -67,6 +67,10 @@ type CatalogStream struct {
 	// The field whose value orders a record's versions; empty for none.
 	CursorField string
 	Replay      Replay
+	// Declared logical types, by field name; nil: inferred from the records.
+	// Records may carry a declared field as text, which the engine parses,
+	// quarantining what doesn't fit.
+	Schema *arrow.Schema
 }
 
 type Catalog struct {

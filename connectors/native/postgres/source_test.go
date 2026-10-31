@@ -204,7 +204,7 @@ func TestSourceReadsTypes(t *testing.T) {
 		"name": "utf8", "code": "utf8", "label": "utf8", "raw": "binary", "day": "date32", "at_time": "time64[us]",
 		"ts": "timestamp[us]", "tstz": "timestamp[us, tz=UTC]", "uid": "extension<arrow.uuid>",
 		"doc": `extension<arrow.json[storage_type=utf8]>`, "docb": `extension<arrow.json[storage_type=utf8]>`,
-		"amount": "decimal(12, 2)", "any_num": "utf8", "span": "utf8", "tags": "utf8",
+		"amount": "utf8", "any_num": "utf8", "span": "utf8", "tags": "utf8",
 	}
 	for name, typ := range want {
 		if types[name] != typ {
@@ -232,6 +232,46 @@ func TestSourceReadsTypes(t *testing.T) {
 	} {
 		if row[name] != v {
 			t.Errorf("%s = %q, want %q", name, row[name], v)
+		}
+	}
+}
+
+func TestSourceDeclaresNumericsAndClampsInfinities(t *testing.T) {
+	e := newSourceEnv(t)
+	e.exec(`CREATE TABLE $schema.edges (id int PRIMARY KEY, amount numeric(12, 2), any_num numeric, huge numeric(50, 2),
+		day date, ts timestamp, tstz timestamptz, n oid)`)
+	e.exec(`INSERT INTO $schema.edges VALUES
+		(1, 'NaN', 'NaN', 1, 'infinity', 'infinity', '-infinity', 7),
+		(2, 1.5, 0.0000000001, 2, '-infinity', '-infinity', 'infinity', NULL)`)
+
+	src := e.source("")
+	cat, err := src.Discover(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := map[string]string{}
+	for _, f := range cat.Streams[0].Schema.Fields() {
+		declared[f.Name] = f.Type.String()
+	}
+	for name, want := range map[string]string{
+		"amount": "decimal(12, 2)", "any_num": "decimal(38, 9)", "huge": "decimal(38, 9)", "n": "int64", "day": "date32",
+	} {
+		if declared[name] != want {
+			t.Errorf("%s is declared %s, want %s", name, declared[name], want)
+		}
+	}
+
+	c := read(t, src, map[string]string{"edges": ""})
+	for name, want := range map[string][]string{
+		"amount":  {"NaN", "1.50"},
+		"any_num": {"NaN", "0.0000000001"},
+		"day":     {"9999-12-31", "0001-01-01"},
+		"ts":      {"9999-12-31T23:59:59.999999", "0001-01-01T00:00:00"},
+		"tstz":    {"0001-01-01T00:00:00Z", "9999-12-31T23:59:59.999999Z"},
+		"n":       {"7", array.NullValueStr},
+	} {
+		if got := c.column("edges", name); !slices.Equal(got, want) {
+			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
 }

@@ -20,6 +20,8 @@ pub struct Plan {
     pub naming: Naming,
     /// Each stream's schema in the restored checkpoint.
     pub restored: Vec<Option<SchemaRef>>,
+    /// Each stream's declared logical types, under source names.
+    pub declared: Vec<Option<SchemaRef>>,
     pub identities: Vec<Identity>,
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
     pub inbound: Vec<EdgePlan>,
@@ -63,6 +65,7 @@ impl Plan {
         }
         let mut index = HashMap::new();
         let mut restored = Vec::with_capacity(req.streams.len());
+        let mut declared = Vec::with_capacity(req.streams.len());
         for (i, s) in req.streams.iter().enumerate() {
             if s.name.is_empty() || index.insert(s.name.as_str(), i).is_some() {
                 return Err(JobError::config(format!(
@@ -70,11 +73,16 @@ impl Plan {
                     s.name
                 )));
             }
-            if !s.arrow_schema.is_empty() {
-                return Err(JobError::config(
-                    "declared stream schemas aren't supported yet",
-                ));
-            }
+            declared.push(if s.arrow_schema.is_empty() {
+                None
+            } else {
+                let schema = ipc::decode_schema(&s.arrow_schema).map_err(|e| {
+                    JobError::config(format!("stream {}: declared schema: {e}", s.name))
+                })?;
+                openetl_normalize::check_declared(&schema)
+                    .map_err(|e| JobError::config(format!("stream {}: {e}", s.name)))?;
+                Some(schema)
+            });
             restored.push(if s.restored_schema.is_empty() {
                 None
             } else {
@@ -207,6 +215,7 @@ impl Plan {
             tables,
             naming,
             restored,
+            declared,
             identities,
             quarantine,
             inbound,
@@ -339,6 +348,17 @@ pub(crate) mod tests {
             (
                 "declared schema",
                 Box::new(|r| r.streams[0].arrow_schema = vec![1]),
+            ),
+            (
+                "declared type",
+                Box::new(|r| {
+                    let s = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                        "x",
+                        arrow_schema::DataType::UInt64,
+                        true,
+                    )]);
+                    r.streams[0].arrow_schema = crate::ipc::encode_schema(&s).unwrap();
+                }),
             ),
             (
                 "restored schema",

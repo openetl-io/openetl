@@ -163,6 +163,7 @@ where
             plan.tables[s].clone(),
             plan.identities[s].clone(),
             plan.restored[s].clone(),
+            plan.declared[s].clone(),
         )
         .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?;
         shape.push(sh);
@@ -211,34 +212,10 @@ where
                 let n = shape[local]
                     .rows(rows.rows.iter().map(Vec::as_slice))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
-                if let Some(first) = n.rejected.first() {
-                    if plan.quarantine.is_none() {
-                        return Err(JobError::new(
-                            ErrorCode::DataInvalid,
-                            format!("stream {}: {}", plan.streams[stream], first.reason),
-                        ));
-                    }
-                    let (lines, count) = &mut held[local];
-                    for r in &n.rejected {
-                        let line = serde_json::json!({
-                            "stream": plan.streams[stream],
-                            "reason": r.reason,
-                            "record": String::from_utf8_lossy(&rows.rows[r.row]),
-                        });
-                        lines.extend_from_slice(line.to_string().as_bytes());
-                        lines.push(b'\n');
-                    }
-                    *count += n.rejected.len() as u64;
-                    c.rows_quarantined
-                        .fetch_add(n.rejected.len() as u64, Ordering::Relaxed);
-                }
+                let record = |row: usize| String::from_utf8_lossy(&rows.rows[row]).into_owned();
+                hold(&plan, stream, &n.rejected, record, &mut held[local], c)?;
                 if n.schema_changed {
-                    let encoded = ipc::encode_schema(&n.batch.schema())
-                        .map_err(|e| JobError::internal(e.to_string()))?;
-                    let msg = SchemaChange {
-                        arrow_schema: encoded,
-                    };
-                    send(&tx, Out::SchemaChange(stream, msg.encode_to_vec())).await?;
+                    send(&tx, schema_change(stream, &n.batch)?).await?;
                 }
                 if n.batch.num_rows() == 0 {
                     continue;
@@ -249,10 +226,18 @@ where
                 let batch = ipc::decode_batch(f.payload).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-                let batch = shape[local]
+                let n = shape[local]
                     .batch(&batch)
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
-                Out::Batch(stream, batch)
+                let record = |row: usize| openetl_normalize::render_row(&batch, row);
+                hold(&plan, stream, &n.rejected, record, &mut held[local], c)?;
+                if n.schema_changed {
+                    send(&tx, schema_change(stream, &n.batch)?).await?;
+                }
+                if n.batch.num_rows() == 0 {
+                    continue;
+                }
+                Out::Batch(stream, n.batch)
             }
             FrameKind::Barrier => {
                 let epoch = Barrier::decode(f.payload.as_slice())
@@ -296,12 +281,58 @@ where
     }
 }
 
+/// Adds rejected rows to the stream's quarantine for the epoch, or fails the
+/// job if it has no quarantine.
+fn hold(
+    plan: &Plan,
+    stream: usize,
+    rejected: &[openetl_normalize::Rejected],
+    record: impl Fn(usize) -> String,
+    held: &mut (Vec<u8>, u64),
+    c: &Counters,
+) -> Result<(), JobError> {
+    let Some(first) = rejected.first() else {
+        return Ok(());
+    };
+    if plan.quarantine.is_none() {
+        return Err(JobError::new(
+            ErrorCode::DataInvalid,
+            format!("stream {}: {}", plan.streams[stream], first.reason),
+        ));
+    }
+    let (lines, count) = held;
+    for r in rejected {
+        let line = serde_json::json!({
+            "stream": plan.streams[stream],
+            "reason": r.reason,
+            "record": record(r.row),
+        });
+        lines.extend_from_slice(line.to_string().as_bytes());
+        lines.push(b'\n');
+    }
+    *count += rejected.len() as u64;
+    c.rows_quarantined
+        .fetch_add(rejected.len() as u64, Ordering::Relaxed);
+    Ok(())
+}
+
+fn schema_change(stream: usize, batch: &RecordBatch) -> Result<Out, JobError> {
+    let encoded =
+        ipc::encode_schema(&batch.schema()).map_err(|e| JobError::internal(e.to_string()))?;
+    let msg = SchemaChange {
+        arrow_schema: encoded,
+    };
+    Ok(Out::SchemaChange(stream, msg.encode_to_vec()))
+}
+
 fn shape_error(stream: &str, e: NormalizeError) -> JobError {
     use arrow_schema::ArrowError as A;
     let code = match &e {
         NormalizeError::Json { .. } | NormalizeError::NotAnObject { .. } => ErrorCode::DataInvalid,
         NormalizeError::Unsupported { .. }
         | NormalizeError::Restored(_)
+        | NormalizeError::Declared(_)
+        | NormalizeError::Mismatch { .. }
         | NormalizeError::Arrow(A::SchemaError(_) | A::NotYetImplemented(_)) => {
             ErrorCode::ConfigInvalid
         }
@@ -854,8 +885,12 @@ mod tests {
 
         let frames = drain(&mut h.from_engine).await;
         h.job.await.unwrap().unwrap();
-        assert_eq!((frames[0].kind, frames[0].stream), (FrameKind::Batch, 0));
-        let out = ipc::decode_batch(frames[0].payload.clone()).unwrap();
+        assert_eq!(
+            (frames[0].kind, frames[0].stream),
+            (FrameKind::SchemaChange, 0)
+        );
+        assert_eq!((frames[1].kind, frames[1].stream), (FrameKind::Batch, 0));
+        let out = ipc::decode_batch(frames[1].payload.clone()).unwrap();
         assert_eq!(out.column(0), batch.column(0));
         let schema = out.schema();
         assert_eq!(schema.field(0).name(), "key");
@@ -971,6 +1006,60 @@ mod tests {
         );
         // Rows after the last barrier are never committed.
         assert!(!dir.path().join("1/2").exists());
+    }
+
+    #[tokio::test]
+    async fn typed_rows_that_dont_fit_their_declared_types_are_quarantined() {
+        use arrow_array::types::Decimal128Type;
+        use arrow_array::{RecordBatch, StringArray, cast::AsArray};
+        use arrow_schema::{Field, Schema};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = request(&["a", "b"]);
+        req.quarantine_url = format!("file://{}", dir.path().display());
+        let declared = Schema::new(vec![Field::new("price", DataType::Decimal128(38, 9), true)]);
+        req.streams[0].arrow_schema = ipc::encode_schema(&declared).unwrap();
+        let mut h = start_with(req);
+        let schema = Arc::new(Schema::new(vec![Field::new("price", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![
+                "1.5",
+                "NaN",
+                "0.0000000001",
+            ]))],
+        )
+        .unwrap();
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Batch, 0, ipc::encode_batch(&batch).unwrap()).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let batch = frames.iter().find(|f| f.kind == FrameKind::Batch).unwrap();
+        let out = ipc::decode_batch(batch.payload.clone()).unwrap();
+        assert_eq!(out.num_rows(), 1);
+        let price = out.column(0).as_primitive::<Decimal128Type>();
+        assert_eq!(price.values()[0], 1_500_000_000);
+
+        let ready = ready(&mut h.events).await;
+        assert_eq!(ready[0].quarantine[0].rows, 2);
+        let text = std::fs::read_to_string(dir.path().join("1/1/a.jsonl")).unwrap();
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines[0]["record"], r#"{"price":"NaN"}"#);
+        assert!(lines[0]["reason"].as_str().unwrap().starts_with("nan:"));
+        assert!(
+            lines[1]["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("precision:")
+        );
     }
 
     #[tokio::test]

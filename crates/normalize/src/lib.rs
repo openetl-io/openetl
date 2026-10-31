@@ -1,19 +1,24 @@
 //! Raw rows to Arrow. A [`Normalizer`] infers one stream's schema from the
-//! JSON objects it sees, and only ever widens it. A [`Shaper`] gives a
-//! stream's columns their destination names, on either lane.
+//! JSON objects it sees, and only ever widens it; declared columns keep
+//! their types. A [`Shaper`] gives a stream's columns their destination
+//! names, on either lane.
 
+mod coerce;
 mod ids;
 pub mod naming;
 mod shape;
 
+pub use coerce::{check_declared, render_row};
 pub use ids::Identity;
 pub use shape::{Shaped, Shaper};
+
+use coerce::Target;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::builder::{BooleanBuilder, Float64Builder, Int64Builder, StringBuilder};
-use arrow_array::{ArrayRef, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions};
+use arrow_array::{ArrayRef, BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
@@ -21,6 +26,8 @@ pub const EXTENSION_NAME_KEY: &str = "ARROW:extension:name";
 pub const EXTENSION_METADATA_KEY: &str = "ARROW:extension:metadata";
 /// The canonical extension name of `json` columns, stored as strings.
 pub const JSON_EXTENSION: &str = "arrow.json";
+/// The canonical extension name of `uuid` columns, stored as 16 bytes.
+pub const UUID_EXTENSION: &str = "arrow.uuid";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -97,6 +104,14 @@ pub enum Error {
     Unsupported { column: String, data_type: DataType },
     #[error("the restored schema has {0}")]
     Restored(String),
+    #[error("{0}")]
+    Declared(String),
+    #[error("column {column:?} arrives as {from}, but is declared {to}")]
+    Mismatch {
+        column: String,
+        from: DataType,
+        to: DataType,
+    },
     #[error(transparent)]
     Arrow(#[from] ArrowError),
 }
@@ -121,13 +136,32 @@ pub struct Normalized {
     pub ids: Option<FixedSizeBinaryArray>,
 }
 
+/// A column's type: inferred from values, or declared.
+#[derive(Clone, Debug)]
+enum Ty {
+    Inferred(Kind),
+    Declared(Field, Target),
+}
+
+impl Ty {
+    fn field(&self, name: &str) -> Field {
+        match self {
+            Ty::Inferred(k) => k.field(name),
+            Ty::Declared(f, _) => f.clone().with_name(name).with_nullable(true),
+        }
+    }
+}
+
 /// Infers and holds one stream's schema. Columns appear in the order their
-/// first non-null value arrived, and types only widen: `int64` to `float64`
-/// to `string`, and anything else to `string`.
+/// first non-null value arrived, and inferred types only widen: `int64` to
+/// `float64` to `string`, and anything else to `string`. Declared columns
+/// keep their types, and a row whose value doesn't fit is rejected.
 #[derive(Debug)]
 pub struct Normalizer {
-    columns: Vec<(String, Kind)>,
+    columns: Vec<(String, Ty)>,
     index: HashMap<String, usize>,
+    /// By source name, in declared order.
+    declared: Vec<(String, Ty)>,
     schema: SchemaRef,
     identity: Option<Identity>,
 }
@@ -137,6 +171,7 @@ impl Default for Normalizer {
         Self {
             columns: Vec::new(),
             index: HashMap::new(),
+            declared: Vec::new(),
             schema: Arc::new(Schema::empty()),
             identity: None,
         }
@@ -144,20 +179,56 @@ impl Default for Normalizer {
 }
 
 impl Normalizer {
-    /// Continues inference from a schema the stream had before.
-    pub fn with_schema(schema: &Schema) -> Result<Self, Error> {
+    /// Fails if raw rows can't fill a declared type.
+    pub fn new(declared: Option<&Schema>) -> Result<Self, Error> {
         let mut n = Self::default();
-        for f in schema.fields() {
-            let kind = Kind::from_field(f).ok_or_else(|| Error::Unsupported {
-                column: f.name().clone(),
-                data_type: f.data_type().clone(),
-            })?;
-            n.index.insert(f.name().clone(), n.columns.len());
-            n.columns.push((f.name().clone(), kind));
+        for f in declared.map(|d| d.fields().iter()).into_iter().flatten() {
+            let t = Target::of(f)
+                .filter(|t| *t != Target::TypedOnly)
+                .ok_or_else(|| coerce::raw_unsupported(f))?;
+            n.declared
+                .push((f.name().clone(), Ty::Declared(f.as_ref().clone(), t)));
         }
-        let fields: Vec<Field> = n.columns.iter().map(|(c, k)| k.field(c)).collect();
-        n.schema = Arc::new(Schema::new(fields));
         Ok(n)
+    }
+
+    /// Continues from a schema the stream had before. Declared types win
+    /// over restored ones.
+    pub fn with_schema(restored: &Schema, declared: Option<&Schema>) -> Result<Self, Error> {
+        let mut n = Self::new(declared)?;
+        for f in restored.fields() {
+            let ty = match n.declared_ty(f.name()) {
+                Some(ty) => ty,
+                None => match (Kind::from_field(f), Target::of(f)) {
+                    (Some(k), _) => Ty::Inferred(k),
+                    (None, Some(t)) if t != Target::TypedOnly => {
+                        Ty::Declared(f.as_ref().clone(), t)
+                    }
+                    _ => {
+                        return Err(Error::Unsupported {
+                            column: f.name().clone(),
+                            data_type: f.data_type().clone(),
+                        });
+                    }
+                },
+            };
+            n.index.insert(f.name().clone(), n.columns.len());
+            n.columns.push((f.name().clone(), ty));
+        }
+        n.schema = n.build_schema();
+        Ok(n)
+    }
+
+    fn declared_ty(&self, name: &str) -> Option<Ty> {
+        self.declared
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| t.clone())
+    }
+
+    fn build_schema(&self) -> SchemaRef {
+        let fields: Vec<Field> = self.columns.iter().map(|(n, t)| t.field(n)).collect();
+        Arc::new(Schema::new(fields))
     }
 
     pub fn schema(&self) -> SchemaRef {
@@ -170,18 +241,22 @@ impl Normalizer {
     }
 
     /// Converts rows, one JSON object each, to a batch. Rows that aren't JSON
-    /// objects are left out and listed. On error, the schema is unchanged.
+    /// objects, or whose declared columns don't fit, are left out and listed.
+    /// On error, the schema is unchanged.
     pub fn push<'a, I>(&mut self, rows: I) -> Result<Normalized, Error>
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
         let mut objects = Vec::new();
+        // Each object's row among those pushed.
+        let mut at = Vec::new();
         let mut rejected = Vec::new();
         for (row, raw) in rows.into_iter().enumerate() {
             // Parsing to Value first keeps contents out of the error.
             let err = match serde_json::from_slice(raw) {
                 Ok(Value::Object(obj)) => {
                     objects.push(obj);
+                    at.push(row);
                     continue;
                 }
                 Ok(_) => Error::NotAnObject { row },
@@ -193,48 +268,97 @@ impl Normalizer {
             });
         }
 
+        // Declared columns first, so rows that don't fit infer nothing.
+        let mut coerced: HashMap<&str, ArrayRef> = HashMap::new();
+        let mut failed: Vec<Option<String>> = vec![None; objects.len()];
+        for (name, ty) in &self.declared {
+            let Ty::Declared(f, t) = ty else { continue };
+            let present = objects
+                .iter()
+                .any(|o| o.get(name).is_some_and(|v| !v.is_null()));
+            if !present && !self.index.contains_key(name) {
+                continue;
+            }
+            let values = objects.iter().map(|o| o.get(name));
+            let (array, failures) = coerce::json(f, *t, values)?;
+            for (i, reason) in failures {
+                failed[i].get_or_insert(reason);
+            }
+            coerced.insert(name, array);
+        }
+
+        let mut columns = self.columns.clone();
+        let mut index = self.index.clone();
         let mut changed = false;
-        for (name, v) in objects.iter().flatten() {
+        let kept = objects.iter().zip(&failed).filter(|(_, f)| f.is_none());
+        for (name, v) in kept.flat_map(|(o, _)| o) {
             let Some(kind) = Kind::of(v) else { continue };
-            match self.index.get(name) {
+            match index.get(name) {
                 Some(&i) => {
-                    let cur = self.columns[i].1;
-                    let widened = cur.join(kind);
-                    if widened != cur {
-                        self.columns[i].1 = widened;
-                        changed = true;
+                    if let Ty::Inferred(cur) = columns[i].1 {
+                        let widened = cur.join(kind);
+                        if widened != cur {
+                            columns[i].1 = Ty::Inferred(widened);
+                            changed = true;
+                        }
                     }
                 }
                 None => {
-                    self.index.insert(name.clone(), self.columns.len());
-                    self.columns.push((name.clone(), kind));
+                    let ty = self.declared_ty(name).unwrap_or(Ty::Inferred(kind));
+                    index.insert(name.clone(), columns.len());
+                    columns.push((name.clone(), ty));
                     changed = true;
                 }
             }
         }
-        if changed {
-            let fields: Vec<Field> = self.columns.iter().map(|(n, k)| k.field(n)).collect();
-            self.schema = Arc::new(Schema::new(fields));
-        }
 
-        let arrays = self
-            .columns
-            .iter()
-            .map(|(name, kind)| build(*kind, name, &objects))
-            .collect();
+        let mut arrays = Vec::with_capacity(columns.len());
+        for (name, ty) in &columns {
+            arrays.push(match ty {
+                Ty::Inferred(kind) => build(*kind, name, &objects),
+                Ty::Declared(..) => match coerced.get(name.as_str()) {
+                    Some(a) => a.clone(),
+                    None => {
+                        return Err(Error::Declared(format!("column {name:?} wasn't coerced")));
+                    }
+                },
+            });
+        }
+        let fields: Vec<Field> = columns.iter().map(|(n, t)| t.field(n)).collect();
+        let schema = if changed {
+            Arc::new(Schema::new(fields))
+        } else {
+            self.schema.clone()
+        };
         let opts = RecordBatchOptions::new().with_row_count(Some(objects.len()));
-        let batch = RecordBatch::try_new_with_options(self.schema.clone(), arrays, &opts)?;
+        let mut batch = RecordBatch::try_new_with_options(schema.clone(), arrays, &opts)?;
+        if failed.iter().any(Option::is_some) {
+            let keep = BooleanArray::from_iter(failed.iter().map(|f| Some(f.is_none())));
+            batch = arrow_select::filter::filter_record_batch(&batch, &keep)?;
+            for (i, reason) in failed.iter().enumerate() {
+                if let Some(reason) = reason {
+                    rejected.push(Rejected {
+                        row: at[i],
+                        reason: reason.clone(),
+                    });
+                }
+            }
+            rejected.sort_by_key(|r| r.row);
+        }
         let ids = match &self.identity {
             Some(identity) => {
                 let mut buf = Vec::new();
-                let mut ids = Vec::with_capacity(objects.len() * 16);
-                for obj in &objects {
+                let mut ids = Vec::with_capacity(batch.num_rows() * 16);
+                for (obj, _) in objects.iter().zip(&failed).filter(|(_, f)| f.is_none()) {
                     ids.extend_from_slice(&identity.raw(obj, &mut buf));
                 }
                 Some(FixedSizeBinaryArray::try_new(16, ids.into(), None)?)
             }
             None => None,
         };
+        self.columns = columns;
+        self.index = index;
+        self.schema = schema;
         Ok(Normalized {
             batch,
             rejected,
@@ -431,7 +555,7 @@ mod tests {
         let mut first = Normalizer::default();
         push(&mut first, &[r#"{"a": 1.5, "o": {"k": 1}, "b": 1}"#]);
 
-        let mut n = Normalizer::with_schema(&first.schema()).unwrap();
+        let mut n = Normalizer::with_schema(&first.schema(), None).unwrap();
         assert_eq!(n.schema(), first.schema());
         let out = push(&mut n, &[r#"{"b": 2, "a": 3, "c": "x"}"#]);
         assert!(out.schema_changed);
@@ -446,9 +570,80 @@ mod tests {
         );
         assert_eq!(n.schema().field(1), first.schema().field(1));
 
-        let other = Schema::new(vec![Field::new("t", DataType::Date32, true)]);
-        let err = Normalizer::with_schema(&other).unwrap_err();
+        let other = Schema::new(vec![Field::new("t", DataType::UInt64, true)]);
+        let err = Normalizer::with_schema(&other, None).unwrap_err();
         assert!(matches!(err, Error::Unsupported { .. }), "{err}");
+    }
+
+    fn declared() -> Schema {
+        Schema::new(vec![
+            Field::new("price", DataType::Decimal128(10, 2), false),
+            Field::new(
+                "at",
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+        ])
+    }
+
+    #[test]
+    fn declared_columns_keep_their_types_and_reject_what_doesnt_fit() {
+        use arrow_array::types::Decimal128Type;
+        let d = declared();
+        let mut n = Normalizer::new(Some(&d)).unwrap();
+        let out = push(
+            &mut n,
+            &[
+                r#"{"id": 1, "price": 1.5, "at": "2026-01-01T00:00:00Z"}"#,
+                r#"{"id": "x", "price": "NaN", "extra": true}"#,
+                r#"{"id": 3, "price": "2.25"}"#,
+            ],
+        );
+        assert_eq!(
+            types(&n),
+            vec![
+                ("id".into(), DataType::Int64),
+                ("price".into(), DataType::Decimal128(10, 2)),
+                (
+                    "at".into(),
+                    DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()))
+                ),
+            ],
+            "the rejected row widens nothing and adds nothing"
+        );
+        assert!(n.schema().field(1).is_nullable());
+        assert_eq!(out.batch.num_rows(), 2);
+        assert_eq!(out.rejected.len(), 1);
+        assert_eq!(out.rejected[0].row, 1);
+        assert!(out.rejected[0].reason.starts_with("nan: column \"price\""));
+        let price = out.batch.column(1).as_primitive::<Decimal128Type>();
+        assert_eq!(price.iter().collect::<Vec<_>>(), vec![Some(150), Some(225)]);
+    }
+
+    #[test]
+    fn declared_types_win_over_restored_ones() {
+        let restored = Schema::new(vec![
+            Field::new("price", DataType::Utf8, true),
+            Field::new("day", DataType::Date32, true),
+        ]);
+        let d = declared();
+        let n = Normalizer::with_schema(&restored, Some(&d)).unwrap();
+        assert_eq!(
+            types(&n),
+            vec![
+                ("price".into(), DataType::Decimal128(10, 2)),
+                ("day".into(), DataType::Date32),
+            ]
+        );
+        let interval = Schema::new(vec![Field::new(
+            "i",
+            DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano),
+            true,
+        )]);
+        assert!(matches!(
+            Normalizer::new(Some(&interval)),
+            Err(Error::Declared(_))
+        ));
     }
 
     #[test]

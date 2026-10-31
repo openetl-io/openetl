@@ -91,7 +91,12 @@ func (s *Source) Discover(ctx context.Context) (source.Catalog, error) {
 	}
 	var c source.Catalog
 	for _, t := range tables {
-		cs := source.CatalogStream{Name: t.name, Replay: source.Exact}
+		b, err := newBatcher(memory.DefaultAllocator, t.cols)
+		if err != nil {
+			return source.Catalog{}, fmt.Errorf("postgres: %s: %w", t.name, err)
+		}
+		b.release()
+		cs := source.CatalogStream{Name: t.name, Replay: source.Exact, Schema: b.declared}
 		for _, i := range t.key {
 			cs.PrimaryKey = append(cs.PrimaryKey, t.cols[i].name)
 		}
@@ -334,14 +339,17 @@ func resume(out source.Emitter, stream string, st sourceState) error {
 // batcher builds one table's Arrow batches.
 type batcher struct {
 	schema *arrow.Schema
-	cols   []*colBuilder
-	rows   int
-	bytes  int
+	// schema with each column's logical type.
+	declared *arrow.Schema
+	cols     []*colBuilder
+	rows     int
+	bytes    int
 }
 
 func newBatcher(mem memory.Allocator, cols []sourceColumn) (*batcher, error) {
 	b := &batcher{}
 	fields := make([]arrow.Field, len(cols))
+	declared := make([]arrow.Field, len(cols))
 	for i, c := range cols {
 		cb, err := newColBuilder(mem, c)
 		if err != nil {
@@ -350,8 +358,13 @@ func newBatcher(mem memory.Allocator, cols []sourceColumn) (*batcher, error) {
 		}
 		b.cols = append(b.cols, cb)
 		fields[i] = arrow.Field{Name: c.name, Type: cb.b.Type(), Nullable: true}
+		declared[i] = fields[i]
+		if cb.declared != nil {
+			declared[i].Type = cb.declared
+		}
 	}
 	b.schema = arrow.NewSchema(fields, nil)
+	b.declared = arrow.NewSchema(declared, nil)
 	return b, nil
 }
 

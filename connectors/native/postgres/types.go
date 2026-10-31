@@ -106,6 +106,15 @@ func columnOf(f arrow.Field) (column, error) {
 	case *arrow.Date32Type:
 		c.typ = "date"
 		c.value = func(a arrow.Array, i int) any { return storage(a).(*array.Date32).Value(i).ToTime() }
+	case *arrow.Time64Type:
+		c.typ = "time without time zone"
+		div := int64(1)
+		if t.Unit == arrow.Nanosecond {
+			div = 1000
+		}
+		c.value = func(a arrow.Array, i int) any {
+			return pgtype.Time{Microseconds: int64(storage(a).(*array.Time64).Value(i)) / div, Valid: true}
+		}
 	case *arrow.TimestampType:
 		c.typ = "timestamp without time zone"
 		if t.TimeZone != "" {

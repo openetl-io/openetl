@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
@@ -25,6 +26,8 @@ type Stream struct {
 	Mode        destination.WriteMode
 	PrimaryKey  []string
 	CursorField string
+	// Declared logical types under source names; nil: inferred.
+	Schema *arrow.Schema
 }
 
 // Settings are a pipeline's spec.delivery.

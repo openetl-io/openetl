@@ -126,7 +126,7 @@ func run(ctx context.Context) error {
 	}
 	var streams []runner.Stream
 	for _, s := range cat.Streams {
-		streams = append(streams, runner.Stream{Name: s.Name, Replay: s.Replay, Mode: destination.Append, PrimaryKey: s.PrimaryKey})
+		streams = append(streams, runner.Stream{Name: s.Name, Replay: s.Replay, Mode: destination.Append, PrimaryKey: s.PrimaryKey, Schema: s.Schema})
 	}
 	readAll := source.ReadRequest{Streams: []source.ConfiguredStream{{Name: table}}}
 	engine := engineclient.Dataflow{Options: engineclient.Options{Binary: bin}}

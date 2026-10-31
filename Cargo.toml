@@ -14,15 +14,19 @@ openetl-normalize = { path = "crates/normalize" }
 openetl-proto = { path = "crates/proto" }
 arrow-array = "60.1.0"
 arrow-buffer = "60.1.0"
+arrow-cast = { version = "60.1.0", default-features = false }
 arrow-ipc = "60.1.0"
 arrow-schema = "60.1.0"
+arrow-select = "60.1.0"
+base64 = "0.22.1"
 bytes = "1.12.1"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 object_store = { version = "0.14.2", default-features = false, features = ["aws", "fs"] }
 parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap"] }
 prost = "0.14.4"
 prost-types = "0.14.4"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.154", features = ["preserve_order"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "arbitrary_precision"] }
 socket2 = "0.6.5"
 tempfile = "3.27.0"
 thiserror = "2"

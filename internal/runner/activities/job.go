@@ -58,7 +58,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 	}
 	var streams []runner.Stream
 	stream := func(cs source.CatalogStream, cursor string) runner.Stream {
-		return runner.Stream{Name: cs.Name, Replay: cs.Replay, Mode: mode, PrimaryKey: cs.PrimaryKey, CursorField: cmp.Or(cursor, cs.CursorField)}
+		return runner.Stream{Name: cs.Name, Replay: cs.Replay, Mode: mode, PrimaryKey: cs.PrimaryKey, CursorField: cmp.Or(cursor, cs.CursorField), Schema: cs.Schema}
 	}
 	if len(p.GetSource().GetStreams()) == 0 {
 		for _, cs := range cat.Streams {

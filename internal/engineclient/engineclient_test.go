@@ -372,7 +372,10 @@ func startJob(t *testing.T) (p *process, in, out io.Closer) {
 		t.Fatal(err)
 	}
 	t.Cleanup(p.close)
-	req, _, _ := startRequest(plan("a"))
+	req, _, _, err := startRequest(plan("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := p.client.StartJob(ctx, req); err != nil {
 		t.Fatal(err)
 	}
