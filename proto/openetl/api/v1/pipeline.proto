@@ -20,6 +20,27 @@ service PipelineService {
   rpc DeletePipeline(DeletePipelineRequest) returns (DeletePipelineResponse) {
     option (google.api.http) = {delete: "/v1/{name=workspaces/*/pipelines/*}"};
   }
+  // Stops scheduled syncs. A sync that is running carries on.
+  rpc PausePipeline(PausePipelineRequest) returns (PausePipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:pause"
+      body: "*"
+    };
+  }
+  rpc ResumePipeline(ResumePipelineRequest) returns (ResumePipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:resume"
+      body: "*"
+    };
+  }
+  // Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
+  // paused or a sync is running.
+  rpc SyncPipeline(SyncPipelineRequest) returns (SyncPipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:sync"
+      body: "*"
+    };
+  }
 }
 
 message Pipeline {
@@ -30,6 +51,8 @@ message Pipeline {
   string etag = 4;
   google.protobuf.Timestamp create_time = 5;
   google.protobuf.Timestamp update_time = 6;
+  // Set by PausePipeline and ResumePipeline, not by the spec.
+  bool paused = 7;
 }
 
 // PipelineSpec is the spec of a Pipeline document. Unset fields take their
@@ -180,3 +203,25 @@ message DeletePipelineRequest {
 }
 
 message DeletePipelineResponse {}
+
+message PausePipelineRequest {
+  string name = 1;
+}
+
+message PausePipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message ResumePipelineRequest {
+  string name = 1;
+}
+
+message ResumePipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message SyncPipelineRequest {
+  string name = 1;
+}
+
+message SyncPipelineResponse {}

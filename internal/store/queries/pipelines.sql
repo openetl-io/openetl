@@ -36,3 +36,6 @@ FROM pipeline_versions v
 JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
 JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
 WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id AND v.version = @version;
+
+-- name: SetPipelinePaused :exec
+UPDATE pipelines SET paused = @paused WHERE org_id = @org_id AND id = @id;

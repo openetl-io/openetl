@@ -27,6 +27,7 @@ var errValidateOnly = errors.New("validate only")
 type schedule struct {
 	pipelineID string
 	spec       *apiv1.Schedule
+	paused     bool
 }
 
 func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequest]) (*connect.Response[apiv1.ApplyResponse], error) {
@@ -96,7 +97,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		return nil, err
 	}
 	for _, sc := range scheds {
-		if err := s.Schedules.Upsert(ctx, s.Tenant.Org.String(), sc.pipelineID, sc.spec); err != nil {
+		if err := s.Schedules.Upsert(ctx, s.Tenant.Org.String(), sc.pipelineID, sc.spec, sc.paused); err != nil {
 			s.log().Error("schedule update failed", "pipeline", sc.pipelineID, "err", err)
 			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the definitions were stored, but a schedule couldn't be updated; apply again: %w", err))
 		}
@@ -260,5 +261,5 @@ func (s *Server) applyPipeline(ctx context.Context, q *db.Queries, doc *spec.Doc
 	if err != nil {
 		return nil, nil, err
 	}
-	return res, &schedule{pipelineID: id.String(), spec: p.GetSchedule()}, nil
+	return res, &schedule{pipelineID: id.String(), spec: p.GetSchedule(), paused: cur.Paused}, nil
 }

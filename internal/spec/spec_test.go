@@ -26,6 +26,7 @@ spec:
     ref: warehouse
     namespace: raw_faker
     naming: source
+  schemaPolicy: block
   delivery:
     require: exactly_once
     commit: { interval: 5s, maxBytes: 256MB, scope: stream }
@@ -52,6 +53,8 @@ func TestParsePipeline(t *testing.T) {
 		t.Error("write doesn't default to append")
 	case p.GetDestination().GetNaming() != apiv1.Naming_NAMING_SOURCE:
 		t.Error("naming")
+	case p.GetSchemaPolicy() != apiv1.SchemaPolicy_SCHEMA_POLICY_BLOCK:
+		t.Error("schemaPolicy")
 	case p.GetDelivery().GetRequire() != apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE:
 		t.Error("require")
 	case p.GetDelivery().GetCommit().GetMaxBytes() != 256e6 || p.GetDelivery().GetCommit().GetScope() != apiv1.CommitScope_COMMIT_SCOPE_STREAM:

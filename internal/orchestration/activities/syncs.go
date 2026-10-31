@@ -23,8 +23,8 @@ type Activities struct {
 	Store *store.Store
 }
 
-// StartSync records a running sync of the pipeline's current version.
-// Retries of one workflow run record it once.
+// StartSync records a running sync of the pipeline's current version, unless
+// the pipeline is paused. Retries of one workflow run record it once.
 func (a *Activities) StartSync(ctx context.Context, in contract.SyncInput) (contract.StartSyncResult, error) {
 	res, err := a.startSync(ctx, in)
 	return res, temporalx.ApplicationError(err)
@@ -42,6 +42,9 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	}
 	if err != nil {
 		return res, err
+	}
+	if p.Paused {
+		return contract.StartSyncResult{Paused: true}, nil
 	}
 	run := activity.GetInfo(ctx).WorkflowExecution
 	id, err := a.Store.StartSync(ctx, db.StartSyncParams{

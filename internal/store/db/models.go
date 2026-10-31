@@ -59,6 +59,7 @@ type Pipeline struct {
 	Revision      int64
 	CreateTime    time.Time
 	UpdateTime    time.Time
+	Paused        bool
 }
 
 type PipelineVersion struct {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/orchestration/schedules"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
 )
@@ -49,6 +51,7 @@ func (s *Server) pipeline(ctx context.Context, ws string, p db.Pipeline) (*apiv1
 		Etag:       etag(p.Revision),
 		CreateTime: timestamppb.New(p.CreateTime),
 		UpdateTime: timestamppb.New(p.UpdateTime),
+		Paused:     p.Paused,
 	}
 	return out, protojson.Unmarshal(v.Spec, out.Spec)
 }
@@ -130,6 +133,59 @@ func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.
 		return nil, err
 	}
 	return connect.NewResponse(&apiv1.DeletePipelineResponse{}), nil
+}
+
+func (s *Server) PausePipeline(ctx context.Context, req *connect.Request[apiv1.PausePipelineRequest]) (*connect.Response[apiv1.PausePipelineResponse], error) {
+	p, err := s.setPaused(ctx, req.Msg.GetName(), true)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.PausePipelineResponse{Pipeline: p}), nil
+}
+
+func (s *Server) ResumePipeline(ctx context.Context, req *connect.Request[apiv1.ResumePipelineRequest]) (*connect.Response[apiv1.ResumePipelineResponse], error) {
+	p, err := s.setPaused(ctx, req.Msg.GetName(), false)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.ResumePipelineResponse{Pipeline: p}), nil
+}
+
+// setPaused records the state first: syncs check it before they run, so a
+// schedule left behind by a failure can't run a paused pipeline. Calling it
+// again repairs the schedule.
+func (s *Server) setPaused(ctx context.Context, name string, paused bool) (*apiv1.Pipeline, error) {
+	ws, p, err := s.getPipeline(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Store.SetPipelinePaused(ctx, db.SetPipelinePausedParams{OrgID: s.Tenant.Org, ID: p.ID, Paused: paused}); err != nil {
+		return nil, err
+	}
+	if err := s.Schedules.SetPaused(ctx, p.ID.String(), paused); err != nil {
+		s.log().Error("schedule pause failed", "pipeline", p.ID, "paused", paused, "err", err)
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the pipeline's state was stored, but its schedule couldn't be changed; try again: %w", err))
+	}
+	p.Paused = paused
+	return s.pipeline(ctx, ws, p)
+}
+
+func (s *Server) SyncPipeline(ctx context.Context, req *connect.Request[apiv1.SyncPipelineRequest]) (*connect.Response[apiv1.SyncPipelineResponse], error) {
+	_, p, err := s.getPipeline(ctx, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+	if p.Paused {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s is paused; resume it first", req.Msg.GetName()))
+	}
+	err = s.Schedules.Trigger(ctx, p.ID.String())
+	switch {
+	case errors.Is(err, schedules.ErrSyncRunning):
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("a sync of %s is running", req.Msg.GetName()))
+	case err != nil:
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+	return connect.NewResponse(&apiv1.SyncPipelineResponse{}), nil
 }
 
 // ---- Sources and destinations

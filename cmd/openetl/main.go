@@ -25,6 +25,9 @@ const usage = `usage: openetl <command> [flags]
 
 Commands:
   apply -f FILE   create or update the sources, destinations and pipelines in FILE
+  pause NAME      stop a pipeline's scheduled syncs
+  resume NAME     start a pipeline's scheduled syncs again
+  sync NAME       start a sync of a pipeline now
 
 Run openetl <command> -h for its flags.
 `
@@ -45,20 +48,32 @@ func (f *files) String() string     { return strings.Join(*f, ",") }
 func (f *files) Set(v string) error { *f = append(*f, v); return nil }
 
 func run(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) == 0 || args[0] != "apply" {
+	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
-		if len(args) == 0 {
-			return errors.New("no command")
-		}
-		return fmt.Errorf("unknown command %q", args[0])
+		return errors.New("no command")
 	}
+	switch args[0] {
+	case "apply":
+		return runApply(ctx, args[1:], out)
+	case "pause", "resume", "sync":
+		return runPipeline(ctx, args[0], args[1:], out)
+	}
+	fmt.Fprint(os.Stderr, usage)
+	return fmt.Errorf("unknown command %q", args[0])
+}
+
+func apiURL(fs *flag.FlagSet) *string {
+	return fs.String("api-url", cmp.Or(os.Getenv("OPENETL_API_URL"), "http://localhost:8080"), "API URL (env OPENETL_API_URL)")
+}
+
+func runApply(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("openetl apply", flag.ContinueOnError)
 	var paths files
 	fs.Var(&paths, "f", "a YAML or JSON file, or - for stdin; repeatable")
-	api := fs.String("api-url", cmp.Or(os.Getenv("OPENETL_API_URL"), "http://localhost:8080"), "API URL (env OPENETL_API_URL)")
+	api := apiURL(fs)
 	workspace := fs.String("workspace", "", "workspace for documents that name none (default: default)")
 	dryRun := fs.Bool("dry-run", false, "validate without changing anything")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if len(paths) == 0 || fs.NArg() > 0 {
@@ -87,6 +102,42 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "%s %s (version %.12s)\n", action, r.GetName(), r.GetVersion())
 	}
+	return nil
+}
+
+func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("openetl "+cmd, flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "usage: openetl %s [flags] NAME\n", cmd)
+		fs.PrintDefaults()
+	}
+	api := apiURL(fs)
+	workspace := fs.String("workspace", "default", "the pipeline's workspace")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("%s takes one pipeline name, after its flags", cmd)
+	}
+	name := "workspaces/" + *workspace + "/pipelines/" + fs.Arg(0)
+	client := apiv1connect.NewPipelineServiceClient(http.DefaultClient, *api)
+	var err error
+	var done string
+	switch cmd {
+	case "pause":
+		_, err = client.PausePipeline(ctx, connect.NewRequest(&apiv1.PausePipelineRequest{Name: name}))
+		done = "paused"
+	case "resume":
+		_, err = client.ResumePipeline(ctx, connect.NewRequest(&apiv1.ResumePipelineRequest{Name: name}))
+		done = "resumed"
+	default:
+		_, err = client.SyncPipeline(ctx, connect.NewRequest(&apiv1.SyncPipelineRequest{Name: name}))
+		done = "started a sync of"
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, done, name)
 	return nil
 }
 

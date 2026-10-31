@@ -25,9 +25,11 @@ type SyncInput struct {
 }
 
 type StartSyncResult struct {
+	// Empty if the pipeline is paused, and no sync was recorded.
 	SyncID    string
 	Version   string
 	DataPlane string
+	Paused    bool
 }
 
 type AttemptInput struct {

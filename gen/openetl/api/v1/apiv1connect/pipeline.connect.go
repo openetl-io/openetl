@@ -42,6 +42,15 @@ const (
 	// PipelineServiceDeletePipelineProcedure is the fully-qualified name of the PipelineService's
 	// DeletePipeline RPC.
 	PipelineServiceDeletePipelineProcedure = "/openetl.api.v1.PipelineService/DeletePipeline"
+	// PipelineServicePausePipelineProcedure is the fully-qualified name of the PipelineService's
+	// PausePipeline RPC.
+	PipelineServicePausePipelineProcedure = "/openetl.api.v1.PipelineService/PausePipeline"
+	// PipelineServiceResumePipelineProcedure is the fully-qualified name of the PipelineService's
+	// ResumePipeline RPC.
+	PipelineServiceResumePipelineProcedure = "/openetl.api.v1.PipelineService/ResumePipeline"
+	// PipelineServiceSyncPipelineProcedure is the fully-qualified name of the PipelineService's
+	// SyncPipeline RPC.
+	PipelineServiceSyncPipelineProcedure = "/openetl.api.v1.PipelineService/SyncPipeline"
 )
 
 // PipelineServiceClient is a client for the openetl.api.v1.PipelineService service.
@@ -49,6 +58,12 @@ type PipelineServiceClient interface {
 	GetPipeline(context.Context, *connect.Request[v1.GetPipelineRequest]) (*connect.Response[v1.GetPipelineResponse], error)
 	ListPipelines(context.Context, *connect.Request[v1.ListPipelinesRequest]) (*connect.Response[v1.ListPipelinesResponse], error)
 	DeletePipeline(context.Context, *connect.Request[v1.DeletePipelineRequest]) (*connect.Response[v1.DeletePipelineResponse], error)
+	// Stops scheduled syncs. A sync that is running carries on.
+	PausePipeline(context.Context, *connect.Request[v1.PausePipelineRequest]) (*connect.Response[v1.PausePipelineResponse], error)
+	ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error)
+	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
+	// paused or a sync is running.
+	SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error)
 }
 
 // NewPipelineServiceClient constructs a client for the openetl.api.v1.PipelineService service. By
@@ -80,6 +95,24 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(pipelineServiceMethods.ByName("DeletePipeline")),
 			connect.WithClientOptions(opts...),
 		),
+		pausePipeline: connect.NewClient[v1.PausePipelineRequest, v1.PausePipelineResponse](
+			httpClient,
+			baseURL+PipelineServicePausePipelineProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("PausePipeline")),
+			connect.WithClientOptions(opts...),
+		),
+		resumePipeline: connect.NewClient[v1.ResumePipelineRequest, v1.ResumePipelineResponse](
+			httpClient,
+			baseURL+PipelineServiceResumePipelineProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("ResumePipeline")),
+			connect.WithClientOptions(opts...),
+		),
+		syncPipeline: connect.NewClient[v1.SyncPipelineRequest, v1.SyncPipelineResponse](
+			httpClient,
+			baseURL+PipelineServiceSyncPipelineProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("SyncPipeline")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -88,6 +121,9 @@ type pipelineServiceClient struct {
 	getPipeline    *connect.Client[v1.GetPipelineRequest, v1.GetPipelineResponse]
 	listPipelines  *connect.Client[v1.ListPipelinesRequest, v1.ListPipelinesResponse]
 	deletePipeline *connect.Client[v1.DeletePipelineRequest, v1.DeletePipelineResponse]
+	pausePipeline  *connect.Client[v1.PausePipelineRequest, v1.PausePipelineResponse]
+	resumePipeline *connect.Client[v1.ResumePipelineRequest, v1.ResumePipelineResponse]
+	syncPipeline   *connect.Client[v1.SyncPipelineRequest, v1.SyncPipelineResponse]
 }
 
 // GetPipeline calls openetl.api.v1.PipelineService.GetPipeline.
@@ -105,11 +141,32 @@ func (c *pipelineServiceClient) DeletePipeline(ctx context.Context, req *connect
 	return c.deletePipeline.CallUnary(ctx, req)
 }
 
+// PausePipeline calls openetl.api.v1.PipelineService.PausePipeline.
+func (c *pipelineServiceClient) PausePipeline(ctx context.Context, req *connect.Request[v1.PausePipelineRequest]) (*connect.Response[v1.PausePipelineResponse], error) {
+	return c.pausePipeline.CallUnary(ctx, req)
+}
+
+// ResumePipeline calls openetl.api.v1.PipelineService.ResumePipeline.
+func (c *pipelineServiceClient) ResumePipeline(ctx context.Context, req *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error) {
+	return c.resumePipeline.CallUnary(ctx, req)
+}
+
+// SyncPipeline calls openetl.api.v1.PipelineService.SyncPipeline.
+func (c *pipelineServiceClient) SyncPipeline(ctx context.Context, req *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error) {
+	return c.syncPipeline.CallUnary(ctx, req)
+}
+
 // PipelineServiceHandler is an implementation of the openetl.api.v1.PipelineService service.
 type PipelineServiceHandler interface {
 	GetPipeline(context.Context, *connect.Request[v1.GetPipelineRequest]) (*connect.Response[v1.GetPipelineResponse], error)
 	ListPipelines(context.Context, *connect.Request[v1.ListPipelinesRequest]) (*connect.Response[v1.ListPipelinesResponse], error)
 	DeletePipeline(context.Context, *connect.Request[v1.DeletePipelineRequest]) (*connect.Response[v1.DeletePipelineResponse], error)
+	// Stops scheduled syncs. A sync that is running carries on.
+	PausePipeline(context.Context, *connect.Request[v1.PausePipelineRequest]) (*connect.Response[v1.PausePipelineResponse], error)
+	ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error)
+	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
+	// paused or a sync is running.
+	SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error)
 }
 
 // NewPipelineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -137,6 +194,24 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 		connect.WithSchema(pipelineServiceMethods.ByName("DeletePipeline")),
 		connect.WithHandlerOptions(opts...),
 	)
+	pipelineServicePausePipelineHandler := connect.NewUnaryHandler(
+		PipelineServicePausePipelineProcedure,
+		svc.PausePipeline,
+		connect.WithSchema(pipelineServiceMethods.ByName("PausePipeline")),
+		connect.WithHandlerOptions(opts...),
+	)
+	pipelineServiceResumePipelineHandler := connect.NewUnaryHandler(
+		PipelineServiceResumePipelineProcedure,
+		svc.ResumePipeline,
+		connect.WithSchema(pipelineServiceMethods.ByName("ResumePipeline")),
+		connect.WithHandlerOptions(opts...),
+	)
+	pipelineServiceSyncPipelineHandler := connect.NewUnaryHandler(
+		PipelineServiceSyncPipelineProcedure,
+		svc.SyncPipeline,
+		connect.WithSchema(pipelineServiceMethods.ByName("SyncPipeline")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.api.v1.PipelineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PipelineServiceGetPipelineProcedure:
@@ -145,6 +220,12 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 			pipelineServiceListPipelinesHandler.ServeHTTP(w, r)
 		case PipelineServiceDeletePipelineProcedure:
 			pipelineServiceDeletePipelineHandler.ServeHTTP(w, r)
+		case PipelineServicePausePipelineProcedure:
+			pipelineServicePausePipelineHandler.ServeHTTP(w, r)
+		case PipelineServiceResumePipelineProcedure:
+			pipelineServiceResumePipelineHandler.ServeHTTP(w, r)
+		case PipelineServiceSyncPipelineProcedure:
+			pipelineServiceSyncPipelineHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -164,4 +245,16 @@ func (UnimplementedPipelineServiceHandler) ListPipelines(context.Context, *conne
 
 func (UnimplementedPipelineServiceHandler) DeletePipeline(context.Context, *connect.Request[v1.DeletePipelineRequest]) (*connect.Response[v1.DeletePipelineResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.DeletePipeline is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) PausePipeline(context.Context, *connect.Request[v1.PausePipelineRequest]) (*connect.Response[v1.PausePipelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.PausePipeline is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ResumePipeline is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.SyncPipeline is not implemented"))
 }

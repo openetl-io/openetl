@@ -19,9 +19,13 @@ type Schedules struct {
 	Client client.Client
 }
 
-// Upsert creates or updates the pipeline's schedule. A new schedule starts
-// its first sync right away.
-func (s *Schedules) Upsert(ctx context.Context, orgID, pipelineID string, sched *apiv1.Schedule) error {
+// ErrSyncRunning: a sync of the pipeline is running.
+var ErrSyncRunning = errors.New("schedules: a sync is running")
+
+// Upsert creates or updates the pipeline's schedule. A new schedule is
+// paused if paused is set, and otherwise starts its first sync right away.
+// Updates keep the schedule's pause state, which only SetPaused changes.
+func (s *Schedules) Upsert(ctx context.Context, orgID, pipelineID string, sched *apiv1.Schedule, paused bool) error {
 	spec := client.ScheduleSpec{Jitter: sched.GetJitter().AsDuration()}
 	switch t := sched.GetTrigger().(type) {
 	case *apiv1.Schedule_Every:
@@ -43,7 +47,8 @@ func (s *Schedules) Upsert(ctx context.Context, orgID, pipelineID string, sched 
 		Spec:               spec,
 		Action:             action,
 		Overlap:            enumspb.SCHEDULE_OVERLAP_POLICY_SKIP,
-		TriggerImmediately: true,
+		TriggerImmediately: !paused,
+		Paused:             paused,
 	})
 	if err == nil {
 		return nil
@@ -77,4 +82,35 @@ func (s *Schedules) Delete(ctx context.Context, pipelineID string) error {
 		return nil
 	}
 	return err
+}
+
+func (s *Schedules) SetPaused(ctx context.Context, pipelineID string, paused bool) error {
+	h := s.Client.ScheduleClient().GetHandle(ctx, contract.ScheduleID(pipelineID))
+	var err error
+	if paused {
+		err = h.Pause(ctx, client.SchedulePauseOptions{Note: "paused through the API"})
+	} else {
+		err = h.Unpause(ctx, client.ScheduleUnpauseOptions{Note: "resumed through the API"})
+	}
+	if err != nil {
+		return fmt.Errorf("schedules: pause %s: %w", pipelineID, err)
+	}
+	return nil
+}
+
+// Trigger starts a sync now, under the schedule's overlap policy, or returns
+// ErrSyncRunning.
+func (s *Schedules) Trigger(ctx context.Context, pipelineID string) error {
+	h := s.Client.ScheduleClient().GetHandle(ctx, contract.ScheduleID(pipelineID))
+	desc, err := h.Describe(ctx)
+	if err != nil {
+		return fmt.Errorf("schedules: describe %s: %w", pipelineID, err)
+	}
+	if len(desc.Info.RunningWorkflows) > 0 {
+		return ErrSyncRunning
+	}
+	if err := h.Trigger(ctx, client.ScheduleTriggerOptions{Overlap: enumspb.SCHEDULE_OVERLAP_POLICY_SKIP}); err != nil {
+		return fmt.Errorf("schedules: trigger %s: %w", pipelineID, err)
+	}
+	return nil
 }

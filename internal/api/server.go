@@ -20,9 +20,13 @@ import (
 	"github.com/unsuitable001/openetl/internal/store"
 )
 
+// Scheduler is implemented by schedules.Schedules.
 type Scheduler interface {
-	Upsert(ctx context.Context, orgID, pipelineID string, s *apiv1.Schedule) error
+	Upsert(ctx context.Context, orgID, pipelineID string, s *apiv1.Schedule, paused bool) error
 	Delete(ctx context.Context, pipelineID string) error
+	SetPaused(ctx context.Context, pipelineID string, paused bool) error
+	// Returns schedules.ErrSyncRunning if a sync is running.
+	Trigger(ctx context.Context, pipelineID string) error
 }
 
 type Server struct {

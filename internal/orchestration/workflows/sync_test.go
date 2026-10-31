@@ -107,3 +107,25 @@ func TestDrainedSyncSucceeds(t *testing.T) {
 		t.Fatalf("recorded %+v", finished)
 	}
 }
+
+func TestPausedPipelineDoesNotSync(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := s.NewTestWorkflowEnvironment()
+	env.RegisterWorkflowWithOptions(workflows.Workflows{}.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
+	env.RegisterActivityWithOptions(func(context.Context, contract.SyncInput) (contract.StartSyncResult, error) {
+		return contract.StartSyncResult{Paused: true}, nil
+	}, activity.RegisterOptions{Name: contract.StartSync})
+	ran := false
+	env.RegisterActivityWithOptions(func(context.Context, contract.AttemptInput) (contract.AttemptResult, error) {
+		ran = true
+		return contract.AttemptResult{}, nil
+	}, activity.RegisterOptions{Name: contract.RunSyncAttempt})
+	env.RegisterActivityWithOptions(func(context.Context, contract.FinishSyncInput) error {
+		ran = true
+		return nil
+	}, activity.RegisterOptions{Name: contract.FinishSync})
+	env.ExecuteWorkflow(contract.SyncWorkflow, contract.SyncInput{OrgID: "o", PipelineID: "p"})
+	if err := env.GetWorkflowError(); err != nil || ran {
+		t.Fatalf("error %v, attempt or finish ran: %v", err, ran)
+	}
+}

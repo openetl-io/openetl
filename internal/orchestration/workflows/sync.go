@@ -30,7 +30,7 @@ type Workflows struct {
 
 // Sync runs one sync of a pipeline: it records the sync, runs attempts on
 // the pipeline's data plane until one succeeds or retries run out, then
-// records the outcome.
+// records the outcome. It does nothing if the pipeline is paused.
 func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.SyncResult, error) {
 	cp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:           contract.OrchestratorQueue,
@@ -40,6 +40,10 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 	var started contract.StartSyncResult
 	if err := workflow.ExecuteActivity(cp, contract.StartSync, in).Get(ctx, &started); err != nil {
 		return nil, err
+	}
+	if started.Paused {
+		workflow.GetLogger(ctx).Info("the pipeline is paused; not syncing")
+		return nil, nil
 	}
 
 	retry, heartbeat := w.AttemptRetry, w.AttemptHeartbeat

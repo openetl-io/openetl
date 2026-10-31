@@ -29,7 +29,7 @@ func (q *Queries) DeletePipeline(ctx context.Context, arg DeletePipelineParams) 
 }
 
 const getPipeline = `-- name: GetPipeline :one
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `
 
 type GetPipelineParams struct {
@@ -53,12 +53,13 @@ func (q *Queries) GetPipeline(ctx context.Context, arg GetPipelineParams) (Pipel
 		&i.Revision,
 		&i.CreateTime,
 		&i.UpdateTime,
+		&i.Paused,
 	)
 	return i, err
 }
 
 const getPipelineByID = `-- name: GetPipelineByID :one
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time FROM pipelines WHERE org_id = $1 AND id = $2
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused FROM pipelines WHERE org_id = $1 AND id = $2
 `
 
 type GetPipelineByIDParams struct {
@@ -81,6 +82,7 @@ func (q *Queries) GetPipelineByID(ctx context.Context, arg GetPipelineByIDParams
 		&i.Revision,
 		&i.CreateTime,
 		&i.UpdateTime,
+		&i.Paused,
 	)
 	return i, err
 }
@@ -206,7 +208,7 @@ func (q *Queries) InsertPipelineVersion(ctx context.Context, arg InsertPipelineV
 }
 
 const listPipelines = `-- name: ListPipelines :many
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time FROM pipelines
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused FROM pipelines
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3
 ORDER BY name LIMIT $4
 `
@@ -244,6 +246,7 @@ func (q *Queries) ListPipelines(ctx context.Context, arg ListPipelinesParams) ([
 			&i.Revision,
 			&i.CreateTime,
 			&i.UpdateTime,
+			&i.Paused,
 		); err != nil {
 			return nil, err
 		}
@@ -253,6 +256,21 @@ func (q *Queries) ListPipelines(ctx context.Context, arg ListPipelinesParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const setPipelinePaused = `-- name: SetPipelinePaused :exec
+UPDATE pipelines SET paused = $1 WHERE org_id = $2 AND id = $3
+`
+
+type SetPipelinePausedParams struct {
+	Paused bool
+	OrgID  uuid.UUID
+	ID     uuid.UUID
+}
+
+func (q *Queries) SetPipelinePaused(ctx context.Context, arg SetPipelinePausedParams) error {
+	_, err := q.db.Exec(ctx, setPipelinePaused, arg.Paused, arg.OrgID, arg.ID)
+	return err
 }
 
 const updatePipeline = `-- name: UpdatePipeline :exec

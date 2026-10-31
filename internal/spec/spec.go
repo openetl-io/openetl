@@ -231,9 +231,6 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	if p.SchemaPolicy, err = enum(apiv1.SchemaPolicy_value, "SCHEMA_POLICY_", "schemaPolicy", y.SchemaPolicy, apiv1.SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL); err != nil {
 		return nil, err
 	}
-	if p.SchemaPolicy != apiv1.SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL {
-		return nil, errors.New("schemaPolicy: only allow_all is supported so far")
-	}
 	if y.Delivery != nil {
 		if p.Delivery, err = parseDelivery(y.Delivery); err != nil {
 			return nil, err
