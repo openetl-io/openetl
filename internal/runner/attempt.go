@@ -202,6 +202,7 @@ const (
 	evStaged                         // the sink staged epoch
 	evThreshold                      // CommitMaxBytes was reached
 	evReadDone                       // Read returned; active says whether anything is uncommitted
+	evCommitted                      // epoch is visible in the destination
 )
 
 type event struct {
@@ -220,8 +221,14 @@ type epochState struct {
 	desc           destination.Staged
 }
 
+type commitReq struct {
+	n  uint64
+	st *epochState
+}
+
 // coordinator requests barriers and commits each epoch once it is placed and
-// staged.
+// staged. Commits run one at a time, in epoch order, on the committer's
+// goroutine, so barriers keep being requested while an epoch commits.
 type coordinator struct {
 	job  *Job
 	sess *checkpoint.Session
@@ -230,15 +237,17 @@ type coordinator struct {
 	res  *Result
 
 	events      chan event
+	commits     chan commitReq
 	pump        *sourcePump
 	next        uint64 // the next epoch to request
 	outstanding bool   // a barrier is being placed
 	want        bool   // a commit trigger fired
 	readDone    bool
 	active      bool // emitted after the last barrier, so a final epoch is needed
+	committing  bool
 	pending     map[uint64]*epochState
 	committed   uint64            // the last epoch committed or restored
-	ackStates   map[string][]byte // states of the committed epoch, acked after the next commit
+	ackStates   map[string][]byte // owned by the committer: states of the committed epoch, acked after the next commit
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
@@ -261,6 +270,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	toFlow := make(chan Frame, 16)
 	fromFlow := make(chan Frame, 16)
 	c.events = make(chan event, 64)
+	c.commits = make(chan commitReq, 1)
 	c.pump = newSourcePump(gctx, c.job, states, restoredForced, canForce, toFlow, c.events)
 	sink := newSinkPump(c.w, c.sess.Generation(), c.next, c.job.Streams, fromFlow, c.events)
 
@@ -287,7 +297,11 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	}
 	g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
 	g.Go(func() error { return sink.run(gctx) })
-	g.Go(func() error { return c.loop(gctx) })
+	g.Go(func() error { return c.committer(gctx) })
+	g.Go(func() error {
+		defer close(c.commits)
+		return c.loop(gctx)
+	})
 	return g.Wait()
 }
 
@@ -347,7 +361,7 @@ func (c *coordinator) shouldRequest() bool {
 }
 
 func (c *coordinator) finished() bool {
-	return c.readDone && !c.active && !c.outstanding && c.committed == c.next-1
+	return c.readDone && !c.active && !c.outstanding && !c.committing && c.committed == c.next-1
 }
 
 func (c *coordinator) handle(ctx context.Context, ev event) error {
@@ -371,22 +385,44 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 			return fmt.Errorf("runner: unexpected staging of epoch %d", ev.epoch)
 		}
 		st.staged, st.desc = true, ev.staged
+	case evCommitted:
+		if !c.committing || ev.epoch != c.committed+1 {
+			return fmt.Errorf("runner: unexpected commit of epoch %d", ev.epoch)
+		}
+		c.committing = false
+		c.committed = ev.epoch
+		c.res.Committed++
+		c.res.Last = ev.epoch
+		delete(c.pending, ev.epoch)
+		if c.job.OnCommit != nil {
+			c.job.OnCommit(ev.epoch)
+		}
 	}
-	for {
-		n := c.committed + 1
-		st := c.pending[n]
-		if st == nil || !st.placed || !st.staged {
-			return nil
-		}
-		if err := c.commit(ctx, n, st); err != nil {
-			return err
-		}
-		delete(c.pending, n)
+	n := c.committed + 1
+	st := c.pending[n]
+	if c.committing || st == nil || !st.placed || !st.staged {
+		return nil
+	}
+	c.committing = true
+	select {
+	case c.commits <- commitReq{n: n, st: st}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
-// commit records the checkpoint, makes the epoch visible, then acknowledges
-// the previous epoch upstream.
+func (c *coordinator) committer(ctx context.Context) error {
+	for req := range c.commits {
+		if err := c.commit(ctx, req.n, req.st); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// commit records the checkpoint, makes the epoch visible, reports it to the
+// loop, then acknowledges the previous epoch upstream.
 func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) error {
 	rec := &checkpoint.Record{
 		Epoch:     n,
@@ -407,12 +443,11 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 	if err := retry(ctx, func() error { return c.w.Commit(ctx, e, st.desc) }, destination.ErrFenced); err != nil {
 		return fmt.Errorf("runner: commit epoch %d: %w", n, err)
 	}
-	c.committed = n
-	c.res.Committed++
-	c.res.Last = n
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
-	if c.job.OnCommit != nil {
-		c.job.OnCommit(n)
+	select {
+	case c.events <- event{kind: evCommitted, epoch: n}:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	// Trail by one checkpoint, so recovery can fall back one record.
