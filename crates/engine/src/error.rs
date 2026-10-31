@@ -41,6 +41,7 @@ impl JobError {
         let code = match self.code {
             ErrorCode::ConfigInvalid | ErrorCode::DataInvalid => Code::InvalidArgument,
             ErrorCode::ResourceExhausted => Code::ResourceExhausted,
+            ErrorCode::SchemaDrift => Code::FailedPrecondition,
             _ => Code::Internal,
         };
         let detail = ProtoError {

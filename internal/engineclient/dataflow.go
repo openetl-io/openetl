@@ -195,6 +195,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		Naming:     &enginev1.Naming{KeepSourceNames: plan.Naming.KeepSource, MaxLength: uint32(max(plan.Naming.MaxLength, 0))}, //nolint:gosec // identifier limits are small
 
 		QuarantineUrl: plan.QuarantineURL,
+		SchemaPolicy:  schemaPolicies[plan.Policy],
 	}
 	for i, s := range plan.Streams {
 		names[i] = s.Name
@@ -227,6 +228,13 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names})
 	}
 	return req, names, index, nil
+}
+
+var schemaPolicies = map[runner.SchemaPolicy]enginev1.SchemaPolicy{
+	runner.AllowAll:     enginev1.SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL,
+	runner.AllowColumns: enginev1.SchemaPolicy_SCHEMA_POLICY_ALLOW_COLUMNS,
+	runner.Block:        enginev1.SchemaPolicy_SCHEMA_POLICY_BLOCK,
+	runner.IgnoreNew:    enginev1.SchemaPolicy_SCHEMA_POLICY_IGNORE_NEW,
 }
 
 // encodeSchema returns an Arrow IPC stream holding only s; nil for nil.

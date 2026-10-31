@@ -3,14 +3,17 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
@@ -58,6 +61,7 @@ type Job struct {
 	Namespace string
 	// Tables and columns keep their source names instead of normalized ones.
 	KeepSourceNames bool
+	SchemaPolicy    SchemaPolicy
 	// Where the dataflow keeps records it can't take, as Plan says.
 	QuarantineURL string
 	Dataflow      Dataflow
@@ -147,8 +151,17 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 
 	var e destination.Epoch
 	var staged destination.Staged
+	applied := map[string]*arrow.Schema{}
 	if head != nil {
 		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, head.Staged
+		schemas := make(map[string][]byte, len(head.Streams))
+		for name, st := range head.Streams {
+			schemas[name] = st.Schema
+		}
+		// A redone epoch needs its schemas in place.
+		if err := applySchemas(ctx, w, applied, schemas); err != nil {
+			return res, err
+		}
 	}
 	if res.Recovery, err = w.Recover(ctx, res.Generation, e, staged); err != nil {
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
@@ -172,7 +185,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
 
-	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState)}
+	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied}
 	return res, c.run(ctx, restored, canForce)
 }
 
@@ -260,8 +273,9 @@ type coordinator struct {
 	active      bool // emitted after the last barrier, so a final epoch is needed
 	committing  bool
 	pending     map[uint64]*epochState
-	committed   uint64            // the last epoch committed or restored
-	ackStates   map[string][]byte // owned by the committer: states of the committed epoch, acked after the next commit
+	committed   uint64                   // the last epoch committed or restored
+	ackStates   map[string][]byte        // owned by the committer: states of the committed epoch, acked after the next commit
+	applied     map[string]*arrow.Schema // owned by the committer: each stream's schema last applied
 	readStarts  map[string]int64
 }
 
@@ -312,6 +326,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 			KeepSource: c.job.KeepSourceNames,
 			MaxLength:  c.job.Destination.Capabilities().MaxIdentifierLength,
 		},
+		Policy:        c.job.SchemaPolicy,
 		QuarantineURL: c.job.QuarantineURL,
 		ReadStarts:    c.readStarts,
 		Schemas:       schemas,
@@ -494,6 +509,9 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 	if err != nil {
 		return fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}
+	if err := retry(ctx, func() error { return applySchemas(ctx, c.w, c.applied, st.flow.Schemas) }, nil); err != nil {
+		return fmt.Errorf("runner: epoch %d: %w", n, err)
+	}
 	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	if err := retry(ctx, func() error { return c.w.Commit(ctx, e, st.desc) }, destination.ErrFenced); err != nil {
 		return fmt.Errorf("runner: commit epoch %d: %w", n, err)
@@ -535,4 +553,64 @@ func retry(ctx context.Context, f func() error, fatal error) error {
 		backoff *= 2
 	}
 	return err
+}
+
+// applySchemas applies the schemas that differ from those in applied, if the
+// writer has a schema, and records them there.
+func applySchemas(ctx context.Context, w destination.Writer, applied map[string]*arrow.Schema, schemas map[string][]byte) error {
+	sa, ok := w.(destination.SchemaApplier)
+	if !ok {
+		return nil
+	}
+	var changed []destination.StreamSchema
+	for name, b := range schemas {
+		if b == nil {
+			continue
+		}
+		s, err := decodeSchema(b)
+		if err != nil {
+			return fmt.Errorf("stream %s schema: %w", name, err)
+		}
+		if prev := applied[name]; prev == nil || !sameSchema(prev, s) {
+			changed = append(changed, destination.StreamSchema{Name: name, Schema: s})
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	slices.SortFunc(changed, func(a, b destination.StreamSchema) int { return strings.Compare(a.Name, b.Name) })
+	if err := sa.ApplySchema(ctx, changed); err != nil {
+		return fmt.Errorf("apply schemas: %w", err)
+	}
+	for _, s := range changed {
+		applied[s.Name] = s.Schema
+	}
+	return nil
+}
+
+func decodeSchema(b []byte) (*arrow.Schema, error) {
+	r, err := ipc.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Release()
+	return r.Schema(), nil
+}
+
+// sameSchema compares fields and metadata; the engine encodes metadata in
+// no particular order.
+func sameSchema(a, b *arrow.Schema) bool {
+	if !slices.EqualFunc(a.Fields(), b.Fields(), func(x, y arrow.Field) bool { return x.Equal(y) }) {
+		return false
+	}
+	am, bm := a.Metadata(), b.Metadata()
+	if am.Len() != bm.Len() {
+		return false
+	}
+	for i, k := range am.Keys() {
+		if v, ok := bm.GetValue(k); !ok || v != am.Values()[i] {
+			return false
+		}
+	}
+	return true
 }

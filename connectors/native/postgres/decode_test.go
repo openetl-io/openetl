@@ -38,3 +38,28 @@ func TestNumericType(t *testing.T) {
 		}
 	}
 }
+
+func TestWidens(t *testing.T) {
+	for _, c := range []struct {
+		from, to string
+		want     bool
+	}{
+		{"bigint", "bigint", true},
+		{"integer", "bigint", true},
+		{"bigint", "double precision", true},
+		{"boolean", "text", true},
+		{"jsonb", "text", true},
+		{"integer", "numeric(12,2)", true},
+		{"integer", "numeric(11,2)", false},
+		{"numeric(10,2)", "numeric(12,4)", true},
+		{"numeric(10,2)", "numeric(12,1)", false},
+		{"bigint", "integer", false},
+		{"text", "bigint", false},
+		{"boolean", "bigint", false},
+		{"double precision", "bigint", false},
+	} {
+		if got := widens(c.from, c.to); got != c.want {
+			t.Errorf("widens(%s, %s) = %v", c.from, c.to, got)
+		}
+	}
+}

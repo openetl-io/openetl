@@ -3,6 +3,7 @@ package postgres
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -141,6 +142,45 @@ func columnOf(f arrow.Field) (column, error) {
 		return c, fmt.Errorf("postgres: column %q has unsupported Arrow type %s", f.Name, f.Type)
 	}
 	return c, nil
+}
+
+// widens reports whether a column of type from can become type to without
+// losing values; bigint to double precision counts, as it does for the
+// engine.
+func widens(from, to string) bool {
+	if from == to || to == "text" {
+		return true
+	}
+	switch from + " " + to {
+	case "smallint integer", "smallint bigint", "smallint real", "smallint double precision",
+		"integer bigint", "integer double precision", "bigint double precision", "real double precision":
+		return true
+	}
+	p2, s2, ok := numericPS(to)
+	if !ok {
+		return false
+	}
+	if n, ok := map[string]int{"smallint": 5, "integer": 10, "bigint": 19}[from]; ok {
+		return p2-s2 >= n
+	}
+	p1, s1, ok := numericPS(from)
+	return ok && s2 >= s1 && p2-s2 >= p1-s1
+}
+
+// numericPS parses numeric(p,s) as format_type prints it.
+func numericPS(typ string) (p, s int, ok bool) {
+	inner, found := strings.CutPrefix(typ, "numeric(")
+	if !found {
+		return 0, 0, false
+	}
+	inner, found = strings.CutSuffix(inner, ")")
+	ps, ss, comma := strings.Cut(inner, ",")
+	if !found || !comma {
+		return 0, 0, false
+	}
+	p, perr := strconv.Atoi(ps)
+	s, serr := strconv.Atoi(ss)
+	return p, s, perr == nil && serr == nil
 }
 
 func storage(a arrow.Array) arrow.Array {

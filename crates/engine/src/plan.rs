@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use arrow_schema::SchemaRef;
-use openetl_normalize::Identity;
 use openetl_normalize::naming::{Namer, Naming, RESERVED_TABLES, TABLE_KEY};
-use openetl_proto::engine::v1::{EdgeDirection, StartJobRequest, sink_plan};
+use openetl_normalize::{Identity, Policy};
+use openetl_proto::engine::v1::{EdgeDirection, SchemaPolicy, StartJobRequest, sink_plan};
 
 use crate::error::JobError;
 use crate::ipc;
@@ -18,6 +18,7 @@ pub struct Plan {
     /// Each stream's destination table.
     pub tables: Vec<String>,
     pub naming: Naming,
+    pub policy: Policy,
     /// Each stream's schema in the restored checkpoint.
     pub restored: Vec<Option<SchemaRef>>,
     /// Each stream's declared logical types, under source names.
@@ -110,6 +111,12 @@ impl Plan {
             keep_source: n.keep_source_names,
             max_len: n.max_length as usize,
         });
+        let policy = match req.schema_policy() {
+            SchemaPolicy::Unspecified | SchemaPolicy::AllowAll => Policy::AllowAll,
+            SchemaPolicy::AllowColumns => Policy::AllowColumns,
+            SchemaPolicy::Block => Policy::Block,
+            SchemaPolicy::IgnoreNew => Policy::IgnoreNew,
+        };
         let mut namer = Namer::new(naming, &RESERVED_TABLES);
         for (name, schema) in names.iter().zip(&restored) {
             if let Some(table) = schema.as_ref().and_then(|s| s.metadata().get(TABLE_KEY))
@@ -214,6 +221,7 @@ impl Plan {
             streams: names,
             tables,
             naming,
+            policy,
             restored,
             declared,
             identities,
@@ -268,6 +276,7 @@ pub(crate) mod tests {
             restored_snapshots: Vec::new(),
             naming: None,
             quarantine_url: String::new(),
+            schema_policy: 0,
         }
     }
 

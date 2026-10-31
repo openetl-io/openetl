@@ -20,6 +20,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/engineclient"
 	runnerpkg "github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 // Postgres to Postgres through the engine: declared numerics arrive as
@@ -142,4 +143,68 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 	if !strings.Contains(lines[0]["record"], `"id":2`) {
 		t.Errorf("quarantined record %v", lines[0])
 	}
+}
+
+// A raw column that widens from int64 to float64 to string, within an epoch
+// and across epochs, widens in Postgres without losing a value.
+func TestWideningReachesPostgres(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	name := unique("widen")
+	pg, err := postgres.NewDestination(fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, schema(name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		conn, err := pgx.Connect(context.Background(), env.dbURL)
+		if err == nil {
+			_, _ = conn.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema(name)+" CASCADE")
+			_ = conn.Close(context.Background())
+		}
+	})
+	res, err := runnerpkg.RunAttempt(ctx, runnerpkg.Job{
+		Owner:       "a1",
+		Pipeline:    name,
+		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", name),
+		Source:      wideningSource{},
+		Streams:     []runnerpkg.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
+		Destination: pg,
+		Dataflow:    &engineclient.Dataflow{Options: engineclient.Options{Binary: env.engine}},
+		Settings: runnerpkg.Settings{
+			Require:        delivery.ExactlyOnce,
+			CommitMaxBytes: 1,
+			Scope:          destination.ScopePipeline,
+			Dedupe:         delivery.DedupeNone,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Committed < 2 {
+		t.Errorf("committed %d epochs, want the widening across two", res.Committed)
+	}
+	got, err := query[string](t, "SELECT format_type(atttypid, atttypmod) || ' ' || (SELECT string_agg(x, ',' ORDER BY id) FROM "+
+		schema(name)+".s) FROM pg_attribute WHERE attrelid = $1::regclass AND attname = 'x'", schema(name)+".s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "text 1,2,2.5,a"; got != want {
+		t.Errorf("x is %q, want %q", got, want)
+	}
+}
+
+type wideningSource struct{}
+
+func (wideningSource) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
+	for i, rows := range [][]string{{`{"id": 1, "x": 1}`}, {`{"id": 2, "x": 2}`}, {`{"id": 3, "x": 2.5}`}, {`{"id": 4, "x": "a"}`}} {
+		if err := out.Rows("s", []json.RawMessage{json.RawMessage(rows[0])}); err != nil {
+			return err
+		}
+		if i == 0 || i == 3 {
+			if err := out.ResumePoint("s", fmt.Appendf(nil, "%d", i)); err != nil {
+				return err
+			}
+		}
+	}
+	return out.Complete("s")
 }

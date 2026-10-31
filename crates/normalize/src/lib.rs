@@ -4,11 +4,13 @@
 //! names, on either lane.
 
 mod coerce;
+mod evolve;
 mod ids;
 pub mod naming;
 mod shape;
 
 pub use coerce::{check_declared, render_row};
+pub use evolve::{Policy, VERSIONS_KEY, widens};
 pub use ids::Identity;
 pub use shape::{Shaped, Shaper};
 
@@ -106,6 +108,9 @@ pub enum Error {
     Restored(String),
     #[error("{0}")]
     Declared(String),
+    /// A change the schema policy doesn't take.
+    #[error("{0}")]
+    Drift(String),
     #[error("column {column:?} arrives as {from}, but is declared {to}")]
     Mismatch {
         column: String,
@@ -129,6 +134,8 @@ pub struct Rejected {
 pub struct Normalized {
     /// Has the stream's current schema, and every row but the rejected.
     pub batch: RecordBatch,
+    /// Each batch row's position among those pushed.
+    pub rows: Vec<usize>,
     pub rejected: Vec<Rejected>,
     /// The stream's schema changed with this batch.
     pub schema_changed: bool,
@@ -162,6 +169,8 @@ pub struct Normalizer {
     index: HashMap<String, usize>,
     /// By source name, in declared order.
     declared: Vec<(String, Ty)>,
+    /// No columns are added or widened.
+    frozen: bool,
     schema: SchemaRef,
     identity: Option<Identity>,
 }
@@ -172,6 +181,7 @@ impl Default for Normalizer {
             columns: Vec::new(),
             index: HashMap::new(),
             declared: Vec::new(),
+            frozen: false,
             schema: Arc::new(Schema::empty()),
             identity: None,
         }
@@ -235,6 +245,24 @@ impl Normalizer {
         self.schema.clone()
     }
 
+    /// Stops adding and widening columns: unknown fields are dropped, and
+    /// values are coerced to their column's type, rejecting rows that don't
+    /// fit.
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+        for (name, ty) in &mut self.columns {
+            if let Ty::Inferred(k) = ty {
+                let f = k.field(name);
+                if let Some(t) = Target::of(&f) {
+                    *ty = Ty::Declared(f, t);
+                }
+            }
+            if !self.declared.iter().any(|(n, _)| n == name) {
+                self.declared.push((name.clone(), ty.clone()));
+            }
+        }
+    }
+
     /// Makes push compute each row's `_openetl_id`.
     pub fn identify(&mut self, identity: Identity) {
         self.identity = Some(identity);
@@ -276,7 +304,8 @@ impl Normalizer {
             let present = objects
                 .iter()
                 .any(|o| o.get(name).is_some_and(|v| !v.is_null()));
-            if !present && !self.index.contains_key(name) {
+            let column = self.index.contains_key(name);
+            if !column && (!present || self.frozen) {
                 continue;
             }
             let values = objects.iter().map(|o| o.get(name));
@@ -303,6 +332,7 @@ impl Normalizer {
                         }
                     }
                 }
+                None if self.frozen => {}
                 None => {
                     let ty = self.declared_ty(name).unwrap_or(Ty::Inferred(kind));
                     index.insert(name.clone(), columns.len());
@@ -356,11 +386,18 @@ impl Normalizer {
             }
             None => None,
         };
+        let rows = at
+            .iter()
+            .zip(&failed)
+            .filter(|(_, f)| f.is_none())
+            .map(|(r, _)| *r)
+            .collect();
         self.columns = columns;
         self.index = index;
         self.schema = schema;
         Ok(Normalized {
             batch,
+            rows,
             rejected,
             schema_changed: changed,
             ids,

@@ -332,7 +332,7 @@ pub(crate) fn conform(
         if let Some(d) = d {
             if field.data_type() != d.data_type() {
                 let t = Target::of(d).ok_or_else(|| Error::Declared(f.name().clone()))?;
-                let (c, rows) = text(d, t, &col).ok_or_else(|| Error::Mismatch {
+                let (c, rows) = text_column(d, t, &col).ok_or_else(|| Error::Mismatch {
                     column: f.name().clone(),
                     from: field.data_type().clone(),
                     to: d.data_type().clone(),
@@ -362,7 +362,7 @@ pub(crate) fn conform(
 }
 
 /// Parses a text column to `t`. None if `a` isn't text or `t` has no parser.
-fn text(f: &Field, t: Target, a: &ArrayRef) -> Option<(ArrayRef, Failures)> {
+pub(crate) fn text_column(f: &Field, t: Target, a: &ArrayRef) -> Option<(ArrayRef, Failures)> {
     let strings: Box<dyn Iterator<Item = Option<&str>>> = match a.data_type() {
         DataType::Utf8 => Box::new(a.as_string::<i32>().iter()),
         DataType::LargeUtf8 => Box::new(a.as_string::<i64>().iter()),
@@ -509,14 +509,15 @@ pub fn render_row(batch: &RecordBatch, row: usize) -> String {
     Value::Object(obj).to_string()
 }
 
-fn int<T: TryFrom<i64>>(s: &str) -> Result<T, Unfit> {
-    use std::num::IntErrorKind as K;
-    let v: i64 = s
-        .parse()
-        .map_err(|e: std::num::ParseIntError| match e.kind() {
-            K::PosOverflow | K::NegOverflow => Unfit::new("range", "is out of range"),
-            _ => not_a("an integer"),
-        })?;
+/// An integer, also spelled as an exact decimal such as `2.0` or `1e3`.
+fn int<T: TryFrom<i128>>(s: &str) -> Result<T, Unfit> {
+    let v = match s.parse::<i64>() {
+        Ok(v) => i128::from(v),
+        Err(_) => decimal(s, 38, 0).map_err(|u| match u.code {
+            "precision" => not_a("an integer"),
+            _ => u,
+        })?,
+    };
     T::try_from(v).map_err(|_| Unfit::new("range", "is out of range"))
 }
 

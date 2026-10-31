@@ -42,6 +42,25 @@ message StartJobRequest {
   // path, or s3://bucket/prefix with region and endpoint as query
   // parameters. Empty: such a record fails the job.
   string quarantine_url = 11;
+  // How changes to a stream's established schema are taken. A stream's
+  // schema is established once restored, or once it crosses a barrier.
+  SchemaPolicy schema_policy = 12;
+}
+
+enum SchemaPolicy {
+  // allow_all.
+  SCHEMA_POLICY_UNSPECIFIED = 0;
+  // Add columns and widen types. A type that isn't a widening goes to a new
+  // column, col__v2.
+  SCHEMA_POLICY_ALLOW_ALL = 1;
+  // As allow_all, but a type that isn't a widening fails the job with
+  // SCHEMA_DRIFT.
+  SCHEMA_POLICY_ALLOW_COLUMNS = 2;
+  // Any change fails the job with SCHEMA_DRIFT.
+  SCHEMA_POLICY_BLOCK = 3;
+  // New columns are dropped in flight. Values are coerced to the
+  // established types, and records whose values don't fit are quarantined.
+  SCHEMA_POLICY_IGNORE_NEW = 4;
 }
 
 // Naming gives tables and columns their destination names. Names already in

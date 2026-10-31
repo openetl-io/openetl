@@ -57,6 +57,7 @@ type Plan struct {
 	// Zero: out feeds the destination's Writer.
 	Sink   SinkPlan
 	Naming Naming
+	Policy SchemaPolicy
 	// Where the dataflow keeps records it can't take; empty: they fail it.
 	QuarantineURL string
 	// Each stream's read start, in microseconds since the Unix epoch.
@@ -65,6 +66,22 @@ type Plan struct {
 	Schemas   map[string][]byte
 	Snapshots []checkpoint.Snapshot
 }
+
+// SchemaPolicy is how the dataflow takes changes to a stream's established
+// schema.
+type SchemaPolicy int
+
+const (
+	// AllowAll adds columns and widens types; a type that isn't a widening
+	// goes to a new column.
+	AllowAll SchemaPolicy = iota
+	// AllowColumns is AllowAll, but fails on a type that isn't a widening.
+	AllowColumns
+	// Block fails on any change.
+	Block
+	// IgnoreNew drops new columns and quarantines values that don't fit.
+	IgnoreNew
+)
 
 // Naming is how the dataflow names tables and columns in the destination.
 type Naming struct {

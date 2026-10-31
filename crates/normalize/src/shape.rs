@@ -1,13 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use arrow_array::cast::AsArray;
 use arrow_array::{
-    ArrayRef, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions, StringArray,
-    TimestampMicrosecondArray,
+    Array, ArrayRef, BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions,
+    StringArray, TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 
+use crate::evolve::{Conformed, Evolver, Policy, VERSIONS_KEY};
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
 use crate::{
@@ -21,6 +23,8 @@ pub struct Shaped {
     pub rejected: Vec<Rejected>,
     /// The stream's schema changed with this batch.
     pub schema_changed: bool,
+    /// Columns whose type changed incompatibly, and where their values go.
+    pub versioned: Vec<String>,
 }
 
 /// One stream's schema as the destination sees it: columns under their
@@ -31,17 +35,14 @@ pub struct Shaper {
     namer: Namer,
     table: String,
     identity: Identity,
+    policy: Policy,
     /// Under source names.
     declared: Option<SchemaRef>,
     norm: Option<Normalizer>,
-    /// The restored schema's source columns under their source names, until
-    /// raw rows need it.
-    restored: Option<Schema>,
+    evolver: Evolver,
     current: Option<SchemaRef>,
-    /// current came from this attempt, not from the checkpoint.
-    shaped: bool,
-    /// The last typed batch's schema, and its shaped form.
-    typed: Option<(SchemaRef, SchemaRef)>,
+    /// current matches the evolver's schema.
+    fresh: bool,
 }
 
 impl Shaper {
@@ -51,14 +52,20 @@ impl Shaper {
         naming: Naming,
         table: String,
         identity: Identity,
+        policy: Policy,
         restored: Option<SchemaRef>,
         declared: Option<SchemaRef>,
     ) -> Result<Self, Error> {
         let mut namer = Namer::new(naming, &METADATA_COLUMNS);
-        let mut source = None;
+        let mut evolver = Evolver::new(policy, None, BTreeMap::new());
         if let Some(r) = &restored {
             let names = source_names(r)
                 .ok_or_else(|| Error::Restored(format!("its {SOURCE_NAMES_KEY} metadata")))?;
+            let versions = match r.metadata().get(VERSIONS_KEY) {
+                Some(v) => serde_json::from_str(v)
+                    .map_err(|_| Error::Restored(format!("its {VERSIONS_KEY} metadata")))?,
+                None => BTreeMap::new(),
+            };
             let mut fields = Vec::with_capacity(r.fields().len());
             for f in r.fields() {
                 if METADATA_COLUMNS.contains(&f.name().as_str()) {
@@ -70,24 +77,35 @@ impl Shaper {
                 }
                 fields.push(f.as_ref().clone().with_name(name));
             }
-            source = Some(Schema::new(fields));
+            evolver = Evolver::new(policy, Some(&Schema::new(fields)), versions);
         }
         Ok(Self {
             namer,
             table,
             identity,
+            policy,
             declared,
             norm: None,
-            restored: source,
+            evolver,
             current: restored,
-            shaped: false,
-            typed: None,
+            fresh: false,
         })
     }
 
     /// None until the stream has a column.
     pub fn schema(&self) -> Option<SchemaRef> {
         self.current.clone()
+    }
+
+    /// Called at each barrier: from now on, the schema policy applies.
+    pub fn seal(&mut self) {
+        self.evolver.establish();
+        if self.policy == Policy::IgnoreNew
+            && self.evolver.established()
+            && let Some(n) = self.norm.as_mut()
+        {
+            n.freeze();
+        }
     }
 
     /// Converts raw rows. On error, the schema is unchanged.
@@ -97,50 +115,82 @@ impl Shaper {
     {
         if self.norm.is_none() {
             let declared = self.declared.as_deref();
-            let mut n = match &self.restored {
-                Some(s) => Normalizer::with_schema(s, declared)?,
-                None => Normalizer::new(declared)?,
+            let live = self.evolver.live();
+            let mut n = match live.fields().is_empty() {
+                true => Normalizer::new(declared)?,
+                false => Normalizer::with_schema(&live, declared)?,
             };
             n.identify(self.identity.clone());
+            if self.policy == Policy::IgnoreNew && self.evolver.established() {
+                n.freeze();
+            }
             self.norm = Some(n);
-            self.restored = None;
         }
         let Some(norm) = self.norm.as_mut() else {
             return Err(Error::Restored(String::new()));
         };
         let n = norm.push(rows)?;
         let ids = n.ids.ok_or_else(|| Error::Restored(String::new()))?;
-        let schema = match &self.current {
-            Some(s) if self.shaped && !n.schema_changed => s.clone(),
-            _ => self.shape(&n.batch),
-        };
-        Ok(Shaped {
-            batch: self.assemble(schema, &n.batch, ids)?,
-            rejected: n.rejected,
-            schema_changed: n.schema_changed,
-        })
+        let mut rejected = n.rejected;
+        let c = self.evolver.conform(&n.batch)?;
+        rejected.extend(c.failed.iter().map(|(i, reason)| Rejected {
+            row: n.rows[*i],
+            reason: reason.clone(),
+        }));
+        rejected.sort_by_key(|r| r.row);
+        self.finish(c, ids, rejected)
     }
 
-    /// Gives a typed batch its logical and declared types, renames its
-    /// columns and adds the metadata columns.
+    /// Gives a typed batch its logical and declared types, conforms it to the
+    /// stream's schema, renames its columns and adds the metadata columns.
     pub fn batch(&mut self, batch: &RecordBatch) -> Result<Shaped, Error> {
-        let (batch, failed) = coerce::conform(batch, self.declared.as_deref())?;
-        let ids = self.identity.typed(&batch)?;
-        let (schema, changed) = match &self.typed {
-            Some((from, to)) if *from == batch.schema() => (to.clone(), false),
-            _ => {
-                let to = self.shape(&batch);
-                self.typed = Some((batch.schema(), to.clone()));
-                (to, true)
-            }
+        let (typed, failed) = coerce::conform(batch, self.declared.as_deref())?;
+        let ids = self.identity.typed(&typed)?;
+        let c = self.evolver.conform(&typed)?;
+        let mut rejected: Vec<Rejected> = failed
+            .iter()
+            .map(|(row, reason)| Rejected {
+                row: *row,
+                reason: reason.clone(),
+            })
+            .collect();
+        if !c.failed.is_empty() {
+            let gone: HashSet<usize> = failed.iter().map(|(r, _)| *r).collect();
+            let kept: Vec<usize> = (0..batch.num_rows())
+                .filter(|r| !gone.contains(r))
+                .collect();
+            rejected.extend(c.failed.iter().map(|(i, reason)| Rejected {
+                row: kept[*i],
+                reason: reason.clone(),
+            }));
+            rejected.sort_by_key(|r| r.row);
+        }
+        self.finish(c, ids, rejected)
+    }
+
+    fn finish(
+        &mut self,
+        c: Conformed,
+        ids: FixedSizeBinaryArray,
+        rejected: Vec<Rejected>,
+    ) -> Result<Shaped, Error> {
+        let ids = if c.failed.is_empty() {
+            ids
+        } else {
+            let gone: HashSet<usize> = c.failed.iter().map(|(r, _)| *r).collect();
+            let keep = BooleanArray::from_iter((0..ids.len()).map(|i| Some(!gone.contains(&i))));
+            let kept = arrow_select::filter::filter(&ids, &keep)?;
+            kept.as_fixed_size_binary().clone()
+        };
+        let schema = match &self.current {
+            Some(s) if self.fresh && !c.changed => s.clone(),
+            _ => self.shape(&c.batch),
         };
         Ok(Shaped {
-            batch: self.assemble(schema, &batch, ids)?,
-            rejected: failed
-                .into_iter()
-                .map(|(row, reason)| Rejected { row, reason })
-                .collect(),
-            schema_changed: changed,
+            batch: self.assemble(schema, &c.batch, ids)?,
+            rejected,
+            schema_changed: c.changed,
+            versioned: c.versioned,
         })
     }
 
@@ -179,10 +229,15 @@ impl Shaper {
         ));
         let mut md = renamed.metadata().clone();
         md.insert(TABLE_KEY.to_owned(), self.table.clone());
+        if !self.evolver.versions().is_empty()
+            && let Ok(v) = serde_json::to_string(self.evolver.versions())
+        {
+            md.insert(VERSIONS_KEY.to_owned(), v);
+        }
         let schema = Arc::new(Schema::new_with_metadata(fields, md));
         if data {
             self.current = Some(schema.clone());
-            self.shaped = true;
+            self.fresh = true;
         }
         schema
     }
@@ -248,10 +303,15 @@ mod tests {
     }
 
     fn shaper(restored: Option<SchemaRef>) -> Shaper {
+        with_policy(Policy::AllowAll, restored)
+    }
+
+    fn with_policy(policy: Policy, restored: Option<SchemaRef>) -> Shaper {
         Shaper::new(
             Naming::default(),
             "users".into(),
             identity(),
+            policy,
             restored,
             None,
         )
@@ -340,6 +400,7 @@ mod tests {
                 cursor: Some("At".into()),
                 read_start: 0,
             },
+            Policy::AllowAll,
             None,
             None,
         )
@@ -377,6 +438,61 @@ mod tests {
         assert_ne!(ids(&out)[0], ids(&out)[1]);
     }
 
+    fn data_names(schema: &Schema) -> Vec<String> {
+        names(schema)
+            .into_iter()
+            .filter(|n| !n.starts_with("_openetl_"))
+            .collect()
+    }
+
+    #[test]
+    fn policies_apply_once_the_schema_is_established() {
+        let mut first = shaper(None);
+        rows(&mut first, &[r#"{"x": 1}"#]);
+        let restored = first.schema();
+
+        let mut s = with_policy(Policy::IgnoreNew, restored.clone());
+        let n = rows(&mut s, &[r#"{"x": 2, "y": "new"}"#, r#"{"x": 2.5}"#]);
+        assert!(!n.schema_changed);
+        assert_eq!(data_names(&n.batch.schema()), ["x"]);
+        assert_eq!(n.batch.num_rows(), 1);
+        assert_eq!(n.rejected.len(), 1);
+        assert_eq!(n.rejected[0].row, 1);
+        assert!(n.rejected[0].reason.starts_with("type: column \"x\""));
+
+        let mut s = with_policy(Policy::Block, restored);
+        let err = s.rows([br#"{"x": 1, "y": 1}"#.as_slice()]).unwrap_err();
+        assert!(matches!(err, Error::Drift(_)), "{err}");
+
+        // A new stream takes its first epoch's schema as it comes.
+        let mut s = with_policy(Policy::Block, None);
+        rows(&mut s, &[r#"{"x": 1}"#, r#"{"x": 1.5, "y": true}"#]);
+        s.seal();
+        assert!(s.rows([br#"{"z": 1}"#.as_slice()]).is_err());
+    }
+
+    #[test]
+    fn versioned_columns_are_restored() {
+        let typed = |a: ArrayRef| RecordBatch::try_from_iter(vec![("X", a)]).unwrap();
+        let mut s = shaper(None);
+        s.batch(&typed(Arc::new(Int64Array::from(vec![1]))))
+            .unwrap();
+        s.seal();
+        let flag = typed(Arc::new(arrow_array::BooleanArray::from(vec![true])));
+        let n = s.batch(&flag).unwrap();
+        assert!(n.schema_changed);
+        assert_eq!(n.versioned.len(), 1);
+        let schema = n.batch.schema();
+        assert_eq!(data_names(&schema), ["x", "x__v2"]);
+        assert_eq!(schema.metadata().get(VERSIONS_KEY).unwrap(), r#"{"X":2}"#);
+
+        let mut r = shaper(Some(schema.clone()));
+        let n = r.batch(&flag).unwrap();
+        assert_eq!(n.batch.schema().fields(), schema.fields());
+        assert_eq!(n.batch.column(0).null_count(), 1);
+        assert!(n.versioned.is_empty());
+    }
+
     #[test]
     fn rejects_a_restored_schema_with_a_repeated_name() {
         let bad = Arc::new(Schema::new_with_metadata(
@@ -386,8 +502,15 @@ mod tests {
             ],
             HashMap::from([(SOURCE_NAMES_KEY.to_owned(), r#"{"x_2":"x"}"#.to_owned())]),
         ));
-        let err =
-            Shaper::new(Naming::default(), "t".into(), identity(), Some(bad), None).unwrap_err();
+        let err = Shaper::new(
+            Naming::default(),
+            "t".into(),
+            identity(),
+            Policy::AllowAll,
+            Some(bad),
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::Restored(_)), "{err}");
     }
 }

@@ -22,6 +22,69 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type SchemaPolicy int32
+
+const (
+	// allow_all.
+	SchemaPolicy_SCHEMA_POLICY_UNSPECIFIED SchemaPolicy = 0
+	// Add columns and widen types. A type that isn't a widening goes to a new
+	// column, col__v2.
+	SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL SchemaPolicy = 1
+	// As allow_all, but a type that isn't a widening fails the job with
+	// SCHEMA_DRIFT.
+	SchemaPolicy_SCHEMA_POLICY_ALLOW_COLUMNS SchemaPolicy = 2
+	// Any change fails the job with SCHEMA_DRIFT.
+	SchemaPolicy_SCHEMA_POLICY_BLOCK SchemaPolicy = 3
+	// New columns are dropped in flight. Values are coerced to the
+	// established types, and records whose values don't fit are quarantined.
+	SchemaPolicy_SCHEMA_POLICY_IGNORE_NEW SchemaPolicy = 4
+)
+
+// Enum value maps for SchemaPolicy.
+var (
+	SchemaPolicy_name = map[int32]string{
+		0: "SCHEMA_POLICY_UNSPECIFIED",
+		1: "SCHEMA_POLICY_ALLOW_ALL",
+		2: "SCHEMA_POLICY_ALLOW_COLUMNS",
+		3: "SCHEMA_POLICY_BLOCK",
+		4: "SCHEMA_POLICY_IGNORE_NEW",
+	}
+	SchemaPolicy_value = map[string]int32{
+		"SCHEMA_POLICY_UNSPECIFIED":   0,
+		"SCHEMA_POLICY_ALLOW_ALL":     1,
+		"SCHEMA_POLICY_ALLOW_COLUMNS": 2,
+		"SCHEMA_POLICY_BLOCK":         3,
+		"SCHEMA_POLICY_IGNORE_NEW":    4,
+	}
+)
+
+func (x SchemaPolicy) Enum() *SchemaPolicy {
+	p := new(SchemaPolicy)
+	*p = x
+	return p
+}
+
+func (x SchemaPolicy) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SchemaPolicy) Descriptor() protoreflect.EnumDescriptor {
+	return file_openetl_engine_v1_engine_proto_enumTypes[0].Descriptor()
+}
+
+func (SchemaPolicy) Type() protoreflect.EnumType {
+	return &file_openetl_engine_v1_engine_proto_enumTypes[0]
+}
+
+func (x SchemaPolicy) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SchemaPolicy.Descriptor instead.
+func (SchemaPolicy) EnumDescriptor() ([]byte, []int) {
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{0}
+}
+
 type Lane int32
 
 const (
@@ -55,11 +118,11 @@ func (x Lane) String() string {
 }
 
 func (Lane) Descriptor() protoreflect.EnumDescriptor {
-	return file_openetl_engine_v1_engine_proto_enumTypes[0].Descriptor()
+	return file_openetl_engine_v1_engine_proto_enumTypes[1].Descriptor()
 }
 
 func (Lane) Type() protoreflect.EnumType {
-	return &file_openetl_engine_v1_engine_proto_enumTypes[0]
+	return &file_openetl_engine_v1_engine_proto_enumTypes[1]
 }
 
 func (x Lane) Number() protoreflect.EnumNumber {
@@ -68,7 +131,7 @@ func (x Lane) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Lane.Descriptor instead.
 func (Lane) EnumDescriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{0}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{1}
 }
 
 type EdgeDirection int32
@@ -104,11 +167,11 @@ func (x EdgeDirection) String() string {
 }
 
 func (EdgeDirection) Descriptor() protoreflect.EnumDescriptor {
-	return file_openetl_engine_v1_engine_proto_enumTypes[1].Descriptor()
+	return file_openetl_engine_v1_engine_proto_enumTypes[2].Descriptor()
 }
 
 func (EdgeDirection) Type() protoreflect.EnumType {
-	return &file_openetl_engine_v1_engine_proto_enumTypes[1]
+	return &file_openetl_engine_v1_engine_proto_enumTypes[2]
 }
 
 func (x EdgeDirection) Number() protoreflect.EnumNumber {
@@ -117,7 +180,7 @@ func (x EdgeDirection) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use EdgeDirection.Descriptor instead.
 func (EdgeDirection) EnumDescriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{1}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{2}
 }
 
 type StartJobRequest struct {
@@ -139,6 +202,9 @@ type StartJobRequest struct {
 	// path, or s3://bucket/prefix with region and endpoint as query
 	// parameters. Empty: such a record fails the job.
 	QuarantineUrl string `protobuf:"bytes,11,opt,name=quarantine_url,json=quarantineUrl,proto3" json:"quarantine_url,omitempty"`
+	// How changes to a stream's established schema are taken. A stream's
+	// schema is established once restored, or once it crosses a barrier.
+	SchemaPolicy  SchemaPolicy `protobuf:"varint,12,opt,name=schema_policy,json=schemaPolicy,proto3,enum=openetl.engine.v1.SchemaPolicy" json:"schema_policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -248,6 +314,13 @@ func (x *StartJobRequest) GetQuarantineUrl() string {
 		return x.QuarantineUrl
 	}
 	return ""
+}
+
+func (x *StartJobRequest) GetSchemaPolicy() SchemaPolicy {
+	if x != nil {
+		return x.SchemaPolicy
+	}
+	return SchemaPolicy_SCHEMA_POLICY_UNSPECIFIED
 }
 
 // Naming gives tables and columns their destination names. Names already in
@@ -1486,7 +1559,7 @@ var File_openetl_engine_v1_engine_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xf7\x03\n" +
+	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xbd\x04\n" +
 	"\x0fStartJobRequest\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x10\n" +
 	"\x03job\x18\x02 \x01(\tR\x03job\x12\x1e\n" +
@@ -1502,7 +1575,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x12restored_snapshots\x18\t \x03(\v2 .openetl.engine.v1.StateSnapshotR\x11restoredSnapshots\x121\n" +
 	"\x06naming\x18\n" +
 	" \x01(\v2\x19.openetl.engine.v1.NamingR\x06naming\x12%\n" +
-	"\x0equarantine_url\x18\v \x01(\tR\rquarantineUrl\"S\n" +
+	"\x0equarantine_url\x18\v \x01(\tR\rquarantineUrl\x12D\n" +
+	"\rschema_policy\x18\f \x01(\x0e2\x1f.openetl.engine.v1.SchemaPolicyR\fschemaPolicy\"S\n" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
@@ -1580,7 +1654,13 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06staged\x18\x02 \x01(\fR\x06staged\"\x10\n" +
 	"\x0eCommitResponse\"\r\n" +
 	"\vStopRequest\"\x0e\n" +
-	"\fStopResponse*;\n" +
+	"\fStopResponse*\xa2\x01\n" +
+	"\fSchemaPolicy\x12\x1d\n" +
+	"\x19SCHEMA_POLICY_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17SCHEMA_POLICY_ALLOW_ALL\x10\x01\x12\x1f\n" +
+	"\x1bSCHEMA_POLICY_ALLOW_COLUMNS\x10\x02\x12\x17\n" +
+	"\x13SCHEMA_POLICY_BLOCK\x10\x03\x12\x1c\n" +
+	"\x18SCHEMA_POLICY_IGNORE_NEW\x10\x04*;\n" +
 	"\x04Lane\x12\x14\n" +
 	"\x10LANE_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tLANE_ROWS\x10\x01\x12\x0e\n" +
@@ -1609,75 +1689,77 @@ func file_openetl_engine_v1_engine_proto_rawDescGZIP() []byte {
 	return file_openetl_engine_v1_engine_proto_rawDescData
 }
 
-var file_openetl_engine_v1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_openetl_engine_v1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_openetl_engine_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_openetl_engine_v1_engine_proto_goTypes = []any{
-	(Lane)(0),                // 0: openetl.engine.v1.Lane
-	(EdgeDirection)(0),       // 1: openetl.engine.v1.EdgeDirection
-	(*StartJobRequest)(nil),  // 2: openetl.engine.v1.StartJobRequest
-	(*Naming)(nil),           // 3: openetl.engine.v1.Naming
-	(*StreamPlan)(nil),       // 4: openetl.engine.v1.StreamPlan
-	(*Edge)(nil),             // 5: openetl.engine.v1.Edge
-	(*SinkPlan)(nil),         // 6: openetl.engine.v1.SinkPlan
-	(*RunnerSink)(nil),       // 7: openetl.engine.v1.RunnerSink
-	(*ParquetSink)(nil),      // 8: openetl.engine.v1.ParquetSink
-	(*DiscardSink)(nil),      // 9: openetl.engine.v1.DiscardSink
-	(*Limits)(nil),           // 10: openetl.engine.v1.Limits
-	(*StartJobResponse)(nil), // 11: openetl.engine.v1.StartJobResponse
-	(*RecoverRequest)(nil),   // 12: openetl.engine.v1.RecoverRequest
-	(*RecoverResponse)(nil),  // 13: openetl.engine.v1.RecoverResponse
-	(*EventsRequest)(nil),    // 14: openetl.engine.v1.EventsRequest
-	(*EventsResponse)(nil),   // 15: openetl.engine.v1.EventsResponse
-	(*EpochReady)(nil),       // 16: openetl.engine.v1.EpochReady
-	(*QuarantineFile)(nil),   // 17: openetl.engine.v1.QuarantineFile
-	(*StateSnapshot)(nil),    // 18: openetl.engine.v1.StateSnapshot
-	(*Metrics)(nil),          // 19: openetl.engine.v1.Metrics
-	(*StreamMetrics)(nil),    // 20: openetl.engine.v1.StreamMetrics
-	(*CommitRequest)(nil),    // 21: openetl.engine.v1.CommitRequest
-	(*CommitResponse)(nil),   // 22: openetl.engine.v1.CommitResponse
-	(*StopRequest)(nil),      // 23: openetl.engine.v1.StopRequest
-	(*StopResponse)(nil),     // 24: openetl.engine.v1.StopResponse
-	nil,                      // 25: openetl.engine.v1.EpochReady.SchemasEntry
-	(*v1.Epoch)(nil),         // 26: openetl.connector.v1.Epoch
-	(v1.Recovery)(0),         // 27: openetl.connector.v1.Recovery
+	(SchemaPolicy)(0),        // 0: openetl.engine.v1.SchemaPolicy
+	(Lane)(0),                // 1: openetl.engine.v1.Lane
+	(EdgeDirection)(0),       // 2: openetl.engine.v1.EdgeDirection
+	(*StartJobRequest)(nil),  // 3: openetl.engine.v1.StartJobRequest
+	(*Naming)(nil),           // 4: openetl.engine.v1.Naming
+	(*StreamPlan)(nil),       // 5: openetl.engine.v1.StreamPlan
+	(*Edge)(nil),             // 6: openetl.engine.v1.Edge
+	(*SinkPlan)(nil),         // 7: openetl.engine.v1.SinkPlan
+	(*RunnerSink)(nil),       // 8: openetl.engine.v1.RunnerSink
+	(*ParquetSink)(nil),      // 9: openetl.engine.v1.ParquetSink
+	(*DiscardSink)(nil),      // 10: openetl.engine.v1.DiscardSink
+	(*Limits)(nil),           // 11: openetl.engine.v1.Limits
+	(*StartJobResponse)(nil), // 12: openetl.engine.v1.StartJobResponse
+	(*RecoverRequest)(nil),   // 13: openetl.engine.v1.RecoverRequest
+	(*RecoverResponse)(nil),  // 14: openetl.engine.v1.RecoverResponse
+	(*EventsRequest)(nil),    // 15: openetl.engine.v1.EventsRequest
+	(*EventsResponse)(nil),   // 16: openetl.engine.v1.EventsResponse
+	(*EpochReady)(nil),       // 17: openetl.engine.v1.EpochReady
+	(*QuarantineFile)(nil),   // 18: openetl.engine.v1.QuarantineFile
+	(*StateSnapshot)(nil),    // 19: openetl.engine.v1.StateSnapshot
+	(*Metrics)(nil),          // 20: openetl.engine.v1.Metrics
+	(*StreamMetrics)(nil),    // 21: openetl.engine.v1.StreamMetrics
+	(*CommitRequest)(nil),    // 22: openetl.engine.v1.CommitRequest
+	(*CommitResponse)(nil),   // 23: openetl.engine.v1.CommitResponse
+	(*StopRequest)(nil),      // 24: openetl.engine.v1.StopRequest
+	(*StopResponse)(nil),     // 25: openetl.engine.v1.StopResponse
+	nil,                      // 26: openetl.engine.v1.EpochReady.SchemasEntry
+	(*v1.Epoch)(nil),         // 27: openetl.connector.v1.Epoch
+	(v1.Recovery)(0),         // 28: openetl.connector.v1.Recovery
 }
 var file_openetl_engine_v1_engine_proto_depIdxs = []int32{
-	4,  // 0: openetl.engine.v1.StartJobRequest.streams:type_name -> openetl.engine.v1.StreamPlan
-	5,  // 1: openetl.engine.v1.StartJobRequest.edges:type_name -> openetl.engine.v1.Edge
-	6,  // 2: openetl.engine.v1.StartJobRequest.sink:type_name -> openetl.engine.v1.SinkPlan
-	10, // 3: openetl.engine.v1.StartJobRequest.limits:type_name -> openetl.engine.v1.Limits
-	18, // 4: openetl.engine.v1.StartJobRequest.restored_snapshots:type_name -> openetl.engine.v1.StateSnapshot
-	3,  // 5: openetl.engine.v1.StartJobRequest.naming:type_name -> openetl.engine.v1.Naming
-	0,  // 6: openetl.engine.v1.StreamPlan.lane:type_name -> openetl.engine.v1.Lane
-	1,  // 7: openetl.engine.v1.Edge.direction:type_name -> openetl.engine.v1.EdgeDirection
-	7,  // 8: openetl.engine.v1.SinkPlan.runner:type_name -> openetl.engine.v1.RunnerSink
-	8,  // 9: openetl.engine.v1.SinkPlan.parquet:type_name -> openetl.engine.v1.ParquetSink
-	9,  // 10: openetl.engine.v1.SinkPlan.discard:type_name -> openetl.engine.v1.DiscardSink
-	26, // 11: openetl.engine.v1.RecoverRequest.epoch:type_name -> openetl.connector.v1.Epoch
-	27, // 12: openetl.engine.v1.RecoverResponse.recovery:type_name -> openetl.connector.v1.Recovery
-	16, // 13: openetl.engine.v1.EventsResponse.epoch_ready:type_name -> openetl.engine.v1.EpochReady
-	19, // 14: openetl.engine.v1.EventsResponse.metrics:type_name -> openetl.engine.v1.Metrics
-	26, // 15: openetl.engine.v1.EpochReady.epoch:type_name -> openetl.connector.v1.Epoch
-	18, // 16: openetl.engine.v1.EpochReady.snapshots:type_name -> openetl.engine.v1.StateSnapshot
-	25, // 17: openetl.engine.v1.EpochReady.schemas:type_name -> openetl.engine.v1.EpochReady.SchemasEntry
-	17, // 18: openetl.engine.v1.EpochReady.quarantine:type_name -> openetl.engine.v1.QuarantineFile
-	20, // 19: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
-	26, // 20: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
-	2,  // 21: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
-	12, // 22: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
-	14, // 23: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
-	21, // 24: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
-	23, // 25: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
-	11, // 26: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
-	13, // 27: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
-	15, // 28: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
-	22, // 29: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
-	24, // 30: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
-	26, // [26:31] is the sub-list for method output_type
-	21, // [21:26] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	5,  // 0: openetl.engine.v1.StartJobRequest.streams:type_name -> openetl.engine.v1.StreamPlan
+	6,  // 1: openetl.engine.v1.StartJobRequest.edges:type_name -> openetl.engine.v1.Edge
+	7,  // 2: openetl.engine.v1.StartJobRequest.sink:type_name -> openetl.engine.v1.SinkPlan
+	11, // 3: openetl.engine.v1.StartJobRequest.limits:type_name -> openetl.engine.v1.Limits
+	19, // 4: openetl.engine.v1.StartJobRequest.restored_snapshots:type_name -> openetl.engine.v1.StateSnapshot
+	4,  // 5: openetl.engine.v1.StartJobRequest.naming:type_name -> openetl.engine.v1.Naming
+	0,  // 6: openetl.engine.v1.StartJobRequest.schema_policy:type_name -> openetl.engine.v1.SchemaPolicy
+	1,  // 7: openetl.engine.v1.StreamPlan.lane:type_name -> openetl.engine.v1.Lane
+	2,  // 8: openetl.engine.v1.Edge.direction:type_name -> openetl.engine.v1.EdgeDirection
+	8,  // 9: openetl.engine.v1.SinkPlan.runner:type_name -> openetl.engine.v1.RunnerSink
+	9,  // 10: openetl.engine.v1.SinkPlan.parquet:type_name -> openetl.engine.v1.ParquetSink
+	10, // 11: openetl.engine.v1.SinkPlan.discard:type_name -> openetl.engine.v1.DiscardSink
+	27, // 12: openetl.engine.v1.RecoverRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	28, // 13: openetl.engine.v1.RecoverResponse.recovery:type_name -> openetl.connector.v1.Recovery
+	17, // 14: openetl.engine.v1.EventsResponse.epoch_ready:type_name -> openetl.engine.v1.EpochReady
+	20, // 15: openetl.engine.v1.EventsResponse.metrics:type_name -> openetl.engine.v1.Metrics
+	27, // 16: openetl.engine.v1.EpochReady.epoch:type_name -> openetl.connector.v1.Epoch
+	19, // 17: openetl.engine.v1.EpochReady.snapshots:type_name -> openetl.engine.v1.StateSnapshot
+	26, // 18: openetl.engine.v1.EpochReady.schemas:type_name -> openetl.engine.v1.EpochReady.SchemasEntry
+	18, // 19: openetl.engine.v1.EpochReady.quarantine:type_name -> openetl.engine.v1.QuarantineFile
+	21, // 20: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
+	27, // 21: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	3,  // 22: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
+	13, // 23: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
+	15, // 24: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
+	22, // 25: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
+	24, // 26: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
+	12, // 27: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
+	14, // 28: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
+	16, // 29: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
+	23, // 30: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
+	25, // 31: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
+	27, // [27:32] is the sub-list for method output_type
+	22, // [22:27] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_openetl_engine_v1_engine_proto_init() }
@@ -1699,7 +1781,7 @@ func file_openetl_engine_v1_engine_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_engine_v1_engine_proto_rawDesc), len(file_openetl_engine_v1_engine_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,

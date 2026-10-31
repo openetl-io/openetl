@@ -81,6 +81,15 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 	if err != nil {
 		return runner.Job{}, err
 	}
+	policy := runner.AllowAll
+	switch p.GetSchemaPolicy() {
+	case apiv1.SchemaPolicy_SCHEMA_POLICY_ALLOW_COLUMNS:
+		policy = runner.AllowColumns
+	case apiv1.SchemaPolicy_SCHEMA_POLICY_BLOCK:
+		policy = runner.Block
+	case apiv1.SchemaPolicy_SCHEMA_POLICY_IGNORE_NEW:
+		policy = runner.IgnoreNew
+	}
 	return runner.Job{
 		Pipeline:        spec.GetPipelineId(),
 		Source:          src,
@@ -89,6 +98,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 		Namespace:       p.GetDestination().GetNamespace(),
 		Settings:        settings,
 		KeepSourceNames: p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
+		SchemaPolicy:    policy,
 	}, nil
 }
 

@@ -162,6 +162,7 @@ where
             plan.naming,
             plan.tables[s].clone(),
             plan.identities[s].clone(),
+            plan.policy,
             plan.restored[s].clone(),
             plan.declared[s].clone(),
         )
@@ -214,6 +215,9 @@ where
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| String::from_utf8_lossy(&rows.rows[row]).into_owned();
                 hold(&plan, stream, &n.rejected, record, &mut held[local], c)?;
+                for v in &n.versioned {
+                    tracing::warn!(stream = %plan.streams[stream], "{v}");
+                }
                 if n.schema_changed {
                     send(&tx, schema_change(stream, &n.batch)?).await?;
                 }
@@ -231,6 +235,9 @@ where
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| openetl_normalize::render_row(&batch, row);
                 hold(&plan, stream, &n.rejected, record, &mut held[local], c)?;
+                for v in &n.versioned {
+                    tracing::warn!(stream = %plan.streams[stream], "{v}");
+                }
                 if n.schema_changed {
                     send(&tx, schema_change(stream, &n.batch)?).await?;
                 }
@@ -266,6 +273,7 @@ where
                     }),
                     _ => None,
                 };
+                shape[local].seal();
                 Out::Barrier(stream, epoch, shape[local].schema(), quarantined)
             }
             FrameKind::SchemaChange => Out::SchemaChange(stream, f.payload),
@@ -329,6 +337,7 @@ fn shape_error(stream: &str, e: NormalizeError) -> JobError {
     use arrow_schema::ArrowError as A;
     let code = match &e {
         NormalizeError::Json { .. } | NormalizeError::NotAnObject { .. } => ErrorCode::DataInvalid,
+        NormalizeError::Drift(_) => ErrorCode::SchemaDrift,
         NormalizeError::Unsupported { .. }
         | NormalizeError::Restored(_)
         | NormalizeError::Declared(_)
@@ -1060,6 +1069,21 @@ mod tests {
                 .unwrap()
                 .starts_with("precision:")
         );
+    }
+
+    #[tokio::test]
+    async fn a_blocked_change_is_schema_drift() {
+        let mut req = request(&["a", "b"]);
+        req.schema_policy = openetl_proto::engine::v1::SchemaPolicy::Block as i32;
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Rows, 0, rows(&[r#"{"x": 1, "y": 2}"#])).await;
+        let (err, st) = failure(h).await;
+        assert_eq!(err.code, ErrorCode::SchemaDrift);
+        assert_eq!(st.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message.contains("\"y\" is new"), "{}", err.message);
     }
 
     #[tokio::test]

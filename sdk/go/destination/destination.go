@@ -150,5 +150,24 @@ type Writer interface {
 	Close(ctx context.Context) error
 }
 
+// StreamSchema is a stream's schema as the dataflow shaped it: destination
+// names, the metadata columns, and its table in the "openetl.table" schema
+// metadata.
+type StreamSchema struct {
+	Name   string
+	Schema *arrow.Schema
+}
+
+// SchemaApplier is implemented by writers whose destination has a schema to
+// change, such as a database. ApplySchema makes each stream's table hold its
+// schema: it creates tables, adds columns and widens types, and never drops
+// or narrows them. It is idempotent, and isn't fenced.
+//
+// It runs before Recover with the restored epoch's schemas, and before
+// Commit for each epoch whose schemas changed.
+type SchemaApplier interface {
+	ApplySchema(ctx context.Context, streams []StreamSchema) error
+}
+
 // ErrFenced is returned when a newer generation owns the pipeline.
 var ErrFenced = errors.New("destination: fenced by a newer generation")

@@ -37,7 +37,10 @@ type Destination struct {
 	pool *pgxpool.Config
 }
 
-var _ destination.Destination = (*Destination)(nil)
+var (
+	_ destination.Destination   = (*Destination)(nil)
+	_ destination.SchemaApplier = (*writer)(nil)
+)
 
 func NewDestination(config []byte) (*Destination, error) {
 	cfg := DestinationConfig{Schema: "public"}
@@ -54,6 +57,10 @@ func NewDestination(config []byte) (*Destination, error) {
 		return nil, fmt.Errorf("postgres: dsn: %w", err)
 	}
 	pc.MaxConns = 4
+	// COPY encodes values for the column types a statement description
+	// gives. A cached one is stale once a column widens, and would encode the
+	// old type without an error.
+	pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
 	return &Destination{cfg: cfg, pool: pc}, nil
 }
 
@@ -194,20 +201,27 @@ func (w *writer) Write(ctx context.Context, e destination.Epoch, stream string, 
 	return nil
 }
 
-// widen adds columns that appeared since the staging table was created.
+// widen adds columns that appeared since the staging table was created, and
+// widens those whose type widened.
 func (w *writer) widen(ctx context.Context, st *stagingTable, cols []column) error {
 	for _, c := range cols {
 		i := slices.IndexFunc(st.cols, func(x column) bool { return x.name == c.name })
-		if i >= 0 {
-			if st.cols[i].typ != c.typ {
-				return fmt.Errorf("postgres: column %q changed type from %s to %s within an epoch", c.name, st.cols[i].typ, c.typ)
+		q := pgx.Identifier{c.name}.Sanitize()
+		switch {
+		case i < 0:
+			if _, err := w.pool.Exec(ctx, "ALTER TABLE "+w.ident(st.name)+" ADD COLUMN IF NOT EXISTS "+q+" "+c.typ); err != nil {
+				return fmt.Errorf("postgres: add column %q to staging: %w", c.name, err)
 			}
-			continue
+			st.cols = append(st.cols, c)
+		case st.cols[i].typ == c.typ:
+		case widens(st.cols[i].typ, c.typ):
+			if _, err := w.pool.Exec(ctx, "ALTER TABLE "+w.ident(st.name)+" ALTER COLUMN "+q+" TYPE "+c.typ+" USING "+q+"::"+c.typ); err != nil {
+				return fmt.Errorf("postgres: widen column %q in staging: %w", c.name, err)
+			}
+			st.cols[i] = c
+		default:
+			return fmt.Errorf("postgres: column %q changed from %s to %s within an epoch", c.name, st.cols[i].typ, c.typ)
 		}
-		if _, err := w.pool.Exec(ctx, "ALTER TABLE "+w.ident(st.name)+" ADD COLUMN IF NOT EXISTS "+pgx.Identifier{c.name}.Sanitize()+" "+c.typ); err != nil {
-			return fmt.Errorf("postgres: add column %q to staging: %w", c.name, err)
-		}
-		st.cols = append(st.cols, c)
 	}
 	return nil
 }
@@ -309,44 +323,96 @@ func quoteAll(names []string) string {
 	return strings.Join(q, ", ")
 }
 
-// ensureTarget creates the target table, or adds the staging table's new
-// columns to it, and returns the staging table's columns.
+// ensureTarget makes the target table hold the staging table's columns,
+// and returns them.
 func (w *writer) ensureTarget(ctx context.Context, desc staged, s stagedStream) ([]string, error) {
-	var exists bool
-	if err := w.pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", w.ident(s.Staging)).Scan(&exists); err != nil {
+	cols, err := w.columnTypes(ctx, s.Staging)
+	if err != nil {
 		return nil, err
 	}
-	if !exists {
+	if len(cols) == 0 {
 		return nil, fmt.Errorf("postgres: staging for %s in epoch %d-g%d is missing", s.Name, desc.Epoch, desc.Generation)
 	}
-	rows, err := w.pool.Query(ctx, `SELECT attname, format_type(atttypid, atttypmod) FROM pg_attribute
-		WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped ORDER BY attnum`, w.ident(s.Staging))
-	if err != nil {
-		return nil, fmt.Errorf("postgres: read staging columns for %s: %w", s.Name, err)
+	if err := w.ensureTable(ctx, s.Table, cols); err != nil {
+		return nil, err
 	}
-	type col struct{ name, typ string }
-	cols, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (col, error) {
-		var c col
+	names := make([]string, len(cols))
+	for i, c := range cols {
+		names[i] = c.name
+	}
+	return names, nil
+}
+
+// ApplySchema creates each stream's table, adds its new columns and widens
+// the columns whose type widened.
+func (w *writer) ApplySchema(ctx context.Context, streams []destination.StreamSchema) error {
+	if _, err := w.pool.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+pgx.Identifier{w.schema}.Sanitize()); err != nil {
+		return fmt.Errorf("postgres: create schema %s: %w", w.schema, err)
+	}
+	for _, s := range streams {
+		cols, err := columnsOf(s.Schema)
+		if err != nil {
+			return err
+		}
+		if err := w.ensureTable(ctx, targetTable(s.Schema, s.Name), cols); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureTable creates the table with cols, or adds and widens its columns
+// to hold them. A column already wider is left alone.
+func (w *writer) ensureTable(ctx context.Context, table string, cols []column) error {
+	have, err := w.columnTypes(ctx, table)
+	if err != nil {
+		return err
+	}
+	if len(have) == 0 {
+		if _, err := w.pool.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+w.ident(table)+" ("+columnDefs(cols)+")"); err != nil {
+			return fmt.Errorf("postgres: create %s: %w", table, err)
+		}
+		if have, err = w.columnTypes(ctx, table); err != nil {
+			return err
+		}
+	}
+	for _, c := range cols {
+		i := slices.IndexFunc(have, func(x column) bool { return x.name == c.name })
+		q := pgx.Identifier{c.name}.Sanitize()
+		var ddl string
+		switch {
+		case i < 0:
+			ddl = "ADD COLUMN IF NOT EXISTS " + q + " " + c.typ
+		case have[i].typ == c.typ || widens(c.typ, have[i].typ):
+			continue
+		case widens(have[i].typ, c.typ):
+			ddl = "ALTER COLUMN " + q + " TYPE " + c.typ + " USING " + q + "::" + c.typ
+		default:
+			return fmt.Errorf("postgres: column %q of %s is %s, and can't widen to %s", c.name, table, have[i].typ, c.typ)
+		}
+		if _, err := w.pool.Exec(ctx, "ALTER TABLE "+w.ident(table)+" "+ddl); err != nil {
+			return fmt.Errorf("postgres: change column %q of %s: %w", c.name, table, err)
+		}
+	}
+	return nil
+}
+
+// columnTypes returns a table's columns in order, or none if it doesn't
+// exist.
+func (w *writer) columnTypes(ctx context.Context, table string) ([]column, error) {
+	rows, err := w.pool.Query(ctx, `SELECT attname, format_type(atttypid, atttypmod) FROM pg_attribute
+		WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped ORDER BY attnum`, w.ident(table))
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read the columns of %s: %w", table, err)
+	}
+	cols, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (column, error) {
+		var c column
 		return c, r.Scan(&c.name, &c.typ)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("postgres: read staging columns for %s: %w", s.Name, err)
+		return nil, fmt.Errorf("postgres: read the columns of %s: %w", table, err)
 	}
-	defs := make([]string, len(cols))
-	names := make([]string, len(cols))
-	for i, c := range cols {
-		defs[i] = pgx.Identifier{c.name}.Sanitize() + " " + c.typ
-		names[i] = c.name
-	}
-	if _, err := w.pool.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+w.ident(s.Table)+" ("+strings.Join(defs, ", ")+")"); err != nil {
-		return nil, fmt.Errorf("postgres: create %s: %w", s.Table, err)
-	}
-	for _, d := range defs {
-		if _, err := w.pool.Exec(ctx, "ALTER TABLE "+w.ident(s.Table)+" ADD COLUMN IF NOT EXISTS "+d); err != nil {
-			return nil, fmt.Errorf("postgres: add column to %s: %w", s.Table, err)
-		}
-	}
-	return names, nil
+	return cols, nil
 }
 
 func (w *writer) unapplied(ctx context.Context, desc staged, streams []stagedStream) ([]stagedStream, error) {

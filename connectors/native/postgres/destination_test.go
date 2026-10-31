@@ -252,3 +252,76 @@ func TestOnlyAppend(t *testing.T) {
 		t.Fatal("Open accepted a merge stream")
 	}
 }
+
+func TestColumnsWiden(t *testing.T) {
+	env := newEnv(t)
+	ctx := t.Context()
+	w := env.open(1, destination.ScopePipeline, "nums")
+	recov(t, w, 1, destination.Epoch{}, nil)
+	ints := []arrow.Field{{Name: "x", Type: arrow.PrimitiveTypes.Int64, Nullable: true}}
+	floats := []arrow.Field{{Name: "x", Type: arrow.PrimitiveTypes.Float64, Nullable: true}}
+	e1, e2 := destination.Epoch{Generation: 1, N: 1}, destination.Epoch{Generation: 1, N: 2}
+	if err := w.Write(ctx, e1, "nums", batch(t, ints, `[{"x": 1}]`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(ctx, e1, precommit(t, w, e1)); err != nil {
+		t.Fatal(err)
+	}
+	// Widened within epoch 2, and across epochs.
+	if err := w.Write(ctx, e2, "nums", batch(t, ints, `[{"x": 2}]`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(ctx, e2, "nums", batch(t, floats, `[{"x": 2.5}]`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(ctx, e2, precommit(t, w, e2)); err != nil {
+		t.Fatal(err)
+	}
+	typ := func() string {
+		var typ string
+		err := env.conn.QueryRow(ctx, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = $1::regclass AND attname = 'x'",
+			env.schema+".nums").Scan(&typ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return typ
+	}
+	if got := typ(); got != "double precision" {
+		t.Errorf("x is %s", got)
+	}
+	if n := env.count("SELECT count(*) FROM $schema.nums WHERE x IN (1, 2, 2.5)"); n != 3 {
+		var got string
+		_ = env.conn.QueryRow(ctx, "SELECT string_agg(coalesce(x::text, 'null'), ',') FROM "+env.schema+".nums").Scan(&got)
+		t.Errorf("%d rows kept their values: %s", n, got)
+	}
+
+	sa := w.(destination.SchemaApplier)
+	table := func(name string) *arrow.Metadata {
+		md := arrow.NewMetadata([]string{tableKey}, []string{name})
+		return &md
+	}
+	text := arrow.NewSchema([]arrow.Field{{Name: "x", Type: arrow.BinaryTypes.String, Nullable: true}, nameField}, table("nums"))
+	for range 2 {
+		if err := sa.ApplySchema(ctx, []destination.StreamSchema{{Name: "nums", Schema: text}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	narrower := arrow.NewSchema(ints, table("nums"))
+	if err := sa.ApplySchema(ctx, []destination.StreamSchema{{Name: "nums", Schema: narrower}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := typ(); got != "text" {
+		t.Errorf("x is %s after ApplySchema", got)
+	}
+	if n := env.count("SELECT count(*) FROM $schema.nums WHERE name IS NULL AND x = '2.5'"); n != 1 {
+		t.Errorf("name isn't a new column, or x lost its value")
+	}
+	flags := arrow.NewSchema([]arrow.Field{{Name: "x", Type: arrow.FixedWidthTypes.Boolean, Nullable: true}}, table("other"))
+	if err := sa.ApplySchema(ctx, []destination.StreamSchema{{Name: "other", Schema: flags}}); err != nil {
+		t.Fatal(err)
+	}
+	ints2 := arrow.NewSchema(ints, table("other"))
+	if err := sa.ApplySchema(ctx, []destination.StreamSchema{{Name: "other", Schema: ints2}}); err == nil {
+		t.Error("boolean became bigint")
+	}
+}
