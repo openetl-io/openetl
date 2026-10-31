@@ -159,6 +159,7 @@ func extensionName(f arrow.Field) string {
 
 func TestRunPassesFramesThrough(t *testing.T) {
 	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
 	defer mem.AssertSize(t, 0)
 	ctx := testContext(t)
 
@@ -167,7 +168,7 @@ func TestRunPassesFramesThrough(t *testing.T) {
 	batch := b.NewRecordBatch()
 	b.Release()
 
-	got, err := run(ctx, &Dataflow{Options: options(t, mem)}, plan("a", "b"),
+	got, err := run(ctx, &Dataflow{Options: opts}, plan("a", "b"),
 		runner.Frame{Kind: runner.FrameRows, Stream: "a", Rows: rows(`{"x": 1}`, `{"x": 2}`)},
 		runner.Frame{Kind: runner.FrameBarrier, Stream: "a", Epoch: 5},
 		runner.Frame{Kind: runner.FrameBatch, Stream: "b", Batch: batch},
@@ -292,18 +293,25 @@ func TestEngineExitsWhenTheRunnerCloses(t *testing.T) {
 	})
 }
 
-// pagedSource emits each stream's pages with a resume point after each.
+// pagedSource emits each stream's pages with a resume point after each, and
+// calls afterPage with the number of pages emitted so far.
 type pagedSource struct {
-	pages map[string][][]string
+	pages     map[string][][]string
+	afterPage func(ctx context.Context, n int) error
 }
 
-func (s *pagedSource) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
+func (s *pagedSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	n := 0
 	for _, cs := range req.Streams {
 		for i, page := range s.pages[cs.Name] {
 			if err := out.Rows(cs.Name, rows(page...)); err != nil {
 				return err
 			}
 			if err := out.ResumePoint(cs.Name, []byte(strconv.Itoa(i+1))); err != nil {
+				return err
+			}
+			n++
+			if err := s.afterPage(ctx, n); err != nil {
 				return err
 			}
 		}
@@ -320,6 +328,34 @@ type memDest struct {
 	pending map[uint64]map[string][]int64
 	applied map[string][]int64
 	types   map[string]arrow.DataType
+	commits int
+	// Closed and replaced at every Commit.
+	committed chan struct{}
+}
+
+func newMemDest() *memDest {
+	return &memDest{
+		pending:   map[uint64]map[string][]int64{},
+		applied:   map[string][]int64{},
+		types:     map[string]arrow.DataType{},
+		committed: make(chan struct{}),
+	}
+}
+
+func (d *memDest) waitCommits(ctx context.Context, n int) error {
+	for {
+		d.mu.Lock()
+		done, ch := d.commits >= n, d.committed
+		d.mu.Unlock()
+		if done {
+			return nil
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (d *memDest) Capabilities() destination.Capabilities {
@@ -360,6 +396,9 @@ func (d *memDest) Commit(_ context.Context, e destination.Epoch, _ destination.S
 		d.applied[stream] = append(d.applied[stream], ids...)
 	}
 	delete(d.pending, e.N)
+	d.commits++
+	close(d.committed)
+	d.committed = make(chan struct{})
 	return nil
 }
 
@@ -371,27 +410,33 @@ func (d *memDest) Close(context.Context) error { return nil }
 
 func TestRunAttemptThroughTheEngine(t *testing.T) {
 	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
 	defer mem.AssertSize(t, 0)
 	ctx := testContext(t)
 
-	src := &pagedSource{pages: map[string][][]string{
-		"users": {
-			{`{"id": 1, "name": "a"}`, `{"id": 2, "name": "b"}`},
-			{`{"id": 3, "name": null}`},
-			{`{"id": 4, "name": "d", "extra": true}`},
+	// Each page waits for the previous one's epoch to commit, so with a
+	// one-byte threshold every page is its own epoch.
+	dest := newMemDest()
+	src := &pagedSource{
+		pages: map[string][][]string{
+			"users": {
+				{`{"id": 1, "name": "a"}`, `{"id": 2, "name": "b"}`},
+				{`{"id": 3, "name": null}`},
+				{`{"id": 4, "name": "d", "extra": true}`},
+			},
+			"orders": {
+				{`{"id": 10, "name": "x"}`},
+			},
 		},
-		"orders": {
-			{`{"id": 10, "name": "x"}`},
-		},
-	}}
-	dest := &memDest{pending: map[uint64]map[string][]int64{}, applied: map[string][]int64{}, types: map[string]arrow.DataType{}}
+		afterPage: dest.waitCommits,
+	}
 	job := runner.Job{
 		Owner:       "a1",
 		Pipeline:    "pipe",
 		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"),
 		Source:      src,
 		Destination: dest,
-		Dataflow:    &Dataflow{Options: options(t, mem)},
+		Dataflow:    &Dataflow{Options: opts},
 		Settings: runner.Settings{
 			Require:        delivery.ExactlyOnce,
 			Scope:          destination.ScopePipeline,
@@ -407,8 +452,8 @@ func TestRunAttemptThroughTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Committed < 2 || res.Last != uint64(res.Committed) {
-		t.Errorf("committed %d epochs, last %d", res.Committed, res.Last)
+	if res.Committed != 4 || res.Last != 4 {
+		t.Errorf("committed %d epochs, last %d; want 4 and 4", res.Committed, res.Last)
 	}
 	if got := dest.applied["users"]; !slices.Equal(got, []int64{1, 2, 3, 4}) {
 		t.Errorf("users applied %v", got)
