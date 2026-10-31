@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/unsuitable001/openetl/sdk/go"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
@@ -43,6 +44,7 @@ func TestCodeOf(t *testing.T) {
 		{limited, RateLimited},
 		{fmt.Errorf("read orders: %w", limited), RateLimited},
 		{Wrap(AuthInvalid, errors.New("401"), "token revoked"), AuthInvalid},
+		{fmt.Errorf("check: %w", sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_PERMISSION_DENIED, errors.New("42501"))), PermissionDenied},
 	}
 	for _, tt := range tests {
 		if got := CodeOf(tt.err); got != tt.want {

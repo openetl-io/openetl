@@ -564,6 +564,255 @@ func (x *ReportCheckpointResponse) GetAdded() bool {
 	return false
 }
 
+type GetConnectorConfigRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Connector:
+	//
+	//	*GetConnectorConfigRequest_SourceId
+	//	*GetConnectorConfigRequest_DestinationId
+	Connector     isGetConnectorConfigRequest_Connector `protobuf_oneof:"connector"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetConnectorConfigRequest) Reset() {
+	*x = GetConnectorConfigRequest{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetConnectorConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetConnectorConfigRequest) ProtoMessage() {}
+
+func (x *GetConnectorConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetConnectorConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetConnectorConfigRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetConnectorConfigRequest) GetConnector() isGetConnectorConfigRequest_Connector {
+	if x != nil {
+		return x.Connector
+	}
+	return nil
+}
+
+func (x *GetConnectorConfigRequest) GetSourceId() string {
+	if x != nil {
+		if x, ok := x.Connector.(*GetConnectorConfigRequest_SourceId); ok {
+			return x.SourceId
+		}
+	}
+	return ""
+}
+
+func (x *GetConnectorConfigRequest) GetDestinationId() string {
+	if x != nil {
+		if x, ok := x.Connector.(*GetConnectorConfigRequest_DestinationId); ok {
+			return x.DestinationId
+		}
+	}
+	return ""
+}
+
+type isGetConnectorConfigRequest_Connector interface {
+	isGetConnectorConfigRequest_Connector()
+}
+
+type GetConnectorConfigRequest_SourceId struct {
+	SourceId string `protobuf:"bytes,1,opt,name=source_id,json=sourceId,proto3,oneof"`
+}
+
+type GetConnectorConfigRequest_DestinationId struct {
+	DestinationId string `protobuf:"bytes,2,opt,name=destination_id,json=destinationId,proto3,oneof"`
+}
+
+func (*GetConnectorConfigRequest_SourceId) isGetConnectorConfigRequest_Connector() {}
+
+func (*GetConnectorConfigRequest_DestinationId) isGetConnectorConfigRequest_Connector() {}
+
+type GetConnectorConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OrgId         string                 `protobuf:"bytes,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
+	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	Config        *v1.ConnectorConfig    `protobuf:"bytes,3,opt,name=config,proto3" json:"config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetConnectorConfigResponse) Reset() {
+	*x = GetConnectorConfigResponse{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetConnectorConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetConnectorConfigResponse) ProtoMessage() {}
+
+func (x *GetConnectorConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetConnectorConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetConnectorConfigResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GetConnectorConfigResponse) GetOrgId() string {
+	if x != nil {
+		return x.OrgId
+	}
+	return ""
+}
+
+func (x *GetConnectorConfigResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *GetConnectorConfigResponse) GetConfig() *v1.ConnectorConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+type ReportCatalogRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	SourceId string                 `protobuf:"bytes,1,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	// The source version discovered.
+	Version string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	// Streams only; the API sets the rest.
+	Catalog       *v1.Catalog `protobuf:"bytes,3,opt,name=catalog,proto3" json:"catalog,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportCatalogRequest) Reset() {
+	*x = ReportCatalogRequest{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportCatalogRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportCatalogRequest) ProtoMessage() {}
+
+func (x *ReportCatalogRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportCatalogRequest.ProtoReflect.Descriptor instead.
+func (*ReportCatalogRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ReportCatalogRequest) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+func (x *ReportCatalogRequest) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *ReportCatalogRequest) GetCatalog() *v1.Catalog {
+	if x != nil {
+		return x.Catalog
+	}
+	return nil
+}
+
+type ReportCatalogResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Of the catalog's streams. The same streams always have the same digest.
+	Digest        string `protobuf:"bytes,1,opt,name=digest,proto3" json:"digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportCatalogResponse) Reset() {
+	*x = ReportCatalogResponse{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportCatalogResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportCatalogResponse) ProtoMessage() {}
+
+func (x *ReportCatalogResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportCatalogResponse.ProtoReflect.Descriptor instead.
+func (*ReportCatalogResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ReportCatalogResponse) GetDigest() string {
+	if x != nil {
+		return x.Digest
+	}
+	return ""
+}
+
 var File_openetl_dataplane_v1_dataplane_proto protoreflect.FileDescriptor
 
 const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
@@ -621,11 +870,27 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\bcomplete\x18\x05 \x01(\bR\bcomplete\x12#\n" +
 	"\rschema_digest\x18\x06 \x01(\tR\fschemaDigest\"0\n" +
 	"\x18ReportCheckpointResponse\x12\x14\n" +
-	"\x05added\x18\x01 \x01(\bR\x05added2\xd3\x02\n" +
+	"\x05added\x18\x01 \x01(\bR\x05added\"p\n" +
+	"\x19GetConnectorConfigRequest\x12\x1d\n" +
+	"\tsource_id\x18\x01 \x01(\tH\x00R\bsourceId\x12'\n" +
+	"\x0edestination_id\x18\x02 \x01(\tH\x00R\rdestinationIdB\v\n" +
+	"\tconnector\"\x86\x01\n" +
+	"\x1aGetConnectorConfigResponse\x12\x15\n" +
+	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x127\n" +
+	"\x06config\x18\x03 \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\x06config\"\x80\x01\n" +
+	"\x14ReportCatalogRequest\x12\x1b\n" +
+	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x121\n" +
+	"\acatalog\x18\x03 \x01(\v2\x17.openetl.api.v1.CatalogR\acatalog\"/\n" +
+	"\x15ReportCatalogResponse\x12\x16\n" +
+	"\x06digest\x18\x01 \x01(\tR\x06digest2\xb6\x04\n" +
 	"\x10DataPlaneService\x12b\n" +
 	"\vGetSyncSpec\x12(.openetl.dataplane.v1.GetSyncSpecRequest\x1a).openetl.dataplane.v1.GetSyncSpecResponse\x12h\n" +
 	"\rReportSchemas\x12*.openetl.dataplane.v1.ReportSchemasRequest\x1a+.openetl.dataplane.v1.ReportSchemasResponse\x12q\n" +
-	"\x10ReportCheckpoint\x12-.openetl.dataplane.v1.ReportCheckpointRequest\x1a..openetl.dataplane.v1.ReportCheckpointResponseBGZEgithub.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1b\x06proto3"
+	"\x10ReportCheckpoint\x12-.openetl.dataplane.v1.ReportCheckpointRequest\x1a..openetl.dataplane.v1.ReportCheckpointResponse\x12w\n" +
+	"\x12GetConnectorConfig\x12/.openetl.dataplane.v1.GetConnectorConfigRequest\x1a0.openetl.dataplane.v1.GetConnectorConfigResponse\x12h\n" +
+	"\rReportCatalog\x12*.openetl.dataplane.v1.ReportCatalogRequest\x1a+.openetl.dataplane.v1.ReportCatalogResponseBGZEgithub.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1b\x06proto3"
 
 var (
 	file_openetl_dataplane_v1_dataplane_proto_rawDescOnce sync.Once
@@ -639,40 +904,51 @@ func file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP() []byte {
 	return file_openetl_dataplane_v1_dataplane_proto_rawDescData
 }
 
-var file_openetl_dataplane_v1_dataplane_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_openetl_dataplane_v1_dataplane_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_openetl_dataplane_v1_dataplane_proto_goTypes = []any{
-	(*GetSyncSpecRequest)(nil),       // 0: openetl.dataplane.v1.GetSyncSpecRequest
-	(*GetSyncSpecResponse)(nil),      // 1: openetl.dataplane.v1.GetSyncSpecResponse
-	(*ReportSchemasRequest)(nil),     // 2: openetl.dataplane.v1.ReportSchemasRequest
-	(*ReportSchemasResponse)(nil),    // 3: openetl.dataplane.v1.ReportSchemasResponse
-	(*ReportCheckpointRequest)(nil),  // 4: openetl.dataplane.v1.ReportCheckpointRequest
-	(*CheckpointRef)(nil),            // 5: openetl.dataplane.v1.CheckpointRef
-	(*CheckpointStream)(nil),         // 6: openetl.dataplane.v1.CheckpointStream
-	(*ReportCheckpointResponse)(nil), // 7: openetl.dataplane.v1.ReportCheckpointResponse
-	nil,                              // 8: openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
-	(*v1.PipelineSpec)(nil),          // 9: openetl.api.v1.PipelineSpec
-	(*v1.ConnectorConfig)(nil),       // 10: openetl.api.v1.ConnectorConfig
-	(*timestamppb.Timestamp)(nil),    // 11: google.protobuf.Timestamp
+	(*GetSyncSpecRequest)(nil),         // 0: openetl.dataplane.v1.GetSyncSpecRequest
+	(*GetSyncSpecResponse)(nil),        // 1: openetl.dataplane.v1.GetSyncSpecResponse
+	(*ReportSchemasRequest)(nil),       // 2: openetl.dataplane.v1.ReportSchemasRequest
+	(*ReportSchemasResponse)(nil),      // 3: openetl.dataplane.v1.ReportSchemasResponse
+	(*ReportCheckpointRequest)(nil),    // 4: openetl.dataplane.v1.ReportCheckpointRequest
+	(*CheckpointRef)(nil),              // 5: openetl.dataplane.v1.CheckpointRef
+	(*CheckpointStream)(nil),           // 6: openetl.dataplane.v1.CheckpointStream
+	(*ReportCheckpointResponse)(nil),   // 7: openetl.dataplane.v1.ReportCheckpointResponse
+	(*GetConnectorConfigRequest)(nil),  // 8: openetl.dataplane.v1.GetConnectorConfigRequest
+	(*GetConnectorConfigResponse)(nil), // 9: openetl.dataplane.v1.GetConnectorConfigResponse
+	(*ReportCatalogRequest)(nil),       // 10: openetl.dataplane.v1.ReportCatalogRequest
+	(*ReportCatalogResponse)(nil),      // 11: openetl.dataplane.v1.ReportCatalogResponse
+	nil,                                // 12: openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	(*v1.PipelineSpec)(nil),            // 13: openetl.api.v1.PipelineSpec
+	(*v1.ConnectorConfig)(nil),         // 14: openetl.api.v1.ConnectorConfig
+	(*timestamppb.Timestamp)(nil),      // 15: google.protobuf.Timestamp
+	(*v1.Catalog)(nil),                 // 16: openetl.api.v1.Catalog
 }
 var file_openetl_dataplane_v1_dataplane_proto_depIdxs = []int32{
-	9,  // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
-	10, // 1: openetl.dataplane.v1.GetSyncSpecResponse.source:type_name -> openetl.api.v1.ConnectorConfig
-	10, // 2: openetl.dataplane.v1.GetSyncSpecResponse.destination:type_name -> openetl.api.v1.ConnectorConfig
-	8,  // 3: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	13, // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
+	14, // 1: openetl.dataplane.v1.GetSyncSpecResponse.source:type_name -> openetl.api.v1.ConnectorConfig
+	14, // 2: openetl.dataplane.v1.GetSyncSpecResponse.destination:type_name -> openetl.api.v1.ConnectorConfig
+	12, // 3: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
 	5,  // 4: openetl.dataplane.v1.ReportCheckpointRequest.previous:type_name -> openetl.dataplane.v1.CheckpointRef
-	11, // 5: openetl.dataplane.v1.ReportCheckpointRequest.create_time:type_name -> google.protobuf.Timestamp
+	15, // 5: openetl.dataplane.v1.ReportCheckpointRequest.create_time:type_name -> google.protobuf.Timestamp
 	6,  // 6: openetl.dataplane.v1.ReportCheckpointRequest.streams:type_name -> openetl.dataplane.v1.CheckpointStream
-	0,  // 7: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
-	2,  // 8: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
-	4,  // 9: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
-	1,  // 10: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
-	3,  // 11: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
-	7,  // 12: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
-	10, // [10:13] is the sub-list for method output_type
-	7,  // [7:10] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	14, // 7: openetl.dataplane.v1.GetConnectorConfigResponse.config:type_name -> openetl.api.v1.ConnectorConfig
+	16, // 8: openetl.dataplane.v1.ReportCatalogRequest.catalog:type_name -> openetl.api.v1.Catalog
+	0,  // 9: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
+	2,  // 10: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
+	4,  // 11: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
+	8,  // 12: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:input_type -> openetl.dataplane.v1.GetConnectorConfigRequest
+	10, // 13: openetl.dataplane.v1.DataPlaneService.ReportCatalog:input_type -> openetl.dataplane.v1.ReportCatalogRequest
+	1,  // 14: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
+	3,  // 15: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
+	7,  // 16: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
+	9,  // 17: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:output_type -> openetl.dataplane.v1.GetConnectorConfigResponse
+	11, // 18: openetl.dataplane.v1.DataPlaneService.ReportCatalog:output_type -> openetl.dataplane.v1.ReportCatalogResponse
+	14, // [14:19] is the sub-list for method output_type
+	9,  // [9:14] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_openetl_dataplane_v1_dataplane_proto_init() }
@@ -680,13 +956,17 @@ func file_openetl_dataplane_v1_dataplane_proto_init() {
 	if File_openetl_dataplane_v1_dataplane_proto != nil {
 		return
 	}
+	file_openetl_dataplane_v1_dataplane_proto_msgTypes[8].OneofWrappers = []any{
+		(*GetConnectorConfigRequest_SourceId)(nil),
+		(*GetConnectorConfigRequest_DestinationId)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_dataplane_v1_dataplane_proto_rawDesc), len(file_openetl_dataplane_v1_dataplane_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -42,6 +42,12 @@ const (
 	// DataPlaneServiceReportCheckpointProcedure is the fully-qualified name of the DataPlaneService's
 	// ReportCheckpoint RPC.
 	DataPlaneServiceReportCheckpointProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportCheckpoint"
+	// DataPlaneServiceGetConnectorConfigProcedure is the fully-qualified name of the DataPlaneService's
+	// GetConnectorConfig RPC.
+	DataPlaneServiceGetConnectorConfigProcedure = "/openetl.dataplane.v1.DataPlaneService/GetConnectorConfig"
+	// DataPlaneServiceReportCatalogProcedure is the fully-qualified name of the DataPlaneService's
+	// ReportCatalog RPC.
+	DataPlaneServiceReportCatalogProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportCatalog"
 )
 
 // DataPlaneServiceClient is a client for the openetl.dataplane.v1.DataPlaneService service.
@@ -55,6 +61,10 @@ type DataPlaneServiceClient interface {
 	// Mirrors a committed checkpoint into the control plane. A checkpoint
 	// already mirrored is skipped.
 	ReportCheckpoint(context.Context, *connect.Request[v1.ReportCheckpointRequest]) (*connect.Response[v1.ReportCheckpointResponse], error)
+	// The current config of a source or destination, for Check and Discover.
+	GetConnectorConfig(context.Context, *connect.Request[v1.GetConnectorConfigRequest]) (*connect.Response[v1.GetConnectorConfigResponse], error)
+	// Keeps a source's discovered catalog, and returns its digest.
+	ReportCatalog(context.Context, *connect.Request[v1.ReportCatalogRequest]) (*connect.Response[v1.ReportCatalogResponse], error)
 }
 
 // NewDataPlaneServiceClient constructs a client for the openetl.dataplane.v1.DataPlaneService
@@ -86,14 +96,28 @@ func NewDataPlaneServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportCheckpoint")),
 			connect.WithClientOptions(opts...),
 		),
+		getConnectorConfig: connect.NewClient[v1.GetConnectorConfigRequest, v1.GetConnectorConfigResponse](
+			httpClient,
+			baseURL+DataPlaneServiceGetConnectorConfigProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("GetConnectorConfig")),
+			connect.WithClientOptions(opts...),
+		),
+		reportCatalog: connect.NewClient[v1.ReportCatalogRequest, v1.ReportCatalogResponse](
+			httpClient,
+			baseURL+DataPlaneServiceReportCatalogProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportCatalog")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // dataPlaneServiceClient implements DataPlaneServiceClient.
 type dataPlaneServiceClient struct {
-	getSyncSpec      *connect.Client[v1.GetSyncSpecRequest, v1.GetSyncSpecResponse]
-	reportSchemas    *connect.Client[v1.ReportSchemasRequest, v1.ReportSchemasResponse]
-	reportCheckpoint *connect.Client[v1.ReportCheckpointRequest, v1.ReportCheckpointResponse]
+	getSyncSpec        *connect.Client[v1.GetSyncSpecRequest, v1.GetSyncSpecResponse]
+	reportSchemas      *connect.Client[v1.ReportSchemasRequest, v1.ReportSchemasResponse]
+	reportCheckpoint   *connect.Client[v1.ReportCheckpointRequest, v1.ReportCheckpointResponse]
+	getConnectorConfig *connect.Client[v1.GetConnectorConfigRequest, v1.GetConnectorConfigResponse]
+	reportCatalog      *connect.Client[v1.ReportCatalogRequest, v1.ReportCatalogResponse]
 }
 
 // GetSyncSpec calls openetl.dataplane.v1.DataPlaneService.GetSyncSpec.
@@ -111,6 +135,16 @@ func (c *dataPlaneServiceClient) ReportCheckpoint(ctx context.Context, req *conn
 	return c.reportCheckpoint.CallUnary(ctx, req)
 }
 
+// GetConnectorConfig calls openetl.dataplane.v1.DataPlaneService.GetConnectorConfig.
+func (c *dataPlaneServiceClient) GetConnectorConfig(ctx context.Context, req *connect.Request[v1.GetConnectorConfigRequest]) (*connect.Response[v1.GetConnectorConfigResponse], error) {
+	return c.getConnectorConfig.CallUnary(ctx, req)
+}
+
+// ReportCatalog calls openetl.dataplane.v1.DataPlaneService.ReportCatalog.
+func (c *dataPlaneServiceClient) ReportCatalog(ctx context.Context, req *connect.Request[v1.ReportCatalogRequest]) (*connect.Response[v1.ReportCatalogResponse], error) {
+	return c.reportCatalog.CallUnary(ctx, req)
+}
+
 // DataPlaneServiceHandler is an implementation of the openetl.dataplane.v1.DataPlaneService
 // service.
 type DataPlaneServiceHandler interface {
@@ -123,6 +157,10 @@ type DataPlaneServiceHandler interface {
 	// Mirrors a committed checkpoint into the control plane. A checkpoint
 	// already mirrored is skipped.
 	ReportCheckpoint(context.Context, *connect.Request[v1.ReportCheckpointRequest]) (*connect.Response[v1.ReportCheckpointResponse], error)
+	// The current config of a source or destination, for Check and Discover.
+	GetConnectorConfig(context.Context, *connect.Request[v1.GetConnectorConfigRequest]) (*connect.Response[v1.GetConnectorConfigResponse], error)
+	// Keeps a source's discovered catalog, and returns its digest.
+	ReportCatalog(context.Context, *connect.Request[v1.ReportCatalogRequest]) (*connect.Response[v1.ReportCatalogResponse], error)
 }
 
 // NewDataPlaneServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -150,6 +188,18 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportCheckpoint")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dataPlaneServiceGetConnectorConfigHandler := connect.NewUnaryHandler(
+		DataPlaneServiceGetConnectorConfigProcedure,
+		svc.GetConnectorConfig,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("GetConnectorConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dataPlaneServiceReportCatalogHandler := connect.NewUnaryHandler(
+		DataPlaneServiceReportCatalogProcedure,
+		svc.ReportCatalog,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportCatalog")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.dataplane.v1.DataPlaneService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DataPlaneServiceGetSyncSpecProcedure:
@@ -158,6 +208,10 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 			dataPlaneServiceReportSchemasHandler.ServeHTTP(w, r)
 		case DataPlaneServiceReportCheckpointProcedure:
 			dataPlaneServiceReportCheckpointHandler.ServeHTTP(w, r)
+		case DataPlaneServiceGetConnectorConfigProcedure:
+			dataPlaneServiceGetConnectorConfigHandler.ServeHTTP(w, r)
+		case DataPlaneServiceReportCatalogProcedure:
+			dataPlaneServiceReportCatalogHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -177,4 +231,12 @@ func (UnimplementedDataPlaneServiceHandler) ReportSchemas(context.Context, *conn
 
 func (UnimplementedDataPlaneServiceHandler) ReportCheckpoint(context.Context, *connect.Request[v1.ReportCheckpointRequest]) (*connect.Response[v1.ReportCheckpointResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportCheckpoint is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) GetConnectorConfig(context.Context, *connect.Request[v1.GetConnectorConfigRequest]) (*connect.Response[v1.GetConnectorConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.GetConnectorConfig is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) ReportCatalog(context.Context, *connect.Request[v1.ReportCatalogRequest]) (*connect.Response[v1.ReportCatalogResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportCatalog is not implemented"))
 }

@@ -85,6 +85,15 @@ type Source struct {
 	UpdateTime  time.Time
 }
 
+type SourceCatalog struct {
+	OrgID         uuid.UUID
+	SourceID      uuid.UUID
+	Digest        string
+	SourceVersion string
+	Catalog       []byte
+	DiscoverTime  time.Time
+}
+
 type StreamSchema struct {
 	OrgID       uuid.UUID
 	PipelineID  uuid.UUID

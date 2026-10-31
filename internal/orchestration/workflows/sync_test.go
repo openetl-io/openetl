@@ -129,3 +129,39 @@ func TestPausedPipelineDoesNotSync(t *testing.T) {
 		t.Fatalf("error %v, attempt or finish ran: %v", err, ran)
 	}
 }
+
+// Check and Discover run on the data plane's queue, Discover with a
+// heartbeat.
+func TestConnectorOpRunsOnTheDataPlane(t *testing.T) {
+	for _, op := range []string{contract.OpCheck, contract.OpDiscover} {
+		var s testsuite.WorkflowTestSuite
+		env := s.NewTestWorkflowEnvironment()
+		env.RegisterWorkflowWithOptions(workflows.Workflows{}.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
+		var ran []string
+		for _, name := range []string{contract.CheckConnector, contract.DiscoverSource} {
+			env.RegisterActivityWithOptions(func(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+				info := activity.GetInfo(ctx)
+				ran = append(ran, name)
+				if info.TaskQueue != contract.BatchQueue("dp1") {
+					t.Errorf("%s ran on %s", name, info.TaskQueue)
+				}
+				if (name == contract.DiscoverSource) != (info.HeartbeatTimeout > 0) {
+					t.Errorf("%s has heartbeat timeout %s", name, info.HeartbeatTimeout)
+				}
+				return contract.ConnectorOpResult{Version: "v1", Catalog: in.Op}, nil
+			}, activity.RegisterOptions{Name: name})
+		}
+		env.ExecuteWorkflow(contract.ConnectorOpWorkflow, contract.ConnectorOpInput{OrgID: "o", DataPlane: "dp1", Op: op, SourceID: "s"})
+		var res contract.ConnectorOpResult
+		if err := env.GetWorkflowResult(&res); err != nil {
+			t.Fatal(err)
+		}
+		want := contract.CheckConnector
+		if op == contract.OpDiscover {
+			want = contract.DiscoverSource
+		}
+		if len(ran) != 1 || ran[0] != want || res.Catalog != op {
+			t.Errorf("%s: ran %v, result %+v", op, ran, res)
+		}
+	}
+}

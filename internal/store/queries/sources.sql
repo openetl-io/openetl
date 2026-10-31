@@ -16,3 +16,15 @@ WHERE org_id = @org_id AND id = @id;
 
 -- name: DeleteSource :execrows
 DELETE FROM sources WHERE org_id = @org_id AND id = @id;
+
+-- name: GetSourceByID :one
+SELECT * FROM sources WHERE org_id = @org_id AND id = @id;
+
+-- name: UpsertSourceCatalog :exec
+INSERT INTO source_catalogs (org_id, source_id, digest, source_version, catalog)
+VALUES (@org_id, @source_id, @digest, @source_version, @catalog)
+ON CONFLICT (org_id, source_id, digest)
+DO UPDATE SET source_version = excluded.source_version, discover_time = now();
+
+-- name: GetSourceCatalog :one
+SELECT * FROM source_catalogs WHERE org_id = @org_id AND source_id = @source_id AND digest = @digest;

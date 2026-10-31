@@ -12,7 +12,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -99,27 +98,9 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	job.OnCommit = last.Store
 	reports := newReporter(ctx, a.API, spec.GetPipelineId(), info.WorkflowExecution.RunID, log)
 	job.OnSchemas, job.OnCheckpoint = reports.schemas, reports.checkpoint
-	every := 30 * time.Second
-	if t := info.HeartbeatTimeout / 4; t > 0 && t < every {
-		every = t
-	}
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		t := time.NewTicker(every)
-		defer t.Stop()
-		for {
-			select {
-			case <-t.C:
-				activity.RecordHeartbeat(ctx, last.Load())
-			case <-stop:
-				return
-			}
-		}
-	})
+	stop := heartbeats(ctx, func() any { return last.Load() })
 	r, err := runner.RunAttempt(ctx, job)
-	close(stop)
-	wg.Wait()
+	stop()
 	reports.close(5 * time.Second)
 
 	out = contract.AttemptResult{Generation: r.Generation, Restored: r.Restored, Committed: r.Committed, Last: r.Last}

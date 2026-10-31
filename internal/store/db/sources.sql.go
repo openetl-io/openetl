@@ -55,6 +55,56 @@ func (q *Queries) GetSource(ctx context.Context, arg GetSourceParams) (Source, e
 	return i, err
 }
 
+const getSourceByID = `-- name: GetSourceByID :one
+SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time FROM sources WHERE org_id = $1 AND id = $2
+`
+
+type GetSourceByIDParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+func (q *Queries) GetSourceByID(ctx context.Context, arg GetSourceByIDParams) (Source, error) {
+	row := q.db.QueryRow(ctx, getSourceByID, arg.OrgID, arg.ID)
+	var i Source
+	err := row.Scan(
+		&i.OrgID,
+		&i.WorkspaceID,
+		&i.ID,
+		&i.Name,
+		&i.Spec,
+		&i.Version,
+		&i.Revision,
+		&i.CreateTime,
+		&i.UpdateTime,
+	)
+	return i, err
+}
+
+const getSourceCatalog = `-- name: GetSourceCatalog :one
+SELECT org_id, source_id, digest, source_version, catalog, discover_time FROM source_catalogs WHERE org_id = $1 AND source_id = $2 AND digest = $3
+`
+
+type GetSourceCatalogParams struct {
+	OrgID    uuid.UUID
+	SourceID uuid.UUID
+	Digest   string
+}
+
+func (q *Queries) GetSourceCatalog(ctx context.Context, arg GetSourceCatalogParams) (SourceCatalog, error) {
+	row := q.db.QueryRow(ctx, getSourceCatalog, arg.OrgID, arg.SourceID, arg.Digest)
+	var i SourceCatalog
+	err := row.Scan(
+		&i.OrgID,
+		&i.SourceID,
+		&i.Digest,
+		&i.SourceVersion,
+		&i.Catalog,
+		&i.DiscoverTime,
+	)
+	return i, err
+}
+
 const insertSource = `-- name: InsertSource :exec
 INSERT INTO sources (org_id, workspace_id, id, name, spec, version, revision)
 VALUES ($1, $2, $3, $4, $5, $6, 1)
@@ -147,6 +197,32 @@ func (q *Queries) UpdateSource(ctx context.Context, arg UpdateSourceParams) erro
 		arg.Version,
 		arg.OrgID,
 		arg.ID,
+	)
+	return err
+}
+
+const upsertSourceCatalog = `-- name: UpsertSourceCatalog :exec
+INSERT INTO source_catalogs (org_id, source_id, digest, source_version, catalog)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (org_id, source_id, digest)
+DO UPDATE SET source_version = excluded.source_version, discover_time = now()
+`
+
+type UpsertSourceCatalogParams struct {
+	OrgID         uuid.UUID
+	SourceID      uuid.UUID
+	Digest        string
+	SourceVersion string
+	Catalog       []byte
+}
+
+func (q *Queries) UpsertSourceCatalog(ctx context.Context, arg UpsertSourceCatalogParams) error {
+	_, err := q.db.Exec(ctx, upsertSourceCatalog,
+		arg.OrgID,
+		arg.SourceID,
+		arg.Digest,
+		arg.SourceVersion,
+		arg.Catalog,
 	)
 	return err
 }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"text/tabwriter"
 
 	"connectrpc.com/connect"
 	"go.yaml.in/yaml/v3"
@@ -28,6 +29,9 @@ Commands:
   pause NAME      stop a pipeline's scheduled syncs
   resume NAME     start a pipeline's scheduled syncs again
   sync NAME       start a sync of a pipeline now
+  check source|destination NAME
+                  check that a source or destination is reachable
+  discover NAME   list a source's streams and columns
 
 Run openetl <command> -h for its flags.
 `
@@ -57,6 +61,10 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runApply(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
+	case "check":
+		return runCheck(ctx, args[1:], out)
+	case "discover":
+		return runDiscover(ctx, args[1:], out)
 	}
 	fmt.Fprint(os.Stderr, usage)
 	return fmt.Errorf("unknown command %q", args[0])
@@ -138,6 +146,90 @@ func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) 
 		return err
 	}
 	fmt.Fprintln(out, done, name)
+	return nil
+}
+
+func connectorFlags(cmd, usage string) (fs *flag.FlagSet, api, workspace, dataPlane *string) {
+	fs = flag.NewFlagSet("openetl "+cmd, flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "usage: openetl %s [flags] %s\n", cmd, usage)
+		fs.PrintDefaults()
+	}
+	api = apiURL(fs)
+	workspace = fs.String("workspace", "default", "the connector's workspace")
+	dataPlane = fs.String("data-plane", "", "the data plane whose runner runs it (default: the server's)")
+	return fs, api, workspace, dataPlane
+}
+
+func runCheck(ctx context.Context, args []string, out io.Writer) error {
+	fs, api, workspace, dataPlane := connectorFlags("check", "source|destination NAME")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	kind := fs.Arg(0)
+	if fs.NArg() != 2 || (kind != "source" && kind != "destination") {
+		return errors.New("check takes source or destination, then a name, after its flags")
+	}
+	name := "workspaces/" + *workspace + "/" + kind + "s/" + fs.Arg(1)
+	var res *apiv1.CheckResult
+	if kind == "source" {
+		r, err := apiv1connect.NewSourceServiceClient(http.DefaultClient, *api).CheckSource(ctx, connect.NewRequest(&apiv1.CheckSourceRequest{Name: name, DataPlane: *dataPlane}))
+		if err != nil {
+			return err
+		}
+		res = r.Msg.GetResult()
+	} else {
+		r, err := apiv1connect.NewDestinationServiceClient(http.DefaultClient, *api).CheckDestination(ctx, connect.NewRequest(&apiv1.CheckDestinationRequest{Name: name, DataPlane: *dataPlane}))
+		if err != nil {
+			return err
+		}
+		res = r.Msg.GetResult()
+	}
+	if !res.GetOk() {
+		return fmt.Errorf("%s failed its check: %s: %s", name, res.GetCode(), res.GetMessage())
+	}
+	fmt.Fprintf(out, "%s passed its check (version %.12s)\n", name, res.GetVersion())
+	return nil
+}
+
+func runDiscover(ctx context.Context, args []string, out io.Writer) error {
+	fs, api, workspace, dataPlane := connectorFlags("discover", "NAME")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("discover takes one source name, after its flags")
+	}
+	name := "workspaces/" + *workspace + "/sources/" + fs.Arg(0)
+	r, err := apiv1connect.NewSourceServiceClient(http.DefaultClient, *api).DiscoverSource(ctx, connect.NewRequest(&apiv1.DiscoverSourceRequest{Name: name, DataPlane: *dataPlane}))
+	if err != nil {
+		return err
+	}
+	for _, s := range r.Msg.GetCatalog().GetStreams() {
+		notes := []string{strings.ToLower(strings.TrimPrefix(s.GetReplay().String(), "REPLAY_"))}
+		if pk := s.GetPrimaryKey(); len(pk) > 0 {
+			notes = append(notes, "key "+strings.Join(pk, ", "))
+		}
+		if c := s.GetCursorField(); c != "" {
+			notes = append(notes, "cursor "+c)
+		}
+		fmt.Fprintf(out, "%s (%s)\n", s.GetName(), strings.Join(notes, "; "))
+		if len(s.GetColumns()) == 0 {
+			fmt.Fprintln(out, "  columns are inferred from the records")
+			continue
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		for _, c := range s.GetColumns() {
+			null := ""
+			if c.GetNullable() {
+				null = "nullable"
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", c.GetName(), c.GetType(), null)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

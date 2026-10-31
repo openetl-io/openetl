@@ -158,6 +158,13 @@ type StreamSchema struct {
 	Schema *arrow.Schema
 }
 
+// Checker is implemented by destinations that can confirm their config
+// reaches the destination with the access writes need, without writing
+// records.
+type Checker interface {
+	Check(ctx context.Context) error
+}
+
 // SchemaApplier is implemented by writers whose destination has a schema to
 // change, such as a database. ApplySchema makes each stream's table hold its
 // schema: it creates tables, adds columns and widens types, and never drops

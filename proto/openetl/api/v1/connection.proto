@@ -20,6 +20,21 @@ service SourceService {
   rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse) {
     option (google.api.http) = {delete: "/v1/{name=workspaces/*/sources/*}"};
   }
+  // Runs the source's Check on a runner of the data plane, and waits for it.
+  rpc CheckSource(CheckSourceRequest) returns (CheckSourceResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/sources/*}:check"
+      body: "*"
+    };
+  }
+  // Runs the source's Discover on a runner of the data plane, and waits for
+  // the catalog.
+  rpc DiscoverSource(DiscoverSourceRequest) returns (DiscoverSourceResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/sources/*}:discover"
+      body: "*"
+    };
+  }
 }
 
 // DestinationService reads and deletes destinations. ApplyService creates and
@@ -33,6 +48,14 @@ service DestinationService {
   }
   rpc DeleteDestination(DeleteDestinationRequest) returns (DeleteDestinationResponse) {
     option (google.api.http) = {delete: "/v1/{name=workspaces/*/destinations/*}"};
+  }
+  // Runs the destination's Check on a runner of the data plane, and waits
+  // for it.
+  rpc CheckDestination(CheckDestinationRequest) returns (CheckDestinationResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/destinations/*}:check"
+      body: "*"
+    };
   }
 }
 
@@ -119,3 +142,80 @@ message DeleteDestinationRequest {
 }
 
 message DeleteDestinationResponse {}
+
+message CheckSourceRequest {
+  string name = 1;
+  // The data plane whose runner checks it. Unset: the default.
+  string data_plane = 2;
+}
+
+message CheckSourceResponse {
+  CheckResult result = 1;
+}
+
+message CheckDestinationRequest {
+  string name = 1;
+  // The data plane whose runner checks it. Unset: the default.
+  string data_plane = 2;
+}
+
+message CheckDestinationResponse {
+  CheckResult result = 1;
+}
+
+// CheckResult is a connector's answer to Check. A connector without a check
+// of its own only validates its config.
+message CheckResult {
+  bool ok = 1;
+  // When not ok: a code of the error taxonomy, such as AUTH_INVALID.
+  string code = 2;
+  string message = 3;
+  // The source or destination version checked.
+  string version = 4;
+}
+
+message DiscoverSourceRequest {
+  string name = 1;
+  // The data plane whose runner discovers it. Unset: the default.
+  string data_plane = 2;
+}
+
+message DiscoverSourceResponse {
+  Catalog catalog = 1;
+}
+
+// Catalog is what a source's Discover found.
+message Catalog {
+  repeated CatalogStream streams = 1;
+  // The source version discovered.
+  string version = 2;
+  google.protobuf.Timestamp discover_time = 3;
+}
+
+message CatalogStream {
+  string name = 1;
+  repeated string primary_key = 2;
+  // The field whose value orders a record's versions; empty for none.
+  string cursor_field = 3;
+  Replay replay = 4;
+  // The columns the source declares; empty when the engine infers them from
+  // the records.
+  repeated CatalogColumn columns = 5;
+}
+
+// Replay is how a source replays a stream from a resume point.
+enum Replay {
+  REPLAY_UNSPECIFIED = 0;
+  // The same records, in the same order.
+  REPLAY_EXACT = 1;
+  // Possibly records already read, such as a cursor floor's ties.
+  REPLAY_SUPERSET = 2;
+}
+
+message CatalogColumn {
+  string name = 1;
+  // The Arrow type, such as int64, decimal(10, 2) or
+  // timestamp[us, tz=UTC].
+  string type = 2;
+  bool nullable = 3;
+}

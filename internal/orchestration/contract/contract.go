@@ -3,21 +3,38 @@
 // them without importing each other.
 package contract
 
+import "time"
+
 const (
 	OrchestratorQueue = "cp.orchestrator"
 
-	SyncWorkflow = "SyncWorkflow"
+	SyncWorkflow        = "SyncWorkflow"
+	ConnectorOpWorkflow = "ConnectorOpWorkflow"
 
 	StartSync      = "StartSync"
 	FinishSync     = "FinishSync"
 	RunSyncAttempt = "RunSyncAttempt"
+	CheckConnector = "CheckConnector"
+	DiscoverSource = "DiscoverSource"
 )
+
+// Connector operations.
+const (
+	OpCheck    = "check"
+	OpDiscover = "discover"
+)
+
+// OpPickup is how long a connector operation waits for a runner of its data
+// plane to take it.
+const OpPickup = time.Minute
 
 func BatchQueue(dataPlane string) string { return "dp." + dataPlane + ".batch" }
 
 func SyncWorkflowID(pipelineID string) string { return "sync/" + pipelineID }
 
 func ScheduleID(pipelineID string) string { return "schedule/" + pipelineID }
+
+func OpWorkflowID(id string) string { return "op/" + id }
 
 type SyncInput struct {
 	OrgID      string
@@ -60,4 +77,24 @@ type FinishSyncInput struct {
 type SyncResult struct {
 	SyncID  string
 	Attempt AttemptResult
+}
+
+type ConnectorOpInput struct {
+	OrgID     string
+	DataPlane string
+	// OpCheck or OpDiscover, which only sources have.
+	Op string
+	// One of them.
+	SourceID      string
+	DestinationID string
+}
+
+type ConnectorOpResult struct {
+	// Of the source or destination the operation ran on.
+	Version string
+	// A failed check's taxonomy code and message; empty if it passed.
+	Code    string
+	Message string
+	// The discovered catalog's digest (source_catalogs.digest).
+	Catalog string
 }

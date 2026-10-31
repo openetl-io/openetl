@@ -33,7 +33,8 @@ type Server struct {
 	Store     *store.Store
 	Tenant    store.Tenant
 	Schedules Scheduler
-	// For pipelines that name none.
+	Ops       OpRunner
+	// For pipelines and connector operations that name none.
 	DefaultDataPlane string
 	Logger           *slog.Logger
 }

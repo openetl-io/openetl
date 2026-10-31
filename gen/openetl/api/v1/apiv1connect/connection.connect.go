@@ -43,6 +43,12 @@ const (
 	// SourceServiceDeleteSourceProcedure is the fully-qualified name of the SourceService's
 	// DeleteSource RPC.
 	SourceServiceDeleteSourceProcedure = "/openetl.api.v1.SourceService/DeleteSource"
+	// SourceServiceCheckSourceProcedure is the fully-qualified name of the SourceService's CheckSource
+	// RPC.
+	SourceServiceCheckSourceProcedure = "/openetl.api.v1.SourceService/CheckSource"
+	// SourceServiceDiscoverSourceProcedure is the fully-qualified name of the SourceService's
+	// DiscoverSource RPC.
+	SourceServiceDiscoverSourceProcedure = "/openetl.api.v1.SourceService/DiscoverSource"
 	// DestinationServiceGetDestinationProcedure is the fully-qualified name of the DestinationService's
 	// GetDestination RPC.
 	DestinationServiceGetDestinationProcedure = "/openetl.api.v1.DestinationService/GetDestination"
@@ -52,6 +58,9 @@ const (
 	// DestinationServiceDeleteDestinationProcedure is the fully-qualified name of the
 	// DestinationService's DeleteDestination RPC.
 	DestinationServiceDeleteDestinationProcedure = "/openetl.api.v1.DestinationService/DeleteDestination"
+	// DestinationServiceCheckDestinationProcedure is the fully-qualified name of the
+	// DestinationService's CheckDestination RPC.
+	DestinationServiceCheckDestinationProcedure = "/openetl.api.v1.DestinationService/CheckDestination"
 )
 
 // SourceServiceClient is a client for the openetl.api.v1.SourceService service.
@@ -59,6 +68,11 @@ type SourceServiceClient interface {
 	GetSource(context.Context, *connect.Request[v1.GetSourceRequest]) (*connect.Response[v1.GetSourceResponse], error)
 	ListSources(context.Context, *connect.Request[v1.ListSourcesRequest]) (*connect.Response[v1.ListSourcesResponse], error)
 	DeleteSource(context.Context, *connect.Request[v1.DeleteSourceRequest]) (*connect.Response[v1.DeleteSourceResponse], error)
+	// Runs the source's Check on a runner of the data plane, and waits for it.
+	CheckSource(context.Context, *connect.Request[v1.CheckSourceRequest]) (*connect.Response[v1.CheckSourceResponse], error)
+	// Runs the source's Discover on a runner of the data plane, and waits for
+	// the catalog.
+	DiscoverSource(context.Context, *connect.Request[v1.DiscoverSourceRequest]) (*connect.Response[v1.DiscoverSourceResponse], error)
 }
 
 // NewSourceServiceClient constructs a client for the openetl.api.v1.SourceService service. By
@@ -90,14 +104,28 @@ func NewSourceServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(sourceServiceMethods.ByName("DeleteSource")),
 			connect.WithClientOptions(opts...),
 		),
+		checkSource: connect.NewClient[v1.CheckSourceRequest, v1.CheckSourceResponse](
+			httpClient,
+			baseURL+SourceServiceCheckSourceProcedure,
+			connect.WithSchema(sourceServiceMethods.ByName("CheckSource")),
+			connect.WithClientOptions(opts...),
+		),
+		discoverSource: connect.NewClient[v1.DiscoverSourceRequest, v1.DiscoverSourceResponse](
+			httpClient,
+			baseURL+SourceServiceDiscoverSourceProcedure,
+			connect.WithSchema(sourceServiceMethods.ByName("DiscoverSource")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // sourceServiceClient implements SourceServiceClient.
 type sourceServiceClient struct {
-	getSource    *connect.Client[v1.GetSourceRequest, v1.GetSourceResponse]
-	listSources  *connect.Client[v1.ListSourcesRequest, v1.ListSourcesResponse]
-	deleteSource *connect.Client[v1.DeleteSourceRequest, v1.DeleteSourceResponse]
+	getSource      *connect.Client[v1.GetSourceRequest, v1.GetSourceResponse]
+	listSources    *connect.Client[v1.ListSourcesRequest, v1.ListSourcesResponse]
+	deleteSource   *connect.Client[v1.DeleteSourceRequest, v1.DeleteSourceResponse]
+	checkSource    *connect.Client[v1.CheckSourceRequest, v1.CheckSourceResponse]
+	discoverSource *connect.Client[v1.DiscoverSourceRequest, v1.DiscoverSourceResponse]
 }
 
 // GetSource calls openetl.api.v1.SourceService.GetSource.
@@ -115,11 +143,26 @@ func (c *sourceServiceClient) DeleteSource(ctx context.Context, req *connect.Req
 	return c.deleteSource.CallUnary(ctx, req)
 }
 
+// CheckSource calls openetl.api.v1.SourceService.CheckSource.
+func (c *sourceServiceClient) CheckSource(ctx context.Context, req *connect.Request[v1.CheckSourceRequest]) (*connect.Response[v1.CheckSourceResponse], error) {
+	return c.checkSource.CallUnary(ctx, req)
+}
+
+// DiscoverSource calls openetl.api.v1.SourceService.DiscoverSource.
+func (c *sourceServiceClient) DiscoverSource(ctx context.Context, req *connect.Request[v1.DiscoverSourceRequest]) (*connect.Response[v1.DiscoverSourceResponse], error) {
+	return c.discoverSource.CallUnary(ctx, req)
+}
+
 // SourceServiceHandler is an implementation of the openetl.api.v1.SourceService service.
 type SourceServiceHandler interface {
 	GetSource(context.Context, *connect.Request[v1.GetSourceRequest]) (*connect.Response[v1.GetSourceResponse], error)
 	ListSources(context.Context, *connect.Request[v1.ListSourcesRequest]) (*connect.Response[v1.ListSourcesResponse], error)
 	DeleteSource(context.Context, *connect.Request[v1.DeleteSourceRequest]) (*connect.Response[v1.DeleteSourceResponse], error)
+	// Runs the source's Check on a runner of the data plane, and waits for it.
+	CheckSource(context.Context, *connect.Request[v1.CheckSourceRequest]) (*connect.Response[v1.CheckSourceResponse], error)
+	// Runs the source's Discover on a runner of the data plane, and waits for
+	// the catalog.
+	DiscoverSource(context.Context, *connect.Request[v1.DiscoverSourceRequest]) (*connect.Response[v1.DiscoverSourceResponse], error)
 }
 
 // NewSourceServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -147,6 +190,18 @@ func NewSourceServiceHandler(svc SourceServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(sourceServiceMethods.ByName("DeleteSource")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sourceServiceCheckSourceHandler := connect.NewUnaryHandler(
+		SourceServiceCheckSourceProcedure,
+		svc.CheckSource,
+		connect.WithSchema(sourceServiceMethods.ByName("CheckSource")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sourceServiceDiscoverSourceHandler := connect.NewUnaryHandler(
+		SourceServiceDiscoverSourceProcedure,
+		svc.DiscoverSource,
+		connect.WithSchema(sourceServiceMethods.ByName("DiscoverSource")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.api.v1.SourceService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SourceServiceGetSourceProcedure:
@@ -155,6 +210,10 @@ func NewSourceServiceHandler(svc SourceServiceHandler, opts ...connect.HandlerOp
 			sourceServiceListSourcesHandler.ServeHTTP(w, r)
 		case SourceServiceDeleteSourceProcedure:
 			sourceServiceDeleteSourceHandler.ServeHTTP(w, r)
+		case SourceServiceCheckSourceProcedure:
+			sourceServiceCheckSourceHandler.ServeHTTP(w, r)
+		case SourceServiceDiscoverSourceProcedure:
+			sourceServiceDiscoverSourceHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -176,11 +235,22 @@ func (UnimplementedSourceServiceHandler) DeleteSource(context.Context, *connect.
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.SourceService.DeleteSource is not implemented"))
 }
 
+func (UnimplementedSourceServiceHandler) CheckSource(context.Context, *connect.Request[v1.CheckSourceRequest]) (*connect.Response[v1.CheckSourceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.SourceService.CheckSource is not implemented"))
+}
+
+func (UnimplementedSourceServiceHandler) DiscoverSource(context.Context, *connect.Request[v1.DiscoverSourceRequest]) (*connect.Response[v1.DiscoverSourceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.SourceService.DiscoverSource is not implemented"))
+}
+
 // DestinationServiceClient is a client for the openetl.api.v1.DestinationService service.
 type DestinationServiceClient interface {
 	GetDestination(context.Context, *connect.Request[v1.GetDestinationRequest]) (*connect.Response[v1.GetDestinationResponse], error)
 	ListDestinations(context.Context, *connect.Request[v1.ListDestinationsRequest]) (*connect.Response[v1.ListDestinationsResponse], error)
 	DeleteDestination(context.Context, *connect.Request[v1.DeleteDestinationRequest]) (*connect.Response[v1.DeleteDestinationResponse], error)
+	// Runs the destination's Check on a runner of the data plane, and waits
+	// for it.
+	CheckDestination(context.Context, *connect.Request[v1.CheckDestinationRequest]) (*connect.Response[v1.CheckDestinationResponse], error)
 }
 
 // NewDestinationServiceClient constructs a client for the openetl.api.v1.DestinationService
@@ -212,6 +282,12 @@ func NewDestinationServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(destinationServiceMethods.ByName("DeleteDestination")),
 			connect.WithClientOptions(opts...),
 		),
+		checkDestination: connect.NewClient[v1.CheckDestinationRequest, v1.CheckDestinationResponse](
+			httpClient,
+			baseURL+DestinationServiceCheckDestinationProcedure,
+			connect.WithSchema(destinationServiceMethods.ByName("CheckDestination")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -220,6 +296,7 @@ type destinationServiceClient struct {
 	getDestination    *connect.Client[v1.GetDestinationRequest, v1.GetDestinationResponse]
 	listDestinations  *connect.Client[v1.ListDestinationsRequest, v1.ListDestinationsResponse]
 	deleteDestination *connect.Client[v1.DeleteDestinationRequest, v1.DeleteDestinationResponse]
+	checkDestination  *connect.Client[v1.CheckDestinationRequest, v1.CheckDestinationResponse]
 }
 
 // GetDestination calls openetl.api.v1.DestinationService.GetDestination.
@@ -237,11 +314,19 @@ func (c *destinationServiceClient) DeleteDestination(ctx context.Context, req *c
 	return c.deleteDestination.CallUnary(ctx, req)
 }
 
+// CheckDestination calls openetl.api.v1.DestinationService.CheckDestination.
+func (c *destinationServiceClient) CheckDestination(ctx context.Context, req *connect.Request[v1.CheckDestinationRequest]) (*connect.Response[v1.CheckDestinationResponse], error) {
+	return c.checkDestination.CallUnary(ctx, req)
+}
+
 // DestinationServiceHandler is an implementation of the openetl.api.v1.DestinationService service.
 type DestinationServiceHandler interface {
 	GetDestination(context.Context, *connect.Request[v1.GetDestinationRequest]) (*connect.Response[v1.GetDestinationResponse], error)
 	ListDestinations(context.Context, *connect.Request[v1.ListDestinationsRequest]) (*connect.Response[v1.ListDestinationsResponse], error)
 	DeleteDestination(context.Context, *connect.Request[v1.DeleteDestinationRequest]) (*connect.Response[v1.DeleteDestinationResponse], error)
+	// Runs the destination's Check on a runner of the data plane, and waits
+	// for it.
+	CheckDestination(context.Context, *connect.Request[v1.CheckDestinationRequest]) (*connect.Response[v1.CheckDestinationResponse], error)
 }
 
 // NewDestinationServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -269,6 +354,12 @@ func NewDestinationServiceHandler(svc DestinationServiceHandler, opts ...connect
 		connect.WithSchema(destinationServiceMethods.ByName("DeleteDestination")),
 		connect.WithHandlerOptions(opts...),
 	)
+	destinationServiceCheckDestinationHandler := connect.NewUnaryHandler(
+		DestinationServiceCheckDestinationProcedure,
+		svc.CheckDestination,
+		connect.WithSchema(destinationServiceMethods.ByName("CheckDestination")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.api.v1.DestinationService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DestinationServiceGetDestinationProcedure:
@@ -277,6 +368,8 @@ func NewDestinationServiceHandler(svc DestinationServiceHandler, opts ...connect
 			destinationServiceListDestinationsHandler.ServeHTTP(w, r)
 		case DestinationServiceDeleteDestinationProcedure:
 			destinationServiceDeleteDestinationHandler.ServeHTTP(w, r)
+		case DestinationServiceCheckDestinationProcedure:
+			destinationServiceCheckDestinationHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -296,4 +389,8 @@ func (UnimplementedDestinationServiceHandler) ListDestinations(context.Context, 
 
 func (UnimplementedDestinationServiceHandler) DeleteDestination(context.Context, *connect.Request[v1.DeleteDestinationRequest]) (*connect.Response[v1.DeleteDestinationResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.DestinationService.DeleteDestination is not implemented"))
+}
+
+func (UnimplementedDestinationServiceHandler) CheckDestination(context.Context, *connect.Request[v1.CheckDestinationRequest]) (*connect.Response[v1.CheckDestinationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.DestinationService.CheckDestination is not implemented"))
 }

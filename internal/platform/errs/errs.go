@@ -113,14 +113,24 @@ func Wrap(c Code, err error, msg string) error {
 	return &Error{Code: c, Msg: msg, Err: err}
 }
 
-// CodeOf returns the code of the first *Error in err's chain: Internal if
-// there is none, Unspecified if err is nil.
+// coded is how connectors classify errors (sdk.WithCode).
+type coded interface {
+	error
+	ErrorCode() protocolv1.ErrorCode
+}
+
+// CodeOf returns the code of the first *Error in err's chain, or else of the
+// first error a connector classified: Internal if there is none, Unspecified
+// if err is nil.
 func CodeOf(err error) Code {
 	if err == nil {
 		return Unspecified
 	}
 	if e, ok := errors.AsType[*Error](err); ok {
 		return e.Code
+	}
+	if e, ok := errors.AsType[coded](err); ok {
+		return Code(e.ErrorCode())
 	}
 	return Internal
 }

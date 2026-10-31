@@ -24,6 +24,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/engineclient"
 	cpactivities "github.com/unsuitable001/openetl/internal/orchestration/activities"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/orchestration/ops"
 	"github.com/unsuitable001/openetl/internal/orchestration/schedules"
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
@@ -89,7 +90,10 @@ func Run(ctx context.Context, o Options) error {
 			_ = ln.Close()
 			return err
 		}
-		srv := &api.Server{Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, DefaultDataPlane: cfg.DataPlane, Logger: log.With("role", "server")}
+		srv := &api.Server{
+			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc},
+			DefaultDataPlane: cfg.DataPlane, Logger: log.With("role", "server"),
+		}
 		g.Go(func() error { return serve(gctx, ln, srv.Handler(), o.Ready, log) })
 	}
 	if o.Roles.Orchestrator {
@@ -131,6 +135,7 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, ready func(stri
 func orchestrate(ctx context.Context, tc client.Client, st *store.Store, wf workflows.Workflows) error {
 	w := worker.New(tc, contract.OrchestratorQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(wf.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
+	w.RegisterWorkflowWithOptions(wf.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
 	acts := &cpactivities.Activities{Store: st}
 	w.RegisterActivityWithOptions(acts.StartSync, activity.RegisterOptions{Name: contract.StartSync})
 	w.RegisterActivityWithOptions(acts.FinishSync, activity.RegisterOptions{Name: contract.FinishSync})
@@ -145,8 +150,9 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	if err := checkpoint.Probe(ctx, cps, ""); err != nil {
 		return fmt.Errorf("daemon: the checkpoint store fails the conditional-write probe, so the runner won't start: %w", err)
 	}
+	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL)
 	sync := &dpactivities.Sync{
-		API:         dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL),
+		API:         apiClient,
 		Checkpoints: cps,
 		Storage:     cfg.Checkpoints,
 		Engine:      engineclient.Options{Binary: cfg.Engine, Logger: log.With("component", "engine")},
@@ -158,6 +164,9 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		WorkerStopTimeout: 2 * time.Minute,
 	})
 	w.RegisterActivityWithOptions(sync.RunSyncAttempt, activity.RegisterOptions{Name: contract.RunSyncAttempt})
+	connectorOps := &dpactivities.Ops{API: apiClient}
+	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
+	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
 	log.Info("runner polling", "queue", contract.BatchQueue(cfg.DataPlane), "checkpoints", cfg.Checkpoints)
 	return runWorker(ctx, w)
 }

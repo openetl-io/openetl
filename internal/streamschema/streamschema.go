@@ -50,9 +50,9 @@ func Describe(raw []byte) (Description, error) {
 			return Description{}, err
 		}
 	}
-	d.Columns = make([]Column, 0, s.NumFields())
-	for _, f := range s.Fields() {
-		d.Columns = append(d.Columns, Column{Name: f.Name, Type: typeName(f), Nullable: f.Nullable, Source: sources[f.Name]})
+	d.Columns = Columns(s)
+	for i := range d.Columns {
+		d.Columns[i].Source = sources[d.Columns[i].Name]
 	}
 	cols, err := json.Marshal(d.Columns)
 	if err != nil {
@@ -61,6 +61,15 @@ func Describe(raw []byte) (Description, error) {
 	sum := sha256.Sum256(append([]byte(d.Table+"\x00"), cols...))
 	d.Digest = hex.EncodeToString(sum[:])
 	return d, nil
+}
+
+// Columns describes a schema's fields.
+func Columns(s *arrow.Schema) []Column {
+	cols := make([]Column, 0, s.NumFields())
+	for _, f := range s.Fields() {
+		cols = append(cols, Column{Name: f.Name, Type: typeName(f), Nullable: f.Nullable})
+	}
+	return cols
 }
 
 // typeName is the field's Arrow type, with its extension where the field

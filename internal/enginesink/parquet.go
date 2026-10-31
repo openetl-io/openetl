@@ -14,10 +14,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 
+	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
@@ -34,7 +36,10 @@ type Parquet struct {
 	root string
 }
 
-var _ runner.EngineSink = (*Parquet)(nil)
+var (
+	_ runner.EngineSink   = (*Parquet)(nil)
+	_ destination.Checker = (*Parquet)(nil)
+)
 
 func NewParquet(config []byte) (*Parquet, error) {
 	var cfg ParquetConfig
@@ -48,6 +53,23 @@ func NewParquet(config []byte) (*Parquet, error) {
 		return nil, fmt.Errorf("parquet: url %q must be file:// and an absolute path", cfg.URL)
 	}
 	return &Parquet{root: filepath.Clean(filepath.FromSlash(u.Path))}, nil
+}
+
+// Check confirms the root directory exists, or can be created, and takes
+// new files.
+func (p *Parquet) Check(context.Context) error {
+	err := os.MkdirAll(p.root, 0o750)
+	if err == nil {
+		var f *os.File
+		if f, err = os.CreateTemp(p.root, ".openetl-check-*"); err == nil {
+			_ = f.Close()
+			err = os.Remove(f.Name())
+		}
+	}
+	if errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS) {
+		return errs.Wrap(errs.PermissionDenied, err, "parquet")
+	}
+	return err
 }
 
 func (p *Parquet) EngineSink() runner.SinkPlan {

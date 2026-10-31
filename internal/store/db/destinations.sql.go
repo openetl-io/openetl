@@ -55,6 +55,32 @@ func (q *Queries) GetDestination(ctx context.Context, arg GetDestinationParams) 
 	return i, err
 }
 
+const getDestinationByID = `-- name: GetDestinationByID :one
+SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time FROM destinations WHERE org_id = $1 AND id = $2
+`
+
+type GetDestinationByIDParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+func (q *Queries) GetDestinationByID(ctx context.Context, arg GetDestinationByIDParams) (Destination, error) {
+	row := q.db.QueryRow(ctx, getDestinationByID, arg.OrgID, arg.ID)
+	var i Destination
+	err := row.Scan(
+		&i.OrgID,
+		&i.WorkspaceID,
+		&i.ID,
+		&i.Name,
+		&i.Spec,
+		&i.Version,
+		&i.Revision,
+		&i.CreateTime,
+		&i.UpdateTime,
+	)
+	return i, err
+}
+
 const insertDestination = `-- name: InsertDestination :exec
 INSERT INTO destinations (org_id, workspace_id, id, name, spec, version, revision)
 VALUES ($1, $2, $3, $4, $5, $6, 1)

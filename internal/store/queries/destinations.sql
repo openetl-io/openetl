@@ -16,3 +16,6 @@ WHERE org_id = @org_id AND id = @id;
 
 -- name: DeleteDestination :execrows
 DELETE FROM destinations WHERE org_id = @org_id AND id = @id;
+
+-- name: GetDestinationByID :one
+SELECT * FROM destinations WHERE org_id = @org_id AND id = @id;

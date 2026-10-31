@@ -19,6 +19,10 @@ service DataPlaneService {
   // Mirrors a committed checkpoint into the control plane. A checkpoint
   // already mirrored is skipped.
   rpc ReportCheckpoint(ReportCheckpointRequest) returns (ReportCheckpointResponse);
+  // The current config of a source or destination, for Check and Discover.
+  rpc GetConnectorConfig(GetConnectorConfigRequest) returns (GetConnectorConfigResponse);
+  // Keeps a source's discovered catalog, and returns its digest.
+  rpc ReportCatalog(ReportCatalogRequest) returns (ReportCatalogResponse);
 }
 
 message GetSyncSpecRequest {
@@ -86,4 +90,30 @@ message CheckpointStream {
 message ReportCheckpointResponse {
   // False if the checkpoint was already mirrored.
   bool added = 1;
+}
+
+message GetConnectorConfigRequest {
+  oneof connector {
+    string source_id = 1;
+    string destination_id = 2;
+  }
+}
+
+message GetConnectorConfigResponse {
+  string org_id = 1;
+  string version = 2;
+  openetl.api.v1.ConnectorConfig config = 3;
+}
+
+message ReportCatalogRequest {
+  string source_id = 1;
+  // The source version discovered.
+  string version = 2;
+  // Streams only; the API sets the rest.
+  openetl.api.v1.Catalog catalog = 3;
+}
+
+message ReportCatalogResponse {
+  // Of the catalog's streams. The same streams always have the same digest.
+  string digest = 1;
 }
