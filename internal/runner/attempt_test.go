@@ -18,18 +18,19 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
-// Commit(1) returns only once PreCommit(2) has run, which needs barrier 2 to
-// be requested and placed while epoch 1 is committing.
+// The source emits its second page only once Commit(1) has started, and
+// Commit(1) returns only once PreCommit(2) has run, so barrier 2 must be
+// requested and placed while epoch 1 is committing.
 func TestBarrierRequestedWhileCommitting(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
-		dest := &blockingDest{preCommitted2: make(chan struct{})}
+		dest := &blockingDest{committing1: make(chan struct{}), preCommitted2: make(chan struct{})}
 		res, err := runner.RunAttempt(ctx, runner.Job{
 			Owner:       "a1",
 			Pipeline:    "p",
 			Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"),
-			Source:      pagedSource{pages: 6},
+			Source:      pagedSource{pages: 2, after1: dest.committing1},
 			Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
 			Destination: dest,
 			Dataflow:    countingFlow{},
@@ -46,17 +47,28 @@ func TestBarrierRequestedWhileCommitting(t *testing.T) {
 		if res.Committed < 2 {
 			t.Fatalf("committed %d epochs, want at least 2", res.Committed)
 		}
-		if dest.rows != 6 {
-			t.Fatalf("wrote %d rows, want 6", dest.rows)
+		if dest.rows != 2 {
+			t.Fatalf("wrote %d rows, want 2", dest.rows)
 		}
 	})
 }
 
-// pagedSource emits one row per page, each followed by a resume point.
-type pagedSource struct{ pages int }
+// pagedSource emits one row per page, each followed by a resume point, and
+// waits for after1 after the first.
+type pagedSource struct {
+	pages  int
+	after1 <-chan struct{}
+}
 
-func (s pagedSource) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
+func (s pagedSource) Read(ctx context.Context, _ source.ReadRequest, out source.Emitter) error {
 	for i := range s.pages {
+		if i == 1 {
+			select {
+			case <-s.after1:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		if err := out.Rows("s", []json.RawMessage{json.RawMessage(`{}`)}); err != nil {
 			return err
 		}
@@ -88,8 +100,8 @@ func (countingFlow) Run(ctx context.Context, _ runner.Plan, in <-chan runner.Fra
 }
 
 type blockingDest struct {
-	preCommitted2 chan struct{}
-	rows          int64
+	committing1, preCommitted2 chan struct{}
+	rows                       int64
 }
 
 func (d *blockingDest) Capabilities() destination.Capabilities {
@@ -116,6 +128,7 @@ func (d *blockingDest) Commit(ctx context.Context, e destination.Epoch, _ destin
 	if e.N != 1 {
 		return nil
 	}
+	close(d.committing1)
 	select {
 	case <-d.preCommitted2:
 		return nil
