@@ -193,9 +193,12 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	req.Edges = []*enginev1.Edge{
 		{Id: inEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names},
 	}
-	if u := plan.Sink.ParquetURL; u != "" {
-		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Parquet{Parquet: &enginev1.ParquetSink{Url: u}}}
-	} else {
+	switch {
+	case plan.Sink.ParquetURL != "":
+		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Parquet{Parquet: &enginev1.ParquetSink{Url: plan.Sink.ParquetURL}}}
+	case plan.Sink.Discard:
+		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Discard{Discard: &enginev1.DiscardSink{}}}
+	default:
 		req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names})
 	}
 	return req, names, index

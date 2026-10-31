@@ -45,6 +45,9 @@ const (
 	exitTimeout  = 5 * time.Second
 	// sun_path is 104 bytes on darwin, including the terminating NUL.
 	maxSocketPath = 103
+	// Unix sockets default to small buffers (8 KiB on darwin), which costs a
+	// context switch every few KiB of a batch. The engine uses the same size.
+	edgeSocketBuffer = 1 << 20
 )
 
 func (o Options) binary() (string, error) {
@@ -158,6 +161,9 @@ func (p *process) dialEdge(ctx context.Context, id string) (*net.UnixConn, error
 		return nil, fmt.Errorf("engineclient: connect edge %s: %w", id, err)
 	}
 	conn := c.(*net.UnixConn)
+	if err := errors.Join(conn.SetReadBuffer(edgeSocketBuffer), conn.SetWriteBuffer(edgeSocketBuffer)); err != nil {
+		p.log.Warn("sizing an edge's socket buffers failed", "edge", id, "err", err)
+	}
 	hello, err := proto.Marshal(&enginev1.Hello{Edge: id})
 	if err == nil {
 		fw := newFrameWriter(conn)

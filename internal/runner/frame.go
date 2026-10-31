@@ -49,6 +49,8 @@ type Plan struct {
 type SinkPlan struct {
 	// Parquet files under this file:// URL.
 	ParquetURL string
+	// The engine drops every batch; its epochs arrive staged with nothing.
+	Discard bool
 }
 
 // EngineSink is a destination whose data the engine writes. Its Writer only

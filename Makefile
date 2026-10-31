@@ -79,9 +79,10 @@ test-integration: ## Integration tests against the compose deps
 sim: ## Commit-protocol simulation; SEEDS=n runs n seeds per sink kind
 	go test ./test/sim -run TestSimulation -count=1 -timeout 60m -seeds=$(SEEDS)
 
+# Needs the compose Postgres. BENCH_FLAGS passes flags, e.g. -rows 10000000.
 .PHONY: bench-boundary
-bench-boundary: ## Runner/engine boundary benchmark
-	@echo "not built yet (tracker item P0.10)"; exit 1
+bench-boundary: engine ## Runner/engine boundary benchmark
+	go run ./test/bench/boundary -engine $(CURDIR)/target/release/openetl-engine $(BENCH_FLAGS)
 
 .PHONY: e2e
 e2e: ## Full-stack scenarios against the compose deps

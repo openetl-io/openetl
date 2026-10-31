@@ -25,6 +25,7 @@ pub enum Sink {
     Parquet {
         url: String,
     },
+    Discard,
 }
 
 #[derive(Debug)]
@@ -68,6 +69,7 @@ impl Plan {
                     .map_err(|e| JobError::config(e.to_string()))?;
                 None
             }
+            sink_plan::Sink::Discard(_) => None,
         };
 
         let mut ids = HashSet::new();
@@ -140,6 +142,7 @@ impl Plan {
                 Sink::Runner { edge, out_index }
             }
             sink_plan::Sink::Parquet(p) => Sink::Parquet { url: p.url },
+            sink_plan::Sink::Discard(_) => Sink::Discard,
         };
 
         Ok(Plan {
@@ -156,7 +159,9 @@ impl Plan {
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use super::*;
-    use openetl_proto::engine::v1::{Edge, ParquetSink, RunnerSink, SinkPlan, StreamPlan};
+    use openetl_proto::engine::v1::{
+        DiscardSink, Edge, ParquetSink, RunnerSink, SinkPlan, StreamPlan,
+    };
 
     fn edge(id: &str, dir: EdgeDirection, streams: &[&str]) -> Edge {
         Edge {
@@ -215,10 +220,29 @@ pub(crate) mod tests {
         assert_eq!(out_index, vec![2, 1, 0]);
     }
 
+    pub(crate) fn discard_request(streams: &[&str]) -> StartJobRequest {
+        let mut req = request(streams);
+        req.edges.pop();
+        req.sink = Some(SinkPlan {
+            sink: Some(sink_plan::Sink::Discard(DiscardSink {})),
+        });
+        req
+    }
+
     #[test]
     fn a_parquet_sink_has_no_outbound_edge() {
         let p = Plan::from_request(parquet_request(&["a", "b"], "file:///tmp/x")).unwrap();
         assert!(matches!(p.sink, Sink::Parquet { url } if url == "file:///tmp/x"));
+    }
+
+    #[test]
+    fn a_discard_sink_has_no_outbound_edge() {
+        let p = Plan::from_request(discard_request(&["a", "b"])).unwrap();
+        assert!(matches!(p.sink, Sink::Discard));
+        let mut req = discard_request(&["a", "b"]);
+        req.edges
+            .push(edge("out", EdgeDirection::FromEngine, &["a", "b"]));
+        assert!(Plan::from_request(req).is_err());
     }
 
     type Mutation = Box<dyn Fn(&mut StartJobRequest)>;

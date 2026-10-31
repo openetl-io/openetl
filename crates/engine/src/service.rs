@@ -27,6 +27,10 @@ use crate::plan::{Plan, Sink};
 /// How long the runner has to connect every edge after StartJob.
 const EDGE_TIMEOUT: Duration = Duration::from_secs(30);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+/// Unix sockets default to small buffers (8 KiB on macOS), which costs a
+/// context switch every few KiB of a batch. internal/engineclient uses the
+/// same size.
+const EDGE_SOCKET_BUFFER: usize = 1 << 20;
 
 pub struct Edge {
     pub reader: BufReader<OwnedReadHalf>,
@@ -81,7 +85,7 @@ impl Engine {
                 job.edges.insert(edge.id.clone(), tx);
                 Some(rx)
             }
-            Sink::Parquet { .. } => None,
+            Sink::Parquet { .. } | Sink::Discard => None,
         };
         *slot = Some(job);
 
@@ -181,6 +185,13 @@ pub async fn accept_edges(listener: UnixListener, engine: Arc<Engine>) {
 }
 
 async fn handshake(conn: UnixStream, engine: &Engine) -> Result<(), String> {
+    let sock = socket2::SockRef::from(&conn);
+    if let Err(e) = sock
+        .set_send_buffer_size(EDGE_SOCKET_BUFFER)
+        .and_then(|()| sock.set_recv_buffer_size(EDGE_SOCKET_BUFFER))
+    {
+        warn!(error = %e, "sizing an edge's socket buffers failed");
+    }
     let (r, w) = conn.into_split();
     let mut reader = BufReader::with_capacity(1 << 16, r);
     let f = tokio::time::timeout(HELLO_TIMEOUT, frame::read(&mut reader))

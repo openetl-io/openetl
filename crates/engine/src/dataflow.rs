@@ -91,6 +91,12 @@ where
                 .map_err(|e| JobError::internal(format!("the Parquet sink failed: {e}")))?
             })
         }
+        (Sink::Discard, None) => Box::pin(write_discard(
+            plan.clone(),
+            rx,
+            events.clone(),
+            counters.clone(),
+        )),
         _ => {
             let e = JobError::internal("the outbound edge doesn't match the sink");
             report(&events, &e).await;
@@ -437,6 +443,42 @@ fn write_parquet(
     Ok(true)
 }
 
+/// Drops every batch, and reports each epoch ready with nothing staged.
+/// Returns false if the inbound edges closed before every stream ended.
+async fn write_discard(
+    plan: Arc<Plan>,
+    mut rx: mpsc::Receiver<Out>,
+    events: Events,
+    counters: Arc<Vec<Counters>>,
+) -> Result<bool, JobError> {
+    let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
+    while !align.done() {
+        let Some(item) = rx.recv().await else {
+            return Ok(false);
+        };
+        match item {
+            Out::Batch(s, batch) => {
+                counters[s]
+                    .rows_out
+                    .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+            }
+            Out::SchemaChange(..) => {}
+            Out::Barrier(s, epoch) => align.cross(s, epoch.n),
+            Out::End(s) => align.end(s),
+        }
+        let ready = align.advance();
+        if ready.is_empty() {
+            continue;
+        }
+        for n in ready {
+            let _ = events.send(Ok(epoch_ready(&plan, n, Vec::new()))).await;
+        }
+        let _ = events.try_send(Ok(metrics(&plan, &counters)));
+    }
+    let _ = events.try_send(Ok(metrics(&plan, &counters)));
+    Ok(true)
+}
+
 fn sink_error(e: openetl_formats::Error) -> JobError {
     use openetl_formats::Error as E;
     use std::io::ErrorKind as K;
@@ -741,6 +783,38 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(left, 0, "the unsealed file is removed");
+    }
+
+    #[tokio::test]
+    async fn a_discard_sink_reports_every_epoch() {
+        let plan =
+            Arc::new(Plan::from_request(crate::plan::tests::discard_request(&["a", "b"])).unwrap());
+        let (mut w, engine_in) = duplex(1 << 16);
+        let (tx, mut events) = mpsc::channel(64);
+        let job = tokio::spawn(run::<_, DuplexStream>(
+            plan,
+            vec![BufReader::new(engine_in)],
+            None,
+            tx,
+        ));
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        put(&mut w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(&mut w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(&mut w, FrameKind::Rows, 1, rows(&[r#"{"y": 2}"#])).await;
+        put(&mut w, FrameKind::Barrier, 1, barrier(2)).await;
+        put(&mut w, FrameKind::EndOfStream, 1, vec![]).await;
+        put(&mut w, FrameKind::EndOfStream, 0, vec![]).await;
+        w.shutdown().await.unwrap();
+        job.await.unwrap().unwrap();
+
+        let mut ready = Vec::new();
+        while let Some(Ok(ev)) = events.recv().await {
+            if let Some(events_response::Event::EpochReady(r)) = ev.event {
+                assert!(r.staged.is_empty());
+                ready.push(r.epoch.unwrap().n);
+            }
+        }
+        assert_eq!(ready, vec![1, 2]);
     }
 
     #[tokio::test]

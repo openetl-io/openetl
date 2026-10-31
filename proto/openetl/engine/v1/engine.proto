@@ -69,6 +69,7 @@ message SinkPlan {
   oneof sink {
     RunnerSink runner = 1;
     ParquetSink parquet = 2;
+    DiscardSink discard = 3;
   }
 }
 
@@ -83,6 +84,10 @@ message ParquetSink {
   // file:// and an absolute path. Object stores come later.
   string url = 1;
 }
+
+// DiscardSink drops every batch and reports each epoch ready with nothing
+// staged. For benchmarks and tests.
+message DiscardSink {}
 
 message Limits {
   // Zero: no limit.

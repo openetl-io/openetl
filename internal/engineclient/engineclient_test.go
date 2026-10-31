@@ -631,3 +631,66 @@ func TestRunAttemptIntoParquet(t *testing.T) {
 		t.Errorf("staging left behind: %v", left)
 	}
 }
+
+// discardDest is the engine's discard sink. It records the epochs committed.
+type discardDest struct{ committed []uint64 }
+
+func (d *discardDest) EngineSink() runner.SinkPlan { return runner.SinkPlan{Discard: true} }
+
+func (d *discardDest) Capabilities() destination.Capabilities {
+	return destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}}
+}
+
+func (d *discardDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	return d, nil
+}
+
+func (d *discardDest) Write(context.Context, destination.Epoch, string, arrow.RecordBatch) error {
+	return errors.New("the engine sink got a batch")
+}
+
+func (d *discardDest) PreCommit(context.Context, destination.Epoch) (destination.Staged, error) {
+	return nil, errors.New("the engine sink was asked to pre-commit")
+}
+
+func (d *discardDest) Commit(_ context.Context, e destination.Epoch, s destination.Staged) error {
+	if len(s) != 0 {
+		return fmt.Errorf("epoch %d staged %q", e.N, s)
+	}
+	d.committed = append(d.committed, e.N)
+	return nil
+}
+
+func (d *discardDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+	return destination.Applied, nil
+}
+
+func (d *discardDest) Close(context.Context) error { return nil }
+
+func TestRunAttemptIntoTheDiscardSink(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	defer mem.AssertSize(t, 0)
+
+	dest := &discardDest{}
+	job := runner.Job{
+		Owner:    "a1",
+		Pipeline: "pipe",
+		Log:      checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"),
+		Source: &pagedSource{
+			pages:     map[string][][]string{"users": {{`{"id": 1}`}, {`{"id": 2}`}}},
+			afterPage: func(context.Context, int) error { return nil },
+		},
+		Streams:     []runner.Stream{{Name: "users", Replay: source.Exact, Mode: destination.Append}},
+		Destination: dest,
+		Dataflow:    &Dataflow{Options: opts},
+		Settings:    runner.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopeStream, Dedupe: delivery.DedupeAuto},
+	}
+	res, err := runner.RunAttempt(testContext(t), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Committed != 1 || !slices.Equal(dest.committed, []uint64{1}) {
+		t.Errorf("committed %d epochs: %v; want epoch 1", res.Committed, dest.committed)
+	}
+}
