@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"sync"
@@ -290,6 +291,45 @@ func TestEngineExitsWhenTheRunnerCloses(t *testing.T) {
 		p, _, _ := startJob(t)
 		_ = p.stdin.Close()
 		waitExited(t, p)
+	})
+	// A killed runner also stops reading the engine's output, so logging
+	// the exit fails.
+	t.Run("killed", func(t *testing.T) {
+		dir, err := os.MkdirTemp("", "oe-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		cmd := exec.Command(engineBinary(t), "serve", "--control", dir+"/c.sock", "--data", dir+"/d.sock", "--watch-stdin")
+		stdin, _ := cmd.StdinPipe()
+		stdout, _ := cmd.StdoutPipe()
+		stderr, _ := cmd.StderrPipe()
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		ready := make([]byte, len("ready\n"))
+		if _, err := io.ReadFull(stdout, ready); err != nil {
+			t.Fatal(err)
+		}
+		_ = stdout.Close()
+		_ = stderr.Close()
+		_ = stdin.Close()
+		var waitErr error
+		exited := make(chan struct{})
+		go func() {
+			waitErr = cmd.Wait()
+			close(exited)
+		}()
+		select {
+		case <-exited:
+			if waitErr != nil {
+				t.Fatalf("the engine didn't exit cleanly: %v", waitErr)
+			}
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-exited
+			t.Fatal("the engine is still running")
+		}
 	})
 }
 

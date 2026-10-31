@@ -84,6 +84,8 @@ fn serve(args: ServeArgs) -> ExitCode {
         .with_current_span(false)
         .with_span_list(false)
         .with_writer(std::io::stderr)
+        // Reporting a failed write panics once the runner has stopped reading.
+        .log_internal_errors(false)
         .with_env_filter(
             EnvFilter::try_from_env("OPENETL_ENGINE_LOG")
                 .unwrap_or_else(|_| EnvFilter::new("info")),
@@ -164,7 +166,7 @@ fn watch_stdin(shutdown: CancellationToken) {
                 break;
             }
         }
-        info!("stdin closed; exiting");
         shutdown.cancel();
+        info!("stdin closed; exiting");
     });
 }
