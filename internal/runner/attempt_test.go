@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -209,6 +210,40 @@ func TestAcknowledgementsTrailByOneRecord(t *testing.T) {
 	})
 }
 
+// A stream's read start survives a failed attempt, so rows re-read after it
+// keep their IDs, and starts again once the stream has completed.
+func TestReadStartLastsUntilTheStreamCompletes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		var plans []runner.Plan
+		run := func(src ackSource) error {
+			committed := make(chan uint64, 16)
+			src.committed, src.acks = committed, new([]string)
+			_, err := runner.RunAttempt(ctx, job(log, fmt.Sprintf("a%d", len(plans)), src, reportingFlow{plans: &plans}, committed))
+			time.Sleep(time.Second)
+			return err
+		}
+		if err := run(ackSource{pages: 4, failAfter: 2}); err == nil {
+			t.Fatal("the first attempt succeeded")
+		}
+		if err := run(ackSource{pages: 4}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(ackSource{pages: 4}); err != nil {
+			t.Fatal(err)
+		}
+		start := func(i int) int64 { return plans[i].ReadStarts["s"] }
+		if start(0) == 0 || start(1) != start(0) {
+			t.Errorf("the second attempt read from %d, want the first's %d", start(1), start(0))
+		}
+		if start(2) <= start(1) {
+			t.Errorf("after the stream completed, the next read started at %d, not after %d", start(2), start(1))
+		}
+	})
+}
+
 func job(log *checkpoint.Log, owner string, src source.Reader, flow runner.Dataflow, committed chan<- uint64) runner.Job {
 	return runner.Job{
 		Owner:       owner,
@@ -235,6 +270,8 @@ type ackSource struct {
 	pages     int
 	committed <-chan uint64
 	acks      *[]string
+	// Fail once page failAfter has committed; 0 never fails.
+	failAfter int
 }
 
 func (s ackSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
@@ -256,6 +293,9 @@ func (s ackSource) Read(ctx context.Context, req source.ReadRequest, out source.
 		case <-s.committed:
 		case <-ctx.Done():
 			return ctx.Err()
+		}
+		if i+1 == s.failAfter {
+			return errors.New("the source broke")
 		}
 	}
 	return out.Complete("s")

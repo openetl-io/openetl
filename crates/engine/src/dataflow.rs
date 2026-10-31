@@ -159,6 +159,7 @@ where
         let sh = Shaper::new(
             plan.naming,
             plan.tables[s].clone(),
+            plan.identities[s].clone(),
             plan.restored[s].clone(),
         )
         .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?;
@@ -205,17 +206,7 @@ where
                     .fetch_add(rows.rows.len() as u64, Ordering::Relaxed);
                 let n = shape[local]
                     .rows(rows.rows.iter().map(Vec::as_slice))
-                    .map_err(|e| {
-                        let code =
-                            match e {
-                                NormalizeError::Json { .. }
-                                | NormalizeError::NotAnObject { .. } => ErrorCode::DataInvalid,
-                                NormalizeError::Unsupported { .. }
-                                | NormalizeError::Restored(_) => ErrorCode::ConfigInvalid,
-                                NormalizeError::Arrow(_) => ErrorCode::Internal,
-                            };
-                        JobError::new(code, format!("stream {}: {e}", plan.streams[stream]))
-                    })?;
+                    .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 if n.schema_changed {
                     let encoded = ipc::encode_schema(&n.batch.schema())
                         .map_err(|e| JobError::internal(e.to_string()))?;
@@ -233,9 +224,9 @@ where
                 let batch = ipc::decode_batch(f.payload).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-                let batch = shape[local].batch(&batch).map_err(|e| {
-                    JobError::internal(format!("stream {}: {e}", plan.streams[stream]))
-                })?;
+                let batch = shape[local]
+                    .batch(&batch)
+                    .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 Out::Batch(stream, batch)
             }
             FrameKind::Barrier => {
@@ -267,6 +258,20 @@ where
         };
         send(&tx, out).await?;
     }
+}
+
+fn shape_error(stream: &str, e: NormalizeError) -> JobError {
+    use arrow_schema::ArrowError as A;
+    let code = match &e {
+        NormalizeError::Json { .. } | NormalizeError::NotAnObject { .. } => ErrorCode::DataInvalid,
+        NormalizeError::Unsupported { .. }
+        | NormalizeError::Restored(_)
+        | NormalizeError::Arrow(A::SchemaError(_) | A::NotYetImplemented(_)) => {
+            ErrorCode::ConfigInvalid
+        }
+        NormalizeError::Arrow(_) => ErrorCode::Internal,
+    };
+    JobError::new(code, format!("stream {stream}: {e}"))
 }
 
 async fn send(tx: &mpsc::Sender<Out>, out: Out) -> Result<(), JobError> {
@@ -716,7 +721,11 @@ mod tests {
             .iter()
             .map(|(name, encoded)| {
                 let schema = ipc::decode_schema(encoded).unwrap();
-                let types = schema.fields().iter().map(|f| f.data_type().clone());
+                let types = schema
+                    .fields()
+                    .iter()
+                    .filter(|f| !f.name().starts_with("_openetl_"))
+                    .map(|f| f.data_type().clone());
                 (name.clone(), types.collect())
             })
             .collect();
@@ -797,7 +806,7 @@ mod tests {
         h.job.await.unwrap().unwrap();
         assert_eq!((frames[0].kind, frames[0].stream), (FrameKind::Batch, 0));
         let out = ipc::decode_batch(frames[0].payload.clone()).unwrap();
-        assert_eq!(out.columns(), batch.columns());
+        assert_eq!(out.column(0), batch.column(0));
         let schema = out.schema();
         assert_eq!(schema.field(0).name(), "key");
         let names = naming::source_names(&schema).unwrap();

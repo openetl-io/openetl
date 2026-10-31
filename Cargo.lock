@@ -863,6 +863,7 @@ name = "openetl-normalize"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-schema",
  "serde_json",
  "thiserror",

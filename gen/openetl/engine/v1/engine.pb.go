@@ -306,8 +306,14 @@ type StreamPlan struct {
 	// The stream's schema in the restored checkpoint, as EpochReady reported
 	// it. Inference continues from it.
 	RestoredSchema []byte `protobuf:"bytes,5,opt,name=restored_schema,json=restoredSchema,proto3" json:"restored_schema,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The column whose value orders a record's versions, and becomes its
+	// _openetl_seq. Empty: read_start_micros is.
+	CursorField string `protobuf:"bytes,6,opt,name=cursor_field,json=cursorField,proto3" json:"cursor_field,omitempty"`
+	// When the stream's current read started, in microseconds since the Unix
+	// epoch.
+	ReadStartMicros int64 `protobuf:"varint,7,opt,name=read_start_micros,json=readStartMicros,proto3" json:"read_start_micros,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *StreamPlan) Reset() {
@@ -373,6 +379,20 @@ func (x *StreamPlan) GetRestoredSchema() []byte {
 		return x.RestoredSchema
 	}
 	return nil
+}
+
+func (x *StreamPlan) GetCursorField() string {
+	if x != nil {
+		return x.CursorField
+	}
+	return ""
+}
+
+func (x *StreamPlan) GetReadStartMicros() int64 {
+	if x != nil {
+		return x.ReadStartMicros
+	}
+	return 0
 }
 
 type Edge struct {
@@ -1403,7 +1423,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
-	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xba\x01\n" +
+	"max_length\x18\x02 \x01(\rR\tmaxLength\"\x89\x02\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
@@ -1411,7 +1431,9 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\vprimary_key\x18\x03 \x03(\tR\n" +
 	"primaryKey\x12!\n" +
 	"\farrow_schema\x18\x04 \x01(\fR\varrowSchema\x12'\n" +
-	"\x0frestored_schema\x18\x05 \x01(\fR\x0erestoredSchema\"p\n" +
+	"\x0frestored_schema\x18\x05 \x01(\fR\x0erestoredSchema\x12!\n" +
+	"\fcursor_field\x18\x06 \x01(\tR\vcursorField\x12*\n" +
+	"\x11read_start_micros\x18\a \x01(\x03R\x0freadStartMicros\"p\n" +
 	"\x04Edge\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12>\n" +
 	"\tdirection\x18\x02 \x01(\x0e2 .openetl.engine.v1.EdgeDirectionR\tdirection\x12\x18\n" +

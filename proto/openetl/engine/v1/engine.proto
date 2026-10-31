@@ -59,6 +59,12 @@ message StreamPlan {
   // The stream's schema in the restored checkpoint, as EpochReady reported
   // it. Inference continues from it.
   bytes restored_schema = 5;
+  // The column whose value orders a record's versions, and becomes its
+  // _openetl_seq. Empty: read_start_micros is.
+  string cursor_field = 6;
+  // When the stream's current read started, in microseconds since the Unix
+  // epoch.
+  int64 read_start_micros = 7;
 }
 
 enum Lane {

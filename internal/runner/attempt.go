@@ -20,10 +20,11 @@ import (
 )
 
 type Stream struct {
-	Name       string
-	Replay     source.Replay
-	Mode       destination.WriteMode
-	PrimaryKey []string
+	Name        string
+	Replay      source.Replay
+	Mode        destination.WriteMode
+	PrimaryKey  []string
+	CursorField string
 }
 
 // Settings are a pipeline's spec.delivery.
@@ -201,7 +202,7 @@ func (j *Job) validate() error {
 type eventKind uint8
 
 const (
-	evPlaced    eventKind = iota + 1 // every stream crossed barrier epoch
+	evPlaced    eventKind = iota + 1 // every stream crossed barrier epoch; complete lists the streams it ended
 	evStaged                         // the sink staged epoch
 	evReady                          // the dataflow's part of epoch is durable
 	evThreshold                      // CommitMaxBytes was reached
@@ -210,19 +211,21 @@ const (
 )
 
 type event struct {
-	kind   eventKind
-	epoch  uint64
-	states map[string][]byte
-	forced []string
-	staged destination.Staged
-	ready  *Ready
-	active bool
+	kind     eventKind
+	epoch    uint64
+	states   map[string][]byte
+	forced   []string
+	complete map[string]bool
+	staged   destination.Staged
+	ready    *Ready
+	active   bool
 }
 
 type epochState struct {
 	placed, staged, ready bool
 	states                map[string][]byte
 	forced                []string
+	complete              map[string]bool
 	desc                  destination.Staged
 	flow                  *Ready
 }
@@ -254,12 +257,24 @@ type coordinator struct {
 	pending     map[uint64]*epochState
 	committed   uint64            // the last epoch committed or restored
 	ackStates   map[string][]byte // owned by the committer: states of the committed epoch, acked after the next commit
+	readStarts  map[string]int64
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
 	states := map[string][]byte{}
 	schemas := map[string][]byte{}
 	restoredForced := map[string]bool{}
+	now := time.Now().UnixMicro()
+	c.readStarts = make(map[string]int64, len(c.job.Streams))
+	for _, s := range c.job.Streams {
+		c.readStarts[s.Name] = now
+		if restored == nil {
+			continue
+		}
+		if st := restored.Streams[s.Name]; st.ReadStart != 0 && !st.Complete {
+			c.readStarts[s.Name] = st.ReadStart
+		}
+	}
 	if restored != nil {
 		c.committed = restored.Epoch
 		for name, st := range restored.Streams {
@@ -292,7 +307,8 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 			KeepSource: c.job.KeepSourceNames,
 			MaxLength:  c.job.Destination.Capabilities().MaxIdentifierLength,
 		},
-		Schemas: schemas,
+		ReadStarts: c.readStarts,
+		Schemas:    schemas,
 	}
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots
@@ -397,7 +413,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 		if st == nil || st.placed {
 			return fmt.Errorf("runner: unexpected placement of epoch %d", ev.epoch)
 		}
-		st.placed, st.states, st.forced = true, ev.states, ev.forced
+		st.placed, st.states, st.forced, st.complete = true, ev.states, ev.forced, ev.complete
 		c.outstanding = false
 	case evStaged:
 		st := c.pending[ev.epoch]
@@ -459,7 +475,12 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		CreatedAt: time.Now().UTC(),
 	}
 	for name, state := range st.states {
-		rec.Streams[name] = checkpoint.StreamState{State: state, Schema: st.flow.Schemas[name]}
+		rec.Streams[name] = checkpoint.StreamState{
+			State:     state,
+			Schema:    st.flow.Schemas[name],
+			ReadStart: c.readStarts[name],
+			Complete:  st.complete[name],
+		}
 	}
 	slices.Sort(rec.Forced)
 	err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced)

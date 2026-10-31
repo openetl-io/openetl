@@ -64,7 +64,9 @@ type Reader interface {
 type CatalogStream struct {
 	Name       string
 	PrimaryKey []string
-	Replay     Replay
+	// The field whose value orders a record's versions; empty for none.
+	CursorField string
+	Replay      Replay
 }
 
 type Catalog struct {

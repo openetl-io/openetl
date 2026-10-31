@@ -266,7 +266,7 @@ func TestRunNamesTablesAndColumns(t *testing.T) {
 	for _, f := range s.Fields() {
 		names = append(names, f.Name)
 	}
-	if len(names) != 3 || names[0] != "first_name" || names[1] != "first_name_2" || len(names[2]) != 12 || !strings.HasPrefix(names[2], "a_r_") {
+	if len(names) != 7 || names[0] != "first_name" || names[1] != "first_name_2" || len(names[2]) != 12 || !strings.HasPrefix(names[2], "a_r_") {
 		t.Errorf("columns are %q", names)
 	}
 	if table, _ := s.Metadata().GetValue("openetl.table"); table != "users" {
@@ -277,6 +277,53 @@ func TestRunNamesTablesAndColumns(t *testing.T) {
 	}
 	if s.Field(0).HasMetadata() {
 		t.Errorf("first_name has metadata %v", s.Field(0).Metadata)
+	}
+}
+
+func TestRunAddsMetadataColumns(t *testing.T) {
+	ctx := testContext(t)
+	p := plan("a")
+	p.Streams[0].PrimaryKey = []string{"id"}
+	p.ReadStarts = map[string]int64{"a": 1_700_000_000_000_000}
+	ids := func() (*arrow.Schema, []string) {
+		got, err := run(ctx, &Dataflow{Options: options(t, nil)}, p,
+			runner.Frame{Kind: runner.FrameRows, Stream: "a", Rows: rows(`{"id": 1, "v": "x"}`, `{"id": 2, "v": "y"}`)},
+		)
+		defer release(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := got["a"][0].Batch
+		col := b.Column(b.Schema().FieldIndices("_openetl_id")[0])
+		var out []string
+		for i := range col.Len() {
+			out = append(out, col.ValueStr(i))
+		}
+		seq := b.Column(b.Schema().FieldIndices("_openetl_seq")[0]).(*array.Timestamp)
+		if seq.Value(0) != 1_700_000_000_000_000 {
+			t.Errorf("_openetl_seq is %v, want the read start", seq.Value(0))
+		}
+		if op := b.Column(b.Schema().FieldIndices("_openetl_op")[0]).(*array.String); op.Value(1) != "insert" {
+			t.Errorf("_openetl_op is %q", op.Value(1))
+		}
+		return b.Schema(), out
+	}
+	schema, first := ids()
+	var names []string
+	for _, f := range schema.Fields() {
+		names = append(names, f.Name)
+	}
+	if want := []string{"id", "v", "_openetl_id", "_openetl_op", "_openetl_seq", "_openetl_synced_at"}; !slices.Equal(names, want) {
+		t.Fatalf("columns are %q, want %q", names, want)
+	}
+	if ext := extensionName(schema.Field(2)); ext != "arrow.uuid" {
+		t.Errorf("_openetl_id has extension %q", ext)
+	}
+	if first[0] == first[1] {
+		t.Errorf("two rows share the ID %s", first[0])
+	}
+	if _, again := ids(); !slices.Equal(again, first) {
+		t.Errorf("a second engine gave IDs %q, the first %q", again, first)
 	}
 }
 
@@ -561,8 +608,9 @@ func TestRunAttemptThroughTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Committed != 4 || res.Last != 4 {
-		t.Errorf("committed %d epochs, last %d; want 4 and 4", res.Committed, res.Last)
+	// One epoch per page, then one that records the streams completed.
+	if res.Committed != 5 || res.Last != 5 {
+		t.Errorf("committed %d epochs, last %d; want 5 and 5", res.Committed, res.Last)
 	}
 	if got := dest.applied["users"]; !slices.Equal(got, []int64{1, 2, 3, 4}) {
 		t.Errorf("users applied %v", got)
@@ -674,8 +722,8 @@ func TestRunAttemptIntoParquet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Committed != 4 {
-		t.Errorf("committed %d epochs, want 4", res.Committed)
+	if res.Committed != 5 {
+		t.Errorf("committed %d epochs, want one per page and one for completion", res.Committed)
 	}
 	if got := readIDs(t, filepath.Join(root, "users")); !slices.Equal(got, []int64{1, 2, 3, 4}) {
 		t.Errorf("users holds %v", got)

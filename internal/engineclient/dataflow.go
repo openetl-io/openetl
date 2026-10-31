@@ -191,7 +191,13 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	for i, s := range plan.Streams {
 		names[i] = s.Name
 		index[s.Name] = uint32(i)
-		req.Streams = append(req.Streams, &enginev1.StreamPlan{Name: s.Name, PrimaryKey: s.PrimaryKey, RestoredSchema: plan.Schemas[s.Name]})
+		req.Streams = append(req.Streams, &enginev1.StreamPlan{
+			Name:            s.Name,
+			PrimaryKey:      s.PrimaryKey,
+			CursorField:     s.CursorField,
+			ReadStartMicros: plan.ReadStarts[s.Name],
+			RestoredSchema:  plan.Schemas[s.Name],
+		})
 	}
 	for _, s := range plan.Snapshots {
 		req.RestoredSnapshots = append(req.RestoredSnapshots, &enginev1.StateSnapshot{Operator: s.Operator, Url: s.URL})

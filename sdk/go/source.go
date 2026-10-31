@@ -73,7 +73,7 @@ func (b *bound[C]) Check(ctx context.Context) error {
 func (b *bound[C]) Discover(context.Context) (source.Catalog, error) {
 	var c source.Catalog
 	for _, st := range b.src.Streams {
-		c.Streams = append(c.Streams, source.CatalogStream{Name: st.name, PrimaryKey: st.primaryKey, Replay: source.Superset})
+		c.Streams = append(c.Streams, source.CatalogStream{Name: st.name, PrimaryKey: st.primaryKey, CursorField: st.cursor, Replay: source.Superset})
 	}
 	return c, nil
 }

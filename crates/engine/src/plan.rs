@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use arrow_schema::SchemaRef;
+use openetl_normalize::Identity;
 use openetl_normalize::naming::{Namer, Naming, RESERVED_TABLES, TABLE_KEY};
 use openetl_proto::engine::v1::{EdgeDirection, StartJobRequest, sink_plan};
 
@@ -18,6 +19,7 @@ pub struct Plan {
     pub naming: Naming,
     /// Each stream's schema in the restored checkpoint.
     pub restored: Vec<Option<SchemaRef>>,
+    pub identities: Vec<Identity>,
     pub inbound: Vec<EdgePlan>,
     pub sink: Sink,
 }
@@ -80,6 +82,16 @@ impl Plan {
             });
         }
         let names: Vec<String> = req.streams.iter().map(|s| s.name.clone()).collect();
+        let identities = req
+            .streams
+            .iter()
+            .map(|s| Identity {
+                stream: s.name.clone(),
+                key: s.primary_key.clone(),
+                cursor: Some(s.cursor_field.clone()).filter(|c| !c.is_empty()),
+                read_start: s.read_start_micros,
+            })
+            .collect();
         let naming = req.naming.map_or_else(Naming::default, |n| Naming {
             keep_source: n.keep_source_names,
             max_len: n.max_length as usize,
@@ -189,6 +201,7 @@ impl Plan {
             tables,
             naming,
             restored,
+            identities,
             inbound,
             sink,
         })

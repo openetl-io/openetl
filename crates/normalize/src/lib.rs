@@ -2,16 +2,18 @@
 //! JSON objects it sees, and only ever widens it. A [`Shaper`] gives a
 //! stream's columns their destination names, on either lane.
 
+mod ids;
 pub mod naming;
 mod shape;
 
-pub use shape::Shaper;
+pub use ids::Identity;
+pub use shape::{Shaped, Shaper};
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::builder::{BooleanBuilder, Float64Builder, Int64Builder, StringBuilder};
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow_array::{ArrayRef, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
@@ -105,6 +107,8 @@ pub struct Normalized {
     pub batch: RecordBatch,
     /// The stream's schema changed with this batch.
     pub schema_changed: bool,
+    /// Each row's `_openetl_id`, if the normalizer has an identity.
+    pub ids: Option<FixedSizeBinaryArray>,
 }
 
 /// Infers and holds one stream's schema. Columns appear in the order their
@@ -115,6 +119,7 @@ pub struct Normalizer {
     columns: Vec<(String, Kind)>,
     index: HashMap<String, usize>,
     schema: SchemaRef,
+    identity: Option<Identity>,
 }
 
 impl Default for Normalizer {
@@ -123,6 +128,7 @@ impl Default for Normalizer {
             columns: Vec::new(),
             index: HashMap::new(),
             schema: Arc::new(Schema::empty()),
+            identity: None,
         }
     }
 }
@@ -146,6 +152,11 @@ impl Normalizer {
 
     pub fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    /// Makes push compute each row's `_openetl_id`.
+    pub fn identify(&mut self, identity: Identity) {
+        self.identity = Some(identity);
     }
 
     /// Converts rows, one JSON object each, to a batch. On error, the schema
@@ -196,9 +207,21 @@ impl Normalizer {
             .collect();
         let opts = RecordBatchOptions::new().with_row_count(Some(objects.len()));
         let batch = RecordBatch::try_new_with_options(self.schema.clone(), arrays, &opts)?;
+        let ids = match &self.identity {
+            Some(identity) => {
+                let mut buf = Vec::new();
+                let mut ids = Vec::with_capacity(objects.len() * 16);
+                for obj in &objects {
+                    ids.extend_from_slice(&identity.raw(obj, &mut buf));
+                }
+                Some(FixedSizeBinaryArray::try_new(16, ids.into(), None)?)
+            }
+            None => None,
+        };
         Ok(Normalized {
             batch,
             schema_changed: changed,
+            ids,
         })
     }
 }

@@ -64,6 +64,7 @@ type sourcePump struct {
 	unplaced      int
 	states        map[string][]byte
 	forced        []string
+	complete      map[string]bool
 	bytes         int64
 	thresholdSent bool
 	done          bool
@@ -200,7 +201,8 @@ func (p *sourcePump) handle(e emit) error {
 			return p.place(e.stream, false)
 		}
 	case emitComplete:
-		st.complete = true
+		// A record must say the stream completed.
+		st.complete, st.active = true, true
 		if p.pending != 0 && !st.placed && !st.dirty {
 			return p.place(e.stream, false)
 		}
@@ -230,6 +232,7 @@ func (p *sourcePump) request(n uint64) error {
 	p.requested, p.pending, p.unplaced = n, n, len(p.order)
 	p.states = make(map[string][]byte, len(p.order))
 	p.forced = nil
+	p.complete = make(map[string]bool)
 	p.bytes, p.thresholdSent = 0, false
 	for _, st := range p.streams {
 		st.placed = false
@@ -302,12 +305,14 @@ func (p *sourcePump) place(name string, forced bool) error {
 	p.states[name] = st.resume
 	if st.forced {
 		p.forced = append(p.forced, name)
+	} else if st.complete {
+		p.complete[name] = true
 	}
 	p.unplaced--
 	if p.unplaced > 0 {
 		return nil
 	}
-	ev := event{kind: evPlaced, epoch: p.pending, states: p.states, forced: p.forced}
+	ev := event{kind: evPlaced, epoch: p.pending, states: p.states, forced: p.forced, complete: p.complete}
 	p.pending = 0
 	if p.forceTimer != nil {
 		p.forceTimer.Stop()

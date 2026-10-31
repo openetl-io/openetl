@@ -44,6 +44,11 @@ type StreamState struct {
 	// The engine's schema for the stream at this checkpoint: an Arrow IPC
 	// stream holding only the schema.
 	Schema []byte `json:"schema,omitempty"`
+	// When the stream's current read started, in microseconds since the Unix
+	// epoch. Rows read without a cursor carry it as their sequence.
+	ReadStart int64 `json:"read_start,omitempty"`
+	// The read ended at a resume point, so the next one starts afresh.
+	Complete bool `json:"complete,omitempty"`
 }
 
 // Snapshot is one operator's state at a checkpoint.

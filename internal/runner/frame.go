@@ -56,6 +56,8 @@ type Plan struct {
 	// Zero: out feeds the destination's Writer.
 	Sink   SinkPlan
 	Naming Naming
+	// Each stream's read start, in microseconds since the Unix epoch.
+	ReadStarts map[string]int64
 	// From the restored checkpoint, as Ready reported them.
 	Schemas   map[string][]byte
 	Snapshots []checkpoint.Snapshot

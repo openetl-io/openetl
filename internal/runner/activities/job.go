@@ -1,6 +1,7 @@
 package activities
 
 import (
+	"cmp"
 	"context"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 // Defaults for scheduled pipelines.
@@ -55,16 +57,19 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 		mode = destination.Merge
 	}
 	var streams []runner.Stream
+	stream := func(cs source.CatalogStream, cursor string) runner.Stream {
+		return runner.Stream{Name: cs.Name, Replay: cs.Replay, Mode: mode, PrimaryKey: cs.PrimaryKey, CursorField: cmp.Or(cursor, cs.CursorField)}
+	}
 	if len(p.GetSource().GetStreams()) == 0 {
 		for _, cs := range cat.Streams {
-			streams = append(streams, runner.Stream{Name: cs.Name, Replay: cs.Replay, Mode: mode, PrimaryKey: cs.PrimaryKey})
+			streams = append(streams, stream(cs, ""))
 		}
 	}
 	for _, ps := range p.GetSource().GetStreams() {
 		found := false
 		for _, cs := range cat.Streams {
 			if cs.Name == ps.GetName() {
-				streams = append(streams, runner.Stream{Name: cs.Name, Replay: cs.Replay, Mode: mode, PrimaryKey: cs.PrimaryKey})
+				streams = append(streams, stream(cs, ps.GetCursor()))
 				found = true
 			}
 		}
