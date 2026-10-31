@@ -1,6 +1,7 @@
 // Package faker is a bounded source of generated rows. Row i of a stream
 // depends only on the seed and i, so a resumed read yields exactly the rows
-// after its resume point.
+// after its resume point, or with an overlap, those and the ones just before
+// it.
 package faker
 
 import (
@@ -24,6 +25,9 @@ type Config struct {
 	BatchSize int `json:"batchSize"`
 	// A pause after each batch, such as "50ms".
 	Delay string `json:"delay"`
+	// Rows before its resume point that a resumed read emits again, like a
+	// cursor's lookback window. Above 0, replay is superset.
+	Overlap int `json:"overlap"`
 }
 
 type Source struct {
@@ -48,6 +52,8 @@ func New(config []byte) (*Source, error) {
 		return nil, errors.New("faker: count must not be negative")
 	case cfg.BatchSize <= 0:
 		return nil, errors.New("faker: batchSize must be positive")
+	case cfg.Overlap < 0:
+		return nil, errors.New("faker: overlap must not be negative")
 	}
 	if cfg.Delay != "" {
 		d, err := time.ParseDuration(cfg.Delay)
@@ -71,8 +77,12 @@ var streams = []stream{
 
 func (s *Source) Discover(context.Context) (source.Catalog, error) {
 	var c source.Catalog
+	replay := source.Exact
+	if s.cfg.Overlap > 0 {
+		replay = source.Superset
+	}
 	for _, st := range streams {
-		c.Streams = append(c.Streams, source.CatalogStream{Name: st.name, PrimaryKey: []string{"id"}, Replay: source.Exact})
+		c.Streams = append(c.Streams, source.CatalogStream{Name: st.name, PrimaryKey: []string{"id"}, Replay: replay})
 	}
 	return c, nil
 }
@@ -99,7 +109,7 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 				return fmt.Errorf("faker: %s state: %w", cs.Name, err)
 			}
 		}
-		if err := s.readStream(ctx, idx, st.Next, out); err != nil {
+		if err := s.readStream(ctx, idx, max(st.Next-s.cfg.Overlap, 0), out); err != nil {
 			return err
 		}
 	}

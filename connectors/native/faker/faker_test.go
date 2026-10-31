@@ -105,8 +105,30 @@ func TestResumeYieldsTheRest(t *testing.T) {
 	}
 }
 
+func TestOverlapRepeatsRowsBeforeTheResumePoint(t *testing.T) {
+	s, err := New([]byte(`{"seed": 1, "count": 25, "batchSize": 10, "overlap": 4}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat, err := s.Discover(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cat.Streams[0].Replay != source.Superset {
+		t.Errorf("replay = %v, want superset", cat.Streams[0].Replay)
+	}
+	full := read(t, s, nil)
+	if len(full.rows["users"]) != 25 {
+		t.Errorf("a fresh read has %d rows, want 25", len(full.rows["users"]))
+	}
+	resumed := read(t, s, map[string][]byte{"users": full.resumes["users"][1]})
+	if !slices.Equal(resumed.rows["users"], full.rows["users"][16:]) {
+		t.Errorf("resuming after row 20 yielded %d rows, want rows 17 to 25", len(resumed.rows["users"]))
+	}
+}
+
 func TestConfigErrors(t *testing.T) {
-	for _, cfg := range []string{`{"count": -1}`, `{"batchSize": 0}`, `{"delay": "soon"}`, `{"rows": 5}`} {
+	for _, cfg := range []string{`{"count": -1}`, `{"batchSize": 0}`, `{"delay": "soon"}`, `{"rows": 5}`, `{"overlap": -1}`} {
 		if _, err := New([]byte(cfg)); err == nil {
 			t.Errorf("New(%s) succeeded", cfg)
 		}

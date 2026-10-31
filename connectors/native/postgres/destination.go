@@ -1,7 +1,8 @@
 // Package postgres has the Postgres source, which reads full snapshots of
 // tables, and the Postgres destination: append writes, staged into one table
 // per stream and epoch, and applied behind a fence row with a marker per
-// stream in _openetl_loads.
+// stream in _openetl_loads. Deduped streams insert one row per _openetl_id,
+// and only IDs the target doesn't have yet.
 package postgres
 
 import (
@@ -68,6 +69,7 @@ func (d *Destination) Capabilities() destination.Capabilities {
 	return destination.Capabilities{
 		Class:                 destination.StageAndApply,
 		Scopes:                []destination.Scope{destination.ScopePipeline, destination.ScopeStream},
+		DedupeAtApply:         true,
 		DefaultCommitInterval: 10 * time.Second,
 		MinCommitInterval:     time.Second,
 		MaxIdentifierLength:   63,
@@ -78,9 +80,6 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 	for _, s := range cfg.Streams {
 		if s.Mode != destination.Append {
 			return nil, fmt.Errorf("postgres: stream %q: only append writes are supported", s.Name)
-		}
-		if s.Dedupe {
-			return nil, fmt.Errorf("postgres: stream %q: dedupe at apply isn't supported yet", s.Name)
 		}
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, d.pool)
@@ -96,13 +95,14 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		cfg:     cfg,
 		schema:  cfg.Namespace,
 		staging: map[uint64]map[string]*stagingTable{},
-		streams: map[string]bool{},
+		streams: map[string]destination.Stream{},
+		indexed: map[string]bool{},
 	}
 	if w.schema == "" {
 		w.schema = d.cfg.Schema
 	}
 	for _, s := range cfg.Streams {
-		w.streams[s.Name] = true
+		w.streams[s.Name] = s
 	}
 	return w, nil
 }
@@ -111,9 +111,11 @@ type writer struct {
 	pool    *pgxpool.Pool
 	cfg     destination.OpenConfig
 	schema  string
-	streams map[string]bool
+	streams map[string]destination.Stream
 	// Only Write and PreCommit use it.
 	staging map[uint64]map[string]*stagingTable
+	// Only Commit and Recover use it: targets with an _openetl_id index.
+	indexed map[string]bool
 }
 
 type stagingTable struct {
@@ -133,9 +135,17 @@ type stagedStream struct {
 	Name    string `json:"name"`
 	Table   string `json:"table"`
 	Staging string `json:"staging"`
+	Dedupe  bool   `json:"dedupe,omitempty"`
 }
 
 func (w *writer) ident(name string) string { return pgx.Identifier{w.schema, name}.Sanitize() }
+
+const idColumn = "_openetl_id"
+
+func indexName(table string) string {
+	h := sha256.Sum256([]byte(table))
+	return "_openetl_id_" + hex.EncodeToString(h[:12])
+}
 
 func stagingName(pipeline, stream string, e destination.Epoch) string {
 	h := sha256.Sum256([]byte(pipeline + "\x00" + stream + "\x00" + strconv.FormatUint(e.Generation, 10) + "\x00" + strconv.FormatUint(e.N, 10)))
@@ -143,11 +153,15 @@ func stagingName(pipeline, stream string, e destination.Epoch) string {
 }
 
 func (w *writer) Write(ctx context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
-	if !w.streams[stream] {
+	cfg, ok := w.streams[stream]
+	if !ok {
 		return fmt.Errorf("postgres: unknown stream %q", stream)
 	}
 	if batch.NumRows() == 0 {
 		return nil
+	}
+	if cfg.Dedupe && len(batch.Schema().FieldIndices(idColumn)) == 0 {
+		return fmt.Errorf("postgres: stream %q is deduped at apply, but its batches have no %s", stream, idColumn)
 	}
 	cols, err := columnsOf(batch.Schema())
 	if err != nil {
@@ -240,7 +254,7 @@ func (w *writer) PreCommit(_ context.Context, e destination.Epoch) (destination.
 	byStream := w.staging[e.N]
 	for _, s := range w.cfg.Streams {
 		if st := byStream[s.Name]; st != nil {
-			desc.Streams = append(desc.Streams, stagedStream{Name: s.Name, Table: st.target, Staging: st.name})
+			desc.Streams = append(desc.Streams, stagedStream{Name: s.Name, Table: st.target, Staging: st.name, Dedupe: s.Dedupe})
 		}
 	}
 	delete(w.staging, e.N)
@@ -302,8 +316,7 @@ func (w *writer) applyTx(ctx context.Context, desc staged, streams []stagedStrea
 			if done {
 				continue
 			}
-			list := quoteAll(cols[s.Name])
-			if _, err := tx.Exec(ctx, "INSERT INTO "+w.ident(s.Table)+" ("+list+") SELECT "+list+" FROM "+w.ident(s.Staging)); err != nil {
+			if _, err := tx.Exec(ctx, w.insert(s, cols[s.Name])); err != nil {
 				return fmt.Errorf("postgres: apply %s: %w", s.Name, err)
 			}
 			if _, err := tx.Exec(ctx, "INSERT INTO "+w.ident("_openetl_loads")+" (pipeline, stream, generation, epoch) VALUES ($1, $2, $3, $4)",
@@ -313,6 +326,18 @@ func (w *writer) applyTx(ctx context.Context, desc staged, streams []stagedStrea
 		}
 		return nil
 	})
+}
+
+// insert copies a stream's staging into its target. A deduped stream inserts
+// one row per _openetl_id, and only IDs the target doesn't have.
+func (w *writer) insert(s stagedStream, cols []string) string {
+	list := quoteAll(cols)
+	if !s.Dedupe {
+		return "INSERT INTO " + w.ident(s.Table) + " (" + list + ") SELECT " + list + " FROM " + w.ident(s.Staging)
+	}
+	id := pgx.Identifier{idColumn}.Sanitize()
+	return "INSERT INTO " + w.ident(s.Table) + " (" + list + ") SELECT DISTINCT ON (" + id + ") " + list +
+		" FROM " + w.ident(s.Staging) + " s WHERE NOT EXISTS (SELECT 1 FROM " + w.ident(s.Table) + " t WHERE t." + id + " = s." + id + ")"
 }
 
 func quoteAll(names []string) string {
@@ -335,6 +360,13 @@ func (w *writer) ensureTarget(ctx context.Context, desc staged, s stagedStream) 
 	}
 	if err := w.ensureTable(ctx, s.Table, cols); err != nil {
 		return nil, err
+	}
+	if s.Dedupe && !w.indexed[s.Table] {
+		if _, err := w.pool.Exec(ctx, "CREATE INDEX IF NOT EXISTS "+pgx.Identifier{indexName(s.Table)}.Sanitize()+
+			" ON "+w.ident(s.Table)+" ("+pgx.Identifier{idColumn}.Sanitize()+")"); err != nil {
+			return nil, fmt.Errorf("postgres: index %s on %s: %w", idColumn, s.Table, err)
+		}
+		w.indexed[s.Table] = true
 	}
 	names := make([]string, len(cols))
 	for i, c := range cols {

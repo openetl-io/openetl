@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -55,10 +56,16 @@ func newEnv(t *testing.T) *env {
 
 func (e *env) open(gen uint64, scope destination.Scope, streams ...string) destination.Writer {
 	e.t.Helper()
-	cfg := destination.OpenConfig{Pipeline: "p1", Generation: gen, Scope: scope}
+	var cfg []destination.Stream
 	for _, s := range streams {
-		cfg.Streams = append(cfg.Streams, destination.Stream{Name: s, Mode: destination.Append})
+		cfg = append(cfg, destination.Stream{Name: s, Mode: destination.Append})
 	}
+	return e.openStreams(gen, scope, cfg...)
+}
+
+func (e *env) openStreams(gen uint64, scope destination.Scope, streams ...destination.Stream) destination.Writer {
+	e.t.Helper()
+	cfg := destination.OpenConfig{Pipeline: "p1", Generation: gen, Scope: scope, Streams: streams}
 	w, err := e.d.Open(e.t.Context(), cfg)
 	if err != nil {
 		e.t.Fatal(err)
@@ -323,5 +330,91 @@ func TestColumnsWiden(t *testing.T) {
 	ints2 := arrow.NewSchema(ints, table("other"))
 	if err := sa.ApplySchema(ctx, []destination.StreamSchema{{Name: "other", Schema: ints2}}); err == nil {
 		t.Error("boolean became bigint")
+	}
+}
+
+var rowID = arrow.Field{Name: idColumn, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16},
+	Metadata: arrow.NewMetadata([]string{extensionNameKey}, []string{uuidExtension})}
+
+// uid is a JSON _openetl_id whose bytes are all n.
+func uid(n byte) string {
+	b := make([]byte, 16)
+	for i := range b {
+		b[i] = n
+	}
+	return `"` + base64.StdEncoding.EncodeToString(b) + `"`
+}
+
+func TestDedupeAtApply(t *testing.T) {
+	env := newEnv(t)
+	ctx := t.Context()
+	w := env.openStreams(1, destination.ScopePipeline,
+		destination.Stream{Name: "events", Mode: destination.Append, Dedupe: true},
+		destination.Stream{Name: "logs", Mode: destination.Append})
+	recov(t, w, 1, destination.Epoch{}, nil)
+	fields := []arrow.Field{idField, rowID}
+	e1, e2 := destination.Epoch{Generation: 1, N: 1}, destination.Epoch{Generation: 1, N: 2}
+	// Repeats within an epoch, and of an earlier epoch's rows.
+	rows1 := `[{"id": 1, "_openetl_id": ` + uid(1) + `}, {"id": 2, "_openetl_id": ` + uid(2) + `}, {"id": 2, "_openetl_id": ` + uid(2) + `}]`
+	rows2 := `[{"id": 1, "_openetl_id": ` + uid(1) + `}, {"id": 3, "_openetl_id": ` + uid(3) + `}]`
+	for _, stream := range []string{"events", "logs"} {
+		if err := w.Write(ctx, e1, stream, batch(t, fields, rows1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Commit(ctx, e1, precommit(t, w, e1)); err != nil {
+		t.Fatal(err)
+	}
+	for _, stream := range []string{"events", "logs"} {
+		if err := w.Write(ctx, e2, stream, batch(t, fields, rows2)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Commit(ctx, e2, precommit(t, w, e2)); err != nil {
+		t.Fatal(err)
+	}
+	if n := env.count("SELECT count(*) FROM $schema.events"); n != 3 {
+		t.Errorf("events has %d rows, want 3", n)
+	}
+	if n := env.count("SELECT count(*) FROM $schema.logs"); n != 5 {
+		t.Errorf("logs, which isn't deduped, has %d rows, want 5", n)
+	}
+	if n := env.count("SELECT count(*) FROM pg_indexes WHERE schemaname = '" + env.schema + "' AND tablename = 'events' AND indexdef LIKE '%(_openetl_id)'"); n != 1 {
+		t.Errorf("events has %d indexes on _openetl_id, want 1", n)
+	}
+	if n := env.count("SELECT count(*) FROM pg_indexes WHERE schemaname = '" + env.schema + "' AND tablename = 'logs'"); n != 0 {
+		t.Errorf("logs has %d indexes, want none", n)
+	}
+}
+
+func TestRedoDedupesAsStaged(t *testing.T) {
+	env := newEnv(t)
+	ctx := t.Context()
+	w1 := env.openStreams(1, destination.ScopeStream, destination.Stream{Name: "events", Mode: destination.Append, Dedupe: true})
+	recov(t, w1, 1, destination.Epoch{}, nil)
+	e := destination.Epoch{Generation: 1, N: 1}
+	rows := `[{"id": 1, "_openetl_id": ` + uid(1) + `}, {"id": 1, "_openetl_id": ` + uid(1) + `}]`
+	if err := w1.Write(ctx, e, "events", batch(t, []arrow.Field{idField, rowID}, rows)); err != nil {
+		t.Fatal(err)
+	}
+	st := precommit(t, w1, e)
+
+	// The next attempt doesn't dedupe, but redoes the epoch as it was staged.
+	w2 := env.open(2, destination.ScopeStream, "events")
+	if r := recov(t, w2, 2, e, st); r != destination.Redone {
+		t.Fatalf("Recover = %v, want redone", r)
+	}
+	if n := env.count("SELECT count(*) FROM $schema.events"); n != 1 {
+		t.Errorf("events has %d rows, want 1", n)
+	}
+}
+
+func TestDedupeNeedsRowIDs(t *testing.T) {
+	env := newEnv(t)
+	w := env.openStreams(1, destination.ScopePipeline, destination.Stream{Name: "events", Mode: destination.Append, Dedupe: true})
+	recov(t, w, 1, destination.Epoch{}, nil)
+	err := w.Write(t.Context(), destination.Epoch{Generation: 1, N: 1}, "events", batch(t, []arrow.Field{idField}, `[{"id": 1}]`))
+	if err == nil || !strings.Contains(err.Error(), "no _openetl_id") {
+		t.Fatalf("Write = %v, want it to need _openetl_id", err)
 	}
 }
