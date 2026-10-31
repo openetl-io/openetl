@@ -254,8 +254,8 @@ func verdict(ok bool) string {
 }
 
 // The defaults for scheduled pipelines.
-func settings(caps destination.Capabilities) runner.Settings {
-	s := runner.Settings{
+func settings(caps destination.Capabilities) delivery.Settings {
+	s := delivery.Settings{
 		Require:            delivery.AtLeastOnce,
 		CommitInterval:     5 * time.Minute,
 		CommitMaxBytes:     256e6,

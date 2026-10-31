@@ -79,6 +79,7 @@ func (SyncMode) EnumDescriptor() ([]byte, []int) {
 type Replay int32
 
 const (
+	// Counted as superset.
 	Replay_REPLAY_UNSPECIFIED Replay = 0
 	// Resuming yields exactly the records after the resume point.
 	Replay_REPLAY_EXACT Replay = 1

@@ -79,7 +79,7 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 		Destination:   pg,
 		Dataflow:      &engineclient.Dataflow{Options: engineclient.Options{Binary: env.engine}},
 		QuarantineURL: "file://" + quarantine,
-		Settings: runnerpkg.Settings{
+		Settings: delivery.Settings{
 			Require: delivery.ExactlyOnce,
 			Scope:   destination.ScopePipeline,
 			Dedupe:  delivery.DedupeNone,
@@ -172,7 +172,7 @@ func TestWideningReachesPostgres(t *testing.T) {
 			Streams:     []runnerpkg.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
 			Destination: pg,
 			Dataflow:    &engineclient.Dataflow{Options: engineclient.Options{Binary: env.engine}},
-			Settings: runnerpkg.Settings{
+			Settings: delivery.Settings{
 				Require: delivery.ExactlyOnce,
 				Scope:   destination.ScopePipeline,
 				Dedupe:  delivery.DedupeNone,

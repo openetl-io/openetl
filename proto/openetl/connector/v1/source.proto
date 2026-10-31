@@ -54,6 +54,7 @@ enum SyncMode {
 }
 
 enum Replay {
+  // Counted as superset.
   REPLAY_UNSPECIFIED = 0;
   // Resuming yields exactly the records after the resume point.
   REPLAY_EXACT = 1;

@@ -57,7 +57,7 @@ func TestQuarantineInS3(t *testing.T) {
 		Destination:   &rowCounter{},
 		Dataflow:      &engineclient.Dataflow{Options: engineclient.Options{Binary: env.engine}},
 		QuarantineURL: quarantine.String(),
-		Settings: runnerpkg.Settings{
+		Settings: delivery.Settings{
 			Require: delivery.ExactlyOnce,
 			Scope:   destination.ScopePipeline,
 			Dedupe:  delivery.DedupeNone,

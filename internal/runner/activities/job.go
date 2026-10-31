@@ -77,10 +77,6 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 			return runner.Job{}, errs.New(errs.ConfigInvalid, "the source has no stream %q", ps.GetName())
 		}
 	}
-	settings, err := settingsFor(p.GetDelivery(), dst.Capabilities())
-	if err != nil {
-		return runner.Job{}, err
-	}
 	policy := runner.AllowAll
 	switch p.GetSchemaPolicy() {
 	case apiv1.SchemaPolicy_SCHEMA_POLICY_ALLOW_COLUMNS:
@@ -96,14 +92,14 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 		Streams:         streams,
 		Destination:     dst,
 		Namespace:       p.GetDestination().GetNamespace(),
-		Settings:        settings,
+		Settings:        settingsFor(p.GetDelivery(), dst.Capabilities()),
 		KeepSourceNames: p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
 		SchemaPolicy:    policy,
 	}, nil
 }
 
-func settingsFor(d *apiv1.Delivery, caps destination.Capabilities) (runner.Settings, error) {
-	s := runner.Settings{
+func settingsFor(d *apiv1.Delivery, caps destination.Capabilities) delivery.Settings {
+	s := delivery.Settings{
 		Require:            delivery.AtLeastOnce,
 		CommitInterval:     defaultCommitInterval,
 		CommitMaxBytes:     defaultCommitMaxBytes,
@@ -140,8 +136,5 @@ func settingsFor(d *apiv1.Delivery, caps destination.Capabilities) (runner.Setti
 	if t := d.GetResumePointTimeout(); t != nil {
 		s.ResumePointTimeout = t.AsDuration()
 	}
-	if s.CommitInterval < caps.MinCommitInterval {
-		return s, errs.New(errs.ConfigInvalid, "delivery.commit.interval %v is below the destination's minimum, %v", s.CommitInterval, caps.MinCommitInterval)
-	}
-	return s, nil
+	return s
 }

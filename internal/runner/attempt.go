@@ -33,22 +33,6 @@ type Stream struct {
 	Schema *arrow.Schema
 }
 
-// Settings are a pipeline's spec.delivery.
-type Settings struct {
-	// A barrier is placed without a resume point only where every stream stays
-	// at Require.
-	Require delivery.Level
-	// 0 disables.
-	CommitInterval time.Duration
-	// Bytes read since the last barrier; 0 disables.
-	CommitMaxBytes int64
-	Scope          destination.Scope
-	// How long a barrier waits for a resume point before it is forced; 0
-	// waits forever.
-	ResumePointTimeout time.Duration
-	Dedupe             delivery.Dedupe
-}
-
 type Job struct {
 	// Unique per attempt.
 	Owner       string
@@ -65,7 +49,7 @@ type Job struct {
 	// Where the dataflow keeps records it can't take, as Plan says.
 	QuarantineURL string
 	Dataflow      Dataflow
-	Settings      Settings
+	Settings      delivery.Settings
 	Logger        *slog.Logger
 	// Called on the coordinator's goroutine after each epoch commits. It
 	// must not block.
@@ -204,21 +188,16 @@ func (j *Job) validate() error {
 	case j.Settings.Require == 0 || j.Settings.Scope == 0 || j.Settings.Dedupe == 0:
 		return errors.New("runner: job settings need Require, Scope and Dedupe")
 	}
-	caps := j.Destination.Capabilities()
-	if !caps.SupportsScope(j.Settings.Scope) {
-		return errs.New(errs.ConfigInvalid, "runner: the destination doesn't support commit scope %d", j.Settings.Scope)
-	}
 	seen := make(map[string]bool)
+	streams := make([]delivery.Stream, 0, len(j.Streams))
 	for _, s := range j.Streams {
 		if seen[s.Name] {
 			return errs.New(errs.ConfigInvalid, "runner: stream %q configured twice", s.Name)
 		}
 		seen[s.Name] = true
-		if lvl := delivery.StreamLevel(caps, s.Replay, s.Mode, j.Settings.Dedupe); lvl < j.Settings.Require {
-			return errs.New(errs.ConfigInvalid, "runner: stream %q gets %v, below the required %v", s.Name, lvl, j.Settings.Require)
-		}
+		streams = append(streams, delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode})
 	}
-	return nil
+	return errs.Wrap(errs.ConfigInvalid, delivery.Check(j.Destination.Capabilities(), j.Settings, streams), "runner: plan checks")
 }
 
 type eventKind uint8

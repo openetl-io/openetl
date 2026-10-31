@@ -93,6 +93,7 @@ func TestParseErrors(t *testing.T) {
 		"repeated":       header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a}, {name: a}]}", 1),
 		"size":           header + base + "  delivery: {commit: {maxBytes: lots}}\n",
 		"zero timeout":   header + base + "  delivery: {resumePointTimeout: 0s}\n",
+		"zero interval":  header + base + "  delivery: {commit: {interval: 0s}}\n",
 		"two documents":  header + base + "---\n" + header + base,
 		"missing source": header + "spec:\n  schedule: {every: 1m}\n  destination: {ref: d}\n",
 	} {

@@ -270,6 +270,9 @@ func parseDelivery(y *deliveryYAML) (*apiv1.Delivery, error) {
 			if d.Commit.Interval, err = duration("delivery.commit.interval", c.Interval); err != nil {
 				return nil, err
 			}
+			if d.Commit.Interval.AsDuration() <= 0 {
+				return nil, errors.New("delivery.commit.interval must be positive")
+			}
 		}
 		if c.MaxBytes != "" {
 			if d.Commit.MaxBytes, err = Size(c.MaxBytes); err != nil {

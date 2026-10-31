@@ -37,7 +37,7 @@ func TestBarrierRequestedWhileCommitting(t *testing.T) {
 			Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
 			Destination: dest,
 			Dataflow:    runner.Passthrough{Convert: columnless},
-			Settings: runner.Settings{
+			Settings: delivery.Settings{
 				Require:        delivery.ExactlyOnce,
 				CommitMaxBytes: 1,
 				Scope:          destination.ScopePipeline,
@@ -253,7 +253,7 @@ func job(log *checkpoint.Log, owner string, src source.Reader, flow runner.Dataf
 		Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
 		Destination: &countingDest{},
 		Dataflow:    flow,
-		Settings: runner.Settings{
+		Settings: delivery.Settings{
 			Require:        delivery.ExactlyOnce,
 			CommitMaxBytes: 1,
 			Scope:          destination.ScopePipeline,

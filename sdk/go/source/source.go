@@ -9,7 +9,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 )
 
-// Replay is whether a stream can carry the same record version more than once.
+// Replay is whether a stream can carry the same record version more than
+// once. The zero value counts as Superset.
 type Replay int
 
 const (

@@ -596,7 +596,7 @@ func TestRunAttemptThroughTheEngine(t *testing.T) {
 		Source:      src,
 		Destination: dest,
 		Dataflow:    &Dataflow{Options: opts},
-		Settings: runner.Settings{
+		Settings: delivery.Settings{
 			Require:        delivery.ExactlyOnce,
 			Scope:          destination.ScopePipeline,
 			Dedupe:         delivery.DedupeAuto,
@@ -651,7 +651,7 @@ func TestRunAttemptQuarantinesBadRows(t *testing.T) {
 		Destination:   dest,
 		Dataflow:      &Dataflow{Options: opts},
 		QuarantineURL: "file://" + dir,
-		Settings: runner.Settings{
+		Settings: delivery.Settings{
 			Require:        delivery.ExactlyOnce,
 			Scope:          destination.ScopePipeline,
 			Dedupe:         delivery.DedupeAuto,
@@ -758,7 +758,7 @@ func TestRunAttemptIntoParquet(t *testing.T) {
 		Source:      src,
 		Destination: dest,
 		Dataflow:    &Dataflow{Options: opts},
-		Settings: runner.Settings{
+		Settings: delivery.Settings{
 			Require:        delivery.ExactlyOnce,
 			Scope:          destination.ScopeStream,
 			Dedupe:         delivery.DedupeAuto,
@@ -850,7 +850,7 @@ func TestRunAttemptIntoTheDiscardSink(t *testing.T) {
 		Streams:     []runner.Stream{{Name: "users", Replay: source.Exact, Mode: destination.Append}},
 		Destination: dest,
 		Dataflow:    &Dataflow{Options: opts},
-		Settings:    runner.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopeStream, Dedupe: delivery.DedupeAuto},
+		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopeStream, Dedupe: delivery.DedupeAuto},
 	}
 	res, err := runner.RunAttempt(testContext(t), job)
 	if err != nil {

@@ -104,7 +104,7 @@ func fencingJob(t *testing.T, log *checkpoint.Log, owner string, dst destination
 		Streams:     streams,
 		Destination: dst,
 		Dataflow:    &engineclient.Dataflow{Options: engineclient.Options{Binary: env.engine}},
-		Settings: runnerpkg.Settings{
+		Settings: delivery.Settings{
 			Require:        delivery.ExactlyOnce,
 			CommitMaxBytes: 1,
 			Scope:          destination.ScopePipeline,

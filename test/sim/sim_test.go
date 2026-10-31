@@ -72,7 +72,7 @@ type config struct {
 	kind     string
 	streams  []streamCfg
 	mode     destination.WriteMode
-	settings runner.Settings
+	settings delivery.Settings
 	faults   int
 	zombies  int
 }
@@ -100,7 +100,7 @@ func randomConfig(rng *rand.Rand, kind string) config {
 	if kind == "warehouse" && rng.IntN(2) == 0 {
 		c.mode = destination.Merge
 	}
-	c.settings = runner.Settings{
+	c.settings = delivery.Settings{
 		Scope:          destination.ScopeStream,
 		Dedupe:         delivery.DedupeAuto,
 		CommitMaxBytes: int64(40 + rng.IntN(400)),
