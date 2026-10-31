@@ -60,9 +60,12 @@ lint: tools ## Lint protos, Go and Rust
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 
+# The runner/engine tests in internal/engineclient need OPENETL_ENGINE and
+# skip without it.
 .PHONY: test
-test: tools ## Unit tests (fast, no Docker)
-	$(BIN)/gotestsum --format pkgname -- $(GO_PACKAGES)
+test: tools ## Unit tests (fast, no Docker), including runner/engine tests
+	cargo build -p openetl-engine
+	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine $(BIN)/gotestsum --format pkgname -- $(GO_PACKAGES)
 	cd sdk/go && GOWORK=off go build ./...
 	cargo test --workspace
 

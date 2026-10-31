@@ -11,9 +11,9 @@ publish.workspace = true
 doctest = false
 
 [dependencies]
-prost = "0.14.4"
-prost-types = "0.14.4"
-tonic = "0.14.9"
+prost.workspace = true
+prost-types.workspace = true
+tonic.workspace = true
 tonic-prost = "0.14.9"
 
 [build-dependencies]

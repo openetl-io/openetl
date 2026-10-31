@@ -233,7 +233,7 @@ func (x *Barrier) GetEpoch() *v1.Epoch {
 // SchemaChange comes before the first batch with the new schema.
 type SchemaChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// An Arrow IPC schema message.
+	// An Arrow IPC stream holding only the schema.
 	ArrowSchema   []byte `protobuf:"bytes,1,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

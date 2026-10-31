@@ -1,0 +1,16 @@
+[package]
+name = "openetl-normalize"
+description = "Raw rows to Arrow: schema inference and coercion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

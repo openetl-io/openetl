@@ -297,7 +297,7 @@ var rowSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "value", Type: arrow.BinaryTypes.String},
 }, nil)
 
-func (flow) Run(ctx context.Context, in <-chan runner.Frame, out chan<- runner.Frame) error {
+func (flow) Run(ctx context.Context, _ runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
 	defer close(out)
 	for {
 		var f runner.Frame

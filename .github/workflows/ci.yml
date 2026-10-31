@@ -77,3 +77,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Runner/engine contract tests
+        run: |
+          cargo build -p openetl-engine
+          OPENETL_ENGINE="$PWD/target/debug/openetl-engine" go test -race -count=1 ./internal/engineclient/...

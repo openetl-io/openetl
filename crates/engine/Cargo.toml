@@ -10,5 +10,22 @@ publish.workspace = true
 name = "openetl-engine"
 path = "src/main.rs"
 
+[dependencies]
+openetl-normalize.workspace = true
+openetl-proto.workspace = true
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-ipc.workspace = true
+arrow-schema.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
 [lints]
 workspace = true

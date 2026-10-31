@@ -40,8 +40,8 @@ message StreamPlan {
   string name = 1;
   Lane lane = 2;
   repeated string primary_key = 3;
-  // An Arrow IPC schema message, if known. Empty: inferred from the first
-  // rows.
+  // An Arrow IPC stream holding only the schema, if known. Empty: inferred
+  // from the rows.
   bytes arrow_schema = 4;
 }
 

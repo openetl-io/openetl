@@ -43,7 +43,7 @@ message Barrier {
 
 // SchemaChange comes before the first batch with the new schema.
 message SchemaChange {
-  // An Arrow IPC schema message.
+  // An Arrow IPC stream holding only the schema.
   bytes arrow_schema = 1;
 }
 

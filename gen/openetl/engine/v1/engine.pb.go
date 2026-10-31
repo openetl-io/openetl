@@ -227,8 +227,8 @@ type StreamPlan struct {
 	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Lane       Lane                   `protobuf:"varint,2,opt,name=lane,proto3,enum=openetl.engine.v1.Lane" json:"lane,omitempty"`
 	PrimaryKey []string               `protobuf:"bytes,3,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
-	// An Arrow IPC schema message, if known. Empty: inferred from the first
-	// rows.
+	// An Arrow IPC stream holding only the schema, if known. Empty: inferred
+	// from the rows.
 	ArrowSchema   []byte `protobuf:"bytes,4,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

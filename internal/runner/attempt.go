@@ -269,7 +269,14 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		return c.pump.readDone()
 	})
 	g.Go(c.pump.run)
-	g.Go(func() error { return c.job.Dataflow.Run(gctx, toFlow, fromFlow) })
+	plan := Plan{
+		Pipeline:   c.job.Pipeline,
+		Owner:      c.job.Owner,
+		Generation: c.sess.Generation(),
+		FirstEpoch: c.next,
+		Streams:    c.job.Streams,
+	}
+	g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
 	g.Go(func() error { return sink.run(gctx) })
 	g.Go(func() error { return c.loop(gctx) })
 	return g.Wait()
