@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+
+// SourceService reads and deletes sources. Sources are created and changed
+// with ApplyService.Apply.
+service SourceService {
+  rpc GetSource(GetSourceRequest) returns (GetSourceResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/sources/*}"};
+  }
+  rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/sources"};
+  }
+  rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/sources/*}"};
+  }
+}
+
+// DestinationService reads and deletes destinations. Destinations are
+// created and changed with ApplyService.Apply.
+service DestinationService {
+  rpc GetDestination(GetDestinationRequest) returns (GetDestinationResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/destinations/*}"};
+  }
+  rpc ListDestinations(ListDestinationsRequest) returns (ListDestinationsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/destinations"};
+  }
+  rpc DeleteDestination(DeleteDestinationRequest) returns (DeleteDestinationResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/destinations/*}"};
+  }
+}
+
+// Source is a configured source connector, reusable across pipelines.
+message Source {
+  // workspaces/{workspace}/sources/{source}
+  string name = 1;
+  ConnectorConfig spec = 2;
+  string version = 3;
+  string etag = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+}
+
+// Destination is a configured destination connector, reusable across
+// pipelines.
+message Destination {
+  // workspaces/{workspace}/destinations/{destination}
+  string name = 1;
+  ConnectorConfig spec = 2;
+  string version = 3;
+  string etag = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+}
+
+// ConnectorConfig is the spec of a Source or Destination document.
+message ConnectorConfig {
+  // The connector, and optionally its version: "postgres",
+  // "postgres@1.2.0", or "postgres@sha256:…".
+  string connector = 1;
+  // The connector's config, matching its config schema. Secret fields hold
+  // secret references, never values.
+  google.protobuf.Struct config = 2;
+}
+
+message GetSourceRequest {
+  string name = 1;
+}
+
+message GetSourceResponse {
+  Source source = 1;
+}
+
+message ListSourcesRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListSourcesResponse {
+  repeated Source sources = 1;
+  string next_page_token = 2;
+}
+
+message DeleteSourceRequest {
+  string name = 1;
+  // When set, the delete fails unless it matches the source's etag.
+  string etag = 2;
+}
+
+message DeleteSourceResponse {}
+
+message GetDestinationRequest {
+  string name = 1;
+}
+
+message GetDestinationResponse {
+  Destination destination = 1;
+}
+
+message ListDestinationsRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListDestinationsResponse {
+  repeated Destination destinations = 1;
+  string next_page_token = 2;
+}
+
+message DeleteDestinationRequest {
+  string name = 1;
+  // When set, the delete fails unless it matches the destination's etag.
+  string etag = 2;
+}
+
+message DeleteDestinationResponse {}

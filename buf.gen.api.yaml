@@ -1,0 +1,13 @@
+# The control-plane API: Go messages and Connect handlers.
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: module=github.com/unsuitable001/openetl
+  - local: protoc-gen-connect-go
+    out: .
+    opt: module=github.com/unsuitable001/openetl
+inputs:
+  - directory: proto
+    paths:
+      - proto/openetl/api

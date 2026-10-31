@@ -30,6 +30,8 @@ linters:
           deny:
             - pkg: github.com/unsuitable001/openetl/internal
               desc: the SDK must not depend on the platform
+            - pkg: github.com/unsuitable001/openetl/gen
+              desc: the SDK must not depend on the platform
         data-path-has-no-control-plane:
           files: ["**/internal/runner/**", "**/internal/connectorhost/**"]
           deny:

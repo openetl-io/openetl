@@ -1,0 +1,210 @@
+syntax = "proto3";
+
+package openetl.connector.v1;
+
+import "google/protobuf/duration.proto";
+import "openetl/connector/v1/errors.proto";
+
+option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
+
+// DestinationService is what a destination connector serves, next to
+// ConnectorService.
+//
+// The platform drives a destination through the commit protocol (ADR-0013):
+// records for an epoch are written, staged durably but invisibly in
+// PreCommit, and made visible in Commit only after the platform has recorded
+// the epoch's checkpoint. On restart, Recover finishes or abandons the epoch
+// the checkpoint log points to.
+service DestinationService {
+  // ApplySchema creates or evolves destination tables to match the given
+  // stream schemas. It is idempotent.
+  rpc ApplySchema(ApplySchemaRequest) returns (ApplySchemaResponse);
+  // Write is one attempt's writer; the stream's lifetime is the writer's.
+  //
+  // The platform sends WriteOpen, then WriteRecover, then batches,
+  // pre-commits and commits, and closes its side to close the writer. Batches
+  // and pre-commits arrive in epoch order, but batches for epoch N+1 can
+  // arrive before the pre-commit of N, because each stream crosses barrier N
+  // at its own resume point. A commit can arrive while later epochs are being
+  // written; the connector runs it concurrently with them, but never
+  // concurrently with another commit.
+  //
+  // The connector answers WriteRecover with WriteRecovered, each pre-commit
+  // with WriteStaged, and each commit with WriteCommitted. Any other failure
+  // ends the stream with an Error in the status details; ERROR_CODE_FENCED
+  // means a newer generation owns the pipeline.
+  rpc Write(stream WriteRequest) returns (stream WriteResponse);
+}
+
+// DestinationCapabilities is what the planner needs to compute each stream's
+// delivery guarantee and check a pipeline's delivery settings (ADR-0016).
+message DestinationCapabilities {
+  SinkClass sink_class = 1;
+  repeated CommitScope scopes = 2;
+  // The sink can insert append and overwrite rows only for _openetl_id values
+  // not already in the target.
+  bool dedupe_at_apply = 3;
+  google.protobuf.Duration default_commit_interval = 4;
+  google.protobuf.Duration min_commit_interval = 5;
+}
+
+// SinkClass is how a sink makes an epoch visible. It sets the best delivery
+// guarantee the sink can offer.
+enum SinkClass {
+  SINK_CLASS_UNSPECIFIED = 0;
+  // Stage in PreCommit and apply in Commit, with a marker per stream behind a
+  // fence: warehouses, Postgres, Parquet. Exactly-once.
+  SINK_CLASS_STAGE_AND_APPLY = 1;
+  // Flush into an open transaction in PreCommit and commit it in Commit:
+  // Kafka. Exactly-once.
+  SINK_CLASS_TRANSACTIONAL_STREAM = 2;
+  // Deliver every record during the epoch; PreCommit returns once all of them
+  // are acknowledged: webhooks, HTTP APIs. At-least-once.
+  SINK_CLASS_DELIVER_AND_ACK = 3;
+}
+
+// CommitScope is whether every stream's epoch becomes visible at the same
+// moment, or each stream's separately.
+enum CommitScope {
+  COMMIT_SCOPE_UNSPECIFIED = 0;
+  COMMIT_SCOPE_PIPELINE = 1;
+  COMMIT_SCOPE_STREAM = 2;
+}
+
+enum WriteMode {
+  WRITE_MODE_UNSPECIFIED = 0;
+  WRITE_MODE_APPEND = 1;
+  WRITE_MODE_OVERWRITE = 2;
+  // Upsert on the primary key.
+  WRITE_MODE_MERGE = 3;
+}
+
+// Recovery is what a writer found for the epoch the checkpoint log points to.
+enum Recovery {
+  RECOVERY_UNSPECIFIED = 0;
+  // Every stream of the epoch was already visible.
+  RECOVERY_APPLIED = 1;
+  // Some streams weren't visible, and the writer applied them now.
+  RECOVERY_REDONE = 2;
+  // The epoch was not applied and can't be. The platform falls back to the
+  // previous checkpoint.
+  RECOVERY_LOST = 3;
+}
+
+// Epoch identifies one checkpoint: N within the generation that wrote it.
+// Every name a sink derives for an epoch, such as markers and staging,
+// includes both. N is 0 when there is no checkpoint yet.
+message Epoch {
+  uint64 generation = 1;
+  uint64 n = 2;
+}
+
+message ApplySchemaRequest {
+  bytes config = 1;
+  // Where the pipeline's tables live: a schema or dataset.
+  string namespace = 2;
+  repeated StreamSchema streams = 3;
+}
+
+message StreamSchema {
+  string name = 1;
+  // An Arrow IPC schema message, metadata columns included.
+  bytes arrow_schema = 2;
+  repeated string primary_key = 3;
+  WriteMode mode = 4;
+}
+
+message ApplySchemaResponse {}
+
+message WriteRequest {
+  oneof msg {
+    WriteOpen open = 1;
+    WriteRecover recover = 2;
+    WriteBatch batch = 3;
+    WritePreCommit pre_commit = 4;
+    WriteCommit commit = 5;
+  }
+}
+
+// WriteOpen configures the writer for one attempt. It is the first message.
+message WriteOpen {
+  bytes config = 1;
+  string pipeline = 2;
+  string namespace = 3;
+  // The attempt's generation. Applies from this writer check it against the
+  // destination fence.
+  uint64 generation = 4;
+  CommitScope scope = 5;
+  repeated WriteStream streams = 6;
+}
+
+message WriteStream {
+  string name = 1;
+  WriteMode mode = 2;
+  repeated string primary_key = 3;
+  // Dedupe append and overwrite writes of this stream on _openetl_id when
+  // applying an epoch. The platform sets it for streams that can repeat
+  // records, and only for sinks with dedupe_at_apply.
+  bool dedupe = 4;
+}
+
+// WriteRecover is the second message. It raises the destination fence to the
+// writer's generation, then recovers epoch: reports applied, applies the
+// streams whose marker is missing and reports redone, or reports lost. With
+// no epoch (no checkpoint yet), it only raises the fence and reports applied.
+message WriteRecover {
+  Epoch epoch = 1;
+  // The descriptor PreCommit returned for epoch, from its checkpoint record.
+  bytes staged = 2;
+}
+
+// WriteBatch adds records of one stream to an epoch.
+message WriteBatch {
+  Epoch epoch = 1;
+  string stream = 2;
+  // An Arrow IPC stream holding the schema, any dictionaries, and one record
+  // batch.
+  bytes arrow = 3;
+}
+
+// WritePreCommit makes everything written in epoch durable but not visible.
+message WritePreCommit {
+  Epoch epoch = 1;
+}
+
+// WriteCommit runs after epoch's checkpoint record is in the checkpoint log.
+// It makes the epoch visible together with a marker per stream, behind the
+// destination fence: in one destination transaction, or one per stream when
+// the scope is stream. Running it twice is a no-op.
+message WriteCommit {
+  Epoch epoch = 1;
+  bytes staged = 2;
+}
+
+message WriteResponse {
+  oneof msg {
+    WriteRecovered recovered = 1;
+    WriteStaged staged = 2;
+    WriteCommitted committed = 3;
+  }
+}
+
+message WriteRecovered {
+  Recovery recovery = 1;
+}
+
+message WriteStaged {
+  Epoch epoch = 1;
+  // A small description of what PreCommit staged: file URIs, a staging table
+  // name, a producer slot. The platform stores it in the epoch's checkpoint
+  // record and passes it back to commit and recover, so a sink needs no state
+  // of its own to finish an epoch. Keep it to a few KB.
+  bytes staged = 2;
+}
+
+message WriteCommitted {
+  Epoch epoch = 1;
+  // Set when the commit failed. The platform may send the commit again: it
+  // is idempotent, and the stream stays open.
+  Error error = 2;
+}

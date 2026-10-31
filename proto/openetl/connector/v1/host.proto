@@ -1,0 +1,215 @@
+syntax = "proto3";
+
+package openetl.connector.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
+
+// HostService is how connectors reach the outside world (ADR-0008). The
+// runner implements it once, in Go. Container connectors call it over a
+// second Unix socket; native and declarative connectors call the Go
+// implementation directly.
+//
+// Secrets are referenced by name. The host injects their values when a
+// request leaves, so connector code never holds a credential, except through
+// GetSecret on the proxy and raw egress tiers.
+service HostService {
+  // HTTP sends a request through the platform's client: retries and backoff
+  // within the budget, Retry-After, adaptive rate limits, auth injection, the
+  // SSRF guard, and redacted traces. The response streams back as a head,
+  // then the body in chunks.
+  rpc HTTP(HTTPRequest) returns (stream HTTPResponse);
+  // Sign signs bytes with a named secret, so connectors that sign requests
+  // never see the key.
+  rpc Sign(SignRequest) returns (SignResponse);
+  // GetSecret returns a secret's value. Only connectors on the proxy and raw
+  // egress tiers may call it.
+  rpc GetSecret(GetSecretRequest) returns (GetSecretResponse);
+  rpc Log(LogRequest) returns (LogResponse);
+  // KVGet and KVPut are scratch storage scoped to the connector instance.
+  rpc KVGet(KVGetRequest) returns (KVGetResponse);
+  rpc KVPut(KVPutRequest) returns (KVPutResponse);
+  // Now is the host's clock. Cassette replays control it.
+  rpc Now(NowRequest) returns (NowResponse);
+}
+
+message HTTPRequest {
+  string method = 1;
+  // An absolute URL. The SSRF guard checks it and every redirect.
+  string url = 2;
+  repeated Header headers = 3;
+  bytes body = 4;
+  HTTPAuth auth = 5;
+  // Bounds the whole call, retries included. Unset: the host's default.
+  google.protobuf.Duration budget = 6;
+  // Allows retrying a method that isn't idempotent by definition, such as a
+  // POST with an idempotency key.
+  bool idempotent = 7;
+  // Groups requests that share a rate limit. Empty: the URL's host.
+  string rate_limit_key = 8;
+}
+
+message Header {
+  string name = 1;
+  string value = 2;
+}
+
+// HTTPAuth is how the host authenticates a request. Every field that names a
+// secret holds the secret's name.
+message HTTPAuth {
+  oneof scheme {
+    BearerAuth bearer = 1;
+    BasicAuth basic = 2;
+    APIKeyAuth api_key = 3;
+    OAuth2Auth oauth2 = 4;
+    AWSSigV4Auth aws_sigv4 = 5;
+  }
+}
+
+// BearerAuth sends "Authorization: Bearer <token>".
+message BearerAuth {
+  string token_secret = 1;
+}
+
+message BasicAuth {
+  string username = 1;
+  string password_secret = 2;
+}
+
+// APIKeyAuth sends a key in a header or a query parameter.
+message APIKeyAuth {
+  string key_secret = 1;
+  oneof location {
+    string header = 2;
+    string query_param = 3;
+  }
+  // Prepended to the key, such as "Token ".
+  string prefix = 4;
+}
+
+// OAuth2Auth sends an access token, and refreshes it when it expires.
+message OAuth2Auth {
+  // A secret holding the client, the token URL and the refresh token. The
+  // host stores rotated refresh tokens back.
+  string credential_secret = 1;
+}
+
+// AWSSigV4Auth signs the whole request with AWS Signature Version 4.
+message AWSSigV4Auth {
+  // A secret holding the access key ID, secret key and optional session
+  // token.
+  string credentials_secret = 1;
+  string region = 2;
+  string service = 3;
+}
+
+message HTTPResponse {
+  oneof part {
+    // The first message.
+    HTTPResponseHead head = 1;
+    // The body, in order.
+    bytes body = 2;
+  }
+}
+
+message HTTPResponseHead {
+  int32 status = 1;
+  repeated Header headers = 2;
+}
+
+message SignRequest {
+  // The secret holding the key.
+  string key_secret = 1;
+  oneof method {
+    HMACSign hmac = 2;
+    JWTSign jwt = 3;
+  }
+}
+
+// HMACSign returns the raw MAC of message.
+message HMACSign {
+  HashAlgorithm hash = 1;
+  bytes message = 2;
+}
+
+enum HashAlgorithm {
+  HASH_ALGORITHM_UNSPECIFIED = 0;
+  HASH_ALGORITHM_SHA1 = 1;
+  HASH_ALGORITHM_SHA256 = 2;
+  HASH_ALGORITHM_SHA512 = 3;
+}
+
+// JWTSign returns a compact JWS of claims.
+message JWTSign {
+  JWTAlgorithm algorithm = 1;
+  // A JSON object.
+  bytes claims = 2;
+  // Extra header fields, as a JSON object. The host sets alg and typ.
+  bytes header = 3;
+}
+
+enum JWTAlgorithm {
+  JWT_ALGORITHM_UNSPECIFIED = 0;
+  JWT_ALGORITHM_HS256 = 1;
+  JWT_ALGORITHM_RS256 = 2;
+  JWT_ALGORITHM_ES256 = 3;
+}
+
+message SignResponse {
+  bytes signature = 1;
+}
+
+message GetSecretRequest {
+  string name = 1;
+}
+
+message GetSecretResponse {
+  bytes value = 1;
+}
+
+message LogRequest {
+  repeated LogEntry entries = 1;
+}
+
+message LogEntry {
+  google.protobuf.Timestamp time = 1;
+  LogLevel level = 2;
+  string message = 3;
+  map<string, string> attrs = 4;
+}
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_DEBUG = 1;
+  LOG_LEVEL_INFO = 2;
+  LOG_LEVEL_WARN = 3;
+  LOG_LEVEL_ERROR = 4;
+}
+
+message LogResponse {}
+
+message KVGetRequest {
+  string key = 1;
+}
+
+message KVGetResponse {
+  // Unset when the key doesn't exist or has expired.
+  optional bytes value = 1;
+}
+
+message KVPutRequest {
+  string key = 1;
+  bytes value = 2;
+  // Unset: the value doesn't expire.
+  google.protobuf.Duration ttl = 3;
+}
+
+message KVPutResponse {}
+
+message NowRequest {}
+
+message NowResponse {
+  google.protobuf.Timestamp now = 1;
+}

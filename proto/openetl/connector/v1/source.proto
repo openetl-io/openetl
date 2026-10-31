@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package openetl.connector.v1;
+
+option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
+
+// SourceService is what a source connector serves, next to ConnectorService.
+//
+// A source decides what to fetch and where it is safe to resume. The platform
+// decides when to commit: it places checkpoint barriers only at the resume
+// points a source emits, so sources never see epochs.
+service SourceService {
+  // Discover returns the catalog: the streams the config can read.
+  rpc Discover(DiscoverRequest) returns (DiscoverResponse);
+  // Read reads the configured streams. For bounded reads the response stream
+  // ends once every stream is complete.
+  rpc Read(ReadRequest) returns (stream ReadResponse);
+  // Committed says it is safe to discard everything before these per-stream
+  // states upstream: Kafka offsets, a Postgres slot's confirmed LSN, queue
+  // deletes. It runs concurrently with Read. Only called when
+  // SourceCapabilities.acknowledges is set.
+  rpc Committed(CommittedRequest) returns (CommittedResponse);
+}
+
+message SourceCapabilities {
+  // The source implements Committed.
+  bool acknowledges = 1;
+}
+
+message DiscoverRequest {
+  bytes config = 1;
+}
+
+message DiscoverResponse {
+  Catalog catalog = 1;
+}
+
+message Catalog {
+  repeated CatalogStream streams = 1;
+}
+
+message CatalogStream {
+  string name = 1;
+  // A JSON Schema for one record, for streams on the raw lane. The engine
+  // still infers types; this is what the source knows in advance.
+  bytes json_schema = 2;
+  // An Arrow IPC schema message, for streams on the typed lane.
+  bytes arrow_schema = 3;
+  repeated string primary_key = 4;
+  repeated SyncMode sync_modes = 5;
+  // The field incremental reads use unless the pipeline names another.
+  string default_cursor = 6;
+  // The source picks the cursor, and the pipeline can't override it.
+  bool source_defined_cursor = 7;
+  Replay replay = 8;
+}
+
+enum SyncMode {
+  SYNC_MODE_UNSPECIFIED = 0;
+  SYNC_MODE_FULL_REFRESH = 1;
+  // Incremental reads by a cursor field.
+  SYNC_MODE_INCREMENTAL = 2;
+  // A log-based changelog.
+  SYNC_MODE_CDC = 3;
+  // Unbounded: Kafka, webhooks.
+  SYNC_MODE_STREAM = 4;
+}
+
+// Replay is whether a stream can carry the same record version more than
+// once. It decides the stream's delivery guarantee together with the sink.
+enum Replay {
+  REPLAY_UNSPECIFIED = 0;
+  // Resuming from a resume point yields exactly the records after it: CDC,
+  // Kafka, chunked snapshots.
+  REPLAY_EXACT = 1;
+  // Records can repeat: cursor floors, lookback windows, webhook retries.
+  // Every SDK and declarative stream is superset.
+  REPLAY_SUPERSET = 2;
+}
+
+message ReadRequest {
+  bytes config = 1;
+  repeated ConfiguredStream streams = 2;
+}
+
+message ConfiguredStream {
+  string name = 1;
+  SyncMode sync_mode = 2;
+  // The cursor field for incremental reads.
+  string cursor = 3;
+  // The state to resume from, as the source emitted it in a resume point.
+  // Unset: start from the beginning.
+  optional bytes state = 4;
+}
+
+message ReadResponse {
+  oneof msg {
+    RecordBatch batch = 1;
+    ResumePoint resume_point = 2;
+    StreamComplete complete = 3;
+  }
+}
+
+// RecordBatch is records for one stream, on one of two lanes.
+message RecordBatch {
+  string stream = 1;
+  oneof records {
+    // The typed lane: an Arrow IPC stream holding the schema, any
+    // dictionaries, and one record batch.
+    bytes arrow = 2;
+    // The raw lane: JSON objects. The engine infers types, coerces values
+    // and adds metadata columns.
+    JSONRows rows = 3;
+  }
+}
+
+message JSONRows {
+  // Each row is one JSON object.
+  repeated bytes rows = 1;
+}
+
+// ResumePoint says it is safe to restart the stream from state after
+// everything emitted for it so far.
+message ResumePoint {
+  string stream = 1;
+  bytes state = 2;
+}
+
+// StreamComplete says a bounded stream has no more records. A source emits a
+// final resume point first, so the next read starts after them.
+message StreamComplete {
+  string stream = 1;
+}
+
+message CommittedRequest {
+  // Per-stream states from one checkpoint.
+  map<string, bytes> states = 1;
+}
+
+message CommittedResponse {}

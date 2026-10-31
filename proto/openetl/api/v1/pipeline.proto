@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+
+// PipelineService reads and deletes pipelines. Pipelines are created and
+// changed with ApplyService.Apply.
+service PipelineService {
+  rpc GetPipeline(GetPipelineRequest) returns (GetPipelineResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*}"};
+  }
+  rpc ListPipelines(ListPipelinesRequest) returns (ListPipelinesResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/pipelines"};
+  }
+  rpc DeletePipeline(DeletePipelineRequest) returns (DeletePipelineResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/pipelines/*}"};
+  }
+}
+
+// Pipeline is the unit of execution: it reads from a source and writes to
+// one destination.
+message Pipeline {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string name = 1;
+  PipelineSpec spec = 2;
+  // The current immutable version. Syncs and jobs record the version they
+  // ran.
+  string version = 3;
+  string etag = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+}
+
+// PipelineSpec is the spec of a Pipeline document. Unset fields take the
+// default, which is often the sink's.
+message PipelineSpec {
+  PipelineMode mode = 1;
+  Schedule schedule = 2;
+  // The data plane the pipeline runs on.
+  string data_plane = 3;
+  PipelineSource source = 4;
+  PipelineDestination destination = 5;
+  SchemaPolicy schema_policy = 6;
+  Delivery delivery = 7;
+}
+
+enum PipelineMode {
+  PIPELINE_MODE_UNSPECIFIED = 0;
+  // Bounded syncs on a schedule.
+  PIPELINE_MODE_SCHEDULED = 1;
+  // An unbounded job that runs until stopped.
+  PIPELINE_MODE_CONTINUOUS = 2;
+}
+
+message Schedule {
+  oneof trigger {
+    google.protobuf.Duration every = 1;
+    string cron = 2;
+  }
+  // A random delay of up to this much, so pipelines on the same schedule
+  // don't all start at once.
+  google.protobuf.Duration jitter = 3;
+}
+
+message PipelineSource {
+  // The Source resource's ID within the workspace.
+  string ref = 1;
+  repeated PipelineStream streams = 2;
+}
+
+message PipelineStream {
+  string name = 1;
+  SyncMode sync = 2;
+  // The cursor field for incremental reads.
+  string cursor = 3;
+  // In-flight column operations, by column name.
+  map<string, ColumnOp> columns = 4;
+}
+
+enum SyncMode {
+  SYNC_MODE_UNSPECIFIED = 0;
+  SYNC_MODE_FULL_REFRESH = 1;
+  SYNC_MODE_INCREMENTAL = 2;
+  SYNC_MODE_CDC = 3;
+  SYNC_MODE_STREAM = 4;
+}
+
+message ColumnOp {
+  ColumnOpKind op = 1;
+}
+
+enum ColumnOpKind {
+  COLUMN_OP_KIND_UNSPECIFIED = 0;
+  COLUMN_OP_KIND_HASH = 1;
+  COLUMN_OP_KIND_BLOCK = 2;
+}
+
+message PipelineDestination {
+  // The Destination resource's ID within the workspace.
+  string ref = 1;
+  WriteMode write = 2;
+  // Where the pipeline's tables live: a schema or dataset.
+  string namespace = 3;
+}
+
+enum WriteMode {
+  WRITE_MODE_UNSPECIFIED = 0;
+  WRITE_MODE_APPEND = 1;
+  WRITE_MODE_OVERWRITE = 2;
+  WRITE_MODE_MERGE = 3;
+}
+
+enum SchemaPolicy {
+  SCHEMA_POLICY_UNSPECIFIED = 0;
+  SCHEMA_POLICY_ALLOW_ALL = 1;
+  SCHEMA_POLICY_ALLOW_COLUMNS = 2;
+  SCHEMA_POLICY_BLOCK = 3;
+  SCHEMA_POLICY_IGNORE_NEW = 4;
+}
+
+// Delivery is the pipeline's commit cadence and visibility, and the lowest
+// delivery guarantee it accepts (ADR-0016).
+message Delivery {
+  // A check, not a mode: the plan fails if any stream's computed guarantee is
+  // lower.
+  DeliveryLevel require = 1;
+  Commit commit = 2;
+  // How long a barrier waits for a stream's next resume point before it is
+  // placed without one. Unset: the default. Zero: wait forever.
+  google.protobuf.Duration resume_point_timeout = 3;
+  Dedupe dedupe = 4;
+}
+
+enum DeliveryLevel {
+  DELIVERY_LEVEL_UNSPECIFIED = 0;
+  DELIVERY_LEVEL_AT_LEAST_ONCE = 1;
+  DELIVERY_LEVEL_EFFECTIVELY_ONCE = 2;
+  DELIVERY_LEVEL_EXACTLY_ONCE = 3;
+}
+
+message Commit {
+  google.protobuf.Duration interval = 1;
+  int64 max_bytes = 2;
+  CommitScope scope = 3;
+}
+
+enum CommitScope {
+  COMMIT_SCOPE_UNSPECIFIED = 0;
+  COMMIT_SCOPE_PIPELINE = 1;
+  COMMIT_SCOPE_STREAM = 2;
+}
+
+enum Dedupe {
+  DEDUPE_UNSPECIFIED = 0;
+  DEDUPE_AUTO = 1;
+  DEDUPE_NONE = 2;
+}
+
+message GetPipelineRequest {
+  string name = 1;
+}
+
+message GetPipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message ListPipelinesRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPipelinesResponse {
+  repeated Pipeline pipelines = 1;
+  string next_page_token = 2;
+}
+
+message DeletePipelineRequest {
+  string name = 1;
+  // When set, the delete fails unless it matches the pipeline's etag.
+  string etag = 2;
+}
+
+message DeletePipelineResponse {}

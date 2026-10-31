@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package openetl.engine.v1;
+
+import "openetl/connector/v1/destination.proto";
+
+option go_package = "github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1";
+
+// The data edges (ADR-0009).
+//
+// Each Edge in the plan is one connection to the engine's data socket. Both
+// directions carry the same frames: a 12-byte header, then the payload.
+//
+// - kind: 1 byte, a FrameKind.
+// - reserved: 3 bytes, zero.
+// - stream: 4 bytes, little-endian. An index into the edge's streams; 0 for
+//   HELLO.
+// - length: 4 bytes, little-endian. The payload's length.
+//
+// A BATCH payload is an Arrow IPC stream holding the stream's schema, any
+// dictionaries, and one record batch. Each BATCH frame stands alone, so a
+// receiver keeps no decoder state per stream. Every other payload is the
+// protobuf message named after its kind.
+//
+// Control frames travel in band, so a barrier stays in order with its
+// stream's records.
+enum FrameKind {
+  FRAME_KIND_UNSPECIFIED = 0;
+  // Hello. The first frame on every edge connection, from the runner.
+  FRAME_KIND_HELLO = 1;
+  // An Arrow batch for one stream. Both directions.
+  FRAME_KIND_BATCH = 2;
+  // Rows. JSON rows for one stream on the raw lane, to the engine.
+  FRAME_KIND_ROWS = 3;
+  // Barrier. Both directions.
+  FRAME_KIND_BARRIER = 4;
+  // SchemaChange. Both directions.
+  FRAME_KIND_SCHEMA_CHANGE = 5;
+  // StagedFiles. From the engine.
+  FRAME_KIND_STAGED_FILES = 6;
+  // EndOfStream. Both directions.
+  FRAME_KIND_END_OF_STREAM = 7;
+}
+
+// Hello says which edge of the plan a connection is.
+message Hello {
+  string edge = 1;
+}
+
+message Rows {
+  // Each row is one JSON object.
+  repeated bytes rows = 1;
+}
+
+// Barrier marks the end of epoch on one stream. Everything before it on that
+// stream belongs to the epoch.
+message Barrier {
+  openetl.connector.v1.Epoch epoch = 1;
+}
+
+// SchemaChange says a stream's schema changed. It comes before the first
+// batch with the new schema, so a sink can evolve its tables first.
+message SchemaChange {
+  // An Arrow IPC schema message.
+  bytes arrow_schema = 1;
+}
+
+// StagedFiles lists files the engine staged in epoch for a runner sink to
+// load, such as Parquet files for a warehouse COPY.
+message StagedFiles {
+  openetl.connector.v1.Epoch epoch = 1;
+  repeated StagedFile files = 2;
+}
+
+message StagedFile {
+  string url = 1;
+  uint64 size_bytes = 2;
+  uint64 rows = 3;
+}
+
+// EndOfStream says a bounded stream has no more records on this edge.
+message EndOfStream {}

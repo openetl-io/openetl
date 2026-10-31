@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+
+// ApplyService is the one way definitions get in (ADR-0015). The CLI, the UI,
+// Terraform and git sync all use it.
+service ApplyService {
+  // Apply validates definitions and stores each one as an immutable,
+  // content-addressed version. A definition that hasn't changed keeps its
+  // version. Either every document applies, or none does.
+  rpc Apply(ApplyRequest) returns (ApplyResponse) {
+    option (google.api.http) = {
+      post: "/v1/{workspace=workspaces/*}:apply"
+      body: "*"
+    };
+  }
+}
+
+message ApplyRequest {
+  // workspaces/{workspace}: where documents go that don't name a workspace.
+  string workspace = 1;
+  repeated Document documents = 2;
+  // Validate and report what would change, without storing anything.
+  bool validate_only = 3;
+}
+
+// Document is one definition in YAML or JSON, with apiVersion, kind, metadata
+// and spec, such as a Pipeline, Source or Destination.
+message Document {
+  // Where the document came from, such as a file name, for error messages.
+  string origin = 1;
+  bytes content = 2;
+}
+
+message ApplyResponse {
+  // One per document, in order.
+  repeated AppliedResource resources = 1;
+}
+
+message AppliedResource {
+  // The document's kind: Pipeline, Source or Destination.
+  string kind = 1;
+  // The resource name, such as workspaces/analytics/pipelines/shop.
+  string name = 2;
+  ApplyAction action = 3;
+  string version = 4;
+}
+
+enum ApplyAction {
+  APPLY_ACTION_UNSPECIFIED = 0;
+  APPLY_ACTION_CREATED = 1;
+  APPLY_ACTION_UPDATED = 2;
+  APPLY_ACTION_UNCHANGED = 3;
+}

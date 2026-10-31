@@ -21,10 +21,33 @@ jobs:
             sdk/go/go.sum
             tools/go.sum
       - run: make tools
+      - name: Generated code is up to date
+        run: |
+          make generate
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::make generate changed files; run it and commit the result"
+            exit 1
+          fi
       - name: Lint
         run: |
           export PATH="$PWD/bin:$PATH"
+          buf lint
+          buf format --diff --exit-code
           for m in . sdk/go; do (cd "$m" && golangci-lint run ./...); done
+      # Informational until v0.1.0-alpha: the protocols still change
+      # incompatibly during P0 and P1.
+      - name: Breaking proto changes
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          # buf needs the commit's hash: it doesn't resolve FETCH_HEAD.
+          if git cat-file -e FETCH_HEAD:buf.yaml 2>/dev/null; then
+            bin/buf breaking --against ".git#ref=$(git rev-parse FETCH_HEAD)"
+          else
+            echo "The base branch has no protos yet."
+          fi
       - name: Unit tests
         run: go test -race ./... ./sdk/go/...
       - name: SDK builds without the workspace

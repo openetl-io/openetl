@@ -1,0 +1,24 @@
+[package]
+name = "openetl-proto"
+description = "Generated types for the connector and engine protocols"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# Doc comments come from the .proto files and aren't Rust examples.
+doctest = false
+
+[dependencies]
+prost = "0.14.4"
+prost-types = "0.14.4"
+tonic = "0.14.9"
+tonic-prost = "0.14.9"
+
+[build-dependencies]
+protox = "0.10.0"
+tonic-prost-build = "0.14.9"
+
+[lints]
+workspace = true
