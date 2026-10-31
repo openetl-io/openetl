@@ -13,6 +13,7 @@ TOOL_PKGS := \
 	gotest.tools/gotestsum \
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 BIN := $(CURDIR)/bin
+CARGO_DENY_VERSION := 0.20.2
 
 GO_MODULES := . sdk/go
 GO_PACKAGES := ./... ./sdk/go/...
@@ -26,6 +27,10 @@ help: ## Show this help
 
 $(BIN)/.tools: tools/go.mod tools/go.sum
 	GOWORK=off go build -modfile=tools/go.mod -o $(BIN)/ $(TOOL_PKGS)
+	@touch $@
+
+$(BIN)/.cargo-deny-$(CARGO_DENY_VERSION):
+	cargo install --locked --quiet --root $(BIN)/cargo cargo-deny@$(CARGO_DENY_VERSION)
 	@touch $@
 
 .PHONY: tools
@@ -55,12 +60,13 @@ generate: tools ## Generate code from protos and SQL
 	$(BIN)/sqlc generate -f internal/store/sqlc.yaml
 
 .PHONY: lint
-lint: tools ## Lint protos, Go and Rust
+lint: tools $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION) ## Lint protos, Go and Rust, and check Rust dependencies
 	$(BIN)/buf lint
 	$(BIN)/buf format --diff --exit-code
 	@for m in $(GO_MODULES); do (cd $$m && $(BIN)/golangci-lint run ./...) || exit 1; done
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
+	$(BIN)/cargo/bin/cargo-deny check --hide-inclusion-graph
 
 # The runner/engine tests in internal/engineclient need OPENETL_ENGINE and
 # skip without it.

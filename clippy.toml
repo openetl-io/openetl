@@ -1,0 +1,13 @@
+# Arrow's value(i) accessors return whatever is in the buffer at a null slot.
+# Outside kernels, use the iterators, which yield Option.
+disallowed-methods = [
+  { path = "arrow_array::array::PrimitiveArray::value", reason = "ignores nulls; iterate for Option values" },
+  { path = "arrow_array::array::BooleanArray::value", reason = "ignores nulls; iterate for Option values" },
+  { path = "arrow_array::array::GenericByteArray::value", reason = "ignores nulls; iterate for Option values" },
+  { path = "arrow_array::array::GenericByteViewArray::value", reason = "ignores nulls; iterate for Option values" },
+  { path = "arrow_array::array::FixedSizeBinaryArray::value", reason = "ignores nulls; iterate for Option values" },
+  { path = "arrow_array::array::GenericListArray::value", reason = "ignores nulls; iterate for Option values" },
+  { path = "arrow_array::array::GenericListViewArray::value", reason = "ignores nulls; iterate for Option values" },
+  { path = "arrow_array::array::FixedSizeListArray::value", reason = "ignores nulls; iterate for Option values" },
+  { path = "arrow_array::array::MapArray::value", reason = "ignores nulls; iterate for Option values" },
+]
