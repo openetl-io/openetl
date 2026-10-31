@@ -97,6 +97,15 @@ message PipelineDestination {
   WriteMode write = 2;
   // A schema or dataset.
   string namespace = 3;
+  Naming naming = 4;
+}
+
+enum Naming {
+  NAMING_UNSPECIFIED = 0;
+  // Lowercase, with anything outside [a-z0-9_] replaced. The default.
+  NAMING_NORMALIZED = 1;
+  // Source names as they are, quoted.
+  NAMING_SOURCE = 2;
 }
 
 enum WriteMode {

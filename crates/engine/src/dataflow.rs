@@ -13,7 +13,7 @@ use std::time::Duration;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use openetl_formats::ParquetStaging;
-use openetl_normalize::Normalizer;
+use openetl_normalize::{Error as NormalizeError, Shaper};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
     Barrier, EpochReady, EventsResponse, FrameKind, Metrics, Rows, SchemaChange, StreamMetrics,
@@ -154,9 +154,16 @@ where
 {
     let id = &plan.inbound[edge].id;
     let streams = &plan.inbound[edge].streams;
-    let mut schema: Vec<Option<SchemaRef>> =
-        streams.iter().map(|&s| plan.restored[s].clone()).collect();
-    let mut norm: Vec<Option<Normalizer>> = streams.iter().map(|_| None).collect();
+    let mut shape = Vec::with_capacity(streams.len());
+    for &s in streams {
+        let sh = Shaper::new(
+            plan.naming,
+            plan.tables[s].clone(),
+            plan.restored[s].clone(),
+        )
+        .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?;
+        shape.push(sh);
+    }
     let mut next_epoch = vec![plan.first_epoch; streams.len()];
     let mut ended = vec![false; streams.len()];
     let protocol = |msg: String| JobError::internal(format!("edge {id}: {msg}"));
@@ -196,32 +203,25 @@ where
                     Rows::decode(f.payload.as_slice()).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
                     .fetch_add(rows.rows.len() as u64, Ordering::Relaxed);
-                let mut normalizer = match (norm[local].take(), &schema[local]) {
-                    (Some(n), _) => n,
-                    (None, None) => Normalizer::default(),
-                    (None, Some(s)) => Normalizer::with_schema(s).map_err(|e| {
-                        JobError::config(format!(
-                            "stream {}: the restored schema: {e}",
-                            plan.streams[stream]
-                        ))
-                    })?,
-                };
-                let n = normalizer
-                    .push(rows.rows.iter().map(Vec::as_slice))
+                let n = shape[local]
+                    .rows(rows.rows.iter().map(Vec::as_slice))
                     .map_err(|e| {
-                        JobError::new(
-                            ErrorCode::DataInvalid,
-                            format!("stream {}: {e}", plan.streams[stream]),
-                        )
+                        let code =
+                            match e {
+                                NormalizeError::Json { .. }
+                                | NormalizeError::NotAnObject { .. } => ErrorCode::DataInvalid,
+                                NormalizeError::Unsupported { .. }
+                                | NormalizeError::Restored(_) => ErrorCode::ConfigInvalid,
+                                NormalizeError::Arrow(_) => ErrorCode::Internal,
+                            };
+                        JobError::new(code, format!("stream {}: {e}", plan.streams[stream]))
                     })?;
-                norm[local] = Some(normalizer);
                 if n.schema_changed {
                     let encoded = ipc::encode_schema(&n.batch.schema())
                         .map_err(|e| JobError::internal(e.to_string()))?;
                     let msg = SchemaChange {
                         arrow_schema: encoded,
                     };
-                    schema[local] = Some(n.batch.schema());
                     send(&tx, Out::SchemaChange(stream, msg.encode_to_vec())).await?;
                 }
                 if n.batch.num_rows() == 0 {
@@ -233,7 +233,9 @@ where
                 let batch = ipc::decode_batch(f.payload).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-                schema[local] = Some(batch.schema());
+                let batch = shape[local].batch(&batch).map_err(|e| {
+                    JobError::internal(format!("stream {}: {e}", plan.streams[stream]))
+                })?;
                 Out::Batch(stream, batch)
             }
             FrameKind::Barrier => {
@@ -252,12 +254,12 @@ where
                     )));
                 }
                 next_epoch[local] += 1;
-                Out::Barrier(stream, epoch, schema[local].clone())
+                Out::Barrier(stream, epoch, shape[local].schema())
             }
             FrameKind::SchemaChange => Out::SchemaChange(stream, f.payload),
             FrameKind::EndOfStream => {
                 ended[local] = true;
-                Out::End(stream, schema[local].clone())
+                Out::End(stream, shape[local].schema())
             }
             k @ (FrameKind::Hello | FrameKind::StagedFiles | FrameKind::Unspecified) => {
                 return Err(protocol(format!("unexpected {} frame", k.as_str_name())));
@@ -456,7 +458,13 @@ fn write_parquet(
     events: &Events,
     counters: &[Counters],
 ) -> Result<bool, JobError> {
-    let mut staging = ParquetStaging::new(url, plan.generation, plan.first_epoch, &plan.streams)
+    let streams: Vec<(String, String)> = plan
+        .streams
+        .iter()
+        .cloned()
+        .zip(plan.tables.iter().cloned())
+        .collect();
+    let mut staging = ParquetStaging::new(url, plan.generation, plan.first_epoch, &streams)
         .map_err(sink_error)?;
     let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
 
@@ -578,6 +586,7 @@ fn metrics(plan: &Plan, counters: &[Counters]) -> EventsResponse {
 mod tests {
     use super::*;
     use arrow_schema::DataType;
+    use openetl_normalize::{Normalizer, naming};
     use tokio::io::{BufReader, DuplexStream, duplex};
 
     use crate::plan::tests::request;
@@ -765,7 +774,7 @@ mod tests {
         h.job.await.unwrap().unwrap();
         let batch = frames.iter().find(|f| f.kind == FrameKind::Batch).unwrap();
         let b = ipc::decode_batch(batch.payload.clone()).unwrap();
-        assert_eq!(b.schema(), first.schema());
+        assert_eq!(b.schema().field(0).data_type(), &DataType::Float64);
 
         let ready = ready(&mut h.events).await;
         let shapes: Vec<_> = ready.iter().map(schema_types).collect();
@@ -774,10 +783,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn arrow_batches_pass_through() {
+    async fn arrow_batches_pass_through_renamed() {
         let mut h = start(1);
         let mut n = Normalizer::default();
-        let batch = n.push([br#"{"k": "v"}"#.as_slice()]).unwrap().batch;
+        let batch = n.push([br#"{"Key": "v"}"#.as_slice()]).unwrap().batch;
         let w = &mut h.to_engine;
         put(w, FrameKind::Batch, 1, ipc::encode_batch(&batch).unwrap()).await;
         put(w, FrameKind::EndOfStream, 0, vec![]).await;
@@ -787,7 +796,16 @@ mod tests {
         let frames = drain(&mut h.from_engine).await;
         h.job.await.unwrap().unwrap();
         assert_eq!((frames[0].kind, frames[0].stream), (FrameKind::Batch, 0));
-        assert_eq!(ipc::decode_batch(frames[0].payload.clone()).unwrap(), batch);
+        let out = ipc::decode_batch(frames[0].payload.clone()).unwrap();
+        assert_eq!(out.columns(), batch.columns());
+        let schema = out.schema();
+        assert_eq!(schema.field(0).name(), "key");
+        let names = naming::source_names(&schema).unwrap();
+        assert_eq!(names.get("key").map(String::as_str), Some("Key"));
+        assert_eq!(
+            schema.metadata().get(naming::TABLE_KEY).map(String::as_str),
+            Some("b")
+        );
     }
 
     #[tokio::test]

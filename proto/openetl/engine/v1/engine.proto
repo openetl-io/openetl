@@ -37,6 +37,16 @@ message StartJobRequest {
   Limits limits = 8;
   // Operator state in the restored checkpoint, as EpochReady reported it.
   repeated StateSnapshot restored_snapshots = 9;
+  Naming naming = 10;
+}
+
+// Naming gives tables and columns their destination names. Names already in
+// a restored schema are kept.
+message Naming {
+  // Keep source names as they are, for destinations that quote identifiers.
+  bool keep_source_names = 1;
+  // The destination's identifier limit in bytes. Zero: none.
+  uint32 max_length = 2;
 }
 
 message StreamPlan {

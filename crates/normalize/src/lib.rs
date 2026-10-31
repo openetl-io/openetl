@@ -1,5 +1,11 @@
 //! Raw rows to Arrow. A [`Normalizer`] infers one stream's schema from the
-//! JSON objects it sees, and only ever widens it.
+//! JSON objects it sees, and only ever widens it. A [`Shaper`] gives a
+//! stream's columns their destination names, on either lane.
+
+pub mod naming;
+mod shape;
+
+pub use shape::Shaper;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -87,6 +93,8 @@ pub enum Error {
     NotAnObject { row: usize },
     #[error("column {column:?} is {data_type}, which raw rows don't infer")]
     Unsupported { column: String, data_type: DataType },
+    #[error("the restored schema has {0}")]
+    Restored(String),
     #[error(transparent)]
     Arrow(#[from] ArrowError),
 }

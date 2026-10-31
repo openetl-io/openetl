@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -247,6 +248,36 @@ func decodeSchema(b []byte) (*arrow.Schema, error) {
 	}
 	defer r.Release()
 	return r.Schema(), nil
+}
+
+func TestRunNamesTablesAndColumns(t *testing.T) {
+	ctx := testContext(t)
+	p := plan("Users")
+	p.Naming = runner.Naming{MaxLength: 12}
+	got, err := run(ctx, &Dataflow{Options: options(t, nil)}, p,
+		runner.Frame{Kind: runner.FrameRows, Stream: "Users", Rows: rows(`{"First Name": "a", "first_name": "b", "a_rather_long_name": 1}`)},
+	)
+	defer release(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := got["Users"][0].Batch.Schema()
+	var names []string
+	for _, f := range s.Fields() {
+		names = append(names, f.Name)
+	}
+	if len(names) != 3 || names[0] != "first_name" || names[1] != "first_name_2" || len(names[2]) != 12 || !strings.HasPrefix(names[2], "a_r_") {
+		t.Errorf("columns are %q", names)
+	}
+	if table, _ := s.Metadata().GetValue("openetl.table"); table != "users" {
+		t.Errorf("table is %q, want users", table)
+	}
+	if names, _ := s.Metadata().GetValue("openetl.source_names"); !strings.Contains(names, `"first_name":"First Name"`) {
+		t.Errorf("source names are %s", names)
+	}
+	if s.Field(0).HasMetadata() {
+		t.Errorf("first_name has metadata %v", s.Field(0).Metadata)
+	}
 }
 
 func TestRunReportsEngineErrors(t *testing.T) {

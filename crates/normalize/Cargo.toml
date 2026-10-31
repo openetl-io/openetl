@@ -11,6 +11,7 @@ arrow-array.workspace = true
 arrow-schema.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+twox-hash.workspace = true
 
 [lints]
 workspace = true

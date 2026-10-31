@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use arrow_schema::SchemaRef;
+use openetl_normalize::naming::{Namer, Naming, RESERVED_TABLES, TABLE_KEY};
 use openetl_proto::engine::v1::{EdgeDirection, StartJobRequest, sink_plan};
 
 use crate::error::JobError;
@@ -12,6 +13,9 @@ pub struct Plan {
     pub generation: u64,
     pub first_epoch: u64,
     pub streams: Vec<String>,
+    /// Each stream's destination table.
+    pub tables: Vec<String>,
+    pub naming: Naming,
     /// Each stream's schema in the restored checkpoint.
     pub restored: Vec<Option<SchemaRef>>,
     pub inbound: Vec<EdgePlan>,
@@ -76,6 +80,21 @@ impl Plan {
             });
         }
         let names: Vec<String> = req.streams.iter().map(|s| s.name.clone()).collect();
+        let naming = req.naming.map_or_else(Naming::default, |n| Naming {
+            keep_source: n.keep_source_names,
+            max_len: n.max_length as usize,
+        });
+        let mut namer = Namer::new(naming, &RESERVED_TABLES);
+        for (name, schema) in names.iter().zip(&restored) {
+            if let Some(table) = schema.as_ref().and_then(|s| s.metadata().get(TABLE_KEY))
+                && !namer.keep(name, table)
+            {
+                return Err(JobError::config(format!(
+                    "stream {name}: its restored table {table:?} belongs to another stream"
+                )));
+            }
+        }
+        let tables: Vec<String> = names.iter().map(|n| namer.name(n)).collect();
         let sink = req
             .sink
             .and_then(|s| s.sink)
@@ -83,7 +102,7 @@ impl Plan {
         let sink_edge = match &sink {
             sink_plan::Sink::Runner(r) => Some(r.edge.as_str()),
             sink_plan::Sink::Parquet(p) => {
-                openetl_formats::check(&p.url, &names)
+                openetl_formats::check(&p.url, &tables)
                     .map_err(|e| JobError::config(e.to_string()))?;
                 None
             }
@@ -167,6 +186,8 @@ impl Plan {
             generation: req.generation,
             first_epoch: req.first_epoch,
             streams: names,
+            tables,
+            naming,
             restored,
             inbound,
             sink,
@@ -216,6 +237,7 @@ pub(crate) mod tests {
             }),
             limits: None,
             restored_snapshots: Vec::new(),
+            naming: None,
         }
     }
 
@@ -247,6 +269,23 @@ pub(crate) mod tests {
             sink: Some(sink_plan::Sink::Discard(DiscardSink {})),
         });
         req
+    }
+
+    #[test]
+    fn names_tables_keeping_restored_names() {
+        let mut req = request(&["Users", "users", "1st"]);
+        let restored = arrow_schema::Schema::new(Vec::<arrow_schema::Field>::new())
+            .with_metadata(HashMap::from([(TABLE_KEY.to_owned(), "users".to_owned())]));
+        req.streams[1].restored_schema = crate::ipc::encode_schema(&restored).unwrap();
+        let p = Plan::from_request(req).unwrap();
+        assert_eq!(p.tables, vec!["users_2", "users", "_1st"]);
+
+        let mut req = request(&["a", "b"]);
+        let taken = arrow_schema::Schema::new(Vec::<arrow_schema::Field>::new()).with_metadata(
+            HashMap::from([(TABLE_KEY.to_owned(), "_openetl_loads".to_owned())]),
+        );
+        req.streams[0].restored_schema = crate::ipc::encode_schema(&taken).unwrap();
+        assert!(Plan::from_request(req).is_err());
     }
 
     #[test]
@@ -307,8 +346,14 @@ pub(crate) mod tests {
                 Box::new(|r| *r = parquet_request(&["a", "b"], "s3://bucket/x")),
             ),
             (
-                "parquet stream name",
-                Box::new(|r| *r = parquet_request(&["a", "b/c"], "file:///tmp/x")),
+                "parquet directory",
+                Box::new(|r| {
+                    *r = parquet_request(&["a", "b/c"], "file:///tmp/x");
+                    r.naming = Some(openetl_proto::engine::v1::Naming {
+                        keep_source_names: true,
+                        max_length: 0,
+                    });
+                }),
             ),
             (
                 "unknown stream",

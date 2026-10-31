@@ -186,6 +186,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		Generation: plan.Generation,
 		FirstEpoch: plan.FirstEpoch,
 		Sink:       &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Runner{Runner: &enginev1.RunnerSink{Edge: outEdge}}},
+		Naming:     &enginev1.Naming{KeepSourceNames: plan.Naming.KeepSource, MaxLength: uint32(max(plan.Naming.MaxLength, 0))}, //nolint:gosec // identifier limits are small
 	}
 	for i, s := range plan.Streams {
 		names[i] = s.Name

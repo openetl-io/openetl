@@ -89,6 +89,8 @@ type Capabilities struct {
 	DedupeAtApply         bool
 	DefaultCommitInterval time.Duration
 	MinCommitInterval     time.Duration
+	// The longest table or column name, in bytes; 0 for no limit.
+	MaxIdentifierLength int
 }
 
 func (c Capabilities) SupportsScope(s Scope) bool {

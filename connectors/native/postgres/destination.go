@@ -63,6 +63,7 @@ func (d *Destination) Capabilities() destination.Capabilities {
 		Scopes:                []destination.Scope{destination.ScopePipeline, destination.ScopeStream},
 		DefaultCommitInterval: 10 * time.Second,
 		MinCommitInterval:     time.Second,
+		MaxIdentifierLength:   63,
 	}
 }
 
@@ -109,8 +110,9 @@ type writer struct {
 }
 
 type stagingTable struct {
-	name string
-	cols []column
+	name   string
+	target string
+	cols   []column
 }
 
 // staged is the descriptor PreCommit returns.
@@ -151,7 +153,7 @@ func (w *writer) Write(ctx context.Context, e destination.Epoch, stream string, 
 	}
 	st := byStream[stream]
 	if st == nil {
-		st = &stagingTable{name: stagingName(w.cfg.Pipeline, stream, e)}
+		st = &stagingTable{name: stagingName(w.cfg.Pipeline, stream, e), target: targetTable(batch.Schema(), stream)}
 		if _, err := w.pool.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+w.ident(st.name)+" ("+columnDefs(cols)+")"); err != nil {
 			return fmt.Errorf("postgres: create staging for %s: %w", stream, err)
 		}
@@ -224,7 +226,7 @@ func (w *writer) PreCommit(_ context.Context, e destination.Epoch) (destination.
 	byStream := w.staging[e.N]
 	for _, s := range w.cfg.Streams {
 		if st := byStream[s.Name]; st != nil {
-			desc.Streams = append(desc.Streams, stagedStream{Name: s.Name, Table: tableName(s.Name), Staging: st.name})
+			desc.Streams = append(desc.Streams, stagedStream{Name: s.Name, Table: st.target, Staging: st.name})
 		}
 	}
 	delete(w.staging, e.N)

@@ -25,6 +25,7 @@ spec:
   destination:
     ref: warehouse
     namespace: raw_faker
+    naming: source
   delivery:
     require: exactly_once
     commit: { interval: 5s, maxBytes: 256MB, scope: stream }
@@ -50,6 +51,8 @@ func TestParsePipeline(t *testing.T) {
 		t.Error("sync mode")
 	case p.GetDestination().GetWrite() != apiv1.WriteMode_WRITE_MODE_APPEND:
 		t.Error("write doesn't default to append")
+	case p.GetDestination().GetNaming() != apiv1.Naming_NAMING_SOURCE:
+		t.Error("naming")
 	case p.GetDelivery().GetRequire() != apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE:
 		t.Error("require")
 	case p.GetDelivery().GetCommit().GetMaxBytes() != 256e6 || p.GetDelivery().GetCommit().GetScope() != apiv1.CommitScope_COMMIT_SCOPE_STREAM:
@@ -85,6 +88,7 @@ func TestParseErrors(t *testing.T) {
 		"continuous":     header + base + "  mode: continuous\n",
 		"enum case":      header + base + "  schemaPolicy: ALLOW_ALL\n",
 		"unknown enum":   header + strings.Replace(base, "{ref: d}", "{ref: d, write: upsert}", 1),
+		"naming":         header + strings.Replace(base, "{ref: d}", "{ref: d, naming: exact}", 1),
 		"column ops":     header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {op: hash}}}]}", 1),
 		"repeated":       header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a}, {name: a}]}", 1),
 		"size":           header + base + "  delivery: {commit: {maxBytes: lots}}\n",

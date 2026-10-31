@@ -866,6 +866,7 @@ dependencies = [
  "arrow-schema",
  "serde_json",
  "thiserror",
+ "twox-hash",
 ]
 
 [[package]]

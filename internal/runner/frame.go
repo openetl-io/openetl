@@ -54,10 +54,18 @@ type Plan struct {
 	FirstEpoch uint64
 	Streams    []Stream
 	// Zero: out feeds the destination's Writer.
-	Sink SinkPlan
+	Sink   SinkPlan
+	Naming Naming
 	// From the restored checkpoint, as Ready reported them.
 	Schemas   map[string][]byte
 	Snapshots []checkpoint.Snapshot
+}
+
+// Naming is how the dataflow names tables and columns in the destination.
+type Naming struct {
+	KeepSource bool
+	// In bytes; 0 for no limit.
+	MaxLength int
 }
 
 // SinkPlan says where an engine sink writes.

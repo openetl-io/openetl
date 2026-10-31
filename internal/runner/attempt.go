@@ -52,9 +52,11 @@ type Job struct {
 	Destination destination.Destination
 	// The destination's schema or dataset; empty for its default.
 	Namespace string
-	Dataflow  Dataflow
-	Settings  Settings
-	Logger    *slog.Logger
+	// Tables and columns keep their source names instead of normalized ones.
+	KeepSourceNames bool
+	Dataflow        Dataflow
+	Settings        Settings
+	Logger          *slog.Logger
 	// Called on the coordinator's goroutine after each epoch commits. It
 	// must not block.
 	OnCommit func(epoch uint64)
@@ -286,7 +288,11 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		Generation: c.sess.Generation(),
 		FirstEpoch: c.next,
 		Streams:    c.job.Streams,
-		Schemas:    schemas,
+		Naming: Naming{
+			KeepSource: c.job.KeepSourceNames,
+			MaxLength:  c.job.Destination.Capabilities().MaxIdentifierLength,
+		},
+		Schemas: schemas,
 	}
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots

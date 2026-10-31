@@ -22,6 +22,8 @@ const (
 	extensionNameKey = "ARROW:extension:name"
 	jsonExtension    = "arrow.json"
 	uuidExtension    = "arrow.uuid"
+	// The engine names each stream's table in its schema's metadata.
+	tableKey = "openetl.table"
 )
 
 func columnsOf(schema *arrow.Schema) ([]column, error) {
@@ -152,6 +154,15 @@ func str(a arrow.Array, i int) string {
 }
 
 func stringValue(a arrow.Array, i int) any { return str(a, i) }
+
+// targetTable is the table the engine named, or for batches that didn't
+// pass through the engine, the stream's name normalized.
+func targetTable(schema *arrow.Schema, stream string) string {
+	if t, ok := schema.Metadata().GetValue(tableKey); ok {
+		return t
+	}
+	return tableName(stream)
+}
 
 // tableName lowercases stream and replaces anything but [a-z0-9_] with _.
 func tableName(stream string) string {

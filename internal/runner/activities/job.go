@@ -77,12 +77,13 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 		return runner.Job{}, err
 	}
 	return runner.Job{
-		Pipeline:    spec.GetPipelineId(),
-		Source:      src,
-		Streams:     streams,
-		Destination: dst,
-		Namespace:   p.GetDestination().GetNamespace(),
-		Settings:    settings,
+		Pipeline:        spec.GetPipelineId(),
+		Source:          src,
+		Streams:         streams,
+		Destination:     dst,
+		Namespace:       p.GetDestination().GetNamespace(),
+		Settings:        settings,
+		KeepSourceNames: p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
 	}, nil
 }
 

@@ -1,10 +1,11 @@
 //! File formats the engine writes. Today that is Parquet staging for an
 //! engine sink on the local filesystem.
 //!
-//! Layout under the sink's root, for generation `g` and epoch `N`:
-//! - `_openetl/staging/{g}/{N}/{stream}/part-{k}.parquet`: staged, not visible
-//! - `{stream}/{N:020}-g{g:020}-{k:05}.parquet`: the name a commit gives it
-//! - `_openetl/loads/{stream}/{N:020}-g{g:020}`: the stream's commit marker
+//! Layout under the sink's root, for generation `g` and epoch `N`, where
+//! `{dir}` is the stream's destination table:
+//! - `_openetl/staging/{g}/{N}/{dir}/part-{k}.parquet`: staged, not visible
+//! - `{dir}/{N:020}-g{g:020}-{k:05}.parquet`: the name a commit gives it
+//! - `_openetl/loads/{dir}/{N:020}-g{g:020}`: the stream's commit marker
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -85,6 +86,7 @@ pub struct ParquetStaging {
 
 struct Stream {
     name: String,
+    dir: String,
     epoch: u64,
     part: Option<Part>,
     /// Closed files of the current epoch.
@@ -99,14 +101,16 @@ struct Part {
 }
 
 impl ParquetStaging {
-    /// `url` is `file://` followed by an absolute path.
+    /// `url` is `file://` followed by an absolute path. `streams` holds each
+    /// stream's name and directory.
     pub fn new(
         url: &str,
         generation: u64,
         first_epoch: u64,
-        streams: &[String],
+        streams: &[(String, String)],
     ) -> Result<Self, Error> {
-        let root = check(url, streams)?;
+        let dirs: Vec<String> = streams.iter().map(|(_, d)| d.clone()).collect();
+        let root = check(url, &dirs)?;
         let props = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
             .set_max_row_group_bytes(Some(MAX_ROW_GROUP_BYTES))
@@ -117,8 +121,9 @@ impl ParquetStaging {
             props,
             streams: streams
                 .iter()
-                .map(|name| Stream {
+                .map(|(name, dir)| Stream {
                     name: name.clone(),
+                    dir: dir.clone(),
                     epoch: first_epoch,
                     part: None,
                     files: Vec::new(),
@@ -167,7 +172,7 @@ impl ParquetStaging {
             stream: st.name.clone(),
             marker: format!(
                 "{RESERVED}/loads/{}/{epoch:020}-g{:020}",
-                st.name, self.generation
+                st.dir, self.generation
             ),
             files,
         });
@@ -204,8 +209,8 @@ impl ParquetStaging {
     }
 }
 
-/// Checks a sink's URL and stream names, and returns its root.
-pub fn check<'a>(url: &'a str, streams: &[String]) -> Result<&'a str, Error> {
+/// Checks a sink's URL and stream directories, and returns its root.
+pub fn check<'a>(url: &'a str, dirs: &[String]) -> Result<&'a str, Error> {
     let root = url
         .strip_prefix("file://")
         .filter(|p| p.starts_with('/'))
@@ -214,8 +219,8 @@ pub fn check<'a>(url: &'a str, streams: &[String]) -> Result<&'a str, Error> {
                 "Parquet sink URL {url:?} must be file:// and an absolute path"
             ))
         })?;
-    for s in streams {
-        check_name(s)?;
+    for d in dirs {
+        check_name(d)?;
     }
     Ok(root)
 }
@@ -240,7 +245,7 @@ fn open(
     st: &Stream,
     batch: &RecordBatch,
 ) -> Result<Part, Error> {
-    let (name, epoch, k) = (&st.name, st.epoch, st.files.len());
+    let (name, epoch, k) = (&st.dir, st.epoch, st.files.len());
     let dir = format!("{RESERVED}/staging/{generation}/{epoch}/{name}");
     fs::create_dir_all(root.join(&dir)).map_err(io_err(&root.join(&dir)))?;
     let staged = format!("{dir}/part-{k:05}.parquet");
@@ -316,7 +321,10 @@ mod tests {
     }
 
     fn staging(dir: &Path, streams: &[&str]) -> ParquetStaging {
-        let names: Vec<String> = streams.iter().map(|s| s.to_string()).collect();
+        let names: Vec<(String, String)> = streams
+            .iter()
+            .map(|s| (s.to_string(), s.to_string()))
+            .collect();
         ParquetStaging::new(&format!("file://{}", dir.display()), 3, 5, &names).unwrap()
     }
 
@@ -441,7 +449,7 @@ mod tests {
         for name in ["", ".", "..", "_openetl", "a/b", "a b"] {
             assert!(
                 matches!(
-                    ParquetStaging::new("file:///tmp", 1, 1, &[name.to_string()]),
+                    ParquetStaging::new("file:///tmp", 1, 1, &[("s".into(), name.to_string())]),
                     Err(Error::Config(_))
                 ),
                 "{name:?}"
