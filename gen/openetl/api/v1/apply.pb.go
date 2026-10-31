@@ -76,11 +76,10 @@ func (ApplyAction) EnumDescriptor() ([]byte, []int) {
 
 type ApplyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// workspaces/{workspace}: where documents go that don't name a workspace.
-	Workspace string      `protobuf:"bytes,1,opt,name=workspace,proto3" json:"workspace,omitempty"`
-	Documents []*Document `protobuf:"bytes,2,rep,name=documents,proto3" json:"documents,omitempty"`
-	// Validate and report what would change, without storing anything.
-	ValidateOnly  bool `protobuf:"varint,3,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
+	// workspaces/{workspace}, for documents that don't name one.
+	Workspace     string      `protobuf:"bytes,1,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	Documents     []*Document `protobuf:"bytes,2,rep,name=documents,proto3" json:"documents,omitempty"`
+	ValidateOnly  bool        `protobuf:"varint,3,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -136,11 +135,11 @@ func (x *ApplyRequest) GetValidateOnly() bool {
 	return false
 }
 
-// Document is one definition in YAML or JSON, with apiVersion, kind, metadata
-// and spec, such as a Pipeline, Source or Destination.
+// Document is a YAML or JSON definition with apiVersion, kind, metadata and
+// spec.
 type Document struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Where the document came from, such as a file name, for error messages.
+	// Such as a file name, for error messages.
 	Origin        string `protobuf:"bytes,1,opt,name=origin,proto3" json:"origin,omitempty"`
 	Content       []byte `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -237,13 +236,11 @@ func (x *ApplyResponse) GetResources() []*AppliedResource {
 }
 
 type AppliedResource struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// The document's kind: Pipeline, Source or Destination.
-	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
-	// The resource name, such as workspaces/analytics/pipelines/shop.
-	Name          string      `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Action        ApplyAction `protobuf:"varint,3,opt,name=action,proto3,enum=openetl.api.v1.ApplyAction" json:"action,omitempty"`
-	Version       string      `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Action        ApplyAction            `protobuf:"varint,3,opt,name=action,proto3,enum=openetl.api.v1.ApplyAction" json:"action,omitempty"`
+	Version       string                 `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

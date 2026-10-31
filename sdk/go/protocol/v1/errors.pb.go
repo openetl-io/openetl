@@ -22,44 +22,26 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// ErrorCode is the error taxonomy. The runtime, Temporal retry policies and
-// the heal system all key off it, so every error that crosses a connector,
-// engine or API boundary carries one. The platform mirrors it in
-// internal/platform/errs and the engine in the openetl-proto crate; both say
-// which codes are retryable.
+// ErrorCode is the error taxonomy. internal/platform/errs and the
+// openetl-proto crate mirror it.
 type ErrorCode int32
 
 const (
-	ErrorCode_ERROR_CODE_UNSPECIFIED ErrorCode = 0
-	// Retryable: a network blip, a 5xx, a deadlock. Retried with backoff.
-	ErrorCode_ERROR_CODE_TRANSIENT ErrorCode = 1
-	// Retryable: a 429 or a quota. Retried after retry_after.
-	ErrorCode_ERROR_CODE_RATE_LIMITED ErrorCode = 2
-	// Retryable: an expired OAuth access token. Retried after a refresh.
-	ErrorCode_ERROR_CODE_AUTH_EXPIRED ErrorCode = 3
-	// Not retryable: revoked or invalid credentials. The pipeline pauses.
-	ErrorCode_ERROR_CODE_AUTH_INVALID ErrorCode = 4
-	// Not retryable: a missing scope or grant.
-	ErrorCode_ERROR_CODE_PERMISSION_DENIED ErrorCode = 5
-	// Not retryable: a bad host, an unknown database.
-	ErrorCode_ERROR_CODE_CONFIG_INVALID ErrorCode = 6
-	// Retryable: columns or types changed. The schema policy decides.
-	ErrorCode_ERROR_CODE_SCHEMA_DRIFT ErrorCode = 7
-	// Not retryable: an endpoint is gone, a response changed shape, or
-	// pagination broke. The heal agent takes over.
-	ErrorCode_ERROR_CODE_CONTRACT_CHANGED ErrorCode = 8
-	// Retryable: a record failed validation. It is quarantined.
-	ErrorCode_ERROR_CODE_DATA_INVALID ErrorCode = 9
-	// Retryable: the destination is down or suspended.
+	ErrorCode_ERROR_CODE_UNSPECIFIED             ErrorCode = 0
+	ErrorCode_ERROR_CODE_TRANSIENT               ErrorCode = 1
+	ErrorCode_ERROR_CODE_RATE_LIMITED            ErrorCode = 2
+	ErrorCode_ERROR_CODE_AUTH_EXPIRED            ErrorCode = 3
+	ErrorCode_ERROR_CODE_AUTH_INVALID            ErrorCode = 4
+	ErrorCode_ERROR_CODE_PERMISSION_DENIED       ErrorCode = 5
+	ErrorCode_ERROR_CODE_CONFIG_INVALID          ErrorCode = 6
+	ErrorCode_ERROR_CODE_SCHEMA_DRIFT            ErrorCode = 7
+	ErrorCode_ERROR_CODE_CONTRACT_CHANGED        ErrorCode = 8
+	ErrorCode_ERROR_CODE_DATA_INVALID            ErrorCode = 9
 	ErrorCode_ERROR_CODE_DESTINATION_UNAVAILABLE ErrorCode = 10
-	// Not retryable: storage, credits or quota exhausted at the destination.
-	ErrorCode_ERROR_CODE_DESTINATION_QUOTA ErrorCode = 11
-	// Retryable: out of memory or disk. Restarted with a bigger slot or
-	// smaller batches.
-	ErrorCode_ERROR_CODE_RESOURCE_EXHAUSTED ErrorCode = 12
-	// Retryable a few times, then an incident: a bug.
-	ErrorCode_ERROR_CODE_INTERNAL ErrorCode = 13
-	// Not retryable: a newer attempt owns the pipeline, so this one stops.
+	ErrorCode_ERROR_CODE_DESTINATION_QUOTA       ErrorCode = 11
+	ErrorCode_ERROR_CODE_RESOURCE_EXHAUSTED      ErrorCode = 12
+	ErrorCode_ERROR_CODE_INTERNAL                ErrorCode = 13
+	// A newer attempt owns the pipeline.
 	ErrorCode_ERROR_CODE_FENCED ErrorCode = 14
 )
 
@@ -128,15 +110,13 @@ func (ErrorCode) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_connector_v1_errors_proto_rawDescGZIP(), []int{0}
 }
 
-// Error is a classified failure. A failed RPC carries one in the details of
-// its google.rpc.Status. A response that reports a failure as a result, such
-// as CheckResponse, carries one directly.
+// Error is a classified failure. A failed RPC carries it in the
+// google.rpc.Status details.
 type Error struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Code  ErrorCode              `protobuf:"varint,1,opt,name=code,proto3,enum=openetl.connector.v1.ErrorCode" json:"code,omitempty"`
-	// For people. It never contains secrets or record contents.
-	Message string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
-	// How long to wait before retrying, when the cause says (Retry-After).
+	// Never contains secrets or record contents.
+	Message       string               `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	RetryAfter    *durationpb.Duration `protobuf:"bytes,3,opt,name=retry_after,json=retryAfter,proto3" json:"retry_after,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

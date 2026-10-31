@@ -8,8 +8,8 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
 
-// SourceService reads and deletes sources. Sources are created and changed
-// with ApplyService.Apply.
+// SourceService reads and deletes sources. ApplyService creates and changes
+// them.
 service SourceService {
   rpc GetSource(GetSourceRequest) returns (GetSourceResponse) {
     option (google.api.http) = {get: "/v1/{name=workspaces/*/sources/*}"};
@@ -22,8 +22,8 @@ service SourceService {
   }
 }
 
-// DestinationService reads and deletes destinations. Destinations are
-// created and changed with ApplyService.Apply.
+// DestinationService reads and deletes destinations. ApplyService creates and
+// changes them.
 service DestinationService {
   rpc GetDestination(GetDestinationRequest) returns (GetDestinationResponse) {
     option (google.api.http) = {get: "/v1/{name=workspaces/*/destinations/*}"};
@@ -36,7 +36,6 @@ service DestinationService {
   }
 }
 
-// Source is a configured source connector, reusable across pipelines.
 message Source {
   // workspaces/{workspace}/sources/{source}
   string name = 1;
@@ -47,8 +46,6 @@ message Source {
   google.protobuf.Timestamp update_time = 6;
 }
 
-// Destination is a configured destination connector, reusable across
-// pipelines.
 message Destination {
   // workspaces/{workspace}/destinations/{destination}
   string name = 1;
@@ -61,11 +58,9 @@ message Destination {
 
 // ConnectorConfig is the spec of a Source or Destination document.
 message ConnectorConfig {
-  // The connector, and optionally its version: "postgres",
-  // "postgres@1.2.0", or "postgres@sha256:…".
+  // "postgres", "postgres@1.2.0" or "postgres@sha256:…".
   string connector = 1;
-  // The connector's config, matching its config schema. Secret fields hold
-  // secret references, never values.
+  // Secret fields hold secret references, never values.
   google.protobuf.Struct config = 2;
 }
 
@@ -91,7 +86,7 @@ message ListSourcesResponse {
 
 message DeleteSourceRequest {
   string name = 1;
-  // When set, the delete fails unless it matches the source's etag.
+  // If set, it must match.
   string etag = 2;
 }
 
@@ -119,7 +114,7 @@ message ListDestinationsResponse {
 
 message DeleteDestinationRequest {
   string name = 1;
-  // When set, the delete fails unless it matches the destination's etag.
+  // If set, it must match.
   string etag = 2;
 }
 

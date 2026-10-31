@@ -74,12 +74,9 @@ type EgressTier int32
 
 const (
 	EgressTier_EGRESS_TIER_UNSPECIFIED EgressTier = 0
-	// Only through host services. The default.
-	EgressTier_EGRESS_TIER_HOST EgressTier = 1
-	// HTTPS through an allowlisted forward proxy (HTTPS_PROXY).
-	EgressTier_EGRESS_TIER_PROXY EgressTier = 2
-	// Raw TCP to allowlisted host:port pairs.
-	EgressTier_EGRESS_TIER_RAW EgressTier = 3
+	EgressTier_EGRESS_TIER_HOST        EgressTier = 1
+	EgressTier_EGRESS_TIER_PROXY       EgressTier = 2
+	EgressTier_EGRESS_TIER_RAW         EgressTier = 3
 )
 
 // Enum value maps for EgressTier.
@@ -163,18 +160,14 @@ func (*SpecRequest) Descriptor() ([]byte, []int) {
 
 type SpecResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The protocol version the connector speaks: "v1".
+	// "v1".
 	ProtocolVersion string        `protobuf:"bytes,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	Kind            ConnectorKind `protobuf:"varint,2,opt,name=kind,proto3,enum=openetl.connector.v1.ConnectorKind" json:"kind,omitempty"`
-	// A JSON Schema for the config. Fields marked "x-secret": true hold secret
-	// names.
-	ConfigSchema []byte  `protobuf:"bytes,3,opt,name=config_schema,json=configSchema,proto3" json:"config_schema,omitempty"`
-	Egress       *Egress `protobuf:"bytes,4,opt,name=egress,proto3" json:"egress,omitempty"`
-	// The connector implements Setup and Teardown.
-	Setup bool `protobuf:"varint,5,opt,name=setup,proto3" json:"setup,omitempty"`
-	// Set when kind is source.
-	Source *SourceCapabilities `protobuf:"bytes,6,opt,name=source,proto3" json:"source,omitempty"`
-	// Set when kind is destination.
+	// A JSON Schema. Fields marked "x-secret": true hold secret names.
+	ConfigSchema  []byte                   `protobuf:"bytes,3,opt,name=config_schema,json=configSchema,proto3" json:"config_schema,omitempty"`
+	Egress        *Egress                  `protobuf:"bytes,4,opt,name=egress,proto3" json:"egress,omitempty"`
+	Setup         bool                     `protobuf:"varint,5,opt,name=setup,proto3" json:"setup,omitempty"`
+	Source        *SourceCapabilities      `protobuf:"bytes,6,opt,name=source,proto3" json:"source,omitempty"`
 	Destination   *DestinationCapabilities `protobuf:"bytes,7,opt,name=destination,proto3" json:"destination,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -259,13 +252,10 @@ func (x *SpecResponse) GetDestination() *DestinationCapabilities {
 	return nil
 }
 
-// Egress is how a connector reaches the network. The tier decides what the
-// platform can do for it, and which pools it runs in.
 type Egress struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Tier  EgressTier             `protobuf:"varint,1,opt,name=tier,proto3,enum=openetl.connector.v1.EgressTier" json:"tier,omitempty"`
-	// What the connector may reach: host names for the proxy tier, host:port
-	// pairs for the raw tier. Empty for the host tier.
+	// Hosts for the proxy tier, host:port pairs for the raw tier.
 	Allow         []string `protobuf:"bytes,2,rep,name=allow,proto3" json:"allow,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

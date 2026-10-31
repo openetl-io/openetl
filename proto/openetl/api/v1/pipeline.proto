@@ -8,8 +8,8 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
 
-// PipelineService reads and deletes pipelines. Pipelines are created and
-// changed with ApplyService.Apply.
+// PipelineService reads and deletes pipelines. ApplyService creates and
+// changes them.
 service PipelineService {
   rpc GetPipeline(GetPipelineRequest) returns (GetPipelineResponse) {
     option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*}"};
@@ -22,26 +22,21 @@ service PipelineService {
   }
 }
 
-// Pipeline is the unit of execution: it reads from a source and writes to
-// one destination.
 message Pipeline {
   // workspaces/{workspace}/pipelines/{pipeline}
   string name = 1;
   PipelineSpec spec = 2;
-  // The current immutable version. Syncs and jobs record the version they
-  // ran.
   string version = 3;
   string etag = 4;
   google.protobuf.Timestamp create_time = 5;
   google.protobuf.Timestamp update_time = 6;
 }
 
-// PipelineSpec is the spec of a Pipeline document. Unset fields take the
-// default, which is often the sink's.
+// PipelineSpec is the spec of a Pipeline document. Unset fields take their
+// defaults.
 message PipelineSpec {
   PipelineMode mode = 1;
   Schedule schedule = 2;
-  // The data plane the pipeline runs on.
   string data_plane = 3;
   PipelineSource source = 4;
   PipelineDestination destination = 5;
@@ -51,9 +46,7 @@ message PipelineSpec {
 
 enum PipelineMode {
   PIPELINE_MODE_UNSPECIFIED = 0;
-  // Bounded syncs on a schedule.
   PIPELINE_MODE_SCHEDULED = 1;
-  // An unbounded job that runs until stopped.
   PIPELINE_MODE_CONTINUOUS = 2;
 }
 
@@ -62,13 +55,12 @@ message Schedule {
     google.protobuf.Duration every = 1;
     string cron = 2;
   }
-  // A random delay of up to this much, so pipelines on the same schedule
-  // don't all start at once.
+  // A random start delay of up to this much.
   google.protobuf.Duration jitter = 3;
 }
 
 message PipelineSource {
-  // The Source resource's ID within the workspace.
+  // A Source ID in the same workspace.
   string ref = 1;
   repeated PipelineStream streams = 2;
 }
@@ -76,9 +68,8 @@ message PipelineSource {
 message PipelineStream {
   string name = 1;
   SyncMode sync = 2;
-  // The cursor field for incremental reads.
   string cursor = 3;
-  // In-flight column operations, by column name.
+  // By column name.
   map<string, ColumnOp> columns = 4;
 }
 
@@ -101,10 +92,10 @@ enum ColumnOpKind {
 }
 
 message PipelineDestination {
-  // The Destination resource's ID within the workspace.
+  // A Destination ID in the same workspace.
   string ref = 1;
   WriteMode write = 2;
-  // Where the pipeline's tables live: a schema or dataset.
+  // A schema or dataset.
   string namespace = 3;
 }
 
@@ -123,15 +114,11 @@ enum SchemaPolicy {
   SCHEMA_POLICY_IGNORE_NEW = 4;
 }
 
-// Delivery is the pipeline's commit cadence and visibility, and the lowest
-// delivery guarantee it accepts (ADR-0016).
 message Delivery {
-  // A check, not a mode: the plan fails if any stream's computed guarantee is
-  // lower.
+  // The plan fails if any stream's guarantee is lower.
   DeliveryLevel require = 1;
   Commit commit = 2;
-  // How long a barrier waits for a stream's next resume point before it is
-  // placed without one. Unset: the default. Zero: wait forever.
+  // Unset: the default. Zero: wait forever.
   google.protobuf.Duration resume_point_timeout = 3;
   Dedupe dedupe = 4;
 }
@@ -183,7 +170,7 @@ message ListPipelinesResponse {
 
 message DeletePipelineRequest {
   string name = 1;
-  // When set, the delete fails unless it matches the pipeline's etag.
+  // If set, it must match.
   string etag = 2;
 }
 

@@ -28,10 +28,8 @@ type PipelineMode int32
 
 const (
 	PipelineMode_PIPELINE_MODE_UNSPECIFIED PipelineMode = 0
-	// Bounded syncs on a schedule.
-	PipelineMode_PIPELINE_MODE_SCHEDULED PipelineMode = 1
-	// An unbounded job that runs until stopped.
-	PipelineMode_PIPELINE_MODE_CONTINUOUS PipelineMode = 2
+	PipelineMode_PIPELINE_MODE_SCHEDULED   PipelineMode = 1
+	PipelineMode_PIPELINE_MODE_CONTINUOUS  PipelineMode = 2
 )
 
 // Enum value maps for PipelineMode.
@@ -436,15 +434,11 @@ func (Dedupe) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{7}
 }
 
-// Pipeline is the unit of execution: it reads from a source and writes to
-// one destination.
 type Pipeline struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}/pipelines/{pipeline}
-	Name string        `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Spec *PipelineSpec `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
-	// The current immutable version. Syncs and jobs record the version they
-	// ran.
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Spec          *PipelineSpec          `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
 	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
 	Etag          string                 `protobuf:"bytes,4,opt,name=etag,proto3" json:"etag,omitempty"`
 	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
@@ -525,18 +519,17 @@ func (x *Pipeline) GetUpdateTime() *timestamppb.Timestamp {
 	return nil
 }
 
-// PipelineSpec is the spec of a Pipeline document. Unset fields take the
-// default, which is often the sink's.
+// PipelineSpec is the spec of a Pipeline document. Unset fields take their
+// defaults.
 type PipelineSpec struct {
-	state    protoimpl.MessageState `protogen:"open.v1"`
-	Mode     PipelineMode           `protobuf:"varint,1,opt,name=mode,proto3,enum=openetl.api.v1.PipelineMode" json:"mode,omitempty"`
-	Schedule *Schedule              `protobuf:"bytes,2,opt,name=schedule,proto3" json:"schedule,omitempty"`
-	// The data plane the pipeline runs on.
-	DataPlane     string               `protobuf:"bytes,3,opt,name=data_plane,json=dataPlane,proto3" json:"data_plane,omitempty"`
-	Source        *PipelineSource      `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
-	Destination   *PipelineDestination `protobuf:"bytes,5,opt,name=destination,proto3" json:"destination,omitempty"`
-	SchemaPolicy  SchemaPolicy         `protobuf:"varint,6,opt,name=schema_policy,json=schemaPolicy,proto3,enum=openetl.api.v1.SchemaPolicy" json:"schema_policy,omitempty"`
-	Delivery      *Delivery            `protobuf:"bytes,7,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mode          PipelineMode           `protobuf:"varint,1,opt,name=mode,proto3,enum=openetl.api.v1.PipelineMode" json:"mode,omitempty"`
+	Schedule      *Schedule              `protobuf:"bytes,2,opt,name=schedule,proto3" json:"schedule,omitempty"`
+	DataPlane     string                 `protobuf:"bytes,3,opt,name=data_plane,json=dataPlane,proto3" json:"data_plane,omitempty"`
+	Source        *PipelineSource        `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	Destination   *PipelineDestination   `protobuf:"bytes,5,opt,name=destination,proto3" json:"destination,omitempty"`
+	SchemaPolicy  SchemaPolicy           `protobuf:"varint,6,opt,name=schema_policy,json=schemaPolicy,proto3,enum=openetl.api.v1.SchemaPolicy" json:"schema_policy,omitempty"`
+	Delivery      *Delivery              `protobuf:"bytes,7,opt,name=delivery,proto3" json:"delivery,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -627,8 +620,7 @@ type Schedule struct {
 	//	*Schedule_Every
 	//	*Schedule_Cron
 	Trigger isSchedule_Trigger `protobuf_oneof:"trigger"`
-	// A random delay of up to this much, so pipelines on the same schedule
-	// don't all start at once.
+	// A random start delay of up to this much.
 	Jitter        *durationpb.Duration `protobuf:"bytes,3,opt,name=jitter,proto3" json:"jitter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -714,7 +706,7 @@ func (*Schedule_Cron) isSchedule_Trigger() {}
 
 type PipelineSource struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The Source resource's ID within the workspace.
+	// A Source ID in the same workspace.
 	Ref           string            `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
 	Streams       []*PipelineStream `protobuf:"bytes,2,rep,name=streams,proto3" json:"streams,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -766,12 +758,11 @@ func (x *PipelineSource) GetStreams() []*PipelineStream {
 }
 
 type PipelineStream struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Sync  SyncMode               `protobuf:"varint,2,opt,name=sync,proto3,enum=openetl.api.v1.SyncMode" json:"sync,omitempty"`
-	// The cursor field for incremental reads.
-	Cursor string `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
-	// In-flight column operations, by column name.
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Name   string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Sync   SyncMode               `protobuf:"varint,2,opt,name=sync,proto3,enum=openetl.api.v1.SyncMode" json:"sync,omitempty"`
+	Cursor string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	// By column name.
 	Columns       map[string]*ColumnOp `protobuf:"bytes,4,rep,name=columns,proto3" json:"columns,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -881,10 +872,10 @@ func (x *ColumnOp) GetOp() ColumnOpKind {
 
 type PipelineDestination struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The Destination resource's ID within the workspace.
+	// A Destination ID in the same workspace.
 	Ref   string    `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
 	Write WriteMode `protobuf:"varint,2,opt,name=write,proto3,enum=openetl.api.v1.WriteMode" json:"write,omitempty"`
-	// Where the pipeline's tables live: a schema or dataset.
+	// A schema or dataset.
 	Namespace     string `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -941,16 +932,12 @@ func (x *PipelineDestination) GetNamespace() string {
 	return ""
 }
 
-// Delivery is the pipeline's commit cadence and visibility, and the lowest
-// delivery guarantee it accepts (ADR-0016).
 type Delivery struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// A check, not a mode: the plan fails if any stream's computed guarantee is
-	// lower.
+	// The plan fails if any stream's guarantee is lower.
 	Require DeliveryLevel `protobuf:"varint,1,opt,name=require,proto3,enum=openetl.api.v1.DeliveryLevel" json:"require,omitempty"`
 	Commit  *Commit       `protobuf:"bytes,2,opt,name=commit,proto3" json:"commit,omitempty"`
-	// How long a barrier waits for a stream's next resume point before it is
-	// placed without one. Unset: the default. Zero: wait forever.
+	// Unset: the default. Zero: wait forever.
 	ResumePointTimeout *durationpb.Duration `protobuf:"bytes,3,opt,name=resume_point_timeout,json=resumePointTimeout,proto3" json:"resume_point_timeout,omitempty"`
 	Dedupe             Dedupe               `protobuf:"varint,4,opt,name=dedupe,proto3,enum=openetl.api.v1.Dedupe" json:"dedupe,omitempty"`
 	unknownFields      protoimpl.UnknownFields
@@ -1279,7 +1266,7 @@ func (x *ListPipelinesResponse) GetNextPageToken() string {
 type DeletePipelineRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// When set, the delete fails unless it matches the pipeline's etag.
+	// If set, it must match.
 	Etag          string `protobuf:"bytes,2,opt,name=etag,proto3" json:"etag,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

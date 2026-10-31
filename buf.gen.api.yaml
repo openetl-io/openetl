@@ -1,4 +1,3 @@
-# The control-plane API: Go messages and Connect handlers.
 version: v2
 plugins:
   - local: protoc-gen-go

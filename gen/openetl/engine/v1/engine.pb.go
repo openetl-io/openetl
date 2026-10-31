@@ -26,10 +26,8 @@ type Lane int32
 
 const (
 	Lane_LANE_UNSPECIFIED Lane = 0
-	// JSON rows, in ROWS frames.
-	Lane_LANE_ROWS Lane = 1
-	// Arrow batches, in BATCH frames.
-	Lane_LANE_ARROW Lane = 2
+	Lane_LANE_ROWS        Lane = 1
+	Lane_LANE_ARROW       Lane = 2
 )
 
 // Enum value maps for Lane.
@@ -125,11 +123,10 @@ func (EdgeDirection) EnumDescriptor() ([]byte, []int) {
 type StartJobRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Pipeline string                 `protobuf:"bytes,1,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
-	// Identifies the attempt in logs and object-storage paths.
+	// The attempt.
 	Job        string `protobuf:"bytes,2,opt,name=job,proto3" json:"job,omitempty"`
 	Generation uint64 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
-	// The epoch the job's first records belong to: one more than the epoch it
-	// restored from.
+	// One past the restored epoch.
 	FirstEpoch    uint64        `protobuf:"varint,4,opt,name=first_epoch,json=firstEpoch,proto3" json:"first_epoch,omitempty"`
 	Streams       []*StreamPlan `protobuf:"bytes,5,rep,name=streams,proto3" json:"streams,omitempty"`
 	Edges         []*Edge       `protobuf:"bytes,6,rep,name=edges,proto3" json:"edges,omitempty"`
@@ -226,14 +223,12 @@ func (x *StartJobRequest) GetLimits() *Limits {
 }
 
 type StreamPlan struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// How the stream's records arrive from its source.
-	Lane       Lane     `protobuf:"varint,2,opt,name=lane,proto3,enum=openetl.engine.v1.Lane" json:"lane,omitempty"`
-	PrimaryKey []string `protobuf:"bytes,3,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
-	// The stream's schema when it is already known: declared by a typed source,
-	// or inferred by an earlier attempt. An Arrow IPC schema message. Empty:
-	// inferred from the first rows.
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Lane       Lane                   `protobuf:"varint,2,opt,name=lane,proto3,enum=openetl.engine.v1.Lane" json:"lane,omitempty"`
+	PrimaryKey []string               `protobuf:"bytes,3,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
+	// An Arrow IPC schema message, if known. Empty: inferred from the first
+	// rows.
 	ArrowSchema   []byte `protobuf:"bytes,4,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -297,13 +292,11 @@ func (x *StreamPlan) GetArrowSchema() []byte {
 	return nil
 }
 
-// Edge is one data connection between the runner and the engine.
 type Edge struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Id        string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Direction EdgeDirection          `protobuf:"varint,2,opt,name=direction,proto3,enum=openetl.engine.v1.EdgeDirection" json:"direction,omitempty"`
-	// The streams the edge carries. A frame's stream index points into this
-	// list.
+	// A frame's stream index points into this list.
 	Streams       []string `protobuf:"bytes,3,rep,name=streams,proto3" json:"streams,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -360,7 +353,6 @@ func (x *Edge) GetStreams() []string {
 	return nil
 }
 
-// SinkPlan is where the job's output goes.
 type SinkPlan struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Sink:
@@ -432,12 +424,10 @@ type isSinkPlan_Sink interface {
 }
 
 type SinkPlan_Runner struct {
-	// A Go connector in the runner, fed by a FROM_ENGINE edge.
 	Runner *RunnerSink `protobuf:"bytes,1,opt,name=runner,proto3,oneof"`
 }
 
 type SinkPlan_Parquet struct {
-	// Parquet files written by the engine.
 	Parquet *ParquetSink `protobuf:"bytes,2,opt,name=parquet,proto3,oneof"`
 }
 
@@ -445,6 +435,7 @@ func (*SinkPlan_Runner) isSinkPlan_Sink() {}
 
 func (*SinkPlan_Parquet) isSinkPlan_Sink() {}
 
+// RunnerSink is a Go sink in the runner, fed by a FROM_ENGINE edge.
 type RunnerSink struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Edge          string                 `protobuf:"bytes,1,opt,name=edge,proto3" json:"edge,omitempty"`
@@ -491,8 +482,7 @@ func (x *RunnerSink) GetEdge() string {
 
 type ParquetSink struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The object-storage prefix the sink stages and applies under, such as
-	// s3://bucket/prefix or file:///path.
+	// Such as s3://bucket/prefix or file:///path.
 	Url           string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -537,7 +527,7 @@ func (x *ParquetSink) GetUrl() string {
 
 type Limits struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The job's memory budget. Zero: no limit.
+	// Zero: no limit.
 	MemoryBytes   uint64 `protobuf:"varint,1,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -617,10 +607,9 @@ func (*StartJobResponse) Descriptor() ([]byte, []int) {
 }
 
 type RecoverRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Epoch *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	// The engine sink's descriptor for epoch, from its checkpoint record.
-	Staged        []byte `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Epoch         *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Staged        []byte                 `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -831,13 +820,11 @@ func (*EventsResponse_EpochReady) isEventsResponse_Event() {}
 
 func (*EventsResponse_Metrics) isEventsResponse_Event() {}
 
-// EpochReady says the engine's part of an epoch is durable: operator state is
-// snapshotted, and an engine sink has staged the epoch. The runner records the
-// checkpoint once the rest of the epoch is staged too.
+// EpochReady says the engine's part of the epoch is durable.
 type EpochReady struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Epoch *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	// The engine sink's descriptor of what it staged. Empty with a runner sink.
+	// Empty with a runner sink.
 	Staged        []byte           `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
 	Snapshots     []*StateSnapshot `protobuf:"bytes,3,rep,name=snapshots,proto3" json:"snapshots,omitempty"`
 	unknownFields protoimpl.UnknownFields

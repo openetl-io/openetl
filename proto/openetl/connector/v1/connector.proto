@@ -8,42 +8,30 @@ import "openetl/connector/v1/source.proto";
 
 option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
 
-// ConnectorService holds the operations every connector has. A container
-// connector serves it on its Unix socket, next to SourceService or
-// DestinationService. Native connectors implement the same operations in Go.
-//
-// Configs travel as JSON objects that match the connector's config schema.
-// Secret fields hold secret names, never values: the host injects values at
-// egress (HostService).
+// ConnectorService is served by every connector, next to SourceService or
+// DestinationService. Configs are JSON objects matching the config schema;
+// secret fields hold secret names, not values.
 service ConnectorService {
   rpc Spec(SpecRequest) returns (SpecResponse);
-  // Check validates a config and its credentials. A failed check is a
-  // result, not an RPC error.
+  // A failed check is reported in CheckResponse, not as an RPC error.
   rpc Check(CheckRequest) returns (CheckResponse);
-  // Setup runs provider-side setup when a pipeline is created, such as
-  // registering a webhook or creating a CDC publication. It must be safe to
-  // run more than once. Only called when SpecResponse.setup is set.
+  // Setup and Teardown must be idempotent. They're called only when
+  // SpecResponse.setup is set.
   rpc Setup(SetupRequest) returns (SetupResponse);
-  // Teardown undoes Setup when a pipeline is deleted. It must be safe to run
-  // more than once.
   rpc Teardown(TeardownRequest) returns (TeardownResponse);
 }
 
 message SpecRequest {}
 
 message SpecResponse {
-  // The protocol version the connector speaks: "v1".
+  // "v1".
   string protocol_version = 1;
   ConnectorKind kind = 2;
-  // A JSON Schema for the config. Fields marked "x-secret": true hold secret
-  // names.
+  // A JSON Schema. Fields marked "x-secret": true hold secret names.
   bytes config_schema = 3;
   Egress egress = 4;
-  // The connector implements Setup and Teardown.
   bool setup = 5;
-  // Set when kind is source.
   SourceCapabilities source = 6;
-  // Set when kind is destination.
   DestinationCapabilities destination = 7;
 }
 
@@ -53,22 +41,16 @@ enum ConnectorKind {
   CONNECTOR_KIND_DESTINATION = 2;
 }
 
-// Egress is how a connector reaches the network. The tier decides what the
-// platform can do for it, and which pools it runs in.
 message Egress {
   EgressTier tier = 1;
-  // What the connector may reach: host names for the proxy tier, host:port
-  // pairs for the raw tier. Empty for the host tier.
+  // Hosts for the proxy tier, host:port pairs for the raw tier.
   repeated string allow = 2;
 }
 
 enum EgressTier {
   EGRESS_TIER_UNSPECIFIED = 0;
-  // Only through host services. The default.
   EGRESS_TIER_HOST = 1;
-  // HTTPS through an allowlisted forward proxy (HTTPS_PROXY).
   EGRESS_TIER_PROXY = 2;
-  // Raw TCP to allowlisted host:port pairs.
   EGRESS_TIER_RAW = 3;
 }
 

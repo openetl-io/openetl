@@ -6,52 +6,32 @@ import "google/protobuf/duration.proto";
 
 option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
 
-// ErrorCode is the error taxonomy. The runtime, Temporal retry policies and
-// the heal system all key off it, so every error that crosses a connector,
-// engine or API boundary carries one. The platform mirrors it in
-// internal/platform/errs and the engine in the openetl-proto crate; both say
-// which codes are retryable.
+// ErrorCode is the error taxonomy. internal/platform/errs and the
+// openetl-proto crate mirror it.
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
-  // Retryable: a network blip, a 5xx, a deadlock. Retried with backoff.
   ERROR_CODE_TRANSIENT = 1;
-  // Retryable: a 429 or a quota. Retried after retry_after.
   ERROR_CODE_RATE_LIMITED = 2;
-  // Retryable: an expired OAuth access token. Retried after a refresh.
   ERROR_CODE_AUTH_EXPIRED = 3;
-  // Not retryable: revoked or invalid credentials. The pipeline pauses.
   ERROR_CODE_AUTH_INVALID = 4;
-  // Not retryable: a missing scope or grant.
   ERROR_CODE_PERMISSION_DENIED = 5;
-  // Not retryable: a bad host, an unknown database.
   ERROR_CODE_CONFIG_INVALID = 6;
-  // Retryable: columns or types changed. The schema policy decides.
   ERROR_CODE_SCHEMA_DRIFT = 7;
-  // Not retryable: an endpoint is gone, a response changed shape, or
-  // pagination broke. The heal agent takes over.
   ERROR_CODE_CONTRACT_CHANGED = 8;
-  // Retryable: a record failed validation. It is quarantined.
   ERROR_CODE_DATA_INVALID = 9;
-  // Retryable: the destination is down or suspended.
   ERROR_CODE_DESTINATION_UNAVAILABLE = 10;
-  // Not retryable: storage, credits or quota exhausted at the destination.
   ERROR_CODE_DESTINATION_QUOTA = 11;
-  // Retryable: out of memory or disk. Restarted with a bigger slot or
-  // smaller batches.
   ERROR_CODE_RESOURCE_EXHAUSTED = 12;
-  // Retryable a few times, then an incident: a bug.
   ERROR_CODE_INTERNAL = 13;
-  // Not retryable: a newer attempt owns the pipeline, so this one stops.
+  // A newer attempt owns the pipeline.
   ERROR_CODE_FENCED = 14;
 }
 
-// Error is a classified failure. A failed RPC carries one in the details of
-// its google.rpc.Status. A response that reports a failure as a result, such
-// as CheckResponse, carries one directly.
+// Error is a classified failure. A failed RPC carries it in the
+// google.rpc.Status details.
 message Error {
   ErrorCode code = 1;
-  // For people. It never contains secrets or record contents.
+  // Never contains secrets or record contents.
   string message = 2;
-  // How long to wait before retrying, when the cause says (Retry-After).
   google.protobuf.Duration retry_after = 3;
 }

@@ -29,24 +29,16 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// ConnectorService holds the operations every connector has. A container
-// connector serves it on its Unix socket, next to SourceService or
-// DestinationService. Native connectors implement the same operations in Go.
-//
-// Configs travel as JSON objects that match the connector's config schema.
-// Secret fields hold secret names, never values: the host injects values at
-// egress (HostService).
+// ConnectorService is served by every connector, next to SourceService or
+// DestinationService. Configs are JSON objects matching the config schema;
+// secret fields hold secret names, not values.
 type ConnectorServiceClient interface {
 	Spec(ctx context.Context, in *SpecRequest, opts ...grpc.CallOption) (*SpecResponse, error)
-	// Check validates a config and its credentials. A failed check is a
-	// result, not an RPC error.
+	// A failed check is reported in CheckResponse, not as an RPC error.
 	Check(ctx context.Context, in *CheckRequest, opts ...grpc.CallOption) (*CheckResponse, error)
-	// Setup runs provider-side setup when a pipeline is created, such as
-	// registering a webhook or creating a CDC publication. It must be safe to
-	// run more than once. Only called when SpecResponse.setup is set.
+	// Setup and Teardown must be idempotent. They're called only when
+	// SpecResponse.setup is set.
 	Setup(ctx context.Context, in *SetupRequest, opts ...grpc.CallOption) (*SetupResponse, error)
-	// Teardown undoes Setup when a pipeline is deleted. It must be safe to run
-	// more than once.
 	Teardown(ctx context.Context, in *TeardownRequest, opts ...grpc.CallOption) (*TeardownResponse, error)
 }
 
@@ -102,24 +94,16 @@ func (c *connectorServiceClient) Teardown(ctx context.Context, in *TeardownReque
 // All implementations must embed UnimplementedConnectorServiceServer
 // for forward compatibility.
 //
-// ConnectorService holds the operations every connector has. A container
-// connector serves it on its Unix socket, next to SourceService or
-// DestinationService. Native connectors implement the same operations in Go.
-//
-// Configs travel as JSON objects that match the connector's config schema.
-// Secret fields hold secret names, never values: the host injects values at
-// egress (HostService).
+// ConnectorService is served by every connector, next to SourceService or
+// DestinationService. Configs are JSON objects matching the config schema;
+// secret fields hold secret names, not values.
 type ConnectorServiceServer interface {
 	Spec(context.Context, *SpecRequest) (*SpecResponse, error)
-	// Check validates a config and its credentials. A failed check is a
-	// result, not an RPC error.
+	// A failed check is reported in CheckResponse, not as an RPC error.
 	Check(context.Context, *CheckRequest) (*CheckResponse, error)
-	// Setup runs provider-side setup when a pipeline is created, such as
-	// registering a webhook or creating a CDC publication. It must be safe to
-	// run more than once. Only called when SpecResponse.setup is set.
+	// Setup and Teardown must be idempotent. They're called only when
+	// SpecResponse.setup is set.
 	Setup(context.Context, *SetupRequest) (*SetupResponse, error)
-	// Teardown undoes Setup when a pipeline is deleted. It must be safe to run
-	// more than once.
 	Teardown(context.Context, *TeardownRequest) (*TeardownResponse, error)
 	mustEmbedUnimplementedConnectorServiceServer()
 }

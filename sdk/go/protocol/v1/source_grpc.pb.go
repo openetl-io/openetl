@@ -28,20 +28,14 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// SourceService is what a source connector serves, next to ConnectorService.
-//
-// A source decides what to fetch and where it is safe to resume. The platform
-// decides when to commit: it places checkpoint barriers only at the resume
-// points a source emits, so sources never see epochs.
+// SourceService is served by source connectors. The platform commits only at
+// the resume points a source emits.
 type SourceServiceClient interface {
-	// Discover returns the catalog: the streams the config can read.
 	Discover(ctx context.Context, in *DiscoverRequest, opts ...grpc.CallOption) (*DiscoverResponse, error)
-	// Read reads the configured streams. For bounded reads the response stream
-	// ends once every stream is complete.
+	// For a bounded read, the response stream ends once every stream is
+	// complete.
 	Read(ctx context.Context, in *ReadRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadResponse], error)
-	// Committed says it is safe to discard everything before these per-stream
-	// states upstream: Kafka offsets, a Postgres slot's confirmed LSN, queue
-	// deletes. It runs concurrently with Read. Only called when
+	// Runs concurrently with Read. Called only when
 	// SourceCapabilities.acknowledges is set.
 	Committed(ctx context.Context, in *CommittedRequest, opts ...grpc.CallOption) (*CommittedResponse, error)
 }
@@ -97,20 +91,14 @@ func (c *sourceServiceClient) Committed(ctx context.Context, in *CommittedReques
 // All implementations must embed UnimplementedSourceServiceServer
 // for forward compatibility.
 //
-// SourceService is what a source connector serves, next to ConnectorService.
-//
-// A source decides what to fetch and where it is safe to resume. The platform
-// decides when to commit: it places checkpoint barriers only at the resume
-// points a source emits, so sources never see epochs.
+// SourceService is served by source connectors. The platform commits only at
+// the resume points a source emits.
 type SourceServiceServer interface {
-	// Discover returns the catalog: the streams the config can read.
 	Discover(context.Context, *DiscoverRequest) (*DiscoverResponse, error)
-	// Read reads the configured streams. For bounded reads the response stream
-	// ends once every stream is complete.
+	// For a bounded read, the response stream ends once every stream is
+	// complete.
 	Read(*ReadRequest, grpc.ServerStreamingServer[ReadResponse]) error
-	// Committed says it is safe to discard everything before these per-stream
-	// states upstream: Kafka offsets, a Postgres slot's confirmed LSN, queue
-	// deletes. It runs concurrently with Read. Only called when
+	// Runs concurrently with Read. Called only when
 	// SourceCapabilities.acknowledges is set.
 	Committed(context.Context, *CommittedRequest) (*CommittedResponse, error)
 	mustEmbedUnimplementedSourceServiceServer()

@@ -6,38 +6,29 @@ import "openetl/connector/v1/destination.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1";
 
-// EngineService is the engine's control channel (ADR-0009). One engine
-// process runs one job. It serves this service on a Unix socket, and the
-// runner is its only client. Records move on separate data edges
-// (frames.proto).
-//
-// The runner calls StartJob, then Recover when the job has an engine sink,
-// then connects the data edges and watches Events. The engine exits when the
-// job is stopped or the runner's connections close.
+// EngineService is the engine's control channel, served on a Unix socket. One
+// engine process runs one job. The runner calls StartJob, then Recover if the
+// job has an engine sink, then connects the data edges (frames.proto).
 service EngineService {
-  // StartJob configures the job from its plan. It is called once, first.
   rpc StartJob(StartJobRequest) returns (StartJobResponse);
-  // Recover finishes or abandons the epoch the checkpoint log points to, for
-  // an engine sink, with the semantics of a destination's WriteRecover.
+  // Engine sinks only.
   rpc Recover(RecoverRequest) returns (RecoverResponse);
-  // Events streams the job's events until it ends. A failed job ends the
-  // stream with an openetl.connector.v1.Error in the status details.
+  // A failed job ends the stream with an openetl.connector.v1.Error in the
+  // status details.
   rpc Events(EventsRequest) returns (stream EventsResponse);
-  // Commit says epoch's checkpoint record is in the checkpoint log. An engine
-  // sink makes the epoch visible. Running it twice is a no-op.
+  // The epoch's checkpoint is recorded, so an engine sink makes it visible.
+  // Idempotent.
   rpc Commit(CommitRequest) returns (CommitResponse);
-  // Stop ends the job without waiting for its inputs, closes the data edges,
-  // and lets the process exit.
+  // Ends the job without draining, and the process exits.
   rpc Stop(StopRequest) returns (StopResponse);
 }
 
 message StartJobRequest {
   string pipeline = 1;
-  // Identifies the attempt in logs and object-storage paths.
+  // The attempt.
   string job = 2;
   uint64 generation = 3;
-  // The epoch the job's first records belong to: one more than the epoch it
-  // restored from.
+  // One past the restored epoch.
   uint64 first_epoch = 4;
   repeated StreamPlan streams = 5;
   repeated Edge edges = 6;
@@ -47,29 +38,23 @@ message StartJobRequest {
 
 message StreamPlan {
   string name = 1;
-  // How the stream's records arrive from its source.
   Lane lane = 2;
   repeated string primary_key = 3;
-  // The stream's schema when it is already known: declared by a typed source,
-  // or inferred by an earlier attempt. An Arrow IPC schema message. Empty:
-  // inferred from the first rows.
+  // An Arrow IPC schema message, if known. Empty: inferred from the first
+  // rows.
   bytes arrow_schema = 4;
 }
 
 enum Lane {
   LANE_UNSPECIFIED = 0;
-  // JSON rows, in ROWS frames.
   LANE_ROWS = 1;
-  // Arrow batches, in BATCH frames.
   LANE_ARROW = 2;
 }
 
-// Edge is one data connection between the runner and the engine.
 message Edge {
   string id = 1;
   EdgeDirection direction = 2;
-  // The streams the edge carries. A frame's stream index points into this
-  // list.
+  // A frame's stream index points into this list.
   repeated string streams = 3;
 }
 
@@ -79,28 +64,25 @@ enum EdgeDirection {
   EDGE_DIRECTION_FROM_ENGINE = 2;
 }
 
-// SinkPlan is where the job's output goes.
 message SinkPlan {
   oneof sink {
-    // A Go connector in the runner, fed by a FROM_ENGINE edge.
     RunnerSink runner = 1;
-    // Parquet files written by the engine.
     ParquetSink parquet = 2;
   }
 }
 
+// RunnerSink is a Go sink in the runner, fed by a FROM_ENGINE edge.
 message RunnerSink {
   string edge = 1;
 }
 
 message ParquetSink {
-  // The object-storage prefix the sink stages and applies under, such as
-  // s3://bucket/prefix or file:///path.
+  // Such as s3://bucket/prefix or file:///path.
   string url = 1;
 }
 
 message Limits {
-  // The job's memory budget. Zero: no limit.
+  // Zero: no limit.
   uint64 memory_bytes = 1;
 }
 
@@ -108,7 +90,6 @@ message StartJobResponse {}
 
 message RecoverRequest {
   openetl.connector.v1.Epoch epoch = 1;
-  // The engine sink's descriptor for epoch, from its checkpoint record.
   bytes staged = 2;
 }
 
@@ -125,12 +106,10 @@ message EventsResponse {
   }
 }
 
-// EpochReady says the engine's part of an epoch is durable: operator state is
-// snapshotted, and an engine sink has staged the epoch. The runner records the
-// checkpoint once the rest of the epoch is staged too.
+// EpochReady says the engine's part of the epoch is durable.
 message EpochReady {
   openetl.connector.v1.Epoch epoch = 1;
-  // The engine sink's descriptor of what it staged. Empty with a runner sink.
+  // Empty with a runner sink.
   bytes staged = 2;
   repeated StateSnapshot snapshots = 3;
 }

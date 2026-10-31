@@ -32,31 +32,19 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// HostService is how connectors reach the outside world (ADR-0008). The
-// runner implements it once, in Go. Container connectors call it over a
-// second Unix socket; native and declarative connectors call the Go
-// implementation directly.
-//
-// Secrets are referenced by name. The host injects their values when a
-// request leaves, so connector code never holds a credential, except through
-// GetSecret on the proxy and raw egress tiers.
+// HostService is how connectors reach the outside world. Fields ending in
+// _secret hold secret names; the host injects the values.
 type HostServiceClient interface {
-	// HTTP sends a request through the platform's client: retries and backoff
-	// within the budget, Retry-After, adaptive rate limits, auth injection, the
-	// SSRF guard, and redacted traces. The response streams back as a head,
-	// then the body in chunks.
+	// Retries within the budget, rate limits, auth injection and the SSRF
+	// guard. Streams a head, then the body in chunks.
 	HTTP(ctx context.Context, in *HTTPRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[HTTPResponse], error)
-	// Sign signs bytes with a named secret, so connectors that sign requests
-	// never see the key.
 	Sign(ctx context.Context, in *SignRequest, opts ...grpc.CallOption) (*SignResponse, error)
-	// GetSecret returns a secret's value. Only connectors on the proxy and raw
-	// egress tiers may call it.
+	// Only for connectors on the proxy and raw egress tiers.
 	GetSecret(ctx context.Context, in *GetSecretRequest, opts ...grpc.CallOption) (*GetSecretResponse, error)
 	Log(ctx context.Context, in *LogRequest, opts ...grpc.CallOption) (*LogResponse, error)
-	// KVGet and KVPut are scratch storage scoped to the connector instance.
+	// KVGet and KVPut are scoped to the connector instance.
 	KVGet(ctx context.Context, in *KVGetRequest, opts ...grpc.CallOption) (*KVGetResponse, error)
 	KVPut(ctx context.Context, in *KVPutRequest, opts ...grpc.CallOption) (*KVPutResponse, error)
-	// Now is the host's clock. Cassette replays control it.
 	Now(ctx context.Context, in *NowRequest, opts ...grpc.CallOption) (*NowResponse, error)
 }
 
@@ -151,31 +139,19 @@ func (c *hostServiceClient) Now(ctx context.Context, in *NowRequest, opts ...grp
 // All implementations must embed UnimplementedHostServiceServer
 // for forward compatibility.
 //
-// HostService is how connectors reach the outside world (ADR-0008). The
-// runner implements it once, in Go. Container connectors call it over a
-// second Unix socket; native and declarative connectors call the Go
-// implementation directly.
-//
-// Secrets are referenced by name. The host injects their values when a
-// request leaves, so connector code never holds a credential, except through
-// GetSecret on the proxy and raw egress tiers.
+// HostService is how connectors reach the outside world. Fields ending in
+// _secret hold secret names; the host injects the values.
 type HostServiceServer interface {
-	// HTTP sends a request through the platform's client: retries and backoff
-	// within the budget, Retry-After, adaptive rate limits, auth injection, the
-	// SSRF guard, and redacted traces. The response streams back as a head,
-	// then the body in chunks.
+	// Retries within the budget, rate limits, auth injection and the SSRF
+	// guard. Streams a head, then the body in chunks.
 	HTTP(*HTTPRequest, grpc.ServerStreamingServer[HTTPResponse]) error
-	// Sign signs bytes with a named secret, so connectors that sign requests
-	// never see the key.
 	Sign(context.Context, *SignRequest) (*SignResponse, error)
-	// GetSecret returns a secret's value. Only connectors on the proxy and raw
-	// egress tiers may call it.
+	// Only for connectors on the proxy and raw egress tiers.
 	GetSecret(context.Context, *GetSecretRequest) (*GetSecretResponse, error)
 	Log(context.Context, *LogRequest) (*LogResponse, error)
-	// KVGet and KVPut are scratch storage scoped to the connector instance.
+	// KVGet and KVPut are scoped to the connector instance.
 	KVGet(context.Context, *KVGetRequest) (*KVGetResponse, error)
 	KVPut(context.Context, *KVPutRequest) (*KVPutResponse, error)
-	// Now is the host's clock. Cassette replays control it.
 	Now(context.Context, *NowRequest) (*NowResponse, error)
 	mustEmbedUnimplementedHostServiceServer()
 }

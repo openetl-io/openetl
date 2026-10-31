@@ -1,6 +1,4 @@
-//! Generated types for the connector protocol (`openetl.connector.v1`) and
-//! the runner–engine protocol (`openetl.engine.v1`). The `.proto` sources are
-//! in `proto/` at the repository root.
+//! Generated types for `openetl.connector.v1` and `openetl.engine.v1`.
 
 pub mod connector {
     pub mod v1 {
@@ -15,11 +13,7 @@ pub mod engine {
 }
 
 impl connector::v1::ErrorCode {
-    /// Whether an attempt that failed with this code is retried. `Internal`
-    /// is retried a limited number of times, then raises an incident.
-    ///
-    /// The match is exhaustive, so a code added to the protocol doesn't build
-    /// until it has a decision here, as in `internal/platform/errs`.
+    /// Whether an attempt that failed with this code is retried.
     pub fn retryable(self) -> bool {
         use connector::v1::ErrorCode as C;
         match self {

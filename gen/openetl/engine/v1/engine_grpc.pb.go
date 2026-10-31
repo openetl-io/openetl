@@ -30,28 +30,20 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// EngineService is the engine's control channel (ADR-0009). One engine
-// process runs one job. It serves this service on a Unix socket, and the
-// runner is its only client. Records move on separate data edges
-// (frames.proto).
-//
-// The runner calls StartJob, then Recover when the job has an engine sink,
-// then connects the data edges and watches Events. The engine exits when the
-// job is stopped or the runner's connections close.
+// EngineService is the engine's control channel, served on a Unix socket. One
+// engine process runs one job. The runner calls StartJob, then Recover if the
+// job has an engine sink, then connects the data edges (frames.proto).
 type EngineServiceClient interface {
-	// StartJob configures the job from its plan. It is called once, first.
 	StartJob(ctx context.Context, in *StartJobRequest, opts ...grpc.CallOption) (*StartJobResponse, error)
-	// Recover finishes or abandons the epoch the checkpoint log points to, for
-	// an engine sink, with the semantics of a destination's WriteRecover.
+	// Engine sinks only.
 	Recover(ctx context.Context, in *RecoverRequest, opts ...grpc.CallOption) (*RecoverResponse, error)
-	// Events streams the job's events until it ends. A failed job ends the
-	// stream with an openetl.connector.v1.Error in the status details.
+	// A failed job ends the stream with an openetl.connector.v1.Error in the
+	// status details.
 	Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[EventsResponse], error)
-	// Commit says epoch's checkpoint record is in the checkpoint log. An engine
-	// sink makes the epoch visible. Running it twice is a no-op.
+	// The epoch's checkpoint is recorded, so an engine sink makes it visible.
+	// Idempotent.
 	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
-	// Stop ends the job without waiting for its inputs, closes the data edges,
-	// and lets the process exit.
+	// Ends the job without draining, and the process exits.
 	Stop(ctx context.Context, in *StopRequest, opts ...grpc.CallOption) (*StopResponse, error)
 }
 
@@ -126,28 +118,20 @@ func (c *engineServiceClient) Stop(ctx context.Context, in *StopRequest, opts ..
 // All implementations must embed UnimplementedEngineServiceServer
 // for forward compatibility.
 //
-// EngineService is the engine's control channel (ADR-0009). One engine
-// process runs one job. It serves this service on a Unix socket, and the
-// runner is its only client. Records move on separate data edges
-// (frames.proto).
-//
-// The runner calls StartJob, then Recover when the job has an engine sink,
-// then connects the data edges and watches Events. The engine exits when the
-// job is stopped or the runner's connections close.
+// EngineService is the engine's control channel, served on a Unix socket. One
+// engine process runs one job. The runner calls StartJob, then Recover if the
+// job has an engine sink, then connects the data edges (frames.proto).
 type EngineServiceServer interface {
-	// StartJob configures the job from its plan. It is called once, first.
 	StartJob(context.Context, *StartJobRequest) (*StartJobResponse, error)
-	// Recover finishes or abandons the epoch the checkpoint log points to, for
-	// an engine sink, with the semantics of a destination's WriteRecover.
+	// Engine sinks only.
 	Recover(context.Context, *RecoverRequest) (*RecoverResponse, error)
-	// Events streams the job's events until it ends. A failed job ends the
-	// stream with an openetl.connector.v1.Error in the status details.
+	// A failed job ends the stream with an openetl.connector.v1.Error in the
+	// status details.
 	Events(*EventsRequest, grpc.ServerStreamingServer[EventsResponse]) error
-	// Commit says epoch's checkpoint record is in the checkpoint log. An engine
-	// sink makes the epoch visible. Running it twice is a no-op.
+	// The epoch's checkpoint is recorded, so an engine sink makes it visible.
+	// Idempotent.
 	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
-	// Stop ends the job without waiting for its inputs, closes the data edges,
-	// and lets the process exit.
+	// Ends the job without draining, and the process exits.
 	Stop(context.Context, *StopRequest) (*StopResponse, error)
 	mustEmbedUnimplementedEngineServiceServer()
 }

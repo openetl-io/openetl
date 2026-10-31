@@ -24,7 +24,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Source is a configured source connector, reusable across pipelines.
 type Source struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}/sources/{source}
@@ -110,8 +109,6 @@ func (x *Source) GetUpdateTime() *timestamppb.Timestamp {
 	return nil
 }
 
-// Destination is a configured destination connector, reusable across
-// pipelines.
 type Destination struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}/destinations/{destination}
@@ -200,11 +197,9 @@ func (x *Destination) GetUpdateTime() *timestamppb.Timestamp {
 // ConnectorConfig is the spec of a Source or Destination document.
 type ConnectorConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The connector, and optionally its version: "postgres",
-	// "postgres@1.2.0", or "postgres@sha256:…".
+	// "postgres", "postgres@1.2.0" or "postgres@sha256:…".
 	Connector string `protobuf:"bytes,1,opt,name=connector,proto3" json:"connector,omitempty"`
-	// The connector's config, matching its config schema. Secret fields hold
-	// secret references, never values.
+	// Secret fields hold secret references, never values.
 	Config        *structpb.Struct `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -458,7 +453,7 @@ func (x *ListSourcesResponse) GetNextPageToken() string {
 type DeleteSourceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// When set, the delete fails unless it matches the source's etag.
+	// If set, it must match.
 	Etag          string `protobuf:"bytes,2,opt,name=etag,proto3" json:"etag,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -748,7 +743,7 @@ func (x *ListDestinationsResponse) GetNextPageToken() string {
 type DeleteDestinationRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// When set, the delete fails unless it matches the destination's etag.
+	// If set, it must match.
 	Etag          string `protobuf:"bytes,2,opt,name=etag,proto3" json:"etag,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

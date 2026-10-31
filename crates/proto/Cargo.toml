@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [lib]
-# Doc comments come from the .proto files and aren't Rust examples.
+# Proto comments aren't Rust examples.
 doctest = false
 
 [dependencies]

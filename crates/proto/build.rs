@@ -1,6 +1,3 @@
-//! Compiles the connector and engine protocols with protox, a protobuf
-//! compiler in Rust, so building the engine needs neither protoc nor buf.
-
 use std::path::Path;
 
 const PROTOS: &[&str] = &[

@@ -27,32 +27,17 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// DestinationService is what a destination connector serves, next to
-// ConnectorService.
-//
-// The platform drives a destination through the commit protocol (ADR-0013):
-// records for an epoch are written, staged durably but invisibly in
-// PreCommit, and made visible in Commit only after the platform has recorded
-// the epoch's checkpoint. On restart, Recover finishes or abandons the epoch
-// the checkpoint log points to.
+// DestinationService is served by destination connectors.
 type DestinationServiceClient interface {
-	// ApplySchema creates or evolves destination tables to match the given
-	// stream schemas. It is idempotent.
+	// Idempotent.
 	ApplySchema(ctx context.Context, in *ApplySchemaRequest, opts ...grpc.CallOption) (*ApplySchemaResponse, error)
-	// Write is one attempt's writer; the stream's lifetime is the writer's.
+	// One stream per attempt's writer. The platform sends open, then recover,
+	// then batches, pre-commits and commits, and closes its side to close the
+	// writer. The connector answers recover, each pre-commit and each commit.
 	//
-	// The platform sends WriteOpen, then WriteRecover, then batches,
-	// pre-commits and commits, and closes its side to close the writer. Batches
-	// and pre-commits arrive in epoch order, but batches for epoch N+1 can
-	// arrive before the pre-commit of N, because each stream crosses barrier N
-	// at its own resume point. A commit can arrive while later epochs are being
-	// written; the connector runs it concurrently with them, but never
-	// concurrently with another commit.
-	//
-	// The connector answers WriteRecover with WriteRecovered, each pre-commit
-	// with WriteStaged, and each commit with WriteCommitted. Any other failure
-	// ends the stream with an Error in the status details; ERROR_CODE_FENCED
-	// means a newer generation owns the pipeline.
+	// Batches for epoch N+1 can arrive before pre-commit N. A commit runs
+	// concurrently with later batches and pre-commits, but never with another
+	// commit. Any other failure ends the stream.
 	Write(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WriteRequest, WriteResponse], error)
 }
 
@@ -91,32 +76,17 @@ type DestinationService_WriteClient = grpc.BidiStreamingClient[WriteRequest, Wri
 // All implementations must embed UnimplementedDestinationServiceServer
 // for forward compatibility.
 //
-// DestinationService is what a destination connector serves, next to
-// ConnectorService.
-//
-// The platform drives a destination through the commit protocol (ADR-0013):
-// records for an epoch are written, staged durably but invisibly in
-// PreCommit, and made visible in Commit only after the platform has recorded
-// the epoch's checkpoint. On restart, Recover finishes or abandons the epoch
-// the checkpoint log points to.
+// DestinationService is served by destination connectors.
 type DestinationServiceServer interface {
-	// ApplySchema creates or evolves destination tables to match the given
-	// stream schemas. It is idempotent.
+	// Idempotent.
 	ApplySchema(context.Context, *ApplySchemaRequest) (*ApplySchemaResponse, error)
-	// Write is one attempt's writer; the stream's lifetime is the writer's.
+	// One stream per attempt's writer. The platform sends open, then recover,
+	// then batches, pre-commits and commits, and closes its side to close the
+	// writer. The connector answers recover, each pre-commit and each commit.
 	//
-	// The platform sends WriteOpen, then WriteRecover, then batches,
-	// pre-commits and commits, and closes its side to close the writer. Batches
-	// and pre-commits arrive in epoch order, but batches for epoch N+1 can
-	// arrive before the pre-commit of N, because each stream crosses barrier N
-	// at its own resume point. A commit can arrive while later epochs are being
-	// written; the connector runs it concurrently with them, but never
-	// concurrently with another commit.
-	//
-	// The connector answers WriteRecover with WriteRecovered, each pre-commit
-	// with WriteStaged, and each commit with WriteCommitted. Any other failure
-	// ends the stream with an Error in the status details; ERROR_CODE_FENCED
-	// means a newer generation owns the pipeline.
+	// Batches for epoch N+1 can arrive before pre-commit N. A commit runs
+	// concurrently with later batches and pre-commits, but never with another
+	// commit. Any other failure ends the stream.
 	Write(grpc.BidiStreamingServer[WriteRequest, WriteResponse]) error
 	mustEmbedUnimplementedDestinationServiceServer()
 }

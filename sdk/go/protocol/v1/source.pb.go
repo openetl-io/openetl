@@ -26,12 +26,9 @@ type SyncMode int32
 const (
 	SyncMode_SYNC_MODE_UNSPECIFIED  SyncMode = 0
 	SyncMode_SYNC_MODE_FULL_REFRESH SyncMode = 1
-	// Incremental reads by a cursor field.
-	SyncMode_SYNC_MODE_INCREMENTAL SyncMode = 2
-	// A log-based changelog.
-	SyncMode_SYNC_MODE_CDC SyncMode = 3
-	// Unbounded: Kafka, webhooks.
-	SyncMode_SYNC_MODE_STREAM SyncMode = 4
+	SyncMode_SYNC_MODE_INCREMENTAL  SyncMode = 2
+	SyncMode_SYNC_MODE_CDC          SyncMode = 3
+	SyncMode_SYNC_MODE_STREAM       SyncMode = 4
 )
 
 // Enum value maps for SyncMode.
@@ -79,17 +76,13 @@ func (SyncMode) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{0}
 }
 
-// Replay is whether a stream can carry the same record version more than
-// once. It decides the stream's delivery guarantee together with the sink.
 type Replay int32
 
 const (
 	Replay_REPLAY_UNSPECIFIED Replay = 0
-	// Resuming from a resume point yields exactly the records after it: CDC,
-	// Kafka, chunked snapshots.
+	// Resuming yields exactly the records after the resume point.
 	Replay_REPLAY_EXACT Replay = 1
-	// Records can repeat: cursor floors, lookback windows, webhook retries.
-	// Every SDK and declarative stream is superset.
+	// Records can repeat after a resume.
 	Replay_REPLAY_SUPERSET Replay = 2
 )
 
@@ -135,9 +128,8 @@ func (Replay) EnumDescriptor() ([]byte, []int) {
 }
 
 type SourceCapabilities struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// The source implements Committed.
-	Acknowledges  bool `protobuf:"varint,1,opt,name=acknowledges,proto3" json:"acknowledges,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Acknowledges  bool                   `protobuf:"varint,1,opt,name=acknowledges,proto3" json:"acknowledges,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -314,18 +306,15 @@ func (x *Catalog) GetStreams() []*CatalogStream {
 type CatalogStream struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// A JSON Schema for one record, for streams on the raw lane. The engine
-	// still infers types; this is what the source knows in advance.
+	// For raw-lane streams: a JSON Schema for one record.
 	JsonSchema []byte `protobuf:"bytes,2,opt,name=json_schema,json=jsonSchema,proto3" json:"json_schema,omitempty"`
-	// An Arrow IPC schema message, for streams on the typed lane.
-	ArrowSchema []byte     `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
-	PrimaryKey  []string   `protobuf:"bytes,4,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
-	SyncModes   []SyncMode `protobuf:"varint,5,rep,packed,name=sync_modes,json=syncModes,proto3,enum=openetl.connector.v1.SyncMode" json:"sync_modes,omitempty"`
-	// The field incremental reads use unless the pipeline names another.
-	DefaultCursor string `protobuf:"bytes,6,opt,name=default_cursor,json=defaultCursor,proto3" json:"default_cursor,omitempty"`
-	// The source picks the cursor, and the pipeline can't override it.
-	SourceDefinedCursor bool   `protobuf:"varint,7,opt,name=source_defined_cursor,json=sourceDefinedCursor,proto3" json:"source_defined_cursor,omitempty"`
-	Replay              Replay `protobuf:"varint,8,opt,name=replay,proto3,enum=openetl.connector.v1.Replay" json:"replay,omitempty"`
+	// For typed-lane streams: an Arrow IPC schema message.
+	ArrowSchema         []byte     `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	PrimaryKey          []string   `protobuf:"bytes,4,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
+	SyncModes           []SyncMode `protobuf:"varint,5,rep,packed,name=sync_modes,json=syncModes,proto3,enum=openetl.connector.v1.SyncMode" json:"sync_modes,omitempty"`
+	DefaultCursor       string     `protobuf:"bytes,6,opt,name=default_cursor,json=defaultCursor,proto3" json:"default_cursor,omitempty"`
+	SourceDefinedCursor bool       `protobuf:"varint,7,opt,name=source_defined_cursor,json=sourceDefinedCursor,proto3" json:"source_defined_cursor,omitempty"`
+	Replay              Replay     `protobuf:"varint,8,opt,name=replay,proto3,enum=openetl.connector.v1.Replay" json:"replay,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -472,9 +461,7 @@ type ConfiguredStream struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Name     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	SyncMode SyncMode               `protobuf:"varint,2,opt,name=sync_mode,json=syncMode,proto3,enum=openetl.connector.v1.SyncMode" json:"sync_mode,omitempty"`
-	// The cursor field for incremental reads.
-	Cursor string `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
-	// The state to resume from, as the source emitted it in a resume point.
+	Cursor   string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	// Unset: start from the beginning.
 	State         []byte `protobuf:"bytes,4,opt,name=state,proto3,oneof" json:"state,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -637,7 +624,6 @@ func (*ReadResponse_ResumePoint) isReadResponse_Msg() {}
 
 func (*ReadResponse_Complete) isReadResponse_Msg() {}
 
-// RecordBatch is records for one stream, on one of two lanes.
 type RecordBatch struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Stream string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
@@ -717,14 +703,11 @@ type isRecordBatch_Records interface {
 }
 
 type RecordBatch_Arrow struct {
-	// The typed lane: an Arrow IPC stream holding the schema, any
-	// dictionaries, and one record batch.
+	// An Arrow IPC stream: the schema, any dictionaries, one record batch.
 	Arrow []byte `protobuf:"bytes,2,opt,name=arrow,proto3,oneof"`
 }
 
 type RecordBatch_Rows struct {
-	// The raw lane: JSON objects. The engine infers types, coerces values
-	// and adds metadata columns.
 	Rows *JSONRows `protobuf:"bytes,3,opt,name=rows,proto3,oneof"`
 }
 
@@ -734,7 +717,7 @@ func (*RecordBatch_Rows) isRecordBatch_Records() {}
 
 type JSONRows struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Each row is one JSON object.
+	// One JSON object each.
 	Rows          [][]byte `protobuf:"bytes,1,rep,name=rows,proto3" json:"rows,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -777,8 +760,8 @@ func (x *JSONRows) GetRows() [][]byte {
 	return nil
 }
 
-// ResumePoint says it is safe to restart the stream from state after
-// everything emitted for it so far.
+// ResumePoint says the stream can restart from state after everything
+// emitted for it so far.
 type ResumePoint struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Stream        string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
@@ -831,8 +814,8 @@ func (x *ResumePoint) GetState() []byte {
 	return nil
 }
 
-// StreamComplete says a bounded stream has no more records. A source emits a
-// final resume point first, so the next read starts after them.
+// StreamComplete ends a bounded stream. It follows the stream's final resume
+// point.
 type StreamComplete struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Stream        string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
@@ -879,7 +862,8 @@ func (x *StreamComplete) GetStream() string {
 
 type CommittedRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Per-stream states from one checkpoint.
+	// Per-stream states of one checkpoint. Everything before them can be
+	// discarded upstream.
 	States        map[string][]byte `protobuf:"bytes,1,rep,name=states,proto3" json:"states,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

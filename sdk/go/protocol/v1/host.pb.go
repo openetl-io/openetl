@@ -185,17 +185,17 @@ func (LogLevel) EnumDescriptor() ([]byte, []int) {
 type HTTPRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Method string                 `protobuf:"bytes,1,opt,name=method,proto3" json:"method,omitempty"`
-	// An absolute URL. The SSRF guard checks it and every redirect.
+	// Absolute.
 	Url     string    `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
 	Headers []*Header `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty"`
 	Body    []byte    `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
 	Auth    *HTTPAuth `protobuf:"bytes,5,opt,name=auth,proto3" json:"auth,omitempty"`
-	// Bounds the whole call, retries included. Unset: the host's default.
+	// Covers retries. Unset: the host's default.
 	Budget *durationpb.Duration `protobuf:"bytes,6,opt,name=budget,proto3" json:"budget,omitempty"`
-	// Allows retrying a method that isn't idempotent by definition, such as a
-	// POST with an idempotency key.
+	// Allows retrying a non-idempotent method, such as a POST with an
+	// idempotency key.
 	Idempotent bool `protobuf:"varint,7,opt,name=idempotent,proto3" json:"idempotent,omitempty"`
-	// Groups requests that share a rate limit. Empty: the URL's host.
+	// Empty: the URL's host.
 	RateLimitKey  string `protobuf:"bytes,8,opt,name=rate_limit_key,json=rateLimitKey,proto3" json:"rate_limit_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -339,8 +339,6 @@ func (x *Header) GetValue() string {
 	return ""
 }
 
-// HTTPAuth is how the host authenticates a request. Every field that names a
-// secret holds the secret's name.
 type HTTPAuth struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Scheme:
@@ -471,7 +469,6 @@ func (*HTTPAuth_Oauth2) isHTTPAuth_Scheme() {}
 
 func (*HTTPAuth_AwsSigv4) isHTTPAuth_Scheme() {}
 
-// BearerAuth sends "Authorization: Bearer <token>".
 type BearerAuth struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TokenSecret   string                 `protobuf:"bytes,1,opt,name=token_secret,json=tokenSecret,proto3" json:"token_secret,omitempty"`
@@ -568,7 +565,6 @@ func (x *BasicAuth) GetPasswordSecret() string {
 	return ""
 }
 
-// APIKeyAuth sends a key in a header or a query parameter.
 type APIKeyAuth struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	KeySecret string                 `protobuf:"bytes,1,opt,name=key_secret,json=keySecret,proto3" json:"key_secret,omitempty"`
@@ -668,11 +664,9 @@ func (*APIKeyAuth_Header) isAPIKeyAuth_Location() {}
 
 func (*APIKeyAuth_QueryParam) isAPIKeyAuth_Location() {}
 
-// OAuth2Auth sends an access token, and refreshes it when it expires.
 type OAuth2Auth struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// A secret holding the client, the token URL and the refresh token. The
-	// host stores rotated refresh tokens back.
+	// Holds the client, the token URL and the refresh token.
 	CredentialSecret string `protobuf:"bytes,1,opt,name=credential_secret,json=credentialSecret,proto3" json:"credential_secret,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -715,11 +709,9 @@ func (x *OAuth2Auth) GetCredentialSecret() string {
 	return ""
 }
 
-// AWSSigV4Auth signs the whole request with AWS Signature Version 4.
 type AWSSigV4Auth struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// A secret holding the access key ID, secret key and optional session
-	// token.
+	// Holds the access key ID, the secret key and an optional session token.
 	CredentialsSecret string `protobuf:"bytes,1,opt,name=credentials_secret,json=credentialsSecret,proto3" json:"credentials_secret,omitempty"`
 	Region            string `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
 	Service           string `protobuf:"bytes,3,opt,name=service,proto3" json:"service,omitempty"`
@@ -849,12 +841,11 @@ type isHTTPResponse_Part interface {
 }
 
 type HTTPResponse_Head struct {
-	// The first message.
+	// First.
 	Head *HTTPResponseHead `protobuf:"bytes,1,opt,name=head,proto3,oneof"`
 }
 
 type HTTPResponse_Body struct {
-	// The body, in order.
 	Body []byte `protobuf:"bytes,2,opt,name=body,proto3,oneof"`
 }
 
@@ -915,9 +906,8 @@ func (x *HTTPResponseHead) GetHeaders() []*Header {
 }
 
 type SignRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// The secret holding the key.
-	KeySecret string `protobuf:"bytes,1,opt,name=key_secret,json=keySecret,proto3" json:"key_secret,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	KeySecret string                 `protobuf:"bytes,1,opt,name=key_secret,json=keySecret,proto3" json:"key_secret,omitempty"`
 	// Types that are valid to be assigned to Method:
 	//
 	//	*SignRequest_Hmac
@@ -1005,7 +995,6 @@ func (*SignRequest_Hmac) isSignRequest_Method() {}
 
 func (*SignRequest_Jwt) isSignRequest_Method() {}
 
-// HMACSign returns the raw MAC of message.
 type HMACSign struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Hash          HashAlgorithm          `protobuf:"varint,1,opt,name=hash,proto3,enum=openetl.connector.v1.HashAlgorithm" json:"hash,omitempty"`
@@ -1058,7 +1047,6 @@ func (x *HMACSign) GetMessage() []byte {
 	return nil
 }
 
-// JWTSign returns a compact JWS of claims.
 type JWTSign struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Algorithm JWTAlgorithm           `protobuf:"varint,1,opt,name=algorithm,proto3,enum=openetl.connector.v1.JWTAlgorithm" json:"algorithm,omitempty"`
@@ -1122,8 +1110,9 @@ func (x *JWTSign) GetHeader() []byte {
 }
 
 type SignResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Signature     []byte                 `protobuf:"bytes,1,opt,name=signature,proto3" json:"signature,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// HMAC: the raw MAC. JWT: the compact JWS.
+	Signature     []byte `protobuf:"bytes,1,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1447,7 +1436,7 @@ func (x *KVGetRequest) GetKey() string {
 
 type KVGetResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Unset when the key doesn't exist or has expired.
+	// Unset if the key is missing or expired.
 	Value         []byte `protobuf:"bytes,1,opt,name=value,proto3,oneof" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1494,7 +1483,7 @@ type KVPutRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	Value []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
-	// Unset: the value doesn't expire.
+	// Unset: never expires.
 	Ttl           *durationpb.Duration `protobuf:"bytes,3,opt,name=ttl,proto3" json:"ttl,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

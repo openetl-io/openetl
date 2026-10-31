@@ -22,21 +22,13 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// SinkClass is how a sink makes an epoch visible. It sets the best delivery
-// guarantee the sink can offer.
 type SinkClass int32
 
 const (
-	SinkClass_SINK_CLASS_UNSPECIFIED SinkClass = 0
-	// Stage in PreCommit and apply in Commit, with a marker per stream behind a
-	// fence: warehouses, Postgres, Parquet. Exactly-once.
-	SinkClass_SINK_CLASS_STAGE_AND_APPLY SinkClass = 1
-	// Flush into an open transaction in PreCommit and commit it in Commit:
-	// Kafka. Exactly-once.
+	SinkClass_SINK_CLASS_UNSPECIFIED          SinkClass = 0
+	SinkClass_SINK_CLASS_STAGE_AND_APPLY      SinkClass = 1
 	SinkClass_SINK_CLASS_TRANSACTIONAL_STREAM SinkClass = 2
-	// Deliver every record during the epoch; PreCommit returns once all of them
-	// are acknowledged: webhooks, HTTP APIs. At-least-once.
-	SinkClass_SINK_CLASS_DELIVER_AND_ACK SinkClass = 3
+	SinkClass_SINK_CLASS_DELIVER_AND_ACK      SinkClass = 3
 )
 
 // Enum value maps for SinkClass.
@@ -82,8 +74,6 @@ func (SinkClass) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{0}
 }
 
-// CommitScope is whether every stream's epoch becomes visible at the same
-// moment, or each stream's separately.
 type CommitScope int32
 
 const (
@@ -186,18 +176,13 @@ func (WriteMode) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{2}
 }
 
-// Recovery is what a writer found for the epoch the checkpoint log points to.
 type Recovery int32
 
 const (
 	Recovery_RECOVERY_UNSPECIFIED Recovery = 0
-	// Every stream of the epoch was already visible.
-	Recovery_RECOVERY_APPLIED Recovery = 1
-	// Some streams weren't visible, and the writer applied them now.
-	Recovery_RECOVERY_REDONE Recovery = 2
-	// The epoch was not applied and can't be. The platform falls back to the
-	// previous checkpoint.
-	Recovery_RECOVERY_LOST Recovery = 3
+	Recovery_RECOVERY_APPLIED     Recovery = 1
+	Recovery_RECOVERY_REDONE      Recovery = 2
+	Recovery_RECOVERY_LOST        Recovery = 3
 )
 
 // Enum value maps for Recovery.
@@ -243,14 +228,12 @@ func (Recovery) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{3}
 }
 
-// DestinationCapabilities is what the planner needs to compute each stream's
-// delivery guarantee and check a pipeline's delivery settings (ADR-0016).
 type DestinationCapabilities struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SinkClass SinkClass              `protobuf:"varint,1,opt,name=sink_class,json=sinkClass,proto3,enum=openetl.connector.v1.SinkClass" json:"sink_class,omitempty"`
 	Scopes    []CommitScope          `protobuf:"varint,2,rep,packed,name=scopes,proto3,enum=openetl.connector.v1.CommitScope" json:"scopes,omitempty"`
-	// The sink can insert append and overwrite rows only for _openetl_id values
-	// not already in the target.
+	// The sink can skip append and overwrite rows whose _openetl_id is already
+	// in the target.
 	DedupeAtApply         bool                 `protobuf:"varint,3,opt,name=dedupe_at_apply,json=dedupeAtApply,proto3" json:"dedupe_at_apply,omitempty"`
 	DefaultCommitInterval *durationpb.Duration `protobuf:"bytes,4,opt,name=default_commit_interval,json=defaultCommitInterval,proto3" json:"default_commit_interval,omitempty"`
 	MinCommitInterval     *durationpb.Duration `protobuf:"bytes,5,opt,name=min_commit_interval,json=minCommitInterval,proto3" json:"min_commit_interval,omitempty"`
@@ -323,9 +306,8 @@ func (x *DestinationCapabilities) GetMinCommitInterval() *durationpb.Duration {
 	return nil
 }
 
-// Epoch identifies one checkpoint: N within the generation that wrote it.
-// Every name a sink derives for an epoch, such as markers and staging,
-// includes both. N is 0 when there is no checkpoint yet.
+// Epoch is checkpoint N within the generation that wrote it. N is 0 when
+// there is no checkpoint yet.
 type Epoch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Generation    uint64                 `protobuf:"varint,1,opt,name=generation,proto3" json:"generation,omitempty"`
@@ -381,7 +363,7 @@ func (x *Epoch) GetN() uint64 {
 type ApplySchemaRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Config []byte                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
-	// Where the pipeline's tables live: a schema or dataset.
+	// A schema or dataset.
 	Namespace     string          `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Streams       []*StreamSchema `protobuf:"bytes,3,rep,name=streams,proto3" json:"streams,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -674,17 +656,14 @@ func (*WriteRequest_PreCommit) isWriteRequest_Msg() {}
 
 func (*WriteRequest_Commit) isWriteRequest_Msg() {}
 
-// WriteOpen configures the writer for one attempt. It is the first message.
 type WriteOpen struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Config    []byte                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
-	Pipeline  string                 `protobuf:"bytes,2,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
-	Namespace string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	// The attempt's generation. Applies from this writer check it against the
-	// destination fence.
-	Generation    uint64         `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
-	Scope         CommitScope    `protobuf:"varint,5,opt,name=scope,proto3,enum=openetl.connector.v1.CommitScope" json:"scope,omitempty"`
-	Streams       []*WriteStream `protobuf:"bytes,6,rep,name=streams,proto3" json:"streams,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Config        []byte                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	Pipeline      string                 `protobuf:"bytes,2,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
+	Namespace     string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Generation    uint64                 `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
+	Scope         CommitScope            `protobuf:"varint,5,opt,name=scope,proto3,enum=openetl.connector.v1.CommitScope" json:"scope,omitempty"`
+	Streams       []*WriteStream         `protobuf:"bytes,6,rep,name=streams,proto3" json:"streams,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -766,9 +745,7 @@ type WriteStream struct {
 	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Mode       WriteMode              `protobuf:"varint,2,opt,name=mode,proto3,enum=openetl.connector.v1.WriteMode" json:"mode,omitempty"`
 	PrimaryKey []string               `protobuf:"bytes,3,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
-	// Dedupe append and overwrite writes of this stream on _openetl_id when
-	// applying an epoch. The platform sets it for streams that can repeat
-	// records, and only for sinks with dedupe_at_apply.
+	// Dedupe append and overwrite rows on _openetl_id at apply.
 	Dedupe        bool `protobuf:"varint,4,opt,name=dedupe,proto3" json:"dedupe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -832,15 +809,13 @@ func (x *WriteStream) GetDedupe() bool {
 	return false
 }
 
-// WriteRecover is the second message. It raises the destination fence to the
-// writer's generation, then recovers epoch: reports applied, applies the
-// streams whose marker is missing and reports redone, or reports lost. With
-// no epoch (no checkpoint yet), it only raises the fence and reports applied.
+// WriteRecover raises the destination fence to the writer's generation, then
+// recovers epoch. With no epoch, it only raises the fence and reports
+// applied.
 type WriteRecover struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	// The descriptor PreCommit returned for epoch, from its checkpoint record.
-	Staged        []byte `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Staged        []byte                 `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -889,13 +864,11 @@ func (x *WriteRecover) GetStaged() []byte {
 	return nil
 }
 
-// WriteBatch adds records of one stream to an epoch.
 type WriteBatch struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Epoch  *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	Stream string                 `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
-	// An Arrow IPC stream holding the schema, any dictionaries, and one record
-	// batch.
+	// An Arrow IPC stream: the schema, any dictionaries, one record batch.
 	Arrow         []byte `protobuf:"bytes,3,opt,name=arrow,proto3" json:"arrow,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -952,7 +925,7 @@ func (x *WriteBatch) GetArrow() []byte {
 	return nil
 }
 
-// WritePreCommit makes everything written in epoch durable but not visible.
+// WritePreCommit stages the epoch durably but invisibly.
 type WritePreCommit struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
@@ -997,10 +970,8 @@ func (x *WritePreCommit) GetEpoch() *Epoch {
 	return nil
 }
 
-// WriteCommit runs after epoch's checkpoint record is in the checkpoint log.
-// It makes the epoch visible together with a marker per stream, behind the
-// destination fence: in one destination transaction, or one per stream when
-// the scope is stream. Running it twice is a no-op.
+// WriteCommit makes the epoch visible, with a marker per stream, behind the
+// fence. Idempotent.
 type WriteCommit struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
@@ -1198,10 +1169,8 @@ func (x *WriteRecovered) GetRecovery() Recovery {
 type WriteStaged struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	// A small description of what PreCommit staged: file URIs, a staging table
-	// name, a producer slot. The platform stores it in the epoch's checkpoint
-	// record and passes it back to commit and recover, so a sink needs no state
-	// of its own to finish an epoch. Keep it to a few KB.
+	// Stored in the epoch's checkpoint record and passed back to commit and
+	// recover. Keep it to a few KB.
 	Staged        []byte `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1254,8 +1223,8 @@ func (x *WriteStaged) GetStaged() []byte {
 type WriteCommitted struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	// Set when the commit failed. The platform may send the commit again: it
-	// is idempotent, and the stream stays open.
+	// Set if the commit failed. The stream stays open, and the commit can be
+	// sent again.
 	Error         *Error `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

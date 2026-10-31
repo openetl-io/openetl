@@ -22,41 +22,26 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// The data edges (ADR-0009).
+// Each Edge is one connection to the engine's data socket. A frame is a
+// 12-byte header and a payload. The header is the kind (1 byte), 3 zero
+// bytes, the stream (uint32 LE, an index into Edge.streams), and the payload
+// length (uint32 LE).
 //
-// Each Edge in the plan is one connection to the engine's data socket. Both
-// directions carry the same frames: a 12-byte header, then the payload.
-//
-//   - kind: 1 byte, a FrameKind.
-//   - reserved: 3 bytes, zero.
-//   - stream: 4 bytes, little-endian. An index into the edge's streams; 0 for
-//     HELLO.
-//   - length: 4 bytes, little-endian. The payload's length.
-//
-// A BATCH payload is an Arrow IPC stream holding the stream's schema, any
-// dictionaries, and one record batch. Each BATCH frame stands alone, so a
-// receiver keeps no decoder state per stream. Every other payload is the
-// protobuf message named after its kind.
-//
-// Control frames travel in band, so a barrier stays in order with its
-// stream's records.
+// A BATCH payload is an Arrow IPC stream: the schema, any dictionaries, one
+// record batch. Every other payload is the message named after its kind.
 type FrameKind int32
 
 const (
 	FrameKind_FRAME_KIND_UNSPECIFIED FrameKind = 0
-	// Hello. The first frame on every edge connection, from the runner.
+	// The first frame on every connection, from the runner.
 	FrameKind_FRAME_KIND_HELLO FrameKind = 1
-	// An Arrow batch for one stream. Both directions.
 	FrameKind_FRAME_KIND_BATCH FrameKind = 2
-	// Rows. JSON rows for one stream on the raw lane, to the engine.
-	FrameKind_FRAME_KIND_ROWS FrameKind = 3
-	// Barrier. Both directions.
-	FrameKind_FRAME_KIND_BARRIER FrameKind = 4
-	// SchemaChange. Both directions.
+	// To the engine only.
+	FrameKind_FRAME_KIND_ROWS          FrameKind = 3
+	FrameKind_FRAME_KIND_BARRIER       FrameKind = 4
 	FrameKind_FRAME_KIND_SCHEMA_CHANGE FrameKind = 5
-	// StagedFiles. From the engine.
-	FrameKind_FRAME_KIND_STAGED_FILES FrameKind = 6
-	// EndOfStream. Both directions.
+	// From the engine only.
+	FrameKind_FRAME_KIND_STAGED_FILES  FrameKind = 6
 	FrameKind_FRAME_KIND_END_OF_STREAM FrameKind = 7
 )
 
@@ -111,7 +96,6 @@ func (FrameKind) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{0}
 }
 
-// Hello says which edge of the plan a connection is.
 type Hello struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Edge          string                 `protobuf:"bytes,1,opt,name=edge,proto3" json:"edge,omitempty"`
@@ -158,7 +142,7 @@ func (x *Hello) GetEdge() string {
 
 type Rows struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Each row is one JSON object.
+	// One JSON object each.
 	Rows          [][]byte `protobuf:"bytes,1,rep,name=rows,proto3" json:"rows,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -201,8 +185,7 @@ func (x *Rows) GetRows() [][]byte {
 	return nil
 }
 
-// Barrier marks the end of epoch on one stream. Everything before it on that
-// stream belongs to the epoch.
+// Barrier ends the epoch on one stream.
 type Barrier struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
@@ -247,8 +230,7 @@ func (x *Barrier) GetEpoch() *v1.Epoch {
 	return nil
 }
 
-// SchemaChange says a stream's schema changed. It comes before the first
-// batch with the new schema, so a sink can evolve its tables first.
+// SchemaChange comes before the first batch with the new schema.
 type SchemaChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// An Arrow IPC schema message.
@@ -294,8 +276,7 @@ func (x *SchemaChange) GetArrowSchema() []byte {
 	return nil
 }
 
-// StagedFiles lists files the engine staged in epoch for a runner sink to
-// load, such as Parquet files for a warehouse COPY.
+// StagedFiles lists files the engine staged for a runner sink to load.
 type StagedFiles struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
@@ -408,7 +389,6 @@ func (x *StagedFile) GetRows() uint64 {
 	return 0
 }
 
-// EndOfStream says a bounded stream has no more records on this edge.
 type EndOfStream struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields

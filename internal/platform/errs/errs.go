@@ -1,9 +1,5 @@
-// Package errs is the error taxonomy. Every error that crosses a connector,
-// activity, engine or API boundary carries a Code, and retries, pauses and
-// heal playbooks key off it rather than off messages.
-//
-// The codes mirror openetl.connector.v1.ErrorCode, which is the one
-// definition; the engine mirrors it too.
+// Package errs is the error taxonomy. Its codes mirror
+// openetl.connector.v1.ErrorCode.
 package errs
 
 import (
@@ -16,7 +12,6 @@ import (
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
-// Code classifies an error. Its values are the protocol's ErrorCode values.
 type Code int32
 
 const (
@@ -37,8 +32,6 @@ const (
 	Fenced                 = Code(protocolv1.ErrorCode_ERROR_CODE_FENCED)
 )
 
-// retryable lists every code and whether an attempt that failed with it is
-// retried. A test checks that it covers the protocol's enum.
 var retryable = map[Code]bool{
 	Transient:              true,
 	RateLimited:            true,
@@ -57,11 +50,9 @@ var retryable = map[Code]bool{
 }
 
 // Retryable reports whether an attempt that failed with c is retried.
-// Internal is retried a limited number of times, then raises an incident.
 func (c Code) Retryable() bool { return retryable[c] }
 
-// String returns the code's name without the enum prefix, such as
-// "RATE_LIMITED".
+// String returns the name without the enum prefix, such as "RATE_LIMITED".
 func (c Code) String() string {
 	name, ok := protocolv1.ErrorCode_name[int32(c)]
 	if !ok {
@@ -70,20 +61,16 @@ func (c Code) String() string {
 	return name[len("ERROR_CODE_"):]
 }
 
-// Error is an error with a code.
 type Error struct {
 	Code Code
-	// Msg is for people: no secrets, no record contents.
-	Msg string
-	// RetryAfter is how long to wait before retrying, when the cause says.
+	// No secrets or record contents.
+	Msg        string
 	RetryAfter time.Duration
-	// Err is the cause, if any.
-	Err error
+	Err        error
 }
 
 func (e *Error) Error() string { return e.Code.String() + ": " + e.text() }
 
-// text is the message without the code.
 func (e *Error) text() string {
 	switch {
 	case e.Err == nil:
@@ -97,7 +84,6 @@ func (e *Error) text() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
-// New returns an error with code c.
 func New(c Code, format string, args ...any) error {
 	return &Error{Code: c, Msg: fmt.Sprintf(format, args...)}
 }
@@ -110,8 +96,8 @@ func Wrap(c Code, err error, msg string) error {
 	return &Error{Code: c, Msg: msg, Err: err}
 }
 
-// CodeOf returns the code of the first *Error in err's chain. An error without
-// one is Internal, and a nil error is Unspecified.
+// CodeOf returns the code of the first *Error in err's chain: Internal if
+// there is none, Unspecified if err is nil.
 func CodeOf(err error) Code {
 	if err == nil {
 		return Unspecified
@@ -122,14 +108,12 @@ func CodeOf(err error) Code {
 	return Internal
 }
 
-// ToProto returns err as a protocol Error, or nil if err is nil.
 func ToProto(err error) *protocolv1.Error {
 	if err == nil {
 		return nil
 	}
 	p := &protocolv1.Error{Code: protocolv1.ErrorCode(CodeOf(err)), Message: err.Error()}
-	if e, ok := err.(*Error); ok { //nolint:errorlint // only the outermost error's text starts with its code
-		// The code travels in its own field.
+	if e, ok := err.(*Error); ok { //nolint:errorlint // the code has its own field, so drop it from the outermost message
 		p.Message = e.text()
 	}
 	if e, ok := errors.AsType[*Error](err); ok && e.RetryAfter > 0 {
@@ -138,7 +122,6 @@ func ToProto(err error) *protocolv1.Error {
 	return p
 }
 
-// FromProto returns p as an error, or nil if p is nil.
 func FromProto(p *protocolv1.Error) error {
 	if p == nil {
 		return nil

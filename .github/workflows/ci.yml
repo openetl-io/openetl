@@ -35,14 +35,13 @@ jobs:
           buf lint
           buf format --diff --exit-code
           for m in . sdk/go; do (cd "$m" && golangci-lint run ./...); done
-      # Informational until v0.1.0-alpha: the protocols still change
-      # incompatibly during P0 and P1.
+      # Informational until v0.1.0-alpha.
       - name: Breaking proto changes
         if: github.event_name == 'pull_request'
         continue-on-error: true
         run: |
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          # buf needs the commit's hash: it doesn't resolve FETCH_HEAD.
+          # buf doesn't resolve FETCH_HEAD.
           if git cat-file -e FETCH_HEAD:buf.yaml 2>/dev/null; then
             bin/buf breaking --against ".git#ref=$(git rev-parse FETCH_HEAD)"
           else

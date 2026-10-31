@@ -9,8 +9,6 @@ import (
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
-// The taxonomy is defined once, in the protocol. Adding a code there must
-// come with a decision here about whether it is retried.
 func TestCoversProtocol(t *testing.T) {
 	for v, name := range protocolv1.ErrorCode_name {
 		c := Code(v)
