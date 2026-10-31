@@ -100,10 +100,6 @@ func (s *Source) Discover(ctx context.Context) (source.Catalog, error) {
 		for _, i := range t.key {
 			cs.PrimaryKey = append(cs.PrimaryKey, t.cols[i].name)
 		}
-		if len(t.key) == 0 {
-			// Its only resume point is at the end.
-			cs.Replay = source.Superset
-		}
 		c.Streams = append(c.Streams, cs)
 	}
 	return c, nil

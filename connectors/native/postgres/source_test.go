@@ -161,7 +161,7 @@ func TestSourceDiscovers(t *testing.T) {
 	if s := got["keyed"]; !slices.Equal(s.PrimaryKey, []string{"a", "b"}) || s.Replay != source.Exact {
 		t.Errorf("keyed: %+v", s)
 	}
-	if s := got["loose"]; len(s.PrimaryKey) != 0 || s.Replay != source.Superset {
+	if s := got["loose"]; len(s.PrimaryKey) != 0 || s.Replay != source.Exact {
 		t.Errorf("loose: %+v", s)
 	}
 	if s := got["parted"]; !slices.Equal(s.PrimaryKey, []string{"id"}) {
