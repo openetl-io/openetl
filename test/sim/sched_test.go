@@ -13,16 +13,11 @@ import (
 	"time"
 )
 
-// Every call a fake makes to the outside world is a yield point. The
-// scheduler lets one waiting call proceed at a time, chosen by the seed, and
-// decides whether it fails.
+// Every fake call is a yield point. The scheduler lets one waiting call
+// proceed at a time, chosen by the seed, and decides whether it fails.
 //
-// A seed reproduces exactly as long as the goroutines that one decision wakes
-// can't race each other into different outcomes. Goroutines still run in
-// parallel between decisions, so two rules keep their races harmless: calls
-// made under a cancelled context don't count as decisions (see settle), and
-// the runner can't get from one barrier to the next without reaching a yield
-// point. TestReproducible checks this.
+// Seeds reproduce only while the runner can't get from one barrier to the
+// next without reaching a yield point.
 
 type decision uint8
 
@@ -45,7 +40,6 @@ var (
 	errCrashed   = errors.New("sim: attempt crashed")
 )
 
-// outcome applies a call according to d and returns what the caller sees.
 func outcome(d decision, apply func() error) error {
 	switch d {
 	case proceed:
@@ -120,8 +114,7 @@ func (s *scheduler) point(ctx context.Context, attempt int, op string) decision 
 	return <-w.reply
 }
 
-// release removes w from the waiting set and sends it d. A crash releases
-// every other waiter of the same attempt too.
+// release sends w d. A crash releases every waiter of the attempt.
 func (s *scheduler) release(w *waiter, d decision) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,12 +136,9 @@ func (s *scheduler) release(w *waiter, d decision) {
 }
 
 // settle waits until every actor is blocked. Calls made since the last
-// decision under an already cancelled context fail at once, without effect and
-// without taking a decision, and settle waits again. Whether such a call is
-// made at all depends on goroutine timing: a select that finds both a ready
-// channel and ctx.Done picks one at random. Calls already waiting when their
-// context was cancelled are scheduled as usual; they were in flight and may
-// still land.
+// decision under a cancelled context fail without effect or a decision: a
+// select can pick ctx.Done or a ready channel at random, so whether they
+// happen at all is timing. Calls that were already waiting are scheduled.
 func (s *scheduler) settle() {
 	for {
 		synctest.Wait()
@@ -185,10 +175,9 @@ type finish struct {
 	err     error
 }
 
-// run plays the role of Temporal: it starts attempts, retries the newest one
-// when it fails, and sometimes starts a replacement while the current attempt
-// is still running, which leaves the old one behind as a zombie. It returns
-// once the newest attempt has succeeded and every attempt has stopped.
+// run plays Temporal: it retries the newest attempt when it fails, and
+// sometimes starts a replacement early, leaving a zombie. It returns once the
+// newest attempt has succeeded and every attempt has stopped.
 func (s *scheduler) run(start func(attempt int) error) error {
 	done := make(chan finish, maxAttempts+1)
 	alive, newest, newestOK := 0, 0, false
@@ -231,8 +220,7 @@ func (s *scheduler) run(start func(attempt int) error) error {
 			continue // let the new attempt reach its first call
 		}
 		if failure != nil {
-			// Crash every attempt and wait for its goroutines to exit, so the
-			// bubble doesn't end deadlocked.
+			// Wait for every goroutine to exit, or the bubble ends deadlocked.
 			if alive == 0 {
 				return failure
 			}
@@ -284,8 +272,8 @@ func (s *scheduler) run(start func(attempt int) error) error {
 	}
 }
 
-// crashAll makes every current and future call crash, and releases every
-// waiter. It reports whether anyone was waiting.
+// crashAll crashes every current and future call. It reports whether anyone
+// was waiting.
 func (s *scheduler) crashAll() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

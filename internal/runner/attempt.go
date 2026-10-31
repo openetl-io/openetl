@@ -1,6 +1,5 @@
-// Package runner runs a pipeline's jobs on the data plane: it hosts the
-// connectors, drives the dataflow, and coordinates checkpoints with the
-// commit protocol (ADR-0013).
+// Package runner runs a pipeline's jobs: it hosts the connectors, drives the
+// dataflow, and coordinates checkpoints.
 package runner
 
 import (
@@ -19,7 +18,6 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
-// Stream is one stream of a job, as configured in the pipeline.
 type Stream struct {
 	Name       string
 	Replay     source.Replay
@@ -27,27 +25,24 @@ type Stream struct {
 	PrimaryKey []string
 }
 
-// Settings are a pipeline's delivery settings (spec.delivery, ADR-0016).
+// Settings are a pipeline's spec.delivery.
 type Settings struct {
-	// Require is the lowest level the pipeline accepts. A barrier is placed
-	// without a resume point only where that keeps every stream at Require.
+	// A barrier is placed without a resume point only where every stream stays
+	// at Require.
 	Require delivery.Level
-	// CommitInterval commits an epoch this often; 0 disables the timer.
+	// 0 disables.
 	CommitInterval time.Duration
-	// CommitMaxBytes commits an epoch once this much has been read since the
-	// last barrier; 0 disables it.
+	// Bytes read since the last barrier; 0 disables.
 	CommitMaxBytes int64
 	Scope          destination.Scope
-	// ResumePointTimeout is how long a barrier waits for a stream's next
-	// resume point before it is placed without one; 0 waits forever.
+	// How long a barrier waits for a resume point before it is forced; 0
+	// waits forever.
 	ResumePointTimeout time.Duration
 	Dedupe             delivery.Dedupe
 }
 
-// Job is everything one attempt of a bounded sync needs.
 type Job struct {
-	// Owner identifies this attempt in the checkpoint log. It must be unique
-	// per attempt.
+	// Unique per attempt.
 	Owner       string
 	Pipeline    string
 	Log         *checkpoint.Log
@@ -59,26 +54,23 @@ type Job struct {
 	Logger      *slog.Logger
 }
 
-// Result describes a finished attempt.
 type Result struct {
 	Generation uint64
 	Recovery   destination.Recovery
-	// Restored is the epoch the attempt resumed from (0: from the beginning).
+	// The epoch the attempt resumed from; 0 from the beginning.
 	Restored uint64
-	// Committed is the number of epochs this attempt committed.
+	// Epochs committed by this attempt.
 	Committed int
-	// Last is the last epoch committed, or Restored if none was.
+	// The last epoch committed, or Restored.
 	Last uint64
 }
 
-// commitAttempts bounds in-process retries of an epoch's commit steps. Both
-// are idempotent; what fails after this many tries fails the attempt, and the
-// next attempt finishes the epoch in recovery.
+// commitAttempts bounds in-process retries of the idempotent commit steps.
+// Recovery in the next attempt finishes what still fails.
 const commitAttempts = 4
 
-// RunAttempt runs one attempt of a bounded sync: claim the pipeline, recover
-// the epoch HEAD points to, read until every stream is complete, and commit
-// epochs along the way.
+// RunAttempt runs one attempt of a bounded sync: claim, recover HEAD's epoch,
+// then read until every stream is complete, committing along the way.
 func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if err := job.validate(); err != nil {
 		return res, err
@@ -149,8 +141,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	}
 	restored := head
 	if res.Recovery == destination.Lost {
-		// Nothing of HEAD's epoch is visible, and upstream acknowledgements
-		// trail by one checkpoint, so the previous record is a safe restart.
+		// Safe because acknowledgements trail by one checkpoint.
 		var to *checkpoint.RecordRef
 		if prev != nil {
 			ref := prev.Ref()
@@ -223,9 +214,8 @@ type epochState struct {
 	desc           destination.Staged
 }
 
-// coordinator is the checkpoint coordinator for one attempt. It requests
-// barriers, and commits each epoch once it is placed and staged: record the
-// checkpoint, make the epoch visible, acknowledge the previous one upstream.
+// coordinator requests barriers and commits each epoch once it is placed and
+// staged.
 type coordinator struct {
 	job  *Job
 	sess *checkpoint.Session
@@ -293,8 +283,7 @@ func (c *coordinator) loop(ctx context.Context) error {
 		tick = t.C
 	}
 	for {
-		// Handle queued events before anything else, so that the order of
-		// decisions doesn't depend on which channel select picks.
+		// Events first, so decisions don't depend on select's random choice.
 		select {
 		case ev := <-c.events:
 			if err := c.handle(ctx, ev); err != nil {
@@ -331,8 +320,7 @@ func (c *coordinator) loop(ctx context.Context) error {
 	}
 }
 
-// At most two epochs are in flight: one staging and one waiting for its turn
-// to commit.
+// One epoch staging, one waiting to commit.
 const maxInFlight = 2
 
 func (c *coordinator) shouldRequest() bool {
@@ -381,8 +369,8 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 	}
 }
 
-// commit runs the commit protocol for epoch n: record the checkpoint, then
-// make the epoch visible, then acknowledge the previous epoch upstream.
+// commit records the checkpoint, makes the epoch visible, then acknowledges
+// the previous epoch upstream.
 func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) error {
 	rec := &checkpoint.Record{
 		Epoch:     n,
@@ -408,8 +396,7 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 	c.res.Last = n
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
 
-	// Acknowledgements trail by one checkpoint, so recovery can always fall
-	// back one record.
+	// Trail by one checkpoint, so recovery can fall back one record.
 	if ack, ok := c.job.Source.(source.Acknowledger); ok && c.ackStates != nil {
 		if err := ack.Committed(ctx, c.ackStates); err != nil {
 			c.log.Warn("upstream acknowledgement failed; the next commit retries it", "epoch", n-1, "err", err)
@@ -419,8 +406,6 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 	return nil
 }
 
-// retry runs f until it succeeds, fails with a fatal error, or has failed
-// commitAttempts times, backing off between tries.
 func retry(ctx context.Context, f func() error, fatal error) error {
 	backoff := 100 * time.Millisecond
 	var err error

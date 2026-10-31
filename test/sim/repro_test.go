@@ -5,8 +5,7 @@ import (
 	"testing/synctest"
 )
 
-// TestReproducible runs every seed twice and compares the scheduler's
-// decisions, so that a failing seed's rerun command shows the same run.
+// TestReproducible runs every seed twice and compares every decision.
 func TestReproducible(t *testing.T) {
 	for _, kind := range sinkKinds {
 		t.Run(kind, func(t *testing.T) {

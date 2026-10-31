@@ -1,6 +1,5 @@
-// Package s3store is a checkpoint.Store on S3 and S3-compatible object
-// storage, using conditional PUTs: If-None-Match: * for Create and If-Match on
-// the ETag for Swap. Stores that ignore those headers fail checkpoint.Probe.
+// Package s3store is a checkpoint.Store on S3 and S3-compatible stores, using
+// If-None-Match: * for Create and If-Match for Swap.
 package s3store
 
 import (
@@ -19,8 +18,6 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 )
 
-// Store keeps checkpoint objects in one bucket, under the keys the log
-// chooses.
 type Store struct {
 	client *s3.Client
 	bucket string
@@ -57,12 +54,9 @@ func (s *Store) Swap(ctx context.Context, key string, data []byte, prev checkpoi
 	return s.put(ctx, key, data, &s3.PutObjectInput{IfMatch: aws.String(string(prev))})
 }
 
-// put sends a conditional PUT exactly once. If the SDK retried a PUT whose
-// response was lost, the retry would fail its own condition, and a write that
-// landed would be reported as ErrPrecondition. Sent once, a 412 means the
-// condition didn't hold, and any other error is an unknown outcome, which the
-// log resolves by reading back. That includes 409 ConditionalRequestConflict,
-// which S3 returns when another write to the key is in flight.
+// put sends a conditional PUT exactly once: an SDK retry of a PUT that landed
+// would fail its own condition. Anything but a 412 (including 409) is an
+// unknown outcome.
 func (s *Store) put(ctx context.Context, key string, data []byte, in *s3.PutObjectInput) (checkpoint.Version, error) {
 	in.Bucket, in.Key, in.Body = &s.bucket, &key, bytes.NewReader(data)
 	out, err := s.client.PutObject(ctx, in, func(o *s3.Options) { o.RetryMaxAttempts = 1 })
@@ -107,8 +101,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 	return keys, nil
 }
 
-// status returns the HTTP status of a failed S3 call, or 0 if err is nil or
-// carries no response.
+// status returns 0 if err is nil or has no HTTP response.
 func status(err error) int {
 	if re, ok := errors.AsType[*awshttp.ResponseError](err); ok {
 		return re.HTTPStatusCode()

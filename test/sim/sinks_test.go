@@ -26,7 +26,7 @@ type stagingKey struct {
 	stream string
 }
 
-// warehouse is the destination's durable state, shared by every attempt.
+// warehouse is the destination's durable state.
 type warehouse struct {
 	dedupeCapable bool // Postgres and warehouses can dedupe at apply; Parquet can't
 
@@ -64,8 +64,8 @@ type warehouseStaged struct {
 
 var errStagingMissing = errors.New("sim: staging missing")
 
-// applyTx is one destination transaction applying the given streams of an
-// epoch. It checks every precondition before changing anything.
+// applyTx is one destination transaction. It checks every precondition
+// before changing anything.
 func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []stagedStream) error {
 	wh.mu.Lock()
 	defer wh.mu.Unlock()
@@ -202,7 +202,6 @@ func (w *warehouseWriter) PreCommit(ctx context.Context, e destination.Epoch) (d
 	return json.Marshal(st)
 }
 
-// applyScoped applies streams in one transaction per scope.
 func (w *warehouseWriter) applyScoped(ctx context.Context, st warehouseStaged, streams []stagedStream) error {
 	if w.cfg.Scope == destination.ScopePipeline {
 		return outcome(w.w.sched.point(ctx, w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, streams) })
@@ -468,11 +467,8 @@ func (d *webhookDest) Write(ctx context.Context, _ destination.Epoch, stream str
 	})
 }
 
-// Write returns only once the receiver has acknowledged, so there is nothing
-// left to wait for at PreCommit, and nothing to do at Commit. PreCommit is
-// still a yield point: without one, a barrier could carry the coordinator
-// through staging, the record and the next barrier request in one step, racing
-// the source side, and runs would stop being reproducible.
+// Write returns once the receiver has acknowledged. PreCommit still yields,
+// so runs stay reproducible.
 func (d *webhookDest) PreCommit(ctx context.Context, _ destination.Epoch) (destination.Staged, error) {
 	if err := outcome(d.w.sched.point(ctx, d.attempt, "hook.precommit"), nop); err != nil {
 		return nil, err

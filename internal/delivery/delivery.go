@@ -1,5 +1,4 @@
-// Package delivery computes each stream's delivery guarantee from its sink
-// class, replay, write mode and dedupe setting (ADR-0016).
+// Package delivery computes each stream's delivery guarantee.
 package delivery
 
 import (
@@ -11,13 +10,10 @@ import (
 type Level int
 
 const (
-	// AtLeastOnce: a record version can land more than once, with the same
-	// _openetl_id each time.
 	AtLeastOnce Level = iota + 1
-	// EffectivelyOnce: a version can be applied more than once, but each apply
-	// is keyed and guarded by _openetl_seq, so the destination ends up the same.
+	// Repeats are keyed and guarded by _openetl_seq, so the final state is
+	// the same.
 	EffectivelyOnce
-	// ExactlyOnce: each record version is applied once.
 	ExactlyOnce
 )
 
@@ -34,7 +30,6 @@ func (l Level) String() string {
 	}
 }
 
-// Dedupe is the pipeline's dedupe-at-apply setting.
 type Dedupe int
 
 const (
@@ -42,7 +37,6 @@ const (
 	DedupeNone
 )
 
-// StreamLevel returns the guarantee a stream gets.
 func StreamLevel(caps destination.Capabilities, replay source.Replay, mode destination.WriteMode, dedupe Dedupe) Level {
 	switch caps.Class {
 	case destination.DeliverAndAck:
@@ -68,10 +62,9 @@ func StreamLevel(caps destination.Capabilities, replay source.Replay, mode desti
 	}
 }
 
-// ShouldDedupe reports whether the sink should dedupe a stream's append and
-// overwrite writes at apply. Superset streams always can repeat records; an
-// exact stream repeats them only after a restore from a checkpoint whose
-// barrier was forced on it.
+// ShouldDedupe reports whether a stream's append and overwrite writes are
+// deduped at apply: superset streams always, exact streams only after a
+// restore from a forced barrier.
 func ShouldDedupe(caps destination.Capabilities, replay source.Replay, mode destination.WriteMode, dedupe Dedupe, restoredFromForced bool) bool {
 	return caps.Class == destination.StageAndApply && caps.DedupeAtApply && dedupe == DedupeAuto &&
 		mode != destination.Merge && (replay == source.Superset || restoredFromForced)

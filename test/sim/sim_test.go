@@ -1,12 +1,7 @@
-// Package sim is the deterministic simulation of the commit protocol
-// (ADR-0013, ADR-0016). Each seed builds a random pipeline (fake sources with
-// exact or superset replay, one fake sink of a given class, random delivery
-// settings), runs the real runner against it while a seeded scheduler
-// interleaves attempts, injects failures and unknown outcomes, crashes
-// attempts, and leaves zombies running next to their replacements. Then an
-// oracle checks the destination against the stream's computed guarantee: no
-// loss ever, no duplicates where it is exactly-once, and the right final rows
-// where it is effectively-once.
+// Package sim is a seeded simulation of the commit protocol. Each seed runs
+// the real runner against fake sources and a fake sink under injected faults,
+// crashes and zombie attempts, then checks no loss, no duplicates where
+// exactly-once, and the right final rows where effectively-once.
 //
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace
@@ -37,8 +32,8 @@ var (
 	traceFlag = flag.Bool("simtrace", false, "print the scheduler trace of every seed")
 )
 
-// The sink kinds. warehouse and parquet are both stage-and-apply; parquet
-// can't dedupe at apply or commit across tables.
+// parquet is stage-and-apply like warehouse, but can't dedupe or commit
+// across tables.
 var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook"}
 
 func TestSimulation(t *testing.T) {
@@ -130,8 +125,7 @@ func randomConfig(rng *rand.Rand, kind string) config {
 	return c
 }
 
-// world is everything that survives an attempt: the upstreams, the
-// checkpoint store and the destination.
+// world is what survives an attempt.
 type world struct {
 	cfg       config
 	sched     *scheduler
@@ -234,8 +228,7 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 	return res
 }
 
-// check compares the destination with the upstreams. It returns "" if every
-// stream got its guarantee.
+// check returns "" if every stream got its guarantee.
 func (w *world) check(caps destination.Capabilities, stats map[string]int) string {
 	forced := w.forcedStreams()
 	var problems []string
@@ -337,8 +330,7 @@ func (w *world) checkMerge(stream string, u *upstream, expected map[string]recor
 	return problems
 }
 
-// forcedStreams reads every checkpoint record ever written and returns the
-// streams whose barrier was forced in any of them.
+// forcedStreams returns the streams forced in any record ever written.
 func (w *world) forcedStreams() map[string]bool {
 	out := map[string]bool{}
 	ctx := context.Background()

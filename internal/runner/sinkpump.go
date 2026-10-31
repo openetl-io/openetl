@@ -7,17 +7,16 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
 
-// sinkPump feeds the dataflow's output to the destination writer. It assigns
-// each batch to its stream's current epoch, and calls PreCommit(N) once every
-// stream has crossed barrier N.
+// sinkPump feeds the dataflow's output to the writer, and calls PreCommit(N)
+// once every stream has crossed barrier N.
 type sinkPump struct {
 	w      destination.Writer
 	gen    uint64
 	in     <-chan Frame
 	events chan<- event
 
-	epochOf map[string]uint64 // the epoch each stream's next records belong to
-	seen    map[uint64]int    // how many streams have crossed each barrier
+	epochOf map[string]uint64 // each stream's current epoch
+	seen    map[uint64]int    // streams that crossed each barrier
 }
 
 func newSinkPump(w destination.Writer, gen, firstEpoch uint64, streams []Stream, in <-chan Frame, events chan<- event) *sinkPump {

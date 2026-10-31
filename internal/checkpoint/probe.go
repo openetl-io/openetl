@@ -7,10 +7,8 @@ import (
 	"fmt"
 )
 
-// Probe checks that store honours conditional writes. Some S3-compatible
-// stores ignore If-None-Match and If-Match, which would silently break
-// fencing, so a runner must refuse to start when Probe fails. It writes and
-// deletes one object under prefix.
+// Probe checks that store honours conditional writes; a runner must refuse
+// to start if it fails. It writes and deletes one object under prefix.
 func Probe(ctx context.Context, store Store, prefix string) (err error) {
 	key := prefix + "_probe/" + rand.Text()
 	defer func() {

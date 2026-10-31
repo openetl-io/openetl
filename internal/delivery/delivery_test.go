@@ -7,7 +7,6 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
-// The table in ADR-0016, row by row.
 func TestStreamLevel(t *testing.T) {
 	postgres := destination.Capabilities{Class: destination.StageAndApply, DedupeAtApply: true}
 	parquet := destination.Capabilities{Class: destination.StageAndApply}

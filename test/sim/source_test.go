@@ -18,29 +18,26 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
-// record is one version of a row in a fake upstream.
 type record struct {
 	Key   string `json:"k"`
 	Seq   int64  `json:"s"`
 	Value string `json:"v"`
 }
 
-// recordID is the fake engine's _openetl_id: one per stream and version.
+// recordID is the fake engine's _openetl_id.
 func recordID(stream, key string, seq int64) string {
 	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%d", stream, key, seq))
 	return hex.EncodeToString(sum[:8])
 }
 
-// upstream is one stream's data in the source system.
 type upstream struct {
 	name     string
 	replay   source.Replay
 	records  []record
 	pageSize int
-	// Exact streams: resumeAt[i] says whether a resume point follows the page
-	// that ends at offset i. Gaps make barriers wait, or get forced.
+	// Exact: whether a resume point follows the page ending at offset i.
 	resumeAt []bool
-	// Superset streams: how far below the cursor floor a read starts.
+	// Superset: how far below the cursor floor a read starts.
 	lookback int64
 
 	mu      sync.Mutex
@@ -90,7 +87,6 @@ type cursorState struct {
 	Cursor int64 `json:"cursor"`
 }
 
-// start returns where a read resumes from a stream's state.
 func (u *upstream) start(state []byte) (int, error) {
 	if u.replay == source.Exact {
 		var st exactState
@@ -122,7 +118,6 @@ func (u *upstream) start(state []byte) (int, error) {
 	return len(u.records), nil
 }
 
-// stateAfter is the resume state after reading records[:pos].
 func (u *upstream) stateAfter(pos int) []byte {
 	if u.replay == source.Exact {
 		return must(json.Marshal(exactState{Offset: pos}))
@@ -132,8 +127,6 @@ func (u *upstream) stateAfter(pos int) []byte {
 
 var errDataLost = fmt.Errorf("sim: data lost")
 
-// simSource reads every upstream for one attempt, interleaving streams page
-// by page.
 type simSource struct {
 	w       *world
 	attempt int
@@ -191,8 +184,8 @@ func (s *simSource) Read(ctx context.Context, req source.ReadRequest, emitter so
 	return nil
 }
 
-// Committed discards what exact streams have acknowledged, as Kafka retention
-// or a replication slot would. Reading below it later is data loss.
+// Committed discards what exact streams acknowledged. Reading below it later
+// is data loss.
 func (s *simSource) Committed(ctx context.Context, states map[string][]byte) error {
 	return outcome(s.w.sched.point(ctx, s.attempt, "src.ack"), func() error {
 		for name, state := range states {
@@ -212,8 +205,7 @@ func (s *simSource) Committed(ctx context.Context, states map[string][]byte) err
 	})
 }
 
-// gatedEmitter makes every Emitter call a yield point, so the connector can't
-// race other actors (such as a barrier request) between two of them.
+// gatedEmitter makes every Emitter call a yield point.
 type gatedEmitter struct {
 	ctx context.Context
 	s   *simSource
@@ -254,7 +246,6 @@ func must[T any](v T, err error) T {
 	return v
 }
 
-// simStore is the checkpoint store as one attempt sees it.
 type simStore struct {
 	w       *world
 	attempt int
@@ -296,8 +287,7 @@ func (s *simStore) List(ctx context.Context, prefix string) (keys []string, err 
 	return keys, nil
 }
 
-// flow stands in for the engine: it turns raw rows into Arrow batches with
-// the metadata columns, and forwards everything else unchanged.
+// flow stands in for the engine.
 type flow struct{}
 
 var rowSchema = arrow.NewSchema([]arrow.Field{
@@ -354,7 +344,6 @@ func toArrow(stream string, rows []json.RawMessage) (arrow.RecordBatch, error) {
 	return b.NewRecordBatch(), nil
 }
 
-// row is one record as a sink sees it.
 type row struct {
 	ID    string
 	Seq   int64

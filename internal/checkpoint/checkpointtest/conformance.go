@@ -1,5 +1,4 @@
-// Package checkpointtest is the conformance suite every checkpoint.Store must
-// pass: conditional creates, compare-and-swap, listing and the probe.
+// Package checkpointtest is the conformance suite for checkpoint.Store.
 package checkpointtest
 
 import (
@@ -14,8 +13,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 )
 
-// TestStore runs the suite. newStore returns an empty store; keys used by
-// the suite start with prefix.
+// TestStore runs the suite against empty stores from newStore, under prefix.
 func TestStore(t *testing.T, newStore func(t *testing.T) checkpoint.Store) {
 	const prefix = "conformance/"
 	ctx := context.Background()

@@ -21,10 +21,8 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint/s3store"
 )
 
-// The tests run against the SeaweedFS in deploy/compose/dev.yml (`make
-// deps-up`), or the endpoint in OPENETL_TEST_S3_ENDPOINT, with anonymous
-// access. Each store gets a new bucket.
-
+// Runs against the compose SeaweedFS (make deps-up) or
+// OPENETL_TEST_S3_ENDPOINT, anonymously.
 func TestStore(t *testing.T) {
 	checkpointtest.TestStore(t, func(t *testing.T) checkpoint.Store {
 		c := client(nil)
@@ -32,8 +30,6 @@ func TestStore(t *testing.T) {
 	})
 }
 
-// A conditional PUT that lands but whose response is lost must not be
-// reported as a failed condition.
 func TestLostResponseIsUnknownOutcome(t *testing.T) {
 	ctx := t.Context()
 	drop := &dropResponses{}
@@ -60,8 +56,7 @@ func TestLostResponseIsUnknownOutcome(t *testing.T) {
 	}
 }
 
-// dropResponses sends the next PUT, then discards its response and reports a
-// transport error, as if the connection broke after the server applied it.
+// dropResponses applies the next PUT and then reports a transport error.
 type dropResponses struct {
 	next atomic.Bool
 }
@@ -86,8 +81,6 @@ func client(hc s3.HTTPClient) *s3.Client {
 	})
 }
 
-// bucket creates an empty bucket and removes it, with its objects, when t
-// ends.
 func bucket(t *testing.T, c *s3.Client) string {
 	t.Helper()
 	name := "openetl-test-" + strings.ToLower(rand.Text())[:16]

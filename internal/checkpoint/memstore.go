@@ -8,14 +8,13 @@ import (
 	"sync"
 )
 
-// MemStore is an in-memory Store for tests and the commit-protocol simulation.
-// Versions are derived from content, as with S3 ETags.
+// MemStore is an in-memory Store. Versions are derived from content, as on
+// S3.
 type MemStore struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 }
 
-// NewMemStore returns an empty MemStore.
 func NewMemStore() *MemStore {
 	return &MemStore{objects: make(map[string][]byte)}
 }

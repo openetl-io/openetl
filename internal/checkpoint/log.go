@@ -9,28 +9,23 @@ import (
 	"time"
 )
 
-// ErrFenced is returned when a newer generation has claimed the pipeline. The
-// attempt that gets it must stop and never claim again.
+// ErrFenced: a newer generation has claimed the pipeline. The attempt must
+// stop and never claim again.
 var ErrFenced = errors.New("checkpoint: fenced by a newer generation")
 
-// claimAttempts bounds how often Claim retries after losing a race.
 const claimAttempts = 16
 
-// RecordRef points to one checkpoint record.
 type RecordRef struct {
 	Epoch      uint64 `json:"epoch"`
 	Generation uint64 `json:"generation"`
 }
 
-// Head is the content of the log's HEAD object.
 type Head struct {
-	// Generation is the generation that owns the pipeline. Claiming raises it.
 	Generation uint64 `json:"generation"`
-	// Owner identifies the attempt that claimed the generation. It makes every
-	// HEAD write unique, so a write with an unknown outcome can be resolved by
-	// reading HEAD back even when versions are derived from content.
+	// Owner is unique per attempt, so every HEAD write is distinct and an
+	// unknown outcome can be resolved by reading HEAD back.
 	Owner string `json:"owner"`
-	// Record is the committed checkpoint, or nil before the first one.
+	// Nil before the first checkpoint.
 	Record *RecordRef `json:"record,omitempty"`
 }
 
@@ -44,7 +39,6 @@ func (h Head) equal(o Head) bool {
 	return *h.Record == *o.Record
 }
 
-// StreamState is one stream's resume state in a checkpoint.
 type StreamState struct {
 	State []byte `json:"state,omitempty"`
 }
@@ -53,22 +47,18 @@ type StreamState struct {
 type Record struct {
 	Epoch      uint64 `json:"epoch"`
 	Generation uint64 `json:"generation"`
-	// Previous is the record HEAD pointed to when this one was committed. On
-	// a lost epoch, recovery moves HEAD back to it.
-	Previous *RecordRef             `json:"previous,omitempty"`
-	Streams  map[string]StreamState `json:"streams"`
-	// Staged is the sink's staged descriptor for this epoch.
-	Staged []byte `json:"staged,omitempty"`
-	// Snapshots are the engine's operator state snapshot URIs.
-	Snapshots []string `json:"snapshots,omitempty"`
-	// Forced lists the streams whose barrier was placed without a resume point.
-	// Their state is the last resume point before the barrier, so a restore
-	// from this record re-reads records that are already applied.
+	// What HEAD pointed to before this record. Recovery rewinds to it when the
+	// epoch is lost.
+	Previous  *RecordRef             `json:"previous,omitempty"`
+	Streams   map[string]StreamState `json:"streams"`
+	Staged    []byte                 `json:"staged,omitempty"`
+	Snapshots []string               `json:"snapshots,omitempty"`
+	// Streams whose barrier was placed without a resume point. Restoring from
+	// this record re-reads rows that may already be applied.
 	Forced    []string  `json:"forced,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Ref returns a pointer to r.
 func (r *Record) Ref() RecordRef { return RecordRef{Epoch: r.Epoch, Generation: r.Generation} }
 
 // Log is one pipeline's checkpoint log, under {org}/{pipeline}/_checkpoints/.
@@ -77,14 +67,13 @@ type Log struct {
 	prefix string
 }
 
-// NewLog returns the checkpoint log for a pipeline.
 func NewLog(store Store, org, pipeline string) *Log {
 	return &Log{store: store, prefix: org + "/" + pipeline + "/_checkpoints/"}
 }
 
 func (l *Log) headKey() string { return l.prefix + "HEAD" }
 
-// Record keys are zero-padded so that listing returns them in epoch order.
+// Zero-padded, so listings sort by epoch.
 func (l *Log) recordKey(ref RecordRef) string {
 	return fmt.Sprintf("%s%020d-g%020d.json", l.prefix, ref.Epoch, ref.Generation)
 }
@@ -101,7 +90,6 @@ func (l *Log) readHead(ctx context.Context) (Head, Version, error) {
 	return h, v, nil
 }
 
-// Record reads one checkpoint record.
 func (l *Log) Record(ctx context.Context, ref RecordRef) (*Record, error) {
 	data, _, err := l.store.Get(ctx, l.recordKey(ref))
 	if err != nil {
@@ -114,9 +102,8 @@ func (l *Log) Record(ctx context.Context, ref RecordRef) (*Record, error) {
 	return &r, nil
 }
 
-// Claim makes owner the owner of the pipeline under a new generation, one
-// higher than HEAD's. Claiming needs only the log, never the control plane.
-// owner must be unique per attempt.
+// Claim takes the pipeline for owner under HEAD's generation plus one. owner
+// must be unique per attempt.
 func (l *Log) Claim(ctx context.Context, owner string) (*Session, error) {
 	for range claimAttempts {
 		cur, v, err := l.readHead(ctx)
@@ -149,8 +136,7 @@ func (l *Log) Claim(ctx context.Context, owner string) (*Session, error) {
 		if errors.Is(werr, ErrPrecondition) {
 			continue // lost a race; claim on top of the winner
 		}
-		// The outcome is unknown. Only our write can have produced next,
-		// because it carries our owner.
+		// Unknown outcome. Only our write carries our owner.
 		got, gv, rerr := l.readHead(ctx)
 		if errors.Is(rerr, ErrNotFound) {
 			continue // the first create didn't land
@@ -174,7 +160,6 @@ type Session struct {
 	version Version
 }
 
-// Generation returns the session's generation.
 func (s *Session) Generation() uint64 { return s.head.Generation }
 
 // Head returns HEAD as this session last wrote or read it.
@@ -188,10 +173,9 @@ func (s *Session) Load(ctx context.Context) (*Record, error) {
 	return s.log.Record(ctx, *s.head.Record)
 }
 
-// Commit records checkpoint rec and moves HEAD to it. It sets rec.Generation
-// and rec.Previous from the session. It returns ErrFenced if a newer
-// generation has claimed the pipeline. On any other error the checkpoint may
-// or may not be committed; calling Commit again with the same rec is safe.
+// Commit writes rec, setting its Generation and Previous, and moves HEAD to
+// it. On an error other than ErrFenced the outcome is unknown, and calling
+// Commit again with the same rec is safe.
 func (s *Session) Commit(ctx context.Context, rec *Record) error {
 	rec.Generation = s.head.Generation
 	rec.Previous = s.head.Record
@@ -202,8 +186,7 @@ func (s *Session) Commit(ctx context.Context, rec *Record) error {
 	ref := rec.Ref()
 	key := s.log.recordKey(ref)
 	if _, werr := s.log.store.Create(ctx, key, data); werr != nil {
-		// Rejected because it exists, or outcome unknown. Either way the record
-		// may be ours: from this call, or an earlier one with the same rec.
+		// It may exist from an earlier call with the same rec.
 		existing, _, gerr := s.log.store.Get(ctx, key)
 		switch {
 		case gerr == nil && !bytes.Equal(existing, data):
@@ -215,8 +198,7 @@ func (s *Session) Commit(ctx context.Context, rec *Record) error {
 	return s.swapHead(ctx, Head{Generation: s.head.Generation, Owner: s.owner, Record: &ref})
 }
 
-// Rewind moves HEAD back to an earlier record (nil: no record), for an epoch
-// the sink reported lost.
+// Rewind moves HEAD back to an earlier record, or to none.
 func (s *Session) Rewind(ctx context.Context, to *RecordRef) error {
 	return s.swapHead(ctx, Head{Generation: s.head.Generation, Owner: s.owner, Record: to})
 }
@@ -231,8 +213,7 @@ func (s *Session) swapHead(ctx context.Context, next Head) error {
 		s.head, s.version = next, v
 		return nil
 	}
-	// The swap didn't report success: it was rejected, or its outcome is
-	// unknown. Read HEAD to find out which of three things happened.
+	// Rejected or unknown: HEAD says which.
 	cur, cv, err := s.log.readHead(ctx)
 	if err != nil {
 		return fmt.Errorf("checkpoint: HEAD swap failed (%w), re-read failed: %w", werr, err)

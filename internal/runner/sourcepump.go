@@ -29,28 +29,22 @@ type emit struct {
 	state  []byte
 }
 
-// streamPos is the source pump's view of one stream.
 type streamPos struct {
-	resume   []byte // state at the last resume point (or the restored state)
-	dirty    bool   // records emitted since the last resume point
-	active   bool   // anything emitted since this stream's last barrier
+	resume   []byte // state at the last resume point, or restored
+	dirty    bool   // emitted since the last resume point
+	active   bool   // emitted since the last barrier
 	complete bool
-	placed   bool // barrier for the pending epoch is placed
-	// forced: resume was captured by a forced barrier, so records after it
-	// may already be applied. Every checkpoint that records this state must
-	// say so, until the stream reaches a real resume point.
+	placed   bool // the pending barrier is placed
+	// resume came from a forced barrier. Every checkpoint recording it must
+	// list the stream as forced until the next real resume point.
 	forced bool
-	// canForce: placing a barrier without a resume point, which makes the
-	// stream repeat records after a restore, keeps it at or above require.
+	// A forced barrier keeps the stream at or above require.
 	canForce bool
 }
 
-// sourcePump sits between a source connector and the dataflow. It is the
-// connector's Emitter, and it places each requested barrier on every stream
-// right after that stream's next resume point.
-//
-// One goroutine (run) owns all state. The connector's Emitter calls and the
-// coordinator's barrier requests reach it over channels.
+// sourcePump is the connector's Emitter. It places each requested barrier on
+// every stream right after that stream's next resume point. Only run touches
+// its state.
 type sourcePump struct {
 	ctx      context.Context
 	in       chan emit
@@ -97,8 +91,6 @@ func newSourcePump(ctx context.Context, job *Job, restored map[string][]byte, re
 	return p
 }
 
-// Emitter methods, called on the connector's goroutine.
-
 func (p *sourcePump) Rows(stream string, rows []json.RawMessage) error {
 	return p.send(emit{kind: emitRows, stream: stream, rows: rows})
 }
@@ -129,8 +121,7 @@ func (p *sourcePump) send(e emit) error {
 	}
 }
 
-// requestBarrier asks the pump to place barrier n. The coordinator calls it
-// only when no other barrier is being placed.
+// requestBarrier is called only when no other barrier is being placed.
 func (p *sourcePump) requestBarrier(n uint64) error {
 	select {
 	case p.barriers <- n:
@@ -145,8 +136,7 @@ func (p *sourcePump) stop() { close(p.stopCh) }
 func (p *sourcePump) run() error {
 	defer close(p.out)
 	for {
-		// Barrier requests first, so that a request and an emit that are both
-		// ready are always handled in the same order.
+		// Barrier requests first, so ready requests and emits keep one order.
 		select {
 		case n := <-p.barriers:
 			if err := p.request(n); err != nil {
@@ -216,8 +206,7 @@ func (p *sourcePump) handle(e emit) error {
 	return nil
 }
 
-// finish runs when Read has returned. No stream will emit again, so every
-// stream still waiting for a resume point is placed now.
+// finish runs when Read has returned: every waiting stream is placed now.
 func (p *sourcePump) finish() error {
 	p.done = true
 	if p.pending != 0 {
@@ -246,8 +235,7 @@ func (p *sourcePump) request(n uint64) error {
 	if p.done {
 		return p.placeRemaining()
 	}
-	// A stream with nothing emitted since its last resume point is at one:
-	// streams not started yet, idle streams and complete streams.
+	// Nothing emitted since its last resume point: it's at one.
 	for _, name := range p.order {
 		if !p.streams[name].dirty {
 			if err := p.place(name, false); err != nil {
@@ -284,9 +272,8 @@ func (p *sourcePump) placeRemaining() error {
 	return nil
 }
 
-// forceWaiting runs when resumePointTimeout has passed: it places the barrier
-// on every waiting stream that can take a forced barrier. The others keep
-// waiting for a resume point.
+// forceWaiting runs at resumePointTimeout and forces the barrier on every
+// waiting stream that can take it.
 func (p *sourcePump) forceWaiting() error {
 	p.forceC = nil
 	for _, name := range p.order {

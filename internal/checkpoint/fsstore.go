@@ -12,15 +12,13 @@ import (
 	"syscall"
 )
 
-// FSStore is a Store on the local filesystem, for `openetld dev` and tests.
-// Create is atomic through a hard link that fails if the target exists. Swap
-// holds an flock on a sidecar lock file, so it is safe across processes on one
-// machine, and replaces the object with an atomic rename. Readers never lock.
+// FSStore is a Store on the local filesystem. Create hard-links, which fails
+// if the target exists; Swap renames under an flock on a sidecar file, so it
+// is safe across processes on one machine.
 type FSStore struct {
 	root string
 }
 
-// NewFSStore returns a Store rooted at dir, creating it if needed.
 func NewFSStore(dir string) (*FSStore, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("checkpoint: create store root: %w", err)
@@ -137,7 +135,6 @@ func (s *FSStore) List(_ context.Context, prefix string) ([]string, error) {
 	return keys, nil
 }
 
-// writeTemp writes data to a synced temporary file next to p.
 func (s *FSStore) writeTemp(p string, data []byte) (string, error) {
 	dir := filepath.Dir(p)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
