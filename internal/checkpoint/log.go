@@ -41,6 +41,15 @@ func (h Head) equal(o Head) bool {
 
 type StreamState struct {
 	State []byte `json:"state,omitempty"`
+	// The engine's schema for the stream at this checkpoint: an Arrow IPC
+	// stream holding only the schema.
+	Schema []byte `json:"schema,omitempty"`
+}
+
+// Snapshot is one operator's state at a checkpoint.
+type Snapshot struct {
+	Operator string `json:"operator"`
+	URL      string `json:"url"`
 }
 
 // Record is one checkpoint. Records are immutable once written.
@@ -52,7 +61,7 @@ type Record struct {
 	Previous  *RecordRef             `json:"previous,omitempty"`
 	Streams   map[string]StreamState `json:"streams"`
 	Staged    []byte                 `json:"staged,omitempty"`
-	Snapshots []string               `json:"snapshots,omitempty"`
+	Snapshots []Snapshot             `json:"snapshots,omitempty"`
 	// Streams whose barrier was placed without a resume point. Restoring from
 	// this record re-reads rows that may already be applied.
 	Forced    []string  `json:"forced,omitempty"`

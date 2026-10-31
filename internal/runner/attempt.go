@@ -147,7 +147,8 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	}
 	restored := head
 	if res.Recovery == destination.Lost {
-		// Safe because acknowledgements trail by one checkpoint.
+		// Safe because the epoch never became visible, and upstream is
+		// acknowledged at most up to the previous record.
 		var to *checkpoint.RecordRef
 		if prev != nil {
 			ref := prev.Ref()
@@ -200,6 +201,7 @@ type eventKind uint8
 const (
 	evPlaced    eventKind = iota + 1 // every stream crossed barrier epoch
 	evStaged                         // the sink staged epoch
+	evReady                          // the dataflow's part of epoch is durable
 	evThreshold                      // CommitMaxBytes was reached
 	evReadDone                       // Read returned; active says whether anything is uncommitted
 	evCommitted                      // epoch is visible in the destination
@@ -211,14 +213,16 @@ type event struct {
 	states map[string][]byte
 	forced []string
 	staged destination.Staged
+	ready  *Ready
 	active bool
 }
 
 type epochState struct {
-	placed, staged bool
-	states         map[string][]byte
-	forced         []string
-	desc           destination.Staged
+	placed, staged, ready bool
+	states                map[string][]byte
+	forced                []string
+	desc                  destination.Staged
+	flow                  *Ready
 }
 
 type commitReq struct {
@@ -252,11 +256,15 @@ type coordinator struct {
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
 	states := map[string][]byte{}
+	schemas := map[string][]byte{}
 	restoredForced := map[string]bool{}
 	if restored != nil {
 		c.committed = restored.Epoch
 		for name, st := range restored.Streams {
 			states[name] = st.State
+			if st.Schema != nil {
+				schemas[name] = st.Schema
+			}
 		}
 		for _, name := range restored.Forced {
 			restoredForced[name] = true
@@ -272,7 +280,21 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	c.events = make(chan event, 64)
 	c.commits = make(chan commitReq, 1)
 	c.pump = newSourcePump(gctx, c.job, states, restoredForced, canForce, toFlow, c.events)
-	sink := newSinkPump(c.w, c.sess.Generation(), c.next, c.job.Streams, fromFlow, c.events)
+	plan := Plan{
+		Pipeline:   c.job.Pipeline,
+		Owner:      c.job.Owner,
+		Generation: c.sess.Generation(),
+		FirstEpoch: c.next,
+		Streams:    c.job.Streams,
+		Schemas:    schemas,
+	}
+	if restored != nil {
+		plan.Snapshots = restored.Snapshots
+	}
+	if es, ok := c.job.Destination.(EngineSink); ok {
+		plan.Sink = es.EngineSink()
+	}
+	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, c.job.Streams, fromFlow, c.events)
 
 	req := source.ReadRequest{}
 	for _, s := range c.job.Streams {
@@ -285,16 +307,6 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		return c.pump.readDone()
 	})
 	g.Go(c.pump.run)
-	plan := Plan{
-		Pipeline:   c.job.Pipeline,
-		Owner:      c.job.Owner,
-		Generation: c.sess.Generation(),
-		FirstEpoch: c.next,
-		Streams:    c.job.Streams,
-	}
-	if es, ok := c.job.Destination.(EngineSink); ok {
-		plan.Sink = es.EngineSink()
-	}
 	g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
 	g.Go(func() error { return sink.run(gctx) })
 	g.Go(func() error { return c.committer(gctx) })
@@ -385,6 +397,12 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 			return fmt.Errorf("runner: unexpected staging of epoch %d", ev.epoch)
 		}
 		st.staged, st.desc = true, ev.staged
+	case evReady:
+		st := c.pending[ev.epoch]
+		if st == nil || st.ready {
+			return fmt.Errorf("runner: unexpected readiness of epoch %d", ev.epoch)
+		}
+		st.ready, st.flow = true, ev.ready
 	case evCommitted:
 		if !c.committing || ev.epoch != c.committed+1 {
 			return fmt.Errorf("runner: unexpected commit of epoch %d", ev.epoch)
@@ -400,7 +418,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 	}
 	n := c.committed + 1
 	st := c.pending[n]
-	if c.committing || st == nil || !st.placed || !st.staged {
+	if c.committing || st == nil || !st.placed || !st.staged || !st.ready {
 		return nil
 	}
 	c.committing = true
@@ -428,11 +446,12 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		Epoch:     n,
 		Streams:   make(map[string]checkpoint.StreamState, len(st.states)),
 		Staged:    st.desc,
+		Snapshots: st.flow.Snapshots,
 		Forced:    st.forced,
 		CreatedAt: time.Now().UTC(),
 	}
 	for name, state := range st.states {
-		rec.Streams[name] = checkpoint.StreamState{State: state}
+		rec.Streams[name] = checkpoint.StreamState{State: state, Schema: st.flow.Schemas[name]}
 	}
 	slices.Sort(rec.Forced)
 	err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced)

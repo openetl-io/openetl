@@ -9,20 +9,21 @@ import (
 
 // sinkPump feeds the dataflow's output to the writer, and calls PreCommit(N)
 // once every stream has crossed barrier N. An engine sink's epochs arrive
-// staged.
+// staged, in their FrameReady.
 type sinkPump struct {
-	w      destination.Writer
-	gen    uint64
-	in     <-chan Frame
-	events chan<- event
+	w          destination.Writer
+	gen        uint64
+	engineSink bool
+	in         <-chan Frame
+	events     chan<- event
 
-	epochOf    map[string]uint64 // each stream's current epoch
-	seen       map[uint64]int    // streams that crossed each barrier
-	nextStaged uint64
+	epochOf   map[string]uint64 // each stream's current epoch
+	seen      map[uint64]int    // streams that crossed each barrier
+	nextReady uint64
 }
 
-func newSinkPump(w destination.Writer, gen, firstEpoch uint64, streams []Stream, in <-chan Frame, events chan<- event) *sinkPump {
-	s := &sinkPump{w: w, gen: gen, in: in, events: events, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextStaged: firstEpoch}
+func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, streams []Stream, in <-chan Frame, events chan<- event) *sinkPump {
+	s := &sinkPump{w: w, gen: gen, engineSink: engineSink, in: in, events: events, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextReady: firstEpoch}
 	for _, st := range streams {
 		s.epochOf[st.Name] = firstEpoch
 	}
@@ -41,12 +42,17 @@ func (s *sinkPump) run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if f.Kind == FrameStaged {
-			if f.Epoch != s.nextStaged {
-				return fmt.Errorf("runner: the dataflow staged epoch %d, expected %d", f.Epoch, s.nextStaged)
+		if f.Kind == FrameReady {
+			if f.Epoch != s.nextReady || f.Ready == nil {
+				return fmt.Errorf("runner: the dataflow reported epoch %d ready, expected %d", f.Epoch, s.nextReady)
 			}
-			s.nextStaged++
-			if err := s.staged(ctx, f.Epoch, f.Staged); err != nil {
+			s.nextReady++
+			if s.engineSink {
+				if err := s.staged(ctx, f.Epoch, f.Ready.Staged); err != nil {
+					return err
+				}
+			}
+			if err := s.send(ctx, event{kind: evReady, epoch: f.Epoch, ready: f.Ready}); err != nil {
 				return err
 			}
 			continue
@@ -88,8 +94,12 @@ func (s *sinkPump) run(ctx context.Context) error {
 }
 
 func (s *sinkPump) staged(ctx context.Context, n uint64, staged destination.Staged) error {
+	return s.send(ctx, event{kind: evStaged, epoch: n, staged: staged})
+}
+
+func (s *sinkPump) send(ctx context.Context, ev event) error {
 	select {
-	case s.events <- event{kind: evStaged, epoch: n, staged: staged}:
+	case s.events <- ev:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

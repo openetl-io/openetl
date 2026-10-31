@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
+use arrow_schema::SchemaRef;
 use openetl_proto::engine::v1::{EdgeDirection, StartJobRequest, sink_plan};
 
 use crate::error::JobError;
+use crate::ipc;
 
 /// A validated StartJobRequest.
 #[derive(Debug)]
@@ -10,6 +12,8 @@ pub struct Plan {
     pub generation: u64,
     pub first_epoch: u64,
     pub streams: Vec<String>,
+    /// Each stream's schema in the restored checkpoint.
+    pub restored: Vec<Option<SchemaRef>>,
     pub inbound: Vec<EdgePlan>,
     pub sink: Sink,
 }
@@ -43,7 +47,14 @@ impl Plan {
         if req.streams.is_empty() {
             return Err(JobError::config("the job has no streams"));
         }
+        if let Some(s) = req.restored_snapshots.first() {
+            return Err(JobError::config(format!(
+                "the job has no operator {:?} to restore",
+                s.operator
+            )));
+        }
         let mut index = HashMap::new();
+        let mut restored = Vec::with_capacity(req.streams.len());
         for (i, s) in req.streams.iter().enumerate() {
             if s.name.is_empty() || index.insert(s.name.as_str(), i).is_some() {
                 return Err(JobError::config(format!(
@@ -56,6 +67,13 @@ impl Plan {
                     "declared stream schemas aren't supported yet",
                 ));
             }
+            restored.push(if s.restored_schema.is_empty() {
+                None
+            } else {
+                Some(ipc::decode_schema(&s.restored_schema).map_err(|e| {
+                    JobError::config(format!("stream {}: restored schema: {e}", s.name))
+                })?)
+            });
         }
         let names: Vec<String> = req.streams.iter().map(|s| s.name.clone()).collect();
         let sink = req
@@ -149,6 +167,7 @@ impl Plan {
             generation: req.generation,
             first_epoch: req.first_epoch,
             streams: names,
+            restored,
             inbound,
             sink,
         })
@@ -160,7 +179,7 @@ impl Plan {
 pub(crate) mod tests {
     use super::*;
     use openetl_proto::engine::v1::{
-        DiscardSink, Edge, ParquetSink, RunnerSink, SinkPlan, StreamPlan,
+        DiscardSink, Edge, ParquetSink, RunnerSink, SinkPlan, StateSnapshot, StreamPlan,
     };
 
     fn edge(id: &str, dir: EdgeDirection, streams: &[&str]) -> Edge {
@@ -196,6 +215,7 @@ pub(crate) mod tests {
                 sink: Some(sink_plan::Sink::Runner(RunnerSink { edge: "out".into() })),
             }),
             limits: None,
+            restored_snapshots: Vec::new(),
         }
     }
 
@@ -259,6 +279,19 @@ pub(crate) mod tests {
             (
                 "declared schema",
                 Box::new(|r| r.streams[0].arrow_schema = vec![1]),
+            ),
+            (
+                "restored schema",
+                Box::new(|r| r.streams[0].restored_schema = vec![1]),
+            ),
+            (
+                "restored snapshot",
+                Box::new(|r| {
+                    r.restored_snapshots.push(StateSnapshot {
+                        operator: "window".into(),
+                        url: "file:///x".into(),
+                    })
+                }),
             ),
             ("no sink", Box::new(|r| r.sink = None)),
             (

@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	enginev1 "github.com/unsuitable001/openetl/gen/openetl/engine/v1"
+	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/runner"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
@@ -80,10 +81,11 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	}
 	engineSink := plan.Sink != runner.SinkPlan{}
 	onReady := func(r *enginev1.EpochReady) error {
-		if !engineSink {
-			return nil
+		ready := &runner.Ready{Staged: r.GetStaged(), Schemas: r.GetSchemas()}
+		for _, s := range r.GetSnapshots() {
+			ready.Snapshots = append(ready.Snapshots, checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()})
 		}
-		f := runner.Frame{Kind: runner.FrameStaged, Epoch: r.GetEpoch().GetN(), Staged: r.GetStaged()}
+		f := runner.Frame{Kind: runner.FrameReady, Epoch: r.GetEpoch().GetN(), Ready: ready}
 		select {
 		case out <- f:
 			return nil
@@ -188,7 +190,10 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	for i, s := range plan.Streams {
 		names[i] = s.Name
 		index[s.Name] = uint32(i)
-		req.Streams = append(req.Streams, &enginev1.StreamPlan{Name: s.Name, PrimaryKey: s.PrimaryKey})
+		req.Streams = append(req.Streams, &enginev1.StreamPlan{Name: s.Name, PrimaryKey: s.PrimaryKey, RestoredSchema: plan.Schemas[s.Name]})
+	}
+	for _, s := range plan.Snapshots {
+		req.RestoredSnapshots = append(req.RestoredSnapshots, &enginev1.StateSnapshot{Operator: s.Operator, Url: s.URL})
 	}
 	req.Edges = []*enginev1.Edge{
 		{Id: inEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names},

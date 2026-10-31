@@ -164,22 +164,3 @@ func (discardWriter) Recover(context.Context, uint64, destination.Epoch, destina
 }
 
 func (discardWriter) Close(context.Context) error { return nil }
-
-// inProcess passes frames straight to the sink: the dataflow without the
-// engine.
-type inProcess struct{}
-
-func (inProcess) Run(ctx context.Context, _ runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
-	defer close(out)
-	for f := range in {
-		select {
-		case out <- f:
-		case <-ctx.Done():
-			if f.Batch != nil {
-				f.Batch.Release()
-			}
-			return ctx.Err()
-		}
-	}
-	return nil
-}

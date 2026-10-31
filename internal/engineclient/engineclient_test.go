@@ -20,6 +20,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
@@ -218,6 +219,34 @@ func TestRunPassesFramesThrough(t *testing.T) {
 	if v := bs[0].Batch.Column(0).(*array.String); v.Len() != 2 || v.Value(0) != "x" || v.Value(1) != "y" {
 		t.Errorf("stream b's batch changed: %v", v)
 	}
+
+	ready := got[""]
+	if len(ready) != 1 || ready[0].Kind != runner.FrameReady || ready[0].Epoch != 5 {
+		t.Fatalf("ready: %+v", ready)
+	}
+	// Each schema is the stream's at its barrier: a's x hadn't widened yet.
+	want := map[string]arrow.DataType{"a": arrow.PrimitiveTypes.Int64, "b": arrow.BinaryTypes.String}
+	if len(ready[0].Ready.Schemas) != len(want) {
+		t.Fatalf("schemas for %d streams, want %d", len(ready[0].Ready.Schemas), len(want))
+	}
+	for name, typ := range want {
+		schema, err := decodeSchema(ready[0].Ready.Schemas[name])
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := schema.Field(0).Type; !arrow.TypeEqual(got, typ) {
+			t.Errorf("%s's first column is %v, want %v", name, got, typ)
+		}
+	}
+}
+
+func decodeSchema(b []byte) (*arrow.Schema, error) {
+	r, err := ipc.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Release()
+	return r.Schema(), nil
 }
 
 func TestRunReportsEngineErrors(t *testing.T) {

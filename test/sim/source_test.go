@@ -14,7 +14,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
@@ -287,46 +286,12 @@ func (s *simStore) List(ctx context.Context, prefix string) (keys []string, err 
 	return keys, nil
 }
 
-// flow stands in for the engine.
-type flow struct{}
-
 var rowSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "_openetl_id", Type: arrow.BinaryTypes.String},
 	{Name: "_openetl_seq", Type: arrow.PrimitiveTypes.Int64},
 	{Name: "key", Type: arrow.BinaryTypes.String},
 	{Name: "value", Type: arrow.BinaryTypes.String},
 }, nil)
-
-func (flow) Run(ctx context.Context, _ runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
-	defer close(out)
-	for {
-		var f runner.Frame
-		select {
-		case fr, ok := <-in:
-			if !ok {
-				return nil
-			}
-			f = fr
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		if f.Kind == runner.FrameRows {
-			batch, err := toArrow(f.Stream, f.Rows)
-			if err != nil {
-				return err
-			}
-			f = runner.Frame{Kind: runner.FrameBatch, Stream: f.Stream, Batch: batch}
-		}
-		select {
-		case out <- f:
-		case <-ctx.Done():
-			if f.Batch != nil {
-				f.Batch.Release()
-			}
-			return ctx.Err()
-		}
-	}
-}
 
 func toArrow(stream string, rows []json.RawMessage) (arrow.RecordBatch, error) {
 	b := array.NewRecordBuilder(memory.DefaultAllocator, rowSchema)

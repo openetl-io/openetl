@@ -161,7 +161,7 @@ func (w *world) job(attempt int) runner.Job {
 		Log:         checkpoint.NewLog(&simStore{w: w, attempt: attempt}, "org", "pipe"),
 		Source:      &simSource{w: w, attempt: attempt},
 		Destination: w.destination(attempt),
-		Dataflow:    flow{},
+		Dataflow:    runner.Passthrough{Convert: toArrow},
 		Settings:    w.cfg.settings,
 	}
 	for _, s := range w.cfg.streams {

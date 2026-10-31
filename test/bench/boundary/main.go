@@ -208,7 +208,7 @@ func run(ctx context.Context) error {
 			return attempt(ctx, name, &replay{stream: table, items: rec.items, bytes: dataset}, streams, dst, flow, "")
 		}}
 	}
-	ref, err := b.add(ctx, "replay → in process → discard", replayed("ref", discardDest{}, inProcess{}))
+	ref, err := b.add(ctx, "replay → in process → discard", replayed("ref", discardDest{}, runner.Passthrough{}))
 	if err != nil {
 		return err
 	}

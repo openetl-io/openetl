@@ -45,6 +45,18 @@ impl Kind {
         }
     }
 
+    fn from_field(f: &Field) -> Option<Kind> {
+        let json = f.metadata().get(EXTENSION_NAME_KEY).map(String::as_str) == Some(JSON_EXTENSION);
+        match f.data_type() {
+            DataType::Boolean => Some(Kind::Boolean),
+            DataType::Int64 => Some(Kind::Int64),
+            DataType::Float64 => Some(Kind::Float64),
+            DataType::Utf8 if json => Some(Kind::Json),
+            DataType::Utf8 => Some(Kind::String),
+            _ => None,
+        }
+    }
+
     fn field(self, name: &str) -> Field {
         let dt = match self {
             Kind::Boolean => DataType::Boolean,
@@ -73,6 +85,8 @@ pub enum Error {
     },
     #[error("row {row} is not a JSON object")]
     NotAnObject { row: usize },
+    #[error("column {column:?} is {data_type}, which raw rows don't infer")]
+    Unsupported { column: String, data_type: DataType },
     #[error(transparent)]
     Arrow(#[from] ArrowError),
 }
@@ -106,6 +120,22 @@ impl Default for Normalizer {
 }
 
 impl Normalizer {
+    /// Continues inference from a schema the stream had before.
+    pub fn with_schema(schema: &Schema) -> Result<Self, Error> {
+        let mut n = Self::default();
+        for f in schema.fields() {
+            let kind = Kind::from_field(f).ok_or_else(|| Error::Unsupported {
+                column: f.name().clone(),
+                data_type: f.data_type().clone(),
+            })?;
+            n.index.insert(f.name().clone(), n.columns.len());
+            n.columns.push((f.name().clone(), kind));
+        }
+        let fields: Vec<Field> = n.columns.iter().map(|(c, k)| k.field(c)).collect();
+        n.schema = Arc::new(Schema::new(fields));
+        Ok(n)
+    }
+
     pub fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -345,6 +375,31 @@ mod tests {
                 ("c".into(), DataType::Boolean),
             ]
         );
+    }
+
+    #[test]
+    fn continues_from_a_previous_schema() {
+        let mut first = Normalizer::default();
+        push(&mut first, &[r#"{"a": 1.5, "o": {"k": 1}, "b": 1}"#]);
+
+        let mut n = Normalizer::with_schema(&first.schema()).unwrap();
+        assert_eq!(n.schema(), first.schema());
+        let out = push(&mut n, &[r#"{"b": 2, "a": 3, "c": "x"}"#]);
+        assert!(out.schema_changed);
+        assert_eq!(
+            types(&n),
+            vec![
+                ("a".into(), DataType::Float64),
+                ("o".into(), DataType::Utf8),
+                ("b".into(), DataType::Int64),
+                ("c".into(), DataType::Utf8),
+            ]
+        );
+        assert_eq!(n.schema().field(1), first.schema().field(1));
+
+        let other = Schema::new(vec![Field::new("t", DataType::Date32, true)]);
+        let err = Normalizer::with_schema(&other).unwrap_err();
+        assert!(matches!(err, Error::Unsupported { .. }), "{err}");
     }
 
     #[test]

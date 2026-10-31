@@ -38,7 +38,6 @@ pub fn encode_schema(schema: &Schema) -> Result<Vec<u8>, ArrowError> {
     w.into_inner()
 }
 
-#[cfg(test)]
 pub fn decode_schema(payload: &[u8]) -> Result<arrow_schema::SchemaRef, ArrowError> {
     let r = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(payload), None)?;
     Ok(r.schema())

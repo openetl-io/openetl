@@ -35,6 +35,8 @@ message StartJobRequest {
   repeated Edge edges = 6;
   SinkPlan sink = 7;
   Limits limits = 8;
+  // Operator state in the restored checkpoint, as EpochReady reported it.
+  repeated StateSnapshot restored_snapshots = 9;
 }
 
 message StreamPlan {
@@ -44,6 +46,9 @@ message StreamPlan {
   // An Arrow IPC stream holding only the schema, if known. Empty: inferred
   // from the rows.
   bytes arrow_schema = 4;
+  // The stream's schema in the restored checkpoint, as EpochReady reported
+  // it. Inference continues from it.
+  bytes restored_schema = 5;
 }
 
 enum Lane {
@@ -120,6 +125,9 @@ message EpochReady {
   // Empty with a runner sink.
   bytes staged = 2;
   repeated StateSnapshot snapshots = 3;
+  // Each stream's schema at its barrier, as an Arrow IPC stream holding only
+  // the schema. Streams without one yet are missing.
+  map<string, bytes> schemas = 4;
 }
 
 message StateSnapshot {
