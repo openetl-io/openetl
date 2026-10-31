@@ -14,7 +14,7 @@ OpenETL is MIT-licensed and built to be self-hosted.
 | `gen/`, `sdk/go/protocol/v1` | Go generated from `proto/` by `make generate`, committed |
 | `internal/checkpoint` | The checkpoint log: one record per checkpoint plus a `HEAD` pointer in object storage, updated by compare-and-swap, which also fences out replaced jobs |
 | `internal/runner` | The data-plane job driver and checkpoint coordinator |
-| `internal/delivery` | Each stream's delivery guarantee, computed from the sink, the source's replay behaviour, the write mode and dedupe |
+| `internal/delivery` | Each stream's delivery guarantee, computed from the sink, the source's replay behaviour, the write mode, the primary key and the required level |
 | `internal/platform/errs` | The error taxonomy every boundary carries |
 | `sdk/go` | The Go connector SDK (a separate module) |
 | `crates/` | `openetl-engine`, the Rust data engine, and `openetl-proto`, its generated protocol types |

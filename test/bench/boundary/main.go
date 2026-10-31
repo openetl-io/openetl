@@ -261,7 +261,6 @@ func settings(caps destination.Capabilities) delivery.Settings {
 		CommitMaxBytes:     256e6,
 		Scope:              destination.ScopeStream,
 		ResumePointTimeout: time.Minute,
-		Dedupe:             delivery.DedupeAuto,
 	}
 	if caps.SupportsScope(destination.ScopePipeline) {
 		s.Scope = destination.ScopePipeline

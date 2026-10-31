@@ -165,7 +165,6 @@ type deliveryYAML struct {
 		Scope    string `yaml:"scope"`
 	} `yaml:"commit"`
 	ResumePointTimeout string `yaml:"resumePointTimeout"`
-	Dedupe             string `yaml:"dedupe"`
 }
 
 func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
@@ -247,9 +246,6 @@ func parseDelivery(y *deliveryYAML) (*apiv1.Delivery, error) {
 	d := &apiv1.Delivery{}
 	var err error
 	if d.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", "delivery.require", y.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
-		return nil, err
-	}
-	if d.Dedupe, err = enum(apiv1.Dedupe_value, "DEDUPE_", "delivery.dedupe", y.Dedupe, apiv1.Dedupe_DEDUPE_UNSPECIFIED); err != nil {
 		return nil, err
 	}
 	switch y.ResumePointTimeout {

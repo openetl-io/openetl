@@ -100,24 +100,20 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 
 func settingsFor(d *apiv1.Delivery, caps destination.Capabilities) delivery.Settings {
 	s := delivery.Settings{
-		Require:            delivery.AtLeastOnce,
+		Require:            delivery.ExactlyOnce,
 		CommitInterval:     defaultCommitInterval,
 		CommitMaxBytes:     defaultCommitMaxBytes,
 		Scope:              destination.ScopeStream,
 		ResumePointTimeout: defaultResumePointTimeout,
-		Dedupe:             delivery.DedupeAuto,
 	}
 	if caps.SupportsScope(destination.ScopePipeline) {
 		s.Scope = destination.ScopePipeline
 	}
 	switch d.GetRequire() {
+	case apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE:
+		s.Require = delivery.AtLeastOnce
 	case apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE:
 		s.Require = delivery.EffectivelyOnce
-	case apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE:
-		s.Require = delivery.ExactlyOnce
-	}
-	if d.GetDedupe() == apiv1.Dedupe_DEDUPE_NONE {
-		s.Dedupe = delivery.DedupeNone
 	}
 	if c := d.GetCommit(); c != nil {
 		if c.GetInterval() != nil {

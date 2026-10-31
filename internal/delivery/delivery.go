@@ -35,17 +35,11 @@ func (l Level) String() string {
 	}
 }
 
-type Dedupe int
-
-const (
-	DedupeAuto Dedupe = iota + 1
-	DedupeNone
-)
-
 // Settings are a pipeline's spec.delivery, with defaults filled in.
 type Settings struct {
-	// A barrier is placed without a resume point only where every stream stays
-	// at Require.
+	// The lowest level the pipeline accepts. Each stream reaches it the
+	// cheapest way it can, and a barrier is placed without a resume point
+	// only where every stream stays at Require.
 	Require Level
 	// 0 disables.
 	CommitInterval time.Duration
@@ -55,7 +49,6 @@ type Settings struct {
 	// How long a barrier waits for a resume point before it is forced; 0
 	// waits forever.
 	ResumePointTimeout time.Duration
-	Dedupe             Dedupe
 }
 
 // Stream is what sets one stream's level. A zero Replay counts as superset.
@@ -63,37 +56,56 @@ type Stream struct {
 	Name   string
 	Replay source.Replay
 	Mode   destination.WriteMode
+	// A stream without a primary key is never deduped, so rows the source
+	// holds twice land twice.
+	Keyed bool
 }
 
-func StreamLevel(caps destination.Capabilities, replay source.Replay, mode destination.WriteMode, dedupe Dedupe) Level {
-	l, _ := Explain(caps, replay, mode, dedupe)
-	return l
+// Plan is how a stream meets a required level.
+type Plan struct {
+	Level Level
+	// Append and overwrite writes are deduped on _openetl_id at apply.
+	Dedupe bool
+	// The inputs that set Level.
+	Why string
 }
 
-// Explain returns a stream's level and the inputs that set it.
-func Explain(caps destination.Capabilities, replay source.Replay, mode destination.WriteMode, dedupe Dedupe) (Level, string) {
+// PlanStream returns the level a stream gets under require. It dedupes at
+// apply only when the commit protocol alone falls short of require.
+func PlanStream(caps destination.Capabilities, s Stream, require Level) Plan {
 	switch {
 	case caps.Class == destination.DeliverAndAck:
-		return AtLeastOnce, "the destination delivers and acknowledges"
-	case replay == source.Exact && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
-		return ExactlyOnce, "exact replay"
-	case caps.Class == destination.StageAndApply && mode == destination.Merge:
-		return EffectivelyOnce, "superset replay, written with merge"
-	case caps.Class == destination.StageAndApply && caps.DedupeAtApply && dedupe == DedupeAuto:
-		return ExactlyOnce, "superset replay, deduped at apply"
-	case caps.Class == destination.StageAndApply && caps.DedupeAtApply:
-		return AtLeastOnce, "superset replay with dedupe: none"
+		return Plan{Level: AtLeastOnce, Why: "the destination delivers and acknowledges"}
+	case s.Replay == source.Exact && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
+		return Plan{Level: ExactlyOnce, Why: "exact replay"}
+	case caps.Class == destination.StageAndApply && s.Mode == destination.Merge:
+		return Plan{Level: EffectivelyOnce, Why: "superset replay, written with merge"}
+	case caps.Class != destination.StageAndApply || !caps.DedupeAtApply:
+		return Plan{Level: AtLeastOnce, Why: "superset replay, and the destination can't dedupe"}
+	case !s.Keyed:
+		return Plan{Level: AtLeastOnce, Why: "superset replay, and no primary key to dedupe on"}
+	case require > AtLeastOnce:
+		return Plan{Level: ExactlyOnce, Dedupe: true, Why: "superset replay, deduped at apply"}
 	default:
-		return AtLeastOnce, "superset replay, and the destination can't dedupe"
+		return Plan{Level: AtLeastOnce, Why: "superset replay, not deduped under at_least_once"}
 	}
 }
 
-// ShouldDedupe reports whether a stream's append and overwrite writes are
-// deduped at apply: superset streams always, exact streams only after a
-// restore from a forced barrier.
-func ShouldDedupe(caps destination.Capabilities, replay source.Replay, mode destination.WriteMode, dedupe Dedupe, restoredFromForced bool) bool {
-	return caps.Class == destination.StageAndApply && caps.DedupeAtApply && dedupe == DedupeAuto &&
-		mode != destination.Merge && (replay != source.Exact || restoredFromForced)
+// ShouldDedupe reports whether a stream is deduped at apply in this attempt.
+// After a restore from a forced barrier, it counts as superset.
+func ShouldDedupe(caps destination.Capabilities, s Stream, require Level, restoredFromForced bool) bool {
+	if restoredFromForced {
+		s.Replay = source.Superset
+	}
+	return PlanStream(caps, s, require).Dedupe
+}
+
+// CanForce reports whether a barrier can be placed on a stream without a
+// resume point: whether the stream, counted as superset, still meets
+// require.
+func CanForce(caps destination.Capabilities, s Stream, require Level) bool {
+	s.Replay = source.Superset
+	return PlanStream(caps, s, require).Level >= require
 }
 
 // Check runs the plan checks on a pipeline's settings and streams, and
@@ -107,8 +119,12 @@ func Check(caps destination.Capabilities, s Settings, streams []Stream) error {
 		fails = append(fails, fmt.Errorf("delivery.commit.interval: %v is below the destination's minimum, %v", s.CommitInterval, caps.MinCommitInterval))
 	}
 	for _, st := range streams {
-		if l, why := Explain(caps, st.Replay, st.Mode, s.Dedupe); l < s.Require {
-			fails = append(fails, fmt.Errorf("delivery.require: stream %q gets %v (%s), below %v", st.Name, l, why, s.Require))
+		if st.Mode == destination.Merge && !st.Keyed {
+			fails = append(fails, fmt.Errorf("destination.write: merge needs a primary key, and stream %q has none", st.Name))
+			continue
+		}
+		if p := PlanStream(caps, st, s.Require); p.Level < s.Require {
+			fails = append(fails, fmt.Errorf("delivery.require: stream %q gets %v (%s), below %v", st.Name, p.Level, p.Why, s.Require))
 		}
 	}
 	return errors.Join(fails...)

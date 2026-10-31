@@ -124,12 +124,14 @@ enum SchemaPolicy {
 }
 
 message Delivery {
-  // The plan fails if any stream's guarantee is lower.
+  reserved 4;
+  reserved "dedupe";
+
+  // The plan fails if any stream's guarantee is lower. Unset: exactly once.
   DeliveryLevel require = 1;
   Commit commit = 2;
   // Unset: the default. Zero: wait forever.
   google.protobuf.Duration resume_point_timeout = 3;
-  Dedupe dedupe = 4;
 }
 
 enum DeliveryLevel {
@@ -149,12 +151,6 @@ enum CommitScope {
   COMMIT_SCOPE_UNSPECIFIED = 0;
   COMMIT_SCOPE_PIPELINE = 1;
   COMMIT_SCOPE_STREAM = 2;
-}
-
-enum Dedupe {
-  DEDUPE_UNSPECIFIED = 0;
-  DEDUPE_AUTO = 1;
-  DEDUPE_NONE = 2;
 }
 
 message GetPipelineRequest {

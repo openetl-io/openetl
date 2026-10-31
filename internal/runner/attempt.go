@@ -33,6 +33,10 @@ type Stream struct {
 	Schema *arrow.Schema
 }
 
+func (s Stream) delivery() delivery.Stream {
+	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0}
+}
+
 type Job struct {
 	// Unique per attempt.
 	Owner       string
@@ -123,9 +127,9 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			Name:       s.Name,
 			Mode:       s.Mode,
 			PrimaryKey: s.PrimaryKey,
-			Dedupe:     delivery.ShouldDedupe(caps, s.Replay, s.Mode, job.Settings.Dedupe, forced[s.Name]),
+			Dedupe:     delivery.ShouldDedupe(caps, s.delivery(), job.Settings.Require, forced[s.Name]),
 		})
-		canForce[s.Name] = delivery.StreamLevel(caps, source.Superset, s.Mode, job.Settings.Dedupe) >= job.Settings.Require
+		canForce[s.Name] = delivery.CanForce(caps, s.delivery(), job.Settings.Require)
 	}
 	w, err := job.Destination.Open(ctx, cfg)
 	if err != nil {
@@ -185,8 +189,8 @@ func (j *Job) validate() error {
 		return errors.New("runner: job is missing its log, source, destination or dataflow")
 	case len(j.Streams) == 0:
 		return errors.New("runner: job has no streams")
-	case j.Settings.Require == 0 || j.Settings.Scope == 0 || j.Settings.Dedupe == 0:
-		return errors.New("runner: job settings need Require, Scope and Dedupe")
+	case j.Settings.Require == 0 || j.Settings.Scope == 0:
+		return errors.New("runner: job settings need Require and Scope")
 	}
 	seen := make(map[string]bool)
 	streams := make([]delivery.Stream, 0, len(j.Streams))
@@ -195,7 +199,7 @@ func (j *Job) validate() error {
 			return errs.New(errs.ConfigInvalid, "runner: stream %q configured twice", s.Name)
 		}
 		seen[s.Name] = true
-		streams = append(streams, delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode})
+		streams = append(streams, s.delivery())
 	}
 	return errs.Wrap(errs.ConfigInvalid, delivery.Check(j.Destination.Capabilities(), j.Settings, streams), "runner: plan checks")
 }

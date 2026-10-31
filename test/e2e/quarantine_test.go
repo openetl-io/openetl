@@ -60,7 +60,6 @@ func TestQuarantineInS3(t *testing.T) {
 		Settings: delivery.Settings{
 			Require: delivery.ExactlyOnce,
 			Scope:   destination.ScopePipeline,
-			Dedupe:  delivery.DedupeNone,
 		},
 	})
 	if err != nil {

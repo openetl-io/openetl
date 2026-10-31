@@ -66,6 +66,11 @@ func TestSimulation(t *testing.T) {
 type streamCfg struct {
 	name   string
 	replay source.Replay
+	keyed  bool
+}
+
+func (s streamCfg) delivery(mode destination.WriteMode) delivery.Stream {
+	return delivery.Stream{Name: s.name, Replay: s.replay, Mode: mode, Keyed: s.keyed}
 }
 
 type config struct {
@@ -79,30 +84,31 @@ type config struct {
 
 func (c config) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "sink=%s mode=%d scope=%d dedupe=%d require=%v maxBytes=%d interval=%v resumeTimeout=%v faults=%d zombies=%d streams=",
-		c.kind, c.mode, c.settings.Scope, c.settings.Dedupe, c.settings.Require, c.settings.CommitMaxBytes,
+	fmt.Fprintf(&b, "sink=%s mode=%d scope=%d require=%v maxBytes=%d interval=%v resumeTimeout=%v faults=%d zombies=%d streams=",
+		c.kind, c.mode, c.settings.Scope, c.settings.Require, c.settings.CommitMaxBytes,
 		c.settings.CommitInterval, c.settings.ResumePointTimeout, c.faults, c.zombies)
 	for _, s := range c.streams {
-		fmt.Fprintf(&b, "%s(%v) ", s.name, s.replay)
+		fmt.Fprintf(&b, "%s(%v, keyed=%v) ", s.name, s.replay, s.keyed)
 	}
 	return b.String()
 }
 
 func randomConfig(rng *rand.Rand, kind string) config {
 	c := config{kind: kind, mode: destination.Append, faults: rng.IntN(9), zombies: rng.IntN(3)}
+	if kind == "warehouse" && rng.IntN(2) == 0 {
+		c.mode = destination.Merge
+	}
 	for i := range 1 + rng.IntN(3) {
 		r := source.Exact
 		if rng.IntN(2) == 0 {
 			r = source.Superset
 		}
-		c.streams = append(c.streams, streamCfg{name: fmt.Sprintf("s%d", i), replay: r})
-	}
-	if kind == "warehouse" && rng.IntN(2) == 0 {
-		c.mode = destination.Merge
+		keyed := c.mode == destination.Merge || rng.IntN(4) != 0
+		c.streams = append(c.streams, streamCfg{name: fmt.Sprintf("s%d", i), replay: r, keyed: keyed})
 	}
 	c.settings = delivery.Settings{
+		Require:        delivery.ExactlyOnce,
 		Scope:          destination.ScopeStream,
-		Dedupe:         delivery.DedupeAuto,
 		CommitMaxBytes: int64(40 + rng.IntN(400)),
 	}
 	switch kind {
@@ -114,7 +120,7 @@ func randomConfig(rng *rand.Rand, kind string) config {
 		c.settings.Scope = destination.ScopePipeline
 	}
 	if rng.IntN(3) == 0 {
-		c.settings.Dedupe = delivery.DedupeNone
+		c.settings.Require = delivery.AtLeastOnce
 	}
 	if rng.IntN(3) == 0 {
 		c.settings.CommitInterval = time.Duration(5+rng.IntN(55)) * time.Second
@@ -165,7 +171,11 @@ func (w *world) job(attempt int) runner.Job {
 		Settings:    w.cfg.settings,
 	}
 	for _, s := range w.cfg.streams {
-		j.Streams = append(j.Streams, runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, PrimaryKey: []string{"key"}})
+		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode}
+		if s.keyed {
+			st.PrimaryKey = []string{"key"}
+		}
+		j.Streams = append(j.Streams, st)
 	}
 	return j
 }
@@ -190,11 +200,11 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 	for _, s := range cfg.streams {
 		w.upstreams[s.name] = newUpstream(rng, s.name, s.replay)
 	}
-	// Require what the plan computes, so a forced barrier may never lower it.
+	// Require no more than every stream can get, so the plan passes and a
+	// forced barrier may never lower a stream below it.
 	caps := w.destination(0).Capabilities()
-	w.cfg.settings.Require = delivery.ExactlyOnce
 	for _, s := range cfg.streams {
-		w.cfg.settings.Require = min(w.cfg.settings.Require, delivery.StreamLevel(caps, s.replay, cfg.mode, cfg.settings.Dedupe))
+		w.cfg.settings.Require = min(w.cfg.settings.Require, delivery.PlanStream(caps, s.delivery(cfg.mode), delivery.ExactlyOnce).Level)
 	}
 	w.sched = newScheduler(rng, cfg.faults, cfg.zombies)
 	res.config = w.cfg.String()
@@ -234,10 +244,12 @@ func (w *world) check(caps destination.Capabilities, stats map[string]int) strin
 	var problems []string
 	for _, s := range w.cfg.streams {
 		u := w.upstreams[s.name]
-		level := delivery.StreamLevel(caps, s.replay, w.cfg.mode, w.cfg.settings.Dedupe)
+		ds := s.delivery(w.cfg.mode)
+		level := delivery.PlanStream(caps, ds, w.cfg.settings.Require).Level
 		if forced[s.name] {
 			stats["forced streams"]++
-			if lower := delivery.StreamLevel(caps, source.Superset, w.cfg.mode, w.cfg.settings.Dedupe); lower < w.cfg.settings.Require {
+			ds.Replay = source.Superset
+			if lower := delivery.PlanStream(caps, ds, w.cfg.settings.Require).Level; lower < w.cfg.settings.Require {
 				problems = append(problems, fmt.Sprintf("%s: a barrier was forced although it lowers the stream to %v, below the required %v", s.name, lower, w.cfg.settings.Require))
 			} else {
 				level = min(level, lower)

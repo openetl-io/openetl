@@ -108,7 +108,6 @@ func fencingJob(t *testing.T, log *checkpoint.Log, owner string, dst destination
 			Require:        delivery.ExactlyOnce,
 			CommitMaxBytes: 1,
 			Scope:          destination.ScopePipeline,
-			Dedupe:         delivery.DedupeNone,
 		},
 	}
 }

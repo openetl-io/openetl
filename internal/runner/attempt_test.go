@@ -41,7 +41,6 @@ func TestBarrierRequestedWhileCommitting(t *testing.T) {
 				Require:        delivery.ExactlyOnce,
 				CommitMaxBytes: 1,
 				Scope:          destination.ScopePipeline,
-				Dedupe:         delivery.DedupeNone,
 			},
 		})
 		if err != nil {
@@ -257,7 +256,6 @@ func job(log *checkpoint.Log, owner string, src source.Reader, flow runner.Dataf
 			Require:        delivery.ExactlyOnce,
 			CommitMaxBytes: 1,
 			Scope:          destination.ScopePipeline,
-			Dedupe:         delivery.DedupeNone,
 		},
 		OnCommit: func(n uint64) { committed <- n },
 	}

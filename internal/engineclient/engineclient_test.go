@@ -599,7 +599,6 @@ func TestRunAttemptThroughTheEngine(t *testing.T) {
 		Settings: delivery.Settings{
 			Require:        delivery.ExactlyOnce,
 			Scope:          destination.ScopePipeline,
-			Dedupe:         delivery.DedupeAuto,
 			CommitMaxBytes: 1,
 		},
 	}
@@ -654,7 +653,6 @@ func TestRunAttemptQuarantinesBadRows(t *testing.T) {
 		Settings: delivery.Settings{
 			Require:        delivery.ExactlyOnce,
 			Scope:          destination.ScopePipeline,
-			Dedupe:         delivery.DedupeAuto,
 			CommitMaxBytes: 1,
 		},
 	})
@@ -761,7 +759,6 @@ func TestRunAttemptIntoParquet(t *testing.T) {
 		Settings: delivery.Settings{
 			Require:        delivery.ExactlyOnce,
 			Scope:          destination.ScopeStream,
-			Dedupe:         delivery.DedupeAuto,
 			CommitMaxBytes: 1,
 		},
 		OnCommit: func(uint64) {
@@ -850,7 +847,7 @@ func TestRunAttemptIntoTheDiscardSink(t *testing.T) {
 		Streams:     []runner.Stream{{Name: "users", Replay: source.Exact, Mode: destination.Append}},
 		Destination: dest,
 		Dataflow:    &Dataflow{Options: opts},
-		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopeStream, Dedupe: delivery.DedupeAuto},
+		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopeStream},
 	}
 	res, err := runner.RunAttempt(testContext(t), job)
 	if err != nil {

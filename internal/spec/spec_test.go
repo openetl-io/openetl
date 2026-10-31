@@ -30,7 +30,6 @@ spec:
     require: exactly_once
     commit: { interval: 5s, maxBytes: 256MB, scope: stream }
     resumePointTimeout: none
-    dedupe: auto
 `
 
 func TestParsePipeline(t *testing.T) {
