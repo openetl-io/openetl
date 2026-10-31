@@ -21,7 +21,7 @@ arrow-select = "60.1.0"
 base64 = "0.22.1"
 bytes = "1.12.1"
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
-object_store = { version = "0.14.2", default-features = false, features = ["aws", "fs"] }
+object_store = { version = "0.14.2", default-features = false, features = ["aws", "azure", "fs", "gcp"] }
 parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap"] }
 prost = "0.14.4"
 prost-types = "0.14.4"
