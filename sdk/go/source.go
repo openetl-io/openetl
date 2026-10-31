@@ -109,12 +109,12 @@ func (b *bound[C]) read(ctx context.Context, st *Stream[C], state []byte, emit s
 		}
 	}
 	c := &Ctx[C]{Context: ctx, Config: &b.cfg}
-	out := newOut(ctx, st, emit, s)
+	out := newOut(ctx, st, emit, s, state)
 	err := st.run(c, state, out)
 	if errors.Is(err, ErrPageTokenExpired) && out.expired {
 		// Start over from the floor, without the page token.
 		s.Since, s.Max, s.Page = nil, nil, ""
-		out = newOut(ctx, st, emit, s)
+		out = newOut(ctx, st, emit, s, state)
 		err = st.run(c, state, out)
 	}
 	if err != nil {

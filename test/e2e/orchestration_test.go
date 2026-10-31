@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"syscall"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
@@ -191,4 +194,109 @@ func TestPauseResumeAndSyncNow(t *testing.T) {
 	if n := syncCount(t, name); n != 2 {
 		t.Fatalf("%d syncs, want 2", n)
 	}
+}
+
+// pgExec runs statements against the e2e database.
+func pgExec(t *testing.T, stmts ...string) {
+	t.Helper()
+	conn, err := pgx.Connect(t.Context(), env.dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	for _, q := range stmts {
+		if _, err := conn.Exec(t.Context(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A full refresh reads the table whole on every sync, and appends a copy.
+func TestFullRefreshReadsEverySync(t *testing.T) {
+	startRunner(t)
+	name := unique("full-refresh")
+	sch := pgx.Identifier{schema(name)}.Sanitize()
+	pgExec(t,
+		"CREATE SCHEMA "+sch,
+		"CREATE TABLE "+sch+".items (id bigint PRIMARY KEY, name text)",
+		"INSERT INTO "+sch+".items SELECT i, 'item ' || i FROM generate_series(1, 300) i",
+	)
+	dir := t.TempDir()
+	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q, "chunkRows": 100}}`, env.dbURL, schema(name))
+	apply(t, docs(name, src, parquetDest(dir), `{}`)...)
+	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	if status, stats := syncNow(t, name); status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	if rows, ids, _ := parquetRows(t, dir, "items"); rows != 600 || ids != 300 {
+		t.Fatalf("%d rows and %d distinct ids after two syncs, want 600 and 300", rows, ids)
+	}
+}
+
+// A schema change the block policy stops fails the sync once, with no
+// retries (P1.3-D).
+func TestBlockedSchemaChangeIsNotRetried(t *testing.T) {
+	startRunner(t)
+	name := unique("blocked")
+	sch := pgx.Identifier{schema(name)}.Sanitize()
+	pgExec(t,
+		"CREATE SCHEMA "+sch,
+		"CREATE TABLE "+sch+".items (id bigint PRIMARY KEY, name text)",
+		"INSERT INTO "+sch+".items SELECT i, 'item ' || i FROM generate_series(1, 100) i",
+	)
+	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q}}`, env.dbURL, schema(name))
+	ds := docs(name, src, parquetDest(t.TempDir()), `{}`)
+	ds[2] = strings.Replace(ds[2], `"delivery"`, `"schemaPolicy": "block", "delivery"`, 1)
+	apply(t, ds...)
+	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+
+	pgExec(t, "ALTER TABLE "+sch+".items ADD COLUMN price numeric(10, 2)")
+	status, stats := syncNow(t, name)
+	if status != "failed" || !strings.Contains(stats, "SCHEMA_DRIFT") {
+		t.Fatalf("sync %s: %s; want it failed with SCHEMA_DRIFT", status, stats)
+	}
+	var failed int
+	for _, ev := range history(t, name) {
+		if f := ev.GetActivityTaskFailedEventAttributes(); f != nil {
+			failed++
+			if f.GetRetryState() != enumspb.RETRY_STATE_NON_RETRYABLE_FAILURE {
+				t.Errorf("retry state %v", f.GetRetryState())
+			}
+		}
+		if a := ev.GetActivityTaskStartedEventAttributes(); a != nil && a.GetAttempt() != 1 {
+			t.Errorf("an activity ran attempt %d", a.GetAttempt())
+		}
+	}
+	if failed != 1 {
+		t.Errorf("%d failed activities, want 1", failed)
+	}
+}
+
+// A retry doesn't read again a stream that its sync completed: faker reads
+// users before purchases, and the engine dies once users has completed.
+func TestCompletedStreamIsNotReadAgain(t *testing.T) {
+	r := startRunner(t)
+	name := unique("completed")
+	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
+	pid := r.engine(t)
+	eventually(t, 30*time.Second, "users to complete", func() bool {
+		n, err := query[int](t, `SELECT count(*) FROM checkpoint_mirror m JOIN pipelines p ON p.id = m.pipeline_id,
+			jsonb_array_elements(m.streams) s WHERE p.name = $1 AND s->>'name' = 'users' AND (s->>'complete')::boolean`, name)
+		return err == nil && n > 0
+	})
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	status, stats := waitSync(t, name, 90*time.Second)
+	if status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	if !strings.Contains(stats, `"Generation": 2`) {
+		t.Errorf("stats %s: want the second attempt to have finished", stats)
+	}
+	checkRows(t, schema(name), 2000, "users", "purchases")
 }

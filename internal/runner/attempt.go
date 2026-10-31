@@ -39,7 +39,10 @@ func (s Stream) delivery() delivery.Stream {
 
 type Job struct {
 	// Unique per attempt.
-	Owner       string
+	Owner string
+	// Identifies the sync. Its attempts don't read again the streams one of
+	// them completed. Empty: every attempt reads every stream.
+	Sync        string
 	Pipeline    string
 	Log         *checkpoint.Log
 	Source      source.Reader
@@ -316,7 +319,13 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	fromFlow := make(chan Frame, 16)
 	c.events = make(chan event, 64)
 	c.commits = make(chan commitReq, 1)
-	c.pump = newSourcePump(gctx, c.job, c.committed, states, restoredForced, canForce, toFlow, c.events)
+	done := map[string]bool{}
+	if restored != nil && c.job.Sync != "" && restored.Sync == c.job.Sync {
+		for name, st := range restored.Streams {
+			done[name] = st.Complete
+		}
+	}
+	c.pump = newSourcePump(gctx, c.job, c.committed, states, restoredForced, canForce, done, toFlow, c.events)
 	plan := Plan{
 		Pipeline:   c.job.Pipeline,
 		Owner:      c.job.Owner,
@@ -342,11 +351,15 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 
 	req := source.ReadRequest{}
 	for _, s := range c.job.Streams {
-		req.Streams = append(req.Streams, source.ConfiguredStream{Name: s.Name, State: states[s.Name]})
+		if !done[s.Name] {
+			req.Streams = append(req.Streams, source.ConfiguredStream{Name: s.Name, State: states[s.Name]})
+		}
 	}
 	g.Go(func() error {
-		if err := c.job.Source.Read(gctx, req, c.pump); err != nil {
-			return fmt.Errorf("runner: read: %w", err)
+		if len(req.Streams) > 0 {
+			if err := c.job.Source.Read(gctx, req, c.pump); err != nil {
+				return fmt.Errorf("runner: read: %w", err)
+			}
 		}
 		return c.pump.readDone()
 	})
@@ -518,6 +531,7 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		Snapshots:  st.flow.Snapshots,
 		Quarantine: st.flow.Quarantine,
 		Forced:     st.forced,
+		Sync:       c.job.Sync,
 		CreatedAt:  time.Now().UTC(),
 	}
 	for name, state := range st.states {

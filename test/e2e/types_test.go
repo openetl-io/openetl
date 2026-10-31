@@ -193,7 +193,8 @@ func TestWideningReachesPostgres(t *testing.T) {
 	}
 }
 
-// wideningSource reads x = 1 first, then 2, 2.5 and "a", each a batch.
+// wideningSource reads x = 1 on its first sync, then 2, 2.5 and "a", each a
+// batch.
 type wideningSource struct{}
 
 func (wideningSource) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
@@ -206,8 +207,5 @@ func (wideningSource) Read(_ context.Context, req source.ReadRequest, out source
 			return err
 		}
 	}
-	if err := out.ResumePoint("s", []byte(`"read"`)); err != nil {
-		return err
-	}
-	return out.Complete("s")
+	return out.Complete("s", []byte(`"read"`))
 }

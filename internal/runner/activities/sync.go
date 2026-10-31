@@ -84,6 +84,7 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 		return out, err
 	}
 	job.Owner = fmt.Sprintf("%s/%s/%d/%s", info.WorkflowExecution.RunID, info.ActivityID, info.Attempt, rand.Text()[:8])
+	job.Sync = info.WorkflowExecution.RunID
 	job.Log = checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId())
 	if a.Storage != "" {
 		if job.QuarantineURL, err = quarantineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId()); err != nil {

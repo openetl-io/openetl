@@ -104,10 +104,14 @@ message ResumePoint {
   bytes state = 2;
 }
 
-// StreamComplete ends a bounded stream. It follows the stream's final resume
-// point.
+// StreamComplete ends a bounded stream. Like a resume point, it covers
+// everything emitted for the stream. A retry within the same sync doesn't
+// read the stream again.
 message StreamComplete {
   string stream = 1;
+  // Where the stream's next sync starts. Unset: from the beginning, as a
+  // full refresh does.
+  optional bytes next = 2;
 }
 
 message CommittedRequest {

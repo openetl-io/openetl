@@ -124,6 +124,17 @@ func (u *upstream) stateAfter(pos int) []byte {
 	return must(json.Marshal(cursorState{Cursor: u.records[pos-1].Seq}))
 }
 
+// next is where a sync after this one starts: from the beginning for exact
+// streams, as a full refresh, so an attempt that reads a stream its sync
+// completed reads below what was acknowledged; from the cursor for superset
+// ones.
+func (u *upstream) next() []byte {
+	if u.replay == source.Exact {
+		return nil
+	}
+	return u.stateAfter(len(u.records))
+}
+
 var errDataLost = fmt.Errorf("sim: data lost")
 
 type simSource struct {
@@ -146,7 +157,7 @@ func (s *simSource) Read(ctx context.Context, req source.ReadRequest, emitter so
 			return err
 		}
 		if pos >= len(u.records) {
-			if err := out.Complete(u.name); err != nil {
+			if err := out.Complete(u.name, u.next()); err != nil {
 				return err
 			}
 			continue
@@ -174,7 +185,7 @@ func (s *simSource) Read(ctx context.Context, req source.ReadRequest, emitter so
 			}
 		}
 		if last {
-			if err := out.Complete(c.u.name); err != nil {
+			if err := out.Complete(c.u.name, c.u.next()); err != nil {
 				return err
 			}
 			open = append(open[:i%len(open)], open[i%len(open)+1:]...)
@@ -229,11 +240,11 @@ func (g gatedEmitter) ResumePoint(stream string, state []byte) error {
 	return g.out.ResumePoint(stream, state)
 }
 
-func (g gatedEmitter) Complete(stream string) error {
+func (g gatedEmitter) Complete(stream string, next []byte) error {
 	if err := g.gate(); err != nil {
 		return err
 	}
-	return g.out.Complete(stream)
+	return g.out.Complete(stream, next)
 }
 
 func nop() error { return nil }

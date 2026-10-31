@@ -191,7 +191,7 @@ func (badRowSource) Read(_ context.Context, _ source.ReadRequest, out source.Emi
 	if err := out.ResumePoint("s", []byte(`"end"`)); err != nil {
 		return err
 	}
-	return out.Complete("s")
+	return out.Complete("s", nil)
 }
 
 type rowCounter struct{ rows int64 }

@@ -374,34 +374,39 @@ func parquetDest(dir string) string {
 func checkParquet(t *testing.T, dir string, want int, streams ...string) {
 	t.Helper()
 	for _, stream := range streams {
-		files, err := filepath.Glob(filepath.Join(dir, stream, "*.parquet"))
+		if rows, ids, files := parquetRows(t, dir, stream); rows != want || ids != want {
+			t.Errorf("%s: %d rows and %d distinct ids in %d files, want %d each", stream, rows, ids, files, want)
+		}
+	}
+}
+
+// parquetRows counts a stream's committed rows and distinct ids.
+func parquetRows(t *testing.T, dir, stream string) (rows, ids, files int) {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join(dir, stream, "*.parquet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int64]bool{}
+	for _, name := range names {
+		f, err := os.Open(name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ids := map[int64]bool{}
-		rows := 0
-		for _, name := range files {
-			f, err := os.Open(name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			tbl, err := pqarrow.ReadTable(t.Context(), f, parquet.NewReaderProperties(nil), pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
-			_ = f.Close()
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, chunk := range tbl.Column(tbl.Schema().FieldIndices("id")[0]).Data().Chunks() {
-				for i := range chunk.Len() {
-					ids[chunk.(*array.Int64).Value(i)] = true
-					rows++
-				}
-			}
-			tbl.Release()
+		tbl, err := pqarrow.ReadTable(t.Context(), f, parquet.NewReaderProperties(nil), pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+		_ = f.Close()
+		if err != nil {
+			t.Fatal(err)
 		}
-		if rows != want || len(ids) != want {
-			t.Errorf("%s: %d rows and %d distinct ids in %d files, want %d each", stream, rows, len(ids), len(files), want)
+		for _, chunk := range tbl.Column(tbl.Schema().FieldIndices("id")[0]).Data().Chunks() {
+			for i := range chunk.Len() {
+				seen[chunk.(*array.Int64).Value(i)] = true
+				rows++
+			}
 		}
+		tbl.Release()
 	}
+	return rows, len(seen), len(names)
 }
 
 func TestPostgresToParquet(t *testing.T) {

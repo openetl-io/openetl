@@ -83,8 +83,8 @@ func (c *capture) ResumePoint(stream string, state []byte) error {
 	return nil
 }
 
-func (c *capture) Complete(stream string) error {
-	c.log = append(c.log, stream+" complete")
+func (c *capture) Complete(stream string, next []byte) error {
+	c.log = append(c.log, fmt.Sprintf("%s complete%s", stream, next))
 	return nil
 }
 

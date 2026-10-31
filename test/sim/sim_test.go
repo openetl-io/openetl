@@ -163,6 +163,7 @@ func (w *world) destination(attempt int) destination.Destination {
 func (w *world) job(attempt int) runner.Job {
 	j := runner.Job{
 		Owner:       fmt.Sprintf("a%d", attempt),
+		Sync:        "sync",
 		Pipeline:    "pipe",
 		Log:         checkpoint.NewLog(&simStore{w: w, attempt: attempt}, "org", "pipe"),
 		Source:      &simSource{w: w, attempt: attempt},

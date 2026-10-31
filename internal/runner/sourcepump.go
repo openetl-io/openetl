@@ -74,7 +74,8 @@ type sourcePump struct {
 	forceC        <-chan time.Time
 }
 
-func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored map[string][]byte, restoredForced, canForce map[string]bool, out chan<- Frame, events chan<- event) *sourcePump {
+// Streams in done completed earlier in the sync, and aren't read.
+func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored map[string][]byte, restoredForced, canForce, done map[string]bool, out chan<- Frame, events chan<- event) *sourcePump {
 	p := &sourcePump{
 		ctx:        ctx,
 		requested:  restoredEpoch,
@@ -90,7 +91,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored
 	}
 	for _, s := range job.Streams {
 		p.order = append(p.order, s.Name)
-		p.streams[s.Name] = &streamPos{resume: restored[s.Name], forced: restoredForced[s.Name], canForce: canForce[s.Name]}
+		p.streams[s.Name] = &streamPos{resume: restored[s.Name], forced: restoredForced[s.Name], canForce: canForce[s.Name], complete: done[s.Name]}
 		p.known[s.Name] = true
 	}
 	return p
@@ -108,8 +109,8 @@ func (p *sourcePump) ResumePoint(stream string, state []byte) error {
 	return p.send(emit{kind: emitResume, stream: stream, state: state})
 }
 
-func (p *sourcePump) Complete(stream string) error {
-	return p.send(emit{kind: emitComplete, stream: stream})
+func (p *sourcePump) Complete(stream string, next []byte) error {
+	return p.send(emit{kind: emitComplete, stream: stream, state: next})
 }
 
 func (p *sourcePump) readDone() error { return p.send(emit{kind: emitDone}) }
@@ -205,9 +206,9 @@ func (p *sourcePump) handle(e emit) error {
 			return p.place(e.stream, false)
 		}
 	case emitComplete:
-		// A record must say the stream completed.
-		st.complete, st.active = true, true
-		if p.pending != 0 && !st.placed && !st.dirty {
+		// A resume point that a record must also show as complete.
+		st.resume, st.dirty, st.complete, st.active, st.forced = e.state, false, true, true, false
+		if p.pending != 0 && !st.placed {
 			return p.place(e.stream, false)
 		}
 	}

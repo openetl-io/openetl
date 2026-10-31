@@ -474,7 +474,7 @@ func (s *pagedSource) Read(ctx context.Context, req source.ReadRequest, out sour
 				return err
 			}
 		}
-		if err := out.Complete(cs.Name); err != nil {
+		if err := out.Complete(cs.Name, nil); err != nil {
 			return err
 		}
 	}

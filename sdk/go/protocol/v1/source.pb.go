@@ -815,11 +815,15 @@ func (x *ResumePoint) GetState() []byte {
 	return nil
 }
 
-// StreamComplete ends a bounded stream. It follows the stream's final resume
-// point.
+// StreamComplete ends a bounded stream. Like a resume point, it covers
+// everything emitted for the stream. A retry within the same sync doesn't
+// read the stream again.
 type StreamComplete struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Stream        string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Stream string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
+	// Where the stream's next sync starts. Unset: from the beginning, as a
+	// full refresh does.
+	Next          []byte `protobuf:"bytes,2,opt,name=next,proto3,oneof" json:"next,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -859,6 +863,13 @@ func (x *StreamComplete) GetStream() string {
 		return x.Stream
 	}
 	return ""
+}
+
+func (x *StreamComplete) GetNext() []byte {
+	if x != nil {
+		return x.Next
+	}
+	return nil
 }
 
 type CommittedRequest struct {
@@ -991,9 +1002,11 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\x04rows\x18\x01 \x03(\fR\x04rows\";\n" +
 	"\vResumePoint\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\fR\x05state\"(\n" +
+	"\x05state\x18\x02 \x01(\fR\x05state\"J\n" +
 	"\x0eStreamComplete\x12\x16\n" +
-	"\x06stream\x18\x01 \x01(\tR\x06stream\"\x99\x01\n" +
+	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x17\n" +
+	"\x04next\x18\x02 \x01(\fH\x00R\x04next\x88\x01\x01B\a\n" +
+	"\x05_next\"\x99\x01\n" +
 	"\x10CommittedRequest\x12J\n" +
 	"\x06states\x18\x01 \x03(\v22.openetl.connector.v1.CommittedRequest.StatesEntryR\x06states\x1a9\n" +
 	"\vStatesEntry\x12\x10\n" +
@@ -1088,6 +1101,7 @@ func file_openetl_connector_v1_source_proto_init() {
 		(*RecordBatch_Arrow)(nil),
 		(*RecordBatch_Rows)(nil),
 	}
+	file_openetl_connector_v1_source_proto_msgTypes[11].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

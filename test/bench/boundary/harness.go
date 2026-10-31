@@ -46,7 +46,7 @@ func (d *discardEmitter) Records(_ string, b arrow.RecordBatch) error {
 }
 
 func (d *discardEmitter) ResumePoint(string, []byte) error { return nil }
-func (d *discardEmitter) Complete(string) error            { return nil }
+func (d *discardEmitter) Complete(string, []byte) error    { return nil }
 
 // emitted is a batch, or a resume point if batch is nil.
 type emitted struct {
@@ -82,7 +82,7 @@ func (r *recorder) ResumePoint(_ string, state []byte) error {
 	return nil
 }
 
-func (r *recorder) Complete(string) error { return nil }
+func (r *recorder) Complete(string, []byte) error { return nil }
 
 func (r *recorder) release() {
 	for _, it := range r.items {
@@ -123,7 +123,7 @@ func (r *replay) Read(ctx context.Context, _ source.ReadRequest, out source.Emit
 			}
 		}
 	}
-	return out.Complete(r.stream)
+	return out.Complete(r.stream, nil)
 }
 
 // discardDest is a runner sink that drops every batch.

@@ -150,7 +150,7 @@ func (s *Source) readStream(ctx context.Context, idx, next int, out source.Emitt
 			}
 		}
 	}
-	return out.Complete(st.name)
+	return out.Complete(st.name, nil)
 }
 
 var (

@@ -15,7 +15,8 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
-// recorder writes each call as one line: rows ids, resume state, complete.
+// recorder writes each call as one line: rows ids, resume state, complete
+// and the next sync's state.
 type recorder struct{ calls []string }
 
 func (r *recorder) Rows(stream string, rows []json.RawMessage) error {
@@ -40,8 +41,8 @@ func (r *recorder) ResumePoint(stream string, state []byte) error {
 	return nil
 }
 
-func (r *recorder) Complete(stream string) error {
-	r.calls = append(r.calls, stream+" complete")
+func (r *recorder) Complete(stream string, next []byte) error {
+	r.calls = append(r.calls, fmt.Sprintf("%s complete %s", stream, next))
 	return nil
 }
 
@@ -178,10 +179,10 @@ func TestFullPaginates(t *testing.T) {
 	expect(t, read(t, src, "a", ""),
 		"a rows 1,2", `a resume {"page":"t1"}`,
 		"a rows 3", `a resume {"page":"t2"}`,
-		"a rows 4", "a resume ", "a complete")
+		"a rows 4", "a complete ")
 
 	p.tokens = nil
-	expect(t, read(t, src, "a", `{"page":"t2"}`), "a rows 4", "a resume ", "a complete")
+	expect(t, read(t, src, "a", `{"page":"t2"}`), "a rows 4", "a complete ")
 	expect(t, p.tokens, "t2")
 }
 
@@ -197,12 +198,12 @@ func TestIncrementalUnordered(t *testing.T) {
 	// The floor stays put until the stream completes.
 	expect(t, read(t, src, "b", ""),
 		"b rows 1,2", `b resume {"since":null,"max":"2026-01-05T00:00:00Z","page":"t1"}`,
-		"b rows 3", `b resume {"cursor":"2026-01-05T00:00:00Z"}`, "b complete")
+		"b rows 3", `b complete {"cursor":"2026-01-05T00:00:00Z"}`)
 
 	// A resumed read keeps the highest cursor the first part emitted.
 	since = nil
 	expect(t, read(t, src, "b", `{"cursor":"2026-01-01T00:00:00Z","since":"2026-01-01T00:00:00Z","max":"2026-01-05T00:00:00Z","page":"t1"}`),
-		"b rows 3", `b resume {"cursor":"2026-01-05T00:00:00Z"}`, "b complete")
+		"b rows 3", `b complete {"cursor":"2026-01-05T00:00:00Z"}`)
 	expect(t, since, "2026-01-01T00:00:00Z")
 }
 
@@ -214,7 +215,7 @@ func TestIncrementalOrdered(t *testing.T) {
 	}}
 	expect(t, read(t, src, "b", `{"cursor":1}`),
 		"b rows 1,2", `b resume {"cursor":2,"since":1,"page":"t1"}`,
-		"b rows 3,4", `b resume {"cursor":10}`, "b complete")
+		"b rows 3,4", `b complete {"cursor":10}`)
 	// The page token belongs to the read from 1.
 	since = nil
 	read(t, src, "b", `{"cursor":2,"since":1,"page":"t1"}`)
@@ -229,7 +230,7 @@ func TestExpiredPageTokenRestartsFromTheFloor(t *testing.T) {
 	}}
 	expect(t, read(t, src, "b", `{"cursor":3,"since":null,"page":"t1"}`),
 		"b rows 1", `b resume {"cursor":3,"since":3,"page":"t1"}`,
-		"b rows 2", `b resume {"cursor":4}`, "b complete")
+		"b rows 2", `b complete {"cursor":4}`)
 	expect(t, since, "", "3")
 	expect(t, p.tokens, "t1", "", "t1")
 }
@@ -277,8 +278,8 @@ func TestResumable(t *testing.T) {
 		}),
 	}}
 	expect(t, read(t, src, "c", ""),
-		"c rows 0,1", `c resume {"offset":2}`, "c rows 2,3", `c resume {"offset":4}`, "c complete")
-	expect(t, read(t, src, "c", `{"offset":2}`), "c rows 2,3", `c resume {"offset":4}`, "c complete")
+		"c rows 0,1", `c resume {"offset":2}`, "c rows 2,3", `c resume {"offset":4}`, `c complete {"offset":4}`)
+	expect(t, read(t, src, "c", `{"offset":2}`), "c rows 2,3", `c resume {"offset":4}`, `c complete {"offset":4}`)
 	expect(t, restored, "", `{"offset":2}`)
 }
 
@@ -340,8 +341,8 @@ func TestCursorOrder(t *testing.T) {
 			}),
 		}}
 		got := read(t, src, "s", "")
-		if want := fmt.Sprintf(`s resume {"cursor":%s}`, tc.want); got[len(got)-2] != want {
-			t.Errorf("%s: %s, want %s", tc.records, got[len(got)-2], want)
+		if want := fmt.Sprintf(`s complete {"cursor":%s}`, tc.want); got[len(got)-1] != want {
+			t.Errorf("%s: %s, want %s", tc.records, got[len(got)-1], want)
 		}
 	}
 }

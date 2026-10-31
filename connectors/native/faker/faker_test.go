@@ -2,6 +2,7 @@ package faker
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -34,7 +35,10 @@ func (r *recorder) ResumePoint(stream string, state []byte) error {
 	return nil
 }
 
-func (r *recorder) Complete(stream string) error {
+func (r *recorder) Complete(stream string, next []byte) error {
+	if next != nil {
+		return fmt.Errorf("%s: a full refresh completed with next state %s", stream, next)
+	}
 	r.complete = append(r.complete, stream)
 	return nil
 }

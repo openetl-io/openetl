@@ -52,8 +52,11 @@ type Emitter interface {
 	// ResumePoint says stream can restart from state after everything emitted
 	// for it so far.
 	ResumePoint(stream string, state []byte) error
-	// Complete ends a bounded stream. Emit its final resume point first.
-	Complete(stream string) error
+	// Complete ends a bounded stream. Like a resume point, it covers
+	// everything emitted for the stream, and a retry within the same sync
+	// doesn't read the stream again. next is where its next sync starts: nil
+	// for the beginning, as a full refresh does, or a cursor floor.
+	Complete(stream string, next []byte) error
 }
 
 // Reader reads records. Read returns when every stream is complete, when ctx

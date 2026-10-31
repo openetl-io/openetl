@@ -240,7 +240,7 @@ func (s *Source) readTable(ctx context.Context, conn *pgx.Conn, t table, st sour
 				return err
 			}
 		}
-		return out.Complete(t.name)
+		return out.Complete(t.name, nil)
 	}
 
 	key := make([]string, len(t.key))
@@ -273,7 +273,7 @@ func (s *Source) readTable(ctx context.Context, conn *pgx.Conn, t table, st sour
 			return err
 		}
 		if n < s.cfg.ChunkRows {
-			return out.Complete(t.name)
+			return out.Complete(t.name, nil)
 		}
 	}
 }

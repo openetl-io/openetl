@@ -120,10 +120,11 @@ type Out struct {
 	max     json.RawMessage
 	resumed string // the restored page token, until Paginate uses it
 	expired bool   // the restored page token was rejected
+	last    []byte // a Resumable stream's last state
 }
 
-func newOut[C any](ctx context.Context, st *Stream[C], emit source.Emitter, s streamState) *Out {
-	return &Out{ctx: ctx, stream: st.name, kind: st.kind, emit: emit, cursor: st.cursor, ordered: st.ordered, state: s, max: s.Max, resumed: s.Page}
+func newOut[C any](ctx context.Context, st *Stream[C], emit source.Emitter, s streamState, raw []byte) *Out {
+	return &Out{ctx: ctx, stream: st.name, kind: st.kind, emit: emit, cursor: st.cursor, ordered: st.ordered, state: s, max: s.Max, resumed: s.Page, last: raw}
 }
 
 func (o *Out) since() Cursor {
@@ -216,6 +217,7 @@ func (o *Out) Checkpoint(state any) error {
 	if err != nil {
 		return err
 	}
+	o.last = b
 	return o.resumePoint(b)
 }
 
@@ -270,29 +272,27 @@ func (o *Out) highest() (json.RawMessage, error) {
 	return o.state.Cursor, nil
 }
 
-// complete marks the final resume point and ends the stream. A Full stream
-// ends with no state, so the next sync reads it whole again.
+// complete ends the stream. The next sync reads a Full stream whole again,
+// an Incremental one from its new floor, and a Resumable one from its last
+// state.
 func (o *Out) complete() error {
-	var state []byte
+	if err := o.flush(); err != nil {
+		return err
+	}
+	var next []byte
 	switch o.kind {
 	case incremental:
 		floor, err := o.highest()
 		if err != nil {
 			return err
 		}
-		if state, err = json.Marshal(streamState{Cursor: floor}); err != nil {
+		if next, err = json.Marshal(streamState{Cursor: floor}); err != nil {
 			return err
 		}
 	case resumable:
-		if err := o.flush(); err != nil {
-			return err
-		}
-		return o.emit.Complete(o.stream)
+		next = o.last
 	}
-	if err := o.resumePoint(state); err != nil {
-		return err
-	}
-	return o.emit.Complete(o.stream)
+	return o.emit.Complete(o.stream, next)
 }
 
 // ErrPageTokenExpired is what a fetch returns, wrapped or not, when the API

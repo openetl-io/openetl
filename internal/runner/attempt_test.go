@@ -78,7 +78,7 @@ func (s pagedSource) Read(ctx context.Context, _ source.ReadRequest, out source.
 			return err
 		}
 	}
-	return out.Complete("s")
+	return out.Complete("s", nil)
 }
 
 var empty = arrow.NewSchema(nil, nil)
@@ -297,8 +297,8 @@ func job(log *checkpoint.Log, owner string, src source.Reader, flow runner.Dataf
 }
 
 // ackSource emits pages from its state up to pages, one row and a resume
-// point each. It waits for a commit after each page but the last, and keeps
-// what it's asked to acknowledge.
+// point each, and its next sync carries on from there. It waits for a commit
+// after each page but the last, and keeps what it's asked to acknowledge.
 type ackSource struct {
 	pages     int
 	committed <-chan uint64
@@ -331,7 +331,7 @@ func (s ackSource) Read(ctx context.Context, req source.ReadRequest, out source.
 			return errors.New("the source broke")
 		}
 	}
-	return out.Complete("s")
+	return out.Complete("s", strconv.AppendInt(nil, int64(s.pages), 10))
 }
 
 func (s ackSource) Committed(_ context.Context, states map[string][]byte) error {
@@ -423,7 +423,7 @@ func (s lateSource) Read(_ context.Context, _ source.ReadRequest, out source.Emi
 	if err := out.ResumePoint("s", []byte("1")); err != nil {
 		return err
 	}
-	if err := out.Complete("s"); err != nil {
+	if err := out.Complete("s", nil); err != nil {
 		return err
 	}
 	time.Sleep(s.after)
@@ -487,5 +487,83 @@ func (s slowSource) Read(ctx context.Context, req source.ReadRequest, out source
 			return err
 		}
 	}
-	return out.Complete("s")
+	return out.Complete("s", nil)
+}
+
+// A stream completed earlier in the sync isn't read again, and the next sync
+// reads it whole.
+func TestCompletedStreamsWaitForTheNextSync(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		read := map[string]int{}
+		attempt := func(sync string, fail bool) error {
+			committed := make(chan uint64, 16)
+			j := job(log, fmt.Sprintf("a%d", len(read)), fullSource{pages: 2, committed: committed, read: read, fail: fail}, runner.Passthrough{Convert: columnless}, committed)
+			j.Sync = sync
+			j.Streams = []runner.Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append}, {Name: "b", Replay: source.Exact, Mode: destination.Append}}
+			_, err := runner.RunAttempt(ctx, j)
+			time.Sleep(time.Second)
+			return err
+		}
+		if err := attempt("s1", true); err == nil {
+			t.Fatal("the first attempt succeeded")
+		}
+		if err := attempt("s1", false); err != nil {
+			t.Fatal(err)
+		}
+		if read["a"] != 2 || read["b"] != 2 {
+			t.Fatalf("the first sync read %v, want 2 rows of each", read)
+		}
+		if err := attempt("s2", false); err != nil {
+			t.Fatal(err)
+		}
+		if err := attempt("s2", false); err != nil {
+			t.Fatal(err)
+		}
+		if read["a"] != 4 || read["b"] != 4 {
+			t.Fatalf("after the second sync, read %v, want 4 rows of each", read)
+		}
+	})
+}
+
+// fullSource reads each stream's pages from its state, one row and a resume
+// point each, waiting for a commit after each, and completes it as a full
+// refresh. With fail, it fails once b's first page has committed.
+type fullSource struct {
+	pages     int
+	committed <-chan uint64
+	read      map[string]int
+	fail      bool
+}
+
+func (s fullSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	for _, cs := range req.Streams {
+		from := 0
+		if cs.State != nil {
+			from, _ = strconv.Atoi(string(cs.State))
+		}
+		for i := from; i < s.pages; i++ {
+			if err := out.Rows(cs.Name, []json.RawMessage{json.RawMessage(`{}`)}); err != nil {
+				return err
+			}
+			s.read[cs.Name]++
+			if err := out.ResumePoint(cs.Name, strconv.AppendInt(nil, int64(i+1), 10)); err != nil {
+				return err
+			}
+			select {
+			case <-s.committed:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if s.fail && cs.Name == "b" {
+				return errors.New("the source broke")
+			}
+		}
+		if err := out.Complete(cs.Name, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }

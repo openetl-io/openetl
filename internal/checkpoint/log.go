@@ -47,7 +47,7 @@ type StreamState struct {
 	// When the stream's current read started, in microseconds since the Unix
 	// epoch. Rows read without a cursor carry it as their sequence.
 	ReadStart int64 `json:"read_start,omitempty"`
-	// The read ended at a resume point, so the next one starts afresh.
+	// The stream completed, and State is where its next sync starts.
 	Complete bool `json:"complete,omitempty"`
 	// Rows the source emitted in the epoch, quarantined ones included.
 	Rows uint64 `json:"rows,omitempty"`
@@ -81,7 +81,10 @@ type Record struct {
 	Quarantine []QuarantineFile `json:"quarantine,omitempty"`
 	// Streams whose barrier was placed without a resume point. Restoring from
 	// this record re-reads rows that may already be applied.
-	Forced    []string  `json:"forced,omitempty"`
+	Forced []string `json:"forced,omitempty"`
+	// The sync that wrote it. A later attempt of the same sync doesn't read
+	// the streams it completed.
+	Sync      string    `json:"sync,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
