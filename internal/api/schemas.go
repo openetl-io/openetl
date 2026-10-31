@@ -1,38 +1,20 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
 
 	"connectrpc.com/connect"
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/unsuitable001/openetl/internal/streamschema"
 )
-
-// Schema metadata the engine writes.
-const (
-	tableKey       = "openetl.table"
-	sourceNamesKey = "openetl.source_names"
-)
-
-type column struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Nullable bool   `json:"nullable"`
-	// Where the destination name differs.
-	Source string `json:"source,omitempty"`
-}
 
 type streamSchema struct {
 	stream  string
@@ -43,43 +25,15 @@ type streamSchema struct {
 }
 
 func describeSchema(stream string, raw []byte) (streamSchema, error) {
-	r, err := ipc.NewReader(bytes.NewReader(raw))
+	d, err := streamschema.Describe(raw)
 	if err != nil {
 		return streamSchema{}, err
 	}
-	defer r.Release()
-	s := r.Schema()
-	md := s.Metadata()
-	out := streamSchema{stream: stream, raw: raw}
-	out.table, _ = md.GetValue(tableKey)
-	var sources map[string]string
-	if v, ok := md.GetValue(sourceNamesKey); ok {
-		if err := json.Unmarshal([]byte(v), &sources); err != nil {
-			return streamSchema{}, err
-		}
-	}
-	cols := make([]column, 0, s.NumFields())
-	for _, f := range s.Fields() {
-		cols = append(cols, column{Name: f.Name, Type: typeName(f), Nullable: f.Nullable, Source: sources[f.Name]})
-	}
-	if out.columns, err = json.Marshal(cols); err != nil {
+	cols, err := json.Marshal(d.Columns)
+	if err != nil {
 		return streamSchema{}, err
 	}
-	sum := sha256.Sum256(append([]byte(out.table+"\x00"), out.columns...))
-	out.digest = hex.EncodeToString(sum[:])
-	return out, nil
-}
-
-// typeName is the field's Arrow type, with its extension where the field
-// metadata names one.
-func typeName(f arrow.Field) string {
-	if _, ok := f.Type.(arrow.ExtensionType); ok {
-		return f.Type.String()
-	}
-	if ext, ok := f.Metadata.GetValue("ARROW:extension:name"); ok {
-		return "extension<" + ext + ">"
-	}
-	return f.Type.String()
+	return streamSchema{stream: stream, table: d.Table, columns: cols, digest: d.Digest, raw: raw}, nil
 }
 
 // ReportSchemas adds each stream's schema to its history, unless the

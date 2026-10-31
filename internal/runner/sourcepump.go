@@ -31,6 +31,7 @@ type emit struct {
 
 type streamPos struct {
 	resume   []byte // state at the last resume point, or restored
+	rows     uint64 // emitted since the last barrier
 	dirty    bool   // emitted since the last resume point
 	active   bool   // emitted since the last barrier
 	complete bool
@@ -65,6 +66,7 @@ type sourcePump struct {
 	states        map[string][]byte
 	forced        []string
 	complete      map[string]bool
+	rows          map[string]uint64
 	bytes         int64
 	thresholdSent bool
 	done          bool
@@ -180,9 +182,11 @@ func (p *sourcePump) handle(e emit) error {
 	switch e.kind {
 	case emitRows, emitBatch:
 		f := Frame{Kind: FrameRows, Stream: e.stream, Rows: e.rows}
+		st.rows += uint64(len(e.rows))
 		if e.kind == emitBatch {
 			f = Frame{Kind: FrameBatch, Stream: e.stream, Batch: e.batch}
 			p.bytes += util.TotalRecordSize(e.batch)
+			st.rows += uint64(e.batch.NumRows()) //nolint:gosec // never negative
 		}
 		for _, r := range e.rows {
 			p.bytes += int64(len(r))
@@ -233,6 +237,7 @@ func (p *sourcePump) request(n uint64) error {
 	p.states = make(map[string][]byte, len(p.order))
 	p.forced = nil
 	p.complete = make(map[string]bool)
+	p.rows = make(map[string]uint64, len(p.order))
 	p.bytes, p.thresholdSent = 0, false
 	for _, st := range p.streams {
 		st.placed = false
@@ -303,6 +308,7 @@ func (p *sourcePump) place(name string, forced bool) error {
 	st.placed, st.active = true, false
 	st.forced = st.forced || forced
 	p.states[name] = st.resume
+	p.rows[name], st.rows = st.rows, 0
 	if st.forced {
 		p.forced = append(p.forced, name)
 	} else if st.complete {
@@ -312,7 +318,7 @@ func (p *sourcePump) place(name string, forced bool) error {
 	if p.unplaced > 0 {
 		return nil
 	}
-	ev := event{kind: evPlaced, epoch: p.pending, states: p.states, forced: p.forced, complete: p.complete}
+	ev := event{kind: evPlaced, epoch: p.pending, states: p.states, forced: p.forced, complete: p.complete, rows: p.rows}
 	p.pending = 0
 	if p.forceTimer != nil {
 		p.forceTimer.Stop()

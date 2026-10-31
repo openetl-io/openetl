@@ -10,6 +10,19 @@ import (
 	"github.com/google/uuid"
 )
 
+type CheckpointMirror struct {
+	OrgID              uuid.UUID
+	PipelineID         uuid.UUID
+	Epoch              int64
+	Generation         int64
+	PreviousEpoch      *int64
+	PreviousGeneration *int64
+	RunID              string
+	CommitTime         time.Time
+	Streams            []byte
+	CreateTime         time.Time
+}
+
 type DataPlane struct {
 	ID         string
 	OrgID      uuid.UUID

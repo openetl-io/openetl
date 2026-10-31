@@ -88,8 +88,8 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 
 	var last atomic.Uint64
 	job.OnCommit = last.Store
-	schemas := newSchemaReporter(ctx, a.API, spec.GetPipelineId(), log)
-	job.OnSchemas = schemas.report
+	reports := newReporter(ctx, a.API, spec.GetPipelineId(), info.WorkflowExecution.RunID, log)
+	job.OnSchemas, job.OnCheckpoint = reports.schemas, reports.checkpoint
 	every := 30 * time.Second
 	if t := info.HeartbeatTimeout / 4; t > 0 && t < every {
 		every = t
@@ -111,7 +111,7 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	r, err := runner.RunAttempt(ctx, job)
 	close(stop)
 	wg.Wait()
-	schemas.close(5 * time.Second)
+	reports.close(5 * time.Second)
 
 	out = contract.AttemptResult{Generation: r.Generation, Restored: r.Restored, Committed: r.Committed, Last: r.Last}
 	if r.Recovery != 0 {

@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package openetl.dataplane.v1;
 
+import "google/protobuf/timestamp.proto";
 import "openetl/api/v1/connection.proto";
 import "openetl/api/v1/pipeline.proto";
 
@@ -15,6 +16,9 @@ service DataPlaneService {
   // Adds a committed checkpoint's stream schemas to the pipeline's schema
   // history. A schema already in a stream's history is skipped.
   rpc ReportSchemas(ReportSchemasRequest) returns (ReportSchemasResponse);
+  // Mirrors a committed checkpoint into the control plane. A checkpoint
+  // already mirrored is skipped.
+  rpc ReportCheckpoint(ReportCheckpointRequest) returns (ReportCheckpointResponse);
 }
 
 message GetSyncSpecRequest {
@@ -44,4 +48,42 @@ message ReportSchemasRequest {
 message ReportSchemasResponse {
   // The streams whose history got a new version.
   repeated string added = 1;
+}
+
+message ReportCheckpointRequest {
+  string pipeline_id = 1;
+  // The sync's Temporal run.
+  string run_id = 2;
+  uint64 generation = 3;
+  uint64 epoch = 4;
+  // What HEAD pointed to before; unset for the pipeline's first checkpoint.
+  CheckpointRef previous = 5;
+  // When the data plane recorded it. It must be within a day of the
+  // control plane's clock.
+  google.protobuf.Timestamp create_time = 6;
+  repeated CheckpointStream streams = 7;
+}
+
+message CheckpointRef {
+  uint64 generation = 1;
+  uint64 epoch = 2;
+}
+
+message CheckpointStream {
+  string name = 1;
+  // Rows the source emitted in the epoch, quarantined ones included.
+  uint64 rows = 2;
+  uint64 quarantined_rows = 3;
+  // The barrier was placed without a resume point.
+  bool forced = 4;
+  // The stream's read ended in this epoch.
+  bool complete = 5;
+  // The stream's schema, as its schema history keys it; empty if it has
+  // none yet.
+  string schema_digest = 6;
+}
+
+message ReportCheckpointResponse {
+  // False if the checkpoint was already mirrored.
+  bool added = 1;
 }

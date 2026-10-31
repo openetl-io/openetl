@@ -10,6 +10,7 @@ import (
 	v1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -281,11 +282,293 @@ func (x *ReportSchemasResponse) GetAdded() []string {
 	return nil
 }
 
+type ReportCheckpointRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	PipelineId string                 `protobuf:"bytes,1,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
+	// The sync's Temporal run.
+	RunId      string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	Generation uint64 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	Epoch      uint64 `protobuf:"varint,4,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// What HEAD pointed to before; unset for the pipeline's first checkpoint.
+	Previous *CheckpointRef `protobuf:"bytes,5,opt,name=previous,proto3" json:"previous,omitempty"`
+	// When the data plane recorded it. It must be within a day of the
+	// control plane's clock.
+	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	Streams       []*CheckpointStream    `protobuf:"bytes,7,rep,name=streams,proto3" json:"streams,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportCheckpointRequest) Reset() {
+	*x = ReportCheckpointRequest{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportCheckpointRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportCheckpointRequest) ProtoMessage() {}
+
+func (x *ReportCheckpointRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportCheckpointRequest.ProtoReflect.Descriptor instead.
+func (*ReportCheckpointRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ReportCheckpointRequest) GetPipelineId() string {
+	if x != nil {
+		return x.PipelineId
+	}
+	return ""
+}
+
+func (x *ReportCheckpointRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *ReportCheckpointRequest) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *ReportCheckpointRequest) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *ReportCheckpointRequest) GetPrevious() *CheckpointRef {
+	if x != nil {
+		return x.Previous
+	}
+	return nil
+}
+
+func (x *ReportCheckpointRequest) GetCreateTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreateTime
+	}
+	return nil
+}
+
+func (x *ReportCheckpointRequest) GetStreams() []*CheckpointStream {
+	if x != nil {
+		return x.Streams
+	}
+	return nil
+}
+
+type CheckpointRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Generation    uint64                 `protobuf:"varint,1,opt,name=generation,proto3" json:"generation,omitempty"`
+	Epoch         uint64                 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckpointRef) Reset() {
+	*x = CheckpointRef{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckpointRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckpointRef) ProtoMessage() {}
+
+func (x *CheckpointRef) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckpointRef.ProtoReflect.Descriptor instead.
+func (*CheckpointRef) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CheckpointRef) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *CheckpointRef) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+type CheckpointStream struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Rows the source emitted in the epoch, quarantined ones included.
+	Rows            uint64 `protobuf:"varint,2,opt,name=rows,proto3" json:"rows,omitempty"`
+	QuarantinedRows uint64 `protobuf:"varint,3,opt,name=quarantined_rows,json=quarantinedRows,proto3" json:"quarantined_rows,omitempty"`
+	// The barrier was placed without a resume point.
+	Forced bool `protobuf:"varint,4,opt,name=forced,proto3" json:"forced,omitempty"`
+	// The stream's read ended in this epoch.
+	Complete bool `protobuf:"varint,5,opt,name=complete,proto3" json:"complete,omitempty"`
+	// The stream's schema, as its schema history keys it; empty if it has
+	// none yet.
+	SchemaDigest  string `protobuf:"bytes,6,opt,name=schema_digest,json=schemaDigest,proto3" json:"schema_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckpointStream) Reset() {
+	*x = CheckpointStream{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckpointStream) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckpointStream) ProtoMessage() {}
+
+func (x *CheckpointStream) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckpointStream.ProtoReflect.Descriptor instead.
+func (*CheckpointStream) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CheckpointStream) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CheckpointStream) GetRows() uint64 {
+	if x != nil {
+		return x.Rows
+	}
+	return 0
+}
+
+func (x *CheckpointStream) GetQuarantinedRows() uint64 {
+	if x != nil {
+		return x.QuarantinedRows
+	}
+	return 0
+}
+
+func (x *CheckpointStream) GetForced() bool {
+	if x != nil {
+		return x.Forced
+	}
+	return false
+}
+
+func (x *CheckpointStream) GetComplete() bool {
+	if x != nil {
+		return x.Complete
+	}
+	return false
+}
+
+func (x *CheckpointStream) GetSchemaDigest() string {
+	if x != nil {
+		return x.SchemaDigest
+	}
+	return ""
+}
+
+type ReportCheckpointResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// False if the checkpoint was already mirrored.
+	Added         bool `protobuf:"varint,1,opt,name=added,proto3" json:"added,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportCheckpointResponse) Reset() {
+	*x = ReportCheckpointResponse{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportCheckpointResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportCheckpointResponse) ProtoMessage() {}
+
+func (x *ReportCheckpointResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportCheckpointResponse.ProtoReflect.Descriptor instead.
+func (*ReportCheckpointResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ReportCheckpointResponse) GetAdded() bool {
+	if x != nil {
+		return x.Added
+	}
+	return false
+}
+
 var File_openetl_dataplane_v1_dataplane_proto protoreflect.FileDescriptor
 
 const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
-	"$openetl/dataplane/v1/dataplane.proto\x12\x14openetl.dataplane.v1\x1a\x1fopenetl/api/v1/connection.proto\x1a\x1dopenetl/api/v1/pipeline.proto\"O\n" +
+	"$openetl/dataplane/v1/dataplane.proto\x12\x14openetl.dataplane.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1fopenetl/api/v1/connection.proto\x1a\x1dopenetl/api/v1/pipeline.proto\"O\n" +
 	"\x12GetSyncSpecRequest\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x18\n" +
@@ -312,10 +595,37 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"-\n" +
 	"\x15ReportSchemasResponse\x12\x14\n" +
-	"\x05added\x18\x01 \x03(\tR\x05added2\xe0\x01\n" +
+	"\x05added\x18\x01 \x03(\tR\x05added\"\xc7\x02\n" +
+	"\x17ReportCheckpointRequest\x12\x1f\n" +
+	"\vpipeline_id\x18\x01 \x01(\tR\n" +
+	"pipelineId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\x04R\n" +
+	"generation\x12\x14\n" +
+	"\x05epoch\x18\x04 \x01(\x04R\x05epoch\x12?\n" +
+	"\bprevious\x18\x05 \x01(\v2#.openetl.dataplane.v1.CheckpointRefR\bprevious\x12;\n" +
+	"\vcreate_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"createTime\x12@\n" +
+	"\astreams\x18\a \x03(\v2&.openetl.dataplane.v1.CheckpointStreamR\astreams\"E\n" +
+	"\rCheckpointRef\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x01 \x01(\x04R\n" +
+	"generation\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\"\xbe\x01\n" +
+	"\x10CheckpointStream\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04rows\x18\x02 \x01(\x04R\x04rows\x12)\n" +
+	"\x10quarantined_rows\x18\x03 \x01(\x04R\x0fquarantinedRows\x12\x16\n" +
+	"\x06forced\x18\x04 \x01(\bR\x06forced\x12\x1a\n" +
+	"\bcomplete\x18\x05 \x01(\bR\bcomplete\x12#\n" +
+	"\rschema_digest\x18\x06 \x01(\tR\fschemaDigest\"0\n" +
+	"\x18ReportCheckpointResponse\x12\x14\n" +
+	"\x05added\x18\x01 \x01(\bR\x05added2\xd3\x02\n" +
 	"\x10DataPlaneService\x12b\n" +
 	"\vGetSyncSpec\x12(.openetl.dataplane.v1.GetSyncSpecRequest\x1a).openetl.dataplane.v1.GetSyncSpecResponse\x12h\n" +
-	"\rReportSchemas\x12*.openetl.dataplane.v1.ReportSchemasRequest\x1a+.openetl.dataplane.v1.ReportSchemasResponseBGZEgithub.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1b\x06proto3"
+	"\rReportSchemas\x12*.openetl.dataplane.v1.ReportSchemasRequest\x1a+.openetl.dataplane.v1.ReportSchemasResponse\x12q\n" +
+	"\x10ReportCheckpoint\x12-.openetl.dataplane.v1.ReportCheckpointRequest\x1a..openetl.dataplane.v1.ReportCheckpointResponseBGZEgithub.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1b\x06proto3"
 
 var (
 	file_openetl_dataplane_v1_dataplane_proto_rawDescOnce sync.Once
@@ -329,30 +639,40 @@ func file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP() []byte {
 	return file_openetl_dataplane_v1_dataplane_proto_rawDescData
 }
 
-var file_openetl_dataplane_v1_dataplane_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_openetl_dataplane_v1_dataplane_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_openetl_dataplane_v1_dataplane_proto_goTypes = []any{
-	(*GetSyncSpecRequest)(nil),    // 0: openetl.dataplane.v1.GetSyncSpecRequest
-	(*GetSyncSpecResponse)(nil),   // 1: openetl.dataplane.v1.GetSyncSpecResponse
-	(*ReportSchemasRequest)(nil),  // 2: openetl.dataplane.v1.ReportSchemasRequest
-	(*ReportSchemasResponse)(nil), // 3: openetl.dataplane.v1.ReportSchemasResponse
-	nil,                           // 4: openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
-	(*v1.PipelineSpec)(nil),       // 5: openetl.api.v1.PipelineSpec
-	(*v1.ConnectorConfig)(nil),    // 6: openetl.api.v1.ConnectorConfig
+	(*GetSyncSpecRequest)(nil),       // 0: openetl.dataplane.v1.GetSyncSpecRequest
+	(*GetSyncSpecResponse)(nil),      // 1: openetl.dataplane.v1.GetSyncSpecResponse
+	(*ReportSchemasRequest)(nil),     // 2: openetl.dataplane.v1.ReportSchemasRequest
+	(*ReportSchemasResponse)(nil),    // 3: openetl.dataplane.v1.ReportSchemasResponse
+	(*ReportCheckpointRequest)(nil),  // 4: openetl.dataplane.v1.ReportCheckpointRequest
+	(*CheckpointRef)(nil),            // 5: openetl.dataplane.v1.CheckpointRef
+	(*CheckpointStream)(nil),         // 6: openetl.dataplane.v1.CheckpointStream
+	(*ReportCheckpointResponse)(nil), // 7: openetl.dataplane.v1.ReportCheckpointResponse
+	nil,                              // 8: openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	(*v1.PipelineSpec)(nil),          // 9: openetl.api.v1.PipelineSpec
+	(*v1.ConnectorConfig)(nil),       // 10: openetl.api.v1.ConnectorConfig
+	(*timestamppb.Timestamp)(nil),    // 11: google.protobuf.Timestamp
 }
 var file_openetl_dataplane_v1_dataplane_proto_depIdxs = []int32{
-	5, // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
-	6, // 1: openetl.dataplane.v1.GetSyncSpecResponse.source:type_name -> openetl.api.v1.ConnectorConfig
-	6, // 2: openetl.dataplane.v1.GetSyncSpecResponse.destination:type_name -> openetl.api.v1.ConnectorConfig
-	4, // 3: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
-	0, // 4: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
-	2, // 5: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
-	1, // 6: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
-	3, // 7: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	9,  // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
+	10, // 1: openetl.dataplane.v1.GetSyncSpecResponse.source:type_name -> openetl.api.v1.ConnectorConfig
+	10, // 2: openetl.dataplane.v1.GetSyncSpecResponse.destination:type_name -> openetl.api.v1.ConnectorConfig
+	8,  // 3: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	5,  // 4: openetl.dataplane.v1.ReportCheckpointRequest.previous:type_name -> openetl.dataplane.v1.CheckpointRef
+	11, // 5: openetl.dataplane.v1.ReportCheckpointRequest.create_time:type_name -> google.protobuf.Timestamp
+	6,  // 6: openetl.dataplane.v1.ReportCheckpointRequest.streams:type_name -> openetl.dataplane.v1.CheckpointStream
+	0,  // 7: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
+	2,  // 8: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
+	4,  // 9: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
+	1,  // 10: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
+	3,  // 11: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
+	7,  // 12: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
+	10, // [10:13] is the sub-list for method output_type
+	7,  // [7:10] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_openetl_dataplane_v1_dataplane_proto_init() }
@@ -366,7 +686,7 @@ func file_openetl_dataplane_v1_dataplane_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_dataplane_v1_dataplane_proto_rawDesc), len(file_openetl_dataplane_v1_dataplane_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

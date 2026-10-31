@@ -62,6 +62,9 @@ type Job struct {
 	// last call, the attempt's first holding every stream's. Each is an
 	// Arrow IPC stream holding only the schema. It must not block.
 	OnSchemas func(e destination.Epoch, schemas map[string][]byte)
+	// Called after an epoch commits, and after OnSchemas, with its record,
+	// which it must not modify. It must not block.
+	OnCheckpoint func(rec *checkpoint.Record)
 }
 
 type Result struct {
@@ -221,6 +224,7 @@ type event struct {
 	states   map[string][]byte
 	forced   []string
 	complete map[string]bool
+	rows     map[string]uint64
 	staged   destination.Staged
 	ready    *Ready
 	active   bool
@@ -231,6 +235,7 @@ type epochState struct {
 	states                map[string][]byte
 	forced                []string
 	complete              map[string]bool
+	rows                  map[string]uint64
 	desc                  destination.Staged
 	flow                  *Ready
 }
@@ -422,7 +427,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 		if st == nil || st.placed {
 			return fmt.Errorf("runner: unexpected placement of epoch %d", ev.epoch)
 		}
-		st.placed, st.states, st.forced, st.complete = true, ev.states, ev.forced, ev.complete
+		st.placed, st.states, st.forced, st.complete, st.rows = true, ev.states, ev.forced, ev.complete, ev.rows
 		c.outstanding = false
 	case evStaged:
 		st := c.pending[ev.epoch]
@@ -490,6 +495,7 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 			Schema:    st.flow.Schemas[name],
 			ReadStart: c.readStarts[name],
 			Complete:  st.complete[name],
+			Rows:      st.rows[name],
 		}
 	}
 	slices.Sort(rec.Forced)
@@ -518,6 +524,9 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 			}
 			c.job.OnSchemas(e, raw)
 		}
+	}
+	if c.job.OnCheckpoint != nil {
+		c.job.OnCheckpoint(rec)
 	}
 	select {
 	case c.events <- event{kind: evCommitted, epoch: n}:

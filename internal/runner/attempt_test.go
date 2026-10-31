@@ -171,6 +171,41 @@ func TestRecordsCarryTheDataflowsReport(t *testing.T) {
 	})
 }
 
+// Each record counts the rows its epoch read, and OnCheckpoint gets every
+// record in order, across attempts. A page's row is in its own epoch, and
+// an epoch that only completes the stream has none.
+func TestRecordsCountRows(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		var epochs []uint64
+		var rows uint64
+		for _, pages := range []int{2, 3} {
+			committed := make(chan uint64, 16)
+			j := job(log, fmt.Sprintf("a%d", pages), ackSource{pages: pages, committed: committed, acks: new([]string)}, runner.Passthrough{Convert: columnless}, committed)
+			j.OnCheckpoint = func(rec *checkpoint.Record) {
+				epochs = append(epochs, rec.Epoch)
+				if n := rec.Streams["s"].Rows; n > 1 {
+					t.Errorf("epoch %d read %d rows, want at most 1", rec.Epoch, n)
+				}
+				rows += rec.Streams["s"].Rows
+			}
+			if _, err := runner.RunAttempt(ctx, j); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i, n := range epochs {
+			if n != uint64(i)+1 {
+				t.Fatalf("OnCheckpoint got epochs %v, want 1, 2, ... in order", epochs)
+			}
+		}
+		if rows != 3 {
+			t.Fatalf("records count %d rows, want 3", rows)
+		}
+	})
+}
+
 // After Commit(N), the source acknowledges record N-1's states, including the
 // restored record after a new attempt's first commit.
 func TestAcknowledgementsTrailByOneRecord(t *testing.T) {

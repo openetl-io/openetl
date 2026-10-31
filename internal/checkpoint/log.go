@@ -49,6 +49,8 @@ type StreamState struct {
 	ReadStart int64 `json:"read_start,omitempty"`
 	// The read ended at a resume point, so the next one starts afresh.
 	Complete bool `json:"complete,omitempty"`
+	// Rows the source emitted in the epoch, quarantined ones included.
+	Rows uint64 `json:"rows,omitempty"`
 }
 
 // QuarantineFile holds the records of one stream the engine quarantined in
