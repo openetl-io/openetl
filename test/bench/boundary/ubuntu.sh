@@ -42,15 +42,20 @@ fi
 # rustup installs the toolchain rust-toolchain.toml pins on first use.
 command -v rustup >/dev/null || curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 
+# The first cgroup v2 file, else the first v1 file, that exists.
+cgroup() { for f; do [ -r "/sys/fs/cgroup/$f" ] && { echo "$f: $(cat "/sys/fs/cgroup/$f")"; return; }; done; echo n/a; }
 report="bench-boundary-$(date -u +%Y%m%dT%H%M%SZ).txt"
 {
   echo "# $(date -u +%FT%TZ) ${OPENETL_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
   echo "kernel: $(uname -sr)"
   echo "nproc: $(nproc)"
-  echo "cgroup cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a)"
+  echo "cgroup cpu: $(cgroup cpu.max cpu/cpu.cfs_quota_us)"
+  echo "cgroup cpuset: $(cgroup cpuset.cpus.effective cpuset/cpuset.cpus)"
   echo "memory: $(awk '/MemTotal/ {print $2 " kB"}' /proc/meminfo)"
-  echo "cgroup memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
-  echo "net.core.wmem_max: $(cat /proc/sys/net/core/wmem_max)"
+  echo "cgroup memory: $(cgroup memory.max memory/memory.limit_in_bytes)"
+  # A container's network namespace may hide wmem_max, so also ask for the edges' 1 MiB.
+  echo "net.core.wmem_max: $(cat /proc/sys/net/core/wmem_max 2>/dev/null || echo hidden)"
+  echo "SO_SNDBUF granted for 1 MiB: $(perl -MSocket -e 'socketpair(my $s, my $t, AF_UNIX, SOCK_STREAM, 0) or die $!; setsockopt($s, SOL_SOCKET, SO_SNDBUF, 1 << 20) or die $!; print unpack("i", getsockopt($s, SOL_SOCKET, SO_SNDBUF))' 2>&1)"
   lscpu | grep -E '^(Model name|Thread|Core|Socket|CPU\(s\)|L3)'
   su postgres -c "psql -qtA -c 'SELECT version()'"
   echo
