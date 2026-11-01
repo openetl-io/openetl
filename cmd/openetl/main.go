@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -29,6 +30,8 @@ const usage = `usage: openetl <command> [flags]
 Commands:
   apply -f FILE   create or update the connector versions, sources,
                   destinations, dbt projects and pipelines in FILE
+  plan -f FILE    show what apply would change, and how each pipeline
+                  would sync
   pause NAME      stop a pipeline's scheduled syncs
   resume NAME     start a pipeline's scheduled syncs again
   sync NAME       start a sync of a pipeline now
@@ -75,7 +78,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "apply":
-		return runApplyDocuments(ctx, "openetl apply", args[1:], out, false)
+		return runApplyDocuments(ctx, "openetl apply", args[1:], out, applyAll)
+	case "plan":
+		return runApplyDocuments(ctx, "openetl plan", args[1:], out, planAll)
 	case "connector":
 		return runConnector(ctx, args[1:], out)
 	case "secret":
@@ -122,22 +127,32 @@ func client[T any](a *api, newClient func(connect.HTTPClient, string, ...connect
 	return newClient(http.DefaultClient, *a.url, auth.WithBearer(key)), nil
 }
 
-// runApplyDocuments applies the documents in -f's files; with connectors,
-// only connector versions.
-func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Writer, connectors bool) error {
+type applyMode int
+
+const (
+	applyAll applyMode = iota
+	applyConnectors
+	planAll
+)
+
+// runApplyDocuments applies or plans the documents in -f's files.
+func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Writer, mode applyMode) error {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	var paths files
 	fs.Var(&paths, "f", "a YAML or JSON file, or - for stdin; repeatable")
 	conn := apiFlags(fs)
 	workspace := fs.String("workspace", "", "workspace for documents that name none (default: default)")
-	dryRun := fs.Bool("dry-run", false, "validate without changing anything")
+	dryRun := new(bool)
+	if mode != planAll {
+		dryRun = fs.Bool("dry-run", false, "validate without changing anything")
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if len(paths) == 0 || fs.NArg() > 0 {
-		return errors.New("apply takes one or more -f FILE, and no arguments")
+		return fmt.Errorf("%s takes one or more -f FILE, and no arguments", strings.TrimPrefix(cmd, "openetl "))
 	}
-	req := &apiv1.ApplyRequest{ValidateOnly: *dryRun, Client: "cli"}
+	req := &apiv1.ApplyRequest{ValidateOnly: *dryRun || mode == planAll, Client: "cli"}
 	if *workspace != "" {
 		req.Workspace = "workspaces/" + *workspace
 	}
@@ -151,7 +166,7 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 			base = "."
 		}
 		for _, d := range docs {
-			if connectors {
+			if mode == applyConnectors {
 				if err := onlyConnectorVersions(d.GetContent(), d.GetOrigin()); err != nil {
 					return err
 				}
@@ -172,7 +187,7 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	}
 	verb := func(r *apiv1.AppliedResource) string {
 		action := strings.ToLower(strings.TrimPrefix(r.GetAction().String(), "APPLY_ACTION_"))
-		if *dryRun {
+		if req.GetValidateOnly() {
 			action = "would be " + action
 		}
 		return action
@@ -182,6 +197,52 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	}
 	for _, r := range res.Msg.GetDependents() {
 		fmt.Fprintf(out, "%s %s (version %.12s), which uses what changed\n", verb(r), r.GetName(), r.GetVersion())
+	}
+	if mode == planAll {
+		return printPlans(out, res.Msg)
+	}
+	return nil
+}
+
+// printPlans prints each pipeline's plan, and fails if one the apply would
+// create or change has problems.
+func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
+	changed := map[string]bool{}
+	for _, r := range slices.Concat(res.GetResources(), res.GetDependents()) {
+		changed[r.GetName()] = r.GetAction() != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED
+	}
+	failed := false
+	for _, p := range res.GetPlans() {
+		fmt.Fprintf(out, "\n%s (version %.12s)\n", p.GetPipeline(), p.GetVersion())
+		if len(p.GetChanges()) > 0 {
+			fmt.Fprintln(out, "  changes:")
+			for _, c := range p.GetChanges() {
+				fmt.Fprintf(out, "    %s: %s -> %s\n", c.GetField(), cmp.Or(c.GetBefore(), "(unset)"), cmp.Or(c.GetAfter(), "(unset)"))
+			}
+		}
+		if len(p.GetStreams()) > 0 {
+			fmt.Fprintln(out, "  streams:")
+			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			for _, st := range p.GetStreams() {
+				fmt.Fprintf(tw, "    %s\t%s\t%s\n", st.GetName(), strings.ToLower(strings.TrimPrefix(st.GetLevel().String(), "DELIVERY_LEVEL_")), st.GetReason())
+			}
+			_ = tw.Flush()
+		}
+		for _, list := range []struct {
+			title string
+			items []string
+		}{{"problems", p.GetProblems()}, {"notes", p.GetNotes()}} {
+			if len(list.items) > 0 {
+				fmt.Fprintf(out, "  %s:\n", list.title)
+				for _, item := range list.items {
+					fmt.Fprintf(out, "    %s\n", item)
+				}
+			}
+		}
+		failed = failed || changed[p.GetPipeline()] && len(p.GetProblems()) > 0
+	}
+	if failed {
+		return errors.New("the plan has problems, so apply would refuse it")
 	}
 	return nil
 }

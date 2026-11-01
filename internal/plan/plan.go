@@ -1,0 +1,138 @@
+// Package plan works out how a pipeline version will sync before a runner
+// runs it: its delivery settings, each stream's level, and the checks a sync
+// would fail. The API plans from the source's latest catalog, and the runner
+// checks again against the catalog it discovers.
+package plan
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"time"
+
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	"github.com/unsuitable001/openetl/internal/delivery"
+	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/unsuitable001/openetl/sdk/go/source"
+)
+
+// Defaults for scheduled pipelines.
+const (
+	defaultCommitInterval     = 5 * time.Minute
+	defaultCommitMaxBytes     = 256e6
+	defaultResumePointTimeout = time.Minute
+)
+
+// Settings settles spec.delivery against the destination's capabilities.
+func Settings(d *apiv1.Delivery, caps destination.Capabilities) delivery.Settings {
+	s := delivery.Settings{
+		Require:            delivery.ExactlyOnce,
+		CommitInterval:     defaultCommitInterval,
+		CommitMaxBytes:     defaultCommitMaxBytes,
+		Scope:              destination.ScopeStream,
+		ResumePointTimeout: defaultResumePointTimeout,
+	}
+	if caps.SupportsScope(destination.ScopePipeline) {
+		s.Scope = destination.ScopePipeline
+	}
+	switch d.GetRequire() {
+	case apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE:
+		s.Require = delivery.AtLeastOnce
+	case apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE:
+		s.Require = delivery.EffectivelyOnce
+	}
+	if c := d.GetCommit(); c != nil {
+		if c.GetInterval() != nil {
+			s.CommitInterval = c.GetInterval().AsDuration()
+		}
+		if c.GetMaxBytes() > 0 {
+			s.CommitMaxBytes = c.GetMaxBytes()
+		}
+		switch c.GetScope() {
+		case apiv1.CommitScope_COMMIT_SCOPE_PIPELINE:
+			s.Scope = destination.ScopePipeline
+		case apiv1.CommitScope_COMMIT_SCOPE_STREAM:
+			s.Scope = destination.ScopeStream
+		}
+	}
+	if t := d.GetResumePointTimeout(); t != nil {
+		s.ResumePointTimeout = t.AsDuration()
+	}
+	return s
+}
+
+func WriteMode(p *apiv1.PipelineSpec) destination.WriteMode {
+	switch p.GetDestination().GetWrite() {
+	case apiv1.WriteMode_WRITE_MODE_OVERWRITE:
+		return destination.Overwrite
+	case apiv1.WriteMode_WRITE_MODE_MERGE:
+		return destination.Merge
+	}
+	return destination.Append
+}
+
+var levels = map[delivery.Level]apiv1.DeliveryLevel{
+	delivery.AtLeastOnce:     apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE,
+	delivery.EffectivelyOnce: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE,
+	delivery.ExactlyOnce:     apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE,
+}
+
+// Pipeline plans each stream the spec reads, and returns every check a sync
+// would fail. Without a catalog, it checks only the settings.
+func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities) ([]*apiv1.StreamPlan, []error) {
+	settings := Settings(spec.GetDelivery(), caps)
+	if cat == nil {
+		return nil, delivery.Problems(caps, settings, nil)
+	}
+	var problems []error
+	type selected struct {
+		cs *apiv1.CatalogStream
+		ps *apiv1.PipelineStream
+	}
+	var streams []selected
+	if len(spec.GetSource().GetStreams()) == 0 {
+		for _, cs := range cat.GetStreams() {
+			streams = append(streams, selected{cs: cs})
+		}
+	}
+	for _, ps := range spec.GetSource().GetStreams() {
+		i := slices.IndexFunc(cat.GetStreams(), func(cs *apiv1.CatalogStream) bool { return cs.GetName() == ps.GetName() })
+		if i < 0 {
+			problems = append(problems, fmt.Errorf("the source has no stream %q", ps.GetName()))
+			continue
+		}
+		streams = append(streams, selected{cs: cat.GetStreams()[i], ps: ps})
+	}
+
+	mode := WriteMode(spec)
+	var plans []*apiv1.StreamPlan
+	var ds []delivery.Stream
+	for _, s := range streams {
+		name := s.cs.GetName()
+		for _, column := range slices.Sorted(maps.Keys(s.ps.GetColumns())) {
+			if s.ps.GetColumns()[column].GetType() == apiv1.ColumnType_COLUMN_TYPE_UNSPECIFIED {
+				continue
+			}
+			i := slices.IndexFunc(s.cs.GetColumns(), func(c *apiv1.CatalogColumn) bool { return c.GetName() == column })
+			if i < 0 || !strings.HasPrefix(s.cs.GetColumns()[i].GetType(), "decimal(") {
+				problems = append(problems, fmt.Errorf("stream %q: column %q has a type override, but the source doesn't declare it a decimal", name, column))
+			}
+		}
+		if s.ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND && !caps.NanosecondTimestamps {
+			problems = append(problems, fmt.Errorf("stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", name))
+		}
+		d := delivery.Stream{Name: name, Replay: replay(s.cs.GetReplay()), Mode: mode, Keyed: len(s.cs.GetPrimaryKey()) > 0}
+		ds = append(ds, d)
+		p := delivery.PlanStream(caps, d, settings.Require)
+		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe, Reason: p.Why})
+	}
+	return plans, append(problems, delivery.Problems(caps, settings, ds)...)
+}
+
+func replay(r apiv1.Replay) source.Replay {
+	if r == apiv1.Replay_REPLAY_EXACT {
+		return source.Exact
+	}
+	return source.Superset
+}

@@ -37,7 +37,7 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 	case "package":
 		return runPackage(ctx, args[1:], out)
 	case "apply":
-		return runApplyDocuments(ctx, "openetl connector apply", args[1:], out, true)
+		return runApplyDocuments(ctx, "openetl connector apply", args[1:], out, applyConnectors)
 	}
 	fmt.Fprint(os.Stderr, connectorUsage)
 	return fmt.Errorf("unknown connector command %q", args[0])

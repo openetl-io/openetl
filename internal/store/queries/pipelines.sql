@@ -33,7 +33,8 @@ ON CONFLICT (org_id, pipeline_id, version) DO NOTHING;
 SELECT * FROM pipeline_versions WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND version = @version;
 
 -- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, sv.spec AS source_spec, dv.spec AS destination_spec,
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.source_version, v.destination_version,
+    sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
     sv.secrets AS source_secrets, dv.secrets AS destination_secrets,
     p.workspace_id, p.name AS pipeline, w.name AS workspace

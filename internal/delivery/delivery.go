@@ -111,6 +111,11 @@ func CanForce(caps destination.Capabilities, s Stream, require Level) bool {
 // Check runs the plan checks on a pipeline's settings and streams, and
 // returns every failure.
 func Check(caps destination.Capabilities, s Settings, streams []Stream) error {
+	return errors.Join(Problems(caps, s, streams)...)
+}
+
+// Problems is Check's failures, one by one.
+func Problems(caps destination.Capabilities, s Settings, streams []Stream) []error {
 	var fails []error
 	if !caps.SupportsScope(s.Scope) {
 		fails = append(fails, fmt.Errorf("delivery.commit.scope: the destination doesn't support %s", scopeName(s.Scope)))
@@ -127,7 +132,7 @@ func Check(caps destination.Capabilities, s Settings, streams []Stream) error {
 			fails = append(fails, fmt.Errorf("delivery.require: stream %q gets %v (%s), below %v", st.Name, p.Level, p.Why, s.Require))
 		}
 	}
-	return errors.Join(fails...)
+	return fails
 }
 
 func scopeName(s destination.Scope) string {

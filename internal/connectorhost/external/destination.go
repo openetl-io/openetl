@@ -35,15 +35,26 @@ func NewDestination(exe string, config []byte, opts Options) *Destination {
 
 func (d *Destination) Check(ctx context.Context) error { return d.check(ctx) }
 
-// Capabilities come from the spec, so they're zero until Start.
+// Capabilities come from the spec: the descriptor's, or else the running
+// connector's, so they're zero until Start.
 func (d *Destination) Capabilities() destination.Capabilities {
-	d.mu.Lock()
-	p := d.p
-	d.mu.Unlock()
-	if p == nil {
+	spec := d.opts.Spec
+	if spec == nil {
+		d.mu.Lock()
+		if d.p != nil {
+			spec = d.p.spec
+		}
+		d.mu.Unlock()
+	}
+	return Capabilities(spec)
+}
+
+// Capabilities are what a destination's spec declares; zero for nil.
+func Capabilities(spec *protocolv1.SpecResponse) destination.Capabilities {
+	if spec == nil {
 		return destination.Capabilities{}
 	}
-	pc := p.spec.GetDestination()
+	pc := spec.GetDestination()
 	c := destination.Capabilities{
 		Class:                 destination.Class(pc.GetSinkClass()),
 		DedupeAtApply:         pc.GetDedupeAtApply(),

@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -20,6 +22,9 @@ type fakeApply struct {
 }
 
 func (fakeApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyRequest]) (*connect.Response[apiv1.ApplyResponse], error) {
+	if !req.Msg.GetValidateOnly() {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("want validate only"))
+	}
 	return connect.NewResponse(&apiv1.ApplyResponse{
 		Resources: []*apiv1.AppliedResource{
 			{Name: "workspaces/default/sources/shop", Action: apiv1.ApplyAction_APPLY_ACTION_UPDATED, Version: "0123456789abcdef"},
@@ -27,10 +32,21 @@ func (fakeApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyReques
 		Dependents: []*apiv1.AppliedResource{
 			{Name: "workspaces/default/pipelines/shop-to-dw", Action: apiv1.ApplyAction_APPLY_ACTION_UPDATED, Version: "fedcba9876543210"},
 		},
+		Plans: []*apiv1.PipelinePlan{{
+			Pipeline: "workspaces/default/pipelines/shop-to-dw", Version: "fedcba9876543210",
+			Changes: []*apiv1.PlanChange{{Field: "source.version", Before: `"01"`, After: `"02"`}, {Field: "delivery.require", After: `"DELIVERY_LEVEL_AT_LEAST_ONCE"`}},
+			Streams: []*apiv1.StreamPlan{
+				{Name: "orders", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, Reason: "exact replay"},
+				{Name: "events", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, Reason: "superset replay, and no primary key to dedupe on"},
+			},
+			Problems: []string{`delivery.require: stream "events" gets at_least_once`},
+			Notes:    []string{"a note"},
+		}},
 	}), nil
 }
 
-// openetl apply lists the pipelines that a change gave new versions.
+// openetl apply lists the pipelines that a change gave new versions, and
+// openetl plan shows their plans.
 func TestApplyListsDependents(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewApplyServiceHandler(fakeApply{}))
@@ -47,6 +63,28 @@ func TestApplyListsDependents(t *testing.T) {
 	}
 	want := "would be updated workspaces/default/sources/shop (version 0123456789ab)\n" +
 		"would be updated workspaces/default/pipelines/shop-to-dw (version fedcba987654), which uses what changed\n"
+	if out.String() != want {
+		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
+	}
+
+	out.Reset()
+	err := run(t.Context(), []string{"plan", "--api-url", srv.URL, "-f", file}, &out)
+	if err == nil || !strings.Contains(err.Error(), "apply would refuse it") {
+		t.Errorf("a plan with problems: %v", err)
+	}
+	want += `
+workspaces/default/pipelines/shop-to-dw (version fedcba987654)
+  changes:
+    source.version: "01" -> "02"
+    delivery.require: (unset) -> "DELIVERY_LEVEL_AT_LEAST_ONCE"
+  streams:
+    orders  exactly_once   exact replay
+    events  at_least_once  superset replay, and no primary key to dedupe on
+  problems:
+    delivery.require: stream "events" gets at_least_once
+  notes:
+    a note
+`
 	if out.String() != want {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
 	}

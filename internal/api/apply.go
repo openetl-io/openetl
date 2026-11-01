@@ -120,8 +120,18 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		if res.Dependents, err = s.repin(ctx, q, ch); err != nil {
 			return err
 		}
+		for _, p := range ch.pipelines {
+			pl, err := s.plan(ctx, q, p)
+			if err != nil {
+				return fmt.Errorf("%s: plan: %w", p.name, err)
+			}
+			res.Plans = append(res.Plans, pl)
+		}
 		if req.Msg.GetValidateOnly() {
 			return errValidateOnly
+		}
+		if err := refuse(ch, res.Plans); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -227,32 +237,17 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	if err != nil {
 		return nil, err
 	}
-	env, connector := s.Connectors, ""
+	connector := ""
 	if v != nil {
-		env, connector = env.With(v), v.Digest
+		connector = v.Digest
 	}
-	props, known, err := connectorhost.SecretProperties(kind, name, env)
-	if err != nil {
-		return nil, invalid("%v", err)
-	}
-	secrets, masked, err := bindSecrets(doc.Connector.GetConfig(), props, known)
+	b, err := s.bind(kind, name, v, doc.Connector.GetConfig())
 	if err != nil {
 		return nil, err
 	}
+	secrets := b.secrets
 	if err := s.checkSecretsExist(ctx, q, wsID, doc.Workspace, secrets); err != nil {
 		return nil, err
-	}
-	cfg, err := protojson.Marshal(masked)
-	if err != nil {
-		return nil, err
-	}
-	if kind == "source" {
-		_, err = connectorhost.NewSource(name, cfg, env)
-	} else {
-		_, err = connectorhost.NewDestination(name, cfg, env)
-	}
-	if err != nil {
-		return nil, invalid("%v", err)
 	}
 	version, err := digest(doc.Connector, connector)
 	if err != nil {
@@ -430,22 +425,22 @@ func (s *Server) applyPipeline(ctx context.Context, q *db.Queries, doc *spec.Doc
 	if err != nil {
 		return nil, nil, err
 	}
-	ch.pipelines[id] = true
+	ch.pipelines = append(ch.pipelines, &planned{id: id, name: res.Name, prev: cur.Version, version: res.Version, action: res.Action, v: v})
 	return res, &schedule{pipelineID: id.String(), spec: doc.Pipeline.GetSchedule(), paused: cur.Paused}, nil
 }
 
 // changes is what an Apply has changed so far: sources, destinations and dbt
 // projects, with the provenance of the documents that changed them, and the
-// pipelines it applied.
+// pipelines it gave versions, those the documents define first.
 type changes struct {
 	sources      map[uuid.UUID]string
 	destinations map[uuid.UUID]string
 	dbtProjects  map[uuid.UUID]string
-	pipelines    map[uuid.UUID]bool
+	pipelines    []*planned
 }
 
 func newChanges() *changes {
-	return &changes{sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{}, pipelines: map[uuid.UUID]bool{}}
+	return &changes{sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{}}
 }
 
 // repin gives a new version to each pipeline whose current version pins a
@@ -466,7 +461,7 @@ func (s *Server) repin(ctx context.Context, q *db.Queries, ch *changes) ([]*apiv
 	}
 	var out []*apiv1.AppliedResource
 	for _, r := range rows {
-		if ch.pipelines[r.ID] {
+		if slices.ContainsFunc(ch.pipelines, func(p *planned) bool { return p.id == r.ID }) {
 			continue
 		}
 		name := resourceName(r.Workspace, "pipelines", r.Name)
@@ -488,6 +483,7 @@ func (s *Server) repin(ctx context.Context, q *db.Queries, ch *changes) ([]*apiv
 		}
 		if action != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED {
 			out = append(out, &apiv1.AppliedResource{Kind: spec.KindPipeline, Name: name, Action: action, Version: version})
+			ch.pipelines = append(ch.pipelines, &planned{id: r.ID, name: name, prev: r.Version, version: version, action: action, v: v})
 		}
 	}
 	return out, nil

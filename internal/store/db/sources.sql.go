@@ -28,6 +28,30 @@ func (q *Queries) DeleteSource(ctx context.Context, arg DeleteSourceParams) (int
 	return result.RowsAffected(), nil
 }
 
+const getLatestSourceCatalog = `-- name: GetLatestSourceCatalog :one
+SELECT org_id, source_id, digest, source_version, catalog, discover_time FROM source_catalogs WHERE org_id = $1 AND source_id = $2
+ORDER BY discover_time DESC LIMIT 1
+`
+
+type GetLatestSourceCatalogParams struct {
+	OrgID    uuid.UUID
+	SourceID uuid.UUID
+}
+
+func (q *Queries) GetLatestSourceCatalog(ctx context.Context, arg GetLatestSourceCatalogParams) (SourceCatalog, error) {
+	row := q.db.QueryRow(ctx, getLatestSourceCatalog, arg.OrgID, arg.SourceID)
+	var i SourceCatalog
+	err := row.Scan(
+		&i.OrgID,
+		&i.SourceID,
+		&i.Digest,
+		&i.SourceVersion,
+		&i.Catalog,
+		&i.DiscoverTime,
+	)
+	return i, err
+}
+
 const getSource = `-- name: GetSource :one
 SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest, secrets FROM sources WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `

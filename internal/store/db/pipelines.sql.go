@@ -118,7 +118,8 @@ func (q *Queries) GetPipelineVersion(ctx context.Context, arg GetPipelineVersion
 }
 
 const getSyncSpec = `-- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, sv.spec AS source_spec, dv.spec AS destination_spec,
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.source_version, v.destination_version,
+    sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
     sv.secrets AS source_secrets, dv.secrets AS destination_secrets,
     p.workspace_id, p.name AS pipeline, w.name AS workspace
@@ -141,6 +142,8 @@ type GetSyncSpecRow struct {
 	DataPlaneID          string
 	PipelineSpec         []byte
 	Dbt                  []byte
+	SourceVersion        string
+	DestinationVersion   string
 	SourceSpec           []byte
 	DestinationSpec      []byte
 	SourceConnector      string
@@ -160,6 +163,8 @@ func (q *Queries) GetSyncSpec(ctx context.Context, arg GetSyncSpecParams) (GetSy
 		&i.DataPlaneID,
 		&i.PipelineSpec,
 		&i.Dbt,
+		&i.SourceVersion,
+		&i.DestinationVersion,
 		&i.SourceSpec,
 		&i.DestinationSpec,
 		&i.SourceConnector,

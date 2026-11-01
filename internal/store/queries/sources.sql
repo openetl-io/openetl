@@ -33,3 +33,7 @@ SELECT * FROM source_catalogs WHERE org_id = @org_id AND source_id = @source_id 
 INSERT INTO source_versions (org_id, source_id, version, spec, connector_digest, secrets, provenance)
 VALUES (@org_id, @source_id, @version, @spec, @connector_digest, @secrets, @provenance)
 ON CONFLICT (org_id, source_id, version) DO NOTHING;
+
+-- name: GetLatestSourceCatalog :one
+SELECT * FROM source_catalogs WHERE org_id = @org_id AND source_id = @source_id
+ORDER BY discover_time DESC LIMIT 1;

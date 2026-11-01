@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 )
@@ -98,5 +101,62 @@ func TestVersionsPinConfigs(t *testing.T) {
 	}
 	if len(res.GetDependents()) != 0 {
 		t.Errorf("reapplying: dependents %v", res.GetDependents())
+	}
+}
+
+// The plan uses the source's latest catalog and the destination's declared
+// capabilities, and Apply refuses a change whose plan fails.
+func TestPlan(t *testing.T) {
+	startRunner(t)
+	name := unique("plan")
+	faker := `{"seed": 5, "count": 20, "overlap": 5}`
+	first := applyAll(t, false, pipelineDocs(name, faker, `{}`)...)
+	if p := first.GetPlans(); len(p) != 1 || len(p[0].GetStreams()) != 0 || len(p[0].GetNotes()) != 1 || !strings.Contains(p[0].GetNotes()[0], "hasn't been discovered") {
+		t.Fatalf("before discovery: %v", p)
+	}
+	sources := apiv1connect.NewSourceServiceClient(env.http, env.apiURL)
+	if _, err := sources.DiscoverSource(t.Context(), connect.NewRequest(&apiv1.DiscoverSourceRequest{Name: "workspaces/default/sources/" + name})); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := applyAll(t, true, pipelineDocs(name, faker, `{}`)...).GetPlans()[0]
+	var got []string
+	for _, s := range plan.GetStreams() {
+		got = append(got, fmt.Sprintf("%s %v %v", s.GetName(), s.GetLevel(), s.GetDedupe()))
+	}
+	if want := "users DELIVERY_LEVEL_EXACTLY_ONCE true, purchases DELIVERY_LEVEL_EXACTLY_ONCE true"; strings.Join(got, ", ") != want ||
+		len(plan.GetProblems())+len(plan.GetNotes())+len(plan.GetChanges()) != 0 {
+		t.Errorf("into Postgres: streams %v, want %s; plan %v", got, want, plan)
+	}
+
+	toParquet := docs(name, `{"connector": "faker", "config": `+faker+`}`, parquetDest(t.TempDir()), `{}`)
+	res := applyAll(t, true, toParquet...)
+	plan = res.GetPlans()[0]
+	fields := map[string]bool{}
+	for _, c := range plan.GetChanges() {
+		fields[c.GetField()] = true
+	}
+	if !fields["destination.version"] || !fields["destination.connector"] || !fields["destination.namespace"] {
+		t.Errorf("changes %v", plan.GetChanges())
+	}
+	if p := plan.GetProblems(); len(p) != 2 || !strings.Contains(p[1], `stream "purchases" gets at_least_once (superset replay, and the destination can't dedupe), below exactly_once`) {
+		t.Errorf("into Parquet: problems %v", p)
+	}
+	before, err := query[string](t, "SELECT version FROM pipelines WHERE name = $1", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = applyErr(t, toParquet...)
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "workspaces/default/pipelines/"+name+`: delivery.require: stream "users"`) {
+		t.Fatalf("applying a failing plan: %v", err)
+	}
+	if after, err := query[string](t, "SELECT version FROM pipelines WHERE name = $1", name); err != nil || after != before {
+		t.Errorf("the refused apply changed the version from %s to %s, %v", before, after, err)
+	}
+
+	toParquet[2] = strings.Replace(toParquet[2], `"delivery": {}`, `"delivery": {"require": "at_least_once"}`, 1)
+	res = applyAll(t, false, toParquet...)
+	if p := res.GetPlans()[0]; len(p.GetProblems()) != 0 || p.GetStreams()[0].GetLevel() != apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE {
+		t.Errorf("at least once into Parquet: %v", p)
 	}
 }
