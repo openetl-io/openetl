@@ -149,7 +149,8 @@ type Writer interface {
 	// streams whose marker is missing and reports Redone, or reports Lost.
 	// With a zero e it only raises the fence and reports Applied. Otherwise it
 	// may then drop whatever earlier generations staged, since none of it can
-	// be applied any more.
+	// be applied any more, and, unless e is lost, the markers of epochs before
+	// e.N, which no recovery checks again.
 	Recover(ctx context.Context, gen uint64, e Epoch, s Staged) (Recovery, error)
 	Close(ctx context.Context) error
 }

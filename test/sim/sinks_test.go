@@ -141,6 +141,17 @@ func (wh *warehouse) missing(st warehouseStaged) (missing []stagedStream, staged
 	return missing, staged
 }
 
+// trim deletes the markers below an applied epoch, as Postgres does.
+func (wh *warehouse) trim(applied uint64) {
+	wh.mu.Lock()
+	defer wh.mu.Unlock()
+	for m := range wh.loads {
+		if m.n < applied {
+			delete(wh.loads, m)
+		}
+	}
+}
+
 type warehouseDest struct {
 	w       *world
 	wh      *warehouse
@@ -244,19 +255,26 @@ func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination
 		return 0, err
 	}
 	missing, staged := w.wh.missing(st)
+	var r destination.Recovery
 	switch {
 	case len(missing) == 0:
-		return destination.Applied, nil
+		r = destination.Applied
 	case staged == len(missing):
 		if err := w.applyScoped(ctx, st, missing); err != nil {
 			return 0, err
 		}
-		return destination.Redone, nil
+		r = destination.Redone
 	case staged == 0 && len(missing) == len(st.Streams):
 		return destination.Lost, nil
 	default:
 		return 0, fmt.Errorf("sim: epoch %d-g%d is partly applied and its remaining staging is gone", st.N, st.Gen)
 	}
+	// Best effort, as on Postgres: only a crash stops the attempt.
+	err = outcome(w.w.sched.point(ctx, w.attempt, "sink.trim"), func() error { w.wh.trim(st.N); return nil })
+	if errors.Is(err, errCrashed) || errors.Is(err, context.Canceled) {
+		return 0, err
+	}
+	return r, nil
 }
 
 func (w *warehouseWriter) Close(context.Context) error { return nil }

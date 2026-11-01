@@ -203,6 +203,72 @@ func TestRecoverReportsLost(t *testing.T) {
 	}
 }
 
+// Recovering an applied epoch deletes the pipeline's markers below it; a lost
+// one keeps the previous epoch's, which the next recovery checks.
+func TestRecoverTrimsMarkers(t *testing.T) {
+	env := newEnv(t)
+	ctx := t.Context()
+	commit := func(w destination.Writer, e destination.Epoch) destination.Staged {
+		if err := w.Write(ctx, e, "users", batch(t, []arrow.Field{idField}, `[{"id": 1}]`)); err != nil {
+			t.Fatal(err)
+		}
+		st := precommit(t, w, e)
+		if err := w.Commit(ctx, e, st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	markers := func(pipeline string) string {
+		var s string
+		if err := env.conn.QueryRow(ctx, "SELECT coalesce(string_agg(generation || '-' || epoch, ' ' ORDER BY epoch), '') FROM "+
+			pgx.Identifier{env.schema, "_openetl_loads"}.Sanitize()+" WHERE pipeline = $1", pipeline).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	other, err := env.d.Open(ctx, destination.OpenConfig{Pipeline: "p2", Generation: 1, Scope: destination.ScopePipeline,
+		Streams: []destination.Stream{{Name: "users", Mode: destination.Append}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close(context.Background()) })
+	recov(t, other, 1, destination.Epoch{}, nil)
+	commit(other, destination.Epoch{Generation: 1, N: 1})
+
+	w1 := env.open(1, destination.ScopePipeline, "users")
+	recov(t, w1, 1, destination.Epoch{}, nil)
+	var head destination.Staged
+	for n := uint64(1); n <= 3; n++ {
+		head = commit(w1, destination.Epoch{Generation: 1, N: n})
+	}
+	w2 := env.open(2, destination.ScopePipeline, "users")
+	if r := recov(t, w2, 2, destination.Epoch{Generation: 1, N: 3}, head); r != destination.Applied {
+		t.Fatalf("Recover = %v, want applied", r)
+	}
+	if got := markers("p1"); got != "1-3" {
+		t.Errorf("markers after recovering 3: %q, want 1-3", got)
+	}
+
+	lost := destination.Epoch{Generation: 2, N: 4}
+	if err := w2.Write(ctx, lost, "users", batch(t, []arrow.Field{idField}, `[{"id": 1}]`)); err != nil {
+		t.Fatal(err)
+	}
+	st := precommit(t, w2, lost)
+	if _, err := env.conn.Exec(ctx, "DROP TABLE "+pgx.Identifier{env.schema, stagingName("p1", "users", lost)}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	w3 := env.open(3, destination.ScopePipeline, "users")
+	if r := recov(t, w3, 3, lost, st); r != destination.Lost {
+		t.Fatalf("Recover = %v, want lost", r)
+	}
+	if r := recov(t, w3, 3, destination.Epoch{Generation: 1, N: 3}, head); r != destination.Applied {
+		t.Fatalf("recovering the previous epoch after a lost one: %v, want applied", r)
+	}
+	if got := markers("p2"); got != "1-1" {
+		t.Errorf("the other pipeline's markers: %q, want 1-1", got)
+	}
+}
+
 func TestStaleWriterIsFenced(t *testing.T) {
 	env := newEnv(t)
 	ctx := t.Context()

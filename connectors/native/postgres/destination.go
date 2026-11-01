@@ -568,8 +568,19 @@ func (w *writer) Recover(ctx context.Context, gen uint64, e destination.Epoch, s
 	default:
 		return 0, fmt.Errorf("postgres: epoch %d-g%d is partly applied and the staging for the rest is gone", desc.Epoch, desc.Generation)
 	}
+	if r != destination.Lost {
+		w.trimMarkers(ctx, desc.Epoch)
+	}
 	w.dropStale(ctx, gen)
 	return r, nil
+}
+
+// trimMarkers deletes the pipeline's markers below an applied epoch. Recovery
+// checks only HEAD's, and HEAD never moves back past an applied epoch; a lost
+// one moves it back to the previous record, whose markers it then checks.
+// Best effort, like dropStaging.
+func (w *writer) trimMarkers(ctx context.Context, applied uint64) {
+	_, _ = w.pool.Exec(ctx, "DELETE FROM "+w.ident("_openetl_loads")+" WHERE pipeline = $1 AND epoch < $2", w.cfg.Pipeline, applied)
 }
 
 // dropStale drops what earlier generations of the pipeline staged. None of
