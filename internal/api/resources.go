@@ -383,6 +383,8 @@ func (s *Server) DeleteDestination(ctx context.Context, req *connect.Request[api
 // ---- Data plane
 
 func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplanev1.GetSyncSpecRequest]) (*connect.Response[dataplanev1.GetSyncSpecResponse], error) {
+	audit(ctx).set("pipelineId", req.Msg.GetPipelineId())
+	audit(ctx).set("version", req.Msg.GetVersion())
 	id, err := uuid.Parse(req.Msg.GetPipelineId())
 	if err != nil {
 		return nil, invalid("pipeline_id: %v", err)
@@ -394,6 +396,7 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if err != nil {
 		return nil, err
 	}
+	audit(ctx).touched(resourceName(row.Workspace, "pipelines", row.Pipeline))
 	if err := onDataPlane(ctx, row.DataPlaneID, fmt.Sprintf("pipeline %s version %s", id, row.Version)); err != nil {
 		return nil, err
 	}

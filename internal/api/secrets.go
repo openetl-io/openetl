@@ -296,6 +296,7 @@ func (s *Server) resolveSecrets(ctx context.Context, what string, wsID uuid.UUID
 			return err
 		}
 		values[r.Name] = string(v)
+		audit(ctx).touched(resourceName(r.Workspace, "secrets", r.Name))
 	}
 	for k, v := range cfg.GetConfig().GetFields() {
 		name, ok := secretRef(v)

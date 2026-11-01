@@ -142,6 +142,7 @@ func lastOwner(name string) error {
 func (s *Server) CreatePrincipal(ctx context.Context, req *connect.Request[apiv1.CreatePrincipalRequest]) (*connect.Response[apiv1.CreatePrincipalResponse], error) {
 	in := req.Msg.GetPrincipal()
 	id := req.Msg.GetPrincipalId()
+	audit(ctx).touched(principalName(id))
 	if !principalID.MatchString(id) {
 		return nil, invalid("principal_id %q must be a lowercase letter, then lowercase letters, digits and hyphens, at most 63 in all", id)
 	}
@@ -266,6 +267,10 @@ func (s *Server) changeRole(ctx context.Context, name string, b *apiv1.RoleBindi
 	if role == auth.None {
 		return nil, invalid("set the binding's role")
 	}
+	audit(ctx).set("role", role.String())
+	if b.GetWorkspace() != "" {
+		audit(ctx).set("workspace", b.GetWorkspace())
+	}
 	var ws string
 	if b.GetWorkspace() != "" {
 		var err error
@@ -371,6 +376,7 @@ func (s *Server) CreateKey(ctx context.Context, req *connect.Request[apiv1.Creat
 		}
 		res.Secret = key.Secret
 		res.Key = keyResource(p.Name, id, key.Shown, expire, nil, time.Now())
+		audit(ctx).touched(res.Key.GetName())
 		return nil
 	})
 	if err != nil {
@@ -466,9 +472,9 @@ func (s *Server) CreateRunnerToken(ctx context.Context, req *connect.Request[api
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&apiv1.CreateRunnerTokenResponse{
-		Token: tokenResource(dp, id, token.Shown, nil, time.Now()), Secret: token.Secret,
-	}), nil
+	t := tokenResource(dp, id, token.Shown, nil, time.Now())
+	audit(ctx).touched(t.GetName())
+	return connect.NewResponse(&apiv1.CreateRunnerTokenResponse{Token: t, Secret: token.Secret}), nil
 }
 
 func (s *Server) ListRunnerTokens(ctx context.Context, req *connect.Request[apiv1.ListRunnerTokensRequest]) (*connect.Response[apiv1.ListRunnerTokensResponse], error) {

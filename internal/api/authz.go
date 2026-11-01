@@ -51,6 +51,7 @@ var permissions = map[string]auth.Role{
 	"runnerTokens.get":    auth.Viewer,
 	"runnerTokens.create": auth.Admin,
 	"runnerTokens.delete": auth.Admin,
+	"audit.get":           auth.Admin,
 	// Granting or revoking owner, and changing an owner or its keys.
 	"owners.manage": auth.Owner,
 }
@@ -117,6 +118,8 @@ var rules = map[string]rule{
 	apiv1connect.AccessServiceListRunnerTokensProcedure:  {"runnerTokens.get", onOrg, false},
 	apiv1connect.AccessServiceDeleteRunnerTokenProcedure: {"runnerTokens.delete", onOrg, false},
 
+	apiv1connect.AuditServiceListAuditEntriesProcedure: {"audit.get", onOrg, false},
+
 	dataplanev1connect.DataPlaneServiceGetSyncSpecProcedure:        runner,
 	dataplanev1connect.DataPlaneServiceReportSchemasProcedure:      runner,
 	dataplanev1connect.DataPlaneServiceReportCheckpointProcedure:   runner,
@@ -181,25 +184,36 @@ type authInterceptor struct{ s *Server }
 
 func (a authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		r, ok := rules[req.Spec().Procedure]
+		procedure := req.Spec().Procedure
+		r, ok := rules[procedure]
 		if !ok {
-			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("%s has no permission, so nobody may call it", req.Spec().Procedure))
+			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("%s has no permission, so nobody may call it", procedure))
 		}
 		c, err := a.s.authenticate(ctx, req.Header(), r.runner)
 		if err != nil {
+			// Anyone can make these, so they're logged, not audited.
+			if connect.CodeOf(err) == connect.CodeUnauthenticated {
+				a.s.log().Info("call refused", "procedure", procedure, "peer", req.Peer().Addr, "err", err)
+			}
 			return nil, err
 		}
 		ctx = context.WithValue(ctx, callerKey{}, c)
-		if r.scope != nil {
-			ws, err := r.scope(req.Any())
-			if err != nil {
-				return nil, err
+		call := func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			if r.scope != nil {
+				ws, err := r.scope(req.Any())
+				if err != nil {
+					return nil, err
+				}
+				if err := authorize(ctx, r.permission, ws); err != nil {
+					return nil, err
+				}
 			}
-			if err := authorize(ctx, r.permission, ws); err != nil {
-				return nil, err
-			}
+			return next(ctx, req)
 		}
-		return next(ctx, req)
+		if !audited(procedure, r) {
+			return call(ctx, req)
+		}
+		return a.s.audit(ctx, req, call)
 	}
 }
 

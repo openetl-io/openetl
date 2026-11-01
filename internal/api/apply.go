@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -64,6 +65,9 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	if len(docs) == 0 {
 		return nil, invalid("no documents")
 	}
+	for _, doc := range docs {
+		audit(ctx).touched(documentName(doc))
+	}
 	for i, doc := range docs {
 		perm, ws := "documents.apply", doc.Workspace
 		if versioned(doc) {
@@ -94,6 +98,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	}
 	slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(rank(a), rank(b)) })
 	client := cmp.Or(req.Msg.GetClient(), "api")
+	audit(ctx).set("client", client)
 
 	res := &apiv1.ApplyResponse{Resources: make([]*apiv1.AppliedResource, len(docs))}
 	var scheds []schedule
@@ -114,11 +119,14 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		return nil
 	})
 	if errors.Is(err, errValidateOnly) {
+		audit(ctx).set("validateOnly", true)
+		auditApplied(ctx, res)
 		return connect.NewResponse(res), nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	auditApplied(ctx, res)
 	for _, sc := range scheds {
 		if err := s.Schedules.Upsert(ctx, s.Tenant.Org.String(), sc.pipelineID, sc.spec, sc.paused); err != nil {
 			s.log().Error("schedule update failed", "pipeline", sc.pipelineID, "err", err)
@@ -126,6 +134,28 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		}
 	}
 	return connect.NewResponse(res), nil
+}
+
+// documentName is the resource a document defines.
+func documentName(doc *spec.Document) string {
+	if versioned(doc) {
+		return connectorName(connectorKind(doc), doc.Name, doc.Version)
+	}
+	collection := map[string]string{
+		spec.KindSource: "sources", spec.KindDestination: "destinations", spec.KindPipeline: "pipelines", spec.KindDbtProject: "dbtProjects",
+	}[doc.Kind]
+	return resourceName(doc.Workspace, collection, doc.Name)
+}
+
+// auditApplied records what each document did, and the version it has.
+func auditApplied(ctx context.Context, res *apiv1.ApplyResponse) {
+	applied := make([]any, len(res.GetResources()))
+	for i, r := range res.GetResources() {
+		applied[i] = map[string]any{
+			"name": r.GetName(), "action": strings.ToLower(strings.TrimPrefix(r.GetAction().String(), "APPLY_ACTION_")), "version": r.GetVersion(),
+		}
+	}
+	audit(ctx).set("applied", applied)
 }
 
 func (s *Server) workspace(ctx context.Context, q *db.Queries, name string) (uuid.UUID, error) {

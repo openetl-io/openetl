@@ -63,8 +63,9 @@ func (q *Queries) GetSecret(ctx context.Context, arg GetSecretParams) (Secret, e
 }
 
 const getSecretValues = `-- name: GetSecretValues :many
-SELECT id, name, ciphertext FROM secrets
-WHERE org_id = $1 AND workspace_id = $2 AND name = ANY($3::text[])
+SELECT s.id, s.name, s.ciphertext, w.name AS workspace
+FROM secrets s JOIN workspaces w ON w.org_id = s.org_id AND w.id = s.workspace_id
+WHERE s.org_id = $1 AND s.workspace_id = $2 AND s.name = ANY($3::text[])
 `
 
 type GetSecretValuesParams struct {
@@ -77,6 +78,7 @@ type GetSecretValuesRow struct {
 	ID         uuid.UUID
 	Name       string
 	Ciphertext []byte
+	Workspace  string
 }
 
 func (q *Queries) GetSecretValues(ctx context.Context, arg GetSecretValuesParams) ([]GetSecretValuesRow, error) {
@@ -88,7 +90,12 @@ func (q *Queries) GetSecretValues(ctx context.Context, arg GetSecretValuesParams
 	var items []GetSecretValuesRow
 	for rows.Next() {
 		var i GetSecretValuesRow
-		if err := rows.Scan(&i.ID, &i.Name, &i.Ciphertext); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Ciphertext,
+			&i.Workspace,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

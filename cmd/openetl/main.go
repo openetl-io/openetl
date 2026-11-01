@@ -45,6 +45,7 @@ Commands:
                   manage principals' API keys
   dataplane list|token
                   list data planes, and manage their runner tokens
+  audit list      list who changed what, and who read secrets
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file
 (.openetl/admin.key by default, where openetld writes the owner's key).
@@ -85,6 +86,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runKey(ctx, args[1:], out)
 	case "dataplane":
 		return runDataPlane(ctx, args[1:], out)
+	case "audit":
+		return runAudit(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "check":

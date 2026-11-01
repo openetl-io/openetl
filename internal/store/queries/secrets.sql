@@ -23,8 +23,9 @@ WHERE org_id = @org_id AND workspace_id = @workspace_id AND name > @after
 ORDER BY name LIMIT @max_rows;
 
 -- name: GetSecretValues :many
-SELECT id, name, ciphertext FROM secrets
-WHERE org_id = @org_id AND workspace_id = @workspace_id AND name = ANY(@names::text[]);
+SELECT s.id, s.name, s.ciphertext, w.name AS workspace
+FROM secrets s JOIN workspaces w ON w.org_id = s.org_id AND w.id = s.workspace_id
+WHERE s.org_id = @org_id AND s.workspace_id = @workspace_id AND s.name = ANY(@names::text[]);
 
 -- name: InsertSecret :exec
 INSERT INTO secrets (org_id, workspace_id, id, name, ciphertext, revision)

@@ -96,6 +96,8 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 	if err := s.sendOp(ctx, &in); err != nil {
 		return contract.ConnectorOpResult{}, err
 	}
+	audit(ctx).set("operation", in.OpID)
+	audit(ctx).set("dataPlane", dp)
 	defer func() {
 		id := uuid.MustParse(in.OpID)
 		if err := s.Store.DeleteConnectorOp(context.WithoutCancel(ctx), db.DeleteConnectorOpParams{OrgID: s.Tenant.Org, ID: id}); err != nil {
@@ -177,8 +179,10 @@ func (s *Server) sentOp(ctx context.Context, op string, source, destination uuid
 func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[dataplanev1.GetConnectorConfigRequest]) (*connect.Response[dataplanev1.GetConnectorConfigResponse], error) {
 	var c connection
 	what := "source "
+	audit(ctx).set("operation", req.Msg.GetOperationId())
 	switch id := req.Msg.GetConnector().(type) {
 	case *dataplanev1.GetConnectorConfigRequest_SourceId:
+		audit(ctx).set("sourceId", id.SourceId)
 		u, err := uuid.Parse(id.SourceId)
 		if err != nil {
 			return nil, invalid("source_id: %v", err)
@@ -192,6 +196,7 @@ func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[da
 		}
 		c = fromSource(r)
 	case *dataplanev1.GetConnectorConfigRequest_DestinationId:
+		audit(ctx).set("destinationId", id.DestinationId)
 		u, err := uuid.Parse(id.DestinationId)
 		if err != nil {
 			return nil, invalid("destination_id: %v", err)

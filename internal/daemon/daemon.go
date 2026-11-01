@@ -104,7 +104,7 @@ func Run(ctx context.Context, o Options) error {
 			if err != nil || len(owners) > 0 {
 				return err
 			}
-			return writeOwnerKey(ctx, q, org, cfg.BootstrapKeyFile, log)
+			return writeOwnerKey(ctx, q, org, cfg.BootstrapKeyFile, "openetld bootstrap", log)
 		})
 		if err != nil {
 			_ = ln.Close()
@@ -154,12 +154,12 @@ func Run(ctx context.Context, o Options) error {
 }
 
 // writeOwnerKey makes the bootstrap principal an owner with a new key, and
-// writes the key to path.
-func writeOwnerKey(ctx context.Context, q *db.Queries, org uuid.UUID, path string, log *slog.Logger) error {
+// writes the key to path. method is what the audit log calls it.
+func writeOwnerKey(ctx context.Context, q *db.Queries, org uuid.UUID, path, method string, log *slog.Logger) error {
 	if path == "" {
 		return errors.New("daemon: no bootstrap key file to write the owner key to")
 	}
-	key, err := store.EnsureOwner(ctx, q, org)
+	key, err := store.EnsureOwner(ctx, q, org, method)
 	if err != nil {
 		return err
 	}
@@ -188,7 +188,9 @@ func BootstrapKey(ctx context.Context, cfg config.Config, log *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	return st.Tx(ctx, func(q *db.Queries) error { return writeOwnerKey(ctx, q, org.ID, cfg.BootstrapKeyFile, log) })
+	return st.Tx(ctx, func(q *db.Queries) error {
+		return writeOwnerKey(ctx, q, org.ID, cfg.BootstrapKeyFile, "openetld bootstrap-key", log)
+	})
 }
 
 // openKeyring opens the secrets key, if there is one, and checks that it

@@ -234,8 +234,8 @@ func when(t *timestamppb.Timestamp) string {
 	return t.AsTime().Local().Format(time.DateTime)
 }
 
-// parseExpiry takes a duration, or a number of days such as 90d.
-func parseExpiry(s string) (time.Duration, error) {
+// parseDuration takes a duration, or a number of days such as 90d.
+func parseDuration(s string) (time.Duration, error) {
 	if days, ok := strings.CutSuffix(s, "d"); ok {
 		n, err := strconv.Atoi(days)
 		return time.Duration(n) * 24 * time.Hour, err
@@ -262,7 +262,7 @@ func runKey(ctx context.Context, args []string, out io.Writer) error {
 		}
 		req := &apiv1.CreateKeyRequest{Parent: "principals/" + a[0]}
 		if *expires != "" {
-			d, err := parseExpiry(*expires)
+			d, err := parseDuration(*expires)
 			if err != nil || d <= 0 {
 				return fmt.Errorf("--expires %q isn't a positive duration", *expires)
 			}

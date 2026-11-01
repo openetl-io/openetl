@@ -57,6 +57,7 @@ var (
 	_ apiv1connect.DestinationServiceHandler     = (*Server)(nil)
 	_ apiv1connect.SecretServiceHandler          = (*Server)(nil)
 	_ apiv1connect.AccessServiceHandler          = (*Server)(nil)
+	_ apiv1connect.AuditServiceHandler           = (*Server)(nil)
 	_ dataplanev1connect.DataPlaneServiceHandler = (*Server)(nil)
 )
 
@@ -69,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle(apiv1connect.NewDestinationServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewSecretServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewAccessServiceHandler(s, opts))
+	mux.Handle(apiv1connect.NewAuditServiceHandler(s, opts))
 	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(s, opts))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	return mux
@@ -82,29 +84,38 @@ func (s *Server) log() *slog.Logger {
 }
 
 // errorInterceptor turns errors that aren't Connect errors into Connect
-// codes, and logs internal ones.
+// codes.
 func (s *Server) errorInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 			res, err := next(ctx, req)
-			if err == nil {
-				return res, nil
+			if err != nil {
+				return nil, s.connectError(req.Spec().Procedure, err)
 			}
-			if _, ok := errors.AsType[*connect.Error](err); ok {
-				return nil, err
-			}
-			switch {
-			case errors.Is(err, pgx.ErrNoRows):
-				return nil, connect.NewError(connect.CodeNotFound, err)
-			case errs.CodeOf(err) == errs.ConfigInvalid:
-				return nil, connect.NewError(connect.CodeInvalidArgument, err)
-			case errors.Is(err, context.Canceled):
-				return nil, connect.NewError(connect.CodeCanceled, err)
-			}
-			s.log().Error("request failed", "procedure", req.Spec().Procedure, "err", err)
-			return nil, connect.NewError(connect.CodeInternal, errors.New("internal error"))
+			return res, nil
 		}
 	}
+}
+
+// connectError turns an error that isn't a Connect error into a Connect
+// code, and logs internal ones.
+func (s *Server) connectError(procedure string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := errors.AsType[*connect.Error](err); ok {
+		return err
+	}
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errs.CodeOf(err) == errs.ConfigInvalid:
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, context.Canceled):
+		return connect.NewError(connect.CodeCanceled, err)
+	}
+	s.log().Error("request failed", "procedure", procedure, "err", err)
+	return connect.NewError(connect.CodeInternal, errors.New("internal error"))
 }
 
 func invalid(format string, args ...any) error {

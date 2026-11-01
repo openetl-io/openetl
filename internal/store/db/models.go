@@ -29,6 +29,22 @@ type Artifact struct {
 	CreateTime time.Time
 }
 
+type AuditLog struct {
+	OrgID      uuid.UUID
+	ID         uuid.UUID
+	Time       time.Time
+	Actor      string
+	Credential string
+	Method     string
+	Resources  []string
+	Details    []byte
+	Peer       string
+	UserAgent  string
+	Code       *string
+	Error      string
+	EndTime    *time.Time
+}
+
 type CheckpointMirror struct {
 	OrgID              uuid.UUID
 	PipelineID         uuid.UUID
