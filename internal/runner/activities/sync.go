@@ -71,17 +71,9 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 
 func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.Info, log *slog.Logger) (contract.AttemptResult, error) {
 	var out contract.AttemptResult
-	resp, err := a.API.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: in.PipelineID, Version: in.Version}))
+	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
 	if err != nil {
-		code := errs.Transient
-		if c := connect.CodeOf(err); c == connect.CodeNotFound || c == connect.CodeInvalidArgument {
-			code = errs.ConfigInvalid
-		}
-		return out, errs.Wrap(code, err, "fetch the sync spec")
-	}
-	spec := resp.Msg
-	if spec.GetOrgId() != in.OrgID {
-		return out, errs.New(errs.ConfigInvalid, "pipeline %s belongs to another org", in.PipelineID)
+		return out, err
 	}
 	env, err := connectorEnv(ctx, a.Connectors, a.Versions, spec.GetSourceConnector(), spec.GetDestinationConnector())
 	if err != nil {
@@ -122,6 +114,22 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 		err = errs.Wrap(errs.Fenced, err, "")
 	}
 	return out, err
+}
+
+// syncSpec fetches a pipeline version, with its source and destination.
+func syncSpec(ctx context.Context, api dataplanev1connect.DataPlaneServiceClient, org, pipeline, version string) (*dataplanev1.GetSyncSpecResponse, error) {
+	resp, err := api.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: pipeline, Version: version}))
+	if err != nil {
+		code := errs.Transient
+		if c := connect.CodeOf(err); c == connect.CodeNotFound || c == connect.CodeInvalidArgument {
+			code = errs.ConfigInvalid
+		}
+		return nil, errs.Wrap(code, err, "fetch the sync spec")
+	}
+	if resp.Msg.GetOrgId() != org {
+		return nil, errs.New(errs.ConfigInvalid, "pipeline %s belongs to another org", pipeline)
+	}
+	return resp.Msg, nil
 }
 
 // quarantineURL is where a pipeline's quarantined records go:

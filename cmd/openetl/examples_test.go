@@ -10,7 +10,8 @@ import (
 	"github.com/unsuitable001/openetl/internal/spec"
 )
 
-// Every example parses, and its built-in connectors accept their configs.
+// Every example parses, with its dbt projects bundled, and its built-in
+// connectors accept their configs.
 func TestExamples(t *testing.T) {
 	files, err := filepath.Glob("../../examples/*.yaml")
 	if err != nil || len(files) == 0 {
@@ -22,6 +23,9 @@ func TestExamples(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, d := range docs {
+			if err := bundleDbtProject(d, filepath.Dir(f)); err != nil {
+				t.Fatal(err)
+			}
 			doc, err := spec.Parse(d.GetContent())
 			if err != nil {
 				t.Errorf("%s: %v", d.GetOrigin(), err)

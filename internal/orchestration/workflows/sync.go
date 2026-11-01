@@ -4,6 +4,7 @@ package workflows
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -29,8 +30,9 @@ type Workflows struct {
 }
 
 // Sync runs one sync of a pipeline: it records the sync, runs attempts on
-// the pipeline's data plane until one succeeds or retries run out, then
-// records the outcome. It does nothing if the pipeline is paused.
+// the pipeline's data plane until one succeeds or retries run out, runs the
+// post-sync steps there, then records the outcome. It does nothing if the
+// pipeline is paused.
 func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.SyncResult, error) {
 	cp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:           contract.OrchestratorQueue,
@@ -93,10 +95,12 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 	}
 
 	finish := contract.FinishSyncInput{OrgID: in.OrgID, SyncID: started.SyncID}
+	if err == nil {
+		finish.Result = &res
+		finish.PostSync, err = postSync(ctx, in, started, retry, heartbeat)
+	}
 	if err != nil {
 		finish.Error = err.Error()
-	} else {
-		finish.Result = &res
 	}
 	// Recorded even if the workflow is being cancelled.
 	fctx, _ := workflow.NewDisconnectedContext(cp)
@@ -107,6 +111,34 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 		return nil, err
 	}
 	return &contract.SyncResult{SyncID: started.SyncID, Attempt: res}, nil
+}
+
+// postSync runs the post-sync steps in order, until one fails. A dbt
+// command that fails isn't retried.
+func postSync(ctx workflow.Context, in contract.SyncInput, started contract.StartSyncResult, retry, heartbeat time.Duration) ([]contract.PostSyncResult, error) {
+	dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:           contract.BatchQueue(started.DataPlane),
+		StartToCloseTimeout: 24 * time.Hour,
+		HeartbeatTimeout:    heartbeat,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        retry,
+			BackoffCoefficient:     2,
+			MaximumAttempts:        3,
+			NonRetryableErrorTypes: errs.NonRetryable(),
+		},
+	})
+	var results []contract.PostSyncResult
+	for i, step := range started.PostSync {
+		var r contract.DbtResult
+		err := workflow.ExecuteActivity(dp, contract.RunDbt, contract.DbtInput{
+			OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *step.Dbt,
+		}).Get(ctx, &r)
+		if err != nil {
+			return results, fmt.Errorf("post-sync step %d, dbt project %s: %w", i+1, step.Dbt.Project, err)
+		}
+		results = append(results, contract.PostSyncResult{Dbt: &r})
+	}
+	return results, nil
 }
 
 // drained returns the attempt number of an attempt that failed with DRAINING.

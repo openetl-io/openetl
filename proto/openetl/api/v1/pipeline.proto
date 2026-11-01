@@ -66,6 +66,36 @@ message PipelineSpec {
   SchemaPolicy schema_policy = 6;
   Delivery delivery = 7;
   Types types = 8;
+  // Run in order after a sync's data is committed. A step that fails fails
+  // the sync, and the steps after it don't run.
+  repeated PostSyncStep post_sync = 9;
+}
+
+message PostSyncStep {
+  oneof step {
+    DbtStep dbt = 1;
+  }
+}
+
+// DbtStep runs a dbt project against the pipeline's destination.
+message DbtStep {
+  // A DbtProject in the same workspace. A sync runs the bundle that was
+  // current when it started.
+  string project = 1;
+  DbtCommand command = 2;
+  // dbt's --select and --exclude.
+  string select = 3;
+  string exclude = 4;
+  // The target schema. Unset: the schema the pipeline writes to.
+  string schema = 5;
+}
+
+enum DbtCommand {
+  DBT_COMMAND_UNSPECIFIED = 0;
+  // The default.
+  DBT_COMMAND_BUILD = 1;
+  DBT_COMMAND_RUN = 2;
+  DBT_COMMAND_TEST = 3;
 }
 
 // How values map to logical types where a pipeline has a choice.

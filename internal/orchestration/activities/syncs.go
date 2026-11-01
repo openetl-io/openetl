@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -53,6 +54,10 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	if err != nil {
 		return res, err
 	}
+	steps, err := a.postSync(ctx, p)
+	if err != nil {
+		return res, err
+	}
 	run := activity.GetInfo(ctx).WorkflowExecution
 	id, err := a.Store.StartSync(ctx, db.StartSyncParams{
 		OrgID:      org,
@@ -67,8 +72,42 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	}
 	return contract.StartSyncResult{
 		SyncID: id.String(), Version: p.Version, DataPlane: p.DataPlaneID,
-		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors,
+		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, PostSync: steps,
 	}, nil
+}
+
+// postSync resolves the pipeline version's post-sync steps: each dbt
+// project to its current bundle.
+func (a *Activities) postSync(ctx context.Context, p db.Pipeline) ([]contract.PostSyncStep, error) {
+	v, err := a.Store.GetPipelineVersion(ctx, db.GetPipelineVersionParams{OrgID: p.OrgID, PipelineID: p.ID, Version: p.Version})
+	if err != nil {
+		return nil, err
+	}
+	var spec apiv1.PipelineSpec
+	if err := protojson.Unmarshal(v.Spec, &spec); err != nil {
+		return nil, err
+	}
+	var steps []contract.PostSyncStep
+	for _, s := range spec.GetPostSync() {
+		d := s.GetDbt()
+		proj, err := a.Store.GetDbtProject(ctx, db.GetDbtProjectParams{OrgID: p.OrgID, WorkspaceID: p.WorkspaceID, Name: d.GetProject()})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errs.New(errs.ConfigInvalid, "dbt project %q no longer exists", d.GetProject())
+		}
+		if err != nil {
+			return nil, err
+		}
+		command := d.GetCommand()
+		if command == apiv1.DbtCommand_DBT_COMMAND_UNSPECIFIED {
+			command = apiv1.DbtCommand_DBT_COMMAND_BUILD
+		}
+		steps = append(steps, contract.PostSyncStep{Dbt: &contract.DbtStep{
+			Project: d.GetProject(), Digest: proj.Digest,
+			Command: strings.ToLower(strings.TrimPrefix(command.String(), "DBT_COMMAND_")),
+			Select:  d.GetSelect(), Exclude: d.GetExclude(), Schema: d.GetSchema(),
+		}})
+	}
+	return steps, nil
 }
 
 // connectors names the pipeline's source and destination connectors.
@@ -102,7 +141,11 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 		params.Status, params.Error = "failed", &in.Error
 	}
 	if in.Result != nil {
-		if params.Stats, err = json.Marshal(in.Result); err != nil {
+		stats := struct {
+			*contract.AttemptResult
+			PostSync []contract.PostSyncResult `json:",omitempty"`
+		}{in.Result, in.PostSync}
+		if params.Stats, err = json.Marshal(stats); err != nil {
 			return err
 		}
 	}

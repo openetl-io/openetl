@@ -19,10 +19,15 @@ const (
 	StartSync            = "StartSync"
 	FinishSync           = "FinishSync"
 	RunSyncAttempt       = "RunSyncAttempt"
+	RunDbt               = "RunDbt"
 	CheckConnector       = "CheckConnector"
 	DiscoverSource       = "DiscoverSource"
 	DropMirrorPartitions = "DropMirrorPartitions"
 )
+
+// DbtFailed is the error type of a dbt command that ran and failed. It isn't
+// retried; the next sync runs the step again.
+const DbtFailed = "DBT_FAILED"
 
 // One retention schedule runs for the whole deployment.
 const (
@@ -79,6 +84,48 @@ type StartSyncResult struct {
 	WorkspaceID string
 	// Of the source and the destination.
 	Connectors []string
+	// The pipeline version's post-sync steps, with their projects resolved.
+	PostSync []PostSyncStep
+}
+
+// PostSyncStep is one of a pipeline's post-sync steps. Dbt is its only
+// kind.
+type PostSyncStep struct {
+	Dbt *DbtStep
+}
+
+type DbtStep struct {
+	Project string
+	// The project's bundle when the sync started: sha256:{hex}.
+	Digest string
+	// build, run or test.
+	Command         string
+	Select, Exclude string
+	// Empty: the schema the pipeline writes to.
+	Schema string
+}
+
+type DbtInput struct {
+	OrgID      string
+	PipelineID string
+	// The pipeline version the sync ran, for its destination.
+	Version string
+	Step    DbtStep
+}
+
+type DbtResult struct {
+	Project string
+	Digest  string
+	Command string
+	// Nodes by status, as dbt reports them: success, error, skipped, pass,
+	// fail and so on.
+	Nodes   map[string]int
+	Seconds float64
+}
+
+// PostSyncResult is a post-sync step's result.
+type PostSyncResult struct {
+	Dbt *DbtResult `json:",omitempty"`
 }
 
 type AttemptInput struct {
@@ -102,8 +149,11 @@ type FinishSyncInput struct {
 	OrgID  string
 	SyncID string
 	// Empty on success.
-	Error  string
+	Error string
+	// The attempt that committed the sync's data; nil if none did.
 	Result *AttemptResult
+	// The post-sync steps that succeeded.
+	PostSync []PostSyncResult
 }
 
 type SyncResult struct {

@@ -70,6 +70,9 @@ var env struct {
 	// An empty connectors directory, so runners don't find the official
 	// connectors in OPENETL_CONNECTORS.
 	noConnectors string
+	// A dbt with dbt-postgres, from OPENETL_DBT; without it, dbt steps
+	// aren't tested.
+	dbt string
 }
 
 // The in-process registry is on loopback.
@@ -91,6 +94,7 @@ func setup(m *testing.M) (int, error) {
 	if env.engine == "" {
 		return 0, errors.New("set OPENETL_ENGINE to an openetl-engine binary (make e2e does)")
 	}
+	env.dbt = os.Getenv("OPENETL_DBT")
 	env.connectors = os.Getenv("OPENETL_CONNECTORS")
 	if env.connectors == "" {
 		return 0, errors.New("set OPENETL_CONNECTORS to a directory with source-postgres and destination-postgres (make e2e builds them)")
@@ -304,9 +308,13 @@ type runner struct {
 
 func startRunner(t *testing.T) *runner {
 	t.Helper()
-	cmd := exec.Command(env.openetld, "runner",
+	args := []string{"runner",
 		"--api-url", env.apiURL, "--temporal-address", env.temporal, "--temporal-namespace", env.ns,
-		"--checkpoints", env.checkpoints, "--engine", env.engine, "--cache", env.cache, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--log-format", "text")
+		"--checkpoints", env.checkpoints, "--engine", env.engine, "--cache", env.cache, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--log-format", "text"}
+	if env.dbt != "" {
+		args = append(args, "--dbt", env.dbt)
+	}
+	cmd := exec.Command(env.openetld, args...)
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
 	if err := cmd.Start(); err != nil {

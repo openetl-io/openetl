@@ -1,0 +1,9 @@
+version: 2
+sources:
+  # The tables the pipeline loads. The runner sets OPENETL_NAMESPACE to their
+  # schema.
+  - name: faker
+    schema: "{{ env_var('OPENETL_NAMESPACE') }}"
+    tables:
+      - name: users
+      - name: purchases

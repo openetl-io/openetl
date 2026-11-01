@@ -68,7 +68,8 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		return nil, err
 	}
 	// Sources and destinations refer to connector versions, and pipelines to
-	// sources and destinations, so each goes before what refers to it.
+	// sources, destinations and dbt projects, so each goes before what refers
+	// to it.
 	order := make([]int, len(docs))
 	for i := range order {
 		order[i] = i
@@ -138,6 +139,9 @@ func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document
 	switch doc.Kind {
 	case spec.KindSource, spec.KindDestination:
 		res, err := s.applyConnector(ctx, q, doc, wsID)
+		return res, nil, err
+	case spec.KindDbtProject:
+		res, err := s.applyDbtProject(ctx, q, doc, wsID)
 		return res, nil, err
 	default:
 		return s.applyPipeline(ctx, q, doc, wsID)
@@ -246,6 +250,9 @@ func (s *Server) applyPipeline(ctx context.Context, q *db.Queries, doc *spec.Doc
 		return nil, nil, invalid("destination %q doesn't exist in workspace %q", p.GetDestination().GetRef(), doc.Workspace)
 	}
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.checkPostSync(ctx, q, p, wsID, doc.Workspace); err != nil {
 		return nil, nil, err
 	}
 	dp := cmp.Or(p.GetDataPlane(), s.DefaultDataPlane)

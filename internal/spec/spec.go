@@ -5,6 +5,7 @@ package spec
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
@@ -30,11 +31,13 @@ const (
 	// declarative source's manifest.
 	KindConnector         = "Connector"
 	KindDeclarativeSource = "DeclarativeSource"
+	// A dbt project's files, for post-sync steps.
+	KindDbtProject = "DbtProject"
 )
 
 // Document is one parsed definition. Connector is set for sources and
-// destinations, Pipeline for pipelines, Descriptor for connectors, and
-// Manifest for declarative sources.
+// destinations, Pipeline for pipelines, Descriptor for connectors, Manifest
+// for declarative sources, and Bundle for dbt projects.
 type Document struct {
 	Kind      string
 	Name      string
@@ -46,6 +49,8 @@ type Document struct {
 	Descriptor *Descriptor
 	// The whole manifest, as canonical JSON, for declarative.Load.
 	Manifest []byte
+	// A gzipped tar of the project's files, which dbt.Canonical checks.
+	Bundle []byte
 }
 
 type envelope struct {
@@ -107,8 +112,10 @@ func Parse(content []byte) (*Document, error) {
 	case KindDeclarativeSource:
 		// declarative.Load checks the rest.
 		doc.Manifest, err = canonicalJSON(content)
+	case KindDbtProject:
+		doc.Bundle, err = parseDbtProject(spec)
 	default:
-		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector or DeclarativeSource", env.Kind)
+		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource or DbtProject", env.Kind)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("spec: %w", err)
@@ -168,6 +175,17 @@ type pipelineYAML struct {
 	Types        *struct {
 		Infinity string `yaml:"infinity"`
 	} `yaml:"types"`
+	PostSync []postSyncYAML `yaml:"postSync"`
+}
+
+type postSyncYAML struct {
+	Dbt *struct {
+		Project string `yaml:"project"`
+		Command string `yaml:"command"`
+		Select  string `yaml:"select"`
+		Exclude string `yaml:"exclude"`
+		Schema  string `yaml:"schema"`
+	} `yaml:"dbt"`
 }
 
 type scheduleYAML struct {
@@ -289,7 +307,44 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, err
 		}
 	}
+	for i, s := range y.PostSync {
+		field := fmt.Sprintf("postSync[%d]", i)
+		if s.Dbt == nil {
+			return nil, fmt.Errorf("%s: needs a dbt step", field)
+		}
+		if !ValidName(s.Dbt.Project) {
+			return nil, fmt.Errorf("%s.dbt.project: %q isn't a DbtProject name", field, s.Dbt.Project)
+		}
+		step := &apiv1.DbtStep{Project: s.Dbt.Project, Select: s.Dbt.Select, Exclude: s.Dbt.Exclude, Schema: s.Dbt.Schema}
+		if step.Command, err = enum(apiv1.DbtCommand_value, "DBT_COMMAND_", field+".dbt.command", s.Dbt.Command, apiv1.DbtCommand_DBT_COMMAND_BUILD); err != nil {
+			return nil, err
+		}
+		p.PostSync = append(p.PostSync, &apiv1.PostSyncStep{Step: &apiv1.PostSyncStep_Dbt{Dbt: step}})
+	}
 	return p, nil
+}
+
+type dbtProjectYAML struct {
+	Bundle string `yaml:"bundle"`
+	Path   string `yaml:"path"`
+}
+
+func parseDbtProject(b []byte) ([]byte, error) {
+	var y dbtProjectYAML
+	if err := strict(b, &y); err != nil {
+		return nil, err
+	}
+	switch {
+	case y.Path != "":
+		return nil, errors.New("path is read by openetl apply, which sends the project's files as bundle in its place")
+	case y.Bundle == "":
+		return nil, errors.New("bundle is missing: the project's files as a base64 gzipped tar, which openetl apply makes from path")
+	}
+	bundle, err := base64.StdEncoding.DecodeString(y.Bundle)
+	if err != nil {
+		return nil, fmt.Errorf("bundle isn't base64: %w", err)
+	}
+	return bundle, nil
 }
 
 func parseDelivery(y *deliveryYAML) (*apiv1.Delivery, error) {

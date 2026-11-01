@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -26,7 +27,7 @@ const usage = `usage: openetl <command> [flags]
 
 Commands:
   apply -f FILE   create or update the connector versions, sources,
-                  destinations and pipelines in FILE
+                  destinations, dbt projects and pipelines in FILE
   pause NAME      stop a pipeline's scheduled syncs
   resume NAME     start a pipeline's scheduled syncs again
   sync NAME       start a sync of a pipeline now
@@ -103,11 +104,18 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 		if err != nil {
 			return err
 		}
+		base := filepath.Dir(p)
+		if p == "-" {
+			base = "."
+		}
 		for _, d := range docs {
 			if connectors {
 				if err := onlyConnectorVersions(d.GetContent(), d.GetOrigin()); err != nil {
 					return err
 				}
+			}
+			if err := bundleDbtProject(d, base); err != nil {
+				return err
 			}
 		}
 		req.Documents = append(req.Documents, docs...)

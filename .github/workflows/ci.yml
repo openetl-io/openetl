@@ -88,6 +88,12 @@ jobs:
           cache-dependency-path: |
             go.sum
             openetl-connectors/go.sum
+      # dbt Core: dbt v2 has no Postgres adapter.
+      - name: dbt for post-sync steps
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dbt"
+          "$RUNNER_TEMP/dbt/bin/pip" install --quiet dbt-core==1.12.6 dbt-postgres==1.11.0
+          echo "OPENETL_DBT=$RUNNER_TEMP/dbt/bin/dbt" >> "$GITHUB_ENV"
       - name: Start Postgres, Temporal and S3
         run: make deps-up
       - name: Scheduled syncs through the whole stack, with engine and runner kills

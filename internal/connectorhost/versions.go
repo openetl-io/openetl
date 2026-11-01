@@ -106,9 +106,9 @@ func (e Env) With(v *Version) Env {
 	return e
 }
 
-// Fetcher gets connector versions by digest on a runner, through a cache:
-// artifacts in {Cache}/artifacts, and descriptors' executables in
-// {Cache}/executables.
+// Fetcher gets artifacts and connector versions by digest on a runner,
+// through a cache: artifacts in {Cache}/artifacts, and descriptors'
+// executables in {Cache}/executables.
 type Fetcher struct {
 	// An artifact's content, from the control plane.
 	Artifact func(ctx context.Context, digest string) ([]byte, error)
@@ -119,7 +119,7 @@ type Fetcher struct {
 // Fetch returns the connector version at digest, with its executable pulled
 // for this platform.
 func (f *Fetcher) Fetch(ctx context.Context, digest string) (*Version, error) {
-	content, err := f.artifact(ctx, digest)
+	content, err := f.Get(ctx, digest)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,8 @@ func (f *Fetcher) Fetch(ctx context.Context, digest string) (*Version, error) {
 	return v, nil
 }
 
-func (f *Fetcher) artifact(ctx context.Context, digest string) ([]byte, error) {
+// Get returns the artifact at digest, from the cache if it's there.
+func (f *Fetcher) Get(ctx context.Context, digest string) ([]byte, error) {
 	hexDigest, ok := strings.CutPrefix(digest, "sha256:")
 	if _, err := hex.DecodeString(hexDigest); !ok || err != nil || len(hexDigest) != sha256.Size*2 {
 		return nil, errs.New(errs.ConfigInvalid, "artifact digest %q isn't sha256:{hex}", digest)

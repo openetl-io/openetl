@@ -47,6 +47,17 @@ type DataPlane struct {
 	CreateTime time.Time
 }
 
+type DbtProject struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	ID          uuid.UUID
+	Name        string
+	Digest      string
+	Revision    int64
+	CreateTime  time.Time
+	UpdateTime  time.Time
+}
+
 type Destination struct {
 	OrgID           uuid.UUID
 	WorkspaceID     uuid.UUID

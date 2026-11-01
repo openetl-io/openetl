@@ -25,8 +25,10 @@ type Config struct {
 	// A directory of external connectors' executables. Empty: connectors/
 	// next to openetld.
 	Connectors string
-	// Where runners cache connector versions and their executables.
+	// Where runners cache artifacts and connectors' executables.
 	Cache string
+	// The dbt executable for post-sync steps. Empty: dbt on PATH.
+	Dbt string
 	// CIDR prefixes, comma-separated, that connectors and registries may
 	// reach besides public addresses.
 	EgressAllow string
@@ -49,7 +51,8 @@ var options = []option{
 	{"checkpoints", "OPENETL_CHECKPOINTS", ".openetl/checkpoints", "checkpoint store: a directory, s3://bucket?region=…&endpoint=…, gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it", func(c *Config) *string { return &c.Checkpoints }},
 	{"engine", "OPENETL_ENGINE", "", "openetl-engine executable (default: next to openetld, then on PATH)", func(c *Config) *string { return &c.Engine }},
 	{"connectors", "OPENETL_CONNECTORS", "", "directory of external connector executables, named source-NAME and destination-NAME (default: connectors/ next to openetld)", func(c *Config) *string { return &c.Connectors }},
-	{"cache", "OPENETL_CACHE", ".openetl/cache", "where runners cache connector versions and their executables", func(c *Config) *string { return &c.Cache }},
+	{"cache", "OPENETL_CACHE", ".openetl/cache", "where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables", func(c *Config) *string { return &c.Cache }},
+	{"dbt", "OPENETL_DBT", "", "dbt executable for pipelines' post-sync steps, with the destinations' adapters installed (default: dbt on PATH)", func(c *Config) *string { return &c.Dbt }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors and registries may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
 	{"log-level", "OPENETL_LOG_LEVEL", "info", "debug, info, warn or error", func(c *Config) *string { return &c.LogLevel }},
 	{"log-format", "OPENETL_LOG_FORMAT", "json", "json or text", func(c *Config) *string { return &c.LogFormat }},

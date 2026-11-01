@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 )
 
@@ -36,6 +38,9 @@ spec:
     resumePointTimeout: none
   types:
     infinity: quarantine
+  postSync:
+    - dbt: { project: analytics, select: "tag:shop", schema: marts }
+    - dbt: { project: checks, command: test }
 `
 
 func TestParsePipeline(t *testing.T) {
@@ -72,6 +77,40 @@ func TestParsePipeline(t *testing.T) {
 		t.Error("resumePointTimeout: none should be an explicit zero")
 	case p.GetTypes().GetInfinity() != apiv1.Infinity_INFINITY_QUARANTINE:
 		t.Error("types.infinity")
+	case len(p.GetPostSync()) != 2:
+		t.Fatalf("postSync = %v", p.GetPostSync())
+	}
+	want := []*apiv1.DbtStep{
+		{Project: "analytics", Command: apiv1.DbtCommand_DBT_COMMAND_BUILD, Select: "tag:shop", Schema: "marts"},
+		{Project: "checks", Command: apiv1.DbtCommand_DBT_COMMAND_TEST},
+	}
+	for i, s := range p.GetPostSync() {
+		if !proto.Equal(s.GetDbt(), want[i]) {
+			t.Errorf("postSync[%d] = %v, want %v", i, s.GetDbt(), want[i])
+		}
+	}
+}
+
+func TestParseDbtProject(t *testing.T) {
+	doc, err := Parse([]byte("apiVersion: openetl.dev/v1alpha1\nkind: DbtProject\nmetadata: {name: analytics}\nspec: {bundle: aGVsbG8=}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Kind != KindDbtProject || string(doc.Bundle) != "hello" {
+		t.Errorf("doc = %+v", doc)
+	}
+	header := "apiVersion: openetl.dev/v1alpha1\nkind: DbtProject\nmetadata: {name: analytics}\n"
+	for name, spec := range map[string]string{
+		"path":       "spec: {path: ./dbt}",
+		"no bundle":  "spec: {bundle: ''}",
+		"not base64": "spec: {bundle: '%%%'}",
+	} {
+		if _, err := Parse([]byte(header + spec)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(header, "{name: analytics}", "{name: analytics, version: 1.0.0}", 1) + "spec: {bundle: aGVsbG8=}")); err == nil {
+		t.Error("a dbt project took a version")
 	}
 }
 
@@ -113,6 +152,9 @@ func TestParseErrors(t *testing.T) {
 		"timestamps":     header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, timestamps: millisecond}]}", 1),
 		"two documents":  header + base + "---\n" + header + base,
 		"missing source": header + "spec:\n  schedule: {every: 1m}\n  destination: {ref: d}\n",
+		"empty step":     header + base + "  postSync: [{}]\n",
+		"dbt command":    header + base + "  postSync: [{dbt: {project: a, command: seed}}]\n",
+		"dbt project":    header + base + "  postSync: [{dbt: {project: A_1}}]\n",
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: parsed", name)
