@@ -25,6 +25,10 @@ Roles:
   gateway       webhook ingress (not built yet)
   agent         LLM-backed activities (not built yet)
 
+Commands:
+  bootstrap-key  give the admin service account a new owner key, in
+                 --bootstrap-key-file, for when every owner key is lost
+
 Run openetld <role> -h for its flags.
 `
 
@@ -56,6 +60,7 @@ func run(ctx context.Context, args []string) error {
 	case "dev":
 		roles = daemon.Roles{Server: true, Orchestrator: true, Runner: true}
 		defaults["log-format"] = "text"
+	case "bootstrap-key":
 	case "gateway", "agent":
 		return fmt.Errorf("the %s role isn't built yet", role)
 	case "-h", "-help", "--help", "help":
@@ -73,6 +78,9 @@ func run(ctx context.Context, args []string) error {
 	log, err := logging.New(os.Stderr, cfg.LogLevel, cfg.LogFormat)
 	if err != nil {
 		return err
+	}
+	if role == "bootstrap-key" {
+		return daemon.BootstrapKey(ctx, cfg, log)
 	}
 	return daemon.Run(ctx, daemon.Options{Config: cfg, Roles: roles, Logger: log})
 }

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/api"
+	"github.com/unsuitable001/openetl/internal/auth"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/checkpoint/openstore"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
@@ -37,6 +40,7 @@ import (
 	dpactivities "github.com/unsuitable001/openetl/internal/runner/activities"
 	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/store"
+	"github.com/unsuitable001/openetl/internal/store/db"
 )
 
 type Roles struct {
@@ -94,10 +98,29 @@ func Run(ctx context.Context, o Options) error {
 			// The runner in this process calls the API it serves.
 			cfg.APIURL = "http://" + ln.Addr().String()
 		}
-		tenant, err := st.Bootstrap(ctx, cfg.DataPlane)
+		// A new org has no owner, and nor does one from before API keys.
+		tenant, err := st.Bootstrap(ctx, cfg.DataPlane, func(q *db.Queries, org uuid.UUID) error {
+			owners, err := q.LockOrgOwners(ctx, org)
+			if err != nil || len(owners) > 0 {
+				return err
+			}
+			return writeOwnerKey(ctx, q, org, cfg.BootstrapKeyFile, log)
+		})
 		if err != nil {
 			_ = ln.Close()
 			return err
+		}
+		if o.Roles.Runner && cfg.RunnerToken == "" && cfg.TokenFile == "" {
+			// The runner in this process gets a token for as long as it runs.
+			token, id, err := store.CreateRunnerToken(ctx, st.Queries, tenant.Org, cfg.DataPlane)
+			if err != nil {
+				_ = ln.Close()
+				return err
+			}
+			defer func() {
+				_, _ = st.DeleteRunnerToken(context.WithoutCancel(ctx), db.DeleteRunnerTokenParams{OrgID: tenant.Org, DataPlaneID: cfg.DataPlane, ID: id})
+			}()
+			cfg.RunnerToken = token.Secret
 		}
 		allow, err := netguard.ParsePrefixes(cfg.EgressAllow)
 		if err != nil {
@@ -128,6 +151,44 @@ func Run(ctx context.Context, o Options) error {
 		g.Go(func() error { return runRunner(gctx, cfg, tc, log.With("role", "runner")) })
 	}
 	return g.Wait()
+}
+
+// writeOwnerKey makes the bootstrap principal an owner with a new key, and
+// writes the key to path.
+func writeOwnerKey(ctx context.Context, q *db.Queries, org uuid.UUID, path string, log *slog.Logger) error {
+	if path == "" {
+		return errors.New("daemon: no bootstrap key file to write the owner key to")
+	}
+	key, err := store.EnsureOwner(ctx, q, org)
+	if err != nil {
+		return err
+	}
+	if err := auth.WriteKeyFile(path, key); err != nil {
+		return fmt.Errorf("daemon: write the owner key: %w", err)
+	}
+	log.Info("wrote an owner key", "principal", "principals/"+store.BootstrapPrincipal, "file", path)
+	return nil
+}
+
+// BootstrapKey gives the bootstrap principal a new owner key, for an
+// operator who has lost every owner's.
+func BootstrapKey(ctx context.Context, cfg config.Config, log *slog.Logger) error {
+	st, err := store.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		return err
+	}
+	org, err := st.FirstOrg(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errors.New("daemon: there's no org yet; openetld server creates it, with an owner key, on its first start")
+	}
+	if err != nil {
+		return err
+	}
+	return st.Tx(ctx, func(q *db.Queries) error { return writeOwnerKey(ctx, q, org.ID, cfg.BootstrapKeyFile, log) })
 }
 
 // openKeyring opens the secrets key, if there is one, and checks that it
@@ -199,7 +260,19 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		return fmt.Errorf("daemon: --egress-allow: %w", err)
 	}
 	connectors := connectorhost.Env{Egress: netguard.Policy{Allow: allow}, Connectors: connectorsDir(cfg), Logger: log.With("component", "connector")}
-	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL) //nolint:forbidigo // the operator configures the API's address
+	token := cfg.RunnerToken
+	if cfg.TokenFile != "" {
+		if token, err = auth.ReadKeyFile(cfg.TokenFile); err != nil {
+			return fmt.Errorf("daemon: --token-file: %w", err)
+		}
+	}
+	if token == "" {
+		return errors.New("daemon: the runner needs its data plane's token, in --token-file or OPENETL_RUNNER_TOKEN; openetl dataplane token create makes one")
+	}
+	if !auth.IsRunnerToken(token) {
+		return errors.New("daemon: the runner's token isn't a runner token; openetl dataplane token create makes one")
+	}
+	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL, auth.WithBearer(token)) //nolint:forbidigo // the operator configures the API's address
 	versions := &connectorhost.Fetcher{
 		Artifact: dpactivities.Artifacts(apiClient),
 		Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},

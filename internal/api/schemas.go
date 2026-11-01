@@ -43,6 +43,9 @@ func (s *Server) ReportSchemas(ctx context.Context, req *connect.Request[datapla
 	if err != nil {
 		return nil, invalid("pipeline_id: %v", err)
 	}
+	if err := s.pipelineOnDataPlane(ctx, id); err != nil {
+		return nil, err
+	}
 	var schemas []streamSchema
 	for name, raw := range req.Msg.GetSchemas() {
 		d, err := describeSchema(name, raw)

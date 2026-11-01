@@ -394,6 +394,9 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if err != nil {
 		return nil, err
 	}
+	if err := onDataPlane(ctx, row.DataPlaneID, fmt.Sprintf("pipeline %s version %s", id, row.Version)); err != nil {
+		return nil, err
+	}
 	res := &dataplanev1.GetSyncSpecResponse{
 		OrgId:       s.Tenant.Org.String(),
 		PipelineId:  id.String(),

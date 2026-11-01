@@ -5,7 +5,6 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"net/http"
 	"testing"
 	"time"
 
@@ -50,7 +49,7 @@ func TestSchemaHistory(t *testing.T) {
 		t.Error("the users columns don't list _openetl_id")
 	}
 
-	api := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, env.apiURL)
+	api := dataplanev1connect.NewDataPlaneServiceClient(env.runner, env.apiURL)
 	report := func(schema []byte) []string {
 		t.Helper()
 		res, err := api.ReportSchemas(t.Context(), connect.NewRequest(&dataplanev1.ReportSchemasRequest{

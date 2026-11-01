@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -38,7 +37,7 @@ func runSecret(ctx context.Context, args []string, out io.Writer) error {
 	}
 	cmd, args := args[0], args[1:]
 	fs := flag.NewFlagSet("openetl secret "+cmd, flag.ContinueOnError)
-	api := apiURL(fs)
+	conn := apiFlags(fs)
 	workspace := fs.String("workspace", "default", "the secret's workspace")
 	switch cmd {
 	case "set":
@@ -49,7 +48,7 @@ func runSecret(ctx context.Context, args []string, out io.Writer) error {
 		if fs.NArg() != 1 {
 			return errors.New("secret set takes one name, after its flags")
 		}
-		return setSecret(ctx, *api, *workspace, fs.Arg(0), *file, out)
+		return setSecret(ctx, conn, *workspace, fs.Arg(0), *file, out)
 	case "list":
 		if err := fs.Parse(args); err != nil {
 			return err
@@ -57,7 +56,7 @@ func runSecret(ctx context.Context, args []string, out io.Writer) error {
 		if fs.NArg() != 0 {
 			return errors.New("secret list takes no arguments")
 		}
-		return listSecrets(ctx, *api, *workspace, out)
+		return listSecrets(ctx, conn, *workspace, out)
 	case "delete":
 		if err := fs.Parse(args); err != nil {
 			return err
@@ -66,7 +65,11 @@ func runSecret(ctx context.Context, args []string, out io.Writer) error {
 			return errors.New("secret delete takes one name, after its flags")
 		}
 		name := "workspaces/" + *workspace + "/secrets/" + fs.Arg(0)
-		if _, err := apiv1connect.NewSecretServiceClient(http.DefaultClient, *api).DeleteSecret(ctx, connect.NewRequest(&apiv1.DeleteSecretRequest{Name: name})); err != nil {
+		c, err := client(conn, apiv1connect.NewSecretServiceClient)
+		if err != nil {
+			return err
+		}
+		if _, err := c.DeleteSecret(ctx, connect.NewRequest(&apiv1.DeleteSecretRequest{Name: name})); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "deleted", name)
@@ -99,13 +102,17 @@ func readValue(name, file string) (string, error) {
 	return string(b), nil
 }
 
-func setSecret(ctx context.Context, api, workspace, secret, file string, out io.Writer) error {
+func setSecret(ctx context.Context, conn *api, workspace, secret, file string, out io.Writer) error {
+	c, err := client(conn, apiv1connect.NewSecretServiceClient)
+	if err != nil {
+		return err
+	}
 	value, err := readValue(secret, file)
 	if err != nil {
 		return err
 	}
 	name := "workspaces/" + workspace + "/secrets/" + secret
-	res, err := apiv1connect.NewSecretServiceClient(http.DefaultClient, api).UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{
+	res, err := c.UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{
 		Secret: &apiv1.Secret{Name: name, Value: value}, AllowMissing: true,
 	}))
 	if err != nil {
@@ -119,13 +126,16 @@ func setSecret(ctx context.Context, api, workspace, secret, file string, out io.
 	return nil
 }
 
-func listSecrets(ctx context.Context, api, workspace string, out io.Writer) error {
-	client := apiv1connect.NewSecretServiceClient(http.DefaultClient, api)
+func listSecrets(ctx context.Context, conn *api, workspace string, out io.Writer) error {
+	c, err := client(conn, apiv1connect.NewSecretServiceClient)
+	if err != nil {
+		return err
+	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tUPDATED\tUSED BY")
 	req := &apiv1.ListSecretsRequest{Parent: "workspaces/" + workspace}
 	for {
-		res, err := client.ListSecrets(ctx, connect.NewRequest(req))
+		res, err := c.ListSecrets(ctx, connect.NewRequest(req))
 		if err != nil {
 			return err
 		}

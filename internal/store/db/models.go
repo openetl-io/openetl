@@ -10,6 +10,17 @@ import (
 	"github.com/google/uuid"
 )
 
+type ApiKey struct {
+	OrgID        uuid.UUID
+	ID           uuid.UUID
+	PrincipalID  uuid.UUID
+	Hash         []byte
+	Prefix       string
+	ExpireTime   *time.Time
+	LastUsedTime *time.Time
+	CreateTime   time.Time
+}
+
 type Artifact struct {
 	OrgID      uuid.UUID
 	Digest     string
@@ -29,6 +40,15 @@ type CheckpointMirror struct {
 	CommitTime         time.Time
 	Streams            []byte
 	CreateTime         time.Time
+}
+
+type ConnectorOp struct {
+	OrgID         uuid.UUID
+	ID            uuid.UUID
+	DataPlaneID   string
+	SourceID      *uuid.UUID
+	DestinationID *uuid.UUID
+	ExpireTime    time.Time
 }
 
 type ConnectorVersion struct {
@@ -108,6 +128,35 @@ type PipelineVersion struct {
 	DestinationID uuid.UUID
 	DataPlaneID   string
 	CreateTime    time.Time
+}
+
+type Principal struct {
+	OrgID       uuid.UUID
+	ID          uuid.UUID
+	Name        string
+	Type        string
+	DisplayName string
+	Email       string
+	Disabled    bool
+	CreateTime  time.Time
+}
+
+type RoleBinding struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+	Role        string
+	WorkspaceID *uuid.UUID
+	CreateTime  time.Time
+}
+
+type RunnerToken struct {
+	OrgID        uuid.UUID
+	ID           uuid.UUID
+	DataPlaneID  string
+	Hash         []byte
+	Prefix       string
+	LastUsedTime *time.Time
+	CreateTime   time.Time
 }
 
 type Secret struct {

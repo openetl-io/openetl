@@ -1,0 +1,114 @@
+-- name: CreatePrincipal :exec
+INSERT INTO principals (org_id, id, name, type, display_name, email)
+VALUES (@org_id, @id, @name, @type, @display_name, @email);
+
+-- name: GetPrincipal :one
+SELECT * FROM principals WHERE org_id = @org_id AND name = @name;
+
+-- name: ListPrincipals :many
+SELECT * FROM principals
+WHERE org_id = @org_id AND name > @after
+ORDER BY name
+LIMIT @max_rows;
+
+-- name: DeletePrincipal :execrows
+DELETE FROM principals WHERE org_id = @org_id AND id = @id;
+
+-- name: SetPrincipalDisabled :exec
+UPDATE principals SET disabled = @disabled WHERE org_id = @org_id AND id = @id;
+
+-- name: ListRoleBindings :many
+SELECT b.principal_id, b.role, coalesce(w.name, '')::text AS workspace
+FROM role_bindings b LEFT JOIN workspaces w ON w.org_id = b.org_id AND w.id = b.workspace_id
+WHERE b.org_id = @org_id AND b.principal_id = ANY(@principal_ids::uuid[])
+ORDER BY b.principal_id, workspace, b.role;
+
+-- name: InsertRoleBinding :execrows
+INSERT INTO role_bindings (org_id, principal_id, role, workspace_id)
+VALUES (@org_id, @principal_id, @role, sqlc.narg('workspace_id'))
+ON CONFLICT DO NOTHING;
+
+-- name: DeleteRoleBinding :execrows
+DELETE FROM role_bindings
+WHERE org_id = @org_id AND principal_id = @principal_id AND role = @role
+  AND workspace_id IS NOT DISTINCT FROM sqlc.narg('workspace_id');
+
+-- The enabled principals bound as owner on the org, locked, so changes that
+-- could leave none are serialized.
+-- name: LockOrgOwners :many
+SELECT p.id FROM role_bindings b JOIN principals p ON p.org_id = b.org_id AND p.id = b.principal_id
+WHERE b.org_id = @org_id AND b.role = 'owner' AND b.workspace_id IS NULL AND NOT p.disabled
+FOR UPDATE;
+
+-- name: InsertAPIKey :exec
+INSERT INTO api_keys (org_id, id, principal_id, hash, prefix, expire_time)
+VALUES (@org_id, @id, @principal_id, @hash, @prefix, sqlc.narg('expire_time'));
+
+-- name: ListAPIKeys :many
+SELECT id, prefix, expire_time, last_used_time, create_time FROM api_keys
+WHERE org_id = @org_id AND principal_id = @principal_id
+ORDER BY create_time, id;
+
+-- name: DeleteAPIKey :execrows
+DELETE FROM api_keys WHERE org_id = @org_id AND principal_id = @principal_id AND id = @id;
+
+-- Before the org is known, so it isn't scoped by org_id. Each binding is
+-- role/workspace, or the role alone on the org.
+-- name: AuthenticateAPIKey :one
+SELECT k.org_id, k.id, k.principal_id, p.name AS principal, k.last_used_time,
+    array(
+        SELECT b.role || coalesce('/' || w.name, '')
+        FROM role_bindings b LEFT JOIN workspaces w ON w.org_id = b.org_id AND w.id = b.workspace_id
+        WHERE b.org_id = k.org_id AND b.principal_id = k.principal_id
+    )::text[] AS bindings
+FROM api_keys k JOIN principals p ON p.org_id = k.org_id AND p.id = k.principal_id
+WHERE k.hash = @hash AND NOT p.disabled AND (k.expire_time IS NULL OR k.expire_time > now());
+
+-- name: TouchAPIKey :exec
+UPDATE api_keys SET last_used_time = now() WHERE org_id = @org_id AND id = @id;
+
+-- name: InsertRunnerToken :exec
+INSERT INTO runner_tokens (org_id, id, data_plane_id, hash, prefix)
+VALUES (@org_id, @id, @data_plane_id, @hash, @prefix);
+
+-- name: ListRunnerTokens :many
+SELECT id, prefix, last_used_time, create_time FROM runner_tokens
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id
+ORDER BY create_time, id;
+
+-- name: DeleteRunnerToken :execrows
+DELETE FROM runner_tokens WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id;
+
+-- Before the org is known, so it isn't scoped by org_id.
+-- name: AuthenticateRunnerToken :one
+SELECT org_id, id, data_plane_id, last_used_time FROM runner_tokens WHERE hash = @hash;
+
+-- name: TouchRunnerToken :exec
+UPDATE runner_tokens SET last_used_time = now() WHERE org_id = @org_id AND id = @id;
+
+-- name: InsertConnectorOp :exec
+INSERT INTO connector_ops (org_id, id, data_plane_id, source_id, destination_id, expire_time)
+VALUES (@org_id, @id, @data_plane_id, sqlc.narg('source_id'), sqlc.narg('destination_id'), @expire_time);
+
+-- name: DeleteConnectorOp :exec
+DELETE FROM connector_ops WHERE org_id = @org_id AND id = @id;
+
+-- name: DeleteExpiredConnectorOps :exec
+DELETE FROM connector_ops WHERE org_id = @org_id AND expire_time < now();
+
+-- name: GetConnectorOp :one
+SELECT source_id, destination_id FROM connector_ops
+WHERE org_id = @org_id AND id = @id AND data_plane_id = @data_plane_id AND expire_time > now();
+
+-- Whether the pipeline exists, and whether a version of it runs on the data
+-- plane.
+-- name: PipelineOnDataPlane :one
+SELECT
+    EXISTS (SELECT 1 FROM pipelines p WHERE p.org_id = @org_id AND p.id = @pipeline_id) AS found,
+    EXISTS (
+        SELECT 1 FROM pipeline_versions v
+        WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id AND v.data_plane_id = @data_plane_id
+    ) AS on_data_plane;
+
+-- name: ListDataPlanes :many
+SELECT id, create_time FROM data_planes WHERE org_id = @org_id ORDER BY id;

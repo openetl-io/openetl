@@ -589,7 +589,9 @@ type GetConnectorConfigRequest struct {
 	//
 	//	*GetConnectorConfigRequest_SourceId
 	//	*GetConnectorConfigRequest_DestinationId
-	Connector     isGetConnectorConfigRequest_Connector `protobuf_oneof:"connector"`
+	Connector isGetConnectorConfigRequest_Connector `protobuf_oneof:"connector"`
+	// The check or discover the API sent to the runner's data plane.
+	OperationId   string `protobuf:"bytes,3,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -645,6 +647,13 @@ func (x *GetConnectorConfigRequest) GetDestinationId() string {
 		if x, ok := x.Connector.(*GetConnectorConfigRequest_DestinationId); ok {
 			return x.DestinationId
 		}
+	}
+	return ""
+}
+
+func (x *GetConnectorConfigRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
 	}
 	return ""
 }
@@ -740,7 +749,9 @@ type ReportCatalogRequest struct {
 	// The source version discovered.
 	Version string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
 	// Streams only; the API sets the rest.
-	Catalog       *v1.Catalog `protobuf:"bytes,3,opt,name=catalog,proto3" json:"catalog,omitempty"`
+	Catalog *v1.Catalog `protobuf:"bytes,3,opt,name=catalog,proto3" json:"catalog,omitempty"`
+	// As GetConnectorConfigRequest's.
+	OperationId   string `protobuf:"bytes,4,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -794,6 +805,13 @@ func (x *ReportCatalogRequest) GetCatalog() *v1.Catalog {
 		return x.Catalog
 	}
 	return nil
+}
+
+func (x *ReportCatalogRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
 }
 
 type ReportCatalogResponse struct {
@@ -997,20 +1015,22 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\bcomplete\x18\x05 \x01(\bR\bcomplete\x12#\n" +
 	"\rschema_digest\x18\x06 \x01(\tR\fschemaDigest\"0\n" +
 	"\x18ReportCheckpointResponse\x12\x14\n" +
-	"\x05added\x18\x01 \x01(\bR\x05added\"p\n" +
+	"\x05added\x18\x01 \x01(\bR\x05added\"\x93\x01\n" +
 	"\x19GetConnectorConfigRequest\x12\x1d\n" +
 	"\tsource_id\x18\x01 \x01(\tH\x00R\bsourceId\x12'\n" +
-	"\x0edestination_id\x18\x02 \x01(\tH\x00R\rdestinationIdB\v\n" +
+	"\x0edestination_id\x18\x02 \x01(\tH\x00R\rdestinationId\x12!\n" +
+	"\foperation_id\x18\x03 \x01(\tR\voperationIdB\v\n" +
 	"\tconnector\"\xa4\x01\n" +
 	"\x1aGetConnectorConfigResponse\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x127\n" +
 	"\x06config\x18\x03 \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\x06config\x12\x1c\n" +
-	"\tconnector\x18\x04 \x01(\tR\tconnector\"\x80\x01\n" +
+	"\tconnector\x18\x04 \x01(\tR\tconnector\"\xa3\x01\n" +
 	"\x14ReportCatalogRequest\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x121\n" +
-	"\acatalog\x18\x03 \x01(\v2\x17.openetl.api.v1.CatalogR\acatalog\"/\n" +
+	"\acatalog\x18\x03 \x01(\v2\x17.openetl.api.v1.CatalogR\acatalog\x12!\n" +
+	"\foperation_id\x18\x04 \x01(\tR\voperationId\"/\n" +
 	"\x15ReportCatalogResponse\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\tR\x06digest\",\n" +
 	"\x12GetArtifactRequest\x12\x16\n" +

@@ -109,7 +109,7 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 		return res, err
 	}
 	rep, err := a.API.ReportCatalog(ctx, connect.NewRequest(&dataplanev1.ReportCatalogRequest{
-		SourceId: in.SourceID, Version: res.Version, Catalog: catalogProto(cat),
+		SourceId: in.SourceID, Version: res.Version, Catalog: catalogProto(cat), OperationId: in.OpID,
 	}))
 	if err != nil {
 		return res, errs.Wrap(errs.Transient, err, "report the catalog")
@@ -119,7 +119,7 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 }
 
 func (a *Ops) config(ctx context.Context, in contract.ConnectorOpInput) (*dataplanev1.GetConnectorConfigResponse, error) {
-	req := &dataplanev1.GetConnectorConfigRequest{}
+	req := &dataplanev1.GetConnectorConfigRequest{OperationId: in.OpID}
 	if in.SourceID != "" {
 		req.Connector = &dataplanev1.GetConnectorConfigRequest_SourceId{SourceId: in.SourceID}
 	} else {

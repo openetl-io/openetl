@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -92,6 +93,15 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 		return contract.ConnectorOpResult{}, err
 	}
 	in.OrgID, in.WorkspaceID, in.DataPlane, in.Connector = s.Tenant.Org.String(), c.workspace.String(), dp, cfg.GetConnector()
+	if err := s.sendOp(ctx, &in); err != nil {
+		return contract.ConnectorOpResult{}, err
+	}
+	defer func() {
+		id := uuid.MustParse(in.OpID)
+		if err := s.Store.DeleteConnectorOp(context.WithoutCancel(ctx), db.DeleteConnectorOpParams{OrgID: s.Tenant.Org, ID: id}); err != nil {
+			s.log().Warn("connector operation not deleted; it expires", "op", in.OpID, "err", err)
+		}
+	}()
 	res, err := s.Ops.Run(ctx, in)
 	if err == nil {
 		return res, nil
@@ -116,6 +126,54 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 	return res, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the %s failed: %w", in.Op, err))
 }
 
+// sendOp records the operation, so the data plane's runners may read the
+// connector's config for it.
+func (s *Server) sendOp(ctx context.Context, in *contract.ConnectorOpInput) error {
+	if err := s.Store.DeleteExpiredConnectorOps(ctx, s.Tenant.Org); err != nil {
+		return err
+	}
+	id := uuid.New()
+	op := db.InsertConnectorOpParams{OrgID: s.Tenant.Org, ID: id, DataPlaneID: in.DataPlane, ExpireTime: time.Now().Add(contract.OpTimeout + time.Minute)}
+	var err error
+	if in.SourceID != "" {
+		op.SourceID, err = parseUUID(in.SourceID)
+	} else {
+		op.DestinationID, err = parseUUID(in.DestinationID)
+	}
+	if err != nil {
+		return err
+	}
+	in.OpID = id.String()
+	return s.Store.InsertConnectorOp(ctx, op)
+}
+
+func parseUUID(s string) (*uuid.UUID, error) {
+	u, err := uuid.Parse(s)
+	return &u, err
+}
+
+// sentOp fails unless op is a check or discover of the connector that the
+// API sent to the caller's data plane.
+func (s *Server) sentOp(ctx context.Context, op string, source, destination uuid.UUID) error {
+	dp := callerOf(ctx).dataPlane
+	denied := connect.NewError(connect.CodePermissionDenied, fmt.Errorf("the API sent no operation %q on it to data plane %q", op, dp))
+	id, err := uuid.Parse(op)
+	if err != nil {
+		return denied
+	}
+	row, err := s.Store.GetConnectorOp(ctx, db.GetConnectorOpParams{OrgID: s.Tenant.Org, ID: id, DataPlaneID: dp})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return denied
+	}
+	if err != nil {
+		return err
+	}
+	if source != uuid.Nil && row.SourceID != nil && *row.SourceID == source || destination != uuid.Nil && row.DestinationID != nil && *row.DestinationID == destination {
+		return nil
+	}
+	return denied
+}
+
 func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[dataplanev1.GetConnectorConfigRequest]) (*connect.Response[dataplanev1.GetConnectorConfigResponse], error) {
 	var c connection
 	what := "source "
@@ -124,6 +182,9 @@ func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[da
 		u, err := uuid.Parse(id.SourceId)
 		if err != nil {
 			return nil, invalid("source_id: %v", err)
+		}
+		if err := s.sentOp(ctx, req.Msg.GetOperationId(), u, uuid.Nil); err != nil {
+			return nil, err
 		}
 		r, err := s.Store.GetSourceByID(ctx, db.GetSourceByIDParams{OrgID: s.Tenant.Org, ID: u})
 		if err != nil {
@@ -134,6 +195,9 @@ func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[da
 		u, err := uuid.Parse(id.DestinationId)
 		if err != nil {
 			return nil, invalid("destination_id: %v", err)
+		}
+		if err := s.sentOp(ctx, req.Msg.GetOperationId(), uuid.Nil, u); err != nil {
+			return nil, err
 		}
 		r, err := s.Store.GetDestinationByID(ctx, db.GetDestinationByIDParams{OrgID: s.Tenant.Org, ID: u})
 		if err != nil {
@@ -157,6 +221,9 @@ func (s *Server) ReportCatalog(ctx context.Context, req *connect.Request[datapla
 	id, err := uuid.Parse(req.Msg.GetSourceId())
 	if err != nil {
 		return nil, invalid("source_id: %v", err)
+	}
+	if err := s.sentOp(ctx, req.Msg.GetOperationId(), id, uuid.Nil); err != nil {
+		return nil, err
 	}
 	cat := &apiv1.Catalog{Streams: req.Msg.GetCatalog().GetStreams()}
 	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(cat)

@@ -36,6 +36,9 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err != nil {
 		return nil, invalid("pipeline_id: %v", err)
 	}
+	if err := s.pipelineOnDataPlane(ctx, id); err != nil {
+		return nil, err
+	}
 	if m.GetRunId() == "" {
 		return nil, invalid("run_id is empty")
 	}

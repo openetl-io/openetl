@@ -56,17 +56,19 @@ var (
 	_ apiv1connect.SourceServiceHandler          = (*Server)(nil)
 	_ apiv1connect.DestinationServiceHandler     = (*Server)(nil)
 	_ apiv1connect.SecretServiceHandler          = (*Server)(nil)
+	_ apiv1connect.AccessServiceHandler          = (*Server)(nil)
 	_ dataplanev1connect.DataPlaneServiceHandler = (*Server)(nil)
 )
 
 func (s *Server) Handler() http.Handler {
-	opts := connect.WithInterceptors(s.errorInterceptor())
+	opts := connect.WithInterceptors(s.errorInterceptor(), authInterceptor{s})
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewApplyServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewPipelineServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewSourceServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewDestinationServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewSecretServiceHandler(s, opts))
+	mux.Handle(apiv1connect.NewAccessServiceHandler(s, opts))
 	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(s, opts))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	return mux

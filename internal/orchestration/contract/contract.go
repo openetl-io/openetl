@@ -62,6 +62,9 @@ var (
 // plane to take it.
 const OpPickup = time.Minute
 
+// OpTimeout is how long a connector operation may take in all.
+const OpTimeout = 15 * time.Minute
+
 func BatchQueue(dataPlane string) string { return "dp." + dataPlane + ".batch" }
 
 func SyncWorkflowID(pipelineID string) string { return "sync/" + pipelineID }
@@ -162,6 +165,9 @@ type SyncResult struct {
 }
 
 type ConnectorOpInput struct {
+	// Names the workflow; the runner shows it to the API to read the
+	// connector's config.
+	OpID        string
 	OrgID       string
 	WorkspaceID string
 	DataPlane   string

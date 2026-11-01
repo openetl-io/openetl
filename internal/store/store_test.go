@@ -13,6 +13,9 @@ var (
 	orgsTable = regexp.MustCompile(`(?i)\b(FROM|INTO|UPDATE)\s+orgs\b`)
 )
 
+// Looking up a credential comes before its org is known.
+var unscoped = map[string]bool{"AuthenticateAPIKey": true, "AuthenticateRunnerToken": true}
+
 func TestQueriesAreOrgScoped(t *testing.T) {
 	files, err := filepath.Glob("queries/*.sql")
 	if err != nil || len(files) == 0 {
@@ -31,7 +34,7 @@ func TestQueriesAreOrgScoped(t *testing.T) {
 			if strings.HasPrefix(q, "INSERT") {
 				scoped = strings.Contains(q, "@org_id")
 			}
-			if !scoped && !orgsTable.MatchString(q) {
+			if !scoped && !orgsTable.MatchString(q) && !unscoped[names[i][1]] {
 				t.Errorf("%s: %s isn't scoped by org_id", f, names[i][1])
 			}
 		}

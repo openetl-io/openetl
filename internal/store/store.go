@@ -79,8 +79,9 @@ type Tenant struct {
 const DefaultName = "default"
 
 // Bootstrap creates the default org and workspace, and dataPlane, unless
-// they exist.
-func (s *Store) Bootstrap(ctx context.Context, dataPlane string) (Tenant, error) {
+// they exist. Then it runs then, if set, in the same transaction, which
+// holds the bootstrap lock.
+func (s *Store) Bootstrap(ctx context.Context, dataPlane string, then func(q *db.Queries, org uuid.UUID) error) (Tenant, error) {
 	var t Tenant
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('openetl.bootstrap'))"); err != nil {
@@ -107,7 +108,13 @@ func (s *Store) Bootstrap(ctx context.Context, dataPlane string) (Tenant, error)
 			return err
 		}
 		t.Workspace = ws.ID
-		return q.CreateDataPlane(ctx, db.CreateDataPlaneParams{ID: dataPlane, OrgID: t.Org})
+		if err := q.CreateDataPlane(ctx, db.CreateDataPlaneParams{ID: dataPlane, OrgID: t.Org}); err != nil {
+			return err
+		}
+		if then != nil {
+			return then(q, t.Org)
+		}
+		return nil
 	})
 	if err != nil {
 		return t, fmt.Errorf("store: bootstrap: %w", err)

@@ -45,7 +45,7 @@ func applyErr(t *testing.T, docs ...string) error {
 	for i, d := range docs {
 		req.Documents = append(req.Documents, &apiv1.Document{Origin: fmt.Sprintf("doc %d", i+1), Content: []byte(d)})
 	}
-	_, err := apiv1connect.NewApplyServiceClient(http.DefaultClient, env.apiURL).Apply(t.Context(), connect.NewRequest(req))
+	_, err := apiv1connect.NewApplyServiceClient(env.http, env.apiURL).Apply(t.Context(), connect.NewRequest(req))
 	return err
 }
 

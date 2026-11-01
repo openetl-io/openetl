@@ -2,9 +2,9 @@
 package ops
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
@@ -21,9 +21,9 @@ type Ops struct {
 func (o *Ops) Run(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	var res contract.ConnectorOpResult
 	run, err := o.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:                       contract.OpWorkflowID(uuid.NewString()),
+		ID:                       contract.OpWorkflowID(cmp.Or(in.OpID, uuid.NewString())),
 		TaskQueue:                contract.OrchestratorQueue,
-		WorkflowExecutionTimeout: 15 * time.Minute,
+		WorkflowExecutionTimeout: contract.OpTimeout,
 		TypedSearchAttributes: temporal.NewSearchAttributes(
 			contract.OrgIDAttr.ValueSet(in.OrgID),
 			contract.WorkspaceIDAttr.ValueSet(in.WorkspaceID),

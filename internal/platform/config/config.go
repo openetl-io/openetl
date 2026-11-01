@@ -36,8 +36,15 @@ type Config struct {
 	// a base64key://, awskms://, gcpkms:// or azurekeyvault:// URL. Empty:
 	// the server can't store secrets.
 	SecretsKey string
-	LogLevel   string
-	LogFormat  string
+	// Where the server writes the owner key it creates with the org, and
+	// openetld bootstrap-key a new one.
+	BootstrapKeyFile string
+	// A file holding the runner's token. Empty: OPENETL_RUNNER_TOKEN.
+	TokenFile string
+	// From OPENETL_RUNNER_TOKEN only, so it isn't in a process listing.
+	RunnerToken string
+	LogLevel    string
+	LogFormat   string
 }
 
 type option struct {
@@ -59,6 +66,8 @@ var options = []option{
 	{"dbt", "OPENETL_DBT", "", "dbt executable for pipelines' post-sync steps, with the destinations' adapters installed (default: dbt on PATH)", func(c *Config) *string { return &c.Dbt }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors and registries may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
 	{"secrets-key", "OPENETL_SECRETS_KEY", ".openetl/secrets.key", "the API server's key-encryption key for secrets: a file holding a base64-encoded 32-byte key, created if missing; or base64key://KEY, awskms://…, gcpkms://… or azurekeyvault://…", func(c *Config) *string { return &c.SecretsKey }},
+	{"bootstrap-key-file", "OPENETL_BOOTSTRAP_KEY_FILE", ".openetl/admin.key", "where the server writes the owner key of the org it creates on first start, readable only by its owner; and where openetld bootstrap-key writes a new one", func(c *Config) *string { return &c.BootstrapKeyFile }},
+	{"token-file", "OPENETL_RUNNER_TOKEN_FILE", "", "a file holding the runner's token, which openetl dataplane token create makes (default: the OPENETL_RUNNER_TOKEN variable)", func(c *Config) *string { return &c.TokenFile }},
 	{"log-level", "OPENETL_LOG_LEVEL", "info", "debug, info, warn or error", func(c *Config) *string { return &c.LogLevel }},
 	{"log-format", "OPENETL_LOG_FORMAT", "json", "json or text", func(c *Config) *string { return &c.LogFormat }},
 }
@@ -77,6 +86,7 @@ func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config,
 	if fs.NArg() > 0 {
 		return c, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
+	c.RunnerToken = os.Getenv("OPENETL_RUNNER_TOKEN")
 	if c.DataPlane == "" || strings.ContainsAny(c.DataPlane, ". /") {
 		return c, errors.New("config: the data plane ID must be non-empty, without dots, slashes or spaces")
 	}

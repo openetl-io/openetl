@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"bytes"
-	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -25,8 +24,8 @@ func TestSecrets(t *testing.T) {
 	startRunner(t)
 	ctx := t.Context()
 	name := unique("secrets")
-	secrets := apiv1connect.NewSecretServiceClient(http.DefaultClient, env.apiURL)
-	destinations := apiv1connect.NewDestinationServiceClient(http.DefaultClient, env.apiURL)
+	secrets := apiv1connect.NewSecretServiceClient(env.http, env.apiURL)
+	destinations := apiv1connect.NewDestinationServiceClient(env.http, env.apiURL)
 	dsn := setSecret(t, env.dbURL)
 	secretName := "workspaces/default/secrets/" + dsn
 	ds := pipelineDocs(name, `{"seed": 5, "count": 200}`, `{}`)
@@ -114,7 +113,7 @@ func TestSecrets(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "destinations/"+name) {
 		t.Errorf("delete while in use: %v", err)
 	}
-	pipelines := apiv1connect.NewPipelineServiceClient(http.DefaultClient, env.apiURL)
+	pipelines := apiv1connect.NewPipelineServiceClient(env.http, env.apiURL)
 	if _, err := pipelines.DeletePipeline(ctx, connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name})); err != nil {
 		t.Fatal(err)
 	}

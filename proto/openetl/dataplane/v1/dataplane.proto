@@ -8,7 +8,8 @@ import "openetl/api/v1/pipeline.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1";
 
-// DataPlaneService is what runners call on the control plane.
+// DataPlaneService is what runners call on the control plane, with their data
+// plane's runner token. It serves a token only that data plane's work.
 service DataPlaneService {
   // The pipeline version, and its source and destination, for one sync
   // attempt.
@@ -105,6 +106,8 @@ message GetConnectorConfigRequest {
     string source_id = 1;
     string destination_id = 2;
   }
+  // The check or discover the API sent to the runner's data plane.
+  string operation_id = 3;
 }
 
 message GetConnectorConfigResponse {
@@ -121,6 +124,8 @@ message ReportCatalogRequest {
   string version = 2;
   // Streams only; the API sets the rest.
   openetl.api.v1.Catalog catalog = 3;
+  // As GetConnectorConfigRequest's.
+  string operation_id = 4;
 }
 
 message ReportCatalogResponse {

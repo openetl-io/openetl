@@ -21,6 +21,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/unsuitable001/openetl/internal/auth"
 )
 
 const usage = `usage: openetl <command> [flags]
@@ -38,6 +39,15 @@ Commands:
                   package and apply connector versions
   secret set|list|delete
                   store the secrets that configs name
+  principal create|list|delete|disable|enable|grant|revoke
+                  manage users and service accounts, and their roles
+  key create|list|delete
+                  manage principals' API keys
+  dataplane list|token
+                  list data planes, and manage their runner tokens
+
+Commands send the API key in OPENETL_API_KEY, or in --api-key-file
+(.openetl/admin.key by default, where openetld writes the owner's key).
 
 Run openetl <command> -h for its flags.
 `
@@ -69,6 +79,12 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runConnector(ctx, args[1:], out)
 	case "secret":
 		return runSecret(ctx, args[1:], out)
+	case "principal":
+		return runPrincipal(ctx, args[1:], out)
+	case "key":
+		return runKey(ctx, args[1:], out)
+	case "dataplane":
+		return runDataPlane(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "check":
@@ -80,8 +96,27 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	return fmt.Errorf("unknown command %q", args[0])
 }
 
-func apiURL(fs *flag.FlagSet) *string {
-	return fs.String("api-url", cmp.Or(os.Getenv("OPENETL_API_URL"), "http://localhost:8080"), "API URL (env OPENETL_API_URL)")
+// api is the flags that reach the API.
+type api struct{ url, keyFile *string }
+
+func apiFlags(fs *flag.FlagSet) *api {
+	return &api{
+		url:     fs.String("api-url", cmp.Or(os.Getenv("OPENETL_API_URL"), "http://localhost:8080"), "API URL (env OPENETL_API_URL)"),
+		keyFile: fs.String("api-key-file", cmp.Or(os.Getenv("OPENETL_API_KEY_FILE"), ".openetl/admin.key"), "a file holding the API key, unless OPENETL_API_KEY holds it (env OPENETL_API_KEY_FILE)"),
+	}
+}
+
+// client makes a service's client, which sends the API key.
+func client[T any](a *api, newClient func(connect.HTTPClient, string, ...connect.ClientOption) T) (T, error) {
+	key := os.Getenv("OPENETL_API_KEY")
+	if key == "" {
+		var err error
+		if key, err = auth.ReadKeyFile(*a.keyFile); err != nil {
+			var zero T
+			return zero, fmt.Errorf("no API key: set OPENETL_API_KEY, or --api-key-file: %w", err)
+		}
+	}
+	return newClient(http.DefaultClient, *a.url, auth.WithBearer(key)), nil
 }
 
 // runApplyDocuments applies the documents in -f's files; with connectors,
@@ -90,7 +125,7 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	var paths files
 	fs.Var(&paths, "f", "a YAML or JSON file, or - for stdin; repeatable")
-	api := apiURL(fs)
+	conn := apiFlags(fs)
 	workspace := fs.String("workspace", "", "workspace for documents that name none (default: default)")
 	dryRun := fs.Bool("dry-run", false, "validate without changing anything")
 	if err := fs.Parse(args); err != nil {
@@ -124,8 +159,11 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 		}
 		req.Documents = append(req.Documents, docs...)
 	}
-	client := apiv1connect.NewApplyServiceClient(http.DefaultClient, *api)
-	res, err := client.Apply(ctx, connect.NewRequest(req))
+	c, err := client(conn, apiv1connect.NewApplyServiceClient)
+	if err != nil {
+		return err
+	}
+	res, err := c.Apply(ctx, connect.NewRequest(req))
 	if err != nil {
 		return err
 	}
@@ -145,7 +183,7 @@ func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) 
 		fmt.Fprintf(fs.Output(), "usage: openetl %s [flags] NAME\n", cmd)
 		fs.PrintDefaults()
 	}
-	api := apiURL(fs)
+	conn := apiFlags(fs)
 	workspace := fs.String("workspace", "default", "the pipeline's workspace")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -154,18 +192,20 @@ func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) 
 		return fmt.Errorf("%s takes one pipeline name, after its flags", cmd)
 	}
 	name := "workspaces/" + *workspace + "/pipelines/" + fs.Arg(0)
-	client := apiv1connect.NewPipelineServiceClient(http.DefaultClient, *api)
-	var err error
+	c, err := client(conn, apiv1connect.NewPipelineServiceClient)
+	if err != nil {
+		return err
+	}
 	var done string
 	switch cmd {
 	case "pause":
-		_, err = client.PausePipeline(ctx, connect.NewRequest(&apiv1.PausePipelineRequest{Name: name}))
+		_, err = c.PausePipeline(ctx, connect.NewRequest(&apiv1.PausePipelineRequest{Name: name}))
 		done = "paused"
 	case "resume":
-		_, err = client.ResumePipeline(ctx, connect.NewRequest(&apiv1.ResumePipelineRequest{Name: name}))
+		_, err = c.ResumePipeline(ctx, connect.NewRequest(&apiv1.ResumePipelineRequest{Name: name}))
 		done = "resumed"
 	default:
-		_, err = client.SyncPipeline(ctx, connect.NewRequest(&apiv1.SyncPipelineRequest{Name: name}))
+		_, err = c.SyncPipeline(ctx, connect.NewRequest(&apiv1.SyncPipelineRequest{Name: name}))
 		done = "started a sync of"
 	}
 	if err != nil {
@@ -175,20 +215,20 @@ func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) 
 	return nil
 }
 
-func connectorFlags(cmd, usage string) (fs *flag.FlagSet, api, workspace, dataPlane *string) {
+func connectorFlags(cmd, usage string) (fs *flag.FlagSet, conn *api, workspace, dataPlane *string) {
 	fs = flag.NewFlagSet("openetl "+cmd, flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "usage: openetl %s [flags] %s\n", cmd, usage)
 		fs.PrintDefaults()
 	}
-	api = apiURL(fs)
+	conn = apiFlags(fs)
 	workspace = fs.String("workspace", "default", "the connector's workspace")
 	dataPlane = fs.String("data-plane", "", "the data plane whose runner runs it (default: the server's)")
-	return fs, api, workspace, dataPlane
+	return fs, conn, workspace, dataPlane
 }
 
 func runCheck(ctx context.Context, args []string, out io.Writer) error {
-	fs, api, workspace, dataPlane := connectorFlags("check", "source|destination NAME")
+	fs, conn, workspace, dataPlane := connectorFlags("check", "source|destination NAME")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -199,13 +239,21 @@ func runCheck(ctx context.Context, args []string, out io.Writer) error {
 	name := "workspaces/" + *workspace + "/" + kind + "s/" + fs.Arg(1)
 	var res *apiv1.CheckResult
 	if kind == "source" {
-		r, err := apiv1connect.NewSourceServiceClient(http.DefaultClient, *api).CheckSource(ctx, connect.NewRequest(&apiv1.CheckSourceRequest{Name: name, DataPlane: *dataPlane}))
+		c, err := client(conn, apiv1connect.NewSourceServiceClient)
+		if err != nil {
+			return err
+		}
+		r, err := c.CheckSource(ctx, connect.NewRequest(&apiv1.CheckSourceRequest{Name: name, DataPlane: *dataPlane}))
 		if err != nil {
 			return err
 		}
 		res = r.Msg.GetResult()
 	} else {
-		r, err := apiv1connect.NewDestinationServiceClient(http.DefaultClient, *api).CheckDestination(ctx, connect.NewRequest(&apiv1.CheckDestinationRequest{Name: name, DataPlane: *dataPlane}))
+		c, err := client(conn, apiv1connect.NewDestinationServiceClient)
+		if err != nil {
+			return err
+		}
+		r, err := c.CheckDestination(ctx, connect.NewRequest(&apiv1.CheckDestinationRequest{Name: name, DataPlane: *dataPlane}))
 		if err != nil {
 			return err
 		}
@@ -219,7 +267,7 @@ func runCheck(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func runDiscover(ctx context.Context, args []string, out io.Writer) error {
-	fs, api, workspace, dataPlane := connectorFlags("discover", "NAME")
+	fs, conn, workspace, dataPlane := connectorFlags("discover", "NAME")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -227,7 +275,11 @@ func runDiscover(ctx context.Context, args []string, out io.Writer) error {
 		return errors.New("discover takes one source name, after its flags")
 	}
 	name := "workspaces/" + *workspace + "/sources/" + fs.Arg(0)
-	r, err := apiv1connect.NewSourceServiceClient(http.DefaultClient, *api).DiscoverSource(ctx, connect.NewRequest(&apiv1.DiscoverSourceRequest{Name: name, DataPlane: *dataPlane}))
+	c, err := client(conn, apiv1connect.NewSourceServiceClient)
+	if err != nil {
+		return err
+	}
+	r, err := c.DiscoverSource(ctx, connect.NewRequest(&apiv1.DiscoverSourceRequest{Name: name, DataPlane: *dataPlane}))
 	if err != nil {
 		return err
 	}

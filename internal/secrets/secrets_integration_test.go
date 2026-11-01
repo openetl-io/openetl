@@ -25,7 +25,7 @@ func TestKeyringOnTheStore(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	tenant, err := st.Bootstrap(ctx, "default")
+	tenant, err := st.Bootstrap(ctx, "default", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

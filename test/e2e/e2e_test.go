@@ -45,6 +45,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/unsuitable001/openetl/internal/auth"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/daemon"
 	"github.com/unsuitable001/openetl/internal/netguard"
@@ -73,6 +74,12 @@ var env struct {
 	// A dbt with dbt-postgres, from OPENETL_DBT; without it, dbt steps
 	// aren't tested.
 	dbt string
+	// Send the owner key the server wrote, and the default data plane's
+	// runner token.
+	http, runner *http.Client
+	runnerToken  string
+	// The owner key's file.
+	keyFile string
 }
 
 // The in-process registry is on loopback.
@@ -107,6 +114,7 @@ func setup(m *testing.M) (int, error) {
 	env.checkpoints = filepath.Join(dir, "checkpoints")
 	env.cache = filepath.Join(dir, "cache")
 	env.noConnectors = filepath.Join(dir, "no-connectors")
+	env.keyFile = filepath.Join(dir, "admin.key")
 	if err := os.Mkdir(env.noConnectors, 0o750); err != nil {
 		return 0, err
 	}
@@ -154,6 +162,7 @@ func setup(m *testing.M) (int, error) {
 			Config: config.Config{
 				DatabaseURL: env.dbURL, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
 				Connectors: env.noConnectors, EgressAllow: egressAllow, SecretsKey: filepath.Join(dir, "secrets.key"),
+				BootstrapKeyFile: env.keyFile,
 			},
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
 			Listener:  ln,
@@ -168,11 +177,22 @@ func setup(m *testing.M) (int, error) {
 	case <-time.After(30 * time.Second):
 		return 0, errors.New("the server didn't start")
 	}
+	key, err := auth.ReadKeyFile(env.keyFile)
+	if err != nil {
+		return 0, fmt.Errorf("the server's owner key: %w", err)
+	}
+	env.http = withKey(key)
+	tok, err := apiv1connect.NewAccessServiceClient(env.http, env.apiURL).CreateRunnerToken(ctx, connect.NewRequest(&apiv1.CreateRunnerTokenRequest{Parent: "dataPlanes/default"}))
+	if err != nil {
+		return 0, err
+	}
+	env.runnerToken = tok.Msg.GetSecret()
+	env.runner = withKey(env.runnerToken)
 	if err := applyOfficialConnectors(ctx); err != nil {
 		return 0, err
 	}
 	// The DSN of the test's database, which configs name as e2e-dsn.
-	if _, err := apiv1connect.NewSecretServiceClient(http.DefaultClient, env.apiURL).UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{
+	if _, err := apiv1connect.NewSecretServiceClient(env.http, env.apiURL).UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{
 		Secret: &apiv1.Secret{Name: "workspaces/default/secrets/e2e-dsn", Value: env.dbURL}, AllowMissing: true,
 	})); err != nil {
 		return 0, err
@@ -203,7 +223,7 @@ func applyOfficialConnectors(ctx context.Context) error {
 		}
 		req.Documents = append(req.Documents, &apiv1.Document{Origin: exe, Content: doc})
 	}
-	_, err := apiv1connect.NewApplyServiceClient(http.DefaultClient, env.apiURL).Apply(ctx, connect.NewRequest(req))
+	_, err := apiv1connect.NewApplyServiceClient(env.http, env.apiURL).Apply(ctx, connect.NewRequest(req))
 	return err
 }
 
@@ -305,6 +325,17 @@ func replaceText(m protoreflect.Message, old, new string) {
 	}
 }
 
+// bearer sends a key or token with each request.
+type bearer string
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+string(b))
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func withKey(secret string) *http.Client { return &http.Client{Transport: bearer(secret)} }
+
 // runner is an openetld runner process.
 type runner struct {
 	cmd  *exec.Cmd
@@ -321,6 +352,7 @@ func startRunner(t *testing.T) *runner {
 		args = append(args, "--dbt", env.dbt)
 	}
 	cmd := exec.Command(env.openetld, args...)
+	cmd.Env = append(os.Environ(), "OPENETL_RUNNER_TOKEN="+env.runnerToken)
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
 	if err := cmd.Start(); err != nil {
@@ -398,7 +430,7 @@ func apply(t *testing.T, docs ...string) []*apiv1.AppliedResource {
 	for i, d := range docs {
 		req.Documents = append(req.Documents, &apiv1.Document{Origin: fmt.Sprintf("doc %d", i+1), Content: []byte(d)})
 	}
-	res, err := apiv1connect.NewApplyServiceClient(http.DefaultClient, env.apiURL).Apply(t.Context(), connect.NewRequest(req))
+	res, err := apiv1connect.NewApplyServiceClient(env.http, env.apiURL).Apply(t.Context(), connect.NewRequest(req))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +441,7 @@ func apply(t *testing.T, docs ...string) []*apiv1.AppliedResource {
 func setSecret(t *testing.T, value string) string {
 	t.Helper()
 	name := unique("secret")
-	_, err := apiv1connect.NewSecretServiceClient(http.DefaultClient, env.apiURL).UpdateSecret(t.Context(), connect.NewRequest(&apiv1.UpdateSecretRequest{
+	_, err := apiv1connect.NewSecretServiceClient(env.http, env.apiURL).UpdateSecret(t.Context(), connect.NewRequest(&apiv1.UpdateSecretRequest{
 		Secret: &apiv1.Secret{Name: "workspaces/default/secrets/" + name, Value: value}, AllowMissing: true,
 	}))
 	if err != nil {

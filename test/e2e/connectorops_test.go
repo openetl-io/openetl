@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"fmt"
-	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -55,7 +54,7 @@ func TestCheckAndDiscover(t *testing.T) {
 		sourceDoc(name+"-missing", pg("e2e-dsn", "no_such_schema")),
 		destinationDoc(name, pg("e2e-dsn", schema(name))),
 	)
-	sources := apiv1connect.NewSourceServiceClient(http.DefaultClient, env.apiURL)
+	sources := apiv1connect.NewSourceServiceClient(env.http, env.apiURL)
 	check := func(source string) *apiv1.CheckResult {
 		t.Helper()
 		r, err := sources.CheckSource(t.Context(), connect.NewRequest(&apiv1.CheckSourceRequest{Name: "workspaces/default/sources/" + source}))
@@ -73,7 +72,7 @@ func TestCheckAndDiscover(t *testing.T) {
 	if r := check(name + "-missing"); r.GetOk() || r.GetCode() != "CONFIG_INVALID" || !strings.Contains(r.GetMessage(), "no_such_schema") {
 		t.Errorf("check of a missing schema: %v", r)
 	}
-	d, err := apiv1connect.NewDestinationServiceClient(http.DefaultClient, env.apiURL).CheckDestination(t.Context(),
+	d, err := apiv1connect.NewDestinationServiceClient(env.http, env.apiURL).CheckDestination(t.Context(),
 		connect.NewRequest(&apiv1.CheckDestinationRequest{Name: "workspaces/default/destinations/" + name}))
 	if err != nil {
 		t.Fatal(err)

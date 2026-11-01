@@ -4,14 +4,18 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/unsuitable001/openetl/internal/auth"
 	"github.com/unsuitable001/openetl/internal/store"
+	"github.com/unsuitable001/openetl/internal/store/db"
 	"github.com/unsuitable001/openetl/internal/store/storetest"
 )
 
@@ -27,16 +31,56 @@ func TestMigrateAndBootstrapAreIdempotent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a, err := s.Bootstrap(ctx, "default")
+	var key string
+	var orgs []uuid.UUID
+	then := func(q *db.Queries, org uuid.UUID) error {
+		orgs = append(orgs, org)
+		if key != "" {
+			return nil
+		}
+		var err error
+		key, err = store.EnsureOwner(ctx, q, org)
+		return err
+	}
+	a, err := s.Bootstrap(ctx, "default", then)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.Bootstrap(ctx, "default")
+	b, err := s.Bootstrap(ctx, "default", then)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a != b {
-		t.Errorf("second bootstrap gave %+v, first %+v", b, a)
+	if a != b || len(orgs) != 2 || orgs[1] != a.Org {
+		t.Errorf("second bootstrap gave %+v, first %+v; then ran for %v", b, a, orgs)
+	}
+
+	k, err := s.AuthenticateAPIKey(ctx, auth.Hash(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.OrgID != a.Org || k.Principal != store.BootstrapPrincipal || !slices.Equal(k.Bindings, []string{"owner"}) {
+		t.Errorf("the owner key authenticates as %+v", k)
+	}
+	// A second key, as openetld bootstrap-key makes, after the principal was
+	// disabled.
+	if err := s.SetPrincipalDisabled(ctx, db.SetPrincipalDisabledParams{OrgID: a.Org, ID: k.PrincipalID, Disabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AuthenticateAPIKey(ctx, auth.Hash(key)); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("a disabled principal's key: %v", err)
+	}
+	var again string
+	if err := s.Tx(ctx, func(q *db.Queries) (err error) { again, err = store.EnsureOwner(ctx, q, a.Org); return err }); err != nil {
+		t.Fatal(err)
+	}
+	for _, kk := range []string{key, again} {
+		if _, err := s.AuthenticateAPIKey(ctx, auth.Hash(kk)); err != nil {
+			t.Errorf("after bootstrap-key: %v", err)
+		}
+	}
+	owners, err := s.LockOrgOwners(ctx, a.Org)
+	if err != nil || len(owners) != 1 {
+		t.Errorf("owners %v, %v", owners, err)
 	}
 }
 

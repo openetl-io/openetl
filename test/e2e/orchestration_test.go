@@ -5,7 +5,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"syscall"
 	"testing"
@@ -102,7 +101,7 @@ func TestRunnerDrains(t *testing.T) {
 }
 
 func pipelines() apiv1connect.PipelineServiceClient {
-	return apiv1connect.NewPipelineServiceClient(http.DefaultClient, env.apiURL)
+	return apiv1connect.NewPipelineServiceClient(env.http, env.apiURL)
 }
 
 func syncCount(t *testing.T, pipeline string) int {
@@ -310,7 +309,7 @@ func TestSearchAttributes(t *testing.T) {
 	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
 		t.Fatalf("sync %s: %s", status, stats)
 	}
-	if _, err := apiv1connect.NewSourceServiceClient(http.DefaultClient, env.apiURL).CheckSource(t.Context(),
+	if _, err := apiv1connect.NewSourceServiceClient(env.http, env.apiURL).CheckSource(t.Context(),
 		connect.NewRequest(&apiv1.CheckSourceRequest{Name: "workspaces/default/sources/" + name})); err != nil {
 		t.Fatal(err)
 	}

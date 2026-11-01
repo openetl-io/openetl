@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -133,7 +132,7 @@ func TestCheckpointMirror(t *testing.T) {
 		}
 	}
 
-	api := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, env.apiURL)
+	api := dataplanev1connect.NewDataPlaneServiceClient(env.runner, env.apiURL)
 	report := func(pipeline string, epoch uint64, at time.Time) (*dataplanev1.ReportCheckpointResponse, error) {
 		res, err := api.ReportCheckpoint(ctx, connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
 			PipelineId: pipeline, RunId: "run", Generation: 99, Epoch: epoch, CreateTime: timestamppb.New(at),

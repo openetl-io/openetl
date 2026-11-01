@@ -64,6 +64,15 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	if len(docs) == 0 {
 		return nil, invalid("no documents")
 	}
+	for i, doc := range docs {
+		perm, ws := "documents.apply", doc.Workspace
+		if versioned(doc) {
+			perm, ws = "connectors.apply", ""
+		}
+		if err := authorize(ctx, perm, ws); err != nil {
+			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("%s: %w", origins[i], errors.Unwrap(err)))
+		}
+	}
 	if err := s.pinImages(ctx, docs, origins); err != nil {
 		return nil, err
 	}
