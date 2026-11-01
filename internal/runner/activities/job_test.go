@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/connectorhost"
 )
 
 func TestBuildJobTakesTypeSettings(t *testing.T) {
@@ -30,7 +31,7 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 			}}},
 			Types: &apiv1.Types{Infinity: apiv1.Infinity_INFINITY_QUARANTINE},
 		},
-	})
+	}, connectorhost.Env{})
 	if err != nil {
 		t.Fatal(err)
 	}

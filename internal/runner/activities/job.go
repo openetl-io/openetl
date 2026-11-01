@@ -27,13 +27,13 @@ const (
 
 // buildJob binds the connectors and settles the settings. The caller sets
 // the attempt's owner, log and dataflow.
-func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runner.Job, error) {
+func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env) (runner.Job, error) {
 	p := spec.GetPipeline()
 	srcCfg, err := protojson.Marshal(spec.GetSource().GetConfig())
 	if err != nil {
 		return runner.Job{}, err
 	}
-	src, err := connectorhost.NewSource(spec.GetSource().GetConnector(), srcCfg)
+	src, err := connectorhost.NewSource(spec.GetSource().GetConnector(), srcCfg, env)
 	if err != nil {
 		return runner.Job{}, err
 	}

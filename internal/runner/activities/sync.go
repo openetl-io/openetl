@@ -22,6 +22,7 @@ import (
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/engineclient"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
@@ -38,6 +39,8 @@ type Sync struct {
 	Storage string
 	Engine  engineclient.Options
 	Logger  *slog.Logger
+	// What the connectors get.
+	Connectors connectorhost.Env
 }
 
 // RunSyncAttempt runs one attempt of a sync. Heartbeats carry the last
@@ -78,7 +81,7 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	if spec.GetOrgId() != in.OrgID {
 		return out, errs.New(errs.ConfigInvalid, "pipeline %s belongs to another org", in.PipelineID)
 	}
-	job, err := buildJob(ctx, spec)
+	job, err := buildJob(ctx, spec, a.Connectors)
 	if err != nil {
 		return out, err
 	}

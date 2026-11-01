@@ -36,7 +36,7 @@ func TestExamples(t *testing.T) {
 			}
 			switch doc.Kind {
 			case spec.KindSource:
-				_, err = connectorhost.NewSource(doc.Connector.GetConnector(), cfg)
+				_, err = connectorhost.NewSource(doc.Connector.GetConnector(), cfg, connectorhost.Env{})
 			case spec.KindDestination:
 				_, err = connectorhost.NewDestination(doc.Connector.GetConnector(), cfg)
 			}

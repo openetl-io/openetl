@@ -22,7 +22,8 @@ import (
 
 // Ops runs connector operations for ConnectorOpWorkflow.
 type Ops struct {
-	API dataplanev1connect.DataPlaneServiceClient
+	API        dataplanev1connect.DataPlaneServiceClient
+	Connectors connectorhost.Env
 }
 
 // CheckConnector checks a source or destination. A failed check is a result,
@@ -33,19 +34,19 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 		return contract.ConnectorOpResult{}, temporalx.ApplicationError(err)
 	}
 	res := contract.ConnectorOpResult{Version: cfg.GetVersion()}
-	if err := check(ctx, in, cfg.GetConfig()); err != nil {
+	if err := check(ctx, in, cfg.GetConfig(), a.Connectors); err != nil {
 		res.Code, res.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
 	}
 	return res, nil
 }
 
-func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig) error {
+func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) error {
 	raw, err := protojson.Marshal(cfg.GetConfig())
 	if err != nil {
 		return err
 	}
 	if in.SourceID != "" {
-		src, err := connectorhost.NewSource(cfg.GetConnector(), raw)
+		src, err := connectorhost.NewSource(cfg.GetConnector(), raw, env)
 		if err != nil {
 			return err
 		}
@@ -84,7 +85,7 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 	if err != nil {
 		return res, err
 	}
-	src, err := connectorhost.NewSource(cfg.GetConfig().GetConnector(), raw)
+	src, err := connectorhost.NewSource(cfg.GetConfig().GetConnector(), raw, a.Connectors)
 	if err != nil {
 		return res, err
 	}

@@ -21,7 +21,9 @@ import (
 	"github.com/unsuitable001/openetl/internal/api"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/checkpoint/openstore"
+	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/engineclient"
+	"github.com/unsuitable001/openetl/internal/netguard"
 	cpactivities "github.com/unsuitable001/openetl/internal/orchestration/activities"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/orchestration/ops"
@@ -159,6 +161,11 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	if err := checkpoint.Probe(ctx, cps, ""); err != nil {
 		return fmt.Errorf("daemon: the checkpoint store fails the conditional-write probe, so the runner won't start: %w", err)
 	}
+	allow, err := netguard.ParsePrefixes(cfg.EgressAllow)
+	if err != nil {
+		return fmt.Errorf("daemon: --egress-allow: %w", err)
+	}
+	connectors := connectorhost.Env{Egress: netguard.Policy{Allow: allow}, Logger: log.With("component", "connector")}
 	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL) //nolint:forbidigo // the operator configures the API's address
 	sync := &dpactivities.Sync{
 		API:         apiClient,
@@ -166,6 +173,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		Storage:     cfg.Checkpoints,
 		Engine:      engineclient.Options{Binary: cfg.Engine, Logger: log.With("component", "engine")},
 		Logger:      log,
+		Connectors:  connectors,
 	}
 	w := worker.New(tc, contract.BatchQueue(cfg.DataPlane), worker.Options{
 		MaxConcurrentActivityExecutionSize: 4,
@@ -173,7 +181,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		WorkerStopTimeout: 2 * time.Minute,
 	})
 	w.RegisterActivityWithOptions(sync.RunSyncAttempt, activity.RegisterOptions{Name: contract.RunSyncAttempt})
-	connectorOps := &dpactivities.Ops{API: apiClient}
+	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
 	log.Info("runner polling", "queue", contract.BatchQueue(cfg.DataPlane), "checkpoints", cfg.Checkpoints)
