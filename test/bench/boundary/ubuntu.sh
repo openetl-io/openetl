@@ -4,9 +4,14 @@
 # database), Go and Rust, then runs make bench-boundary and saves the report
 # with the machine's details. Run it as root from the repository root; it is
 # safe to run again. Arguments are passed to the benchmark, e.g. -rows 10000000.
-# OPENETL_COMMIT names the commit in the report when there is no .git, as in a
-# copy made with git archive.
+# It needs a copy of openetl-connectors at CONNECTORS_SRC (default
+# ../openetl-connectors), which make connectors builds against this checkout.
+# OPENETL_COMMIT and OPENETL_CONNECTORS_COMMIT name the commits in the report
+# when there is no .git, as in a copy made with git archive.
 set -euo pipefail
+
+connectors=${CONNECTORS_SRC:-../openetl-connectors}
+[ -f "$connectors/go.mod" ] || { echo "no openetl-connectors at $connectors; copy it there or set CONNECTORS_SRC" >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/go/bin:$HOME/.cargo/bin:$PATH"
@@ -46,7 +51,7 @@ command -v rustup >/dev/null || curl -fsSL https://sh.rustup.rs | sh -s -- -y --
 cgroup() { for f; do [ -r "/sys/fs/cgroup/$f" ] && { echo "$f: $(cat "/sys/fs/cgroup/$f")"; return; }; done; echo n/a; }
 report="bench-boundary-$(date -u +%Y%m%dT%H%M%SZ).txt"
 {
-  echo "# $(date -u +%FT%TZ) ${OPENETL_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+  echo "# $(date -u +%FT%TZ) ${OPENETL_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}, connectors ${OPENETL_CONNECTORS_COMMIT:-$(git -C "$connectors" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
   echo "kernel: $(uname -sr)"
   echo "nproc: $(nproc)"
   echo "cgroup cpu: $(cgroup cpu.max cpu/cpu.cfs_quota_us)"
@@ -60,5 +65,5 @@ report="bench-boundary-$(date -u +%Y%m%dT%H%M%SZ).txt"
   su postgres -c "psql -qtA -c 'SELECT version()'"
   echo
 } | tee "$report"
-make bench-boundary BENCH_FLAGS="$*" 2>&1 | tee -a "$report"
+make bench-boundary CONNECTORS_SRC="$connectors" BENCH_FLAGS="$*" 2>&1 | tee -a "$report"
 echo "report: $report"
