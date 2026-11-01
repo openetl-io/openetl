@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -129,9 +130,8 @@ func run(ctx context.Context) error {
 		streams = append(streams, runner.Stream{Name: s.Name, Replay: s.Replay, Mode: destination.Append, PrimaryKey: s.PrimaryKey, Schema: s.Schema})
 	}
 	readAll := source.ReadRequest{Streams: []source.ConfiguredStream{{Name: table}}}
-	engine := engineclient.Dataflow{Options: engineclient.Options{Binary: bin}}
-
 	b := &bench{runs: *runsFlag}
+	engine := engineclient.Dataflow{Options: engineclient.Options{Binary: bin, PeakMemory: b.enginePeak}}
 	if _, err := b.add(ctx, "postgres wire, no Arrow", step{run: func(ctx context.Context) (int64, error) { return wire(ctx, conn) }}); err != nil {
 		return err
 	}
@@ -240,8 +240,8 @@ func run(ctx context.Context) error {
 	fmt.Fprintf(w, "  two crossings\t%.3f CPU s/GB = %.1f%% of shape 2's CPU\t≤ 20%%\t%s\n", twoCost, 100*share2, verdict(share2 <= 0.20))
 	fmt.Fprintf(w, "  idle engine RSS\t%.1f MB\t≤ 50 MB\t%s\n", float64(idle)/1e6, verdict(idle <= 50e6))
 	_ = w.Flush()
-	fmt.Printf("\nlargest engine RSS in any phase: %.0f MB\n", float64(peakChildRSS())/1e6)
-	fmt.Println("MB is 10^6 bytes of Arrow buffers (value bytes on the wire for the first phase).")
+	fmt.Println("\nMB is 10^6 bytes of Arrow buffers (value bytes on the wire for the first phase).")
+	fmt.Println("Engine MB is the engine's peak resident memory.")
 	fmt.Println("CPU is this process (the runner) plus the engines it started; Postgres's own CPU isn't counted.")
 	return nil
 }
@@ -382,18 +382,6 @@ func idleRSS(ctx context.Context, bin string) (int64, error) {
 	return kb << 10, err
 }
 
-// peakChildRSS is the largest resident memory of any child that has exited.
-func peakChildRSS() int64 {
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_CHILDREN, &ru); err != nil {
-		return 0
-	}
-	if runtime.GOOS == "darwin" {
-		return ru.Maxrss
-	}
-	return ru.Maxrss << 10
-}
-
 func cpu(who int) time.Duration {
 	var ru syscall.Rusage
 	if err := syscall.Getrusage(who, &ru); err != nil {
@@ -414,6 +402,7 @@ type sample struct {
 	bytes int64
 	// This process, and the children that exited during the run.
 	runner, engine time.Duration
+	enginePeak     int64
 }
 
 func (s sample) mbps() float64 { return float64(s.bytes) / 1e6 / s.wall.Seconds() }
@@ -443,6 +432,17 @@ func (p *phase) median(f func(sample) float64) float64 {
 type bench struct {
 	runs   int
 	phases []*phase
+	peak   atomic.Int64
+}
+
+// enginePeak keeps the largest engine peak of the current run.
+func (b *bench) enginePeak(n int64) {
+	for {
+		old := b.peak.Load()
+		if n <= old || b.peak.CompareAndSwap(old, n) {
+			return
+		}
+	}
 }
 
 func (b *bench) add(ctx context.Context, name string, s step) (*phase, error) {
@@ -454,19 +454,20 @@ func (b *bench) add(ctx context.Context, name string, s step) (*phase, error) {
 			}
 		}
 		runtime.GC()
+		b.peak.Store(0)
 		self, kids := cpu(syscall.RUSAGE_SELF), cpu(syscall.RUSAGE_CHILDREN)
 		start := time.Now()
 		n, err := s.run(ctx)
 		wall := time.Since(start)
 		runtime.GC()
-		smp := sample{wall: wall, bytes: n, runner: cpu(syscall.RUSAGE_SELF) - self, engine: cpu(syscall.RUSAGE_CHILDREN) - kids}
+		smp := sample{wall: wall, bytes: n, runner: cpu(syscall.RUSAGE_SELF) - self, engine: cpu(syscall.RUSAGE_CHILDREN) - kids, enginePeak: b.peak.Load()}
 		if s.cleanup != nil {
 			s.cleanup(ctx)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		fmt.Fprintf(os.Stderr, "%-40s run %d: %5.2fs %5.0f MB/s, largest engine RSS so far %.0f MB\n", name, i+1, wall.Seconds(), smp.mbps(), float64(peakChildRSS())/1e6)
+		fmt.Fprintf(os.Stderr, "%-40s run %d: %5.2fs %5.0f MB/s, engine peak %.0f MB\n", name, i+1, wall.Seconds(), smp.mbps(), float64(smp.enginePeak)/1e6)
 		p.samples = append(p.samples, smp)
 	}
 	b.phases = append(b.phases, p)
@@ -474,14 +475,19 @@ func (b *bench) add(ctx context.Context, name string, s step) (*phase, error) {
 }
 
 func (b *bench) print() {
-	const row = "%-38s %7s %6s %11s %11s %9s\n"
-	fmt.Printf(row, "phase", "wall s", "MB/s", "runner CPU", "engine CPU", "CPU s/GB")
+	const row = "%-38s %7s %6s %11s %11s %9s %9s\n"
+	fmt.Printf(row, "phase", "wall s", "MB/s", "runner CPU", "engine CPU", "CPU s/GB", "engine MB")
 	for _, p := range b.phases {
+		peak := "—"
+		if mb := p.median(func(s sample) float64 { return float64(s.enginePeak) / 1e6 }); mb > 0 {
+			peak = fmt.Sprintf("%.0f", mb)
+		}
 		fmt.Printf(row, p.name,
 			fmt.Sprintf("%.2f", p.median(func(s sample) float64 { return s.wall.Seconds() })),
 			fmt.Sprintf("%.0f", p.median(sample.mbps)),
 			fmt.Sprintf("%.2f", p.median(func(s sample) float64 { return s.runner.Seconds() })),
 			fmt.Sprintf("%.2f", p.median(func(s sample) float64 { return s.engine.Seconds() })),
-			fmt.Sprintf("%.3f", p.median(sample.cpuPerGB)))
+			fmt.Sprintf("%.3f", p.median(sample.cpuPerGB)),
+			peak)
 	}
 }

@@ -14,7 +14,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +39,9 @@ type Options struct {
 	Logger *slog.Logger
 	// Allocates batches read from the engine. Nil: memory.DefaultAllocator.
 	Allocator memory.Allocator
+	// PeakMemory, if set, gets each engine's peak resident memory in bytes
+	// once it has stopped, when that can be read.
+	PeakMemory func(bytes int64)
 }
 
 const (
@@ -72,6 +77,7 @@ type process struct {
 	conn   *grpc.ClientConn
 	client enginev1.EngineServiceClient
 	log    *slog.Logger
+	peak   func(int64)
 	// Closed once the process has exited and its output is drained.
 	exited chan struct{}
 	killed atomic.Bool
@@ -87,7 +93,7 @@ func start(ctx context.Context, opts Options) (*process, error) {
 		return nil, errs.Wrap(errs.Internal, err, "engineclient: make the socket directory")
 	}
 	control := filepath.Join(dir, "control.sock")
-	p := &process{dir: dir, data: filepath.Join(dir, "data.sock"), exited: make(chan struct{})}
+	p := &process{dir: dir, data: filepath.Join(dir, "data.sock"), peak: opts.PeakMemory, exited: make(chan struct{})}
 	if len(control) > maxSocketPath {
 		_ = os.RemoveAll(dir)
 		return nil, errs.New(errs.ConfigInvalid, "engineclient: socket path %s is too long; set a shorter TMPDIR", control)
@@ -181,6 +187,10 @@ func (p *process) dialEdge(ctx context.Context, id string) (*net.UnixConn, error
 // close stops the engine and waits for it to exit. It is safe to call after
 // the engine has died.
 func (p *process) close() {
+	var hwm int64
+	if p.peak != nil {
+		hwm = p.highWater()
+	}
 	if p.client != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 		_, _ = p.client.Stop(ctx, &enginev1.StopRequest{})
@@ -200,6 +210,50 @@ func (p *process) close() {
 	}
 	t.Stop()
 	_ = os.RemoveAll(p.dir)
+	if p.peak != nil {
+		if n := p.peakMemory(hwm); n > 0 {
+			p.peak(n)
+		}
+	}
+}
+
+// highWater reads the running engine's peak resident memory on Linux. Its
+// rusage won't do there: Go starts processes with CLONE_VM, so execve carries
+// the runner's own peak into the engine's maxrss.
+func (p *process) highWater() int64 {
+	if runtime.GOOS != "linux" {
+		return 0
+	}
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(p.cmd.Process.Pid) + "/status")
+	if err != nil {
+		return 0
+	}
+	for line := range strings.Lines(string(b)) {
+		if v, ok := strings.CutPrefix(line, "VmHWM:"); ok {
+			kb, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimSpace(v), " kB"), 10, 64)
+			if err != nil {
+				return 0
+			}
+			return kb << 10
+		}
+	}
+	return 0
+}
+
+// peakMemory is the exited engine's peak resident memory in bytes, given
+// what highWater read before it stopped; 0 if unknown.
+func (p *process) peakMemory(hwm int64) int64 {
+	if runtime.GOOS == "linux" {
+		return hwm
+	}
+	ru, ok := p.cmd.ProcessState.SysUsage().(*syscall.Rusage)
+	if !ok {
+		return 0
+	}
+	if runtime.GOOS == "darwin" {
+		return ru.Maxrss
+	}
+	return ru.Maxrss << 10
 }
 
 func (p *process) kill() {

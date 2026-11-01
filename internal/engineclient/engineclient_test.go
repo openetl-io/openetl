@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -361,6 +362,32 @@ func TestRunReportsEngineDeaths(t *testing.T) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestPeakMemoryIsTheEngines(t *testing.T) {
+	// On Linux the engine's rusage would include this.
+	ballast := make([]byte, 256<<20)
+	for i := 0; i < len(ballast); i += 4096 {
+		ballast[i] = 1
+	}
+	var peaks []int64
+	opts := options(t, nil)
+	opts.PeakMemory = func(n int64) { peaks = append(peaks, n) }
+	got, err := run(testContext(t), &Dataflow{Options: opts}, plan("a"),
+		runner.Frame{Kind: runner.FrameRows, Stream: "a", Rows: rows(`{"x": 1}`)},
+		runner.Frame{Kind: runner.FrameBarrier, Stream: "a", Epoch: 5},
+	)
+	release(got)
+	runtime.KeepAlive(ballast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peaks) != 1 {
+		t.Fatalf("got %d peaks, want 1", len(peaks))
+	}
+	if mb := peaks[0] >> 20; mb < 1 || mb >= 128 {
+		t.Errorf("peak memory is %d MiB, want the engine's own, 1-128 MiB", mb)
 	}
 }
 
