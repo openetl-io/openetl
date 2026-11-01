@@ -148,10 +148,10 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	}
 	collection := "sources"
 	if doc.Kind == spec.KindSource {
-		_, err = connectorhost.NewSource(doc.Connector.GetConnector(), cfg, connectorhost.Env{})
+		_, err = connectorhost.NewSource(doc.Connector.GetConnector(), cfg, s.Connectors)
 	} else {
 		collection = "destinations"
-		_, err = connectorhost.NewDestination(doc.Connector.GetConnector(), cfg)
+		_, err = connectorhost.NewDestination(doc.Connector.GetConnector(), cfg, s.Connectors)
 	}
 	if err != nil {
 		return nil, invalid("%v", err)

@@ -21,6 +21,7 @@ require (
 replace github.com/unsuitable001/openetl/sdk/go => ./sdk/go
 
 require (
+	cel.dev/cel-go v0.32.0
 	cloud.google.com/go/storage v1.67.0
 	connectrpc.com/connect v1.21.1
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
@@ -32,6 +33,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/pressly/goose/v3 v3.29.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/unsuitable001/openetl/sdk/go v0.0.0-00010101000000-000000000000
 	go.temporal.io/api v1.63.5
 	go.temporal.io/sdk v1.50.0
@@ -45,7 +47,6 @@ require (
 )
 
 require (
-	cel.dev/cel-go v0.32.0 // indirect
 	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.23.2 // indirect
@@ -59,6 +60,7 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.61.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.61.0 // indirect
 	github.com/andybalholm/brotli v1.2.6 // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/apache/thrift v0.24.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.25 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.33.3 // indirect
@@ -107,7 +109,6 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/sethvargo/go-retry v0.5.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect

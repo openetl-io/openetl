@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/unsuitable001/openetl/sdk/go/host"
+	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
@@ -25,11 +27,25 @@ type Source[C any] struct {
 type Ctx[C any] struct {
 	context.Context
 	Config *C
+	// Nil if the source was bound without host services.
+	Host host.Host
 }
 
-// New binds s to config, a JSON object. Unknown fields are an error, and
-// C's Validate method runs if it has one. New does no I/O.
-func (s *Source[C]) New(config []byte) (source.Source, error) {
+// HTTP sends req through host services: retries, rate limits and auth.
+func (c *Ctx[C]) HTTP(req *host.Request) (*host.Response, error) {
+	if c.Host == nil {
+		return nil, WithCode(protocolv1.ErrorCode_ERROR_CODE_INTERNAL, errors.New("HTTP: the source has no host services"))
+	}
+	return c.Host.HTTP(c, req)
+}
+
+// New binds s to config without host services.
+func (s *Source[C]) New(config []byte) (source.Source, error) { return s.Bind(config, nil) }
+
+// Bind binds s to config, a JSON object, and to its host services. Unknown
+// fields are an error, and C's Validate method runs if it has one. Bind
+// does no I/O.
+func (s *Source[C]) Bind(config []byte, h host.Host) (source.Source, error) {
 	seen := make(map[string]bool, len(s.Streams))
 	for _, st := range s.Streams {
 		if st.name == "" || seen[st.name] {
@@ -37,7 +53,7 @@ func (s *Source[C]) New(config []byte) (source.Source, error) {
 		}
 		seen[st.name] = true
 	}
-	b := &bound[C]{src: s}
+	b := &bound[C]{src: s, host: h}
 	if len(bytes.TrimSpace(config)) > 0 {
 		dec := json.NewDecoder(bytes.NewReader(config))
 		dec.DisallowUnknownFields()
@@ -54,8 +70,9 @@ func (s *Source[C]) New(config []byte) (source.Source, error) {
 }
 
 type bound[C any] struct {
-	src *Source[C]
-	cfg C
+	src  *Source[C]
+	cfg  C
+	host host.Host
 }
 
 var (
@@ -108,7 +125,7 @@ func (b *bound[C]) read(ctx context.Context, st *Stream[C], state []byte, emit s
 			return fmt.Errorf("state: %w", err)
 		}
 	}
-	c := &Ctx[C]{Context: ctx, Config: &b.cfg}
+	c := &Ctx[C]{Context: ctx, Config: &b.cfg, Host: b.host}
 	out := newOut(ctx, st, emit, s, state)
 	err := st.run(c, state, out)
 	if errors.Is(err, ErrPageTokenExpired) && out.expired {

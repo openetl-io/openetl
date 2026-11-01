@@ -50,15 +50,17 @@ func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.Connect
 		if err != nil {
 			return err
 		}
+		defer connectorhost.Close(src)
 		if c, ok := src.(source.Checker); ok {
 			return c.Check(ctx)
 		}
 		return nil
 	}
-	dst, err := connectorhost.NewDestination(cfg.GetConnector(), raw)
+	dst, err := connectorhost.NewDestination(cfg.GetConnector(), raw, env)
 	if err != nil {
 		return err
 	}
+	defer connectorhost.Close(dst)
 	if c, ok := dst.(destination.Checker); ok {
 		return c.Check(ctx)
 	}
@@ -89,6 +91,7 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 	if err != nil {
 		return res, err
 	}
+	defer connectorhost.Close(src)
 	cat, err := src.Discover(ctx)
 	if err != nil {
 		return res, err

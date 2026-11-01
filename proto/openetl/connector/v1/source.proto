@@ -36,7 +36,9 @@ message CatalogStream {
   string name = 1;
   // For raw-lane streams: a JSON Schema for one record.
   bytes json_schema = 2;
-  // For typed-lane streams: an Arrow IPC schema message.
+  // Declared logical types, by field name, as an Arrow IPC stream with no
+  // batches; empty: inferred from the records. Rows on either lane may carry
+  // a declared field as text, which the platform parses.
   bytes arrow_schema = 3;
   repeated string primary_key = 4;
   repeated SyncMode sync_modes = 5;
@@ -118,6 +120,8 @@ message CommittedRequest {
   // Per-stream states of one checkpoint. Everything before them can be
   // discarded upstream.
   map<string, bytes> states = 1;
+  // The read's config, for when no read is running.
+  bytes config = 2;
 }
 
 message CommittedResponse {}

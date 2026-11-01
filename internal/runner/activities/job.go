@@ -3,6 +3,7 @@ package activities
 import (
 	"cmp"
 	"context"
+	"errors"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -25,8 +26,9 @@ const (
 	defaultResumePointTimeout = time.Minute
 )
 
-// buildJob binds the connectors and settles the settings. The caller sets
-// the attempt's owner, log and dataflow.
+// buildJob binds and starts the connectors, and settles the settings. The
+// caller sets the attempt's owner, log and dataflow, and closes the
+// connectors, even after an error.
 func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env) (runner.Job, error) {
 	p := spec.GetPipeline()
 	srcCfg, err := protojson.Marshal(spec.GetSource().GetConfig())
@@ -37,17 +39,22 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	if err != nil {
 		return runner.Job{}, err
 	}
+	job := runner.Job{Source: src}
 	dstCfg, err := protojson.Marshal(spec.GetDestination().GetConfig())
 	if err != nil {
-		return runner.Job{}, err
+		return job, err
 	}
-	dst, err := connectorhost.NewDestination(spec.GetDestination().GetConnector(), dstCfg)
+	dst, err := connectorhost.NewDestination(spec.GetDestination().GetConnector(), dstCfg, env)
 	if err != nil {
-		return runner.Job{}, err
+		return job, err
+	}
+	job.Destination = dst
+	if err := errors.Join(connectorhost.Start(ctx, src), connectorhost.Start(ctx, dst)); err != nil {
+		return job, err
 	}
 	cat, err := src.Discover(ctx)
 	if err != nil {
-		return runner.Job{}, err
+		return job, err
 	}
 
 	mode := destination.Append
@@ -92,7 +99,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			}
 		}
 		if !found {
-			return runner.Job{}, errs.New(errs.ConfigInvalid, "the source has no stream %q", ps.GetName())
+			return job, errs.New(errs.ConfigInvalid, "the source has no stream %q", ps.GetName())
 		}
 	}
 	policy := runner.AllowAll

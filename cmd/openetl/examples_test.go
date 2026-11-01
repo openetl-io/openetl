@@ -38,7 +38,7 @@ func TestExamples(t *testing.T) {
 			case spec.KindSource:
 				_, err = connectorhost.NewSource(doc.Connector.GetConnector(), cfg, connectorhost.Env{})
 			case spec.KindDestination:
-				_, err = connectorhost.NewDestination(doc.Connector.GetConnector(), cfg)
+				_, err = connectorhost.NewDestination(doc.Connector.GetConnector(), cfg, connectorhost.Env{})
 			}
 			if err != nil {
 				t.Errorf("%s: %v", d.GetOrigin(), err)

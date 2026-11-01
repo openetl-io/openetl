@@ -9,15 +9,15 @@ option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protoco
 
 // DestinationService is served by destination connectors.
 service DestinationService {
-  // Idempotent.
-  rpc ApplySchema(ApplySchemaRequest) returns (ApplySchemaResponse);
   // One stream per attempt's writer. The platform sends open, then recover,
-  // then batches, pre-commits and commits, and closes its side to close the
-  // writer. The connector answers recover, each pre-commit and each commit.
+  // then batches, pre-commits, schemas and commits, and closes its side to
+  // close the writer. The connector answers open, recover, each pre-commit,
+  // each schema and each commit.
   //
-  // Batches for epoch N+1 can arrive before pre-commit N. A commit runs
-  // concurrently with later batches and pre-commits, but never with another
-  // commit. Any other failure ends the stream.
+  // Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
+  // run concurrently with later batches and pre-commits, but never with each
+  // other. A failed schema or commit is answered with its error; any other
+  // failure ends the stream.
   rpc Write(stream WriteRequest) returns (stream WriteResponse);
 }
 
@@ -31,6 +31,8 @@ message DestinationCapabilities {
   google.protobuf.Duration min_commit_interval = 5;
   // Timestamps keep nanoseconds; otherwise only microseconds.
   bool nanosecond_timestamps = 6;
+  // The longest table or column name, in bytes; 0 for no limit.
+  uint32 max_identifier_length = 7;
 }
 
 enum SinkClass {
@@ -68,23 +70,6 @@ message Epoch {
   uint64 n = 2;
 }
 
-message ApplySchemaRequest {
-  bytes config = 1;
-  // A schema or dataset.
-  string namespace = 2;
-  repeated StreamSchema streams = 3;
-}
-
-message StreamSchema {
-  string name = 1;
-  // An Arrow IPC schema message, metadata columns included.
-  bytes arrow_schema = 2;
-  repeated string primary_key = 3;
-  WriteMode mode = 4;
-}
-
-message ApplySchemaResponse {}
-
 message WriteRequest {
   oneof msg {
     WriteOpen open = 1;
@@ -92,10 +77,12 @@ message WriteRequest {
     WriteBatch batch = 3;
     WritePreCommit pre_commit = 4;
     WriteCommit commit = 5;
+    WriteApplySchema apply_schema = 6;
   }
 }
 
 message WriteOpen {
+  // Secret fields hold secret names.
   bytes config = 1;
   string pipeline = 2;
   string namespace = 3;
@@ -140,12 +127,38 @@ message WriteCommit {
   bytes staged = 2;
 }
 
+// WriteApplySchema makes each stream's table hold its schema: it creates
+// tables, adds columns and widens types, and never drops or narrows them.
+// Idempotent, and not fenced. Only sent to destinations that have a schema.
+message WriteApplySchema {
+  repeated StreamSchema streams = 1;
+}
+
+message StreamSchema {
+  string name = 1;
+  // An Arrow IPC stream with no batches, metadata columns included.
+  bytes arrow_schema = 2;
+}
+
 message WriteResponse {
   oneof msg {
     WriteRecovered recovered = 1;
     WriteStaged staged = 2;
     WriteCommitted committed = 3;
+    WriteOpened opened = 4;
+    WriteSchemaApplied schema_applied = 5;
   }
+}
+
+message WriteOpened {
+  // The writer changes schemas, so the platform sends apply_schema.
+  bool applies_schema = 1;
+}
+
+message WriteSchemaApplied {
+  // Set if applying failed. The stream stays open, and the schemas can be
+  // sent again.
+  Error error = 1;
 }
 
 message WriteRecovered {

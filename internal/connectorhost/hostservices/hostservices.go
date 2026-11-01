@@ -46,6 +46,9 @@ type Options struct {
 	MaxBodyBytes int64
 	// Nil: slog's default.
 	Logger *slog.Logger
+	// GetSecret returns values. Only for connectors on the proxy and raw
+	// egress tiers, which build their own auth.
+	RevealSecrets bool
 }
 
 // Services is one connector instance's host services. It's safe for

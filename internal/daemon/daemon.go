@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"go.temporal.io/sdk/activity"
@@ -97,7 +99,8 @@ func Run(ctx context.Context, o Options) error {
 		}
 		srv := &api.Server{
 			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc},
-			DefaultDataPlane: cfg.DataPlane, Logger: log.With("role", "server"),
+			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
+			Logger: log.With("role", "server"),
 		}
 		g.Go(func() error { return serve(gctx, ln, srv.Handler(), o.Ready, log) })
 	}
@@ -165,7 +168,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	if err != nil {
 		return fmt.Errorf("daemon: --egress-allow: %w", err)
 	}
-	connectors := connectorhost.Env{Egress: netguard.Policy{Allow: allow}, Logger: log.With("component", "connector")}
+	connectors := connectorhost.Env{Egress: netguard.Policy{Allow: allow}, Connectors: connectorsDir(cfg), Logger: log.With("component", "connector")}
 	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL) //nolint:forbidigo // the operator configures the API's address
 	sync := &dpactivities.Sync{
 		API:         apiClient,
@@ -186,6 +189,19 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
 	log.Info("runner polling", "queue", contract.BatchQueue(cfg.DataPlane), "checkpoints", cfg.Checkpoints)
 	return runWorker(ctx, w)
+}
+
+// connectorsDir is where external connectors are: connectors/ next to
+// openetld unless configured.
+func connectorsDir(cfg config.Config) string {
+	if cfg.Connectors != "" {
+		return cfg.Connectors
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(exe), "connectors")
 }
 
 func runWorker(ctx context.Context, w worker.Worker) error {

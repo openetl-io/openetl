@@ -309,7 +309,9 @@ type CatalogStream struct {
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// For raw-lane streams: a JSON Schema for one record.
 	JsonSchema []byte `protobuf:"bytes,2,opt,name=json_schema,json=jsonSchema,proto3" json:"json_schema,omitempty"`
-	// For typed-lane streams: an Arrow IPC schema message.
+	// Declared logical types, by field name, as an Arrow IPC stream with no
+	// batches; empty: inferred from the records. Rows on either lane may carry
+	// a declared field as text, which the platform parses.
 	ArrowSchema         []byte     `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
 	PrimaryKey          []string   `protobuf:"bytes,4,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
 	SyncModes           []SyncMode `protobuf:"varint,5,rep,packed,name=sync_modes,json=syncModes,proto3,enum=openetl.connector.v1.SyncMode" json:"sync_modes,omitempty"`
@@ -876,7 +878,9 @@ type CommittedRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Per-stream states of one checkpoint. Everything before them can be
 	// discarded upstream.
-	States        map[string][]byte `protobuf:"bytes,1,rep,name=states,proto3" json:"states,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	States map[string][]byte `protobuf:"bytes,1,rep,name=states,proto3" json:"states,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// The read's config, for when no read is running.
+	Config        []byte `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -914,6 +918,13 @@ func (*CommittedRequest) Descriptor() ([]byte, []int) {
 func (x *CommittedRequest) GetStates() map[string][]byte {
 	if x != nil {
 		return x.States
+	}
+	return nil
+}
+
+func (x *CommittedRequest) GetConfig() []byte {
+	if x != nil {
+		return x.Config
 	}
 	return nil
 }
@@ -1006,9 +1017,10 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\x0eStreamComplete\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x17\n" +
 	"\x04next\x18\x02 \x01(\fH\x00R\x04next\x88\x01\x01B\a\n" +
-	"\x05_next\"\x99\x01\n" +
+	"\x05_next\"\xb1\x01\n" +
 	"\x10CommittedRequest\x12J\n" +
-	"\x06states\x18\x01 \x03(\v22.openetl.connector.v1.CommittedRequest.StatesEntryR\x06states\x1a9\n" +
+	"\x06states\x18\x01 \x03(\v22.openetl.connector.v1.CommittedRequest.StatesEntryR\x06states\x12\x16\n" +
+	"\x06config\x18\x02 \x01(\fR\x06config\x1a9\n" +
 	"\vStatesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\x13\n" +

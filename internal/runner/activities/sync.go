@@ -82,6 +82,8 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 		return out, errs.New(errs.ConfigInvalid, "pipeline %s belongs to another org", in.PipelineID)
 	}
 	job, err := buildJob(ctx, spec, a.Connectors)
+	defer connectorhost.Close(job.Source)
+	defer connectorhost.Close(job.Destination)
 	if err != nil {
 		return out, err
 	}

@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/store"
 )
@@ -36,7 +37,10 @@ type Server struct {
 	Ops       OpRunner
 	// For pipelines and connector operations that name none.
 	DefaultDataPlane string
-	Logger           *slog.Logger
+	// Which connectors exist, to validate configs; only names, manifests
+	// and the connectors directory matter.
+	Connectors connectorhost.Env
+	Logger     *slog.Logger
 }
 
 var (

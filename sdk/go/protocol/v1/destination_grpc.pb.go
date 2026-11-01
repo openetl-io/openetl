@@ -19,8 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DestinationService_ApplySchema_FullMethodName = "/openetl.connector.v1.DestinationService/ApplySchema"
-	DestinationService_Write_FullMethodName       = "/openetl.connector.v1.DestinationService/Write"
+	DestinationService_Write_FullMethodName = "/openetl.connector.v1.DestinationService/Write"
 )
 
 // DestinationServiceClient is the client API for DestinationService service.
@@ -29,15 +28,15 @@ const (
 //
 // DestinationService is served by destination connectors.
 type DestinationServiceClient interface {
-	// Idempotent.
-	ApplySchema(ctx context.Context, in *ApplySchemaRequest, opts ...grpc.CallOption) (*ApplySchemaResponse, error)
 	// One stream per attempt's writer. The platform sends open, then recover,
-	// then batches, pre-commits and commits, and closes its side to close the
-	// writer. The connector answers recover, each pre-commit and each commit.
+	// then batches, pre-commits, schemas and commits, and closes its side to
+	// close the writer. The connector answers open, recover, each pre-commit,
+	// each schema and each commit.
 	//
-	// Batches for epoch N+1 can arrive before pre-commit N. A commit runs
-	// concurrently with later batches and pre-commits, but never with another
-	// commit. Any other failure ends the stream.
+	// Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
+	// run concurrently with later batches and pre-commits, but never with each
+	// other. A failed schema or commit is answered with its error; any other
+	// failure ends the stream.
 	Write(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WriteRequest, WriteResponse], error)
 }
 
@@ -47,16 +46,6 @@ type destinationServiceClient struct {
 
 func NewDestinationServiceClient(cc grpc.ClientConnInterface) DestinationServiceClient {
 	return &destinationServiceClient{cc}
-}
-
-func (c *destinationServiceClient) ApplySchema(ctx context.Context, in *ApplySchemaRequest, opts ...grpc.CallOption) (*ApplySchemaResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ApplySchemaResponse)
-	err := c.cc.Invoke(ctx, DestinationService_ApplySchema_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *destinationServiceClient) Write(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WriteRequest, WriteResponse], error) {
@@ -78,15 +67,15 @@ type DestinationService_WriteClient = grpc.BidiStreamingClient[WriteRequest, Wri
 //
 // DestinationService is served by destination connectors.
 type DestinationServiceServer interface {
-	// Idempotent.
-	ApplySchema(context.Context, *ApplySchemaRequest) (*ApplySchemaResponse, error)
 	// One stream per attempt's writer. The platform sends open, then recover,
-	// then batches, pre-commits and commits, and closes its side to close the
-	// writer. The connector answers recover, each pre-commit and each commit.
+	// then batches, pre-commits, schemas and commits, and closes its side to
+	// close the writer. The connector answers open, recover, each pre-commit,
+	// each schema and each commit.
 	//
-	// Batches for epoch N+1 can arrive before pre-commit N. A commit runs
-	// concurrently with later batches and pre-commits, but never with another
-	// commit. Any other failure ends the stream.
+	// Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
+	// run concurrently with later batches and pre-commits, but never with each
+	// other. A failed schema or commit is answered with its error; any other
+	// failure ends the stream.
 	Write(grpc.BidiStreamingServer[WriteRequest, WriteResponse]) error
 	mustEmbedUnimplementedDestinationServiceServer()
 }
@@ -98,9 +87,6 @@ type DestinationServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedDestinationServiceServer struct{}
 
-func (UnimplementedDestinationServiceServer) ApplySchema(context.Context, *ApplySchemaRequest) (*ApplySchemaResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ApplySchema not implemented")
-}
 func (UnimplementedDestinationServiceServer) Write(grpc.BidiStreamingServer[WriteRequest, WriteResponse]) error {
 	return status.Error(codes.Unimplemented, "method Write not implemented")
 }
@@ -125,24 +111,6 @@ func RegisterDestinationServiceServer(s grpc.ServiceRegistrar, srv DestinationSe
 	s.RegisterService(&DestinationService_ServiceDesc, srv)
 }
 
-func _DestinationService_ApplySchema_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ApplySchemaRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DestinationServiceServer).ApplySchema(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DestinationService_ApplySchema_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DestinationServiceServer).ApplySchema(ctx, req.(*ApplySchemaRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _DestinationService_Write_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(DestinationServiceServer).Write(&grpc.GenericServerStream[WriteRequest, WriteResponse]{ServerStream: stream})
 }
@@ -156,12 +124,7 @@ type DestinationService_WriteServer = grpc.BidiStreamingServer[WriteRequest, Wri
 var DestinationService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "openetl.connector.v1.DestinationService",
 	HandlerType: (*DestinationServiceServer)(nil),
-	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "ApplySchema",
-			Handler:    _DestinationService_ApplySchema_Handler,
-		},
-	},
+	Methods:     []grpc.MethodDesc{},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Write",

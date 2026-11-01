@@ -114,6 +114,13 @@ func (s *Services) credential(ctx context.Context, a host.Auth) (credential, *oa
 	}
 }
 
+func (s *Services) GetSecret(ctx context.Context, name string) (sdk.Secret, error) {
+	if !s.opts.RevealSecrets {
+		return sdk.Secret{}, errs.New(errs.PermissionDenied, "GetSecret: only connectors on the proxy or raw egress tier get secret values; name the secret in a request's auth instead")
+	}
+	return s.secret(ctx, name)
+}
+
 func (s *Services) secret(ctx context.Context, name string) (sdk.Secret, error) {
 	if s.opts.Secrets == nil {
 		return sdk.Secret{}, errs.New(errs.ConfigInvalid, "HTTP: no secret named %q", name)
