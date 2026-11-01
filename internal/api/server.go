@@ -37,6 +37,8 @@ type Server struct {
 	Tenant    store.Tenant
 	Schedules Scheduler
 	Ops       OpRunner
+	// Reads syncs' logs on their data planes. Nil: they can't be read.
+	Logs LogReader
 	// For pipelines and connector operations that name none.
 	DefaultDataPlane string
 	// Which connectors exist, to validate configs; only names, manifests
@@ -53,6 +55,7 @@ type Server struct {
 var (
 	_ apiv1connect.ApplyServiceHandler           = (*Server)(nil)
 	_ apiv1connect.PipelineServiceHandler        = (*Server)(nil)
+	_ apiv1connect.SyncServiceHandler            = (*Server)(nil)
 	_ apiv1connect.SourceServiceHandler          = (*Server)(nil)
 	_ apiv1connect.DestinationServiceHandler     = (*Server)(nil)
 	_ apiv1connect.SecretServiceHandler          = (*Server)(nil)
@@ -66,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewApplyServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewPipelineServiceHandler(s, opts))
+	mux.Handle(apiv1connect.NewSyncServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewSourceServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewDestinationServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewSecretServiceHandler(s, opts))

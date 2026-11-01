@@ -20,7 +20,7 @@ import (
 // runSync runs SyncWorkflow with attempt answering each RunSyncAttempt. It
 // returns the number of attempts, what FinishSync recorded and the
 // workflow's error.
-func runSync(t *testing.T, attempt func(n int, info activity.Info) (contract.AttemptResult, error)) (calls int, finished contract.FinishSyncInput, err error) {
+func runSync(t *testing.T, attempt func(n int, info activity.Info, in contract.AttemptInput) (contract.AttemptResult, error)) (calls int, finished contract.FinishSyncInput, err error) {
 	t.Helper()
 	var s testsuite.WorkflowTestSuite
 	env := s.NewTestWorkflowEnvironment()
@@ -32,9 +32,9 @@ func runSync(t *testing.T, attempt func(n int, info activity.Info) (contract.Att
 		finished = in
 		return nil
 	}, activity.RegisterOptions{Name: contract.FinishSync})
-	env.RegisterActivityWithOptions(func(ctx context.Context, _ contract.AttemptInput) (contract.AttemptResult, error) {
+	env.RegisterActivityWithOptions(func(ctx context.Context, in contract.AttemptInput) (contract.AttemptResult, error) {
 		calls++
-		return attempt(calls, activity.GetInfo(ctx))
+		return attempt(calls, activity.GetInfo(ctx), in)
 	}, activity.RegisterOptions{Name: contract.RunSyncAttempt})
 	env.ExecuteWorkflow(contract.SyncWorkflow, contract.SyncInput{OrgID: "o", PipelineID: "p"})
 	if !env.IsWorkflowCompleted() {
@@ -51,7 +51,7 @@ func drain(info activity.Info) error {
 
 func TestNonRetryableCodesFailTheSync(t *testing.T) {
 	for _, code := range []errs.Code{errs.SchemaDrift, errs.ConfigInvalid, errs.Fenced} {
-		calls, finished, err := runSync(t, func(int, activity.Info) (contract.AttemptResult, error) {
+		calls, finished, err := runSync(t, func(int, activity.Info, contract.AttemptInput) (contract.AttemptResult, error) {
 			return contract.AttemptResult{}, fail(code)
 		})
 		if err == nil || calls != 1 {
@@ -64,7 +64,7 @@ func TestNonRetryableCodesFailTheSync(t *testing.T) {
 }
 
 func TestRetryableCodesRetryFiveTimes(t *testing.T) {
-	calls, _, err := runSync(t, func(int, activity.Info) (contract.AttemptResult, error) {
+	calls, _, err := runSync(t, func(int, activity.Info, contract.AttemptInput) (contract.AttemptResult, error) {
 		return contract.AttemptResult{}, fail(errs.Transient)
 	})
 	if err == nil || calls != 5 {
@@ -73,9 +73,13 @@ func TestRetryableCodesRetryFiveTimes(t *testing.T) {
 }
 
 // A drained attempt restarts at once, and doesn't count: one failure, a
-// drain, then four more failures.
+// drain, then four more failures. Every attempt knows its number in the
+// sync, for its log.
 func TestDrainingDoesNotCount(t *testing.T) {
-	calls, _, err := runSync(t, func(n int, info activity.Info) (contract.AttemptResult, error) {
+	calls, _, err := runSync(t, func(n int, info activity.Info, in contract.AttemptInput) (contract.AttemptResult, error) {
+		if got := int(in.Earlier + info.Attempt); got != n || in.SyncID != "s1" {
+			t.Errorf("call %d is the sync's attempt %d, of sync %q", n, got, in.SyncID)
+		}
 		if n == 2 {
 			if info.Attempt != 2 {
 				t.Errorf("the drained call was attempt %d, want 2", info.Attempt)
@@ -94,7 +98,7 @@ func TestDrainingDoesNotCount(t *testing.T) {
 }
 
 func TestDrainedSyncSucceeds(t *testing.T) {
-	calls, finished, err := runSync(t, func(n int, info activity.Info) (contract.AttemptResult, error) {
+	calls, finished, err := runSync(t, func(n int, info activity.Info, _ contract.AttemptInput) (contract.AttemptResult, error) {
 		if n < 3 {
 			return contract.AttemptResult{}, drain(info)
 		}
@@ -163,5 +167,25 @@ func TestConnectorOpRunsOnTheDataPlane(t *testing.T) {
 		if len(ran) != 1 || ran[0] != want || res.Catalog != op {
 			t.Errorf("%s: ran %v, result %+v", op, ran, res)
 		}
+	}
+}
+
+func TestReadLogsRunsOnTheLogsQueue(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := s.NewTestWorkflowEnvironment()
+	env.RegisterWorkflowWithOptions(workflows.Workflows{}.ReadLogs, workflow.RegisterOptions{Name: contract.ReadLogsWorkflow})
+	env.RegisterActivityWithOptions(func(ctx context.Context, in contract.ReadLogsInput) (contract.ReadLogsResult, error) {
+		if q := activity.GetInfo(ctx).TaskQueue; q != contract.LogsQueue("dp1") {
+			t.Errorf("ReadLogs ran on %s", q)
+		}
+		return contract.ReadLogsResult{Lines: []contract.LogLine{{Task: "attempt-001", Text: "{}"}}, Next: contract.LogCursor{Key: in.SyncID, Lines: 1}}, nil
+	}, activity.RegisterOptions{Name: contract.ReadLogs})
+	env.ExecuteWorkflow(contract.ReadLogsWorkflow, contract.ReadLogsInput{DataPlane: "dp1", SyncID: "s1"})
+	var res contract.ReadLogsResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Lines) != 1 || res.Next.Key != "s1" {
+		t.Fatalf("got %+v", res)
 	}
 }

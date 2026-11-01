@@ -46,7 +46,7 @@ func runPostSync(t *testing.T, s []contract.PostSyncStep, attemptErr error, dbt 
 		if info.TaskQueue != contract.BatchQueue("dp1") || info.HeartbeatTimeout == 0 {
 			t.Errorf("RunDbt ran on %s with heartbeat timeout %s", info.TaskQueue, info.HeartbeatTimeout)
 		}
-		if in.Version != "v1" || in.PipelineID != "p" {
+		if in.Version != "v1" || in.PipelineID != "p" || in.SyncID != "s1" || in.StepNumber < 1 || in.StepNumber > len(s) || s[in.StepNumber-1].Dbt.Project != in.Step.Project {
 			t.Errorf("RunDbt got %+v", in)
 		}
 		ran = append(ran, in.Step.Project)

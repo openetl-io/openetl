@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -35,26 +36,106 @@ func (q *Queries) FinishSync(ctx context.Context, arg FinishSyncParams) error {
 	return err
 }
 
+const getSync = `-- name: GetSync :one
+SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
+FROM syncs s
+JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
+LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
+WHERE s.org_id = $1 AND s.pipeline_id = $2 AND s.id = $3
+`
+
+type GetSyncParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	ID         uuid.UUID
+}
+
+type GetSyncRow struct {
+	OrgID       uuid.UUID
+	ID          uuid.UUID
+	PipelineID  uuid.UUID
+	Version     string
+	WorkflowID  string
+	RunID       string
+	Status      string
+	Error       *string
+	Stats       []byte
+	StartTime   time.Time
+	EndTime     *time.Time
+	DataPlaneID string
+}
+
+func (q *Queries) GetSync(ctx context.Context, arg GetSyncParams) (GetSyncRow, error) {
+	row := q.db.QueryRow(ctx, getSync, arg.OrgID, arg.PipelineID, arg.ID)
+	var i GetSyncRow
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.PipelineID,
+		&i.Version,
+		&i.WorkflowID,
+		&i.RunID,
+		&i.Status,
+		&i.Error,
+		&i.Stats,
+		&i.StartTime,
+		&i.EndTime,
+		&i.DataPlaneID,
+	)
+	return i, err
+}
+
 const listSyncs = `-- name: ListSyncs :many
-SELECT org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time FROM syncs WHERE org_id = $1 AND pipeline_id = $2
-ORDER BY start_time DESC LIMIT $3
+SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
+FROM syncs s
+JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
+LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
+WHERE s.org_id = $1 AND s.pipeline_id = $2
+  AND ($3::timestamptz IS NULL OR (s.start_time, s.id) < ($3, $4::uuid))
+ORDER BY s.start_time DESC, s.id DESC
+LIMIT $5
 `
 
 type ListSyncsParams struct {
 	OrgID      uuid.UUID
 	PipelineID uuid.UUID
+	BeforeTime *time.Time
+	BeforeID   uuid.UUID
 	MaxRows    int32
 }
 
-func (q *Queries) ListSyncs(ctx context.Context, arg ListSyncsParams) ([]Sync, error) {
-	rows, err := q.db.Query(ctx, listSyncs, arg.OrgID, arg.PipelineID, arg.MaxRows)
+type ListSyncsRow struct {
+	OrgID       uuid.UUID
+	ID          uuid.UUID
+	PipelineID  uuid.UUID
+	Version     string
+	WorkflowID  string
+	RunID       string
+	Status      string
+	Error       *string
+	Stats       []byte
+	StartTime   time.Time
+	EndTime     *time.Time
+	DataPlaneID string
+}
+
+// Newest first, after the sync (before_time, before_id) if given. The data
+// plane is the version's, or the pipeline's if the version is gone.
+func (q *Queries) ListSyncs(ctx context.Context, arg ListSyncsParams) ([]ListSyncsRow, error) {
+	rows, err := q.db.Query(ctx, listSyncs,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.BeforeTime,
+		arg.BeforeID,
+		arg.MaxRows,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Sync
+	var items []ListSyncsRow
 	for rows.Next() {
-		var i Sync
+		var i ListSyncsRow
 		if err := rows.Scan(
 			&i.OrgID,
 			&i.ID,
@@ -67,6 +148,7 @@ func (q *Queries) ListSyncs(ctx context.Context, arg ListSyncsParams) ([]Sync, e
 			&i.Stats,
 			&i.StartTime,
 			&i.EndTime,
+			&i.DataPlaneID,
 		); err != nil {
 			return nil, err
 		}

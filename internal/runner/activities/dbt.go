@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/dbt"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
@@ -28,6 +29,8 @@ type Dbt struct {
 	// temporary directory.
 	Work   string
 	Logger *slog.Logger
+	// Where steps' logs go. Nil: steps keep none.
+	Logs checkpoint.Store
 }
 
 // RunDbt runs a dbt step's command on the project's bundle. A command that
@@ -37,7 +40,10 @@ func (a *Dbt) RunDbt(ctx context.Context, in contract.DbtInput) (contract.DbtRes
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	log = log.With("pipeline", in.PipelineID, "project", in.Step.Project, "digest", in.Step.Digest, "attempt", activity.GetInfo(ctx).Attempt)
+	attempt := int(activity.GetInfo(ctx).Attempt)
+	log = log.With("pipeline", in.PipelineID, "sync", in.SyncID, "step", in.StepNumber, "project", in.Step.Project, "digest", in.Step.Digest, "attempt", attempt)
+	log, done := attemptLog(ctx, a.Logs, log, in.OrgID, in.PipelineID, in.SyncID, in.StepNumber, attempt)
+	defer done()
 	stop := heartbeats(ctx, func() any { return nil })
 	res, err := a.run(ctx, in, log)
 	stop()

@@ -63,9 +63,15 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 		return res, err
 	}
 	run := activity.GetInfo(ctx).WorkflowExecution
+	// A UUIDv7 holds when the sync started, which data planes prune its log
+	// by.
+	sync, err := uuid.NewV7()
+	if err != nil {
+		return res, err
+	}
 	id, err := a.Store.StartSync(ctx, db.StartSyncParams{
 		OrgID:      org,
-		ID:         uuid.New(),
+		ID:         sync,
 		PipelineID: pipeline,
 		Version:    p.Version,
 		WorkflowID: run.ID,

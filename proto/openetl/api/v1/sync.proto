@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+
+// SyncService reads pipelines' syncs and their logs.
+service SyncService {
+  // Newest first.
+  rpc ListSyncs(ListSyncsRequest) returns (ListSyncsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/syncs"};
+  }
+  rpc GetSync(GetSyncRequest) returns (GetSyncResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*/syncs/*}"};
+  }
+  // A page of the sync's log, oldest first: each attempt's, then each
+  // post-sync step's. The log is in the data plane that ran the sync, so a
+  // runner of that data plane reads it; UNAVAILABLE if none does in time.
+  // Data planes keep logs for 30 days.
+  rpc ReadSyncLog(ReadSyncLogRequest) returns (ReadSyncLogResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*/syncs/*}:readLog"};
+  }
+}
+
+message Sync {
+  // workspaces/{workspace}/pipelines/{pipeline}/syncs/{sync}
+  string name = 1;
+  // The pipeline version it ran.
+  string version = 2;
+  SyncState state = 3;
+  // Why it failed.
+  string error = 4;
+  google.protobuf.Timestamp start_time = 5;
+  // Unset while it runs.
+  google.protobuf.Timestamp end_time = 6;
+  // The data plane it ran on, which holds its log.
+  string data_plane = 7;
+}
+
+enum SyncState {
+  SYNC_STATE_UNSPECIFIED = 0;
+  SYNC_STATE_RUNNING = 1;
+  SYNC_STATE_SUCCEEDED = 2;
+  SYNC_STATE_FAILED = 3;
+}
+
+message ListSyncsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListSyncsResponse {
+  repeated Sync syncs = 1;
+  string next_page_token = 2;
+}
+
+message GetSyncRequest {
+  string name = 1;
+}
+
+message GetSyncResponse {
+  Sync sync = 1;
+}
+
+message ReadSyncLogRequest {
+  string name = 1;
+  // From the last page; unset for the start.
+  string page_token = 2;
+}
+
+message ReadSyncLogResponse {
+  repeated LogEntry entries = 1;
+  // Where the next page starts. Unset once the sync has ended and every
+  // entry is read; while it runs, more may follow, so read again with it.
+  string next_page_token = 2;
+}
+
+// A line of a sync's log, from the runner, the engine, the connectors or
+// dbt.
+message LogEntry {
+  google.protobuf.Timestamp time = 1;
+  // DEBUG, INFO, WARN or ERROR.
+  string level = 2;
+  string message = 3;
+  // The attempt that logged it, from 1: the sync's, or its post-sync
+  // step's.
+  int32 attempt = 4;
+  // The post-sync step that logged it, from 1; 0 for the sync's attempts.
+  int32 post_sync_step = 5;
+  // The line's other fields, such as component: connector, engine or dbt.
+  google.protobuf.Struct attrs = 6;
+}

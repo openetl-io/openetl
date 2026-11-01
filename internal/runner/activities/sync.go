@@ -43,6 +43,11 @@ type Sync struct {
 	Connectors connectorhost.Env
 	// Nil: connector versions can't be fetched.
 	Versions *connectorhost.Fetcher
+	// Where attempts' logs go, next to the checkpoints. Nil: attempts keep
+	// none.
+	Logs checkpoint.Store
+	// How long syncs' logs are kept. Zero: contract.DefaultLogHistory.
+	LogHistory time.Duration
 }
 
 // RunSyncAttempt runs one attempt of a sync. Heartbeats carry the last
@@ -55,7 +60,12 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 		log = slog.New(slog.DiscardHandler)
 	}
 	info := activity.GetInfo(ctx)
-	log = log.With("pipeline", in.PipelineID, "version", in.Version, "attempt", info.Attempt)
+	attempt := int(in.Earlier + info.Attempt)
+	log, done := attemptLog(ctx, a.Logs, log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", attempt), in.OrgID, in.PipelineID, in.SyncID, 0, attempt)
+	defer done()
+	if attempt == 1 {
+		defer pruneLogs(ctx, a.Logs, a.LogHistory, in.OrgID, in.PipelineID, log)()
+	}
 	res, err := a.run(ctx, in, info, log)
 	switch {
 	case errors.Is(err, runner.ErrDrained):
@@ -79,6 +89,7 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	if err != nil {
 		return out, err
 	}
+	env.Logger = log.With("component", "connector")
 	job, err := buildJob(ctx, spec, env)
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
@@ -93,7 +104,9 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 			return out, errs.Wrap(errs.ConfigInvalid, err, "quarantine location")
 		}
 	}
-	job.Dataflow = &engineclient.Dataflow{Options: a.Engine}
+	engine := a.Engine
+	engine.Logger = log.With("component", "engine")
+	job.Dataflow = &engineclient.Dataflow{Options: engine}
 	job.Logger = log
 	job.Drain = activity.GetWorkerStopChannel(ctx)
 

@@ -1,0 +1,200 @@
+package api
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/temporal"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	"github.com/unsuitable001/openetl/internal/attemptlog"
+	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/store/db"
+)
+
+// LogReader is implemented by ops.Ops.
+type LogReader interface {
+	ReadLogs(ctx context.Context, in contract.ReadLogsInput) (contract.ReadLogsResult, error)
+}
+
+var syncStates = map[string]apiv1.SyncState{
+	"running":   apiv1.SyncState_SYNC_STATE_RUNNING,
+	"succeeded": apiv1.SyncState_SYNC_STATE_SUCCEEDED,
+	"failed":    apiv1.SyncState_SYNC_STATE_FAILED,
+}
+
+func syncOut(pipeline string, r db.GetSyncRow) *apiv1.Sync {
+	out := &apiv1.Sync{
+		Name:      pipeline + "/syncs/" + r.ID.String(),
+		Version:   r.Version,
+		State:     syncStates[r.Status],
+		StartTime: timestamppb.New(r.StartTime),
+		DataPlane: r.DataPlaneID,
+	}
+	if r.Error != nil {
+		out.Error = *r.Error
+	}
+	if r.EndTime != nil {
+		out.EndTime = timestamppb.New(*r.EndTime)
+	}
+	return out
+}
+
+// getSync returns the sync named workspaces/{w}/pipelines/{p}/syncs/{s}, and
+// its pipeline's name.
+func (s *Server) getSync(ctx context.Context, name string) (string, db.GetSyncRow, error) {
+	pipeline, id, ok := strings.Cut(name, "/syncs/")
+	sync, err := uuid.Parse(id)
+	if !ok || err != nil || sync.String() != id {
+		return "", db.GetSyncRow{}, invalid("name %q isn't workspaces/{workspace}/pipelines/{pipeline}/syncs/{sync}", name)
+	}
+	_, p, err := s.getPipeline(ctx, pipeline)
+	if err != nil {
+		return "", db.GetSyncRow{}, err
+	}
+	r, err := s.Store.GetSync(ctx, db.GetSyncParams{OrgID: s.Tenant.Org, PipelineID: p.ID, ID: sync})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", r, notFound("%s doesn't exist", name)
+	}
+	return pipeline, r, err
+}
+
+func (s *Server) GetSync(ctx context.Context, req *connect.Request[apiv1.GetSyncRequest]) (*connect.Response[apiv1.GetSyncResponse], error) {
+	pipeline, r, err := s.getSync(ctx, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.GetSyncResponse{Sync: syncOut(pipeline, r)}), nil
+}
+
+func (s *Server) ListSyncs(ctx context.Context, req *connect.Request[apiv1.ListSyncsRequest]) (*connect.Response[apiv1.ListSyncsResponse], error) {
+	_, p, err := s.getPipeline(ctx, req.Msg.GetParent())
+	if err != nil {
+		return nil, err
+	}
+	after, n, err := page(req.Msg.GetPageSize(), req.Msg.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+	params := db.ListSyncsParams{OrgID: s.Tenant.Org, PipelineID: p.ID, MaxRows: n}
+	if after != "" {
+		at, id, _ := strings.Cut(after, " ")
+		t, err1 := time.Parse(time.RFC3339Nano, at)
+		u, err2 := uuid.Parse(id)
+		if err1 != nil || err2 != nil {
+			return nil, invalid("bad page_token")
+		}
+		params.BeforeTime, params.BeforeID = &t, u
+	}
+	rows, err := s.Store.ListSyncs(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	res := &apiv1.ListSyncsResponse{}
+	if len(rows) == int(n) {
+		rows = rows[:n-1]
+		last := rows[len(rows)-1]
+		res.NextPageToken = nextToken(last.StartTime.Format(time.RFC3339Nano) + " " + last.ID.String())
+	}
+	for _, r := range rows {
+		res.Syncs = append(res.Syncs, syncOut(req.Msg.GetParent(), db.GetSyncRow(r)))
+	}
+	return connect.NewResponse(res), nil
+}
+
+// ReadSyncLog asks a runner of the sync's data plane for a page of its log.
+// Syncs from before logs, whose IDs aren't UUIDv7s, have none.
+func (s *Server) ReadSyncLog(ctx context.Context, req *connect.Request[apiv1.ReadSyncLogRequest]) (*connect.Response[apiv1.ReadSyncLogResponse], error) {
+	_, r, err := s.getSync(ctx, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+	in := contract.ReadLogsInput{DataPlane: r.DataPlaneID, OrgID: s.Tenant.Org.String(), PipelineID: r.PipelineID.String(), SyncID: r.ID.String()}
+	if t := req.Msg.GetPageToken(); t != "" {
+		b, err := base64.RawURLEncoding.DecodeString(t)
+		if err != nil || json.Unmarshal(b, &in.After) != nil {
+			return nil, invalid("bad page_token")
+		}
+	}
+	res := &apiv1.ReadSyncLogResponse{}
+	if r.ID.Version() != 7 {
+		return connect.NewResponse(res), nil
+	}
+	if s.Logs == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("this server can't read logs"))
+	}
+	out, err := s.Logs.ReadLogs(ctx, in)
+	if err != nil {
+		return nil, logsError(err, r.DataPlaneID)
+	}
+	for _, l := range out.Lines {
+		res.Entries = append(res.Entries, logEntry(l))
+	}
+	// The sync's status was read first, so an ended sync's log is whole.
+	if len(out.Lines) > 0 || r.Status == "running" {
+		b, err := json.Marshal(out.Next)
+		if err != nil {
+			return nil, err
+		}
+		res.NextPageToken = base64.RawURLEncoding.EncodeToString(b)
+	}
+	return connect.NewResponse(res), nil
+}
+
+func logsError(err error, dp string) error {
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok && app.Type() == errs.ConfigInvalid.String() {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New(app.Message()))
+	}
+	if t, ok := errors.AsType[*temporal.TimeoutError](err); ok && t.TimeoutType() == enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START {
+		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner of data plane %q read the log within %s", dp, contract.LogsPickup))
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return connect.NewError(connect.CodeUnavailable, fmt.Errorf("reading the log failed: %w", err))
+}
+
+// logEntry parses a line from slog's JSON handler. A line that isn't JSON
+// is its message.
+func logEntry(l contract.LogLine) *apiv1.LogEntry {
+	e := &apiv1.LogEntry{}
+	e.PostSyncStep, e.Attempt = taskOf(l.Task)
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(l.Text), &fields); err != nil {
+		e.Message = l.Text
+		return e
+	}
+	if v, ok := fields["time"].(string); ok {
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			e.Time = timestamppb.New(t)
+			delete(fields, "time")
+		}
+	}
+	for key, dst := range map[string]*string{"level": &e.Level, "msg": &e.Message} {
+		if v, ok := fields[key].(string); ok {
+			*dst = v
+			delete(fields, key)
+		}
+	}
+	if len(fields) > 0 {
+		e.Attrs, _ = structpb.NewStruct(fields)
+	}
+	return e
+}
+
+func taskOf(task string) (step, attempt int32) {
+	s, a, _ := attemptlog.ParseTask(task)
+	return int32(s), int32(a) //nolint:gosec // three digits
+}

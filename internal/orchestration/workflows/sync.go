@@ -66,6 +66,7 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 		heartbeat = 2 * time.Minute
 	}
 	attempts := int32(attemptLimit)
+	var earlier int32
 	var res contract.AttemptResult
 	for drains := 0; ; drains++ {
 		dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -85,6 +86,8 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 			OrgID:      in.OrgID,
 			PipelineID: in.PipelineID,
 			Version:    started.Version,
+			SyncID:     started.SyncID,
+			Earlier:    earlier,
 		}).Get(ctx, &res)
 		attempt, ok := drained(err)
 		if !ok || drains == maxDrains {
@@ -92,6 +95,7 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 		}
 		// The attempts that failed before the drained one still count.
 		attempts -= attempt - 1
+		earlier += attempt
 	}
 
 	finish := contract.FinishSyncInput{OrgID: in.OrgID, SyncID: started.SyncID}
@@ -132,6 +136,7 @@ func postSync(ctx workflow.Context, in contract.SyncInput, started contract.Star
 		var r contract.DbtResult
 		err := workflow.ExecuteActivity(dp, contract.RunDbt, contract.DbtInput{
 			OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *step.Dbt,
+			SyncID: started.SyncID, StepNumber: i + 1,
 		}).Get(ctx, &r)
 		if err != nil {
 			return results, fmt.Errorf("post-sync step %d, dbt project %s: %w", i+1, step.Dbt.Project, err)

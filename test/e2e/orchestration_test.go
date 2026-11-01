@@ -81,6 +81,11 @@ func TestRunnerDrains(t *testing.T) {
 		t.Errorf("stats %s: want the second attempt to have finished", stats)
 	}
 	checkRows(t, schema(name), 2000, "users", "purchases")
+	// The restarted activity's attempt is the sync's second.
+	log := wholeLog(t, latestSync(t, name).GetName())
+	if logged(log, 0, 1, "sync attempt drained") != 1 || logged(log, 0, 2, "sync attempt finished") != 1 {
+		t.Errorf("the log has no drained first attempt and finished second: %v", log)
+	}
 
 	var scheduled int
 	var drained bool

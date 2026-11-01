@@ -14,7 +14,7 @@ import (
 func TestAudited(t *testing.T) {
 	for proc, r := range rules {
 		name := proc[strings.LastIndex(proc, "/")+1:]
-		want := !strings.HasPrefix(name, "Get") && !strings.HasPrefix(name, "List")
+		want := !strings.HasPrefix(name, "Get") && !strings.HasPrefix(name, "List") && !strings.HasPrefix(name, "Read")
 		if r.runner {
 			want = name == "GetSyncSpec" || name == "GetConnectorConfig"
 		}

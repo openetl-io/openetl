@@ -1,10 +1,12 @@
-// Package ops runs connector operations through ConnectorOpWorkflow.
+// Package ops runs connector operations through ConnectorOpWorkflow, and
+// reads syncs' logs through ReadLogsWorkflow.
 package ops
 
 import (
 	"cmp"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
@@ -33,6 +35,25 @@ func (o *Ops) Run(ctx context.Context, in contract.ConnectorOpInput) (contract.C
 	}, contract.ConnectorOpWorkflow, in)
 	if err != nil {
 		return res, fmt.Errorf("ops: start %s: %w", in.Op, err)
+	}
+	return res, run.Get(ctx, &res)
+}
+
+// ReadLogs reads a page of a sync's log on its data plane, and waits for it.
+func (o *Ops) ReadLogs(ctx context.Context, in contract.ReadLogsInput) (contract.ReadLogsResult, error) {
+	var res contract.ReadLogsResult
+	run, err := o.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:                       contract.LogsWorkflowID(uuid.NewString()),
+		TaskQueue:                contract.OrchestratorQueue,
+		WorkflowExecutionTimeout: 2 * time.Minute,
+		TypedSearchAttributes: temporal.NewSearchAttributes(
+			contract.OrgIDAttr.ValueSet(in.OrgID),
+			contract.PipelineIDAttr.ValueSet(in.PipelineID),
+			contract.DataPlaneIDAttr.ValueSet(in.DataPlane),
+		),
+	}, contract.ReadLogsWorkflow, in)
+	if err != nil {
+		return res, fmt.Errorf("ops: read a log: %w", err)
 	}
 	return res, run.Get(ctx, &res)
 }

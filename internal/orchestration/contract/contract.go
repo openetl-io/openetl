@@ -15,6 +15,7 @@ const (
 	SyncWorkflow        = "SyncWorkflow"
 	ConnectorOpWorkflow = "ConnectorOpWorkflow"
 	RetentionWorkflow   = "RetentionWorkflow"
+	ReadLogsWorkflow    = "ReadLogsWorkflow"
 
 	StartSync            = "StartSync"
 	FinishSync           = "FinishSync"
@@ -23,6 +24,7 @@ const (
 	CheckConnector       = "CheckConnector"
 	DiscoverSource       = "DiscoverSource"
 	DropMirrorPartitions = "DropMirrorPartitions"
+	ReadLogs             = "ReadLogs"
 )
 
 // DbtFailed is the error type of a dbt command that ran and failed. It isn't
@@ -38,6 +40,9 @@ const (
 // DefaultCheckpointHistory is how long the control plane keeps the
 // checkpoint mirror.
 const DefaultCheckpointHistory = 30 * 24 * time.Hour
+
+// DefaultLogHistory is how long a data plane keeps syncs' logs.
+const DefaultLogHistory = 30 * 24 * time.Hour
 
 // Connector operations.
 const (
@@ -67,11 +72,20 @@ const OpTimeout = 15 * time.Minute
 
 func BatchQueue(dataPlane string) string { return "dp." + dataPlane + ".batch" }
 
+// LogsQueue serves reads of a data plane's logs, apart from the batch
+// queue, so busy runners still answer them.
+func LogsQueue(dataPlane string) string { return "dp." + dataPlane + ".logs" }
+
+// LogsPickup is how long a log read waits for a runner of its data plane.
+const LogsPickup = 15 * time.Second
+
 func SyncWorkflowID(pipelineID string) string { return "sync/" + pipelineID }
 
 func ScheduleID(pipelineID string) string { return "schedule/" + pipelineID }
 
 func OpWorkflowID(id string) string { return "op/" + id }
+
+func LogsWorkflowID(id string) string { return "logs/" + id }
 
 type SyncInput struct {
 	OrgID      string
@@ -114,6 +128,10 @@ type DbtInput struct {
 	// The pipeline version the sync ran, for its destination.
 	Version string
 	Step    DbtStep
+	// Empty for workflows from before logs: the step keeps no log.
+	SyncID string
+	// The step's place in the pipeline's post-sync steps, from 1.
+	StepNumber int
 }
 
 type DbtResult struct {
@@ -135,6 +153,11 @@ type AttemptInput struct {
 	OrgID      string
 	PipelineID string
 	Version    string
+	// Empty for workflows from before logs: the attempt keeps no log.
+	SyncID string
+	// Attempts the sync ran before this activity, which drained. The
+	// activity's attempt n is the sync's attempt Earlier+n.
+	Earlier int32
 }
 
 type AttemptResult struct {
@@ -193,6 +216,37 @@ type RetentionResult struct {
 type DropMirrorPartitionsInput struct {
 	// Days that end by then are dropped.
 	Before time.Time
+}
+
+type ReadLogsInput struct {
+	// The data plane that ran the sync.
+	DataPlane  string
+	OrgID      string
+	PipelineID string
+	SyncID     string
+	// Where the last read ended; empty for the start.
+	After LogCursor
+	// At most this many bytes of lines, but at least one line.
+	MaxBytes int
+}
+
+// LogCursor is a read's place in a sync's log: a chunk, and how many of its
+// lines were read.
+type LogCursor struct {
+	Key   string
+	Lines int
+}
+
+type ReadLogsResult struct {
+	Lines []LogLine
+	Next  LogCursor
+}
+
+type LogLine struct {
+	// The attempt's directory, such as attempt-001 or step-01-attempt-001.
+	Task string
+	// A JSON object.
+	Text string
 }
 
 type ConnectorOpResult struct {

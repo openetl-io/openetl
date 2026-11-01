@@ -95,6 +95,10 @@ func TestDbtPostSync(t *testing.T) {
 	if err != nil || n != 300 {
 		t.Fatalf("user_count = %d, %v; want 300", n, err)
 	}
+	log := wholeLog(t, latestSync(t, name).GetName())
+	if logged(log, 1, 1, "dbt finished") != 1 || !fromComponent(log, "dbt") {
+		t.Errorf("the log has no dbt step: %v", log)
+	}
 
 	broken := dbtProject(t, name, map[string]string{
 		"user_count": "select count(*) as n from {{ source('raw', 'users') }}",

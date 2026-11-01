@@ -136,7 +136,7 @@ func Run(ctx context.Context, o Options) error {
 			defer func() { _ = keyring.Close() }()
 		}
 		srv := &api.Server{
-			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc},
+			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc}, Logs: &ops.Ops{Client: tc},
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
 			Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},
 			Secrets:  keyring,
@@ -242,6 +242,7 @@ func orchestrate(ctx context.Context, tc client.Client, st *store.Store, wf work
 	w.RegisterWorkflowWithOptions(wf.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
 	w.RegisterWorkflowWithOptions(wf.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
 	w.RegisterWorkflowWithOptions(wf.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
+	w.RegisterWorkflowWithOptions(wf.ReadLogs, workflow.RegisterOptions{Name: contract.ReadLogsWorkflow})
 	acts := &cpactivities.Activities{Store: st}
 	w.RegisterActivityWithOptions(acts.StartSync, activity.RegisterOptions{Name: contract.StartSync})
 	w.RegisterActivityWithOptions(acts.FinishSync, activity.RegisterOptions{Name: contract.FinishSync})
@@ -288,6 +289,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		Logger:      log,
 		Connectors:  connectors,
 		Versions:    versions,
+		Logs:        cps,
 	}
 	w := worker.New(tc, contract.BatchQueue(cfg.DataPlane), worker.Options{
 		MaxConcurrentActivityExecutionSize: 4,
@@ -295,13 +297,18 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		WorkerStopTimeout: 2 * time.Minute,
 	})
 	w.RegisterActivityWithOptions(sync.RunSyncAttempt, activity.RegisterOptions{Name: contract.RunSyncAttempt})
-	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Executable: cfg.Dbt, Logger: log}
+	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Executable: cfg.Dbt, Logger: log, Logs: cps}
 	w.RegisterActivityWithOptions(dbt.RunDbt, activity.RegisterOptions{Name: contract.RunDbt})
 	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
-	log.Info("runner polling", "queue", contract.BatchQueue(cfg.DataPlane), "checkpoints", cfg.Checkpoints)
-	return runWorker(ctx, w)
+	logs := worker.New(tc, contract.LogsQueue(cfg.DataPlane), worker.Options{MaxConcurrentActivityExecutionSize: 8})
+	logs.RegisterActivityWithOptions((&dpactivities.Logs{Store: cps}).ReadLogs, activity.RegisterOptions{Name: contract.ReadLogs})
+	log.Info("runner polling", "queues", []string{contract.BatchQueue(cfg.DataPlane), contract.LogsQueue(cfg.DataPlane)}, "checkpoints", cfg.Checkpoints)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return runWorker(gctx, w) })
+	g.Go(func() error { return runWorker(gctx, logs) })
+	return g.Wait()
 }
 
 // connectorsDir is where external connectors are: connectors/ next to

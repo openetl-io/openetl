@@ -26,6 +26,8 @@ var permissions = map[string]auth.Role{
 	"pipelines.pause":     auth.Operator,
 	"pipelines.sync":      auth.Operator,
 	"pipelines.delete":    auth.Editor,
+	"syncs.get":           auth.Viewer,
+	"logs.get":            auth.Viewer,
 	"sources.get":         auth.Viewer,
 	"sources.check":       auth.Operator,
 	"sources.discover":    auth.Operator,
@@ -84,6 +86,10 @@ var rules = map[string]rule{
 	apiv1connect.PipelineServicePausePipelineProcedure:  {"pipelines.pause", inName, false},
 	apiv1connect.PipelineServiceResumePipelineProcedure: {"pipelines.pause", inName, false},
 	apiv1connect.PipelineServiceSyncPipelineProcedure:   {"pipelines.sync", inName, false},
+
+	apiv1connect.SyncServiceListSyncsProcedure:   {"syncs.get", inParent, false},
+	apiv1connect.SyncServiceGetSyncProcedure:     {"syncs.get", inName, false},
+	apiv1connect.SyncServiceReadSyncLogProcedure: {"logs.get", inName, false},
 
 	apiv1connect.SourceServiceGetSourceProcedure:      {"sources.get", inName, false},
 	apiv1connect.SourceServiceListSourcesProcedure:    {"sources.get", inParent, false},
