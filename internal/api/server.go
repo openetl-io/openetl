@@ -19,6 +19,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/registry"
+	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/store"
 )
 
@@ -44,7 +45,9 @@ type Server struct {
 	Connectors connectorhost.Env
 	// Pins external connectors' images. Nil: they can't be applied.
 	Registry *registry.Client
-	Logger   *slog.Logger
+	// Seals secrets' values. Nil: secrets can't be stored.
+	Secrets *secrets.Keyring
+	Logger  *slog.Logger
 }
 
 var (
@@ -52,6 +55,7 @@ var (
 	_ apiv1connect.PipelineServiceHandler        = (*Server)(nil)
 	_ apiv1connect.SourceServiceHandler          = (*Server)(nil)
 	_ apiv1connect.DestinationServiceHandler     = (*Server)(nil)
+	_ apiv1connect.SecretServiceHandler          = (*Server)(nil)
 	_ dataplanev1connect.DataPlaneServiceHandler = (*Server)(nil)
 )
 
@@ -62,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle(apiv1connect.NewPipelineServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewSourceServiceHandler(s, opts))
 	mux.Handle(apiv1connect.NewDestinationServiceHandler(s, opts))
+	mux.Handle(apiv1connect.NewSecretServiceHandler(s, opts))
 	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(s, opts))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	return mux

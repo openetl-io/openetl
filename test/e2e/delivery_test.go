@@ -55,8 +55,8 @@ func TestDuplicateRowsLand(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q}}`, env.dbURL, schema(name))
-	dst := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q}}`, env.dbURL, out)
+	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q}}`, schema(name))
+	dst := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q}}`, out)
 	apply(t, docs(name, src, dst, `{}`)...)
 	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
 		t.Fatalf("sync %s: %s", status, stats)

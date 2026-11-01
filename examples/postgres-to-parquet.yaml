@@ -1,6 +1,7 @@
 # The tables faker-to-postgres.yaml writes, as Parquet files under
 # /tmp/openetl-parquet, every hour. With `make deps-up` and `make dev` running,
-# and the faker pipeline synced once:
+# and the faker pipeline synced once (faker-to-postgres.yaml sets the
+# local-postgres-dsn secret):
 #
 #   go run ./cmd/openetl apply -f examples/postgres-to-parquet.yaml
 #
@@ -12,7 +13,7 @@ metadata:
 spec:
   connector: postgres
   config:
-    dsn: postgres://openetl:openetl@localhost:5432/openetl
+    dsn: { secret: local-postgres-dsn }
     schema: faker
 ---
 apiVersion: openetl.dev/v1alpha1

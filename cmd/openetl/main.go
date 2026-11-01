@@ -36,6 +36,8 @@ Commands:
   discover NAME   list a source's streams and columns
   connector package|apply
                   package and apply connector versions
+  secret set|list|delete
+                  store the secrets that configs name
 
 Run openetl <command> -h for its flags.
 `
@@ -65,6 +67,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runApplyDocuments(ctx, "openetl apply", args[1:], out, false)
 	case "connector":
 		return runConnector(ctx, args[1:], out)
+	case "secret":
+		return runSecret(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "check":

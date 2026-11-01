@@ -153,7 +153,7 @@ func setup(m *testing.M) (int, error) {
 		done <- daemon.Run(ctx, daemon.Options{
 			Config: config.Config{
 				DatabaseURL: env.dbURL, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
-				Connectors: env.noConnectors, EgressAllow: egressAllow,
+				Connectors: env.noConnectors, EgressAllow: egressAllow, SecretsKey: filepath.Join(dir, "secrets.key"),
 			},
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
 			Listener:  ln,
@@ -169,6 +169,12 @@ func setup(m *testing.M) (int, error) {
 		return 0, errors.New("the server didn't start")
 	}
 	if err := applyOfficialConnectors(ctx); err != nil {
+		return 0, err
+	}
+	// The DSN of the test's database, which configs name as e2e-dsn.
+	if _, err := apiv1connect.NewSecretServiceClient(http.DefaultClient, env.apiURL).UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{
+		Secret: &apiv1.Secret{Name: "workspaces/default/secrets/e2e-dsn", Value: env.dbURL}, AllowMissing: true,
+	})); err != nil {
 		return 0, err
 	}
 	code := m.Run()
@@ -399,6 +405,19 @@ func apply(t *testing.T, docs ...string) []*apiv1.AppliedResource {
 	return res.Msg.GetResources()
 }
 
+// setSecret stores value as a new secret, and returns its name.
+func setSecret(t *testing.T, value string) string {
+	t.Helper()
+	name := unique("secret")
+	_, err := apiv1connect.NewSecretServiceClient(http.DefaultClient, env.apiURL).UpdateSecret(t.Context(), connect.NewRequest(&apiv1.UpdateSecretRequest{
+		Secret: &apiv1.Secret{Name: "workspaces/default/secrets/" + name, Value: value}, AllowMissing: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
+}
+
 // unique makes names unique per run, so -count=n works.
 func unique(name string) string { return name + "-" + strings.ToLower(rand.Text())[:6] }
 
@@ -409,7 +428,7 @@ func pipelineDocs(name string, faker, delivery string) []string {
 		fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Source", "metadata": {"name": %q},
 			"spec": {"connector": "faker", "config": %s}}`, name, faker),
 		fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Destination", "metadata": {"name": %q},
-			"spec": {"connector": "postgres", "config": {"dsn": %q}}}`, name, env.dbURL),
+			"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}}`, name),
 		fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
 			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q},
 			"destination": {"ref": %q, "namespace": %q}, "delivery": %s}}`, name, name, name, schema(name), delivery),
@@ -606,7 +625,7 @@ func TestPostgresToParquet(t *testing.T) {
 		}
 	}
 	dir := t.TempDir()
-	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q, "chunkRows": 1000}}`, env.dbURL, schema(name))
+	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q, "chunkRows": 1000}}`, schema(name))
 	apply(t, docs(name, src, parquetDest(dir), `{}`)...)
 	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
 		t.Fatalf("sync %s: %s", status, stats)

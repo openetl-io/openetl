@@ -3,6 +3,7 @@ package external
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -20,21 +21,17 @@ func splitSecrets(schema, config []byte) ([]byte, hostservices.StaticSecrets, er
 	if len(schema) == 0 || len(bytes.TrimSpace(config)) == 0 {
 		return config, secrets, nil
 	}
-	var s struct {
-		Properties map[string]struct {
-			Secret bool `json:"x-secret"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(schema, &s); err != nil {
-		return nil, nil, errs.Wrap(errs.ConfigInvalid, err, "connector: config schema")
+	props, err := SecretProperties(schema)
+	if err != nil {
+		return nil, nil, err
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(config, &m); err != nil {
 		return nil, nil, errs.New(errs.ConfigInvalid, "connector: the config isn't a JSON object")
 	}
-	for k, p := range s.Properties {
+	for _, k := range props {
 		v, ok := m[k]
-		if !p.Secret || !ok {
+		if !ok {
 			continue
 		}
 		var value string
@@ -50,6 +47,30 @@ func splitSecrets(schema, config []byte) ([]byte, hostservices.StaticSecrets, er
 	}
 	out, err := json.Marshal(m)
 	return out, secrets, err
+}
+
+// SecretProperties lists the top-level properties a config schema marks
+// x-secret.
+func SecretProperties(schema []byte) ([]string, error) {
+	if len(schema) == 0 {
+		return nil, nil
+	}
+	var s struct {
+		Properties map[string]struct {
+			Secret bool `json:"x-secret"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil {
+		return nil, errs.Wrap(errs.ConfigInvalid, err, "connector: config schema")
+	}
+	var props []string
+	for k, p := range s.Properties {
+		if p.Secret {
+			props = append(props, k)
+		}
+	}
+	slices.Sort(props)
+	return props, nil
 }
 
 // CompileSchema checks that schema, a connector's config schema, is a JSON

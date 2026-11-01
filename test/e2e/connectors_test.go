@@ -85,8 +85,8 @@ func TestDeclarativeSource(t *testing.T) {
 	}
 
 	docs := []string{
-		sourceDoc(name, fmt.Sprintf(`{"connector": %q, "config": {"base_url": %q, "api_key": "k1"}}`, name, api.URL)),
-		destinationDoc(name, fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q}}`, env.dbURL)),
+		sourceDoc(name, fmt.Sprintf(`{"connector": %q, "config": {"base_url": %q, "api_key": {"secret": %q}}}`, name, api.URL, setSecret(t, "k1"))),
+		destinationDoc(name, `{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`),
 		fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
 			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q}, "destination": {"ref": %q, "namespace": %q},
 			"delivery": {"require": "at_least_once"}}}`, name, name, name, schema(name)),

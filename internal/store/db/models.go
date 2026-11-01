@@ -69,11 +69,18 @@ type Destination struct {
 	CreateTime      time.Time
 	UpdateTime      time.Time
 	ConnectorDigest string
+	Secrets         []string
 }
 
 type Org struct {
 	ID         uuid.UUID
 	Name       string
+	CreateTime time.Time
+}
+
+type OrgKey struct {
+	OrgID      uuid.UUID
+	WrappedKey []byte
 	CreateTime time.Time
 }
 
@@ -103,6 +110,17 @@ type PipelineVersion struct {
 	CreateTime    time.Time
 }
 
+type Secret struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	ID          uuid.UUID
+	Name        string
+	Ciphertext  []byte
+	Revision    int64
+	CreateTime  time.Time
+	UpdateTime  time.Time
+}
+
 type Source struct {
 	OrgID           uuid.UUID
 	WorkspaceID     uuid.UUID
@@ -114,6 +132,7 @@ type Source struct {
 	CreateTime      time.Time
 	UpdateTime      time.Time
 	ConnectorDigest string
+	Secrets         []string
 }
 
 type SourceCatalog struct {

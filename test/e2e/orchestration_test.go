@@ -223,7 +223,7 @@ func TestFullRefreshReadsEverySync(t *testing.T) {
 		"INSERT INTO "+sch+".items SELECT i, 'item ' || i FROM generate_series(1, 300) i",
 	)
 	dir := t.TempDir()
-	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q, "chunkRows": 100}}`, env.dbURL, schema(name))
+	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q, "chunkRows": 100}}`, schema(name))
 	apply(t, docs(name, src, parquetDest(dir), `{}`)...)
 	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
 		t.Fatalf("sync %s: %s", status, stats)
@@ -247,7 +247,7 @@ func TestBlockedSchemaChangeIsNotRetried(t *testing.T) {
 		"CREATE TABLE "+sch+".items (id bigint PRIMARY KEY, name text)",
 		"INSERT INTO "+sch+".items SELECT i, 'item ' || i FROM generate_series(1, 100) i",
 	)
-	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q}}`, env.dbURL, schema(name))
+	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q}}`, schema(name))
 	ds := docs(name, src, parquetDest(t.TempDir()), `{}`)
 	ds[2] = strings.Replace(ds[2], `"delivery"`, `"schemaPolicy": "block", "delivery"`, 1)
 	apply(t, ds...)

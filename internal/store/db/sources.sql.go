@@ -29,7 +29,7 @@ func (q *Queries) DeleteSource(ctx context.Context, arg DeleteSourceParams) (int
 }
 
 const getSource = `-- name: GetSource :one
-SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest FROM sources WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest, secrets FROM sources WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `
 
 type GetSourceParams struct {
@@ -52,12 +52,13 @@ func (q *Queries) GetSource(ctx context.Context, arg GetSourceParams) (Source, e
 		&i.CreateTime,
 		&i.UpdateTime,
 		&i.ConnectorDigest,
+		&i.Secrets,
 	)
 	return i, err
 }
 
 const getSourceByID = `-- name: GetSourceByID :one
-SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest FROM sources WHERE org_id = $1 AND id = $2
+SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest, secrets FROM sources WHERE org_id = $1 AND id = $2
 `
 
 type GetSourceByIDParams struct {
@@ -79,6 +80,7 @@ func (q *Queries) GetSourceByID(ctx context.Context, arg GetSourceByIDParams) (S
 		&i.CreateTime,
 		&i.UpdateTime,
 		&i.ConnectorDigest,
+		&i.Secrets,
 	)
 	return i, err
 }
@@ -108,8 +110,8 @@ func (q *Queries) GetSourceCatalog(ctx context.Context, arg GetSourceCatalogPara
 }
 
 const insertSource = `-- name: InsertSource :exec
-INSERT INTO sources (org_id, workspace_id, id, name, spec, version, connector_digest, revision)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
+INSERT INTO sources (org_id, workspace_id, id, name, spec, version, connector_digest, secrets, revision)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)
 `
 
 type InsertSourceParams struct {
@@ -120,6 +122,7 @@ type InsertSourceParams struct {
 	Spec            []byte
 	Version         string
 	ConnectorDigest string
+	Secrets         []string
 }
 
 func (q *Queries) InsertSource(ctx context.Context, arg InsertSourceParams) error {
@@ -131,12 +134,13 @@ func (q *Queries) InsertSource(ctx context.Context, arg InsertSourceParams) erro
 		arg.Spec,
 		arg.Version,
 		arg.ConnectorDigest,
+		arg.Secrets,
 	)
 	return err
 }
 
 const listSources = `-- name: ListSources :many
-SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest FROM sources
+SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest, secrets FROM sources
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3
 ORDER BY name LIMIT $4
 `
@@ -173,6 +177,7 @@ func (q *Queries) ListSources(ctx context.Context, arg ListSourcesParams) ([]Sou
 			&i.CreateTime,
 			&i.UpdateTime,
 			&i.ConnectorDigest,
+			&i.Secrets,
 		); err != nil {
 			return nil, err
 		}
@@ -185,14 +190,15 @@ func (q *Queries) ListSources(ctx context.Context, arg ListSourcesParams) ([]Sou
 }
 
 const updateSource = `-- name: UpdateSource :exec
-UPDATE sources SET spec = $1, version = $2, connector_digest = $3, revision = revision + 1, update_time = now()
-WHERE org_id = $4 AND id = $5
+UPDATE sources SET spec = $1, version = $2, connector_digest = $3, secrets = $4, revision = revision + 1, update_time = now()
+WHERE org_id = $5 AND id = $6
 `
 
 type UpdateSourceParams struct {
 	Spec            []byte
 	Version         string
 	ConnectorDigest string
+	Secrets         []string
 	OrgID           uuid.UUID
 	ID              uuid.UUID
 }
@@ -202,6 +208,7 @@ func (q *Queries) UpdateSource(ctx context.Context, arg UpdateSourceParams) erro
 		arg.Spec,
 		arg.Version,
 		arg.ConnectorDigest,
+		arg.Secrets,
 		arg.OrgID,
 		arg.ID,
 	)

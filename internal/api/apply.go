@@ -168,10 +168,6 @@ func digest(m proto.Message, extra ...string) (string, error) {
 }
 
 func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Document, wsID uuid.UUID) (*apiv1.AppliedResource, error) {
-	cfg, err := protojson.Marshal(doc.Connector.GetConfig())
-	if err != nil {
-		return nil, err
-	}
 	kind, collection := "source", "sources"
 	if doc.Kind == spec.KindDestination {
 		kind, collection = "destination", "destinations"
@@ -184,6 +180,21 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	env, connector := s.Connectors, ""
 	if v != nil {
 		env, connector = env.With(v), v.Digest
+	}
+	props, known, err := connectorhost.SecretProperties(kind, name, env)
+	if err != nil {
+		return nil, invalid("%v", err)
+	}
+	secrets, masked, err := bindSecrets(doc.Connector.GetConfig(), props, known)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkSecretsExist(ctx, q, wsID, doc.Workspace, secrets); err != nil {
+		return nil, err
+	}
+	cfg, err := protojson.Marshal(masked)
+	if err != nil {
+		return nil, err
 	}
 	if kind == "source" {
 		_, err = connectorhost.NewSource(name, cfg, env)
@@ -218,9 +229,9 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	case errors.Is(err, pgx.ErrNoRows):
 		res.Action = apiv1.ApplyAction_APPLY_ACTION_CREATED
 		if doc.Kind == spec.KindSource {
-			err = q.InsertSource(ctx, db.InsertSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector})
+			err = q.InsertSource(ctx, db.InsertSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
 		} else {
-			err = q.InsertDestination(ctx, db.InsertDestinationParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector})
+			err = q.InsertDestination(ctx, db.InsertDestinationParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
 		}
 	case err != nil:
 	case cur.version == version:
@@ -228,9 +239,9 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	default:
 		res.Action = apiv1.ApplyAction_APPLY_ACTION_UPDATED
 		if doc.Kind == spec.KindSource {
-			err = q.UpdateSource(ctx, db.UpdateSourceParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version, ConnectorDigest: connector})
+			err = q.UpdateSource(ctx, db.UpdateSourceParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
 		} else {
-			err = q.UpdateDestination(ctx, db.UpdateDestinationParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version, ConnectorDigest: connector})
+			err = q.UpdateDestination(ctx, db.UpdateDestinationParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
 		}
 	}
 	return res, err

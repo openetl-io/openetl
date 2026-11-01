@@ -35,6 +35,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	"github.com/unsuitable001/openetl/internal/registry"
 	dpactivities "github.com/unsuitable001/openetl/internal/runner/activities"
+	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/store"
 )
 
@@ -103,10 +104,19 @@ func Run(ctx context.Context, o Options) error {
 			_ = ln.Close()
 			return fmt.Errorf("daemon: --egress-allow: %w", err)
 		}
+		keyring, err := openKeyring(ctx, cfg.SecretsKey, st)
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		if keyring != nil {
+			defer func() { _ = keyring.Close() }()
+		}
 		srv := &api.Server{
 			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc},
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
 			Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},
+			Secrets:  keyring,
 			Logger:   log.With("role", "server"),
 		}
 		g.Go(func() error { return serve(gctx, ln, srv.Handler(), o.Ready, log) })
@@ -118,6 +128,19 @@ func Run(ctx context.Context, o Options) error {
 		g.Go(func() error { return runRunner(gctx, cfg, tc, log.With("role", "runner")) })
 	}
 	return g.Wait()
+}
+
+// openKeyring opens the secrets key, if there is one, and checks that it
+// unwraps every org's data key.
+func openKeyring(ctx context.Context, ref string, st *store.Store) (*secrets.Keyring, error) {
+	if ref == "" {
+		return nil, nil
+	}
+	orgs, err := st.ListOrgs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return secrets.Open(ctx, ref, st, orgs)
 }
 
 func serve(ctx context.Context, ln net.Listener, h http.Handler, ready func(string), log *slog.Logger) error {

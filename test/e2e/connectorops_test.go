@@ -46,14 +46,14 @@ func TestCheckAndDiscover(t *testing.T) {
 		"CREATE TABLE "+sch+".items (id bigint PRIMARY KEY, name text, price numeric(10, 2))",
 		"CREATE TABLE "+sch+".events (id bigint, kind text)",
 	)
-	pg := func(dsn, schemaName string) string {
-		return fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": %q, "schema": %q}}`, dsn, schemaName)
+	pg := func(dsnSecret, schemaName string) string {
+		return fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": %q}, "schema": %q}}`, dsnSecret, schemaName)
 	}
 	apply(t,
-		sourceDoc(name, pg(env.dbURL, schema(name))),
-		sourceDoc(name+"-auth", pg(wrongPassword(t), schema(name))),
-		sourceDoc(name+"-missing", pg(env.dbURL, "no_such_schema")),
-		destinationDoc(name, pg(env.dbURL, schema(name))),
+		sourceDoc(name, pg("e2e-dsn", schema(name))),
+		sourceDoc(name+"-auth", pg(setSecret(t, wrongPassword(t)), schema(name))),
+		sourceDoc(name+"-missing", pg("e2e-dsn", "no_such_schema")),
+		destinationDoc(name, pg("e2e-dsn", schema(name))),
 	)
 	sources := apiv1connect.NewSourceServiceClient(http.DefaultClient, env.apiURL)
 	check := func(source string) *apiv1.CheckResult {

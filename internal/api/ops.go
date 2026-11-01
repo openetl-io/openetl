@@ -118,6 +118,7 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 
 func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[dataplanev1.GetConnectorConfigRequest]) (*connect.Response[dataplanev1.GetConnectorConfigResponse], error) {
 	var c connection
+	what := "source "
 	switch id := req.Msg.GetConnector().(type) {
 	case *dataplanev1.GetConnectorConfigRequest_SourceId:
 		u, err := uuid.Parse(id.SourceId)
@@ -138,12 +139,15 @@ func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[da
 		if err != nil {
 			return nil, err
 		}
-		c = fromDestination(r)
+		c, what = fromDestination(r), "destination "
 	default:
 		return nil, invalid("name a source_id or a destination_id")
 	}
 	cfg, err := c.config()
 	if err != nil {
+		return nil, err
+	}
+	if err := s.resolveSecrets(ctx, what+c.name, c.workspace, cfg, c.secrets); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&dataplanev1.GetConnectorConfigResponse{OrgId: s.Tenant.Org.String(), Version: c.version, Config: cfg, Connector: c.connector}), nil

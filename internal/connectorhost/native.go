@@ -79,6 +79,27 @@ func NewSource(connector string, config []byte, env Env) (source.Source, error) 
 	return s, errs.Wrap(errs.ConfigInvalid, err, "")
 }
 
+// SecretProperties lists the config properties a connector's schema marks
+// x-secret, looking connectors up as NewSource and NewDestination do. known
+// is false for one only the connectors directory has, whose schema the API
+// doesn't know.
+func SecretProperties(kind, connector string, env Env) (props []string, known bool, err error) {
+	if _, native := sources[connector]; kind == "source" && native {
+		return nil, true, nil
+	}
+	if _, native := destinations[connector]; kind == "destination" && native {
+		return nil, true, nil
+	}
+	if m := env.Manifests[connector]; kind == "source" && m != nil {
+		return m.SecretProperties(), true, nil
+	}
+	if x, ok := env.Externals[kind+"/"+connector]; ok {
+		props, err := external.SecretProperties(x.Spec.GetConfigSchema())
+		return props, true, err
+	}
+	return nil, false, nil
+}
+
 // executable is the external connector's path, or empty if there is none.
 func (e Env) executable(kind, connector string) string {
 	if e.Connectors == "" || strings.ContainsAny(connector, `/\@`) || connector == "" {

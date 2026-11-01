@@ -1,6 +1,7 @@
 # faker-to-postgres, with a dbt project that runs after every sync. With
 # `make deps-up`, and `make dev` running on a machine with dbt-core and
-# dbt-postgres (or with --dbt pointing at them):
+# dbt-postgres (or with --dbt pointing at them), and the local-postgres-dsn
+# secret set as faker-to-postgres.yaml shows:
 #
 #   go run ./cmd/openetl apply -f examples/faker-to-postgres-dbt.yaml
 #
@@ -31,7 +32,7 @@ metadata:
 spec:
   connector: postgres
   config:
-    dsn: postgres://openetl:openetl@localhost:5432/openetl
+    dsn: { secret: local-postgres-dsn }
 ---
 apiVersion: openetl.dev/v1alpha1
 kind: Pipeline

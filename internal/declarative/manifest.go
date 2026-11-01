@@ -462,6 +462,18 @@ func (c *Connector) compileConfig(raw json.RawMessage) error {
 	return nil
 }
 
+// SecretProperties lists the config properties the manifest marks x-secret.
+func (c *Connector) SecretProperties() []string {
+	var props []string
+	for k, secret := range c.props {
+		if secret {
+			props = append(props, k)
+		}
+	}
+	slices.Sort(props)
+	return props
+}
+
 // secretName checks that r names a secret.
 func (c *Connector) secretName(where string, r *secretRef) (string, error) {
 	if r == nil {

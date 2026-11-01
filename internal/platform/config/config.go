@@ -32,8 +32,12 @@ type Config struct {
 	// CIDR prefixes, comma-separated, that connectors and registries may
 	// reach besides public addresses.
 	EgressAllow string
-	LogLevel    string
-	LogFormat   string
+	// The key that wraps orgs' data keys, for the API server: a key file, or
+	// a base64key://, awskms://, gcpkms:// or azurekeyvault:// URL. Empty:
+	// the server can't store secrets.
+	SecretsKey string
+	LogLevel   string
+	LogFormat  string
 }
 
 type option struct {
@@ -54,6 +58,7 @@ var options = []option{
 	{"cache", "OPENETL_CACHE", ".openetl/cache", "where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables", func(c *Config) *string { return &c.Cache }},
 	{"dbt", "OPENETL_DBT", "", "dbt executable for pipelines' post-sync steps, with the destinations' adapters installed (default: dbt on PATH)", func(c *Config) *string { return &c.Dbt }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors and registries may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
+	{"secrets-key", "OPENETL_SECRETS_KEY", ".openetl/secrets.key", "the API server's key-encryption key for secrets: a file holding a base64-encoded 32-byte key, created if missing; or base64key://KEY, awskms://…, gcpkms://… or azurekeyvault://…", func(c *Config) *string { return &c.SecretsKey }},
 	{"log-level", "OPENETL_LOG_LEVEL", "info", "debug, info, warn or error", func(c *Config) *string { return &c.LogLevel }},
 	{"log-format", "OPENETL_LOG_FORMAT", "json", "json or text", func(c *Config) *string { return &c.LogFormat }},
 }

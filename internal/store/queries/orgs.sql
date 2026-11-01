@@ -16,3 +16,6 @@ INSERT INTO data_planes (id, org_id) VALUES (@id, @org_id) ON CONFLICT (id) DO N
 
 -- name: GetDataPlane :one
 SELECT id FROM data_planes WHERE org_id = @org_id AND id = @id;
+
+-- name: ListOrgs :many
+SELECT id FROM orgs ORDER BY id;

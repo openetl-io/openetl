@@ -199,14 +199,16 @@ type connection struct {
 	created, updated time.Time
 	// The connector version's digest.
 	connector string
+	// The secrets its config names.
+	secrets []string
 }
 
 func fromSource(r db.Source) connection {
-	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime, r.ConnectorDigest}
+	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime, r.ConnectorDigest, r.Secrets}
 }
 
 func fromDestination(r db.Destination) connection {
-	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime, r.ConnectorDigest}
+	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime, r.ConnectorDigest, r.Secrets}
 }
 
 func (c connection) config() (*apiv1.ConnectorConfig, error) {
@@ -411,6 +413,12 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 		return nil, err
 	}
 	if err := protojson.Unmarshal(row.DestinationSpec, res.Destination); err != nil {
+		return nil, err
+	}
+	if err := s.resolveSecrets(ctx, "the source", row.SourceWorkspace, res.Source, row.SourceSecrets); err != nil {
+		return nil, err
+	}
+	if err := s.resolveSecrets(ctx, "the destination", row.DestinationWorkspace, res.Destination, row.DestinationSecrets); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(res), nil
