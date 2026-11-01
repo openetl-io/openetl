@@ -36,7 +36,8 @@ const (
 // _secret hold secret names; the host injects the values.
 type HostServiceClient interface {
 	// Retries within the budget, rate limits, auth injection and the SSRF
-	// guard. Streams a head, then the body in chunks.
+	// guard. Streams a head, then the body in chunks. A request that got no
+	// response fails the RPC with a classified Error.
 	HTTP(ctx context.Context, in *HTTPRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[HTTPResponse], error)
 	Sign(ctx context.Context, in *SignRequest, opts ...grpc.CallOption) (*SignResponse, error)
 	// Only for connectors on the proxy and raw egress tiers.
@@ -143,7 +144,8 @@ func (c *hostServiceClient) Now(ctx context.Context, in *NowRequest, opts ...grp
 // _secret hold secret names; the host injects the values.
 type HostServiceServer interface {
 	// Retries within the budget, rate limits, auth injection and the SSRF
-	// guard. Streams a head, then the body in chunks.
+	// guard. Streams a head, then the body in chunks. A request that got no
+	// response fails the RPC with a classified Error.
 	HTTP(*HTTPRequest, grpc.ServerStreamingServer[HTTPResponse]) error
 	Sign(context.Context, *SignRequest) (*SignResponse, error)
 	// Only for connectors on the proxy and raw egress tiers.

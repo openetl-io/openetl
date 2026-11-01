@@ -53,8 +53,8 @@ func ApplicationError(err error) error {
 	}
 	code := errs.CodeOf(err)
 	opts := temporal.ApplicationErrorOptions{NonRetryable: !code.Retryable(), Cause: err}
-	if e, ok := errors.AsType[*errs.Error](err); ok && e.RetryAfter > 0 {
-		opts.NextRetryDelay = e.RetryAfter
+	if d := errs.RetryAfterOf(err); d > 0 {
+		opts.NextRetryDelay = d
 	}
 	return temporal.NewApplicationErrorWithOptions(err.Error(), code.String(), opts)
 }

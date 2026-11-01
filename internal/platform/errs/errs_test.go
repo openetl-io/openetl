@@ -7,6 +7,7 @@ import (
 	"time"
 
 	sdk "github.com/unsuitable001/openetl/sdk/go"
+	"github.com/unsuitable001/openetl/sdk/go/host"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
@@ -73,5 +74,14 @@ func TestProtoRoundTrip(t *testing.T) {
 	}
 	if ToProto(nil) != nil || FromProto(nil) != nil {
 		t.Error("nil doesn't map to nil")
+	}
+}
+
+// A host.StatusError carries its code and wait through the SDK's methods.
+func TestStatusErrorToProto(t *testing.T) {
+	err := fmt.Errorf("list orders: %w", &host.StatusError{Status: 429, Code: protocolv1.ErrorCode_ERROR_CODE_RATE_LIMITED, After: time.Minute})
+	p := ToProto(err)
+	if p.GetCode() != protocolv1.ErrorCode_ERROR_CODE_RATE_LIMITED || p.GetRetryAfter().AsDuration() != time.Minute {
+		t.Errorf("ToProto = %v", p)
 	}
 }

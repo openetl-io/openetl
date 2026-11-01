@@ -854,9 +854,12 @@ func (*HTTPResponse_Head) isHTTPResponse_Part() {}
 func (*HTTPResponse_Body) isHTTPResponse_Part() {}
 
 type HTTPResponseHead struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        int32                  `protobuf:"varint,1,opt,name=status,proto3" json:"status,omitempty"`
-	Headers       []*Header              `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Status  int32                  `protobuf:"varint,1,opt,name=status,proto3" json:"status,omitempty"`
+	Headers []*Header              `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty"`
+	// The host's classification of a final status of 400 or more. The body
+	// that follows is truncated.
+	Error         *Error `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -901,6 +904,13 @@ func (x *HTTPResponseHead) GetStatus() int32 {
 func (x *HTTPResponseHead) GetHeaders() []*Header {
 	if x != nil {
 		return x.Headers
+	}
+	return nil
+}
+
+func (x *HTTPResponseHead) GetError() *Error {
+	if x != nil {
+		return x.Error
 	}
 	return nil
 }
@@ -1660,7 +1670,7 @@ var File_openetl_connector_v1_host_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_host_proto_rawDesc = "" +
 	"\n" +
-	"\x1fopenetl/connector/v1/host.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb0\x02\n" +
+	"\x1fopenetl/connector/v1/host.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\xb0\x02\n" +
 	"\vHTTPRequest\x12\x16\n" +
 	"\x06method\x18\x01 \x01(\tR\x06method\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x126\n" +
@@ -1708,10 +1718,11 @@ const file_openetl_connector_v1_host_proto_rawDesc = "" +
 	"\fHTTPResponse\x12<\n" +
 	"\x04head\x18\x01 \x01(\v2&.openetl.connector.v1.HTTPResponseHeadH\x00R\x04head\x12\x14\n" +
 	"\x04body\x18\x02 \x01(\fH\x00R\x04bodyB\x06\n" +
-	"\x04part\"b\n" +
+	"\x04part\"\x95\x01\n" +
 	"\x10HTTPResponseHead\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\x05R\x06status\x126\n" +
-	"\aheaders\x18\x02 \x03(\v2\x1c.openetl.connector.v1.HeaderR\aheaders\"\x9f\x01\n" +
+	"\aheaders\x18\x02 \x03(\v2\x1c.openetl.connector.v1.HeaderR\aheaders\x121\n" +
+	"\x05error\x18\x03 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\"\x9f\x01\n" +
 	"\vSignRequest\x12\x1d\n" +
 	"\n" +
 	"key_secret\x18\x01 \x01(\tR\tkeySecret\x124\n" +
@@ -1828,7 +1839,8 @@ var file_openetl_connector_v1_host_proto_goTypes = []any{
 	(*NowResponse)(nil),           // 27: openetl.connector.v1.NowResponse
 	nil,                           // 28: openetl.connector.v1.LogEntry.AttrsEntry
 	(*durationpb.Duration)(nil),   // 29: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil), // 30: google.protobuf.Timestamp
+	(*Error)(nil),                 // 30: openetl.connector.v1.Error
+	(*timestamppb.Timestamp)(nil), // 31: google.protobuf.Timestamp
 }
 var file_openetl_connector_v1_host_proto_depIdxs = []int32{
 	4,  // 0: openetl.connector.v1.HTTPRequest.headers:type_name -> openetl.connector.v1.Header
@@ -1841,35 +1853,36 @@ var file_openetl_connector_v1_host_proto_depIdxs = []int32{
 	10, // 7: openetl.connector.v1.HTTPAuth.aws_sigv4:type_name -> openetl.connector.v1.AWSSigV4Auth
 	12, // 8: openetl.connector.v1.HTTPResponse.head:type_name -> openetl.connector.v1.HTTPResponseHead
 	4,  // 9: openetl.connector.v1.HTTPResponseHead.headers:type_name -> openetl.connector.v1.Header
-	14, // 10: openetl.connector.v1.SignRequest.hmac:type_name -> openetl.connector.v1.HMACSign
-	15, // 11: openetl.connector.v1.SignRequest.jwt:type_name -> openetl.connector.v1.JWTSign
-	0,  // 12: openetl.connector.v1.HMACSign.hash:type_name -> openetl.connector.v1.HashAlgorithm
-	1,  // 13: openetl.connector.v1.JWTSign.algorithm:type_name -> openetl.connector.v1.JWTAlgorithm
-	20, // 14: openetl.connector.v1.LogRequest.entries:type_name -> openetl.connector.v1.LogEntry
-	30, // 15: openetl.connector.v1.LogEntry.time:type_name -> google.protobuf.Timestamp
-	2,  // 16: openetl.connector.v1.LogEntry.level:type_name -> openetl.connector.v1.LogLevel
-	28, // 17: openetl.connector.v1.LogEntry.attrs:type_name -> openetl.connector.v1.LogEntry.AttrsEntry
-	29, // 18: openetl.connector.v1.KVPutRequest.ttl:type_name -> google.protobuf.Duration
-	30, // 19: openetl.connector.v1.NowResponse.now:type_name -> google.protobuf.Timestamp
-	3,  // 20: openetl.connector.v1.HostService.HTTP:input_type -> openetl.connector.v1.HTTPRequest
-	13, // 21: openetl.connector.v1.HostService.Sign:input_type -> openetl.connector.v1.SignRequest
-	17, // 22: openetl.connector.v1.HostService.GetSecret:input_type -> openetl.connector.v1.GetSecretRequest
-	19, // 23: openetl.connector.v1.HostService.Log:input_type -> openetl.connector.v1.LogRequest
-	22, // 24: openetl.connector.v1.HostService.KVGet:input_type -> openetl.connector.v1.KVGetRequest
-	24, // 25: openetl.connector.v1.HostService.KVPut:input_type -> openetl.connector.v1.KVPutRequest
-	26, // 26: openetl.connector.v1.HostService.Now:input_type -> openetl.connector.v1.NowRequest
-	11, // 27: openetl.connector.v1.HostService.HTTP:output_type -> openetl.connector.v1.HTTPResponse
-	16, // 28: openetl.connector.v1.HostService.Sign:output_type -> openetl.connector.v1.SignResponse
-	18, // 29: openetl.connector.v1.HostService.GetSecret:output_type -> openetl.connector.v1.GetSecretResponse
-	21, // 30: openetl.connector.v1.HostService.Log:output_type -> openetl.connector.v1.LogResponse
-	23, // 31: openetl.connector.v1.HostService.KVGet:output_type -> openetl.connector.v1.KVGetResponse
-	25, // 32: openetl.connector.v1.HostService.KVPut:output_type -> openetl.connector.v1.KVPutResponse
-	27, // 33: openetl.connector.v1.HostService.Now:output_type -> openetl.connector.v1.NowResponse
-	27, // [27:34] is the sub-list for method output_type
-	20, // [20:27] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	30, // 10: openetl.connector.v1.HTTPResponseHead.error:type_name -> openetl.connector.v1.Error
+	14, // 11: openetl.connector.v1.SignRequest.hmac:type_name -> openetl.connector.v1.HMACSign
+	15, // 12: openetl.connector.v1.SignRequest.jwt:type_name -> openetl.connector.v1.JWTSign
+	0,  // 13: openetl.connector.v1.HMACSign.hash:type_name -> openetl.connector.v1.HashAlgorithm
+	1,  // 14: openetl.connector.v1.JWTSign.algorithm:type_name -> openetl.connector.v1.JWTAlgorithm
+	20, // 15: openetl.connector.v1.LogRequest.entries:type_name -> openetl.connector.v1.LogEntry
+	31, // 16: openetl.connector.v1.LogEntry.time:type_name -> google.protobuf.Timestamp
+	2,  // 17: openetl.connector.v1.LogEntry.level:type_name -> openetl.connector.v1.LogLevel
+	28, // 18: openetl.connector.v1.LogEntry.attrs:type_name -> openetl.connector.v1.LogEntry.AttrsEntry
+	29, // 19: openetl.connector.v1.KVPutRequest.ttl:type_name -> google.protobuf.Duration
+	31, // 20: openetl.connector.v1.NowResponse.now:type_name -> google.protobuf.Timestamp
+	3,  // 21: openetl.connector.v1.HostService.HTTP:input_type -> openetl.connector.v1.HTTPRequest
+	13, // 22: openetl.connector.v1.HostService.Sign:input_type -> openetl.connector.v1.SignRequest
+	17, // 23: openetl.connector.v1.HostService.GetSecret:input_type -> openetl.connector.v1.GetSecretRequest
+	19, // 24: openetl.connector.v1.HostService.Log:input_type -> openetl.connector.v1.LogRequest
+	22, // 25: openetl.connector.v1.HostService.KVGet:input_type -> openetl.connector.v1.KVGetRequest
+	24, // 26: openetl.connector.v1.HostService.KVPut:input_type -> openetl.connector.v1.KVPutRequest
+	26, // 27: openetl.connector.v1.HostService.Now:input_type -> openetl.connector.v1.NowRequest
+	11, // 28: openetl.connector.v1.HostService.HTTP:output_type -> openetl.connector.v1.HTTPResponse
+	16, // 29: openetl.connector.v1.HostService.Sign:output_type -> openetl.connector.v1.SignResponse
+	18, // 30: openetl.connector.v1.HostService.GetSecret:output_type -> openetl.connector.v1.GetSecretResponse
+	21, // 31: openetl.connector.v1.HostService.Log:output_type -> openetl.connector.v1.LogResponse
+	23, // 32: openetl.connector.v1.HostService.KVGet:output_type -> openetl.connector.v1.KVGetResponse
+	25, // 33: openetl.connector.v1.HostService.KVPut:output_type -> openetl.connector.v1.KVPutResponse
+	27, // 34: openetl.connector.v1.HostService.Now:output_type -> openetl.connector.v1.NowResponse
+	28, // [28:35] is the sub-list for method output_type
+	21, // [21:28] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_host_proto_init() }
@@ -1877,6 +1890,7 @@ func file_openetl_connector_v1_host_proto_init() {
 	if File_openetl_connector_v1_host_proto != nil {
 		return
 	}
+	file_openetl_connector_v1_errors_proto_init()
 	file_openetl_connector_v1_host_proto_msgTypes[2].OneofWrappers = []any{
 		(*HTTPAuth_Bearer)(nil),
 		(*HTTPAuth_Basic)(nil),

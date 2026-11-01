@@ -4,6 +4,7 @@ package openetl.connector.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "openetl/connector/v1/errors.proto";
 
 option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
 
@@ -11,7 +12,8 @@ option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protoco
 // _secret hold secret names; the host injects the values.
 service HostService {
   // Retries within the budget, rate limits, auth injection and the SSRF
-  // guard. Streams a head, then the body in chunks.
+  // guard. Streams a head, then the body in chunks. A request that got no
+  // response fails the RPC with a classified Error.
   rpc HTTP(HTTPRequest) returns (stream HTTPResponse);
   rpc Sign(SignRequest) returns (SignResponse);
   // Only for connectors on the proxy and raw egress tiers.
@@ -96,6 +98,9 @@ message HTTPResponse {
 message HTTPResponseHead {
   int32 status = 1;
   repeated Header headers = 2;
+  // The host's classification of a final status of 400 or more. The body
+  // that follows is truncated.
+  Error error = 3;
 }
 
 message SignRequest {

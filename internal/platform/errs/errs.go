@@ -145,10 +145,26 @@ func ToProto(err error) *protocolv1.Error {
 	if e, ok := err.(*Error); ok { //nolint:errorlint // the code has its own field, so drop it from the outermost message
 		p.Message = e.text()
 	}
-	if e, ok := errors.AsType[*Error](err); ok && e.RetryAfter > 0 {
-		p.RetryAfter = durationpb.New(e.RetryAfter)
+	if d := RetryAfterOf(err); d > 0 {
+		p.RetryAfter = durationpb.New(d)
 	}
 	return p
+}
+
+// RetryAfterOf returns how long err says to wait before retrying, from the
+// first *Error in its chain or else the first error with a RetryAfter
+// method, such as a host.StatusError.
+func RetryAfterOf(err error) time.Duration {
+	if e, ok := errors.AsType[*Error](err); ok {
+		return e.RetryAfter
+	}
+	if e, ok := errors.AsType[interface {
+		error
+		RetryAfter() time.Duration
+	}](err); ok {
+		return e.RetryAfter()
+	}
+	return 0
 }
 
 func FromProto(p *protocolv1.Error) error {
