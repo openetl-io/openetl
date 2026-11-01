@@ -9,12 +9,19 @@ linters:
     - bodyclose
     - depguard
     - errorlint
+    - forbidigo
     - gosec
     - misspell
     - noctx
     - nolintlint
     - revive
   settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^http\.(DefaultClient|DefaultTransport|Transport|Get|Head|Post|PostForm)$
+          pkg: ^net/http$
+          msg: outbound HTTP goes through internal/netguard, the SSRF guard
     # Package boundary rules. Each one is explained in the repo layout docs.
     depguard:
       rules:
@@ -69,7 +76,12 @@ linters:
       - std-error-handling
     rules:
       - path: _test\.go
-        linters: [gosec, noctx]
+        linters: [gosec, noctx, forbidigo]
+      - path: internal/netguard/
+        linters: [forbidigo]
+      # The CLI talks to openetld's API, whose address the user gives.
+      - path: cmd/openetl/
+        linters: [forbidigo]
 
 formatters:
   enable:

@@ -159,7 +159,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	if err := checkpoint.Probe(ctx, cps, ""); err != nil {
 		return fmt.Errorf("daemon: the checkpoint store fails the conditional-write probe, so the runner won't start: %w", err)
 	}
-	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL)
+	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL) //nolint:forbidigo // the operator configures the API's address
 	sync := &dpactivities.Sync{
 		API:         apiClient,
 		Checkpoints: cps,
