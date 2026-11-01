@@ -36,6 +36,10 @@ const MaxMessageSize = 256 << 20
 
 const socketBuffer = 1 << 20
 
+// gRPC's own defaults, 32 KiB buffers and 64 KiB windows, cost a syscall or
+// a window update every few KiB of a batch.
+const flowWindow = 16 << 20
+
 // Connector is what an external connector's main serves: a source or a
 // destination.
 type Connector struct {
@@ -121,7 +125,9 @@ func (c Connector) Run(ctx context.Context, socket, hostSocket string, ready fun
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(grpc.MaxRecvMsgSize(MaxMessageSize), grpc.MaxSendMsgSize(MaxMessageSize))
+	srv := grpc.NewServer(grpc.MaxRecvMsgSize(MaxMessageSize), grpc.MaxSendMsgSize(MaxMessageSize),
+		grpc.ReadBufferSize(socketBuffer), grpc.WriteBufferSize(socketBuffer),
+		grpc.InitialWindowSize(flowWindow), grpc.InitialConnWindowSize(flowWindow))
 	protocolv1.RegisterConnectorServiceServer(srv, b)
 	if c.Source != nil {
 		protocolv1.RegisterSourceServiceServer(srv, &sourceServer{base: b})

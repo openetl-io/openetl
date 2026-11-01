@@ -40,6 +40,9 @@ const (
 	// sun_path is 104 bytes on darwin, including the terminating NUL.
 	maxSocketPath = 103
 	socketBuffer  = 1 << 20
+	// gRPC's own defaults, 32 KiB buffers and 64 KiB windows, cost a syscall
+	// or a window update every few KiB of a batch.
+	flowWindow = 16 << 20
 )
 
 // The runner's environment holds its own credentials, so a connector gets
@@ -193,6 +196,8 @@ func (p *process) run(ctx context.Context, exe, socket, hostSocket string) error
 	p.conn, err = grpc.NewClient("passthrough:///"+socket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(dialSized),
+		grpc.WithReadBufferSize(socketBuffer), grpc.WithWriteBufferSize(socketBuffer),
+		grpc.WithInitialWindowSize(flowWindow), grpc.WithInitialConnWindowSize(flowWindow),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(sdk.MaxMessageSize), grpc.MaxCallSendMsgSize(sdk.MaxMessageSize)))
 	if err != nil {
 		p.close()

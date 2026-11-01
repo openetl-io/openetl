@@ -9,8 +9,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/arrow/util"
-	"github.com/google/uuid"
 )
 
 func batches(t testing.TB) map[string]arrow.RecordBatch {
@@ -31,13 +29,13 @@ func batches(t testing.TB) map[string]arrow.RecordBatch {
 			b.Field(2).AppendNull()
 		} else {
 			b.Field(1).(*array.StringBuilder).Append("row")
-			b.Field(2).(*extensions.UUIDBuilder).Append(uuid.New())
+			b.Field(2).(*extensions.UUIDBuilder).AppendBytes([16]byte{byte(i)})
 		}
 	}
 	out["nulls"] = b.NewRecordBatch()
 	b.Field(0).(*array.Int64Builder).Append(1)
 	b.Field(1).(*array.StringBuilder).Append("x")
-	b.Field(2).(*extensions.UUIDBuilder).Append(uuid.New())
+	b.Field(2).(*extensions.UUIDBuilder).AppendBytes([16]byte{1})
 	out["no nulls"] = b.NewRecordBatch()
 	out["empty"] = b.NewRecordBatch()
 
@@ -75,7 +73,13 @@ func TestInspect(t *testing.T) {
 			if got.Rows != rec.NumRows() {
 				t.Errorf("rows: %d, want %d", got.Rows, rec.NumRows())
 			}
-			if want := util.TotalRecordSize(decoded); got.Size != want {
+			// As util.TotalRecordSize counts it, which needs a dependency
+			// the SDK doesn't have.
+			want := int64(0)
+			for _, col := range decoded.Columns() {
+				want += int64(size(col.Data()))
+			}
+			if got.Size != want {
 				t.Errorf("size: %d, want %d", got.Size, want)
 			}
 			if !bytes.Equal(got.Bytes, b) {

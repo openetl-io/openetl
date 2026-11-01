@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	_ "github.com/apache/arrow-go/v18/arrow/extensions" // registers uuid and json
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -14,6 +15,13 @@ import (
 
 func EncodeBatch(rec arrow.RecordBatch) ([]byte, error) {
 	var buf bytes.Buffer
+	// Room for the padding and the headers too, so growing doesn't copy the
+	// batch again.
+	n := 0
+	for _, col := range rec.Columns() {
+		n += size(col.Data())
+	}
+	buf.Grow(n + n/16 + 64<<10)
 	w := ipc.NewWriter(&buf, ipc.WithSchema(rec.Schema()))
 	if err := w.Write(rec); err != nil {
 		_ = w.Close()
@@ -23,6 +31,23 @@ func EncodeBatch(rec arrow.RecordBatch) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// size sums the lengths of d's buffers.
+func size(d arrow.ArrayData) int {
+	n := 0
+	for _, b := range d.Buffers() {
+		if b != nil {
+			n += b.Len()
+		}
+	}
+	for _, c := range d.Children() {
+		n += size(c)
+	}
+	if dict, ok := d.Dictionary().(*array.Data); ok && dict != nil {
+		n += size(dict)
+	}
+	return n
 }
 
 // DecodeBatch decodes a stream of one batch. Release the batch.
