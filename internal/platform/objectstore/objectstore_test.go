@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,26 @@ func TestOpen(t *testing.T) {
 		if b, err := objectstore.Open(t.Context(), loc); err == nil {
 			_ = b.Close()
 			t.Errorf("opened %q", loc)
+		}
+	}
+}
+
+func TestPrefix(t *testing.T) {
+	for loc, want := range map[string]string{
+		"s3://b":                 "",
+		"s3://b/":                "",
+		"s3://b?endpoint=x":      "",
+		"s3://b/base":            "base/",
+		"s3://b//base/?region=r": "base/",
+		"gs://b/a/b/":            "a/b/",
+		"azblob://c/a/../b":      "b/",
+	} {
+		u, err := url.Parse(loc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := objectstore.Prefix(u); got != want {
+			t.Errorf("Prefix(%s) = %q, want %q", loc, got, want)
 		}
 	}
 }

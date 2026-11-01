@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"cloud.google.com/go/storage"
@@ -24,7 +25,8 @@ import (
 )
 
 // Open takes a directory, file:///dir, mem://, or a bucket URL as S3Client,
-// GCSClient or AzureClient describes. A directory is created if missing.
+// GCSClient or AzureClient describes. A directory is created if missing. A
+// bucket URL's path puts every key under it (Prefix).
 func Open(ctx context.Context, location string) (*blob.Bucket, error) {
 	if !strings.Contains(location, "://") {
 		if location == "" {
@@ -44,6 +46,30 @@ func Open(ctx context.Context, location string) (*blob.Bucket, error) {
 		return openDir(u.Path)
 	case "mem":
 		return memblob.OpenBucket(nil), nil
+	}
+	b, err := openBucket(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	if p := Prefix(u); p != "" {
+		b = blob.PrefixedBucket(b, p)
+	}
+	return b, nil
+}
+
+// Prefix is the key prefix a bucket URL's path names: "base/" for
+// s3://bucket/base, and "" for none. The path is cleaned, so
+// s3://bucket//base/ names base/ too.
+func Prefix(u *url.URL) string {
+	p := strings.TrimPrefix(path.Clean("/"+u.Path), "/")
+	if p == "" {
+		return ""
+	}
+	return p + "/"
+}
+
+func openBucket(ctx context.Context, u *url.URL) (*blob.Bucket, error) {
+	switch u.Scheme {
 	case "s3":
 		c, err := S3Client(u)
 		if err != nil {
@@ -63,7 +89,7 @@ func Open(ctx context.Context, location string) (*blob.Bucket, error) {
 		}
 		return azureblob.OpenBucket(ctx, c, nil)
 	}
-	return nil, fmt.Errorf("objectstore: unsupported location %q", location)
+	return nil, fmt.Errorf("objectstore: unsupported location %q", u.Redacted())
 }
 
 func openDir(dir string) (*blob.Bucket, error) {

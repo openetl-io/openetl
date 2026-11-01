@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/internal/checkpoint/openstore"
 	"github.com/unsuitable001/openetl/internal/delivery"
 	"github.com/unsuitable001/openetl/internal/engineclient"
 	"github.com/unsuitable001/openetl/internal/platform/objectstore"
@@ -31,7 +32,8 @@ import (
 )
 
 // The engine quarantines a malformed row into each provider's object
-// storage, and the checkpoint lists the file.
+// storage, under the storage URL's path, and the checkpoint lists the file.
+// The checkpoint store, on the same URL, finds it there.
 func TestQuarantineInObjectStorage(t *testing.T) {
 	for _, p := range []struct {
 		scheme string
@@ -79,11 +81,17 @@ func TestQuarantineInObjectStorage(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 			defer cancel()
 			bucket := "openetl-e2e-" + strings.ToLower(rand.Text())[:16]
-			storage := p.create(t, bucket)
-			quarantine := *mustParse(t, storage)
-			quarantine.Path = "/org/pipe/_quarantine"
+			u := mustParse(t, p.create(t, bucket))
+			u.Path = "/base"
+			storage := u.String()
+			quarantine := *u
+			quarantine.Path = "/base/org/pipe/_quarantine"
 
-			log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe")
+			store, err := openstore.Open(ctx, storage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log := checkpoint.NewLog(store, "org", "pipe")
 			res, err := runnerpkg.RunAttempt(ctx, runnerpkg.Job{
 				Owner:         "a1",
 				Pipeline:      "pipe",
@@ -108,9 +116,12 @@ func TestQuarantineInObjectStorage(t *testing.T) {
 			if len(rec.Quarantine) != 1 || rec.Quarantine[0].Rows != 1 {
 				t.Fatalf("the record lists %+v", rec.Quarantine)
 			}
-			key, ok := strings.CutPrefix(rec.Quarantine[0].URL, p.scheme+"://"+bucket+"/")
+			key, ok := strings.CutPrefix(rec.Quarantine[0].URL, p.scheme+"://"+bucket+"/base/")
 			if !ok {
-				t.Fatalf("quarantine file %s isn't in the bucket", rec.Quarantine[0].URL)
+				t.Fatalf("quarantine file %s isn't under the bucket's base path", rec.Quarantine[0].URL)
+			}
+			if keys, err := store.List(ctx, "org/pipe/"+checkpoint.QuarantineDir+"/"); err != nil || len(keys) != 1 || keys[0] != key {
+				t.Fatalf("the checkpoint store lists %q, %v; want %s", keys, err, key)
 			}
 			b, err := objectstore.Open(ctx, storage)
 			if err != nil {
