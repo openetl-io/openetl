@@ -115,6 +115,35 @@ func (q *Queries) InsertDestination(ctx context.Context, arg InsertDestinationPa
 	return err
 }
 
+const insertDestinationVersion = `-- name: InsertDestinationVersion :exec
+INSERT INTO destination_versions (org_id, destination_id, version, spec, connector_digest, secrets, provenance)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (org_id, destination_id, version) DO NOTHING
+`
+
+type InsertDestinationVersionParams struct {
+	OrgID           uuid.UUID
+	DestinationID   uuid.UUID
+	Version         string
+	Spec            []byte
+	ConnectorDigest string
+	Secrets         []string
+	Provenance      string
+}
+
+func (q *Queries) InsertDestinationVersion(ctx context.Context, arg InsertDestinationVersionParams) error {
+	_, err := q.db.Exec(ctx, insertDestinationVersion,
+		arg.OrgID,
+		arg.DestinationID,
+		arg.Version,
+		arg.Spec,
+		arg.ConnectorDigest,
+		arg.Secrets,
+		arg.Provenance,
+	)
+	return err
+}
+
 const listDestinations = `-- name: ListDestinations :many
 SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest, secrets FROM destinations
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3

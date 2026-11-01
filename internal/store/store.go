@@ -44,7 +44,10 @@ func (s *Store) Close() { s.pool.Close() }
 
 // Migrate applies pending migrations. Concurrent callers wait on a session
 // lock.
-func (s *Store) Migrate(ctx context.Context) error {
+func (s *Store) Migrate(ctx context.Context) error { return s.migrate(ctx, 0) }
+
+// migrate applies pending migrations up to version, or every one if it's 0.
+func (s *Store) migrate(ctx context.Context, version int64) error {
 	sqlDB := stdlib.OpenDBFromPool(s.pool)
 	defer func() { _ = sqlDB.Close() }()
 	locker, err := lock.NewPostgresSessionLocker()
@@ -59,7 +62,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("store: migrations: %w", err)
 	}
-	if _, err := p.Up(ctx); err != nil {
+	if version == 0 {
+		_, err = p.Up(ctx)
+	} else {
+		_, err = p.UpTo(ctx, version)
+	}
+	if err != nil {
 		return fmt.Errorf("store: migrate: %w", err)
 	}
 	return nil

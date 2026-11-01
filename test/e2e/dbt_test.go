@@ -100,12 +100,17 @@ func TestDbtPostSync(t *testing.T) {
 		"user_count": "select count(*) as n from {{ source('raw', 'users') }}",
 		"broken":     "select * from no_such_table",
 	})
-	if r := apply(t, broken); r[0].GetAction() != apiv1.ApplyAction_APPLY_ACTION_UPDATED {
-		t.Fatalf("applied %v", r[0])
+	applied := applyAll(t, false, broken)
+	res = applied.GetResources()
+	if res[0].GetAction() != apiv1.ApplyAction_APPLY_ACTION_UPDATED {
+		t.Fatalf("applied %v", res[0])
+	}
+	if deps := applied.GetDependents(); len(deps) != 1 || deps[0].GetName() != "workspaces/default/pipelines/"+name {
+		t.Errorf("changing the project: dependents %v", deps)
 	}
 	// The step selects only user_count, so the broken model doesn't run.
-	if status, stats := syncNow(t, name); status != "succeeded" {
-		t.Fatalf("sync %s: %s %s", status, stats, lastSyncError(t, name))
+	if status, stats := syncNow(t, name); status != "succeeded" || !strings.Contains(stats, res[0].GetVersion()) {
+		t.Fatalf("sync %s: %s %s; want it to run %s", status, stats, lastSyncError(t, name), res[0].GetVersion())
 	}
 	apply(t, broken, strings.Replace(pipeline(name)[2], `"select": "user_count", `, "", 1))
 	users := func() int {

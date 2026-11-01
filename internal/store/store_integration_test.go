@@ -192,3 +192,65 @@ func TestDropMirrorPartitions(t *testing.T) {
 		t.Fatalf("partitions left %v, want %v", left, want)
 	}
 }
+
+// Migration 11 pins what pipeline versions from before it ran: their
+// sources' and destinations' current configs, and their dbt projects'
+// current bundles. Versions whose source is gone go.
+func TestPinnedVersionsMigration(t *testing.T) {
+	ctx := t.Context()
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.MigrateTo(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	org, ws, src, gone, dst, pipeline := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	args := pgx.NamedArgs{"org": org, "ws": ws, "src": src, "gone": gone, "dst": dst, "pipeline": pipeline, "dp": "dp-" + org.String()}
+	for _, q := range []string{
+		`INSERT INTO orgs (id, name) VALUES (@org, 'o')`,
+		`INSERT INTO workspaces (org_id, id, name) VALUES (@org, @ws, 'default')`,
+		`INSERT INTO data_planes (org_id, id) VALUES (@org, @dp)`,
+		`INSERT INTO sources (org_id, workspace_id, id, name, spec, version, revision, connector_digest, secrets)
+			VALUES (@org, @ws, @src, 'src', '{"connector": "faker"}', 's1', 1, '', '{}')`,
+		`INSERT INTO sources (org_id, workspace_id, id, name, spec, version, revision) VALUES (@org, @ws, @gone, 'gone', '{}', 'g1', 1)`,
+		`INSERT INTO destinations (org_id, workspace_id, id, name, spec, version, revision, connector_digest, secrets)
+			VALUES (@org, @ws, @dst, 'dst', '{"connector": "postgres"}', 'd1', 1, 'sha256:c', '{dsn}')`,
+		`INSERT INTO artifacts (org_id, digest, media_type, content) VALUES (@org, 'sha256:b', 'x', '')`,
+		`INSERT INTO dbt_projects (org_id, workspace_id, id, name, digest, revision) VALUES (@org, @ws, gen_random_uuid(), 'proj', 'sha256:b', 1)`,
+		`INSERT INTO pipelines (org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision)
+			VALUES (@org, @ws, @pipeline, 'p', @src, @dst, @dp, 'v2', 2)`,
+		`INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id)
+			VALUES (@org, @pipeline, 'v1', '{}', @gone, @dst, @dp)`,
+		`INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id)
+			VALUES (@org, @pipeline, 'v2', '{"postSync": [{"dbt": {"project": "proj"}}, {"dbt": {"project": "proj", "command": "DBT_COMMAND_TEST"}}]}', @src, @dst, @dp)`,
+		`DELETE FROM sources WHERE id = @gone`,
+	} {
+		if _, err := conn.Exec(ctx, q, args); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: org, PipelineID: pipeline, Version: "v2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(v.SourceSpec) != `{"connector": "faker"}` || v.DestinationConnector != "sha256:c" || !slices.Equal(v.DestinationSecrets, []string{"dsn"}) {
+		t.Errorf("v2 pins %+v", v)
+	}
+	if string(v.Dbt) != `{"proj": "sha256:b"}` {
+		t.Errorf("v2 pins dbt %s", v.Dbt)
+	}
+	if _, err := s.GetPipelineVersion(ctx, db.GetPipelineVersionParams{OrgID: org, PipelineID: pipeline, Version: "v1"}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("v1, whose source is gone: %v", err)
+	}
+}

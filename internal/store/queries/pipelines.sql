@@ -23,25 +23,41 @@ WHERE org_id = @org_id AND id = @id;
 DELETE FROM pipelines WHERE org_id = @org_id AND id = @id;
 
 -- name: InsertPipelineVersion :exec
-INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id)
-VALUES (@org_id, @pipeline_id, @version, @spec, @source_id, @destination_id, @data_plane_id)
+INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id,
+    source_version, destination_version, dbt, provenance)
+VALUES (@org_id, @pipeline_id, @version, @spec, @source_id, @destination_id, @data_plane_id,
+    @source_version, @destination_version, @dbt, @provenance)
 ON CONFLICT (org_id, pipeline_id, version) DO NOTHING;
 
 -- name: GetPipelineVersion :one
 SELECT * FROM pipeline_versions WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND version = @version;
 
 -- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, s.spec AS source_spec, d.spec AS destination_spec,
-    s.connector_digest AS source_connector, d.connector_digest AS destination_connector,
-    s.workspace_id AS source_workspace, s.secrets AS source_secrets,
-    d.workspace_id AS destination_workspace, d.secrets AS destination_secrets,
-    p.name AS pipeline, w.name AS workspace
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, sv.spec AS source_spec, dv.spec AS destination_spec,
+    sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
+    sv.secrets AS source_secrets, dv.secrets AS destination_secrets,
+    p.workspace_id, p.name AS pipeline, w.name AS workspace
 FROM pipeline_versions v
 JOIN pipelines p ON p.org_id = v.org_id AND p.id = v.pipeline_id
 JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
-JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
-JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
+JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source_id AND sv.version = v.source_version
+JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
 WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id AND v.version = @version;
+
+-- The pipelines whose current versions use any of the sources, destinations
+-- or dbt projects.
+-- name: ListPipelinesUsing :many
+SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt
+FROM pipelines p
+JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
+JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
+WHERE p.org_id = @org_id AND (
+    p.source_id = ANY(@sources::uuid[]) OR p.destination_id = ANY(@destinations::uuid[])
+    OR EXISTS (
+        SELECT 1 FROM jsonb_object_keys(v.dbt) k
+        JOIN dbt_projects d ON d.org_id = p.org_id AND d.workspace_id = p.workspace_id AND d.name = k
+        WHERE d.id = ANY(@dbt_projects::uuid[])))
+ORDER BY w.name, p.name;
 
 -- name: SetPipelinePaused :exec
 UPDATE pipelines SET paused = @paused WHERE org_id = @org_id AND id = @id;

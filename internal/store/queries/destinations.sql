@@ -19,3 +19,8 @@ DELETE FROM destinations WHERE org_id = @org_id AND id = @id;
 
 -- name: GetDestinationByID :one
 SELECT * FROM destinations WHERE org_id = @org_id AND id = @id;
+
+-- name: InsertDestinationVersion :exec
+INSERT INTO destination_versions (org_id, destination_id, version, spec, connector_digest, secrets, provenance)
+VALUES (@org_id, @destination_id, @version, @spec, @connector_digest, @secrets, @provenance)
+ON CONFLICT (org_id, destination_id, version) DO NOTHING;

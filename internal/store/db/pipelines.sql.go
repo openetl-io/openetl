@@ -88,7 +88,7 @@ func (q *Queries) GetPipelineByID(ctx context.Context, arg GetPipelineByIDParams
 }
 
 const getPipelineVersion = `-- name: GetPipelineVersion :one
-SELECT org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id, create_time FROM pipeline_versions WHERE org_id = $1 AND pipeline_id = $2 AND version = $3
+SELECT org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id, create_time, source_version, destination_version, dbt, provenance FROM pipeline_versions WHERE org_id = $1 AND pipeline_id = $2 AND version = $3
 `
 
 type GetPipelineVersionParams struct {
@@ -109,21 +109,24 @@ func (q *Queries) GetPipelineVersion(ctx context.Context, arg GetPipelineVersion
 		&i.DestinationID,
 		&i.DataPlaneID,
 		&i.CreateTime,
+		&i.SourceVersion,
+		&i.DestinationVersion,
+		&i.Dbt,
+		&i.Provenance,
 	)
 	return i, err
 }
 
 const getSyncSpec = `-- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, s.spec AS source_spec, d.spec AS destination_spec,
-    s.connector_digest AS source_connector, d.connector_digest AS destination_connector,
-    s.workspace_id AS source_workspace, s.secrets AS source_secrets,
-    d.workspace_id AS destination_workspace, d.secrets AS destination_secrets,
-    p.name AS pipeline, w.name AS workspace
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, sv.spec AS source_spec, dv.spec AS destination_spec,
+    sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
+    sv.secrets AS source_secrets, dv.secrets AS destination_secrets,
+    p.workspace_id, p.name AS pipeline, w.name AS workspace
 FROM pipeline_versions v
 JOIN pipelines p ON p.org_id = v.org_id AND p.id = v.pipeline_id
 JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
-JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
-JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
+JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source_id AND sv.version = v.source_version
+JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
 WHERE v.org_id = $1 AND v.pipeline_id = $2 AND v.version = $3
 `
 
@@ -137,14 +140,14 @@ type GetSyncSpecRow struct {
 	Version              string
 	DataPlaneID          string
 	PipelineSpec         []byte
+	Dbt                  []byte
 	SourceSpec           []byte
 	DestinationSpec      []byte
 	SourceConnector      string
 	DestinationConnector string
-	SourceWorkspace      uuid.UUID
 	SourceSecrets        []string
-	DestinationWorkspace uuid.UUID
 	DestinationSecrets   []string
+	WorkspaceID          uuid.UUID
 	Pipeline             string
 	Workspace            string
 }
@@ -156,14 +159,14 @@ func (q *Queries) GetSyncSpec(ctx context.Context, arg GetSyncSpecParams) (GetSy
 		&i.Version,
 		&i.DataPlaneID,
 		&i.PipelineSpec,
+		&i.Dbt,
 		&i.SourceSpec,
 		&i.DestinationSpec,
 		&i.SourceConnector,
 		&i.DestinationConnector,
-		&i.SourceWorkspace,
 		&i.SourceSecrets,
-		&i.DestinationWorkspace,
 		&i.DestinationSecrets,
+		&i.WorkspaceID,
 		&i.Pipeline,
 		&i.Workspace,
 	)
@@ -201,19 +204,25 @@ func (q *Queries) InsertPipeline(ctx context.Context, arg InsertPipelineParams) 
 }
 
 const insertPipelineVersion = `-- name: InsertPipelineVersion :exec
-INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id,
+    source_version, destination_version, dbt, provenance)
+VALUES ($1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11)
 ON CONFLICT (org_id, pipeline_id, version) DO NOTHING
 `
 
 type InsertPipelineVersionParams struct {
-	OrgID         uuid.UUID
-	PipelineID    uuid.UUID
-	Version       string
-	Spec          []byte
-	SourceID      uuid.UUID
-	DestinationID uuid.UUID
-	DataPlaneID   string
+	OrgID              uuid.UUID
+	PipelineID         uuid.UUID
+	Version            string
+	Spec               []byte
+	SourceID           uuid.UUID
+	DestinationID      uuid.UUID
+	DataPlaneID        string
+	SourceVersion      string
+	DestinationVersion string
+	Dbt                []byte
+	Provenance         string
 }
 
 func (q *Queries) InsertPipelineVersion(ctx context.Context, arg InsertPipelineVersionParams) error {
@@ -225,6 +234,10 @@ func (q *Queries) InsertPipelineVersion(ctx context.Context, arg InsertPipelineV
 		arg.SourceID,
 		arg.DestinationID,
 		arg.DataPlaneID,
+		arg.SourceVersion,
+		arg.DestinationVersion,
+		arg.Dbt,
+		arg.Provenance,
 	)
 	return err
 }
@@ -269,6 +282,76 @@ func (q *Queries) ListPipelines(ctx context.Context, arg ListPipelinesParams) ([
 			&i.CreateTime,
 			&i.UpdateTime,
 			&i.Paused,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPipelinesUsing = `-- name: ListPipelinesUsing :many
+SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt
+FROM pipelines p
+JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
+JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
+WHERE p.org_id = $1 AND (
+    p.source_id = ANY($2::uuid[]) OR p.destination_id = ANY($3::uuid[])
+    OR EXISTS (
+        SELECT 1 FROM jsonb_object_keys(v.dbt) k
+        JOIN dbt_projects d ON d.org_id = p.org_id AND d.workspace_id = p.workspace_id AND d.name = k
+        WHERE d.id = ANY($4::uuid[])))
+ORDER BY w.name, p.name
+`
+
+type ListPipelinesUsingParams struct {
+	OrgID        uuid.UUID
+	Sources      []uuid.UUID
+	Destinations []uuid.UUID
+	DbtProjects  []uuid.UUID
+}
+
+type ListPipelinesUsingRow struct {
+	ID            uuid.UUID
+	Name          string
+	Version       string
+	WorkspaceID   uuid.UUID
+	SourceID      uuid.UUID
+	DestinationID uuid.UUID
+	Workspace     string
+	Spec          []byte
+	Dbt           []byte
+}
+
+// The pipelines whose current versions use any of the sources, destinations
+// or dbt projects.
+func (q *Queries) ListPipelinesUsing(ctx context.Context, arg ListPipelinesUsingParams) ([]ListPipelinesUsingRow, error) {
+	rows, err := q.db.Query(ctx, listPipelinesUsing,
+		arg.OrgID,
+		arg.Sources,
+		arg.Destinations,
+		arg.DbtProjects,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPipelinesUsingRow
+	for rows.Next() {
+		var i ListPipelinesUsingRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Version,
+			&i.WorkspaceID,
+			&i.SourceID,
+			&i.DestinationID,
+			&i.Workspace,
+			&i.Spec,
+			&i.Dbt,
 		); err != nil {
 			return nil, err
 		}

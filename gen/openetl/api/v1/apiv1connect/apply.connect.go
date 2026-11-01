@@ -40,7 +40,9 @@ const (
 // ApplyServiceClient is a client for the openetl.api.v1.ApplyService service.
 type ApplyServiceClient interface {
 	// Stores each definition as an immutable version; unchanged definitions
-	// keep theirs. Either every document applies or none does.
+	// keep theirs. A pipeline's version pins the versions of its source and
+	// destination and its dbt projects' bundles. Either every document applies
+	// or none does.
 	Apply(context.Context, *connect.Request[v1.ApplyRequest]) (*connect.Response[v1.ApplyResponse], error)
 }
 
@@ -77,7 +79,9 @@ func (c *applyServiceClient) Apply(ctx context.Context, req *connect.Request[v1.
 // ApplyServiceHandler is an implementation of the openetl.api.v1.ApplyService service.
 type ApplyServiceHandler interface {
 	// Stores each definition as an immutable version; unchanged definitions
-	// keep theirs. Either every document applies or none does.
+	// keep theirs. A pipeline's version pins the versions of its source and
+	// destination and its dbt projects' bundles. Either every document applies
+	// or none does.
 	Apply(context.Context, *connect.Request[v1.ApplyRequest]) (*connect.Response[v1.ApplyResponse], error)
 }
 

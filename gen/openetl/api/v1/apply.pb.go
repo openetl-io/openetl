@@ -203,7 +203,10 @@ func (x *Document) GetContent() []byte {
 type ApplyResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// One per document, in order.
-	Resources     []*AppliedResource `protobuf:"bytes,1,rep,name=resources,proto3" json:"resources,omitempty"`
+	Resources []*AppliedResource `protobuf:"bytes,1,rep,name=resources,proto3" json:"resources,omitempty"`
+	// Pipelines the documents don't define, which have a new version because
+	// a source, destination or dbt project they use changed.
+	Dependents    []*AppliedResource `protobuf:"bytes,2,rep,name=dependents,proto3" json:"dependents,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -241,6 +244,13 @@ func (*ApplyResponse) Descriptor() ([]byte, []int) {
 func (x *ApplyResponse) GetResources() []*AppliedResource {
 	if x != nil {
 		return x.Resources
+	}
+	return nil
+}
+
+func (x *ApplyResponse) GetDependents() []*AppliedResource {
+	if x != nil {
+		return x.Dependents
 	}
 	return nil
 }
@@ -325,9 +335,12 @@ const file_openetl_api_v1_apply_proto_rawDesc = "" +
 	"\x06client\x18\x04 \x01(\tR\x06client\"<\n" +
 	"\bDocument\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\tR\x06origin\x12\x18\n" +
-	"\acontent\x18\x02 \x01(\fR\acontent\"N\n" +
+	"\acontent\x18\x02 \x01(\fR\acontent\"\x8f\x01\n" +
 	"\rApplyResponse\x12=\n" +
-	"\tresources\x18\x01 \x03(\v2\x1f.openetl.api.v1.AppliedResourceR\tresources\"\x88\x01\n" +
+	"\tresources\x18\x01 \x03(\v2\x1f.openetl.api.v1.AppliedResourceR\tresources\x12?\n" +
+	"\n" +
+	"dependents\x18\x02 \x03(\v2\x1f.openetl.api.v1.AppliedResourceR\n" +
+	"dependents\"\x88\x01\n" +
 	"\x0fAppliedResource\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x123\n" +
@@ -365,14 +378,15 @@ var file_openetl_api_v1_apply_proto_goTypes = []any{
 var file_openetl_api_v1_apply_proto_depIdxs = []int32{
 	2, // 0: openetl.api.v1.ApplyRequest.documents:type_name -> openetl.api.v1.Document
 	4, // 1: openetl.api.v1.ApplyResponse.resources:type_name -> openetl.api.v1.AppliedResource
-	0, // 2: openetl.api.v1.AppliedResource.action:type_name -> openetl.api.v1.ApplyAction
-	1, // 3: openetl.api.v1.ApplyService.Apply:input_type -> openetl.api.v1.ApplyRequest
-	3, // 4: openetl.api.v1.ApplyService.Apply:output_type -> openetl.api.v1.ApplyResponse
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	4, // 2: openetl.api.v1.ApplyResponse.dependents:type_name -> openetl.api.v1.AppliedResource
+	0, // 3: openetl.api.v1.AppliedResource.action:type_name -> openetl.api.v1.ApplyAction
+	1, // 4: openetl.api.v1.ApplyService.Apply:input_type -> openetl.api.v1.ApplyRequest
+	3, // 5: openetl.api.v1.ApplyService.Apply:output_type -> openetl.api.v1.ApplyResponse
+	5, // [5:6] is the sub-list for method output_type
+	4, // [4:5] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_apply_proto_init() }

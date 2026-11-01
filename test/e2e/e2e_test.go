@@ -426,7 +426,13 @@ func eventually(t *testing.T, timeout time.Duration, what string, ok func() bool
 
 func apply(t *testing.T, docs ...string) []*apiv1.AppliedResource {
 	t.Helper()
-	req := &apiv1.ApplyRequest{}
+	return applyAll(t, false, docs...).GetResources()
+}
+
+// applyAll applies the documents, or only validates them.
+func applyAll(t *testing.T, validateOnly bool, docs ...string) *apiv1.ApplyResponse {
+	t.Helper()
+	req := &apiv1.ApplyRequest{ValidateOnly: validateOnly}
 	for i, d := range docs {
 		req.Documents = append(req.Documents, &apiv1.Document{Origin: fmt.Sprintf("doc %d", i+1), Content: []byte(d)})
 	}
@@ -434,7 +440,7 @@ func apply(t *testing.T, docs ...string) []*apiv1.AppliedResource {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return res.Msg.GetResources()
+	return res.Msg
 }
 
 // setSecret stores value as a new secret, and returns its name.

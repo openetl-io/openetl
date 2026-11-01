@@ -108,6 +108,17 @@ type Destination struct {
 	Secrets         []string
 }
 
+type DestinationVersion struct {
+	OrgID           uuid.UUID
+	DestinationID   uuid.UUID
+	Version         string
+	Spec            []byte
+	ConnectorDigest string
+	Secrets         []string
+	Provenance      string
+	CreateTime      time.Time
+}
+
 type Org struct {
 	ID         uuid.UUID
 	Name       string
@@ -136,14 +147,18 @@ type Pipeline struct {
 }
 
 type PipelineVersion struct {
-	OrgID         uuid.UUID
-	PipelineID    uuid.UUID
-	Version       string
-	Spec          []byte
-	SourceID      uuid.UUID
-	DestinationID uuid.UUID
-	DataPlaneID   string
-	CreateTime    time.Time
+	OrgID              uuid.UUID
+	PipelineID         uuid.UUID
+	Version            string
+	Spec               []byte
+	SourceID           uuid.UUID
+	DestinationID      uuid.UUID
+	DataPlaneID        string
+	CreateTime         time.Time
+	SourceVersion      string
+	DestinationVersion string
+	Dbt                []byte
+	Provenance         string
 }
 
 type Principal struct {
@@ -207,6 +222,17 @@ type SourceCatalog struct {
 	SourceVersion string
 	Catalog       []byte
 	DiscoverTime  time.Time
+}
+
+type SourceVersion struct {
+	OrgID           uuid.UUID
+	SourceID        uuid.UUID
+	Version         string
+	Spec            []byte
+	ConnectorDigest string
+	Secrets         []string
+	Provenance      string
+	CreateTime      time.Time
 }
 
 type StreamSchema struct {

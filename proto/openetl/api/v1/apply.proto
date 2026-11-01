@@ -8,7 +8,9 @@ option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
 
 service ApplyService {
   // Stores each definition as an immutable version; unchanged definitions
-  // keep theirs. Either every document applies or none does.
+  // keep theirs. A pipeline's version pins the versions of its source and
+  // destination and its dbt projects' bundles. Either every document applies
+  // or none does.
   rpc Apply(ApplyRequest) returns (ApplyResponse) {
     option (google.api.http) = {
       post: "/v1/{workspace=workspaces/*}:apply"
@@ -38,6 +40,9 @@ message Document {
 message ApplyResponse {
   // One per document, in order.
   repeated AppliedResource resources = 1;
+  // Pipelines the documents don't define, which have a new version because
+  // a source, destination or dbt project they use changed.
+  repeated AppliedResource dependents = 2;
 }
 
 message AppliedResource {

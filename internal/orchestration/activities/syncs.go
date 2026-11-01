@@ -50,11 +50,15 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	if p.Paused {
 		return contract.StartSyncResult{Paused: true}, nil
 	}
-	connectors, err := a.connectors(ctx, p)
+	v, err := a.Store.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: org, PipelineID: pipeline, Version: p.Version})
 	if err != nil {
 		return res, err
 	}
-	steps, err := a.postSync(ctx, p)
+	connectors, err := connectorNames(v)
+	if err != nil {
+		return res, err
+	}
+	steps, err := postSync(v)
 	if err != nil {
 		return res, err
 	}
@@ -76,33 +80,30 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	}, nil
 }
 
-// postSync resolves the pipeline version's post-sync steps: each dbt
-// project to its current bundle.
-func (a *Activities) postSync(ctx context.Context, p db.Pipeline) ([]contract.PostSyncStep, error) {
-	v, err := a.Store.GetPipelineVersion(ctx, db.GetPipelineVersionParams{OrgID: p.OrgID, PipelineID: p.ID, Version: p.Version})
-	if err != nil {
+// postSync is the pipeline version's post-sync steps, with the bundles it
+// pins.
+func postSync(v db.GetSyncSpecRow) ([]contract.PostSyncStep, error) {
+	var spec apiv1.PipelineSpec
+	if err := protojson.Unmarshal(v.PipelineSpec, &spec); err != nil {
 		return nil, err
 	}
-	var spec apiv1.PipelineSpec
-	if err := protojson.Unmarshal(v.Spec, &spec); err != nil {
+	var bundles map[string]string
+	if err := json.Unmarshal(v.Dbt, &bundles); err != nil {
 		return nil, err
 	}
 	var steps []contract.PostSyncStep
 	for _, s := range spec.GetPostSync() {
 		d := s.GetDbt()
-		proj, err := a.Store.GetDbtProject(ctx, db.GetDbtProjectParams{OrgID: p.OrgID, WorkspaceID: p.WorkspaceID, Name: d.GetProject()})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errs.New(errs.ConfigInvalid, "dbt project %q no longer exists", d.GetProject())
-		}
-		if err != nil {
-			return nil, err
+		digest, ok := bundles[d.GetProject()]
+		if !ok {
+			return nil, errs.New(errs.ConfigInvalid, "pipeline version %s pins no bundle of dbt project %q", v.Version, d.GetProject())
 		}
 		command := d.GetCommand()
 		if command == apiv1.DbtCommand_DBT_COMMAND_UNSPECIFIED {
 			command = apiv1.DbtCommand_DBT_COMMAND_BUILD
 		}
 		steps = append(steps, contract.PostSyncStep{Dbt: &contract.DbtStep{
-			Project: d.GetProject(), Digest: proj.Digest,
+			Project: d.GetProject(), Digest: digest,
 			Command: strings.ToLower(strings.TrimPrefix(command.String(), "DBT_COMMAND_")),
 			Select:  d.GetSelect(), Exclude: d.GetExclude(), Schema: d.GetSchema(),
 		}})
@@ -110,18 +111,11 @@ func (a *Activities) postSync(ctx context.Context, p db.Pipeline) ([]contract.Po
 	return steps, nil
 }
 
-// connectors names the pipeline's source and destination connectors.
-func (a *Activities) connectors(ctx context.Context, p db.Pipeline) ([]string, error) {
-	src, err := a.Store.GetSourceByID(ctx, db.GetSourceByIDParams{OrgID: p.OrgID, ID: p.SourceID})
-	if err != nil {
-		return nil, err
-	}
-	dst, err := a.Store.GetDestinationByID(ctx, db.GetDestinationByIDParams{OrgID: p.OrgID, ID: p.DestinationID})
-	if err != nil {
-		return nil, err
-	}
+// connectorNames names the pipeline version's source and destination
+// connectors.
+func connectorNames(v db.GetSyncSpecRow) ([]string, error) {
 	var names []string
-	for _, spec := range [][]byte{src.Spec, dst.Spec} {
+	for _, spec := range [][]byte{v.SourceSpec, v.DestinationSpec} {
 		var c apiv1.ConnectorConfig
 		if err := protojson.Unmarshal(spec, &c); err != nil {
 			return nil, err

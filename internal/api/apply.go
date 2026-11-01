@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -103,8 +105,9 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	res := &apiv1.ApplyResponse{Resources: make([]*apiv1.AppliedResource, len(docs))}
 	var scheds []schedule
 	err := s.Store.Tx(ctx, func(q *db.Queries) error {
+		ch := newChanges()
 		for _, i := range order {
-			applied, sched, err := s.applyOne(ctx, q, docs[i], client+":"+origins[i])
+			applied, sched, err := s.applyOne(ctx, q, docs[i], client+":"+origins[i], ch)
 			if err != nil {
 				return fmt.Errorf("%s: %w", origins[i], err)
 			}
@@ -112,6 +115,10 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 			if sched != nil {
 				scheds = append(scheds, *sched)
 			}
+		}
+		var err error
+		if res.Dependents, err = s.repin(ctx, q, ch); err != nil {
+			return err
 		}
 		if req.Msg.GetValidateOnly() {
 			return errValidateOnly
@@ -147,13 +154,17 @@ func documentName(doc *spec.Document) string {
 	return resourceName(doc.Workspace, collection, doc.Name)
 }
 
-// auditApplied records what each document did, and the version it has.
+// auditApplied records what each document and dependent did, and the
+// version it has.
 func auditApplied(ctx context.Context, res *apiv1.ApplyResponse) {
-	applied := make([]any, len(res.GetResources()))
-	for i, r := range res.GetResources() {
-		applied[i] = map[string]any{
+	var applied []any
+	for _, r := range slices.Concat(res.GetResources(), res.GetDependents()) {
+		applied = append(applied, map[string]any{
 			"name": r.GetName(), "action": strings.ToLower(strings.TrimPrefix(r.GetAction().String(), "APPLY_ACTION_")), "version": r.GetVersion(),
-		}
+		})
+	}
+	for _, r := range res.GetDependents() {
+		audit(ctx).touched(r.GetName())
 	}
 	audit(ctx).set("applied", applied)
 }
@@ -166,7 +177,7 @@ func (s *Server) workspace(ctx context.Context, q *db.Queries, name string) (uui
 	return ws.ID, err
 }
 
-func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document, provenance string) (*apiv1.AppliedResource, *schedule, error) {
+func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document, provenance string, ch *changes) (*apiv1.AppliedResource, *schedule, error) {
 	if versioned(doc) {
 		res, err := s.applyConnectorVersion(ctx, q, doc, provenance)
 		return res, nil, err
@@ -177,13 +188,13 @@ func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document
 	}
 	switch doc.Kind {
 	case spec.KindSource, spec.KindDestination:
-		res, err := s.applyConnector(ctx, q, doc, wsID)
+		res, err := s.applyConnector(ctx, q, doc, wsID, provenance, ch)
 		return res, nil, err
 	case spec.KindDbtProject:
-		res, err := s.applyDbtProject(ctx, q, doc, wsID)
+		res, err := s.applyDbtProject(ctx, q, doc, wsID, provenance, ch)
 		return res, nil, err
 	default:
-		return s.applyPipeline(ctx, q, doc, wsID)
+		return s.applyPipeline(ctx, q, doc, wsID, provenance, ch)
 	}
 }
 
@@ -206,7 +217,7 @@ func digest(m proto.Message, extra ...string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Document, wsID uuid.UUID) (*apiv1.AppliedResource, error) {
+func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Document, wsID uuid.UUID, provenance string, ch *changes) (*apiv1.AppliedResource, error) {
 	kind, collection := "source", "sources"
 	if doc.Kind == spec.KindDestination {
 		kind, collection = "destination", "destinations"
@@ -266,15 +277,17 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		res.Action = apiv1.ApplyAction_APPLY_ACTION_CREATED
+		res.Action, cur.id = apiv1.ApplyAction_APPLY_ACTION_CREATED, uuid.New()
 		if doc.Kind == spec.KindSource {
-			err = q.InsertSource(ctx, db.InsertSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
+			err = q.InsertSource(ctx, db.InsertSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: cur.id, Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
 		} else {
-			err = q.InsertDestination(ctx, db.InsertDestinationParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
+			err = q.InsertDestination(ctx, db.InsertDestinationParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: cur.id, Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
 		}
 	case err != nil:
+		return nil, err
 	case cur.version == version:
 		res.Action = apiv1.ApplyAction_APPLY_ACTION_UNCHANGED
+		return res, nil
 	default:
 		res.Action = apiv1.ApplyAction_APPLY_ACTION_UPDATED
 		if doc.Kind == spec.KindSource {
@@ -283,73 +296,224 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 			err = q.UpdateDestination(ctx, db.UpdateDestinationParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
 		}
 	}
+	if err != nil {
+		return nil, err
+	}
+	if doc.Kind == spec.KindSource {
+		ch.sources[cur.id] = provenance
+		err = q.InsertSourceVersion(ctx, db.InsertSourceVersionParams{
+			OrgID: s.Tenant.Org, SourceID: cur.id, Version: version, Spec: stored, ConnectorDigest: connector, Secrets: secrets, Provenance: provenance,
+		})
+	} else {
+		ch.destinations[cur.id] = provenance
+		err = q.InsertDestinationVersion(ctx, db.InsertDestinationVersionParams{
+			OrgID: s.Tenant.Org, DestinationID: cur.id, Version: version, Spec: stored, ConnectorDigest: connector, Secrets: secrets, Provenance: provenance,
+		})
+	}
 	return res, err
 }
 
-func (s *Server) applyPipeline(ctx context.Context, q *db.Queries, doc *spec.Document, wsID uuid.UUID) (*apiv1.AppliedResource, *schedule, error) {
-	p := doc.Pipeline
-	src, err := q.GetSource(ctx, db.GetSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: p.GetSource().GetRef()})
+// pinned is a pipeline version: its spec, and what the spec named when it
+// was applied.
+type pinned struct {
+	spec      *apiv1.PipelineSpec
+	src       db.Source
+	dst       db.Destination
+	dataPlane string
+	// Each dbt project's bundle, by name.
+	dbt map[string]string
+}
+
+// pin resolves what a pipeline's spec names in its workspace.
+func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, wsID uuid.UUID, workspace string) (*pinned, error) {
+	v := &pinned{spec: p, dataPlane: cmp.Or(p.GetDataPlane(), s.DefaultDataPlane), dbt: map[string]string{}}
+	var err error
+	v.src, err = q.GetSource(ctx, db.GetSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: p.GetSource().GetRef()})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil, invalid("source %q doesn't exist in workspace %q", p.GetSource().GetRef(), doc.Workspace)
+		return nil, invalid("source %q doesn't exist in workspace %q", p.GetSource().GetRef(), workspace)
 	}
+	if err != nil {
+		return nil, err
+	}
+	v.dst, err = q.GetDestination(ctx, db.GetDestinationParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: p.GetDestination().GetRef()})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, invalid("destination %q doesn't exist in workspace %q", p.GetDestination().GetRef(), workspace)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, step := range p.GetPostSync() {
+		name := step.GetDbt().GetProject()
+		proj, err := q.GetDbtProject(ctx, db.GetDbtProjectParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: name})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, invalid("dbt project %q doesn't exist in workspace %q", name, workspace)
+		}
+		if err != nil {
+			return nil, err
+		}
+		v.dbt[name] = proj.Digest
+	}
+	if _, err := q.GetDataPlane(ctx, db.GetDataPlaneParams{OrgID: s.Tenant.Org, ID: v.dataPlane}); errors.Is(err, pgx.ErrNoRows) {
+		return nil, invalid("data plane %q doesn't exist", v.dataPlane)
+	} else if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func (v *pinned) version() (string, error) {
+	extra := []string{v.src.ID.String(), v.dst.ID.String(), v.dataPlane, v.src.Version, v.dst.Version}
+	for _, name := range slices.Sorted(maps.Keys(v.dbt)) {
+		extra = append(extra, name+"@"+v.dbt[name])
+	}
+	return digest(v.spec, extra...)
+}
+
+// store makes v the current version of the pipeline cur, or of a new one if
+// cur is nil.
+func (v *pinned) store(ctx context.Context, q *db.Queries, org, wsID uuid.UUID, name string, cur *db.Pipeline, provenance string) (apiv1.ApplyAction, string, uuid.UUID, error) {
+	version, err := v.version()
+	if err != nil {
+		return 0, "", uuid.Nil, err
+	}
+	var action apiv1.ApplyAction
+	var id uuid.UUID
+	switch {
+	case cur == nil:
+		action, id = apiv1.ApplyAction_APPLY_ACTION_CREATED, uuid.New()
+		err = q.InsertPipeline(ctx, db.InsertPipelineParams{
+			OrgID: org, WorkspaceID: wsID, ID: id, Name: name,
+			SourceID: v.src.ID, DestinationID: v.dst.ID, DataPlaneID: v.dataPlane, Version: version,
+		})
+	case cur.Version == version:
+		return apiv1.ApplyAction_APPLY_ACTION_UNCHANGED, version, cur.ID, nil
+	default:
+		action, id = apiv1.ApplyAction_APPLY_ACTION_UPDATED, cur.ID
+		err = q.UpdatePipeline(ctx, db.UpdatePipelineParams{
+			OrgID: org, ID: id, SourceID: v.src.ID, DestinationID: v.dst.ID, DataPlaneID: v.dataPlane, Version: version,
+		})
+	}
+	if err != nil {
+		return 0, "", uuid.Nil, err
+	}
+	spec, err := protojson.Marshal(v.spec)
+	if err != nil {
+		return 0, "", uuid.Nil, err
+	}
+	dbt, err := json.Marshal(v.dbt)
+	if err != nil {
+		return 0, "", uuid.Nil, err
+	}
+	err = q.InsertPipelineVersion(ctx, db.InsertPipelineVersionParams{
+		OrgID: org, PipelineID: id, Version: version, Spec: spec,
+		SourceID: v.src.ID, DestinationID: v.dst.ID, DataPlaneID: v.dataPlane,
+		SourceVersion: v.src.Version, DestinationVersion: v.dst.Version, Dbt: dbt, Provenance: provenance,
+	})
+	return action, version, id, err
+}
+
+func (s *Server) applyPipeline(ctx context.Context, q *db.Queries, doc *spec.Document, wsID uuid.UUID, provenance string, ch *changes) (*apiv1.AppliedResource, *schedule, error) {
+	v, err := s.pin(ctx, q, doc.Pipeline, wsID, doc.Workspace)
 	if err != nil {
 		return nil, nil, err
 	}
-	dst, err := q.GetDestination(ctx, db.GetDestinationParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: p.GetDestination().GetRef()})
+	cur, err := q.GetPipeline(ctx, db.GetPipelineParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: doc.Name})
+	curp := &cur
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil, invalid("destination %q doesn't exist in workspace %q", p.GetDestination().GetRef(), doc.Workspace)
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := s.checkPostSync(ctx, q, p, wsID, doc.Workspace); err != nil {
-		return nil, nil, err
-	}
-	dp := cmp.Or(p.GetDataPlane(), s.DefaultDataPlane)
-	if _, err := q.GetDataPlane(ctx, db.GetDataPlaneParams{OrgID: s.Tenant.Org, ID: dp}); errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil, invalid("data plane %q doesn't exist", dp)
+		curp = nil
 	} else if err != nil {
 		return nil, nil, err
 	}
+	res := &apiv1.AppliedResource{Kind: doc.Kind, Name: resourceName(doc.Workspace, "pipelines", doc.Name)}
+	var id uuid.UUID
+	res.Action, res.Version, id, err = v.store(ctx, q, s.Tenant.Org, wsID, doc.Name, curp, provenance)
+	if err != nil {
+		return nil, nil, err
+	}
+	ch.pipelines[id] = true
+	return res, &schedule{pipelineID: id.String(), spec: doc.Pipeline.GetSchedule(), paused: cur.Paused}, nil
+}
 
-	version, err := digest(p, src.ID.String(), dst.ID.String(), dp)
-	if err != nil {
-		return nil, nil, err
-	}
-	stored, err := protojson.Marshal(p)
-	if err != nil {
-		return nil, nil, err
-	}
-	res := &apiv1.AppliedResource{Kind: doc.Kind, Name: resourceName(doc.Workspace, "pipelines", doc.Name), Version: version}
+// changes is what an Apply has changed so far: sources, destinations and dbt
+// projects, with the provenance of the documents that changed them, and the
+// pipelines it applied.
+type changes struct {
+	sources      map[uuid.UUID]string
+	destinations map[uuid.UUID]string
+	dbtProjects  map[uuid.UUID]string
+	pipelines    map[uuid.UUID]bool
+}
 
-	cur, err := q.GetPipeline(ctx, db.GetPipelineParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: doc.Name})
-	id := cur.ID
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		res.Action = apiv1.ApplyAction_APPLY_ACTION_CREATED
-		id = uuid.New()
-		err = q.InsertPipeline(ctx, db.InsertPipelineParams{
-			OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: id, Name: doc.Name,
-			SourceID: src.ID, DestinationID: dst.ID, DataPlaneID: dp, Version: version,
-		})
-	case err != nil:
-	case cur.Version == version:
-		res.Action = apiv1.ApplyAction_APPLY_ACTION_UNCHANGED
-	default:
-		res.Action = apiv1.ApplyAction_APPLY_ACTION_UPDATED
-		err = q.UpdatePipeline(ctx, db.UpdatePipelineParams{
-			OrgID: s.Tenant.Org, ID: id, SourceID: src.ID, DestinationID: dst.ID, DataPlaneID: dp, Version: version,
-		})
+func newChanges() *changes {
+	return &changes{sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{}, pipelines: map[uuid.UUID]bool{}}
+}
+
+// repin gives a new version to each pipeline whose current version pins a
+// changed source, destination or dbt project, unless the Apply applied the
+// pipeline itself.
+func (s *Server) repin(ctx context.Context, q *db.Queries, ch *changes) ([]*apiv1.AppliedResource, error) {
+	if len(ch.sources)+len(ch.destinations)+len(ch.dbtProjects) == 0 {
+		return nil, nil
 	}
-	if err != nil {
-		return nil, nil, err
-	}
-	err = q.InsertPipelineVersion(ctx, db.InsertPipelineVersionParams{
-		OrgID: s.Tenant.Org, PipelineID: id, Version: version, Spec: stored,
-		SourceID: src.ID, DestinationID: dst.ID, DataPlaneID: dp,
+	rows, err := q.ListPipelinesUsing(ctx, db.ListPipelinesUsingParams{
+		OrgID:        s.Tenant.Org,
+		Sources:      slices.Collect(maps.Keys(ch.sources)),
+		Destinations: slices.Collect(maps.Keys(ch.destinations)),
+		DbtProjects:  slices.Collect(maps.Keys(ch.dbtProjects)),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return res, &schedule{pipelineID: id.String(), spec: p.GetSchedule(), paused: cur.Paused}, nil
+	var out []*apiv1.AppliedResource
+	for _, r := range rows {
+		if ch.pipelines[r.ID] {
+			continue
+		}
+		name := resourceName(r.Workspace, "pipelines", r.Name)
+		var p apiv1.PipelineSpec
+		if err := protojson.Unmarshal(r.Spec, &p); err != nil {
+			return nil, err
+		}
+		v, err := s.pin(ctx, q, &p, r.WorkspaceID, r.Workspace)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		provenance, err := ch.cause(ctx, q, s.Tenant.Org, r)
+		if err != nil {
+			return nil, err
+		}
+		action, version, _, err := v.store(ctx, q, s.Tenant.Org, r.WorkspaceID, r.Name, &db.Pipeline{ID: r.ID, Version: r.Version}, provenance)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if action != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED {
+			out = append(out, &apiv1.AppliedResource{Kind: spec.KindPipeline, Name: name, Action: action, Version: version})
+		}
+	}
+	return out, nil
+}
+
+// cause is the provenance of a change that a dependent pipeline's new version
+// takes in.
+func (ch *changes) cause(ctx context.Context, q *db.Queries, org uuid.UUID, r db.ListPipelinesUsingRow) (string, error) {
+	if p, ok := ch.sources[r.SourceID]; ok {
+		return p, nil
+	}
+	if p, ok := ch.destinations[r.DestinationID]; ok {
+		return p, nil
+	}
+	var dbt map[string]string
+	if err := json.Unmarshal(r.Dbt, &dbt); err != nil {
+		return "", err
+	}
+	for _, name := range slices.Sorted(maps.Keys(dbt)) {
+		proj, err := q.GetDbtProject(ctx, db.GetDbtProjectParams{OrgID: org, WorkspaceID: r.WorkspaceID, Name: name})
+		if err != nil {
+			return "", err
+		}
+		if p, ok := ch.dbtProjects[proj.ID]; ok {
+			return p, nil
+		}
+	}
+	return "", nil
 }

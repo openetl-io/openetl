@@ -170,12 +170,18 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	if err != nil {
 		return err
 	}
-	for _, r := range res.Msg.GetResources() {
+	verb := func(r *apiv1.AppliedResource) string {
 		action := strings.ToLower(strings.TrimPrefix(r.GetAction().String(), "APPLY_ACTION_"))
 		if *dryRun {
 			action = "would be " + action
 		}
-		fmt.Fprintf(out, "%s %s (version %.12s)\n", action, r.GetName(), r.GetVersion())
+		return action
+	}
+	for _, r := range res.Msg.GetResources() {
+		fmt.Fprintf(out, "%s %s (version %.12s)\n", verb(r), r.GetName(), r.GetVersion())
+	}
+	for _, r := range res.Msg.GetDependents() {
+		fmt.Fprintf(out, "%s %s (version %.12s), which uses what changed\n", verb(r), r.GetName(), r.GetVersion())
 	}
 	return nil
 }

@@ -87,7 +87,7 @@ type StartSyncResult struct {
 	WorkspaceID string
 	// Of the source and the destination.
 	Connectors []string
-	// The pipeline version's post-sync steps, with their projects resolved.
+	// The pipeline version's post-sync steps, with the bundles it pins.
 	PostSync []PostSyncStep
 }
 
@@ -99,7 +99,7 @@ type PostSyncStep struct {
 
 type DbtStep struct {
 	Project string
-	// The project's bundle when the sync started: sha256:{hex}.
+	// The bundle the pipeline version pins: sha256:{hex}.
 	Digest string
 	// build, run or test.
 	Command         string

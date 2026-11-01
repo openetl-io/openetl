@@ -139,6 +139,35 @@ func (q *Queries) InsertSource(ctx context.Context, arg InsertSourceParams) erro
 	return err
 }
 
+const insertSourceVersion = `-- name: InsertSourceVersion :exec
+INSERT INTO source_versions (org_id, source_id, version, spec, connector_digest, secrets, provenance)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (org_id, source_id, version) DO NOTHING
+`
+
+type InsertSourceVersionParams struct {
+	OrgID           uuid.UUID
+	SourceID        uuid.UUID
+	Version         string
+	Spec            []byte
+	ConnectorDigest string
+	Secrets         []string
+	Provenance      string
+}
+
+func (q *Queries) InsertSourceVersion(ctx context.Context, arg InsertSourceVersionParams) error {
+	_, err := q.db.Exec(ctx, insertSourceVersion,
+		arg.OrgID,
+		arg.SourceID,
+		arg.Version,
+		arg.Spec,
+		arg.ConnectorDigest,
+		arg.Secrets,
+		arg.Provenance,
+	)
+	return err
+}
+
 const listSources = `-- name: ListSources :many
 SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest, secrets FROM sources
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3

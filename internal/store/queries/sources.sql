@@ -28,3 +28,8 @@ DO UPDATE SET source_version = excluded.source_version, discover_time = now();
 
 -- name: GetSourceCatalog :one
 SELECT * FROM source_catalogs WHERE org_id = @org_id AND source_id = @source_id AND digest = @digest;
+
+-- name: InsertSourceVersion :exec
+INSERT INTO source_versions (org_id, source_id, version, spec, connector_digest, secrets, provenance)
+VALUES (@org_id, @source_id, @version, @spec, @connector_digest, @secrets, @provenance)
+ON CONFLICT (org_id, source_id, version) DO NOTHING;
