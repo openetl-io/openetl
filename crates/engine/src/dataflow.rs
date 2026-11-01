@@ -206,6 +206,9 @@ where
         c.bytes_in
             .fetch_add(f.payload.len() as u64, Ordering::Relaxed);
         let out = match f.kind {
+            FrameKind::Rows if plan.passthrough => {
+                return Err(protocol("rows in a passthrough job".into()));
+            }
             FrameKind::Rows => {
                 let rows =
                     Rows::decode(f.payload.as_slice()).map_err(|e| protocol(e.to_string()))?;
@@ -231,6 +234,10 @@ where
                 let batch = ipc::decode_batch(f.payload).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+                if plan.passthrough {
+                    send(&tx, Out::Batch(stream, batch)).await?;
+                    continue;
+                }
                 let n = shape[local]
                     .batch(&batch)
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
@@ -910,6 +917,35 @@ mod tests {
             schema.metadata().get(naming::TABLE_KEY).map(String::as_str),
             Some("b")
         );
+    }
+
+    #[tokio::test]
+    async fn a_passthrough_job_leaves_batches_as_they_came() {
+        let mut req = request(&["a", "b"]);
+        req.passthrough = true;
+        let mut h = start_with(req);
+        let mut n = Normalizer::default();
+        let batch = n.push([br#"{"Key": "v"}"#.as_slice()]).unwrap().batch;
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Batch, 1, ipc::encode_batch(&batch).unwrap()).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        assert_eq!((frames[0].kind, frames[0].stream), (FrameKind::Batch, 0));
+        assert_eq!(ipc::decode_batch(frames[0].payload.clone()).unwrap(), batch);
+    }
+
+    #[tokio::test]
+    async fn a_passthrough_job_takes_no_rows() {
+        let mut req = request(&["a", "b"]);
+        req.passthrough = true;
+        let mut h = start_with(req);
+        put(&mut h.to_engine, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        let (err, _) = failure(h).await;
+        assert!(err.to_string().contains("passthrough"), "{err}");
     }
 
     #[tokio::test]

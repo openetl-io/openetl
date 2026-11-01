@@ -209,8 +209,11 @@ type StartJobRequest struct {
 	// logical type's limits. In typed batches, the largest and smallest values
 	// of Date32 and of timestamps in any unit are infinite.
 	QuarantineInfinity bool `protobuf:"varint,13,opt,name=quarantine_infinity,json=quarantineInfinity,proto3" json:"quarantine_infinity,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Batches reach the sink as they came: not coerced, renamed or given
+	// metadata columns. Rows fail the job. For measuring the boundary.
+	Passthrough   bool `protobuf:"varint,14,opt,name=passthrough,proto3" json:"passthrough,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartJobRequest) Reset() {
@@ -330,6 +333,13 @@ func (x *StartJobRequest) GetSchemaPolicy() SchemaPolicy {
 func (x *StartJobRequest) GetQuarantineInfinity() bool {
 	if x != nil {
 		return x.QuarantineInfinity
+	}
+	return false
+}
+
+func (x *StartJobRequest) GetPassthrough() bool {
+	if x != nil {
+		return x.Passthrough
 	}
 	return false
 }
@@ -1581,7 +1591,7 @@ var File_openetl_engine_v1_engine_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xee\x04\n" +
+	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\x90\x05\n" +
 	"\x0fStartJobRequest\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x10\n" +
 	"\x03job\x18\x02 \x01(\tR\x03job\x12\x1e\n" +
@@ -1599,7 +1609,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	" \x01(\v2\x19.openetl.engine.v1.NamingR\x06naming\x12%\n" +
 	"\x0equarantine_url\x18\v \x01(\tR\rquarantineUrl\x12D\n" +
 	"\rschema_policy\x18\f \x01(\x0e2\x1f.openetl.engine.v1.SchemaPolicyR\fschemaPolicy\x12/\n" +
-	"\x13quarantine_infinity\x18\r \x01(\bR\x12quarantineInfinity\"S\n" +
+	"\x13quarantine_infinity\x18\r \x01(\bR\x12quarantineInfinity\x12 \n" +
+	"\vpassthrough\x18\x0e \x01(\bR\vpassthrough\"S\n" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +

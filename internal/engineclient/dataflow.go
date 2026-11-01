@@ -73,6 +73,7 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	if err != nil {
 		return err
 	}
+	req.Passthrough = d.Options.Passthrough
 	if _, err := p.client.StartJob(ctx, req); err != nil {
 		return p.explain(ctx, err)
 	}

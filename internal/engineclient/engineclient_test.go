@@ -329,6 +329,29 @@ func TestRunAddsMetadataColumns(t *testing.T) {
 	}
 }
 
+func TestPassthroughLeavesBatchesAsTheyCame(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	opts.Passthrough = true
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+
+	b := array.NewRecordBuilder(memory.DefaultAllocator, arrow.NewSchema([]arrow.Field{{Name: "Key", Type: arrow.PrimitiveTypes.Int64}}, nil))
+	b.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2}, nil)
+	batch := b.NewRecordBatch()
+	b.Release()
+	p := plan("a")
+	p.Streams[0].PrimaryKey = []string{"Key"}
+	got, err := run(ctx, &Dataflow{Options: opts}, p, runner.Frame{Kind: runner.FrameBatch, Stream: "a", Batch: batch})
+	defer release(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := got["a"]; len(a) != 1 || a[0].Batch.Schema().NumFields() != 1 || a[0].Batch.Schema().Field(0).Name != "Key" {
+		t.Fatalf("stream a: %+v", a)
+	}
+}
+
 func TestRunReportsEngineErrors(t *testing.T) {
 	ctx := testContext(t)
 	got, err := run(ctx, &Dataflow{Options: options(t, nil)}, plan("a"),

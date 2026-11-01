@@ -42,6 +42,10 @@ type Options struct {
 	// PeakMemory, if set, gets each engine's peak resident memory in bytes
 	// once it has stopped, when that can be read.
 	PeakMemory func(bytes int64)
+	// Batches reach the sink as they came, without the engine's coercion,
+	// naming or metadata columns, and rows fail the job. For measuring the
+	// boundary.
+	Passthrough bool
 }
 
 const (

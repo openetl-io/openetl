@@ -27,6 +27,8 @@ pub struct Plan {
     pub declared: Vec<Option<SchemaRef>>,
     pub identities: Vec<Identity>,
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
+    /// Batches skip shaping, for measuring the boundary.
+    pub passthrough: bool,
     pub inbound: Vec<EdgePlan>,
     pub sink: Sink,
 }
@@ -241,6 +243,7 @@ impl Plan {
             declared,
             identities,
             quarantine,
+            passthrough: req.passthrough,
             inbound,
             sink,
         })
@@ -293,6 +296,7 @@ pub(crate) mod tests {
             quarantine_url: String::new(),
             schema_policy: 0,
             quarantine_infinity: false,
+            passthrough: false,
         }
     }
 

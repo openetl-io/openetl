@@ -49,6 +49,9 @@ message StartJobRequest {
   // logical type's limits. In typed batches, the largest and smallest values
   // of Date32 and of timestamps in any unit are infinite.
   bool quarantine_infinity = 13;
+  // Batches reach the sink as they came: not coerced, renamed or given
+  // metadata columns. Rows fail the job. For measuring the boundary.
+  bool passthrough = 14;
 }
 
 enum SchemaPolicy {

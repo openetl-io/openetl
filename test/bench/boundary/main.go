@@ -6,8 +6,9 @@
 // make bench-boundary runs it.
 //
 // Boundary CPU is measured by replaying the same batches from memory through
-// the engine and through an in-process passthrough. The difference per GB is
-// what crossing costs, which is then compared with the full jobs' CPU per GB.
+// a passthrough engine, which leaves out its own per-batch work, and through
+// an in-process passthrough. The difference per GB is what crossing costs,
+// which is then compared with the full jobs' CPU per GB.
 package main
 
 import (
@@ -234,11 +235,19 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	one, err := b.add(ctx, "replay → engine, discarded there", replayed("one", engineDiscard{}, &engine))
+	shaped, err := b.add(ctx, "replay → engine, discarded there", replayed("shaped", engineDiscard{}, &engine))
 	if err != nil {
 		return err
 	}
-	two, err := b.add(ctx, "replay → engine → runner → discard", replayed("two", discardDest{}, &engine))
+	// The crossings without the engine's own work, which the reference
+	// doesn't do.
+	bare := engine
+	bare.Options.Passthrough = true
+	one, err := b.add(ctx, "replay → passthrough engine, discarded", replayed("one", engineDiscard{}, &bare))
+	if err != nil {
+		return err
+	}
+	two, err := b.add(ctx, "replay → passthrough engine → runner", replayed("two", discardDest{}, &bare))
 	if err != nil {
 		return err
 	}
@@ -262,7 +271,9 @@ func run(ctx context.Context) error {
 	fmt.Fprintf(w, "  two crossings\t%.3f CPU s/GB = %.1f%% of shape 2's CPU\t≤ 20%%\t%s\n", twoCost, 100*share2, verdict(share2 <= 0.20))
 	fmt.Fprintf(w, "  idle engine RSS\t%.1f MB\t≤ 50 MB\t%s\n", float64(idle)/1e6, verdict(idle <= 50e6))
 	_ = w.Flush()
-	fmt.Println("\nMB is 10^6 bytes of Arrow buffers (value bytes on the wire for the first phase).")
+	work := perGB(shaped) - perGB(one)
+	fmt.Printf("\nThe engine's own per-batch work (coercion, naming, metadata columns) costs %.3f CPU s/GB, %.1f%% of shape 1's CPU. The crossings exclude it.\n", work, 100*work/perGB(shape1))
+	fmt.Println("MB is 10^6 bytes of Arrow buffers (value bytes on the wire for the first phase).")
 	fmt.Println("Engine MB is the engine's peak resident memory.")
 	fmt.Println("CPU is this process (the runner) plus the engines and connectors it started; Postgres's own CPU isn't counted.")
 	return nil
