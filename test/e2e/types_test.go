@@ -15,7 +15,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/unsuitable001/openetl/connectors/native/postgres"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
 	"github.com/unsuitable001/openetl/internal/engineclient"
@@ -137,18 +136,12 @@ func typesRoundTrip(t *testing.T, edit func(*runnerpkg.Job)) roundTrip {
 		_ = conn.Close(context.Background())
 	})
 
-	source, err := postgres.NewSource(fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, src))
-	if err != nil {
-		t.Fatal(err)
-	}
+	source := postgresSource(t, fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, src))
 	cat, err := source.Discover(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pg, err := postgres.NewDestination(fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, dst))
-	if err != nil {
-		t.Fatal(err)
-	}
+	pg := postgresDestination(t, fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, dst))
 	quarantine := t.TempDir()
 	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", name)
 	cs := cat.Streams[0]
@@ -215,10 +208,7 @@ func TestWideningReachesPostgres(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	name := unique("widen")
-	pg, err := postgres.NewDestination(fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, schema(name)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	pg := postgresDestination(t, fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, schema(name)))
 	t.Cleanup(func() {
 		conn, err := pgx.Connect(context.Background(), env.dbURL)
 		if err == nil {

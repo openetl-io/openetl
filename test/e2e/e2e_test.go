@@ -40,17 +40,22 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/daemon"
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
 	"github.com/unsuitable001/openetl/internal/store/storetest"
+	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 var env struct {
 	openetld, engine string
-	temporal, ns     string
-	dbURL, apiURL    string
-	checkpoints      string
+	// The official connectors, built from openetl-connectors.
+	connectors    string
+	temporal, ns  string
+	dbURL, apiURL string
+	checkpoints   string
 }
 
 func TestMain(m *testing.M) {
@@ -68,6 +73,10 @@ func setup(m *testing.M) (int, error) {
 	env.engine = os.Getenv("OPENETL_ENGINE")
 	if env.engine == "" {
 		return 0, errors.New("set OPENETL_ENGINE to an openetl-engine binary (make e2e does)")
+	}
+	env.connectors = os.Getenv("OPENETL_CONNECTORS")
+	if env.connectors == "" {
+		return 0, errors.New("set OPENETL_CONNECTORS to a directory with source-postgres and destination-postgres (make e2e builds them)")
 	}
 	dir, err := os.MkdirTemp("", "openetl-e2e-")
 	if err != nil {
@@ -114,6 +123,7 @@ func setup(m *testing.M) (int, error) {
 		done <- daemon.Run(ctx, daemon.Options{
 			Config: config.Config{
 				DatabaseURL: env.dbURL, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
+				Connectors: env.connectors,
 			},
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
 			Listener:  ln,
@@ -250,7 +260,7 @@ func startRunner(t *testing.T) *runner {
 	t.Helper()
 	cmd := exec.Command(env.openetld, "runner",
 		"--api-url", env.apiURL, "--temporal-address", env.temporal, "--temporal-namespace", env.ns,
-		"--checkpoints", env.checkpoints, "--engine", env.engine, "--log-format", "text")
+		"--checkpoints", env.checkpoints, "--engine", env.engine, "--connectors", env.connectors, "--log-format", "text")
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
 	if err := cmd.Start(); err != nil {
@@ -276,11 +286,15 @@ func (r *runner) kill(t *testing.T) {
 }
 
 // engine returns the PID of the runner's engine process, once it has one.
-func (r *runner) engine(t *testing.T) int {
+func (r *runner) engine(t *testing.T) int { return r.child(t, "openetl-engine") }
+
+// child returns the PID of the runner's child process whose name starts
+// with name, once it has one. Linux keeps 15 bytes of a name.
+func (r *runner) child(t *testing.T, name string) int {
 	t.Helper()
 	var pid int
-	eventually(t, 30*time.Second, "the runner to start an engine", func() bool {
-		out, err := exec.Command("pgrep", "-P", fmt.Sprint(r.cmd.Process.Pid), "openetl-engine").Output()
+	eventually(t, 30*time.Second, "the runner to start "+name, func() bool {
+		out, err := exec.Command("pgrep", "-P", fmt.Sprint(r.cmd.Process.Pid), "^"+name).Output()
 		if err != nil {
 			return false
 		}
@@ -447,10 +461,11 @@ func TestRunnerKilledMidSync(t *testing.T) {
 	name := unique("runner-killed")
 	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
 	engine := first.engine(t)
+	dst := first.child(t, "destination-pos")
 	eventually(t, 30*time.Second, "a committed epoch", func() bool { return committedEpochs(t, schema(name)) > 0 })
 	first.kill(t)
-	eventually(t, 10*time.Second, "the orphaned engine to exit", func() bool {
-		return errors.Is(syscall.Kill(engine, 0), syscall.ESRCH)
+	eventually(t, 10*time.Second, "the orphaned engine and destination to exit", func() bool {
+		return errors.Is(syscall.Kill(engine, 0), syscall.ESRCH) && errors.Is(syscall.Kill(dst, 0), syscall.ESRCH)
 	})
 	startRunner(t)
 	status, stats := waitSync(t, name, 90*time.Second)
@@ -567,4 +582,33 @@ func TestParquetEngineKilledMidSync(t *testing.T) {
 		t.Errorf("stats %s: want the second attempt to have finished", stats)
 	}
 	checkParquet(t, dir, 2000, "users", "purchases")
+}
+
+// postgresSource binds the external Postgres source and starts it.
+func postgresSource(t *testing.T, config []byte) source.Source {
+	t.Helper()
+	s, err := connectorhost.NewSource("postgres", config, connectorhost.Env{Connectors: env.connectors})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { connectorhost.Close(s) })
+	if err := connectorhost.Start(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// postgresDestination binds the external Postgres destination and starts
+// it.
+func postgresDestination(t *testing.T, config []byte) destination.Destination {
+	t.Helper()
+	d, err := connectorhost.NewDestination("postgres", config, connectorhost.Env{Connectors: env.connectors})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { connectorhost.Close(d) })
+	if err := connectorhost.Start(t.Context(), d); err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

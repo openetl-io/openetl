@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/unsuitable001/openetl/connectors/native/faker"
-	"github.com/unsuitable001/openetl/connectors/native/postgres"
 	"github.com/unsuitable001/openetl/connectors/native/stdout"
 	"github.com/unsuitable001/openetl/internal/connectorhost/external"
 	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
@@ -29,13 +28,11 @@ import (
 // them to validate.
 var (
 	sources = map[string]func([]byte) (source.Source, error){
-		"faker":    func(c []byte) (source.Source, error) { return faker.New(c) },
-		"postgres": func(c []byte) (source.Source, error) { return postgres.NewSource(c) },
+		"faker": func(c []byte) (source.Source, error) { return faker.New(c) },
 	}
 	destinations = map[string]func([]byte) (destination.Destination, error){
-		"parquet":  func(c []byte) (destination.Destination, error) { return enginesink.NewParquet(c) },
-		"postgres": func(c []byte) (destination.Destination, error) { return postgres.NewDestination(c) },
-		"stdout":   func(c []byte) (destination.Destination, error) { return stdout.New(c) },
+		"parquet": func(c []byte) (destination.Destination, error) { return enginesink.NewParquet(c) },
+		"stdout":  func(c []byte) (destination.Destination, error) { return stdout.New(c) },
 	}
 )
 
@@ -179,4 +176,15 @@ func lookup[F any](m map[string]F, kind, connector string, env Env) (F, error) {
 		return zero, errs.New(errs.ConfigInvalid, "unknown %s connector %q; known: %s", kind, connector, strings.Join(names, ", "))
 	}
 	return f, nil
+}
+
+// Builtin reports whether a connector of a kind, "source" or "destination",
+// is compiled into openetld.
+func Builtin(kind, connector string) bool {
+	if kind == "source" {
+		_, ok := sources[connector]
+		return ok
+	}
+	_, ok := destinations[connector]
+	return ok
 }

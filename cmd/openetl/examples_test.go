@@ -10,7 +10,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/spec"
 )
 
-// Every example parses, and its connectors accept their configs.
+// Every example parses, and its built-in connectors accept their configs.
 func TestExamples(t *testing.T) {
 	files, err := filepath.Glob("../../examples/*.yaml")
 	if err != nil || len(files) == 0 {
@@ -33,6 +33,14 @@ func TestExamples(t *testing.T) {
 			cfg, err := protojson.Marshal(doc.Connector.GetConfig())
 			if err != nil {
 				t.Fatal(err)
+			}
+			// An external connector checks its config itself.
+			kind := "source"
+			if doc.Kind == spec.KindDestination {
+				kind = "destination"
+			}
+			if !connectorhost.Builtin(kind, doc.Connector.GetConnector()) {
+				continue
 			}
 			switch doc.Kind {
 			case spec.KindSource:

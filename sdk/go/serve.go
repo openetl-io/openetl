@@ -39,8 +39,7 @@ const socketBuffer = 1 << 20
 // Connector is what an external connector's main serves: a source or a
 // destination.
 type Connector struct {
-	Name    string
-	Version string
+	Name string
 	// A JSON Schema for the config. Top-level properties marked
 	// "x-secret": true hold secret names. On the proxy and raw egress tiers,
 	// the connector gets each replaced by the secret's value.

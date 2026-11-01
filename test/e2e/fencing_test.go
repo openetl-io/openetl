@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/unsuitable001/openetl/connectors/native/faker"
-	"github.com/unsuitable001/openetl/connectors/native/postgres"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
 	"github.com/unsuitable001/openetl/internal/engineclient"
@@ -34,10 +33,7 @@ func TestZombieCommitIsFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := checkpoint.NewLog(store, "org", name)
-	pg, err := postgres.NewDestination(fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, schema(name)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	pg := postgresDestination(t, fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, schema(name)))
 
 	zombie := &zombieDest{Destination: pg, committing: make(chan struct{}), release: make(chan struct{})}
 	zerr := make(chan error, 1)

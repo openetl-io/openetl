@@ -73,16 +73,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The official connectors; a nested module, so ./... skips it.
+      - uses: actions/checkout@v5
+        with:
+          repository: unsuitable001/openetl-connectors
+          ref: move-postgres
+          path: openetl-connectors
+          token: ${{ secrets.CONNECTORS_TOKEN }}
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            openetl-connectors/go.sum
       - name: Start Postgres, Temporal and S3
         run: make deps-up
       - name: Scheduled syncs through the whole stack, with engine and runner kills
-        run: make e2e
+        run: make e2e CONNECTORS_SRC=openetl-connectors
 
   rust:
     runs-on: ubuntu-latest

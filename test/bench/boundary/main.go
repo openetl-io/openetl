@@ -1,7 +1,8 @@
 // Command boundary benchmarks the runner/engine boundary: Postgres snapshots
 // through the engine into Parquet (one crossing) and into
 // destination-postgres (two crossings), the CPU the crossings cost, and the
-// engine's idle memory. It needs the compose Postgres and a release engine;
+// engine's idle memory. It needs the compose Postgres, a release engine and
+// the external Postgres connectors, whose own crossing the shapes include;
 // make bench-boundary runs it.
 //
 // Boundary CPU is measured by replaying the same batches from memory through
@@ -33,8 +34,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/unsuitable001/openetl/connectors/native/postgres"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/delivery"
 	"github.com/unsuitable001/openetl/internal/engineclient"
 	"github.com/unsuitable001/openetl/internal/enginesink"
@@ -46,6 +47,7 @@ import (
 var (
 	dsnFlag    = flag.String("dsn", cmp.Or(os.Getenv("OPENETL_TEST_POSTGRES_DSN"), "postgres://openetl:openetl@localhost:5432/openetl"), "Postgres for the dataset and for destination-postgres")
 	engineFlag = flag.String("engine", "target/release/openetl-engine", "the openetl-engine binary")
+	connFlag   = flag.String("connectors", "bin/connectors", "a directory with source-postgres and destination-postgres (make connectors)")
 	rowsFlag   = flag.Int("rows", 5_000_000, "rows in the dataset")
 	runsFlag   = flag.Int("runs", 3, "runs of each phase; the report shows medians")
 	replayFlag = flag.Int("replay-mb", 512, "MB of batches held in memory for the replay phases")
@@ -116,11 +118,24 @@ func run(ctx context.Context) error {
 	}
 
 	srcConfig := fmt.Sprintf(`{"dsn": %q, "schema": %q, "tables": [%q]}`, *dsnFlag, schema, table)
-	newSource := func() (*postgres.Source, error) { return postgres.NewSource([]byte(srcConfig)) }
-	src, err := newSource()
+	connectors := connectorhost.Env{Connectors: *connFlag}
+	// Closing a connector waits for its process, so its CPU is counted.
+	newSource := func(ctx context.Context) (source.Source, func(), error) {
+		s, err := connectorhost.NewSource("postgres", []byte(srcConfig), connectors)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := connectorhost.Start(ctx, s); err != nil {
+			connectorhost.Close(s)
+			return nil, nil, err
+		}
+		return s, func() { connectorhost.Close(s) }, nil
+	}
+	src, closeSrc, err := newSource(ctx)
 	if err != nil {
 		return err
 	}
+	defer closeSrc()
 	cat, err := src.Discover(ctx)
 	if err != nil {
 		return err
@@ -136,10 +151,11 @@ func run(ctx context.Context) error {
 		return err
 	}
 	sourceOnly, err := b.add(ctx, "source → discard", step{run: func(ctx context.Context) (int64, error) {
-		src, err := newSource()
+		src, done, err := newSource(ctx)
 		if err != nil {
 			return 0, err
 		}
+		defer done()
 		var d discardEmitter
 		err = src.Read(ctx, readAll, &d)
 		return d.bytes, err
@@ -154,10 +170,11 @@ func run(ctx context.Context) error {
 			return err
 		},
 		run: func(ctx context.Context) (int64, error) {
-			src, err := newSource()
+			src, done, err := newSource(ctx)
 			if err != nil {
 				return 0, err
 			}
+			defer done()
 			dst, err := enginesink.NewParquet(fmt.Appendf(nil, `{"url": %q}`, "file://"+filepath.ToSlash(dir)))
 			if err != nil {
 				return 0, err
@@ -176,12 +193,17 @@ func run(ctx context.Context) error {
 	shape2, err := b.add(ctx, "shape 2: source → engine → postgres", step{
 		setup: dropOut,
 		run: func(ctx context.Context) (int64, error) {
-			src, err := newSource()
+			src, done, err := newSource(ctx)
 			if err != nil {
 				return 0, err
 			}
-			dst, err := postgres.NewDestination(fmt.Appendf(nil, `{"dsn": %q}`, *dsnFlag))
+			defer done()
+			dst, err := connectorhost.NewDestination("postgres", fmt.Appendf(nil, `{"dsn": %q}`, *dsnFlag), connectors)
 			if err != nil {
+				return 0, err
+			}
+			defer connectorhost.Close(dst)
+			if err := connectorhost.Start(ctx, dst); err != nil {
 				return 0, err
 			}
 			return attempt(ctx, "shape2", src, streams, dst, &engine, outSchema)
@@ -242,7 +264,7 @@ func run(ctx context.Context) error {
 	_ = w.Flush()
 	fmt.Println("\nMB is 10^6 bytes of Arrow buffers (value bytes on the wire for the first phase).")
 	fmt.Println("Engine MB is the engine's peak resident memory.")
-	fmt.Println("CPU is this process (the runner) plus the engines it started; Postgres's own CPU isn't counted.")
+	fmt.Println("CPU is this process (the runner) plus the engines and connectors it started; Postgres's own CPU isn't counted.")
 	return nil
 }
 
@@ -476,7 +498,7 @@ func (b *bench) add(ctx context.Context, name string, s step) (*phase, error) {
 
 func (b *bench) print() {
 	const row = "%-38s %7s %6s %11s %11s %9s %9s\n"
-	fmt.Printf(row, "phase", "wall s", "MB/s", "runner CPU", "engine CPU", "CPU s/GB", "engine MB")
+	fmt.Printf(row, "phase", "wall s", "MB/s", "runner CPU", "child CPU", "CPU s/GB", "engine MB")
 	for _, p := range b.phases {
 		peak := "—"
 		if mb := p.median(func(s sample) float64 { return float64(s.enginePeak) / 1e6 }); mb > 0 {

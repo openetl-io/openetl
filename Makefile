@@ -38,15 +38,25 @@ $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION):
 tools: $(BIN)/.tools ## Build the pinned developer tools into bin/
 
 .PHONY: dev
-dev: deps-up ## Start compose deps and run openetld dev
+dev: deps-up connectors ## Start compose deps and run openetld dev
 	cargo build -p openetl-engine
-	go run ./cmd/openetld dev --engine $(CURDIR)/target/debug/openetl-engine
+	go run ./cmd/openetld dev --engine $(CURDIR)/target/debug/openetl-engine --connectors $(CURDIR)/bin/connectors
 
 .PHONY: deps-up deps-down
 deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure)
 	docker compose -f deploy/compose/dev.yml up -d --wait
 deps-down: ## Stop local dependencies
 	docker compose -f deploy/compose/dev.yml down
+
+# The official connectors, built from a checkout of openetl-connectors
+# against this repo's SDK. A go.work replace overrides theirs.
+CONNECTORS_SRC ?= ../openetl-connectors
+.PHONY: connectors
+connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connectors
+	@test -f $(CONNECTORS_SRC)/go.mod || { echo "clone openetl-connectors into $(CONNECTORS_SRC), or set CONNECTORS_SRC"; exit 1; }
+	@mkdir -p $(BIN)/connectors
+	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/unsuitable001/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
+	cd $(CONNECTORS_SRC) && GOWORK=$(BIN)/connectors.work go build -o $(BIN)/connectors/ ./cmd/...
 
 .PHONY: engine
 engine: ## Build openetl-engine
@@ -89,13 +99,13 @@ sim: ## Commit-protocol simulation; SEEDS=n runs n seeds per sink kind
 
 # Needs the compose Postgres. BENCH_FLAGS passes flags, e.g. -rows 10000000.
 .PHONY: bench-boundary
-bench-boundary: engine ## Runner/engine boundary benchmark
-	go run ./test/bench/boundary -engine $(CURDIR)/target/release/openetl-engine $(BENCH_FLAGS)
+bench-boundary: engine connectors ## Runner/engine boundary benchmark
+	go run ./test/bench/boundary -engine $(CURDIR)/target/release/openetl-engine -connectors $(BIN)/connectors $(BENCH_FLAGS)
 
 .PHONY: e2e
-e2e: ## Full-stack scenarios against the compose deps
+e2e: connectors ## Full-stack scenarios against the compose deps
 	cargo build -p openetl-engine
-	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
+	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
 
 .PHONY: clean
 clean: ## Remove build outputs

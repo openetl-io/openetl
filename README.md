@@ -16,7 +16,8 @@ OpenETL is MIT-licensed and built to be self-hosted.
 | `internal/runner` | The data-plane job driver and checkpoint coordinator |
 | `internal/delivery` | Each stream's delivery guarantee, computed from the sink, the source's replay behaviour, the write mode, the primary key and the required level |
 | `internal/platform/errs` | The error taxonomy every boundary carries |
-| `sdk/go` | The Go connector SDK (a separate module) |
+| `sdk/go` | The Go connector SDK (a separate module), with `sdk.Serve` for external connectors |
+| `internal/connectorhost` | Connectors the runner hosts: the few built in, declarative sources, and external connectors, which it starts as subprocesses |
 | `crates/` | `openetl-engine`, the Rust data engine, and `openetl-proto`, its generated protocol types |
 | `test/sim` | A seeded simulation of the commit protocol under crashes, timeouts and zombie jobs |
 | `deploy/compose` | Local dependencies: Postgres, Temporal, an S3-compatible store |
@@ -31,7 +32,11 @@ make sim           # commit-protocol simulation; SEEDS=10000 for more seeds
 make lint          # buf lint, golangci-lint, rustfmt, clippy
 make generate      # regenerate Go from proto/ after changing a .proto
 make deps-up       # Postgres, Temporal and S3 in Docker
+make connectors    # build the official connectors from ../openetl-connectors into bin/connectors
+make e2e           # whole-stack scenarios; needs deps-up and the connectors
 ```
+
+The official connectors, Postgres's included, live in [openetl-connectors](https://github.com/unsuitable001/openetl-connectors). Clone it next to this repo, or set `CONNECTORS_SRC`.
 
 ## License
 
