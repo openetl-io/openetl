@@ -108,6 +108,16 @@ message PipelineStream {
   string cursor = 3;
   // By source column name.
   map<string, PipelineColumn> columns = 4;
+  TimestampUnit timestamps = 5;
+}
+
+// The unit timestamps arrive in. Nanoseconds need a destination that
+// keeps them, and hold only 1677-09-21 to 2262-04-11.
+enum TimestampUnit {
+  TIMESTAMP_UNIT_UNSPECIFIED = 0;
+  // The default. Finer values are truncated.
+  TIMESTAMP_UNIT_MICROSECOND = 1;
+  TIMESTAMP_UNIT_NANOSECOND = 2;
 }
 
 enum SyncMode {

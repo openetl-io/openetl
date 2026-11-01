@@ -407,8 +407,12 @@ type StreamPlan struct {
 	// When the stream's current read started, in microseconds since the Unix
 	// epoch.
 	ReadStartMicros int64 `protobuf:"varint,7,opt,name=read_start_micros,json=readStartMicros,proto3" json:"read_start_micros,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Timestamps keep nanoseconds instead of being truncated to microseconds,
+	// declared ones included. Outside 1677-09-21 to 2262-04-11 they are
+	// quarantined, and infinities clamp to those limits.
+	NanosecondTimestamps bool `protobuf:"varint,8,opt,name=nanosecond_timestamps,json=nanosecondTimestamps,proto3" json:"nanosecond_timestamps,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *StreamPlan) Reset() {
@@ -488,6 +492,13 @@ func (x *StreamPlan) GetReadStartMicros() int64 {
 		return x.ReadStartMicros
 	}
 	return 0
+}
+
+func (x *StreamPlan) GetNanosecondTimestamps() bool {
+	if x != nil {
+		return x.NanosecondTimestamps
+	}
+	return false
 }
 
 type Edge struct {
@@ -1592,7 +1603,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
-	"max_length\x18\x02 \x01(\rR\tmaxLength\"\x89\x02\n" +
+	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xbe\x02\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
@@ -1602,7 +1613,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\farrow_schema\x18\x04 \x01(\fR\varrowSchema\x12'\n" +
 	"\x0frestored_schema\x18\x05 \x01(\fR\x0erestoredSchema\x12!\n" +
 	"\fcursor_field\x18\x06 \x01(\tR\vcursorField\x12*\n" +
-	"\x11read_start_micros\x18\a \x01(\x03R\x0freadStartMicros\"p\n" +
+	"\x11read_start_micros\x18\a \x01(\x03R\x0freadStartMicros\x123\n" +
+	"\x15nanosecond_timestamps\x18\b \x01(\bR\x14nanosecondTimestamps\"p\n" +
 	"\x04Edge\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12>\n" +
 	"\tdirection\x18\x02 \x01(\x0e2 .openetl.engine.v1.EdgeDirectionR\tdirection\x12\x18\n" +

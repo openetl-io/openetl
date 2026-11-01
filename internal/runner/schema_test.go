@@ -8,7 +8,11 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 
+	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/internal/delivery"
+	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 type applier struct {
@@ -84,5 +88,30 @@ func TestOverridesApplyToDeclaredDecimals(t *testing.T) {
 	}
 	if err := (Stream{Name: "s", Overrides: map[string]arrow.DataType{"amount": arrow.BinaryTypes.String}}).checkOverrides(); err == nil {
 		t.Error("an override on an undeclared stream was accepted")
+	}
+}
+
+type capsDest struct {
+	destination.Destination
+	caps destination.Capabilities
+}
+
+func (d capsDest) Capabilities() destination.Capabilities { return d.caps }
+
+func TestNanosecondsNeedADestinationThatKeepsThem(t *testing.T) {
+	for _, keeps := range []bool{false, true} {
+		j := Job{
+			Owner:       "a",
+			Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "o", "p"),
+			Source:      struct{ source.Reader }{},
+			Dataflow:    Passthrough{},
+			Streams:     []Stream{{Name: "s", NanosecondTimestamps: true}},
+			Destination: capsDest{caps: destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}, NanosecondTimestamps: keeps}},
+			Settings:    delivery.Settings{Require: delivery.AtLeastOnce, Scope: destination.ScopeStream},
+		}
+		err := j.validate()
+		if keeps != (err == nil) || (err != nil && errs.CodeOf(err) != errs.ConfigInvalid) {
+			t.Errorf("destination keeps nanoseconds: %v; validate: %v", keeps, err)
+		}
 	}
 }

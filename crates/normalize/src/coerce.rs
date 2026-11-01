@@ -9,17 +9,20 @@ use std::sync::Arc;
 use arrow_array::builder::{
     BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, FixedSizeBinaryBuilder,
     Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+    Time64MicrosecondBuilder,
 };
 use arrow_array::cast::AsArray;
 use arrow_array::types::ArrowPrimitiveType;
 use arrow_array::types::{
     Date32Type, Int64Type, Time32MillisecondType, Time32SecondType, Time64MicrosecondType,
-    Time64NanosecondType, TimestampMicrosecondType,
+    Time64NanosecondType, TimestampMicrosecondType, TimestampMillisecondType,
+    TimestampNanosecondType, TimestampSecondType,
 };
-use arrow_array::{Array, ArrayRef, BooleanArray, PrimitiveArray, RecordBatch};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, Int64Array, PrimitiveArray, RecordBatch, make_array,
+};
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use base64::Engine;
 use chrono::NaiveDate;
 use serde_json::Value;
@@ -52,7 +55,7 @@ const MAX_DATE: i32 = 2_932_896; // 9999-12-31
 const MIN_DATE: i32 = -719_162; // 0001-01-01
 const MAX_TIMESTAMP: i64 = 253_402_300_799_999_999; // 9999-12-31 23:59:59.999999
 const MIN_TIMESTAMP: i64 = -62_135_596_800_000_000; // 0001-01-01 00:00:00
-const MICROS_PER_DAY: i64 = 86_400_000_000;
+const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 
 /// A logical type that values can be coerced to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +72,8 @@ pub(crate) enum Target {
     Decimal(u8, i8),
     Timestamp {
         utc: bool,
+        /// Only for streams that keep nanoseconds.
+        nanos: bool,
     },
     Date,
     Time,
@@ -93,9 +98,13 @@ impl Target {
             DataType::Decimal128(p, s) if (1..=38).contains(p) && (0..=*p as i8).contains(s) => {
                 Target::Decimal(*p, *s)
             }
-            DataType::Timestamp(TimeUnit::Microsecond, None) => Target::Timestamp { utc: false },
-            DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) if tz.as_ref() == "UTC" => {
-                Target::Timestamp { utc: true }
+            DataType::Timestamp(unit @ (TimeUnit::Microsecond | TimeUnit::Nanosecond), tz)
+                if tz.as_deref().is_none_or(|z| z == "UTC") =>
+            {
+                Target::Timestamp {
+                    utc: tz.is_some(),
+                    nanos: *unit == TimeUnit::Nanosecond,
+                }
             }
             DataType::Date32 => Target::Date,
             DataType::Time64(TimeUnit::Microsecond) => Target::Time,
@@ -107,10 +116,14 @@ impl Target {
     }
 }
 
-/// A declared schema: every column has a logical type.
+/// A declared schema: every column has a logical type. Timestamps are in
+/// microseconds; a stream's option makes them nanoseconds.
 pub fn check_declared(schema: &Schema) -> Result<(), Error> {
     for f in schema.fields() {
-        if Target::of(f).is_none() {
+        if matches!(
+            Target::of(f),
+            None | Some(Target::Timestamp { nanos: true, .. })
+        ) {
             return Err(Error::Declared(format!(
                 "column {:?} is declared {}, which isn't a logical type",
                 f.name(),
@@ -119,6 +132,22 @@ pub fn check_declared(schema: &Schema) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// `schema` with its timestamps in nanoseconds.
+pub(crate) fn nanoseconds(schema: &Schema) -> SchemaRef {
+    let fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|f| match f.data_type() {
+            DataType::Timestamp(TimeUnit::Microsecond, tz) => f
+                .as_ref()
+                .clone()
+                .with_data_type(DataType::Timestamp(TimeUnit::Nanosecond, tz.clone())),
+            _ => f.as_ref().clone(),
+        })
+        .collect();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
 
 pub(crate) struct Unfit {
@@ -153,10 +182,55 @@ enum Builder {
     String(StringBuilder, bool),
     Binary(BinaryBuilder),
     Decimal(Decimal128Builder, u8, i8),
-    Timestamp(TimestampMicrosecondBuilder, bool, Infinity),
+    Timestamp(Int64Builder, Ts),
     Date(Date32Builder, Infinity),
     Time(Time64MicrosecondBuilder),
     Uuid(FixedSizeBinaryBuilder),
+}
+
+/// How text becomes a timestamp column.
+#[derive(Clone, Copy)]
+struct Ts {
+    utc: bool,
+    nanos: bool,
+    inf: Infinity,
+}
+
+impl Ts {
+    fn unit(self) -> TimeUnit {
+        match self.nanos {
+            true => TimeUnit::Nanosecond,
+            false => TimeUnit::Microsecond,
+        }
+    }
+
+    fn array(self, ticks: Int64Array) -> ArrayRef {
+        timestamps(ticks, self.unit(), self.utc.then(|| "UTC".into()))
+    }
+}
+
+/// The smallest and largest timestamps in a unit, which infinities clamp
+/// to.
+fn limits(unit: &TimeUnit) -> (i64, i64) {
+    match unit {
+        TimeUnit::Nanosecond => (i64::MIN, i64::MAX),
+        _ => (MIN_TIMESTAMP, MAX_TIMESTAMP),
+    }
+}
+
+fn timestamps(ticks: Int64Array, unit: TimeUnit, tz: Option<Arc<str>>) -> ArrayRef {
+    match unit {
+        TimeUnit::Nanosecond => Arc::new(
+            ticks
+                .reinterpret_cast::<TimestampNanosecondType>()
+                .with_timezone_opt(tz),
+        ),
+        _ => Arc::new(
+            ticks
+                .reinterpret_cast::<TimestampMicrosecondType>()
+                .with_timezone_opt(tz),
+        ),
+    }
 }
 
 impl Builder {
@@ -176,9 +250,8 @@ impl Builder {
                 p,
                 s,
             ),
-            Target::Timestamp { utc } => {
-                let b = TimestampMicrosecondBuilder::with_capacity(n);
-                Builder::Timestamp(if utc { b.with_timezone("UTC") } else { b }, utc, inf)
+            Target::Timestamp { utc, nanos } => {
+                Builder::Timestamp(Int64Builder::with_capacity(n), Ts { utc, nanos, inf })
             }
             Target::Date => Builder::Date(Date32Builder::with_capacity(n), inf),
             Target::Time => Builder::Time(Time64MicrosecondBuilder::with_capacity(n)),
@@ -248,7 +321,7 @@ impl Builder {
                     .map_err(|_| not_a("base64"))?,
             ),
             Builder::Decimal(b, p, sc) => b.append_value(decimal(s, *p, *sc)?),
-            Builder::Timestamp(b, utc, inf) => b.append_value(timestamp(s, *utc, *inf)?),
+            Builder::Timestamp(b, ts) => b.append_value(timestamp(s, *ts)?),
             Builder::Date(b, inf) => b.append_value(date(s, *inf)?),
             Builder::Time(b) => b.append_value(time(s)?),
             Builder::Uuid(b) => b
@@ -283,7 +356,7 @@ impl Builder {
             Builder::String(mut b, _) => Arc::new(b.finish()),
             Builder::Binary(mut b) => Arc::new(b.finish()),
             Builder::Decimal(mut b, ..) => Arc::new(b.finish()),
-            Builder::Timestamp(mut b, ..) => Arc::new(b.finish()),
+            Builder::Timestamp(mut b, ts) => ts.array(b.finish()),
             Builder::Date(mut b, _) => Arc::new(b.finish()),
             Builder::Time(mut b) => Arc::new(b.finish()),
             Builder::Uuid(mut b) => Arc::new(b.finish()),
@@ -326,7 +399,8 @@ pub(crate) fn raw_unsupported(f: &Field) -> Error {
 }
 
 /// Gives a typed batch the logical types: timestamps and times in
-/// microseconds, truncated where finer, zoned timestamps in UTC, and
+/// microseconds, truncated where finer (timestamps in nanoseconds if the
+/// stream keeps them), zoned timestamps in UTC, and
 /// infinite dates and timestamps clamped or rejected; then text columns
 /// parsed to their declared types. Returns the batch without the rows that
 /// failed, and those rows' indexes in `batch` with reasons.
@@ -348,7 +422,7 @@ pub(crate) fn conform(
         let (mut field, mut col) = (f.as_ref().clone(), a.clone());
         if let Some((dt, c, rows)) = temporal(f, a, opts) {
             fail(rows);
-            field = field.with_data_type(dt);
+            field = field.with_data_type(dt).with_nullable(true);
             col = c;
         }
         let d = declared.and_then(|d| d.field_with_name(f.name()).ok());
@@ -421,6 +495,15 @@ pub(crate) fn text_column(
 
 type Converted = Option<(DataType, ArrayRef, Failures)>;
 
+fn unit_name(u: &TimeUnit) -> &'static str {
+    match u {
+        TimeUnit::Second => "seconds",
+        TimeUnit::Millisecond => "milliseconds",
+        TimeUnit::Microsecond => "microseconds",
+        TimeUnit::Nanosecond => "nanoseconds",
+    }
+}
+
 fn per_second(u: &TimeUnit) -> i64 {
     match u {
         TimeUnit::Second => 1,
@@ -430,15 +513,18 @@ fn per_second(u: &TimeUnit) -> i64 {
     }
 }
 
-/// Timestamps and times in microseconds, zoned timestamps in UTC, and
-/// infinite timestamps and dates clamped or rejected; None if `a` needs
-/// none of that.
+/// Timestamps in microseconds, or nanoseconds if the stream keeps them,
+/// times in microseconds, zoned timestamps in UTC, and infinite timestamps
+/// and dates clamped or rejected; None if `a` needs none of that.
 fn temporal(f: &Field, a: &ArrayRef, opts: TypeOptions) -> Converted {
     let name = f.name();
     let inf = opts.infinity;
     Some(match a.data_type() {
         DataType::Timestamp(unit, tz) => {
-            let to = TimeUnit::Microsecond;
+            let to = match opts.nanoseconds {
+                true => TimeUnit::Nanosecond,
+                false => TimeUnit::Microsecond,
+            };
             let ticks = arrow_cast::cast(a, &DataType::Int64).ok()?;
             let infinite = ticks
                 .as_primitive::<Int64Type>()
@@ -449,18 +535,18 @@ fn temporal(f: &Field, a: &ArrayRef, opts: TypeOptions) -> Converted {
                 return None;
             }
             let (from_n, to_n) = (per_second(unit), per_second(&to));
-            let range = || Unfit::new("range", "is out of range for microseconds");
-            let (out, failed) =
-                scale::<Int64Type, TimestampMicrosecondType>(&ticks, name, |v| match v {
-                    i64::MAX => inf.apply(MAX_TIMESTAMP),
-                    i64::MIN => inf.apply(MIN_TIMESTAMP),
-                    v if to_n >= from_n => v.checked_mul(to_n / from_n).ok_or_else(range),
-                    v => Ok(v.div_euclid(from_n / to_n)),
-                });
+            let (min, max) = limits(&to);
+            let range = || Unfit::new("range", format!("is out of range for {}", unit_name(&to)));
+            let (out, failed) = scale::<Int64Type, Int64Type>(&ticks, name, |v| match v {
+                i64::MAX => inf.apply(max),
+                i64::MIN => inf.apply(min),
+                v if to_n >= from_n => v.checked_mul(to_n / from_n).ok_or_else(range),
+                v => Ok(v.div_euclid(from_n / to_n)),
+            });
             let tz = tz.as_ref().map(|_| Arc::<str>::from("UTC"));
             (
                 DataType::Timestamp(to, tz.clone()),
-                Arc::new(out.with_timezone_opt(tz)) as ArrayRef,
+                timestamps(out, to, tz),
                 failed,
             )
         }
@@ -544,9 +630,12 @@ pub fn render_row(batch: &RecordBatch, row: usize) -> String {
     for (f, a) in batch.schema().fields().iter().zip(batch.columns()) {
         let v = if a.is_null(row) {
             Value::Null
+        } else if let Some(inf) = infinity_text(a, row) {
+            Value::String(inf.to_owned())
         } else {
+            let a = offset_zone(&a.slice(row, 1));
             let text = ArrayFormatter::try_new(a.as_ref(), &opts)
-                .map(|fmt| fmt.value(row).to_string())
+                .map(|fmt| fmt.value(0).to_string())
                 .unwrap_or_default();
             match a.data_type() {
                 DataType::Boolean => Value::Bool(text == "true"),
@@ -559,6 +648,50 @@ pub fn render_row(batch: &RecordBatch, row: usize) -> String {
         obj.insert(f.name().clone(), v);
     }
     Value::Object(obj).to_string()
+}
+
+/// `a`, with a zoned timestamp's zone given as an offset: arrow displays and
+/// casts named zones, `UTC` included, only with chrono-tz. Values are UTC
+/// either way.
+pub(crate) fn offset_zone(a: &ArrayRef) -> ArrayRef {
+    let DataType::Timestamp(unit, Some(_)) = a.data_type() else {
+        return a.clone();
+    };
+    let data = a
+        .to_data()
+        .into_builder()
+        .data_type(DataType::Timestamp(*unit, Some("+00:00".into())));
+    data.build().map_or_else(|_| a.clone(), make_array)
+}
+
+/// `infinity` or `-infinity` for a typed date or timestamp that stands for
+/// one.
+fn infinity_text(a: &ArrayRef, row: usize) -> Option<&'static str> {
+    let v = match a.data_type() {
+        DataType::Date32 => match a.as_primitive::<Date32Type>().values()[row] {
+            i32::MAX => i64::MAX,
+            i32::MIN => i64::MIN,
+            _ => return None,
+        },
+        DataType::Timestamp(TimeUnit::Second, _) => {
+            a.as_primitive::<TimestampSecondType>().values()[row]
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            a.as_primitive::<TimestampMillisecondType>().values()[row]
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            a.as_primitive::<TimestampMicrosecondType>().values()[row]
+        }
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+            a.as_primitive::<TimestampNanosecondType>().values()[row]
+        }
+        _ => return None,
+    };
+    match v {
+        i64::MAX => Some("infinity"),
+        i64::MIN => Some("-infinity"),
+        _ => None,
+    }
 }
 
 /// An integer, also spelled as an exact decimal such as `2.0` or `1e3`.
@@ -690,32 +823,31 @@ fn date(s: &str, inf: Infinity) -> Result<i32, Unfit> {
     }
 }
 
-/// `HH:MM:SS[.fraction]`; microseconds since midnight, truncated.
+/// `HH:MM:SS[.fraction]`; nanoseconds since midnight, truncated.
 fn time_part(s: &str) -> Option<(i64, &str)> {
     let (h, rest) = digits(s, 2)?;
     let (m, rest) = digits(rest.strip_prefix(':')?, 2)?;
     let (sec, mut rest) = digits(rest.strip_prefix(':')?, 2)?;
-    let mut micros = 0;
+    let mut nanos = 0;
     if let Some(f) = rest.strip_prefix('.') {
         let n = f.bytes().take_while(u8::is_ascii_digit).count();
         if n == 0 {
             return None;
         }
-        for (i, b) in f.bytes().take(6).enumerate() {
-            if i < n {
-                micros += i64::from(b - b'0') * 10_i64.pow(5 - i as u32);
-            }
+        for (i, b) in f.bytes().take(n.min(9)).enumerate() {
+            nanos += i64::from(b - b'0') * 10_i64.pow(8 - i as u32);
         }
         rest = &f[n..];
     }
-    let t = (i64::from(h) * 3600 + i64::from(m) * 60 + i64::from(sec)) * 1_000_000 + micros;
-    let valid = (h < 24 && m < 60 && sec < 60) || t == MICROS_PER_DAY;
+    let t = (i64::from(h) * 3600 + i64::from(m) * 60 + i64::from(sec)) * 1_000_000_000 + nanos;
+    let valid = (h < 24 && m < 60 && sec < 60) || t == NANOS_PER_DAY;
     valid.then_some((t, rest))
 }
 
+/// Microseconds since midnight.
 fn time(s: &str) -> Result<i64, Unfit> {
     match time_part(s) {
-        Some((t, "")) => Ok(t),
+        Some((t, "")) => Ok(t / 1_000),
         _ => Err(not_a("a time")),
     }
 }
@@ -742,31 +874,46 @@ fn offset(s: &str) -> Option<i64> {
     (h < 24 && m < 60).then_some(sign * i64::from(h * 3600 + m * 60))
 }
 
-fn timestamp(s: &str, utc: bool, inf: Infinity) -> Result<i64, Unfit> {
-    if let Some(t) = infinity(s, inf, MAX_TIMESTAMP, MIN_TIMESTAMP) {
+fn timestamp(s: &str, ts: Ts) -> Result<i64, Unfit> {
+    let (min, max) = limits(&ts.unit());
+    if let Some(t) = infinity(s, ts.inf, max, min) {
         return t;
     }
     let parsed = date_part(s).and_then(|(days, rest)| {
         let rest = rest.strip_prefix(['T', 't', ' '])?;
         let (t, zone) = time_part(rest)?;
-        let local = days.checked_mul(MICROS_PER_DAY)?.checked_add(t)?;
-        Some((local, zone))
+        Some((
+            i128::from(days) * i128::from(NANOS_PER_DAY) + i128::from(t),
+            zone,
+        ))
     });
     let Some((local, zone)) = parsed else {
         return Err(not_a("a date-time"));
     };
-    match (zone, utc) {
-        ("", true) => Err(Unfit::new("type", "has no UTC offset")),
-        ("", false) => Ok(local),
-        (_, false) => Err(Unfit::new(
-            "type",
-            "has a UTC offset, but its column has no time zone",
-        )),
+    let nanos = match (zone, ts.utc) {
+        ("", true) => return Err(Unfit::new("type", "has no UTC offset")),
+        ("", false) => local,
+        (_, false) => {
+            return Err(Unfit::new(
+                "type",
+                "has a UTC offset, but its column has no time zone",
+            ));
+        }
         (z, true) => match offset(z) {
-            Some(o) => Ok(local - o * 1_000_000),
-            None => Err(not_a("a date-time")),
+            Some(o) => local - i128::from(o) * 1_000_000_000,
+            None => return Err(not_a("a date-time")),
         },
-    }
+    };
+    let v = match ts.nanos {
+        true => nanos,
+        false => nanos.div_euclid(1_000),
+    };
+    i64::try_from(v).map_err(|_| {
+        Unfit::new(
+            "range",
+            format!("is out of range for {}", unit_name(&ts.unit())),
+        )
+    })
 }
 
 fn uuid(s: &str) -> Option<[u8; 16]> {
@@ -793,6 +940,14 @@ mod tests {
     use arrow_array::types::{Decimal128Type, Int16Type};
 
     const C: Infinity = Infinity::Clamp;
+
+    fn us(utc: bool) -> Ts {
+        Ts {
+            utc,
+            nanos: false,
+            inf: C,
+        }
+    }
 
     fn reason(r: Result<impl std::fmt::Debug, Unfit>) -> String {
         match r {
@@ -830,35 +985,35 @@ mod tests {
     #[test]
     fn timestamps_are_microseconds_since_the_epoch() {
         assert_eq!(
-            timestamp("1970-01-01T00:00:01Z", true, C).ok(),
+            timestamp("1970-01-01T00:00:01Z", us(true)).ok(),
             Some(1_000_000)
         );
-        assert_eq!(timestamp("1970-01-01 01:00:00+01", true, C).ok(), Some(0));
+        assert_eq!(timestamp("1970-01-01 01:00:00+01", us(true)).ok(), Some(0));
         assert_eq!(
-            timestamp("1970-01-01T05:30:00+05:30", true, C).ok(),
+            timestamp("1970-01-01T05:30:00+05:30", us(true)).ok(),
             Some(0)
         );
         assert_eq!(
-            timestamp("1969-12-31T23:59:59.9999999Z", true, C).ok(),
+            timestamp("1969-12-31T23:59:59.9999999Z", us(true)).ok(),
             Some(-1)
         );
         assert_eq!(
-            timestamp("2000-01-01 00:00:00.123456789", false, C).ok(),
+            timestamp("2000-01-01 00:00:00.123456789", us(false)).ok(),
             Some(946_684_800_123_456)
         );
-        assert_eq!(timestamp("infinity", true, C).ok(), Some(MAX_TIMESTAMP));
-        assert_eq!(timestamp("-infinity", false, C).ok(), Some(MIN_TIMESTAMP));
+        assert_eq!(timestamp("infinity", us(true)).ok(), Some(MAX_TIMESTAMP));
+        assert_eq!(timestamp("-infinity", us(false)).ok(), Some(MIN_TIMESTAMP));
         assert_eq!(
-            timestamp("9999-12-31 23:59:59.999999", false, C).ok(),
+            timestamp("9999-12-31 23:59:59.999999", us(false)).ok(),
             Some(MAX_TIMESTAMP)
         );
         assert_eq!(
-            timestamp("0001-01-01T00:00:00", false, C).ok(),
+            timestamp("0001-01-01T00:00:00", us(false)).ok(),
             Some(MIN_TIMESTAMP)
         );
 
-        assert!(reason(timestamp("2000-01-01T00:00:00", true, C)).contains("no UTC offset"));
-        assert!(reason(timestamp("2000-01-01T00:00:00Z", false, C)).contains("has a UTC offset"));
+        assert!(reason(timestamp("2000-01-01T00:00:00", us(true))).contains("no UTC offset"));
+        assert!(reason(timestamp("2000-01-01T00:00:00Z", us(false))).contains("has a UTC offset"));
         for bad in [
             "2000-02-30T00:00:00Z",
             "2000-01-01",
@@ -867,7 +1022,7 @@ mod tests {
             "2000-01-01T00:00:00+0",
         ] {
             assert!(
-                reason(timestamp(bad, true, C)).starts_with("type:"),
+                reason(timestamp(bad, us(true))).starts_with("type:"),
                 "{bad:?}"
             );
         }
@@ -882,8 +1037,11 @@ mod tests {
         assert_eq!(date("-infinity", C).ok(), Some(MIN_DATE));
         assert!(reason(date("2001-02-29", C)).starts_with("type:"));
         assert_eq!(time("00:00:01.5").ok(), Some(1_500_000));
-        assert_eq!(time("23:59:59.9999999").ok(), Some(MICROS_PER_DAY - 1));
-        assert_eq!(time("24:00:00").ok(), Some(MICROS_PER_DAY));
+        assert_eq!(
+            time("23:59:59.9999999").ok(),
+            Some((NANOS_PER_DAY / 1_000) - 1)
+        );
+        assert_eq!(time("24:00:00").ok(), Some(NANOS_PER_DAY / 1_000));
         assert!(reason(time("24:00:01")).starts_with("type:"));
         assert!(reason(time("12:00:00+02")).starts_with("type:"));
     }
@@ -1002,7 +1160,7 @@ mod tests {
             reason(date("infinity", q)),
             "range: column \"c\" is infinite"
         );
-        assert!(reason(timestamp("-infinity", true, q)).starts_with("range:"));
+        assert!(reason(timestamp("-infinity", Ts { inf: q, ..us(true) })).starts_with("range:"));
         assert_eq!(date("2026-11-01", q).ok(), Some(20_758));
 
         let batch = RecordBatch::try_from_iter([
@@ -1051,7 +1209,15 @@ mod tests {
             vec![Some(1), None, Some(MAX_TIMESTAMP), Some(7)]
         );
 
-        let (out, failed) = conform(&batch, None, TypeOptions { infinity: q }).unwrap();
+        let (out, failed) = conform(
+            &batch,
+            None,
+            TypeOptions {
+                infinity: q,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let rows: Vec<(usize, &str)> = failed.iter().map(|(r, w)| (*r, w.as_str())).collect();
         assert_eq!(
             rows,
@@ -1064,6 +1230,83 @@ mod tests {
         assert_eq!(out.num_rows(), 1);
         let n = out.column(2).as_primitive::<TimestampMicrosecondType>();
         assert_eq!(n.values()[0], 7);
+        assert_eq!(
+            render_row(&batch, 3),
+            r#"{"d":"1970-01-03","t":"1970-01-01T00:00:00.000006Z","n":"1970-01-01T00:00:00.000007"}"#
+        );
+        assert!(render_row(&batch, 0).contains(r#""d":"infinity""#));
+        assert!(render_row(&batch, 1).contains(r#""t":"-infinity""#));
+    }
+
+    #[test]
+    fn streams_can_keep_nanoseconds() {
+        use arrow_array::{
+            TimestampMicrosecondArray, TimestampNanosecondArray, TimestampSecondArray,
+        };
+        let ns = Ts {
+            nanos: true,
+            ..us(false)
+        };
+        assert_eq!(
+            timestamp("2000-01-01 00:00:00.123456789", ns).ok(),
+            Some(946_684_800_123_456_789)
+        );
+        assert_eq!(timestamp("infinity", ns).ok(), Some(i64::MAX));
+        assert_eq!(
+            reason(timestamp("2300-01-01 00:00:00", ns)),
+            "range: column \"c\" is out of range for nanoseconds"
+        );
+
+        let batch = RecordBatch::try_from_iter([
+            (
+                "n",
+                Arc::new(TimestampNanosecondArray::from(vec![1_999, 5])) as ArrayRef,
+            ),
+            (
+                "u",
+                Arc::new(TimestampMicrosecondArray::from(vec![i64::MIN, 6]).with_timezone("UTC")),
+            ),
+            (
+                "s",
+                Arc::new(TimestampSecondArray::from(vec![1, 10_000_000_000])),
+            ),
+        ])
+        .unwrap();
+        let opts = TypeOptions {
+            nanoseconds: true,
+            ..Default::default()
+        };
+        let (out, failed) = conform(&batch, None, opts).unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, 1);
+        assert_eq!(
+            failed[0].1,
+            "range: column \"s\" is out of range for nanoseconds"
+        );
+        let schema = out.schema();
+        assert_eq!(
+            schema.field(1).data_type(),
+            &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into()))
+        );
+        let col = |i: usize| {
+            out.column(i)
+                .as_primitive::<TimestampNanosecondType>()
+                .values()
+                .to_vec()
+        };
+        assert_eq!(col(0), vec![1_999]);
+        assert_eq!(col(1), vec![i64::MIN]);
+        assert_eq!(col(2), vec![1_000_000_000]);
+
+        let declared = Schema::new(vec![Field::new(
+            "at",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]);
+        assert_eq!(
+            nanoseconds(&declared).field(0).data_type(),
+            &DataType::Timestamp(TimeUnit::Nanosecond, None)
+        );
     }
 
     #[test]

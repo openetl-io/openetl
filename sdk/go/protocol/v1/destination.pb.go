@@ -237,8 +237,10 @@ type DestinationCapabilities struct {
 	DedupeAtApply         bool                 `protobuf:"varint,3,opt,name=dedupe_at_apply,json=dedupeAtApply,proto3" json:"dedupe_at_apply,omitempty"`
 	DefaultCommitInterval *durationpb.Duration `protobuf:"bytes,4,opt,name=default_commit_interval,json=defaultCommitInterval,proto3" json:"default_commit_interval,omitempty"`
 	MinCommitInterval     *durationpb.Duration `protobuf:"bytes,5,opt,name=min_commit_interval,json=minCommitInterval,proto3" json:"min_commit_interval,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Timestamps keep nanoseconds; otherwise only microseconds.
+	NanosecondTimestamps bool `protobuf:"varint,6,opt,name=nanosecond_timestamps,json=nanosecondTimestamps,proto3" json:"nanosecond_timestamps,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *DestinationCapabilities) Reset() {
@@ -304,6 +306,13 @@ func (x *DestinationCapabilities) GetMinCommitInterval() *durationpb.Duration {
 		return x.MinCommitInterval
 	}
 	return nil
+}
+
+func (x *DestinationCapabilities) GetNanosecondTimestamps() bool {
+	if x != nil {
+		return x.NanosecondTimestamps
+	}
+	return false
 }
 
 // Epoch is checkpoint N within the generation that wrote it. N is 0 when
@@ -1279,14 +1288,15 @@ var File_openetl_connector_v1_destination_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\n" +
-	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a!openetl/connector/v1/errors.proto\"\xda\x02\n" +
+	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a!openetl/connector/v1/errors.proto\"\x8f\x03\n" +
 	"\x17DestinationCapabilities\x12>\n" +
 	"\n" +
 	"sink_class\x18\x01 \x01(\x0e2\x1f.openetl.connector.v1.SinkClassR\tsinkClass\x129\n" +
 	"\x06scopes\x18\x02 \x03(\x0e2!.openetl.connector.v1.CommitScopeR\x06scopes\x12&\n" +
 	"\x0fdedupe_at_apply\x18\x03 \x01(\bR\rdedupeAtApply\x12Q\n" +
 	"\x17default_commit_interval\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x15defaultCommitInterval\x12I\n" +
-	"\x13min_commit_interval\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\x11minCommitInterval\"5\n" +
+	"\x13min_commit_interval\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\x11minCommitInterval\x123\n" +
+	"\x15nanosecond_timestamps\x18\x06 \x01(\bR\x14nanosecondTimestamps\"5\n" +
 	"\x05Epoch\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x01 \x01(\x04R\n" +

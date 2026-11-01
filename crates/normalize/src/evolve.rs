@@ -289,6 +289,7 @@ fn cast_up(col: &ArrayRef, to: &Field) -> Result<ArrayRef, Error> {
     if col.data_type() == to.data_type() {
         return Ok(col.clone());
     }
+    let col = &coerce::offset_zone(col);
     if arrow_cast::can_cast_types(col.data_type(), to.data_type()) {
         return Ok(arrow_cast::cast(col, to.data_type())?);
     }
@@ -313,6 +314,7 @@ fn cast_down(col: &ArrayRef, to: &Field, source: &str, inf: Infinity) -> (ArrayR
     let Some(t) = Target::of(to).filter(|t| *t != Target::TypedOnly) else {
         return fail_all(&format!("isn't {}", to.data_type()));
     };
+    let col = &coerce::offset_zone(col);
     let Ok(fmt) = ArrayFormatter::try_new(col.as_ref(), &FormatOptions::new()) else {
         return fail_all(&format!("isn't {}", to.data_type()));
     };
@@ -336,6 +338,25 @@ mod tests {
 
     fn batch(cols: Vec<(&str, ArrayRef)>) -> RecordBatch {
         RecordBatch::try_from_iter(cols).unwrap()
+    }
+
+    #[test]
+    fn zoned_timestamps_widen_to_strings() {
+        let mut e = Evolver::new(Policy::AllowAll, None, BTreeMap::new());
+        let s: ArrayRef = Arc::new(StringArray::from(vec!["a"]));
+        e.conform(&batch(vec![("x", s)])).unwrap();
+        let ts = arrow_array::TimestampMicrosecondArray::from(vec![5]).with_timezone("UTC");
+        let c = e
+            .conform(&batch(vec![("x", Arc::new(ts) as ArrayRef)]))
+            .unwrap();
+        assert_eq!(
+            c.batch
+                .column(0)
+                .as_string::<i32>()
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![Some("1970-01-01T00:00:00.000005Z")]
+        );
     }
 
     fn names(s: &Schema) -> Vec<(String, DataType)> {

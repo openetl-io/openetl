@@ -29,6 +29,8 @@ message DestinationCapabilities {
   bool dedupe_at_apply = 3;
   google.protobuf.Duration default_commit_interval = 4;
   google.protobuf.Duration min_commit_interval = 5;
+  // Timestamps keep nanoseconds; otherwise only microseconds.
+  bool nanosecond_timestamps = 6;
 }
 
 enum SinkClass {

@@ -35,6 +35,8 @@ pub const UUID_EXTENSION: &str = "arrow.uuid";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TypeOptions {
     pub infinity: Infinity,
+    /// The stream's timestamps keep nanoseconds, declared ones included.
+    pub nanoseconds: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

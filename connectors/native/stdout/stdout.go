@@ -38,7 +38,7 @@ func NewWriter(config []byte, w io.Writer) (*Destination, error) {
 }
 
 func (d *Destination) Capabilities() destination.Capabilities {
-	return destination.Capabilities{Class: destination.DeliverAndAck, Scopes: []destination.Scope{destination.ScopeStream}}
+	return destination.Capabilities{Class: destination.DeliverAndAck, Scopes: []destination.Scope{destination.ScopeStream}, NanosecondTimestamps: true}
 }
 
 func (d *Destination) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {

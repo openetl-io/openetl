@@ -83,6 +83,10 @@ impl Shaper {
             evolver = Evolver::new(policy, Some(&Schema::new(fields)), versions);
         }
         evolver.infinity = types.infinity;
+        let declared = match declared {
+            Some(d) if types.nanoseconds => Some(coerce::nanoseconds(&d)),
+            d => d,
+        };
         Ok(Self {
             namer,
             table,
@@ -393,6 +397,39 @@ mod tests {
             ids(&n.batch)[1],
             ids(&a.batch)[0],
             "the same row, the same ID"
+        );
+    }
+
+    #[test]
+    fn declared_timestamps_keep_nanoseconds_if_asked() {
+        let declared = Schema::new(vec![Field::new(
+            "at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        )]);
+        let mut s = Shaper::new(
+            Naming::default(),
+            "t".into(),
+            identity(),
+            Policy::AllowAll,
+            None,
+            Some(Arc::new(declared)),
+            TypeOptions {
+                nanoseconds: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let n = rows(&mut s, &[r#"{"at": "2000-01-01T00:00:00.123456789Z"}"#]);
+        let at = n.batch.column(0);
+        assert_eq!(
+            at.data_type(),
+            &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into()))
+        );
+        assert_eq!(
+            at.as_primitive::<arrow_array::types::TimestampNanosecondType>()
+                .values()[0],
+            946_684_800_123_456_789
         );
     }
 

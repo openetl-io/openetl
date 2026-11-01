@@ -36,6 +36,8 @@ type Stream struct {
 	// Decimal columns that arrive as another type instead, by source name:
 	// String or Float64.
 	Overrides map[string]arrow.DataType
+	// Timestamps keep nanoseconds, which the destination must too.
+	NanosecondTimestamps bool
 }
 
 func (s Stream) delivery() delivery.Stream {
@@ -262,6 +264,9 @@ func (j *Job) validate() error {
 		seen[s.Name] = true
 		if err := s.checkOverrides(); err != nil {
 			return errs.Wrap(errs.ConfigInvalid, err, "runner")
+		}
+		if s.NanosecondTimestamps && !j.Destination.Capabilities().NanosecondTimestamps {
+			return errs.New(errs.ConfigInvalid, "runner: stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", s.Name)
 		}
 		streams = append(streams, s.delivery())
 	}

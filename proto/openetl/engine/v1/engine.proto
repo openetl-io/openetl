@@ -92,6 +92,10 @@ message StreamPlan {
   // When the stream's current read started, in microseconds since the Unix
   // epoch.
   int64 read_start_micros = 7;
+  // Timestamps keep nanoseconds instead of being truncated to microseconds,
+  // declared ones included. Outside 1677-09-21 to 2262-04-11 they are
+  // quarantined, and infinities clamp to those limits.
+  bool nanosecond_timestamps = 8;
 }
 
 enum Lane {

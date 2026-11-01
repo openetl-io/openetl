@@ -206,12 +206,13 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 			return nil, nil, nil, fmt.Errorf("engineclient: %s declared schema: %w", s.Name, err)
 		}
 		req.Streams = append(req.Streams, &enginev1.StreamPlan{
-			Name:            s.Name,
-			PrimaryKey:      s.PrimaryKey,
-			ArrowSchema:     declared,
-			CursorField:     s.CursorField,
-			ReadStartMicros: plan.ReadStarts[s.Name],
-			RestoredSchema:  plan.Schemas[s.Name],
+			Name:                 s.Name,
+			PrimaryKey:           s.PrimaryKey,
+			ArrowSchema:          declared,
+			CursorField:          s.CursorField,
+			ReadStartMicros:      plan.ReadStarts[s.Name],
+			RestoredSchema:       plan.Schemas[s.Name],
+			NanosecondTimestamps: s.NanosecondTimestamps,
 		})
 	}
 	for _, s := range plan.Snapshots {

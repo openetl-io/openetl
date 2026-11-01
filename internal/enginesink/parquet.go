@@ -82,6 +82,7 @@ func (p *Parquet) Capabilities() destination.Capabilities {
 		Scopes:                []destination.Scope{destination.ScopeStream},
 		DefaultCommitInterval: time.Minute,
 		MinCommitInterval:     time.Second,
+		NanosecondTimestamps:  true,
 	}
 }
 

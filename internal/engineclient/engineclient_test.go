@@ -795,6 +795,61 @@ func TestRunAttemptIntoParquet(t *testing.T) {
 	}
 }
 
+func TestNanosecondTimestampsReachParquet(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+
+	root := t.TempDir()
+	dest, err := enginesink.NewParquet([]byte(`{"url": "file://` + filepath.ToSlash(root) + `"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &pagedSource{
+		pages:     map[string][][]string{"events": {{`{"id": 1, "at": "2000-01-01T00:00:00.123456789Z"}`}}},
+		afterPage: func(context.Context, int) error { return nil },
+	}
+	declared := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "at", Type: arrow.FixedWidthTypes.Timestamp_us, Nullable: true},
+	}, nil)
+	_, err = runner.RunAttempt(ctx, runner.Job{
+		Owner:       "a1",
+		Pipeline:    "pipe",
+		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"),
+		Source:      src,
+		Streams:     []runner.Stream{{Name: "events", Replay: source.Exact, Mode: destination.Append, Schema: declared, NanosecondTimestamps: true}},
+		Destination: dest,
+		Dataflow:    &Dataflow{Options: opts},
+		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopeStream},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(root, "events", "*.parquet"))
+	if len(files) != 1 {
+		t.Fatalf("parquet files %v", files)
+	}
+	f, err := os.Open(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	tbl, err := pqarrow.ReadTable(t.Context(), f, parquet.NewReaderProperties(nil), pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Release()
+	col := tbl.Column(tbl.Schema().FieldIndices("at")[0])
+	if want := (&arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}); !arrow.TypeEqual(col.DataType(), want) {
+		t.Fatalf("at is %s, want %s", col.DataType(), want)
+	}
+	if got := col.Data().Chunk(0).(*array.Timestamp).Value(0); got != 946_684_800_123_456_789 {
+		t.Errorf("at = %d", got)
+	}
+}
+
 // discardDest is the engine's discard sink. It records the epochs committed.
 type discardDest struct{ committed []uint64 }
 

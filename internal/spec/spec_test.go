@@ -22,6 +22,7 @@ spec:
     streams:
       - name: users
         sync: full_refresh
+        timestamps: nanosecond
         columns:
           balance: { type: float64 }
   destination:
@@ -53,6 +54,8 @@ func TestParsePipeline(t *testing.T) {
 		t.Errorf("schedule = %v", p.GetSchedule())
 	case p.GetSource().GetStreams()[0].GetSync() != apiv1.SyncMode_SYNC_MODE_FULL_REFRESH:
 		t.Error("sync mode")
+	case p.GetSource().GetStreams()[0].GetTimestamps() != apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND:
+		t.Error("timestamps")
 	case p.GetSource().GetStreams()[0].GetColumns()["balance"].GetType() != apiv1.ColumnType_COLUMN_TYPE_FLOAT64:
 		t.Errorf("columns = %v", p.GetSource().GetStreams()[0].GetColumns())
 	case p.GetDestination().GetWrite() != apiv1.WriteMode_WRITE_MODE_APPEND:
@@ -107,6 +110,7 @@ func TestParseErrors(t *testing.T) {
 		"zero timeout":   header + base + "  delivery: {resumePointTimeout: 0s}\n",
 		"zero interval":  header + base + "  delivery: {commit: {interval: 0s}}\n",
 		"infinity":       header + base + "  types: {infinity: drop}\n",
+		"timestamps":     header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, timestamps: millisecond}]}", 1),
 		"two documents":  header + base + "---\n" + header + base,
 		"missing source": header + "spec:\n  schedule: {every: 1m}\n  destination: {ref: d}\n",
 	} {

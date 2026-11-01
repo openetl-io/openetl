@@ -152,10 +152,11 @@ type scheduleYAML struct {
 }
 
 type streamYAML struct {
-	Name    string `yaml:"name"`
-	Sync    string `yaml:"sync"`
-	Cursor  string `yaml:"cursor"`
-	Columns map[string]struct {
+	Name       string `yaml:"name"`
+	Sync       string `yaml:"sync"`
+	Cursor     string `yaml:"cursor"`
+	Timestamps string `yaml:"timestamps"`
+	Columns    map[string]struct {
 		Op   string `yaml:"op"`
 		Type string `yaml:"type"`
 	} `yaml:"columns"`
@@ -218,6 +219,9 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		seen[s.Name] = true
 		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor}
 		if st.Sync, err = enum(apiv1.SyncMode_value, "SYNC_MODE_", "sync", s.Sync, apiv1.SyncMode_SYNC_MODE_UNSPECIFIED); err != nil {
+			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
+		}
+		if st.Timestamps, err = enum(apiv1.TimestampUnit_value, "TIMESTAMP_UNIT_", "timestamps", s.Timestamps, apiv1.TimestampUnit_TIMESTAMP_UNIT_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
 		}
 		for name, c := range s.Columns {

@@ -91,6 +91,8 @@ type Capabilities struct {
 	MinCommitInterval     time.Duration
 	// The longest table or column name, in bytes; 0 for no limit.
 	MaxIdentifierLength int
+	// Timestamps keep nanoseconds; otherwise only microseconds.
+	NanosecondTimestamps bool
 }
 
 func (c Capabilities) SupportsScope(s Scope) bool {

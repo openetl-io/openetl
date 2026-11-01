@@ -21,7 +21,8 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 		Destination: &apiv1.ConnectorConfig{Connector: "stdout"},
 		Pipeline: &apiv1.PipelineSpec{
 			Source: &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{
-				Name: "users",
+				Name:       "users",
+				Timestamps: apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
 				Columns: map[string]*apiv1.PipelineColumn{
 					"a": {Type: apiv1.ColumnType_COLUMN_TYPE_STRING},
 					"b": {Type: apiv1.ColumnType_COLUMN_TYPE_FLOAT64},
@@ -39,5 +40,8 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 	}
 	if !job.QuarantineInfinity {
 		t.Error("infinities aren't quarantined")
+	}
+	if !job.Streams[0].NanosecondTimestamps {
+		t.Error("timestamps aren't in nanoseconds")
 	}
 }

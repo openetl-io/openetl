@@ -59,7 +59,15 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 	}
 	var streams []runner.Stream
 	stream := func(cs source.CatalogStream, ps *apiv1.PipelineStream) runner.Stream {
-		s := runner.Stream{Name: cs.Name, Replay: cs.Replay, Mode: mode, PrimaryKey: cs.PrimaryKey, CursorField: cmp.Or(ps.GetCursor(), cs.CursorField), Schema: cs.Schema}
+		s := runner.Stream{
+			Name:                 cs.Name,
+			Replay:               cs.Replay,
+			Mode:                 mode,
+			PrimaryKey:           cs.PrimaryKey,
+			CursorField:          cmp.Or(ps.GetCursor(), cs.CursorField),
+			Schema:               cs.Schema,
+			NanosecondTimestamps: ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
+		}
 		for name, c := range ps.GetColumns() {
 			if t := columnTypes[c.GetType()]; t != nil {
 				if s.Overrides == nil {

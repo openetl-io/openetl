@@ -19,7 +19,8 @@ pub struct Plan {
     pub tables: Vec<String>,
     pub naming: Naming,
     pub policy: Policy,
-    pub types: TypeOptions,
+    /// Each stream's.
+    pub types: Vec<TypeOptions>,
     /// Each stream's schema in the restored checkpoint.
     pub restored: Vec<Option<SchemaRef>>,
     /// Each stream's declared logical types, under source names.
@@ -118,12 +119,18 @@ impl Plan {
             SchemaPolicy::Block => Policy::Block,
             SchemaPolicy::IgnoreNew => Policy::IgnoreNew,
         };
-        let types = TypeOptions {
-            infinity: match req.quarantine_infinity {
-                true => Infinity::Quarantine,
-                false => Infinity::Clamp,
-            },
+        let infinity = match req.quarantine_infinity {
+            true => Infinity::Quarantine,
+            false => Infinity::Clamp,
         };
+        let types = req
+            .streams
+            .iter()
+            .map(|s| TypeOptions {
+                infinity,
+                nanoseconds: s.nanosecond_timestamps,
+            })
+            .collect();
         let mut namer = Namer::new(naming, &RESERVED_TABLES);
         for (name, schema) in names.iter().zip(&restored) {
             if let Some(table) = schema.as_ref().and_then(|s| s.metadata().get(TABLE_KEY))
@@ -308,6 +315,28 @@ pub(crate) mod tests {
         };
         assert_eq!(edge.streams, vec![2, 1, 0]);
         assert_eq!(out_index, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn type_options_follow_the_job_and_each_stream() {
+        let mut req = request(&["a", "b"]);
+        req.quarantine_infinity = true;
+        req.streams[1].nanosecond_timestamps = true;
+        let p = Plan::from_request(req).unwrap();
+        let q = Infinity::Quarantine;
+        assert_eq!(
+            p.types,
+            vec![
+                TypeOptions {
+                    infinity: q,
+                    nanoseconds: false
+                },
+                TypeOptions {
+                    infinity: q,
+                    nanoseconds: true
+                },
+            ]
+        );
     }
 
     pub(crate) fn discard_request(streams: &[&str]) -> StartJobRequest {
