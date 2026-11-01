@@ -14,9 +14,8 @@ use arrow_array::builder::{
 use arrow_array::cast::AsArray;
 use arrow_array::types::ArrowPrimitiveType;
 use arrow_array::types::{
-    Time32MillisecondType, Time32SecondType, Time64MicrosecondType, Time64NanosecondType,
-    TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
-    TimestampSecondType,
+    Date32Type, Int64Type, Time32MillisecondType, Time32SecondType, Time64MicrosecondType,
+    Time64NanosecondType, TimestampMicrosecondType,
 };
 use arrow_array::{Array, ArrayRef, BooleanArray, PrimitiveArray, RecordBatch};
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
@@ -25,9 +24,30 @@ use base64::Engine;
 use chrono::NaiveDate;
 use serde_json::Value;
 
-use crate::{EXTENSION_NAME_KEY, Error, JSON_EXTENSION, UUID_EXTENSION};
+use crate::{EXTENSION_NAME_KEY, Error, JSON_EXTENSION, TypeOptions, UUID_EXTENSION};
 
-/// `infinity` and `-infinity` dates and timestamps are clamped to these.
+/// What becomes of infinite dates and timestamps: `infinity` and
+/// `-infinity` in text, and in typed batches the largest and smallest
+/// values of Date32 and of timestamps in any unit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Infinity {
+    /// To the logical type's largest or smallest value.
+    #[default]
+    Clamp,
+    /// Rejected with reason `range`.
+    Quarantine,
+}
+
+impl Infinity {
+    fn apply<T>(self, limit: T) -> Result<T, Unfit> {
+        match self {
+            Infinity::Clamp => Ok(limit),
+            Infinity::Quarantine => Err(Unfit::new("range", "is infinite")),
+        }
+    }
+}
+
+/// Infinite dates and timestamps are clamped to these.
 const MAX_DATE: i32 = 2_932_896; // 9999-12-31
 const MIN_DATE: i32 = -719_162; // 0001-01-01
 const MAX_TIMESTAMP: i64 = 253_402_300_799_999_999; // 9999-12-31 23:59:59.999999
@@ -133,14 +153,14 @@ enum Builder {
     String(StringBuilder, bool),
     Binary(BinaryBuilder),
     Decimal(Decimal128Builder, u8, i8),
-    Timestamp(TimestampMicrosecondBuilder, bool),
-    Date(Date32Builder),
+    Timestamp(TimestampMicrosecondBuilder, bool, Infinity),
+    Date(Date32Builder, Infinity),
     Time(Time64MicrosecondBuilder),
     Uuid(FixedSizeBinaryBuilder),
 }
 
 impl Builder {
-    fn new(t: Target, n: usize) -> Option<Self> {
+    fn new(t: Target, n: usize, inf: Infinity) -> Option<Self> {
         Some(match t {
             Target::Boolean => Builder::Boolean(BooleanBuilder::with_capacity(n)),
             Target::Int16 => Builder::Int16(Int16Builder::with_capacity(n)),
@@ -158,9 +178,9 @@ impl Builder {
             ),
             Target::Timestamp { utc } => {
                 let b = TimestampMicrosecondBuilder::with_capacity(n);
-                Builder::Timestamp(if utc { b.with_timezone("UTC") } else { b }, utc)
+                Builder::Timestamp(if utc { b.with_timezone("UTC") } else { b }, utc, inf)
             }
-            Target::Date => Builder::Date(Date32Builder::with_capacity(n)),
+            Target::Date => Builder::Date(Date32Builder::with_capacity(n), inf),
             Target::Time => Builder::Time(Time64MicrosecondBuilder::with_capacity(n)),
             Target::Uuid => Builder::Uuid(FixedSizeBinaryBuilder::with_capacity(n, 16)),
             Target::TypedOnly => return None,
@@ -178,8 +198,8 @@ impl Builder {
             Builder::String(b, _) => b.append_null(),
             Builder::Binary(b) => b.append_null(),
             Builder::Decimal(b, ..) => b.append_null(),
-            Builder::Timestamp(b, _) => b.append_null(),
-            Builder::Date(b) => b.append_null(),
+            Builder::Timestamp(b, ..) => b.append_null(),
+            Builder::Date(b, _) => b.append_null(),
             Builder::Time(b) => b.append_null(),
             Builder::Uuid(b) => b.append_null(),
         }
@@ -228,8 +248,8 @@ impl Builder {
                     .map_err(|_| not_a("base64"))?,
             ),
             Builder::Decimal(b, p, sc) => b.append_value(decimal(s, *p, *sc)?),
-            Builder::Timestamp(b, utc) => b.append_value(timestamp(s, *utc)?),
-            Builder::Date(b) => b.append_value(date(s)?),
+            Builder::Timestamp(b, utc, inf) => b.append_value(timestamp(s, *utc, *inf)?),
+            Builder::Date(b, inf) => b.append_value(date(s, *inf)?),
             Builder::Time(b) => b.append_value(time(s)?),
             Builder::Uuid(b) => b
                 .append_value(uuid(s).ok_or_else(|| not_a("a UUID"))?)
@@ -246,7 +266,7 @@ impl Builder {
             Builder::String(..) => "a string",
             Builder::Binary(_) => "base64",
             Builder::Timestamp(..) => "a date-time",
-            Builder::Date(_) => "a date",
+            Builder::Date(..) => "a date",
             Builder::Time(_) => "a time",
             Builder::Uuid(_) => "a UUID",
         }
@@ -263,8 +283,8 @@ impl Builder {
             Builder::String(mut b, _) => Arc::new(b.finish()),
             Builder::Binary(mut b) => Arc::new(b.finish()),
             Builder::Decimal(mut b, ..) => Arc::new(b.finish()),
-            Builder::Timestamp(mut b, _) => Arc::new(b.finish()),
-            Builder::Date(mut b) => Arc::new(b.finish()),
+            Builder::Timestamp(mut b, ..) => Arc::new(b.finish()),
+            Builder::Date(mut b, _) => Arc::new(b.finish()),
             Builder::Time(mut b) => Arc::new(b.finish()),
             Builder::Uuid(mut b) => Arc::new(b.finish()),
         }
@@ -279,8 +299,9 @@ pub(crate) fn json<'a>(
     f: &Field,
     t: Target,
     values: impl ExactSizeIterator<Item = Option<&'a Value>>,
+    inf: Infinity,
 ) -> Result<(ArrayRef, Failures), Error> {
-    let mut b = Builder::new(t, values.len()).ok_or_else(|| raw_unsupported(f))?;
+    let mut b = Builder::new(t, values.len(), inf).ok_or_else(|| raw_unsupported(f))?;
     let mut failed = Vec::new();
     for (row, v) in values.enumerate() {
         match v {
@@ -305,12 +326,14 @@ pub(crate) fn raw_unsupported(f: &Field) -> Error {
 }
 
 /// Gives a typed batch the logical types: timestamps and times in
-/// microseconds, truncated where finer, and zoned timestamps in UTC; then
-/// text columns parsed to their declared types. Returns the batch without
-/// the rows that failed, and those rows' indexes in `batch` with reasons.
+/// microseconds, truncated where finer, zoned timestamps in UTC, and
+/// infinite dates and timestamps clamped or rejected; then text columns
+/// parsed to their declared types. Returns the batch without the rows that
+/// failed, and those rows' indexes in `batch` with reasons.
 pub(crate) fn conform(
     batch: &RecordBatch,
     declared: Option<&Schema>,
+    opts: TypeOptions,
 ) -> Result<(RecordBatch, Failures), Error> {
     let schema = batch.schema();
     let mut fields = Vec::with_capacity(schema.fields().len());
@@ -323,7 +346,7 @@ pub(crate) fn conform(
     };
     for (f, a) in schema.fields().iter().zip(batch.columns()) {
         let (mut field, mut col) = (f.as_ref().clone(), a.clone());
-        if let Some((dt, c, rows)) = microseconds(f, a) {
+        if let Some((dt, c, rows)) = temporal(f, a, opts) {
             fail(rows);
             field = field.with_data_type(dt);
             col = c;
@@ -337,7 +360,7 @@ pub(crate) fn conform(
                     (DataType::Decimal128(..), Target::String | Target::Float64) => {
                         (arrow_cast::cast(&col, d.data_type())?, Vec::new())
                     }
-                    _ => text_column(d, t, &col).ok_or_else(|| Error::Mismatch {
+                    _ => text_column(d, t, &col, opts.infinity).ok_or_else(|| Error::Mismatch {
                         column: f.name().clone(),
                         from: field.data_type().clone(),
                         to: d.data_type().clone(),
@@ -368,14 +391,19 @@ pub(crate) fn conform(
 }
 
 /// Parses a text column to `t`. None if `a` isn't text or `t` has no parser.
-pub(crate) fn text_column(f: &Field, t: Target, a: &ArrayRef) -> Option<(ArrayRef, Failures)> {
+pub(crate) fn text_column(
+    f: &Field,
+    t: Target,
+    a: &ArrayRef,
+    inf: Infinity,
+) -> Option<(ArrayRef, Failures)> {
     let strings: Box<dyn Iterator<Item = Option<&str>>> = match a.data_type() {
         DataType::Utf8 => Box::new(a.as_string::<i32>().iter()),
         DataType::LargeUtf8 => Box::new(a.as_string::<i64>().iter()),
         DataType::Utf8View => Box::new(a.as_string_view().iter()),
         _ => return None,
     };
-    let mut b = Builder::new(t, a.len())?;
+    let mut b = Builder::new(t, a.len(), inf)?;
     let mut failed = Vec::new();
     for (row, s) in strings.enumerate() {
         match s {
@@ -393,55 +421,75 @@ pub(crate) fn text_column(f: &Field, t: Target, a: &ArrayRef) -> Option<(ArrayRe
 
 type Converted = Option<(DataType, ArrayRef, Failures)>;
 
-/// Timestamps and times in microseconds; None if `a` already is.
-fn microseconds(f: &Field, a: &ArrayRef) -> Converted {
-    let utc = |tz: &Option<Arc<str>>| tz.as_ref().map(|_| Arc::<str>::from("UTC"));
-    let range = || Unfit::new("range", "is out of range for microseconds").reason(f.name());
+fn per_second(u: &TimeUnit) -> i64 {
+    match u {
+        TimeUnit::Second => 1,
+        TimeUnit::Millisecond => 1_000,
+        TimeUnit::Microsecond => 1_000_000,
+        TimeUnit::Nanosecond => 1_000_000_000,
+    }
+}
+
+/// Timestamps and times in microseconds, zoned timestamps in UTC, and
+/// infinite timestamps and dates clamped or rejected; None if `a` needs
+/// none of that.
+fn temporal(f: &Field, a: &ArrayRef, opts: TypeOptions) -> Converted {
+    let name = f.name();
+    let inf = opts.infinity;
     Some(match a.data_type() {
-        DataType::Timestamp(TimeUnit::Microsecond, tz)
-            if tz.as_deref().is_none_or(|z| z == "UTC") =>
-        {
-            return None;
-        }
         DataType::Timestamp(unit, tz) => {
-            let tz = utc(tz);
-            let dt = DataType::Timestamp(TimeUnit::Microsecond, tz.clone());
-            let (out, failed) = match unit {
-                TimeUnit::Second => scale::<TimestampSecondType, TimestampMicrosecondType>(
-                    a,
-                    |v| v.checked_mul(1_000_000),
-                    range,
-                ),
-                TimeUnit::Millisecond => {
-                    scale::<TimestampMillisecondType, TimestampMicrosecondType>(
-                        a,
-                        |v| v.checked_mul(1_000),
-                        range,
-                    )
-                }
-                TimeUnit::Microsecond => {
-                    scale::<TimestampMicrosecondType, TimestampMicrosecondType>(a, Some, range)
-                }
-                TimeUnit::Nanosecond => scale::<TimestampNanosecondType, TimestampMicrosecondType>(
-                    a,
-                    |v| Some(v.div_euclid(1_000)),
-                    range,
-                ),
-            };
-            (dt, Arc::new(out.with_timezone_opt(tz)) as ArrayRef, failed)
+            let to = TimeUnit::Microsecond;
+            let ticks = arrow_cast::cast(a, &DataType::Int64).ok()?;
+            let infinite = ticks
+                .as_primitive::<Int64Type>()
+                .values()
+                .iter()
+                .any(|&v| v == i64::MAX || v == i64::MIN);
+            if *unit == to && tz.as_deref().is_none_or(|z| z == "UTC") && !infinite {
+                return None;
+            }
+            let (from_n, to_n) = (per_second(unit), per_second(&to));
+            let range = || Unfit::new("range", "is out of range for microseconds");
+            let (out, failed) =
+                scale::<Int64Type, TimestampMicrosecondType>(&ticks, name, |v| match v {
+                    i64::MAX => inf.apply(MAX_TIMESTAMP),
+                    i64::MIN => inf.apply(MIN_TIMESTAMP),
+                    v if to_n >= from_n => v.checked_mul(to_n / from_n).ok_or_else(range),
+                    v => Ok(v.div_euclid(from_n / to_n)),
+                });
+            let tz = tz.as_ref().map(|_| Arc::<str>::from("UTC"));
+            (
+                DataType::Timestamp(to, tz.clone()),
+                Arc::new(out.with_timezone_opt(tz)) as ArrayRef,
+                failed,
+            )
+        }
+        DataType::Date32 => {
+            let days = a.as_primitive::<Date32Type>();
+            if !days
+                .values()
+                .iter()
+                .any(|&v| v == i32::MAX || v == i32::MIN)
+            {
+                return None;
+            }
+            let (out, failed) = scale::<Date32Type, Date32Type>(a, name, |v| match v {
+                i32::MAX => inf.apply(MAX_DATE),
+                i32::MIN => inf.apply(MIN_DATE),
+                v => Ok(v),
+            });
+            (DataType::Date32, Arc::new(out), failed)
         }
         DataType::Time32(unit) => {
             let (out, failed) = match unit {
-                TimeUnit::Second => scale::<Time32SecondType, Time64MicrosecondType>(
-                    a,
-                    |v| Some(i64::from(v) * 1_000_000),
-                    range,
-                ),
-                _ => scale::<Time32MillisecondType, Time64MicrosecondType>(
-                    a,
-                    |v| Some(i64::from(v) * 1_000),
-                    range,
-                ),
+                TimeUnit::Second => {
+                    scale::<Time32SecondType, Time64MicrosecondType>(a, name, |v| {
+                        Ok(i64::from(v) * 1_000_000)
+                    })
+                }
+                _ => scale::<Time32MillisecondType, Time64MicrosecondType>(a, name, |v| {
+                    Ok(i64::from(v) * 1_000)
+                }),
             };
             (
                 DataType::Time64(TimeUnit::Microsecond),
@@ -450,11 +498,10 @@ fn microseconds(f: &Field, a: &ArrayRef) -> Converted {
             )
         }
         DataType::Time64(TimeUnit::Nanosecond) => {
-            let (out, failed) = scale::<Time64NanosecondType, Time64MicrosecondType>(
-                a,
-                |v| Some(v.div_euclid(1_000)),
-                range,
-            );
+            let (out, failed) =
+                scale::<Time64NanosecondType, Time64MicrosecondType>(a, name, |v| {
+                    Ok(v.div_euclid(1_000))
+                });
             (
                 DataType::Time64(TimeUnit::Microsecond),
                 Arc::new(out),
@@ -467,8 +514,8 @@ fn microseconds(f: &Field, a: &ArrayRef) -> Converted {
 
 fn scale<I, O>(
     a: &ArrayRef,
-    f: impl Fn(I::Native) -> Option<O::Native>,
-    reason: impl Fn() -> String,
+    column: &str,
+    f: impl Fn(I::Native) -> Result<O::Native, Unfit>,
 ) -> (PrimitiveArray<O>, Failures)
 where
     I: ArrowPrimitiveType,
@@ -479,13 +526,12 @@ where
     let out = a
         .iter()
         .enumerate()
-        .map(|(row, v)| {
-            let v = v?;
-            let out = f(v);
-            if out.is_none() {
-                failed.push((row, reason()));
+        .map(|(row, v)| match f(v?) {
+            Ok(v) => Some(v),
+            Err(u) => {
+                failed.push((row, u.reason(column)));
+                None
             }
-            out
         })
         .collect();
     (out, failed)
@@ -612,10 +658,10 @@ fn digits(s: &str, n: usize) -> Option<(u32, &str)> {
     Some((d.parse().ok()?, &s[n..]))
 }
 
-fn infinity<T>(s: &str, max: T, min: T) -> Option<T> {
+fn infinity<T>(s: &str, inf: Infinity, max: T, min: T) -> Option<Result<T, Unfit>> {
     match s {
-        "infinity" | "+infinity" => Some(max),
-        "-infinity" => Some(min),
+        "infinity" | "+infinity" => Some(inf.apply(max)),
+        "-infinity" => Some(inf.apply(min)),
         _ => None,
     }
 }
@@ -634,9 +680,9 @@ fn date_part(s: &str) -> Option<(i64, &str)> {
     Some(((date - epoch).num_days(), rest))
 }
 
-fn date(s: &str) -> Result<i32, Unfit> {
-    if let Some(d) = infinity(s, MAX_DATE, MIN_DATE) {
-        return Ok(d);
+fn date(s: &str, inf: Infinity) -> Result<i32, Unfit> {
+    if let Some(d) = infinity(s, inf, MAX_DATE, MIN_DATE) {
+        return d;
     }
     match date_part(s) {
         Some((d, "")) => i32::try_from(d).map_err(|_| Unfit::new("range", "is out of range")),
@@ -696,9 +742,9 @@ fn offset(s: &str) -> Option<i64> {
     (h < 24 && m < 60).then_some(sign * i64::from(h * 3600 + m * 60))
 }
 
-fn timestamp(s: &str, utc: bool) -> Result<i64, Unfit> {
-    if let Some(t) = infinity(s, MAX_TIMESTAMP, MIN_TIMESTAMP) {
-        return Ok(t);
+fn timestamp(s: &str, utc: bool, inf: Infinity) -> Result<i64, Unfit> {
+    if let Some(t) = infinity(s, inf, MAX_TIMESTAMP, MIN_TIMESTAMP) {
+        return t;
     }
     let parsed = date_part(s).and_then(|(days, rest)| {
         let rest = rest.strip_prefix(['T', 't', ' '])?;
@@ -746,6 +792,8 @@ mod tests {
     use arrow_array::StringArray;
     use arrow_array::types::{Decimal128Type, Int16Type};
 
+    const C: Infinity = Infinity::Clamp;
+
     fn reason(r: Result<impl std::fmt::Debug, Unfit>) -> String {
         match r {
             Ok(v) => panic!("fits: {v:?}"),
@@ -782,32 +830,35 @@ mod tests {
     #[test]
     fn timestamps_are_microseconds_since_the_epoch() {
         assert_eq!(
-            timestamp("1970-01-01T00:00:01Z", true).ok(),
+            timestamp("1970-01-01T00:00:01Z", true, C).ok(),
             Some(1_000_000)
         );
-        assert_eq!(timestamp("1970-01-01 01:00:00+01", true).ok(), Some(0));
-        assert_eq!(timestamp("1970-01-01T05:30:00+05:30", true).ok(), Some(0));
+        assert_eq!(timestamp("1970-01-01 01:00:00+01", true, C).ok(), Some(0));
         assert_eq!(
-            timestamp("1969-12-31T23:59:59.9999999Z", true).ok(),
+            timestamp("1970-01-01T05:30:00+05:30", true, C).ok(),
+            Some(0)
+        );
+        assert_eq!(
+            timestamp("1969-12-31T23:59:59.9999999Z", true, C).ok(),
             Some(-1)
         );
         assert_eq!(
-            timestamp("2000-01-01 00:00:00.123456789", false).ok(),
+            timestamp("2000-01-01 00:00:00.123456789", false, C).ok(),
             Some(946_684_800_123_456)
         );
-        assert_eq!(timestamp("infinity", true).ok(), Some(MAX_TIMESTAMP));
-        assert_eq!(timestamp("-infinity", false).ok(), Some(MIN_TIMESTAMP));
+        assert_eq!(timestamp("infinity", true, C).ok(), Some(MAX_TIMESTAMP));
+        assert_eq!(timestamp("-infinity", false, C).ok(), Some(MIN_TIMESTAMP));
         assert_eq!(
-            timestamp("9999-12-31 23:59:59.999999", false).ok(),
+            timestamp("9999-12-31 23:59:59.999999", false, C).ok(),
             Some(MAX_TIMESTAMP)
         );
         assert_eq!(
-            timestamp("0001-01-01T00:00:00", false).ok(),
+            timestamp("0001-01-01T00:00:00", false, C).ok(),
             Some(MIN_TIMESTAMP)
         );
 
-        assert!(reason(timestamp("2000-01-01T00:00:00", true)).contains("no UTC offset"));
-        assert!(reason(timestamp("2000-01-01T00:00:00Z", false)).contains("has a UTC offset"));
+        assert!(reason(timestamp("2000-01-01T00:00:00", true, C)).contains("no UTC offset"));
+        assert!(reason(timestamp("2000-01-01T00:00:00Z", false, C)).contains("has a UTC offset"));
         for bad in [
             "2000-02-30T00:00:00Z",
             "2000-01-01",
@@ -815,18 +866,21 @@ mod tests {
             "x",
             "2000-01-01T00:00:00+0",
         ] {
-            assert!(reason(timestamp(bad, true)).starts_with("type:"), "{bad:?}");
+            assert!(
+                reason(timestamp(bad, true, C)).starts_with("type:"),
+                "{bad:?}"
+            );
         }
     }
 
     #[test]
     fn dates_and_times() {
-        assert_eq!(date("1970-01-02").ok(), Some(1));
-        assert_eq!(date("9999-12-31").ok(), Some(MAX_DATE));
-        assert_eq!(date("0001-01-01").ok(), Some(MIN_DATE));
-        assert_eq!(date("infinity").ok(), Some(MAX_DATE));
-        assert_eq!(date("-infinity").ok(), Some(MIN_DATE));
-        assert!(reason(date("2001-02-29")).starts_with("type:"));
+        assert_eq!(date("1970-01-02", C).ok(), Some(1));
+        assert_eq!(date("9999-12-31", C).ok(), Some(MAX_DATE));
+        assert_eq!(date("0001-01-01", C).ok(), Some(MIN_DATE));
+        assert_eq!(date("infinity", C).ok(), Some(MAX_DATE));
+        assert_eq!(date("-infinity", C).ok(), Some(MIN_DATE));
+        assert!(reason(date("2001-02-29", C)).starts_with("type:"));
         assert_eq!(time("00:00:01.5").ok(), Some(1_500_000));
         assert_eq!(time("23:59:59.9999999").ok(), Some(MICROS_PER_DAY - 1));
         assert_eq!(time("24:00:00").ok(), Some(MICROS_PER_DAY));
@@ -841,7 +895,7 @@ mod tests {
             .map(|s| serde_json::from_str(s).unwrap())
             .collect();
         let f = Field::new("c", DataType::Int16, true);
-        let (a, failed) = json(&f, Target::Int16, rows.iter().map(Some)).unwrap();
+        let (a, failed) = json(&f, Target::Int16, rows.iter().map(Some), C).unwrap();
         let a = a.as_primitive::<Int16Type>();
         assert_eq!(
             a.iter().collect::<Vec<_>>(),
@@ -858,7 +912,7 @@ mod tests {
     fn json_numbers_keep_their_digits_in_decimals() {
         let v: Value = serde_json::from_str("12345678901234567890.123456789").unwrap();
         let f = Field::new("c", DataType::Decimal128(38, 9), true);
-        let (a, failed) = json(&f, Target::Decimal(38, 9), [Some(&v)].into_iter()).unwrap();
+        let (a, failed) = json(&f, Target::Decimal(38, 9), [Some(&v)].into_iter(), C).unwrap();
         assert!(failed.is_empty());
         assert_eq!(
             a.as_primitive::<Decimal128Type>().values()[0],
@@ -874,7 +928,7 @@ mod tests {
         assert!(uuid("0190b8a4-1f2e-7c3d-8e4f-5a6b7c8d9e0").is_none());
         assert!(uuid("0190b8a4_1f2e_7c3d_8e4f_5a6b7c8d9e0f").is_none());
 
-        let mut b = Builder::new(Target::Binary, 2).unwrap();
+        let mut b = Builder::new(Target::Binary, 2, C).unwrap();
         assert!(b.text("aGk=").is_ok());
         assert!(b.text("!!").is_err());
     }
@@ -908,7 +962,7 @@ mod tests {
             DataType::Decimal128(10, 2),
             false,
         )]);
-        let (out, failed) = conform(&batch, Some(&declared)).unwrap();
+        let (out, failed) = conform(&batch, Some(&declared), TypeOptions::default()).unwrap();
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].0, 1);
         assert!(
@@ -935,9 +989,81 @@ mod tests {
 
         let mismatch = Schema::new(vec![Field::new("at", DataType::Int64, true)]);
         assert!(matches!(
-            conform(&batch, Some(&mismatch)),
+            conform(&batch, Some(&mismatch), TypeOptions::default()),
             Err(Error::Mismatch { .. })
         ));
+    }
+
+    #[test]
+    fn infinities_clamp_or_quarantine() {
+        use arrow_array::{Date32Array, TimestampMicrosecondArray, TimestampNanosecondArray};
+        let q = Infinity::Quarantine;
+        assert_eq!(
+            reason(date("infinity", q)),
+            "range: column \"c\" is infinite"
+        );
+        assert!(reason(timestamp("-infinity", true, q)).starts_with("range:"));
+        assert_eq!(date("2026-11-01", q).ok(), Some(20_758));
+
+        let batch = RecordBatch::try_from_iter([
+            (
+                "d",
+                Arc::new(Date32Array::from(vec![
+                    Some(i32::MAX),
+                    Some(1),
+                    None,
+                    Some(2),
+                ])) as ArrayRef,
+            ),
+            (
+                "t",
+                Arc::new(
+                    TimestampMicrosecondArray::from(vec![Some(5), Some(i64::MIN), None, Some(6)])
+                        .with_timezone("UTC"),
+                ),
+            ),
+            (
+                "n",
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    Some(1_999),
+                    None,
+                    Some(i64::MAX),
+                    Some(7_000),
+                ])),
+            ),
+        ])
+        .unwrap();
+        let (out, failed) = conform(&batch, None, TypeOptions::default()).unwrap();
+        assert!(failed.is_empty());
+        let d = out.column(0).as_primitive::<Date32Type>();
+        assert_eq!(
+            d.iter().collect::<Vec<_>>(),
+            vec![Some(MAX_DATE), Some(1), None, Some(2)]
+        );
+        let t = out.column(1).as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(
+            t.iter().collect::<Vec<_>>(),
+            vec![Some(5), Some(MIN_TIMESTAMP), None, Some(6)]
+        );
+        let n = out.column(2).as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(
+            n.iter().collect::<Vec<_>>(),
+            vec![Some(1), None, Some(MAX_TIMESTAMP), Some(7)]
+        );
+
+        let (out, failed) = conform(&batch, None, TypeOptions { infinity: q }).unwrap();
+        let rows: Vec<(usize, &str)> = failed.iter().map(|(r, w)| (*r, w.as_str())).collect();
+        assert_eq!(
+            rows,
+            vec![
+                (0, "range: column \"d\" is infinite"),
+                (1, "range: column \"t\" is infinite"),
+                (2, "range: column \"n\" is infinite"),
+            ]
+        );
+        assert_eq!(out.num_rows(), 1);
+        let n = out.column(2).as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(n.values()[0], 7);
     }
 
     #[test]
@@ -956,7 +1082,7 @@ mod tests {
             Field::new("s", DataType::Utf8, true),
             Field::new("f", DataType::Float64, true),
         ]);
-        let (out, failed) = conform(&batch, Some(&declared)).unwrap();
+        let (out, failed) = conform(&batch, Some(&declared), TypeOptions::default()).unwrap();
         assert!(failed.is_empty());
         let s = out.column(0).as_string::<i32>();
         assert_eq!(

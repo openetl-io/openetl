@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use arrow_schema::SchemaRef;
 use openetl_normalize::naming::{Namer, Naming, RESERVED_TABLES, TABLE_KEY};
-use openetl_normalize::{Identity, Policy};
+use openetl_normalize::{Identity, Infinity, Policy, TypeOptions};
 use openetl_proto::engine::v1::{EdgeDirection, SchemaPolicy, StartJobRequest, sink_plan};
 
 use crate::error::JobError;
@@ -19,6 +19,7 @@ pub struct Plan {
     pub tables: Vec<String>,
     pub naming: Naming,
     pub policy: Policy,
+    pub types: TypeOptions,
     /// Each stream's schema in the restored checkpoint.
     pub restored: Vec<Option<SchemaRef>>,
     /// Each stream's declared logical types, under source names.
@@ -116,6 +117,12 @@ impl Plan {
             SchemaPolicy::AllowColumns => Policy::AllowColumns,
             SchemaPolicy::Block => Policy::Block,
             SchemaPolicy::IgnoreNew => Policy::IgnoreNew,
+        };
+        let types = TypeOptions {
+            infinity: match req.quarantine_infinity {
+                true => Infinity::Quarantine,
+                false => Infinity::Clamp,
+            },
         };
         let mut namer = Namer::new(naming, &RESERVED_TABLES);
         for (name, schema) in names.iter().zip(&restored) {
@@ -222,6 +229,7 @@ impl Plan {
             tables,
             naming,
             policy,
+            types,
             restored,
             declared,
             identities,
@@ -277,6 +285,7 @@ pub(crate) mod tests {
             naming: None,
             quarantine_url: String::new(),
             schema_policy: 0,
+            quarantine_infinity: false,
         }
     }
 

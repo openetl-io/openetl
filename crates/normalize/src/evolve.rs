@@ -10,7 +10,7 @@ use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{DataType, Field, Schema};
 
-use crate::coerce::{self, Failures, Target};
+use crate::coerce::{self, Failures, Infinity, Target};
 use crate::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, JSON_EXTENSION};
 
 /// Schema metadata: a JSON object from each source column whose type changed
@@ -78,6 +78,8 @@ pub(crate) struct Evolver {
     index: HashMap<String, usize>,
     versions: BTreeMap<String, u32>,
     established: bool,
+    /// For values coerced to an established date or timestamp.
+    pub infinity: Infinity,
 }
 
 impl Evolver {
@@ -90,6 +92,7 @@ impl Evolver {
             index: HashMap::new(),
             versions,
             established: false,
+            infinity: Infinity::default(),
         };
         for f in restored.map(|r| r.fields().iter()).into_iter().flatten() {
             e.add(f.as_ref().clone());
@@ -212,7 +215,7 @@ impl Evolver {
                     )));
                 }
                 Policy::IgnoreNew if strict => {
-                    let (c, rows) = cast_down(col, &cur, f.name());
+                    let (c, rows) = cast_down(col, &cur, f.name(), self.infinity);
                     for (row, reason) in rows {
                         failed.entry(row).or_insert(reason);
                     }
@@ -299,7 +302,7 @@ fn cast_up(col: &ArrayRef, to: &Field) -> Result<ArrayRef, Error> {
 
 /// Casts a column to a narrower type, value by value through its display
 /// form. Values that don't fit are null and listed.
-fn cast_down(col: &ArrayRef, to: &Field, source: &str) -> (ArrayRef, Failures) {
+fn cast_down(col: &ArrayRef, to: &Field, source: &str, inf: Infinity) -> (ArrayRef, Failures) {
     let fail_all = |why: &str| {
         let failed = (0..col.len())
             .filter(|&i| !col.is_null(i))
@@ -317,7 +320,7 @@ fn cast_down(col: &ArrayRef, to: &Field, source: &str) -> (ArrayRef, Failures) {
         .map(|i| (!col.is_null(i)).then(|| fmt.value(i).to_string()))
         .collect();
     let named = to.clone().with_name(source);
-    match coerce::text_column(&named, t, &(Arc::new(strings) as ArrayRef)) {
+    match coerce::text_column(&named, t, &(Arc::new(strings) as ArrayRef), inf) {
         Some(out) => out,
         None => fail_all(&format!("isn't {}", to.data_type())),
     }

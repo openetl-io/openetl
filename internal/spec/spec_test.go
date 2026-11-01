@@ -33,6 +33,8 @@ spec:
     require: exactly_once
     commit: { interval: 5s, maxBytes: 256MB, scope: stream }
     resumePointTimeout: none
+  types:
+    infinity: quarantine
 `
 
 func TestParsePipeline(t *testing.T) {
@@ -65,6 +67,8 @@ func TestParsePipeline(t *testing.T) {
 		t.Errorf("commit = %v", p.GetDelivery().GetCommit())
 	case p.GetDelivery().GetResumePointTimeout() == nil || p.GetDelivery().GetResumePointTimeout().AsDuration() != 0:
 		t.Error("resumePointTimeout: none should be an explicit zero")
+	case p.GetTypes().GetInfinity() != apiv1.Infinity_INFINITY_QUARANTINE:
+		t.Error("types.infinity")
 	}
 }
 
@@ -102,6 +106,7 @@ func TestParseErrors(t *testing.T) {
 		"size":           header + base + "  delivery: {commit: {maxBytes: lots}}\n",
 		"zero timeout":   header + base + "  delivery: {resumePointTimeout: 0s}\n",
 		"zero interval":  header + base + "  delivery: {commit: {interval: 0s}}\n",
+		"infinity":       header + base + "  types: {infinity: drop}\n",
 		"two documents":  header + base + "---\n" + header + base,
 		"missing source": header + "spec:\n  schedule: {every: 1m}\n  destination: {ref: d}\n",
 	} {

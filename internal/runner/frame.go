@@ -60,6 +60,8 @@ type Plan struct {
 	Policy SchemaPolicy
 	// Where the dataflow keeps records it can't take; empty: they fail it.
 	QuarantineURL string
+	// Infinite dates and timestamps are quarantined instead of clamped.
+	QuarantineInfinity bool
 	// Each stream's read start, in microseconds since the Unix epoch.
 	ReadStarts map[string]int64
 	// From the restored checkpoint, as Ready reported them.

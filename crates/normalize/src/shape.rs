@@ -13,7 +13,8 @@ use crate::evolve::{Conformed, Evolver, Policy, VERSIONS_KEY};
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
 use crate::{
-    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, Normalizer, Rejected, UUID_EXTENSION, coerce,
+    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, Normalizer, Rejected, TypeOptions,
+    UUID_EXTENSION, coerce,
 };
 
 #[derive(Debug)]
@@ -38,6 +39,7 @@ pub struct Shaper {
     policy: Policy,
     /// Under source names.
     declared: Option<SchemaRef>,
+    types: TypeOptions,
     norm: Option<Normalizer>,
     evolver: Evolver,
     current: Option<SchemaRef>,
@@ -55,6 +57,7 @@ impl Shaper {
         policy: Policy,
         restored: Option<SchemaRef>,
         declared: Option<SchemaRef>,
+        types: TypeOptions,
     ) -> Result<Self, Error> {
         let mut namer = Namer::new(naming, &METADATA_COLUMNS);
         let mut evolver = Evolver::new(policy, None, BTreeMap::new());
@@ -79,12 +82,14 @@ impl Shaper {
             }
             evolver = Evolver::new(policy, Some(&Schema::new(fields)), versions);
         }
+        evolver.infinity = types.infinity;
         Ok(Self {
             namer,
             table,
             identity,
             policy,
             declared,
+            types,
             norm: None,
             evolver,
             current: restored,
@@ -121,6 +126,7 @@ impl Shaper {
                 false => Normalizer::with_schema(&live, declared)?,
             };
             n.identify(self.identity.clone());
+            n.infinity(self.types.infinity);
             if self.policy == Policy::IgnoreNew && self.evolver.established() {
                 n.freeze();
             }
@@ -144,7 +150,7 @@ impl Shaper {
     /// Gives a typed batch its logical and declared types, conforms it to the
     /// stream's schema, renames its columns and adds the metadata columns.
     pub fn batch(&mut self, batch: &RecordBatch) -> Result<Shaped, Error> {
-        let (typed, failed) = coerce::conform(batch, self.declared.as_deref())?;
+        let (typed, failed) = coerce::conform(batch, self.declared.as_deref(), self.types)?;
         let ids = self.identity.typed(&typed)?;
         let c = self.evolver.conform(&typed)?;
         let mut rejected: Vec<Rejected> = failed
@@ -314,6 +320,7 @@ mod tests {
             policy,
             restored,
             None,
+            TypeOptions::default(),
         )
         .unwrap()
     }
@@ -403,6 +410,7 @@ mod tests {
             Policy::AllowAll,
             None,
             None,
+            TypeOptions::default(),
         )
         .unwrap();
         let n = rows(&mut s, &[r#"{"id": 1}"#]);
@@ -509,6 +517,7 @@ mod tests {
             Policy::AllowAll,
             Some(bad),
             None,
+            TypeOptions::default(),
         )
         .unwrap_err();
         assert!(matches!(err, Error::Restored(_)), "{err}");

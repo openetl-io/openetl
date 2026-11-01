@@ -204,9 +204,13 @@ type StartJobRequest struct {
 	QuarantineUrl string `protobuf:"bytes,11,opt,name=quarantine_url,json=quarantineUrl,proto3" json:"quarantine_url,omitempty"`
 	// How changes to a stream's established schema are taken. A stream's
 	// schema is established once restored, or once it crosses a barrier.
-	SchemaPolicy  SchemaPolicy `protobuf:"varint,12,opt,name=schema_policy,json=schemaPolicy,proto3,enum=openetl.engine.v1.SchemaPolicy" json:"schema_policy,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SchemaPolicy SchemaPolicy `protobuf:"varint,12,opt,name=schema_policy,json=schemaPolicy,proto3,enum=openetl.engine.v1.SchemaPolicy" json:"schema_policy,omitempty"`
+	// Infinite dates and timestamps are quarantined instead of clamped to the
+	// logical type's limits. In typed batches, the largest and smallest values
+	// of Date32 and of timestamps in any unit are infinite.
+	QuarantineInfinity bool `protobuf:"varint,13,opt,name=quarantine_infinity,json=quarantineInfinity,proto3" json:"quarantine_infinity,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *StartJobRequest) Reset() {
@@ -321,6 +325,13 @@ func (x *StartJobRequest) GetSchemaPolicy() SchemaPolicy {
 		return x.SchemaPolicy
 	}
 	return SchemaPolicy_SCHEMA_POLICY_UNSPECIFIED
+}
+
+func (x *StartJobRequest) GetQuarantineInfinity() bool {
+	if x != nil {
+		return x.QuarantineInfinity
+	}
+	return false
 }
 
 // Naming gives tables and columns their destination names. Names already in
@@ -1559,7 +1570,7 @@ var File_openetl_engine_v1_engine_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xbd\x04\n" +
+	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xee\x04\n" +
 	"\x0fStartJobRequest\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x10\n" +
 	"\x03job\x18\x02 \x01(\tR\x03job\x12\x1e\n" +
@@ -1576,7 +1587,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06naming\x18\n" +
 	" \x01(\v2\x19.openetl.engine.v1.NamingR\x06naming\x12%\n" +
 	"\x0equarantine_url\x18\v \x01(\tR\rquarantineUrl\x12D\n" +
-	"\rschema_policy\x18\f \x01(\x0e2\x1f.openetl.engine.v1.SchemaPolicyR\fschemaPolicy\"S\n" +
+	"\rschema_policy\x18\f \x01(\x0e2\x1f.openetl.engine.v1.SchemaPolicyR\fschemaPolicy\x12/\n" +
+	"\x13quarantine_infinity\x18\r \x01(\bR\x12quarantineInfinity\"S\n" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +

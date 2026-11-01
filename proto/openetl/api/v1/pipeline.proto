@@ -65,6 +65,20 @@ message PipelineSpec {
   PipelineDestination destination = 5;
   SchemaPolicy schema_policy = 6;
   Delivery delivery = 7;
+  Types types = 8;
+}
+
+// How values map to logical types where a pipeline has a choice.
+message Types {
+  Infinity infinity = 1;
+}
+
+// What becomes of infinite dates and timestamps.
+enum Infinity {
+  INFINITY_UNSPECIFIED = 0;
+  // To the type's largest or smallest value. The default.
+  INFINITY_CLAMP = 1;
+  INFINITY_QUARANTINE = 2;
 }
 
 enum PipelineMode {

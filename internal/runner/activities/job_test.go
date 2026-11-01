@@ -10,7 +10,7 @@ import (
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 )
 
-func TestBuildJobTakesColumnTypes(t *testing.T) {
+func TestBuildJobTakesTypeSettings(t *testing.T) {
 	cfg, err := structpb.NewStruct(map[string]any{"count": 1})
 	if err != nil {
 		t.Fatal(err)
@@ -19,13 +19,16 @@ func TestBuildJobTakesColumnTypes(t *testing.T) {
 		PipelineId:  "p",
 		Source:      &apiv1.ConnectorConfig{Connector: "faker", Config: cfg},
 		Destination: &apiv1.ConnectorConfig{Connector: "stdout"},
-		Pipeline: &apiv1.PipelineSpec{Source: &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{
-			Name: "users",
-			Columns: map[string]*apiv1.PipelineColumn{
-				"a": {Type: apiv1.ColumnType_COLUMN_TYPE_STRING},
-				"b": {Type: apiv1.ColumnType_COLUMN_TYPE_FLOAT64},
-			},
-		}}}},
+		Pipeline: &apiv1.PipelineSpec{
+			Source: &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{
+				Name: "users",
+				Columns: map[string]*apiv1.PipelineColumn{
+					"a": {Type: apiv1.ColumnType_COLUMN_TYPE_STRING},
+					"b": {Type: apiv1.ColumnType_COLUMN_TYPE_FLOAT64},
+				},
+			}}},
+			Types: &apiv1.Types{Infinity: apiv1.Infinity_INFINITY_QUARANTINE},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -33,5 +36,8 @@ func TestBuildJobTakesColumnTypes(t *testing.T) {
 	o := job.Streams[0].Overrides
 	if len(o) != 2 || !arrow.TypeEqual(o["a"], arrow.BinaryTypes.String) || !arrow.TypeEqual(o["b"], arrow.PrimitiveTypes.Float64) {
 		t.Errorf("overrides %v", o)
+	}
+	if !job.QuarantineInfinity {
+		t.Error("infinities aren't quarantined")
 	}
 }

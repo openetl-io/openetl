@@ -165,6 +165,7 @@ where
             plan.policy,
             plan.restored[s].clone(),
             plan.declared[s].clone(),
+            plan.types,
         )
         .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?;
         shape.push(sh);

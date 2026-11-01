@@ -97,14 +97,15 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 		policy = runner.IgnoreNew
 	}
 	return runner.Job{
-		Pipeline:        spec.GetPipelineId(),
-		Source:          src,
-		Streams:         streams,
-		Destination:     dst,
-		Namespace:       p.GetDestination().GetNamespace(),
-		Settings:        settingsFor(p.GetDelivery(), dst.Capabilities()),
-		KeepSourceNames: p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
-		SchemaPolicy:    policy,
+		Pipeline:           spec.GetPipelineId(),
+		Source:             src,
+		Streams:            streams,
+		Destination:        dst,
+		Namespace:          p.GetDestination().GetNamespace(),
+		Settings:           settingsFor(p.GetDelivery(), dst.Capabilities()),
+		KeepSourceNames:    p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
+		SchemaPolicy:       policy,
+		QuarantineInfinity: p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_QUARANTINE,
 	}, nil
 }
 

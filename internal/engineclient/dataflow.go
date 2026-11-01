@@ -194,8 +194,9 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		Sink:       &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Runner{Runner: &enginev1.RunnerSink{Edge: outEdge}}},
 		Naming:     &enginev1.Naming{KeepSourceNames: plan.Naming.KeepSource, MaxLength: uint32(max(plan.Naming.MaxLength, 0))}, //nolint:gosec // identifier limits are small
 
-		QuarantineUrl: plan.QuarantineURL,
-		SchemaPolicy:  schemaPolicies[plan.Policy],
+		QuarantineUrl:      plan.QuarantineURL,
+		SchemaPolicy:       schemaPolicies[plan.Policy],
+		QuarantineInfinity: plan.QuarantineInfinity,
 	}
 	for i, s := range plan.Streams {
 		names[i] = s.Name

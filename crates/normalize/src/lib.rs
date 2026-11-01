@@ -9,7 +9,7 @@ mod ids;
 pub mod naming;
 mod shape;
 
-pub use coerce::{check_declared, render_row};
+pub use coerce::{Infinity, check_declared, render_row};
 pub use evolve::{Policy, VERSIONS_KEY, widens};
 pub use ids::Identity;
 pub use shape::{Shaped, Shaper};
@@ -30,6 +30,12 @@ pub const EXTENSION_METADATA_KEY: &str = "ARROW:extension:metadata";
 pub const JSON_EXTENSION: &str = "arrow.json";
 /// The canonical extension name of `uuid` columns, stored as 16 bytes.
 pub const UUID_EXTENSION: &str = "arrow.uuid";
+
+/// How values map to logical types where a pipeline has a choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TypeOptions {
+    pub infinity: Infinity,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -173,6 +179,7 @@ pub struct Normalizer {
     frozen: bool,
     schema: SchemaRef,
     identity: Option<Identity>,
+    infinity: Infinity,
 }
 
 impl Default for Normalizer {
@@ -184,6 +191,7 @@ impl Default for Normalizer {
             frozen: false,
             schema: Arc::new(Schema::empty()),
             identity: None,
+            infinity: Infinity::default(),
         }
     }
 }
@@ -268,6 +276,11 @@ impl Normalizer {
         self.identity = Some(identity);
     }
 
+    /// What becomes of infinite values in declared dates and timestamps.
+    pub fn infinity(&mut self, inf: Infinity) {
+        self.infinity = inf;
+    }
+
     /// Converts rows, one JSON object each, to a batch. Rows that aren't JSON
     /// objects, or whose declared columns don't fit, are left out and listed.
     /// On error, the schema is unchanged.
@@ -309,7 +322,7 @@ impl Normalizer {
                 continue;
             }
             let values = objects.iter().map(|o| o.get(name));
-            let (array, failures) = coerce::json(f, *t, values)?;
+            let (array, failures) = coerce::json(f, *t, values, self.infinity)?;
             for (i, reason) in failures {
                 failed[i].get_or_insert(reason);
             }

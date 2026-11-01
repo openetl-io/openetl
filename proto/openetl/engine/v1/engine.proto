@@ -45,6 +45,10 @@ message StartJobRequest {
   // How changes to a stream's established schema are taken. A stream's
   // schema is established once restored, or once it crosses a barrier.
   SchemaPolicy schema_policy = 12;
+  // Infinite dates and timestamps are quarantined instead of clamped to the
+  // logical type's limits. In typed batches, the largest and smallest values
+  // of Date32 and of timestamps in any unit are infinite.
+  bool quarantine_infinity = 13;
 }
 
 enum SchemaPolicy {

@@ -91,9 +91,11 @@ type Job struct {
 	SchemaPolicy    SchemaPolicy
 	// Where the dataflow keeps records it can't take, as Plan says.
 	QuarantineURL string
-	Dataflow      Dataflow
-	Settings      delivery.Settings
-	Logger        *slog.Logger
+	// Infinite dates and timestamps are quarantined instead of clamped.
+	QuarantineInfinity bool
+	Dataflow           Dataflow
+	Settings           delivery.Settings
+	Logger             *slog.Logger
 	// Called on the coordinator's goroutine after each epoch commits. It
 	// must not block.
 	OnCommit func(epoch uint64)
@@ -386,10 +388,11 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 			KeepSource: c.job.KeepSourceNames,
 			MaxLength:  c.job.Destination.Capabilities().MaxIdentifierLength,
 		},
-		Policy:        c.job.SchemaPolicy,
-		QuarantineURL: c.job.QuarantineURL,
-		ReadStarts:    c.readStarts,
-		Schemas:       schemas,
+		Policy:             c.job.SchemaPolicy,
+		QuarantineURL:      c.job.QuarantineURL,
+		QuarantineInfinity: c.job.QuarantineInfinity,
+		ReadStarts:         c.readStarts,
+		Schemas:            schemas,
 	}
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots

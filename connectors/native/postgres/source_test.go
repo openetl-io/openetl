@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -236,7 +237,7 @@ func TestSourceReadsTypes(t *testing.T) {
 	}
 }
 
-func TestSourceDeclaresNumericsAndClampsInfinities(t *testing.T) {
+func TestSourceDeclaresNumericsAndPassesInfinities(t *testing.T) {
 	e := newSourceEnv(t)
 	e.exec(`CREATE TABLE $schema.edges (id int PRIMARY KEY, amount numeric(12, 2), any_num numeric, huge numeric(50, 2),
 		day date, ts timestamp, tstz timestamptz, n oid)`)
@@ -265,13 +266,21 @@ func TestSourceDeclaresNumericsAndClampsInfinities(t *testing.T) {
 	for name, want := range map[string][]string{
 		"amount":  {"NaN", "1.50"},
 		"any_num": {"NaN", "0.0000000001"},
-		"day":     {"9999-12-31", "0001-01-01"},
-		"ts":      {"9999-12-31T23:59:59.999999", "0001-01-01T00:00:00"},
-		"tstz":    {"0001-01-01T00:00:00Z", "9999-12-31T23:59:59.999999Z"},
 		"n":       {"7", array.NullValueStr},
 	} {
 		if got := c.column("edges", name); !slices.Equal(got, want) {
 			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	b := c.batches["edges"][0]
+	day := b.Column(b.Schema().FieldIndices("day")[0]).(*array.Date32)
+	if day.Value(0) != math.MaxInt32 || day.Value(1) != math.MinInt32 {
+		t.Errorf("day = %v, want the largest and smallest Date32", day)
+	}
+	for name, want := range map[string][]arrow.Timestamp{"ts": {math.MaxInt64, math.MinInt64}, "tstz": {math.MinInt64, math.MaxInt64}} {
+		ts := b.Column(b.Schema().FieldIndices(name)[0]).(*array.Timestamp)
+		if got := ts.Values(); !slices.Equal(got, want) {
+			t.Errorf("%s = %v, want %v", name, got, want)
 		}
 	}
 }

@@ -140,6 +140,9 @@ type pipelineYAML struct {
 	} `yaml:"destination"`
 	SchemaPolicy string        `yaml:"schemaPolicy"`
 	Delivery     *deliveryYAML `yaml:"delivery"`
+	Types        *struct {
+		Infinity string `yaml:"infinity"`
+	} `yaml:"types"`
 }
 
 type scheduleYAML struct {
@@ -248,6 +251,12 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	}
 	if y.Delivery != nil {
 		if p.Delivery, err = parseDelivery(y.Delivery); err != nil {
+			return nil, err
+		}
+	}
+	if y.Types != nil {
+		p.Types = &apiv1.Types{}
+		if p.Types.Infinity, err = enum(apiv1.Infinity_value, "INFINITY_", "types.infinity", y.Types.Infinity, apiv1.Infinity_INFINITY_UNSPECIFIED); err != nil {
 			return nil, err
 		}
 	}

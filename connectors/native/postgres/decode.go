@@ -25,16 +25,12 @@ type colBuilder struct {
 	declared arrow.DataType
 }
 
+// Microseconds and days from 1970-01-01 to Postgres's epoch, 2000-01-01.
+// Postgres's infinity and -infinity are the types' largest and smallest
+// values, which the engine also reads as infinite, so they pass unshifted.
 const (
-	// Microseconds and days from 1970-01-01 to Postgres's epoch, 2000-01-01.
 	pgEpochMicros = 946_684_800_000_000
 	pgEpochDays   = 10_957
-	// infinity and -infinity are clamped to 9999-12-31 23:59:59.999999 and
-	// 0001-01-01, as microseconds and days since 1970-01-01.
-	maxTimestamp = 253_402_300_799_999_999
-	minTimestamp = -62_135_596_800_000_000
-	maxDate      = 2_932_896
-	minDate      = -719_162
 )
 
 func fixed(n int, f func(v []byte)) func([]byte) error {
@@ -84,14 +80,11 @@ func newColBuilder(mem memory.Allocator, c sourceColumn) (*colBuilder, error) {
 			if len(v) != 4 {
 				return fmt.Errorf("a %d-byte date", len(v))
 			}
-			switch d := int32(be.Uint32(v)); d { //nolint:gosec // two's complement
-			case math.MaxInt32:
-				b.Append(maxDate)
-			case math.MinInt32:
-				b.Append(minDate)
-			default:
-				b.Append(arrow.Date32(d + pgEpochDays))
+			d := int32(be.Uint32(v)) //nolint:gosec // two's complement
+			if d != math.MaxInt32 && d != math.MinInt32 {
+				d += pgEpochDays
 			}
+			b.Append(arrow.Date32(d))
 			return nil
 		}
 	case pgtype.TimeOID:
@@ -107,14 +100,11 @@ func newColBuilder(mem memory.Allocator, c sourceColumn) (*colBuilder, error) {
 			if len(v) != 8 {
 				return fmt.Errorf("a %d-byte timestamp", len(v))
 			}
-			switch us := int64(be.Uint64(v)); us { //nolint:gosec // two's complement
-			case math.MaxInt64:
-				b.Append(maxTimestamp)
-			case math.MinInt64:
-				b.Append(minTimestamp)
-			default:
-				b.Append(arrow.Timestamp(us + pgEpochMicros))
+			us := int64(be.Uint64(v)) //nolint:gosec // two's complement
+			if us != math.MaxInt64 && us != math.MinInt64 {
+				us += pgEpochMicros
 			}
+			b.Append(arrow.Timestamp(us))
 			return nil
 		}
 	case pgtype.UUIDOID:
