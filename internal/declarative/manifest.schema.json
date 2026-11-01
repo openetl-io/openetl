@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openetl.dev/schemas/manifest/v1alpha1.json",
+  "title": "openetl declarative source manifest",
+  "description": "A source for an HTTP API, as data. Expressions are CEL. Templates are text with {expression} holes; {{ and }} are literal braces. A template that is one hole keeps the hole's value: null leaves a parameter or header out, and a list repeats a parameter.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "openetl.dev/v1alpha1" },
+    "kind": { "const": "DeclarativeSource" },
+    "metadata": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The connector's name: lowercase letters, digits and hyphens.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+        },
+        "version": {
+          "description": "Semantic version.",
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["config", "http", "streams"],
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "description": "The JSON Schema of the connector's config: an object. Top-level string properties with x-secret: true are secrets, which only auth and sign can reference, by name. Expressions see the other properties as config.<name>.",
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "object" },
+            "properties": {
+              "type": "object",
+              "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+            }
+          }
+        },
+        "http": { "$ref": "#/$defs/http" },
+        "check": {
+          "description": "What Check does: fetch the first page of a stream. Default: the first stream without a parent.",
+          "type": "object",
+          "required": ["stream"],
+          "additionalProperties": false,
+          "properties": { "stream": { "type": "string" } }
+        },
+        "streams": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/stream" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "expression": {
+      "description": "A CEL expression.",
+      "type": "string",
+      "minLength": 1
+    },
+    "template": {
+      "description": "Text with {expression} holes.",
+      "type": "string"
+    },
+    "templates": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/template" }
+    },
+    "duration": {
+      "description": "A duration such as 90s, 5m or 1h30m.",
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+    },
+    "secret": {
+      "description": "A config property marked x-secret, by name.",
+      "type": "object",
+      "required": ["secret"],
+      "additionalProperties": false,
+      "properties": { "secret": { "type": "string", "minLength": 1 } }
+    },
+    "templateOrSecret": {
+      "oneOf": [{ "$ref": "#/$defs/template" }, { "$ref": "#/$defs/secret" }]
+    },
+    "http": {
+      "type": "object",
+      "required": ["base_url"],
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "description": "A template over config. Request paths are appended to it, and next-page URLs must have its scheme, host and port.",
+          "$ref": "#/$defs/template"
+        },
+        "headers": {
+          "description": "Headers for every request: templates, as in a stream's request.",
+          "$ref": "#/$defs/templates"
+        },
+        "auth": { "$ref": "#/$defs/auth" },
+        "sign": { "$ref": "#/$defs/sign" },
+        "rate_limit": {
+          "type": "object",
+          "required": ["rps"],
+          "additionalProperties": false,
+          "properties": {
+            "rps": {
+              "description": "Requests per second at most. The rate adapts below it when the API throttles.",
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "errors": {
+          "description": "Error rules for every stream, after the stream's own.",
+          "$ref": "#/$defs/errors"
+        }
+      }
+    },
+    "auth": {
+      "description": "How requests authenticate. The host adds the credential when a request leaves, and only to the base URL's scheme, host and port.",
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["bearer", "basic", "api_key", "oauth2", "aws_sigv4"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "bearer" } } },
+          "then": {
+            "required": ["token"],
+            "properties": { "token": { "$ref": "#/$defs/secret" } }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "basic" } } },
+          "then": {
+            "required": ["username", "password"],
+            "properties": {
+              "username": { "description": "A template over config.", "$ref": "#/$defs/template" },
+              "password": { "$ref": "#/$defs/secret" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "api_key" } } },
+          "then": {
+            "required": ["key"],
+            "oneOf": [{ "required": ["header"] }, { "required": ["query"] }],
+            "properties": {
+              "key": { "$ref": "#/$defs/secret" },
+              "header": { "description": "The header the key goes in, such as X-API-Key.", "type": "string", "minLength": 1 },
+              "query": { "description": "The query parameter the key goes in.", "type": "string", "minLength": 1 },
+              "prefix": { "description": "Put before the key, such as \"Token \".", "type": "string" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "oauth2" } } },
+          "then": {
+            "required": ["token_url", "client_id", "client_secret"],
+            "properties": {
+              "token_url": { "description": "A template over config.", "$ref": "#/$defs/template" },
+              "client_id": { "$ref": "#/$defs/templateOrSecret" },
+              "client_secret": { "$ref": "#/$defs/secret" },
+              "refresh_token": {
+                "description": "Without one, the host uses the client credentials grant.",
+                "$ref": "#/$defs/secret"
+              },
+              "scopes": { "type": "array", "items": { "type": "string" } },
+              "auth_style": {
+                "description": "Where the client credentials go in token requests. Default: the host tries both.",
+                "enum": ["header", "params"]
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "aws_sigv4" } } },
+          "then": {
+            "required": ["access_key_id", "secret_access_key", "region", "service"],
+            "properties": {
+              "access_key_id": { "$ref": "#/$defs/templateOrSecret" },
+              "secret_access_key": { "$ref": "#/$defs/secret" },
+              "session_token": { "$ref": "#/$defs/secret" },
+              "region": { "description": "A template over config.", "$ref": "#/$defs/template" },
+              "service": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "sign": {
+      "description": "Signs every request with a key the host holds. hmac puts a MAC of message in a header or a query parameter; jwt sends a JWT as the Authorization header.",
+      "type": "object",
+      "required": ["type", "key"],
+      "properties": {
+        "type": { "enum": ["hmac", "jwt"] },
+        "key": { "$ref": "#/$defs/secret" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "hmac" } } },
+          "then": {
+            "required": ["hash", "message"],
+            "oneOf": [{ "required": ["header"] }, { "required": ["query"] }],
+            "properties": {
+              "hash": { "enum": ["sha1", "sha256", "sha512"] },
+              "message": {
+                "description": "An expression over request (method, url, path, query, headers, body), config and now, returning a string or bytes.",
+                "$ref": "#/$defs/expression"
+              },
+              "encoding": { "description": "Default: hex.", "enum": ["hex", "base64"] },
+              "header": { "type": "string", "minLength": 1 },
+              "query": { "type": "string", "minLength": 1 },
+              "prefix": { "type": "string" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "jwt" } } },
+          "then": {
+            "required": ["algorithm", "claims"],
+            "properties": {
+              "algorithm": { "enum": ["HS256", "RS256", "ES256"] },
+              "claims": { "description": "An expression over config and now, returning a map.", "$ref": "#/$defs/expression" },
+              "jose_header": {
+                "description": "An expression returning extra header fields, such as kid. The host sets alg and typ.",
+                "$ref": "#/$defs/expression"
+              },
+              "prefix": { "description": "Default: \"Bearer \".", "type": "string" }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "stream": {
+      "type": "object",
+      "required": ["name", "request"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "primary_key": { "type": "array", "items": { "type": "string" } },
+        "request": { "$ref": "#/$defs/request" },
+        "records": {
+          "description": "An expression over response, returning the page's records, each an object. Default: response.body.",
+          "$ref": "#/$defs/expression"
+        },
+        "paginator": { "$ref": "#/$defs/paginator" },
+        "incremental": { "$ref": "#/$defs/incremental" },
+        "parent": {
+          "description": "Read the stream once per record of another stream, which the request sees as parent. The parent must have a primary key and no parent of its own.",
+          "type": "object",
+          "required": ["stream"],
+          "additionalProperties": false,
+          "properties": { "stream": { "type": "string" } }
+        },
+        "errors": { "$ref": "#/$defs/errors" },
+        "schema": {
+          "description": "JSON Schema for some or all of the record's top-level properties, which declares their types. The others are inferred.",
+          "type": "object",
+          "properties": {
+            "properties": {
+              "type": "object",
+              "additionalProperties": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "request": {
+      "description": "Templates over config, state, page, parent and now.",
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "method": { "enum": ["GET", "POST"] },
+        "path": {
+          "description": "Appended to the base URL. Holes are escaped as path segments.",
+          "$ref": "#/$defs/template"
+        },
+        "params": { "$ref": "#/$defs/templates" },
+        "headers": { "$ref": "#/$defs/templates" },
+        "body": {
+          "description": "An expression whose value is sent as JSON.",
+          "$ref": "#/$defs/expression"
+        },
+        "idempotent": {
+          "description": "Lets the host retry a POST, such as a search that changes nothing.",
+          "type": "boolean"
+        }
+      }
+    },
+    "paginator": {
+      "description": "How to get the next page. A resume point follows every page. Without a paginator, a stream is one page.",
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["cursor", "next_url", "link", "offset", "page"] },
+        "stop": {
+          "description": "An expression over response and records; true ends pagination.",
+          "$ref": "#/$defs/expression"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "cursor" } } },
+          "then": {
+            "required": ["next"],
+            "properties": {
+              "next": {
+                "description": "An expression over response and records: the next page's token, or null or an empty string at the end. Requests see it as page.token.",
+                "$ref": "#/$defs/expression"
+              },
+              "param": { "description": "Also send the token as this query parameter.", "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "next_url" } } },
+          "then": {
+            "required": ["next"],
+            "properties": {
+              "next": {
+                "description": "An expression over response and records: the next page's URL, absolute or relative to the base URL, or null or an empty string at the end. It's fetched as it is, with no params added.",
+                "$ref": "#/$defs/expression"
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "link" } } },
+          "then": {
+            "description": "The next page is the Link header's rel=\"next\" URL, fetched as it is."
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "offset" } } },
+          "then": {
+            "properties": {
+              "param": { "description": "Default: offset.", "type": "string", "minLength": 1 },
+              "start": { "description": "Default: 0.", "type": "integer", "minimum": 0 },
+              "size": { "description": "Records in a full page. A shorter page is the last.", "type": "integer", "minimum": 1 },
+              "size_param": { "description": "Send size as this query parameter.", "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "page" } } },
+          "then": {
+            "properties": {
+              "param": { "description": "Default: page.", "type": "string", "minLength": 1 },
+              "start": { "description": "Default: 1.", "type": "integer", "minimum": 0 },
+              "size": { "description": "Records in a full page. A shorter page is the last.", "type": "integer", "minimum": 1 },
+              "size_param": { "description": "Send size as this query parameter.", "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "incremental": {
+      "description": "Read from a cursor floor onwards. Requests see the floor, less the lookback, as state.cursor, which is absent on the first sync. The API must return every record whose cursor is at or after it.",
+      "type": "object",
+      "required": ["cursor_field", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "cursor_field": { "description": "A top-level property of the records.", "type": "string", "minLength": 1 },
+        "type": {
+          "description": "datetime: RFC 3339 text, and state.cursor is a timestamp. unix: seconds since 1970, and state.cursor is an int. integer and string: compared as they are.",
+          "enum": ["datetime", "unix", "integer", "string"]
+        },
+        "lookback": {
+          "description": "Read again this far behind the floor, for late updates. datetime and unix only.",
+          "$ref": "#/$defs/duration"
+        },
+        "ordered": {
+          "description": "The API returns records sorted by the cursor, oldest first, so the floor advances after every page.",
+          "type": "boolean"
+        }
+      }
+    },
+    "errors": {
+      "description": "Rules tried in order on every response. The first whose when is true decides; an expression that fails to evaluate doesn't match.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["when", "action"],
+        "additionalProperties": false,
+        "properties": {
+          "when": { "description": "An expression over response.", "$ref": "#/$defs/expression" },
+          "action": {
+            "description": "fail: fail with code and message. ignore: treat the response as an empty last page. expired: the page token a resumed read started from was rejected, so the stream starts over from its floor.",
+            "enum": ["fail", "ignore", "expired"]
+          },
+          "code": {
+            "description": "For fail. Default: how the host classified the response.",
+            "enum": ["TRANSIENT", "RATE_LIMITED", "AUTH_EXPIRED", "AUTH_INVALID", "PERMISSION_DENIED", "CONFIG_INVALID", "CONTRACT_CHANGED", "RESOURCE_EXHAUSTED"]
+          },
+          "message": { "description": "For fail: a template over response.", "$ref": "#/$defs/template" }
+        }
+      }
+    }
+  }
+}
