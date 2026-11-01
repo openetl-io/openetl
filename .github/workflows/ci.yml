@@ -79,7 +79,7 @@ jobs:
           repository: unsuitable001/openetl-connectors
           ref: move-postgres
           path: openetl-connectors
-          token: ${{ secrets.CONNECTORS_TOKEN }}
+          ssh-key: ${{ secrets.CONNECTORS_DEPLOY_KEY }}
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-go@v6
