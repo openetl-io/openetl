@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -20,6 +21,22 @@ type Host interface {
 	// Sign signs with the key in the named secret. An HMAC returns the raw
 	// MAC, a JWT the compact JWS.
 	Sign(ctx context.Context, keySecret string, m SignMethod) ([]byte, error)
+	Log(ctx context.Context, entries []LogEntry) error
+	// KVGet and KVPut are scratch storage for the connector instance: the
+	// host may drop a value before it expires. ok is false if the key is
+	// missing or expired.
+	KVGet(ctx context.Context, key string) (value []byte, ok bool, err error)
+	// A ttl of zero never expires.
+	KVPut(ctx context.Context, key string, value []byte, ttl time.Duration) error
+	Now(ctx context.Context) (time.Time, error)
+}
+
+type LogEntry struct {
+	// Zero: when the host receives it.
+	Time    time.Time
+	Level   slog.Level
+	Message string
+	Attrs   map[string]string
 }
 
 type Request struct {

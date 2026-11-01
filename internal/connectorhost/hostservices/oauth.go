@@ -61,6 +61,7 @@ func (s *Services) oauth(ctx context.Context, name string) (*oauthCredential, er
 	if err := dec.Decode(&sec); err != nil || sec.ClientID == "" || sec.TokenURL == "" {
 		return nil, errs.New(errs.ConfigInvalid, "HTTP: secret %q isn't an OAuth2 credential: it needs client_id, client_secret, token_url and optionally refresh_token", name)
 	}
+	s.remember(sec.ClientSecret, sec.RefreshToken)
 	if sec.AuthStyle != "" && sec.AuthStyle != "header" && sec.AuthStyle != "params" {
 		return nil, errs.New(errs.ConfigInvalid, "HTTP: secret %q: auth_style is header or params", name)
 	}
@@ -113,6 +114,7 @@ func (c *oauthCredential) token(ctx context.Context) (*oauth2.Token, error) {
 		return nil, tokenError(err)
 	}
 	c.tok = tok
+	c.s.remember(tok.AccessToken, tok.RefreshToken)
 	if tok.RefreshToken != "" && tok.RefreshToken != c.secret.RefreshToken {
 		c.secret.RefreshToken = tok.RefreshToken
 		c.rotate(ctx)

@@ -34,6 +34,14 @@ type credential interface {
 	apply(req *http.Request) error
 }
 
+// apiKeyHeader is the header an API key goes in, if any.
+func apiKeyHeader(a host.Auth) string {
+	if k, ok := a.(host.APIKey); ok && k.Header != "" {
+		return http.CanonicalHeaderKey(k.Header)
+	}
+	return ""
+}
+
 // authHeader is the header an auth sets, which the request mustn't set too.
 func authHeader(a host.Auth) string {
 	switch a := a.(type) {
@@ -84,6 +92,7 @@ func (s *Services) credential(ctx context.Context, a host.Auth) (credential, *oa
 	case host.Basic:
 		v, err := s.secret(ctx, a.PasswordSecret)
 		enc := base64.StdEncoding.EncodeToString([]byte(a.Username + ":" + v.Reveal()))
+		s.remember(enc)
 		return headerCredential{"Authorization", sdk.NewSecret("Basic " + enc)}, nil, err
 	case host.APIKey:
 		if (a.Header == "") == (a.QueryParam == "") {
@@ -109,7 +118,9 @@ func (s *Services) secret(ctx context.Context, name string) (sdk.Secret, error) 
 	if s.opts.Secrets == nil {
 		return sdk.Secret{}, errs.New(errs.ConfigInvalid, "HTTP: no secret named %q", name)
 	}
-	return s.opts.Secrets.Secret(ctx, name)
+	v, err := s.opts.Secrets.Secret(ctx, name)
+	s.remember(v.Reveal())
+	return v, err
 }
 
 // A request's credential and origin travel in its context, so every hop of

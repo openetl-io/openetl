@@ -46,6 +46,7 @@ func (s *Services) sigv4(ctx context.Context, a host.AWSSigV4) (credential, erro
 	if err := dec.Decode(&sec); err != nil || sec.AccessKeyID == "" || sec.SecretAccessKey == "" {
 		return nil, errs.New(errs.ConfigInvalid, "HTTP: secret %q isn't AWS credentials: it needs access_key_id, secret_access_key and optionally session_token", a.CredentialsSecret)
 	}
+	s.remember(sec.SecretAccessKey, sec.SessionToken)
 	return &sigv4Credential{
 		creds:   aws.Credentials{AccessKeyID: sec.AccessKeyID, SecretAccessKey: sec.SecretAccessKey, SessionToken: sec.SessionToken},
 		region:  a.Region,

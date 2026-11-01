@@ -58,7 +58,13 @@ type Services struct {
 	mu       sync.Mutex
 	limiters map[string]*limiter
 	// By credential secret.
-	tokens map[string]*oauthCredential
+	tokens    map[string]*oauthCredential
+	traces    []Trace
+	nextTrace int
+	// Secret values, longest first.
+	known   []string
+	kv      map[string]kvEntry
+	kvBytes int
 
 	now   func() time.Time
 	sleep func(context.Context, time.Duration) error
@@ -75,6 +81,7 @@ func New(o Options) *Services {
 		log:      cmp.Or(o.Logger, slog.Default()),
 		limiters: map[string]*limiter{},
 		tokens:   map[string]*oauthCredential{},
+		kv:       map[string]kvEntry{},
 		now:      time.Now,
 		sleep:    sleep,
 	}
@@ -126,10 +133,12 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 				cred = bearer(tok)
 			}
 		}
+		began, clock := s.now(), time.Now()
 		if err == nil {
 			resp, release, err = s.send(withAuth(ctx, u, cred), method, u, r, deadline) //nolint:bodyclose // statusError closes it, or the caller through body
 		}
 		now = s.now()
+		tr := Trace{Time: began, Try: try, Method: method, URL: s.scrub(u.Redacted()), RequestHeader: s.redactHeader(r.Header, apiKeyHeader(r.Auth))}
 		var wait time.Duration
 		var final error
 		switch {
@@ -138,6 +147,8 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 				return nil, ctx.Err()
 			}
 			final = classifyErr(err)
+			tr.Err, tr.Duration = s.scrub(final.Error()), time.Since(clock)
+			s.addTrace(tr)
 			// Without a token, nothing was sent.
 			sentNothing := notSent(err) || (oc != nil && tok == nil)
 			if errs.CodeOf(final) != errs.Transient || (!retryAny && !sentNothing) {
@@ -146,15 +157,19 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 			wait = backoff(try)
 		case resp.StatusCode < 400:
 			lim.ok(now)
+			tr.Status, tr.ResponseHeader = resp.StatusCode, s.redactHeader(resp.Header, "")
 			return &host.Response{
 				Status: resp.StatusCode,
 				Header: resp.Header,
-				Body:   &body{rc: netguard.LimitBody(resp.Body, s.opts.MaxBodyBytes), cancel: release},
+				Body:   &body{rc: netguard.LimitBody(resp.Body, s.opts.MaxBodyBytes), cancel: release, s: s, trace: tr, clock: clock},
 			}, nil
 		default:
 			se := statusError(resp, now)
 			release()
 			final = se
+			tr.Status, tr.ResponseHeader, tr.Duration = se.Status, s.redactHeader(se.Header, ""), time.Since(clock)
+			tr.Body = []byte(s.scrub(string(se.Body[:min(len(se.Body), maxTraceBody)])))
+			s.addTrace(tr)
 			code := errs.Code(se.Code)
 			// A server can revoke an access token before it expires.
 			if oc != nil && se.Status == http.StatusUnauthorized && !refreshed {
@@ -241,13 +256,23 @@ func (s *Services) limiter(key string) *limiter {
 	return l
 }
 
+// body keeps the start of what's read for the try's trace, recorded on
+// Close.
 type body struct {
 	rc     io.ReadCloser
 	cancel context.CancelFunc
+	s      *Services
+	trace  Trace
+	clock  time.Time
+	start  []byte
+	closed bool
 }
 
 func (b *body) Read(p []byte) (int, error) {
 	n, err := b.rc.Read(p)
+	if k := min(n, maxTraceBody-len(b.start)); k > 0 {
+		b.start = append(b.start, p[:k]...)
+	}
 	switch {
 	case err == nil, err == io.EOF:
 		return n, err
@@ -261,6 +286,11 @@ func (b *body) Read(p []byte) (int, error) {
 func (b *body) Close() error {
 	err := b.rc.Close()
 	b.cancel()
+	if !b.closed {
+		b.closed = true
+		b.trace.Body, b.trace.Duration = shape(b.start), time.Since(b.clock)
+		b.s.addTrace(b.trace)
+	}
 	return err
 }
 
