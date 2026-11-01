@@ -153,7 +153,8 @@ type streamYAML struct {
 	Sync    string `yaml:"sync"`
 	Cursor  string `yaml:"cursor"`
 	Columns map[string]struct {
-		Op string `yaml:"op"`
+		Op   string `yaml:"op"`
+		Type string `yaml:"type"`
 	} `yaml:"columns"`
 }
 
@@ -212,12 +213,26 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, fmt.Errorf("source.streams[%d]: missing or repeated name %q", i, s.Name)
 		}
 		seen[s.Name] = true
-		if len(s.Columns) > 0 {
-			return nil, fmt.Errorf("source.streams[%d].columns: column ops aren't supported yet", i)
-		}
 		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor}
 		if st.Sync, err = enum(apiv1.SyncMode_value, "SYNC_MODE_", "sync", s.Sync, apiv1.SyncMode_SYNC_MODE_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
+		}
+		for name, c := range s.Columns {
+			field := fmt.Sprintf("source.streams[%d].columns.%s", i, name)
+			if c.Op != "" {
+				return nil, fmt.Errorf("%s: column ops aren't supported yet", field)
+			}
+			col := &apiv1.PipelineColumn{}
+			if col.Type, err = enum(apiv1.ColumnType_value, "COLUMN_TYPE_", field+".type", c.Type, apiv1.ColumnType_COLUMN_TYPE_UNSPECIFIED); err != nil {
+				return nil, err
+			}
+			if col.Type == apiv1.ColumnType_COLUMN_TYPE_UNSPECIFIED {
+				return nil, fmt.Errorf("%s: needs a type", field)
+			}
+			if st.Columns == nil {
+				st.Columns = map[string]*apiv1.PipelineColumn{}
+			}
+			st.Columns[name] = col
 		}
 		p.Source.Streams = append(p.Source.Streams, st)
 	}

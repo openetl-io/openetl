@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/unsuitable001/openetl/connectors/native/postgres"
@@ -27,6 +28,59 @@ import (
 // decimals, values that don't fit are quarantined, and infinities are
 // clamped.
 func TestPostgresTypesRoundTrip(t *testing.T) {
+	got := typesRoundTrip(t, nil)
+	for col, want := range map[string]string{
+		"amount": "numeric(12,2)", "any_num": "numeric(38,9)", "day": "date", "at_time": "time without time zone",
+		"tstz": "timestamp with time zone", "uid": "uuid", "doc": "jsonb",
+	} {
+		if got.types[col] != want {
+			t.Errorf("%s is %s, want %s", col, got.types[col], want)
+		}
+	}
+	want := "1|12.50|1.123456789|2026-10-31|12:34:56.789|9999-12-31 23:59:59.999999|0b0e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b|{\"a\": 1}"
+	if got.rows != want {
+		t.Errorf("rows are %q, want %q", got.rows, want)
+	}
+	lines := got.quarantined
+	if len(lines) != 2 || !strings.HasPrefix(lines[0]["reason"], "nan:") || !strings.HasPrefix(lines[1]["reason"], "precision:") {
+		t.Fatalf("quarantined %v", lines)
+	}
+	if !strings.Contains(lines[0]["record"], `"id":2`) {
+		t.Errorf("quarantined record %v", lines[0])
+	}
+}
+
+// Decimal columns overridden to float64 and string keep the values a
+// decimal can't hold.
+func TestPostgresTypeOverrides(t *testing.T) {
+	got := typesRoundTrip(t, func(j *runnerpkg.Job) {
+		j.Streams[0].Overrides = map[string]arrow.DataType{"amount": arrow.PrimitiveTypes.Float64, "any_num": arrow.BinaryTypes.String}
+	})
+	if got.types["amount"] != "double precision" || got.types["any_num"] != "text" {
+		t.Errorf("amount is %s and any_num %s, want double precision and text", got.types["amount"], got.types["any_num"])
+	}
+	want := "1|12.5|1.123456789|2026-10-31|12:34:56.789|9999-12-31 23:59:59.999999|0b0e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b|{\"a\": 1};" +
+		"2|NaN|1|0001-01-01;3|1|0.0000000001"
+	if got.rows != want {
+		t.Errorf("rows are %q, want %q", got.rows, want)
+	}
+	if len(got.quarantined) != 0 {
+		t.Errorf("quarantined %v", got.quarantined)
+	}
+}
+
+type roundTrip struct {
+	// Column types in the destination.
+	types map[string]string
+	// Each row's non-null values joined with |, rows with ;.
+	rows        string
+	quarantined []map[string]string
+}
+
+// typesRoundTrip syncs a table of edge-case values once, after edit changes
+// the job.
+func typesRoundTrip(t *testing.T, edit func(*runnerpkg.Job)) roundTrip {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	name := unique("types")
@@ -50,9 +104,14 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
+		conn, err := pgx.Connect(context.Background(), env.dbURL)
+		if err != nil {
+			return
+		}
 		for _, s := range []string{src, dst} {
 			_, _ = conn.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+s+" CASCADE")
 		}
+		_ = conn.Close(context.Background())
 	})
 
 	source, err := postgres.NewSource(fmt.Appendf(nil, `{"dsn": %q, "schema": %q}`, env.dbURL, src))
@@ -70,7 +129,7 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 	quarantine := t.TempDir()
 	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", name)
 	cs := cat.Streams[0]
-	_, err = runnerpkg.RunAttempt(ctx, runnerpkg.Job{
+	job := runnerpkg.Job{
 		Owner:         "a1",
 		Pipeline:      name,
 		Log:           log,
@@ -83,12 +142,15 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 			Require: delivery.ExactlyOnce,
 			Scope:   destination.ScopePipeline,
 		},
-	})
-	if err != nil {
+	}
+	if edit != nil {
+		edit(&job)
+	}
+	if _, err = runnerpkg.RunAttempt(ctx, job); err != nil {
 		t.Fatal(err)
 	}
 
-	types := map[string]string{}
+	res := roundTrip{types: map[string]string{}}
 	rows, err := conn.Query(ctx, `SELECT attname, format_type(atttypid, atttypmod) FROM pg_attribute
 		WHERE attrelid = $1::regclass AND attnum > 0 AND NOT attisdropped`, dst+".items")
 	if err != nil {
@@ -99,29 +161,14 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 		if err := rows.Scan(&n, &typ); err != nil {
 			t.Fatal(err)
 		}
-		types[n] = typ
+		res.types[n] = typ
 	}
-	for col, want := range map[string]string{
-		"amount": "numeric(12,2)", "any_num": "numeric(38,9)", "day": "date", "at_time": "time without time zone",
-		"tstz": "timestamp with time zone", "uid": "uuid", "doc": "jsonb",
-	} {
-		if types[col] != want {
-			t.Errorf("%s is %s, want %s", col, types[col], want)
-		}
-	}
-
-	var got string
-	err = conn.QueryRow(ctx, `SELECT string_agg(concat_ws('|', id, amount, any_num, day, at_time, tstz AT TIME ZONE 'UTC', uid, doc), ';' ORDER BY id)
-		FROM `+dst+`.items`).Scan(&got)
+	err = conn.QueryRow(ctx, `SELECT coalesce(string_agg(concat_ws('|', id, amount, any_num, day, at_time, tstz AT TIME ZONE 'UTC', uid, doc), ';' ORDER BY id), '')
+		FROM `+dst+`.items`).Scan(&res.rows)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "1|12.50|1.123456789|2026-10-31|12:34:56.789|9999-12-31 23:59:59.999999|0b0e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b|{\"a\": 1}"
-	if got != want {
-		t.Errorf("rows are %q, want %q", got, want)
-	}
 
-	var lines []map[string]string
 	files, _ := filepath.Glob(filepath.Join(quarantine, "*", "*", "items.jsonl"))
 	for _, f := range files {
 		b, err := os.ReadFile(f)
@@ -133,15 +180,10 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 			if err := json.Unmarshal([]byte(l), &line); err != nil {
 				t.Fatal(err)
 			}
-			lines = append(lines, line)
+			res.quarantined = append(res.quarantined, line)
 		}
 	}
-	if len(lines) != 2 || !strings.HasPrefix(lines[0]["reason"], "nan:") || !strings.HasPrefix(lines[1]["reason"], "precision:") {
-		t.Fatalf("quarantined %v", lines)
-	}
-	if !strings.Contains(lines[0]["record"], `"id":2`) {
-		t.Errorf("quarantined record %v", lines[0])
-	}
+	return res
 }
 
 // A raw column that widens from int64 to float64 to string, within an epoch

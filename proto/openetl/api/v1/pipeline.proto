@@ -92,8 +92,8 @@ message PipelineStream {
   string name = 1;
   SyncMode sync = 2;
   string cursor = 3;
-  // By column name.
-  map<string, ColumnOp> columns = 4;
+  // By source column name.
+  map<string, PipelineColumn> columns = 4;
 }
 
 enum SyncMode {
@@ -104,8 +104,19 @@ enum SyncMode {
   SYNC_MODE_STREAM = 4;
 }
 
-message ColumnOp {
+message PipelineColumn {
   ColumnOpKind op = 1;
+  // Only for columns the source declares as decimals.
+  ColumnType type = 2;
+}
+
+// A type a decimal column can arrive as instead.
+enum ColumnType {
+  COLUMN_TYPE_UNSPECIFIED = 0;
+  // The source's text for the value, NaN included.
+  COLUMN_TYPE_STRING = 1;
+  // A double, so digits can be lost. NaN and infinities are kept.
+  COLUMN_TYPE_FLOAT64 = 2;
 }
 
 enum ColumnOpKind {

@@ -22,6 +22,8 @@ spec:
     streams:
       - name: users
         sync: full_refresh
+        columns:
+          balance: { type: float64 }
   destination:
     ref: warehouse
     namespace: raw_faker
@@ -49,6 +51,8 @@ func TestParsePipeline(t *testing.T) {
 		t.Errorf("schedule = %v", p.GetSchedule())
 	case p.GetSource().GetStreams()[0].GetSync() != apiv1.SyncMode_SYNC_MODE_FULL_REFRESH:
 		t.Error("sync mode")
+	case p.GetSource().GetStreams()[0].GetColumns()["balance"].GetType() != apiv1.ColumnType_COLUMN_TYPE_FLOAT64:
+		t.Errorf("columns = %v", p.GetSource().GetStreams()[0].GetColumns())
 	case p.GetDestination().GetWrite() != apiv1.WriteMode_WRITE_MODE_APPEND:
 		t.Error("write doesn't default to append")
 	case p.GetDestination().GetNaming() != apiv1.Naming_NAMING_SOURCE:
@@ -92,6 +96,8 @@ func TestParseErrors(t *testing.T) {
 		"unknown enum":   header + strings.Replace(base, "{ref: d}", "{ref: d, write: upsert}", 1),
 		"naming":         header + strings.Replace(base, "{ref: d}", "{ref: d, naming: exact}", 1),
 		"column ops":     header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {op: hash}}}]}", 1),
+		"column type":    header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {type: int64}}}]}", 1),
+		"no column type": header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {}}}]}", 1),
 		"repeated":       header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a}, {name: a}]}", 1),
 		"size":           header + base + "  delivery: {commit: {maxBytes: lots}}\n",
 		"zero timeout":   header + base + "  delivery: {resumePointTimeout: 0s}\n",

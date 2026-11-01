@@ -332,11 +332,17 @@ pub(crate) fn conform(
         if let Some(d) = d {
             if field.data_type() != d.data_type() {
                 let t = Target::of(d).ok_or_else(|| Error::Declared(f.name().clone()))?;
-                let (c, rows) = text_column(d, t, &col).ok_or_else(|| Error::Mismatch {
-                    column: f.name().clone(),
-                    from: field.data_type().clone(),
-                    to: d.data_type().clone(),
-                })?;
+                let (c, rows) = match (field.data_type(), t) {
+                    // A decimal column overridden to another type.
+                    (DataType::Decimal128(..), Target::String | Target::Float64) => {
+                        (arrow_cast::cast(&col, d.data_type())?, Vec::new())
+                    }
+                    _ => text_column(d, t, &col).ok_or_else(|| Error::Mismatch {
+                        column: f.name().clone(),
+                        from: field.data_type().clone(),
+                        to: d.data_type().clone(),
+                    })?,
+                };
                 fail(rows);
                 col = c;
             }
@@ -932,6 +938,33 @@ mod tests {
             conform(&batch, Some(&mismatch)),
             Err(Error::Mismatch { .. })
         ));
+    }
+
+    #[test]
+    fn typed_decimals_cast_to_their_override() {
+        use arrow_array::Decimal128Array;
+        use arrow_array::types::Float64Type;
+        let d = Decimal128Array::from(vec![Some(1_500_000_000), None])
+            .with_precision_and_scale(38, 9)
+            .unwrap();
+        let batch = RecordBatch::try_from_iter([
+            ("s", Arc::new(d.clone()) as ArrayRef),
+            ("f", Arc::new(d) as ArrayRef),
+        ])
+        .unwrap();
+        let declared = Schema::new(vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("f", DataType::Float64, true),
+        ]);
+        let (out, failed) = conform(&batch, Some(&declared)).unwrap();
+        assert!(failed.is_empty());
+        let s = out.column(0).as_string::<i32>();
+        assert_eq!(
+            s.iter().collect::<Vec<_>>(),
+            vec![Some("1.500000000"), None]
+        );
+        let f = out.column(1).as_primitive::<Float64Type>();
+        assert_eq!(f.iter().collect::<Vec<_>>(), vec![Some(1.5), None]);
     }
 
     #[test]

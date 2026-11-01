@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -57,19 +58,28 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 		mode = destination.Merge
 	}
 	var streams []runner.Stream
-	stream := func(cs source.CatalogStream, cursor string) runner.Stream {
-		return runner.Stream{Name: cs.Name, Replay: cs.Replay, Mode: mode, PrimaryKey: cs.PrimaryKey, CursorField: cmp.Or(cursor, cs.CursorField), Schema: cs.Schema}
+	stream := func(cs source.CatalogStream, ps *apiv1.PipelineStream) runner.Stream {
+		s := runner.Stream{Name: cs.Name, Replay: cs.Replay, Mode: mode, PrimaryKey: cs.PrimaryKey, CursorField: cmp.Or(ps.GetCursor(), cs.CursorField), Schema: cs.Schema}
+		for name, c := range ps.GetColumns() {
+			if t := columnTypes[c.GetType()]; t != nil {
+				if s.Overrides == nil {
+					s.Overrides = map[string]arrow.DataType{}
+				}
+				s.Overrides[name] = t
+			}
+		}
+		return s
 	}
 	if len(p.GetSource().GetStreams()) == 0 {
 		for _, cs := range cat.Streams {
-			streams = append(streams, stream(cs, ""))
+			streams = append(streams, stream(cs, nil))
 		}
 	}
 	for _, ps := range p.GetSource().GetStreams() {
 		found := false
 		for _, cs := range cat.Streams {
 			if cs.Name == ps.GetName() {
-				streams = append(streams, stream(cs, ps.GetCursor()))
+				streams = append(streams, stream(cs, ps))
 				found = true
 			}
 		}
@@ -96,6 +106,11 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse) (runne
 		KeepSourceNames: p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
 		SchemaPolicy:    policy,
 	}, nil
+}
+
+var columnTypes = map[apiv1.ColumnType]arrow.DataType{
+	apiv1.ColumnType_COLUMN_TYPE_STRING:  arrow.BinaryTypes.String,
+	apiv1.ColumnType_COLUMN_TYPE_FLOAT64: arrow.PrimitiveTypes.Float64,
 }
 
 func settingsFor(d *apiv1.Delivery, caps destination.Capabilities) delivery.Settings {

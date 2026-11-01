@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -32,10 +33,44 @@ type Stream struct {
 	CursorField string
 	// Declared logical types under source names; nil: inferred.
 	Schema *arrow.Schema
+	// Decimal columns that arrive as another type instead, by source name:
+	// String or Float64.
+	Overrides map[string]arrow.DataType
 }
 
 func (s Stream) delivery() delivery.Stream {
 	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0}
+}
+
+// Declared is Schema with Overrides applied.
+func (s Stream) Declared() *arrow.Schema {
+	if s.Schema == nil || len(s.Overrides) == 0 {
+		return s.Schema
+	}
+	fields := s.Schema.Fields()
+	for i, f := range fields {
+		if t, ok := s.Overrides[f.Name]; ok {
+			fields[i] = arrow.Field{Name: f.Name, Type: t, Nullable: f.Nullable}
+		}
+	}
+	md := s.Schema.Metadata()
+	return arrow.NewSchema(fields, &md)
+}
+
+func (s Stream) checkOverrides() error {
+	for _, name := range slices.Sorted(maps.Keys(s.Overrides)) {
+		if t := s.Overrides[name]; !arrow.TypeEqual(t, arrow.BinaryTypes.String) && !arrow.TypeEqual(t, arrow.PrimitiveTypes.Float64) {
+			return fmt.Errorf("stream %q: column %q can't be overridden to %s, only to string or float64", s.Name, name, t)
+		}
+		var fs []arrow.Field
+		if s.Schema != nil {
+			fs, _ = s.Schema.FieldsByName(name)
+		}
+		if len(fs) != 1 || fs[0].Type.ID() != arrow.DECIMAL128 {
+			return fmt.Errorf("stream %q: column %q has a type override, but the source doesn't declare it a decimal", s.Name, name)
+		}
+	}
+	return nil
 }
 
 type Job struct {
@@ -223,6 +258,9 @@ func (j *Job) validate() error {
 			return errs.New(errs.ConfigInvalid, "runner: stream %q configured twice", s.Name)
 		}
 		seen[s.Name] = true
+		if err := s.checkOverrides(); err != nil {
+			return errs.Wrap(errs.ConfigInvalid, err, "runner")
+		}
 		streams = append(streams, s.delivery())
 	}
 	return errs.Wrap(errs.ConfigInvalid, delivery.Check(j.Destination.Capabilities(), j.Settings, streams), "runner: plan checks")

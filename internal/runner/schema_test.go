@@ -55,3 +55,34 @@ func TestApplySchemasOnlyWhenTheyChange(t *testing.T) {
 		t.Errorf("ApplySchema calls %v, want [[a] [a]]", a.calls)
 	}
 }
+
+func TestOverridesApplyToDeclaredDecimals(t *testing.T) {
+	declared := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "amount", Type: &arrow.Decimal128Type{Precision: 38, Scale: 9}, Nullable: true},
+	}, nil)
+	s := Stream{Name: "s", Schema: declared, Overrides: map[string]arrow.DataType{"amount": arrow.BinaryTypes.String}}
+	if err := s.checkOverrides(); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Declared()
+	if !arrow.TypeEqual(got.Field(1).Type, arrow.BinaryTypes.String) || !got.Field(1).Nullable || !arrow.TypeEqual(got.Field(0).Type, arrow.PrimitiveTypes.Int64) {
+		t.Errorf("declared %v", got)
+	}
+	if !arrow.TypeEqual(declared.Field(1).Type, &arrow.Decimal128Type{Precision: 38, Scale: 9}) {
+		t.Error("Declared changed the source's schema")
+	}
+
+	for name, o := range map[string]map[string]arrow.DataType{
+		"not a decimal": {"id": arrow.BinaryTypes.String},
+		"missing":       {"other": arrow.PrimitiveTypes.Float64},
+		"unsupported":   {"amount": arrow.PrimitiveTypes.Int64},
+	} {
+		if err := (Stream{Name: "s", Schema: declared, Overrides: o}).checkOverrides(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if err := (Stream{Name: "s", Overrides: map[string]arrow.DataType{"amount": arrow.BinaryTypes.String}}).checkOverrides(); err == nil {
+		t.Error("an override on an undeclared stream was accepted")
+	}
+}

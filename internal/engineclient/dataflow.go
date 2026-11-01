@@ -200,7 +200,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	for i, s := range plan.Streams {
 		names[i] = s.Name
 		index[s.Name] = uint32(i)
-		declared, err := encodeSchema(s.Schema)
+		declared, err := encodeSchema(s.Declared())
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("engineclient: %s declared schema: %w", s.Name, err)
 		}
