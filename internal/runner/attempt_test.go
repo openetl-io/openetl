@@ -14,10 +14,12 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
 	"github.com/unsuitable001/openetl/internal/runner"
+	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
@@ -338,6 +340,54 @@ func job(log *checkpoint.Log, owner string, src source.Reader, flow runner.Dataf
 		},
 		OnCommit: func(n uint64) { committed <- n },
 	}
+}
+
+// The pump counts a forwarded batch's rows without decoding it, and
+// Passthrough decodes it.
+func TestForwardedBatches(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		j := job(checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), "a1", encodedSource{pages: 3}, runner.Passthrough{}, make(chan uint64, 16))
+		var rows uint64
+		j.OnCheckpoint = func(rec *checkpoint.Record) { rows += rec.Streams["s"].Rows }
+		if _, err := runner.RunAttempt(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		if d := j.Destination.(*countingDest); d.rows != 6 || rows != 6 {
+			t.Fatalf("wrote %d rows and recorded %d, want 6", d.rows, rows)
+		}
+	})
+}
+
+// encodedSource forwards pages of two rows, each followed by a resume point.
+type encodedSource struct{ pages int }
+
+func (s encodedSource) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
+	b := array.NewInt64Builder(memory.DefaultAllocator)
+	defer b.Release()
+	b.AppendValues([]int64{1, 2}, nil)
+	col := b.NewArray()
+	defer col.Release()
+	rec := array.NewRecordBatch(arrow.NewSchema([]arrow.Field{{Name: "n", Type: arrow.PrimitiveTypes.Int64}}, nil), []arrow.Array{col}, 2)
+	defer rec.Release()
+	payload, err := arrowipc.EncodeBatch(rec)
+	if err != nil {
+		return err
+	}
+	enc, err := arrowipc.Inspect(payload)
+	if err != nil {
+		return err
+	}
+	for i := range s.pages {
+		if err := out.(source.Forwarder).Forward("s", enc); err != nil {
+			return err
+		}
+		if err := out.ResumePoint("s", fmt.Appendf(nil, "%d", i+1)); err != nil {
+			return err
+		}
+	}
+	return out.Complete("s", nil)
 }
 
 // ackSource emits pages from its state up to pages, one row and a resume

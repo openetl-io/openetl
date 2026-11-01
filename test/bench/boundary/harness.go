@@ -10,6 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/util"
 
 	"github.com/unsuitable001/openetl/internal/runner"
+	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
@@ -34,6 +35,12 @@ func (e countingEmitter) Records(stream string, b arrow.RecordBatch) error {
 	return e.Emitter.Records(stream, b)
 }
 
+// Forward needs the runner's emitter, which forwards.
+func (e countingEmitter) Forward(stream string, b arrowipc.Encoded) error {
+	e.n.Add(b.Size)
+	return e.Emitter.(source.Forwarder).Forward(stream, b)
+}
+
 // discardEmitter drops what a source emits.
 type discardEmitter struct{ bytes int64 }
 
@@ -42,6 +49,11 @@ func (d *discardEmitter) Rows(string, []json.RawMessage) error { return errors.N
 func (d *discardEmitter) Records(_ string, b arrow.RecordBatch) error {
 	d.bytes += util.TotalRecordSize(b)
 	b.Release()
+	return nil
+}
+
+func (d *discardEmitter) Forward(_ string, b arrowipc.Encoded) error {
+	d.bytes += b.Size
 	return nil
 }
 

@@ -9,6 +9,9 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/util"
+
+	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
+	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 type emitKind uint8
@@ -22,11 +25,12 @@ const (
 )
 
 type emit struct {
-	kind   emitKind
-	stream string
-	rows   []json.RawMessage
-	batch  arrow.RecordBatch
-	state  []byte
+	kind    emitKind
+	stream  string
+	rows    []json.RawMessage
+	batch   arrow.RecordBatch
+	encoded arrowipc.Encoded // an emitBatch without batch
+	state   []byte
 }
 
 type streamPos struct {
@@ -74,6 +78,8 @@ type sourcePump struct {
 	forceC        <-chan time.Time
 }
 
+var _ source.Forwarder = (*sourcePump)(nil)
+
 // Streams in done completed earlier in the sync, and aren't read.
 func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored map[string][]byte, restoredForced, canForce, done map[string]bool, out chan<- Frame, events chan<- event) *sourcePump {
 	p := &sourcePump{
@@ -103,6 +109,10 @@ func (p *sourcePump) Rows(stream string, rows []json.RawMessage) error {
 
 func (p *sourcePump) Records(stream string, batch arrow.RecordBatch) error {
 	return p.send(emit{kind: emitBatch, stream: stream, batch: batch})
+}
+
+func (p *sourcePump) Forward(stream string, batch arrowipc.Encoded) error {
+	return p.send(emit{kind: emitBatch, stream: stream, encoded: batch})
 }
 
 func (p *sourcePump) ResumePoint(stream string, state []byte) error {
@@ -184,10 +194,15 @@ func (p *sourcePump) handle(e emit) error {
 	case emitRows, emitBatch:
 		f := Frame{Kind: FrameRows, Stream: e.stream, Rows: e.rows}
 		st.rows += uint64(len(e.rows))
-		if e.kind == emitBatch {
+		switch {
+		case e.batch != nil:
 			f = Frame{Kind: FrameBatch, Stream: e.stream, Batch: e.batch}
 			p.bytes += util.TotalRecordSize(e.batch)
 			st.rows += uint64(e.batch.NumRows()) //nolint:gosec // never negative
+		case e.kind == emitBatch:
+			f = Frame{Kind: FrameBatch, Stream: e.stream, IPC: e.encoded.Bytes}
+			p.bytes += e.encoded.Size
+			st.rows += uint64(e.encoded.Rows) //nolint:gosec // never negative
 		}
 		for _, r := range e.rows {
 			p.bytes += int64(len(r))

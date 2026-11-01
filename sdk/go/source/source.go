@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 
 	"github.com/apache/arrow-go/v18/arrow"
+
+	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 )
 
 // Replay is whether a stream can carry the same record version more than
@@ -57,6 +59,13 @@ type Emitter interface {
 	// doesn't read the stream again. next is where its next sync starts: nil
 	// for the beginning, as a full refresh does, or a cursor floor.
 	Complete(stream string, next []byte) error
+}
+
+// Forwarder is an Emitter that also takes batches as the protocol carries
+// them, and passes them on without decoding them.
+type Forwarder interface {
+	Emitter
+	Forward(stream string, batch arrowipc.Encoded) error
 }
 
 // Reader reads records. Read returns when every stream is complete, when ctx

@@ -158,6 +158,13 @@ func emit(m *protocolv1.ReadResponse, out source.Emitter) error {
 			}
 			return out.Rows(b.GetStream(), rows)
 		case *protocolv1.RecordBatch_Arrow:
+			if fw, ok := out.(source.Forwarder); ok {
+				enc, err := arrowipc.Inspect(r.Arrow)
+				if err != nil {
+					return errs.Wrap(errs.Internal, err, "connector: a batch for "+b.GetStream())
+				}
+				return fw.Forward(b.GetStream(), enc)
+			}
 			rec, err := arrowipc.DecodeBatch(r.Arrow, memory.DefaultAllocator)
 			if err != nil {
 				return errs.Wrap(errs.Internal, err, "connector: a batch for "+b.GetStream())

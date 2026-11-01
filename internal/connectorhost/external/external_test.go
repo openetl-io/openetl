@@ -16,8 +16,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow/util"
 
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
@@ -136,6 +138,40 @@ func TestSourceArrow(t *testing.T) {
 	}
 	if strings.Join(out.resumes, ",") != "things=3" || len(out.complete) != 1 {
 		t.Fatalf("resume points %v, complete %v", out.resumes, out.complete)
+	}
+}
+
+// forward is a Forwarder that keeps what it gets.
+type forward struct {
+	collect
+	encoded []arrowipc.Encoded
+}
+
+func (f *forward) Forward(_ string, b arrowipc.Encoded) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.encoded = append(f.encoded, b)
+	return nil
+}
+
+func TestSourceForwardsArrow(t *testing.T) {
+	src := NewSource(exe("source-typed"), nil, Options{})
+	defer func() { _ = src.Close() }()
+	var out forward
+	if err := src.Read(t.Context(), source.ReadRequest{Streams: []source.ConfiguredStream{{Name: "things"}}}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.batches) != 0 || len(out.encoded) != 1 {
+		t.Fatalf("%d batches decoded, %d forwarded", len(out.batches), len(out.encoded))
+	}
+	enc := out.encoded[0]
+	b, err := arrowipc.DecodeBatch(enc.Bytes, memory.DefaultAllocator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Release()
+	if enc.Rows != 3 || enc.Size != util.TotalRecordSize(b) || !arrow.TypeEqual(b.Column(0).DataType(), extensions.NewUUIDType()) {
+		t.Fatalf("forwarded %d rows, %d bytes: %v", enc.Rows, enc.Size, b)
 	}
 }
 

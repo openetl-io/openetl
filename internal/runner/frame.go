@@ -6,8 +6,10 @@ import (
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
 
@@ -31,8 +33,11 @@ type Frame struct {
 	Stream string
 	Rows   []json.RawMessage
 	Batch  arrow.RecordBatch
-	Epoch  uint64
-	Ready  *Ready
+	// A batch into the dataflow, in place of Batch, as an external source
+	// encoded it: an Arrow IPC stream holding one batch.
+	IPC   []byte
+	Epoch uint64
+	Ready *Ready
 }
 
 // Ready is the dataflow's part of an epoch, recorded in its checkpoint.
@@ -109,7 +114,7 @@ type EngineSink interface {
 
 // Dataflow carries frames from a job's sources to its sink: the engine, or
 // an in-process stand-in. Run keeps each stream's frames in order, turns rows
-// into batches, forwards every barrier, and closes out once in is drained.
+// and encoded batches into batches, forwards every barrier, and closes out once in is drained.
 // Once every stream has crossed barrier N, out also carries one FrameReady
 // for N, in epoch order. With an engine sink, out carries only those. The
 // receiver of a batch releases it.
@@ -148,13 +153,20 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if f.Kind == FrameRows {
+		switch {
+		case f.Kind == FrameRows:
 			if p.Convert == nil {
 				return fmt.Errorf("runner: rows for %s, and the dataflow can't convert them", f.Stream)
 			}
 			batch, err := p.Convert(f.Stream, f.Rows)
 			if err != nil {
 				return err
+			}
+			f = Frame{Kind: FrameBatch, Stream: f.Stream, Batch: batch}
+		case f.IPC != nil:
+			batch, err := arrowipc.DecodeBatch(f.IPC, memory.DefaultAllocator)
+			if err != nil {
+				return fmt.Errorf("runner: a batch for %s: %w", f.Stream, err)
 			}
 			f = Frame{Kind: FrameBatch, Stream: f.Stream, Batch: batch}
 		}

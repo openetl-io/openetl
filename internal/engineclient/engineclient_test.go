@@ -33,6 +33,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/enginesink"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/runner"
+	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
@@ -653,6 +654,67 @@ func TestRunAttemptThroughTheEngine(t *testing.T) {
 	if len(dest.pending) != 0 {
 		t.Errorf("epochs left unapplied: %v", dest.pending)
 	}
+}
+
+// An external source's batches reach the engine as the source encoded them.
+func TestRunAttemptForwardsEncodedBatches(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+
+	dest := newMemDest()
+	var rows uint64
+	job := runner.Job{
+		Owner:       "a1",
+		Pipeline:    "pipe",
+		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"),
+		Source:      encodedSource{pages: [][]int64{{1, 2}, {3}}},
+		Streams:     []runner.Stream{{Name: "users", Replay: source.Exact, Mode: destination.Append}},
+		Destination: dest,
+		Dataflow:    &Dataflow{Options: opts},
+		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline},
+		OnCheckpoint: func(rec *checkpoint.Record) {
+			rows += rec.Streams["users"].Rows
+		},
+	}
+	if _, err := runner.RunAttempt(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if got := dest.applied["users"]; !slices.Equal(got, []int64{1, 2, 3}) || rows != 3 {
+		t.Errorf("applied %v; records counted %d rows", got, rows)
+	}
+}
+
+// encodedSource forwards each page of ids, encoded, with a resume point
+// after each.
+type encodedSource struct{ pages [][]int64 }
+
+func (s encodedSource) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
+	schema := arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}, {Name: "name", Type: arrow.BinaryTypes.String, Nullable: true}}, nil)
+	for i, ids := range s.pages {
+		b := array.NewRecordBuilder(memory.DefaultAllocator, schema)
+		b.Field(0).(*array.Int64Builder).AppendValues(ids, nil)
+		b.Field(1).AppendNulls(len(ids))
+		rec := b.NewRecordBatch()
+		b.Release()
+		payload, err := arrowipc.EncodeBatch(rec)
+		rec.Release()
+		if err != nil {
+			return err
+		}
+		enc, err := arrowipc.Inspect(payload)
+		if err != nil {
+			return err
+		}
+		if err := out.(source.Forwarder).Forward("users", enc); err != nil {
+			return err
+		}
+		if err := out.ResumePoint("users", []byte(strconv.Itoa(i+1))); err != nil {
+			return err
+		}
+	}
+	return out.Complete("users", nil)
 }
 
 func TestRunAttemptQuarantinesBadRows(t *testing.T) {

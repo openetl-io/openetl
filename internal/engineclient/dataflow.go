@@ -354,6 +354,9 @@ func encode(f runner.Frame, gen uint64, alloc memory.Allocator, buf *bytes.Buffe
 		b, err := proto.Marshal(&enginev1.Rows{Rows: rows})
 		return enginev1.FrameKind_FRAME_KIND_ROWS, b, err
 	case runner.FrameBatch:
+		if f.IPC != nil {
+			return enginev1.FrameKind_FRAME_KIND_BATCH, f.IPC, nil
+		}
 		buf.Reset()
 		w := ipc.NewWriter(buf, ipc.WithSchema(f.Batch.Schema()), ipc.WithAllocator(alloc))
 		if err := w.Write(f.Batch); err != nil {
