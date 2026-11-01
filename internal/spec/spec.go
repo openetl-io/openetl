@@ -26,16 +26,26 @@ const (
 	KindSource      = "Source"
 	KindDestination = "Destination"
 	KindPipeline    = "Pipeline"
+	// Connector versions: an external connector's descriptor, and a
+	// declarative source's manifest.
+	KindConnector         = "Connector"
+	KindDeclarativeSource = "DeclarativeSource"
 )
 
 // Document is one parsed definition. Connector is set for sources and
-// destinations, Pipeline for pipelines.
+// destinations, Pipeline for pipelines, Descriptor for connectors, and
+// Manifest for declarative sources.
 type Document struct {
 	Kind      string
 	Name      string
 	Workspace string
-	Connector *apiv1.ConnectorConfig
-	Pipeline  *apiv1.PipelineSpec
+	// Connector versions only: a semantic version.
+	Version    string
+	Connector  *apiv1.ConnectorConfig
+	Pipeline   *apiv1.PipelineSpec
+	Descriptor *Descriptor
+	// The whole manifest, as canonical JSON, for declarative.Load.
+	Manifest []byte
 }
 
 type envelope struct {
@@ -48,6 +58,7 @@ type envelope struct {
 type metadata struct {
 	Name      string `yaml:"name"`
 	Workspace string `yaml:"workspace"`
+	Version   string `yaml:"version"`
 }
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
@@ -72,7 +83,16 @@ func Parse(content []byte) (*Document, error) {
 	case env.Spec.Kind == 0:
 		return nil, errors.New("spec is missing")
 	}
-	doc := &Document{Kind: env.Kind, Name: env.Metadata.Name, Workspace: env.Metadata.Workspace}
+	doc := &Document{Kind: env.Kind, Name: env.Metadata.Name, Workspace: env.Metadata.Workspace, Version: env.Metadata.Version}
+	versioned := env.Kind == KindConnector || env.Kind == KindDeclarativeSource
+	switch {
+	case versioned && env.Metadata.Workspace != "":
+		return nil, errors.New("metadata.workspace: connectors belong to the org, not a workspace")
+	case versioned && !semverPattern.MatchString(env.Metadata.Version):
+		return nil, fmt.Errorf("metadata.version %q must be a semantic version, such as 1.2.0", env.Metadata.Version)
+	case !versioned && env.Metadata.Version != "":
+		return nil, fmt.Errorf("metadata.version: a %s has no version", env.Kind)
+	}
 	spec, err := yaml.Marshal(&env.Spec)
 	if err != nil {
 		return nil, err
@@ -82,8 +102,13 @@ func Parse(content []byte) (*Document, error) {
 		doc.Connector, err = parseConnector(spec)
 	case KindPipeline:
 		doc.Pipeline, err = parsePipeline(spec)
+	case KindConnector:
+		doc.Descriptor, err = parseDescriptor(spec)
+	case KindDeclarativeSource:
+		// declarative.Load checks the rest.
+		doc.Manifest, err = canonicalJSON(content)
 	default:
-		return nil, fmt.Errorf("kind %q isn't one of Source, Destination or Pipeline", env.Kind)
+		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector or DeclarativeSource", env.Kind)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("spec: %w", err)

@@ -48,6 +48,9 @@ const (
 	// DataPlaneServiceReportCatalogProcedure is the fully-qualified name of the DataPlaneService's
 	// ReportCatalog RPC.
 	DataPlaneServiceReportCatalogProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportCatalog"
+	// DataPlaneServiceGetArtifactProcedure is the fully-qualified name of the DataPlaneService's
+	// GetArtifact RPC.
+	DataPlaneServiceGetArtifactProcedure = "/openetl.dataplane.v1.DataPlaneService/GetArtifact"
 )
 
 // DataPlaneServiceClient is a client for the openetl.dataplane.v1.DataPlaneService service.
@@ -65,6 +68,9 @@ type DataPlaneServiceClient interface {
 	GetConnectorConfig(context.Context, *connect.Request[v1.GetConnectorConfigRequest]) (*connect.Response[v1.GetConnectorConfigResponse], error)
 	// Keeps a source's discovered catalog, and returns its digest.
 	ReportCatalog(context.Context, *connect.Request[v1.ReportCatalogRequest]) (*connect.Response[v1.ReportCatalogResponse], error)
+	// An artifact by digest, such as a connector version's descriptor or
+	// manifest. Its content never changes, so runners cache it.
+	GetArtifact(context.Context, *connect.Request[v1.GetArtifactRequest]) (*connect.Response[v1.GetArtifactResponse], error)
 }
 
 // NewDataPlaneServiceClient constructs a client for the openetl.dataplane.v1.DataPlaneService
@@ -108,6 +114,12 @@ func NewDataPlaneServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportCatalog")),
 			connect.WithClientOptions(opts...),
 		),
+		getArtifact: connect.NewClient[v1.GetArtifactRequest, v1.GetArtifactResponse](
+			httpClient,
+			baseURL+DataPlaneServiceGetArtifactProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("GetArtifact")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -118,6 +130,7 @@ type dataPlaneServiceClient struct {
 	reportCheckpoint   *connect.Client[v1.ReportCheckpointRequest, v1.ReportCheckpointResponse]
 	getConnectorConfig *connect.Client[v1.GetConnectorConfigRequest, v1.GetConnectorConfigResponse]
 	reportCatalog      *connect.Client[v1.ReportCatalogRequest, v1.ReportCatalogResponse]
+	getArtifact        *connect.Client[v1.GetArtifactRequest, v1.GetArtifactResponse]
 }
 
 // GetSyncSpec calls openetl.dataplane.v1.DataPlaneService.GetSyncSpec.
@@ -145,6 +158,11 @@ func (c *dataPlaneServiceClient) ReportCatalog(ctx context.Context, req *connect
 	return c.reportCatalog.CallUnary(ctx, req)
 }
 
+// GetArtifact calls openetl.dataplane.v1.DataPlaneService.GetArtifact.
+func (c *dataPlaneServiceClient) GetArtifact(ctx context.Context, req *connect.Request[v1.GetArtifactRequest]) (*connect.Response[v1.GetArtifactResponse], error) {
+	return c.getArtifact.CallUnary(ctx, req)
+}
+
 // DataPlaneServiceHandler is an implementation of the openetl.dataplane.v1.DataPlaneService
 // service.
 type DataPlaneServiceHandler interface {
@@ -161,6 +179,9 @@ type DataPlaneServiceHandler interface {
 	GetConnectorConfig(context.Context, *connect.Request[v1.GetConnectorConfigRequest]) (*connect.Response[v1.GetConnectorConfigResponse], error)
 	// Keeps a source's discovered catalog, and returns its digest.
 	ReportCatalog(context.Context, *connect.Request[v1.ReportCatalogRequest]) (*connect.Response[v1.ReportCatalogResponse], error)
+	// An artifact by digest, such as a connector version's descriptor or
+	// manifest. Its content never changes, so runners cache it.
+	GetArtifact(context.Context, *connect.Request[v1.GetArtifactRequest]) (*connect.Response[v1.GetArtifactResponse], error)
 }
 
 // NewDataPlaneServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -200,6 +221,12 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportCatalog")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dataPlaneServiceGetArtifactHandler := connect.NewUnaryHandler(
+		DataPlaneServiceGetArtifactProcedure,
+		svc.GetArtifact,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("GetArtifact")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.dataplane.v1.DataPlaneService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DataPlaneServiceGetSyncSpecProcedure:
@@ -212,6 +239,8 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 			dataPlaneServiceGetConnectorConfigHandler.ServeHTTP(w, r)
 		case DataPlaneServiceReportCatalogProcedure:
 			dataPlaneServiceReportCatalogHandler.ServeHTTP(w, r)
+		case DataPlaneServiceGetArtifactProcedure:
+			dataPlaneServiceGetArtifactHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -239,4 +268,8 @@ func (UnimplementedDataPlaneServiceHandler) GetConnectorConfig(context.Context, 
 
 func (UnimplementedDataPlaneServiceHandler) ReportCatalog(context.Context, *connect.Request[v1.ReportCatalogRequest]) (*connect.Response[v1.ReportCatalogResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportCatalog is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) GetArtifact(context.Context, *connect.Request[v1.GetArtifactRequest]) (*connect.Response[v1.GetArtifactResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.GetArtifact is not implemented"))
 }

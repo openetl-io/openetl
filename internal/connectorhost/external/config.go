@@ -3,6 +3,9 @@ package external
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
@@ -47,4 +50,46 @@ func splitSecrets(schema, config []byte) ([]byte, hostservices.StaticSecrets, er
 	}
 	out, err := json.Marshal(m)
 	return out, secrets, err
+}
+
+// CompileSchema checks that schema, a connector's config schema, is a JSON
+// Schema. It loads nothing from the network.
+func CompileSchema(schema []byte) (*jsonschema.Schema, error) {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
+	if err != nil {
+		return nil, err
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("config.schema.json", doc); err != nil {
+		return nil, err
+	}
+	return c.Compile("config.schema.json")
+}
+
+// ValidateConfig checks config, a JSON object, against a connector's config
+// schema. Errors leave out the config's secrets.
+func ValidateConfig(name string, schema, config []byte) error {
+	sch, err := CompileSchema(schema)
+	if err != nil {
+		return errs.Wrap(errs.ConfigInvalid, err, name+": config schema")
+	}
+	if len(bytes.TrimSpace(config)) == 0 {
+		config = []byte("{}")
+	}
+	v, err := jsonschema.UnmarshalJSON(bytes.NewReader(config))
+	if err != nil {
+		return errs.Wrap(errs.ConfigInvalid, err, name+": config")
+	}
+	if err := sch.Validate(v); err != nil {
+		msg := err.Error()
+		if _, secrets, serr := splitSecrets(schema, config); serr == nil {
+			for _, s := range secrets {
+				if r := s.Reveal(); r != "" {
+					msg = strings.ReplaceAll(msg, r, "[redacted]")
+				}
+			}
+		}
+		return errs.New(errs.ConfigInvalid, "%s: config: %s", name, msg)
+	}
+	return nil
 }

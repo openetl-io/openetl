@@ -24,6 +24,8 @@ import (
 type Ops struct {
 	API        dataplanev1connect.DataPlaneServiceClient
 	Connectors connectorhost.Env
+	// Nil: connector versions can't be fetched.
+	Versions *connectorhost.Fetcher
 }
 
 // CheckConnector checks a source or destination. A failed check is a result,
@@ -34,7 +36,11 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 		return contract.ConnectorOpResult{}, temporalx.ApplicationError(err)
 	}
 	res := contract.ConnectorOpResult{Version: cfg.GetVersion()}
-	if err := check(ctx, in, cfg.GetConfig(), a.Connectors); err != nil {
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, cfg.GetConnector())
+	if err == nil {
+		err = check(ctx, in, cfg.GetConfig(), env)
+	}
+	if err != nil {
 		res.Code, res.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
 	}
 	return res, nil
@@ -45,8 +51,9 @@ func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.Connect
 	if err != nil {
 		return err
 	}
+	name, _ := connectorhost.SplitRef(cfg.GetConnector())
 	if in.SourceID != "" {
-		src, err := connectorhost.NewSource(cfg.GetConnector(), raw, env)
+		src, err := connectorhost.NewSource(name, raw, env)
 		if err != nil {
 			return err
 		}
@@ -56,7 +63,7 @@ func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.Connect
 		}
 		return nil
 	}
-	dst, err := connectorhost.NewDestination(cfg.GetConnector(), raw, env)
+	dst, err := connectorhost.NewDestination(name, raw, env)
 	if err != nil {
 		return err
 	}
@@ -87,7 +94,12 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 	if err != nil {
 		return res, err
 	}
-	src, err := connectorhost.NewSource(cfg.GetConfig().GetConnector(), raw, a.Connectors)
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, cfg.GetConnector())
+	if err != nil {
+		return res, err
+	}
+	name, _ := connectorhost.SplitRef(cfg.GetConfig().GetConnector())
+	src, err := connectorhost.NewSource(name, raw, env)
 	if err != nil {
 		return res, err
 	}
@@ -168,5 +180,40 @@ func heartbeats(ctx context.Context, progress func() any) (stop func()) {
 	return func() {
 		close(done)
 		<-finished
+	}
+}
+
+// connectorEnv is env with the connector versions at digests added; empty
+// digests add nothing.
+func connectorEnv(ctx context.Context, env connectorhost.Env, versions *connectorhost.Fetcher, digests ...string) (connectorhost.Env, error) {
+	for _, d := range digests {
+		if d == "" {
+			continue
+		}
+		if versions == nil {
+			return env, errs.New(errs.ConfigInvalid, "this runner can't fetch connector versions")
+		}
+		v, err := versions.Fetch(ctx, d)
+		if err != nil {
+			return env, err
+		}
+		env = env.With(v)
+	}
+	return env, nil
+}
+
+// Artifacts fetches artifacts by digest from the API, for
+// connectorhost.Fetcher.
+func Artifacts(api dataplanev1connect.DataPlaneServiceClient) func(context.Context, string) ([]byte, error) {
+	return func(ctx context.Context, digest string) ([]byte, error) {
+		res, err := api.GetArtifact(ctx, connect.NewRequest(&dataplanev1.GetArtifactRequest{Digest: digest}))
+		if err != nil {
+			code := errs.Transient
+			if connect.CodeOf(err) == connect.CodeNotFound {
+				code = errs.ConfigInvalid
+			}
+			return nil, errs.Wrap(code, err, "fetch artifact "+digest)
+		}
+		return res.Msg.GetContent(), nil
 	}
 }

@@ -114,7 +114,8 @@ func (q *Queries) GetPipelineVersion(ctx context.Context, arg GetPipelineVersion
 }
 
 const getSyncSpec = `-- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, s.spec AS source_spec, d.spec AS destination_spec
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, s.spec AS source_spec, d.spec AS destination_spec,
+    s.connector_digest AS source_connector, d.connector_digest AS destination_connector
 FROM pipeline_versions v
 JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
 JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
@@ -128,11 +129,13 @@ type GetSyncSpecParams struct {
 }
 
 type GetSyncSpecRow struct {
-	Version         string
-	DataPlaneID     string
-	PipelineSpec    []byte
-	SourceSpec      []byte
-	DestinationSpec []byte
+	Version              string
+	DataPlaneID          string
+	PipelineSpec         []byte
+	SourceSpec           []byte
+	DestinationSpec      []byte
+	SourceConnector      string
+	DestinationConnector string
 }
 
 func (q *Queries) GetSyncSpec(ctx context.Context, arg GetSyncSpecParams) (GetSyncSpecRow, error) {
@@ -144,6 +147,8 @@ func (q *Queries) GetSyncSpec(ctx context.Context, arg GetSyncSpecParams) (GetSy
 		&i.PipelineSpec,
 		&i.SourceSpec,
 		&i.DestinationSpec,
+		&i.SourceConnector,
+		&i.DestinationConnector,
 	)
 	return i, err
 }

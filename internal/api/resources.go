@@ -197,14 +197,16 @@ type connection struct {
 	version          string
 	revision         int64
 	created, updated time.Time
+	// The connector version's digest.
+	connector string
 }
 
 func fromSource(r db.Source) connection {
-	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime}
+	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime, r.ConnectorDigest}
 }
 
 func fromDestination(r db.Destination) connection {
-	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime}
+	return connection{r.Name, r.ID, r.WorkspaceID, r.Spec, r.Version, r.Revision, r.CreateTime, r.UpdateTime, r.ConnectorDigest}
 }
 
 func (c connection) config() (*apiv1.ConnectorConfig, error) {
@@ -398,6 +400,9 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 		Pipeline:    &apiv1.PipelineSpec{},
 		Source:      &apiv1.ConnectorConfig{},
 		Destination: &apiv1.ConnectorConfig{},
+
+		SourceConnector:      row.SourceConnector,
+		DestinationConnector: row.DestinationConnector,
 	}
 	if err := protojson.Unmarshal(row.PipelineSpec, res.Pipeline); err != nil {
 		return nil, err

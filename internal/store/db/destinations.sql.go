@@ -29,7 +29,7 @@ func (q *Queries) DeleteDestination(ctx context.Context, arg DeleteDestinationPa
 }
 
 const getDestination = `-- name: GetDestination :one
-SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time FROM destinations WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest FROM destinations WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `
 
 type GetDestinationParams struct {
@@ -51,12 +51,13 @@ func (q *Queries) GetDestination(ctx context.Context, arg GetDestinationParams) 
 		&i.Revision,
 		&i.CreateTime,
 		&i.UpdateTime,
+		&i.ConnectorDigest,
 	)
 	return i, err
 }
 
 const getDestinationByID = `-- name: GetDestinationByID :one
-SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time FROM destinations WHERE org_id = $1 AND id = $2
+SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest FROM destinations WHERE org_id = $1 AND id = $2
 `
 
 type GetDestinationByIDParams struct {
@@ -77,22 +78,24 @@ func (q *Queries) GetDestinationByID(ctx context.Context, arg GetDestinationByID
 		&i.Revision,
 		&i.CreateTime,
 		&i.UpdateTime,
+		&i.ConnectorDigest,
 	)
 	return i, err
 }
 
 const insertDestination = `-- name: InsertDestination :exec
-INSERT INTO destinations (org_id, workspace_id, id, name, spec, version, revision)
-VALUES ($1, $2, $3, $4, $5, $6, 1)
+INSERT INTO destinations (org_id, workspace_id, id, name, spec, version, connector_digest, revision)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
 `
 
 type InsertDestinationParams struct {
-	OrgID       uuid.UUID
-	WorkspaceID uuid.UUID
-	ID          uuid.UUID
-	Name        string
-	Spec        []byte
-	Version     string
+	OrgID           uuid.UUID
+	WorkspaceID     uuid.UUID
+	ID              uuid.UUID
+	Name            string
+	Spec            []byte
+	Version         string
+	ConnectorDigest string
 }
 
 func (q *Queries) InsertDestination(ctx context.Context, arg InsertDestinationParams) error {
@@ -103,12 +106,13 @@ func (q *Queries) InsertDestination(ctx context.Context, arg InsertDestinationPa
 		arg.Name,
 		arg.Spec,
 		arg.Version,
+		arg.ConnectorDigest,
 	)
 	return err
 }
 
 const listDestinations = `-- name: ListDestinations :many
-SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time FROM destinations
+SELECT org_id, workspace_id, id, name, spec, version, revision, create_time, update_time, connector_digest FROM destinations
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3
 ORDER BY name LIMIT $4
 `
@@ -144,6 +148,7 @@ func (q *Queries) ListDestinations(ctx context.Context, arg ListDestinationsPara
 			&i.Revision,
 			&i.CreateTime,
 			&i.UpdateTime,
+			&i.ConnectorDigest,
 		); err != nil {
 			return nil, err
 		}
@@ -156,21 +161,23 @@ func (q *Queries) ListDestinations(ctx context.Context, arg ListDestinationsPara
 }
 
 const updateDestination = `-- name: UpdateDestination :exec
-UPDATE destinations SET spec = $1, version = $2, revision = revision + 1, update_time = now()
-WHERE org_id = $3 AND id = $4
+UPDATE destinations SET spec = $1, version = $2, connector_digest = $3, revision = revision + 1, update_time = now()
+WHERE org_id = $4 AND id = $5
 `
 
 type UpdateDestinationParams struct {
-	Spec    []byte
-	Version string
-	OrgID   uuid.UUID
-	ID      uuid.UUID
+	Spec            []byte
+	Version         string
+	ConnectorDigest string
+	OrgID           uuid.UUID
+	ID              uuid.UUID
 }
 
 func (q *Queries) UpdateDestination(ctx context.Context, arg UpdateDestinationParams) error {
 	_, err := q.db.Exec(ctx, updateDestination,
 		arg.Spec,
 		arg.Version,
+		arg.ConnectorDigest,
 		arg.OrgID,
 		arg.ID,
 	)

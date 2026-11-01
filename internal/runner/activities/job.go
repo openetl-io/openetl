@@ -35,7 +35,8 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	if err != nil {
 		return runner.Job{}, err
 	}
-	src, err := connectorhost.NewSource(spec.GetSource().GetConnector(), srcCfg, env)
+	srcName, _ := connectorhost.SplitRef(spec.GetSource().GetConnector())
+	src, err := connectorhost.NewSource(srcName, srcCfg, env)
 	if err != nil {
 		return runner.Job{}, err
 	}
@@ -44,7 +45,8 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	if err != nil {
 		return job, err
 	}
-	dst, err := connectorhost.NewDestination(spec.GetDestination().GetConnector(), dstCfg, env)
+	dstName, _ := connectorhost.SplitRef(spec.GetDestination().GetConnector())
+	dst, err := connectorhost.NewDestination(dstName, dstCfg, env)
 	if err != nil {
 		return job, err
 	}

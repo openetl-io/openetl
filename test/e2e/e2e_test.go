@@ -12,8 +12,12 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +32,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+	ggcr "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/jackc/pgx/v5"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
@@ -42,8 +47,10 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/daemon"
+	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
+	"github.com/unsuitable001/openetl/internal/registry"
 	"github.com/unsuitable001/openetl/internal/store/storetest"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
@@ -51,12 +58,22 @@ import (
 
 var env struct {
 	openetld, engine string
-	// The official connectors, built from openetl-connectors.
+	// The official connectors, built from openetl-connectors. Syncs run them
+	// from images in an in-process registry, by their applied descriptors.
 	connectors    string
+	registry      string
 	temporal, ns  string
 	dbURL, apiURL string
 	checkpoints   string
+	// Runners' connector cache.
+	cache string
+	// An empty connectors directory, so runners don't find the official
+	// connectors in OPENETL_CONNECTORS.
+	noConnectors string
 }
+
+// The in-process registry is on loopback.
+const egressAllow = "127.0.0.1/32"
 
 func TestMain(m *testing.M) {
 	code, err := setup(m)
@@ -84,6 +101,11 @@ func setup(m *testing.M) (int, error) {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	env.checkpoints = filepath.Join(dir, "checkpoints")
+	env.cache = filepath.Join(dir, "cache")
+	env.noConnectors = filepath.Join(dir, "no-connectors")
+	if err := os.Mkdir(env.noConnectors, 0o750); err != nil {
+		return 0, err
+	}
 	env.openetld = filepath.Join(dir, "openetld")
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", env.openetld, "github.com/unsuitable001/openetl/cmd/openetld").CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("build openetld: %v\n%s", err, out)
@@ -111,6 +133,10 @@ func setup(m *testing.M) (int, error) {
 	}
 	defer drop()
 
+	reg := httptest.NewServer(ggcr.New(ggcr.Logger(log.New(io.Discard, "", 0))))
+	defer reg.Close()
+	env.registry = strings.TrimPrefix(reg.URL, "http://")
+
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -123,7 +149,7 @@ func setup(m *testing.M) (int, error) {
 		done <- daemon.Run(ctx, daemon.Options{
 			Config: config.Config{
 				DatabaseURL: env.dbURL, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
-				Connectors: env.connectors,
+				Connectors: env.noConnectors, EgressAllow: egressAllow,
 			},
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
 			Listener:  ln,
@@ -138,6 +164,9 @@ func setup(m *testing.M) (int, error) {
 	case <-time.After(30 * time.Second):
 		return 0, errors.New("the server didn't start")
 	}
+	if err := applyOfficialConnectors(ctx); err != nil {
+		return 0, err
+	}
 	code := m.Run()
 	if dir := os.Getenv("OPENETL_RECORD_HISTORIES"); dir != "" {
 		if err := recordHistories(ctx, dir); err != nil {
@@ -149,6 +178,23 @@ func setup(m *testing.M) (int, error) {
 		return code, fmt.Errorf("server: %w", err)
 	}
 	return code, nil
+}
+
+// applyOfficialConnectors packages the official connectors into the test
+// registry, for this platform, and applies their descriptors.
+func applyOfficialConnectors(ctx context.Context) error {
+	c := &registry.Client{Policy: netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix(egressAllow)}}}
+	req := &apiv1.ApplyRequest{}
+	for _, exe := range []string{"source-postgres", "destination-postgres"} {
+		path := filepath.Join(env.connectors, exe)
+		doc, err := connectorhost.Package(ctx, c, env.registry+"/openetl-connectors/"+exe+":e2e", "postgres", "0.1.0", []registry.Executable{{Platform: registry.Platform(), Path: path}})
+		if err != nil {
+			return fmt.Errorf("package %s: %w", exe, err)
+		}
+		req.Documents = append(req.Documents, &apiv1.Document{Origin: exe, Content: doc})
+	}
+	_, err := apiv1connect.NewApplyServiceClient(http.DefaultClient, env.apiURL).Apply(ctx, connect.NewRequest(req))
+	return err
 }
 
 // recordHistories writes the history of every workflow that finished, for the
@@ -260,7 +306,7 @@ func startRunner(t *testing.T) *runner {
 	t.Helper()
 	cmd := exec.Command(env.openetld, "runner",
 		"--api-url", env.apiURL, "--temporal-address", env.temporal, "--temporal-namespace", env.ns,
-		"--checkpoints", env.checkpoints, "--engine", env.engine, "--connectors", env.connectors, "--log-format", "text")
+		"--checkpoints", env.checkpoints, "--engine", env.engine, "--cache", env.cache, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--log-format", "text")
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
 	if err := cmd.Start(); err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/registry"
 	"github.com/unsuitable001/openetl/internal/store"
 )
 
@@ -38,9 +39,12 @@ type Server struct {
 	// For pipelines and connector operations that name none.
 	DefaultDataPlane string
 	// Which connectors exist, to validate configs; only names, manifests
-	// and the connectors directory matter.
+	// and the connectors directory matter. Applied connector versions are
+	// added to it.
 	Connectors connectorhost.Env
-	Logger     *slog.Logger
+	// Pins external connectors' images. Nil: they can't be applied.
+	Registry *registry.Client
+	Logger   *slog.Logger
 }
 
 var (

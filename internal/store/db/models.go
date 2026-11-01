@@ -10,6 +10,14 @@ import (
 	"github.com/google/uuid"
 )
 
+type Artifact struct {
+	OrgID      uuid.UUID
+	Digest     string
+	MediaType  string
+	Content    []byte
+	CreateTime time.Time
+}
+
 type CheckpointMirror struct {
 	OrgID              uuid.UUID
 	PipelineID         uuid.UUID
@@ -23,6 +31,16 @@ type CheckpointMirror struct {
 	CreateTime         time.Time
 }
 
+type ConnectorVersion struct {
+	OrgID      uuid.UUID
+	Kind       string
+	Name       string
+	Version    string
+	Digest     string
+	Provenance string
+	CreateTime time.Time
+}
+
 type DataPlane struct {
 	ID         string
 	OrgID      uuid.UUID
@@ -30,15 +48,16 @@ type DataPlane struct {
 }
 
 type Destination struct {
-	OrgID       uuid.UUID
-	WorkspaceID uuid.UUID
-	ID          uuid.UUID
-	Name        string
-	Spec        []byte
-	Version     string
-	Revision    int64
-	CreateTime  time.Time
-	UpdateTime  time.Time
+	OrgID           uuid.UUID
+	WorkspaceID     uuid.UUID
+	ID              uuid.UUID
+	Name            string
+	Spec            []byte
+	Version         string
+	Revision        int64
+	CreateTime      time.Time
+	UpdateTime      time.Time
+	ConnectorDigest string
 }
 
 type Org struct {
@@ -74,15 +93,16 @@ type PipelineVersion struct {
 }
 
 type Source struct {
-	OrgID       uuid.UUID
-	WorkspaceID uuid.UUID
-	ID          uuid.UUID
-	Name        string
-	Spec        []byte
-	Version     string
-	Revision    int64
-	CreateTime  time.Time
-	UpdateTime  time.Time
+	OrgID           uuid.UUID
+	WorkspaceID     uuid.UUID
+	ID              uuid.UUID
+	Name            string
+	Spec            []byte
+	Version         string
+	Revision        int64
+	CreateTime      time.Time
+	UpdateTime      time.Time
+	ConnectorDigest string
 }
 
 type SourceCatalog struct {

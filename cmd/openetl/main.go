@@ -25,13 +25,16 @@ import (
 const usage = `usage: openetl <command> [flags]
 
 Commands:
-  apply -f FILE   create or update the sources, destinations and pipelines in FILE
+  apply -f FILE   create or update the connector versions, sources,
+                  destinations and pipelines in FILE
   pause NAME      stop a pipeline's scheduled syncs
   resume NAME     start a pipeline's scheduled syncs again
   sync NAME       start a sync of a pipeline now
   check source|destination NAME
                   check that a source or destination is reachable
   discover NAME   list a source's streams and columns
+  connector package|apply
+                  package and apply connector versions
 
 Run openetl <command> -h for its flags.
 `
@@ -58,7 +61,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "apply":
-		return runApply(ctx, args[1:], out)
+		return runApplyDocuments(ctx, "openetl apply", args[1:], out, false)
+	case "connector":
+		return runConnector(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "check":
@@ -74,8 +79,10 @@ func apiURL(fs *flag.FlagSet) *string {
 	return fs.String("api-url", cmp.Or(os.Getenv("OPENETL_API_URL"), "http://localhost:8080"), "API URL (env OPENETL_API_URL)")
 }
 
-func runApply(ctx context.Context, args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("openetl apply", flag.ContinueOnError)
+// runApplyDocuments applies the documents in -f's files; with connectors,
+// only connector versions.
+func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Writer, connectors bool) error {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	var paths files
 	fs.Var(&paths, "f", "a YAML or JSON file, or - for stdin; repeatable")
 	api := apiURL(fs)
@@ -87,7 +94,7 @@ func runApply(ctx context.Context, args []string, out io.Writer) error {
 	if len(paths) == 0 || fs.NArg() > 0 {
 		return errors.New("apply takes one or more -f FILE, and no arguments")
 	}
-	req := &apiv1.ApplyRequest{ValidateOnly: *dryRun}
+	req := &apiv1.ApplyRequest{ValidateOnly: *dryRun, Client: "cli"}
 	if *workspace != "" {
 		req.Workspace = "workspaces/" + *workspace
 	}
@@ -95,6 +102,13 @@ func runApply(ctx context.Context, args []string, out io.Writer) error {
 		docs, err := readDocuments(p)
 		if err != nil {
 			return err
+		}
+		for _, d := range docs {
+			if connectors {
+				if err := onlyConnectorVersions(d.GetContent(), d.GetOrigin()); err != nil {
+					return err
+				}
+			}
 		}
 		req.Documents = append(req.Documents, docs...)
 	}

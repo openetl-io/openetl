@@ -7,11 +7,11 @@ WHERE org_id = @org_id AND workspace_id = @workspace_id AND name > @after
 ORDER BY name LIMIT @max_rows;
 
 -- name: InsertSource :exec
-INSERT INTO sources (org_id, workspace_id, id, name, spec, version, revision)
-VALUES (@org_id, @workspace_id, @id, @name, @spec, @version, 1);
+INSERT INTO sources (org_id, workspace_id, id, name, spec, version, connector_digest, revision)
+VALUES (@org_id, @workspace_id, @id, @name, @spec, @version, @connector_digest, 1);
 
 -- name: UpdateSource :exec
-UPDATE sources SET spec = @spec, version = @version, revision = revision + 1, update_time = now()
+UPDATE sources SET spec = @spec, version = @version, connector_digest = @connector_digest, revision = revision + 1, update_time = now()
 WHERE org_id = @org_id AND id = @id;
 
 -- name: DeleteSource :execrows

@@ -28,6 +28,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	connspec "github.com/unsuitable001/openetl/internal/spec"
 	sdk "github.com/unsuitable001/openetl/sdk/go"
 	"github.com/unsuitable001/openetl/sdk/go/host"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
@@ -55,6 +56,9 @@ type Options struct {
 	Egress netguard.Policy
 	// Nil: slog's default.
 	Logger *slog.Logger
+	// The spec the connector must return: its descriptor's. Nil: any spec of
+	// the right kind.
+	Spec *protocolv1.SpecResponse
 }
 
 // process is one running connector.
@@ -112,10 +116,17 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 		p.close()
 		return nil, fmt.Errorf("connector: spec: %w", err)
 	}
-	if spec.GetKind() != kind {
+	if kind != protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED && spec.GetKind() != kind {
 		_ = hostLn.Close()
 		p.close()
 		return nil, errs.New(errs.ConfigInvalid, "connector %s is a %s, not a %s", filepath.Base(exe), spec.GetKind(), kind)
+	}
+	if opts.Spec != nil {
+		if diff := connspec.SameSpec(spec, opts.Spec); diff != "" {
+			_ = hostLn.Close()
+			p.close()
+			return nil, errs.New(errs.ConfigInvalid, "connector %s's spec isn't its descriptor's: %s", filepath.Base(exe), diff)
+		}
 	}
 	p.spec = spec
 	cfg, secrets, err := splitSecrets(spec.GetConfigSchema(), config)
@@ -137,6 +148,16 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 	protocolv1.RegisterHostServiceServer(p.host, hostservices.NewServer(hs))
 	go func() { _ = p.host.Serve(hostLn) }()
 	return p, nil
+}
+
+// ReadSpec runs exe just long enough to read its spec.
+func ReadSpec(ctx context.Context, exe string, opts Options) (*protocolv1.SpecResponse, error) {
+	p, err := start(ctx, exe, protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED, nil, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer p.close()
+	return p.spec, nil
 }
 
 // run starts the executable and connects to it once it's ready.

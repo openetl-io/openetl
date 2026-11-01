@@ -22,6 +22,9 @@ message ApplyRequest {
   string workspace = 1;
   repeated Document documents = 2;
   bool validate_only = 3;
+  // What's applying, such as "cli", for connector versions' provenance.
+  // Empty: "api".
+  string client = 4;
 }
 
 // Document is a YAML or JSON definition with apiVersion, kind, metadata and

@@ -21,6 +21,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
+	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
@@ -43,6 +44,9 @@ type Env struct {
 	Egress netguard.Policy
 	// Declarative sources, by name. Native connectors' names come first.
 	Manifests map[string]*declarative.Connector
+	// External connectors with descriptors, by kind and name, such as
+	// source/postgres. Native connectors' names come first.
+	Externals map[string]External
 	// A directory of external connectors' executables, named source-{name}
 	// and destination-{name}. Names it shares with the others come last.
 	Connectors string
@@ -57,8 +61,14 @@ func NewSource(connector string, config []byte, env Env) (source.Source, error) 
 		if m := env.Manifests[connector]; m != nil {
 			return declarativeSource(m, config, env)
 		}
+		if x, ok := env.Externals["source/"+connector]; ok {
+			if err := external.ValidateConfig(connector, x.Spec.GetConfigSchema(), config); err != nil {
+				return nil, err
+			}
+			return external.NewSource(x.Executable, config, env.external(x.Spec)), nil
+		}
 		if exe := env.executable("source", connector); exe != "" {
-			return external.NewSource(exe, config, env.external()), nil
+			return external.NewSource(exe, config, env.external(nil)), nil
 		}
 	}
 	f, err := lookup(sources, "source", connector, env)
@@ -81,8 +91,8 @@ func (e Env) executable(kind, connector string) string {
 	return p
 }
 
-func (e Env) external() external.Options {
-	return external.Options{Egress: e.Egress, Logger: e.Logger}
+func (e Env) external(spec *protocolv1.SpecResponse) external.Options {
+	return external.Options{Egress: e.Egress, Logger: e.Logger, Spec: spec}
 }
 
 // externals lists the external connectors of a kind, by name.
@@ -142,8 +152,14 @@ func declarativeSource(m *declarative.Connector, config []byte, env Env) (source
 
 func NewDestination(connector string, config []byte, env Env) (destination.Destination, error) {
 	if _, native := destinations[connector]; !native {
+		if x, ok := env.Externals["destination/"+connector]; ok {
+			if err := external.ValidateConfig(connector, x.Spec.GetConfigSchema(), config); err != nil {
+				return nil, err
+			}
+			return external.NewDestination(x.Executable, config, env.external(x.Spec)), nil
+		}
 		if exe := env.executable("destination", connector); exe != "" {
-			return external.NewDestination(exe, config, env.external()), nil
+			return external.NewDestination(exe, config, env.external(nil)), nil
 		}
 	}
 	f, err := lookup(destinations, "destination", connector, env)
@@ -157,7 +173,7 @@ func NewDestination(connector string, config []byte, env Env) (destination.Desti
 func lookup[F any](m map[string]F, kind, connector string, env Env) (F, error) {
 	var zero F
 	if strings.Contains(connector, "@") {
-		return zero, errs.New(errs.ConfigInvalid, "%s connector %q: connectors have no versions yet", kind, connector)
+		return zero, errs.New(errs.ConfigInvalid, "%s connector %q: resolve its version first", kind, connector)
 	}
 	f, ok := m[connector]
 	if !ok {
@@ -167,6 +183,11 @@ func lookup[F any](m map[string]F, kind, connector string, env Env) (F, error) {
 		}
 		if kind == "source" {
 			for n := range env.Manifests {
+				names = append(names, n)
+			}
+		}
+		for k := range env.Externals {
+			if n, ok := strings.CutPrefix(k, kind+"/"); ok {
 				names = append(names, n)
 			}
 		}
@@ -187,4 +208,11 @@ func Builtin(kind, connector string) bool {
 	}
 	_, ok := destinations[connector]
 	return ok
+}
+
+// SplitRef splits a connector reference, such as postgres, postgres@1.2.0
+// or postgres@sha256:…, into its name and version or digest.
+func SplitRef(connector string) (name, ref string) {
+	name, ref, _ = strings.Cut(connector, "@")
+	return name, ref
 }

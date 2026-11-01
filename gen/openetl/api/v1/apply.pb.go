@@ -77,9 +77,12 @@ func (ApplyAction) EnumDescriptor() ([]byte, []int) {
 type ApplyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}, for documents that don't name one.
-	Workspace     string      `protobuf:"bytes,1,opt,name=workspace,proto3" json:"workspace,omitempty"`
-	Documents     []*Document `protobuf:"bytes,2,rep,name=documents,proto3" json:"documents,omitempty"`
-	ValidateOnly  bool        `protobuf:"varint,3,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
+	Workspace    string      `protobuf:"bytes,1,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	Documents    []*Document `protobuf:"bytes,2,rep,name=documents,proto3" json:"documents,omitempty"`
+	ValidateOnly bool        `protobuf:"varint,3,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
+	// What's applying, such as "cli", for connector versions' provenance.
+	// Empty: "api".
+	Client        string `protobuf:"bytes,4,opt,name=client,proto3" json:"client,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -133,6 +136,13 @@ func (x *ApplyRequest) GetValidateOnly() bool {
 		return x.ValidateOnly
 	}
 	return false
+}
+
+func (x *ApplyRequest) GetClient() string {
+	if x != nil {
+		return x.Client
+	}
+	return ""
 }
 
 // Document is a YAML or JSON definition with apiVersion, kind, metadata and
@@ -307,11 +317,12 @@ var File_openetl_api_v1_apply_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_apply_proto_rawDesc = "" +
 	"\n" +
-	"\x1aopenetl/api/v1/apply.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\"\x89\x01\n" +
+	"\x1aopenetl/api/v1/apply.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\"\xa1\x01\n" +
 	"\fApplyRequest\x12\x1c\n" +
 	"\tworkspace\x18\x01 \x01(\tR\tworkspace\x126\n" +
 	"\tdocuments\x18\x02 \x03(\v2\x18.openetl.api.v1.DocumentR\tdocuments\x12#\n" +
-	"\rvalidate_only\x18\x03 \x01(\bR\fvalidateOnly\"<\n" +
+	"\rvalidate_only\x18\x03 \x01(\bR\fvalidateOnly\x12\x16\n" +
+	"\x06client\x18\x04 \x01(\tR\x06client\"<\n" +
 	"\bDocument\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\tR\x06origin\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\fR\acontent\"N\n" +

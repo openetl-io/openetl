@@ -23,6 +23,9 @@ service DataPlaneService {
   rpc GetConnectorConfig(GetConnectorConfigRequest) returns (GetConnectorConfigResponse);
   // Keeps a source's discovered catalog, and returns its digest.
   rpc ReportCatalog(ReportCatalogRequest) returns (ReportCatalogResponse);
+  // An artifact by digest, such as a connector version's descriptor or
+  // manifest. Its content never changes, so runners cache it.
+  rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse);
 }
 
 message GetSyncSpecRequest {
@@ -38,6 +41,11 @@ message GetSyncSpecResponse {
   openetl.api.v1.PipelineSpec pipeline = 5;
   openetl.api.v1.ConnectorConfig source = 6;
   openetl.api.v1.ConnectorConfig destination = 7;
+  // The digests of the connector versions the source and destination
+  // resolved to. Empty for a built-in connector, or one in the runner's
+  // connectors directory.
+  string source_connector = 8;
+  string destination_connector = 9;
 }
 
 message ReportSchemasRequest {
@@ -103,6 +111,8 @@ message GetConnectorConfigResponse {
   string org_id = 1;
   string version = 2;
   openetl.api.v1.ConnectorConfig config = 3;
+  // As GetSyncSpecResponse's source_connector.
+  string connector = 4;
 }
 
 message ReportCatalogRequest {
@@ -116,4 +126,14 @@ message ReportCatalogRequest {
 message ReportCatalogResponse {
   // Of the catalog's streams. The same streams always have the same digest.
   string digest = 1;
+}
+
+message GetArtifactRequest {
+  // sha256:{hex}
+  string digest = 1;
+}
+
+message GetArtifactResponse {
+  string media_type = 1;
+  bytes content = 2;
 }

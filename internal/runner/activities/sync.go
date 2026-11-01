@@ -41,6 +41,8 @@ type Sync struct {
 	Logger  *slog.Logger
 	// What the connectors get.
 	Connectors connectorhost.Env
+	// Nil: connector versions can't be fetched.
+	Versions *connectorhost.Fetcher
 }
 
 // RunSyncAttempt runs one attempt of a sync. Heartbeats carry the last
@@ -81,7 +83,11 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	if spec.GetOrgId() != in.OrgID {
 		return out, errs.New(errs.ConfigInvalid, "pipeline %s belongs to another org", in.PipelineID)
 	}
-	job, err := buildJob(ctx, spec, a.Connectors)
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, spec.GetSourceConnector(), spec.GetDestinationConnector())
+	if err != nil {
+		return out, err
+	}
+	job, err := buildJob(ctx, spec, env)
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
 	if err != nil {

@@ -146,7 +146,7 @@ func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[da
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&dataplanev1.GetConnectorConfigResponse{OrgId: s.Tenant.Org.String(), Version: c.version, Config: cfg}), nil
+	return connect.NewResponse(&dataplanev1.GetConnectorConfigResponse{OrgId: s.Tenant.Org.String(), Version: c.version, Config: cfg, Connector: c.connector}), nil
 }
 
 func (s *Server) ReportCatalog(ctx context.Context, req *connect.Request[dataplanev1.ReportCatalogRequest]) (*connect.Response[dataplanev1.ReportCatalogResponse], error) {

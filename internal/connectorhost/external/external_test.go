@@ -17,10 +17,12 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/util"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
+	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
@@ -392,5 +394,49 @@ func TestDestinationStreamFailure(t *testing.T) {
 	}
 	if _, err := w.PreCommit(t.Context(), destination.Epoch{Generation: 3, N: 1}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDescriptorSpec(t *testing.T) {
+	files := NewDestination(exe("destination-files"), []byte(`{"dir": "x"}`), Options{})
+	if err := files.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	spec := files.p.spec
+	_ = files.Close()
+
+	same := NewDestination(exe("destination-files"), []byte(`{"dir": "x"}`), Options{Spec: spec})
+	if err := same.Start(t.Context()); err != nil {
+		t.Fatalf("the connector's own spec: %v", err)
+	}
+	_ = same.Close()
+
+	host := proto.Clone(spec).(*protocolv1.SpecResponse)
+	host.Egress.Tier = protocolv1.EgressTier_EGRESS_TIER_HOST
+	other := NewDestination(exe("destination-files"), []byte(`{"dir": "x"}`), Options{Spec: host})
+	defer func() { _ = other.Close() }()
+	err := other.Start(t.Context())
+	if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "descriptor") || !strings.Contains(err.Error(), `"tier":"raw"`) {
+		t.Fatalf("a descriptor on another tier: %v", err)
+	}
+}
+
+func TestValidateConfig(t *testing.T) {
+	schema := []byte(`{"type": "object", "required": ["dir"], "properties": {"dir": {"type": "string"}, "token": {"type": "string", "x-secret": true, "pattern": "^tok_"}}}`)
+	if err := ValidateConfig("files", schema, []byte(`{"dir": "x", "token": "tok_1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig("files", schema, []byte(`{"token": "tok_1"}`)); errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Errorf("missing dir: %v", err)
+	}
+	err := ValidateConfig("files", schema, []byte(`{"dir": "x", "token": "hunter2"}`))
+	if err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("a secret that fails its pattern: %v", err)
+	}
+	if err := ValidateConfig("files", []byte(`{"type": 3}`), []byte(`{}`)); errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Errorf("a bad schema: %v", err)
+	}
+	if _, err := CompileSchema([]byte(`{"$ref": "http://169.254.169.254/schema.json"}`)); err == nil {
+		t.Error("compiled a schema that refers to a URL")
 	}
 }

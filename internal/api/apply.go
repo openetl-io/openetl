@@ -48,8 +48,13 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		if err != nil {
 			return nil, invalid("%s: %v", origins[i], err)
 		}
-		doc.Workspace = cmp.Or(doc.Workspace, defWS)
-		key := doc.Kind + "/" + doc.Workspace + "/" + doc.Name
+		var key string
+		if versioned(doc) {
+			key = "connector/" + connectorKind(doc) + "/" + doc.Name + "@" + doc.Version
+		} else {
+			doc.Workspace = cmp.Or(doc.Workspace, defWS)
+			key = doc.Kind + "/" + doc.Workspace + "/" + doc.Name
+		}
 		if j, ok := seen[key]; ok {
 			return nil, invalid("%s and %s both define %s %s", origins[j], origins[i], doc.Kind, doc.Name)
 		}
@@ -59,24 +64,32 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	if len(docs) == 0 {
 		return nil, invalid("no documents")
 	}
-	// Pipelines refer to sources and destinations, so those go first.
+	if err := s.pinImages(ctx, docs, origins); err != nil {
+		return nil, err
+	}
+	// Sources and destinations refer to connector versions, and pipelines to
+	// sources and destinations, so each goes before what refers to it.
 	order := make([]int, len(docs))
 	for i := range order {
 		order[i] = i
 	}
-	isPipeline := func(i int) int {
-		if docs[i].Kind == spec.KindPipeline {
-			return 1
+	rank := func(i int) int {
+		switch {
+		case versioned(docs[i]):
+			return 0
+		case docs[i].Kind == spec.KindPipeline:
+			return 2
 		}
-		return 0
+		return 1
 	}
-	slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(isPipeline(a), isPipeline(b)) })
+	slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(rank(a), rank(b)) })
+	client := cmp.Or(req.Msg.GetClient(), "api")
 
 	res := &apiv1.ApplyResponse{Resources: make([]*apiv1.AppliedResource, len(docs))}
 	var scheds []schedule
 	err := s.Store.Tx(ctx, func(q *db.Queries) error {
 		for _, i := range order {
-			applied, sched, err := s.applyOne(ctx, q, docs[i])
+			applied, sched, err := s.applyOne(ctx, q, docs[i], client+":"+origins[i])
 			if err != nil {
 				return fmt.Errorf("%s: %w", origins[i], err)
 			}
@@ -113,7 +126,11 @@ func (s *Server) workspace(ctx context.Context, q *db.Queries, name string) (uui
 	return ws.ID, err
 }
 
-func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document) (*apiv1.AppliedResource, *schedule, error) {
+func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document, provenance string) (*apiv1.AppliedResource, *schedule, error) {
+	if versioned(doc) {
+		res, err := s.applyConnectorVersion(ctx, q, doc, provenance)
+		return res, nil, err
+	}
 	wsID, err := s.workspace(ctx, q, doc.Workspace)
 	if err != nil {
 		return nil, nil, err
@@ -127,6 +144,8 @@ func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document
 	}
 }
 
+// digest hashes m and extra; empty extras leave the digest as it was
+// without them.
 func digest(m proto.Message, extra ...string) (string, error) {
 	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(m)
 	if err != nil {
@@ -135,6 +154,9 @@ func digest(m proto.Message, extra ...string) (string, error) {
 	h := sha256.New()
 	h.Write(b)
 	for _, e := range extra {
+		if e == "" {
+			continue
+		}
 		h.Write([]byte{0})
 		h.Write([]byte(e))
 	}
@@ -146,17 +168,28 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	if err != nil {
 		return nil, err
 	}
-	collection := "sources"
-	if doc.Kind == spec.KindSource {
-		_, err = connectorhost.NewSource(doc.Connector.GetConnector(), cfg, s.Connectors)
+	kind, collection := "source", "sources"
+	if doc.Kind == spec.KindDestination {
+		kind, collection = "destination", "destinations"
+	}
+	name, ref := connectorhost.SplitRef(doc.Connector.GetConnector())
+	v, err := s.resolveConnector(ctx, q, kind, name, ref)
+	if err != nil {
+		return nil, err
+	}
+	env, connector := s.Connectors, ""
+	if v != nil {
+		env, connector = env.With(v), v.Digest
+	}
+	if kind == "source" {
+		_, err = connectorhost.NewSource(name, cfg, env)
 	} else {
-		collection = "destinations"
-		_, err = connectorhost.NewDestination(doc.Connector.GetConnector(), cfg, s.Connectors)
+		_, err = connectorhost.NewDestination(name, cfg, env)
 	}
 	if err != nil {
 		return nil, invalid("%v", err)
 	}
-	version, err := digest(doc.Connector)
+	version, err := digest(doc.Connector, connector)
 	if err != nil {
 		return nil, err
 	}
@@ -181,9 +214,9 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	case errors.Is(err, pgx.ErrNoRows):
 		res.Action = apiv1.ApplyAction_APPLY_ACTION_CREATED
 		if doc.Kind == spec.KindSource {
-			err = q.InsertSource(ctx, db.InsertSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version})
+			err = q.InsertSource(ctx, db.InsertSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector})
 		} else {
-			err = q.InsertDestination(ctx, db.InsertDestinationParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version})
+			err = q.InsertDestination(ctx, db.InsertDestinationParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: uuid.New(), Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector})
 		}
 	case err != nil:
 	case cur.version == version:
@@ -191,9 +224,9 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	default:
 		res.Action = apiv1.ApplyAction_APPLY_ACTION_UPDATED
 		if doc.Kind == spec.KindSource {
-			err = q.UpdateSource(ctx, db.UpdateSourceParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version})
+			err = q.UpdateSource(ctx, db.UpdateSourceParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version, ConnectorDigest: connector})
 		} else {
-			err = q.UpdateDestination(ctx, db.UpdateDestinationParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version})
+			err = q.UpdateDestination(ctx, db.UpdateDestinationParams{OrgID: s.Tenant.Org, ID: cur.id, Spec: stored, Version: version, ConnectorDigest: connector})
 		}
 	}
 	return res, err

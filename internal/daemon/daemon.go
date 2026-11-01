@@ -33,6 +33,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
+	"github.com/unsuitable001/openetl/internal/registry"
 	dpactivities "github.com/unsuitable001/openetl/internal/runner/activities"
 	"github.com/unsuitable001/openetl/internal/store"
 )
@@ -97,10 +98,16 @@ func Run(ctx context.Context, o Options) error {
 			_ = ln.Close()
 			return err
 		}
+		allow, err := netguard.ParsePrefixes(cfg.EgressAllow)
+		if err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("daemon: --egress-allow: %w", err)
+		}
 		srv := &api.Server{
 			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc},
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
-			Logger: log.With("role", "server"),
+			Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},
+			Logger:   log.With("role", "server"),
 		}
 		g.Go(func() error { return serve(gctx, ln, srv.Handler(), o.Ready, log) })
 	}
@@ -170,6 +177,11 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	}
 	connectors := connectorhost.Env{Egress: netguard.Policy{Allow: allow}, Connectors: connectorsDir(cfg), Logger: log.With("component", "connector")}
 	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL) //nolint:forbidigo // the operator configures the API's address
+	versions := &connectorhost.Fetcher{
+		Artifact: dpactivities.Artifacts(apiClient),
+		Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},
+		Cache:    cfg.Cache,
+	}
 	sync := &dpactivities.Sync{
 		API:         apiClient,
 		Checkpoints: cps,
@@ -177,6 +189,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		Engine:      engineclient.Options{Binary: cfg.Engine, Logger: log.With("component", "engine")},
 		Logger:      log,
 		Connectors:  connectors,
+		Versions:    versions,
 	}
 	w := worker.New(tc, contract.BatchQueue(cfg.DataPlane), worker.Options{
 		MaxConcurrentActivityExecutionSize: 4,
@@ -184,7 +197,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		WorkerStopTimeout: 2 * time.Minute,
 	})
 	w.RegisterActivityWithOptions(sync.RunSyncAttempt, activity.RegisterOptions{Name: contract.RunSyncAttempt})
-	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors}
+	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
 	log.Info("runner polling", "queue", contract.BatchQueue(cfg.DataPlane), "checkpoints", cfg.Checkpoints)
