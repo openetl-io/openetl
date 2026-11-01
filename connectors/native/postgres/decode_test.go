@@ -1,7 +1,12 @@
 package postgres
 
 import (
+	"encoding/binary"
+	"math"
 	"testing"
+
+	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestNumericTypmod(t *testing.T) {
@@ -61,5 +66,36 @@ func TestWidens(t *testing.T) {
 		if got := widens(c.from, c.to); got != c.want {
 			t.Errorf("widens(%s, %s) = %v", c.from, c.to, got)
 		}
+	}
+}
+
+// Timestamps past Arrow's microseconds since 1970 become text, and so does
+// the last of those, which reads as infinity.
+func TestTimestampsPastArrow(t *testing.T) {
+	const last = math.MaxInt64 - pgEpochMicros
+	for _, c := range []struct {
+		us   int64
+		oid  uint32
+		want string // empty if it fits
+	}{
+		{0, pgtype.TimestamptzOID, ""},
+		{last - 1, pgtype.TimestamptzOID, ""},
+		{last, pgtype.TimestamptzOID, "294247-01-10T04:00:54.775807Z"},
+		{last + 1, pgtype.TimestampOID, "294247-01-10T04:00:54.775808"},
+		// Postgres's last timestamp.
+		{9_223_371_331_200_000_000 - 1, pgtype.TimestampOID, "294276-12-31T23:59:59.999999"},
+		{9_223_371_331_200_000_000 - 86_400_000_000, pgtype.TimestamptzOID, "294276-12-31T00:00:00Z"},
+		{math.MaxInt64, pgtype.TimestamptzOID, ""},
+		{math.MinInt64, pgtype.TimestamptzOID, ""},
+	} {
+		cb, err := newColBuilder(memory.DefaultAllocator, sourceColumn{oid: c.oid})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok := cb.past(binary.BigEndian.AppendUint64(nil, uint64(c.us)))
+		if got != c.want || ok != (c.want != "") {
+			t.Errorf("%d: %q, %v; want %q", c.us, got, ok, c.want)
+		}
+		cb.b.Release()
 	}
 }

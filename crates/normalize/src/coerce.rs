@@ -24,7 +24,6 @@ use arrow_array::{
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use base64::Engine;
-use chrono::NaiveDate;
 use serde_json::Value;
 
 use crate::{EXTENSION_NAME_KEY, Error, JSON_EXTENSION, TypeOptions, UUID_EXTENSION};
@@ -808,9 +807,30 @@ fn date_part(s: &str) -> Option<(i64, &str)> {
     let (y, rest) = digits(s, year_len)?;
     let (m, rest) = digits(rest.strip_prefix('-')?, 2)?;
     let (d, rest) = digits(rest.strip_prefix('-')?, 2)?;
-    let date = NaiveDate::from_ymd_opt(i32::try_from(y).ok()?, m, d)?;
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)?;
-    Some(((date - epoch).num_days(), rest))
+    Some((days_from_civil(i64::from(y), m, d)?, rest))
+}
+
+/// Days since 1970-01-01 in the proleptic Gregorian calendar, for years past
+/// chrono's 262142 too, so they fail as out of range rather than as not a
+/// date. Howard Hinnant's algorithm, with years starting in March.
+fn days_from_civil(y: i64, m: u32, d: u32) -> Option<i64> {
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_len = match m {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        1..=12 => 31,
+        _ => return None,
+    };
+    if d == 0 || d > month_len {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let year_of_era = y - era * 400;
+    let day_of_year = (153 * i64::from((m + 9) % 12) + 2) / 5 + i64::from(d) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
 }
 
 fn date(s: &str, inf: Infinity) -> Result<i32, Unfit> {
@@ -1012,6 +1032,16 @@ mod tests {
             Some(MIN_TIMESTAMP)
         );
 
+        // The last microsecond an i64 holds, past chrono's dates.
+        assert_eq!(
+            timestamp("294247-01-10T04:00:54.775807Z", us(true)).ok(),
+            Some(i64::MAX)
+        );
+        assert!(
+            reason(timestamp("294247-01-10T04:00:54.775808Z", us(true)))
+                .starts_with("range: column \"c\" is out of range for microseconds")
+        );
+
         assert!(reason(timestamp("2000-01-01T00:00:00", us(true))).contains("no UTC offset"));
         assert!(reason(timestamp("2000-01-01T00:00:00Z", us(false))).contains("has a UTC offset"));
         for bad in [
@@ -1036,6 +1066,14 @@ mod tests {
         assert_eq!(date("infinity", C).ok(), Some(MAX_DATE));
         assert_eq!(date("-infinity", C).ok(), Some(MIN_DATE));
         assert!(reason(date("2001-02-29", C)).starts_with("type:"));
+        assert!(reason(date("1900-02-29", C)).starts_with("type:"));
+        assert!(reason(date("2001-04-31", C)).starts_with("type:"));
+        assert!(reason(date("2001-13-01", C)).starts_with("type:"));
+        assert!(reason(date("2001-01-00", C)).starts_with("type:"));
+        assert_eq!(date("2000-02-29", C).ok(), Some(11_016));
+        assert_eq!(date("0000-03-01", C).ok(), Some(-719_468));
+        assert!(date("294250-01-01", C).is_ok(), "past chrono's dates");
+        assert!(reason(date("9999999-01-01", C)).starts_with("range:"));
         assert_eq!(time("00:00:01.5").ok(), Some(1_500_000));
         assert_eq!(
             time("23:59:59.9999999").ok(),

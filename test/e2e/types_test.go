@@ -42,13 +42,19 @@ func TestPostgresTypesRoundTrip(t *testing.T) {
 		t.Errorf("rows are %q, want %q", got.rows, want)
 	}
 	lines := got.quarantined
-	if len(lines) != 2 || !strings.HasPrefix(lines[0]["reason"], "nan:") || !strings.HasPrefix(lines[1]["reason"], "precision:") {
+	if len(lines) != 3 || !strings.HasPrefix(lines[0]["reason"], "nan:") || lines[1]["reason"] != pastArrow || !strings.HasPrefix(lines[2]["reason"], "precision:") {
 		t.Fatalf("quarantined %v", lines)
 	}
 	if !strings.Contains(lines[0]["record"], `"id":2`) {
 		t.Errorf("quarantined record %v", lines[0])
 	}
+	if !strings.Contains(lines[1]["record"], `"tstz":"294250-01-01T00:00:00Z"`) {
+		t.Errorf("quarantined record %v", lines[1])
+	}
 }
+
+// Postgres's timestamps go on past where Arrow's microseconds end.
+const pastArrow = `range: column "tstz" is out of range for microseconds`
 
 // Decimal columns overridden to float64 and string keep the values a
 // decimal can't hold.
@@ -60,11 +66,11 @@ func TestPostgresTypeOverrides(t *testing.T) {
 		t.Errorf("amount is %s and any_num %s, want double precision and text", got.types["amount"], got.types["any_num"])
 	}
 	want := "1|12.5|1.123456789|2026-10-31|12:34:56.789|9999-12-31 23:59:59.999999|0b0e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b|{\"a\": 1};" +
-		"2|NaN|1|0001-01-01;3|1|0.0000000001"
+		"2|NaN|1|0001-01-01;4|1|0.0000000001"
 	if got.rows != want {
 		t.Errorf("rows are %q, want %q", got.rows, want)
 	}
-	if len(got.quarantined) != 0 {
+	if len(got.quarantined) != 1 || got.quarantined[0]["reason"] != pastArrow {
 		t.Errorf("quarantined %v", got.quarantined)
 	}
 }
@@ -76,11 +82,11 @@ func TestPostgresInfinitiesQuarantined(t *testing.T) {
 		j.Streams[0].Overrides = map[string]arrow.DataType{"amount": arrow.PrimitiveTypes.Float64, "any_num": arrow.BinaryTypes.String}
 		j.QuarantineInfinity = true
 	})
-	if want := "3|1|0.0000000001"; got.rows != want {
+	if want := "4|1|0.0000000001"; got.rows != want {
 		t.Errorf("rows are %q, want %q", got.rows, want)
 	}
 	lines := got.quarantined
-	if len(lines) != 2 || lines[0]["reason"] != `range: column "tstz" is infinite` || lines[1]["reason"] != `range: column "day" is infinite` {
+	if len(lines) != 3 || lines[0]["reason"] != `range: column "tstz" is infinite` || lines[1]["reason"] != `range: column "day" is infinite` || lines[2]["reason"] != pastArrow {
 		t.Fatalf("quarantined %v", lines)
 	}
 }
@@ -113,7 +119,8 @@ func typesRoundTrip(t *testing.T, edit func(*runnerpkg.Job)) roundTrip {
 		`INSERT INTO ` + src + `.items VALUES
 			(1, 12.5, 1.123456789, '2026-10-31', '12:34:56.789', 'infinity', '0b0e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b', '{"a": 1}'),
 			(2, 'NaN', 1, '-infinity', NULL, NULL, NULL, NULL),
-			(3, 1, 0.0000000001, NULL, NULL, NULL, NULL, NULL)`,
+			(3, 1, 1, NULL, NULL, '294250-01-01 00:00:00+00', NULL, NULL),
+			(4, 1, 0.0000000001, NULL, NULL, NULL, NULL, NULL)`,
 	} {
 		if _, err := conn.Exec(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)

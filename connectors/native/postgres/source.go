@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -299,7 +300,12 @@ func (s *Source) query(ctx context.Context, conn *pgx.Conn, b *batcher, stream, 
 	var err error
 	for rr.NextRow() {
 		vals := rr.Values()
-		if err = b.add(vals[:len(b.cols)]); err != nil {
+		if text := b.past(vals[:len(b.cols)]); text != nil {
+			err = b.alone(stream, vals[:len(b.cols)], text, out)
+		} else {
+			err = b.add(vals[:len(b.cols)])
+		}
+		if err != nil {
 			break
 		}
 		n++
@@ -334,16 +340,19 @@ func resume(out source.Emitter, stream string, st sourceState) error {
 
 // batcher builds one table's Arrow batches.
 type batcher struct {
+	mem    memory.Allocator
 	schema *arrow.Schema
 	// schema with each column's logical type.
 	declared *arrow.Schema
 	cols     []*colBuilder
-	rows     int
-	bytes    int
+	// Columns whose values can be past what their builder's type holds.
+	checked []int
+	rows    int
+	bytes   int
 }
 
 func newBatcher(mem memory.Allocator, cols []sourceColumn) (*batcher, error) {
-	b := &batcher{}
+	b := &batcher{mem: mem}
 	fields := make([]arrow.Field, len(cols))
 	declared := make([]arrow.Field, len(cols))
 	for i, c := range cols {
@@ -353,6 +362,9 @@ func newBatcher(mem memory.Allocator, cols []sourceColumn) (*batcher, error) {
 			return nil, err
 		}
 		b.cols = append(b.cols, cb)
+		if cb.past != nil {
+			b.checked = append(b.checked, i)
+		}
 		fields[i] = arrow.Field{Name: c.name, Type: cb.b.Type(), Nullable: true}
 		declared[i] = fields[i]
 		if cb.declared != nil {
@@ -380,15 +392,66 @@ func (b *batcher) add(vals [][]byte) error {
 	return nil
 }
 
+// past returns the row's values that their columns' types can't hold, as
+// text by column, or nil.
+func (b *batcher) past(vals [][]byte) map[int]string {
+	var text map[int]string
+	for _, i := range b.checked {
+		if s, ok := b.cols[i].past(vals[i]); ok {
+			if text == nil {
+				text = map[int]string{}
+			}
+			text[i] = s
+		}
+	}
+	return text
+}
+
+// alone emits a row in a batch of its own, with text in place of the values
+// its columns' types can't hold. The engine parses the text as the declared
+// type and quarantines the row.
+func (b *batcher) alone(stream string, vals [][]byte, text map[int]string, out source.Emitter) error {
+	if err := b.flush(stream, out); err != nil {
+		return err
+	}
+	vals = slices.Clone(vals)
+	for i := range text {
+		vals[i] = nil
+	}
+	if err := b.add(vals); err != nil {
+		return err
+	}
+	return b.emit(stream, text, out)
+}
+
 func (b *batcher) flush(stream string, out source.Emitter) error {
+	return b.emit(stream, nil, out)
+}
+
+// emit sends the rows built so far, with the columns in text replaced by
+// strings (one-row batches only).
+func (b *batcher) emit(stream string, text map[int]string, out source.Emitter) error {
 	if b.rows == 0 {
 		return nil
 	}
+	schema := b.schema
 	arrs := make([]arrow.Array, len(b.cols))
 	for i, c := range b.cols {
 		arrs[i] = c.b.NewArray()
 	}
-	rec := array.NewRecordBatch(b.schema, arrs, int64(b.rows))
+	if text != nil {
+		fields := slices.Clone(schema.Fields())
+		for i, s := range text {
+			sb := array.NewStringBuilder(b.mem)
+			sb.Append(s)
+			arrs[i].Release()
+			arrs[i] = sb.NewArray()
+			sb.Release()
+			fields[i].Type = arrow.BinaryTypes.String
+		}
+		schema = arrow.NewSchema(fields, nil)
+	}
+	rec := array.NewRecordBatch(schema, arrs, int64(b.rows))
 	for _, a := range arrs {
 		a.Release()
 	}

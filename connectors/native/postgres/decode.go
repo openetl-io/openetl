@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -23,6 +24,8 @@ type colBuilder struct {
 	add    func(v []byte) error
 	// The column's logical type, if the builder's isn't.
 	declared arrow.DataType
+	// past, if set, renders a value the builder's type can't hold as text.
+	past func(v []byte) (string, bool)
 }
 
 // Microseconds and days from 1970-01-01 to Postgres's epoch, 2000-01-01.
@@ -32,6 +35,18 @@ const (
 	pgEpochMicros = 946_684_800_000_000
 	pgEpochDays   = 10_957
 )
+
+// timestampText renders microseconds since 2000-01-01 as text the engine
+// parses. Postgres's timestamps go on to 294276, past where Arrow's
+// microseconds since 1970 end (and the last of those reads as infinity).
+func timestampText(us int64, zoned bool) string {
+	const day = 86_400_000_000
+	s := time.Date(2000, 1, 1+int(us/day), 0, 0, 0, int(us%day)*1000, time.UTC).Format("2006-01-02T15:04:05.999999")
+	if zoned {
+		s += "Z"
+	}
+	return s
+}
 
 func fixed(n int, f func(v []byte)) func([]byte) error {
 	return func(v []byte) error {
@@ -106,6 +121,16 @@ func newColBuilder(mem memory.Allocator, c sourceColumn) (*colBuilder, error) {
 			}
 			b.Append(arrow.Timestamp(us))
 			return nil
+		}
+		cb.past = func(v []byte) (string, bool) {
+			if len(v) != 8 {
+				return "", false
+			}
+			us := int64(be.Uint64(v)) //nolint:gosec // two's complement
+			if us == math.MaxInt64 || us < math.MaxInt64-pgEpochMicros {
+				return "", false
+			}
+			return timestampText(us, t.TimeZone != ""), true
 		}
 	case pgtype.UUIDOID:
 		b := array.NewExtensionBuilder(mem, extensions.NewUUIDType())

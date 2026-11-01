@@ -1475,7 +1475,6 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "base64 0.22.1",
- "chrono",
  "serde",
  "serde_json",
  "thiserror",
