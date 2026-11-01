@@ -180,7 +180,8 @@ func TestNonIdempotentRequests(t *testing.T) {
 	}
 }
 
-// A POST that was never sent is retried.
+// A POST that was never sent is retried: the server comes up during the
+// first backoff.
 func TestDialFailuresAreRetried(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -189,9 +190,22 @@ func TestDialFailuresAreRetried(t *testing.T) {
 	addr := l.Addr().String()
 	_ = l.Close()
 	s, c := newServices(t, Options{Policy: loopback(), Budget: 5 * time.Second})
-	_, err = do(t, s, &host.Request{Method: http.MethodPost, URL: "http://" + addr})
-	if errs.CodeOf(err) != errs.Transient || len(c.slept) == 0 {
-		t.Errorf("%v, slept %v", err, c.slept)
+	var srv *httptest.Server
+	s.sleep = func(ctx context.Context, d time.Duration) error {
+		if srv == nil {
+			l, err := net.Listen("tcp", addr)
+			if err != nil {
+				t.Skipf("port %s was taken meanwhile: %v", addr, err)
+			}
+			srv = &httptest.Server{Listener: l, Config: &http.Server{Handler: status(200), ReadHeaderTimeout: time.Second}}
+			srv.Start()
+			t.Cleanup(srv.Close)
+		}
+		return c.sleep(ctx, d)
+	}
+	b, err := do(t, s, &host.Request{Method: http.MethodPost, URL: "http://" + addr})
+	if err != nil || b != "OK" || len(c.slept) != 1 {
+		t.Errorf("%q, %v, slept %v", b, err, c.slept)
 	}
 }
 

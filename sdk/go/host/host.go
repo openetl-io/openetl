@@ -17,6 +17,9 @@ type Host interface {
 	// HTTP sends req, retrying within its budget. A final status of 400 or
 	// more is returned as a *StatusError.
 	HTTP(ctx context.Context, req *Request) (*Response, error)
+	// Sign signs with the key in the named secret. An HMAC returns the raw
+	// MAC, a JWT the compact JWS.
+	Sign(ctx context.Context, keySecret string, m SignMethod) ([]byte, error)
 }
 
 type Request struct {
@@ -103,3 +106,42 @@ func (e *StatusError) Error() string {
 
 func (e *StatusError) ErrorCode() protocolv1.ErrorCode { return e.Code }
 func (e *StatusError) RetryAfter() time.Duration       { return e.After }
+
+// SignMethod is HMAC or JWT.
+type SignMethod interface{ signMethod() }
+
+type HMAC struct {
+	Hash    Hash
+	Message []byte
+}
+
+// Hash numbers match the protocol's HashAlgorithm.
+type Hash int32
+
+const (
+	SHA1   Hash = 1
+	SHA256 Hash = 2
+	SHA512 Hash = 3
+)
+
+type JWT struct {
+	Algorithm JWTAlgorithm
+	// A JSON object.
+	Claims []byte
+	// Extra header fields, such as kid, as a JSON object. The host sets alg
+	// and typ.
+	Header []byte
+}
+
+// JWTAlgorithm numbers match the protocol's. The key is the secret's bytes
+// for HS256, and a PEM private key (PKCS #1, SEC 1 or PKCS #8) otherwise.
+type JWTAlgorithm int32
+
+const (
+	HS256 JWTAlgorithm = 1
+	RS256 JWTAlgorithm = 2
+	ES256 JWTAlgorithm = 3
+)
+
+func (HMAC) signMethod() {}
+func (JWT) signMethod()  {}

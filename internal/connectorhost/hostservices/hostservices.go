@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/oauth2"
 	"golang.org/x/time/rate"
 
 	"github.com/unsuitable001/openetl/internal/netguard"
@@ -42,6 +44,8 @@ type Options struct {
 	Budget time.Duration
 	// Zero: 256 MiB.
 	MaxBodyBytes int64
+	// Nil: slog's default.
+	Logger *slog.Logger
 }
 
 // Services is one connector instance's host services. It's safe for
@@ -49,9 +53,12 @@ type Options struct {
 type Services struct {
 	opts   Options
 	client *http.Client
+	log    *slog.Logger
 
 	mu       sync.Mutex
 	limiters map[string]*limiter
+	// By credential secret.
+	tokens map[string]*oauthCredential
 
 	now   func() time.Time
 	sleep func(context.Context, time.Duration) error
@@ -65,7 +72,9 @@ func New(o Options) *Services {
 	return &Services{
 		opts:     o,
 		client:   o.Policy.ClientVia(func(rt http.RoundTripper) http.RoundTripper { return &egress{base: rt} }),
+		log:      cmp.Or(o.Logger, slog.Default()),
 		limiters: map[string]*limiter{},
+		tokens:   map[string]*oauthCredential{},
 		now:      time.Now,
 		sleep:    sleep,
 	}
@@ -80,17 +89,17 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 		return nil, errs.New(errs.ConfigInvalid, "HTTP: the URL must be absolute, with scheme http or https")
 	}
 	method := cmp.Or(r.Method, http.MethodGet)
-	cred, err := s.credential(ctx, r.Auth)
+	if h := authHeader(r.Auth); h != "" && r.Header.Get(h) != "" {
+		return nil, errs.New(errs.Internal, "HTTP: the request sets %s, which its auth sets", h)
+	}
+	cred, oc, err := s.credential(ctx, r.Auth)
 	if err != nil {
 		return nil, err
-	}
-	if cred != nil && cred.header() != "" && r.Header.Get(cred.header()) != "" {
-		return nil, errs.New(errs.Internal, "HTTP: the request sets %s, which its auth sets", cred.header())
 	}
 	lim := s.limiter(cmp.Or(r.RateLimitKey, strings.ToLower(u.Host)))
 	retryAny := r.Idempotent || idempotent(method)
 	deadline := s.now().Add(cmp.Or(r.Budget, s.opts.Budget))
-	ctx = withAuth(ctx, u, cred)
+	refreshed := false
 
 	for try := 0; ; try++ {
 		now := s.now()
@@ -103,7 +112,23 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 				return nil, err
 			}
 		}
-		resp, cancel, err := s.send(ctx, method, u, r, deadline)
+		var (
+			tok     *oauth2.Token
+			resp    *http.Response
+			release context.CancelFunc
+			err     error
+		)
+		if oc != nil {
+			tctx, cancel := context.WithTimeout(ctx, deadline.Sub(s.now()))
+			tok, err = oc.token(tctx)
+			cancel()
+			if err == nil {
+				cred = bearer(tok)
+			}
+		}
+		if err == nil {
+			resp, release, err = s.send(withAuth(ctx, u, cred), method, u, r, deadline) //nolint:bodyclose // statusError closes it, or the caller through body
+		}
 		now = s.now()
 		var wait time.Duration
 		var final error
@@ -113,7 +138,9 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 				return nil, ctx.Err()
 			}
 			final = classifyErr(err)
-			if errs.CodeOf(final) != errs.Transient || (!retryAny && !notSent(err)) {
+			// Without a token, nothing was sent.
+			sentNothing := notSent(err) || (oc != nil && tok == nil)
+			if errs.CodeOf(final) != errs.Transient || (!retryAny && !sentNothing) {
 				return nil, final
 			}
 			wait = backoff(try)
@@ -122,13 +149,19 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 			return &host.Response{
 				Status: resp.StatusCode,
 				Header: resp.Header,
-				Body:   &body{rc: netguard.LimitBody(resp.Body, s.opts.MaxBodyBytes), cancel: cancel},
+				Body:   &body{rc: netguard.LimitBody(resp.Body, s.opts.MaxBodyBytes), cancel: release},
 			}, nil
 		default:
 			se := statusError(resp, now)
-			cancel()
+			release()
 			final = se
 			code := errs.Code(se.Code)
+			// A server can revoke an access token before it expires.
+			if oc != nil && se.Status == http.StatusUnauthorized && !refreshed {
+				oc.invalidate(tok)
+				refreshed = true
+				continue
+			}
 			if code == errs.RateLimited {
 				lim.throttled(now, se.After)
 			} else {

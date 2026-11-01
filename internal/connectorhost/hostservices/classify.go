@@ -89,6 +89,8 @@ func serverNow(h http.Header, now time.Time) time.Time {
 func classifyErr(err error) error {
 	var dns *net.DNSError
 	switch {
+	case errors.As(err, new(*errs.Error)):
+		return err
 	case errors.As(err, new(*netguard.BlockedError)):
 		return errs.Wrap(errs.ConfigInvalid, err, "HTTP")
 	case errors.As(err, new(*netguard.RedirectError)):

@@ -32,8 +32,18 @@ func (s StaticSecrets) Secret(_ context.Context, name string) (sdk.Secret, error
 // request's own origin.
 type credential interface {
 	apply(req *http.Request) error
-	// The header it sets, which the connector mustn't set too.
-	header() string
+}
+
+// authHeader is the header an auth sets, which the request mustn't set too.
+func authHeader(a host.Auth) string {
+	switch a := a.(type) {
+	case nil:
+		return ""
+	case host.APIKey:
+		return http.CanonicalHeaderKey(a.Header)
+	default:
+		return "Authorization"
+	}
 }
 
 type headerCredential struct {
@@ -45,8 +55,6 @@ func (c headerCredential) apply(req *http.Request) error {
 	req.Header.Set(c.name, c.value.Reveal())
 	return nil
 }
-
-func (c headerCredential) header() string { return c.name }
 
 type queryCredential struct {
 	name  string
@@ -64,30 +72,36 @@ func (c queryCredential) apply(req *http.Request) error {
 	return nil
 }
 
-func (c queryCredential) header() string { return "" }
-
-func (s *Services) credential(ctx context.Context, a host.Auth) (credential, error) {
+// credential resolves a request's auth. OAuth2 returns its token cache
+// instead, since each try takes the token current then.
+func (s *Services) credential(ctx context.Context, a host.Auth) (credential, *oauthCredential, error) {
 	switch a := a.(type) {
 	case nil:
-		return nil, nil
+		return nil, nil, nil
 	case host.Bearer:
 		v, err := s.secret(ctx, a.TokenSecret)
-		return headerCredential{"Authorization", sdk.NewSecret("Bearer " + v.Reveal())}, err
+		return headerCredential{"Authorization", sdk.NewSecret("Bearer " + v.Reveal())}, nil, err
 	case host.Basic:
 		v, err := s.secret(ctx, a.PasswordSecret)
 		enc := base64.StdEncoding.EncodeToString([]byte(a.Username + ":" + v.Reveal()))
-		return headerCredential{"Authorization", sdk.NewSecret("Basic " + enc)}, err
+		return headerCredential{"Authorization", sdk.NewSecret("Basic " + enc)}, nil, err
 	case host.APIKey:
 		if (a.Header == "") == (a.QueryParam == "") {
-			return nil, errs.New(errs.Internal, "HTTP: an API key goes in a header or a query parameter, one of them")
+			return nil, nil, errs.New(errs.Internal, "HTTP: an API key goes in a header or a query parameter, one of them")
 		}
 		v, err := s.secret(ctx, a.KeySecret)
 		if a.Header != "" {
-			return headerCredential{http.CanonicalHeaderKey(a.Header), sdk.NewSecret(a.Prefix + v.Reveal())}, err
+			return headerCredential{http.CanonicalHeaderKey(a.Header), sdk.NewSecret(a.Prefix + v.Reveal())}, nil, err
 		}
-		return queryCredential{a.QueryParam, sdk.NewSecret(a.Prefix + v.Reveal())}, err
+		return queryCredential{a.QueryParam, sdk.NewSecret(a.Prefix + v.Reveal())}, nil, err
+	case host.OAuth2:
+		oc, err := s.oauth(ctx, a.CredentialSecret)
+		return nil, oc, err
+	case host.AWSSigV4:
+		c, err := s.sigv4(ctx, a)
+		return c, nil, err
 	default:
-		return nil, errs.New(errs.ConfigInvalid, "HTTP: %T auth isn't supported yet", a)
+		return nil, nil, errs.New(errs.Internal, "HTTP: unknown auth %T", a)
 	}
 }
 
