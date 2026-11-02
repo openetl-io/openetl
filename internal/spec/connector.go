@@ -54,6 +54,7 @@ type capabilitiesYAML struct {
 	DedupeAtApply         bool     `yaml:"dedupeAtApply,omitempty" json:"dedupeAtApply,omitempty"`
 	DefaultCommitInterval string   `yaml:"defaultCommitInterval,omitempty" json:"defaultCommitInterval,omitempty"`
 	MinCommitInterval     string   `yaml:"minCommitInterval,omitempty" json:"minCommitInterval,omitempty"`
+	MaxCommitInterval     string   `yaml:"maxCommitInterval,omitempty" json:"maxCommitInterval,omitempty"`
 	NanosecondTimestamps  bool     `yaml:"nanosecondTimestamps,omitempty" json:"nanosecondTimestamps,omitempty"`
 	MaxIdentifierLength   uint32   `yaml:"maxIdentifierLength,omitempty" json:"maxIdentifierLength,omitempty"`
 	// Empty: append only.
@@ -136,6 +137,7 @@ func parseCapabilities(y *capabilitiesYAML) (*protocolv1.DestinationCapabilities
 	}{
 		"defaultCommitInterval": {y.DefaultCommitInterval, &c.DefaultCommitInterval},
 		"minCommitInterval":     {y.MinCommitInterval, &c.MinCommitInterval},
+		"maxCommitInterval":     {y.MaxCommitInterval, &c.MaxCommitInterval},
 	} {
 		if d.v == "" {
 			continue
@@ -199,6 +201,9 @@ func toYAML(d *Descriptor) (descriptorYAML, error) {
 		}
 		if c.GetMinCommitInterval() != nil {
 			y.Capabilities.MinCommitInterval = c.GetMinCommitInterval().AsDuration().String()
+		}
+		if c.GetMaxCommitInterval() != nil {
+			y.Capabilities.MaxCommitInterval = c.GetMaxCommitInterval().AsDuration().String()
 		}
 	}
 	return y, nil

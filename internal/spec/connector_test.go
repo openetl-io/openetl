@@ -26,6 +26,7 @@ spec:
     scopes: [pipeline, stream]
     dedupeAtApply: true
     defaultCommitInterval: 10s
+    maxCommitInterval: 7m
     maxIdentifierLength: 63
     writeModes: [append, overwrite, merge]
   config:
@@ -53,6 +54,7 @@ func TestParseDescriptor(t *testing.T) {
 			Scopes:                []protocolv1.CommitScope{protocolv1.CommitScope_COMMIT_SCOPE_PIPELINE, protocolv1.CommitScope_COMMIT_SCOPE_STREAM},
 			DedupeAtApply:         true,
 			DefaultCommitInterval: durationpb.New(10 * time.Second),
+			MaxCommitInterval:     durationpb.New(7 * time.Minute),
 			MaxIdentifierLength:   63,
 			WriteModes:            []protocolv1.WriteMode{protocolv1.WriteMode_WRITE_MODE_APPEND, protocolv1.WriteMode_WRITE_MODE_OVERWRITE, protocolv1.WriteMode_WRITE_MODE_MERGE},
 		},

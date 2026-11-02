@@ -201,7 +201,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			}
 		}
 	}
-	cfg := destination.OpenConfig{Pipeline: job.Pipeline, Generation: res.Generation, Scope: job.Settings.Scope, Namespace: job.Namespace}
+	cfg := destination.OpenConfig{Pipeline: job.Pipeline, Generation: res.Generation, Scope: job.Settings.Scope, Namespace: job.Namespace, CommitInterval: job.Settings.CommitInterval}
 	canForce := make(map[string]bool, len(job.Streams))
 	for _, s := range job.Streams {
 		cfg.Streams = append(cfg.Streams, destination.Stream{

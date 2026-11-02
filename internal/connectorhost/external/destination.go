@@ -10,6 +10,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/unsuitable001/openetl/internal/platform/errs"
@@ -62,6 +63,7 @@ func Capabilities(spec *protocolv1.SpecResponse) destination.Capabilities {
 		DedupeAtApply:         pc.GetDedupeAtApply(),
 		DefaultCommitInterval: pc.GetDefaultCommitInterval().AsDuration(),
 		MinCommitInterval:     pc.GetMinCommitInterval().AsDuration(),
+		MaxCommitInterval:     pc.GetMaxCommitInterval().AsDuration(),
 		MaxIdentifierLength:   int(pc.GetMaxIdentifierLength()),
 		NanosecondTimestamps:  pc.GetNanosecondTimestamps(),
 	}
@@ -85,6 +87,9 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		Namespace:  cfg.Namespace,
 		Generation: cfg.Generation,
 		Scope:      protocolv1.CommitScope(cfg.Scope), //nolint:gosec // small
+	}
+	if cfg.CommitInterval > 0 {
+		open.CommitInterval = durationpb.New(cfg.CommitInterval)
 	}
 	for _, s := range cfg.Streams {
 		open.Streams = append(open.Streams, &protocolv1.WriteStream{

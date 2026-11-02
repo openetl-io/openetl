@@ -103,6 +103,8 @@ type Capabilities struct {
 	DedupeAtApply         bool
 	DefaultCommitInterval time.Duration
 	MinCommitInterval     time.Duration
+	// 0: no maximum.
+	MaxCommitInterval time.Duration
 	// The longest table or column name, in bytes; 0 for no limit.
 	MaxIdentifierLength int
 	// Timestamps keep nanoseconds; otherwise only microseconds.
@@ -153,6 +155,9 @@ type OpenConfig struct {
 	// A schema or dataset. Empty: the destination's default.
 	Namespace string
 	Streams   []Stream
+	// How often epochs are committed, for sinks whose transactions must
+	// outlast one; 0 if the platform doesn't say.
+	CommitInterval time.Duration
 }
 
 type Destination interface {

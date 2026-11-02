@@ -36,6 +36,8 @@ message DestinationCapabilities {
   uint32 max_identifier_length = 7;
   // Empty: append only.
   repeated WriteMode write_modes = 8;
+  // Unset: no maximum.
+  google.protobuf.Duration max_commit_interval = 9;
 }
 
 enum SinkClass {
@@ -94,6 +96,9 @@ message WriteOpen {
   uint64 generation = 4;
   CommitScope scope = 5;
   repeated WriteStream streams = 6;
+  // How often the platform commits, for sinks whose transactions must outlast
+  // an epoch.
+  google.protobuf.Duration commit_interval = 7;
 }
 
 message WriteStream {

@@ -172,6 +172,11 @@ func TestCheck(t *testing.T) {
 	if err := Check(postgres, ok, streams); err != nil {
 		t.Errorf("Check: %v", err)
 	}
+	capped := postgres
+	capped.MaxCommitInterval = 30 * time.Second
+	if err := Check(capped, ok, streams); err == nil || !strings.Contains(err.Error(), "delivery.commit.interval: 1m0s is above the destination's maximum, 30s") {
+		t.Errorf("Check above the maximum = %v", err)
+	}
 	untimed := ok
 	untimed.CommitInterval = 0
 	if err := Check(postgres, untimed, streams); err != nil {

@@ -45,6 +45,8 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 		Generation: open.GetGeneration(),
 		Scope:      destination.Scope(open.GetScope()),
 		Namespace:  open.GetNamespace(),
+		// Unset is zero.
+		CommitInterval: open.GetCommitInterval().AsDuration(),
 	}
 	for _, s := range open.GetStreams() {
 		cfg.Streams = append(cfg.Streams, destination.Stream{
@@ -199,6 +201,9 @@ func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapa
 	}
 	if c.MinCommitInterval > 0 {
 		p.MinCommitInterval = durationpb.New(c.MinCommitInterval)
+	}
+	if c.MaxCommitInterval > 0 {
+		p.MaxCommitInterval = durationpb.New(c.MaxCommitInterval)
 	}
 	return p
 }

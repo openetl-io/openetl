@@ -350,9 +350,11 @@ type DestinationCapabilities struct {
 	// The longest table or column name, in bytes; 0 for no limit.
 	MaxIdentifierLength uint32 `protobuf:"varint,7,opt,name=max_identifier_length,json=maxIdentifierLength,proto3" json:"max_identifier_length,omitempty"`
 	// Empty: append only.
-	WriteModes    []WriteMode `protobuf:"varint,8,rep,packed,name=write_modes,json=writeModes,proto3,enum=openetl.connector.v1.WriteMode" json:"write_modes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	WriteModes []WriteMode `protobuf:"varint,8,rep,packed,name=write_modes,json=writeModes,proto3,enum=openetl.connector.v1.WriteMode" json:"write_modes,omitempty"`
+	// Unset: no maximum.
+	MaxCommitInterval *durationpb.Duration `protobuf:"bytes,9,opt,name=max_commit_interval,json=maxCommitInterval,proto3" json:"max_commit_interval,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *DestinationCapabilities) Reset() {
@@ -437,6 +439,13 @@ func (x *DestinationCapabilities) GetMaxIdentifierLength() uint32 {
 func (x *DestinationCapabilities) GetWriteModes() []WriteMode {
 	if x != nil {
 		return x.WriteModes
+	}
+	return nil
+}
+
+func (x *DestinationCapabilities) GetMaxCommitInterval() *durationpb.Duration {
+	if x != nil {
+		return x.MaxCommitInterval
 	}
 	return nil
 }
@@ -676,14 +685,17 @@ func (*WriteRequest_EndRead) isWriteRequest_Msg() {}
 type WriteOpen struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Secret fields hold secret names.
-	Config        []byte         `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
-	Pipeline      string         `protobuf:"bytes,2,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
-	Namespace     string         `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Generation    uint64         `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
-	Scope         CommitScope    `protobuf:"varint,5,opt,name=scope,proto3,enum=openetl.connector.v1.CommitScope" json:"scope,omitempty"`
-	Streams       []*WriteStream `protobuf:"bytes,6,rep,name=streams,proto3" json:"streams,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Config     []byte         `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	Pipeline   string         `protobuf:"bytes,2,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
+	Namespace  string         `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Generation uint64         `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
+	Scope      CommitScope    `protobuf:"varint,5,opt,name=scope,proto3,enum=openetl.connector.v1.CommitScope" json:"scope,omitempty"`
+	Streams    []*WriteStream `protobuf:"bytes,6,rep,name=streams,proto3" json:"streams,omitempty"`
+	// How often the platform commits, for sinks whose transactions must outlast
+	// an epoch.
+	CommitInterval *durationpb.Duration `protobuf:"bytes,7,opt,name=commit_interval,json=commitInterval,proto3" json:"commit_interval,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WriteOpen) Reset() {
@@ -754,6 +766,13 @@ func (x *WriteOpen) GetScope() CommitScope {
 func (x *WriteOpen) GetStreams() []*WriteStream {
 	if x != nil {
 		return x.Streams
+	}
+	return nil
+}
+
+func (x *WriteOpen) GetCommitInterval() *durationpb.Duration {
+	if x != nil {
+		return x.CommitInterval
 	}
 	return nil
 }
@@ -1641,7 +1660,7 @@ var File_openetl_connector_v1_destination_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\n" +
-	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\x85\x04\n" +
+	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\xd0\x04\n" +
 	"\x17DestinationCapabilities\x12>\n" +
 	"\n" +
 	"sink_class\x18\x01 \x01(\x0e2\x1f.openetl.connector.v1.SinkClassR\tsinkClass\x129\n" +
@@ -1652,7 +1671,8 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\x15nanosecond_timestamps\x18\x06 \x01(\bR\x14nanosecondTimestamps\x122\n" +
 	"\x15max_identifier_length\x18\a \x01(\rR\x13maxIdentifierLength\x12@\n" +
 	"\vwrite_modes\x18\b \x03(\x0e2\x1f.openetl.connector.v1.WriteModeR\n" +
-	"writeModes\"5\n" +
+	"writeModes\x12I\n" +
+	"\x13max_commit_interval\x18\t \x01(\v2\x19.google.protobuf.DurationR\x11maxCommitInterval\"5\n" +
 	"\x05Epoch\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x01 \x01(\x04R\n" +
@@ -1669,7 +1689,7 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\vstart_reads\x18\a \x01(\v2%.openetl.connector.v1.WriteStartReadsH\x00R\n" +
 	"startReads\x12?\n" +
 	"\bend_read\x18\b \x01(\v2\".openetl.connector.v1.WriteEndReadH\x00R\aendReadB\x05\n" +
-	"\x03msg\"\xf3\x01\n" +
+	"\x03msg\"\xb7\x02\n" +
 	"\tWriteOpen\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\x12\x1a\n" +
 	"\bpipeline\x18\x02 \x01(\tR\bpipeline\x12\x1c\n" +
@@ -1678,7 +1698,8 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"generation\x18\x04 \x01(\x04R\n" +
 	"generation\x127\n" +
 	"\x05scope\x18\x05 \x01(\x0e2!.openetl.connector.v1.CommitScopeR\x05scope\x12;\n" +
-	"\astreams\x18\x06 \x03(\v2!.openetl.connector.v1.WriteStreamR\astreams\"\xe9\x01\n" +
+	"\astreams\x18\x06 \x03(\v2!.openetl.connector.v1.WriteStreamR\astreams\x12B\n" +
+	"\x0fcommit_interval\x18\a \x01(\v2\x19.google.protobuf.DurationR\x0ecommitInterval\"\xe9\x01\n" +
 	"\vWriteStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04mode\x18\x02 \x01(\x0e2\x1f.openetl.connector.v1.WriteModeR\x04mode\x12\x1f\n" +
@@ -1818,45 +1839,47 @@ var file_openetl_connector_v1_destination_proto_depIdxs = []int32{
 	27, // 2: openetl.connector.v1.DestinationCapabilities.default_commit_interval:type_name -> google.protobuf.Duration
 	27, // 3: openetl.connector.v1.DestinationCapabilities.min_commit_interval:type_name -> google.protobuf.Duration
 	2,  // 4: openetl.connector.v1.DestinationCapabilities.write_modes:type_name -> openetl.connector.v1.WriteMode
-	9,  // 5: openetl.connector.v1.WriteRequest.open:type_name -> openetl.connector.v1.WriteOpen
-	11, // 6: openetl.connector.v1.WriteRequest.recover:type_name -> openetl.connector.v1.WriteRecover
-	12, // 7: openetl.connector.v1.WriteRequest.batch:type_name -> openetl.connector.v1.WriteBatch
-	15, // 8: openetl.connector.v1.WriteRequest.pre_commit:type_name -> openetl.connector.v1.WritePreCommit
-	16, // 9: openetl.connector.v1.WriteRequest.commit:type_name -> openetl.connector.v1.WriteCommit
-	17, // 10: openetl.connector.v1.WriteRequest.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
-	13, // 11: openetl.connector.v1.WriteRequest.start_reads:type_name -> openetl.connector.v1.WriteStartReads
-	14, // 12: openetl.connector.v1.WriteRequest.end_read:type_name -> openetl.connector.v1.WriteEndRead
-	1,  // 13: openetl.connector.v1.WriteOpen.scope:type_name -> openetl.connector.v1.CommitScope
-	10, // 14: openetl.connector.v1.WriteOpen.streams:type_name -> openetl.connector.v1.WriteStream
-	2,  // 15: openetl.connector.v1.WriteStream.mode:type_name -> openetl.connector.v1.WriteMode
-	5,  // 16: openetl.connector.v1.WriteStream.dedupe:type_name -> openetl.connector.v1.Dedupe
-	4,  // 17: openetl.connector.v1.WriteStream.deletes:type_name -> openetl.connector.v1.DeleteMode
-	7,  // 18: openetl.connector.v1.WriteRecover.epoch:type_name -> openetl.connector.v1.Epoch
-	7,  // 19: openetl.connector.v1.WriteBatch.epoch:type_name -> openetl.connector.v1.Epoch
-	25, // 20: openetl.connector.v1.WriteStartReads.starts:type_name -> openetl.connector.v1.WriteStartReads.StartsEntry
-	7,  // 21: openetl.connector.v1.WriteEndRead.epoch:type_name -> openetl.connector.v1.Epoch
-	7,  // 22: openetl.connector.v1.WritePreCommit.epoch:type_name -> openetl.connector.v1.Epoch
-	7,  // 23: openetl.connector.v1.WriteCommit.epoch:type_name -> openetl.connector.v1.Epoch
-	18, // 24: openetl.connector.v1.WriteApplySchema.streams:type_name -> openetl.connector.v1.StreamSchema
-	22, // 25: openetl.connector.v1.WriteResponse.recovered:type_name -> openetl.connector.v1.WriteRecovered
-	23, // 26: openetl.connector.v1.WriteResponse.staged:type_name -> openetl.connector.v1.WriteStaged
-	24, // 27: openetl.connector.v1.WriteResponse.committed:type_name -> openetl.connector.v1.WriteCommitted
-	20, // 28: openetl.connector.v1.WriteResponse.opened:type_name -> openetl.connector.v1.WriteOpened
-	21, // 29: openetl.connector.v1.WriteResponse.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
-	28, // 30: openetl.connector.v1.WriteSchemaApplied.error:type_name -> openetl.connector.v1.Error
-	3,  // 31: openetl.connector.v1.WriteRecovered.recovery:type_name -> openetl.connector.v1.Recovery
-	7,  // 32: openetl.connector.v1.WriteStaged.epoch:type_name -> openetl.connector.v1.Epoch
-	7,  // 33: openetl.connector.v1.WriteCommitted.epoch:type_name -> openetl.connector.v1.Epoch
-	28, // 34: openetl.connector.v1.WriteCommitted.error:type_name -> openetl.connector.v1.Error
-	26, // 35: openetl.connector.v1.WriteCommitted.collapsed_rows:type_name -> openetl.connector.v1.WriteCommitted.CollapsedRowsEntry
-	29, // 36: openetl.connector.v1.WriteStartReads.StartsEntry.value:type_name -> google.protobuf.Timestamp
-	8,  // 37: openetl.connector.v1.DestinationService.Write:input_type -> openetl.connector.v1.WriteRequest
-	19, // 38: openetl.connector.v1.DestinationService.Write:output_type -> openetl.connector.v1.WriteResponse
-	38, // [38:39] is the sub-list for method output_type
-	37, // [37:38] is the sub-list for method input_type
-	37, // [37:37] is the sub-list for extension type_name
-	37, // [37:37] is the sub-list for extension extendee
-	0,  // [0:37] is the sub-list for field type_name
+	27, // 5: openetl.connector.v1.DestinationCapabilities.max_commit_interval:type_name -> google.protobuf.Duration
+	9,  // 6: openetl.connector.v1.WriteRequest.open:type_name -> openetl.connector.v1.WriteOpen
+	11, // 7: openetl.connector.v1.WriteRequest.recover:type_name -> openetl.connector.v1.WriteRecover
+	12, // 8: openetl.connector.v1.WriteRequest.batch:type_name -> openetl.connector.v1.WriteBatch
+	15, // 9: openetl.connector.v1.WriteRequest.pre_commit:type_name -> openetl.connector.v1.WritePreCommit
+	16, // 10: openetl.connector.v1.WriteRequest.commit:type_name -> openetl.connector.v1.WriteCommit
+	17, // 11: openetl.connector.v1.WriteRequest.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
+	13, // 12: openetl.connector.v1.WriteRequest.start_reads:type_name -> openetl.connector.v1.WriteStartReads
+	14, // 13: openetl.connector.v1.WriteRequest.end_read:type_name -> openetl.connector.v1.WriteEndRead
+	1,  // 14: openetl.connector.v1.WriteOpen.scope:type_name -> openetl.connector.v1.CommitScope
+	10, // 15: openetl.connector.v1.WriteOpen.streams:type_name -> openetl.connector.v1.WriteStream
+	27, // 16: openetl.connector.v1.WriteOpen.commit_interval:type_name -> google.protobuf.Duration
+	2,  // 17: openetl.connector.v1.WriteStream.mode:type_name -> openetl.connector.v1.WriteMode
+	5,  // 18: openetl.connector.v1.WriteStream.dedupe:type_name -> openetl.connector.v1.Dedupe
+	4,  // 19: openetl.connector.v1.WriteStream.deletes:type_name -> openetl.connector.v1.DeleteMode
+	7,  // 20: openetl.connector.v1.WriteRecover.epoch:type_name -> openetl.connector.v1.Epoch
+	7,  // 21: openetl.connector.v1.WriteBatch.epoch:type_name -> openetl.connector.v1.Epoch
+	25, // 22: openetl.connector.v1.WriteStartReads.starts:type_name -> openetl.connector.v1.WriteStartReads.StartsEntry
+	7,  // 23: openetl.connector.v1.WriteEndRead.epoch:type_name -> openetl.connector.v1.Epoch
+	7,  // 24: openetl.connector.v1.WritePreCommit.epoch:type_name -> openetl.connector.v1.Epoch
+	7,  // 25: openetl.connector.v1.WriteCommit.epoch:type_name -> openetl.connector.v1.Epoch
+	18, // 26: openetl.connector.v1.WriteApplySchema.streams:type_name -> openetl.connector.v1.StreamSchema
+	22, // 27: openetl.connector.v1.WriteResponse.recovered:type_name -> openetl.connector.v1.WriteRecovered
+	23, // 28: openetl.connector.v1.WriteResponse.staged:type_name -> openetl.connector.v1.WriteStaged
+	24, // 29: openetl.connector.v1.WriteResponse.committed:type_name -> openetl.connector.v1.WriteCommitted
+	20, // 30: openetl.connector.v1.WriteResponse.opened:type_name -> openetl.connector.v1.WriteOpened
+	21, // 31: openetl.connector.v1.WriteResponse.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
+	28, // 32: openetl.connector.v1.WriteSchemaApplied.error:type_name -> openetl.connector.v1.Error
+	3,  // 33: openetl.connector.v1.WriteRecovered.recovery:type_name -> openetl.connector.v1.Recovery
+	7,  // 34: openetl.connector.v1.WriteStaged.epoch:type_name -> openetl.connector.v1.Epoch
+	7,  // 35: openetl.connector.v1.WriteCommitted.epoch:type_name -> openetl.connector.v1.Epoch
+	28, // 36: openetl.connector.v1.WriteCommitted.error:type_name -> openetl.connector.v1.Error
+	26, // 37: openetl.connector.v1.WriteCommitted.collapsed_rows:type_name -> openetl.connector.v1.WriteCommitted.CollapsedRowsEntry
+	29, // 38: openetl.connector.v1.WriteStartReads.StartsEntry.value:type_name -> google.protobuf.Timestamp
+	8,  // 39: openetl.connector.v1.DestinationService.Write:input_type -> openetl.connector.v1.WriteRequest
+	19, // 40: openetl.connector.v1.DestinationService.Write:output_type -> openetl.connector.v1.WriteResponse
+	40, // [40:41] is the sub-list for method output_type
+	39, // [39:40] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_destination_proto_init() }

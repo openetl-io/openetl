@@ -168,6 +168,9 @@ func Problems(caps destination.Capabilities, s Settings, streams []Stream) []err
 	if s.CommitInterval > 0 && s.CommitInterval < caps.MinCommitInterval {
 		fails = append(fails, fmt.Errorf("delivery.commit.interval: %v is below the destination's minimum, %v", s.CommitInterval, caps.MinCommitInterval))
 	}
+	if caps.MaxCommitInterval > 0 && s.CommitInterval > caps.MaxCommitInterval {
+		fails = append(fails, fmt.Errorf("delivery.commit.interval: %v is above the destination's maximum, %v", s.CommitInterval, caps.MaxCommitInterval))
+	}
 	unsupported := map[destination.WriteMode]bool{}
 	for _, st := range streams {
 		if err := ModeProblem(caps, st.Mode); err != nil && !unsupported[st.Mode] {

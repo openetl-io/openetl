@@ -285,9 +285,13 @@ func open(t *testing.T, dir string, gen uint64) (*Destination, destination.Write
 	t.Helper()
 	d := NewDestination(exe("destination-files"), filesConfig(dir, "s3cr3t"), Options{})
 	t.Cleanup(func() { _ = d.Close() })
-	w, err := d.Open(t.Context(), destination.OpenConfig{Pipeline: "p", Generation: gen, Scope: destination.ScopePipeline, Streams: []destination.Stream{{Name: "s", Mode: destination.Append}}})
+	w, err := d.Open(t.Context(), destination.OpenConfig{Pipeline: "p", Generation: gen, Scope: destination.ScopePipeline, CommitInterval: 3 * time.Second,
+		Streams: []destination.Stream{{Name: "s", Mode: destination.Append}}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "interval")); string(got) != "3s" {
+		t.Fatalf("the connector got a commit interval of %q", got)
 	}
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 	return d, w

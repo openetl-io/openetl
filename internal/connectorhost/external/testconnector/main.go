@@ -150,11 +150,15 @@ func (f *files) Check(context.Context) error {
 	return nil
 }
 
+// Open writes the commit interval it's given to interval.
 func (f *files) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
 	for _, d := range []string{"staged", "applied"} {
 		if err := os.MkdirAll(filepath.Join(f.dir, d), 0o750); err != nil {
 			return nil, err
 		}
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, "interval"), []byte(cfg.CommitInterval.String()), 0o600); err != nil {
+		return nil, err
 	}
 	return &filesWriter{files: f, gen: cfg.Generation, pending: map[uint64]map[string]int64{}}, nil
 }
