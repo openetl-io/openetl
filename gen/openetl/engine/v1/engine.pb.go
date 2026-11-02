@@ -423,7 +423,11 @@ type StreamPlan struct {
 	NanosecondTimestamps bool `protobuf:"varint,8,opt,name=nanosecond_timestamps,json=nanosecondTimestamps,proto3" json:"nanosecond_timestamps,omitempty"`
 	// Adds _openetl_deleted, true where _openetl_op is delete: for merge
 	// writes that keep deleted rows.
-	SoftDeletes   bool `protobuf:"varint,9,opt,name=soft_deletes,json=softDeletes,proto3" json:"soft_deletes,omitempty"`
+	SoftDeletes bool `protobuf:"varint,9,opt,name=soft_deletes,json=softDeletes,proto3" json:"soft_deletes,omitempty"`
+	// A changelog stream (CDC): its typed batches carry op and seq control
+	// columns (openetl.connector.v1.RecordBatch), and it gets
+	// _openetl_unchanged.
+	Changelog     bool `protobuf:"varint,10,opt,name=changelog,proto3" json:"changelog,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -517,6 +521,13 @@ func (x *StreamPlan) GetNanosecondTimestamps() bool {
 func (x *StreamPlan) GetSoftDeletes() bool {
 	if x != nil {
 		return x.SoftDeletes
+	}
+	return false
+}
+
+func (x *StreamPlan) GetChangelog() bool {
+	if x != nil {
+		return x.Changelog
 	}
 	return false
 }
@@ -1624,7 +1635,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
-	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xe1\x02\n" +
+	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xff\x02\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
@@ -1636,7 +1647,9 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\fcursor_field\x18\x06 \x01(\tR\vcursorField\x12*\n" +
 	"\x11read_start_micros\x18\a \x01(\x03R\x0freadStartMicros\x123\n" +
 	"\x15nanosecond_timestamps\x18\b \x01(\bR\x14nanosecondTimestamps\x12!\n" +
-	"\fsoft_deletes\x18\t \x01(\bR\vsoftDeletes\"p\n" +
+	"\fsoft_deletes\x18\t \x01(\bR\vsoftDeletes\x12\x1c\n" +
+	"\tchangelog\x18\n" +
+	" \x01(\bR\tchangelog\"p\n" +
 	"\x04Edge\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12>\n" +
 	"\tdirection\x18\x02 \x01(\x0e2 .openetl.engine.v1.EdgeDirectionR\tdirection\x12\x18\n" +

@@ -102,6 +102,10 @@ message StreamPlan {
   // Adds _openetl_deleted, true where _openetl_op is delete: for merge
   // writes that keep deleted rows.
   bool soft_deletes = 9;
+  // A changelog stream (CDC): its typed batches carry op and seq control
+  // columns (openetl.connector.v1.RecordBatch), and it gets
+  // _openetl_unchanged.
+  bool changelog = 10;
 }
 
 enum Lane {

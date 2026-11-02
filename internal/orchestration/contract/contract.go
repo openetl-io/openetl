@@ -27,6 +27,7 @@ const (
 	RunDbt               = "RunDbt"
 	CheckConnector       = "CheckConnector"
 	DiscoverSource       = "DiscoverSource"
+	TeardownSource       = "TeardownSource"
 	DropMirrorPartitions = "DropMirrorPartitions"
 	ReadLogs             = "ReadLogs"
 )
@@ -52,6 +53,8 @@ const DefaultLogHistory = 30 * 24 * time.Hour
 const (
 	OpCheck    = "check"
 	OpDiscover = "discover"
+	// Removes what a source keeps upstream for a deleted pipeline.
+	OpTeardown = "teardown"
 )
 
 // Search attributes on workflows, for finding them in Temporal. openetld
@@ -270,8 +273,10 @@ type ConnectorOpInput struct {
 	DataPlane   string
 	// The connector's name, such as postgres.
 	Connector string
-	// OpCheck or OpDiscover, which only sources have.
+	// OpCheck, or OpDiscover or OpTeardown, which only sources have.
 	Op string
+	// The deleted pipeline, for OpTeardown.
+	PipelineID string
 	// One of them.
 	SourceID      string
 	DestinationID string

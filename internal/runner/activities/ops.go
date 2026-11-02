@@ -127,6 +127,43 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 	return res, nil
 }
 
+// TeardownSource removes what a source keeps upstream for a deleted
+// pipeline.
+func (a *Ops) TeardownSource(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+	res, err := a.teardown(ctx, in)
+	return res, temporalx.ApplicationError(err)
+}
+
+func (a *Ops) teardown(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+	var res contract.ConnectorOpResult
+	cfg, err := a.config(ctx, in)
+	if err != nil {
+		return res, err
+	}
+	res.Version = cfg.GetVersion()
+	if err := readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets()); err != nil {
+		return res, err
+	}
+	raw, err := protojson.Marshal(cfg.GetConfig().GetConfig())
+	if err != nil {
+		return res, err
+	}
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, cfg.GetConnector())
+	if err != nil {
+		return res, err
+	}
+	name, _ := connectorhost.SplitRef(cfg.GetConfig().GetConnector())
+	src, err := connectorhost.NewSource(name, raw, env)
+	if err != nil {
+		return res, err
+	}
+	defer connectorhost.Close(src)
+	if t, ok := src.(source.Teardowner); ok {
+		return res, t.Teardown(ctx, in.PipelineID)
+	}
+	return res, nil
+}
+
 func (a *Ops) config(ctx context.Context, in contract.ConnectorOpInput) (*dataplanev1.GetConnectorConfigResponse, error) {
 	req := &dataplanev1.GetConnectorConfigRequest{OperationId: in.OpID}
 	if in.SourceID != "" {

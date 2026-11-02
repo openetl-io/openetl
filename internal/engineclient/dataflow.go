@@ -24,6 +24,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 // Dataflow runs each attempt's dataflow in its own engine process.
@@ -216,6 +217,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 			RestoredSchema:       plan.Schemas[s.Name],
 			NanosecondTimestamps: s.NanosecondTimestamps,
 			SoftDeletes:          s.Mode == destination.Merge && s.Deletes != destination.HardDelete,
+			Changelog:            s.Read == source.CDC,
 		})
 	}
 	for _, s := range plan.Snapshots {

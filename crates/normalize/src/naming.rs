@@ -14,12 +14,13 @@ pub const SOURCE_NAMES_KEY: &str = "openetl.source_names";
 pub const TABLE_KEY: &str = "openetl.table";
 
 /// Columns the engine adds. Source columns never get these names.
-pub const METADATA_COLUMNS: [&str; 5] = [
+pub const METADATA_COLUMNS: [&str; 6] = [
     "_openetl_id",
     "_openetl_op",
     "_openetl_seq",
     "_openetl_synced_at",
     "_openetl_deleted",
+    "_openetl_unchanged",
 ];
 /// Tables and directories sinks keep for themselves.
 pub const RESERVED_TABLES: [&str; 3] = ["_openetl", "_openetl_fence", "_openetl_loads"];

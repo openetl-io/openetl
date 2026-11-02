@@ -28,6 +28,8 @@ pub struct Plan {
     pub identities: Vec<Identity>,
     /// Each stream's: whether it gets `_openetl_deleted`.
     pub soft_deletes: Vec<bool>,
+    /// Each stream's: whether it's a changelog.
+    pub changelog: Vec<bool>,
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
     /// Batches skip shaping, for measuring the boundary.
     pub passthrough: bool,
@@ -114,6 +116,7 @@ impl Plan {
             })
             .collect();
         let soft_deletes = req.streams.iter().map(|s| s.soft_deletes).collect();
+        let changelog = req.streams.iter().map(|s| s.changelog).collect();
         let naming = req.naming.map_or_else(Naming::default, |n| Naming {
             keep_source: n.keep_source_names,
             max_len: n.max_length as usize,
@@ -246,6 +249,7 @@ impl Plan {
             declared,
             identities,
             soft_deletes,
+            changelog,
             quarantine,
             passthrough: req.passthrough,
             inbound,

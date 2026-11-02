@@ -321,6 +321,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
+	w.RegisterActivityWithOptions(connectorOps.TeardownSource, activity.RegisterOptions{Name: contract.TeardownSource})
 	// A continuous pipeline's job holds its slot for as long as it runs.
 	stream := worker.New(tc, contract.StreamQueue(cfg.DataPlane), worker.Options{
 		MaxConcurrentActivityExecutionSize: 8,

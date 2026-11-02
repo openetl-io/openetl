@@ -32,7 +32,8 @@ impl connector::v1::ErrorCode {
             | C::SchemaDrift
             | C::ContractChanged
             | C::DestinationQuota
-            | C::Fenced => false,
+            | C::Fenced
+            | C::PositionLost => false,
         }
     }
 }

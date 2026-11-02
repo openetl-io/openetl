@@ -4,12 +4,14 @@
 //! names, on either lane.
 
 mod coerce;
+mod control;
 mod evolve;
 mod ids;
 pub mod naming;
 mod shape;
 
 pub use coerce::{Infinity, check_declared, render_row};
+pub use control::CONTROL_KEY;
 pub use evolve::{Policy, VERSIONS_KEY, widens};
 pub use ids::Identity;
 pub use shape::{Shaped, Shaper};

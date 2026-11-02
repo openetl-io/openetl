@@ -28,6 +28,7 @@ import (
 // OpRunner is implemented by ops.Ops.
 type OpRunner interface {
 	Run(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error)
+	Start(ctx context.Context, in contract.ConnectorOpInput) error
 }
 
 func (s *Server) CheckSource(ctx context.Context, req *connect.Request[apiv1.CheckSourceRequest]) (*connect.Response[apiv1.CheckSourceResponse], error) {
@@ -73,6 +74,36 @@ func (s *Server) DiscoverSource(ctx context.Context, req *connect.Request[apiv1.
 	}
 	cat.Version, cat.DiscoverTime = row.SourceVersion, timestamppb.New(row.DiscoverTime)
 	return connect.NewResponse(&apiv1.DiscoverSourceResponse{Catalog: cat}), nil
+}
+
+// teardown starts a teardown of what the deleted pipeline p's source keeps
+// upstream for it, such as a replication slot, without waiting for it. One
+// that fails, as when the source can't be reached until the operation times
+// out, leaves it behind, and is logged on the data plane.
+func (s *Server) teardown(ctx context.Context, p db.Pipeline) {
+	ctx = context.WithoutCancel(ctx)
+	fail := func(err error) { s.log().Error("teardown not started", "pipeline", p.ID, "err", err) }
+	r, err := s.Store.GetSourceByID(ctx, db.GetSourceByIDParams{OrgID: s.Tenant.Org, ID: p.SourceID})
+	if err != nil {
+		fail(err)
+		return
+	}
+	cfg, err := fromSource(r).config()
+	if err != nil {
+		fail(err)
+		return
+	}
+	in := contract.ConnectorOpInput{
+		Op: contract.OpTeardown, SourceID: r.ID.String(), PipelineID: p.ID.String(),
+		OrgID: s.Tenant.Org.String(), WorkspaceID: r.WorkspaceID.String(), DataPlane: p.DataPlaneID, Connector: cfg.GetConnector(),
+	}
+	if err := s.sendOp(ctx, &in); err != nil {
+		fail(err)
+		return
+	}
+	if err := s.Ops.Start(ctx, in); err != nil {
+		fail(err)
+	}
 }
 
 func checkResult(r contract.ConnectorOpResult) *apiv1.CheckResult {

@@ -68,9 +68,9 @@ func (s *sourceServer) Read(req *protocolv1.ReadRequest, stream grpc.ServerStrea
 			s.mu.Unlock()
 		}()
 	}
-	var r source.ReadRequest
+	r := source.ReadRequest{Pipeline: req.GetPipeline(), Continuous: req.GetContinuous()}
 	for _, cs := range req.GetStreams() {
-		r.Streams = append(r.Streams, source.ConfiguredStream{Name: cs.GetName(), State: cs.State})
+		r.Streams = append(r.Streams, source.ConfiguredStream{Name: cs.GetName(), SyncMode: source.SyncMode(cs.GetSyncMode()), State: cs.State})
 	}
 	return status(src.Read(ctx, r, &emitter{stream: stream}))
 }

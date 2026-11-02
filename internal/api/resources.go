@@ -162,6 +162,7 @@ func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.
 	if _, err := s.Store.DeletePipeline(ctx, db.DeletePipelineParams{OrgID: s.Tenant.Org, ID: p.ID}); err != nil {
 		return nil, err
 	}
+	s.teardown(ctx, p)
 	return connect.NewResponse(&apiv1.DeletePipelineResponse{}), nil
 }
 

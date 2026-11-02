@@ -26,8 +26,10 @@ import (
 )
 
 type Stream struct {
-	Name        string
-	Replay      source.Replay
+	Name   string
+	Replay source.Replay
+	// How the source reads it; 0 if neither the spec nor the catalog says.
+	Read        source.SyncMode
 	Mode        destination.WriteMode
 	PrimaryKey  []string
 	CursorField string
@@ -87,8 +89,10 @@ type Job struct {
 	Owner string
 	// Identifies the sync. Its attempts don't read again the streams one of
 	// them completed. Empty: every attempt reads every stream.
-	Sync        string
-	Pipeline    string
+	Sync     string
+	Pipeline string
+	// The read never ends (a continuous pipeline's).
+	Continuous  bool
 	Log         *checkpoint.Log
 	Source      source.Reader
 	Streams     []Stream
@@ -432,10 +436,10 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	}
 	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, c.job.Streams, starts, ends, fromFlow, c.events)
 
-	req := source.ReadRequest{}
+	req := source.ReadRequest{Pipeline: c.job.Pipeline, Continuous: c.job.Continuous}
 	for _, s := range c.job.Streams {
 		if !done[s.Name] {
-			req.Streams = append(req.Streams, source.ConfiguredStream{Name: s.Name, State: states[s.Name]})
+			req.Streams = append(req.Streams, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, State: states[s.Name]})
 		}
 	}
 	g.Go(func() error {

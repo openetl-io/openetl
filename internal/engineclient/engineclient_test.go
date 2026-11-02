@@ -22,6 +22,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
@@ -326,6 +327,52 @@ func TestRunAddsMetadataColumns(t *testing.T) {
 	}
 	if _, again := ids(); !slices.Equal(again, first) {
 		t.Errorf("a second engine gave IDs %q, the first %q", again, first)
+	}
+}
+
+func TestRunTakesAChangelogsControlColumns(t *testing.T) {
+	ctx := testContext(t)
+	b := array.NewRecordBuilder(memory.DefaultAllocator, arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "doc", Type: arrow.BinaryTypes.String, Nullable: true},
+		source.OpField(), source.SeqField(&arrow.Decimal128Type{Precision: 38, Scale: 0}), source.UnchangedField(),
+	}, nil))
+	b.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 1}, nil)
+	b.Field(1).(*array.StringBuilder).AppendValues([]string{"long", ""}, []bool{true, false})
+	b.Field(2).(*array.StringBuilder).AppendValues([]string{source.OpInsert, source.OpUpdate}, nil)
+	b.Field(3).(*array.Decimal128Builder).AppendValues([]decimal128.Num{decimal128.FromI64(7), decimal128.FromI64(9)}, nil)
+	u := b.Field(4).(*array.ListBuilder)
+	u.Append(true)
+	u.Append(true)
+	u.ValueBuilder().(*array.StringBuilder).Append("doc")
+	batch := b.NewRecordBatch()
+	b.Release()
+	p := plan("a")
+	p.Streams[0].PrimaryKey = []string{"id"}
+	p.Streams[0].Read = source.CDC
+	p.Streams[0].Mode = destination.Merge
+	got, err := run(ctx, &Dataflow{Options: options(t, nil)}, p, runner.Frame{Kind: runner.FrameBatch, Stream: "a", Batch: batch})
+	defer release(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := got["a"][0].Batch
+	var names []string
+	for _, f := range out.Schema().Fields() {
+		names = append(names, f.Name)
+	}
+	if want := []string{"id", "doc", "_openetl_id", "_openetl_op", "_openetl_seq", "_openetl_synced_at", "_openetl_deleted", "_openetl_unchanged"}; !slices.Equal(names, want) {
+		t.Fatalf("columns are %q, want %q", names, want)
+	}
+	col := func(name string) arrow.Array { return out.Column(out.Schema().FieldIndices(name)[0]) }
+	if op := col("_openetl_op").(*array.String); op.Value(0) != "insert" || op.Value(1) != "update" {
+		t.Errorf("ops %v", op)
+	}
+	if seq := col("_openetl_seq").(*array.Decimal128); seq.Value(1) != decimal128.FromI64(9) {
+		t.Errorf("_openetl_seq %v", seq)
+	}
+	if u := col("_openetl_unchanged").ValueStr(1); u != `["doc"]` {
+		t.Errorf("_openetl_unchanged is %s", u)
 	}
 }
 

@@ -78,6 +78,7 @@ var (
 	_ source.Source       = (*Source)(nil)
 	_ source.Checker      = (*Source)(nil)
 	_ source.Acknowledger = (*Source)(nil)
+	_ source.Teardowner   = (*Source)(nil)
 )
 
 // NewSource binds the source at exe to config, a JSON object. It does no
@@ -87,6 +88,17 @@ func NewSource(exe string, config []byte, opts Options) *Source {
 }
 
 func (s *Source) Check(ctx context.Context) error { return s.check(ctx) }
+
+func (s *Source) Teardown(ctx context.Context, pipeline string) error {
+	p, err := s.proc(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := protocolv1.NewConnectorServiceClient(p.conn).Teardown(ctx, &protocolv1.TeardownRequest{Config: p.config, Pipeline: pipeline}); err != nil {
+		return p.failure(errs.FromStatus(err))
+	}
+	return nil
+}
 
 func (s *Source) Discover(ctx context.Context) (source.Catalog, error) {
 	var cat source.Catalog
@@ -123,9 +135,9 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 	if err != nil {
 		return err
 	}
-	preq := &protocolv1.ReadRequest{Config: p.config}
+	preq := &protocolv1.ReadRequest{Config: p.config, Pipeline: req.Pipeline, Continuous: req.Continuous}
 	for _, cs := range req.Streams {
-		preq.Streams = append(preq.Streams, &protocolv1.ConfiguredStream{Name: cs.Name, State: cs.State})
+		preq.Streams = append(preq.Streams, &protocolv1.ConfiguredStream{Name: cs.Name, SyncMode: protocolv1.SyncMode(cs.SyncMode), State: cs.State}) //nolint:gosec // small
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

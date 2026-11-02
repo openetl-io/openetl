@@ -411,9 +411,16 @@ func (x *CatalogStream) GetReplay() Replay {
 }
 
 type ReadRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Config        []byte                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
-	Streams       []*ConfiguredStream    `protobuf:"bytes,2,rep,name=streams,proto3" json:"streams,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Config  []byte                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	Streams []*ConfiguredStream    `protobuf:"bytes,2,rep,name=streams,proto3" json:"streams,omitempty"`
+	// The pipeline reading, which names what a source keeps for it upstream,
+	// such as a replication slot.
+	Pipeline string `protobuf:"bytes,3,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
+	// The read never ends: streams read with cdc or stream follow their
+	// source until the read is cancelled. Otherwise they complete once
+	// they've caught up with where their source was when the read started.
+	Continuous    bool `protobuf:"varint,4,opt,name=continuous,proto3" json:"continuous,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -460,6 +467,20 @@ func (x *ReadRequest) GetStreams() []*ConfiguredStream {
 		return x.Streams
 	}
 	return nil
+}
+
+func (x *ReadRequest) GetPipeline() string {
+	if x != nil {
+		return x.Pipeline
+	}
+	return ""
+}
+
+func (x *ReadRequest) GetContinuous() bool {
+	if x != nil {
+		return x.Continuous
+	}
+	return false
 }
 
 type ConfiguredStream struct {
@@ -629,6 +650,18 @@ func (*ReadResponse_ResumePoint) isReadResponse_Msg() {}
 
 func (*ReadResponse_Complete) isReadResponse_Msg() {}
 
+// RecordBatch carries records. A changelog stream's Arrow batches (read
+// with SYNC_MODE_CDC) also carry control columns, which aren't records'
+// fields: columns whose field metadata has openetl.control set to
+//   - op: utf8, insert, update or delete, for _openetl_op; null is insert.
+//   - seq: the record version's position, which orders a key's versions,
+//     for _openetl_seq. Any type the platform can compare.
+//   - unchanged: optional, a list of utf8: the columns an update didn't
+//     send (Postgres's unchanged TOAST values), whose values are null. Merge
+//     keeps what the destination has for them.
+//
+// Every batch of a changelog stream carries op and seq. Their names don't
+// matter, and may be the same as a record field's.
 type RecordBatch struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Stream string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
@@ -991,10 +1024,14 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"sync_modes\x18\x05 \x03(\x0e2\x1e.openetl.connector.v1.SyncModeR\tsyncModes\x12%\n" +
 	"\x0edefault_cursor\x18\x06 \x01(\tR\rdefaultCursor\x122\n" +
 	"\x15source_defined_cursor\x18\a \x01(\bR\x13sourceDefinedCursor\x124\n" +
-	"\x06replay\x18\b \x01(\x0e2\x1c.openetl.connector.v1.ReplayR\x06replay\"g\n" +
+	"\x06replay\x18\b \x01(\x0e2\x1c.openetl.connector.v1.ReplayR\x06replay\"\xa3\x01\n" +
 	"\vReadRequest\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\x12@\n" +
-	"\astreams\x18\x02 \x03(\v2&.openetl.connector.v1.ConfiguredStreamR\astreams\"\xa0\x01\n" +
+	"\astreams\x18\x02 \x03(\v2&.openetl.connector.v1.ConfiguredStreamR\astreams\x12\x1a\n" +
+	"\bpipeline\x18\x03 \x01(\tR\bpipeline\x12\x1e\n" +
+	"\n" +
+	"continuous\x18\x04 \x01(\bR\n" +
+	"continuous\"\xa0\x01\n" +
 	"\x10ConfiguredStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12;\n" +
 	"\tsync_mode\x18\x02 \x01(\x0e2\x1e.openetl.connector.v1.SyncModeR\bsyncMode\x12\x16\n" +

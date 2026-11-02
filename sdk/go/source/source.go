@@ -52,12 +52,54 @@ func (r Replay) String() string {
 
 type ConfiguredStream struct {
 	Name string
+	// How the pipeline reads the stream; 0 if the platform doesn't say.
+	SyncMode SyncMode
 	// Nil: start from the beginning.
 	State []byte
 }
 
 type ReadRequest struct {
 	Streams []ConfiguredStream
+	// The pipeline reading, which names what a source keeps for it upstream,
+	// such as a replication slot.
+	Pipeline string
+	// The read never ends: streams read with CDC or Stream follow their
+	// source until ctx is cancelled. Otherwise they complete once they've
+	// caught up with where their source was when the read started.
+	Continuous bool
+}
+
+// A changelog stream's typed batches (read with CDC) carry each record's
+// op and sequence in control columns, which aren't records' fields. A
+// field's metadata marks it one, under ControlKey; its name doesn't matter.
+const ControlKey = "openetl.control"
+
+// The ops of a changelog's records.
+const (
+	OpInsert = "insert"
+	OpUpdate = "update"
+	OpDelete = "delete"
+)
+
+// OpField is a utf8 control column holding each record's op (OpInsert,
+// OpUpdate or OpDelete; null is an insert). Every batch of a changelog
+// stream has one.
+func OpField() arrow.Field { return controlField("openetl.op", arrow.BinaryTypes.String, "op") }
+
+// SeqField is a control column holding each record version's position,
+// which orders a key's versions: its _openetl_seq. Every batch of a
+// changelog stream has one, of the same type.
+func SeqField(t arrow.DataType) arrow.Field { return controlField("openetl.seq", t, "seq") }
+
+// UnchangedField is a control column holding, for each record, the fields
+// an update didn't send, such as Postgres's unchanged TOAST values; their
+// values are null. Merge keeps what the destination has for them.
+func UnchangedField() arrow.Field {
+	return controlField("openetl.unchanged", arrow.ListOf(arrow.BinaryTypes.String), "unchanged")
+}
+
+func controlField(name string, t arrow.DataType, control string) arrow.Field {
+	return arrow.Field{Name: name, Type: t, Nullable: true, Metadata: arrow.NewMetadata([]string{ControlKey}, []string{control})}
 }
 
 // Emitter receives what a source reads. Its methods block under
@@ -120,6 +162,13 @@ type Source interface {
 // concurrently with Read.
 type Acknowledger interface {
 	Committed(ctx context.Context, states map[string][]byte) error
+}
+
+// Teardowner is implemented by sources that keep something upstream for a
+// pipeline, such as a replication slot. Teardown removes it once the
+// pipeline is deleted. Removing what's already gone isn't an error.
+type Teardowner interface {
+	Teardown(ctx context.Context, pipeline string) error
 }
 
 // Checker is implemented by sources that can verify their config reaches the

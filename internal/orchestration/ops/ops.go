@@ -22,6 +22,20 @@ type Ops struct {
 // Run starts the operation and waits for its result.
 func (o *Ops) Run(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	var res contract.ConnectorOpResult
+	run, err := o.start(ctx, in)
+	if err != nil {
+		return res, err
+	}
+	return res, run.Get(ctx, &res)
+}
+
+// Start starts the operation, without waiting for it.
+func (o *Ops) Start(ctx context.Context, in contract.ConnectorOpInput) error {
+	_, err := o.start(ctx, in)
+	return err
+}
+
+func (o *Ops) start(ctx context.Context, in contract.ConnectorOpInput) (client.WorkflowRun, error) {
 	run, err := o.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                       contract.OpWorkflowID(cmp.Or(in.OpID, uuid.NewString())),
 		TaskQueue:                contract.OrchestratorQueue,
@@ -34,9 +48,9 @@ func (o *Ops) Run(ctx context.Context, in contract.ConnectorOpInput) (contract.C
 		),
 	}, contract.ConnectorOpWorkflow, in)
 	if err != nil {
-		return res, fmt.Errorf("ops: start %s: %w", in.Op, err)
+		return nil, fmt.Errorf("ops: start %s: %w", in.Op, err)
 	}
-	return res, run.Get(ctx, &res)
+	return run, nil
 }
 
 // ReadLogs reads a page of a sync's log on its data plane, and waits for it.

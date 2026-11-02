@@ -11,6 +11,8 @@ name: openetl-dev
 services:
   postgres:
     image: postgres:18
+    # Logical replication, for the Postgres source's CDC.
+    command: ["postgres", "-c", "wal_level=logical"]
     environment:
       POSTGRES_USER: openetl
       POSTGRES_PASSWORD: openetl

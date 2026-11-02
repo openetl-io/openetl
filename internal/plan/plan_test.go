@@ -187,6 +187,48 @@ func TestStreamModes(t *testing.T) {
 	}
 }
 
+// A table read as a full refresh or with cdc, the way Postgres declares
+// one with a replica identity, and one without a key.
+var tables = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
+	{Name: "users", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, apiv1.SyncMode_SYNC_MODE_CDC}},
+	{Name: "audit", Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, apiv1.SyncMode_SYNC_MODE_CDC}},
+}}
+
+func TestCDCStreams(t *testing.T) {
+	for _, tc := range []struct {
+		name, spec string
+		caps       destination.Capabilities
+		want       string
+		warnings   int
+	}{
+		{"scheduled reads the first way", `{}`, warehouse, "users overwrite, audit overwrite", 0},
+		{"continuous reads with cdc, and merges keyed tables", `{"mode": "PIPELINE_MODE_CONTINUOUS"}`, warehouse, "users merge, audit append", 0},
+		{"cdc in a scheduled pipeline", `{"source": {"streams": [{"name": "users", "sync": "SYNC_MODE_CDC"}]}}`, warehouse, "users merge", 0},
+		{"no merge", `{"mode": "PIPELINE_MODE_CONTINUOUS"}`, parquet, "users append, audit append", 0},
+		{"deletes apply to the merge", `{"mode": "PIPELINE_MODE_CONTINUOUS", "destination": {"deletes": "DELETE_MODE_HARD"}}`, warehouse, "users merge, audit append", 0},
+		{"deletes without a merge", `{"destination": {"deletes": "DELETE_MODE_HARD"}}`, warehouse, "users overwrite, audit overwrite", 1},
+	} {
+		spec := &apiv1.PipelineSpec{}
+		if err := protojsonUnmarshal(tc.spec, spec); err != nil {
+			t.Fatal(err)
+		}
+		streams, problems, warnings := Pipeline(spec, tables, tc.caps)
+		if len(problems) > 0 {
+			t.Errorf("%s: %v", tc.name, problems)
+		}
+		var got []string
+		for _, s := range streams {
+			got = append(got, s.GetName()+" "+strings.ToLower(strings.TrimPrefix(s.GetWrite().String(), "WRITE_MODE_")))
+		}
+		if g := strings.Join(got, ", "); g != tc.want {
+			t.Errorf("%s: %s, want %s", tc.name, g, tc.want)
+		}
+		if len(warnings) != tc.warnings {
+			t.Errorf("%s: warnings %v", tc.name, warnings)
+		}
+	}
+}
+
 func TestDiff(t *testing.T) {
 	before := Version{Source: "s1", Destination: "d1", DestinationConnector: "sha256:a", Dbt: map[string]string{"shop": "sha256:b1", "gone": "sha256:g"}, Spec: &apiv1.PipelineSpec{}}
 	after := Version{Source: "s2", Destination: "d1", DestinationConnector: "sha256:a2", Dbt: map[string]string{"shop": "sha256:b2"}, Spec: &apiv1.PipelineSpec{}}

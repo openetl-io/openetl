@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions,
@@ -9,6 +10,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 
+use crate::control::Control;
 use crate::evolve::{Conformed, Evolver, Policy, VERSIONS_KEY};
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
@@ -47,6 +49,9 @@ pub struct Shaper {
     fresh: bool,
     /// Adds `_openetl_deleted`.
     soft_deletes: bool,
+    /// Typed batches carry op and seq control columns; adds
+    /// `_openetl_unchanged`.
+    changelog: bool,
 }
 
 impl Shaper {
@@ -101,6 +106,7 @@ impl Shaper {
             current: restored,
             fresh: false,
             soft_deletes: false,
+            changelog: false,
         })
     }
 
@@ -108,6 +114,12 @@ impl Shaper {
     /// merge writes that keep deleted rows.
     pub fn with_soft_deletes(mut self, on: bool) -> Self {
         self.soft_deletes = on;
+        self
+    }
+
+    /// For a changelog stream (CDC).
+    pub fn with_changelog(mut self, on: bool) -> Self {
+        self.changelog = on;
         self
     }
 
@@ -158,14 +170,25 @@ impl Shaper {
             reason: reason.clone(),
         }));
         rejected.sort_by_key(|r| r.row);
-        self.finish(c, ids, rejected)
+        self.finish(c, ids, Control::default(), rejected)
     }
 
     /// Gives a typed batch its logical and declared types, conforms it to the
-    /// stream's schema, renames its columns and adds the metadata columns.
+    /// stream's schema, renames its columns and adds the metadata columns,
+    /// with a changelog stream's op, seq and unchanged columns from its
+    /// control columns.
     pub fn batch(&mut self, batch: &RecordBatch) -> Result<Shaped, Error> {
+        let (batch, control) = Control::split(batch)?;
+        let batch = &batch;
+        if self.changelog && (control.op.is_none() || control.seq.is_none()) {
+            return Err(Error::Declared(
+                "a changelog stream's batch has no op or seq control column".into(),
+            ));
+        }
         let (typed, failed) = coerce::conform(batch, self.declared.as_deref(), self.types)?;
-        let ids = self.identity.typed(&typed)?;
+        let control =
+            control.without(batch.num_rows(), &failed.iter().map(|(r, _)| *r).collect())?;
+        let ids = self.identity.typed(&typed, control.seq.as_ref())?;
         let c = self.evolver.conform(&typed)?;
         let mut rejected: Vec<Rejected> = failed
             .iter()
@@ -185,37 +208,50 @@ impl Shaper {
             }));
             rejected.sort_by_key(|r| r.row);
         }
-        self.finish(c, ids, rejected)
+        self.finish(c, ids, control, rejected)
     }
 
     fn finish(
         &mut self,
         c: Conformed,
         ids: FixedSizeBinaryArray,
+        control: Control,
         rejected: Vec<Rejected>,
     ) -> Result<Shaped, Error> {
-        let ids = if c.failed.is_empty() {
-            ids
+        let (ids, control) = if c.failed.is_empty() {
+            (ids, control)
         } else {
             let gone: HashSet<usize> = c.failed.iter().map(|(r, _)| *r).collect();
             let keep = BooleanArray::from_iter((0..ids.len()).map(|i| Some(!gone.contains(&i))));
             let kept = arrow_select::filter::filter(&ids, &keep)?;
-            kept.as_fixed_size_binary().clone()
+            (kept.as_fixed_size_binary().clone(), control.filter(&keep)?)
         };
+        let seq = control.seq.as_ref().map(|a| a.data_type());
         let schema = match &self.current {
-            Some(s) if self.fresh && !c.changed => s.clone(),
-            _ => self.shape(&c.batch),
+            Some(s)
+                if self.fresh
+                    && !c.changed
+                    && seq.is_none_or(|t| {
+                        s.field_with_name("_openetl_seq")
+                            .is_ok_and(|f| f.data_type() == t)
+                    }) =>
+            {
+                s.clone()
+            }
+            _ => self.shape(&c.batch, seq),
         };
+        let unchanged = self.unchanged(&c.batch, &control)?;
         Ok(Shaped {
-            batch: self.assemble(schema, &c.batch, ids)?,
+            batch: self.assemble(schema, &c.batch, ids, &control, unchanged)?,
             rejected,
             schema_changed: c.changed,
             versioned: c.versioned,
         })
     }
 
-    /// The destination schema for a batch under source names.
-    fn shape(&mut self, batch: &RecordBatch) -> SchemaRef {
+    /// The destination schema for a batch under source names. `seq` is the
+    /// type of its seq control column.
+    fn shape(&mut self, batch: &RecordBatch, seq: Option<&DataType>) -> SchemaRef {
         let source = batch.schema();
         let renamed = self.namer.rename(&source);
         let mut fields: Vec<Field> = renamed
@@ -233,14 +269,17 @@ impl Shaper {
             ),
         );
         fields.push(Field::new("_openetl_op", DataType::Utf8, false));
-        match self.seq_field(&source) {
-            Some(f) => fields.push(f.with_name("_openetl_seq")),
-            None if self.identity.cursor.is_none() => fields.push(Field::new(
-                "_openetl_seq",
-                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                false,
-            )),
-            None => {}
+        match seq.map(|t| Field::new("_openetl_seq", t.clone(), true)) {
+            Some(f) => fields.push(f),
+            None => match self.seq_field(&source) {
+                Some(f) => fields.push(f.with_name("_openetl_seq")),
+                None if self.identity.cursor.is_none() => fields.push(Field::new(
+                    "_openetl_seq",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    false,
+                )),
+                None => {}
+            },
         }
         fields.push(Field::new(
             "_openetl_synced_at",
@@ -249,6 +288,13 @@ impl Shaper {
         ));
         if self.soft_deletes {
             fields.push(Field::new("_openetl_deleted", DataType::Boolean, false));
+        }
+        if self.changelog {
+            fields.push(Field::new(
+                "_openetl_unchanged",
+                DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true))),
+                true,
+            ));
         }
         let mut md = renamed.metadata().clone();
         md.insert(TABLE_KEY.to_owned(), self.table.clone());
@@ -274,24 +320,66 @@ impl Shaper {
             .map(|f| f.clone().with_nullable(true))
     }
 
+    /// The unchanged control column under destination names, leaving out
+    /// columns the batch doesn't have; None unless the stream is a changelog.
+    fn unchanged(
+        &mut self,
+        batch: &RecordBatch,
+        control: &Control,
+    ) -> Result<Option<ArrayRef>, Error> {
+        if !self.changelog {
+            return Ok(None);
+        }
+        let n = batch.num_rows();
+        let mut b = ListBuilder::new(StringBuilder::new());
+        let Some(u) = &control.unchanged else {
+            for _ in 0..n {
+                b.append_null();
+            }
+            return Ok(Some(Arc::new(b.finish())));
+        };
+        let schema = batch.schema();
+        for names in u.as_list::<i32>().iter() {
+            let Some(names) = names else {
+                b.append_null();
+                continue;
+            };
+            for name in names.as_string::<i32>().iter().flatten() {
+                if schema.field_with_name(name).is_ok() {
+                    b.values().append_value(self.namer.name(name));
+                }
+            }
+            b.append(true);
+        }
+        Ok(Some(Arc::new(b.finish())))
+    }
+
     fn assemble(
         &self,
         schema: SchemaRef,
         batch: &RecordBatch,
         ids: FixedSizeBinaryArray,
+        control: &Control,
+        unchanged: Option<ArrayRef>,
     ) -> Result<RecordBatch, Error> {
         let n = batch.num_rows();
         let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
         columns.push(Arc::new(ids));
-        let ops = StringArray::from_iter_values(std::iter::repeat_n("insert", n));
+        let ops = match &control.op {
+            Some(op) => StringArray::from_iter_values(
+                op.as_string::<i32>().iter().map(|v| v.unwrap_or("insert")),
+            ),
+            None => StringArray::from_iter_values(std::iter::repeat_n("insert", n)),
+        };
         let deleted = self
             .soft_deletes
             .then(|| BooleanArray::from_iter(ops.iter().map(|op| Some(op == Some("delete")))));
         columns.push(Arc::new(ops));
         if schema.index_of("_openetl_seq").is_ok() {
-            columns.push(match &self.identity.cursor {
-                Some(c) => batch.column(batch.schema().index_of(c)?).clone(),
-                None => Arc::new(
+            columns.push(match (&control.seq, &self.identity.cursor) {
+                (Some(seq), _) => seq.clone(),
+                (None, Some(c)) => batch.column(batch.schema().index_of(c)?).clone(),
+                (None, None) => Arc::new(
                     TimestampMicrosecondArray::from_value(self.identity.read_start, n)
                         .with_timezone("UTC"),
                 ),
@@ -305,6 +393,9 @@ impl Shaper {
         ));
         if let Some(d) = deleted {
             columns.push(Arc::new(d));
+        }
+        if let Some(u) = unchanged {
+            columns.push(u);
         }
         let opts = RecordBatchOptions::new().with_row_count(Some(n));
         Ok(RecordBatch::try_new_with_options(schema, columns, &opts)?)
@@ -521,6 +612,187 @@ mod tests {
         assert!(!again.schema_changed);
         assert_eq!(again.batch.schema(), out.schema());
         assert_ne!(ids(&out)[0], ids(&out)[1]);
+    }
+
+    fn change_batch(ops: &[Option<&str>], seqs: &[i64], doc: Vec<Option<&str>>) -> RecordBatch {
+        use crate::control::CONTROL_KEY;
+        use arrow_array::builder::{ListBuilder, StringBuilder};
+        let control = |name: &str, dt: DataType, c: &str| {
+            Field::new(name, dt, true)
+                .with_metadata(HashMap::from([(CONTROL_KEY.to_owned(), c.to_owned())]))
+        };
+        let mut unchanged = ListBuilder::new(StringBuilder::new());
+        for d in &doc {
+            if d.is_none() {
+                unchanged.values().append_value("Doc");
+                unchanged.values().append_value("gone");
+            }
+            unchanged.append(true);
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("Doc", DataType::Utf8, true),
+            // A record field may share a control column's name.
+            control("id", DataType::Utf8, "op"),
+            control("seq", DataType::Int64, "seq"),
+            control(
+                "unchanged",
+                DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true))),
+                "unchanged",
+            ),
+        ]));
+        let n = seqs.len() as i64;
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..n)),
+                Arc::new(StringArray::from(doc)),
+                Arc::new(StringArray::from(ops.to_vec())),
+                Arc::new(Int64Array::from(seqs.to_vec())),
+                Arc::new(unchanged.finish()),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn changelog_shaper(declared: Option<SchemaRef>) -> Shaper {
+        Shaper::new(
+            Naming::default(),
+            "t".into(),
+            Identity {
+                stream: "t".into(),
+                key: vec!["id".into()],
+                ..Default::default()
+            },
+            Policy::AllowAll,
+            None,
+            declared,
+            TypeOptions::default(),
+        )
+        .unwrap()
+        .with_soft_deletes(true)
+        .with_changelog(true)
+    }
+
+    #[test]
+    fn a_changelog_takes_op_seq_and_unchanged_from_control_columns() {
+        let mut s = changelog_shaper(None);
+        let b = change_batch(
+            &[None, Some("update"), Some("delete")],
+            &[10, 20, 30],
+            vec![Some("a"), None, Some("c")],
+        );
+        let n = s.batch(&b).unwrap();
+        let schema = n.batch.schema();
+        assert_eq!(
+            names(&schema),
+            [
+                "id",
+                "doc",
+                "_openetl_id",
+                "_openetl_op",
+                "_openetl_seq",
+                "_openetl_synced_at",
+                "_openetl_deleted",
+                "_openetl_unchanged"
+            ]
+        );
+        let col = |name: &str| n.batch.column(schema.index_of(name).unwrap()).clone();
+        assert_eq!(
+            col("_openetl_op")
+                .as_string::<i32>()
+                .iter()
+                .collect::<Vec<_>>(),
+            [Some("insert"), Some("update"), Some("delete")]
+        );
+        assert_eq!(
+            schema.field_with_name("_openetl_seq").unwrap().data_type(),
+            &DataType::Int64
+        );
+        assert_eq!(
+            col("_openetl_seq")
+                .as_primitive::<arrow_array::types::Int64Type>()
+                .values(),
+            &[10, 20, 30]
+        );
+        assert_eq!(
+            col("_openetl_deleted")
+                .as_boolean()
+                .iter()
+                .collect::<Vec<_>>(),
+            [Some(false), Some(false), Some(true)]
+        );
+        let unchanged: Vec<Vec<Option<String>>> = col("_openetl_unchanged")
+            .as_list::<i32>()
+            .iter()
+            .map(|l| {
+                l.unwrap()
+                    .as_string::<i32>()
+                    .iter()
+                    .map(|v| v.map(str::to_owned))
+                    .collect()
+            })
+            .collect();
+        // Under its destination name; a column the batch doesn't have is
+        // left out.
+        assert_eq!(unchanged, [vec![], vec![Some("doc".to_owned())], vec![]]);
+
+        // The sequence is part of the ID.
+        let again = s
+            .batch(&change_batch(&[None], &[11], vec![Some("a")]))
+            .unwrap();
+        assert!(!again.schema_changed);
+        assert_ne!(ids(&again.batch)[0], ids(&n.batch)[0]);
+        let same = s
+            .batch(&change_batch(&[None], &[10], vec![Some("x")]))
+            .unwrap();
+        assert_eq!(ids(&same.batch)[0], ids(&n.batch)[0]);
+    }
+
+    #[test]
+    fn a_changelog_batch_needs_op_and_seq() {
+        let mut s = changelog_shaper(None);
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let b = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1]))]).unwrap();
+        assert!(matches!(s.batch(&b), Err(Error::Declared(_))));
+
+        let mut b = change_batch(&[Some("upsert")], &[1], vec![Some("a")]);
+        assert!(matches!(s.batch(&b), Err(Error::Declared(_))));
+        b = change_batch(&[None], &[1], vec![Some("a")]);
+        assert!(s.batch(&b).is_ok());
+    }
+
+    #[test]
+    fn rejected_rows_take_their_control_values_with_them() {
+        // doc is declared an integer, so "x" is quarantined.
+        let declared = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("Doc", DataType::Int64, true),
+        ]));
+        let mut s = changelog_shaper(Some(declared));
+        let b = change_batch(
+            &[Some("insert"), Some("update"), Some("delete")],
+            &[10, 20, 30],
+            vec![Some("1"), Some("x"), Some("3")],
+        );
+        let n = s.batch(&b).unwrap();
+        assert_eq!(n.rejected.len(), 1);
+        assert_eq!(n.rejected[0].row, 1);
+        let schema = n.batch.schema();
+        let col = |name: &str| n.batch.column(schema.index_of(name).unwrap()).clone();
+        assert_eq!(
+            col("_openetl_op")
+                .as_string::<i32>()
+                .iter()
+                .collect::<Vec<_>>(),
+            [Some("insert"), Some("delete")]
+        );
+        assert_eq!(
+            col("_openetl_seq")
+                .as_primitive::<arrow_array::types::Int64Type>()
+                .values(),
+            &[10, 30]
+        );
     }
 
     fn data_names(schema: &Schema) -> Vec<String> {

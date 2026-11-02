@@ -6,7 +6,8 @@
 //! - for a keyed stream, `0x01` and each primary-key value in key order;
 //!   otherwise `0x02` and each non-null column's name and value, sorted by
 //!   name;
-//! - the record's sequence: its cursor value, or the stream's read start.
+//! - the record's sequence: its seq control column's value, its cursor value,
+//!   or the stream's read start.
 //!
 //! Each name and value is a little-endian u32 length, then its bytes; a null
 //! is the length `u32::MAX` alone. Raw rows encode values as JSON text, with
@@ -81,8 +82,13 @@ impl Identity {
         uuid(buf)
     }
 
-    /// The IDs of a typed batch's rows.
-    pub(crate) fn typed(&self, batch: &RecordBatch) -> Result<FixedSizeBinaryArray, ArrowError> {
+    /// The IDs of a typed batch's rows. `seq`, from a seq control column,
+    /// takes the place of the cursor.
+    pub(crate) fn typed(
+        &self,
+        batch: &RecordBatch,
+        seq: Option<&ArrayRef>,
+    ) -> Result<FixedSizeBinaryArray, ArrowError> {
         let schema = batch.schema();
         let parts: Vec<(&str, &ArrayRef)> = if self.key.is_empty() {
             let mut all: Vec<_> = schema
@@ -103,12 +109,15 @@ impl Identity {
             }
             key
         };
-        let cursor = self.cursor.as_ref().map(|c| {
-            schema
-                .index_of(c)
-                .ok()
-                .map(|i| (c.as_str(), batch.column(i)))
-        });
+        let cursor = match seq {
+            Some(a) => Some(Some(("seq", a))),
+            None => self.cursor.as_ref().map(|c| {
+                schema
+                    .index_of(c)
+                    .ok()
+                    .map(|i| (c.as_str(), batch.column(i)))
+            }),
+        };
         for (name, a) in parts.iter().chain(cursor.iter().flatten()) {
             if !supported(a.data_type()) {
                 return Err(ArrowError::NotYetImplemented(format!(
@@ -184,7 +193,7 @@ fn uuid(buf: &[u8]) -> [u8; 16] {
     b
 }
 
-fn supported(dt: &DataType) -> bool {
+pub(crate) fn supported(dt: &DataType) -> bool {
     use DataType as D;
     matches!(
         dt,
@@ -417,7 +426,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let ids = i.typed(&batch).unwrap();
+        let ids = i.typed(&batch, None).unwrap();
         assert_eq!(ids.len(), 3);
         let first = &ids.value_data()[0..16];
         assert_eq!(first, &ids.value_data()[32..48]);
@@ -427,13 +436,13 @@ mod tests {
             key: Vec::new(),
             ..i.clone()
         };
-        let ids = unkeyed.typed(&batch).unwrap();
+        let ids = unkeyed.typed(&batch, None).unwrap();
         assert_ne!(&ids.value_data()[0..16], &ids.value_data()[32..48]);
 
         let missing = Identity {
             key: vec!["nope".into()],
             ..i
         };
-        assert!(missing.typed(&batch).is_err());
+        assert!(missing.typed(&batch, None).is_err());
     }
 }

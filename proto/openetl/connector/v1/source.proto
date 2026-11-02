@@ -69,6 +69,13 @@ enum Replay {
 message ReadRequest {
   bytes config = 1;
   repeated ConfiguredStream streams = 2;
+  // The pipeline reading, which names what a source keeps for it upstream,
+  // such as a replication slot.
+  string pipeline = 3;
+  // The read never ends: streams read with cdc or stream follow their
+  // source until the read is cancelled. Otherwise they complete once
+  // they've caught up with where their source was when the read started.
+  bool continuous = 4;
 }
 
 message ConfiguredStream {
@@ -87,6 +94,17 @@ message ReadResponse {
   }
 }
 
+// RecordBatch carries records. A changelog stream's Arrow batches (read
+// with SYNC_MODE_CDC) also carry control columns, which aren't records'
+// fields: columns whose field metadata has openetl.control set to
+//   - op: utf8, insert, update or delete, for _openetl_op; null is insert.
+//   - seq: the record version's position, which orders a key's versions,
+//     for _openetl_seq. Any type the platform can compare.
+//   - unchanged: optional, a list of utf8: the columns an update didn't
+//     send (Postgres's unchanged TOAST values), whose values are null. Merge
+//     keeps what the destination has for them.
+// Every batch of a changelog stream carries op and seq. Their names don't
+// matter, and may be the same as a record field's.
 message RecordBatch {
   string stream = 1;
   oneof records {

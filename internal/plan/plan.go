@@ -81,10 +81,18 @@ func WriteMode(p *apiv1.PipelineSpec) destination.WriteMode {
 }
 
 // ReadMode is how a stream is read: its sync in the spec, or else the way
-// its source declares it reads it first. Unspecified if neither says.
-func ReadMode(declared []apiv1.SyncMode, ps *apiv1.PipelineStream) apiv1.SyncMode {
+// its source declares it reads it first, or in a continuous pipeline the
+// first declared way whose reads don't end. Unspecified if none says.
+func ReadMode(p *apiv1.PipelineSpec, declared []apiv1.SyncMode, ps *apiv1.PipelineStream) apiv1.SyncMode {
 	if m := ps.GetSync(); m != apiv1.SyncMode_SYNC_MODE_UNSPECIFIED {
 		return m
+	}
+	if Continuous(p) {
+		for _, m := range declared {
+			if m == apiv1.SyncMode_SYNC_MODE_CDC || m == apiv1.SyncMode_SYNC_MODE_STREAM {
+				return m
+			}
+		}
 	}
 	if len(declared) > 0 {
 		return declared[0]
@@ -93,14 +101,18 @@ func ReadMode(declared []apiv1.SyncMode, ps *apiv1.PipelineStream) apiv1.SyncMod
 }
 
 // StreamMode is a stream's write mode: destination.write, or without one,
-// overwrite for a full refresh into a destination that has it, so its table
-// holds what the source holds, and append otherwise.
-func StreamMode(p *apiv1.PipelineSpec, caps destination.Capabilities, read apiv1.SyncMode) destination.WriteMode {
+// where the destination has it, so its table holds what the source holds:
+// overwrite for a full refresh, and merge for a keyed stream read with cdc;
+// append otherwise.
+func StreamMode(p *apiv1.PipelineSpec, caps destination.Capabilities, read apiv1.SyncMode, keyed bool) destination.WriteMode {
 	if m := WriteMode(p); m != 0 {
 		return m
 	}
-	if read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH && caps.SupportsMode(destination.Overwrite) {
+	switch {
+	case read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH && caps.SupportsMode(destination.Overwrite):
 		return destination.Overwrite
+	case read == apiv1.SyncMode_SYNC_MODE_CDC && keyed && caps.SupportsMode(destination.Merge):
+		return destination.Merge
 	}
 	return destination.Append
 }
@@ -182,10 +194,13 @@ var levels = map[delivery.Level]apiv1.DeliveryLevel{
 func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities) ([]*apiv1.StreamPlan, []error, []*apiv1.PlanWarning) {
 	settings := Settings(spec, caps)
 	var warnings []*apiv1.PlanWarning
-	if spec.GetDestination().GetDeletes() != apiv1.DeleteMode_DELETE_MODE_UNSPECIFIED && WriteMode(spec) != destination.Merge {
-		warnings = append(warnings, &apiv1.PlanWarning{Message: "destination.deletes applies only to merge, so it's ignored"})
+	deletesIgnored := func(merges bool) {
+		if spec.GetDestination().GetDeletes() != apiv1.DeleteMode_DELETE_MODE_UNSPECIFIED && !merges {
+			warnings = append(warnings, &apiv1.PlanWarning{Message: "destination.deletes applies only to merge, so it's ignored"})
+		}
 	}
 	if cat == nil {
+		deletesIgnored(WriteMode(spec) == destination.Merge)
 		problems := delivery.Problems(caps, settings, nil)
 		if m := WriteMode(spec); m != 0 {
 			if err := delivery.ModeProblem(caps, m); err != nil {
@@ -193,8 +208,8 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 			}
 		}
 		for _, ps := range spec.GetSource().GetStreams() {
-			read := ReadMode(nil, ps)
-			if err := SyncProblem(StreamMode(spec, caps, read), ps.GetName(), read); err != nil {
+			read := ReadMode(spec, nil, ps)
+			if err := SyncProblem(StreamMode(spec, caps, read, false), ps.GetName(), read); err != nil {
 				problems = append(problems, err)
 			}
 			if read == apiv1.SyncMode_SYNC_MODE_UNSPECIFIED {
@@ -228,6 +243,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 
 	var plans []*apiv1.StreamPlan
 	var ds []delivery.Stream
+	merges := false
 	for _, s := range streams {
 		name := s.cs.GetName()
 		for _, column := range slices.Sorted(maps.Keys(s.ps.GetColumns())) {
@@ -242,8 +258,9 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		if s.ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND && !caps.NanosecondTimestamps {
 			problems = append(problems, fmt.Errorf("stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", name))
 		}
-		read := ReadMode(s.cs.GetSyncModes(), s.ps)
-		mode := StreamMode(spec, caps, read)
+		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
+		mode := StreamMode(spec, caps, read, len(s.cs.GetPrimaryKey()) > 0)
+		merges = merges || mode == destination.Merge
 		if err := SyncProblem(mode, name, read); err != nil {
 			problems = append(problems, err)
 		}
@@ -256,6 +273,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
 			Write: apiv1.WriteMode(mode)}) //nolint:gosec // small
 	}
+	deletesIgnored(merges || len(streams) == 0 && WriteMode(spec) == destination.Merge)
 	problems = append(problems, delivery.Problems(caps, settings, ds)...)
 	for _, w := range delivery.Warnings(caps, settings, ds) {
 		warnings = append(warnings, &apiv1.PlanWarning{Stream: w.Stream, Message: w.Message})

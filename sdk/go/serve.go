@@ -243,7 +243,19 @@ func (b *base) Setup(context.Context, *protocolv1.SetupRequest) (*protocolv1.Set
 	return &protocolv1.SetupResponse{}, nil
 }
 
-func (b *base) Teardown(context.Context, *protocolv1.TeardownRequest) (*protocolv1.TeardownResponse, error) {
+func (b *base) Teardown(ctx context.Context, req *protocolv1.TeardownRequest) (*protocolv1.TeardownResponse, error) {
+	if b.c.Source == nil {
+		return &protocolv1.TeardownResponse{}, nil
+	}
+	s, err := b.source(ctx, req.GetConfig())
+	if err != nil {
+		return nil, status(err)
+	}
+	if t, ok := s.(source.Teardowner); ok {
+		if err := t.Teardown(ctx, req.GetPipeline()); err != nil {
+			return nil, status(err)
+		}
+	}
 	return &protocolv1.TeardownResponse{}, nil
 }
 

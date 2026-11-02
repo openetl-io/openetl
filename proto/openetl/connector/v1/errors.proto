@@ -28,6 +28,10 @@ enum ErrorCode {
   // The runner is shutting down. The attempt stopped at a checkpoint, and
   // restarting it elsewhere doesn't count as a retry.
   ERROR_CODE_DRAINING = 15;
+  // The source no longer has the position a stream resumes from, such as a
+  // replication slot lost in a failover. Only a new read from the start,
+  // such as a re-snapshot, carries on.
+  ERROR_CODE_POSITION_LOST = 16;
 }
 
 // Error is a classified failure. A failed RPC carries it in the

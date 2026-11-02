@@ -57,14 +57,15 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		for i, m := range cs.SyncModes {
 			declared[i] = apiv1.SyncMode(m) //nolint:gosec // small
 		}
-		read := plan.ReadMode(declared, ps)
-		mode := plan.StreamMode(p, caps, read)
+		read := plan.ReadMode(p, declared, ps)
+		mode := plan.StreamMode(p, caps, read, len(cs.PrimaryKey) > 0)
 		if err := errors.Join(plan.SyncProblem(mode, cs.Name, read), plan.ReadProblem(p, cs.Name, read)); err != nil {
 			return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
 		}
 		s := runner.Stream{
 			Name:                 cs.Name,
 			Replay:               cs.Replay,
+			Read:                 source.SyncMode(read),
 			Mode:                 mode,
 			PrimaryKey:           cs.PrimaryKey,
 			CursorField:          cmp.Or(ps.GetCursor(), cs.CursorField),
@@ -122,6 +123,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	}
 	return runner.Job{
 		Pipeline:           spec.GetPipelineId(),
+		Continuous:         plan.Continuous(p),
 		Source:             src,
 		Streams:            streams,
 		Destination:        dst,
