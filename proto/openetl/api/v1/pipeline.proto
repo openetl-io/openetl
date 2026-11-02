@@ -258,6 +258,16 @@ message PipelineDestination {
   // A schema or dataset.
   string namespace = 3;
   Naming naming = 4;
+  // How merge applies deletes. Unset: soft.
+  DeleteMode deletes = 5;
+}
+
+enum DeleteMode {
+  DELETE_MODE_UNSPECIFIED = 0;
+  // Keep the row, with _openetl_deleted true and its other columns as they
+  // were.
+  DELETE_MODE_SOFT = 1;
+  DELETE_MODE_HARD = 2;
 }
 
 enum Naming {

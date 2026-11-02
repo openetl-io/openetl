@@ -69,6 +69,28 @@ func WriteMode(p *apiv1.PipelineSpec) destination.WriteMode {
 	return destination.Append
 }
 
+func Deletes(p *apiv1.PipelineSpec) destination.DeleteMode {
+	if p.GetDestination().GetDeletes() == apiv1.DeleteMode_DELETE_MODE_HARD {
+		return destination.HardDelete
+	}
+	return destination.SoftDelete
+}
+
+// SyncProblem fails a stream whose read mode the write mode can't take:
+// overwrite replaces the table with what one read wrote, so it needs full
+// refresh. Streams that don't set sync read as their source does.
+func SyncProblem(mode destination.WriteMode, ps *apiv1.PipelineStream) error {
+	if mode != destination.Overwrite {
+		return nil
+	}
+	switch ps.GetSync() {
+	case apiv1.SyncMode_SYNC_MODE_INCREMENTAL, apiv1.SyncMode_SYNC_MODE_CDC, apiv1.SyncMode_SYNC_MODE_STREAM:
+		return fmt.Errorf("destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream %q has sync: %s",
+			ps.GetName(), strings.ToLower(strings.TrimPrefix(ps.GetSync().String(), "SYNC_MODE_")))
+	}
+	return nil
+}
+
 // Level is a spec's delivery level; 0 if it's unset.
 func Level(l apiv1.DeliveryLevel) delivery.Level {
 	for k, v := range levels {
@@ -100,8 +122,22 @@ var levels = map[delivery.Level]apiv1.DeliveryLevel{
 // only the settings.
 func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities) ([]*apiv1.StreamPlan, []error, []*apiv1.PlanWarning) {
 	settings := Settings(spec.GetDelivery(), caps)
+	mode := WriteMode(spec)
+	var warnings []*apiv1.PlanWarning
+	if spec.GetDestination().GetDeletes() != apiv1.DeleteMode_DELETE_MODE_UNSPECIFIED && mode != destination.Merge {
+		warnings = append(warnings, &apiv1.PlanWarning{Message: "destination.deletes applies only to merge, so it's ignored"})
+	}
 	if cat == nil {
-		return nil, delivery.Problems(caps, settings, nil), nil
+		problems := delivery.Problems(caps, settings, nil)
+		if err := delivery.ModeProblem(caps, mode); err != nil {
+			problems = append(problems, err)
+		}
+		for _, ps := range spec.GetSource().GetStreams() {
+			if err := SyncProblem(mode, ps); err != nil {
+				problems = append(problems, err)
+			}
+		}
+		return nil, problems, warnings
 	}
 	var problems []error
 	type selected struct {
@@ -123,7 +159,6 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		streams = append(streams, selected{cs: cat.GetStreams()[i], ps: ps})
 	}
 
-	mode := WriteMode(spec)
 	var plans []*apiv1.StreamPlan
 	var ds []delivery.Stream
 	for _, s := range streams {
@@ -140,13 +175,15 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		if s.ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND && !caps.NanosecondTimestamps {
 			problems = append(problems, fmt.Errorf("stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", name))
 		}
+		if err := SyncProblem(mode, s.ps); err != nil {
+			problems = append(problems, err)
+		}
 		d := deliveryStream(s.cs, s.ps, mode)
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
 		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why})
 	}
 	problems = append(problems, delivery.Problems(caps, settings, ds)...)
-	var warnings []*apiv1.PlanWarning
 	for _, w := range delivery.Warnings(caps, settings, ds) {
 		warnings = append(warnings, &apiv1.PlanWarning{Stream: w.Stream, Message: w.Message})
 	}

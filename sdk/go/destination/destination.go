@@ -4,6 +4,7 @@ package destination
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -77,8 +78,21 @@ type WriteMode int
 
 const (
 	Append WriteMode = iota + 1
+	// Overwrite replaces a stream's table with what one read wrote, once the
+	// read ends.
 	Overwrite
+	// Merge upserts on the primary key, guarded by _openetl_seq.
 	Merge
+)
+
+// DeleteMode is how merge applies a record whose _openetl_op is delete.
+type DeleteMode int
+
+const (
+	// SoftDelete keeps the row, with _openetl_deleted true and its other
+	// columns as they were.
+	SoftDelete DeleteMode = iota + 1
+	HardDelete
 )
 
 type Capabilities struct {
@@ -93,15 +107,19 @@ type Capabilities struct {
 	MaxIdentifierLength int
 	// Timestamps keep nanoseconds; otherwise only microseconds.
 	NanosecondTimestamps bool
+	// Nil: append only.
+	WriteModes []WriteMode
 }
 
 func (c Capabilities) SupportsScope(s Scope) bool {
-	for _, x := range c.Scopes {
-		if x == s {
-			return true
-		}
+	return slices.Contains(c.Scopes, s)
+}
+
+func (c Capabilities) SupportsMode(m WriteMode) bool {
+	if len(c.WriteModes) == 0 {
+		return m == Append
 	}
-	return false
+	return slices.Contains(c.WriteModes, m)
 }
 
 // Dedupe is which append and overwrite rows an apply skips by _openetl_id.
@@ -123,6 +141,8 @@ type Stream struct {
 	PrimaryKey []string
 	// Only set for sinks with DedupeAtApply.
 	Dedupe Dedupe
+	// Merge only; zero: SoftDelete.
+	Deletes DeleteMode
 }
 
 type OpenConfig struct {
@@ -165,6 +185,21 @@ type Writer interface {
 	// e.N, which no recovery checks again.
 	Recover(ctx context.Context, gen uint64, e Epoch, s Staged) (Recovery, error)
 	Close(ctx context.Context) error
+}
+
+// ReadTracker is implemented by writers that need to know where each
+// stream's read starts and ends, such as overwrite writes, which replace a
+// table with what one read wrote. Its calls come from the goroutine that
+// calls Write and PreCommit.
+type ReadTracker interface {
+	// StartReads comes after Recover and before the first Write, with when
+	// each stream the attempt reads started its read. A read an earlier
+	// attempt began keeps its start, so a stream whose start changed began a
+	// new read.
+	StartReads(ctx context.Context, starts map[string]time.Time) error
+	// EndRead says stream's read ended in epoch e: its last batch came
+	// before this call, and PreCommit(e) after it.
+	EndRead(ctx context.Context, e Epoch, stream string) error
 }
 
 // Committed is what a Commit applied.

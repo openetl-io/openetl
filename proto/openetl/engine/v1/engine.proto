@@ -99,6 +99,9 @@ message StreamPlan {
   // declared ones included. Outside 1677-09-21 to 2262-04-11 they are
   // quarantined, and infinities clamp to those limits.
   bool nanosecond_timestamps = 8;
+  // Adds _openetl_deleted, true where _openetl_op is delete: for merge
+  // writes that keep deleted rows.
+  bool soft_deletes = 9;
 }
 
 enum Lane {

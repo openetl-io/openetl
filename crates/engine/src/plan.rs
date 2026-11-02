@@ -26,6 +26,8 @@ pub struct Plan {
     /// Each stream's declared logical types, under source names.
     pub declared: Vec<Option<SchemaRef>>,
     pub identities: Vec<Identity>,
+    /// Each stream's: whether it gets `_openetl_deleted`.
+    pub soft_deletes: Vec<bool>,
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
     /// Batches skip shaping, for measuring the boundary.
     pub passthrough: bool,
@@ -111,6 +113,7 @@ impl Plan {
                 read_start: s.read_start_micros,
             })
             .collect();
+        let soft_deletes = req.streams.iter().map(|s| s.soft_deletes).collect();
         let naming = req.naming.map_or_else(Naming::default, |n| Naming {
             keep_source: n.keep_source_names,
             max_len: n.max_length as usize,
@@ -242,6 +245,7 @@ impl Plan {
             restored,
             declared,
             identities,
+            soft_deletes,
             quarantine,
             passthrough: req.passthrough,
             inbound,
@@ -341,6 +345,14 @@ pub(crate) mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn soft_deletes_are_per_stream() {
+        let mut req = request(&["a", "b"]);
+        req.streams[1].soft_deletes = true;
+        let p = Plan::from_request(req).unwrap();
+        assert_eq!(p.soft_deletes, vec![false, true]);
     }
 
     pub(crate) fn discard_request(streams: &[&str]) -> StartJobRequest {

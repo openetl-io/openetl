@@ -45,6 +45,8 @@ pub struct Shaper {
     current: Option<SchemaRef>,
     /// current matches the evolver's schema.
     fresh: bool,
+    /// Adds `_openetl_deleted`.
+    soft_deletes: bool,
 }
 
 impl Shaper {
@@ -98,7 +100,15 @@ impl Shaper {
             evolver,
             current: restored,
             fresh: false,
+            soft_deletes: false,
         })
+    }
+
+    /// Adds `_openetl_deleted`, true where `_openetl_op` is `delete`, for
+    /// merge writes that keep deleted rows.
+    pub fn with_soft_deletes(mut self, on: bool) -> Self {
+        self.soft_deletes = on;
+        self
     }
 
     /// None until the stream has a column.
@@ -237,6 +247,9 @@ impl Shaper {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             false,
         ));
+        if self.soft_deletes {
+            fields.push(Field::new("_openetl_deleted", DataType::Boolean, false));
+        }
         let mut md = renamed.metadata().clone();
         md.insert(TABLE_KEY.to_owned(), self.table.clone());
         if !self.evolver.versions().is_empty()
@@ -270,9 +283,11 @@ impl Shaper {
         let n = batch.num_rows();
         let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
         columns.push(Arc::new(ids));
-        columns.push(Arc::new(StringArray::from_iter_values(
-            std::iter::repeat_n("insert", n),
-        )));
+        let ops = StringArray::from_iter_values(std::iter::repeat_n("insert", n));
+        let deleted = self
+            .soft_deletes
+            .then(|| BooleanArray::from_iter(ops.iter().map(|op| Some(op == Some("delete")))));
+        columns.push(Arc::new(ops));
         if schema.index_of("_openetl_seq").is_ok() {
             columns.push(match &self.identity.cursor {
                 Some(c) => batch.column(batch.schema().index_of(c)?).clone(),
@@ -288,6 +303,9 @@ impl Shaper {
         columns.push(Arc::new(
             TimestampMicrosecondArray::from_value(now, n).with_timezone("UTC"),
         ));
+        if let Some(d) = deleted {
+            columns.push(Arc::new(d));
+        }
         let opts = RecordBatchOptions::new().with_row_count(Some(n));
         Ok(RecordBatch::try_new_with_options(schema, columns, &opts)?)
     }
@@ -431,6 +449,28 @@ mod tests {
                 .values()[0],
             946_684_800_123_456_789
         );
+    }
+
+    #[test]
+    fn soft_deletes_add_a_deleted_column_from_the_op() {
+        let mut s = shaper(None).with_soft_deletes(true);
+        let n = rows(&mut s, &[r#"{"id": 1}"#, r#"{"id": 2}"#]);
+        let schema = n.batch.schema();
+        let mut want = vec!["id"];
+        want.extend(META);
+        want.push("_openetl_deleted");
+        assert_eq!(names(&schema), want);
+        let deleted = schema.index_of("_openetl_deleted").unwrap();
+        assert!(!schema.field(deleted).is_nullable());
+        assert_eq!(
+            n.batch
+                .column(deleted)
+                .as_boolean()
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![Some(false), Some(false)]
+        );
+        assert_eq!(s.schema().unwrap(), schema);
     }
 
     #[test]

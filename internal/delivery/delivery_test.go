@@ -11,7 +11,8 @@ import (
 
 var (
 	postgres = destination.Capabilities{Class: destination.StageAndApply, DedupeAtApply: true,
-		Scopes: []destination.Scope{destination.ScopePipeline, destination.ScopeStream}, MinCommitInterval: time.Second}
+		Scopes: []destination.Scope{destination.ScopePipeline, destination.ScopeStream}, MinCommitInterval: time.Second,
+		WriteModes: []destination.WriteMode{destination.Append, destination.Overwrite, destination.Merge}}
 	parquet = destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}}
 	kafka   = destination.Capabilities{Class: destination.TransactionalStream}
 	webhook = destination.Capabilities{Class: destination.DeliverAndAck}
@@ -197,6 +198,9 @@ func TestCheck(t *testing.T) {
 			t.Errorf("Check failed %s: %v", name, err)
 		}
 	}
+	if strings.Contains(err.Error(), "doesn't support merge") {
+		t.Errorf("Check refused merge into a destination that has it: %v", err)
+	}
 
 	err = Check(parquet, ok, streams)
 	for _, want := range []string{
@@ -213,6 +217,13 @@ func TestCheck(t *testing.T) {
 	least.Scope = destination.ScopeStream
 	if err := Check(parquet, least, streams); err != nil {
 		t.Errorf("Check at least once: %v", err)
+	}
+	probs := Problems(parquet, least, []Stream{
+		{Name: "users", Replay: source.Exact, Mode: destination.Overwrite, Keyed: true},
+		{Name: "orders", Replay: source.Exact, Mode: destination.Overwrite, Keyed: true},
+	})
+	if len(probs) != 1 || probs[0].Error() != "destination.write: the destination doesn't support overwrite" {
+		t.Errorf("Problems with overwrite into an append-only destination = %v, want one", probs)
 	}
 
 	err = Check(parquet, least, []Stream{

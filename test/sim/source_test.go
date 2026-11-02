@@ -137,7 +137,7 @@ func (u *upstream) stateAfter(pos int) []byte {
 // completed reads below what was acknowledged; from the cursor for superset
 // ones.
 func (u *upstream) next() []byte {
-	if u.replay == source.Exact {
+	if u.replay == source.Exact || len(u.records) == 0 {
 		return nil
 	}
 	return u.stateAfter(len(u.records))

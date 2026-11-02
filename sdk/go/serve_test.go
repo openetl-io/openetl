@@ -24,6 +24,8 @@ func TestNumbersMatchTheProtocol(t *testing.T) {
 		{"append", int32(destination.Append), int32(protocolv1.WriteMode_WRITE_MODE_APPEND)},
 		{"overwrite", int32(destination.Overwrite), int32(protocolv1.WriteMode_WRITE_MODE_OVERWRITE)},
 		{"merge", int32(destination.Merge), int32(protocolv1.WriteMode_WRITE_MODE_MERGE)},
+		{"soft delete", int32(destination.SoftDelete), int32(protocolv1.DeleteMode_DELETE_MODE_SOFT)},
+		{"hard delete", int32(destination.HardDelete), int32(protocolv1.DeleteMode_DELETE_MODE_HARD)},
 		{"applied", int32(destination.Applied), int32(protocolv1.Recovery_RECOVERY_APPLIED)},
 		{"redone", int32(destination.Redone), int32(protocolv1.Recovery_RECOVERY_REDONE)},
 		{"lost", int32(destination.Lost), int32(protocolv1.Recovery_RECOVERY_LOST)},

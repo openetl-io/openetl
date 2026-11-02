@@ -26,6 +26,11 @@ type stagingKey struct {
 	stream string
 }
 
+type readKey struct {
+	stream string
+	start  int64
+}
+
 // warehouse is the destination's durable state.
 type warehouse struct {
 	dedupeCapable bool // Postgres and warehouses can dedupe at apply; Parquet can't
@@ -34,7 +39,8 @@ type warehouse struct {
 	fence   uint64
 	loads   map[marker]bool
 	staging map[stagingKey][]row
-	tables  map[string][]row          // append targets
+	tables  map[string][]row          // append and overwrite targets
+	reads   map[readKey][]row         // overwrite: each read's rows, until it ends
 	merged  map[string]map[string]row // merge targets, by key
 	applies map[string]int            // how often each record version was applied
 }
@@ -45,6 +51,7 @@ func newWarehouse(dedupeCapable bool) *warehouse {
 		loads:         map[marker]bool{},
 		staging:       map[stagingKey][]row{},
 		tables:        map[string][]row{},
+		reads:         map[readKey][]row{},
 		merged:        map[string]map[string]row{},
 		applies:       map[string]int{},
 	}
@@ -54,6 +61,11 @@ type stagedStream struct {
 	Name   string `json:"name"`
 	Mode   int    `json:"mode"`
 	Dedupe int    `json:"dedupe"`
+	// Overwrite: the read the rows belong to, whether it ends with the epoch,
+	// and whether the epoch staged nothing for it.
+	Read  int64 `json:"read,omitempty"`
+	Ended bool  `json:"ended,omitempty"`
+	Empty bool  `json:"empty,omitempty"`
 }
 
 type warehouseStaged struct {
@@ -78,7 +90,7 @@ func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []st
 		if wh.loads[marker{s.Name, st.Gen, st.N}] {
 			continue
 		}
-		if _, ok := wh.staging[stagingKey{st.Gen, st.N, s.Name}]; !ok {
+		if _, ok := wh.staging[stagingKey{st.Gen, st.N, s.Name}]; !ok && !s.Empty {
 			return fmt.Errorf("%w for %s in %d-g%d", errStagingMissing, s.Name, st.N, st.Gen)
 		}
 		todo = append(todo, s)
@@ -109,33 +121,57 @@ func (wh *warehouse) apply(s stagedStream, rows []row) (collapsed uint64) {
 				wh.applies[r.ID]++
 			}
 		}
+	case destination.Overwrite:
+		// Into the read's rows, deduped against them; the table becomes them
+		// when the read ends. Reads it doesn't continue were abandoned.
+		k := readKey{s.Name, s.Read}
+		for o := range wh.reads {
+			if o.stream == s.Name && o != k {
+				delete(wh.reads, o)
+			}
+		}
+		wh.reads[k], collapsed = wh.insert(wh.reads[k], s, rows)
+		if s.Ended {
+			wh.tables[s.Name] = wh.reads[k]
+			delete(wh.reads, k)
+		}
 	default:
-		var have map[string]bool
-		switch destination.Dedupe(s.Dedupe) {
-		case destination.DedupeTarget:
-			have = map[string]bool{}
-			for _, r := range wh.tables[s.Name] {
-				have[r.ID] = true
-			}
-		case destination.DedupeEpoch:
-			have = map[string]bool{}
-		}
-		for _, r := range rows {
-			if have != nil {
-				if have[r.ID] {
-					collapsed++
-					continue
-				}
-				have[r.ID] = true
-			}
-			wh.tables[s.Name] = append(wh.tables[s.Name], r)
-			wh.applies[r.ID]++
-		}
+		wh.tables[s.Name], collapsed = wh.insert(wh.tables[s.Name], s, rows)
 	}
 	return collapsed
 }
 
-func (wh *warehouse) missing(st warehouseStaged) (missing []stagedStream, staged int) {
+// insert appends rows to target with s's dedupe, and returns the rows it
+// skipped.
+func (wh *warehouse) insert(target []row, s stagedStream, rows []row) ([]row, uint64) {
+	var have map[string]bool
+	switch destination.Dedupe(s.Dedupe) {
+	case destination.DedupeTarget:
+		have = map[string]bool{}
+		for _, r := range target {
+			have[r.ID] = true
+		}
+	case destination.DedupeEpoch:
+		have = map[string]bool{}
+	}
+	var collapsed uint64
+	for _, r := range rows {
+		if have != nil {
+			if have[r.ID] {
+				collapsed++
+				continue
+			}
+			have[r.ID] = true
+		}
+		target = append(target, r)
+		wh.applies[r.ID]++
+	}
+	return target, collapsed
+}
+
+// missing returns the streams without a marker, how many of them have
+// staging to apply, and how many of those still have it.
+func (wh *warehouse) missing(st warehouseStaged) (missing []stagedStream, needs, staged int) {
 	wh.mu.Lock()
 	defer wh.mu.Unlock()
 	for _, s := range st.Streams {
@@ -143,11 +179,15 @@ func (wh *warehouse) missing(st warehouseStaged) (missing []stagedStream, staged
 			continue
 		}
 		missing = append(missing, s)
+		if s.Empty {
+			continue
+		}
+		needs++
 		if _, ok := wh.staging[stagingKey{st.Gen, st.N, s.Name}]; ok {
 			staged++
 		}
 	}
-	return missing, staged
+	return missing, needs, staged
 }
 
 // trim deletes the markers below an applied epoch, as Postgres does.
@@ -172,6 +212,7 @@ func (d *warehouseDest) Capabilities() destination.Capabilities {
 	if d.wh.dedupeCapable {
 		c.DedupeAtApply = true
 		c.Scopes = append(c.Scopes, destination.ScopePipeline)
+		c.WriteModes = []destination.WriteMode{destination.Append, destination.Overwrite, destination.Merge}
 	}
 	return c
 }
@@ -180,13 +221,27 @@ func (d *warehouseDest) Open(ctx context.Context, cfg destination.OpenConfig) (d
 	if err := outcome(d.w.sched.point(ctx, d.attempt, "sink.open"), nop); err != nil {
 		return nil, err
 	}
-	return &warehouseWriter{warehouseDest: d, cfg: cfg, buf: map[uint64]map[string][]row{}}, nil
+	return &warehouseWriter{warehouseDest: d, cfg: cfg, buf: map[uint64]map[string][]row{}, ended: map[uint64][]string{}}, nil
 }
 
 type warehouseWriter struct {
 	*warehouseDest
-	cfg destination.OpenConfig
-	buf map[uint64]map[string][]row // epoch → stream → rows; lost on a crash
+	cfg    destination.OpenConfig
+	buf    map[uint64]map[string][]row // epoch → stream → rows; lost on a crash
+	starts map[string]time.Time
+	ended  map[uint64][]string // epoch → streams whose read ends in it
+}
+
+var _ destination.ReadTracker = (*warehouseWriter)(nil)
+
+func (w *warehouseWriter) StartReads(_ context.Context, starts map[string]time.Time) error {
+	w.starts = starts
+	return nil
+}
+
+func (w *warehouseWriter) EndRead(_ context.Context, e destination.Epoch, stream string) error {
+	w.ended[e.N] = append(w.ended[e.N], stream)
+	return nil
 }
 
 func (w *warehouseWriter) Write(ctx context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
@@ -204,7 +259,16 @@ func (w *warehouseWriter) PreCommit(ctx context.Context, e destination.Epoch) (d
 	st := warehouseStaged{Gen: e.Generation, N: e.N}
 	for _, s := range w.cfg.Streams {
 		rows := w.buf[e.N][s.Name]
+		ss := stagedStream{Name: s.Name, Mode: int(s.Mode), Dedupe: int(s.Dedupe)}
+		if s.Mode == destination.Overwrite {
+			ss.Read, ss.Ended = w.starts[s.Name].UnixMicro(), slices.Contains(w.ended[e.N], s.Name)
+		}
 		if len(rows) == 0 {
+			// A read that ends without rows still replaces the table.
+			if ss.Ended {
+				ss.Empty = true
+				st.Streams = append(st.Streams, ss)
+			}
 			continue
 		}
 		err := outcome(w.w.sched.point(ctx, w.attempt, "sink.stage"), func() error {
@@ -216,9 +280,10 @@ func (w *warehouseWriter) PreCommit(ctx context.Context, e destination.Epoch) (d
 		if err != nil {
 			return nil, err
 		}
-		st.Streams = append(st.Streams, stagedStream{Name: s.Name, Mode: int(s.Mode), Dedupe: int(s.Dedupe)})
+		st.Streams = append(st.Streams, ss)
 	}
 	delete(w.buf, e.N)
+	delete(w.ended, e.N)
 	return json.Marshal(st)
 }
 
@@ -264,17 +329,18 @@ func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination
 	if err := json.Unmarshal(s, &st); err != nil {
 		return 0, err
 	}
-	missing, staged := w.wh.missing(st)
+	missing, needs, staged := w.wh.missing(st)
 	var r destination.Recovery
 	switch {
 	case len(missing) == 0:
 		r = destination.Applied
-	case staged == len(missing):
+	case staged == needs:
 		if err := w.applyScoped(ctx, st, missing, map[string]uint64{}); err != nil {
 			return 0, err
 		}
 		r = destination.Redone
 	case staged == 0 && len(missing) == len(st.Streams):
+		// Streams that staged nothing are lost with the rest.
 		return destination.Lost, nil
 	default:
 		return 0, fmt.Errorf("sim: epoch %d-g%d is partly applied and its remaining staging is gone", st.N, st.Gen)

@@ -51,6 +51,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	}
 
 	mode := plan.WriteMode(p)
+	deletes := plan.Deletes(p)
 	var streams []runner.Stream
 	stream := func(cs source.CatalogStream, ps *apiv1.PipelineStream) runner.Stream {
 		s := runner.Stream{
@@ -62,6 +63,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			Schema:               cs.Schema,
 			NanosecondTimestamps: ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
 			Require:              plan.Level(ps.GetRequire()),
+			Deletes:              deletes,
 		}
 		if ps != nil {
 			s.Collapse = ps.Collapse
@@ -82,6 +84,9 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		}
 	}
 	for _, ps := range p.GetSource().GetStreams() {
+		if err := plan.SyncProblem(mode, ps); err != nil {
+			return job, errs.Wrap(errs.ConfigInvalid, err, "runner")
+		}
 		found := false
 		for _, cs := range cat.Streams {
 			if cs.Name == ps.GetName() {

@@ -3,6 +3,8 @@
 // crashes and zombie attempts, then checks no loss, no duplicates where
 // exactly-once, and the right final rows where effectively-once. Streams
 // without a primary key hold some rows twice, and check what collapses.
+// Overwrite tables start with an earlier read's rows, which the sync's read
+// must replace.
 //
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace
@@ -108,8 +110,8 @@ func (c config) String() string {
 
 func randomConfig(rng *rand.Rand, kind string) config {
 	c := config{kind: kind, mode: destination.Append, faults: rng.IntN(9), zombies: rng.IntN(3)}
-	if kind == "warehouse" && rng.IntN(2) == 0 {
-		c.mode = destination.Merge
+	if kind == "warehouse" {
+		c.mode = []destination.WriteMode{destination.Append, destination.Overwrite, destination.Merge}[rng.IntN(3)]
 	}
 	for i := range 1 + rng.IntN(3) {
 		r := source.Exact
@@ -121,7 +123,7 @@ func randomConfig(rng *rand.Rand, kind string) config {
 			s.require = []delivery.Level{delivery.AtLeastOnce, delivery.ExactlyOnce}[rng.IntN(2)]
 		}
 		// Only a sink that can dedupe can collapse.
-		if kind == "warehouse" && c.mode == destination.Append && rng.IntN(2) == 0 {
+		if kind == "warehouse" && c.mode != destination.Merge && rng.IntN(2) == 0 {
 			s.collapse = new(rng.IntN(2) == 0)
 		}
 		c.streams = append(c.streams, s)
@@ -224,7 +226,14 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		forced:    map[string]bool{},
 	}
 	for _, s := range cfg.streams {
-		w.upstreams[s.name] = newUpstream(rng, s.name, s.replay, !s.keyed)
+		u := newUpstream(rng, s.name, s.replay, !s.keyed)
+		if cfg.mode == destination.Overwrite {
+			w.wh.tables[s.name] = []row{{ID: "stale-" + s.name, Key: "stale", Value: "an earlier read"}}
+			if rng.IntN(5) == 0 {
+				u.records, u.resumeAt = nil, []bool{true}
+			}
+		}
+		w.upstreams[s.name] = u
 	}
 	// Each stream requires no more than it can get, so the plan passes and a
 	// forced barrier may never lower a stream below it.
@@ -242,7 +251,7 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		return res
 	}
 	w.sched = newScheduler(rng, cfg.faults, cfg.zombies)
-	res.stats = map[string]int{}
+	res.stats = map[string]int{"write:" + []string{"", "append", "overwrite", "merge"}[cfg.mode]: 1}
 
 	attempts := 0
 	err := w.sched.run(func(attempt int) error {
@@ -307,6 +316,11 @@ func (w *world) check(caps destination.Capabilities, stats map[string]int) strin
 			id := recordID(s.name, r.Key, r.Seq)
 			expected[id] = r
 			copies[id]++
+		}
+		for k := range w.wh.reads {
+			if k.stream == s.name {
+				problems = append(problems, fmt.Sprintf("%s: the rows of read %d never replaced the table", s.name, k.start))
+			}
 		}
 		if w.cfg.mode == destination.Merge {
 			problems = append(problems, w.checkMerge(s.name, u, expected, level)...)

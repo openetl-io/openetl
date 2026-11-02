@@ -105,7 +105,7 @@ func TestNanosecondsNeedADestinationThatKeepsThem(t *testing.T) {
 			Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "o", "p"),
 			Source:      struct{ source.Reader }{},
 			Dataflow:    Passthrough{},
-			Streams:     []Stream{{Name: "s", NanosecondTimestamps: true}},
+			Streams:     []Stream{{Name: "s", Mode: destination.Append, NanosecondTimestamps: true}},
 			Destination: capsDest{caps: destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}, NanosecondTimestamps: keeps}},
 			Settings:    delivery.Settings{Require: delivery.AtLeastOnce, Scope: destination.ScopeStream},
 		}

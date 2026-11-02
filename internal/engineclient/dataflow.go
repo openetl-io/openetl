@@ -22,6 +22,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/runner"
+	"github.com/unsuitable001/openetl/sdk/go/destination"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
@@ -214,6 +215,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 			ReadStartMicros:      plan.ReadStarts[s.Name],
 			RestoredSchema:       plan.Schemas[s.Name],
 			NanosecondTimestamps: s.NanosecondTimestamps,
+			SoftDeletes:          s.Mode == destination.Merge && s.Deletes != destination.HardDelete,
 		})
 	}
 	for _, s := range plan.Snapshots {

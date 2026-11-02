@@ -167,7 +167,8 @@ where
             plan.declared[s].clone(),
             plan.types[s],
         )
-        .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?;
+        .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?
+        .with_soft_deletes(plan.soft_deletes[s]);
         shape.push(sh);
     }
     let mut next_epoch = vec![plan.first_epoch; streams.len()];

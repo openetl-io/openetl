@@ -29,9 +29,9 @@ const (
 // DestinationService is served by destination connectors.
 type DestinationServiceClient interface {
 	// One stream per attempt's writer. The platform sends open, then recover,
-	// then batches, pre-commits, schemas and commits, and closes its side to
-	// close the writer. The connector answers open, recover, each pre-commit,
-	// each schema and each commit.
+	// then start_reads, batches, end_reads, pre-commits, schemas and commits,
+	// and closes its side to close the writer. The connector answers open,
+	// recover, each pre-commit, each schema and each commit.
 	//
 	// Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
 	// run concurrently with later batches and pre-commits, but never with each
@@ -68,9 +68,9 @@ type DestinationService_WriteClient = grpc.BidiStreamingClient[WriteRequest, Wri
 // DestinationService is served by destination connectors.
 type DestinationServiceServer interface {
 	// One stream per attempt's writer. The platform sends open, then recover,
-	// then batches, pre-commits, schemas and commits, and closes its side to
-	// close the writer. The connector answers open, recover, each pre-commit,
-	// each schema and each commit.
+	// then start_reads, batches, end_reads, pre-commits, schemas and commits,
+	// and closes its side to close the writer. The connector answers open,
+	// recover, each pre-commit, each schema and each commit.
 	//
 	// Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
 	// run concurrently with later batches and pre-commits, but never with each

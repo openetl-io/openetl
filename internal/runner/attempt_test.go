@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -659,5 +660,111 @@ func (s fullSource) Read(ctx context.Context, req source.ReadRequest, out source
 			return err
 		}
 	}
+	return nil
+}
+
+// Each attempt starts the reads it does, a retry continuing its sync's read
+// with the same start, and ends each read once, after its last batch and
+// before its epoch's PreCommit.
+func TestReadsStartAndEnd(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		dest := &readsDest{}
+		attempts := 0
+		attempt := func(sync string, fail bool) error {
+			attempts++
+			dest.log = append(dest.log, "attempt")
+			committed := make(chan uint64, 16)
+			j := job(log, fmt.Sprintf("a%d", attempts), fullSource{pages: 2, committed: committed, read: map[string]int{}, fail: fail}, runner.Passthrough{Convert: columnless}, committed)
+			j.Sync, j.Destination = sync, dest
+			j.Streams = []runner.Stream{{Name: "a", Replay: source.Exact, Mode: destination.Overwrite}, {Name: "b", Replay: source.Exact, Mode: destination.Overwrite}}
+			_, err := runner.RunAttempt(ctx, j)
+			time.Sleep(time.Second)
+			return err
+		}
+		if err := attempt("s1", true); err == nil {
+			t.Fatal("the first attempt succeeded")
+		}
+		if err := attempt("s1", false); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Second)
+		if err := attempt("s2", false); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(dest.starts) != 3 {
+			t.Fatalf("StartReads called %d times, want once an attempt", len(dest.starts))
+		}
+		first, retry, next := dest.starts[0], dest.starts[1], dest.starts[2]
+		if len(first) != 2 || len(retry) != 1 || len(next) != 2 {
+			t.Fatalf("reads started: %v, %v, %v; want a and b, then only b, then both", first, retry, next)
+		}
+		if !retry["b"].Equal(first["b"]) || !next["a"].After(first["a"]) || !next["b"].After(first["b"]) {
+			t.Errorf("starts %v, %v, %v: the retry should continue b's read, and the next sync start new ones", first, retry, next)
+		}
+		ends := strings.Join(slices.DeleteFunc(slices.Clone(dest.log), func(l string) bool { return !strings.HasPrefix(l, "end") && l != "attempt" }), " ")
+		if !regexp.MustCompile(`^attempt end \d+ a attempt end \d+ b attempt (end \d+ [ab] ){2}$`).MatchString(ends + " ") {
+			t.Errorf("reads ended: %s; want a in the first attempt, b in the retry, and both in the next sync", ends)
+		}
+		for i, l := range dest.log {
+			var n uint64
+			var s string
+			if _, err := fmt.Sscanf(l, "end %d %s", &n, &s); err != nil {
+				continue
+			}
+			rest := dest.log[i+1:]
+			pre := slices.Index(rest, fmt.Sprintf("precommit %d", n))
+			if pre < 0 {
+				t.Errorf("%q: no PreCommit of its epoch follows", l)
+			}
+			for _, later := range rest {
+				var m uint64
+				var ws string
+				if _, err := fmt.Sscanf(later, "write %d %s", &m, &ws); err == nil && ws == s && m <= n {
+					t.Errorf("%q: a write in epoch %d follows it", l, m)
+				}
+			}
+		}
+	})
+}
+
+// readsDest logs writes, reads' ends and pre-commits, and each attempt's
+// read starts.
+type readsDest struct {
+	countingDest
+	log    []string
+	starts []map[string]time.Time
+}
+
+func (d *readsDest) Capabilities() destination.Capabilities {
+	c := d.countingDest.Capabilities()
+	c.WriteModes = []destination.WriteMode{destination.Overwrite}
+	return c
+}
+
+func (d *readsDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	return d, nil
+}
+
+func (d *readsDest) Write(ctx context.Context, e destination.Epoch, s string, b arrow.RecordBatch) error {
+	d.log = append(d.log, fmt.Sprintf("write %d %s", e.N, s))
+	return d.countingDest.Write(ctx, e, s, b)
+}
+
+func (d *readsDest) PreCommit(_ context.Context, e destination.Epoch) (destination.Staged, error) {
+	d.log = append(d.log, fmt.Sprintf("precommit %d", e.N))
+	return nil, nil
+}
+
+func (d *readsDest) StartReads(_ context.Context, starts map[string]time.Time) error {
+	d.starts = append(d.starts, starts)
+	return nil
+}
+
+func (d *readsDest) EndRead(_ context.Context, e destination.Epoch, s string) error {
+	d.log = append(d.log, fmt.Sprintf("end %d %s", e.N, s))
 	return nil
 }

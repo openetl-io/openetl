@@ -16,7 +16,8 @@ import (
 var (
 	warehouse = destination.Capabilities{
 		Class: destination.StageAndApply, DedupeAtApply: true, MinCommitInterval: time.Second,
-		Scopes: []destination.Scope{destination.ScopePipeline, destination.ScopeStream},
+		Scopes:     []destination.Scope{destination.ScopePipeline, destination.ScopeStream},
+		WriteModes: []destination.WriteMode{destination.Append, destination.Overwrite, destination.Merge},
 	}
 	parquet = destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}, NanosecondTimestamps: true}
 )
@@ -75,6 +76,16 @@ func TestPipeline(t *testing.T) {
 			streams: "orders exactly_once exact replay", problems: []string{`stream "orders" keeps nanosecond timestamps, but the destination keeps only microseconds`}},
 		{name: "merge without a key", cat: catalog, caps: warehouse, spec: `{"destination": {"write": "WRITE_MODE_MERGE"}, "source": {"streams": [{"name": "logs"}]}}`,
 			streams: "logs effectively_once superset replay, written with merge", problems: []string{`destination.write: merge needs a primary key, and stream "logs" has none`}},
+		{name: "merge into parquet", cat: catalog, caps: parquet, spec: `{"destination": {"write": "WRITE_MODE_MERGE"}, "source": {"streams": [{"name": "orders"}]}}`,
+			streams: "orders exactly_once exact replay", problems: []string{`destination.write: the destination doesn't support merge`}},
+		{name: "merge into parquet, no catalog", caps: parquet, spec: `{"destination": {"write": "WRITE_MODE_MERGE"}}`,
+			problems: []string{`destination.write: the destination doesn't support merge`}},
+		{name: "overwrite an incremental stream", cat: catalog, caps: warehouse,
+			spec:     `{"destination": {"write": "WRITE_MODE_OVERWRITE"}, "source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_INCREMENTAL"}, {"name": "events", "sync": "SYNC_MODE_FULL_REFRESH"}]}}`,
+			streams:  "orders exactly_once exact replay; events exactly_once+dedupe superset replay, deduped at apply",
+			problems: []string{`destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream "orders" has sync: incremental`}},
+		{name: "deletes without merge", cat: catalog, caps: warehouse, spec: `{"destination": {"deletes": "DELETE_MODE_HARD"}, "source": {"streams": [{"name": "orders"}]}}`,
+			streams: "orders exactly_once exact replay", warnings: []string{": destination.deletes applies only to merge"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := &apiv1.PipelineSpec{}

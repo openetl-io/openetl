@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -45,6 +46,28 @@ type streamPos struct {
 	forced bool
 	// A forced barrier keeps the stream at or above require.
 	canForce bool
+	// The barrier that ends the read is placed.
+	ended bool
+}
+
+// readEnds records the barrier that ends each stream's read, for the sink
+// pump, which sees it come out of the dataflow. The source pump records it
+// before forwarding the barrier.
+type readEnds struct {
+	mu sync.Mutex
+	at map[string]uint64
+}
+
+func (r *readEnds) set(stream string, epoch uint64) {
+	r.mu.Lock()
+	r.at[stream] = epoch
+	r.mu.Unlock()
+}
+
+func (r *readEnds) endsAt(stream string, epoch uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.at[stream] == epoch
 }
 
 // sourcePump is the connector's Emitter. It places each requested barrier on
@@ -57,6 +80,7 @@ type sourcePump struct {
 	stopCh   chan struct{}
 	out      chan<- Frame
 	events   chan<- event
+	ends     *readEnds
 
 	order   []string // stream names, in configuration order
 	streams map[string]*streamPos
@@ -81,7 +105,7 @@ type sourcePump struct {
 var _ source.Forwarder = (*sourcePump)(nil)
 
 // Streams in done completed earlier in the sync, and aren't read.
-func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored map[string][]byte, restoredForced, canForce, done map[string]bool, out chan<- Frame, events chan<- event) *sourcePump {
+func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored map[string][]byte, restoredForced, canForce, done map[string]bool, ends *readEnds, out chan<- Frame, events chan<- event) *sourcePump {
 	p := &sourcePump{
 		ctx:        ctx,
 		requested:  restoredEpoch,
@@ -90,6 +114,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored
 		stopCh:     make(chan struct{}),
 		out:        out,
 		events:     events,
+		ends:       ends,
 		streams:    make(map[string]*streamPos, len(job.Streams)),
 		known:      make(map[string]bool, len(job.Streams)),
 		maxBytes:   job.Settings.CommitMaxBytes,
@@ -97,7 +122,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored
 	}
 	for _, s := range job.Streams {
 		p.order = append(p.order, s.Name)
-		p.streams[s.Name] = &streamPos{resume: restored[s.Name], forced: restoredForced[s.Name], canForce: canForce[s.Name], complete: done[s.Name]}
+		p.streams[s.Name] = &streamPos{resume: restored[s.Name], forced: restoredForced[s.Name], canForce: canForce[s.Name], complete: done[s.Name], ended: done[s.Name]}
 		p.known[s.Name] = true
 	}
 	return p
@@ -317,10 +342,14 @@ func (p *sourcePump) place(name string, forced bool) error {
 	if p.pending == 0 {
 		return errors.New("runner: placing a barrier with none pending")
 	}
+	st := p.streams[name]
+	if st.complete && !st.forced && !forced && !st.ended {
+		st.ended = true
+		p.ends.set(name, p.pending)
+	}
 	if err := p.forward(Frame{Kind: FrameBarrier, Stream: name, Epoch: p.pending}); err != nil {
 		return err
 	}
-	st := p.streams[name]
 	st.placed, st.active = true, false
 	st.forced = st.forced || forced
 	p.states[name] = st.resume

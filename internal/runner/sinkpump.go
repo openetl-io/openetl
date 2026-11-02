@@ -3,27 +3,31 @@ package runner
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
 
 // sinkPump feeds the dataflow's output to the writer, and calls PreCommit(N)
 // once every stream has crossed barrier N. An engine sink's epochs arrive
-// staged, in their FrameReady.
+// staged, in their FrameReady. A writer that tracks reads gets their starts
+// first, and each read's end when the barrier that ends it comes out.
 type sinkPump struct {
 	w          destination.Writer
 	gen        uint64
 	engineSink bool
 	in         <-chan Frame
 	events     chan<- event
+	starts     map[string]time.Time // the streams the attempt reads
+	ends       *readEnds
 
 	epochOf   map[string]uint64 // each stream's current epoch
 	seen      map[uint64]int    // streams that crossed each barrier
 	nextReady uint64
 }
 
-func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, streams []Stream, in <-chan Frame, events chan<- event) *sinkPump {
-	s := &sinkPump{w: w, gen: gen, engineSink: engineSink, in: in, events: events, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextReady: firstEpoch}
+func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, streams []Stream, starts map[string]time.Time, ends *readEnds, in <-chan Frame, events chan<- event) *sinkPump {
+	s := &sinkPump{w: w, gen: gen, engineSink: engineSink, in: in, events: events, starts: starts, ends: ends, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextReady: firstEpoch}
 	for _, st := range streams {
 		s.epochOf[st.Name] = firstEpoch
 	}
@@ -31,6 +35,12 @@ func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, 
 }
 
 func (s *sinkPump) run(ctx context.Context) error {
+	rt, _ := s.w.(destination.ReadTracker)
+	if rt != nil && len(s.starts) > 0 {
+		if err := rt.StartReads(ctx, s.starts); err != nil {
+			return fmt.Errorf("runner: start reads: %w", err)
+		}
+	}
 	for {
 		var f Frame
 		select {
@@ -74,6 +84,11 @@ func (s *sinkPump) run(ctx context.Context) error {
 				return fmt.Errorf("runner: stream %s crossed barrier %d while in epoch %d", f.Stream, f.Epoch, n)
 			}
 			s.epochOf[f.Stream] = n + 1
+			if rt != nil && s.ends.endsAt(f.Stream, n) {
+				if err := rt.EndRead(ctx, destination.Epoch{Generation: s.gen, N: n}, f.Stream); err != nil {
+					return fmt.Errorf("runner: end the read of %s in epoch %d: %w", f.Stream, n, err)
+				}
+			}
 			s.seen[n]++
 			if s.seen[n] < len(s.epochOf) {
 				continue

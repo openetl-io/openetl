@@ -385,6 +385,57 @@ func (ColumnOpKind) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{6}
 }
 
+type DeleteMode int32
+
+const (
+	DeleteMode_DELETE_MODE_UNSPECIFIED DeleteMode = 0
+	// Keep the row, with _openetl_deleted true and its other columns as they
+	// were.
+	DeleteMode_DELETE_MODE_SOFT DeleteMode = 1
+	DeleteMode_DELETE_MODE_HARD DeleteMode = 2
+)
+
+// Enum value maps for DeleteMode.
+var (
+	DeleteMode_name = map[int32]string{
+		0: "DELETE_MODE_UNSPECIFIED",
+		1: "DELETE_MODE_SOFT",
+		2: "DELETE_MODE_HARD",
+	}
+	DeleteMode_value = map[string]int32{
+		"DELETE_MODE_UNSPECIFIED": 0,
+		"DELETE_MODE_SOFT":        1,
+		"DELETE_MODE_HARD":        2,
+	}
+)
+
+func (x DeleteMode) Enum() *DeleteMode {
+	p := new(DeleteMode)
+	*p = x
+	return p
+}
+
+func (x DeleteMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DeleteMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_openetl_api_v1_pipeline_proto_enumTypes[7].Descriptor()
+}
+
+func (DeleteMode) Type() protoreflect.EnumType {
+	return &file_openetl_api_v1_pipeline_proto_enumTypes[7]
+}
+
+func (x DeleteMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DeleteMode.Descriptor instead.
+func (DeleteMode) EnumDescriptor() ([]byte, []int) {
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{7}
+}
+
 type Naming int32
 
 const (
@@ -420,11 +471,11 @@ func (x Naming) String() string {
 }
 
 func (Naming) Descriptor() protoreflect.EnumDescriptor {
-	return file_openetl_api_v1_pipeline_proto_enumTypes[7].Descriptor()
+	return file_openetl_api_v1_pipeline_proto_enumTypes[8].Descriptor()
 }
 
 func (Naming) Type() protoreflect.EnumType {
-	return &file_openetl_api_v1_pipeline_proto_enumTypes[7]
+	return &file_openetl_api_v1_pipeline_proto_enumTypes[8]
 }
 
 func (x Naming) Number() protoreflect.EnumNumber {
@@ -433,7 +484,7 @@ func (x Naming) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Naming.Descriptor instead.
 func (Naming) EnumDescriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{7}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{8}
 }
 
 type WriteMode int32
@@ -472,11 +523,11 @@ func (x WriteMode) String() string {
 }
 
 func (WriteMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_openetl_api_v1_pipeline_proto_enumTypes[8].Descriptor()
+	return file_openetl_api_v1_pipeline_proto_enumTypes[9].Descriptor()
 }
 
 func (WriteMode) Type() protoreflect.EnumType {
-	return &file_openetl_api_v1_pipeline_proto_enumTypes[8]
+	return &file_openetl_api_v1_pipeline_proto_enumTypes[9]
 }
 
 func (x WriteMode) Number() protoreflect.EnumNumber {
@@ -485,7 +536,7 @@ func (x WriteMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WriteMode.Descriptor instead.
 func (WriteMode) EnumDescriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{8}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{9}
 }
 
 type SchemaPolicy int32
@@ -527,11 +578,11 @@ func (x SchemaPolicy) String() string {
 }
 
 func (SchemaPolicy) Descriptor() protoreflect.EnumDescriptor {
-	return file_openetl_api_v1_pipeline_proto_enumTypes[9].Descriptor()
+	return file_openetl_api_v1_pipeline_proto_enumTypes[10].Descriptor()
 }
 
 func (SchemaPolicy) Type() protoreflect.EnumType {
-	return &file_openetl_api_v1_pipeline_proto_enumTypes[9]
+	return &file_openetl_api_v1_pipeline_proto_enumTypes[10]
 }
 
 func (x SchemaPolicy) Number() protoreflect.EnumNumber {
@@ -540,7 +591,7 @@ func (x SchemaPolicy) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SchemaPolicy.Descriptor instead.
 func (SchemaPolicy) EnumDescriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{9}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{10}
 }
 
 type DeliveryLevel int32
@@ -579,11 +630,11 @@ func (x DeliveryLevel) String() string {
 }
 
 func (DeliveryLevel) Descriptor() protoreflect.EnumDescriptor {
-	return file_openetl_api_v1_pipeline_proto_enumTypes[10].Descriptor()
+	return file_openetl_api_v1_pipeline_proto_enumTypes[11].Descriptor()
 }
 
 func (DeliveryLevel) Type() protoreflect.EnumType {
-	return &file_openetl_api_v1_pipeline_proto_enumTypes[10]
+	return &file_openetl_api_v1_pipeline_proto_enumTypes[11]
 }
 
 func (x DeliveryLevel) Number() protoreflect.EnumNumber {
@@ -592,7 +643,7 @@ func (x DeliveryLevel) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use DeliveryLevel.Descriptor instead.
 func (DeliveryLevel) EnumDescriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{10}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{11}
 }
 
 type CommitScope int32
@@ -628,11 +679,11 @@ func (x CommitScope) String() string {
 }
 
 func (CommitScope) Descriptor() protoreflect.EnumDescriptor {
-	return file_openetl_api_v1_pipeline_proto_enumTypes[11].Descriptor()
+	return file_openetl_api_v1_pipeline_proto_enumTypes[12].Descriptor()
 }
 
 func (CommitScope) Type() protoreflect.EnumType {
-	return &file_openetl_api_v1_pipeline_proto_enumTypes[11]
+	return &file_openetl_api_v1_pipeline_proto_enumTypes[12]
 }
 
 func (x CommitScope) Number() protoreflect.EnumNumber {
@@ -641,7 +692,7 @@ func (x CommitScope) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CommitScope.Descriptor instead.
 func (CommitScope) EnumDescriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{11}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{12}
 }
 
 // PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
@@ -1596,8 +1647,10 @@ type PipelineDestination struct {
 	Ref   string    `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
 	Write WriteMode `protobuf:"varint,2,opt,name=write,proto3,enum=openetl.api.v1.WriteMode" json:"write,omitempty"`
 	// A schema or dataset.
-	Namespace     string `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Naming        Naming `protobuf:"varint,4,opt,name=naming,proto3,enum=openetl.api.v1.Naming" json:"naming,omitempty"`
+	Namespace string `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Naming    Naming `protobuf:"varint,4,opt,name=naming,proto3,enum=openetl.api.v1.Naming" json:"naming,omitempty"`
+	// How merge applies deletes. Unset: soft.
+	Deletes       DeleteMode `protobuf:"varint,5,opt,name=deletes,proto3,enum=openetl.api.v1.DeleteMode" json:"deletes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1658,6 +1711,13 @@ func (x *PipelineDestination) GetNaming() Naming {
 		return x.Naming
 	}
 	return Naming_NAMING_UNSPECIFIED
+}
+
+func (x *PipelineDestination) GetDeletes() DeleteMode {
+	if x != nil {
+		return x.Deletes
+	}
+	return DeleteMode_DELETE_MODE_UNSPECIFIED
 }
 
 type Delivery struct {
@@ -3610,12 +3670,13 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\t_collapse\"n\n" +
 	"\x0ePipelineColumn\x12,\n" +
 	"\x02op\x18\x01 \x01(\x0e2\x1c.openetl.api.v1.ColumnOpKindR\x02op\x12.\n" +
-	"\x04type\x18\x02 \x01(\x0e2\x1a.openetl.api.v1.ColumnTypeR\x04type\"\xa6\x01\n" +
+	"\x04type\x18\x02 \x01(\x0e2\x1a.openetl.api.v1.ColumnTypeR\x04type\"\xdc\x01\n" +
 	"\x13PipelineDestination\x12\x10\n" +
 	"\x03ref\x18\x01 \x01(\tR\x03ref\x12/\n" +
 	"\x05write\x18\x02 \x01(\x0e2\x19.openetl.api.v1.WriteModeR\x05write\x12\x1c\n" +
 	"\tnamespace\x18\x03 \x01(\tR\tnamespace\x12.\n" +
-	"\x06naming\x18\x04 \x01(\x0e2\x16.openetl.api.v1.NamingR\x06naming\"\xce\x01\n" +
+	"\x06naming\x18\x04 \x01(\x0e2\x16.openetl.api.v1.NamingR\x06naming\x124\n" +
+	"\adeletes\x18\x05 \x01(\x0e2\x1a.openetl.api.v1.DeleteModeR\adeletes\"\xce\x01\n" +
 	"\bDelivery\x127\n" +
 	"\arequire\x18\x01 \x01(\x0e2\x1d.openetl.api.v1.DeliveryLevelR\arequire\x12.\n" +
 	"\x06commit\x18\x02 \x01(\v2\x16.openetl.api.v1.CommitR\x06commit\x12K\n" +
@@ -3776,7 +3837,12 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\fColumnOpKind\x12\x1e\n" +
 	"\x1aCOLUMN_OP_KIND_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13COLUMN_OP_KIND_HASH\x10\x01\x12\x18\n" +
-	"\x14COLUMN_OP_KIND_BLOCK\x10\x02*J\n" +
+	"\x14COLUMN_OP_KIND_BLOCK\x10\x02*U\n" +
+	"\n" +
+	"DeleteMode\x12\x1b\n" +
+	"\x17DELETE_MODE_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10DELETE_MODE_SOFT\x10\x01\x12\x14\n" +
+	"\x10DELETE_MODE_HARD\x10\x02*J\n" +
 	"\x06Naming\x12\x16\n" +
 	"\x12NAMING_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11NAMING_NORMALIZED\x10\x01\x12\x11\n" +
@@ -3826,7 +3892,7 @@ func file_openetl_api_v1_pipeline_proto_rawDescGZIP() []byte {
 	return file_openetl_api_v1_pipeline_proto_rawDescData
 }
 
-var file_openetl_api_v1_pipeline_proto_enumTypes = make([]protoimpl.EnumInfo, 12)
+var file_openetl_api_v1_pipeline_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
 var file_openetl_api_v1_pipeline_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_openetl_api_v1_pipeline_proto_goTypes = []any{
 	(DbtCommand)(0),                      // 0: openetl.api.v1.DbtCommand
@@ -3836,148 +3902,150 @@ var file_openetl_api_v1_pipeline_proto_goTypes = []any{
 	(SyncMode)(0),                        // 4: openetl.api.v1.SyncMode
 	(ColumnType)(0),                      // 5: openetl.api.v1.ColumnType
 	(ColumnOpKind)(0),                    // 6: openetl.api.v1.ColumnOpKind
-	(Naming)(0),                          // 7: openetl.api.v1.Naming
-	(WriteMode)(0),                       // 8: openetl.api.v1.WriteMode
-	(SchemaPolicy)(0),                    // 9: openetl.api.v1.SchemaPolicy
-	(DeliveryLevel)(0),                   // 10: openetl.api.v1.DeliveryLevel
-	(CommitScope)(0),                     // 11: openetl.api.v1.CommitScope
-	(*PipelineVersion)(nil),              // 12: openetl.api.v1.PipelineVersion
-	(*PinnedConfig)(nil),                 // 13: openetl.api.v1.PinnedConfig
-	(*Pipeline)(nil),                     // 14: openetl.api.v1.Pipeline
-	(*PipelineStatus)(nil),               // 15: openetl.api.v1.PipelineStatus
-	(*PipelineSpec)(nil),                 // 16: openetl.api.v1.PipelineSpec
-	(*PostSyncStep)(nil),                 // 17: openetl.api.v1.PostSyncStep
-	(*DbtStep)(nil),                      // 18: openetl.api.v1.DbtStep
-	(*Types)(nil),                        // 19: openetl.api.v1.Types
-	(*Schedule)(nil),                     // 20: openetl.api.v1.Schedule
-	(*PipelineSource)(nil),               // 21: openetl.api.v1.PipelineSource
-	(*PipelineStream)(nil),               // 22: openetl.api.v1.PipelineStream
-	(*PipelineColumn)(nil),               // 23: openetl.api.v1.PipelineColumn
-	(*PipelineDestination)(nil),          // 24: openetl.api.v1.PipelineDestination
-	(*Delivery)(nil),                     // 25: openetl.api.v1.Delivery
-	(*Commit)(nil),                       // 26: openetl.api.v1.Commit
-	(*GetPipelineRequest)(nil),           // 27: openetl.api.v1.GetPipelineRequest
-	(*GetPipelineResponse)(nil),          // 28: openetl.api.v1.GetPipelineResponse
-	(*ListPipelinesRequest)(nil),         // 29: openetl.api.v1.ListPipelinesRequest
-	(*ListPipelinesResponse)(nil),        // 30: openetl.api.v1.ListPipelinesResponse
-	(*DeletePipelineRequest)(nil),        // 31: openetl.api.v1.DeletePipelineRequest
-	(*DeletePipelineResponse)(nil),       // 32: openetl.api.v1.DeletePipelineResponse
-	(*PausePipelineRequest)(nil),         // 33: openetl.api.v1.PausePipelineRequest
-	(*PausePipelineResponse)(nil),        // 34: openetl.api.v1.PausePipelineResponse
-	(*ResumePipelineRequest)(nil),        // 35: openetl.api.v1.ResumePipelineRequest
-	(*ResumePipelineResponse)(nil),       // 36: openetl.api.v1.ResumePipelineResponse
-	(*SyncPipelineRequest)(nil),          // 37: openetl.api.v1.SyncPipelineRequest
-	(*SyncPipelineResponse)(nil),         // 38: openetl.api.v1.SyncPipelineResponse
-	(*ListPipelineVersionsRequest)(nil),  // 39: openetl.api.v1.ListPipelineVersionsRequest
-	(*ListPipelineVersionsResponse)(nil), // 40: openetl.api.v1.ListPipelineVersionsResponse
-	(*GetPipelineVersionRequest)(nil),    // 41: openetl.api.v1.GetPipelineVersionRequest
-	(*GetPipelineVersionResponse)(nil),   // 42: openetl.api.v1.GetPipelineVersionResponse
-	(*GetPipelinePlanRequest)(nil),       // 43: openetl.api.v1.GetPipelinePlanRequest
-	(*GetPipelinePlanResponse)(nil),      // 44: openetl.api.v1.GetPipelinePlanResponse
-	(*PipelinePlan)(nil),                 // 45: openetl.api.v1.PipelinePlan
-	(*PlanWarning)(nil),                  // 46: openetl.api.v1.PlanWarning
-	(*PlanChange)(nil),                   // 47: openetl.api.v1.PlanChange
-	(*StreamPlan)(nil),                   // 48: openetl.api.v1.StreamPlan
-	(*StreamSchema)(nil),                 // 49: openetl.api.v1.StreamSchema
-	(*SchemaColumn)(nil),                 // 50: openetl.api.v1.SchemaColumn
-	(*ListStreamSchemasRequest)(nil),     // 51: openetl.api.v1.ListStreamSchemasRequest
-	(*ListStreamSchemasResponse)(nil),    // 52: openetl.api.v1.ListStreamSchemasResponse
-	(*Checkpoint)(nil),                   // 53: openetl.api.v1.Checkpoint
-	(*CheckpointStream)(nil),             // 54: openetl.api.v1.CheckpointStream
-	(*ListCheckpointsRequest)(nil),       // 55: openetl.api.v1.ListCheckpointsRequest
-	(*ListCheckpointsResponse)(nil),      // 56: openetl.api.v1.ListCheckpointsResponse
-	nil,                                  // 57: openetl.api.v1.PipelineVersion.DbtEntry
-	nil,                                  // 58: openetl.api.v1.PipelineStream.ColumnsEntry
-	(*timestamppb.Timestamp)(nil),        // 59: google.protobuf.Timestamp
-	(*ConnectorConfig)(nil),              // 60: openetl.api.v1.ConnectorConfig
-	(*Sync)(nil),                         // 61: openetl.api.v1.Sync
-	(*durationpb.Duration)(nil),          // 62: google.protobuf.Duration
+	(DeleteMode)(0),                      // 7: openetl.api.v1.DeleteMode
+	(Naming)(0),                          // 8: openetl.api.v1.Naming
+	(WriteMode)(0),                       // 9: openetl.api.v1.WriteMode
+	(SchemaPolicy)(0),                    // 10: openetl.api.v1.SchemaPolicy
+	(DeliveryLevel)(0),                   // 11: openetl.api.v1.DeliveryLevel
+	(CommitScope)(0),                     // 12: openetl.api.v1.CommitScope
+	(*PipelineVersion)(nil),              // 13: openetl.api.v1.PipelineVersion
+	(*PinnedConfig)(nil),                 // 14: openetl.api.v1.PinnedConfig
+	(*Pipeline)(nil),                     // 15: openetl.api.v1.Pipeline
+	(*PipelineStatus)(nil),               // 16: openetl.api.v1.PipelineStatus
+	(*PipelineSpec)(nil),                 // 17: openetl.api.v1.PipelineSpec
+	(*PostSyncStep)(nil),                 // 18: openetl.api.v1.PostSyncStep
+	(*DbtStep)(nil),                      // 19: openetl.api.v1.DbtStep
+	(*Types)(nil),                        // 20: openetl.api.v1.Types
+	(*Schedule)(nil),                     // 21: openetl.api.v1.Schedule
+	(*PipelineSource)(nil),               // 22: openetl.api.v1.PipelineSource
+	(*PipelineStream)(nil),               // 23: openetl.api.v1.PipelineStream
+	(*PipelineColumn)(nil),               // 24: openetl.api.v1.PipelineColumn
+	(*PipelineDestination)(nil),          // 25: openetl.api.v1.PipelineDestination
+	(*Delivery)(nil),                     // 26: openetl.api.v1.Delivery
+	(*Commit)(nil),                       // 27: openetl.api.v1.Commit
+	(*GetPipelineRequest)(nil),           // 28: openetl.api.v1.GetPipelineRequest
+	(*GetPipelineResponse)(nil),          // 29: openetl.api.v1.GetPipelineResponse
+	(*ListPipelinesRequest)(nil),         // 30: openetl.api.v1.ListPipelinesRequest
+	(*ListPipelinesResponse)(nil),        // 31: openetl.api.v1.ListPipelinesResponse
+	(*DeletePipelineRequest)(nil),        // 32: openetl.api.v1.DeletePipelineRequest
+	(*DeletePipelineResponse)(nil),       // 33: openetl.api.v1.DeletePipelineResponse
+	(*PausePipelineRequest)(nil),         // 34: openetl.api.v1.PausePipelineRequest
+	(*PausePipelineResponse)(nil),        // 35: openetl.api.v1.PausePipelineResponse
+	(*ResumePipelineRequest)(nil),        // 36: openetl.api.v1.ResumePipelineRequest
+	(*ResumePipelineResponse)(nil),       // 37: openetl.api.v1.ResumePipelineResponse
+	(*SyncPipelineRequest)(nil),          // 38: openetl.api.v1.SyncPipelineRequest
+	(*SyncPipelineResponse)(nil),         // 39: openetl.api.v1.SyncPipelineResponse
+	(*ListPipelineVersionsRequest)(nil),  // 40: openetl.api.v1.ListPipelineVersionsRequest
+	(*ListPipelineVersionsResponse)(nil), // 41: openetl.api.v1.ListPipelineVersionsResponse
+	(*GetPipelineVersionRequest)(nil),    // 42: openetl.api.v1.GetPipelineVersionRequest
+	(*GetPipelineVersionResponse)(nil),   // 43: openetl.api.v1.GetPipelineVersionResponse
+	(*GetPipelinePlanRequest)(nil),       // 44: openetl.api.v1.GetPipelinePlanRequest
+	(*GetPipelinePlanResponse)(nil),      // 45: openetl.api.v1.GetPipelinePlanResponse
+	(*PipelinePlan)(nil),                 // 46: openetl.api.v1.PipelinePlan
+	(*PlanWarning)(nil),                  // 47: openetl.api.v1.PlanWarning
+	(*PlanChange)(nil),                   // 48: openetl.api.v1.PlanChange
+	(*StreamPlan)(nil),                   // 49: openetl.api.v1.StreamPlan
+	(*StreamSchema)(nil),                 // 50: openetl.api.v1.StreamSchema
+	(*SchemaColumn)(nil),                 // 51: openetl.api.v1.SchemaColumn
+	(*ListStreamSchemasRequest)(nil),     // 52: openetl.api.v1.ListStreamSchemasRequest
+	(*ListStreamSchemasResponse)(nil),    // 53: openetl.api.v1.ListStreamSchemasResponse
+	(*Checkpoint)(nil),                   // 54: openetl.api.v1.Checkpoint
+	(*CheckpointStream)(nil),             // 55: openetl.api.v1.CheckpointStream
+	(*ListCheckpointsRequest)(nil),       // 56: openetl.api.v1.ListCheckpointsRequest
+	(*ListCheckpointsResponse)(nil),      // 57: openetl.api.v1.ListCheckpointsResponse
+	nil,                                  // 58: openetl.api.v1.PipelineVersion.DbtEntry
+	nil,                                  // 59: openetl.api.v1.PipelineStream.ColumnsEntry
+	(*timestamppb.Timestamp)(nil),        // 60: google.protobuf.Timestamp
+	(*ConnectorConfig)(nil),              // 61: openetl.api.v1.ConnectorConfig
+	(*Sync)(nil),                         // 62: openetl.api.v1.Sync
+	(*durationpb.Duration)(nil),          // 63: google.protobuf.Duration
 }
 var file_openetl_api_v1_pipeline_proto_depIdxs = []int32{
-	16, // 0: openetl.api.v1.PipelineVersion.spec:type_name -> openetl.api.v1.PipelineSpec
-	13, // 1: openetl.api.v1.PipelineVersion.source:type_name -> openetl.api.v1.PinnedConfig
-	13, // 2: openetl.api.v1.PipelineVersion.destination:type_name -> openetl.api.v1.PinnedConfig
-	57, // 3: openetl.api.v1.PipelineVersion.dbt:type_name -> openetl.api.v1.PipelineVersion.DbtEntry
-	59, // 4: openetl.api.v1.PipelineVersion.create_time:type_name -> google.protobuf.Timestamp
-	60, // 5: openetl.api.v1.PinnedConfig.spec:type_name -> openetl.api.v1.ConnectorConfig
-	16, // 6: openetl.api.v1.Pipeline.spec:type_name -> openetl.api.v1.PipelineSpec
-	59, // 7: openetl.api.v1.Pipeline.create_time:type_name -> google.protobuf.Timestamp
-	59, // 8: openetl.api.v1.Pipeline.update_time:type_name -> google.protobuf.Timestamp
-	15, // 9: openetl.api.v1.Pipeline.status:type_name -> openetl.api.v1.PipelineStatus
-	61, // 10: openetl.api.v1.PipelineStatus.last_sync:type_name -> openetl.api.v1.Sync
-	59, // 11: openetl.api.v1.PipelineStatus.last_success_time:type_name -> google.protobuf.Timestamp
+	17, // 0: openetl.api.v1.PipelineVersion.spec:type_name -> openetl.api.v1.PipelineSpec
+	14, // 1: openetl.api.v1.PipelineVersion.source:type_name -> openetl.api.v1.PinnedConfig
+	14, // 2: openetl.api.v1.PipelineVersion.destination:type_name -> openetl.api.v1.PinnedConfig
+	58, // 3: openetl.api.v1.PipelineVersion.dbt:type_name -> openetl.api.v1.PipelineVersion.DbtEntry
+	60, // 4: openetl.api.v1.PipelineVersion.create_time:type_name -> google.protobuf.Timestamp
+	61, // 5: openetl.api.v1.PinnedConfig.spec:type_name -> openetl.api.v1.ConnectorConfig
+	17, // 6: openetl.api.v1.Pipeline.spec:type_name -> openetl.api.v1.PipelineSpec
+	60, // 7: openetl.api.v1.Pipeline.create_time:type_name -> google.protobuf.Timestamp
+	60, // 8: openetl.api.v1.Pipeline.update_time:type_name -> google.protobuf.Timestamp
+	16, // 9: openetl.api.v1.Pipeline.status:type_name -> openetl.api.v1.PipelineStatus
+	62, // 10: openetl.api.v1.PipelineStatus.last_sync:type_name -> openetl.api.v1.Sync
+	60, // 11: openetl.api.v1.PipelineStatus.last_success_time:type_name -> google.protobuf.Timestamp
 	2,  // 12: openetl.api.v1.PipelineSpec.mode:type_name -> openetl.api.v1.PipelineMode
-	20, // 13: openetl.api.v1.PipelineSpec.schedule:type_name -> openetl.api.v1.Schedule
-	21, // 14: openetl.api.v1.PipelineSpec.source:type_name -> openetl.api.v1.PipelineSource
-	24, // 15: openetl.api.v1.PipelineSpec.destination:type_name -> openetl.api.v1.PipelineDestination
-	9,  // 16: openetl.api.v1.PipelineSpec.schema_policy:type_name -> openetl.api.v1.SchemaPolicy
-	25, // 17: openetl.api.v1.PipelineSpec.delivery:type_name -> openetl.api.v1.Delivery
-	19, // 18: openetl.api.v1.PipelineSpec.types:type_name -> openetl.api.v1.Types
-	17, // 19: openetl.api.v1.PipelineSpec.post_sync:type_name -> openetl.api.v1.PostSyncStep
-	18, // 20: openetl.api.v1.PostSyncStep.dbt:type_name -> openetl.api.v1.DbtStep
+	21, // 13: openetl.api.v1.PipelineSpec.schedule:type_name -> openetl.api.v1.Schedule
+	22, // 14: openetl.api.v1.PipelineSpec.source:type_name -> openetl.api.v1.PipelineSource
+	25, // 15: openetl.api.v1.PipelineSpec.destination:type_name -> openetl.api.v1.PipelineDestination
+	10, // 16: openetl.api.v1.PipelineSpec.schema_policy:type_name -> openetl.api.v1.SchemaPolicy
+	26, // 17: openetl.api.v1.PipelineSpec.delivery:type_name -> openetl.api.v1.Delivery
+	20, // 18: openetl.api.v1.PipelineSpec.types:type_name -> openetl.api.v1.Types
+	18, // 19: openetl.api.v1.PipelineSpec.post_sync:type_name -> openetl.api.v1.PostSyncStep
+	19, // 20: openetl.api.v1.PostSyncStep.dbt:type_name -> openetl.api.v1.DbtStep
 	0,  // 21: openetl.api.v1.DbtStep.command:type_name -> openetl.api.v1.DbtCommand
 	1,  // 22: openetl.api.v1.Types.infinity:type_name -> openetl.api.v1.Infinity
-	62, // 23: openetl.api.v1.Schedule.every:type_name -> google.protobuf.Duration
-	62, // 24: openetl.api.v1.Schedule.jitter:type_name -> google.protobuf.Duration
-	22, // 25: openetl.api.v1.PipelineSource.streams:type_name -> openetl.api.v1.PipelineStream
+	63, // 23: openetl.api.v1.Schedule.every:type_name -> google.protobuf.Duration
+	63, // 24: openetl.api.v1.Schedule.jitter:type_name -> google.protobuf.Duration
+	23, // 25: openetl.api.v1.PipelineSource.streams:type_name -> openetl.api.v1.PipelineStream
 	4,  // 26: openetl.api.v1.PipelineStream.sync:type_name -> openetl.api.v1.SyncMode
-	58, // 27: openetl.api.v1.PipelineStream.columns:type_name -> openetl.api.v1.PipelineStream.ColumnsEntry
+	59, // 27: openetl.api.v1.PipelineStream.columns:type_name -> openetl.api.v1.PipelineStream.ColumnsEntry
 	3,  // 28: openetl.api.v1.PipelineStream.timestamps:type_name -> openetl.api.v1.TimestampUnit
-	10, // 29: openetl.api.v1.PipelineStream.require:type_name -> openetl.api.v1.DeliveryLevel
+	11, // 29: openetl.api.v1.PipelineStream.require:type_name -> openetl.api.v1.DeliveryLevel
 	6,  // 30: openetl.api.v1.PipelineColumn.op:type_name -> openetl.api.v1.ColumnOpKind
 	5,  // 31: openetl.api.v1.PipelineColumn.type:type_name -> openetl.api.v1.ColumnType
-	8,  // 32: openetl.api.v1.PipelineDestination.write:type_name -> openetl.api.v1.WriteMode
-	7,  // 33: openetl.api.v1.PipelineDestination.naming:type_name -> openetl.api.v1.Naming
-	10, // 34: openetl.api.v1.Delivery.require:type_name -> openetl.api.v1.DeliveryLevel
-	26, // 35: openetl.api.v1.Delivery.commit:type_name -> openetl.api.v1.Commit
-	62, // 36: openetl.api.v1.Delivery.resume_point_timeout:type_name -> google.protobuf.Duration
-	62, // 37: openetl.api.v1.Commit.interval:type_name -> google.protobuf.Duration
-	11, // 38: openetl.api.v1.Commit.scope:type_name -> openetl.api.v1.CommitScope
-	14, // 39: openetl.api.v1.GetPipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
-	14, // 40: openetl.api.v1.ListPipelinesResponse.pipelines:type_name -> openetl.api.v1.Pipeline
-	14, // 41: openetl.api.v1.PausePipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
-	14, // 42: openetl.api.v1.ResumePipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
-	12, // 43: openetl.api.v1.ListPipelineVersionsResponse.pipeline_versions:type_name -> openetl.api.v1.PipelineVersion
-	12, // 44: openetl.api.v1.GetPipelineVersionResponse.pipeline_version:type_name -> openetl.api.v1.PipelineVersion
-	45, // 45: openetl.api.v1.GetPipelinePlanResponse.plan:type_name -> openetl.api.v1.PipelinePlan
-	47, // 46: openetl.api.v1.PipelinePlan.changes:type_name -> openetl.api.v1.PlanChange
-	48, // 47: openetl.api.v1.PipelinePlan.streams:type_name -> openetl.api.v1.StreamPlan
-	46, // 48: openetl.api.v1.PipelinePlan.warnings:type_name -> openetl.api.v1.PlanWarning
-	10, // 49: openetl.api.v1.StreamPlan.level:type_name -> openetl.api.v1.DeliveryLevel
-	50, // 50: openetl.api.v1.StreamSchema.columns:type_name -> openetl.api.v1.SchemaColumn
-	59, // 51: openetl.api.v1.StreamSchema.create_time:type_name -> google.protobuf.Timestamp
-	49, // 52: openetl.api.v1.ListStreamSchemasResponse.stream_schemas:type_name -> openetl.api.v1.StreamSchema
-	59, // 53: openetl.api.v1.Checkpoint.commit_time:type_name -> google.protobuf.Timestamp
-	54, // 54: openetl.api.v1.Checkpoint.streams:type_name -> openetl.api.v1.CheckpointStream
-	53, // 55: openetl.api.v1.ListCheckpointsResponse.checkpoints:type_name -> openetl.api.v1.Checkpoint
-	23, // 56: openetl.api.v1.PipelineStream.ColumnsEntry.value:type_name -> openetl.api.v1.PipelineColumn
-	27, // 57: openetl.api.v1.PipelineService.GetPipeline:input_type -> openetl.api.v1.GetPipelineRequest
-	29, // 58: openetl.api.v1.PipelineService.ListPipelines:input_type -> openetl.api.v1.ListPipelinesRequest
-	31, // 59: openetl.api.v1.PipelineService.DeletePipeline:input_type -> openetl.api.v1.DeletePipelineRequest
-	33, // 60: openetl.api.v1.PipelineService.PausePipeline:input_type -> openetl.api.v1.PausePipelineRequest
-	35, // 61: openetl.api.v1.PipelineService.ResumePipeline:input_type -> openetl.api.v1.ResumePipelineRequest
-	37, // 62: openetl.api.v1.PipelineService.SyncPipeline:input_type -> openetl.api.v1.SyncPipelineRequest
-	39, // 63: openetl.api.v1.PipelineService.ListPipelineVersions:input_type -> openetl.api.v1.ListPipelineVersionsRequest
-	41, // 64: openetl.api.v1.PipelineService.GetPipelineVersion:input_type -> openetl.api.v1.GetPipelineVersionRequest
-	43, // 65: openetl.api.v1.PipelineService.GetPipelinePlan:input_type -> openetl.api.v1.GetPipelinePlanRequest
-	51, // 66: openetl.api.v1.PipelineService.ListStreamSchemas:input_type -> openetl.api.v1.ListStreamSchemasRequest
-	55, // 67: openetl.api.v1.PipelineService.ListCheckpoints:input_type -> openetl.api.v1.ListCheckpointsRequest
-	28, // 68: openetl.api.v1.PipelineService.GetPipeline:output_type -> openetl.api.v1.GetPipelineResponse
-	30, // 69: openetl.api.v1.PipelineService.ListPipelines:output_type -> openetl.api.v1.ListPipelinesResponse
-	32, // 70: openetl.api.v1.PipelineService.DeletePipeline:output_type -> openetl.api.v1.DeletePipelineResponse
-	34, // 71: openetl.api.v1.PipelineService.PausePipeline:output_type -> openetl.api.v1.PausePipelineResponse
-	36, // 72: openetl.api.v1.PipelineService.ResumePipeline:output_type -> openetl.api.v1.ResumePipelineResponse
-	38, // 73: openetl.api.v1.PipelineService.SyncPipeline:output_type -> openetl.api.v1.SyncPipelineResponse
-	40, // 74: openetl.api.v1.PipelineService.ListPipelineVersions:output_type -> openetl.api.v1.ListPipelineVersionsResponse
-	42, // 75: openetl.api.v1.PipelineService.GetPipelineVersion:output_type -> openetl.api.v1.GetPipelineVersionResponse
-	44, // 76: openetl.api.v1.PipelineService.GetPipelinePlan:output_type -> openetl.api.v1.GetPipelinePlanResponse
-	52, // 77: openetl.api.v1.PipelineService.ListStreamSchemas:output_type -> openetl.api.v1.ListStreamSchemasResponse
-	56, // 78: openetl.api.v1.PipelineService.ListCheckpoints:output_type -> openetl.api.v1.ListCheckpointsResponse
-	68, // [68:79] is the sub-list for method output_type
-	57, // [57:68] is the sub-list for method input_type
-	57, // [57:57] is the sub-list for extension type_name
-	57, // [57:57] is the sub-list for extension extendee
-	0,  // [0:57] is the sub-list for field type_name
+	9,  // 32: openetl.api.v1.PipelineDestination.write:type_name -> openetl.api.v1.WriteMode
+	8,  // 33: openetl.api.v1.PipelineDestination.naming:type_name -> openetl.api.v1.Naming
+	7,  // 34: openetl.api.v1.PipelineDestination.deletes:type_name -> openetl.api.v1.DeleteMode
+	11, // 35: openetl.api.v1.Delivery.require:type_name -> openetl.api.v1.DeliveryLevel
+	27, // 36: openetl.api.v1.Delivery.commit:type_name -> openetl.api.v1.Commit
+	63, // 37: openetl.api.v1.Delivery.resume_point_timeout:type_name -> google.protobuf.Duration
+	63, // 38: openetl.api.v1.Commit.interval:type_name -> google.protobuf.Duration
+	12, // 39: openetl.api.v1.Commit.scope:type_name -> openetl.api.v1.CommitScope
+	15, // 40: openetl.api.v1.GetPipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
+	15, // 41: openetl.api.v1.ListPipelinesResponse.pipelines:type_name -> openetl.api.v1.Pipeline
+	15, // 42: openetl.api.v1.PausePipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
+	15, // 43: openetl.api.v1.ResumePipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
+	13, // 44: openetl.api.v1.ListPipelineVersionsResponse.pipeline_versions:type_name -> openetl.api.v1.PipelineVersion
+	13, // 45: openetl.api.v1.GetPipelineVersionResponse.pipeline_version:type_name -> openetl.api.v1.PipelineVersion
+	46, // 46: openetl.api.v1.GetPipelinePlanResponse.plan:type_name -> openetl.api.v1.PipelinePlan
+	48, // 47: openetl.api.v1.PipelinePlan.changes:type_name -> openetl.api.v1.PlanChange
+	49, // 48: openetl.api.v1.PipelinePlan.streams:type_name -> openetl.api.v1.StreamPlan
+	47, // 49: openetl.api.v1.PipelinePlan.warnings:type_name -> openetl.api.v1.PlanWarning
+	11, // 50: openetl.api.v1.StreamPlan.level:type_name -> openetl.api.v1.DeliveryLevel
+	51, // 51: openetl.api.v1.StreamSchema.columns:type_name -> openetl.api.v1.SchemaColumn
+	60, // 52: openetl.api.v1.StreamSchema.create_time:type_name -> google.protobuf.Timestamp
+	50, // 53: openetl.api.v1.ListStreamSchemasResponse.stream_schemas:type_name -> openetl.api.v1.StreamSchema
+	60, // 54: openetl.api.v1.Checkpoint.commit_time:type_name -> google.protobuf.Timestamp
+	55, // 55: openetl.api.v1.Checkpoint.streams:type_name -> openetl.api.v1.CheckpointStream
+	54, // 56: openetl.api.v1.ListCheckpointsResponse.checkpoints:type_name -> openetl.api.v1.Checkpoint
+	24, // 57: openetl.api.v1.PipelineStream.ColumnsEntry.value:type_name -> openetl.api.v1.PipelineColumn
+	28, // 58: openetl.api.v1.PipelineService.GetPipeline:input_type -> openetl.api.v1.GetPipelineRequest
+	30, // 59: openetl.api.v1.PipelineService.ListPipelines:input_type -> openetl.api.v1.ListPipelinesRequest
+	32, // 60: openetl.api.v1.PipelineService.DeletePipeline:input_type -> openetl.api.v1.DeletePipelineRequest
+	34, // 61: openetl.api.v1.PipelineService.PausePipeline:input_type -> openetl.api.v1.PausePipelineRequest
+	36, // 62: openetl.api.v1.PipelineService.ResumePipeline:input_type -> openetl.api.v1.ResumePipelineRequest
+	38, // 63: openetl.api.v1.PipelineService.SyncPipeline:input_type -> openetl.api.v1.SyncPipelineRequest
+	40, // 64: openetl.api.v1.PipelineService.ListPipelineVersions:input_type -> openetl.api.v1.ListPipelineVersionsRequest
+	42, // 65: openetl.api.v1.PipelineService.GetPipelineVersion:input_type -> openetl.api.v1.GetPipelineVersionRequest
+	44, // 66: openetl.api.v1.PipelineService.GetPipelinePlan:input_type -> openetl.api.v1.GetPipelinePlanRequest
+	52, // 67: openetl.api.v1.PipelineService.ListStreamSchemas:input_type -> openetl.api.v1.ListStreamSchemasRequest
+	56, // 68: openetl.api.v1.PipelineService.ListCheckpoints:input_type -> openetl.api.v1.ListCheckpointsRequest
+	29, // 69: openetl.api.v1.PipelineService.GetPipeline:output_type -> openetl.api.v1.GetPipelineResponse
+	31, // 70: openetl.api.v1.PipelineService.ListPipelines:output_type -> openetl.api.v1.ListPipelinesResponse
+	33, // 71: openetl.api.v1.PipelineService.DeletePipeline:output_type -> openetl.api.v1.DeletePipelineResponse
+	35, // 72: openetl.api.v1.PipelineService.PausePipeline:output_type -> openetl.api.v1.PausePipelineResponse
+	37, // 73: openetl.api.v1.PipelineService.ResumePipeline:output_type -> openetl.api.v1.ResumePipelineResponse
+	39, // 74: openetl.api.v1.PipelineService.SyncPipeline:output_type -> openetl.api.v1.SyncPipelineResponse
+	41, // 75: openetl.api.v1.PipelineService.ListPipelineVersions:output_type -> openetl.api.v1.ListPipelineVersionsResponse
+	43, // 76: openetl.api.v1.PipelineService.GetPipelineVersion:output_type -> openetl.api.v1.GetPipelineVersionResponse
+	45, // 77: openetl.api.v1.PipelineService.GetPipelinePlan:output_type -> openetl.api.v1.GetPipelinePlanResponse
+	53, // 78: openetl.api.v1.PipelineService.ListStreamSchemas:output_type -> openetl.api.v1.ListStreamSchemasResponse
+	57, // 79: openetl.api.v1.PipelineService.ListCheckpoints:output_type -> openetl.api.v1.ListCheckpointsResponse
+	69, // [69:80] is the sub-list for method output_type
+	58, // [58:69] is the sub-list for method input_type
+	58, // [58:58] is the sub-list for extension type_name
+	58, // [58:58] is the sub-list for extension extendee
+	0,  // [0:58] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_pipeline_proto_init() }
@@ -4000,7 +4068,7 @@ func file_openetl_api_v1_pipeline_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_pipeline_proto_rawDesc), len(file_openetl_api_v1_pipeline_proto_rawDesc)),
-			NumEnums:      12,
+			NumEnums:      13,
 			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,

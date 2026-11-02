@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -325,13 +326,27 @@ func TestDestinationCommitProtocol(t *testing.T) {
 		t.Fatalf("schemas = %s", got)
 	}
 
+	rt, ok := w.(destination.ReadTracker)
+	if !ok {
+		t.Fatal("the writer doesn't track reads")
+	}
+	if err := rt.StartReads(ctx, map[string]time.Time{"s": time.UnixMicro(42)}); err != nil {
+		t.Fatal(err)
+	}
 	e1 := destination.Epoch{Generation: 1, N: 1}
 	if err := w.Write(ctx, e1, "s", b); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.EndRead(ctx, e1, "s"); err != nil {
 		t.Fatal(err)
 	}
 	st1, err := w.PreCommit(ctx, e1)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// They go unanswered, in order with the pre-commit.
+	if got, _ := os.ReadFile(filepath.Join(dir, "reads.log")); string(got) != "start s 42\nend s 1-1\n" {
+		t.Fatalf("reads.log = %q", got)
 	}
 	// Epoch 2's batches arrive while epoch 1 commits.
 	e2 := destination.Epoch{Generation: 1, N: 2}
@@ -404,6 +419,9 @@ func TestDescriptorSpec(t *testing.T) {
 	}
 	spec := files.p.spec
 	_ = files.Close()
+	if modes := Capabilities(spec).WriteModes; !slices.Equal(modes, []destination.WriteMode{destination.Append, destination.Overwrite}) {
+		t.Errorf("write modes = %v", modes)
+	}
 
 	same := NewDestination(exe("destination-files"), []byte(`{"dir": "x"}`), Options{Spec: spec})
 	if err := same.Start(t.Context()); err != nil {

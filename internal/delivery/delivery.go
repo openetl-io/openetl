@@ -168,6 +168,13 @@ func Problems(caps destination.Capabilities, s Settings, streams []Stream) []err
 	if s.CommitInterval > 0 && s.CommitInterval < caps.MinCommitInterval {
 		fails = append(fails, fmt.Errorf("delivery.commit.interval: %v is below the destination's minimum, %v", s.CommitInterval, caps.MinCommitInterval))
 	}
+	unsupported := map[destination.WriteMode]bool{}
+	for _, st := range streams {
+		if err := ModeProblem(caps, st.Mode); err != nil && !unsupported[st.Mode] {
+			unsupported[st.Mode] = true
+			fails = append(fails, err)
+		}
+	}
 	for _, st := range streams {
 		if st.Mode == destination.Merge && !st.Keyed {
 			fails = append(fails, fmt.Errorf("destination.write: merge needs a primary key, and stream %q has none", st.Name))
@@ -243,6 +250,27 @@ func Warnings(caps destination.Capabilities, s Settings, streams []Stream) []War
 		out = append(out, Warning{st.Name, msg})
 	}
 	return out
+}
+
+// ModeProblem fails a write mode the destination doesn't support.
+func ModeProblem(caps destination.Capabilities, m destination.WriteMode) error {
+	if caps.SupportsMode(m) {
+		return nil
+	}
+	return fmt.Errorf("destination.write: the destination doesn't support %s", modeName(m))
+}
+
+func modeName(m destination.WriteMode) string {
+	switch m {
+	case destination.Append:
+		return "append"
+	case destination.Overwrite:
+		return "overwrite"
+	case destination.Merge:
+		return "merge"
+	default:
+		return fmt.Sprintf("write mode %d", m)
+	}
 }
 
 func scopeName(s destination.Scope) string {

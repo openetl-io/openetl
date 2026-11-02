@@ -56,6 +56,8 @@ type capabilitiesYAML struct {
 	MinCommitInterval     string   `yaml:"minCommitInterval,omitempty" json:"minCommitInterval,omitempty"`
 	NanosecondTimestamps  bool     `yaml:"nanosecondTimestamps,omitempty" json:"nanosecondTimestamps,omitempty"`
 	MaxIdentifierLength   uint32   `yaml:"maxIdentifierLength,omitempty" json:"maxIdentifierLength,omitempty"`
+	// Empty: append only.
+	WriteModes []string `yaml:"writeModes,omitempty" json:"writeModes,omitempty"`
 }
 
 func parseDescriptor(b []byte) (*Descriptor, error) {
@@ -121,6 +123,13 @@ func parseCapabilities(y *capabilitiesYAML) (*protocolv1.DestinationCapabilities
 		}
 		c.Scopes = append(c.Scopes, s)
 	}
+	for _, v := range y.WriteModes {
+		m, err := enum(protocolv1.WriteMode_value, "WRITE_MODE_", "writeModes", v, protocolv1.WriteMode_WRITE_MODE_UNSPECIFIED)
+		if err != nil {
+			return nil, err
+		}
+		c.WriteModes = append(c.WriteModes, m)
+	}
 	for field, d := range map[string]struct {
 		v   string
 		dst **durationpb.Duration
@@ -181,6 +190,9 @@ func toYAML(d *Descriptor) (descriptorYAML, error) {
 		}
 		for _, sc := range c.GetScopes() {
 			y.Capabilities.Scopes = append(y.Capabilities.Scopes, lower(sc.String(), "COMMIT_SCOPE_"))
+		}
+		for _, m := range c.GetWriteModes() {
+			y.Capabilities.WriteModes = append(y.Capabilities.WriteModes, lower(m.String(), "WRITE_MODE_"))
 		}
 		if c.GetDefaultCommitInterval() != nil {
 			y.Capabilities.DefaultCommitInterval = c.GetDefaultCommitInterval().AsDuration().String()

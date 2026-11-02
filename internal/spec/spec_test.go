@@ -35,6 +35,7 @@ spec:
     ref: warehouse
     namespace: raw_faker
     naming: source
+    deletes: hard
   schemaPolicy: block
   delivery:
     require: exactly_once
@@ -77,6 +78,8 @@ func TestParsePipeline(t *testing.T) {
 		t.Error("write doesn't default to append")
 	case p.GetDestination().GetNaming() != apiv1.Naming_NAMING_SOURCE:
 		t.Error("naming")
+	case p.GetDestination().GetDeletes() != apiv1.DeleteMode_DELETE_MODE_HARD:
+		t.Error("deletes")
 	case p.GetSchemaPolicy() != apiv1.SchemaPolicy_SCHEMA_POLICY_BLOCK:
 		t.Error("schemaPolicy")
 	case p.GetDelivery().GetRequire() != apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE:
@@ -151,6 +154,7 @@ func TestParseErrors(t *testing.T) {
 		"enum case":      header + base + "  schemaPolicy: ALLOW_ALL\n",
 		"unknown enum":   header + strings.Replace(base, "{ref: d}", "{ref: d, write: upsert}", 1),
 		"naming":         header + strings.Replace(base, "{ref: d}", "{ref: d, naming: exact}", 1),
+		"deletes":        header + strings.Replace(base, "{ref: d}", "{ref: d, deletes: purge}", 1),
 		"column ops":     header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {op: hash}}}]}", 1),
 		"column type":    header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {type: int64}}}]}", 1),
 		"no column type": header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {}}}]}", 1),

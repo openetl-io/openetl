@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -43,7 +44,10 @@ func main() {
 			ConfigSchema: []byte(`{"type": "object", "properties": {"dir": {"type": "string"}, "token": {"type": "string", "x-secret": true}}}`),
 			Egress:       sdk.Egress{Tier: sdk.EgressRaw},
 			Destination:  newFiles,
-			Capabilities: destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopePipeline}, MaxIdentifierLength: 63},
+			Capabilities: destination.Capabilities{
+				Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopePipeline}, MaxIdentifierLength: 63,
+				WriteModes: []destination.WriteMode{destination.Append, destination.Overwrite},
+			},
 		})
 	default:
 		fmt.Fprintln(os.Stderr, "unknown connector", os.Args[0])
@@ -160,6 +164,29 @@ type filesWriter struct {
 	gen     uint64
 	mu      sync.Mutex
 	pending map[uint64]map[string]int64
+}
+
+// StartReads and EndRead append to reads.log.
+func (w *filesWriter) StartReads(_ context.Context, starts map[string]time.Time) error {
+	for name, t := range starts {
+		if err := w.logRead(fmt.Sprintf("start %s %d", name, t.UnixMicro())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *filesWriter) EndRead(_ context.Context, e destination.Epoch, stream string) error {
+	return w.logRead(fmt.Sprintf("end %s %s", stream, epochName(e)))
+}
+
+func (w *filesWriter) logRead(line string) error {
+	f, err := os.OpenFile(w.path("reads.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(f, line)
+	return errors.Join(err, f.Close())
 }
 
 func (w *filesWriter) path(parts ...string) string {

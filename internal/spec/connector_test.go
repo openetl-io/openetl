@@ -27,6 +27,7 @@ spec:
     dedupeAtApply: true
     defaultCommitInterval: 10s
     maxIdentifierLength: 63
+    writeModes: [append, overwrite, merge]
   config:
     type: object
     required: [dsn]
@@ -53,6 +54,7 @@ func TestParseDescriptor(t *testing.T) {
 			DedupeAtApply:         true,
 			DefaultCommitInterval: durationpb.New(10 * time.Second),
 			MaxIdentifierLength:   63,
+			WriteModes:            []protocolv1.WriteMode{protocolv1.WriteMode_WRITE_MODE_APPEND, protocolv1.WriteMode_WRITE_MODE_OVERWRITE, protocolv1.WriteMode_WRITE_MODE_MERGE},
 		},
 	}
 	if !proto.Equal(doc.Descriptor.Spec, want) {

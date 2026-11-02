@@ -43,6 +43,8 @@ type Stream struct {
 	// Whether rows with the same content become one; nil: the default
 	// delivery.Stream gives.
 	Collapse *bool
+	// How merge applies deletes; zero: soft.
+	Deletes destination.DeleteMode
 }
 
 func (s Stream) delivery() delivery.Stream {
@@ -190,6 +192,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			Mode:       s.Mode,
 			PrimaryKey: s.PrimaryKey,
 			Dedupe:     delivery.Dedupe(caps, s.delivery(), job.Settings.Require, forced[s.Name]),
+			Deletes:    s.Deletes,
 		})
 		canForce[s.Name] = delivery.CanForce(caps, s.delivery(), job.Settings.Require)
 	}
@@ -388,7 +391,8 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 			done[name] = st.Complete
 		}
 	}
-	c.pump = newSourcePump(gctx, c.job, c.committed, states, restoredForced, canForce, done, toFlow, c.events)
+	ends := &readEnds{at: map[string]uint64{}}
+	c.pump = newSourcePump(gctx, c.job, c.committed, states, restoredForced, canForce, done, ends, toFlow, c.events)
 	plan := Plan{
 		Pipeline:   c.job.Pipeline,
 		Owner:      c.job.Owner,
@@ -411,7 +415,13 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	if es, ok := c.job.Destination.(EngineSink); ok {
 		plan.Sink = es.EngineSink()
 	}
-	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, c.job.Streams, fromFlow, c.events)
+	starts := map[string]time.Time{}
+	for _, s := range c.job.Streams {
+		if !done[s.Name] {
+			starts[s.Name] = time.UnixMicro(c.readStarts[s.Name]).UTC()
+		}
+	}
+	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, c.job.Streams, starts, ends, fromFlow, c.events)
 
 	req := source.ReadRequest{}
 	for _, s := range c.job.Streams {

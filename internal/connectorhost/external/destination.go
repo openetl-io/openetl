@@ -10,6 +10,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
@@ -25,6 +26,7 @@ type Destination struct{ instance }
 var (
 	_ destination.Destination = (*Destination)(nil)
 	_ destination.Checker     = (*Destination)(nil)
+	_ destination.ReadTracker = (*writer)(nil)
 )
 
 // NewDestination binds the destination at exe to config, a JSON object. It
@@ -66,6 +68,9 @@ func Capabilities(spec *protocolv1.SpecResponse) destination.Capabilities {
 	for _, s := range pc.GetScopes() {
 		c.Scopes = append(c.Scopes, destination.Scope(s))
 	}
+	for _, m := range pc.GetWriteModes() {
+		c.WriteModes = append(c.WriteModes, destination.WriteMode(m))
+	}
 	return c
 }
 
@@ -82,7 +87,10 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		Scope:      protocolv1.CommitScope(cfg.Scope), //nolint:gosec // small
 	}
 	for _, s := range cfg.Streams {
-		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: s.Name, Mode: protocolv1.WriteMode(s.Mode), PrimaryKey: s.PrimaryKey, Dedupe: protocolv1.Dedupe(s.Dedupe)}) //nolint:gosec // small
+		open.Streams = append(open.Streams, &protocolv1.WriteStream{
+			Name: s.Name, Mode: protocolv1.WriteMode(s.Mode), PrimaryKey: s.PrimaryKey, //nolint:gosec // small
+			Dedupe: protocolv1.Dedupe(s.Dedupe), Deletes: protocolv1.DeleteMode(s.Deletes), //nolint:gosec // small
+		})
 	}
 	// The stream lives until Close, or until ctx is done.
 	sctx, cancel := context.WithCancel(ctx)
@@ -221,6 +229,20 @@ func (w *writer) Write(_ context.Context, e destination.Epoch, stream string, ba
 		return errs.Wrap(errs.Internal, err, "connector: encode a batch for "+stream)
 	}
 	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Batch{Batch: &protocolv1.WriteBatch{Epoch: epochProto(e), Stream: stream, Arrow: b}}})
+}
+
+// StartReads and EndRead go unanswered, like batches; a connector without a
+// ReadTracker ignores them.
+func (w *writer) StartReads(_ context.Context, starts map[string]time.Time) error {
+	m := &protocolv1.WriteStartReads{Starts: make(map[string]*timestamppb.Timestamp, len(starts))}
+	for name, t := range starts {
+		m.Starts[name] = timestamppb.New(t)
+	}
+	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_StartReads{StartReads: m}})
+}
+
+func (w *writer) EndRead(_ context.Context, e destination.Epoch, stream string) error {
+	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_EndRead{EndRead: &protocolv1.WriteEndRead{Epoch: epochProto(e), Stream: stream}}})
 }
 
 func (w *writer) PreCommit(ctx context.Context, e destination.Epoch) (destination.Staged, error) {

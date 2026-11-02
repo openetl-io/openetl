@@ -169,6 +169,7 @@ type pipelineYAML struct {
 		Write     string `yaml:"write"`
 		Namespace string `yaml:"namespace"`
 		Naming    string `yaml:"naming"`
+		Deletes   string `yaml:"deletes"`
 	} `yaml:"destination"`
 	SchemaPolicy string        `yaml:"schemaPolicy"`
 	Delivery     *deliveryYAML `yaml:"delivery"`
@@ -296,6 +297,9 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		return nil, err
 	}
 	if p.Destination.Naming, err = enum(apiv1.Naming_value, "NAMING_", "destination.naming", y.Destination.Naming, apiv1.Naming_NAMING_UNSPECIFIED); err != nil {
+		return nil, err
+	}
+	if p.Destination.Deletes, err = enum(apiv1.DeleteMode_value, "DELETE_MODE_", "destination.deletes", y.Destination.Deletes, apiv1.DeleteMode_DELETE_MODE_UNSPECIFIED); err != nil {
 		return nil, err
 	}
 	if p.SchemaPolicy, err = enum(apiv1.SchemaPolicy_value, "SCHEMA_POLICY_", "schemaPolicy", y.SchemaPolicy, apiv1.SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL); err != nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"google.golang.org/grpc"
@@ -21,9 +22,9 @@ type destinationServer struct {
 	*base
 }
 
-// Write runs one writer. Recover, batches and pre-commits run in order on
-// this goroutine; schemas and commits on another, so a commit runs alongside
-// later batches.
+// Write runs one writer. Recover, batches, reads' starts and ends, and
+// pre-commits run in order on this goroutine; schemas and commits on
+// another, so a commit runs alongside later batches.
 func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.WriteRequest, protocolv1.WriteResponse]) error {
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
@@ -46,13 +47,17 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 		Namespace:  open.GetNamespace(),
 	}
 	for _, s := range open.GetStreams() {
-		cfg.Streams = append(cfg.Streams, destination.Stream{Name: s.GetName(), Mode: destination.WriteMode(s.GetMode()), PrimaryKey: s.GetPrimaryKey(), Dedupe: destination.Dedupe(s.GetDedupe())})
+		cfg.Streams = append(cfg.Streams, destination.Stream{
+			Name: s.GetName(), Mode: destination.WriteMode(s.GetMode()), PrimaryKey: s.GetPrimaryKey(),
+			Dedupe: destination.Dedupe(s.GetDedupe()), Deletes: destination.DeleteMode(s.GetDeletes()),
+		})
 	}
 	w, err := dst.Open(ctx, cfg)
 	if err != nil {
 		return status(err)
 	}
 	sa, applies := w.(destination.SchemaApplier)
+	rt, _ := w.(destination.ReadTracker)
 
 	var sendMu sync.Mutex
 	send := func(m *protocolv1.WriteResponse) error {
@@ -102,6 +107,18 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 			}
 		case *protocolv1.WriteRequest_Batch:
 			fail = write(ctx, w, x.Batch)
+		case *protocolv1.WriteRequest_StartReads:
+			if rt != nil {
+				starts := make(map[string]time.Time, len(x.StartReads.GetStarts()))
+				for name, t := range x.StartReads.GetStarts() {
+					starts[name] = t.AsTime()
+				}
+				fail = rt.StartReads(ctx, starts)
+			}
+		case *protocolv1.WriteRequest_EndRead:
+			if rt != nil {
+				fail = rt.EndRead(ctx, epoch(x.EndRead.GetEpoch()), x.EndRead.GetStream())
+			}
 		case *protocolv1.WriteRequest_PreCommit:
 			var st destination.Staged
 			if st, fail = w.PreCommit(ctx, epoch(x.PreCommit.GetEpoch())); fail == nil {
@@ -173,6 +190,9 @@ func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapa
 	}
 	for _, s := range c.Scopes {
 		p.Scopes = append(p.Scopes, protocolv1.CommitScope(s)) //nolint:gosec // small
+	}
+	for _, m := range c.WriteModes {
+		p.WriteModes = append(p.WriteModes, protocolv1.WriteMode(m)) //nolint:gosec // small
 	}
 	if c.DefaultCommitInterval > 0 {
 		p.DefaultCommitInterval = durationpb.New(c.DefaultCommitInterval)

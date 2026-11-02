@@ -2440,6 +2440,14 @@ components:
                         - NAMING_SOURCE
                     type: string
                     format: enum
+                deletes:
+                    enum:
+                        - DELETE_MODE_UNSPECIFIED
+                        - DELETE_MODE_SOFT
+                        - DELETE_MODE_HARD
+                    type: string
+                    description: 'How merge applies deletes. Unset: soft.'
+                    format: enum
         PipelinePlan:
             type: object
             properties:
