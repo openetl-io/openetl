@@ -236,9 +236,14 @@ func setup(m *testing.M) (int, error) {
 func applyOfficialConnectors(ctx context.Context) error {
 	c := &registry.Client{Policy: netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix(egressAllow)}}}
 	req := &apiv1.ApplyRequest{}
-	for _, exe := range []string{"source-postgres", "destination-postgres"} {
+	for _, exe := range []string{"source-postgres", "destination-postgres", "destination-iceberg"} {
 		path := filepath.Join(env.connectors, exe)
-		doc, err := connectorhost.Package(ctx, c, env.registry+"/openetl-connectors/"+exe+":e2e", "postgres", "0.1.0", []registry.Executable{{Platform: registry.Platform(), Path: path}})
+		// Builds from before it have no Iceberg destination; its tests skip.
+		if _, err := os.Stat(path); err != nil && exe == "destination-iceberg" {
+			continue
+		}
+		_, name, _ := strings.Cut(exe, "-")
+		doc, err := connectorhost.Package(ctx, c, env.registry+"/openetl-connectors/"+exe+":e2e", name, "0.1.0", []registry.Executable{{Platform: registry.Platform(), Path: path}})
 		if err != nil {
 			return fmt.Errorf("package %s: %w", exe, err)
 		}

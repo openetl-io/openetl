@@ -4,7 +4,8 @@
 #
 # `openetld dev` uses the local filesystem as its object store by default.
 # SeaweedFS (S3), fake-gcs-server (GCS) and Azurite (Azure Blob) all enforce
-# conditional writes, for the checkpoint log's per-provider tests.
+# conditional writes, for the checkpoint log's per-provider tests. An Iceberg
+# REST catalog keeps its tables in the S3 store, for destination-iceberg.
 
 name: openetl-dev
 
@@ -44,6 +45,21 @@ services:
       WEED_MASTER_VOLUME_GROWTH_COPY_1: "1"
     ports: ["8333:8333"]
     volumes: ["s3:/data"]
+
+  # In memory. Its warehouse is the S3 store's `iceberg` bucket, which tests
+  # create; clients reach the files at 127.0.0.1:8333.
+  iceberg:
+    image: apache/iceberg-rest-fixture:1.10.1
+    environment:
+      CATALOG_WAREHOUSE: s3://iceberg/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://s3:8333
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: openetl
+      AWS_SECRET_ACCESS_KEY: openetl
+    ports: ["8181:8181"]
+    depends_on: [s3]
 
   gcs:
     image: fsouza/fake-gcs-server:1.56.1
