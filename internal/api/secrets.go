@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
@@ -39,8 +41,12 @@ func (s *Server) parseSecretName(ctx context.Context, name string) (ws string, w
 }
 
 func toSecret(ws string, r db.Secret, usedBy []string) *apiv1.Secret {
-	return &apiv1.Secret{Name: resourceName(ws, "secrets", r.Name), Etag: etag(r.Revision), UsedBy: usedBy,
+	out := &apiv1.Secret{Name: resourceName(ws, "secrets", r.Name), Etag: etag(r.Revision), UsedBy: usedBy,
 		CreateTime: timestamppb.New(r.CreateTime), UpdateTime: timestamppb.New(r.UpdateTime)}
+	if r.Ref != nil {
+		out.Ref = *r.Ref
+	}
+	return out
 }
 
 // secretUsers lists the sources and destinations that name each secret.
@@ -115,19 +121,33 @@ func (s *Server) ListSecrets(ctx context.Context, req *connect.Request[apiv1.Lis
 }
 
 func (s *Server) UpdateSecret(ctx context.Context, req *connect.Request[apiv1.UpdateSecretRequest]) (*connect.Response[apiv1.UpdateSecretResponse], error) {
-	if s.Secrets == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("this server has no secrets key (--secrets-key), so it can't store secrets"))
-	}
 	in := req.Msg.GetSecret()
 	ws, wsID, name, err := s.parseSecretName(ctx, in.GetName())
 	if err != nil {
 		return nil, err
 	}
+	var ref *string
 	switch v := in.GetValue(); {
+	case v != "" && in.GetRef() != "":
+		return nil, invalid("%s: set a value or a reference, not both", in.GetName())
+	case in.GetRef() != "":
+		if _, err := secretstore.Parse(in.GetRef()); err != nil {
+			return nil, invalid("%s: %v", in.GetName(), err)
+		}
+		ref = &in.Ref
+		audit(ctx).set("ref", in.GetRef())
 	case v == "":
 		return nil, invalid("%s: a secret's value can't be empty", in.GetName())
 	case len(v) > maxSecretSize:
 		return nil, invalid("%s: a secret's value is at most %d KiB", in.GetName(), maxSecretSize>>10)
+	case s.Secrets == nil:
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("this server has no secrets key (--secrets-key), so it can't store secrets' values"))
+	}
+	seal := func(id uuid.UUID) ([]byte, error) {
+		if ref != nil {
+			return nil, nil
+		}
+		return s.Secrets.Seal(ctx, s.Tenant.Org, secretAAD(s.Tenant.Org, wsID, id), []byte(in.GetValue()))
 	}
 	res := &apiv1.UpdateSecretResponse{}
 	var row db.Secret
@@ -142,12 +162,12 @@ func (s *Server) UpdateSecret(ctx context.Context, req *connect.Request[apiv1.Up
 				return err
 			}
 			id := uuid.New()
-			sealed, err := s.Secrets.Seal(ctx, s.Tenant.Org, secretAAD(s.Tenant.Org, wsID, id), []byte(in.GetValue()))
+			sealed, err := seal(id)
 			if err != nil {
 				return err
 			}
 			res.Created = true
-			err = q.InsertSecret(ctx, db.InsertSecretParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: id, Name: name, Ciphertext: sealed})
+			err = q.InsertSecret(ctx, db.InsertSecretParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: id, Name: name, Ciphertext: sealed, Ref: ref})
 			if store.IsUniqueViolation(err) {
 				return connect.NewError(connect.CodeAborted, fmt.Errorf("%s was created at the same time; try again", in.GetName()))
 			}
@@ -160,11 +180,11 @@ func (s *Server) UpdateSecret(ctx context.Context, req *connect.Request[apiv1.Up
 			if err := checkEtag(in.GetEtag(), cur.Revision); err != nil {
 				return err
 			}
-			sealed, err := s.Secrets.Seal(ctx, s.Tenant.Org, secretAAD(s.Tenant.Org, wsID, cur.ID), []byte(in.GetValue()))
+			sealed, err := seal(cur.ID)
 			if err != nil {
 				return err
 			}
-			if err := q.UpdateSecret(ctx, db.UpdateSecretParams{OrgID: s.Tenant.Org, ID: cur.ID, Ciphertext: sealed}); err != nil {
+			if err := q.UpdateSecret(ctx, db.UpdateSecretParams{OrgID: s.Tenant.Org, ID: cur.ID, Ciphertext: sealed, Ref: ref}); err != nil {
 				return err
 			}
 		}
@@ -277,37 +297,45 @@ func (s *Server) checkSecretsExist(ctx context.Context, q *db.Queries, wsID uuid
 }
 
 // resolveSecrets replaces the config's references to the named secrets with
-// their values, for a runner.
-func (s *Server) resolveSecrets(ctx context.Context, what string, wsID uuid.UUID, cfg *apiv1.ConnectorConfig, names []string) error {
+// their values, for a runner. It returns the fields that name secrets in
+// cloud secret stores, which keep their references for the runner to read.
+func (s *Server) resolveSecrets(ctx context.Context, what string, wsID uuid.UUID, cfg *apiv1.ConnectorConfig, names []string) ([]*dataplanev1.ExternalSecret, error) {
 	if len(names) == 0 {
-		return nil
-	}
-	if s.Secrets == nil {
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s names secrets, but this server has no secrets key (--secrets-key)", what))
+		return nil, nil
 	}
 	rows, err := s.Store.GetSecretValues(ctx, db.GetSecretValuesParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Names: names})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	values := map[string]string{}
+	byName := map[string]db.GetSecretValuesRow{}
 	for _, r := range rows {
-		v, err := s.Secrets.Open(ctx, s.Tenant.Org, secretAAD(s.Tenant.Org, wsID, r.ID), r.Ciphertext)
-		if err != nil {
-			return err
-		}
-		values[r.Name] = string(v)
-		audit(ctx).touched(resourceName(r.Workspace, "secrets", r.Name))
+		byName[r.Name] = r
 	}
+	var external []*dataplanev1.ExternalSecret
 	for k, v := range cfg.GetConfig().GetFields() {
 		name, ok := secretRef(v)
 		if !ok || !slices.Contains(names, name) {
 			continue
 		}
-		value, ok := values[name]
+		r, ok := byName[name]
 		if !ok {
-			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s names secret %q, which doesn't exist", what, name))
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s names secret %q, which doesn't exist", what, name))
 		}
-		cfg.Config.Fields[k] = structpb.NewStringValue(value)
+		secret := resourceName(r.Workspace, "secrets", r.Name)
+		audit(ctx).touched(secret)
+		if r.Ref != nil {
+			external = append(external, &dataplanev1.ExternalSecret{Field: k, Secret: secret, Ref: *r.Ref})
+			continue
+		}
+		if s.Secrets == nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s names secrets, but this server has no secrets key (--secrets-key)", what))
+		}
+		value, err := s.Secrets.Open(ctx, s.Tenant.Org, secretAAD(s.Tenant.Org, wsID, r.ID), r.Ciphertext)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Config.Fields[k] = structpb.NewStringValue(string(value))
 	}
-	return nil
+	slices.SortFunc(external, func(a, b *dataplanev1.ExternalSecret) int { return strings.Compare(a.GetField(), b.GetField()) })
+	return external, nil
 }

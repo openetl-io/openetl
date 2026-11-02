@@ -50,8 +50,8 @@ const (
 type SecretServiceClient interface {
 	GetSecret(context.Context, *connect.Request[v1.GetSecretRequest]) (*connect.Response[v1.GetSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
-	// Sets a secret's value. The next sync, check or discover that uses it
-	// gets the new value.
+	// Sets a secret's value or reference. The next sync, check or discover
+	// that uses it gets the new value.
 	UpdateSecret(context.Context, *connect.Request[v1.UpdateSecretRequest]) (*connect.Response[v1.UpdateSecretResponse], error)
 	// Fails with FAILED_PRECONDITION while a source or destination names it.
 	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
@@ -127,8 +127,8 @@ func (c *secretServiceClient) DeleteSecret(ctx context.Context, req *connect.Req
 type SecretServiceHandler interface {
 	GetSecret(context.Context, *connect.Request[v1.GetSecretRequest]) (*connect.Response[v1.GetSecretResponse], error)
 	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
-	// Sets a secret's value. The next sync, check or discover that uses it
-	// gets the new value.
+	// Sets a secret's value or reference. The next sync, check or discover
+	// that uses it gets the new value.
 	UpdateSecret(context.Context, *connect.Request[v1.UpdateSecretRequest]) (*connect.Response[v1.UpdateSecretResponse], error)
 	// Fails with FAILED_PRECONDITION while a source or destination names it.
 	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)

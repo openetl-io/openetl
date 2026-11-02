@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -23,11 +24,17 @@ import (
 const secretUsage = `usage: openetl secret <command> [flags]
 
 Commands:
-  set NAME      create a secret or set its value, from stdin or --from-file
+  set NAME      create a secret or set its value, from stdin or --from-file,
+                or point it at a cloud secret store with --ref
   list          list a workspace's secrets, and what uses each
   delete NAME   delete a secret no source or destination names
 
-A config names a secret as {secret: NAME}.
+A config names a secret as {secret: NAME}. Runners read a --ref themselves,
+with their own cloud identity:
+  aws-sm://{name or ARN}[?region=…][&version=…][&stage=…][&field=…]
+  gcp-sm://projects/{p}/[locations/{l}/]secrets/{s}[/versions/{v}][?field=…]
+  azure-kv://{vault}/{name}[?version=…][&field=…]
+field picks a top-level field of a JSON value.
 `
 
 func runSecret(ctx context.Context, args []string, out io.Writer) error {
@@ -42,13 +49,17 @@ func runSecret(ctx context.Context, args []string, out io.Writer) error {
 	switch cmd {
 	case "set":
 		file := fs.String("from-file", "", "read the value from this file instead of stdin")
+		ref := fs.String("ref", "", "a reference to a cloud secret store, which runners read, instead of a value")
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
 			return errors.New("secret set takes one name, after its flags")
 		}
-		return setSecret(ctx, conn, *workspace, fs.Arg(0), *file, out)
+		if *file != "" && *ref != "" {
+			return errors.New("secret set takes --from-file or --ref, not both")
+		}
+		return setSecret(ctx, conn, *workspace, fs.Arg(0), *file, *ref, out)
 	case "list":
 		if err := fs.Parse(args); err != nil {
 			return err
@@ -102,19 +113,19 @@ func readValue(name, file string) (string, error) {
 	return string(b), nil
 }
 
-func setSecret(ctx context.Context, conn *api, workspace, secret, file string, out io.Writer) error {
+func setSecret(ctx context.Context, conn *api, workspace, secret, file, ref string, out io.Writer) error {
 	c, err := client(conn, apiv1connect.NewSecretServiceClient)
 	if err != nil {
 		return err
 	}
-	value, err := readValue(secret, file)
-	if err != nil {
-		return err
-	}
 	name := "workspaces/" + workspace + "/secrets/" + secret
-	res, err := c.UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{
-		Secret: &apiv1.Secret{Name: name, Value: value}, AllowMissing: true,
-	}))
+	in := &apiv1.Secret{Name: name, Ref: ref}
+	if ref == "" {
+		if in.Value, err = readValue(secret, file); err != nil {
+			return err
+		}
+	}
+	res, err := c.UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{Secret: in, AllowMissing: true}))
 	if err != nil {
 		return err
 	}
@@ -132,7 +143,7 @@ func listSecrets(ctx context.Context, conn *api, workspace string, out io.Writer
 		return err
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tUPDATED\tUSED BY")
+	fmt.Fprintln(tw, "NAME\tVALUE\tUPDATED\tUSED BY")
 	req := &apiv1.ListSecretsRequest{Parent: "workspaces/" + workspace}
 	for {
 		res, err := c.ListSecrets(ctx, connect.NewRequest(req))
@@ -145,7 +156,8 @@ func listSecrets(ctx context.Context, conn *api, workspace string, out io.Writer
 			for i, u := range s.GetUsedBy() {
 				users[i] = strings.TrimPrefix(u, req.GetParent()+"/")
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", name, s.GetUpdateTime().AsTime().Local().Format(time.DateTime), strings.Join(users, ", "))
+			value := cmp.Or(s.GetRef(), "sealed")
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, value, s.GetUpdateTime().AsTime().Local().Format(time.DateTime), strings.Join(users, ", "))
 		}
 		if req.PageToken = res.Msg.GetNextPageToken(); req.PageToken == "" {
 			return tw.Flush()

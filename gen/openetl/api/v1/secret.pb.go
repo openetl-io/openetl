@@ -27,14 +27,23 @@ type Secret struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}/secrets/{secret}
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Input only: at most 64 KiB of UTF-8.
+	// Input only: at most 64 KiB of UTF-8. Set this or ref.
 	Value string `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	// On input, if set, it must match.
 	Etag       string                 `protobuf:"bytes,3,opt,name=etag,proto3" json:"etag,omitempty"`
 	CreateTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
 	UpdateTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
 	// Output only: the sources and destinations whose configs name it.
-	UsedBy        []string `protobuf:"bytes,6,rep,name=used_by,json=usedBy,proto3" json:"used_by,omitempty"`
+	UsedBy []string `protobuf:"bytes,6,rep,name=used_by,json=usedBy,proto3" json:"used_by,omitempty"`
+	// Where runners read the value, instead of a value stored here:
+	//
+	//	aws-sm://{name or ARN}[?region=…][&version=…][&stage=…][&field=…]
+	//	gcp-sm://projects/{p}/[locations/{l}/]secrets/{s}[/versions/{v}][?field=…]
+	//	azure-kv://{vault}/{name}[?version=…][&field=…]
+	//
+	// field picks a top-level field of a JSON object value. Runners read it
+	// for each attempt, check and discover.
+	Ref           string `protobuf:"bytes,7,opt,name=ref,proto3" json:"ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -109,6 +118,13 @@ func (x *Secret) GetUsedBy() []string {
 		return x.UsedBy
 	}
 	return nil
+}
+
+func (x *Secret) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
 }
 
 type GetSecretRequest struct {
@@ -511,7 +527,7 @@ var File_openetl_api_v1_secret_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_secret_proto_rawDesc = "" +
 	"\n" +
-	"\x1bopenetl/api/v1/secret.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd9\x01\n" +
+	"\x1bopenetl/api/v1/secret.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xeb\x01\n" +
 	"\x06Secret\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value\x12\x12\n" +
@@ -520,7 +536,8 @@ const file_openetl_api_v1_secret_proto_rawDesc = "" +
 	"createTime\x12;\n" +
 	"\vupdate_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"updateTime\x12\x17\n" +
-	"\aused_by\x18\x06 \x03(\tR\x06usedBy\"&\n" +
+	"\aused_by\x18\x06 \x03(\tR\x06usedBy\x12\x10\n" +
+	"\x03ref\x18\a \x01(\tR\x03ref\"&\n" +
 	"\x10GetSecretRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"C\n" +
 	"\x11GetSecretResponse\x12.\n" +

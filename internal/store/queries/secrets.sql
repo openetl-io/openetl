@@ -23,16 +23,16 @@ WHERE org_id = @org_id AND workspace_id = @workspace_id AND name > @after
 ORDER BY name LIMIT @max_rows;
 
 -- name: GetSecretValues :many
-SELECT s.id, s.name, s.ciphertext, w.name AS workspace
+SELECT s.id, s.name, s.ciphertext, s.ref, w.name AS workspace
 FROM secrets s JOIN workspaces w ON w.org_id = s.org_id AND w.id = s.workspace_id
 WHERE s.org_id = @org_id AND s.workspace_id = @workspace_id AND s.name = ANY(@names::text[]);
 
 -- name: InsertSecret :exec
-INSERT INTO secrets (org_id, workspace_id, id, name, ciphertext, revision)
-VALUES (@org_id, @workspace_id, @id, @name, @ciphertext, 1);
+INSERT INTO secrets (org_id, workspace_id, id, name, ciphertext, ref, revision)
+VALUES (@org_id, @workspace_id, @id, @name, @ciphertext, @ref, 1);
 
 -- name: UpdateSecret :exec
-UPDATE secrets SET ciphertext = @ciphertext, revision = revision + 1, update_time = now()
+UPDATE secrets SET ciphertext = @ciphertext, ref = @ref, revision = revision + 1, update_time = now()
 WHERE org_id = @org_id AND id = @id;
 
 -- name: DeleteSecret :exec

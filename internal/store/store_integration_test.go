@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,5 +253,60 @@ func TestPinnedVersionsMigration(t *testing.T) {
 	}
 	if _, err := s.GetPipelineVersion(ctx, db.GetPipelineVersionParams{OrgID: org, PipelineID: pipeline, Version: "v1"}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Errorf("v1, whose source is gone: %v", err)
+	}
+}
+
+// Migration 12: a secret holds a sealed value or a reference, and only a
+// sealed value needs the org's data key.
+func TestSecretRefsMigration(t *testing.T) {
+	ctx := t.Context()
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.MigrateTo(ctx, 11); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	org, keyless, ws, ws2 := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	args := pgx.NamedArgs{"org": org, "keyless": keyless, "ws": ws, "ws2": ws2}
+	exec := func(q string) error {
+		_, err := conn.Exec(ctx, q, args)
+		return err
+	}
+	for _, q := range []string{
+		`INSERT INTO orgs (id, name) VALUES (@org, 'o'), (@keyless, 'k')`,
+		`INSERT INTO workspaces (org_id, id, name) VALUES (@org, @ws, 'default'), (@keyless, @ws2, 'default')`,
+		`INSERT INTO org_keys (org_id, wrapped_key) VALUES (@org, 'k')`,
+		`INSERT INTO secrets (org_id, workspace_id, id, name, ciphertext, revision) VALUES (@org, @ws, gen_random_uuid(), 'sealed', 'c', 1)`,
+	} {
+		if err := exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.GetSecret(ctx, db.GetSecretParams{OrgID: org, WorkspaceID: ws, Name: "sealed"})
+	if err != nil || string(r.Ciphertext) != "c" || r.Ref != nil {
+		t.Errorf("the sealed secret: %+v, %v", r, err)
+	}
+	ref := "aws-sm://prod/db"
+	if err := s.InsertSecret(ctx, db.InsertSecretParams{OrgID: keyless, WorkspaceID: ws2, ID: uuid.New(), Name: "ref", Ref: &ref}); err != nil {
+		t.Errorf("a reference in an org without a data key: %v", err)
+	}
+	for _, q := range []string{
+		`INSERT INTO secrets (org_id, workspace_id, id, name, revision) VALUES (@org, @ws, gen_random_uuid(), 'neither', 1)`,
+		`INSERT INTO secrets (org_id, workspace_id, id, name, ciphertext, ref, revision) VALUES (@org, @ws, gen_random_uuid(), 'both', 'c', 'aws-sm://x', 1)`,
+	} {
+		if err := exec(q); err == nil || !strings.Contains(err.Error(), "secrets_value_or_ref") {
+			t.Errorf("%s: %v", q, err)
+		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/unsuitable001/openetl/internal/secretstore/secretstoretest"
 )
 
 // Configs name secrets, which the API keeps sealed and gives only to
@@ -126,5 +127,100 @@ func TestSecrets(t *testing.T) {
 	_, err = secrets.GetSecret(ctx, connect.NewRequest(&apiv1.GetSecretRequest{Name: secretName}))
 	if connect.CodeOf(err) != connect.CodeNotFound {
 		t.Errorf("get after delete: %v", err)
+	}
+}
+
+// A secret can name a value in a cloud secret store instead, which runners
+// read with their own credentials for each attempt and check. The control
+// plane keeps only the reference.
+func TestSecretStores(t *testing.T) {
+	store := secretstoretest.NewAWS()
+	defer store.Close()
+	store.Setenv(t)
+	store.Set("e2e/db", `{"dsn": `+strconv.Quote(env.dbURL)+`, "user": "e2e"}`)
+	startRunner(t)
+	ctx := t.Context()
+	name := unique("secret-stores")
+	secrets := apiv1connect.NewSecretServiceClient(env.http, env.apiURL)
+	destinations := apiv1connect.NewDestinationServiceClient(env.http, env.apiURL)
+	dsn := unique("store-dsn")
+	secretName := "workspaces/default/secrets/" + dsn
+	const ref = "aws-sm://e2e/db?region=us-east-1&field=dsn"
+	set := func(s *apiv1.Secret) error {
+		s.Name = secretName
+		_, err := secrets.UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{Secret: s, AllowMissing: true}))
+		return err
+	}
+
+	if err := set(&apiv1.Secret{Value: env.dbURL, Ref: ref}); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("a value and a reference: %v", err)
+	}
+	if err := set(&apiv1.Secret{Ref: "aws-sm://e2e/db?regoin=us-east-1"}); connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), `unknown parameter "regoin"`) {
+		t.Errorf("a bad reference: %v", err)
+	}
+	if err := set(&apiv1.Secret{Ref: ref}); err != nil {
+		t.Fatal(err)
+	}
+	ds := pipelineDocs(name, `{"seed": 6, "count": 150}`, `{}`)
+	ds[1] = strings.Replace(ds[1], `"e2e-dsn"`, strconv.Quote(dsn), 1)
+	apply(t, ds...)
+	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	checkRows(t, schema(name), 150, "users", "purchases")
+
+	// The runner read it, signed with its own key; the control plane holds
+	// the reference only.
+	reads := store.Requests()
+	if len(reads) == 0 {
+		t.Fatal("the runner didn't read the store")
+	}
+	for _, r := range reads {
+		if r != (secretstoretest.Request{SecretID: "e2e/db", AccessKey: secretstoretest.AccessKey}) {
+			t.Errorf("read %+v", r)
+		}
+	}
+	if ok, err := query[bool](t, "SELECT ciphertext IS NULL AND ref = $2 FROM secrets WHERE name = $1", dsn, ref); err != nil || !ok {
+		t.Errorf("the stored secret: %v, %v", ok, err)
+	}
+	sec, err := secrets.GetSecret(ctx, connect.NewRequest(&apiv1.GetSecretRequest{Name: secretName}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := sec.Msg.GetSecret(); s.GetRef() != ref || s.GetValue() != "" || !slices.Equal(s.GetUsedBy(), []string{"workspaces/default/destinations/" + name}) {
+		t.Errorf("GetSecret: %v", s)
+	}
+
+	// Each check reads the store again.
+	check := func() *apiv1.CheckResult {
+		t.Helper()
+		r, err := destinations.CheckDestination(ctx, connect.NewRequest(&apiv1.CheckDestinationRequest{Name: "workspaces/default/destinations/" + name}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Msg.GetResult()
+	}
+	store.Set("e2e/db", `{"dsn": `+strconv.Quote(wrongPassword(t))+`}`)
+	if r := check(); r.GetOk() || r.GetCode() != "AUTH_INVALID" {
+		t.Errorf("check with the wrong password in the store: %v", r)
+	}
+	store.Set("e2e/db", "")
+	if r := check(); r.GetOk() || r.GetCode() != "CONFIG_INVALID" || !strings.Contains(r.GetMessage(), secretName) || !strings.Contains(r.GetMessage(), "ResourceNotFoundException") {
+		t.Errorf("check with the secret gone from the store: %v", r)
+	}
+
+	// Back to a value: the store isn't read any more.
+	if err := set(&apiv1.Secret{Value: env.dbURL}); err != nil {
+		t.Fatal(err)
+	}
+	n := len(store.Requests())
+	if r := check(); !r.GetOk() {
+		t.Errorf("check with a value: %v", r)
+	}
+	if m := len(store.Requests()); m != n {
+		t.Errorf("%d more reads of the store", m-n)
+	}
+	if ok, err := query[bool](t, "SELECT ciphertext IS NOT NULL AND ref IS NULL FROM secrets WHERE name = $1", dsn); err != nil || !ok {
+		t.Errorf("the stored secret: %v, %v", ok, err)
 	}
 }

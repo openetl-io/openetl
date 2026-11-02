@@ -47,6 +47,21 @@ message GetSyncSpecResponse {
   // connectors directory.
   string source_connector = 8;
   string destination_connector = 9;
+  // The config fields that name secrets in cloud secret stores, which the
+  // runner reads and sets.
+  repeated ExternalSecret source_secrets = 10;
+  repeated ExternalSecret destination_secrets = 11;
+}
+
+// A config field that names a secret held in a cloud secret store. The field
+// keeps its {"secret": NAME} until the runner reads the store.
+message ExternalSecret {
+  // The config's top-level field.
+  string field = 1;
+  // workspaces/{workspace}/secrets/{secret}
+  string secret = 2;
+  // As openetl.api.v1.Secret's ref.
+  string ref = 3;
 }
 
 message ReportSchemasRequest {
@@ -116,6 +131,8 @@ message GetConnectorConfigResponse {
   openetl.api.v1.ConnectorConfig config = 3;
   // As GetSyncSpecResponse's source_connector.
   string connector = 4;
+  // As GetSyncSpecResponse's source_secrets.
+  repeated ExternalSecret secrets = 5;
 }
 
 message ReportCatalogRequest {

@@ -39,6 +39,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/registry"
 	dpactivities "github.com/unsuitable001/openetl/internal/runner/activities"
 	"github.com/unsuitable001/openetl/internal/secrets"
+	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
 )
@@ -281,6 +282,8 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},
 		Cache:    cfg.Cache,
 	}
+	stores := &secretstore.Reader{}
+	defer func() { _ = stores.Close() }()
 	sync := &dpactivities.Sync{
 		API:         apiClient,
 		Checkpoints: cps,
@@ -289,6 +292,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		Logger:      log,
 		Connectors:  connectors,
 		Versions:    versions,
+		Secrets:     stores,
 		Logs:        cps,
 	}
 	w := worker.New(tc, contract.BatchQueue(cfg.DataPlane), worker.Options{
@@ -297,9 +301,9 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		WorkerStopTimeout: 2 * time.Minute,
 	})
 	w.RegisterActivityWithOptions(sync.RunSyncAttempt, activity.RegisterOptions{Name: contract.RunSyncAttempt})
-	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Executable: cfg.Dbt, Logger: log, Logs: cps}
+	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Secrets: stores, Executable: cfg.Dbt, Logger: log, Logs: cps}
 	w.RegisterActivityWithOptions(dbt.RunDbt, activity.RegisterOptions{Name: contract.RunDbt})
-	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions}
+	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
 	logs := worker.New(tc, contract.LogsQueue(cfg.DataPlane), worker.Options{MaxConcurrentActivityExecutionSize: 8})

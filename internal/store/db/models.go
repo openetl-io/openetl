@@ -199,6 +199,7 @@ type Secret struct {
 	Revision    int64
 	CreateTime  time.Time
 	UpdateTime  time.Time
+	Ref         *string
 }
 
 type Source struct {

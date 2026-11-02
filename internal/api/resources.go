@@ -421,10 +421,10 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if err := protojson.Unmarshal(row.DestinationSpec, res.Destination); err != nil {
 		return nil, err
 	}
-	if err := s.resolveSecrets(ctx, "the source", row.WorkspaceID, res.Source, row.SourceSecrets); err != nil {
+	if res.SourceSecrets, err = s.resolveSecrets(ctx, "the source", row.WorkspaceID, res.Source, row.SourceSecrets); err != nil {
 		return nil, err
 	}
-	if err := s.resolveSecrets(ctx, "the destination", row.WorkspaceID, res.Destination, row.DestinationSecrets); err != nil {
+	if res.DestinationSecrets, err = s.resolveSecrets(ctx, "the destination", row.WorkspaceID, res.Destination, row.DestinationSecrets); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(res), nil

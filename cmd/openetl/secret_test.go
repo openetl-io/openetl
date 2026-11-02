@@ -34,7 +34,7 @@ func (f *fakeSecrets) ListSecrets(_ context.Context, req *connect.Request[apiv1.
 			{Name: "workspaces/w/secrets/pg-dsn", UsedBy: []string{"workspaces/w/sources/shop", "workspaces/w/destinations/dw"}},
 		}}), nil
 	}
-	return connect.NewResponse(&apiv1.ListSecretsResponse{Secrets: []*apiv1.Secret{{Name: "workspaces/w/secrets/unused"}}}), nil
+	return connect.NewResponse(&apiv1.ListSecretsResponse{Secrets: []*apiv1.Secret{{Name: "workspaces/w/secrets/unused", Ref: "aws-sm://prod/db"}}}), nil
 }
 
 func TestSecretCommands(t *testing.T) {
@@ -78,12 +78,23 @@ func TestSecretCommands(t *testing.T) {
 		t.Errorf("set printed %q", out.String())
 	}
 
+	// A reference reads nothing from stdin or a file.
+	if err := run(t.Context(), []string{"secret", "set", "--api-url", srv.URL, "--workspace", "w", "--ref", "aws-sm://prod/db?field=dsn", "--from-file", file, "pg-dsn"}, &out); err == nil {
+		t.Error("set took --ref and --from-file")
+	}
+	if err := run(t.Context(), []string{"secret", "set", "--api-url", srv.URL, "--workspace", "w", "--ref", "aws-sm://prod/db?field=dsn", "pg-dsn"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.set[2].GetSecret(); len(f.set) != 3 || s.GetRef() != "aws-sm://prod/db?field=dsn" || s.GetValue() != "" {
+		t.Errorf("update %v", s)
+	}
+
 	out.Reset()
 	if err := run(t.Context(), []string{"secret", "list", "--api-url", srv.URL, "--workspace", "w"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[1], "pg-dsn ") || !strings.HasSuffix(lines[1], "sources/shop, destinations/dw") || !strings.HasPrefix(lines[2], "unused ") {
+	if len(lines) != 3 || !strings.HasPrefix(lines[1], "pg-dsn  sealed ") || !strings.HasSuffix(lines[1], "sources/shop, destinations/dw") || !strings.HasPrefix(lines[2], "unused  aws-sm://prod/db ") {
 		t.Errorf("list printed\n%s", out.String())
 	}
 }

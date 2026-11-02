@@ -15,6 +15,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
+	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/streamschema"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
@@ -26,6 +27,8 @@ type Ops struct {
 	Connectors connectorhost.Env
 	// Nil: connector versions can't be fetched.
 	Versions *connectorhost.Fetcher
+	// Nil: secrets in cloud secret stores can't be read.
+	Secrets *secretstore.Reader
 }
 
 // CheckConnector checks a source or destination. A failed check is a result,
@@ -37,6 +40,9 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 	}
 	res := contract.ConnectorOpResult{Version: cfg.GetVersion()}
 	env, err := connectorEnv(ctx, a.Connectors, a.Versions, cfg.GetConnector())
+	if err == nil {
+		err = readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets())
+	}
 	if err == nil {
 		err = check(ctx, in, cfg.GetConfig(), env)
 	}
@@ -90,6 +96,9 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 		return res, err
 	}
 	res.Version = cfg.GetVersion()
+	if err := readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets()); err != nil {
+		return res, err
+	}
 	raw, err := protojson.Marshal(cfg.GetConfig().GetConfig())
 	if err != nil {
 		return res, err

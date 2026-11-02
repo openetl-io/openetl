@@ -17,12 +17,15 @@ import (
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
+	"github.com/unsuitable001/openetl/internal/secretstore"
 )
 
 // Dbt runs pipelines' dbt steps against their destinations.
 type Dbt struct {
 	API       dataplanev1connect.DataPlaneServiceClient
 	Artifacts *connectorhost.Fetcher
+	// Nil: secrets in cloud secret stores can't be read.
+	Secrets *secretstore.Reader
 	// Empty: dbt on PATH.
 	Executable string
 	// Where projects are unpacked while they run. Empty: the system's
@@ -67,6 +70,9 @@ func (a *Dbt) run(ctx context.Context, in contract.DbtInput, log *slog.Logger) (
 		return res, err
 	}
 	dst := spec.GetDestination()
+	if err := readSecrets(ctx, a.Secrets, dst, spec.GetDestinationSecrets()); err != nil {
+		return res, err
+	}
 	cfg, err := protojson.Marshal(dst.GetConfig())
 	if err != nil {
 		return res, err

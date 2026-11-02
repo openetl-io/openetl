@@ -18,7 +18,9 @@ import (
 	"connectrpc.com/connect"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
+	"google.golang.org/protobuf/types/known/structpb"
 
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
@@ -28,6 +30,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	"github.com/unsuitable001/openetl/internal/runner"
+	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
 
@@ -43,6 +46,8 @@ type Sync struct {
 	Connectors connectorhost.Env
 	// Nil: connector versions can't be fetched.
 	Versions *connectorhost.Fetcher
+	// Nil: secrets in cloud secret stores can't be read.
+	Secrets *secretstore.Reader
 	// Where attempts' logs go, next to the checkpoints. Nil: attempts keep
 	// none.
 	Logs checkpoint.Store
@@ -83,6 +88,12 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	var out contract.AttemptResult
 	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
 	if err != nil {
+		return out, err
+	}
+	if err := readSecrets(ctx, a.Secrets, spec.GetSource(), spec.GetSourceSecrets()); err != nil {
+		return out, err
+	}
+	if err := readSecrets(ctx, a.Secrets, spec.GetDestination(), spec.GetDestinationSecrets()); err != nil {
 		return out, err
 	}
 	env, err := connectorEnv(ctx, a.Connectors, a.Versions, spec.GetSourceConnector(), spec.GetDestinationConnector())
@@ -143,6 +154,25 @@ func syncSpec(ctx context.Context, api dataplanev1connect.DataPlaneServiceClient
 		return nil, errs.New(errs.ConfigInvalid, "pipeline %s belongs to another org", pipeline)
 	}
 	return resp.Msg, nil
+}
+
+// readSecrets sets each config field that names a secret in a cloud secret
+// store to its value, read with the runner's cloud identity.
+func readSecrets(ctx context.Context, r *secretstore.Reader, cfg *apiv1.ConnectorConfig, external []*dataplanev1.ExternalSecret) error {
+	for _, e := range external {
+		if _, ok := cfg.GetConfig().GetFields()[e.GetField()]; !ok {
+			return errs.New(errs.Internal, "config.%s names %s, but the config has no such field", e.GetField(), e.GetSecret())
+		}
+		if r == nil {
+			return errs.New(errs.ConfigInvalid, "config.%s names %s, which is in a cloud secret store, and this runner can't read those", e.GetField(), e.GetSecret())
+		}
+		v, err := r.Read(ctx, e.GetRef())
+		if err != nil {
+			return fmt.Errorf("config.%s names %s: %w", e.GetField(), e.GetSecret(), err)
+		}
+		cfg.Config.Fields[e.GetField()] = structpb.NewStringValue(v)
+	}
+	return nil
 }
 
 // quarantineURL is where a pipeline's quarantined records go:

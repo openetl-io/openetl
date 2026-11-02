@@ -37,7 +37,7 @@ func (q *Queries) GetOrgKey(ctx context.Context, orgID uuid.UUID) ([]byte, error
 }
 
 const getSecret = `-- name: GetSecret :one
-SELECT org_id, workspace_id, id, name, ciphertext, revision, create_time, update_time FROM secrets WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, ciphertext, revision, create_time, update_time, ref FROM secrets WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `
 
 type GetSecretParams struct {
@@ -58,12 +58,13 @@ func (q *Queries) GetSecret(ctx context.Context, arg GetSecretParams) (Secret, e
 		&i.Revision,
 		&i.CreateTime,
 		&i.UpdateTime,
+		&i.Ref,
 	)
 	return i, err
 }
 
 const getSecretValues = `-- name: GetSecretValues :many
-SELECT s.id, s.name, s.ciphertext, w.name AS workspace
+SELECT s.id, s.name, s.ciphertext, s.ref, w.name AS workspace
 FROM secrets s JOIN workspaces w ON w.org_id = s.org_id AND w.id = s.workspace_id
 WHERE s.org_id = $1 AND s.workspace_id = $2 AND s.name = ANY($3::text[])
 `
@@ -78,6 +79,7 @@ type GetSecretValuesRow struct {
 	ID         uuid.UUID
 	Name       string
 	Ciphertext []byte
+	Ref        *string
 	Workspace  string
 }
 
@@ -94,6 +96,7 @@ func (q *Queries) GetSecretValues(ctx context.Context, arg GetSecretValuesParams
 			&i.ID,
 			&i.Name,
 			&i.Ciphertext,
+			&i.Ref,
 			&i.Workspace,
 		); err != nil {
 			return nil, err
@@ -122,8 +125,8 @@ func (q *Queries) InsertOrgKey(ctx context.Context, arg InsertOrgKeyParams) erro
 }
 
 const insertSecret = `-- name: InsertSecret :exec
-INSERT INTO secrets (org_id, workspace_id, id, name, ciphertext, revision)
-VALUES ($1, $2, $3, $4, $5, 1)
+INSERT INTO secrets (org_id, workspace_id, id, name, ciphertext, ref, revision)
+VALUES ($1, $2, $3, $4, $5, $6, 1)
 `
 
 type InsertSecretParams struct {
@@ -132,6 +135,7 @@ type InsertSecretParams struct {
 	ID          uuid.UUID
 	Name        string
 	Ciphertext  []byte
+	Ref         *string
 }
 
 func (q *Queries) InsertSecret(ctx context.Context, arg InsertSecretParams) error {
@@ -141,6 +145,7 @@ func (q *Queries) InsertSecret(ctx context.Context, arg InsertSecretParams) erro
 		arg.ID,
 		arg.Name,
 		arg.Ciphertext,
+		arg.Ref,
 	)
 	return err
 }
@@ -183,7 +188,7 @@ func (q *Queries) ListDestinationsUsingSecrets(ctx context.Context, arg ListDest
 }
 
 const listSecrets = `-- name: ListSecrets :many
-SELECT org_id, workspace_id, id, name, ciphertext, revision, create_time, update_time FROM secrets
+SELECT org_id, workspace_id, id, name, ciphertext, revision, create_time, update_time, ref FROM secrets
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3
 ORDER BY name LIMIT $4
 `
@@ -218,6 +223,7 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Sec
 			&i.Revision,
 			&i.CreateTime,
 			&i.UpdateTime,
+			&i.Ref,
 		); err != nil {
 			return nil, err
 		}
@@ -268,7 +274,7 @@ func (q *Queries) ListSourcesUsingSecrets(ctx context.Context, arg ListSourcesUs
 }
 
 const lockSecret = `-- name: LockSecret :one
-SELECT org_id, workspace_id, id, name, ciphertext, revision, create_time, update_time FROM secrets WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, ciphertext, revision, create_time, update_time, ref FROM secrets WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 FOR UPDATE
 `
 
@@ -290,6 +296,7 @@ func (q *Queries) LockSecret(ctx context.Context, arg LockSecretParams) (Secret,
 		&i.Revision,
 		&i.CreateTime,
 		&i.UpdateTime,
+		&i.Ref,
 	)
 	return i, err
 }
@@ -327,17 +334,23 @@ func (q *Queries) ShareSecrets(ctx context.Context, arg ShareSecretsParams) ([]s
 }
 
 const updateSecret = `-- name: UpdateSecret :exec
-UPDATE secrets SET ciphertext = $1, revision = revision + 1, update_time = now()
-WHERE org_id = $2 AND id = $3
+UPDATE secrets SET ciphertext = $1, ref = $2, revision = revision + 1, update_time = now()
+WHERE org_id = $3 AND id = $4
 `
 
 type UpdateSecretParams struct {
 	Ciphertext []byte
+	Ref        *string
 	OrgID      uuid.UUID
 	ID         uuid.UUID
 }
 
 func (q *Queries) UpdateSecret(ctx context.Context, arg UpdateSecretParams) error {
-	_, err := q.db.Exec(ctx, updateSecret, arg.Ciphertext, arg.OrgID, arg.ID)
+	_, err := q.db.Exec(ctx, updateSecret,
+		arg.Ciphertext,
+		arg.Ref,
+		arg.OrgID,
+		arg.ID,
+	)
 	return err
 }
