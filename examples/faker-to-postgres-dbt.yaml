@@ -6,7 +6,7 @@
 #   go run ./cmd/openetl apply -f examples/faker-to-postgres-dbt.yaml
 #
 # The table lands in faker_marts.spend_per_user.
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: DbtProject
 metadata:
   name: faker-dbt
@@ -14,7 +14,7 @@ spec:
   # openetl apply sends this directory's files.
   path: dbt
 ---
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Source
 metadata:
   name: faker
@@ -25,7 +25,7 @@ spec:
     count: 1000
     batchSize: 100
 ---
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Destination
 metadata:
   name: local-postgres
@@ -34,7 +34,7 @@ spec:
   config:
     dsn: { secret: local-postgres-dsn }
 ---
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Pipeline
 metadata:
   name: faker-to-postgres-dbt

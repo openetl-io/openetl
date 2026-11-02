@@ -54,7 +54,7 @@ func TestApplyListsDependents(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("OPENETL_API_KEY", "oetl_test")
 	file := filepath.Join(t.TempDir(), "shop.yaml")
-	if err := os.WriteFile(file, []byte("apiVersion: openetl.dev/v1alpha1\nkind: Source\nmetadata: {name: shop}\nspec: {connector: faker}\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte("apiVersion: openetl.io/v1alpha1\nkind: Source\nmetadata: {name: shop}\nspec: {connector: faker}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer

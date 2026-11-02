@@ -72,7 +72,7 @@ func TestParseVersion(t *testing.T) {
 	if _, err := ParseVersion(builtin); err == nil {
 		t.Error("a version of a built-in connector parsed")
 	}
-	if _, err := ParseVersion([]byte("apiVersion: openetl.dev/v1alpha1\nkind: Source\nmetadata: {name: s}\nspec: {connector: faker}\n")); err == nil {
+	if _, err := ParseVersion([]byte("apiVersion: openetl.io/v1alpha1\nkind: Source\nmetadata: {name: s}\nspec: {connector: faker}\n")); err == nil {
 		t.Error("a Source parsed as a connector version")
 	}
 }

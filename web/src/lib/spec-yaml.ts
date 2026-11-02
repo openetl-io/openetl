@@ -34,7 +34,7 @@ function tidy(v: JsonValue, key?: string): JsonValue {
 
 export function pipelineYAML(name: string, workspace: string, spec: PipelineSpec) {
   return stringify({
-    apiVersion: "openetl.dev/v1alpha1",
+    apiVersion: "openetl.io/v1alpha1",
     kind: "Pipeline",
     metadata: workspace === "default" ? { name } : { name, workspace },
     spec: tidy(toJson(PipelineSpecSchema, spec)),

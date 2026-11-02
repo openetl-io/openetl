@@ -48,7 +48,7 @@ func TestPackage(t *testing.T) {
 }
 
 func TestConnectorApplyTakesOnlyVersions(t *testing.T) {
-	err := onlyConnectorVersions([]byte("apiVersion: openetl.dev/v1alpha1\nkind: Pipeline\n"), "p.yaml#1")
+	err := onlyConnectorVersions([]byte("apiVersion: openetl.io/v1alpha1\nkind: Pipeline\n"), "p.yaml#1")
 	if err == nil || !strings.Contains(err.Error(), "openetl apply") {
 		t.Errorf("a pipeline: %v", err)
 	}

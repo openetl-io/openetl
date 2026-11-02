@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openetl.dev/schemas/manifest/v1alpha1.json",
+  "$id": "https://openetl.io/schemas/manifest/v1alpha1.json",
   "title": "openetl declarative source manifest",
   "description": "A source for an HTTP API, as data. Expressions are CEL. Templates are text with {expression} holes; {{ and }} are literal braces. A template that is one hole keeps the hole's value: null leaves a parameter or header out, and a list repeats a parameter.",
   "type": "object",
   "required": ["apiVersion", "kind", "metadata", "spec"],
   "additionalProperties": false,
   "properties": {
-    "apiVersion": { "const": "openetl.dev/v1alpha1" },
+    "apiVersion": { "const": "openetl.io/v1alpha1" },
     "kind": { "const": "DeclarativeSource" },
     "metadata": {
       "type": "object",

@@ -17,7 +17,7 @@ import (
 )
 
 const acme = `
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: DeclarativeSource
 metadata: { name: acme, version: 0.1.0 }
 spec:

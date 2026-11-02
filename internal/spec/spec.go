@@ -21,7 +21,7 @@ import (
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 )
 
-const APIVersion = "openetl.dev/v1alpha1"
+const APIVersion = "openetl.io/v1alpha1"
 
 const (
 	KindSource      = "Source"

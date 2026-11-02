@@ -17,11 +17,11 @@ import (
 )
 
 func sourceDoc(name, spec string) string {
-	return fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, spec)
+	return fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, spec)
 }
 
 func destinationDoc(name, spec string) string {
-	return fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, spec)
+	return fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, spec)
 }
 
 // wrongPassword is the e2e database URL with another password.

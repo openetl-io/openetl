@@ -113,7 +113,7 @@ func read(t *testing.T, s source.Source, streams ...source.ConfiguredStream) (*r
 // properties, and whose spec has the given YAML after http's base_url.
 func testManifest(props, rest string) string {
 	return `
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: DeclarativeSource
 metadata: { name: acme, version: 0.1.0 }
 spec:

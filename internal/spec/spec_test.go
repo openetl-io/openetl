@@ -12,7 +12,7 @@ import (
 )
 
 const pipeline = `
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Pipeline
 metadata:
   name: faker-to-postgres
@@ -92,14 +92,14 @@ func TestParsePipeline(t *testing.T) {
 }
 
 func TestParseDbtProject(t *testing.T) {
-	doc, err := Parse([]byte("apiVersion: openetl.dev/v1alpha1\nkind: DbtProject\nmetadata: {name: analytics}\nspec: {bundle: aGVsbG8=}\n"))
+	doc, err := Parse([]byte("apiVersion: openetl.io/v1alpha1\nkind: DbtProject\nmetadata: {name: analytics}\nspec: {bundle: aGVsbG8=}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if doc.Kind != KindDbtProject || string(doc.Bundle) != "hello" {
 		t.Errorf("doc = %+v", doc)
 	}
-	header := "apiVersion: openetl.dev/v1alpha1\nkind: DbtProject\nmetadata: {name: analytics}\n"
+	header := "apiVersion: openetl.io/v1alpha1\nkind: DbtProject\nmetadata: {name: analytics}\n"
 	for name, spec := range map[string]string{
 		"path":       "spec: {path: ./dbt}",
 		"no bundle":  "spec: {bundle: ''}",
@@ -115,7 +115,7 @@ func TestParseDbtProject(t *testing.T) {
 }
 
 func TestParseConnector(t *testing.T) {
-	doc, err := Parse([]byte(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "Source", "metadata": {"name": "faker"},
+	doc, err := Parse([]byte(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": "faker"},
 		"spec": {"connector": "faker", "config": {"seed": 1, "count": 100, "nested": {"a": [1, "b"]}}}}`))
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestParseConnector(t *testing.T) {
 }
 
 func TestParseErrors(t *testing.T) {
-	header := "apiVersion: openetl.dev/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\n"
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\n"
 	base := "spec:\n  schedule: {every: 1m}\n  source: {ref: s}\n  destination: {ref: d}\n"
 	for name, doc := range map[string]string{
 		"apiVersion":     strings.Replace(header, "v1alpha1", "v2", 1) + base,

@@ -4,7 +4,7 @@
 #   echo postgres://openetl:openetl@localhost:5432/openetl |
 #     go run ./cmd/openetl secret set local-postgres-dsn
 #   go run ./cmd/openetl apply -f examples/faker-to-postgres.yaml
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Source
 metadata:
   name: faker
@@ -15,7 +15,7 @@ spec:
     count: 1000
     batchSize: 100
 ---
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Destination
 metadata:
   name: local-postgres
@@ -24,7 +24,7 @@ spec:
   config:
     dsn: { secret: local-postgres-dsn }
 ---
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Pipeline
 metadata:
   name: faker-to-postgres

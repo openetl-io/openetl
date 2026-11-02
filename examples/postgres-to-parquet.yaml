@@ -6,7 +6,7 @@
 #   go run ./cmd/openetl apply -f examples/postgres-to-parquet.yaml
 #
 # Each table gets a directory of files, one or more per committed epoch.
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Source
 metadata:
   name: local-postgres-faker
@@ -16,7 +16,7 @@ spec:
     dsn: { secret: local-postgres-dsn }
     schema: faker
 ---
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Destination
 metadata:
   name: local-parquet
@@ -25,7 +25,7 @@ spec:
   config:
     url: file:///tmp/openetl-parquet
 ---
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Pipeline
 metadata:
   name: postgres-to-parquet

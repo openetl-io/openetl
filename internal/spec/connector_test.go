@@ -13,7 +13,7 @@ import (
 )
 
 const descriptor = `
-apiVersion: openetl.dev/v1alpha1
+apiVersion: openetl.io/v1alpha1
 kind: Connector
 metadata: {name: postgres, version: 0.1.0}
 spec:
@@ -104,11 +104,11 @@ func TestParseDescriptor(t *testing.T) {
 }
 
 func TestParseDeclarativeSource(t *testing.T) {
-	doc, err := Parse([]byte("apiVersion: openetl.dev/v1alpha1\nkind: DeclarativeSource\nmetadata: {version: 1.0.0, name: acme}\nspec: {b: 1, a: [x]}\n"))
+	doc, err := Parse([]byte("apiVersion: openetl.io/v1alpha1\nkind: DeclarativeSource\nmetadata: {version: 1.0.0, name: acme}\nspec: {b: 1, a: [x]}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"apiVersion":"openetl.dev/v1alpha1","kind":"DeclarativeSource","metadata":{"name":"acme","version":"1.0.0"},"spec":{"a":["x"],"b":1}}`
+	want := `{"apiVersion":"openetl.io/v1alpha1","kind":"DeclarativeSource","metadata":{"name":"acme","version":"1.0.0"},"spec":{"a":["x"],"b":1}}`
 	if doc.Name != "acme" || doc.Version != "1.0.0" || string(doc.Manifest) != want {
 		t.Errorf("doc = %+v, manifest %s", doc, doc.Manifest)
 	}
@@ -128,8 +128,8 @@ func TestParseConnectorErrors(t *testing.T) {
 		"acknowledges":       strings.Replace(descriptor, "egress: {tier: raw}", "egress: {tier: raw}\n  acknowledges: true", 1),
 		"no config":          descriptor[:strings.Index(descriptor, "  config:")],
 		"unknown field":      descriptor + "  heal: true\n",
-		"version on sources": "apiVersion: openetl.dev/v1alpha1\nkind: Source\nmetadata: {name: s, version: 1.0.0}\nspec: {connector: faker}\n",
-		"manifest version":   "apiVersion: openetl.dev/v1alpha1\nkind: DeclarativeSource\nmetadata: {name: acme}\nspec: {}\n",
+		"version on sources": "apiVersion: openetl.io/v1alpha1\nkind: Source\nmetadata: {name: s, version: 1.0.0}\nspec: {connector: faker}\n",
+		"manifest version":   "apiVersion: openetl.io/v1alpha1\nkind: DeclarativeSource\nmetadata: {name: acme}\nspec: {}\n",
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: parsed", name)

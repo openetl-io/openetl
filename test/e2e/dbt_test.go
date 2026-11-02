@@ -48,7 +48,7 @@ sources:
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fmt.Sprintf(`{"apiVersion": "openetl.dev/v1alpha1", "kind": "DbtProject", "metadata": {"name": %q}, "spec": {"bundle": %q}}`,
+	return fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "DbtProject", "metadata": {"name": %q}, "spec": {"bundle": %q}}`,
 		name, base64.StdEncoding.EncodeToString(bundle))
 }
 
