@@ -37,7 +37,18 @@ func TestSettings(t *testing.T) {
 	if s := Settings(continuous, warehouse); s.CommitInterval != 10*time.Second {
 		t.Errorf("a continuous pipeline commits every %v by default", s.CommitInterval)
 	}
+	iceberg := warehouse
+	iceberg.DefaultCommitInterval = 2 * time.Minute
+	if s := Settings(continuous, iceberg); s.CommitInterval != 2*time.Minute {
+		t.Errorf("a continuous pipeline commits every %v by default, not at its destination's default", s.CommitInterval)
+	}
+	if s := Settings(nil, iceberg); s.CommitInterval != 5*time.Minute {
+		t.Errorf("a scheduled pipeline commits every %v by default, not every 5 min", s.CommitInterval)
+	}
 	continuous.Delivery = d
+	if s := Settings(continuous, iceberg); s.CommitInterval != time.Minute {
+		t.Errorf("a continuous pipeline's own interval: %v", s.CommitInterval)
+	}
 	if s := Settings(continuous, warehouse); s.CommitInterval != time.Minute {
 		t.Errorf("a continuous pipeline's own interval: %v", s.CommitInterval)
 	}

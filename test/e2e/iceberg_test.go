@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
@@ -23,6 +24,8 @@ import (
 	_ "github.com/apache/iceberg-go/io/gocloud"
 	"github.com/apache/iceberg-go/table"
 	"github.com/jackc/pgx/v5"
+
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 )
 
 // The compose Iceberg REST catalog, which keeps its tables in the S3 store's
@@ -205,4 +208,143 @@ func TestIcebergRunnerKilledMidSync(t *testing.T) {
 	status, stats := waitSync(t, name, 90*time.Second)
 	finishedLater(t, status, stats)
 	checkIceberg(t, ns, 2000, "users", "purchases")
+}
+
+// A continuous pipeline reads a Postgres table's snapshot and then its
+// changes, and merges them into Iceberg: updates, soft deletes, a key's
+// change, and an update that leaves a TOAST value alone. A runner killed
+// mid-stream hands the job to another.
+func TestPostgresCDCToIceberg(t *testing.T) {
+	a, b := startRunner(t), startRunner(t)
+	name := unique("cdc-iceberg")
+	in, ns := schema(name), schema(name)+"_out"
+	dst := icebergDest(t, ns)
+	src := pgx.Identifier{in, "users"}.Sanitize()
+	run(t, "CREATE SCHEMA "+pgx.Identifier{in}.Sanitize(),
+		"CREATE TABLE "+src+" (id bigint PRIMARY KEY, name text, doc text)",
+		"ALTER TABLE "+src+" ALTER COLUMN doc SET STORAGE EXTERNAL",
+		"INSERT INTO "+src+" SELECT i, 'u' || i, NULL FROM generate_series(1, 300) i")
+	t.Cleanup(func() {
+		if conn, err := pgx.Connect(context.Background(), env.dbURL); err == nil {
+			_, _ = conn.Exec(context.Background(), "DROP PUBLICATION IF EXISTS "+pgx.Identifier{in}.Sanitize())
+			_ = conn.Close(context.Background())
+		}
+	})
+	apply(t,
+		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q},
+			"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q, "publication": %q, "snapshotChunkRows": 50}}}`, name, in, in),
+		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
+		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
+			"spec": {"mode": "continuous", "source": {"ref": %q}, "destination": {"ref": %q}, "delivery": {"commit": {"interval": "1s"}}}}`, name, name, name))
+	pipeline := "workspaces/default/pipelines/" + name
+	t.Cleanup(func() {
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: pipeline}))
+	})
+
+	type row struct {
+		name, doc string
+		deleted   bool
+	}
+	read := func() (map[int64]row, error) {
+		tbl, err := icebergTable(t, ns, "users")
+		if err != nil {
+			return nil, err
+		}
+		_, it, err := tbl.Scan(table.WithSelectedFields("id", "name", "doc", "_openetl_deleted")).ToArrowRecords(t.Context())
+		if err != nil {
+			return nil, err
+		}
+		out := map[int64]row{}
+		for b, err := range it {
+			if err != nil {
+				return nil, err
+			}
+			ids, names, docs, deleted := b.Column(0).(*array.Int64), b.Column(1).(*array.String), b.Column(2).(*array.String), b.Column(3).(*array.Boolean)
+			for i := range ids.Len() {
+				if _, ok := out[ids.Value(i)]; ok {
+					b.Release()
+					return nil, fmt.Errorf("id %d twice", ids.Value(i))
+				}
+				out[ids.Value(i)] = row{names.Value(i), docs.Value(i), deleted.Value(i)}
+			}
+			b.Release()
+		}
+		return out, nil
+	}
+	// What the table shows of the source: live rows, and deleted ones.
+	matches := func() bool {
+		got, err := read()
+		if err != nil {
+			return false
+		}
+		rows, err := queryRows(t, "SELECT id, name, coalesce(doc, '') FROM "+src)
+		if err != nil {
+			return false
+		}
+		live := 0
+		for _, r := range got {
+			if !r.deleted {
+				live++
+			}
+		}
+		if live != len(rows) {
+			return false
+		}
+		for _, r := range rows {
+			g, ok := got[r.id]
+			if !ok || g.deleted || g.name != r.name || g.doc != r.doc {
+				return false
+			}
+		}
+		return true
+	}
+	eventually(t, 90*time.Second, "the snapshot", matches)
+
+	big := fmt.Sprintf("repeat('d', %d)", 9000)
+	run(t, "UPDATE "+src+" SET doc = "+big+" WHERE id <= 10",
+		"UPDATE "+src+" SET name = 'renamed' WHERE id <= 20",
+		"DELETE FROM "+src+" WHERE id BETWEEN 21 AND 30",
+		"UPDATE "+src+" SET id = id + 1000 WHERE id BETWEEN 31 AND 35",
+		"INSERT INTO "+src+" SELECT i, 'new', NULL FROM generate_series(301, 350) i")
+	eventually(t, 90*time.Second, "the changes", matches)
+	got, err := read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted := 0
+	for _, r := range got {
+		if r.deleted {
+			deleted++
+		}
+	}
+	if deleted != 15 {
+		t.Errorf("%d rows marked deleted, want 15", deleted)
+	}
+
+	host(t, a, b).kill(t)
+	run(t, "UPDATE "+src+" SET name = 'after' WHERE id > 300")
+	eventually(t, 120*time.Second, "the changes after the runner died", matches)
+}
+
+type userRow struct {
+	id        int64
+	name, doc string
+}
+
+func queryRows(t *testing.T, q string) ([]userRow, error) {
+	t.Helper()
+	conn, err := pgx.Connect(t.Context(), env.dbURL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	rows, err := conn.Query(t.Context(), q)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (userRow, error) {
+		var u userRow
+		err := r.Scan(&u.id, &u.name, &u.doc)
+		return u, err
+	})
 }

@@ -24,7 +24,8 @@ const (
 	defaultResumePointTimeout = time.Minute
 )
 
-// A continuous pipeline's commit interval unless it sets one.
+// A continuous pipeline's commit interval unless it or its destination sets
+// one.
 const continuousCommitInterval = 10 * time.Second
 
 // Settings settles the spec's delivery against the destination's
@@ -39,6 +40,9 @@ func Settings(p *apiv1.PipelineSpec, caps destination.Capabilities) delivery.Set
 	}
 	if Continuous(p) {
 		s.CommitInterval = continuousCommitInterval
+		if caps.DefaultCommitInterval > 0 {
+			s.CommitInterval = caps.DefaultCommitInterval
+		}
 	}
 	d := p.GetDelivery()
 	if caps.SupportsScope(destination.ScopePipeline) {
