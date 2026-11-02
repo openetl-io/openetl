@@ -92,8 +92,9 @@ func TestVersionsPinConfigs(t *testing.T) {
 		WHERE p.name = $1 ORDER BY s.start_time DESC LIMIT 1`, name); err != nil || ran != v2 {
 		t.Errorf("the sync ran version %s, %v; want %s", ran, err, v2)
 	}
-	if n := users() - before; n != 80 {
-		t.Errorf("the sync loaded %d users, want 80", n)
+	// A full refresh overwrites the table with what it read.
+	if n := users(); n != 80 {
+		t.Errorf("after the sync, users has %d rows, want 80 (%d before)", n, before)
 	}
 
 	res = applyAll(t, false, pipelineDocs(name, `{"seed": 4, "count": 80}`, `{}`)...)

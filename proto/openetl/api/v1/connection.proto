@@ -201,6 +201,17 @@ message CatalogStream {
   // The columns the source declares; empty when the engine infers them from
   // the records.
   repeated CatalogColumn columns = 5;
+  // How the source can read the stream, the way it reads it first; empty if
+  // it doesn't say.
+  repeated SyncMode sync_modes = 6;
+}
+
+enum SyncMode {
+  SYNC_MODE_UNSPECIFIED = 0;
+  SYNC_MODE_FULL_REFRESH = 1;
+  SYNC_MODE_INCREMENTAL = 2;
+  SYNC_MODE_CDC = 3;
+  SYNC_MODE_STREAM = 4;
 }
 
 // Replay is how a source replays a stream from a resume point.

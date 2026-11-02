@@ -293,7 +293,7 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		p.Source.Streams = append(p.Source.Streams, st)
 	}
 	p.Destination = &apiv1.PipelineDestination{Ref: y.Destination.Ref, Namespace: y.Destination.Namespace}
-	if p.Destination.Write, err = enum(apiv1.WriteMode_value, "WRITE_MODE_", "destination.write", y.Destination.Write, apiv1.WriteMode_WRITE_MODE_APPEND); err != nil {
+	if p.Destination.Write, err = enum(apiv1.WriteMode_value, "WRITE_MODE_", "destination.write", y.Destination.Write, apiv1.WriteMode_WRITE_MODE_UNSPECIFIED); err != nil {
 		return nil, err
 	}
 	if p.Destination.Naming, err = enum(apiv1.Naming_value, "NAMING_", "destination.naming", y.Destination.Naming, apiv1.Naming_NAMING_UNSPECIFIED); err != nil {

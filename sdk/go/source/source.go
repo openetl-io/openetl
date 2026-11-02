@@ -24,6 +24,19 @@ const (
 	Superset
 )
 
+// SyncMode is how a source reads a stream.
+type SyncMode int
+
+const (
+	// FullRefresh reads the whole stream every sync. Its tables are
+	// overwritten unless the pipeline sets another write mode.
+	FullRefresh SyncMode = iota + 1
+	// Incremental reads from a cursor floor onwards.
+	Incremental
+	// CDC reads a changelog.
+	CDC
+)
+
 func (r Replay) String() string {
 	switch r {
 	case Exact:
@@ -84,6 +97,9 @@ type CatalogStream struct {
 	// Records may carry a declared field as text, which the engine parses,
 	// quarantining what doesn't fit.
 	Schema *arrow.Schema
+	// How the source can read the stream, the way it reads it first; nil if
+	// it doesn't say.
+	SyncModes []SyncMode
 }
 
 type Catalog struct {

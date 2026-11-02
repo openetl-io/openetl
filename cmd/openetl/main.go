@@ -260,7 +260,8 @@ func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
 			fmt.Fprintln(out, "  streams:")
 			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 			for _, st := range p.GetStreams() {
-				fmt.Fprintf(tw, "    %s\t%s\t%s\n", st.GetName(), strings.ToLower(strings.TrimPrefix(st.GetLevel().String(), "DELIVERY_LEVEL_")), st.GetReason())
+				fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\n", st.GetName(), strings.ToLower(strings.TrimPrefix(st.GetWrite().String(), "WRITE_MODE_")),
+					strings.ToLower(strings.TrimPrefix(st.GetLevel().String(), "DELIVERY_LEVEL_")), st.GetReason())
 			}
 			_ = tw.Flush()
 		}

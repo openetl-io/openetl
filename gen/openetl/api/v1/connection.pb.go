@@ -24,6 +24,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type SyncMode int32
+
+const (
+	SyncMode_SYNC_MODE_UNSPECIFIED  SyncMode = 0
+	SyncMode_SYNC_MODE_FULL_REFRESH SyncMode = 1
+	SyncMode_SYNC_MODE_INCREMENTAL  SyncMode = 2
+	SyncMode_SYNC_MODE_CDC          SyncMode = 3
+	SyncMode_SYNC_MODE_STREAM       SyncMode = 4
+)
+
+// Enum value maps for SyncMode.
+var (
+	SyncMode_name = map[int32]string{
+		0: "SYNC_MODE_UNSPECIFIED",
+		1: "SYNC_MODE_FULL_REFRESH",
+		2: "SYNC_MODE_INCREMENTAL",
+		3: "SYNC_MODE_CDC",
+		4: "SYNC_MODE_STREAM",
+	}
+	SyncMode_value = map[string]int32{
+		"SYNC_MODE_UNSPECIFIED":  0,
+		"SYNC_MODE_FULL_REFRESH": 1,
+		"SYNC_MODE_INCREMENTAL":  2,
+		"SYNC_MODE_CDC":          3,
+		"SYNC_MODE_STREAM":       4,
+	}
+)
+
+func (x SyncMode) Enum() *SyncMode {
+	p := new(SyncMode)
+	*p = x
+	return p
+}
+
+func (x SyncMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SyncMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_openetl_api_v1_connection_proto_enumTypes[0].Descriptor()
+}
+
+func (SyncMode) Type() protoreflect.EnumType {
+	return &file_openetl_api_v1_connection_proto_enumTypes[0]
+}
+
+func (x SyncMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SyncMode.Descriptor instead.
+func (SyncMode) EnumDescriptor() ([]byte, []int) {
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{0}
+}
+
 // Replay is how a source replays a stream from a resume point.
 type Replay int32
 
@@ -60,11 +115,11 @@ func (x Replay) String() string {
 }
 
 func (Replay) Descriptor() protoreflect.EnumDescriptor {
-	return file_openetl_api_v1_connection_proto_enumTypes[0].Descriptor()
+	return file_openetl_api_v1_connection_proto_enumTypes[1].Descriptor()
 }
 
 func (Replay) Type() protoreflect.EnumType {
-	return &file_openetl_api_v1_connection_proto_enumTypes[0]
+	return &file_openetl_api_v1_connection_proto_enumTypes[1]
 }
 
 func (x Replay) Number() protoreflect.EnumNumber {
@@ -73,7 +128,7 @@ func (x Replay) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Replay.Descriptor instead.
 func (Replay) EnumDescriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{0}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{1}
 }
 
 type Source struct {
@@ -1315,7 +1370,10 @@ type CatalogStream struct {
 	Replay      Replay `protobuf:"varint,4,opt,name=replay,proto3,enum=openetl.api.v1.Replay" json:"replay,omitempty"`
 	// The columns the source declares; empty when the engine infers them from
 	// the records.
-	Columns       []*CatalogColumn `protobuf:"bytes,5,rep,name=columns,proto3" json:"columns,omitempty"`
+	Columns []*CatalogColumn `protobuf:"bytes,5,rep,name=columns,proto3" json:"columns,omitempty"`
+	// How the source can read the stream, the way it reads it first; empty if
+	// it doesn't say.
+	SyncModes     []SyncMode `protobuf:"varint,6,rep,packed,name=sync_modes,json=syncModes,proto3,enum=openetl.api.v1.SyncMode" json:"sync_modes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1381,6 +1439,13 @@ func (x *CatalogStream) GetReplay() Replay {
 func (x *CatalogStream) GetColumns() []*CatalogColumn {
 	if x != nil {
 		return x.Columns
+	}
+	return nil
+}
+
+func (x *CatalogStream) GetSyncModes() []SyncMode {
+	if x != nil {
+		return x.SyncModes
 	}
 	return nil
 }
@@ -1531,18 +1596,26 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\aCatalog\x127\n" +
 	"\astreams\x18\x01 \x03(\v2\x1d.openetl.api.v1.CatalogStreamR\astreams\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12?\n" +
-	"\rdiscover_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\fdiscoverTime\"\xd0\x01\n" +
+	"\rdiscover_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\fdiscoverTime\"\x89\x02\n" +
 	"\rCatalogStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vprimary_key\x18\x02 \x03(\tR\n" +
 	"primaryKey\x12!\n" +
 	"\fcursor_field\x18\x03 \x01(\tR\vcursorField\x12.\n" +
 	"\x06replay\x18\x04 \x01(\x0e2\x16.openetl.api.v1.ReplayR\x06replay\x127\n" +
-	"\acolumns\x18\x05 \x03(\v2\x1d.openetl.api.v1.CatalogColumnR\acolumns\"S\n" +
+	"\acolumns\x18\x05 \x03(\v2\x1d.openetl.api.v1.CatalogColumnR\acolumns\x127\n" +
+	"\n" +
+	"sync_modes\x18\x06 \x03(\x0e2\x18.openetl.api.v1.SyncModeR\tsyncModes\"S\n" +
 	"\rCatalogColumn\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
-	"\bnullable\x18\x03 \x01(\bR\bnullable*G\n" +
+	"\bnullable\x18\x03 \x01(\bR\bnullable*\x85\x01\n" +
+	"\bSyncMode\x12\x19\n" +
+	"\x15SYNC_MODE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16SYNC_MODE_FULL_REFRESH\x10\x01\x12\x19\n" +
+	"\x15SYNC_MODE_INCREMENTAL\x10\x02\x12\x11\n" +
+	"\rSYNC_MODE_CDC\x10\x03\x12\x14\n" +
+	"\x10SYNC_MODE_STREAM\x10\x04*G\n" +
 	"\x06Replay\x12\x16\n" +
 	"\x12REPLAY_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fREPLAY_EXACT\x10\x01\x12\x13\n" +
@@ -1571,80 +1644,82 @@ func file_openetl_api_v1_connection_proto_rawDescGZIP() []byte {
 	return file_openetl_api_v1_connection_proto_rawDescData
 }
 
-var file_openetl_api_v1_connection_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_openetl_api_v1_connection_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_openetl_api_v1_connection_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_openetl_api_v1_connection_proto_goTypes = []any{
-	(Replay)(0),                       // 0: openetl.api.v1.Replay
-	(*Source)(nil),                    // 1: openetl.api.v1.Source
-	(*Destination)(nil),               // 2: openetl.api.v1.Destination
-	(*ConnectorConfig)(nil),           // 3: openetl.api.v1.ConnectorConfig
-	(*GetSourceRequest)(nil),          // 4: openetl.api.v1.GetSourceRequest
-	(*GetSourceResponse)(nil),         // 5: openetl.api.v1.GetSourceResponse
-	(*ListSourcesRequest)(nil),        // 6: openetl.api.v1.ListSourcesRequest
-	(*ListSourcesResponse)(nil),       // 7: openetl.api.v1.ListSourcesResponse
-	(*DeleteSourceRequest)(nil),       // 8: openetl.api.v1.DeleteSourceRequest
-	(*DeleteSourceResponse)(nil),      // 9: openetl.api.v1.DeleteSourceResponse
-	(*GetDestinationRequest)(nil),     // 10: openetl.api.v1.GetDestinationRequest
-	(*GetDestinationResponse)(nil),    // 11: openetl.api.v1.GetDestinationResponse
-	(*ListDestinationsRequest)(nil),   // 12: openetl.api.v1.ListDestinationsRequest
-	(*ListDestinationsResponse)(nil),  // 13: openetl.api.v1.ListDestinationsResponse
-	(*DeleteDestinationRequest)(nil),  // 14: openetl.api.v1.DeleteDestinationRequest
-	(*DeleteDestinationResponse)(nil), // 15: openetl.api.v1.DeleteDestinationResponse
-	(*CheckSourceRequest)(nil),        // 16: openetl.api.v1.CheckSourceRequest
-	(*CheckSourceResponse)(nil),       // 17: openetl.api.v1.CheckSourceResponse
-	(*CheckDestinationRequest)(nil),   // 18: openetl.api.v1.CheckDestinationRequest
-	(*CheckDestinationResponse)(nil),  // 19: openetl.api.v1.CheckDestinationResponse
-	(*CheckResult)(nil),               // 20: openetl.api.v1.CheckResult
-	(*DiscoverSourceRequest)(nil),     // 21: openetl.api.v1.DiscoverSourceRequest
-	(*DiscoverSourceResponse)(nil),    // 22: openetl.api.v1.DiscoverSourceResponse
-	(*Catalog)(nil),                   // 23: openetl.api.v1.Catalog
-	(*CatalogStream)(nil),             // 24: openetl.api.v1.CatalogStream
-	(*CatalogColumn)(nil),             // 25: openetl.api.v1.CatalogColumn
-	(*timestamppb.Timestamp)(nil),     // 26: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),           // 27: google.protobuf.Struct
+	(SyncMode)(0),                     // 0: openetl.api.v1.SyncMode
+	(Replay)(0),                       // 1: openetl.api.v1.Replay
+	(*Source)(nil),                    // 2: openetl.api.v1.Source
+	(*Destination)(nil),               // 3: openetl.api.v1.Destination
+	(*ConnectorConfig)(nil),           // 4: openetl.api.v1.ConnectorConfig
+	(*GetSourceRequest)(nil),          // 5: openetl.api.v1.GetSourceRequest
+	(*GetSourceResponse)(nil),         // 6: openetl.api.v1.GetSourceResponse
+	(*ListSourcesRequest)(nil),        // 7: openetl.api.v1.ListSourcesRequest
+	(*ListSourcesResponse)(nil),       // 8: openetl.api.v1.ListSourcesResponse
+	(*DeleteSourceRequest)(nil),       // 9: openetl.api.v1.DeleteSourceRequest
+	(*DeleteSourceResponse)(nil),      // 10: openetl.api.v1.DeleteSourceResponse
+	(*GetDestinationRequest)(nil),     // 11: openetl.api.v1.GetDestinationRequest
+	(*GetDestinationResponse)(nil),    // 12: openetl.api.v1.GetDestinationResponse
+	(*ListDestinationsRequest)(nil),   // 13: openetl.api.v1.ListDestinationsRequest
+	(*ListDestinationsResponse)(nil),  // 14: openetl.api.v1.ListDestinationsResponse
+	(*DeleteDestinationRequest)(nil),  // 15: openetl.api.v1.DeleteDestinationRequest
+	(*DeleteDestinationResponse)(nil), // 16: openetl.api.v1.DeleteDestinationResponse
+	(*CheckSourceRequest)(nil),        // 17: openetl.api.v1.CheckSourceRequest
+	(*CheckSourceResponse)(nil),       // 18: openetl.api.v1.CheckSourceResponse
+	(*CheckDestinationRequest)(nil),   // 19: openetl.api.v1.CheckDestinationRequest
+	(*CheckDestinationResponse)(nil),  // 20: openetl.api.v1.CheckDestinationResponse
+	(*CheckResult)(nil),               // 21: openetl.api.v1.CheckResult
+	(*DiscoverSourceRequest)(nil),     // 22: openetl.api.v1.DiscoverSourceRequest
+	(*DiscoverSourceResponse)(nil),    // 23: openetl.api.v1.DiscoverSourceResponse
+	(*Catalog)(nil),                   // 24: openetl.api.v1.Catalog
+	(*CatalogStream)(nil),             // 25: openetl.api.v1.CatalogStream
+	(*CatalogColumn)(nil),             // 26: openetl.api.v1.CatalogColumn
+	(*timestamppb.Timestamp)(nil),     // 27: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),           // 28: google.protobuf.Struct
 }
 var file_openetl_api_v1_connection_proto_depIdxs = []int32{
-	3,  // 0: openetl.api.v1.Source.spec:type_name -> openetl.api.v1.ConnectorConfig
-	26, // 1: openetl.api.v1.Source.create_time:type_name -> google.protobuf.Timestamp
-	26, // 2: openetl.api.v1.Source.update_time:type_name -> google.protobuf.Timestamp
-	3,  // 3: openetl.api.v1.Destination.spec:type_name -> openetl.api.v1.ConnectorConfig
-	26, // 4: openetl.api.v1.Destination.create_time:type_name -> google.protobuf.Timestamp
-	26, // 5: openetl.api.v1.Destination.update_time:type_name -> google.protobuf.Timestamp
-	27, // 6: openetl.api.v1.ConnectorConfig.config:type_name -> google.protobuf.Struct
-	1,  // 7: openetl.api.v1.GetSourceResponse.source:type_name -> openetl.api.v1.Source
-	1,  // 8: openetl.api.v1.ListSourcesResponse.sources:type_name -> openetl.api.v1.Source
-	2,  // 9: openetl.api.v1.GetDestinationResponse.destination:type_name -> openetl.api.v1.Destination
-	2,  // 10: openetl.api.v1.ListDestinationsResponse.destinations:type_name -> openetl.api.v1.Destination
-	20, // 11: openetl.api.v1.CheckSourceResponse.result:type_name -> openetl.api.v1.CheckResult
-	20, // 12: openetl.api.v1.CheckDestinationResponse.result:type_name -> openetl.api.v1.CheckResult
-	23, // 13: openetl.api.v1.DiscoverSourceResponse.catalog:type_name -> openetl.api.v1.Catalog
-	24, // 14: openetl.api.v1.Catalog.streams:type_name -> openetl.api.v1.CatalogStream
-	26, // 15: openetl.api.v1.Catalog.discover_time:type_name -> google.protobuf.Timestamp
-	0,  // 16: openetl.api.v1.CatalogStream.replay:type_name -> openetl.api.v1.Replay
-	25, // 17: openetl.api.v1.CatalogStream.columns:type_name -> openetl.api.v1.CatalogColumn
-	4,  // 18: openetl.api.v1.SourceService.GetSource:input_type -> openetl.api.v1.GetSourceRequest
-	6,  // 19: openetl.api.v1.SourceService.ListSources:input_type -> openetl.api.v1.ListSourcesRequest
-	8,  // 20: openetl.api.v1.SourceService.DeleteSource:input_type -> openetl.api.v1.DeleteSourceRequest
-	16, // 21: openetl.api.v1.SourceService.CheckSource:input_type -> openetl.api.v1.CheckSourceRequest
-	21, // 22: openetl.api.v1.SourceService.DiscoverSource:input_type -> openetl.api.v1.DiscoverSourceRequest
-	10, // 23: openetl.api.v1.DestinationService.GetDestination:input_type -> openetl.api.v1.GetDestinationRequest
-	12, // 24: openetl.api.v1.DestinationService.ListDestinations:input_type -> openetl.api.v1.ListDestinationsRequest
-	14, // 25: openetl.api.v1.DestinationService.DeleteDestination:input_type -> openetl.api.v1.DeleteDestinationRequest
-	18, // 26: openetl.api.v1.DestinationService.CheckDestination:input_type -> openetl.api.v1.CheckDestinationRequest
-	5,  // 27: openetl.api.v1.SourceService.GetSource:output_type -> openetl.api.v1.GetSourceResponse
-	7,  // 28: openetl.api.v1.SourceService.ListSources:output_type -> openetl.api.v1.ListSourcesResponse
-	9,  // 29: openetl.api.v1.SourceService.DeleteSource:output_type -> openetl.api.v1.DeleteSourceResponse
-	17, // 30: openetl.api.v1.SourceService.CheckSource:output_type -> openetl.api.v1.CheckSourceResponse
-	22, // 31: openetl.api.v1.SourceService.DiscoverSource:output_type -> openetl.api.v1.DiscoverSourceResponse
-	11, // 32: openetl.api.v1.DestinationService.GetDestination:output_type -> openetl.api.v1.GetDestinationResponse
-	13, // 33: openetl.api.v1.DestinationService.ListDestinations:output_type -> openetl.api.v1.ListDestinationsResponse
-	15, // 34: openetl.api.v1.DestinationService.DeleteDestination:output_type -> openetl.api.v1.DeleteDestinationResponse
-	19, // 35: openetl.api.v1.DestinationService.CheckDestination:output_type -> openetl.api.v1.CheckDestinationResponse
-	27, // [27:36] is the sub-list for method output_type
-	18, // [18:27] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	4,  // 0: openetl.api.v1.Source.spec:type_name -> openetl.api.v1.ConnectorConfig
+	27, // 1: openetl.api.v1.Source.create_time:type_name -> google.protobuf.Timestamp
+	27, // 2: openetl.api.v1.Source.update_time:type_name -> google.protobuf.Timestamp
+	4,  // 3: openetl.api.v1.Destination.spec:type_name -> openetl.api.v1.ConnectorConfig
+	27, // 4: openetl.api.v1.Destination.create_time:type_name -> google.protobuf.Timestamp
+	27, // 5: openetl.api.v1.Destination.update_time:type_name -> google.protobuf.Timestamp
+	28, // 6: openetl.api.v1.ConnectorConfig.config:type_name -> google.protobuf.Struct
+	2,  // 7: openetl.api.v1.GetSourceResponse.source:type_name -> openetl.api.v1.Source
+	2,  // 8: openetl.api.v1.ListSourcesResponse.sources:type_name -> openetl.api.v1.Source
+	3,  // 9: openetl.api.v1.GetDestinationResponse.destination:type_name -> openetl.api.v1.Destination
+	3,  // 10: openetl.api.v1.ListDestinationsResponse.destinations:type_name -> openetl.api.v1.Destination
+	21, // 11: openetl.api.v1.CheckSourceResponse.result:type_name -> openetl.api.v1.CheckResult
+	21, // 12: openetl.api.v1.CheckDestinationResponse.result:type_name -> openetl.api.v1.CheckResult
+	24, // 13: openetl.api.v1.DiscoverSourceResponse.catalog:type_name -> openetl.api.v1.Catalog
+	25, // 14: openetl.api.v1.Catalog.streams:type_name -> openetl.api.v1.CatalogStream
+	27, // 15: openetl.api.v1.Catalog.discover_time:type_name -> google.protobuf.Timestamp
+	1,  // 16: openetl.api.v1.CatalogStream.replay:type_name -> openetl.api.v1.Replay
+	26, // 17: openetl.api.v1.CatalogStream.columns:type_name -> openetl.api.v1.CatalogColumn
+	0,  // 18: openetl.api.v1.CatalogStream.sync_modes:type_name -> openetl.api.v1.SyncMode
+	5,  // 19: openetl.api.v1.SourceService.GetSource:input_type -> openetl.api.v1.GetSourceRequest
+	7,  // 20: openetl.api.v1.SourceService.ListSources:input_type -> openetl.api.v1.ListSourcesRequest
+	9,  // 21: openetl.api.v1.SourceService.DeleteSource:input_type -> openetl.api.v1.DeleteSourceRequest
+	17, // 22: openetl.api.v1.SourceService.CheckSource:input_type -> openetl.api.v1.CheckSourceRequest
+	22, // 23: openetl.api.v1.SourceService.DiscoverSource:input_type -> openetl.api.v1.DiscoverSourceRequest
+	11, // 24: openetl.api.v1.DestinationService.GetDestination:input_type -> openetl.api.v1.GetDestinationRequest
+	13, // 25: openetl.api.v1.DestinationService.ListDestinations:input_type -> openetl.api.v1.ListDestinationsRequest
+	15, // 26: openetl.api.v1.DestinationService.DeleteDestination:input_type -> openetl.api.v1.DeleteDestinationRequest
+	19, // 27: openetl.api.v1.DestinationService.CheckDestination:input_type -> openetl.api.v1.CheckDestinationRequest
+	6,  // 28: openetl.api.v1.SourceService.GetSource:output_type -> openetl.api.v1.GetSourceResponse
+	8,  // 29: openetl.api.v1.SourceService.ListSources:output_type -> openetl.api.v1.ListSourcesResponse
+	10, // 30: openetl.api.v1.SourceService.DeleteSource:output_type -> openetl.api.v1.DeleteSourceResponse
+	18, // 31: openetl.api.v1.SourceService.CheckSource:output_type -> openetl.api.v1.CheckSourceResponse
+	23, // 32: openetl.api.v1.SourceService.DiscoverSource:output_type -> openetl.api.v1.DiscoverSourceResponse
+	12, // 33: openetl.api.v1.DestinationService.GetDestination:output_type -> openetl.api.v1.GetDestinationResponse
+	14, // 34: openetl.api.v1.DestinationService.ListDestinations:output_type -> openetl.api.v1.ListDestinationsResponse
+	16, // 35: openetl.api.v1.DestinationService.DeleteDestination:output_type -> openetl.api.v1.DeleteDestinationResponse
+	20, // 36: openetl.api.v1.DestinationService.CheckDestination:output_type -> openetl.api.v1.CheckDestinationResponse
+	28, // [28:37] is the sub-list for method output_type
+	19, // [19:28] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_connection_proto_init() }
@@ -1657,7 +1732,7 @@ func file_openetl_api_v1_connection_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_connection_proto_rawDesc), len(file_openetl_api_v1_connection_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   2,

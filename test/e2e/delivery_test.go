@@ -175,6 +175,7 @@ func TestCollapse(t *testing.T) {
 }
 
 // collapseDocs discovers the source first, so that the plan checks streams.
+// It appends, so each sync's repeats land on the last's.
 func collapseDocs(t *testing.T, name, faker, stream string) []string {
 	t.Helper()
 	d := pipelineDocs(name, faker, `{}`)
@@ -185,6 +186,6 @@ func collapseDocs(t *testing.T, name, faker, stream string) []string {
 	}
 	d[2] = fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
 		"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q, "streams": [%s]},
-		"destination": {"ref": %q, "namespace": %q}}}`, name, name, stream, name, schema(name))
+		"destination": {"ref": %q, "namespace": %q, "write": "append"}}}`, name, name, stream, name, schema(name))
 	return d
 }

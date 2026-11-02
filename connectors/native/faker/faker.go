@@ -90,7 +90,7 @@ func (s *Source) Discover(context.Context) (source.Catalog, error) {
 		replay = source.Superset
 	}
 	for _, st := range streams {
-		cs := source.CatalogStream{Name: st.name, PrimaryKey: []string{"id"}, Replay: replay}
+		cs := source.CatalogStream{Name: st.name, PrimaryKey: []string{"id"}, Replay: replay, SyncModes: []source.SyncMode{source.FullRefresh}}
 		if s.cfg.Keyless {
 			cs.PrimaryKey, cs.CursorField = nil, "id"
 		}

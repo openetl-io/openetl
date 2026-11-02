@@ -125,6 +125,14 @@ func TestDbtPostSync(t *testing.T) {
 		return n
 	}
 	before := users()
+	syncedAt := func(agg string) time.Time {
+		at, err := query[time.Time](t, "SELECT "+agg+"(_openetl_synced_at) FROM "+pgx.Identifier{schema(name), "users"}.Sanitize())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	last := syncedAt("max")
 	status, stats = syncNow(t, name)
 	msg := lastSyncError(t, name)
 	if status != "failed" || !strings.Contains(msg, "dbt project "+name) || !strings.Contains(msg, "model.shop.broken") || !strings.Contains(msg, contract.DbtFailed) {
@@ -133,8 +141,8 @@ func TestDbtPostSync(t *testing.T) {
 	if !strings.Contains(stats, `"Committed"`) {
 		t.Errorf("stats %s: want the attempt that loaded the data", stats)
 	}
-	// The faker appends its rows on every sync.
-	if after := users(); after != before+300 {
-		t.Errorf("the failed sync loaded %d users, want 300", after-before)
+	// The faker's streams are full refreshes, so each sync overwrites them.
+	if after, first := users(), syncedAt("min"); after != before || !first.After(last) {
+		t.Errorf("after the failed sync, users has %d rows, synced from %v; want %d, all after %v", after, first, before, last)
 	}
 }

@@ -222,14 +222,6 @@ enum TimestampUnit {
   TIMESTAMP_UNIT_NANOSECOND = 2;
 }
 
-enum SyncMode {
-  SYNC_MODE_UNSPECIFIED = 0;
-  SYNC_MODE_FULL_REFRESH = 1;
-  SYNC_MODE_INCREMENTAL = 2;
-  SYNC_MODE_CDC = 3;
-  SYNC_MODE_STREAM = 4;
-}
-
 message PipelineColumn {
   ColumnOpKind op = 1;
   // Only for columns the source declares as decimals.
@@ -448,6 +440,9 @@ message StreamPlan {
   // Rows with the same content become one row: within each epoch, and
   // against the target too when the level is exactly once.
   bool collapse = 5;
+  // destination.write, or with none, overwrite for a full refresh into a
+  // destination that has it, and append otherwise.
+  WriteMode write = 6;
 }
 
 // StreamSchema is a version of a stream's schema, as the destination has it.

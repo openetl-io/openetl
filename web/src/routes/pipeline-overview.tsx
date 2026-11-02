@@ -8,11 +8,11 @@ import { ErrorNote } from "@/components/empty";
 import {
   DeliveryLevel,
   PipelineService,
-  SyncMode,
   WriteMode,
   DbtCommand,
   type Pipeline,
 } from "@/gen/openetl/api/v1/pipeline_pb";
+import { SyncMode } from "@/gen/openetl/api/v1/connection_pb";
 import { SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { errorMessage } from "@/lib/api";
 import { compact, enumLabel, full, sentence } from "@/lib/format";
@@ -30,6 +30,7 @@ export const levelLabel: Record<DeliveryLevel, string> = {
 
 type Row = GraphStream & {
   mode?: SyncMode;
+  write?: WriteMode;
   cursor?: string;
   reason?: string;
   warning?: string;
@@ -78,7 +79,7 @@ export function Overview({
       if (!r) m.set(name, (r = { name }));
       return r;
     };
-    for (const s of plan.data?.plan?.streams ?? []) Object.assign(get(s.name), { level: s.level, reason: s.reason });
+    for (const s of plan.data?.plan?.streams ?? []) Object.assign(get(s.name), { level: s.level, reason: s.reason, write: s.write });
     for (const w of plan.data?.plan?.warnings ?? []) if (w.stream) get(w.stream).warning = w.message;
     for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor });
     for (const s of last?.streams ?? [])
@@ -164,6 +165,7 @@ export function Overview({
               <tr className="border-b text-left text-[0.8125rem] text-muted-foreground">
                 <th scope="col" className="px-4 py-2 font-normal">Stream</th>
                 <th scope="col" className="px-4 py-2 font-normal">Read</th>
+                <th scope="col" className="px-4 py-2 font-normal">Write</th>
                 <th scope="col" className="px-4 py-2 font-normal">Delivery</th>
                 <th scope="col" className="px-4 py-2 font-normal">Schema</th>
                 <th scope="col" className="px-4 py-2 text-right font-normal">Rows</th>
@@ -183,6 +185,7 @@ export function Overview({
                       </>
                     )}
                   </td>
+                  <td className="px-4 py-2 text-muted-foreground">{enumLabel(WriteMode[s.write ?? 0]) || "Unknown"}</td>
                   <td className="px-4 py-2">
                     {s.level !== undefined ? (
                       <span className="inline-flex items-center gap-1.5">
@@ -240,7 +243,7 @@ export function Overview({
               ))}
               {streams.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-6 text-muted-foreground">
                     No streams to show yet. They show once a sync commits rows, or once the plan can list them, after{" "}
                     <code className="font-mono text-[0.8125rem] text-foreground">openetl discover {spec?.source?.ref}</code>.
                   </td>

@@ -45,6 +45,9 @@ func (s *sourceServer) Discover(ctx context.Context, req *protocolv1.DiscoverReq
 			DefaultCursor: cs.CursorField,
 			Replay:        protocolv1.Replay(cs.Replay), //nolint:gosec // small
 		})
+		for _, m := range cs.SyncModes {
+			pc.Streams[len(pc.Streams)-1].SyncModes = append(pc.Streams[len(pc.Streams)-1].SyncModes, protocolv1.SyncMode(m)) //nolint:gosec // small
+		}
 	}
 	return &protocolv1.DiscoverResponse{Catalog: pc}, nil
 }

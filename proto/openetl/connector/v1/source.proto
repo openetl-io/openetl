@@ -41,6 +41,8 @@ message CatalogStream {
   // a declared field as text, which the platform parses.
   bytes arrow_schema = 3;
   repeated string primary_key = 4;
+  // How the source can read the stream, the way it reads it first; empty if
+  // it doesn't say. A full refresh is written with overwrite by default.
   repeated SyncMode sync_modes = 5;
   string default_cursor = 6;
   bool source_defined_cursor = 7;

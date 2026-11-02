@@ -39,9 +39,9 @@ var (
 func (s *src) Discover(context.Context) (source.Catalog, error) {
 	var cat source.Catalog
 	for _, st := range s.b.c.streams {
-		cs := source.CatalogStream{Name: st.name, PrimaryKey: st.primaryKey, Replay: source.Superset, Schema: st.schema}
+		cs := source.CatalogStream{Name: st.name, PrimaryKey: st.primaryKey, Replay: source.Superset, Schema: st.schema, SyncModes: []source.SyncMode{source.FullRefresh}}
 		if st.inc != nil {
-			cs.CursorField = st.inc.field
+			cs.CursorField, cs.SyncModes = st.inc.field, []source.SyncMode{source.Incremental}
 		}
 		cat.Streams = append(cat.Streams, cs)
 	}

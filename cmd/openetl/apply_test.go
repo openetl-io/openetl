@@ -36,8 +36,8 @@ func (fakeApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyReques
 			Pipeline: "workspaces/default/pipelines/shop-to-dw", Version: "fedcba9876543210",
 			Changes: []*apiv1.PlanChange{{Field: "source.version", Before: `"01"`, After: `"02"`}, {Field: "delivery.require", After: `"DELIVERY_LEVEL_AT_LEAST_ONCE"`}},
 			Streams: []*apiv1.StreamPlan{
-				{Name: "orders", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, Reason: "exact replay"},
-				{Name: "events", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, Reason: "superset replay, no primary key, and not collapsed"},
+				{Name: "orders", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, Reason: "exact replay", Write: apiv1.WriteMode_WRITE_MODE_OVERWRITE},
+				{Name: "events", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, Reason: "superset replay, no primary key, and not collapsed", Write: apiv1.WriteMode_WRITE_MODE_APPEND},
 			},
 			Problems: []string{`delivery.require: stream "events" gets at_least_once`},
 			Notes:    []string{"a note"},
@@ -79,8 +79,8 @@ workspaces/default/pipelines/shop-to-dw (version fedcba987654)
     source.version: "01" -> "02"
     delivery.require: (unset) -> "DELIVERY_LEVEL_AT_LEAST_ONCE"
   streams:
-    orders  exactly_once   exact replay
-    events  at_least_once  superset replay, no primary key, and not collapsed
+    orders  overwrite  exactly_once   exact replay
+    events  append     at_least_once  superset replay, no primary key, and not collapsed
   problems:
     delivery.require: stream "events" gets at_least_once
   warnings:

@@ -38,8 +38,8 @@ func TestSettings(t *testing.T) {
 var catalog = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 	{Name: "orders", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, Columns: []*apiv1.CatalogColumn{
 		{Name: "id", Type: "int64"}, {Name: "total", Type: "decimal(38, 9)"},
-	}},
-	{Name: "events", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_SUPERSET},
+	}, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}},
+	{Name: "events", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
 	{Name: "logs", Replay: apiv1.Replay_REPLAY_SUPERSET},
 }}
 
@@ -83,7 +83,11 @@ func TestPipeline(t *testing.T) {
 		{name: "overwrite an incremental stream", cat: catalog, caps: warehouse,
 			spec:     `{"destination": {"write": "WRITE_MODE_OVERWRITE"}, "source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_INCREMENTAL"}, {"name": "events", "sync": "SYNC_MODE_FULL_REFRESH"}]}}`,
 			streams:  "orders exactly_once exact replay; events exactly_once+dedupe superset replay, deduped at apply",
-			problems: []string{`destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream "orders" has sync: incremental`}},
+			problems: []string{`destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream "orders" is read with incremental`}},
+		{name: "overwrite a stream the source reads incrementally", cat: catalog, caps: warehouse,
+			spec:     `{"destination": {"write": "WRITE_MODE_OVERWRITE"}, "source": {"streams": [{"name": "events"}]}}`,
+			streams:  "events exactly_once+dedupe superset replay, deduped at apply",
+			problems: []string{`destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream "events" is read with incremental`}},
 		{name: "deletes without merge", cat: catalog, caps: warehouse, spec: `{"destination": {"deletes": "DELETE_MODE_HARD"}, "source": {"streams": [{"name": "orders"}]}}`,
 			streams: "orders exactly_once exact replay", warnings: []string{": destination.deletes applies only to merge"}},
 	} {
@@ -126,6 +130,34 @@ func TestPipeline(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Without destination.write, a full refresh overwrites where the destination
+// can, and everything else appends.
+func TestStreamModes(t *testing.T) {
+	for _, tc := range []struct {
+		name, spec string
+		caps       destination.Capabilities
+		want       string
+	}{
+		{"default", `{}`, warehouse, "orders overwrite, events append, logs append"},
+		{"sync in the spec", `{"source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_INCREMENTAL"}, {"name": "logs", "sync": "SYNC_MODE_FULL_REFRESH"}]}}`, warehouse, "orders append, logs overwrite"},
+		{"no overwrite", `{}`, parquet, "orders append, events append, logs append"},
+		{"set", `{"destination": {"write": "WRITE_MODE_APPEND"}}`, warehouse, "orders append, events append, logs append"},
+	} {
+		spec := &apiv1.PipelineSpec{}
+		if err := protojsonUnmarshal(tc.spec, spec); err != nil {
+			t.Fatal(err)
+		}
+		streams, _, _ := Pipeline(spec, catalog, tc.caps)
+		var got []string
+		for _, s := range streams {
+			got = append(got, s.GetName()+" "+strings.ToLower(strings.TrimPrefix(s.GetWrite().String(), "WRITE_MODE_")))
+		}
+		if g := strings.Join(got, ", "); g != tc.want {
+			t.Errorf("%s: %s, want %s", tc.name, g, tc.want)
+		}
 	}
 }
 

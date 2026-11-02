@@ -154,6 +154,9 @@ func catalogProto(cat source.Catalog) *apiv1.Catalog {
 	out := &apiv1.Catalog{}
 	for _, cs := range cat.Streams {
 		s := &apiv1.CatalogStream{Name: cs.Name, PrimaryKey: cs.PrimaryKey, CursorField: cs.CursorField, Replay: replays[cs.Replay]}
+		for _, m := range cs.SyncModes {
+			s.SyncModes = append(s.SyncModes, apiv1.SyncMode(m)) //nolint:gosec // small
+		}
 		if cs.Schema != nil {
 			for _, c := range streamschema.Columns(cs.Schema) {
 				s.Columns = append(s.Columns, &apiv1.CatalogColumn{Name: c.Name, Type: c.Type, Nullable: c.Nullable})

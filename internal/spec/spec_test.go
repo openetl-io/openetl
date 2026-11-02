@@ -74,8 +74,8 @@ func TestParsePipeline(t *testing.T) {
 		t.Error("collapse: false should be an explicit false")
 	case p.GetSource().GetStreams()[2].Collapse != nil || p.GetSource().GetStreams()[2].GetRequire() != apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED:
 		t.Error("an unset require or collapse should stay unset")
-	case p.GetDestination().GetWrite() != apiv1.WriteMode_WRITE_MODE_APPEND:
-		t.Error("write doesn't default to append")
+	case p.GetDestination().GetWrite() != apiv1.WriteMode_WRITE_MODE_UNSPECIFIED:
+		t.Error("an unset write should stay unset, for each stream's default")
 	case p.GetDestination().GetNaming() != apiv1.Naming_NAMING_SOURCE:
 		t.Error("naming")
 	case p.GetDestination().GetDeletes() != apiv1.DeleteMode_DELETE_MODE_HARD:

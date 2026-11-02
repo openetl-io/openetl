@@ -103,13 +103,17 @@ func (s *Source) Discover(ctx context.Context) (source.Catalog, error) {
 		if err != nil {
 			return cat, errs.Wrap(errs.Internal, err, "connector: discover: the schema of "+cs.GetName())
 		}
-		cat.Streams = append(cat.Streams, source.CatalogStream{
+		st := source.CatalogStream{
 			Name:        cs.GetName(),
 			PrimaryKey:  cs.GetPrimaryKey(),
 			CursorField: cs.GetDefaultCursor(),
 			Replay:      source.Replay(cs.GetReplay()),
 			Schema:      schema,
-		})
+		}
+		for _, m := range cs.GetSyncModes() {
+			st.SyncModes = append(st.SyncModes, source.SyncMode(m))
+		}
+		cat.Streams = append(cat.Streams, st)
 	}
 	return cat, nil
 }

@@ -1794,6 +1794,20 @@ components:
                     description: |-
                         The columns the source declares; empty when the engine infers them from
                          the records.
+                syncModes:
+                    type: array
+                    items:
+                        enum:
+                            - SYNC_MODE_UNSPECIFIED
+                            - SYNC_MODE_FULL_REFRESH
+                            - SYNC_MODE_INCREMENTAL
+                            - SYNC_MODE_CDC
+                            - SYNC_MODE_STREAM
+                        type: string
+                        format: enum
+                    description: |-
+                        How the source can read the stream, the way it reads it first; empty if
+                         it doesn't say.
         CheckDestinationRequest:
             type: object
             properties:
@@ -2871,6 +2885,17 @@ components:
                     description: |-
                         Rows with the same content become one row: within each epoch, and
                          against the target too when the level is exactly once.
+                write:
+                    enum:
+                        - WRITE_MODE_UNSPECIFIED
+                        - WRITE_MODE_APPEND
+                        - WRITE_MODE_OVERWRITE
+                        - WRITE_MODE_MERGE
+                    type: string
+                    description: |-
+                        destination.write, or with none, overwrite for a full refresh into a
+                         destination that has it, and append otherwise.
+                    format: enum
         StreamSchema:
             type: object
             properties:

@@ -50,10 +50,18 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		return job, err
 	}
 
-	mode := plan.WriteMode(p)
-	deletes := plan.Deletes(p)
+	deletes, caps := plan.Deletes(p), dst.Capabilities()
 	var streams []runner.Stream
-	stream := func(cs source.CatalogStream, ps *apiv1.PipelineStream) runner.Stream {
+	stream := func(cs source.CatalogStream, ps *apiv1.PipelineStream) (runner.Stream, error) {
+		declared := make([]apiv1.SyncMode, len(cs.SyncModes))
+		for i, m := range cs.SyncModes {
+			declared[i] = apiv1.SyncMode(m) //nolint:gosec // small
+		}
+		read := plan.ReadMode(declared, ps)
+		mode := plan.StreamMode(p, caps, read)
+		if err := plan.SyncProblem(mode, cs.Name, read); err != nil {
+			return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
+		}
 		s := runner.Stream{
 			Name:                 cs.Name,
 			Replay:               cs.Replay,
@@ -76,21 +84,26 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 				s.Overrides[name] = t
 			}
 		}
-		return s
+		return s, nil
 	}
 	if len(p.GetSource().GetStreams()) == 0 {
 		for _, cs := range cat.Streams {
-			streams = append(streams, stream(cs, nil))
+			s, err := stream(cs, nil)
+			if err != nil {
+				return job, err
+			}
+			streams = append(streams, s)
 		}
 	}
 	for _, ps := range p.GetSource().GetStreams() {
-		if err := plan.SyncProblem(mode, ps); err != nil {
-			return job, errs.Wrap(errs.ConfigInvalid, err, "runner")
-		}
 		found := false
 		for _, cs := range cat.Streams {
 			if cs.Name == ps.GetName() {
-				streams = append(streams, stream(cs, ps))
+				s, err := stream(cs, ps)
+				if err != nil {
+					return job, err
+				}
+				streams = append(streams, s)
 				found = true
 			}
 		}

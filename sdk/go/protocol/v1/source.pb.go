@@ -312,8 +312,10 @@ type CatalogStream struct {
 	// Declared logical types, by field name, as an Arrow IPC stream with no
 	// batches; empty: inferred from the records. Rows on either lane may carry
 	// a declared field as text, which the platform parses.
-	ArrowSchema         []byte     `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
-	PrimaryKey          []string   `protobuf:"bytes,4,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
+	ArrowSchema []byte   `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	PrimaryKey  []string `protobuf:"bytes,4,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
+	// How the source can read the stream, the way it reads it first; empty if
+	// it doesn't say. A full refresh is written with overwrite by default.
 	SyncModes           []SyncMode `protobuf:"varint,5,rep,packed,name=sync_modes,json=syncModes,proto3,enum=openetl.connector.v1.SyncMode" json:"sync_modes,omitempty"`
 	DefaultCursor       string     `protobuf:"bytes,6,opt,name=default_cursor,json=defaultCursor,proto3" json:"default_cursor,omitempty"`
 	SourceDefinedCursor bool       `protobuf:"varint,7,opt,name=source_defined_cursor,json=sourceDefinedCursor,proto3" json:"source_defined_cursor,omitempty"`
