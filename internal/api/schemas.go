@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/internal/store/db"
 	"github.com/unsuitable001/openetl/internal/streamschema"
@@ -81,6 +84,52 @@ func (s *Server) ReportSchemas(ctx context.Context, req *connect.Request[datapla
 	}
 	if err != nil {
 		return nil, err
+	}
+	return connect.NewResponse(res), nil
+}
+
+func (s *Server) ListStreamSchemas(ctx context.Context, req *connect.Request[apiv1.ListStreamSchemasRequest]) (*connect.Response[apiv1.ListStreamSchemasResponse], error) {
+	_, p, err := s.getPipeline(ctx, req.Msg.GetParent())
+	if err != nil {
+		return nil, err
+	}
+	after, n, err := page(req.Msg.GetPageSize(), req.Msg.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+	params := db.ListStreamSchemasParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Stream: req.Msg.GetStream(), MaxRows: n}
+	if after != "" {
+		stream, v, ok := strings.Cut(after, "\x00")
+		version, err := strconv.ParseInt(v, 10, 32)
+		if !ok || err != nil {
+			return nil, invalid("bad page_token")
+		}
+		params.AfterStream, params.AfterVersion = stream, int32(version)
+	}
+	rows, err := s.Store.ListStreamSchemas(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	res := &apiv1.ListStreamSchemasResponse{}
+	if len(rows) == int(n) {
+		rows = rows[:n-1]
+		last := rows[len(rows)-1]
+		res.NextPageToken = nextToken(last.Stream + "\x00" + strconv.Itoa(int(last.Version)))
+	}
+	for _, r := range rows {
+		var cols []streamschema.Column
+		if err := json.Unmarshal(r.Columns, &cols); err != nil {
+			return nil, err
+		}
+		out := &apiv1.StreamSchema{
+			Stream: r.Stream, Version: r.Version, Table: r.Table, Digest: r.Digest,
+			Generation: uint64(r.Generation), Epoch: uint64(r.Epoch), //nolint:gosec // never negative
+			CreateTime: timestamppb.New(r.CreateTime),
+		}
+		for _, c := range cols {
+			out.Columns = append(out.Columns, &apiv1.SchemaColumn{Name: c.Name, Type: c.Type, Nullable: c.Nullable, Source: c.Source})
+		}
+		res.StreamSchemas = append(res.StreamSchemas, out)
 	}
 	return connect.NewResponse(res), nil
 }

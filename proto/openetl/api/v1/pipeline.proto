@@ -6,6 +6,7 @@ import "google/api/annotations.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "openetl/api/v1/connection.proto";
+import "openetl/api/v1/sync.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
 
@@ -48,6 +49,20 @@ service PipelineService {
   }
   rpc GetPipelineVersion(GetPipelineVersionRequest) returns (GetPipelineVersionResponse) {
     option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*/versions/*}"};
+  }
+  // How the current version syncs, from the source's latest catalog: each
+  // stream's delivery level and what sets it. The plan has no changes.
+  rpc GetPipelinePlan(GetPipelinePlanRequest) returns (GetPipelinePlanResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*}/plan"};
+  }
+  // Each stream's schema history, by stream, then version.
+  rpc ListStreamSchemas(ListStreamSchemasRequest) returns (ListStreamSchemasResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/streamSchemas"};
+  }
+  // The checkpoints the pipeline's syncs committed, newest first. The
+  // control plane keeps 30 days of them.
+  rpc ListCheckpoints(ListCheckpointsRequest) returns (ListCheckpointsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/checkpoints"};
   }
 }
 
@@ -95,6 +110,15 @@ message Pipeline {
   google.protobuf.Timestamp update_time = 6;
   // Set by PausePipeline and ResumePipeline, not by the spec.
   bool paused = 7;
+  PipelineStatus status = 8;
+}
+
+// PipelineStatus is what the pipeline's syncs did.
+message PipelineStatus {
+  // The latest sync; unset if none has run.
+  Sync last_sync = 1;
+  // When the latest sync that succeeded ended; unset if none has.
+  google.protobuf.Timestamp last_success_time = 2;
 }
 
 // PipelineSpec is the spec of a Pipeline document. Unset fields take their
@@ -351,4 +375,130 @@ message GetPipelineVersionRequest {
 
 message GetPipelineVersionResponse {
   PipelineVersion pipeline_version = 1;
+}
+
+message GetPipelinePlanRequest {
+  // The pipeline's name.
+  string name = 1;
+}
+
+message GetPipelinePlanResponse {
+  PipelinePlan plan = 1;
+}
+
+// PipelinePlan is how a pipeline version would sync, as far as the control
+// plane can tell from the source's latest catalog and the destination's
+// capabilities.
+message PipelinePlan {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string pipeline = 1;
+  string version = 2;
+  // What differs from the version that was current; empty for a new
+  // pipeline.
+  repeated PlanChange changes = 3;
+  repeated StreamPlan streams = 4;
+  // What a sync would fail on. Apply refuses to create or change a pipeline
+  // whose plan has any.
+  repeated string problems = 5;
+  // What the plan couldn't check, and why.
+  repeated string notes = 6;
+}
+
+message PlanChange {
+  // A spec field, such as delivery.require or source.streams[orders].cursor,
+  // or what the version pins: source.version, destination.version,
+  // source.connector, destination.connector or dbt.{project}.
+  string field = 1;
+  // As JSON; empty where the field is unset.
+  string before = 2;
+  string after = 3;
+}
+
+message StreamPlan {
+  string name = 1;
+  DeliveryLevel level = 2;
+  // Deduped on _openetl_id at apply.
+  bool dedupe = 3;
+  // What sets the level.
+  string reason = 4;
+}
+
+// StreamSchema is a version of a stream's schema, as the destination has it.
+message StreamSchema {
+  string stream = 1;
+  // 1, 2, ... per stream.
+  int32 version = 2;
+  // The destination table.
+  string table = 3;
+  repeated SchemaColumn columns = 4;
+  // Of the table and columns.
+  string digest = 5;
+  // The first checkpoint that carried it.
+  uint64 generation = 6;
+  uint64 epoch = 7;
+  google.protobuf.Timestamp create_time = 8;
+}
+
+message SchemaColumn {
+  string name = 1;
+  // An Arrow type, such as int64, utf8 or timestamp[us, tz=UTC].
+  string type = 2;
+  bool nullable = 3;
+  // The source's name for it, where the destination's differs.
+  string source = 4;
+}
+
+message ListStreamSchemasRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  // Only this stream's; empty for every stream's.
+  string stream = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListStreamSchemasResponse {
+  repeated StreamSchema stream_schemas = 1;
+  string next_page_token = 2;
+}
+
+// Checkpoint is a record of the pipeline's checkpoint log: an epoch a sync
+// committed.
+message Checkpoint {
+  uint64 generation = 1;
+  uint64 epoch = 2;
+  // The record before it in the log; 0 and 0 for the first.
+  uint64 previous_generation = 3;
+  uint64 previous_epoch = 4;
+  // The sync that committed it; empty if the control plane has no record
+  // of the sync.
+  string sync = 5;
+  // When the data plane recorded it.
+  google.protobuf.Timestamp commit_time = 6;
+  repeated CheckpointStream streams = 7;
+}
+
+message CheckpointStream {
+  string name = 1;
+  // Rows the source emitted in the epoch, quarantined ones included.
+  uint64 rows = 2;
+  uint64 quarantined_rows = 3;
+  // The barrier was placed without a resume point.
+  bool forced = 4;
+  // The stream's read ended in this epoch.
+  bool complete = 5;
+  // The StreamSchema version it carried; 0 if it had none yet.
+  int32 schema_version = 6;
+}
+
+message ListCheckpointsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListCheckpointsResponse {
+  repeated Checkpoint checkpoints = 1;
+  string next_page_token = 2;
 }

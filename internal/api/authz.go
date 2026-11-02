@@ -90,6 +90,9 @@ var rules = map[string]rule{
 	apiv1connect.PipelineServiceSyncPipelineProcedure:         {"pipelines.sync", inName, false},
 	apiv1connect.PipelineServiceListPipelineVersionsProcedure: {"pipelines.get", inParent, false},
 	apiv1connect.PipelineServiceGetPipelineVersionProcedure:   {"pipelines.get", inName, false},
+	apiv1connect.PipelineServiceGetPipelinePlanProcedure:      {"pipelines.get", inName, false},
+	apiv1connect.PipelineServiceListStreamSchemasProcedure:    {"pipelines.get", inParent, false},
+	apiv1connect.PipelineServiceListCheckpointsProcedure:      {"pipelines.get", inParent, false},
 
 	apiv1connect.SyncServiceListSyncsProcedure:   {"syncs.get", inParent, false},
 	apiv1connect.SyncServiceGetSyncProcedure:     {"syncs.get", inName, false},

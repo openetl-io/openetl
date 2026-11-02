@@ -163,6 +163,31 @@ func (s *Server) plan(ctx context.Context, q *db.Queries, p *planned) (*apiv1.Pi
 	return out, nil
 }
 
+func (s *Server) GetPipelinePlan(ctx context.Context, req *connect.Request[apiv1.GetPipelinePlanRequest]) (*connect.Response[apiv1.GetPipelinePlanResponse], error) {
+	_, p, err := s.getPipeline(ctx, req.Msg.GetName())
+	if err != nil {
+		return nil, err
+	}
+	row, err := s.Store.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Version: p.Version})
+	if err != nil {
+		return nil, err
+	}
+	v, err := pinsOf(row)
+	if err != nil {
+		return nil, err
+	}
+	pl := &planned{id: p.ID, name: req.Msg.GetName(), version: p.Version, v: &pinned{
+		spec: v.Spec,
+		src:  db.Source{ID: p.SourceID, Version: row.SourceVersion},
+		dst:  db.Destination{Spec: row.DestinationSpec, ConnectorDigest: row.DestinationConnector},
+	}}
+	out, err := s.plan(ctx, s.Store.Queries, pl)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.GetPipelinePlanResponse{Plan: out}), nil
+}
+
 // refuse fails if the plan of a pipeline the Apply creates or changes has
 // problems.
 func refuse(ch *changes, plans []*apiv1.PipelinePlan) error {

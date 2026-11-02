@@ -53,7 +53,33 @@ func (s *Server) pipeline(ctx context.Context, ws string, p db.Pipeline) (*apiv1
 		UpdateTime: timestamppb.New(p.UpdateTime),
 		Paused:     p.Paused,
 	}
-	return out, protojson.Unmarshal(v.Spec, out.Spec)
+	if err := protojson.Unmarshal(v.Spec, out.Spec); err != nil {
+		return nil, err
+	}
+	out.Status, err = s.pipelineStatus(ctx, out.Name, p.ID)
+	return out, err
+}
+
+func (s *Server) pipelineStatus(ctx context.Context, name string, id uuid.UUID) (*apiv1.PipelineStatus, error) {
+	out := &apiv1.PipelineStatus{}
+	latest, err := s.Store.ListSyncs(ctx, db.ListSyncsParams{OrgID: s.Tenant.Org, PipelineID: id, MaxRows: 1})
+	if err != nil || len(latest) == 0 {
+		return out, err
+	}
+	syncs, err := s.syncsOut(ctx, name, []db.GetSyncRow{db.GetSyncRow(latest[0])})
+	if err != nil {
+		return nil, err
+	}
+	out.LastSync = syncs[0]
+	end, err := s.Store.LastSyncSuccess(ctx, db.LastSyncSuccessParams{OrgID: s.Tenant.Org, PipelineID: id})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return nil, err
+	case end != nil:
+		out.LastSuccessTime = timestamppb.New(*end)
+	}
+	return out, nil
 }
 
 func (s *Server) getPipeline(ctx context.Context, name string) (string, db.Pipeline, error) {

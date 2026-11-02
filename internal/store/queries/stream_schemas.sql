@@ -9,5 +9,16 @@ FROM stream_schemas WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND st
 ON CONFLICT (org_id, pipeline_id, stream, digest) DO NOTHING;
 
 -- name: ListStreamSchemas :many
-SELECT * FROM stream_schemas WHERE org_id = @org_id AND pipeline_id = @pipeline_id
-ORDER BY stream, version;
+-- By stream, then version, after (after_stream, after_version); only the
+-- stream named, if one is.
+SELECT stream, version, digest, "table", columns, generation, epoch, create_time
+FROM stream_schemas
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id
+  AND (@stream::text = '' OR stream = @stream)
+  AND (stream, version) > (@after_stream::text, @after_version::integer)
+ORDER BY stream, version
+LIMIT @max_rows;
+
+-- name: StreamSchemaVersions :many
+SELECT stream, digest, version FROM stream_schemas
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id;

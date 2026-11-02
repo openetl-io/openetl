@@ -26,3 +26,10 @@ FROM syncs s
 JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
 LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
 WHERE s.org_id = @org_id AND s.pipeline_id = @pipeline_id AND s.id = @id;
+
+-- name: LastSyncSuccess :one
+-- When the latest sync that succeeded ended.
+SELECT end_time FROM syncs
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND status = 'succeeded'
+ORDER BY start_time DESC, id DESC
+LIMIT 1;

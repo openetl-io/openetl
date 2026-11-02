@@ -71,12 +71,50 @@ func (s *Server) getSync(ctx context.Context, name string) (string, db.GetSyncRo
 	return pipeline, r, err
 }
 
+// syncsOut is the pipeline's syncs, with what their committed epochs
+// carried.
+func (s *Server) syncsOut(ctx context.Context, pipeline string, rows []db.GetSyncRow) ([]*apiv1.Sync, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	runs := make([]string, len(rows))
+	since := rows[0].StartTime
+	for i, r := range rows {
+		runs[i] = r.RunID
+		if r.StartTime.Before(since) {
+			since = r.StartTime
+		}
+	}
+	streams, err := s.Store.SyncStreams(ctx, db.SyncStreamsParams{
+		OrgID: s.Tenant.Org, PipelineID: rows[0].PipelineID, RunIds: runs, Since: since.Add(-maxClockSkew),
+	})
+	if err != nil {
+		return nil, err
+	}
+	byRun := map[string][]*apiv1.SyncStream{}
+	for _, st := range streams {
+		byRun[st.RunID] = append(byRun[st.RunID], &apiv1.SyncStream{
+			Name: st.Name, Rows: uint64(st.Rows), QuarantinedRows: uint64(st.QuarantinedRows), //nolint:gosec // sums of counts
+		})
+	}
+	out := make([]*apiv1.Sync, len(rows))
+	for i, r := range rows {
+		out[i] = syncOut(pipeline, r)
+		out[i].Streams = byRun[r.RunID]
+	}
+	return out, nil
+}
+
 func (s *Server) GetSync(ctx context.Context, req *connect.Request[apiv1.GetSyncRequest]) (*connect.Response[apiv1.GetSyncResponse], error) {
 	pipeline, r, err := s.getSync(ctx, req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&apiv1.GetSyncResponse{Sync: syncOut(pipeline, r)}), nil
+	out, err := s.syncsOut(ctx, pipeline, []db.GetSyncRow{r})
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.GetSyncResponse{Sync: out[0]}), nil
 }
 
 func (s *Server) ListSyncs(ctx context.Context, req *connect.Request[apiv1.ListSyncsRequest]) (*connect.Response[apiv1.ListSyncsResponse], error) {
@@ -108,8 +146,12 @@ func (s *Server) ListSyncs(ctx context.Context, req *connect.Request[apiv1.ListS
 		last := rows[len(rows)-1]
 		res.NextPageToken = nextToken(last.StartTime.Format(time.RFC3339Nano) + " " + last.ID.String())
 	}
-	for _, r := range rows {
-		res.Syncs = append(res.Syncs, syncOut(req.Msg.GetParent(), db.GetSyncRow(r)))
+	page := make([]db.GetSyncRow, len(rows))
+	for i, r := range rows {
+		page[i] = db.GetSyncRow(r)
+	}
+	if res.Syncs, err = s.syncsOut(ctx, req.Msg.GetParent(), page); err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(res), nil
 }

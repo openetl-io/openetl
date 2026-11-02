@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -50,33 +51,59 @@ func (q *Queries) AddStreamSchema(ctx context.Context, arg AddStreamSchemaParams
 }
 
 const listStreamSchemas = `-- name: ListStreamSchemas :many
-SELECT org_id, pipeline_id, stream, version, digest, "table", columns, arrow_schema, generation, epoch, create_time FROM stream_schemas WHERE org_id = $1 AND pipeline_id = $2
+SELECT stream, version, digest, "table", columns, generation, epoch, create_time
+FROM stream_schemas
+WHERE org_id = $1 AND pipeline_id = $2
+  AND ($3::text = '' OR stream = $3)
+  AND (stream, version) > ($4::text, $5::integer)
 ORDER BY stream, version
+LIMIT $6
 `
 
 type ListStreamSchemasParams struct {
-	OrgID      uuid.UUID
-	PipelineID uuid.UUID
+	OrgID        uuid.UUID
+	PipelineID   uuid.UUID
+	Stream       string
+	AfterStream  string
+	AfterVersion int32
+	MaxRows      int32
 }
 
-func (q *Queries) ListStreamSchemas(ctx context.Context, arg ListStreamSchemasParams) ([]StreamSchema, error) {
-	rows, err := q.db.Query(ctx, listStreamSchemas, arg.OrgID, arg.PipelineID)
+type ListStreamSchemasRow struct {
+	Stream     string
+	Version    int32
+	Digest     string
+	Table      string
+	Columns    []byte
+	Generation int64
+	Epoch      int64
+	CreateTime time.Time
+}
+
+// By stream, then version, after (after_stream, after_version); only the
+// stream named, if one is.
+func (q *Queries) ListStreamSchemas(ctx context.Context, arg ListStreamSchemasParams) ([]ListStreamSchemasRow, error) {
+	rows, err := q.db.Query(ctx, listStreamSchemas,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.Stream,
+		arg.AfterStream,
+		arg.AfterVersion,
+		arg.MaxRows,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []StreamSchema
+	var items []ListStreamSchemasRow
 	for rows.Next() {
-		var i StreamSchema
+		var i ListStreamSchemasRow
 		if err := rows.Scan(
-			&i.OrgID,
-			&i.PipelineID,
 			&i.Stream,
 			&i.Version,
 			&i.Digest,
 			&i.Table,
 			&i.Columns,
-			&i.ArrowSchema,
 			&i.Generation,
 			&i.Epoch,
 			&i.CreateTime,
@@ -105,4 +132,40 @@ func (q *Queries) LockPipelineSchemas(ctx context.Context, arg LockPipelineSchem
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const streamSchemaVersions = `-- name: StreamSchemaVersions :many
+SELECT stream, digest, version FROM stream_schemas
+WHERE org_id = $1 AND pipeline_id = $2
+`
+
+type StreamSchemaVersionsParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+type StreamSchemaVersionsRow struct {
+	Stream  string
+	Digest  string
+	Version int32
+}
+
+func (q *Queries) StreamSchemaVersions(ctx context.Context, arg StreamSchemaVersionsParams) ([]StreamSchemaVersionsRow, error) {
+	rows, err := q.db.Query(ctx, streamSchemaVersions, arg.OrgID, arg.PipelineID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StreamSchemaVersionsRow
+	for rows.Next() {
+		var i StreamSchemaVersionsRow
+		if err := rows.Scan(&i.Stream, &i.Digest, &i.Version); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

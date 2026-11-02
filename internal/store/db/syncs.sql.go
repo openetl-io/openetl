@@ -85,6 +85,26 @@ func (q *Queries) GetSync(ctx context.Context, arg GetSyncParams) (GetSyncRow, e
 	return i, err
 }
 
+const lastSyncSuccess = `-- name: LastSyncSuccess :one
+SELECT end_time FROM syncs
+WHERE org_id = $1 AND pipeline_id = $2 AND status = 'succeeded'
+ORDER BY start_time DESC, id DESC
+LIMIT 1
+`
+
+type LastSyncSuccessParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+// When the latest sync that succeeded ended.
+func (q *Queries) LastSyncSuccess(ctx context.Context, arg LastSyncSuccessParams) (*time.Time, error) {
+	row := q.db.QueryRow(ctx, lastSyncSuccess, arg.OrgID, arg.PipelineID)
+	var end_time *time.Time
+	err := row.Scan(&end_time)
+	return end_time, err
+}
+
 const listSyncs = `-- name: ListSyncs :many
 SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
 FROM syncs s

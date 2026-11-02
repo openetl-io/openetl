@@ -39,6 +39,16 @@ message Sync {
   google.protobuf.Timestamp end_time = 6;
   // The data plane it ran on, which holds its log.
   string data_plane = 7;
+  // What its committed epochs carried, by stream, from the checkpoints the
+  // control plane keeps (30 days).
+  repeated SyncStream streams = 8;
+}
+
+message SyncStream {
+  string name = 1;
+  // Quarantined rows included.
+  uint64 rows = 2;
+  uint64 quarantined_rows = 3;
 }
 
 enum SyncState {

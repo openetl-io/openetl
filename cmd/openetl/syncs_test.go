@@ -27,7 +27,8 @@ type fakeSyncs struct {
 func (f *fakeSyncs) ListSyncs(_ context.Context, req *connect.Request[apiv1.ListSyncsRequest]) (*connect.Response[apiv1.ListSyncsResponse], error) {
 	start := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	return connect.NewResponse(&apiv1.ListSyncsResponse{Syncs: []*apiv1.Sync{
-		{Name: syncName, State: apiv1.SyncState_SYNC_STATE_RUNNING, StartTime: timestamppb.New(start), Version: "v2"},
+		{Name: syncName, State: apiv1.SyncState_SYNC_STATE_RUNNING, StartTime: timestamppb.New(start), Version: "v2",
+			Streams: []*apiv1.SyncStream{{Name: "a", Rows: 40}, {Name: "b", Rows: 2}}},
 		{Name: req.Msg.GetParent() + "/syncs/0192", State: apiv1.SyncState_SYNC_STATE_FAILED, StartTime: timestamppb.New(start.Add(-time.Hour)),
 			EndTime: timestamppb.New(start.Add(-time.Hour + 90*time.Second)), Version: "v1", Error: "TRANSIENT: boom\nmore"},
 	}[:min(req.Msg.GetPageSize(), 2)]}), nil
@@ -65,7 +66,7 @@ func TestSyncsAndLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.Contains(lines[1], "0193  running") || !strings.Contains(lines[2], "1m30s") || !strings.HasSuffix(lines[2], "TRANSIENT: boom") {
+	if len(lines) != 3 || !strings.Contains(lines[1], "0193  running") || !strings.Contains(lines[1], "  42    v2") || !strings.Contains(lines[2], "1m30s") || !strings.HasSuffix(lines[2], "TRANSIENT: boom") {
 		t.Errorf("printed\n%s", out.String())
 	}
 

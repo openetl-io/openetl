@@ -264,233 +264,6 @@ func (x *ApplyResponse) GetPlans() []*PipelinePlan {
 	return nil
 }
 
-// PipelinePlan is how a pipeline version would sync, as far as the control
-// plane can tell from the source's latest catalog and the destination's
-// capabilities.
-type PipelinePlan struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// workspaces/{workspace}/pipelines/{pipeline}
-	Pipeline string `protobuf:"bytes,1,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
-	Version  string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
-	// What differs from the version that was current; empty for a new
-	// pipeline.
-	Changes []*PlanChange `protobuf:"bytes,3,rep,name=changes,proto3" json:"changes,omitempty"`
-	Streams []*StreamPlan `protobuf:"bytes,4,rep,name=streams,proto3" json:"streams,omitempty"`
-	// What a sync would fail on. Apply refuses to create or change a pipeline
-	// whose plan has any.
-	Problems []string `protobuf:"bytes,5,rep,name=problems,proto3" json:"problems,omitempty"`
-	// What the plan couldn't check, and why.
-	Notes         []string `protobuf:"bytes,6,rep,name=notes,proto3" json:"notes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PipelinePlan) Reset() {
-	*x = PipelinePlan{}
-	mi := &file_openetl_api_v1_apply_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PipelinePlan) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PipelinePlan) ProtoMessage() {}
-
-func (x *PipelinePlan) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_apply_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PipelinePlan.ProtoReflect.Descriptor instead.
-func (*PipelinePlan) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_apply_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *PipelinePlan) GetPipeline() string {
-	if x != nil {
-		return x.Pipeline
-	}
-	return ""
-}
-
-func (x *PipelinePlan) GetVersion() string {
-	if x != nil {
-		return x.Version
-	}
-	return ""
-}
-
-func (x *PipelinePlan) GetChanges() []*PlanChange {
-	if x != nil {
-		return x.Changes
-	}
-	return nil
-}
-
-func (x *PipelinePlan) GetStreams() []*StreamPlan {
-	if x != nil {
-		return x.Streams
-	}
-	return nil
-}
-
-func (x *PipelinePlan) GetProblems() []string {
-	if x != nil {
-		return x.Problems
-	}
-	return nil
-}
-
-func (x *PipelinePlan) GetNotes() []string {
-	if x != nil {
-		return x.Notes
-	}
-	return nil
-}
-
-type PlanChange struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// A spec field, such as delivery.require or source.streams[orders].cursor,
-	// or what the version pins: source.version, destination.version,
-	// source.connector, destination.connector or dbt.{project}.
-	Field string `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
-	// As JSON; empty where the field is unset.
-	Before        string `protobuf:"bytes,2,opt,name=before,proto3" json:"before,omitempty"`
-	After         string `protobuf:"bytes,3,opt,name=after,proto3" json:"after,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PlanChange) Reset() {
-	*x = PlanChange{}
-	mi := &file_openetl_api_v1_apply_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PlanChange) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PlanChange) ProtoMessage() {}
-
-func (x *PlanChange) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_apply_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PlanChange.ProtoReflect.Descriptor instead.
-func (*PlanChange) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_apply_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *PlanChange) GetField() string {
-	if x != nil {
-		return x.Field
-	}
-	return ""
-}
-
-func (x *PlanChange) GetBefore() string {
-	if x != nil {
-		return x.Before
-	}
-	return ""
-}
-
-func (x *PlanChange) GetAfter() string {
-	if x != nil {
-		return x.After
-	}
-	return ""
-}
-
-type StreamPlan struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Level DeliveryLevel          `protobuf:"varint,2,opt,name=level,proto3,enum=openetl.api.v1.DeliveryLevel" json:"level,omitempty"`
-	// Deduped on _openetl_id at apply.
-	Dedupe bool `protobuf:"varint,3,opt,name=dedupe,proto3" json:"dedupe,omitempty"`
-	// What sets the level.
-	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *StreamPlan) Reset() {
-	*x = StreamPlan{}
-	mi := &file_openetl_api_v1_apply_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *StreamPlan) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StreamPlan) ProtoMessage() {}
-
-func (x *StreamPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_apply_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StreamPlan.ProtoReflect.Descriptor instead.
-func (*StreamPlan) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_apply_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *StreamPlan) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *StreamPlan) GetLevel() DeliveryLevel {
-	if x != nil {
-		return x.Level
-	}
-	return DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED
-}
-
-func (x *StreamPlan) GetDedupe() bool {
-	if x != nil {
-		return x.Dedupe
-	}
-	return false
-}
-
-func (x *StreamPlan) GetReason() string {
-	if x != nil {
-		return x.Reason
-	}
-	return ""
-}
-
 type AppliedResource struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
@@ -503,7 +276,7 @@ type AppliedResource struct {
 
 func (x *AppliedResource) Reset() {
 	*x = AppliedResource{}
-	mi := &file_openetl_api_v1_apply_proto_msgTypes[6]
+	mi := &file_openetl_api_v1_apply_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -515,7 +288,7 @@ func (x *AppliedResource) String() string {
 func (*AppliedResource) ProtoMessage() {}
 
 func (x *AppliedResource) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_apply_proto_msgTypes[6]
+	mi := &file_openetl_api_v1_apply_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -528,7 +301,7 @@ func (x *AppliedResource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppliedResource.ProtoReflect.Descriptor instead.
 func (*AppliedResource) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_apply_proto_rawDescGZIP(), []int{6}
+	return file_openetl_api_v1_apply_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *AppliedResource) GetKind() string {
@@ -577,25 +350,7 @@ const file_openetl_api_v1_apply_proto_rawDesc = "" +
 	"\n" +
 	"dependents\x18\x02 \x03(\v2\x1f.openetl.api.v1.AppliedResourceR\n" +
 	"dependents\x122\n" +
-	"\x05plans\x18\x03 \x03(\v2\x1c.openetl.api.v1.PipelinePlanR\x05plans\"\xe2\x01\n" +
-	"\fPipelinePlan\x12\x1a\n" +
-	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion\x124\n" +
-	"\achanges\x18\x03 \x03(\v2\x1a.openetl.api.v1.PlanChangeR\achanges\x124\n" +
-	"\astreams\x18\x04 \x03(\v2\x1a.openetl.api.v1.StreamPlanR\astreams\x12\x1a\n" +
-	"\bproblems\x18\x05 \x03(\tR\bproblems\x12\x14\n" +
-	"\x05notes\x18\x06 \x03(\tR\x05notes\"P\n" +
-	"\n" +
-	"PlanChange\x12\x14\n" +
-	"\x05field\x18\x01 \x01(\tR\x05field\x12\x16\n" +
-	"\x06before\x18\x02 \x01(\tR\x06before\x12\x14\n" +
-	"\x05after\x18\x03 \x01(\tR\x05after\"\x85\x01\n" +
-	"\n" +
-	"StreamPlan\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
-	"\x05level\x18\x02 \x01(\x0e2\x1d.openetl.api.v1.DeliveryLevelR\x05level\x12\x16\n" +
-	"\x06dedupe\x18\x03 \x01(\bR\x06dedupe\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason\"\x88\x01\n" +
+	"\x05plans\x18\x03 \x03(\v2\x1c.openetl.api.v1.PipelinePlanR\x05plans\"\x88\x01\n" +
 	"\x0fAppliedResource\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x123\n" +
@@ -622,34 +377,28 @@ func file_openetl_api_v1_apply_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_api_v1_apply_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_openetl_api_v1_apply_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_openetl_api_v1_apply_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_openetl_api_v1_apply_proto_goTypes = []any{
 	(ApplyAction)(0),        // 0: openetl.api.v1.ApplyAction
 	(*ApplyRequest)(nil),    // 1: openetl.api.v1.ApplyRequest
 	(*Document)(nil),        // 2: openetl.api.v1.Document
 	(*ApplyResponse)(nil),   // 3: openetl.api.v1.ApplyResponse
-	(*PipelinePlan)(nil),    // 4: openetl.api.v1.PipelinePlan
-	(*PlanChange)(nil),      // 5: openetl.api.v1.PlanChange
-	(*StreamPlan)(nil),      // 6: openetl.api.v1.StreamPlan
-	(*AppliedResource)(nil), // 7: openetl.api.v1.AppliedResource
-	(DeliveryLevel)(0),      // 8: openetl.api.v1.DeliveryLevel
+	(*AppliedResource)(nil), // 4: openetl.api.v1.AppliedResource
+	(*PipelinePlan)(nil),    // 5: openetl.api.v1.PipelinePlan
 }
 var file_openetl_api_v1_apply_proto_depIdxs = []int32{
 	2, // 0: openetl.api.v1.ApplyRequest.documents:type_name -> openetl.api.v1.Document
-	7, // 1: openetl.api.v1.ApplyResponse.resources:type_name -> openetl.api.v1.AppliedResource
-	7, // 2: openetl.api.v1.ApplyResponse.dependents:type_name -> openetl.api.v1.AppliedResource
-	4, // 3: openetl.api.v1.ApplyResponse.plans:type_name -> openetl.api.v1.PipelinePlan
-	5, // 4: openetl.api.v1.PipelinePlan.changes:type_name -> openetl.api.v1.PlanChange
-	6, // 5: openetl.api.v1.PipelinePlan.streams:type_name -> openetl.api.v1.StreamPlan
-	8, // 6: openetl.api.v1.StreamPlan.level:type_name -> openetl.api.v1.DeliveryLevel
-	0, // 7: openetl.api.v1.AppliedResource.action:type_name -> openetl.api.v1.ApplyAction
-	1, // 8: openetl.api.v1.ApplyService.Apply:input_type -> openetl.api.v1.ApplyRequest
-	3, // 9: openetl.api.v1.ApplyService.Apply:output_type -> openetl.api.v1.ApplyResponse
-	9, // [9:10] is the sub-list for method output_type
-	8, // [8:9] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	4, // 1: openetl.api.v1.ApplyResponse.resources:type_name -> openetl.api.v1.AppliedResource
+	4, // 2: openetl.api.v1.ApplyResponse.dependents:type_name -> openetl.api.v1.AppliedResource
+	5, // 3: openetl.api.v1.ApplyResponse.plans:type_name -> openetl.api.v1.PipelinePlan
+	0, // 4: openetl.api.v1.AppliedResource.action:type_name -> openetl.api.v1.ApplyAction
+	1, // 5: openetl.api.v1.ApplyService.Apply:input_type -> openetl.api.v1.ApplyRequest
+	3, // 6: openetl.api.v1.ApplyService.Apply:output_type -> openetl.api.v1.ApplyResponse
+	6, // [6:7] is the sub-list for method output_type
+	5, // [5:6] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_apply_proto_init() }
@@ -664,7 +413,7 @@ func file_openetl_api_v1_apply_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_apply_proto_rawDesc), len(file_openetl_api_v1_apply_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

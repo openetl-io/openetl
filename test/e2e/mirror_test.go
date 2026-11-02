@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
@@ -130,6 +133,58 @@ func TestCheckpointMirror(t *testing.T) {
 		if n != 0 {
 			t.Errorf("%d mirrored checkpoints or streams have %s", n, what)
 		}
+	}
+
+	// The same through the public API, a page at a time.
+	pipelines := apiv1connect.NewPipelineServiceClient(env.http, env.apiURL)
+	parent := "workspaces/default/pipelines/" + name
+	var read []*apiv1.Checkpoint
+	for token := ""; ; {
+		res, err := pipelines.ListCheckpoints(ctx, connect.NewRequest(&apiv1.ListCheckpointsRequest{Parent: parent, PageSize: 1, PageToken: token}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		read = append(read, res.Msg.GetCheckpoints()...)
+		if token = res.Msg.GetNextPageToken(); token == "" {
+			break
+		}
+	}
+	listed := map[string]uint64{}
+	for i, c := range read {
+		if i > 0 && c.GetEpoch() >= read[i-1].GetEpoch() {
+			t.Errorf("checkpoint %d after %d; want newest first", c.GetEpoch(), read[i-1].GetEpoch())
+		}
+		if c.GetSync() != read[0].GetSync() || !strings.HasPrefix(c.GetSync(), parent+"/syncs/") {
+			t.Errorf("checkpoint %d: sync %q", c.GetEpoch(), c.GetSync())
+		}
+		for _, st := range c.GetStreams() {
+			listed[st.GetName()] += st.GetRows()
+			if st.GetRows() > 0 && st.GetSchemaVersion() != 1 {
+				t.Errorf("checkpoint %d, stream %s: schema version %d", c.GetEpoch(), st.GetName(), st.GetSchemaVersion())
+			}
+		}
+	}
+	if len(read) != mirrored || !maps.Equal(listed, total) {
+		t.Errorf("listed %d checkpoints with rows %v; mirrored %d with %v", len(read), listed, mirrored, total)
+	}
+	synced, err := apiv1connect.NewSyncServiceClient(env.http, env.apiURL).GetSync(ctx, connect.NewRequest(&apiv1.GetSyncRequest{Name: read[0].GetSync()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	carried := map[string]uint64{}
+	for _, st := range synced.Msg.GetSync().GetStreams() {
+		carried[st.GetName()] = st.GetRows()
+	}
+	if !maps.Equal(carried, total) {
+		t.Errorf("the sync carried %v; want %v", carried, total)
+	}
+	got, err := pipelines.GetPipeline(ctx, connect.NewRequest(&apiv1.GetPipelineRequest{Name: parent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := got.Msg.GetPipeline().GetStatus(); st.GetLastSync().GetName() != read[0].GetSync() ||
+		st.GetLastSync().GetState() != apiv1.SyncState_SYNC_STATE_SUCCEEDED || !st.GetLastSuccessTime().AsTime().Equal(st.GetLastSync().GetEndTime().AsTime()) {
+		t.Errorf("status %v", st)
 	}
 
 	api := dataplanev1connect.NewDataPlaneServiceClient(env.runner, env.apiURL)

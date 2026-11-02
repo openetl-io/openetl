@@ -188,6 +188,14 @@ func TestPlan(t *testing.T) {
 		len(plan.GetProblems())+len(plan.GetNotes())+len(plan.GetChanges()) != 0 {
 		t.Errorf("into Postgres: streams %v, want %s; plan %v", got, want, plan)
 	}
+	current, err := apiv1connect.NewPipelineServiceClient(env.http, env.apiURL).GetPipelinePlan(t.Context(),
+		connect.NewRequest(&apiv1.GetPipelinePlanRequest{Name: "workspaces/default/pipelines/" + name}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := current.Msg.GetPlan(); p.GetVersion() != plan.GetVersion() || len(p.GetStreams()) != 2 || p.GetStreams()[1].GetReason() != plan.GetStreams()[1].GetReason() {
+		t.Errorf("the current version's plan %v; want %v", p, plan)
+	}
 
 	toParquet := docs(name, `{"connector": "faker", "config": `+faker+`}`, parquetDest(t.TempDir()), `{}`)
 	res := applyAll(t, true, toParquet...)

@@ -5,6 +5,9 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +16,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/jackc/pgx/v5"
 
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 )
@@ -68,6 +73,33 @@ func TestSchemaHistory(t *testing.T) {
 	}
 	if got, err := query[string](t, history, name); err != nil || got != "purchases:1,users:1,users:2" {
 		t.Errorf("history is %q (%v)", got, err)
+	}
+
+	pipelines := apiv1connect.NewPipelineServiceClient(env.http, env.apiURL)
+	list := func(stream string) []string {
+		t.Helper()
+		var got []string
+		for token := ""; ; {
+			res, err := pipelines.ListStreamSchemas(t.Context(), connect.NewRequest(&apiv1.ListStreamSchemasRequest{
+				Parent: "workspaces/default/pipelines/" + name, Stream: stream, PageSize: 1, PageToken: token,
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range res.Msg.GetStreamSchemas() {
+				got = append(got, fmt.Sprintf("%s:%d:%d", s.GetStream(), s.GetVersion(), len(s.GetColumns())))
+			}
+			if token = res.Msg.GetNextPageToken(); token == "" {
+				return got
+			}
+		}
+	}
+	all := list("")
+	if len(all) != 3 || !strings.HasPrefix(all[0], "purchases:1:") || !strings.HasPrefix(all[1], "users:1:") || !strings.HasPrefix(all[2], "users:2:") {
+		t.Errorf("listed %v", all)
+	}
+	if users := list("users"); !slices.Equal(users, all[1:]) {
+		t.Errorf("users' history %v; want %v", users, all[1:])
 	}
 }
 
