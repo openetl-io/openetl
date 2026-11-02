@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/internal/store"
@@ -22,11 +23,6 @@ import (
 )
 
 const maxSecretSize = 64 << 10
-
-// secretAAD binds a sealed value to its secret.
-func secretAAD(org, ws, id uuid.UUID) []byte {
-	return []byte("openetl.secret.v1/" + org.String() + "/" + ws.String() + "/" + id.String())
-}
 
 func (s *Server) parseSecretName(ctx context.Context, name string) (ws string, wsID uuid.UUID, secret string, err error) {
 	ws, secret, err = parseName(name, "secrets")
@@ -49,7 +45,8 @@ func toSecret(ws string, r db.Secret, usedBy []string) *apiv1.Secret {
 	return out
 }
 
-// secretUsers lists the sources and destinations that name each secret.
+// secretUsers lists the sources, destinations and webhooks that name each
+// secret.
 func (s *Server) secretUsers(ctx context.Context, q *db.Queries, ws string, wsID uuid.UUID, names []string) (map[string][]string, error) {
 	users := map[string][]string{}
 	srcs, err := q.ListSourcesUsingSecrets(ctx, db.ListSourcesUsingSecretsParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Names: names})
@@ -68,6 +65,15 @@ func (s *Server) secretUsers(ctx context.Context, q *db.Queries, ws string, wsID
 	for _, r := range dsts {
 		for _, n := range r.Secrets {
 			users[n] = append(users[n], resourceName(ws, "destinations", r.Name))
+		}
+	}
+	hooks, err := q.ListWebhooksUsingSecrets(ctx, db.ListWebhooksUsingSecretsParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Names: names})
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range hooks {
+		for _, n := range r.Secrets {
+			users[n] = append(users[n], resourceName(ws, "webhooks", r.Name))
 		}
 	}
 	return users, nil
@@ -147,7 +153,7 @@ func (s *Server) UpdateSecret(ctx context.Context, req *connect.Request[apiv1.Up
 		if ref != nil {
 			return nil, nil
 		}
-		return s.Secrets.Seal(ctx, s.Tenant.Org, secretAAD(s.Tenant.Org, wsID, id), []byte(in.GetValue()))
+		return s.Secrets.Seal(ctx, s.Tenant.Org, secrets.AAD(s.Tenant.Org, wsID, id), []byte(in.GetValue()))
 	}
 	res := &apiv1.UpdateSecretResponse{}
 	var row db.Secret
@@ -330,7 +336,7 @@ func (s *Server) resolveSecrets(ctx context.Context, what string, wsID uuid.UUID
 		if s.Secrets == nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s names secrets, but this server has no secrets key (--secrets-key)", what))
 		}
-		value, err := s.Secrets.Open(ctx, s.Tenant.Org, secretAAD(s.Tenant.Org, wsID, r.ID), r.Ciphertext)
+		value, err := s.Secrets.Open(ctx, s.Tenant.Org, secrets.AAD(s.Tenant.Org, wsID, r.ID), r.Ciphertext)
 		if err != nil {
 			return nil, err
 		}

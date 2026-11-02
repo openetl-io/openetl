@@ -83,6 +83,12 @@ func (k *Keyring) Close() error { return k.kek.Close() }
 
 const sealVersion = 1
 
+// AAD binds a secret's sealed value to the secret, so a value copied to
+// another row doesn't open.
+func AAD(org, workspace, id uuid.UUID) []byte {
+	return []byte("openetl.secret.v1/" + org.String() + "/" + workspace.String() + "/" + id.String())
+}
+
 // Seal encrypts value with org's data key, creating the key if org has
 // none. aad binds the result to its place: Open needs the same aad.
 func (k *Keyring) Seal(ctx context.Context, org uuid.UUID, aad, value []byte) ([]byte, error) {

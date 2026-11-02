@@ -30,7 +30,7 @@ func (q *Queries) DeletePipeline(ctx context.Context, arg DeletePipelineParams) 
 }
 
 const getPipeline = `-- name: GetPipeline :one
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `
 
 type GetPipelineParams struct {
@@ -55,12 +55,13 @@ func (q *Queries) GetPipeline(ctx context.Context, arg GetPipelineParams) (Pipel
 		&i.CreateTime,
 		&i.UpdateTime,
 		&i.Paused,
+		&i.LaggingSince,
 	)
 	return i, err
 }
 
 const getPipelineByID = `-- name: GetPipelineByID :one
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused FROM pipelines WHERE org_id = $1 AND id = $2
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since FROM pipelines WHERE org_id = $1 AND id = $2
 `
 
 type GetPipelineByIDParams struct {
@@ -84,7 +85,33 @@ func (q *Queries) GetPipelineByID(ctx context.Context, arg GetPipelineByIDParams
 		&i.CreateTime,
 		&i.UpdateTime,
 		&i.Paused,
+		&i.LaggingSince,
 	)
+	return i, err
+}
+
+const getPipelineNames = `-- name: GetPipelineNames :one
+SELECT p.name, p.workspace_id, w.name AS workspace
+FROM pipelines p JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
+WHERE p.org_id = $1 AND p.id = $2
+`
+
+type GetPipelineNamesParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+type GetPipelineNamesRow struct {
+	Name        string
+	WorkspaceID uuid.UUID
+	Workspace   string
+}
+
+// What events name a pipeline by.
+func (q *Queries) GetPipelineNames(ctx context.Context, arg GetPipelineNamesParams) (GetPipelineNamesRow, error) {
+	row := q.db.QueryRow(ctx, getPipelineNames, arg.OrgID, arg.ID)
+	var i GetPipelineNamesRow
+	err := row.Scan(&i.Name, &i.WorkspaceID, &i.Workspace)
 	return i, err
 }
 
@@ -403,7 +430,7 @@ func (q *Queries) ListPipelineVersions(ctx context.Context, arg ListPipelineVers
 }
 
 const listPipelines = `-- name: ListPipelines :many
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused FROM pipelines
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since FROM pipelines
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3
 ORDER BY name LIMIT $4
 `
@@ -442,6 +469,7 @@ func (q *Queries) ListPipelines(ctx context.Context, arg ListPipelinesParams) ([
 			&i.CreateTime,
 			&i.UpdateTime,
 			&i.Paused,
+			&i.LaggingSince,
 		); err != nil {
 			return nil, err
 		}
@@ -523,8 +551,8 @@ func (q *Queries) ListPipelinesUsing(ctx context.Context, arg ListPipelinesUsing
 	return items, nil
 }
 
-const setPipelinePaused = `-- name: SetPipelinePaused :exec
-UPDATE pipelines SET paused = $1 WHERE org_id = $2 AND id = $3
+const setPipelinePaused = `-- name: SetPipelinePaused :execrows
+UPDATE pipelines SET paused = $1 WHERE org_id = $2 AND id = $3 AND paused <> $1
 `
 
 type SetPipelinePausedParams struct {
@@ -533,9 +561,61 @@ type SetPipelinePausedParams struct {
 	ID     uuid.UUID
 }
 
-func (q *Queries) SetPipelinePaused(ctx context.Context, arg SetPipelinePausedParams) error {
-	_, err := q.db.Exec(ctx, setPipelinePaused, arg.Paused, arg.OrgID, arg.ID)
-	return err
+func (q *Queries) SetPipelinePaused(ctx context.Context, arg SetPipelinePausedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setPipelinePaused, arg.Paused, arg.OrgID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const startLagging = `-- name: StartLagging :execrows
+UPDATE pipelines SET lagging_since = now() WHERE org_id = $1 AND id = $2 AND lagging_since IS NULL
+`
+
+type StartLaggingParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+func (q *Queries) StartLagging(ctx context.Context, arg StartLaggingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, startLagging, arg.OrgID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const stopLagging = `-- name: StopLagging :many
+UPDATE pipelines p SET lagging_since = NULL
+FROM (SELECT o.lagging_since FROM pipelines o WHERE o.org_id = $1 AND o.id = $2 FOR UPDATE) old
+WHERE p.org_id = $1 AND p.id = $2 AND p.lagging_since IS NOT NULL
+RETURNING old.lagging_since::timestamptz AS since
+`
+
+type StopLaggingParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+func (q *Queries) StopLagging(ctx context.Context, arg StopLaggingParams) ([]time.Time, error) {
+	rows, err := q.db.Query(ctx, stopLagging, arg.OrgID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []time.Time
+	for rows.Next() {
+		var since time.Time
+		if err := rows.Scan(&since); err != nil {
+			return nil, err
+		}
+		items = append(items, since)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updatePipeline = `-- name: UpdatePipeline :exec

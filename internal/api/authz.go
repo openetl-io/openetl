@@ -40,7 +40,11 @@ var permissions = map[string]auth.Role{
 	"secrets.get":         auth.Viewer,
 	"secrets.update":      auth.Editor,
 	"secrets.delete":      auth.Editor,
-	// Sources, destinations, pipelines and dbt projects.
+	"webhooks.get":        auth.Viewer,
+	"webhooks.update":     auth.Operator,
+	"webhooks.test":       auth.Operator,
+	"webhooks.delete":     auth.Editor,
+	// Sources, destinations, pipelines, dbt projects and webhooks.
 	"documents.apply":     auth.Editor,
 	"connectors.apply":    auth.Admin,
 	"principals.get":      auth.Viewer,
@@ -136,6 +140,14 @@ var rules = map[string]rule{
 	apiv1connect.AccessServiceDeleteRunnerTokenProcedure: {"runnerTokens.delete", onOrg, false},
 
 	apiv1connect.AuditServiceListAuditEntriesProcedure: {"audit.get", onOrg, false},
+
+	apiv1connect.WebhookServiceGetWebhookProcedure:            {"webhooks.get", inName, false},
+	apiv1connect.WebhookServiceListWebhooksProcedure:          {"webhooks.get", inParent, false},
+	apiv1connect.WebhookServiceDeleteWebhookProcedure:         {"webhooks.delete", inName, false},
+	apiv1connect.WebhookServiceDisableWebhookProcedure:        {"webhooks.update", inName, false},
+	apiv1connect.WebhookServiceEnableWebhookProcedure:         {"webhooks.update", inName, false},
+	apiv1connect.WebhookServiceTestWebhookProcedure:           {"webhooks.test", inName, false},
+	apiv1connect.WebhookServiceListWebhookDeliveriesProcedure: {"webhooks.get", inParent, false},
 
 	dataplanev1connect.DataPlaneServiceGetSyncSpecProcedure:        runner,
 	dataplanev1connect.DataPlaneServiceReportSchemasProcedure:      runner,

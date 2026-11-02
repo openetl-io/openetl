@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -33,11 +34,14 @@ const (
 	KindDeclarativeSource = "DeclarativeSource"
 	// A dbt project's files, for post-sync steps.
 	KindDbtProject = "DbtProject"
+	// Where a workspace's platform events go.
+	KindWebhook = "Webhook"
 )
 
 // Document is one parsed definition. Connector is set for sources and
 // destinations, Pipeline for pipelines, Descriptor for connectors, Manifest
-// for declarative sources, and Bundle for dbt projects.
+// for declarative sources, Bundle for dbt projects, and Webhook for
+// webhooks.
 type Document struct {
 	Kind      string
 	Name      string
@@ -50,7 +54,8 @@ type Document struct {
 	// The whole manifest, as canonical JSON, for declarative.Load.
 	Manifest []byte
 	// A gzipped tar of the project's files, which dbt.Canonical checks.
-	Bundle []byte
+	Bundle  []byte
+	Webhook *apiv1.WebhookSpec
 }
 
 type envelope struct {
@@ -114,8 +119,10 @@ func Parse(content []byte) (*Document, error) {
 		doc.Manifest, err = canonicalJSON(content)
 	case KindDbtProject:
 		doc.Bundle, err = parseDbtProject(spec)
+	case KindWebhook:
+		doc.Webhook, err = parseWebhook(spec)
 	default:
-		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource or DbtProject", env.Kind)
+		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, DbtProject or Webhook", env.Kind)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("spec: %w", err)
@@ -367,6 +374,50 @@ func parseDbtProject(b []byte) ([]byte, error) {
 		return nil, fmt.Errorf("bundle isn't base64: %w", err)
 	}
 	return bundle, nil
+}
+
+type webhookYAML struct {
+	URL       string   `yaml:"url"`
+	Events    []string `yaml:"events"`
+	Pipelines []string `yaml:"pipelines"`
+	Secrets   []string `yaml:"secrets"`
+}
+
+// maxWebhookSecrets is enough for a key and the one it replaces, and one
+// more.
+const maxWebhookSecrets = 3
+
+func parseWebhook(b []byte) (*apiv1.WebhookSpec, error) {
+	var y webhookYAML
+	if err := strict(b, &y); err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(y.URL)
+	switch {
+	case y.URL == "":
+		return nil, errors.New("url is missing")
+	case err != nil || u.Host == "" || u.Scheme != "http" && u.Scheme != "https":
+		return nil, fmt.Errorf("url %q isn't an http or https URL", y.URL)
+	case u.User != nil:
+		return nil, errors.New("url: put credentials in a signing secret, not the URL")
+	case len(y.Events) == 0:
+		return nil, errors.New("events is missing: the event types to send, or globs such as sync.*")
+	case len(y.Secrets) == 0:
+		return nil, errors.New("secrets is missing: a secret holding a whsec_ key signs each delivery; set one with openetl secret set NAME")
+	case len(y.Secrets) > maxWebhookSecrets:
+		return nil, fmt.Errorf("secrets: at most %d", maxWebhookSecrets)
+	}
+	for _, names := range [][]string{y.Pipelines, y.Secrets} {
+		for _, n := range names {
+			if !ValidName(n) {
+				return nil, fmt.Errorf("%q isn't a valid name", n)
+			}
+		}
+	}
+	if len(slices.Compact(slices.Sorted(slices.Values(y.Secrets)))) != len(y.Secrets) {
+		return nil, errors.New("secrets: each secret once")
+	}
+	return &apiv1.WebhookSpec{Url: y.URL, Events: y.Events, Pipelines: y.Pipelines, Secrets: y.Secrets}, nil
 }
 
 func parseDelivery(y *deliveryYAML) (*apiv1.Delivery, error) {

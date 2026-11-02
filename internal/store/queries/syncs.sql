@@ -2,11 +2,15 @@
 INSERT INTO syncs (org_id, id, pipeline_id, version, workflow_id, run_id, status, continuous)
 VALUES (@org_id, @id, @pipeline_id, @version, @workflow_id, @run_id, 'running', @continuous)
 ON CONFLICT (org_id, run_id) DO UPDATE SET status = syncs.status
-RETURNING id;
+RETURNING *;
 
--- name: FinishSync :exec
+-- name: FinishSync :one
 UPDATE syncs SET status = @status, error = @error, stats = @stats, end_time = now()
-WHERE org_id = @org_id AND id = @id;
+WHERE org_id = @org_id AND id = @id
+RETURNING *;
+
+-- name: GetSyncByRun :one
+SELECT * FROM syncs WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND run_id = @run_id;
 
 -- name: ListSyncs :many
 -- Newest first, after the sync (before_time, before_id) if given. The data

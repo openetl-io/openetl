@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/events"
 	"github.com/unsuitable001/openetl/internal/orchestration/schedules"
 	"github.com/unsuitable001/openetl/internal/plan"
 	"github.com/unsuitable001/openetl/internal/store"
@@ -146,7 +147,7 @@ func (s *Server) ListPipelines(ctx context.Context, req *connect.Request[apiv1.L
 // DeletePipeline removes its schedule and stops its supervisor first, so a
 // failure leaves a pipeline that applying again runs.
 func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.DeletePipelineRequest]) (*connect.Response[apiv1.DeletePipelineResponse], error) {
-	_, p, err := s.getPipeline(ctx, req.Msg.GetName())
+	ws, p, err := s.getPipeline(ctx, req.Msg.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -159,11 +160,27 @@ func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.
 	if err := s.Schedules.StopStream(ctx, p.ID.String()); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
-	if _, err := s.Store.DeletePipeline(ctx, db.DeletePipelineParams{OrgID: s.Tenant.Org, ID: p.ID}); err != nil {
+	err = s.Store.Tx(ctx, func(q *db.Queries) error {
+		n, err := q.DeletePipeline(ctx, db.DeletePipelineParams{OrgID: s.Tenant.Org, ID: p.ID})
+		if err != nil || n == 0 {
+			return err
+		}
+		return s.recordPipeline(ctx, q, events.PipelineDeleted, ws, p)
+	})
+	if err != nil {
 		return nil, err
 	}
 	s.teardown(ctx, p)
 	return connect.NewResponse(&apiv1.DeletePipelineResponse{}), nil
+}
+
+// recordPipeline records an event about a pipeline, in q's transaction.
+func (s *Server) recordPipeline(ctx context.Context, q *db.Queries, typ, ws string, p db.Pipeline) error {
+	_, err := events.Record(ctx, q, s.Tenant.Org, events.Event{
+		Workspace: p.WorkspaceID, Type: typ, Pipeline: p.Name,
+		Data: events.Pipeline{Pipeline: resourceName(ws, "pipelines", p.Name), Version: p.Version},
+	})
+	return err
 }
 
 func (s *Server) PausePipeline(ctx context.Context, req *connect.Request[apiv1.PausePipelineRequest]) (*connect.Response[apiv1.PausePipelineResponse], error) {
@@ -191,7 +208,18 @@ func (s *Server) setPaused(ctx context.Context, name string, paused bool) (*apiv
 	if err != nil {
 		return nil, err
 	}
-	if err := s.Store.SetPipelinePaused(ctx, db.SetPipelinePausedParams{OrgID: s.Tenant.Org, ID: p.ID, Paused: paused}); err != nil {
+	err = s.Store.Tx(ctx, func(q *db.Queries) error {
+		n, err := q.SetPipelinePaused(ctx, db.SetPipelinePausedParams{OrgID: s.Tenant.Org, ID: p.ID, Paused: paused})
+		if err != nil || n == 0 {
+			return err
+		}
+		typ := events.PipelineResumed
+		if paused {
+			typ = events.PipelinePaused
+		}
+		return s.recordPipeline(ctx, q, typ, ws, p)
+	})
+	if err != nil {
 		return nil, err
 	}
 	p.Paused = paused

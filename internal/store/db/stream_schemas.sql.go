@@ -12,12 +12,13 @@ import (
 	"github.com/google/uuid"
 )
 
-const addStreamSchema = `-- name: AddStreamSchema :execrows
+const addStreamSchema = `-- name: AddStreamSchema :many
 INSERT INTO stream_schemas (org_id, pipeline_id, stream, version, digest, "table", columns, arrow_schema, generation, epoch)
 SELECT $1, $2, $3,
        coalesce(max(version), 0) + 1, $4, $5, $6, $7, $8, $9
 FROM stream_schemas WHERE org_id = $1 AND pipeline_id = $2 AND stream = $3
 ON CONFLICT (org_id, pipeline_id, stream, digest) DO NOTHING
+RETURNING version
 `
 
 type AddStreamSchemaParams struct {
@@ -32,8 +33,9 @@ type AddStreamSchemaParams struct {
 	Epoch       int64
 }
 
-func (q *Queries) AddStreamSchema(ctx context.Context, arg AddStreamSchemaParams) (int64, error) {
-	result, err := q.db.Exec(ctx, addStreamSchema,
+// The version added; none if the history has the schema.
+func (q *Queries) AddStreamSchema(ctx context.Context, arg AddStreamSchemaParams) ([]int32, error) {
+	rows, err := q.db.Query(ctx, addStreamSchema,
 		arg.OrgID,
 		arg.PipelineID,
 		arg.Stream,
@@ -45,9 +47,45 @@ func (q *Queries) AddStreamSchema(ctx context.Context, arg AddStreamSchemaParams
 		arg.Epoch,
 	)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []int32
+	for rows.Next() {
+		var version int32
+		if err := rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		items = append(items, version)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getStreamSchemaColumns = `-- name: GetStreamSchemaColumns :one
+SELECT columns FROM stream_schemas
+WHERE org_id = $1 AND pipeline_id = $2 AND stream = $3 AND version = $4
+`
+
+type GetStreamSchemaColumnsParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Stream     string
+	Version    int32
+}
+
+func (q *Queries) GetStreamSchemaColumns(ctx context.Context, arg GetStreamSchemaColumnsParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getStreamSchemaColumns,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.Stream,
+		arg.Version,
+	)
+	var columns []byte
+	err := row.Scan(&columns)
+	return columns, err
 }
 
 const listStreamSchemas = `-- name: ListStreamSchemas :many

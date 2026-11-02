@@ -197,6 +197,8 @@ type FinishSyncInput struct {
 	SyncID string
 	// Empty on success.
 	Error string
+	// The error's taxonomy code, if it has one, such as SCHEMA_DRIFT.
+	Code string
 	// A continuous pipeline's run that stopped when asked to, for a new
 	// version, a pause or a change of mode.
 	Stopped bool

@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/events"
 	"github.com/unsuitable001/openetl/internal/plan"
 	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/internal/store"
@@ -157,7 +158,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		if err := refuse(ch, res.Plans); err != nil {
 			return err
 		}
-		return nil
+		return s.recordApplied(ctx, q, ch)
 	})
 	if errors.Is(err, errValidateOnly) {
 		audit(ctx).set("validateOnly", true)
@@ -189,6 +190,7 @@ func documentName(doc *spec.Document) string {
 	}
 	collection := map[string]string{
 		spec.KindSource: "sources", spec.KindDestination: "destinations", spec.KindPipeline: "pipelines", spec.KindDbtProject: "dbtProjects",
+		spec.KindWebhook: "webhooks",
 	}[doc.Kind]
 	return resourceName(doc.Workspace, collection, doc.Name)
 }
@@ -231,6 +233,9 @@ func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document
 		return res, nil, err
 	case spec.KindDbtProject:
 		res, err := s.applyDbtProject(ctx, q, doc, wsID, provenance, ch)
+		return res, nil, err
+	case spec.KindWebhook:
+		res, err := s.applyWebhook(ctx, q, doc, wsID)
 		return res, nil, err
 	default:
 		return s.applyPipeline(ctx, q, doc, wsID, provenance, ch)
@@ -454,8 +459,31 @@ func (s *Server) applyPipeline(ctx context.Context, q *db.Queries, doc *spec.Doc
 	if err != nil {
 		return nil, nil, err
 	}
-	ch.pipelines = append(ch.pipelines, &planned{id: id, name: res.Name, prev: cur.Version, version: res.Version, action: res.Action, v: v})
+	ch.pipelines = append(ch.pipelines, &planned{id: id, name: res.Name, prev: cur.Version, version: res.Version, action: res.Action, v: v, provenance: provenance})
 	return res, &schedule{pipelineID: id.String(), spec: doc.Pipeline.GetSchedule(), paused: cur.Paused, continuous: plan.Continuous(doc.Pipeline)}, nil
+}
+
+// recordApplied records an event for each pipeline the Apply created or
+// gave a new version.
+func (s *Server) recordApplied(ctx context.Context, q *db.Queries, ch *changes) error {
+	for _, p := range ch.pipelines {
+		typ := events.PipelineUpdated
+		switch p.action {
+		case apiv1.ApplyAction_APPLY_ACTION_CREATED:
+			typ = events.PipelineCreated
+		case apiv1.ApplyAction_APPLY_ACTION_UPDATED:
+		default:
+			continue
+		}
+		_, err := events.Record(ctx, q, s.Tenant.Org, events.Event{
+			Workspace: p.v.src.WorkspaceID, Type: typ, Pipeline: p.name[strings.LastIndex(p.name, "/")+1:],
+			Data: events.Pipeline{Pipeline: p.name, Version: p.version, PreviousVersion: p.prev, Provenance: p.provenance},
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // changes is what an Apply has changed so far: sources, destinations and dbt
@@ -512,7 +540,7 @@ func (s *Server) repin(ctx context.Context, q *db.Queries, ch *changes) ([]*apiv
 		}
 		if action != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED {
 			out = append(out, &apiv1.AppliedResource{Kind: spec.KindPipeline, Name: name, Action: action, Version: version})
-			ch.pipelines = append(ch.pipelines, &planned{id: r.ID, name: name, prev: r.Version, version: version, action: action, v: v})
+			ch.pipelines = append(ch.pipelines, &planned{id: r.ID, name: name, prev: r.Version, version: version, action: action, v: v, provenance: provenance})
 		}
 	}
 	return out, nil

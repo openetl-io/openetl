@@ -132,6 +132,19 @@ type OrgKey struct {
 	CreateTime time.Time
 }
 
+type Outbox struct {
+	OrgID        uuid.UUID
+	ID           uuid.UUID
+	WorkspaceID  uuid.UUID
+	Type         string
+	Pipeline     *string
+	Data         []byte
+	Key          *string
+	WebhookID    *uuid.UUID
+	CreateTime   time.Time
+	DispatchTime *time.Time
+}
+
 type Pipeline struct {
 	OrgID         uuid.UUID
 	WorkspaceID   uuid.UUID
@@ -145,6 +158,7 @@ type Pipeline struct {
 	CreateTime    time.Time
 	UpdateTime    time.Time
 	Paused        bool
+	LaggingSince  *time.Time
 }
 
 type PipelineVersion struct {
@@ -264,6 +278,38 @@ type Sync struct {
 	StartTime  time.Time
 	EndTime    *time.Time
 	Continuous bool
+}
+
+type Webhook struct {
+	OrgID          uuid.UUID
+	WorkspaceID    uuid.UUID
+	ID             uuid.UUID
+	Name           string
+	Spec           []byte
+	Version        string
+	Secrets        []string
+	Revision       int64
+	Disabled       bool
+	DisabledReason *string
+	FailingSince   *time.Time
+	CreateTime     time.Time
+	UpdateTime     time.Time
+}
+
+type WebhookDelivery struct {
+	OrgID           uuid.UUID
+	ID              uuid.UUID
+	WebhookID       uuid.UUID
+	EventID         uuid.UUID
+	State           string
+	Attempts        int32
+	NextAttemptTime time.Time
+	LastAttemptTime *time.Time
+	ResponseStatus  *int32
+	ResponseBody    *string
+	Error           *string
+	LatencyMs       *int32
+	CreateTime      time.Time
 }
 
 type Workspace struct {

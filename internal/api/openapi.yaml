@@ -1604,6 +1604,268 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/webhooks:
+        get:
+            tags:
+                - WebhookService
+            operationId: WebhookService_ListWebhooks
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListWebhooksResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/webhooks/{webhook}:
+        get:
+            tags:
+                - WebhookService
+            operationId: WebhookService_GetWebhook
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: webhook
+                  in: path
+                  description: The webhook id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetWebhookResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - WebhookService
+            description: Deletes its deliveries too.
+            operationId: WebhookService_DeleteWebhook
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: webhook
+                  in: path
+                  description: The webhook id.
+                  required: true
+                  schema:
+                    type: string
+                - name: etag
+                  in: query
+                  description: If set, it must match.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteWebhookResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/webhooks/{webhook}/deliveries:
+        get:
+            tags:
+                - WebhookService
+            description: Newest first. Deliveries are kept for 7 days.
+            operationId: WebhookService_ListWebhookDeliveries
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: webhook
+                  in: path
+                  description: The webhook id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListWebhookDeliveriesResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/webhooks/{webhook}:disable:
+        post:
+            tags:
+                - WebhookService
+            description: |-
+                Its pending deliveries fail, and events until it's enabled again aren't
+                 delivered to it.
+            operationId: WebhookService_DisableWebhook
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: webhook
+                  in: path
+                  description: The webhook id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/DisableWebhookRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DisableWebhookResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/webhooks/{webhook}:enable:
+        post:
+            tags:
+                - WebhookService
+            description: |-
+                Delivers events from now on, to a webhook disabled by a call or by
+                 failing.
+            operationId: WebhookService_EnableWebhook
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: webhook
+                  in: path
+                  description: The webhook id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/EnableWebhookRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/EnableWebhookResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/webhooks/{webhook}:test:
+        post:
+            tags:
+                - WebhookService
+            description: |-
+                Records a webhook.test event for this webhook alone, whatever its
+                 filters.
+            operationId: WebhookService_TestWebhook
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: webhook
+                  in: path
+                  description: The webhook id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/TestWebhookRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/TestWebhookResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}:apply:
         post:
             tags:
@@ -2043,6 +2305,9 @@ components:
         DeleteSourceResponse:
             type: object
             properties: {}
+        DeleteWebhookResponse:
+            type: object
+            properties: {}
         Delivery:
             type: object
             properties:
@@ -2089,6 +2354,16 @@ components:
             properties:
                 principal:
                     $ref: '#/components/schemas/Principal'
+        DisableWebhookRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        DisableWebhookResponse:
+            type: object
+            properties:
+                webhook:
+                    $ref: '#/components/schemas/Webhook'
         DiscoverSourceRequest:
             type: object
             properties:
@@ -2124,6 +2399,16 @@ components:
             properties:
                 principal:
                     $ref: '#/components/schemas/Principal'
+        EnableWebhookRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        EnableWebhookResponse:
+            type: object
+            properties:
+                webhook:
+                    $ref: '#/components/schemas/Webhook'
         GetDbtProjectResponse:
             type: object
             properties:
@@ -2169,6 +2454,11 @@ components:
             properties:
                 sync:
                     $ref: '#/components/schemas/Sync'
+        GetWebhookResponse:
+            type: object
+            properties:
+                webhook:
+                    $ref: '#/components/schemas/Webhook'
         GoogleProtobufAny:
             type: object
             properties:
@@ -2329,6 +2619,24 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/Sync'
+                nextPageToken:
+                    type: string
+        ListWebhookDeliveriesResponse:
+            type: object
+            properties:
+                deliveries:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/WebhookDelivery'
+                nextPageToken:
+                    type: string
+        ListWebhooksResponse:
+            type: object
+            properties:
+                webhooks:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Webhook'
                 nextPageToken:
                     type: string
         LogEntry:
@@ -3031,6 +3339,17 @@ components:
                     description: |-
                         Rows the destination didn't insert because a row with the same
                          _openetl_id was earlier in the epoch or already there.
+        TestWebhookRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        TestWebhookResponse:
+            type: object
+            properties:
+                delivery:
+                    type: string
+                    description: The test event's delivery, pending.
         Types:
             type: object
             properties:
@@ -3050,6 +3369,118 @@ components:
                 created:
                     type: boolean
                     description: The secret didn't exist.
+        Webhook:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/webhooks/{webhook}
+                spec:
+                    $ref: '#/components/schemas/WebhookSpec'
+                version:
+                    type: string
+                    description: A digest of the spec.
+                etag:
+                    type: string
+                state:
+                    enum:
+                        - WEBHOOK_STATE_UNSPECIFIED
+                        - WEBHOOK_STATE_ENABLED
+                        - WEBHOOK_STATE_DISABLED
+                    type: string
+                    format: enum
+                disabledReason:
+                    type: string
+                    description: |-
+                        Why it's disabled: a call, an endpoint that answered 410 Gone, or one
+                         that failed for too long.
+                failingSince:
+                    type: string
+                    description: When its endpoint started failing; unset once a delivery succeeds.
+                    format: date-time
+                createTime:
+                    type: string
+                    format: date-time
+                updateTime:
+                    type: string
+                    format: date-time
+        WebhookDelivery:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/webhooks/{webhook}/deliveries/{delivery}
+                eventId:
+                    type: string
+                    description: The event's ID, sent as webhook-id, and its type.
+                eventType:
+                    type: string
+                state:
+                    enum:
+                        - DELIVERY_STATE_UNSPECIFIED
+                        - DELIVERY_STATE_PENDING
+                        - DELIVERY_STATE_SUCCEEDED
+                        - DELIVERY_STATE_FAILED
+                    type: string
+                    format: enum
+                attempts:
+                    type: integer
+                    format: int32
+                nextAttemptTime:
+                    type: string
+                    description: When it's tried next, while pending.
+                    format: date-time
+                lastAttemptTime:
+                    type: string
+                    format: date-time
+                responseStatus:
+                    type: integer
+                    description: The latest attempt's HTTP status; zero if it got no response.
+                    format: int32
+                responseBody:
+                    type: string
+                    description: The start of the latest response's body.
+                error:
+                    type: string
+                    description: Why the latest attempt failed.
+                latency:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                createTime:
+                    type: string
+                    format: date-time
+            description: |-
+                WebhookDelivery is one event's delivery to one webhook, and how its
+                 latest attempt went.
+        WebhookSpec:
+            type: object
+            properties:
+                url:
+                    type: string
+                    description: An http or https URL.
+                events:
+                    type: array
+                    items:
+                        type: string
+                    description: Event types, or globs such as sync.* or *.
+                pipelines:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        Only these pipelines' events, by name; empty: every pipeline's, and the
+                         workspace's own.
+                secrets:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The secrets that sign each delivery, by name in the workspace, each
+                         holding a Standard Webhooks key (whsec_ and base64). Each signs it, so a
+                         new key can be added before the old one is removed.
+            description: |-
+                WebhookSpec is a Webhook document's spec: where the workspace's platform
+                 events go, and which.
 tags:
     - name: AccessService
       description: |-
@@ -3088,3 +3519,8 @@ tags:
         SyncService reads pipelines' syncs and their logs. A continuous
          pipeline's syncs are its runs: each runs one version until it is stopped
          or fails.
+    - name: WebhookService
+      description: |-
+        WebhookService reads, deletes, disables and enables webhooks, sends them
+         test events and lists their deliveries. ApplyService creates and changes
+         them.

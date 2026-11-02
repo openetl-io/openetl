@@ -29,7 +29,7 @@ const usage = `usage: openetl <command> [flags]
 
 Commands:
   apply -f FILE   create or update the connector versions, sources,
-                  destinations, dbt projects and pipelines in FILE
+                  destinations, dbt projects, pipelines and webhooks in FILE
   plan -f FILE    show what apply would change, and how each pipeline
                   would sync
   pause NAME      stop a pipeline's scheduled syncs
@@ -52,6 +52,8 @@ Commands:
   dataplane list|token
                   list data planes, and manage their runner tokens
   audit list      list who changed what, and who read secrets
+  webhook list|deliveries|test|disable|enable|delete
+                  manage the webhooks platform events go to
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file
 (.openetl/admin.key by default, where openetld writes the owner's key).
@@ -96,6 +98,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runDataPlane(ctx, args[1:], out)
 	case "audit":
 		return runAudit(ctx, args[1:], out)
+	case "webhook":
+		return runWebhook(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "syncs":

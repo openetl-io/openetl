@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 
+	"github.com/unsuitable001/openetl/internal/events"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
@@ -77,13 +78,21 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	if err != nil {
 		return res, err
 	}
-	id, err := a.Store.StartSync(ctx, db.StartSyncParams{
-		OrgID:      org,
-		ID:         sync,
-		PipelineID: pipeline,
-		Version:    p.Version,
-		WorkflowID: run.ID,
-		RunID:      run.RunID,
+	var id uuid.UUID
+	err = a.Store.Tx(ctx, func(q *db.Queries) error {
+		row, err := q.StartSync(ctx, db.StartSyncParams{
+			OrgID:      org,
+			ID:         sync,
+			PipelineID: pipeline,
+			Version:    p.Version,
+			WorkflowID: run.ID,
+			RunID:      run.RunID,
+		})
+		if err != nil {
+			return err
+		}
+		id = row.ID
+		return recordSync(ctx, q, events.SyncStarted, row, "")
 	})
 	if err != nil {
 		return res, err
@@ -156,7 +165,45 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 			return err
 		}
 	}
-	return temporalx.ApplicationError(a.Store.FinishSync(ctx, params))
+	err = a.Store.Tx(ctx, func(q *db.Queries) error {
+		row, err := q.FinishSync(ctx, params)
+		if err != nil {
+			return err
+		}
+		typ := map[string]string{"succeeded": events.SyncSucceeded, "stopped": events.SyncStopped, "failed": events.SyncFailed}[params.Status]
+		if err := recordSync(ctx, q, typ, row, in.Code); err != nil {
+			return err
+		}
+		if in.Code == errs.SchemaDrift.String() {
+			return recordSync(ctx, q, events.SchemaBlocked, row, in.Code)
+		}
+		return nil
+	})
+	return temporalx.ApplicationError(err)
+}
+
+// recordSync records a sync's event, once however often it's retried. A
+// pipeline deleted meanwhile gets none.
+func recordSync(ctx context.Context, q *db.Queries, typ string, s db.Sync, code string) error {
+	names, err := q.GetPipelineNames(ctx, db.GetPipelineNamesParams{OrgID: s.OrgID, ID: s.PipelineID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	pipeline := "workspaces/" + names.Workspace + "/pipelines/" + names.Name
+	data := events.Sync{
+		Pipeline: pipeline, Sync: pipeline + "/syncs/" + s.ID.String(), Version: s.Version, Continuous: s.Continuous,
+		StartTime: s.StartTime, EndTime: s.EndTime, Code: code,
+	}
+	if s.Error != nil {
+		data.Error = *s.Error
+	}
+	_, err = events.Record(ctx, q, s.OrgID, events.Event{
+		Workspace: names.WorkspaceID, Type: typ, Pipeline: names.Name, Data: data, Key: typ + "/" + s.ID.String(),
+	})
+	return err
 }
 
 // GetStreamState reads the pipeline for its supervisor. A pipeline that no
@@ -213,14 +260,21 @@ func (a *Activities) StartRun(ctx context.Context, in contract.StartRunInput) (c
 	if err != nil {
 		return res, err
 	}
-	id, err := a.Store.StartSync(ctx, db.StartSyncParams{
-		OrgID:      org,
-		ID:         sync,
-		PipelineID: pipeline,
-		Version:    in.Version,
-		WorkflowID: info.WorkflowExecution.ID,
-		RunID:      res.RunKey,
-		Continuous: true,
+	err = a.Store.Tx(ctx, func(q *db.Queries) error {
+		row, err := q.StartSync(ctx, db.StartSyncParams{
+			OrgID:      org,
+			ID:         sync,
+			PipelineID: pipeline,
+			Version:    in.Version,
+			WorkflowID: info.WorkflowExecution.ID,
+			RunID:      res.RunKey,
+			Continuous: true,
+		})
+		if err != nil {
+			return err
+		}
+		res.SyncID = row.ID.String()
+		return recordSync(ctx, q, events.SyncStarted, row, "")
 	})
 	if store.IsForeignKeyViolation(err) {
 		return res, temporalx.ApplicationError(errs.New(errs.ConfigInvalid, "pipeline %s no longer exists", in.PipelineID))
@@ -228,7 +282,6 @@ func (a *Activities) StartRun(ctx context.Context, in contract.StartRunInput) (c
 	if err != nil {
 		return res, temporalx.ApplicationError(err)
 	}
-	res.SyncID = id.String()
 	return res, nil
 }
 

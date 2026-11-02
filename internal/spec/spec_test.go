@@ -137,6 +137,36 @@ func TestParseDbtProject(t *testing.T) {
 	}
 }
 
+func TestParseWebhook(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Webhook\nmetadata: {name: ops, workspace: analytics}\n"
+	doc, err := Parse([]byte(header + `spec: {url: "https://hooks.example.com/openetl", events: [sync.failed, "schema.*"], pipelines: [shop], secrets: [ops-key, ops-key-old]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := doc.Webhook
+	if doc.Kind != KindWebhook || doc.Workspace != "analytics" || w.GetUrl() != "https://hooks.example.com/openetl" ||
+		len(w.GetEvents()) != 2 || w.GetPipelines()[0] != "shop" || w.GetSecrets()[1] != "ops-key-old" {
+		t.Errorf("doc = %+v", doc)
+	}
+	for name, spec := range map[string]string{
+		"no url":         "spec: {events: ['*'], secrets: [k]}",
+		"ftp":            "spec: {url: 'ftp://example.com', events: ['*'], secrets: [k]}",
+		"no host":        "spec: {url: 'https:///x', events: ['*'], secrets: [k]}",
+		"credentials":    "spec: {url: 'https://u:p@example.com', events: ['*'], secrets: [k]}",
+		"no events":      "spec: {url: 'https://example.com', secrets: [k]}",
+		"no secrets":     "spec: {url: 'https://example.com', events: ['*']}",
+		"a secret twice": "spec: {url: 'https://example.com', events: ['*'], secrets: [k, k]}",
+		"four secrets":   "spec: {url: 'https://example.com', events: ['*'], secrets: [a, b, c, d]}",
+		"a bad name":     "spec: {url: 'https://example.com', events: ['*'], secrets: [K]}",
+		"a bad pipeline": "spec: {url: 'https://example.com', events: ['*'], secrets: [k], pipelines: [a_b]}",
+		"unknown field":  "spec: {url: 'https://example.com', events: ['*'], secrets: [k], headers: {a: b}}",
+	} {
+		if _, err := Parse([]byte(header + spec)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}
+
 func TestParseConnector(t *testing.T) {
 	doc, err := Parse([]byte(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": "faker"},
 		"spec": {"connector": "faker", "config": {"seed": 1, "count": 100, "nested": {"a": [1, "b"]}}}}`))

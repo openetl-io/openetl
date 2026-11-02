@@ -93,6 +93,8 @@ type planned struct {
 	version string
 	action  apiv1.ApplyAction
 	v       *pinned
+	// Where the version came from.
+	provenance string
 }
 
 func (v *pinned) pins() plan.Version {

@@ -30,8 +30,8 @@ type Config struct {
 	Cache string
 	// The dbt executable for post-sync steps. Empty: dbt on PATH.
 	Dbt string
-	// CIDR prefixes, comma-separated, that connectors and registries may
-	// reach besides public addresses.
+	// CIDR prefixes, comma-separated, that connectors, registries and
+	// webhooks may reach besides public addresses.
 	EgressAllow string
 	// The key that wraps orgs' data keys, for the API server: a key file, or
 	// a base64key://, awskms://, gcpkms:// or azurekeyvault:// URL. Empty:
@@ -40,6 +40,9 @@ type Config struct {
 	// Where the server writes the owner key it creates with the org, and
 	// openetld bootstrap-key a new one.
 	BootstrapKeyFile string
+	// How far behind its source a continuous pipeline's read gets before
+	// the server sends pipeline.lagging, as a Go duration.
+	LaggingAfter string
 	// A directory holding the built UI, which the API server serves at /.
 	// Empty: no UI.
 	Web string
@@ -75,7 +78,8 @@ var options = []option{
 	{"cache", "OPENETL_CACHE", ".openetl/cache", "where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables", func(c *Config) *string { return &c.Cache }},
 	{"dbt", "OPENETL_DBT", "", "dbt executable for pipelines' post-sync steps, with the destinations' adapters installed (default: dbt on PATH)", func(c *Config) *string { return &c.Dbt }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
-	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors and registries may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
+	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
+	{"lagging-after", "OPENETL_LAGGING_AFTER", "5m", "how far behind its source a continuous pipeline's read gets before the server sends pipeline.lagging to webhooks", func(c *Config) *string { return &c.LaggingAfter }},
 	{"secrets-key", "OPENETL_SECRETS_KEY", ".openetl/secrets.key", "the API server's key-encryption key for secrets: a file holding a base64-encoded 32-byte key, created if missing; or base64key://KEY, awskms://…, gcpkms://… or azurekeyvault://…", func(c *Config) *string { return &c.SecretsKey }},
 	{"bootstrap-key-file", "OPENETL_BOOTSTRAP_KEY_FILE", ".openetl/admin.key", "where the server writes the owner key of the org it creates on first start, readable only by its owner; and where openetld bootstrap-key writes a new one", func(c *Config) *string { return &c.BootstrapKeyFile }},
 	{"token-file", "OPENETL_RUNNER_TOKEN_FILE", "", "a file holding the runner's token, which openetl dataplane token create makes (default: the OPENETL_RUNNER_TOKEN variable)", func(c *Config) *string { return &c.TokenFile }},

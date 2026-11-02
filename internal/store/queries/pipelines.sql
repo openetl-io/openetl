@@ -60,8 +60,23 @@ WHERE p.org_id = @org_id AND (
         WHERE d.id = ANY(@dbt_projects::uuid[])))
 ORDER BY w.name, p.name;
 
--- name: SetPipelinePaused :exec
-UPDATE pipelines SET paused = @paused WHERE org_id = @org_id AND id = @id;
+-- name: SetPipelinePaused :execrows
+UPDATE pipelines SET paused = @paused WHERE org_id = @org_id AND id = @id AND paused <> @paused;
+
+-- What events name a pipeline by.
+-- name: GetPipelineNames :one
+SELECT p.name, p.workspace_id, w.name AS workspace
+FROM pipelines p JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
+WHERE p.org_id = @org_id AND p.id = @id;
+
+-- name: StartLagging :execrows
+UPDATE pipelines SET lagging_since = now() WHERE org_id = @org_id AND id = @id AND lagging_since IS NULL;
+
+-- name: StopLagging :many
+UPDATE pipelines p SET lagging_since = NULL
+FROM (SELECT o.lagging_since FROM pipelines o WHERE o.org_id = @org_id AND o.id = @id FOR UPDATE) old
+WHERE p.org_id = @org_id AND p.id = @id AND p.lagging_since IS NOT NULL
+RETURNING old.lagging_since::timestamptz AS since;
 
 -- Newest first, after the version (before_time, before_version) if given,
 -- with the configs it pins where they're still there.

@@ -44,6 +44,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/unsuitable001/openetl/internal/webhooks"
 	"github.com/unsuitable001/openetl/internal/webui"
 )
 
@@ -60,6 +61,8 @@ type Options struct {
 	// Called with the API's address once it is serving.
 	Ready     func(addr string)
 	Workflows workflows.Workflows
+	// Changes the server's notifier before it starts, for tests.
+	Webhooks func(*webhooks.Notifier)
 }
 
 // Run runs the roles until ctx ends or one of them fails.
@@ -139,12 +142,18 @@ func Run(ctx context.Context, o Options) error {
 		if keyring != nil {
 			defer func() { _ = keyring.Close() }()
 		}
+		lagging, err := time.ParseDuration(cfg.LaggingAfter)
+		if cfg.LaggingAfter != "" && (err != nil || lagging <= 0) {
+			_ = ln.Close()
+			return fmt.Errorf("daemon: --lagging-after %q isn't a positive duration", cfg.LaggingAfter)
+		}
 		srv := &api.Server{
 			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc}, Logs: &ops.Ops{Client: tc},
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
-			Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},
-			Secrets:  keyring,
-			Logger:   log.With("role", "server"),
+			Registry:     &registry.Client{Policy: netguard.Policy{Allow: allow}},
+			Secrets:      keyring,
+			LaggingAfter: lagging,
+			Logger:       log.With("role", "server"),
 		}
 		h, err := srv.Handler()
 		if err != nil {
@@ -164,6 +173,14 @@ func Run(ctx context.Context, o Options) error {
 			}
 		}
 		g.Go(func() error { return serve(gctx, ln, h, o.Ready, log) })
+		notifier := &webhooks.Notifier{
+			Store: st, Org: tenant.Org, Secrets: keyring, Client: webhooks.Client(netguard.Policy{Allow: allow}),
+			Logger: log.With("role", "server", "component", "webhooks"),
+		}
+		if o.Webhooks != nil {
+			o.Webhooks(notifier)
+		}
+		g.Go(func() error { return notifier.Run(gctx) })
 	}
 	if o.Roles.Orchestrator {
 		g.Go(func() error { return orchestrate(gctx, cfg, tc, st, o.Workflows) })

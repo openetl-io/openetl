@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
@@ -57,7 +58,10 @@ type Server struct {
 	Registry *registry.Client
 	// Seals secrets' values. Nil: secrets can't be stored.
 	Secrets *secrets.Keyring
-	Logger  *slog.Logger
+	// How far behind its source a continuous pipeline's read gets before
+	// it's lagging. Zero: 5 min.
+	LaggingAfter time.Duration
+	Logger       *slog.Logger
 }
 
 var (
@@ -70,6 +74,7 @@ var (
 	_ apiv1connect.SecretServiceHandler          = (*Server)(nil)
 	_ apiv1connect.AccessServiceHandler          = (*Server)(nil)
 	_ apiv1connect.AuditServiceHandler           = (*Server)(nil)
+	_ apiv1connect.WebhookServiceHandler         = (*Server)(nil)
 	_ dataplanev1connect.DataPlaneServiceHandler = (*Server)(nil)
 )
 
@@ -104,6 +109,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		vanguard.NewService(apiv1connect.NewSecretServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewAccessServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewAuditServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewWebhookServiceHandler(s, opts)),
 	}
 	// REST bodies are buffered whole before the handler's limit applies.
 	transcoder, err := vanguard.NewTranscoder(services, vanguard.WithDefaultServiceOptions(vanguard.WithMaxMessageBufferBytes(2*maxApplyBytes)))

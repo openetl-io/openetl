@@ -114,7 +114,7 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 		finish.PostSync, err = postSync(ctx, in, started, retry, heartbeat)
 	}
 	if err != nil {
-		finish.Error = err.Error()
+		finish.Error, finish.Code = err.Error(), code(err)
 	}
 	// Recorded even if the workflow is being cancelled.
 	fctx, _ := workflow.NewDisconnectedContext(cp)
@@ -154,6 +154,14 @@ func postSync(ctx workflow.Context, in contract.SyncInput, started contract.Star
 		results = append(results, contract.PostSyncResult{Dbt: &r})
 	}
 	return results, nil
+}
+
+// code is the taxonomy code an activity failed with, if any.
+func code(err error) string {
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+		return app.Type()
+	}
+	return ""
 }
 
 // drained returns the attempt number of an attempt that failed with DRAINING.

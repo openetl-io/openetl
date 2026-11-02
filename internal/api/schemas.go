@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/events"
 	"github.com/unsuitable001/openetl/internal/store/db"
 	"github.com/unsuitable001/openetl/internal/streamschema"
 )
@@ -66,15 +67,21 @@ func (s *Server) ReportSchemas(ctx context.Context, req *connect.Request[datapla
 			return err
 		}
 		for _, d := range schemas {
-			n, err := q.AddStreamSchema(ctx, db.AddStreamSchemaParams{
+			added, err := q.AddStreamSchema(ctx, db.AddStreamSchemaParams{
 				OrgID: s.Tenant.Org, PipelineID: id, Stream: d.stream, Digest: d.digest, TableName: d.table,
 				Columns: d.columns, ArrowSchema: d.raw, Generation: gen, Epoch: epoch,
 			})
 			if err != nil {
 				return err
 			}
-			if n > 0 {
-				res.Added = append(res.Added, d.stream)
+			if len(added) == 0 {
+				continue
+			}
+			res.Added = append(res.Added, d.stream)
+			if v := added[0]; v > 1 {
+				if err := s.recordSchemaChange(ctx, q, id, d, v); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -86,6 +93,48 @@ func (s *Server) ReportSchemas(ctx context.Context, req *connect.Request[datapla
 		return nil, err
 	}
 	return connect.NewResponse(res), nil
+}
+
+// recordSchemaChange records a stream's new schema version, and how it
+// differs from the one before.
+func (s *Server) recordSchemaChange(ctx context.Context, q *db.Queries, pipeline uuid.UUID, d streamSchema, version int32) error {
+	names, err := q.GetPipelineNames(ctx, db.GetPipelineNamesParams{OrgID: s.Tenant.Org, ID: pipeline})
+	if err != nil {
+		return err
+	}
+	prevRaw, err := q.GetStreamSchemaColumns(ctx, db.GetStreamSchemaColumnsParams{OrgID: s.Tenant.Org, PipelineID: pipeline, Stream: d.stream, Version: version - 1})
+	if err != nil {
+		return err
+	}
+	var prev, cur []streamschema.Column
+	if err := json.Unmarshal(prevRaw, &prev); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(d.columns, &cur); err != nil {
+		return err
+	}
+	name := resourceName(names.Workspace, "pipelines", names.Name)
+	data := events.Schema{Pipeline: name, Stream: d.stream, Version: version, Table: d.table}
+	for _, c := range cur {
+		data.Columns = append(data.Columns, events.Column{Name: c.Name, Type: c.Type, Nullable: c.Nullable})
+		i := slices.IndexFunc(prev, func(p streamschema.Column) bool { return p.Name == c.Name })
+		switch {
+		case i < 0:
+			data.Added = append(data.Added, c.Name)
+		case prev[i].Type != c.Type || prev[i].Nullable != c.Nullable:
+			data.Changed = append(data.Changed, c.Name)
+		}
+	}
+	for _, p := range prev {
+		if !slices.ContainsFunc(cur, func(c streamschema.Column) bool { return c.Name == p.Name }) {
+			data.Removed = append(data.Removed, p.Name)
+		}
+	}
+	_, err = events.Record(ctx, q, s.Tenant.Org, events.Event{
+		Workspace: names.WorkspaceID, Type: events.SchemaChanged, Pipeline: names.Name, Data: data,
+		Key: events.SchemaChanged + "/" + pipeline.String() + "/" + d.stream + "/" + strconv.Itoa(int(version)),
+	})
+	return err
 }
 
 func (s *Server) ListStreamSchemas(ctx context.Context, req *connect.Request[apiv1.ListStreamSchemasRequest]) (*connect.Response[apiv1.ListStreamSchemasResponse], error) {

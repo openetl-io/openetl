@@ -12,9 +12,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const finishSync = `-- name: FinishSync :exec
+const finishSync = `-- name: FinishSync :one
 UPDATE syncs SET status = $1, error = $2, stats = $3, end_time = now()
 WHERE org_id = $4 AND id = $5
+RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous
 `
 
 type FinishSyncParams struct {
@@ -25,15 +26,30 @@ type FinishSyncParams struct {
 	ID     uuid.UUID
 }
 
-func (q *Queries) FinishSync(ctx context.Context, arg FinishSyncParams) error {
-	_, err := q.db.Exec(ctx, finishSync,
+func (q *Queries) FinishSync(ctx context.Context, arg FinishSyncParams) (Sync, error) {
+	row := q.db.QueryRow(ctx, finishSync,
 		arg.Status,
 		arg.Error,
 		arg.Stats,
 		arg.OrgID,
 		arg.ID,
 	)
-	return err
+	var i Sync
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.PipelineID,
+		&i.Version,
+		&i.WorkflowID,
+		&i.RunID,
+		&i.Status,
+		&i.Error,
+		&i.Stats,
+		&i.StartTime,
+		&i.EndTime,
+		&i.Continuous,
+	)
+	return i, err
 }
 
 const getSync = `-- name: GetSync :one
@@ -83,6 +99,36 @@ func (q *Queries) GetSync(ctx context.Context, arg GetSyncParams) (GetSyncRow, e
 		&i.EndTime,
 		&i.Continuous,
 		&i.DataPlaneID,
+	)
+	return i, err
+}
+
+const getSyncByRun = `-- name: GetSyncByRun :one
+SELECT org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous FROM syncs WHERE org_id = $1 AND pipeline_id = $2 AND run_id = $3
+`
+
+type GetSyncByRunParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	RunID      string
+}
+
+func (q *Queries) GetSyncByRun(ctx context.Context, arg GetSyncByRunParams) (Sync, error) {
+	row := q.db.QueryRow(ctx, getSyncByRun, arg.OrgID, arg.PipelineID, arg.RunID)
+	var i Sync
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.PipelineID,
+		&i.Version,
+		&i.WorkflowID,
+		&i.RunID,
+		&i.Status,
+		&i.Error,
+		&i.Stats,
+		&i.StartTime,
+		&i.EndTime,
+		&i.Continuous,
 	)
 	return i, err
 }
@@ -188,7 +234,7 @@ const startSync = `-- name: StartSync :one
 INSERT INTO syncs (org_id, id, pipeline_id, version, workflow_id, run_id, status, continuous)
 VALUES ($1, $2, $3, $4, $5, $6, 'running', $7)
 ON CONFLICT (org_id, run_id) DO UPDATE SET status = syncs.status
-RETURNING id
+RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous
 `
 
 type StartSyncParams struct {
@@ -201,7 +247,7 @@ type StartSyncParams struct {
 	Continuous bool
 }
 
-func (q *Queries) StartSync(ctx context.Context, arg StartSyncParams) (uuid.UUID, error) {
+func (q *Queries) StartSync(ctx context.Context, arg StartSyncParams) (Sync, error) {
 	row := q.db.QueryRow(ctx, startSync,
 		arg.OrgID,
 		arg.ID,
@@ -211,7 +257,20 @@ func (q *Queries) StartSync(ctx context.Context, arg StartSyncParams) (uuid.UUID
 		arg.RunID,
 		arg.Continuous,
 	)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
+	var i Sync
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.PipelineID,
+		&i.Version,
+		&i.WorkflowID,
+		&i.RunID,
+		&i.Status,
+		&i.Error,
+		&i.Stats,
+		&i.StartTime,
+		&i.EndTime,
+		&i.Continuous,
+	)
+	return i, err
 }

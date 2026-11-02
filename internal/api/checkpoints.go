@@ -1,8 +1,10 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -11,13 +13,16 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/events"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
+	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
 // A checkpoint's create_time partitions the mirror, so one far from now
@@ -114,7 +119,72 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err != nil {
 		return nil, err
 	}
+	if err := s.checkLag(ctx, id, m); err != nil {
+		return nil, err
+	}
 	return connect.NewResponse(&dataplanev1.ReportCheckpointResponse{Added: added}), nil
+}
+
+// defaultLaggingAfter is how far behind its source a continuous pipeline's
+// read gets before it's lagging, unless the server says otherwise.
+const defaultLaggingAfter = 5 * time.Minute
+
+// checkLag records pipeline.lagging when a continuous pipeline's running
+// read reports it's further behind its source than the server's
+// LaggingAfter, and pipeline.recovered once it's back within half of it.
+// The pipeline's lagging_since holds the state, so each crossing is recorded
+// once, however often a checkpoint is reported.
+func (s *Server) checkLag(ctx context.Context, pipeline uuid.UUID, m *dataplanev1.ReportCheckpointRequest) error {
+	var worst *protocolv1.Progress
+	for _, p := range m.GetProgress() {
+		if p.GetLag() != nil && (worst == nil || p.GetLag().AsDuration() > worst.GetLag().AsDuration()) {
+			worst = p
+		}
+	}
+	if worst == nil {
+		return nil
+	}
+	sync, err := s.Store.GetSyncByRun(ctx, db.GetSyncByRunParams{OrgID: s.Tenant.Org, PipelineID: pipeline, RunID: m.GetRunId()})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil || !sync.Continuous || sync.Status != "running" {
+		return err
+	}
+	threshold, lag := cmp.Or(s.LaggingAfter, defaultLaggingAfter), worst.GetLag().AsDuration()
+	if lag > threshold/2 && lag <= threshold {
+		return nil
+	}
+	return s.Store.Tx(ctx, func(q *db.Queries) error {
+		var since time.Time
+		typ := events.PipelineLagging
+		if lag > threshold {
+			n, err := q.StartLagging(ctx, db.StartLaggingParams{OrgID: s.Tenant.Org, ID: pipeline})
+			if err != nil || n == 0 {
+				return err
+			}
+			since = time.Now()
+		} else {
+			was, err := q.StopLagging(ctx, db.StopLaggingParams{OrgID: s.Tenant.Org, ID: pipeline})
+			if err != nil || len(was) == 0 {
+				return err
+			}
+			typ, since = events.PipelineRecovered, was[0]
+		}
+		names, err := q.GetPipelineNames(ctx, db.GetPipelineNamesParams{OrgID: s.Tenant.Org, ID: pipeline})
+		if err != nil {
+			return err
+		}
+		name := resourceName(names.Workspace, "pipelines", names.Name)
+		_, err = events.Record(ctx, q, s.Tenant.Org, events.Event{
+			Workspace: names.WorkspaceID, Type: typ, Pipeline: names.Name,
+			Data: events.Lag{
+				Pipeline: name, Sync: name + "/syncs/" + sync.ID.String(), LagSeconds: lag.Seconds(),
+				ThresholdSeconds: threshold.Seconds(), Since: since, Stream: worst.GetStream(),
+			},
+		})
+		return err
+	})
 }
 
 func (s *Server) ListCheckpoints(ctx context.Context, req *connect.Request[apiv1.ListCheckpointsRequest]) (*connect.Response[apiv1.ListCheckpointsResponse], error) {
