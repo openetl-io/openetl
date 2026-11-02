@@ -138,10 +138,13 @@ func TestContinuous(t *testing.T) {
 	waitRuns(t, name, "stopped stopped running")
 	waitRows(t, name, 100)
 
-	res, err := apiv1connect.NewSyncServiceClient(env.http, env.apiURL).ListSyncs(t.Context(), connect.NewRequest(&apiv1.ListSyncsRequest{Parent: "workspaces/default/pipelines/" + name}))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Checkpoints reach the API after the rows land.
+	var res *connect.Response[apiv1.ListSyncsResponse]
+	eventually(t, 10*time.Second, "the run's first checkpoint report", func() bool {
+		var err error
+		res, err = apiv1connect.NewSyncServiceClient(env.http, env.apiURL).ListSyncs(t.Context(), connect.NewRequest(&apiv1.ListSyncsRequest{Parent: "workspaces/default/pipelines/" + name}))
+		return err == nil && len(res.Msg.GetSyncs()) > 1 && res.Msg.GetSyncs()[0].GetLastCommitTime() != nil
+	})
 	latest := res.Msg.GetSyncs()[0]
 	if !latest.GetContinuous() || latest.GetState() != apiv1.SyncState_SYNC_STATE_RUNNING || latest.GetLastCommitTime() == nil {
 		t.Errorf("latest run %v", latest)
