@@ -32,7 +32,7 @@ make test          # Go, Rust and UI unit tests
 make sim           # commit-protocol simulation; SEEDS=10000 for more seeds
 make lint          # buf lint, golangci-lint, rustfmt, clippy, tsc
 make generate      # regenerate Go and TypeScript from proto/ after changing a .proto
-make deps-up       # Postgres, Temporal and S3 in Docker
+make deps-up       # Postgres, Temporal, S3 and Kafka in Docker
 make connectors    # build the official connectors from ../openetl-connectors into bin/connectors
 make e2e           # whole-stack scenarios; needs deps-up and the connectors
 make dev           # openetld with every role, and the UI at http://localhost:8080

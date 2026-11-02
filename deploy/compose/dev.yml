@@ -6,6 +6,7 @@
 # SeaweedFS (S3), fake-gcs-server (GCS) and Azurite (Azure Blob) all enforce
 # conditional writes, for the checkpoint log's per-provider tests. An Iceberg
 # REST catalog keeps its tables in the S3 store, for destination-iceberg.
+# Kafka and a schema registry are for source-kafka and destination-kafka.
 
 name: openetl-dev
 
@@ -73,6 +74,55 @@ services:
     # The well-known devstoreaccount1 account and key, in memory.
     command: ["azurite-blob", "--blobHost", "0.0.0.0", "--inMemoryPersistence", "--skipApiVersionCheck"]
     ports: ["10000:10000"]
+
+  # One KRaft node, in memory between restarts. Clients on the host reach
+  # it at 127.0.0.1:9092, containers at kafka:29092.
+  kafka:
+    image: apache/kafka:4.3.2
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_NUM_PARTITIONS: "3"
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    ports: ["9092:9092"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null"]
+      interval: 5s
+      retries: 30
+
+  # Karapace, a Confluent-compatible schema registry, keeping its schemas
+  # in the broker's _schemas topic.
+  registry:
+    image: ghcr.io/aiven-open/karapace:6.2.4
+    entrypoint: ["python3", "-m", "karapace"]
+    environment:
+      KARAPACE_KARAPACE_REGISTRY: "true"
+      KARAPACE_BOOTSTRAP_URI: kafka:29092
+      KARAPACE_HOST: 0.0.0.0
+      KARAPACE_PORT: "8081"
+      KARAPACE_ADVERTISED_HOSTNAME: registry
+      KARAPACE_GROUP_ID: karapace
+      KARAPACE_MASTER_ELIGIBILITY: "true"
+      KARAPACE_TOPIC_NAME: _schemas
+      KARAPACE_COMPATIBILITY: BACKWARD
+    ports: ["8081:8081"]
+    healthcheck:
+      test: ["CMD", "python3", "healthcheck.py", "http://localhost:8081/_health"]
+      interval: 2s
+      retries: 30
+    depends_on:
+      kafka:
+        condition: service_healthy
 
 volumes:
   postgres:

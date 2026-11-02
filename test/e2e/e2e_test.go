@@ -236,10 +236,11 @@ func setup(m *testing.M) (int, error) {
 func applyOfficialConnectors(ctx context.Context) error {
 	c := &registry.Client{Policy: netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix(egressAllow)}}}
 	req := &apiv1.ApplyRequest{}
-	for _, exe := range []string{"source-postgres", "destination-postgres", "destination-iceberg", "destination-s3"} {
+	for _, exe := range []string{"source-postgres", "destination-postgres", "destination-iceberg", "destination-s3", "source-kafka", "destination-kafka"} {
 		path := filepath.Join(env.connectors, exe)
-		// Builds from before them have neither; their tests skip.
-		if _, err := os.Stat(path); err != nil && (exe == "destination-iceberg" || exe == "destination-s3") {
+		// Builds from before them have only the Postgres connectors; the
+		// others' tests skip.
+		if _, err := os.Stat(path); err != nil && !strings.HasSuffix(exe, "-postgres") {
 			continue
 		}
 		_, name, _ := strings.Cut(exe, "-")
