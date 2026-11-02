@@ -1,0 +1,2698 @@
+# Generated with protoc-gen-openapi
+# https://github.com/google/gnostic/tree/master/cmd/protoc-gen-openapi
+
+openapi: 3.0.3
+info:
+    title: openetl API
+    version: v1
+paths:
+    /v1/auditEntries:
+        get:
+            tags:
+                - AuditService
+            description: Newest first.
+            operationId: AuditService_ListAuditEntries
+            parameters:
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+                - name: actor
+                  in: query
+                  description: Only this actor's entries.
+                  schema:
+                    type: string
+                - name: resource
+                  in: query
+                  description: Only entries that name this resource.
+                  schema:
+                    type: string
+                - name: method
+                  in: query
+                  description: |-
+                    Only this method's entries: its procedure, its service and name
+                     (PipelineService/SyncPipeline), or its name (SyncPipeline).
+                  schema:
+                    type: string
+                - name: startTime
+                  in: query
+                  description: Only calls that started at or after start_time, and before end_time.
+                  schema:
+                    type: string
+                    format: date-time
+                - name: endTime
+                  in: query
+                  schema:
+                    type: string
+                    format: date-time
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListAuditEntriesResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/dataPlanes:
+        get:
+            tags:
+                - AccessService
+            operationId: AccessService_ListDataPlanes
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListDataPlanesResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/dataPlanes/{dataPlane}/tokens:
+        get:
+            tags:
+                - AccessService
+            operationId: AccessService_ListRunnerTokens
+            parameters:
+                - name: dataPlane
+                  in: path
+                  description: The dataPlane id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListRunnerTokensResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        post:
+            tags:
+                - AccessService
+            description: The response has the token itself, which the API never returns again.
+            operationId: AccessService_CreateRunnerToken
+            parameters:
+                - name: dataPlane
+                  in: path
+                  description: The dataPlane id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateRunnerTokenRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/CreateRunnerTokenResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/dataPlanes/{dataPlane}/tokens/{token}:
+        delete:
+            tags:
+                - AccessService
+            description: The token stops working at once.
+            operationId: AccessService_DeleteRunnerToken
+            parameters:
+                - name: dataPlane
+                  in: path
+                  description: The dataPlane id.
+                  required: true
+                  schema:
+                    type: string
+                - name: token
+                  in: path
+                  description: The token id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteRunnerTokenResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals:
+        get:
+            tags:
+                - AccessService
+            operationId: AccessService_ListPrincipals
+            parameters:
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListPrincipalsResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        post:
+            tags:
+                - AccessService
+            operationId: AccessService_CreatePrincipal
+            parameters:
+                - name: principalId
+                  in: query
+                  description: |-
+                    The last part of its name: a lowercase letter, then lowercase letters,
+                     digits and hyphens, at most 63 in all.
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/Principal'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/CreatePrincipalResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}:
+        get:
+            tags:
+                - AccessService
+            operationId: AccessService_GetPrincipal
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetPrincipalResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - AccessService
+            description: |-
+                Deletes its keys and role bindings with it. Fails with
+                 FAILED_PRECONDITION for the org's last owner.
+            operationId: AccessService_DeletePrincipal
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeletePrincipalResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}/keys:
+        get:
+            tags:
+                - AccessService
+            operationId: AccessService_ListKeys
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListKeysResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        post:
+            tags:
+                - AccessService
+            description: The response has the key itself, which the API never returns again.
+            operationId: AccessService_CreateKey
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateKeyRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/CreateKeyResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}/keys/{key}:
+        delete:
+            tags:
+                - AccessService
+            description: The key stops working at once.
+            operationId: AccessService_DeleteKey
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+                - name: key
+                  in: path
+                  description: The key id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteKeyResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}:disable:
+        post:
+            tags:
+                - AccessService
+            description: |-
+                Its keys stop working until it's enabled again. Fails with
+                 FAILED_PRECONDITION for the org's last owner.
+            operationId: AccessService_DisablePrincipal
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/DisablePrincipalRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DisablePrincipalResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}:enable:
+        post:
+            tags:
+                - AccessService
+            operationId: AccessService_EnablePrincipal
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/EnablePrincipalRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/EnablePrincipalResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}:grantRole:
+        post:
+            tags:
+                - AccessService
+            description: Granting a role the principal holds already changes nothing.
+            operationId: AccessService_GrantRole
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/GrantRoleRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GrantRoleResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}:revokeRole:
+        post:
+            tags:
+                - AccessService
+            description: Fails with FAILED_PRECONDITION for the org's last owner.
+            operationId: AccessService_RevokeRole
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RevokeRoleRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RevokeRoleResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/dbtProjects:
+        get:
+            tags:
+                - DbtProjectService
+            operationId: DbtProjectService_ListDbtProjects
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListDbtProjectsResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/dbtProjects/{dbtProject}:
+        get:
+            tags:
+                - DbtProjectService
+            operationId: DbtProjectService_GetDbtProject
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: dbtProject
+                  in: path
+                  description: The dbtProject id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetDbtProjectResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - DbtProjectService
+            description: |-
+                Fails with FAILED_PRECONDITION while a pipeline's current version runs
+                 it. Older versions keep the bundles they pin.
+            operationId: DbtProjectService_DeleteDbtProject
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: dbtProject
+                  in: path
+                  description: The dbtProject id.
+                  required: true
+                  schema:
+                    type: string
+                - name: etag
+                  in: query
+                  description: If set, it must match.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteDbtProjectResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/destinations:
+        get:
+            tags:
+                - DestinationService
+            operationId: DestinationService_ListDestinations
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListDestinationsResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/destinations/{destination}:
+        get:
+            tags:
+                - DestinationService
+            operationId: DestinationService_GetDestination
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: destination
+                  in: path
+                  description: The destination id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetDestinationResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - DestinationService
+            operationId: DestinationService_DeleteDestination
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: destination
+                  in: path
+                  description: The destination id.
+                  required: true
+                  schema:
+                    type: string
+                - name: etag
+                  in: query
+                  description: If set, it must match.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteDestinationResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/destinations/{destination}:check:
+        post:
+            tags:
+                - DestinationService
+            description: |-
+                Runs the destination's Check on a runner of the data plane, and waits
+                 for it.
+            operationId: DestinationService_CheckDestination
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: destination
+                  in: path
+                  description: The destination id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CheckDestinationRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/CheckDestinationResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines:
+        get:
+            tags:
+                - PipelineService
+            operationId: PipelineService_ListPipelines
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListPipelinesResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:
+        get:
+            tags:
+                - PipelineService
+            operationId: PipelineService_GetPipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetPipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - PipelineService
+            operationId: PipelineService_DeletePipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: etag
+                  in: query
+                  description: If set, it must match.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeletePipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/syncs:
+        get:
+            tags:
+                - SyncService
+            description: Newest first.
+            operationId: SyncService_ListSyncs
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListSyncsResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/syncs/{sync}:
+        get:
+            tags:
+                - SyncService
+            operationId: SyncService_GetSync
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: sync
+                  in: path
+                  description: The sync id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetSyncResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/syncs/{sync}:readLog:
+        get:
+            tags:
+                - SyncService
+            description: |-
+                A page of the sync's log, oldest first: each attempt's, then each
+                 post-sync step's. The log is in the data plane that ran the sync, so a
+                 runner of that data plane reads it; UNAVAILABLE if none does in time.
+                 Data planes keep logs for 30 days.
+            operationId: SyncService_ReadSyncLog
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: sync
+                  in: path
+                  description: The sync id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageToken
+                  in: query
+                  description: From the last page; unset for the start.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ReadSyncLogResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/versions:
+        get:
+            tags:
+                - PipelineService
+            description: Newest first.
+            operationId: PipelineService_ListPipelineVersions
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListPipelineVersionsResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/versions/{version}:
+        get:
+            tags:
+                - PipelineService
+            operationId: PipelineService_GetPipelineVersion
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: version
+                  in: path
+                  description: The version id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetPipelineVersionResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:pause:
+        post:
+            tags:
+                - PipelineService
+            description: Stops scheduled syncs. A sync that is running carries on.
+            operationId: PipelineService_PausePipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/PausePipelineRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/PausePipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:resume:
+        post:
+            tags:
+                - PipelineService
+            operationId: PipelineService_ResumePipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ResumePipelineRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ResumePipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:sync:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
+                 paused or a sync is running.
+            operationId: PipelineService_SyncPipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SyncPipelineRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/SyncPipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/secrets:
+        get:
+            tags:
+                - SecretService
+            operationId: SecretService_ListSecrets
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListSecretsResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/secrets/{secret}:
+        get:
+            tags:
+                - SecretService
+            operationId: SecretService_GetSecret
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: secret
+                  in: path
+                  description: The secret id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetSecretResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - SecretService
+            description: Fails with FAILED_PRECONDITION while a source or destination names it.
+            operationId: SecretService_DeleteSecret
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: secret
+                  in: path
+                  description: The secret id.
+                  required: true
+                  schema:
+                    type: string
+                - name: etag
+                  in: query
+                  description: If set, it must match.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteSecretResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        patch:
+            tags:
+                - SecretService
+            description: |-
+                Sets a secret's value or reference. The next sync, check or discover
+                 that uses it gets the new value.
+            operationId: SecretService_UpdateSecret
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: secret
+                  in: path
+                  description: The secret id.
+                  required: true
+                  schema:
+                    type: string
+                - name: allowMissing
+                  in: query
+                  description: Create the secret if it doesn't exist.
+                  schema:
+                    type: boolean
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/Secret'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/UpdateSecretResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/sources:
+        get:
+            tags:
+                - SourceService
+            operationId: SourceService_ListSources
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListSourcesResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/sources/{source}:
+        get:
+            tags:
+                - SourceService
+            operationId: SourceService_GetSource
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: source
+                  in: path
+                  description: The source id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetSourceResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - SourceService
+            operationId: SourceService_DeleteSource
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: source
+                  in: path
+                  description: The source id.
+                  required: true
+                  schema:
+                    type: string
+                - name: etag
+                  in: query
+                  description: If set, it must match.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteSourceResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/sources/{source}:check:
+        post:
+            tags:
+                - SourceService
+            description: Runs the source's Check on a runner of the data plane, and waits for it.
+            operationId: SourceService_CheckSource
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: source
+                  in: path
+                  description: The source id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CheckSourceRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/CheckSourceResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/sources/{source}:discover:
+        post:
+            tags:
+                - SourceService
+            description: |-
+                Runs the source's Discover on a runner of the data plane, and waits for
+                 the catalog.
+            operationId: SourceService_DiscoverSource
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: source
+                  in: path
+                  description: The source id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/DiscoverSourceRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DiscoverSourceResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}:apply:
+        post:
+            tags:
+                - ApplyService
+            description: |-
+                Stores each definition as an immutable version; unchanged definitions
+                 keep theirs. A pipeline's version pins the versions of its source and
+                 destination and its dbt projects' bundles. Either every document applies
+                 or none does.
+            operationId: ApplyService_Apply
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ApplyRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ApplyResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+components:
+    schemas:
+        AppliedResource:
+            type: object
+            properties:
+                kind:
+                    type: string
+                name:
+                    type: string
+                action:
+                    enum:
+                        - APPLY_ACTION_UNSPECIFIED
+                        - APPLY_ACTION_CREATED
+                        - APPLY_ACTION_UPDATED
+                        - APPLY_ACTION_UNCHANGED
+                    type: string
+                    format: enum
+                version:
+                    type: string
+        ApplyRequest:
+            type: object
+            properties:
+                workspace:
+                    type: string
+                    description: workspaces/{workspace}, for documents that don't name one.
+                documents:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Document'
+                validateOnly:
+                    type: boolean
+                client:
+                    type: string
+                    description: |-
+                        What's applying, such as "cli", for connector versions' provenance.
+                         Empty: "api".
+        ApplyResponse:
+            type: object
+            properties:
+                resources:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/AppliedResource'
+                    description: One per document, in order.
+                dependents:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/AppliedResource'
+                    description: |-
+                        Pipelines the documents don't define, which have a new version because
+                         a source, destination or dbt project they use changed.
+                plans:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PipelinePlan'
+                    description: One per pipeline in resources, then one per dependent.
+        AuditEntry:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: auditEntries/{id}
+                time:
+                    type: string
+                    description: When the call started.
+                    format: date-time
+                actor:
+                    type: string
+                    description: principals/{p} or dataPlanes/{dp}, or openetld for its own changes.
+                credential:
+                    type: string
+                    description: principals/{p}/keys/{k} or dataPlanes/{dp}/tokens/{t}.
+                method:
+                    type: string
+                    description: The RPC's procedure, such as /openetl.api.v1.PipelineService/SyncPipeline.
+                resources:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The resources the call named or touched, including the secrets whose
+                         values it read.
+                details:
+                    type: object
+                    description: |-
+                        What the method records, such as each applied document's version.
+                         Never a secret's value.
+                peer:
+                    type: string
+                    description: The caller's address.
+                userAgent:
+                    type: string
+                code:
+                    type: string
+                    description: |-
+                        A Connect code, such as ok or permission_denied. Empty if the call
+                         hasn't ended, or the server stopped before it did.
+                error:
+                    type: string
+                endTime:
+                    type: string
+                    format: date-time
+        Catalog:
+            type: object
+            properties:
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CatalogStream'
+                version:
+                    type: string
+                    description: The source version discovered.
+                discoverTime:
+                    type: string
+                    format: date-time
+            description: Catalog is what a source's Discover found.
+        CatalogColumn:
+            type: object
+            properties:
+                name:
+                    type: string
+                type:
+                    type: string
+                    description: |-
+                        The Arrow type, such as int64, decimal(10, 2) or
+                         timestamp[us, tz=UTC].
+                nullable:
+                    type: boolean
+        CatalogStream:
+            type: object
+            properties:
+                name:
+                    type: string
+                primaryKey:
+                    type: array
+                    items:
+                        type: string
+                cursorField:
+                    type: string
+                    description: The field whose value orders a record's versions; empty for none.
+                replay:
+                    enum:
+                        - REPLAY_UNSPECIFIED
+                        - REPLAY_EXACT
+                        - REPLAY_SUPERSET
+                    type: string
+                    format: enum
+                columns:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CatalogColumn'
+                    description: |-
+                        The columns the source declares; empty when the engine infers them from
+                         the records.
+        CheckDestinationRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                dataPlane:
+                    type: string
+                    description: 'The data plane whose runner checks it. Unset: the default.'
+        CheckDestinationResponse:
+            type: object
+            properties:
+                result:
+                    $ref: '#/components/schemas/CheckResult'
+        CheckResult:
+            type: object
+            properties:
+                ok:
+                    type: boolean
+                code:
+                    type: string
+                    description: 'When not ok: a code of the error taxonomy, such as AUTH_INVALID.'
+                message:
+                    type: string
+                version:
+                    type: string
+                    description: The source or destination version checked.
+            description: |-
+                CheckResult is a connector's answer to Check. A connector without a check
+                 of its own only validates its config.
+        CheckSourceRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                dataPlane:
+                    type: string
+                    description: 'The data plane whose runner checks it. Unset: the default.'
+        CheckSourceResponse:
+            type: object
+            properties:
+                result:
+                    $ref: '#/components/schemas/CheckResult'
+        Commit:
+            type: object
+            properties:
+                interval:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                maxBytes:
+                    type: string
+                scope:
+                    enum:
+                        - COMMIT_SCOPE_UNSPECIFIED
+                        - COMMIT_SCOPE_PIPELINE
+                        - COMMIT_SCOPE_STREAM
+                    type: string
+                    format: enum
+        ConnectorConfig:
+            type: object
+            properties:
+                connector:
+                    type: string
+                    description: '"postgres", "postgres@1.2.0" or "postgres@sha256:…".'
+                config:
+                    type: object
+                    description: Secret fields hold secret references, never values.
+            description: ConnectorConfig is the spec of a Source or Destination document.
+        CreateKeyRequest:
+            type: object
+            properties:
+                parent:
+                    type: string
+                    description: principals/{principal}
+                expireTime:
+                    type: string
+                    description: 'Unset: the key doesn''t expire.'
+                    format: date-time
+        CreateKeyResponse:
+            type: object
+            properties:
+                key:
+                    $ref: '#/components/schemas/Key'
+                secret:
+                    type: string
+        CreatePrincipalResponse:
+            type: object
+            properties:
+                principal:
+                    $ref: '#/components/schemas/Principal'
+        CreateRunnerTokenRequest:
+            type: object
+            properties:
+                parent:
+                    type: string
+                    description: dataPlanes/{data_plane}
+        CreateRunnerTokenResponse:
+            type: object
+            properties:
+                token:
+                    $ref: '#/components/schemas/RunnerToken'
+                secret:
+                    type: string
+        DataPlane:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: dataPlanes/{data_plane}
+                createTime:
+                    type: string
+                    format: date-time
+        DbtProject:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/dbtProjects/{project}
+                digest:
+                    type: string
+                    description: The current bundle's digest, which new pipeline versions pin.
+                etag:
+                    type: string
+                createTime:
+                    type: string
+                    format: date-time
+                updateTime:
+                    type: string
+                    format: date-time
+                usedBy:
+                    type: array
+                    items:
+                        type: string
+                    description: The pipelines whose current versions run it.
+        DbtStep:
+            type: object
+            properties:
+                project:
+                    type: string
+                    description: |-
+                        A DbtProject in the same workspace. A sync runs the bundle that was
+                         current when it started.
+                command:
+                    enum:
+                        - DBT_COMMAND_UNSPECIFIED
+                        - DBT_COMMAND_BUILD
+                        - DBT_COMMAND_RUN
+                        - DBT_COMMAND_TEST
+                    type: string
+                    format: enum
+                select:
+                    type: string
+                    description: dbt's --select and --exclude.
+                exclude:
+                    type: string
+                schema:
+                    type: string
+                    description: 'The target schema. Unset: the schema the pipeline writes to.'
+            description: DbtStep runs a dbt project against the pipeline's destination.
+        DeleteDbtProjectResponse:
+            type: object
+            properties: {}
+        DeleteDestinationResponse:
+            type: object
+            properties: {}
+        DeleteKeyResponse:
+            type: object
+            properties: {}
+        DeletePipelineResponse:
+            type: object
+            properties: {}
+        DeletePrincipalResponse:
+            type: object
+            properties: {}
+        DeleteRunnerTokenResponse:
+            type: object
+            properties: {}
+        DeleteSecretResponse:
+            type: object
+            properties: {}
+        DeleteSourceResponse:
+            type: object
+            properties: {}
+        Delivery:
+            type: object
+            properties:
+                require:
+                    enum:
+                        - DELIVERY_LEVEL_UNSPECIFIED
+                        - DELIVERY_LEVEL_AT_LEAST_ONCE
+                        - DELIVERY_LEVEL_EFFECTIVELY_ONCE
+                        - DELIVERY_LEVEL_EXACTLY_ONCE
+                    type: string
+                    description: 'The plan fails if any stream''s guarantee is lower. Unset: exactly once.'
+                    format: enum
+                commit:
+                    $ref: '#/components/schemas/Commit'
+                resumePointTimeout:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: 'Unset: the default. Zero: wait forever.'
+        Destination:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/destinations/{destination}
+                spec:
+                    $ref: '#/components/schemas/ConnectorConfig'
+                version:
+                    type: string
+                etag:
+                    type: string
+                createTime:
+                    type: string
+                    format: date-time
+                updateTime:
+                    type: string
+                    format: date-time
+        DisablePrincipalRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        DisablePrincipalResponse:
+            type: object
+            properties:
+                principal:
+                    $ref: '#/components/schemas/Principal'
+        DiscoverSourceRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                dataPlane:
+                    type: string
+                    description: 'The data plane whose runner discovers it. Unset: the default.'
+        DiscoverSourceResponse:
+            type: object
+            properties:
+                catalog:
+                    $ref: '#/components/schemas/Catalog'
+        Document:
+            type: object
+            properties:
+                origin:
+                    type: string
+                    description: Such as a file name, for error messages.
+                content:
+                    type: string
+                    format: bytes
+            description: |-
+                Document is a YAML or JSON definition with apiVersion, kind, metadata and
+                 spec.
+        EnablePrincipalRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        EnablePrincipalResponse:
+            type: object
+            properties:
+                principal:
+                    $ref: '#/components/schemas/Principal'
+        GetDbtProjectResponse:
+            type: object
+            properties:
+                dbtProject:
+                    $ref: '#/components/schemas/DbtProject'
+        GetDestinationResponse:
+            type: object
+            properties:
+                destination:
+                    $ref: '#/components/schemas/Destination'
+        GetPipelineResponse:
+            type: object
+            properties:
+                pipeline:
+                    $ref: '#/components/schemas/Pipeline'
+        GetPipelineVersionResponse:
+            type: object
+            properties:
+                pipelineVersion:
+                    $ref: '#/components/schemas/PipelineVersion'
+        GetPrincipalResponse:
+            type: object
+            properties:
+                principal:
+                    $ref: '#/components/schemas/Principal'
+        GetSecretResponse:
+            type: object
+            properties:
+                secret:
+                    $ref: '#/components/schemas/Secret'
+        GetSourceResponse:
+            type: object
+            properties:
+                source:
+                    $ref: '#/components/schemas/Source'
+        GetSyncResponse:
+            type: object
+            properties:
+                sync:
+                    $ref: '#/components/schemas/Sync'
+        GoogleProtobufAny:
+            type: object
+            properties:
+                '@type':
+                    type: string
+                    description: The type of the serialized message.
+            additionalProperties: true
+            description: Contains an arbitrary serialized message along with a @type that describes the type of the serialized message.
+        GrantRoleRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: The principal's name.
+                binding:
+                    $ref: '#/components/schemas/RoleBinding'
+        GrantRoleResponse:
+            type: object
+            properties:
+                principal:
+                    $ref: '#/components/schemas/Principal'
+        Key:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: principals/{principal}/keys/{key}
+                prefix:
+                    type: string
+                    description: The key's first characters, to tell keys apart.
+                expireTime:
+                    type: string
+                    description: Unset if it doesn't expire.
+                    format: date-time
+                createTime:
+                    type: string
+                    format: date-time
+                lastUsedTime:
+                    type: string
+                    description: Updated at most once a minute.
+                    format: date-time
+            description: 'An API key. Calls send it as Authorization: Bearer KEY.'
+        ListAuditEntriesResponse:
+            type: object
+            properties:
+                entries:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/AuditEntry'
+                nextPageToken:
+                    type: string
+        ListDataPlanesResponse:
+            type: object
+            properties:
+                dataPlanes:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/DataPlane'
+        ListDbtProjectsResponse:
+            type: object
+            properties:
+                dbtProjects:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/DbtProject'
+                nextPageToken:
+                    type: string
+        ListDestinationsResponse:
+            type: object
+            properties:
+                destinations:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Destination'
+                nextPageToken:
+                    type: string
+        ListKeysResponse:
+            type: object
+            properties:
+                keys:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Key'
+        ListPipelineVersionsResponse:
+            type: object
+            properties:
+                pipelineVersions:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PipelineVersion'
+                nextPageToken:
+                    type: string
+        ListPipelinesResponse:
+            type: object
+            properties:
+                pipelines:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Pipeline'
+                nextPageToken:
+                    type: string
+        ListPrincipalsResponse:
+            type: object
+            properties:
+                principals:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Principal'
+                nextPageToken:
+                    type: string
+        ListRunnerTokensResponse:
+            type: object
+            properties:
+                tokens:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/RunnerToken'
+        ListSecretsResponse:
+            type: object
+            properties:
+                secrets:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Secret'
+                nextPageToken:
+                    type: string
+        ListSourcesResponse:
+            type: object
+            properties:
+                sources:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Source'
+                nextPageToken:
+                    type: string
+        ListSyncsResponse:
+            type: object
+            properties:
+                syncs:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Sync'
+                nextPageToken:
+                    type: string
+        LogEntry:
+            type: object
+            properties:
+                time:
+                    type: string
+                    format: date-time
+                level:
+                    type: string
+                    description: DEBUG, INFO, WARN or ERROR.
+                message:
+                    type: string
+                attempt:
+                    type: integer
+                    description: |-
+                        The attempt that logged it, from 1: the sync's, or its post-sync
+                         step's.
+                    format: int32
+                postSyncStep:
+                    type: integer
+                    description: The post-sync step that logged it, from 1; 0 for the sync's attempts.
+                    format: int32
+                attrs:
+                    type: object
+                    description: 'The line''s other fields, such as component: connector, engine or dbt.'
+            description: |-
+                A line of a sync's log, from the runner, the engine, the connectors or
+                 dbt.
+        PausePipelineRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        PausePipelineResponse:
+            type: object
+            properties:
+                pipeline:
+                    $ref: '#/components/schemas/Pipeline'
+        PinnedConfig:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: |-
+                        workspaces/{workspace}/sources/{source} or …/destinations/{destination};
+                         empty if it has been deleted since.
+                version:
+                    type: string
+                    description: The source's or destination's version.
+                spec:
+                    allOf:
+                        - $ref: '#/components/schemas/ConnectorConfig'
+                    description: Unset if it has been deleted since.
+                connector:
+                    type: string
+                    description: |-
+                        The connector version's digest; empty for a built-in connector, or if
+                         it has been deleted since.
+            description: PinnedConfig is a version of a source's or destination's config.
+        Pipeline:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}
+                spec:
+                    $ref: '#/components/schemas/PipelineSpec'
+                version:
+                    type: string
+                etag:
+                    type: string
+                createTime:
+                    type: string
+                    format: date-time
+                updateTime:
+                    type: string
+                    format: date-time
+                paused:
+                    type: boolean
+                    description: Set by PausePipeline and ResumePipeline, not by the spec.
+        PipelineColumn:
+            type: object
+            properties:
+                op:
+                    enum:
+                        - COLUMN_OP_KIND_UNSPECIFIED
+                        - COLUMN_OP_KIND_HASH
+                        - COLUMN_OP_KIND_BLOCK
+                    type: string
+                    format: enum
+                type:
+                    enum:
+                        - COLUMN_TYPE_UNSPECIFIED
+                        - COLUMN_TYPE_STRING
+                        - COLUMN_TYPE_FLOAT64
+                    type: string
+                    description: Only for columns the source declares as decimals.
+                    format: enum
+        PipelineDestination:
+            type: object
+            properties:
+                ref:
+                    type: string
+                    description: A Destination ID in the same workspace.
+                write:
+                    enum:
+                        - WRITE_MODE_UNSPECIFIED
+                        - WRITE_MODE_APPEND
+                        - WRITE_MODE_OVERWRITE
+                        - WRITE_MODE_MERGE
+                    type: string
+                    format: enum
+                namespace:
+                    type: string
+                    description: A schema or dataset.
+                naming:
+                    enum:
+                        - NAMING_UNSPECIFIED
+                        - NAMING_NORMALIZED
+                        - NAMING_SOURCE
+                    type: string
+                    format: enum
+        PipelinePlan:
+            type: object
+            properties:
+                pipeline:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}
+                version:
+                    type: string
+                changes:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PlanChange'
+                    description: |-
+                        What differs from the version that was current; empty for a new
+                         pipeline.
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/StreamPlan'
+                problems:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        What a sync would fail on. Apply refuses to create or change a pipeline
+                         whose plan has any.
+                notes:
+                    type: array
+                    items:
+                        type: string
+                    description: What the plan couldn't check, and why.
+            description: |-
+                PipelinePlan is how a pipeline version would sync, as far as the control
+                 plane can tell from the source's latest catalog and the destination's
+                 capabilities.
+        PipelineSource:
+            type: object
+            properties:
+                ref:
+                    type: string
+                    description: A Source ID in the same workspace.
+                streams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PipelineStream'
+        PipelineSpec:
+            type: object
+            properties:
+                mode:
+                    enum:
+                        - PIPELINE_MODE_UNSPECIFIED
+                        - PIPELINE_MODE_SCHEDULED
+                        - PIPELINE_MODE_CONTINUOUS
+                    type: string
+                    format: enum
+                schedule:
+                    $ref: '#/components/schemas/Schedule'
+                dataPlane:
+                    type: string
+                source:
+                    $ref: '#/components/schemas/PipelineSource'
+                destination:
+                    $ref: '#/components/schemas/PipelineDestination'
+                schemaPolicy:
+                    enum:
+                        - SCHEMA_POLICY_UNSPECIFIED
+                        - SCHEMA_POLICY_ALLOW_ALL
+                        - SCHEMA_POLICY_ALLOW_COLUMNS
+                        - SCHEMA_POLICY_BLOCK
+                        - SCHEMA_POLICY_IGNORE_NEW
+                    type: string
+                    format: enum
+                delivery:
+                    $ref: '#/components/schemas/Delivery'
+                types:
+                    $ref: '#/components/schemas/Types'
+                postSync:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PostSyncStep'
+                    description: |-
+                        Run in order after a sync's data is committed. A step that fails fails
+                         the sync, and the steps after it don't run.
+            description: |-
+                PipelineSpec is the spec of a Pipeline document. Unset fields take their
+                 defaults.
+        PipelineStream:
+            type: object
+            properties:
+                name:
+                    type: string
+                sync:
+                    enum:
+                        - SYNC_MODE_UNSPECIFIED
+                        - SYNC_MODE_FULL_REFRESH
+                        - SYNC_MODE_INCREMENTAL
+                        - SYNC_MODE_CDC
+                        - SYNC_MODE_STREAM
+                    type: string
+                    format: enum
+                cursor:
+                    type: string
+                columns:
+                    type: object
+                    additionalProperties:
+                        $ref: '#/components/schemas/PipelineColumn'
+                    description: By source column name.
+                timestamps:
+                    enum:
+                        - TIMESTAMP_UNIT_UNSPECIFIED
+                        - TIMESTAMP_UNIT_MICROSECOND
+                        - TIMESTAMP_UNIT_NANOSECOND
+                    type: string
+                    format: enum
+        PipelineVersion:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}/versions/{version}
+                spec:
+                    $ref: '#/components/schemas/PipelineSpec'
+                source:
+                    $ref: '#/components/schemas/PinnedConfig'
+                destination:
+                    $ref: '#/components/schemas/PinnedConfig'
+                dbt:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Each dbt project's bundle digest, by project name.
+                dataPlane:
+                    type: string
+                provenance:
+                    type: string
+                    description: Where it came from, such as cli:shop.yaml#3.
+                createTime:
+                    type: string
+                    description: When it was first made.
+                    format: date-time
+                current:
+                    type: boolean
+                    description: It's the pipeline's current version.
+            description: |-
+                PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
+                 that. Versions are content-addressed, so going back to an earlier spec
+                 makes its version current again.
+        PlanChange:
+            type: object
+            properties:
+                field:
+                    type: string
+                    description: |-
+                        A spec field, such as delivery.require or source.streams[orders].cursor,
+                         or what the version pins: source.version, destination.version,
+                         source.connector, destination.connector or dbt.{project}.
+                before:
+                    type: string
+                    description: As JSON; empty where the field is unset.
+                after:
+                    type: string
+        PostSyncStep:
+            type: object
+            properties:
+                dbt:
+                    $ref: '#/components/schemas/DbtStep'
+        Principal:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: principals/{principal}
+                type:
+                    enum:
+                        - PRINCIPAL_TYPE_UNSPECIFIED
+                        - PRINCIPAL_TYPE_USER
+                        - PRINCIPAL_TYPE_SERVICE_ACCOUNT
+                    type: string
+                    format: enum
+                displayName:
+                    type: string
+                email:
+                    type: string
+                    description: Users only.
+                disabled:
+                    type: boolean
+                    description: 'Output only: DisablePrincipal and EnablePrincipal set it.'
+                roleBindings:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/RoleBinding'
+                    description: 'Output only: GrantRole and RevokeRole change them.'
+                createTime:
+                    type: string
+                    format: date-time
+            description: A user or a service account, which calls the API with its keys.
+        ReadSyncLogResponse:
+            type: object
+            properties:
+                entries:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/LogEntry'
+                nextPageToken:
+                    type: string
+                    description: |-
+                        Where the next page starts. Unset once the sync has ended and every
+                         entry is read; while it runs, more may follow, so read again with it.
+        ResumePipelineRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        ResumePipelineResponse:
+            type: object
+            properties:
+                pipeline:
+                    $ref: '#/components/schemas/Pipeline'
+        RevokeRoleRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: The principal's name.
+                binding:
+                    $ref: '#/components/schemas/RoleBinding'
+        RevokeRoleResponse:
+            type: object
+            properties:
+                principal:
+                    $ref: '#/components/schemas/Principal'
+        RoleBinding:
+            type: object
+            properties:
+                role:
+                    enum:
+                        - ROLE_UNSPECIFIED
+                        - ROLE_VIEWER
+                        - ROLE_OPERATOR
+                        - ROLE_EDITOR
+                        - ROLE_ADMIN
+                        - ROLE_OWNER
+                    type: string
+                    format: enum
+                workspace:
+                    type: string
+                    description: |-
+                        workspaces/{workspace}, or empty for the org, which covers every
+                         workspace.
+        RunnerToken:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: dataPlanes/{data_plane}/tokens/{token}
+                prefix:
+                    type: string
+                    description: The token's first characters, to tell tokens apart.
+                createTime:
+                    type: string
+                    format: date-time
+                lastUsedTime:
+                    type: string
+                    description: Updated at most once a minute.
+                    format: date-time
+            description: |-
+                A data plane's runners call DataPlaneService with it, as
+                 Authorization: Bearer TOKEN. It serves only that data plane's work.
+        Schedule:
+            type: object
+            properties:
+                every:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                cron:
+                    type: string
+                jitter:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: A random start delay of up to this much.
+        Secret:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/secrets/{secret}
+                value:
+                    type: string
+                    description: 'Input only: at most 64 KiB of UTF-8. Set this or ref.'
+                etag:
+                    type: string
+                    description: On input, if set, it must match.
+                createTime:
+                    type: string
+                    format: date-time
+                updateTime:
+                    type: string
+                    format: date-time
+                usedBy:
+                    type: array
+                    items:
+                        type: string
+                    description: 'Output only: the sources and destinations whose configs name it.'
+                ref:
+                    type: string
+                    description: |-
+                        Where runners read the value, instead of a value stored here:
+                           aws-sm://{name or ARN}[?region=…][&version=…][&stage=…][&field=…]
+                           gcp-sm://projects/{p}/[locations/{l}/]secrets/{s}[/versions/{v}][?field=…]
+                           azure-kv://{vault}/{name}[?version=…][&field=…]
+                         field picks a top-level field of a JSON object value. Runners read it
+                         for each attempt, check and discover.
+        Source:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/sources/{source}
+                spec:
+                    $ref: '#/components/schemas/ConnectorConfig'
+                version:
+                    type: string
+                etag:
+                    type: string
+                createTime:
+                    type: string
+                    format: date-time
+                updateTime:
+                    type: string
+                    format: date-time
+        Status:
+            type: object
+            properties:
+                code:
+                    type: integer
+                    description: The status code, which should be an enum value of [google.rpc.Code][google.rpc.Code].
+                    format: int32
+                message:
+                    type: string
+                    description: A developer-facing error message, which should be in English. Any user-facing error message should be localized and sent in the [google.rpc.Status.details][google.rpc.Status.details] field, or localized by the client.
+                details:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/GoogleProtobufAny'
+                    description: A list of messages that carry the error details.  There is a common set of message types for APIs to use.
+            description: 'The `Status` type defines a logical error model that is suitable for different programming environments, including REST APIs and RPC APIs. It is used by [gRPC](https://github.com/grpc). Each `Status` message contains three pieces of data: error code, error message, and error details. You can find out more about this error model and how to work with it in the [API Design Guide](https://cloud.google.com/apis/design/errors).'
+        StreamPlan:
+            type: object
+            properties:
+                name:
+                    type: string
+                level:
+                    enum:
+                        - DELIVERY_LEVEL_UNSPECIFIED
+                        - DELIVERY_LEVEL_AT_LEAST_ONCE
+                        - DELIVERY_LEVEL_EFFECTIVELY_ONCE
+                        - DELIVERY_LEVEL_EXACTLY_ONCE
+                    type: string
+                    format: enum
+                dedupe:
+                    type: boolean
+                    description: Deduped on _openetl_id at apply.
+                reason:
+                    type: string
+                    description: What sets the level.
+        Sync:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}/syncs/{sync}
+                version:
+                    type: string
+                    description: The pipeline version it ran.
+                state:
+                    enum:
+                        - SYNC_STATE_UNSPECIFIED
+                        - SYNC_STATE_RUNNING
+                        - SYNC_STATE_SUCCEEDED
+                        - SYNC_STATE_FAILED
+                    type: string
+                    format: enum
+                error:
+                    type: string
+                    description: Why it failed.
+                startTime:
+                    type: string
+                    format: date-time
+                endTime:
+                    type: string
+                    description: Unset while it runs.
+                    format: date-time
+                dataPlane:
+                    type: string
+                    description: The data plane it ran on, which holds its log.
+        SyncPipelineRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        SyncPipelineResponse:
+            type: object
+            properties: {}
+        Types:
+            type: object
+            properties:
+                infinity:
+                    enum:
+                        - INFINITY_UNSPECIFIED
+                        - INFINITY_CLAMP
+                        - INFINITY_QUARANTINE
+                    type: string
+                    format: enum
+            description: How values map to logical types where a pipeline has a choice.
+        UpdateSecretResponse:
+            type: object
+            properties:
+                secret:
+                    $ref: '#/components/schemas/Secret'
+                created:
+                    type: boolean
+                    description: The secret didn't exist.
+tags:
+    - name: AccessService
+      description: |-
+        AccessService manages who may call the API: principals, their keys and
+         roles. It also makes data planes' runner tokens, which only
+         DataPlaneService takes.
+    - name: ApplyService
+    - name: AuditService
+      description: |-
+        AuditService reads the audit log: every call that changes something or
+         reads secrets' values, who made it, and how it ended.
+    - name: DbtProjectService
+      description: |-
+        DbtProjectService reads and deletes dbt projects. ApplyService creates and
+         changes them.
+    - name: DestinationService
+      description: |-
+        DestinationService reads and deletes destinations. ApplyService creates and
+         changes them.
+    - name: PipelineService
+      description: |-
+        PipelineService reads and deletes pipelines. ApplyService creates and
+         changes them.
+    - name: SecretService
+      description: |-
+        SecretService stores the secrets that sources' and destinations' configs
+         name, as {"secret": "NAME"}, in their workspace. A secret holds a value,
+         encrypted at rest, or a reference to a cloud secret store, which runners
+         read with their own cloud identity. The API never returns values.
+    - name: SourceService
+      description: |-
+        SourceService reads and deletes sources. ApplyService creates and changes
+         them.
+    - name: SyncService
+      description: SyncService reads pipelines' syncs and their logs.

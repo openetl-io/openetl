@@ -5,6 +5,7 @@ package openetl.api.v1;
 import "google/api/annotations.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "openetl/api/v1/connection.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
 
@@ -41,6 +42,47 @@ service PipelineService {
       body: "*"
     };
   }
+  // Newest first.
+  rpc ListPipelineVersions(ListPipelineVersionsRequest) returns (ListPipelineVersionsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/versions"};
+  }
+  rpc GetPipelineVersion(GetPipelineVersionRequest) returns (GetPipelineVersionResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*/versions/*}"};
+  }
+}
+
+// PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
+// that. Versions are content-addressed, so going back to an earlier spec
+// makes its version current again.
+message PipelineVersion {
+  // workspaces/{workspace}/pipelines/{pipeline}/versions/{version}
+  string name = 1;
+  PipelineSpec spec = 2;
+  PinnedConfig source = 3;
+  PinnedConfig destination = 4;
+  // Each dbt project's bundle digest, by project name.
+  map<string, string> dbt = 5;
+  string data_plane = 6;
+  // Where it came from, such as cli:shop.yaml#3.
+  string provenance = 7;
+  // When it was first made.
+  google.protobuf.Timestamp create_time = 8;
+  // It's the pipeline's current version.
+  bool current = 9;
+}
+
+// PinnedConfig is a version of a source's or destination's config.
+message PinnedConfig {
+  // workspaces/{workspace}/sources/{source} or …/destinations/{destination};
+  // empty if it has been deleted since.
+  string name = 1;
+  // The source's or destination's version.
+  string version = 2;
+  // Unset if it has been deleted since.
+  ConnectorConfig spec = 3;
+  // The connector version's digest; empty for a built-in connector, or if
+  // it has been deleted since.
+  string connector = 4;
 }
 
 message Pipeline {
@@ -290,3 +332,23 @@ message SyncPipelineRequest {
 }
 
 message SyncPipelineResponse {}
+
+message ListPipelineVersionsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPipelineVersionsResponse {
+  repeated PipelineVersion pipeline_versions = 1;
+  string next_page_token = 2;
+}
+
+message GetPipelineVersionRequest {
+  string name = 1;
+}
+
+message GetPipelineVersionResponse {
+  PipelineVersion pipeline_version = 1;
+}

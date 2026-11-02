@@ -36,6 +36,7 @@ Commands:
   resume NAME     start a pipeline's scheduled syncs again
   sync NAME       start a sync of a pipeline now
   syncs NAME      list a pipeline's syncs, newest first
+  versions NAME   list a pipeline's versions, newest first
   logs NAME       print a sync's log; -f follows a running one
   check source|destination NAME
                   check that a source or destination is reachable
@@ -99,6 +100,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "syncs":
 		return runSyncs(ctx, args[1:], out)
+	case "versions":
+		return runVersions(ctx, args[1:], out)
 	case "logs":
 		return runLogs(ctx, args[1:], out)
 	case "check":

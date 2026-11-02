@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	_ "embed"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/vanguard"
 	"github.com/jackc/pgx/v5"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -58,26 +60,55 @@ var (
 	_ apiv1connect.SyncServiceHandler            = (*Server)(nil)
 	_ apiv1connect.SourceServiceHandler          = (*Server)(nil)
 	_ apiv1connect.DestinationServiceHandler     = (*Server)(nil)
+	_ apiv1connect.DbtProjectServiceHandler      = (*Server)(nil)
 	_ apiv1connect.SecretServiceHandler          = (*Server)(nil)
 	_ apiv1connect.AccessServiceHandler          = (*Server)(nil)
 	_ apiv1connect.AuditServiceHandler           = (*Server)(nil)
 	_ dataplanev1connect.DataPlaneServiceHandler = (*Server)(nil)
 )
 
-func (s *Server) Handler() http.Handler {
-	opts := connect.WithInterceptors(s.errorInterceptor(), authInterceptor{s})
+// The most a request's message may hold, decompressed. Apply carries dbt
+// bundles of up to 16 MiB, base64-encoded in their documents, and runners
+// report the catalogs and schemas of large databases.
+const (
+	maxRequestBytes = 4 << 20
+	maxApplyBytes   = 32 << 20
+	maxRunnerBytes  = 32 << 20
+)
+
+//go:embed openapi.yaml
+var openAPI []byte
+
+// Handler serves the public API over Connect, gRPC, gRPC-Web and REST (its
+// google.api.http rules, transcoded by Vanguard), and DataPlaneService over
+// the first three.
+func (s *Server) Handler() (http.Handler, error) {
+	opts := connect.WithHandlerOptions(connect.WithInterceptors(s.errorInterceptor(), authInterceptor{s}), connect.WithReadMaxBytes(maxRequestBytes))
+	services := []*vanguard.Service{
+		vanguard.NewService(apiv1connect.NewApplyServiceHandler(s, opts, connect.WithReadMaxBytes(maxApplyBytes))),
+		vanguard.NewService(apiv1connect.NewPipelineServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewSyncServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewSourceServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewDestinationServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewDbtProjectServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewSecretServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewAccessServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewAuditServiceHandler(s, opts)),
+	}
+	// REST bodies are buffered whole before the handler's limit applies.
+	transcoder, err := vanguard.NewTranscoder(services, vanguard.WithDefaultServiceOptions(vanguard.WithMaxMessageBufferBytes(2*maxApplyBytes)))
+	if err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
-	mux.Handle(apiv1connect.NewApplyServiceHandler(s, opts))
-	mux.Handle(apiv1connect.NewPipelineServiceHandler(s, opts))
-	mux.Handle(apiv1connect.NewSyncServiceHandler(s, opts))
-	mux.Handle(apiv1connect.NewSourceServiceHandler(s, opts))
-	mux.Handle(apiv1connect.NewDestinationServiceHandler(s, opts))
-	mux.Handle(apiv1connect.NewSecretServiceHandler(s, opts))
-	mux.Handle(apiv1connect.NewAccessServiceHandler(s, opts))
-	mux.Handle(apiv1connect.NewAuditServiceHandler(s, opts))
-	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(s, opts))
+	mux.Handle("/", transcoder)
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(s, opts, connect.WithReadMaxBytes(maxRunnerBytes)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
-	return mux
+	mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		_, _ = w.Write(openAPI)
+	})
+	return mux, nil
 }
 
 func (s *Server) log() *slog.Logger {

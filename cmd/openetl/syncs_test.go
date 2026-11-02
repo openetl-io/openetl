@@ -91,3 +91,42 @@ func TestSyncsAndLogs(t *testing.T) {
 		t.Errorf("%d reads, want 4", len(f.reads))
 	}
 }
+
+type fakeVersions struct {
+	apiv1connect.UnimplementedPipelineServiceHandler
+	reqs []*apiv1.ListPipelineVersionsRequest
+}
+
+func (f *fakeVersions) ListPipelineVersions(_ context.Context, req *connect.Request[apiv1.ListPipelineVersionsRequest]) (*connect.Response[apiv1.ListPipelineVersionsResponse], error) {
+	f.reqs = append(f.reqs, req.Msg)
+	created := timestamppb.New(time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC))
+	if req.Msg.GetPageToken() == "" {
+		return connect.NewResponse(&apiv1.ListPipelineVersionsResponse{PipelineVersions: []*apiv1.PipelineVersion{
+			{Name: req.Msg.GetParent() + "/versions/v3", Current: true, CreateTime: created, Provenance: "cli:shop.yaml#3"},
+		}, NextPageToken: "next"}), nil
+	}
+	return connect.NewResponse(&apiv1.ListPipelineVersionsResponse{PipelineVersions: []*apiv1.PipelineVersion{
+		{Name: req.Msg.GetParent() + "/versions/v2", CreateTime: created, Provenance: "api:doc 1"},
+	}}), nil
+}
+
+func TestVersions(t *testing.T) {
+	f := &fakeVersions{}
+	mux := http.NewServeMux()
+	mux.Handle(apiv1connect.NewPipelineServiceHandler(f))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	t.Setenv("OPENETL_API_KEY", "oetl_test")
+
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"versions", "--api-url", srv.URL, "--workspace", "ws", "p"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(strings.Join(strings.Fields(lines[1]), " "), "v3 * ") || !strings.HasSuffix(lines[1], "cli:shop.yaml#3") || !strings.HasSuffix(lines[2], "api:doc 1") {
+		t.Errorf("printed\n%s", out.String())
+	}
+	if len(f.reqs) != 2 || f.reqs[0].GetParent() != "workspaces/ws/pipelines/p" || f.reqs[1].GetPageToken() != "next" {
+		t.Errorf("requests %v", f.reqs)
+	}
+}

@@ -35,6 +35,8 @@ var permissions = map[string]auth.Role{
 	"destinations.get":    auth.Viewer,
 	"destinations.check":  auth.Operator,
 	"destinations.delete": auth.Editor,
+	"dbtProjects.get":     auth.Viewer,
+	"dbtProjects.delete":  auth.Editor,
 	"secrets.get":         auth.Viewer,
 	"secrets.update":      auth.Editor,
 	"secrets.delete":      auth.Editor,
@@ -80,12 +82,14 @@ var (
 var rules = map[string]rule{
 	apiv1connect.ApplyServiceApplyProcedure: {permission: "documents.apply"},
 
-	apiv1connect.PipelineServiceGetPipelineProcedure:    {"pipelines.get", inName, false},
-	apiv1connect.PipelineServiceListPipelinesProcedure:  {"pipelines.get", inParent, false},
-	apiv1connect.PipelineServiceDeletePipelineProcedure: {"pipelines.delete", inName, false},
-	apiv1connect.PipelineServicePausePipelineProcedure:  {"pipelines.pause", inName, false},
-	apiv1connect.PipelineServiceResumePipelineProcedure: {"pipelines.pause", inName, false},
-	apiv1connect.PipelineServiceSyncPipelineProcedure:   {"pipelines.sync", inName, false},
+	apiv1connect.PipelineServiceGetPipelineProcedure:          {"pipelines.get", inName, false},
+	apiv1connect.PipelineServiceListPipelinesProcedure:        {"pipelines.get", inParent, false},
+	apiv1connect.PipelineServiceDeletePipelineProcedure:       {"pipelines.delete", inName, false},
+	apiv1connect.PipelineServicePausePipelineProcedure:        {"pipelines.pause", inName, false},
+	apiv1connect.PipelineServiceResumePipelineProcedure:       {"pipelines.pause", inName, false},
+	apiv1connect.PipelineServiceSyncPipelineProcedure:         {"pipelines.sync", inName, false},
+	apiv1connect.PipelineServiceListPipelineVersionsProcedure: {"pipelines.get", inParent, false},
+	apiv1connect.PipelineServiceGetPipelineVersionProcedure:   {"pipelines.get", inName, false},
 
 	apiv1connect.SyncServiceListSyncsProcedure:   {"syncs.get", inParent, false},
 	apiv1connect.SyncServiceGetSyncProcedure:     {"syncs.get", inName, false},
@@ -101,6 +105,10 @@ var rules = map[string]rule{
 	apiv1connect.DestinationServiceListDestinationsProcedure:  {"destinations.get", inParent, false},
 	apiv1connect.DestinationServiceDeleteDestinationProcedure: {"destinations.delete", inName, false},
 	apiv1connect.DestinationServiceCheckDestinationProcedure:  {"destinations.check", inName, false},
+
+	apiv1connect.DbtProjectServiceGetDbtProjectProcedure:    {"dbtProjects.get", inName, false},
+	apiv1connect.DbtProjectServiceListDbtProjectsProcedure:  {"dbtProjects.get", inParent, false},
+	apiv1connect.DbtProjectServiceDeleteDbtProjectProcedure: {"dbtProjects.delete", inName, false},
 
 	apiv1connect.SecretServiceGetSecretProcedure:    {"secrets.get", inName, false},
 	apiv1connect.SecretServiceListSecretsProcedure:  {"secrets.get", inParent, false},

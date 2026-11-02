@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+
+// DbtProjectService reads and deletes dbt projects. ApplyService creates and
+// changes them.
+service DbtProjectService {
+  rpc GetDbtProject(GetDbtProjectRequest) returns (GetDbtProjectResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/dbtProjects/*}"};
+  }
+  rpc ListDbtProjects(ListDbtProjectsRequest) returns (ListDbtProjectsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/dbtProjects"};
+  }
+  // Fails with FAILED_PRECONDITION while a pipeline's current version runs
+  // it. Older versions keep the bundles they pin.
+  rpc DeleteDbtProject(DeleteDbtProjectRequest) returns (DeleteDbtProjectResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/dbtProjects/*}"};
+  }
+}
+
+message DbtProject {
+  // workspaces/{workspace}/dbtProjects/{project}
+  string name = 1;
+  // The current bundle's digest, which new pipeline versions pin.
+  string digest = 2;
+  string etag = 3;
+  google.protobuf.Timestamp create_time = 4;
+  google.protobuf.Timestamp update_time = 5;
+  // The pipelines whose current versions run it.
+  repeated string used_by = 6;
+}
+
+message GetDbtProjectRequest {
+  string name = 1;
+}
+
+message GetDbtProjectResponse {
+  DbtProject dbt_project = 1;
+}
+
+message ListDbtProjectsRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListDbtProjectsResponse {
+  repeated DbtProject dbt_projects = 1;
+  string next_page_token = 2;
+}
+
+message DeleteDbtProjectRequest {
+  string name = 1;
+  // If set, it must match.
+  string etag = 2;
+}
+
+message DeleteDbtProjectResponse {}

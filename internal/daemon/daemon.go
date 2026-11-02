@@ -143,7 +143,12 @@ func Run(ctx context.Context, o Options) error {
 			Secrets:  keyring,
 			Logger:   log.With("role", "server"),
 		}
-		g.Go(func() error { return serve(gctx, ln, srv.Handler(), o.Ready, log) })
+		h, err := srv.Handler()
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		g.Go(func() error { return serve(gctx, ln, h, o.Ready, log) })
 	}
 	if o.Roles.Orchestrator {
 		g.Go(func() error { return orchestrate(gctx, tc, st, o.Workflows) })

@@ -339,7 +339,7 @@ func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, 
 	}
 	for _, step := range p.GetPostSync() {
 		name := step.GetDbt().GetProject()
-		proj, err := q.GetDbtProject(ctx, db.GetDbtProjectParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: name})
+		proj, err := q.ShareDbtProject(ctx, db.ShareDbtProjectParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: name})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, invalid("dbt project %q doesn't exist in workspace %q", name, workspace)
 		}

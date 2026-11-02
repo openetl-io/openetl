@@ -11,6 +11,20 @@ import (
 	"github.com/google/uuid"
 )
 
+const deleteDbtProject = `-- name: DeleteDbtProject :exec
+DELETE FROM dbt_projects WHERE org_id = $1 AND id = $2
+`
+
+type DeleteDbtProjectParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+func (q *Queries) DeleteDbtProject(ctx context.Context, arg DeleteDbtProjectParams) error {
+	_, err := q.db.Exec(ctx, deleteDbtProject, arg.OrgID, arg.ID)
+	return err
+}
+
 const getDbtProject = `-- name: GetDbtProject :one
 SELECT org_id, workspace_id, id, name, digest, revision, create_time, update_time FROM dbt_projects WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `
@@ -59,6 +73,149 @@ func (q *Queries) InsertDbtProject(ctx context.Context, arg InsertDbtProjectPara
 		arg.Digest,
 	)
 	return err
+}
+
+const listDbtProjects = `-- name: ListDbtProjects :many
+SELECT org_id, workspace_id, id, name, digest, revision, create_time, update_time FROM dbt_projects
+WHERE org_id = $1 AND workspace_id = $2 AND name > $3
+ORDER BY name LIMIT $4
+`
+
+type ListDbtProjectsParams struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	After       string
+	MaxRows     int32
+}
+
+func (q *Queries) ListDbtProjects(ctx context.Context, arg ListDbtProjectsParams) ([]DbtProject, error) {
+	rows, err := q.db.Query(ctx, listDbtProjects,
+		arg.OrgID,
+		arg.WorkspaceID,
+		arg.After,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DbtProject
+	for rows.Next() {
+		var i DbtProject
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.WorkspaceID,
+			&i.ID,
+			&i.Name,
+			&i.Digest,
+			&i.Revision,
+			&i.CreateTime,
+			&i.UpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPipelinesUsingDbtProjects = `-- name: ListPipelinesUsingDbtProjects :many
+SELECT k.project::text AS project, p.name
+FROM pipelines p
+JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
+CROSS JOIN LATERAL jsonb_object_keys(v.dbt) AS k(project)
+WHERE p.org_id = $1 AND p.workspace_id = $2 AND k.project = ANY($3::text[])
+ORDER BY p.name
+`
+
+type ListPipelinesUsingDbtProjectsParams struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	Names       []string
+}
+
+type ListPipelinesUsingDbtProjectsRow struct {
+	Project string
+	Name    string
+}
+
+// The pipelines whose current versions run any of the projects.
+func (q *Queries) ListPipelinesUsingDbtProjects(ctx context.Context, arg ListPipelinesUsingDbtProjectsParams) ([]ListPipelinesUsingDbtProjectsRow, error) {
+	rows, err := q.db.Query(ctx, listPipelinesUsingDbtProjects, arg.OrgID, arg.WorkspaceID, arg.Names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPipelinesUsingDbtProjectsRow
+	for rows.Next() {
+		var i ListPipelinesUsingDbtProjectsRow
+		if err := rows.Scan(&i.Project, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockDbtProject = `-- name: LockDbtProject :one
+SELECT org_id, workspace_id, id, name, digest, revision, create_time, update_time FROM dbt_projects WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+FOR UPDATE
+`
+
+type LockDbtProjectParams struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	Name        string
+}
+
+func (q *Queries) LockDbtProject(ctx context.Context, arg LockDbtProjectParams) (DbtProject, error) {
+	row := q.db.QueryRow(ctx, lockDbtProject, arg.OrgID, arg.WorkspaceID, arg.Name)
+	var i DbtProject
+	err := row.Scan(
+		&i.OrgID,
+		&i.WorkspaceID,
+		&i.ID,
+		&i.Name,
+		&i.Digest,
+		&i.Revision,
+		&i.CreateTime,
+		&i.UpdateTime,
+	)
+	return i, err
+}
+
+const shareDbtProject = `-- name: ShareDbtProject :one
+SELECT org_id, workspace_id, id, name, digest, revision, create_time, update_time FROM dbt_projects WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+FOR SHARE
+`
+
+type ShareDbtProjectParams struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	Name        string
+}
+
+// Keeps the project from being deleted until the transaction ends.
+func (q *Queries) ShareDbtProject(ctx context.Context, arg ShareDbtProjectParams) (DbtProject, error) {
+	row := q.db.QueryRow(ctx, shareDbtProject, arg.OrgID, arg.WorkspaceID, arg.Name)
+	var i DbtProject
+	err := row.Scan(
+		&i.OrgID,
+		&i.WorkspaceID,
+		&i.ID,
+		&i.Name,
+		&i.Digest,
+		&i.Revision,
+		&i.CreateTime,
+		&i.UpdateTime,
+	)
+	return i, err
 }
 
 const updateDbtProject = `-- name: UpdateDbtProject :exec

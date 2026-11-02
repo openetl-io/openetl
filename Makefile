@@ -12,7 +12,8 @@ TOOL_PKGS := \
 	github.com/pressly/goose/v3/cmd/goose \
 	gotest.tools/gotestsum \
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint \
-	go.temporal.io/sdk/contrib/tools/workflowcheck
+	go.temporal.io/sdk/contrib/tools/workflowcheck \
+	github.com/google/gnostic/cmd/protoc-gen-openapi
 BIN := $(CURDIR)/bin
 CARGO_DENY_VERSION := 0.20.2
 

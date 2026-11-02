@@ -62,3 +62,28 @@ ORDER BY w.name, p.name;
 
 -- name: SetPipelinePaused :exec
 UPDATE pipelines SET paused = @paused WHERE org_id = @org_id AND id = @id;
+
+-- Newest first, after the version (before_time, before_version) if given,
+-- with the configs it pins where they're still there.
+-- name: ListPipelineVersions :many
+SELECT v.*, s.name AS source_name, sv.spec AS source_spec, sv.connector_digest AS source_connector,
+    d.name AS destination_name, dv.spec AS destination_spec, dv.connector_digest AS destination_connector
+FROM pipeline_versions v
+LEFT JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
+LEFT JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source_id AND sv.version = v.source_version
+LEFT JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
+LEFT JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
+WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id
+  AND (sqlc.narg('before_time')::timestamptz IS NULL OR (v.create_time, v.version) < (sqlc.narg('before_time'), @before_version::text))
+ORDER BY v.create_time DESC, v.version DESC
+LIMIT @max_rows;
+
+-- name: GetPipelineVersionPins :one
+SELECT v.*, s.name AS source_name, sv.spec AS source_spec, sv.connector_digest AS source_connector,
+    d.name AS destination_name, dv.spec AS destination_spec, dv.connector_digest AS destination_connector
+FROM pipeline_versions v
+LEFT JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
+LEFT JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source_id AND sv.version = v.source_version
+LEFT JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
+LEFT JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
+WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id AND v.version = @version;

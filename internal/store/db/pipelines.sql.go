@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -113,6 +114,70 @@ func (q *Queries) GetPipelineVersion(ctx context.Context, arg GetPipelineVersion
 		&i.DestinationVersion,
 		&i.Dbt,
 		&i.Provenance,
+	)
+	return i, err
+}
+
+const getPipelineVersionPins = `-- name: GetPipelineVersionPins :one
+SELECT v.org_id, v.pipeline_id, v.version, v.spec, v.source_id, v.destination_id, v.data_plane_id, v.create_time, v.source_version, v.destination_version, v.dbt, v.provenance, s.name AS source_name, sv.spec AS source_spec, sv.connector_digest AS source_connector,
+    d.name AS destination_name, dv.spec AS destination_spec, dv.connector_digest AS destination_connector
+FROM pipeline_versions v
+LEFT JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
+LEFT JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source_id AND sv.version = v.source_version
+LEFT JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
+LEFT JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
+WHERE v.org_id = $1 AND v.pipeline_id = $2 AND v.version = $3
+`
+
+type GetPipelineVersionPinsParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Version    string
+}
+
+type GetPipelineVersionPinsRow struct {
+	OrgID                uuid.UUID
+	PipelineID           uuid.UUID
+	Version              string
+	Spec                 []byte
+	SourceID             uuid.UUID
+	DestinationID        uuid.UUID
+	DataPlaneID          string
+	CreateTime           time.Time
+	SourceVersion        string
+	DestinationVersion   string
+	Dbt                  []byte
+	Provenance           string
+	SourceName           *string
+	SourceSpec           []byte
+	SourceConnector      *string
+	DestinationName      *string
+	DestinationSpec      []byte
+	DestinationConnector *string
+}
+
+func (q *Queries) GetPipelineVersionPins(ctx context.Context, arg GetPipelineVersionPinsParams) (GetPipelineVersionPinsRow, error) {
+	row := q.db.QueryRow(ctx, getPipelineVersionPins, arg.OrgID, arg.PipelineID, arg.Version)
+	var i GetPipelineVersionPinsRow
+	err := row.Scan(
+		&i.OrgID,
+		&i.PipelineID,
+		&i.Version,
+		&i.Spec,
+		&i.SourceID,
+		&i.DestinationID,
+		&i.DataPlaneID,
+		&i.CreateTime,
+		&i.SourceVersion,
+		&i.DestinationVersion,
+		&i.Dbt,
+		&i.Provenance,
+		&i.SourceName,
+		&i.SourceSpec,
+		&i.SourceConnector,
+		&i.DestinationName,
+		&i.DestinationSpec,
+		&i.DestinationConnector,
 	)
 	return i, err
 }
@@ -245,6 +310,96 @@ func (q *Queries) InsertPipelineVersion(ctx context.Context, arg InsertPipelineV
 		arg.Provenance,
 	)
 	return err
+}
+
+const listPipelineVersions = `-- name: ListPipelineVersions :many
+SELECT v.org_id, v.pipeline_id, v.version, v.spec, v.source_id, v.destination_id, v.data_plane_id, v.create_time, v.source_version, v.destination_version, v.dbt, v.provenance, s.name AS source_name, sv.spec AS source_spec, sv.connector_digest AS source_connector,
+    d.name AS destination_name, dv.spec AS destination_spec, dv.connector_digest AS destination_connector
+FROM pipeline_versions v
+LEFT JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
+LEFT JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source_id AND sv.version = v.source_version
+LEFT JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
+LEFT JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
+WHERE v.org_id = $1 AND v.pipeline_id = $2
+  AND ($3::timestamptz IS NULL OR (v.create_time, v.version) < ($3, $4::text))
+ORDER BY v.create_time DESC, v.version DESC
+LIMIT $5
+`
+
+type ListPipelineVersionsParams struct {
+	OrgID         uuid.UUID
+	PipelineID    uuid.UUID
+	BeforeTime    *time.Time
+	BeforeVersion string
+	MaxRows       int32
+}
+
+type ListPipelineVersionsRow struct {
+	OrgID                uuid.UUID
+	PipelineID           uuid.UUID
+	Version              string
+	Spec                 []byte
+	SourceID             uuid.UUID
+	DestinationID        uuid.UUID
+	DataPlaneID          string
+	CreateTime           time.Time
+	SourceVersion        string
+	DestinationVersion   string
+	Dbt                  []byte
+	Provenance           string
+	SourceName           *string
+	SourceSpec           []byte
+	SourceConnector      *string
+	DestinationName      *string
+	DestinationSpec      []byte
+	DestinationConnector *string
+}
+
+// Newest first, after the version (before_time, before_version) if given,
+// with the configs it pins where they're still there.
+func (q *Queries) ListPipelineVersions(ctx context.Context, arg ListPipelineVersionsParams) ([]ListPipelineVersionsRow, error) {
+	rows, err := q.db.Query(ctx, listPipelineVersions,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.BeforeTime,
+		arg.BeforeVersion,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPipelineVersionsRow
+	for rows.Next() {
+		var i ListPipelineVersionsRow
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.PipelineID,
+			&i.Version,
+			&i.Spec,
+			&i.SourceID,
+			&i.DestinationID,
+			&i.DataPlaneID,
+			&i.CreateTime,
+			&i.SourceVersion,
+			&i.DestinationVersion,
+			&i.Dbt,
+			&i.Provenance,
+			&i.SourceName,
+			&i.SourceSpec,
+			&i.SourceConnector,
+			&i.DestinationName,
+			&i.DestinationSpec,
+			&i.DestinationConnector,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listPipelines = `-- name: ListPipelines :many

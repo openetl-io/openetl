@@ -51,6 +51,12 @@ const (
 	// PipelineServiceSyncPipelineProcedure is the fully-qualified name of the PipelineService's
 	// SyncPipeline RPC.
 	PipelineServiceSyncPipelineProcedure = "/openetl.api.v1.PipelineService/SyncPipeline"
+	// PipelineServiceListPipelineVersionsProcedure is the fully-qualified name of the PipelineService's
+	// ListPipelineVersions RPC.
+	PipelineServiceListPipelineVersionsProcedure = "/openetl.api.v1.PipelineService/ListPipelineVersions"
+	// PipelineServiceGetPipelineVersionProcedure is the fully-qualified name of the PipelineService's
+	// GetPipelineVersion RPC.
+	PipelineServiceGetPipelineVersionProcedure = "/openetl.api.v1.PipelineService/GetPipelineVersion"
 )
 
 // PipelineServiceClient is a client for the openetl.api.v1.PipelineService service.
@@ -64,6 +70,9 @@ type PipelineServiceClient interface {
 	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
 	// paused or a sync is running.
 	SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error)
+	// Newest first.
+	ListPipelineVersions(context.Context, *connect.Request[v1.ListPipelineVersionsRequest]) (*connect.Response[v1.ListPipelineVersionsResponse], error)
+	GetPipelineVersion(context.Context, *connect.Request[v1.GetPipelineVersionRequest]) (*connect.Response[v1.GetPipelineVersionResponse], error)
 }
 
 // NewPipelineServiceClient constructs a client for the openetl.api.v1.PipelineService service. By
@@ -113,17 +122,31 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(pipelineServiceMethods.ByName("SyncPipeline")),
 			connect.WithClientOptions(opts...),
 		),
+		listPipelineVersions: connect.NewClient[v1.ListPipelineVersionsRequest, v1.ListPipelineVersionsResponse](
+			httpClient,
+			baseURL+PipelineServiceListPipelineVersionsProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("ListPipelineVersions")),
+			connect.WithClientOptions(opts...),
+		),
+		getPipelineVersion: connect.NewClient[v1.GetPipelineVersionRequest, v1.GetPipelineVersionResponse](
+			httpClient,
+			baseURL+PipelineServiceGetPipelineVersionProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("GetPipelineVersion")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // pipelineServiceClient implements PipelineServiceClient.
 type pipelineServiceClient struct {
-	getPipeline    *connect.Client[v1.GetPipelineRequest, v1.GetPipelineResponse]
-	listPipelines  *connect.Client[v1.ListPipelinesRequest, v1.ListPipelinesResponse]
-	deletePipeline *connect.Client[v1.DeletePipelineRequest, v1.DeletePipelineResponse]
-	pausePipeline  *connect.Client[v1.PausePipelineRequest, v1.PausePipelineResponse]
-	resumePipeline *connect.Client[v1.ResumePipelineRequest, v1.ResumePipelineResponse]
-	syncPipeline   *connect.Client[v1.SyncPipelineRequest, v1.SyncPipelineResponse]
+	getPipeline          *connect.Client[v1.GetPipelineRequest, v1.GetPipelineResponse]
+	listPipelines        *connect.Client[v1.ListPipelinesRequest, v1.ListPipelinesResponse]
+	deletePipeline       *connect.Client[v1.DeletePipelineRequest, v1.DeletePipelineResponse]
+	pausePipeline        *connect.Client[v1.PausePipelineRequest, v1.PausePipelineResponse]
+	resumePipeline       *connect.Client[v1.ResumePipelineRequest, v1.ResumePipelineResponse]
+	syncPipeline         *connect.Client[v1.SyncPipelineRequest, v1.SyncPipelineResponse]
+	listPipelineVersions *connect.Client[v1.ListPipelineVersionsRequest, v1.ListPipelineVersionsResponse]
+	getPipelineVersion   *connect.Client[v1.GetPipelineVersionRequest, v1.GetPipelineVersionResponse]
 }
 
 // GetPipeline calls openetl.api.v1.PipelineService.GetPipeline.
@@ -156,6 +179,16 @@ func (c *pipelineServiceClient) SyncPipeline(ctx context.Context, req *connect.R
 	return c.syncPipeline.CallUnary(ctx, req)
 }
 
+// ListPipelineVersions calls openetl.api.v1.PipelineService.ListPipelineVersions.
+func (c *pipelineServiceClient) ListPipelineVersions(ctx context.Context, req *connect.Request[v1.ListPipelineVersionsRequest]) (*connect.Response[v1.ListPipelineVersionsResponse], error) {
+	return c.listPipelineVersions.CallUnary(ctx, req)
+}
+
+// GetPipelineVersion calls openetl.api.v1.PipelineService.GetPipelineVersion.
+func (c *pipelineServiceClient) GetPipelineVersion(ctx context.Context, req *connect.Request[v1.GetPipelineVersionRequest]) (*connect.Response[v1.GetPipelineVersionResponse], error) {
+	return c.getPipelineVersion.CallUnary(ctx, req)
+}
+
 // PipelineServiceHandler is an implementation of the openetl.api.v1.PipelineService service.
 type PipelineServiceHandler interface {
 	GetPipeline(context.Context, *connect.Request[v1.GetPipelineRequest]) (*connect.Response[v1.GetPipelineResponse], error)
@@ -167,6 +200,9 @@ type PipelineServiceHandler interface {
 	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
 	// paused or a sync is running.
 	SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error)
+	// Newest first.
+	ListPipelineVersions(context.Context, *connect.Request[v1.ListPipelineVersionsRequest]) (*connect.Response[v1.ListPipelineVersionsResponse], error)
+	GetPipelineVersion(context.Context, *connect.Request[v1.GetPipelineVersionRequest]) (*connect.Response[v1.GetPipelineVersionResponse], error)
 }
 
 // NewPipelineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -212,6 +248,18 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 		connect.WithSchema(pipelineServiceMethods.ByName("SyncPipeline")),
 		connect.WithHandlerOptions(opts...),
 	)
+	pipelineServiceListPipelineVersionsHandler := connect.NewUnaryHandler(
+		PipelineServiceListPipelineVersionsProcedure,
+		svc.ListPipelineVersions,
+		connect.WithSchema(pipelineServiceMethods.ByName("ListPipelineVersions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	pipelineServiceGetPipelineVersionHandler := connect.NewUnaryHandler(
+		PipelineServiceGetPipelineVersionProcedure,
+		svc.GetPipelineVersion,
+		connect.WithSchema(pipelineServiceMethods.ByName("GetPipelineVersion")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.api.v1.PipelineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PipelineServiceGetPipelineProcedure:
@@ -226,6 +274,10 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 			pipelineServiceResumePipelineHandler.ServeHTTP(w, r)
 		case PipelineServiceSyncPipelineProcedure:
 			pipelineServiceSyncPipelineHandler.ServeHTTP(w, r)
+		case PipelineServiceListPipelineVersionsProcedure:
+			pipelineServiceListPipelineVersionsHandler.ServeHTTP(w, r)
+		case PipelineServiceGetPipelineVersionProcedure:
+			pipelineServiceGetPipelineVersionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -257,4 +309,12 @@ func (UnimplementedPipelineServiceHandler) ResumePipeline(context.Context, *conn
 
 func (UnimplementedPipelineServiceHandler) SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.SyncPipeline is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) ListPipelineVersions(context.Context, *connect.Request[v1.ListPipelineVersionsRequest]) (*connect.Response[v1.ListPipelineVersionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ListPipelineVersions is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) GetPipelineVersion(context.Context, *connect.Request[v1.GetPipelineVersionRequest]) (*connect.Response[v1.GetPipelineVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.GetPipelineVersion is not implemented"))
 }

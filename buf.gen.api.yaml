@@ -6,6 +6,15 @@ plugins:
   - local: protoc-gen-connect-go
     out: .
     opt: module=github.com/unsuitable001/openetl
+  # The REST API, from the google.api.http rules; the server serves it.
+  - local: protoc-gen-openapi
+    out: internal/api
+    strategy: all
+    opt:
+      - title=openetl API
+      - version=v1
+      - enum_type=string
+      - default_response=true
 inputs:
   - directory: proto
     paths:

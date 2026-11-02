@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/proto"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
@@ -59,6 +60,8 @@ func TestVersionsPinConfigs(t *testing.T) {
 		t.Errorf("v2's provenance is %q, %v", p, err)
 	}
 
+	checkVersions(t, name, v1, v2)
+
 	id, err := query[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +104,63 @@ func TestVersionsPinConfigs(t *testing.T) {
 	}
 	if len(res.GetDependents()) != 0 {
 		t.Errorf("reapplying: dependents %v", res.GetDependents())
+	}
+}
+
+// checkVersions reads the pipeline's versions, v2 (current) and v1, which
+// pin the source with counts 80 and 50. The source is built in, so it has no
+// digest; the destination is external.
+func checkVersions(t *testing.T, name, v1, v2 string) {
+	t.Helper()
+	pipelines := apiv1connect.NewPipelineServiceClient(env.http, env.apiURL)
+	parent := "workspaces/default/pipelines/" + name
+	var got []*apiv1.PipelineVersion
+	req := &apiv1.ListPipelineVersionsRequest{Parent: parent, PageSize: 1}
+	for {
+		res, err := pipelines.ListPipelineVersions(t.Context(), connect.NewRequest(req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, res.Msg.GetPipelineVersions()...)
+		if req.PageToken = res.Msg.GetNextPageToken(); req.PageToken == "" {
+			break
+		}
+	}
+	if len(got) != 2 || got[0].GetName() != parent+"/versions/"+v2 || got[1].GetName() != parent+"/versions/"+v1 {
+		t.Fatalf("versions %v, want %s then %s", got, v2, v1)
+	}
+	for i, want := range []struct {
+		current    bool
+		count      float64
+		provenance string
+	}{{true, 80, "api:doc 1"}, {false, 50, "api:doc 3"}} {
+		v := got[i]
+		if v.GetCurrent() != want.current || v.GetProvenance() != want.provenance || v.GetDataPlane() != "default" || v.GetSpec().GetSource().GetRef() != name {
+			t.Errorf("version %d: %v", i, v)
+		}
+		src, dst := v.GetSource(), v.GetDestination()
+		if src.GetName() != "workspaces/default/sources/"+name || src.GetSpec().GetConfig().GetFields()["count"].GetNumberValue() != want.count ||
+			src.GetConnector() != "" || src.GetVersion() == "" {
+			t.Errorf("version %d's source: %v", i, src)
+		}
+		if dst.GetName() != "workspaces/default/destinations/"+name || dst.GetSpec().GetConnector() != "postgres" || !strings.HasPrefix(dst.GetConnector(), "sha256:") {
+			t.Errorf("version %d's destination: %v", i, dst)
+		}
+	}
+	if got[0].GetSource().GetVersion() == got[1].GetSource().GetVersion() || got[0].GetDestination().GetVersion() != got[1].GetDestination().GetVersion() {
+		t.Errorf("v2 pins source %s and destination %s; v1 pins %s and %s", got[0].GetSource().GetVersion(), got[0].GetDestination().GetVersion(),
+			got[1].GetSource().GetVersion(), got[1].GetDestination().GetVersion())
+	}
+	one, err := pipelines.GetPipelineVersion(t.Context(), connect.NewRequest(&apiv1.GetPipelineVersionRequest{Name: got[1].GetName()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(one.Msg.GetPipelineVersion(), got[1]) {
+		t.Errorf("got %v, listed %v", one.Msg.GetPipelineVersion(), got[1])
+	}
+	_, err = pipelines.GetPipelineVersion(t.Context(), connect.NewRequest(&apiv1.GetPipelineVersionRequest{Name: parent + "/versions/nope"}))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Errorf("getting a version that doesn't exist: %v", err)
 	}
 }
 
