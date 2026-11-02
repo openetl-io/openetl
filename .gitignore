@@ -24,6 +24,7 @@ profile.cov
 # Web
 node_modules/
 /web/dist/
+*.tsbuildinfo
 
 # Local state from `openetld dev` and the compose stack
 /.openetl/

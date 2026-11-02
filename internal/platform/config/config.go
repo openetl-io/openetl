@@ -39,6 +39,9 @@ type Config struct {
 	// Where the server writes the owner key it creates with the org, and
 	// openetld bootstrap-key a new one.
 	BootstrapKeyFile string
+	// A directory holding the built UI, which the API server serves at /.
+	// Empty: no UI.
+	Web string
 	// A file holding the runner's token. Empty: OPENETL_RUNNER_TOKEN.
 	TokenFile string
 	// From OPENETL_RUNNER_TOKEN only, so it isn't in a process listing.
@@ -64,6 +67,7 @@ var options = []option{
 	{"connectors", "OPENETL_CONNECTORS", "", "directory of external connector executables, named source-NAME and destination-NAME (default: connectors/ next to openetld)", func(c *Config) *string { return &c.Connectors }},
 	{"cache", "OPENETL_CACHE", ".openetl/cache", "where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables", func(c *Config) *string { return &c.Cache }},
 	{"dbt", "OPENETL_DBT", "", "dbt executable for pipelines' post-sync steps, with the destinations' adapters installed (default: dbt on PATH)", func(c *Config) *string { return &c.Dbt }},
+	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors and registries may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
 	{"secrets-key", "OPENETL_SECRETS_KEY", ".openetl/secrets.key", "the API server's key-encryption key for secrets: a file holding a base64-encoded 32-byte key, created if missing; or base64key://KEY, awskms://…, gcpkms://… or azurekeyvault://…", func(c *Config) *string { return &c.SecretsKey }},
 	{"bootstrap-key-file", "OPENETL_BOOTSTRAP_KEY_FILE", ".openetl/admin.key", "where the server writes the owner key of the org it creates on first start, readable only by its owner; and where openetld bootstrap-key writes a new one", func(c *Config) *string { return &c.BootstrapKeyFile }},

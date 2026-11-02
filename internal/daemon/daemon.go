@@ -42,6 +42,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/unsuitable001/openetl/internal/webui"
 )
 
 type Roles struct {
@@ -147,6 +148,12 @@ func Run(ctx context.Context, o Options) error {
 		if err != nil {
 			_ = ln.Close()
 			return err
+		}
+		if cfg.Web != "" {
+			if h, err = webui.Handler(cfg.Web, h); err != nil {
+				_ = ln.Close()
+				return err
+			}
 		}
 		g.Go(func() error { return serve(gctx, ln, h, o.Ready, log) })
 	}

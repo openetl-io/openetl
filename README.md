@@ -20,21 +20,26 @@ OpenETL is MIT-licensed and built to be self-hosted.
 | `internal/connectorhost` | Connectors the runner hosts: the few built in, declarative sources, and external connectors, which it starts as subprocesses |
 | `crates/` | `openetl-engine`, the Rust data engine, and `openetl-proto`, its generated protocol types |
 | `test/sim` | A seeded simulation of the commit protocol under crashes, timeouts and zombie jobs |
+| `web/` | The UI: React and TypeScript, a client of the public API only. `web/src/gen` is generated from `proto/` and committed |
 | `deploy/compose` | Local dependencies: Postgres, Temporal, an S3-compatible store |
 
 ## Development
 
-You need Go 1.26 and Rust (the toolchain is pinned in `rust-toolchain.toml`; rustup installs it). Developer tools are pinned in `tools/go.mod` and built into `bin/` by `make tools`.
+You need Go 1.26, Rust (the toolchain is pinned in `rust-toolchain.toml`; rustup installs it), and Node 22 with pnpm for the UI. Developer tools are pinned in `tools/go.mod` and built into `bin/` by `make tools`; the UI's, protoc-gen-es among them, in `web/package.json`.
 
 ```sh
-make test          # Go and Rust unit tests
+make test          # Go, Rust and UI unit tests
 make sim           # commit-protocol simulation; SEEDS=10000 for more seeds
-make lint          # buf lint, golangci-lint, rustfmt, clippy
-make generate      # regenerate Go from proto/ after changing a .proto
+make lint          # buf lint, golangci-lint, rustfmt, clippy, tsc
+make generate      # regenerate Go and TypeScript from proto/ after changing a .proto
 make deps-up       # Postgres, Temporal and S3 in Docker
 make connectors    # build the official connectors from ../openetl-connectors into bin/connectors
 make e2e           # whole-stack scenarios; needs deps-up and the connectors
+make dev           # openetld with every role, and the UI at http://localhost:8080
+make web-dev       # the UI's dev server, proxying the API on localhost:8080
 ```
+
+The UI signs in with an API key. `openetld` writes the owner's key to `.openetl/admin.key` when it creates the org, and `openetl key create` makes more. `openetld --web DIR` serves a built UI (`make web` builds `web/dist`) next to the API, on the same origin.
 
 The official connectors, Postgres's included, live in [openetl-connectors](https://github.com/unsuitable001/openetl-connectors). Clone it next to this repo, or set `CONNECTORS_SRC`.
 

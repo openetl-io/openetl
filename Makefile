@@ -39,9 +39,20 @@ $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION):
 tools: $(BIN)/.tools ## Build the pinned developer tools into bin/
 
 .PHONY: dev
-dev: deps-up connectors ## Start compose deps and run openetld dev
+dev: deps-up connectors web ## Start compose deps and run openetld dev, with the UI
 	cargo build -p openetl-engine
-	go run ./cmd/openetld dev --engine $(CURDIR)/target/debug/openetl-engine --connectors $(CURDIR)/bin/connectors
+	go run ./cmd/openetld dev --engine $(CURDIR)/target/debug/openetl-engine --connectors $(CURDIR)/bin/connectors --web $(CURDIR)/web/dist
+
+# The UI. pnpm installs web/'s dependencies, protoc-gen-es among them.
+web/node_modules/.modules.yaml: web/package.json web/pnpm-lock.yaml
+	pnpm --dir web install --frozen-lockfile
+	@touch $@
+
+.PHONY: web web-dev
+web: web/node_modules/.modules.yaml ## Build the UI into web/dist
+	pnpm --dir web build
+web-dev: web/node_modules/.modules.yaml ## Run the UI's dev server against the API on localhost:8080
+	pnpm --dir web dev
 
 .PHONY: deps-up deps-down
 deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure)
@@ -65,14 +76,15 @@ engine: ## Build openetl-engine
 
 # Clearing first drops code for deleted protos.
 .PHONY: generate
-generate: tools ## Generate code from protos and SQL
-	rm -rf gen sdk/go/protocol internal/store/db
+generate: tools web/node_modules/.modules.yaml ## Generate code from protos and SQL
+	rm -rf gen sdk/go/protocol internal/store/db web/src/gen
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate --template buf.gen.api.yaml
+	$(BIN)/buf generate --template buf.gen.web.yaml
 	$(BIN)/sqlc generate -f internal/store/sqlc.yaml
 
 .PHONY: lint
-lint: tools $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION) ## Lint protos, Go and Rust, and check Rust dependencies
+lint: tools $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION) web/node_modules/.modules.yaml ## Lint protos, Go, Rust and the UI, and check Rust dependencies
 	$(BIN)/buf lint
 	$(BIN)/buf format --diff --exit-code
 	@for m in $(GO_MODULES); do (cd $$m && $(BIN)/golangci-lint run ./...) || exit 1; done
@@ -80,15 +92,17 @@ lint: tools $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION) ## Lint protos, Go and Rust
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	$(BIN)/cargo/bin/cargo-deny check --hide-inclusion-graph
+	pnpm --dir web typecheck
 
 # The runner/engine tests in internal/engineclient need OPENETL_ENGINE and
 # skip without it.
 .PHONY: test
-test: tools ## Unit tests (fast, no Docker), including runner/engine tests
+test: tools web/node_modules/.modules.yaml ## Unit tests (fast, no Docker), including runner/engine tests
 	cargo build -p openetl-engine
 	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine $(BIN)/gotestsum --format pkgname -- $(GO_PACKAGES)
 	cd sdk/go && GOWORK=off go build ./...
 	cargo test --workspace
+	pnpm --dir web test
 
 .PHONY: test-integration
 test-integration: ## Integration tests against the compose deps
@@ -110,4 +124,4 @@ e2e: connectors ## Full-stack scenarios against the compose deps
 
 .PHONY: clean
 clean: ## Remove build outputs
-	rm -rf $(BIN) target
+	rm -rf $(BIN) target web/dist web/node_modules
