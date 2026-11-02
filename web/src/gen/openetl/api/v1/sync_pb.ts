@@ -5,15 +5,15 @@
 import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { file_google_api_annotations } from "../../../google/api/annotations_pb";
-import type { Timestamp } from "@bufbuild/protobuf/wkt";
-import { file_google_protobuf_struct, file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
+import type { Duration, Timestamp } from "@bufbuild/protobuf/wkt";
+import { file_google_protobuf_duration, file_google_protobuf_struct, file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
 import type { JsonObject, Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file openetl/api/v1/sync.proto.
  */
 export const file_openetl_api_v1_sync: GenFile = /*@__PURE__*/
-  fileDesc("ChlvcGVuZXRsL2FwaS92MS9zeW5jLnByb3RvEg5vcGVuZXRsLmFwaS52MSLHAgoEU3luYxIMCgRuYW1lGAEgASgJEg8KB3ZlcnNpb24YAiABKAkSKAoFc3RhdGUYAyABKA4yGS5vcGVuZXRsLmFwaS52MS5TeW5jU3RhdGUSDQoFZXJyb3IYBCABKAkSLgoKc3RhcnRfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLAoIZW5kX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmRhdGFfcGxhbmUYByABKAkSKwoHc3RyZWFtcxgIIAMoCzIaLm9wZW5ldGwuYXBpLnYxLlN5bmNTdHJlYW0SEgoKY29udGludW91cxgJIAEoCBI0ChBsYXN0X2NvbW1pdF90aW1lGAogASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJaCgpTeW5jU3RyZWFtEgwKBG5hbWUYASABKAkSDAoEcm93cxgCIAEoBBIYChBxdWFyYW50aW5lZF9yb3dzGAMgASgEEhYKDmNvbGxhcHNlZF9yb3dzGAQgASgEIkkKEExpc3RTeW5jc1JlcXVlc3QSDgoGcGFyZW50GAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoBRISCgpwYWdlX3Rva2VuGAMgASgJIlEKEUxpc3RTeW5jc1Jlc3BvbnNlEiMKBXN5bmNzGAEgAygLMhQub3BlbmV0bC5hcGkudjEuU3luYxIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiHgoOR2V0U3luY1JlcXVlc3QSDAoEbmFtZRgBIAEoCSI1Cg9HZXRTeW5jUmVzcG9uc2USIgoEc3luYxgBIAEoCzIULm9wZW5ldGwuYXBpLnYxLlN5bmMiNgoSUmVhZFN5bmNMb2dSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcGFnZV90b2tlbhgCIAEoCSJZChNSZWFkU3luY0xvZ1Jlc3BvbnNlEikKB2VudHJpZXMYASADKAsyGC5vcGVuZXRsLmFwaS52MS5Mb2dFbnRyeRIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkipQEKCExvZ0VudHJ5EigKBHRpbWUYASABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg0KBWxldmVsGAIgASgJEg8KB21lc3NhZ2UYAyABKAkSDwoHYXR0ZW1wdBgEIAEoBRIWCg5wb3N0X3N5bmNfc3RlcBgFIAEoBRImCgVhdHRycxgGIAEoCzIXLmdvb2dsZS5wcm90b2J1Zi5TdHJ1Y3QqiAEKCVN5bmNTdGF0ZRIaChZTWU5DX1NUQVRFX1VOU1BFQ0lGSUVEEAASFgoSU1lOQ19TVEFURV9SVU5OSU5HEAESGAoUU1lOQ19TVEFURV9TVUNDRUVERUQQAhIVChFTWU5DX1NUQVRFX0ZBSUxFRBADEhYKElNZTkNfU1RBVEVfU1RPUFBFRBAEMqwDCgtTeW5jU2VydmljZRKFAQoJTGlzdFN5bmNzEiAub3BlbmV0bC5hcGkudjEuTGlzdFN5bmNzUmVxdWVzdBohLm9wZW5ldGwuYXBpLnYxLkxpc3RTeW5jc1Jlc3BvbnNlIjOC0+STAi0SKy92MS97cGFyZW50PXdvcmtzcGFjZXMvKi9waXBlbGluZXMvKn0vc3luY3MSfwoHR2V0U3luYxIeLm9wZW5ldGwuYXBpLnYxLkdldFN5bmNSZXF1ZXN0Gh8ub3BlbmV0bC5hcGkudjEuR2V0U3luY1Jlc3BvbnNlIjOC0+STAi0SKy92MS97bmFtZT13b3Jrc3BhY2VzLyovcGlwZWxpbmVzLyovc3luY3MvKn0SkwEKC1JlYWRTeW5jTG9nEiIub3BlbmV0bC5hcGkudjEuUmVhZFN5bmNMb2dSZXF1ZXN0GiMub3BlbmV0bC5hcGkudjEuUmVhZFN5bmNMb2dSZXNwb25zZSI7gtPkkwI1EjMvdjEve25hbWU9d29ya3NwYWNlcy8qL3BpcGVsaW5lcy8qL3N5bmNzLyp9OnJlYWRMb2dCO1o5Z2l0aHViLmNvbS91bnN1aXRhYmxlMDAxL29wZW5ldGwvZ2VuL29wZW5ldGwvYXBpL3YxO2FwaXYxYgZwcm90bzM", [file_google_api_annotations, file_google_protobuf_struct, file_google_protobuf_timestamp]);
+  fileDesc("ChlvcGVuZXRsL2FwaS92MS9zeW5jLnByb3RvEg5vcGVuZXRsLmFwaS52MSL3AgoEU3luYxIMCgRuYW1lGAEgASgJEg8KB3ZlcnNpb24YAiABKAkSKAoFc3RhdGUYAyABKA4yGS5vcGVuZXRsLmFwaS52MS5TeW5jU3RhdGUSDQoFZXJyb3IYBCABKAkSLgoKc3RhcnRfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLAoIZW5kX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmRhdGFfcGxhbmUYByABKAkSKwoHc3RyZWFtcxgIIAMoCzIaLm9wZW5ldGwuYXBpLnYxLlN5bmNTdHJlYW0SEgoKY29udGludW91cxgJIAEoCBI0ChBsYXN0X2NvbW1pdF90aW1lGAogASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCghwcm9ncmVzcxgLIAMoCzIcLm9wZW5ldGwuYXBpLnYxLlJlYWRQcm9ncmVzcyKvAgoMUmVhZFByb2dyZXNzEg4KBnN0cmVhbRgBIAEoCRIWCglsYWdfYnl0ZXMYAiABKARIAIgBARIYCgtsYWdfcmVjb3JkcxgDIAEoBEgBiAEBEiYKA2xhZxgEIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbhIhChRyZXRlbnRpb25fbGVmdF9ieXRlcxgFIAEoBEgCiAEBEjEKDnJldGVudGlvbl9sZWZ0GAYgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEigKBHRpbWUYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wQgwKCl9sYWdfYnl0ZXNCDgoMX2xhZ19yZWNvcmRzQhcKFV9yZXRlbnRpb25fbGVmdF9ieXRlcyJaCgpTeW5jU3RyZWFtEgwKBG5hbWUYASABKAkSDAoEcm93cxgCIAEoBBIYChBxdWFyYW50aW5lZF9yb3dzGAMgASgEEhYKDmNvbGxhcHNlZF9yb3dzGAQgASgEIkkKEExpc3RTeW5jc1JlcXVlc3QSDgoGcGFyZW50GAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoBRISCgpwYWdlX3Rva2VuGAMgASgJIlEKEUxpc3RTeW5jc1Jlc3BvbnNlEiMKBXN5bmNzGAEgAygLMhQub3BlbmV0bC5hcGkudjEuU3luYxIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiHgoOR2V0U3luY1JlcXVlc3QSDAoEbmFtZRgBIAEoCSI1Cg9HZXRTeW5jUmVzcG9uc2USIgoEc3luYxgBIAEoCzIULm9wZW5ldGwuYXBpLnYxLlN5bmMiNgoSUmVhZFN5bmNMb2dSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcGFnZV90b2tlbhgCIAEoCSJZChNSZWFkU3luY0xvZ1Jlc3BvbnNlEikKB2VudHJpZXMYASADKAsyGC5vcGVuZXRsLmFwaS52MS5Mb2dFbnRyeRIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkipQEKCExvZ0VudHJ5EigKBHRpbWUYASABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg0KBWxldmVsGAIgASgJEg8KB21lc3NhZ2UYAyABKAkSDwoHYXR0ZW1wdBgEIAEoBRIWCg5wb3N0X3N5bmNfc3RlcBgFIAEoBRImCgVhdHRycxgGIAEoCzIXLmdvb2dsZS5wcm90b2J1Zi5TdHJ1Y3QqiAEKCVN5bmNTdGF0ZRIaChZTWU5DX1NUQVRFX1VOU1BFQ0lGSUVEEAASFgoSU1lOQ19TVEFURV9SVU5OSU5HEAESGAoUU1lOQ19TVEFURV9TVUNDRUVERUQQAhIVChFTWU5DX1NUQVRFX0ZBSUxFRBADEhYKElNZTkNfU1RBVEVfU1RPUFBFRBAEMqwDCgtTeW5jU2VydmljZRKFAQoJTGlzdFN5bmNzEiAub3BlbmV0bC5hcGkudjEuTGlzdFN5bmNzUmVxdWVzdBohLm9wZW5ldGwuYXBpLnYxLkxpc3RTeW5jc1Jlc3BvbnNlIjOC0+STAi0SKy92MS97cGFyZW50PXdvcmtzcGFjZXMvKi9waXBlbGluZXMvKn0vc3luY3MSfwoHR2V0U3luYxIeLm9wZW5ldGwuYXBpLnYxLkdldFN5bmNSZXF1ZXN0Gh8ub3BlbmV0bC5hcGkudjEuR2V0U3luY1Jlc3BvbnNlIjOC0+STAi0SKy92MS97bmFtZT13b3Jrc3BhY2VzLyovcGlwZWxpbmVzLyovc3luY3MvKn0SkwEKC1JlYWRTeW5jTG9nEiIub3BlbmV0bC5hcGkudjEuUmVhZFN5bmNMb2dSZXF1ZXN0GiMub3BlbmV0bC5hcGkudjEuUmVhZFN5bmNMb2dSZXNwb25zZSI7gtPkkwI1EjMvdjEve25hbWU9d29ya3NwYWNlcy8qL3BpcGVsaW5lcy8qL3N5bmNzLyp9OnJlYWRMb2dCO1o5Z2l0aHViLmNvbS91bnN1aXRhYmxlMDAxL29wZW5ldGwvZ2VuL29wZW5ldGwvYXBpL3YxO2FwaXYxYgZwcm90bzM", [file_google_api_annotations, file_google_protobuf_duration, file_google_protobuf_struct, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message openetl.api.v1.Sync
@@ -86,6 +86,14 @@ export type Sync = Message<"openetl.api.v1.Sync"> & {
    * @generated from field: google.protobuf.Timestamp last_commit_time = 10;
    */
   lastCommitTime?: Timestamp | undefined;
+
+  /**
+   * How far behind its source the read was at its latest commit, for
+   * sources that report it (CDC, Kafka, Kinesis).
+   *
+   * @generated from field: repeated openetl.api.v1.ReadProgress progress = 11;
+   */
+  progress: ReadProgress[];
 };
 
 /**
@@ -94,6 +102,67 @@ export type Sync = Message<"openetl.api.v1.Sync"> & {
  */
 export const SyncSchema: GenMessage<Sync> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_sync, 0);
+
+/**
+ * ReadProgress is what a source reported of how far behind it a read is.
+ * Unset fields are unknown.
+ *
+ * @generated from message openetl.api.v1.ReadProgress
+ */
+export type ReadProgress = Message<"openetl.api.v1.ReadProgress"> & {
+  /**
+   * Empty: the whole read, such as a replication slot's.
+   *
+   * @generated from field: string stream = 1;
+   */
+  stream: string;
+
+  /**
+   * What the source holds that the read hasn't acknowledged.
+   *
+   * @generated from field: optional uint64 lag_bytes = 2;
+   */
+  lagBytes?: bigint | undefined;
+
+  /**
+   * @generated from field: optional uint64 lag_records = 3;
+   */
+  lagRecords?: bigint | undefined;
+
+  /**
+   * How far behind in time; zero once the read has caught up.
+   *
+   * @generated from field: google.protobuf.Duration lag = 4;
+   */
+  lag?: Duration | undefined;
+
+  /**
+   * How much more the source can take, or how long it waits, before it
+   * discards what the read hasn't acknowledged.
+   *
+   * @generated from field: optional uint64 retention_left_bytes = 5;
+   */
+  retentionLeftBytes?: bigint | undefined;
+
+  /**
+   * @generated from field: google.protobuf.Duration retention_left = 6;
+   */
+  retentionLeft?: Duration | undefined;
+
+  /**
+   * When the checkpoint that carried it was recorded.
+   *
+   * @generated from field: google.protobuf.Timestamp time = 7;
+   */
+  time?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message openetl.api.v1.ReadProgress.
+ * Use `create(ReadProgressSchema)` to create a new message.
+ */
+export const ReadProgressSchema: GenMessage<ReadProgress> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_sync, 1);
 
 /**
  * @generated from message openetl.api.v1.SyncStream
@@ -130,7 +199,7 @@ export type SyncStream = Message<"openetl.api.v1.SyncStream"> & {
  * Use `create(SyncStreamSchema)` to create a new message.
  */
 export const SyncStreamSchema: GenMessage<SyncStream> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 1);
+  messageDesc(file_openetl_api_v1_sync, 2);
 
 /**
  * @generated from message openetl.api.v1.ListSyncsRequest
@@ -159,7 +228,7 @@ export type ListSyncsRequest = Message<"openetl.api.v1.ListSyncsRequest"> & {
  * Use `create(ListSyncsRequestSchema)` to create a new message.
  */
 export const ListSyncsRequestSchema: GenMessage<ListSyncsRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 2);
+  messageDesc(file_openetl_api_v1_sync, 3);
 
 /**
  * @generated from message openetl.api.v1.ListSyncsResponse
@@ -181,7 +250,7 @@ export type ListSyncsResponse = Message<"openetl.api.v1.ListSyncsResponse"> & {
  * Use `create(ListSyncsResponseSchema)` to create a new message.
  */
 export const ListSyncsResponseSchema: GenMessage<ListSyncsResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 3);
+  messageDesc(file_openetl_api_v1_sync, 4);
 
 /**
  * @generated from message openetl.api.v1.GetSyncRequest
@@ -198,7 +267,7 @@ export type GetSyncRequest = Message<"openetl.api.v1.GetSyncRequest"> & {
  * Use `create(GetSyncRequestSchema)` to create a new message.
  */
 export const GetSyncRequestSchema: GenMessage<GetSyncRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 4);
+  messageDesc(file_openetl_api_v1_sync, 5);
 
 /**
  * @generated from message openetl.api.v1.GetSyncResponse
@@ -215,7 +284,7 @@ export type GetSyncResponse = Message<"openetl.api.v1.GetSyncResponse"> & {
  * Use `create(GetSyncResponseSchema)` to create a new message.
  */
 export const GetSyncResponseSchema: GenMessage<GetSyncResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 5);
+  messageDesc(file_openetl_api_v1_sync, 6);
 
 /**
  * @generated from message openetl.api.v1.ReadSyncLogRequest
@@ -239,7 +308,7 @@ export type ReadSyncLogRequest = Message<"openetl.api.v1.ReadSyncLogRequest"> & 
  * Use `create(ReadSyncLogRequestSchema)` to create a new message.
  */
 export const ReadSyncLogRequestSchema: GenMessage<ReadSyncLogRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 6);
+  messageDesc(file_openetl_api_v1_sync, 7);
 
 /**
  * @generated from message openetl.api.v1.ReadSyncLogResponse
@@ -264,7 +333,7 @@ export type ReadSyncLogResponse = Message<"openetl.api.v1.ReadSyncLogResponse"> 
  * Use `create(ReadSyncLogResponseSchema)` to create a new message.
  */
 export const ReadSyncLogResponseSchema: GenMessage<ReadSyncLogResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 7);
+  messageDesc(file_openetl_api_v1_sync, 8);
 
 /**
  * A line of a sync's log, from the runner, the engine, the connectors or
@@ -318,7 +387,7 @@ export type LogEntry = Message<"openetl.api.v1.LogEntry"> & {
  * Use `create(LogEntrySchema)` to create a new message.
  */
 export const LogEntrySchema: GenMessage<LogEntry> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 8);
+  messageDesc(file_openetl_api_v1_sync, 9);
 
 /**
  * @generated from enum openetl.api.v1.SyncState

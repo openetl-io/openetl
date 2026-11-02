@@ -9,6 +9,7 @@ package protocolv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -559,6 +560,7 @@ type ReadResponse struct {
 	//	*ReadResponse_Batch
 	//	*ReadResponse_ResumePoint
 	//	*ReadResponse_Complete
+	//	*ReadResponse_Progress
 	Msg           isReadResponse_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -628,6 +630,15 @@ func (x *ReadResponse) GetComplete() *StreamComplete {
 	return nil
 }
 
+func (x *ReadResponse) GetProgress() *Progress {
+	if x != nil {
+		if x, ok := x.Msg.(*ReadResponse_Progress); ok {
+			return x.Progress
+		}
+	}
+	return nil
+}
+
 type isReadResponse_Msg interface {
 	isReadResponse_Msg()
 }
@@ -644,11 +655,17 @@ type ReadResponse_Complete struct {
 	Complete *StreamComplete `protobuf:"bytes,3,opt,name=complete,proto3,oneof"`
 }
 
+type ReadResponse_Progress struct {
+	Progress *Progress `protobuf:"bytes,4,opt,name=progress,proto3,oneof"`
+}
+
 func (*ReadResponse_Batch) isReadResponse_Msg() {}
 
 func (*ReadResponse_ResumePoint) isReadResponse_Msg() {}
 
 func (*ReadResponse_Complete) isReadResponse_Msg() {}
+
+func (*ReadResponse_Progress) isReadResponse_Msg() {}
 
 // RecordBatch carries records. A changelog stream's Arrow batches (read
 // with SYNC_MODE_CDC) also carry control columns, which aren't records'
@@ -909,6 +926,100 @@ func (x *StreamComplete) GetNext() []byte {
 	return nil
 }
 
+// Progress says how far a read is behind its source, and how much longer the
+// source keeps what the read hasn't acknowledged, for metrics. Send it every
+// few seconds at most. Unset fields are unknown.
+type Progress struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Empty: the whole read, such as a replication slot's.
+	Stream string `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
+	// What the source holds that the read hasn't acknowledged: a replication
+	// slot's bytes, a Kafka consumer group's offsets.
+	LagBytes   *uint64 `protobuf:"varint,2,opt,name=lag_bytes,json=lagBytes,proto3,oneof" json:"lag_bytes,omitempty"`
+	LagRecords *uint64 `protobuf:"varint,3,opt,name=lag_records,json=lagRecords,proto3,oneof" json:"lag_records,omitempty"`
+	// How far behind in time: the age of the change being read, or Kinesis's
+	// MillisBehindLatest. Zero once the read has caught up.
+	Lag *durationpb.Duration `protobuf:"bytes,4,opt,name=lag,proto3" json:"lag,omitempty"`
+	// How much more the source can take, or how long it waits, before it
+	// discards what the read hasn't acknowledged.
+	RetentionLeftBytes *uint64              `protobuf:"varint,5,opt,name=retention_left_bytes,json=retentionLeftBytes,proto3,oneof" json:"retention_left_bytes,omitempty"`
+	RetentionLeft      *durationpb.Duration `protobuf:"bytes,6,opt,name=retention_left,json=retentionLeft,proto3" json:"retention_left,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *Progress) Reset() {
+	*x = Progress{}
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Progress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Progress) ProtoMessage() {}
+
+func (x *Progress) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Progress.ProtoReflect.Descriptor instead.
+func (*Progress) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *Progress) GetStream() string {
+	if x != nil {
+		return x.Stream
+	}
+	return ""
+}
+
+func (x *Progress) GetLagBytes() uint64 {
+	if x != nil && x.LagBytes != nil {
+		return *x.LagBytes
+	}
+	return 0
+}
+
+func (x *Progress) GetLagRecords() uint64 {
+	if x != nil && x.LagRecords != nil {
+		return *x.LagRecords
+	}
+	return 0
+}
+
+func (x *Progress) GetLag() *durationpb.Duration {
+	if x != nil {
+		return x.Lag
+	}
+	return nil
+}
+
+func (x *Progress) GetRetentionLeftBytes() uint64 {
+	if x != nil && x.RetentionLeftBytes != nil {
+		return *x.RetentionLeftBytes
+	}
+	return 0
+}
+
+func (x *Progress) GetRetentionLeft() *durationpb.Duration {
+	if x != nil {
+		return x.RetentionLeft
+	}
+	return nil
+}
+
 type CommittedRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Per-stream states of one checkpoint. Everything before them can be
@@ -922,7 +1033,7 @@ type CommittedRequest struct {
 
 func (x *CommittedRequest) Reset() {
 	*x = CommittedRequest{}
-	mi := &file_openetl_connector_v1_source_proto_msgTypes[12]
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -934,7 +1045,7 @@ func (x *CommittedRequest) String() string {
 func (*CommittedRequest) ProtoMessage() {}
 
 func (x *CommittedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_source_proto_msgTypes[12]
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -947,7 +1058,7 @@ func (x *CommittedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommittedRequest.ProtoReflect.Descriptor instead.
 func (*CommittedRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{12}
+	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CommittedRequest) GetStates() map[string][]byte {
@@ -972,7 +1083,7 @@ type CommittedResponse struct {
 
 func (x *CommittedResponse) Reset() {
 	*x = CommittedResponse{}
-	mi := &file_openetl_connector_v1_source_proto_msgTypes[13]
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -984,7 +1095,7 @@ func (x *CommittedResponse) String() string {
 func (*CommittedResponse) ProtoMessage() {}
 
 func (x *CommittedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_source_proto_msgTypes[13]
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -997,14 +1108,14 @@ func (x *CommittedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommittedResponse.ProtoReflect.Descriptor instead.
 func (*CommittedResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{13}
+	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{14}
 }
 
 var File_openetl_connector_v1_source_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\n" +
-	"!openetl/connector/v1/source.proto\x12\x14openetl.connector.v1\"8\n" +
+	"!openetl/connector/v1/source.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\"8\n" +
 	"\x12SourceCapabilities\x12\"\n" +
 	"\facknowledges\x18\x01 \x01(\bR\facknowledges\")\n" +
 	"\x0fDiscoverRequest\x12\x16\n" +
@@ -1037,11 +1148,12 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\tsync_mode\x18\x02 \x01(\x0e2\x1e.openetl.connector.v1.SyncModeR\bsyncMode\x12\x16\n" +
 	"\x06cursor\x18\x03 \x01(\tR\x06cursor\x12\x19\n" +
 	"\x05state\x18\x04 \x01(\fH\x00R\x05state\x88\x01\x01B\b\n" +
-	"\x06_state\"\xdc\x01\n" +
+	"\x06_state\"\x9a\x02\n" +
 	"\fReadResponse\x129\n" +
 	"\x05batch\x18\x01 \x01(\v2!.openetl.connector.v1.RecordBatchH\x00R\x05batch\x12F\n" +
 	"\fresume_point\x18\x02 \x01(\v2!.openetl.connector.v1.ResumePointH\x00R\vresumePoint\x12B\n" +
-	"\bcomplete\x18\x03 \x01(\v2$.openetl.connector.v1.StreamCompleteH\x00R\bcompleteB\x05\n" +
+	"\bcomplete\x18\x03 \x01(\v2$.openetl.connector.v1.StreamCompleteH\x00R\bcomplete\x12<\n" +
+	"\bprogress\x18\x04 \x01(\v2\x1e.openetl.connector.v1.ProgressH\x00R\bprogressB\x05\n" +
 	"\x03msg\"~\n" +
 	"\vRecordBatch\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
@@ -1056,7 +1168,19 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\x0eStreamComplete\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x17\n" +
 	"\x04next\x18\x02 \x01(\fH\x00R\x04next\x88\x01\x01B\a\n" +
-	"\x05_next\"\xb1\x01\n" +
+	"\x05_next\"\xc7\x02\n" +
+	"\bProgress\x12\x16\n" +
+	"\x06stream\x18\x01 \x01(\tR\x06stream\x12 \n" +
+	"\tlag_bytes\x18\x02 \x01(\x04H\x00R\blagBytes\x88\x01\x01\x12$\n" +
+	"\vlag_records\x18\x03 \x01(\x04H\x01R\n" +
+	"lagRecords\x88\x01\x01\x12+\n" +
+	"\x03lag\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x03lag\x125\n" +
+	"\x14retention_left_bytes\x18\x05 \x01(\x04H\x02R\x12retentionLeftBytes\x88\x01\x01\x12@\n" +
+	"\x0eretention_left\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\rretentionLeftB\f\n" +
+	"\n" +
+	"_lag_bytesB\x0e\n" +
+	"\f_lag_recordsB\x17\n" +
+	"\x15_retention_left_bytes\"\xb1\x01\n" +
 	"\x10CommittedRequest\x12J\n" +
 	"\x06states\x18\x01 \x03(\v22.openetl.connector.v1.CommittedRequest.StatesEntryR\x06states\x12\x16\n" +
 	"\x06config\x18\x02 \x01(\fR\x06config\x1a9\n" +
@@ -1092,25 +1216,27 @@ func file_openetl_connector_v1_source_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_connector_v1_source_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_openetl_connector_v1_source_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_openetl_connector_v1_source_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_openetl_connector_v1_source_proto_goTypes = []any{
-	(SyncMode)(0),              // 0: openetl.connector.v1.SyncMode
-	(Replay)(0),                // 1: openetl.connector.v1.Replay
-	(*SourceCapabilities)(nil), // 2: openetl.connector.v1.SourceCapabilities
-	(*DiscoverRequest)(nil),    // 3: openetl.connector.v1.DiscoverRequest
-	(*DiscoverResponse)(nil),   // 4: openetl.connector.v1.DiscoverResponse
-	(*Catalog)(nil),            // 5: openetl.connector.v1.Catalog
-	(*CatalogStream)(nil),      // 6: openetl.connector.v1.CatalogStream
-	(*ReadRequest)(nil),        // 7: openetl.connector.v1.ReadRequest
-	(*ConfiguredStream)(nil),   // 8: openetl.connector.v1.ConfiguredStream
-	(*ReadResponse)(nil),       // 9: openetl.connector.v1.ReadResponse
-	(*RecordBatch)(nil),        // 10: openetl.connector.v1.RecordBatch
-	(*JSONRows)(nil),           // 11: openetl.connector.v1.JSONRows
-	(*ResumePoint)(nil),        // 12: openetl.connector.v1.ResumePoint
-	(*StreamComplete)(nil),     // 13: openetl.connector.v1.StreamComplete
-	(*CommittedRequest)(nil),   // 14: openetl.connector.v1.CommittedRequest
-	(*CommittedResponse)(nil),  // 15: openetl.connector.v1.CommittedResponse
-	nil,                        // 16: openetl.connector.v1.CommittedRequest.StatesEntry
+	(SyncMode)(0),               // 0: openetl.connector.v1.SyncMode
+	(Replay)(0),                 // 1: openetl.connector.v1.Replay
+	(*SourceCapabilities)(nil),  // 2: openetl.connector.v1.SourceCapabilities
+	(*DiscoverRequest)(nil),     // 3: openetl.connector.v1.DiscoverRequest
+	(*DiscoverResponse)(nil),    // 4: openetl.connector.v1.DiscoverResponse
+	(*Catalog)(nil),             // 5: openetl.connector.v1.Catalog
+	(*CatalogStream)(nil),       // 6: openetl.connector.v1.CatalogStream
+	(*ReadRequest)(nil),         // 7: openetl.connector.v1.ReadRequest
+	(*ConfiguredStream)(nil),    // 8: openetl.connector.v1.ConfiguredStream
+	(*ReadResponse)(nil),        // 9: openetl.connector.v1.ReadResponse
+	(*RecordBatch)(nil),         // 10: openetl.connector.v1.RecordBatch
+	(*JSONRows)(nil),            // 11: openetl.connector.v1.JSONRows
+	(*ResumePoint)(nil),         // 12: openetl.connector.v1.ResumePoint
+	(*StreamComplete)(nil),      // 13: openetl.connector.v1.StreamComplete
+	(*Progress)(nil),            // 14: openetl.connector.v1.Progress
+	(*CommittedRequest)(nil),    // 15: openetl.connector.v1.CommittedRequest
+	(*CommittedResponse)(nil),   // 16: openetl.connector.v1.CommittedResponse
+	nil,                         // 17: openetl.connector.v1.CommittedRequest.StatesEntry
+	(*durationpb.Duration)(nil), // 18: google.protobuf.Duration
 }
 var file_openetl_connector_v1_source_proto_depIdxs = []int32{
 	5,  // 0: openetl.connector.v1.DiscoverResponse.catalog:type_name -> openetl.connector.v1.Catalog
@@ -1122,19 +1248,22 @@ var file_openetl_connector_v1_source_proto_depIdxs = []int32{
 	10, // 6: openetl.connector.v1.ReadResponse.batch:type_name -> openetl.connector.v1.RecordBatch
 	12, // 7: openetl.connector.v1.ReadResponse.resume_point:type_name -> openetl.connector.v1.ResumePoint
 	13, // 8: openetl.connector.v1.ReadResponse.complete:type_name -> openetl.connector.v1.StreamComplete
-	11, // 9: openetl.connector.v1.RecordBatch.rows:type_name -> openetl.connector.v1.JSONRows
-	16, // 10: openetl.connector.v1.CommittedRequest.states:type_name -> openetl.connector.v1.CommittedRequest.StatesEntry
-	3,  // 11: openetl.connector.v1.SourceService.Discover:input_type -> openetl.connector.v1.DiscoverRequest
-	7,  // 12: openetl.connector.v1.SourceService.Read:input_type -> openetl.connector.v1.ReadRequest
-	14, // 13: openetl.connector.v1.SourceService.Committed:input_type -> openetl.connector.v1.CommittedRequest
-	4,  // 14: openetl.connector.v1.SourceService.Discover:output_type -> openetl.connector.v1.DiscoverResponse
-	9,  // 15: openetl.connector.v1.SourceService.Read:output_type -> openetl.connector.v1.ReadResponse
-	15, // 16: openetl.connector.v1.SourceService.Committed:output_type -> openetl.connector.v1.CommittedResponse
-	14, // [14:17] is the sub-list for method output_type
-	11, // [11:14] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	14, // 9: openetl.connector.v1.ReadResponse.progress:type_name -> openetl.connector.v1.Progress
+	11, // 10: openetl.connector.v1.RecordBatch.rows:type_name -> openetl.connector.v1.JSONRows
+	18, // 11: openetl.connector.v1.Progress.lag:type_name -> google.protobuf.Duration
+	18, // 12: openetl.connector.v1.Progress.retention_left:type_name -> google.protobuf.Duration
+	17, // 13: openetl.connector.v1.CommittedRequest.states:type_name -> openetl.connector.v1.CommittedRequest.StatesEntry
+	3,  // 14: openetl.connector.v1.SourceService.Discover:input_type -> openetl.connector.v1.DiscoverRequest
+	7,  // 15: openetl.connector.v1.SourceService.Read:input_type -> openetl.connector.v1.ReadRequest
+	15, // 16: openetl.connector.v1.SourceService.Committed:input_type -> openetl.connector.v1.CommittedRequest
+	4,  // 17: openetl.connector.v1.SourceService.Discover:output_type -> openetl.connector.v1.DiscoverResponse
+	9,  // 18: openetl.connector.v1.SourceService.Read:output_type -> openetl.connector.v1.ReadResponse
+	16, // 19: openetl.connector.v1.SourceService.Committed:output_type -> openetl.connector.v1.CommittedResponse
+	17, // [17:20] is the sub-list for method output_type
+	14, // [14:17] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_source_proto_init() }
@@ -1147,19 +1276,21 @@ func file_openetl_connector_v1_source_proto_init() {
 		(*ReadResponse_Batch)(nil),
 		(*ReadResponse_ResumePoint)(nil),
 		(*ReadResponse_Complete)(nil),
+		(*ReadResponse_Progress)(nil),
 	}
 	file_openetl_connector_v1_source_proto_msgTypes[8].OneofWrappers = []any{
 		(*RecordBatch_Arrow)(nil),
 		(*RecordBatch_Rows)(nil),
 	}
 	file_openetl_connector_v1_source_proto_msgTypes[11].OneofWrappers = []any{}
+	file_openetl_connector_v1_source_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_connector_v1_source_proto_rawDesc), len(file_openetl_connector_v1_source_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   15,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

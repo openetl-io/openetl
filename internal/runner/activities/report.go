@@ -7,13 +7,17 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/internal/streamschema"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
+	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 // reporter sends a pipeline's schemas and checkpoints to the control plane,
@@ -30,6 +34,8 @@ type reporter struct {
 	queue    chan report
 	done     chan struct{}
 	digests  map[string]string // by Arrow schema; owned by run()
+	// What the read reports of its progress; nil if nothing.
+	progress *runner.Progress
 }
 
 type report struct {
@@ -65,16 +71,30 @@ func (r *reporter) schemas(e destination.Epoch, schemas map[string][]byte) {
 // checkpoint queues a checkpoint mirror report without blocking. rec must
 // not change.
 func (r *reporter) checkpoint(rec *checkpoint.Record, collapsed map[string]uint64) {
+	var progress []source.Progress
+	if r.progress != nil {
+		progress = r.progress.Latest()
+	}
 	r.enqueue(report{what: "checkpoint mirror", epoch: rec.Epoch, send: func(ctx context.Context) error {
-		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(r.mirrored(rec, collapsed)))
+		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(r.mirrored(rec, collapsed, progress)))
 		return err
 	}})
 }
 
-func (r *reporter) mirrored(rec *checkpoint.Record, collapsed map[string]uint64) *dataplanev1.ReportCheckpointRequest {
+func (r *reporter) mirrored(rec *checkpoint.Record, collapsed map[string]uint64, progress []source.Progress) *dataplanev1.ReportCheckpointRequest {
 	req := &dataplanev1.ReportCheckpointRequest{
 		PipelineId: r.pipeline, RunId: r.runID, Generation: rec.Generation, Epoch: rec.Epoch,
 		CreateTime: timestamppb.New(rec.CreatedAt),
+	}
+	for _, p := range progress {
+		m := &protocolv1.Progress{Stream: p.Stream, LagBytes: p.LagBytes, LagRecords: p.LagRecords, RetentionLeftBytes: p.RetentionLeftBytes}
+		if p.Lag != nil {
+			m.Lag = durationpb.New(*p.Lag)
+		}
+		if p.RetentionLeft != nil {
+			m.RetentionLeft = durationpb.New(*p.RetentionLeft)
+		}
+		req.Progress = append(req.Progress, m)
 	}
 	if p := rec.Previous; p != nil {
 		req.Previous = &dataplanev1.CheckpointRef{Generation: p.Generation, Epoch: p.Epoch}

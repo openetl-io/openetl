@@ -196,9 +196,29 @@ func emit(m *protocolv1.ReadResponse, out source.Emitter) error {
 		return out.ResumePoint(x.ResumePoint.GetStream(), x.ResumePoint.GetState())
 	case *protocolv1.ReadResponse_Complete:
 		return out.Complete(x.Complete.GetStream(), x.Complete.Next)
+	case *protocolv1.ReadResponse_Progress:
+		if pr, ok := out.(source.Progresser); ok {
+			return pr.Progress(progress(x.Progress))
+		}
+		return nil
+	case nil:
+		return nil // a message this runner doesn't know, from a newer connector
 	default:
 		return errs.New(errs.Internal, "connector: unexpected %T", x)
 	}
+}
+
+func progress(m *protocolv1.Progress) source.Progress {
+	p := source.Progress{Stream: m.GetStream(), LagBytes: m.LagBytes, LagRecords: m.LagRecords, RetentionLeftBytes: m.RetentionLeftBytes}
+	if m.Lag != nil {
+		d := m.GetLag().AsDuration()
+		p.Lag = &d
+	}
+	if m.RetentionLeft != nil {
+		d := m.GetRetentionLeft().AsDuration()
+		p.RetentionLeft = &d
+	}
+	return p
 }
 
 func (s *Source) Committed(ctx context.Context, states map[string][]byte) error {

@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -216,6 +217,7 @@ func (p *process) run(ctx context.Context, exe, socket, hostSocket string) error
 	var err error
 	p.conn, err = grpc.NewClient("passthrough:///"+socket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithContextDialer(dialSized),
 		grpc.WithReadBufferSize(socketBuffer), grpc.WithWriteBufferSize(socketBuffer),
 		grpc.WithInitialWindowSize(flowWindow), grpc.WithInitialConnWindowSize(flowWindow),

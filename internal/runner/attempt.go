@@ -16,6 +16,9 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
@@ -90,6 +93,7 @@ type Job struct {
 	// Identifies the sync. Its attempts don't read again the streams one of
 	// them completed. Empty: every attempt reads every stream.
 	Sync     string
+	Org      string
 	Pipeline string
 	// The read never ends (a continuous pipeline's).
 	Continuous  bool
@@ -125,6 +129,8 @@ type Job struct {
 	Drain <-chan struct{}
 	// Records kept along the checkpoint chain, at least 2. Zero: 10.
 	KeepRecords int
+	// Gets what the source reports of its progress. Nil: dropped.
+	Progress *Progress
 }
 
 // ErrDrained: the attempt stopped at a checkpoint because Job.Drain closed.
@@ -159,22 +165,29 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	}
 	log = log.With("pipeline", job.Pipeline, "owner", job.Owner)
 	caps := job.Destination.Capabilities()
+	if job.Progress != nil {
+		live.Store(job.Progress, struct{}{})
+		defer live.Delete(job.Progress)
+	}
 
-	sess, err := job.Log.Claim(ctx, job.Owner)
+	rctx, span := tracer.Start(ctx, "recover", trace.WithAttributes(attribute.String("openetl.pipeline", job.Pipeline)))
+	// Ended before the epochs start; a later End is ignored.
+	defer func() { endSpan(span, err) }()
+	sess, err := job.Log.Claim(rctx, job.Owner)
 	if err != nil {
 		return res, err
 	}
 	res.Generation = sess.Generation()
 	log = log.With("generation", res.Generation)
 
-	head, err := sess.Load(ctx)
+	head, err := sess.Load(rctx)
 	if err != nil {
 		return res, err
 	}
 	// The previous record is needed if the sink reports HEAD's epoch lost.
 	var prev *checkpoint.Record
 	if head != nil && head.Previous != nil {
-		if prev, err = job.Log.Record(ctx, *head.Previous); err != nil {
+		if prev, err = job.Log.Record(rctx, *head.Previous); err != nil {
 			return res, err
 		}
 	}
@@ -200,7 +213,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		})
 		canForce[s.Name] = delivery.CanForce(caps, s.delivery(), job.Settings.Require)
 	}
-	w, err := job.Destination.Open(ctx, cfg)
+	w, err := job.Destination.Open(rctx, cfg)
 	if err != nil {
 		return res, fmt.Errorf("runner: open destination: %w", err)
 	}
@@ -220,11 +233,11 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			schemas[name] = st.Schema
 		}
 		// A redone epoch needs its schemas in place.
-		if err := applySchemas(ctx, w, applied, schemas); err != nil {
+		if err := applySchemas(rctx, w, applied, schemas); err != nil {
 			return res, err
 		}
 	}
-	if res.Recovery, err = w.Recover(ctx, res.Generation, e, staged); err != nil {
+	if res.Recovery, err = w.Recover(rctx, res.Generation, e, staged); err != nil {
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
 	}
 	restored := head
@@ -236,7 +249,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			ref := prev.Ref()
 			to = &ref
 		}
-		if err := sess.Rewind(ctx, to); err != nil {
+		if err := sess.Rewind(rctx, to); err != nil {
 			return res, err
 		}
 		restored = prev
@@ -245,9 +258,11 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		res.Restored = restored.Epoch
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
-	prune(ctx, sess, restored, job.keep(), log)
+	prune(rctx, sess, restored, job.keep(), log)
+	span.SetAttributes(attribute.Int64("openetl.generation", int64(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", int64(res.Restored))) //nolint:gosec // epochs fit
+	span.End()
 
-	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reported: map[string]*arrow.Schema{}}
+	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reported: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}}
 	return res, c.run(ctx, restored, canForce)
 }
 
@@ -317,6 +332,7 @@ type event struct {
 }
 
 type epochState struct {
+	requested             time.Time
 	placed, staged, ready bool
 	states                map[string][]byte
 	forced                []string
@@ -358,8 +374,9 @@ type coordinator struct {
 	applied     map[string]*arrow.Schema // owned by the committer: each stream's schema last applied
 	reported    map[string]*arrow.Schema // owned by the committer: each stream's schema last passed to OnSchemas
 	readStarts  map[string]int64
-	sincePrune  int    // owned by the committer: commits since it last pruned
-	seen        uint64 // what the source had emitted when the last barrier was requested
+	sincePrune  int                                 // owned by the committer: commits since it last pruned
+	seen        uint64                              // what the source had emitted when the last barrier was requested
+	measures    map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
@@ -407,6 +424,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	ends := &readEnds{at: map[string]uint64{}}
 	c.pump = newSourcePump(gctx, c.job, c.committed, states, restoredForced, canForce, done, ends, toFlow, c.events)
 	plan := Plan{
+		Org:        c.job.Org,
 		Pipeline:   c.job.Pipeline,
 		Owner:      c.job.Owner,
 		Generation: c.sess.Generation(),
@@ -495,7 +513,7 @@ func (c *coordinator) loop(ctx context.Context) error {
 			if c.draining && c.drainEpoch == 0 {
 				c.drainEpoch = n
 			}
-			c.pending[n] = &epochState{}
+			c.pending[n] = &epochState{requested: time.Now()}
 			c.seen = c.pump.emitted.Load()
 			if err := c.pump.requestBarrier(n); err != nil {
 				return err
@@ -612,7 +630,10 @@ func (c *coordinator) committer(ctx context.Context) error {
 
 // commit records the checkpoint, makes the epoch visible, reports it to the
 // loop, then acknowledges the previous epoch upstream.
-func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) error {
+func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err error) {
+	start := time.Now()
+	ctx, span := tracer.Start(ctx, "commit", trace.WithAttributes(attribute.String("openetl.pipeline", c.job.Pipeline), attribute.Int64("openetl.epoch", int64(n)))) //nolint:gosec // epochs fit
+	defer func() { endSpan(span, err) }()
 	rec := &checkpoint.Record{
 		Epoch:      n,
 		Streams:    make(map[string]checkpoint.StreamState, len(st.states)),
@@ -633,7 +654,7 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		}
 	}
 	slices.Sort(rec.Forced)
-	err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced)
+	err = retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced)
 	if err != nil {
 		return fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}
@@ -653,6 +674,7 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		return fmt.Errorf("runner: commit epoch %d: %w", n, err)
 	}
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
+	c.measure(ctx, rec, collapsed, time.Since(start), time.Since(st.requested))
 	if c.job.OnSchemas != nil {
 		changed, err := changedSchemas(c.reported, st.flow.Schemas)
 		if err != nil {
@@ -690,6 +712,41 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		prune(ctx, c.sess, rec, c.job.keep(), c.log)
 	}
 	return nil
+}
+
+func (c *coordinator) measure(ctx context.Context, rec *checkpoint.Record, collapsed map[string]uint64, commit, epoch time.Duration) {
+	job := c.attrs("")
+	epochs.Add(ctx, 1, job)
+	commitLength.Record(ctx, commit.Seconds(), job)
+	epochLength.Record(ctx, epoch.Seconds(), job)
+	quarantined := map[string]uint64{}
+	for _, q := range rec.Quarantine {
+		quarantined[q.Stream] += q.Rows
+	}
+	for name, st := range rec.Streams {
+		attrs := c.attrs(name)
+		rowsCommitted.Add(ctx, int64(st.Rows), attrs) //nolint:gosec // row counts fit
+		if q := quarantined[name]; q > 0 {
+			rowsQuarantined.Add(ctx, int64(q), attrs) //nolint:gosec // row counts fit
+		}
+		if n := collapsed[name]; n > 0 {
+			rowsCollapsed.Add(ctx, int64(n), attrs) //nolint:gosec // row counts fit
+		}
+	}
+}
+
+// attrs returns metrics' attributes for a stream, or for the job.
+func (c *coordinator) attrs(stream string) metric.MeasurementOption {
+	if m, ok := c.measures[stream]; ok {
+		return m
+	}
+	kv := []attribute.KeyValue{attribute.String("openetl.org", c.job.Org), attribute.String("openetl.pipeline", c.job.Pipeline)}
+	if stream != "" {
+		kv = append(kv, attribute.String("openetl.stream", stream))
+	}
+	m := metric.WithAttributes(kv...)
+	c.measures[stream] = m
+	return m
 }
 
 func retry(ctx context.Context, f func() error, fatal error) error {

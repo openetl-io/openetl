@@ -3,6 +3,7 @@ syntax = "proto3";
 package openetl.api.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -49,6 +50,27 @@ message Sync {
   // When its latest epoch was committed; unset if none was, or the
   // control plane no longer keeps it.
   google.protobuf.Timestamp last_commit_time = 10;
+  // How far behind its source the read was at its latest commit, for
+  // sources that report it (CDC, Kafka, Kinesis).
+  repeated ReadProgress progress = 11;
+}
+
+// ReadProgress is what a source reported of how far behind it a read is.
+// Unset fields are unknown.
+message ReadProgress {
+  // Empty: the whole read, such as a replication slot's.
+  string stream = 1;
+  // What the source holds that the read hasn't acknowledged.
+  optional uint64 lag_bytes = 2;
+  optional uint64 lag_records = 3;
+  // How far behind in time; zero once the read has caught up.
+  google.protobuf.Duration lag = 4;
+  // How much more the source can take, or how long it waits, before it
+  // discards what the read hasn't acknowledged.
+  optional uint64 retention_left_bytes = 5;
+  google.protobuf.Duration retention_left = 6;
+  // When the checkpoint that carried it was recorded.
+  google.protobuf.Timestamp time = 7;
 }
 
 message SyncStream {

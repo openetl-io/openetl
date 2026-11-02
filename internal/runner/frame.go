@@ -53,6 +53,7 @@ type Ready struct {
 
 // Plan is what a dataflow needs to know about one attempt.
 type Plan struct {
+	Org        string
 	Pipeline   string
 	Owner      string
 	Generation uint64

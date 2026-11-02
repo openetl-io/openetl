@@ -8,6 +8,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
@@ -104,7 +105,7 @@ type emitter struct {
 	stream grpc.ServerStreamingServer[protocolv1.ReadResponse]
 }
 
-var _ source.Emitter = (*emitter)(nil)
+var _ source.Progresser = (*emitter)(nil)
 
 func (e *emitter) send(m *protocolv1.ReadResponse) error {
 	e.mu.Lock()
@@ -145,4 +146,15 @@ func (e *emitter) ResumePoint(stream string, state []byte) error {
 
 func (e *emitter) Complete(stream string, next []byte) error {
 	return e.send(&protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_Complete{Complete: &protocolv1.StreamComplete{Stream: stream, Next: next}}})
+}
+
+func (e *emitter) Progress(p source.Progress) error {
+	m := &protocolv1.Progress{Stream: p.Stream, LagBytes: p.LagBytes, LagRecords: p.LagRecords, RetentionLeftBytes: p.RetentionLeftBytes}
+	if p.Lag != nil {
+		m.Lag = durationpb.New(*p.Lag)
+	}
+	if p.RetentionLeft != nil {
+		m.RetentionLeft = durationpb.New(*p.RetentionLeft)
+	}
+	return e.send(&protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_Progress{Progress: m}})
 }

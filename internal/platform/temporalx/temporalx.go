@@ -12,6 +12,8 @@ import (
 	"go.temporal.io/api/operatorservice/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
+	temporalotel "go.temporal.io/sdk/contrib/opentelemetry"
+	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 
@@ -30,10 +32,21 @@ func Dial(ctx context.Context, o Options) (client.Client, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	// Workers made from the client trace too, so a workflow's activities
+	// continue the trace of whatever started it.
+	tracing, err := temporalotel.NewTracingInterceptor(temporalotel.TracerOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("temporalx: tracing: %w", err)
+	}
 	c, err := client.DialContext(ctx, client.Options{
-		HostPort:  o.Address,
-		Namespace: o.Namespace,
-		Logger:    tlog.NewStructuredLogger(log.With("component", "temporal")),
+		HostPort:     o.Address,
+		Namespace:    o.Namespace,
+		Logger:       tlog.NewStructuredLogger(log.With("component", "temporal")),
+		Interceptors: []interceptor.ClientInterceptor{tracing},
+		MetricsHandler: temporalotel.NewMetricsHandler(temporalotel.MetricsHandlerOptions{
+			UseMonotonicCounters: true,
+			OnError:              func(err error) { log.Warn("temporal metrics", "err", err) },
+		}),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("temporalx: dial %s: %w", o.Address, err)

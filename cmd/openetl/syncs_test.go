@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -28,7 +29,8 @@ func (f *fakeSyncs) ListSyncs(_ context.Context, req *connect.Request[apiv1.List
 	start := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	return connect.NewResponse(&apiv1.ListSyncsResponse{Syncs: []*apiv1.Sync{
 		{Name: syncName, State: apiv1.SyncState_SYNC_STATE_RUNNING, StartTime: timestamppb.New(start), Version: "v2",
-			Streams: []*apiv1.SyncStream{{Name: "a", Rows: 40}, {Name: "b", Rows: 2}}, Continuous: true, LastCommitTime: timestamppb.New(start.Add(time.Hour))},
+			Streams: []*apiv1.SyncStream{{Name: "a", Rows: 40}, {Name: "b", Rows: 2}}, Continuous: true, LastCommitTime: timestamppb.New(start.Add(time.Hour)),
+			Progress: []*apiv1.ReadProgress{{LagBytes: new(uint64(3 << 20)), Lag: durationpb.New(1420 * time.Millisecond)}}},
 		{Name: req.Msg.GetParent() + "/syncs/0192", State: apiv1.SyncState_SYNC_STATE_FAILED, StartTime: timestamppb.New(start.Add(-time.Hour)),
 			EndTime: timestamppb.New(start.Add(-time.Hour + 90*time.Second)), Version: "v1", Error: "TRANSIENT: boom\nmore"},
 	}[:min(req.Msg.GetPageSize(), 2)]}), nil
@@ -68,7 +70,8 @@ func TestSyncsAndLogs(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	committed := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC).Local().Format(time.DateTime)
 	if len(lines) != 3 || !strings.Contains(lines[1], "0193  running") || !strings.Contains(lines[1], "  42    v2") || !strings.Contains(lines[1], committed) ||
-		!strings.Contains(lines[2], "1m30s") || !strings.Contains(lines[2], "never") || !strings.HasSuffix(lines[2], "TRANSIENT: boom") {
+		!strings.Contains(lines[1], "1.4s, 3.0 MiB") || !strings.Contains(lines[2], "1m30s") || !strings.Contains(lines[2], "never") ||
+		!strings.Contains(lines[2], "  -  ") || !strings.HasSuffix(lines[2], "TRANSIENT: boom") {
 		t.Errorf("printed\n%s", out.String())
 	}
 

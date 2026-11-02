@@ -104,9 +104,14 @@ type sourcePump struct {
 	// Counts what the source emitted, for the coordinator to skip epochs
 	// that would hold nothing.
 	emitted atomic.Uint64
+	// Nil: progress is dropped.
+	progress *Progress
 }
 
-var _ source.Forwarder = (*sourcePump)(nil)
+var (
+	_ source.Forwarder  = (*sourcePump)(nil)
+	_ source.Progresser = (*sourcePump)(nil)
+)
 
 // Streams in done completed earlier in the sync, and aren't read.
 func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored map[string][]byte, restoredForced, canForce, done map[string]bool, ends *readEnds, out chan<- Frame, events chan<- event) *sourcePump {
@@ -123,6 +128,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored
 		known:      make(map[string]bool, len(job.Streams)),
 		maxBytes:   job.Settings.CommitMaxBytes,
 		forceAfter: job.Settings.ResumePointTimeout,
+		progress:   job.Progress,
 	}
 	for _, s := range job.Streams {
 		p.order = append(p.order, s.Name)
@@ -150,6 +156,18 @@ func (p *sourcePump) ResumePoint(stream string, state []byte) error {
 
 func (p *sourcePump) Complete(stream string, next []byte) error {
 	return p.send(emit{kind: emitComplete, stream: stream, state: next})
+}
+
+// Progress doesn't go through the pump: it's for metrics, not ordered with
+// what the source emits.
+func (p *sourcePump) Progress(r source.Progress) error {
+	if r.Stream != "" && !p.known[r.Stream] {
+		return fmt.Errorf("runner: source reported progress for unknown stream %q", r.Stream)
+	}
+	if p.progress != nil {
+		p.progress.set(r)
+	}
+	return nil
 }
 
 func (p *sourcePump) readDone() error { return p.send(emit{kind: emitDone}) }

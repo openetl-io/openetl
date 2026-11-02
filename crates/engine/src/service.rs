@@ -17,12 +17,14 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
-use tracing::{info, warn};
+use tracing::{Instrument as _, info, info_span, warn};
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::dataflow::{self, Events};
 use crate::error::JobError;
 use crate::frame;
 use crate::plan::{Plan, Sink};
+use crate::telemetry;
 
 /// How long the runner has to connect every edge after StartJob.
 const EDGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -62,11 +64,13 @@ impl Engine {
         self.job.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn start(&self, req: StartJobRequest) -> Result<(), JobError> {
+    fn start(&self, req: StartJobRequest, parent: opentelemetry::Context) -> Result<(), JobError> {
         let mut slot = self.job();
         if slot.is_some() {
             return Err(JobError::config("this engine already ran a job"));
         }
+        let span = info_span!("job", openetl.pipeline = %req.pipeline, openetl.generation = req.generation);
+        let _ = span.set_parent(parent);
         let plan = Arc::new(Plan::from_request(req)?);
         let (events_tx, events_rx) = mpsc::channel(64);
         let mut job = Job {
@@ -95,7 +99,7 @@ impl Engine {
             "job started"
         );
         let shutdown = self.shutdown.clone();
-        tokio::spawn(async move {
+        let job = async move {
             let res = tokio::select! {
                 r = run(plan, inbound, outbound, events_tx.clone()) => r,
                 _ = shutdown.cancelled() => {
@@ -111,7 +115,8 @@ impl Engine {
                 }
                 Err(e) => warn!(error = %e, "job failed"),
             }
-        });
+        };
+        tokio::spawn(job.instrument(span));
         Ok(())
     }
 
@@ -221,7 +226,10 @@ impl EngineService for Control {
         &self,
         req: Request<StartJobRequest>,
     ) -> Result<Response<StartJobResponse>, Status> {
-        self.0.start(req.into_inner()).map_err(|e| e.to_status())?;
+        let parent = telemetry::remote_context(req.metadata());
+        self.0
+            .start(req.into_inner(), parent)
+            .map_err(|e| e.to_status())?;
         Ok(Response::new(StartJobResponse {}))
     }
 

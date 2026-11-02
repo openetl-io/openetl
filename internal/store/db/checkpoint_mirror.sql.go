@@ -13,8 +13,8 @@ import (
 )
 
 const insertMirroredCheckpoint = `-- name: InsertMirroredCheckpoint :execrows
-INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT DO NOTHING
 `
 
@@ -28,6 +28,7 @@ type InsertMirroredCheckpointParams struct {
 	RunID              string
 	CommitTime         time.Time
 	Streams            []byte
+	Progress           []byte
 }
 
 func (q *Queries) InsertMirroredCheckpoint(ctx context.Context, arg InsertMirroredCheckpointParams) (int64, error) {
@@ -41,11 +42,52 @@ func (q *Queries) InsertMirroredCheckpoint(ctx context.Context, arg InsertMirror
 		arg.RunID,
 		arg.CommitTime,
 		arg.Streams,
+		arg.Progress,
 	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const lastCommits = `-- name: LastCommits :many
+SELECT p.workspace_id, p.id AS pipeline_id, c.commit_time
+FROM pipelines p
+CROSS JOIN LATERAL (
+    SELECT m.commit_time FROM checkpoint_mirror m
+    WHERE m.org_id = p.org_id AND m.pipeline_id = p.id
+    ORDER BY m.epoch DESC, m.generation DESC
+    LIMIT 1
+) c
+WHERE p.org_id = $1
+`
+
+type LastCommitsRow struct {
+	WorkspaceID uuid.UUID
+	PipelineID  uuid.UUID
+	CommitTime  time.Time
+}
+
+// Each pipeline's latest mirrored checkpoint, for freshness; pipelines the
+// mirror has none of are left out.
+func (q *Queries) LastCommits(ctx context.Context, orgID uuid.UUID) ([]LastCommitsRow, error) {
+	rows, err := q.db.Query(ctx, lastCommits, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LastCommitsRow
+	for rows.Next() {
+		var i LastCommitsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.PipelineID, &i.CommitTime); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listCheckpoints = `-- name: ListCheckpoints :many
@@ -103,6 +145,54 @@ func (q *Queries) ListCheckpoints(ctx context.Context, arg ListCheckpointsParams
 			&i.Streams,
 			&i.SyncID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const syncProgress = `-- name: SyncProgress :many
+SELECT DISTINCT ON (c.run_id) c.run_id, c.commit_time, c.progress
+FROM checkpoint_mirror c
+WHERE c.org_id = $1 AND c.pipeline_id = $2 AND c.run_id = ANY($3::text[])
+  AND c.commit_time >= $4 AND c.progress IS NOT NULL
+ORDER BY c.run_id, c.commit_time DESC
+`
+
+type SyncProgressParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	RunIds     []string
+	Since      time.Time
+}
+
+type SyncProgressRow struct {
+	RunID      string
+	CommitTime time.Time
+	Progress   []byte
+}
+
+// Each sync's latest checkpoint that carried the read's progress, committed
+// after since.
+func (q *Queries) SyncProgress(ctx context.Context, arg SyncProgressParams) ([]SyncProgressRow, error) {
+	rows, err := q.db.Query(ctx, syncProgress,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.RunIds,
+		arg.Since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SyncProgressRow
+	for rows.Next() {
+		var i SyncProgressRow
+		if err := rows.Scan(&i.RunID, &i.CommitTime, &i.Progress); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -39,7 +39,7 @@ func runSyncs(ctx context.Context, args []string, out io.Writer) error {
 	}
 	req := &apiv1.ListSyncsRequest{Parent: "workspaces/" + *workspace + "/pipelines/" + rest[0]}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "SYNC\tSTATE\tSTARTED\tTOOK\tROWS\tVERSION\tLAST COMMIT\tERROR")
+	fmt.Fprintln(tw, "SYNC\tSTATE\tSTARTED\tTOOK\tROWS\tVERSION\tLAST COMMIT\tLAG\tERROR")
 	for left := *limit; left > 0; {
 		req.PageSize = int32(min(left, 500))
 		res, err := c.ListSyncs(ctx, connect.NewRequest(req))
@@ -60,7 +60,7 @@ func runSyncs(ctx context.Context, args []string, out io.Writer) error {
 			for _, st := range s.GetStreams() {
 				rows += st.GetRows()
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", path.Base(s.GetName()), state, when(s.GetStartTime()), took, rows, s.GetVersion(), when(s.GetLastCommitTime()), msg)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", path.Base(s.GetName()), state, when(s.GetStartTime()), took, rows, s.GetVersion(), when(s.GetLastCommitTime()), lag(s.GetProgress()), msg)
 		}
 		left -= len(res.Msg.GetSyncs())
 		if req.PageToken = res.Msg.GetNextPageToken(); req.PageToken == "" {
@@ -68,6 +68,52 @@ func runSyncs(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 	return tw.Flush()
+}
+
+// lag is how far behind its source a sync's read was at its latest commit,
+// the most of its streams'; "-" if the source doesn't say.
+func lag(progress []*apiv1.ReadProgress) string {
+	var d time.Duration
+	var bytes, records uint64
+	var hasD, hasBytes, hasRecords bool
+	for _, p := range progress {
+		if p.GetLag() != nil {
+			d, hasD = max(d, p.GetLag().AsDuration()), true
+		}
+		if p.LagBytes != nil {
+			bytes, hasBytes = max(bytes, p.GetLagBytes()), true
+		}
+		if p.LagRecords != nil {
+			records, hasRecords = max(records, p.GetLagRecords()), true
+		}
+	}
+	var parts []string
+	if hasD {
+		parts = append(parts, d.Round(100*time.Millisecond).String())
+	}
+	if hasBytes {
+		parts = append(parts, size(bytes))
+	}
+	if hasRecords {
+		parts = append(parts, strconv.FormatUint(records, 10)+" records")
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func size(n uint64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := uint64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func runLogs(ctx context.Context, args []string, out io.Writer) error {

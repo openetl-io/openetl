@@ -9,10 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/unsuitable001/openetl/internal/daemon"
 	"github.com/unsuitable001/openetl/internal/platform/config"
 	"github.com/unsuitable001/openetl/internal/platform/logging"
+	"github.com/unsuitable001/openetl/internal/platform/telemetry"
 )
 
 const usage = `usage: openetld <role> [flags]
@@ -75,12 +79,31 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	log, err := logging.New(os.Stderr, cfg.LogLevel, cfg.LogFormat)
+	out, err := logging.Output{To: cfg.LogOutput, MaxSize: cfg.LogMaxSize, MaxFiles: cfg.LogMaxFiles}.Open()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+	log, err := logging.New(out, cfg.LogLevel, cfg.LogFormat)
 	if err != nil {
 		return err
 	}
 	if role == "bootstrap-key" {
 		return daemon.BootstrapKey(ctx, cfg, log)
 	}
+	stop, err := telemetry.Start(ctx, telemetry.Options{
+		Service:    "openetld",
+		Attributes: []attribute.KeyValue{attribute.String("openetl.role", role), attribute.String("openetl.data_plane", cfg.DataPlane)},
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := stop(sctx); err != nil {
+			log.Warn("flushing telemetry failed", "err", err)
+		}
+	}()
 	return daemon.Run(ctx, daemon.Options{Config: cfg, Roles: roles, Logger: log})
 }

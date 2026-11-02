@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -103,15 +104,43 @@ func (s *Server) syncsOut(ctx context.Context, pipeline string, rows []db.GetSyn
 			lastCommit[st.RunID] = st.LastCommitTime
 		}
 	}
+	progress, err := s.Store.SyncProgress(ctx, db.SyncProgressParams{
+		OrgID: s.Tenant.Org, PipelineID: rows[0].PipelineID, RunIds: runs, Since: since.Add(-maxClockSkew),
+	})
+	if err != nil {
+		return nil, err
+	}
+	progressByRun := map[string][]*apiv1.ReadProgress{}
+	for _, p := range progress {
+		var ps []mirroredProgress
+		if err := json.Unmarshal(p.Progress, &ps); err != nil {
+			return nil, fmt.Errorf("sync %s's progress: %w", p.RunID, err)
+		}
+		for _, m := range ps {
+			progressByRun[p.RunID] = append(progressByRun[p.RunID], &apiv1.ReadProgress{
+				Stream: m.Stream, LagBytes: m.LagBytes, LagRecords: m.LagRecords, Lag: fromMillis(m.LagMs),
+				RetentionLeftBytes: m.RetentionLeftBytes, RetentionLeft: fromMillis(m.RetentionLeftMs),
+				Time: timestamppb.New(p.CommitTime),
+			})
+		}
+	}
 	out := make([]*apiv1.Sync, len(rows))
 	for i, r := range rows {
 		out[i] = syncOut(pipeline, r)
 		out[i].Streams = byRun[r.RunID]
+		out[i].Progress = progressByRun[r.RunID]
 		if t, ok := lastCommit[r.RunID]; ok {
 			out[i].LastCommitTime = timestamppb.New(t)
 		}
 	}
 	return out, nil
+}
+
+func fromMillis(ms *int64) *durationpb.Duration {
+	if ms == nil {
+		return nil
+	}
+	return durationpb.New(time.Duration(*ms) * time.Millisecond)
 }
 
 func (s *Server) GetSync(ctx context.Context, req *connect.Request[apiv1.GetSyncRequest]) (*connect.Response[apiv1.GetSyncResponse], error) {

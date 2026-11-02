@@ -105,8 +105,9 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	// ev is set before evDone closes.
 	var ev eventsResult
 	evDone := make(chan struct{})
+	counters := newJobCounters(plan.Org, plan.Pipeline)
 	go func() {
-		ev = consumeEvents(events, p.log, onReady)
+		ev = consumeEvents(events, p.log, onReady, counters)
 		close(evDone)
 	}()
 	defer func() {
@@ -257,7 +258,7 @@ func encodeSchema(s *arrow.Schema) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func consumeEvents(stream grpc.ServerStreamingClient[enginev1.EventsResponse], log *slog.Logger, onReady func(*enginev1.EpochReady) error) eventsResult {
+func consumeEvents(stream grpc.ServerStreamingClient[enginev1.EventsResponse], log *slog.Logger, onReady func(*enginev1.EpochReady) error, counters *jobCounters) eventsResult {
 	for {
 		resp, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -276,9 +277,7 @@ func consumeEvents(stream grpc.ServerStreamingClient[enginev1.EventsResponse], l
 				return eventsResult{err: err}
 			}
 		case *enginev1.EventsResponse_Metrics:
-			for _, s := range e.Metrics.GetStreams() {
-				log.Debug("engine stream metrics", "stream", s.GetStream(), "rows_in", s.GetRowsIn(), "rows_out", s.GetRowsOut())
-			}
+			counters.record(stream.Context(), e.Metrics)
 		}
 	}
 }
@@ -337,6 +336,7 @@ func writeEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []stri
 		if err := fw.write(kind, i, payload); err != nil {
 			return fmt.Errorf("engineclient: write edge %s: %w", inEdge, err)
 		}
+		edgeBytes.Add(ctx, int64(len(payload)), toEngine)
 	}
 	for _, name := range names {
 		if err := fw.write(enginev1.FrameKind_FRAME_KIND_END_OF_STREAM, index[name], nil); err != nil {
@@ -397,6 +397,7 @@ func readEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []strin
 		if int(stream) >= len(names) || ended[stream] {
 			return fmt.Errorf("engineclient: unexpected %v frame for stream %d", kind, stream)
 		}
+		edgeBytes.Add(ctx, int64(len(payload)), fromEngine)
 		f := runner.Frame{Stream: names[stream]}
 		switch kind {
 		case enginev1.FrameKind_FRAME_KIND_BATCH:

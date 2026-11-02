@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -108,6 +109,7 @@ func start(ctx context.Context, opts Options) (*process, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	p.cmd = exec.Command(bin, "serve", "--control", control, "--data", p.data, "--watch-stdin") //nolint:gosec,noctx // the operator configures the binary; close stops it
+	p.cmd.Env = engineEnv()
 	stdin, err1 := p.cmd.StdinPipe()
 	stdout, err2 := p.cmd.StdoutPipe()
 	stderr, err3 := p.cmd.StderrPipe()
@@ -121,6 +123,7 @@ func start(ctx context.Context, opts Options) (*process, error) {
 		return nil, errs.Wrap(errs.Internal, err, "engineclient: start "+bin)
 	}
 	p.log = log.With("component", "engine", "pid", p.cmd.Process.Pid)
+	engines.Add(ctx, 1)
 
 	// Wait closes the pipes, so it runs once both are drained.
 	ready := make(chan struct{})
@@ -136,6 +139,12 @@ func start(ctx context.Context, opts Options) (*process, error) {
 	go func() {
 		drained.Wait()
 		_ = p.cmd.Wait()
+		ctx := context.WithoutCancel(ctx)
+		engines.Add(ctx, -1)
+		if st := p.cmd.ProcessState; st != nil {
+			engineCPU.Add(ctx, st.UserTime().Seconds(), userCPU)
+			engineCPU.Add(ctx, st.SystemTime().Seconds(), systemCPU)
+		}
 		close(p.exited)
 	}()
 
@@ -154,7 +163,7 @@ func start(ctx context.Context, opts Options) (*process, error) {
 		return nil, ctx.Err()
 	}
 
-	p.conn, err = grpc.NewClient("unix://"+control, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	p.conn, err = grpc.NewClient("unix://"+control, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 	if err != nil {
 		p.close()
 		return nil, errs.Wrap(errs.Internal, err, "engineclient: control client")
@@ -191,10 +200,7 @@ func (p *process) dialEdge(ctx context.Context, id string) (*net.UnixConn, error
 // close stops the engine and waits for it to exit. It is safe to call after
 // the engine has died.
 func (p *process) close() {
-	var hwm int64
-	if p.peak != nil {
-		hwm = p.highWater()
-	}
+	hwm := p.highWater()
 	if p.client != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 		_, _ = p.client.Stop(ctx, &enginev1.StopRequest{})
@@ -214,8 +220,9 @@ func (p *process) close() {
 	}
 	t.Stop()
 	_ = os.RemoveAll(p.dir)
-	if p.peak != nil {
-		if n := p.peakMemory(hwm); n > 0 {
+	if n := p.peakMemory(hwm); n > 0 {
+		enginePeak.Record(context.Background(), n)
+		if p.peak != nil {
 			p.peak(n)
 		}
 	}
@@ -284,6 +291,13 @@ func (p *process) exitError() error {
 		return errs.New(errs.ResourceExhausted, "engineclient: the engine was killed, likely for running out of memory")
 	}
 	return errs.New(errs.Internal, "engineclient: the engine exited unexpectedly: %v", st)
+}
+
+// engineEnv is the runner's environment, so the engine exports telemetry with
+// its OTEL_* settings, under its own service name.
+func engineEnv() []string {
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "OTEL_SERVICE_NAME=") })
+	return append(env, "OTEL_SERVICE_NAME=openetl-engine")
 }
 
 // relayLogs re-logs the engine's JSON log lines.

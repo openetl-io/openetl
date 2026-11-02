@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
 // A continuous pipeline reads a Postgres table's snapshot and then its
@@ -80,6 +82,16 @@ func TestPostgresCDC(t *testing.T) {
 	if got := statuses(runs(t, name)); got != "running" {
 		t.Errorf("runs %q, want one running", got)
 	}
+	// The slot's lag, as the source reports it, reaches the run.
+	eventually(t, 30*time.Second, "the run's progress", func() bool {
+		res, err := apiv1connect.NewSyncServiceClient(env.http, env.apiURL).ListSyncs(t.Context(), connect.NewRequest(&apiv1.ListSyncsRequest{Parent: pipeline, PageSize: 1}))
+		if err != nil || len(res.Msg.GetSyncs()) == 0 {
+			return false
+		}
+		return slices.ContainsFunc(res.Msg.GetSyncs()[0].GetProgress(), func(p *apiv1.ReadProgress) bool {
+			return p.GetStream() == "" && p.LagBytes != nil && p.GetLag() != nil && p.GetTime() != nil
+		})
+	})
 
 	if _, err := pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: pipeline})); err != nil {
 		t.Fatal(err)

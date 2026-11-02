@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/attribute"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -79,6 +80,7 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 		org: in.OrgID, pipeline: in.PipelineID, version: in.Version,
 		sync: info.WorkflowExecution.RunID, drain: activity.GetWorkerStopChannel(ctx),
 	}, log)
+	countAttempt(ctx, in.OrgID, in.PipelineID, "sync", attempt, false, err)
 	switch {
 	case errors.Is(err, runner.ErrDrained):
 		log.Info("sync attempt drained", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
@@ -146,6 +148,7 @@ func (a *Sync) RunStreamJob(ctx context.Context, in contract.StreamJobInput) (co
 		org: in.OrgID, pipeline: in.PipelineID, version: in.Version,
 		sync: in.RunKey, drain: stop,
 	}, log)
+	countAttempt(ctx, in.OrgID, in.PipelineID, "stream", attempt, ctx.Err() != nil, err)
 	switch {
 	case errors.Is(err, runner.ErrDrained) && ctx.Err() != nil:
 		log.Info("stream job stopped", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
@@ -203,6 +206,8 @@ func (a *Sync) run(ctx, actx context.Context, p attemptParams, log *slog.Logger)
 	}
 	job.Owner = fmt.Sprintf("%s/%s/%d/%s", info.WorkflowExecution.RunID, info.ActivityID, info.Attempt, rand.Text()[:8])
 	job.Sync = p.sync
+	job.Org = spec.GetOrgId()
+	job.Progress = runner.NewProgress(attribute.String("openetl.org", spec.GetOrgId()), attribute.String("openetl.pipeline", spec.GetPipelineId()))
 	job.Log = checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId())
 	if a.Storage != "" {
 		if job.QuarantineURL, err = quarantineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId()); err != nil {
@@ -218,6 +223,7 @@ func (a *Sync) run(ctx, actx context.Context, p attemptParams, log *slog.Logger)
 	var last atomic.Uint64
 	job.OnCommit = last.Store
 	reports := newReporter(ctx, a.API, spec.GetPipelineId(), p.sync, log)
+	reports.progress = job.Progress
 	job.OnSchemas, job.OnCheckpoint = reports.schemas, reports.checkpoint
 	stop := heartbeats(actx, func() any { return last.Load() })
 	r, err := runner.RunAttempt(ctx, job)

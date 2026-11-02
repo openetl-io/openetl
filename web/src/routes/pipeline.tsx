@@ -15,7 +15,7 @@ import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { errorCode, errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
 import { destinationName, pipelineName, shortDigest, sourceName } from "@/lib/names";
-import { lastUpdate, scheduleLabel, stale } from "@/lib/pipeline";
+import { lag, lastUpdate, scheduleLabel, stale } from "@/lib/pipeline";
 import { pipelineStatus } from "@/lib/status";
 import { Overview } from "./pipeline-overview";
 import { SyncsTab } from "./pipeline-syncs";
@@ -80,6 +80,7 @@ export function PipelinePage() {
   const pl = p.data?.pipeline;
   const status = pl ? pipelineStatus(pl) : undefined;
   const lastSuccess = pl && lastUpdate(pl);
+  const behind = spec?.mode === PipelineMode.CONTINUOUS ? lag(pl?.status?.lastSync) : undefined;
 
   return (
     <div className="grid gap-6">
@@ -124,6 +125,7 @@ export function PipelinePage() {
                 "Never"
               )}
             </Fact>
+            {behind && <Fact label="Behind source">{behind}</Fact>}
             <Fact label="Version">
               <Tooltip>
                 <TooltipTrigger asChild>

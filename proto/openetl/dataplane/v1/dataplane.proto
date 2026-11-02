@@ -5,6 +5,7 @@ package openetl.dataplane.v1;
 import "google/protobuf/timestamp.proto";
 import "openetl/api/v1/connection.proto";
 import "openetl/api/v1/pipeline.proto";
+import "openetl/connector/v1/source.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1";
 
@@ -90,6 +91,9 @@ message ReportCheckpointRequest {
   // control plane's clock.
   google.protobuf.Timestamp create_time = 6;
   repeated CheckpointStream streams = 7;
+  // What the read last reported of its progress, by stream ("" for the
+  // whole read), if it reports any.
+  repeated openetl.connector.v1.Progress progress = 8;
 }
 
 message CheckpointRef {

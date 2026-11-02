@@ -23,7 +23,11 @@ func Open(ctx context.Context, location string) (checkpoint.Store, error) {
 		if location == "" {
 			return nil, errors.New("openstore: no location")
 		}
-		return checkpoint.NewFSStore(location)
+		s, err := checkpoint.NewFSStore(location)
+		if err != nil {
+			return nil, err
+		}
+		return instrument(s, "file"), nil
 	}
 	u, err := url.Parse(location)
 	if err != nil {
@@ -55,7 +59,7 @@ func Open(ctx context.Context, location string) (checkpoint.Store, error) {
 	if p := objectstore.Prefix(u); p != "" {
 		s = prefixed{s: s, prefix: p}
 	}
-	return s, nil
+	return instrument(s, u.Scheme), nil
 }
 
 type prefixed struct {

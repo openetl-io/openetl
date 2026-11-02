@@ -10,6 +10,7 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
@@ -103,8 +104,11 @@ type Sync struct {
 	// When its latest epoch was committed; unset if none was, or the
 	// control plane no longer keeps it.
 	LastCommitTime *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=last_commit_time,json=lastCommitTime,proto3" json:"last_commit_time,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// How far behind its source the read was at its latest commit, for
+	// sources that report it (CDC, Kafka, Kinesis).
+	Progress      []*ReadProgress `protobuf:"bytes,11,rep,name=progress,proto3" json:"progress,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Sync) Reset() {
@@ -207,6 +211,113 @@ func (x *Sync) GetLastCommitTime() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Sync) GetProgress() []*ReadProgress {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
+// ReadProgress is what a source reported of how far behind it a read is.
+// Unset fields are unknown.
+type ReadProgress struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Empty: the whole read, such as a replication slot's.
+	Stream string `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
+	// What the source holds that the read hasn't acknowledged.
+	LagBytes   *uint64 `protobuf:"varint,2,opt,name=lag_bytes,json=lagBytes,proto3,oneof" json:"lag_bytes,omitempty"`
+	LagRecords *uint64 `protobuf:"varint,3,opt,name=lag_records,json=lagRecords,proto3,oneof" json:"lag_records,omitempty"`
+	// How far behind in time; zero once the read has caught up.
+	Lag *durationpb.Duration `protobuf:"bytes,4,opt,name=lag,proto3" json:"lag,omitempty"`
+	// How much more the source can take, or how long it waits, before it
+	// discards what the read hasn't acknowledged.
+	RetentionLeftBytes *uint64              `protobuf:"varint,5,opt,name=retention_left_bytes,json=retentionLeftBytes,proto3,oneof" json:"retention_left_bytes,omitempty"`
+	RetentionLeft      *durationpb.Duration `protobuf:"bytes,6,opt,name=retention_left,json=retentionLeft,proto3" json:"retention_left,omitempty"`
+	// When the checkpoint that carried it was recorded.
+	Time          *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=time,proto3" json:"time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadProgress) Reset() {
+	*x = ReadProgress{}
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadProgress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadProgress) ProtoMessage() {}
+
+func (x *ReadProgress) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadProgress.ProtoReflect.Descriptor instead.
+func (*ReadProgress) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ReadProgress) GetStream() string {
+	if x != nil {
+		return x.Stream
+	}
+	return ""
+}
+
+func (x *ReadProgress) GetLagBytes() uint64 {
+	if x != nil && x.LagBytes != nil {
+		return *x.LagBytes
+	}
+	return 0
+}
+
+func (x *ReadProgress) GetLagRecords() uint64 {
+	if x != nil && x.LagRecords != nil {
+		return *x.LagRecords
+	}
+	return 0
+}
+
+func (x *ReadProgress) GetLag() *durationpb.Duration {
+	if x != nil {
+		return x.Lag
+	}
+	return nil
+}
+
+func (x *ReadProgress) GetRetentionLeftBytes() uint64 {
+	if x != nil && x.RetentionLeftBytes != nil {
+		return *x.RetentionLeftBytes
+	}
+	return 0
+}
+
+func (x *ReadProgress) GetRetentionLeft() *durationpb.Duration {
+	if x != nil {
+		return x.RetentionLeft
+	}
+	return nil
+}
+
+func (x *ReadProgress) GetTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Time
+	}
+	return nil
+}
+
 type SyncStream struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -222,7 +333,7 @@ type SyncStream struct {
 
 func (x *SyncStream) Reset() {
 	*x = SyncStream{}
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[1]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -234,7 +345,7 @@ func (x *SyncStream) String() string {
 func (*SyncStream) ProtoMessage() {}
 
 func (x *SyncStream) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[1]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -247,7 +358,7 @@ func (x *SyncStream) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncStream.ProtoReflect.Descriptor instead.
 func (*SyncStream) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{1}
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SyncStream) GetName() string {
@@ -290,7 +401,7 @@ type ListSyncsRequest struct {
 
 func (x *ListSyncsRequest) Reset() {
 	*x = ListSyncsRequest{}
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[2]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -302,7 +413,7 @@ func (x *ListSyncsRequest) String() string {
 func (*ListSyncsRequest) ProtoMessage() {}
 
 func (x *ListSyncsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[2]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -315,7 +426,7 @@ func (x *ListSyncsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSyncsRequest.ProtoReflect.Descriptor instead.
 func (*ListSyncsRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{2}
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ListSyncsRequest) GetParent() string {
@@ -349,7 +460,7 @@ type ListSyncsResponse struct {
 
 func (x *ListSyncsResponse) Reset() {
 	*x = ListSyncsResponse{}
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[3]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -361,7 +472,7 @@ func (x *ListSyncsResponse) String() string {
 func (*ListSyncsResponse) ProtoMessage() {}
 
 func (x *ListSyncsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[3]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -374,7 +485,7 @@ func (x *ListSyncsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSyncsResponse.ProtoReflect.Descriptor instead.
 func (*ListSyncsResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{3}
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListSyncsResponse) GetSyncs() []*Sync {
@@ -400,7 +511,7 @@ type GetSyncRequest struct {
 
 func (x *GetSyncRequest) Reset() {
 	*x = GetSyncRequest{}
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[4]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -412,7 +523,7 @@ func (x *GetSyncRequest) String() string {
 func (*GetSyncRequest) ProtoMessage() {}
 
 func (x *GetSyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[4]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -425,7 +536,7 @@ func (x *GetSyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSyncRequest.ProtoReflect.Descriptor instead.
 func (*GetSyncRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{4}
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GetSyncRequest) GetName() string {
@@ -444,7 +555,7 @@ type GetSyncResponse struct {
 
 func (x *GetSyncResponse) Reset() {
 	*x = GetSyncResponse{}
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[5]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -456,7 +567,7 @@ func (x *GetSyncResponse) String() string {
 func (*GetSyncResponse) ProtoMessage() {}
 
 func (x *GetSyncResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[5]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -469,7 +580,7 @@ func (x *GetSyncResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSyncResponse.ProtoReflect.Descriptor instead.
 func (*GetSyncResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{5}
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GetSyncResponse) GetSync() *Sync {
@@ -490,7 +601,7 @@ type ReadSyncLogRequest struct {
 
 func (x *ReadSyncLogRequest) Reset() {
 	*x = ReadSyncLogRequest{}
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[6]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -502,7 +613,7 @@ func (x *ReadSyncLogRequest) String() string {
 func (*ReadSyncLogRequest) ProtoMessage() {}
 
 func (x *ReadSyncLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[6]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -515,7 +626,7 @@ func (x *ReadSyncLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadSyncLogRequest.ProtoReflect.Descriptor instead.
 func (*ReadSyncLogRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{6}
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ReadSyncLogRequest) GetName() string {
@@ -544,7 +655,7 @@ type ReadSyncLogResponse struct {
 
 func (x *ReadSyncLogResponse) Reset() {
 	*x = ReadSyncLogResponse{}
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[7]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -556,7 +667,7 @@ func (x *ReadSyncLogResponse) String() string {
 func (*ReadSyncLogResponse) ProtoMessage() {}
 
 func (x *ReadSyncLogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[7]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -569,7 +680,7 @@ func (x *ReadSyncLogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadSyncLogResponse.ProtoReflect.Descriptor instead.
 func (*ReadSyncLogResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{7}
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ReadSyncLogResponse) GetEntries() []*LogEntry {
@@ -607,7 +718,7 @@ type LogEntry struct {
 
 func (x *LogEntry) Reset() {
 	*x = LogEntry{}
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[8]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -619,7 +730,7 @@ func (x *LogEntry) String() string {
 func (*LogEntry) ProtoMessage() {}
 
 func (x *LogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_sync_proto_msgTypes[8]
+	mi := &file_openetl_api_v1_sync_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -632,7 +743,7 @@ func (x *LogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
 func (*LogEntry) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{8}
+	return file_openetl_api_v1_sync_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *LogEntry) GetTime() *timestamppb.Timestamp {
@@ -681,7 +792,7 @@ var File_openetl_api_v1_sync_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\n" +
-	"\x19openetl/api/v1/sync.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa8\x03\n" +
+	"\x19openetl/api/v1/sync.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe2\x03\n" +
 	"\x04Sync\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12/\n" +
@@ -697,7 +808,21 @@ const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"continuous\x18\t \x01(\bR\n" +
 	"continuous\x12D\n" +
 	"\x10last_commit_time\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\x0elastCommitTime\"\x86\x01\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\x0elastCommitTime\x128\n" +
+	"\bprogress\x18\v \x03(\v2\x1c.openetl.api.v1.ReadProgressR\bprogress\"\xfb\x02\n" +
+	"\fReadProgress\x12\x16\n" +
+	"\x06stream\x18\x01 \x01(\tR\x06stream\x12 \n" +
+	"\tlag_bytes\x18\x02 \x01(\x04H\x00R\blagBytes\x88\x01\x01\x12$\n" +
+	"\vlag_records\x18\x03 \x01(\x04H\x01R\n" +
+	"lagRecords\x88\x01\x01\x12+\n" +
+	"\x03lag\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x03lag\x125\n" +
+	"\x14retention_left_bytes\x18\x05 \x01(\x04H\x02R\x12retentionLeftBytes\x88\x01\x01\x12@\n" +
+	"\x0eretention_left\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\rretentionLeft\x12.\n" +
+	"\x04time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x04timeB\f\n" +
+	"\n" +
+	"_lag_bytesB\x0e\n" +
+	"\f_lag_recordsB\x17\n" +
+	"\x15_retention_left_bytes\"\x86\x01\n" +
 	"\n" +
 	"SyncStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
@@ -754,43 +879,49 @@ func file_openetl_api_v1_sync_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_api_v1_sync_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_openetl_api_v1_sync_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_openetl_api_v1_sync_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_openetl_api_v1_sync_proto_goTypes = []any{
 	(SyncState)(0),                // 0: openetl.api.v1.SyncState
 	(*Sync)(nil),                  // 1: openetl.api.v1.Sync
-	(*SyncStream)(nil),            // 2: openetl.api.v1.SyncStream
-	(*ListSyncsRequest)(nil),      // 3: openetl.api.v1.ListSyncsRequest
-	(*ListSyncsResponse)(nil),     // 4: openetl.api.v1.ListSyncsResponse
-	(*GetSyncRequest)(nil),        // 5: openetl.api.v1.GetSyncRequest
-	(*GetSyncResponse)(nil),       // 6: openetl.api.v1.GetSyncResponse
-	(*ReadSyncLogRequest)(nil),    // 7: openetl.api.v1.ReadSyncLogRequest
-	(*ReadSyncLogResponse)(nil),   // 8: openetl.api.v1.ReadSyncLogResponse
-	(*LogEntry)(nil),              // 9: openetl.api.v1.LogEntry
-	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 11: google.protobuf.Struct
+	(*ReadProgress)(nil),          // 2: openetl.api.v1.ReadProgress
+	(*SyncStream)(nil),            // 3: openetl.api.v1.SyncStream
+	(*ListSyncsRequest)(nil),      // 4: openetl.api.v1.ListSyncsRequest
+	(*ListSyncsResponse)(nil),     // 5: openetl.api.v1.ListSyncsResponse
+	(*GetSyncRequest)(nil),        // 6: openetl.api.v1.GetSyncRequest
+	(*GetSyncResponse)(nil),       // 7: openetl.api.v1.GetSyncResponse
+	(*ReadSyncLogRequest)(nil),    // 8: openetl.api.v1.ReadSyncLogRequest
+	(*ReadSyncLogResponse)(nil),   // 9: openetl.api.v1.ReadSyncLogResponse
+	(*LogEntry)(nil),              // 10: openetl.api.v1.LogEntry
+	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),   // 12: google.protobuf.Duration
+	(*structpb.Struct)(nil),       // 13: google.protobuf.Struct
 }
 var file_openetl_api_v1_sync_proto_depIdxs = []int32{
 	0,  // 0: openetl.api.v1.Sync.state:type_name -> openetl.api.v1.SyncState
-	10, // 1: openetl.api.v1.Sync.start_time:type_name -> google.protobuf.Timestamp
-	10, // 2: openetl.api.v1.Sync.end_time:type_name -> google.protobuf.Timestamp
-	2,  // 3: openetl.api.v1.Sync.streams:type_name -> openetl.api.v1.SyncStream
-	10, // 4: openetl.api.v1.Sync.last_commit_time:type_name -> google.protobuf.Timestamp
-	1,  // 5: openetl.api.v1.ListSyncsResponse.syncs:type_name -> openetl.api.v1.Sync
-	1,  // 6: openetl.api.v1.GetSyncResponse.sync:type_name -> openetl.api.v1.Sync
-	9,  // 7: openetl.api.v1.ReadSyncLogResponse.entries:type_name -> openetl.api.v1.LogEntry
-	10, // 8: openetl.api.v1.LogEntry.time:type_name -> google.protobuf.Timestamp
-	11, // 9: openetl.api.v1.LogEntry.attrs:type_name -> google.protobuf.Struct
-	3,  // 10: openetl.api.v1.SyncService.ListSyncs:input_type -> openetl.api.v1.ListSyncsRequest
-	5,  // 11: openetl.api.v1.SyncService.GetSync:input_type -> openetl.api.v1.GetSyncRequest
-	7,  // 12: openetl.api.v1.SyncService.ReadSyncLog:input_type -> openetl.api.v1.ReadSyncLogRequest
-	4,  // 13: openetl.api.v1.SyncService.ListSyncs:output_type -> openetl.api.v1.ListSyncsResponse
-	6,  // 14: openetl.api.v1.SyncService.GetSync:output_type -> openetl.api.v1.GetSyncResponse
-	8,  // 15: openetl.api.v1.SyncService.ReadSyncLog:output_type -> openetl.api.v1.ReadSyncLogResponse
-	13, // [13:16] is the sub-list for method output_type
-	10, // [10:13] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	11, // 1: openetl.api.v1.Sync.start_time:type_name -> google.protobuf.Timestamp
+	11, // 2: openetl.api.v1.Sync.end_time:type_name -> google.protobuf.Timestamp
+	3,  // 3: openetl.api.v1.Sync.streams:type_name -> openetl.api.v1.SyncStream
+	11, // 4: openetl.api.v1.Sync.last_commit_time:type_name -> google.protobuf.Timestamp
+	2,  // 5: openetl.api.v1.Sync.progress:type_name -> openetl.api.v1.ReadProgress
+	12, // 6: openetl.api.v1.ReadProgress.lag:type_name -> google.protobuf.Duration
+	12, // 7: openetl.api.v1.ReadProgress.retention_left:type_name -> google.protobuf.Duration
+	11, // 8: openetl.api.v1.ReadProgress.time:type_name -> google.protobuf.Timestamp
+	1,  // 9: openetl.api.v1.ListSyncsResponse.syncs:type_name -> openetl.api.v1.Sync
+	1,  // 10: openetl.api.v1.GetSyncResponse.sync:type_name -> openetl.api.v1.Sync
+	10, // 11: openetl.api.v1.ReadSyncLogResponse.entries:type_name -> openetl.api.v1.LogEntry
+	11, // 12: openetl.api.v1.LogEntry.time:type_name -> google.protobuf.Timestamp
+	13, // 13: openetl.api.v1.LogEntry.attrs:type_name -> google.protobuf.Struct
+	4,  // 14: openetl.api.v1.SyncService.ListSyncs:input_type -> openetl.api.v1.ListSyncsRequest
+	6,  // 15: openetl.api.v1.SyncService.GetSync:input_type -> openetl.api.v1.GetSyncRequest
+	8,  // 16: openetl.api.v1.SyncService.ReadSyncLog:input_type -> openetl.api.v1.ReadSyncLogRequest
+	5,  // 17: openetl.api.v1.SyncService.ListSyncs:output_type -> openetl.api.v1.ListSyncsResponse
+	7,  // 18: openetl.api.v1.SyncService.GetSync:output_type -> openetl.api.v1.GetSyncResponse
+	9,  // 19: openetl.api.v1.SyncService.ReadSyncLog:output_type -> openetl.api.v1.ReadSyncLogResponse
+	17, // [17:20] is the sub-list for method output_type
+	14, // [14:17] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_sync_proto_init() }
@@ -798,13 +929,14 @@ func file_openetl_api_v1_sync_proto_init() {
 	if File_openetl_api_v1_sync_proto != nil {
 		return
 	}
+	file_openetl_api_v1_sync_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_sync_proto_rawDesc), len(file_openetl_api_v1_sync_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

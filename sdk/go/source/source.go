@@ -5,6 +5,7 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 
@@ -123,6 +124,32 @@ type Emitter interface {
 type Forwarder interface {
 	Emitter
 	Forward(stream string, batch arrowipc.Encoded) error
+}
+
+// Progress says how far a read is behind its source, and how much longer
+// the source keeps what the read hasn't acknowledged. Nil fields are
+// unknown.
+type Progress struct {
+	// Empty: the whole read, such as a replication slot's.
+	Stream string
+	// What the source holds that the read hasn't acknowledged: a
+	// replication slot's bytes, a Kafka consumer group's offsets.
+	LagBytes, LagRecords *uint64
+	// How far behind in time: the age of the change being read. Zero once
+	// the read has caught up.
+	Lag *time.Duration
+	// How much more the source can take, or how long it waits, before it
+	// discards what the read hasn't acknowledged.
+	RetentionLeftBytes *uint64
+	RetentionLeft      *time.Duration
+}
+
+// A Progresser is an Emitter that also takes a read's progress, for
+// metrics. Report it every few seconds at most; the platform keeps the
+// latest per stream.
+type Progresser interface {
+	Emitter
+	Progress(Progress) error
 }
 
 // Reader reads records. Read returns when every stream is complete, when ctx

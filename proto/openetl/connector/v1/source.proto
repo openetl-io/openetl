@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package openetl.connector.v1;
 
+import "google/protobuf/duration.proto";
+
 option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
 
 // SourceService is served by source connectors. The platform commits only at
@@ -91,6 +93,7 @@ message ReadResponse {
     RecordBatch batch = 1;
     ResumePoint resume_point = 2;
     StreamComplete complete = 3;
+    Progress progress = 4;
   }
 }
 
@@ -134,6 +137,25 @@ message StreamComplete {
   // Where the stream's next sync starts. Unset: from the beginning, as a
   // full refresh does.
   optional bytes next = 2;
+}
+
+// Progress says how far a read is behind its source, and how much longer the
+// source keeps what the read hasn't acknowledged, for metrics. Send it every
+// few seconds at most. Unset fields are unknown.
+message Progress {
+  // Empty: the whole read, such as a replication slot's.
+  string stream = 1;
+  // What the source holds that the read hasn't acknowledged: a replication
+  // slot's bytes, a Kafka consumer group's offsets.
+  optional uint64 lag_bytes = 2;
+  optional uint64 lag_records = 3;
+  // How far behind in time: the age of the change being read, or Kinesis's
+  // MillisBehindLatest. Zero once the read has caught up.
+  google.protobuf.Duration lag = 4;
+  // How much more the source can take, or how long it waits, before it
+  // discards what the read hasn't acknowledged.
+  optional uint64 retention_left_bytes = 5;
+  google.protobuf.Duration retention_left = 6;
 }
 
 message CommittedRequest {

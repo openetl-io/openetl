@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -31,6 +32,25 @@ type mirroredStream struct {
 	Forced          bool   `json:"forced"`
 	Complete        bool   `json:"complete"`
 	SchemaDigest    string `json:"schema_digest"`
+}
+
+// mirroredProgress is a read's progress as checkpoint_mirror.progress keeps
+// it.
+type mirroredProgress struct {
+	Stream             string  `json:"stream"`
+	LagBytes           *uint64 `json:"lag_bytes,omitempty"`
+	LagRecords         *uint64 `json:"lag_records,omitempty"`
+	LagMs              *int64  `json:"lag_ms,omitempty"`
+	RetentionLeftBytes *uint64 `json:"retention_left_bytes,omitempty"`
+	RetentionLeftMs    *int64  `json:"retention_left_ms,omitempty"`
+}
+
+func millis(d *durationpb.Duration) *int64 {
+	if d == nil {
+		return nil
+	}
+	ms := d.AsDuration().Milliseconds()
+	return &ms
 }
 
 // ReportCheckpoint adds a committed checkpoint to the pipeline's mirror,
@@ -66,8 +86,21 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err != nil {
 		return nil, err
 	}
+	var progress []byte
+	if len(m.GetProgress()) > 0 {
+		ps := make([]mirroredProgress, len(m.GetProgress()))
+		for i, p := range m.GetProgress() {
+			ps[i] = mirroredProgress{
+				Stream: p.GetStream(), LagBytes: p.LagBytes, LagRecords: p.LagRecords, LagMs: millis(p.GetLag()),
+				RetentionLeftBytes: p.RetentionLeftBytes, RetentionLeftMs: millis(p.GetRetentionLeft()),
+			}
+		}
+		if progress, err = json.Marshal(ps); err != nil {
+			return nil, err
+		}
+	}
 	arg := db.InsertMirroredCheckpointParams{
-		OrgID: s.Tenant.Org, PipelineID: id, RunID: m.GetRunId(), CommitTime: created, Streams: raw,
+		OrgID: s.Tenant.Org, PipelineID: id, RunID: m.GetRunId(), CommitTime: created, Streams: raw, Progress: progress,
 		Epoch: int64(m.GetEpoch()), Generation: int64(m.GetGeneration()), //nolint:gosec // generations and epochs are small
 	}
 	if p := m.GetPrevious(); p != nil {

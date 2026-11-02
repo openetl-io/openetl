@@ -1,6 +1,6 @@
 -- name: InsertMirroredCheckpoint :execrows
-INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams)
-VALUES (@org_id, @pipeline_id, @epoch, @generation, @previous_epoch, @previous_generation, @run_id, @commit_time, @streams)
+INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress)
+VALUES (@org_id, @pipeline_id, @epoch, @generation, @previous_epoch, @previous_generation, @run_id, @commit_time, @streams, @progress)
 ON CONFLICT DO NOTHING;
 
 -- name: ListCheckpoints :many
@@ -30,3 +30,25 @@ WHERE c.org_id = @org_id AND c.pipeline_id = @pipeline_id AND c.run_id = ANY(@ru
   AND c.commit_time >= @since
 GROUP BY c.run_id, st ->> 'name'
 ORDER BY c.run_id, st ->> 'name';
+
+-- name: SyncProgress :many
+-- Each sync's latest checkpoint that carried the read's progress, committed
+-- after since.
+SELECT DISTINCT ON (c.run_id) c.run_id, c.commit_time, c.progress
+FROM checkpoint_mirror c
+WHERE c.org_id = @org_id AND c.pipeline_id = @pipeline_id AND c.run_id = ANY(@run_ids::text[])
+  AND c.commit_time >= @since AND c.progress IS NOT NULL
+ORDER BY c.run_id, c.commit_time DESC;
+
+-- name: LastCommits :many
+-- Each pipeline's latest mirrored checkpoint, for freshness; pipelines the
+-- mirror has none of are left out.
+SELECT p.workspace_id, p.id AS pipeline_id, c.commit_time
+FROM pipelines p
+CROSS JOIN LATERAL (
+    SELECT m.commit_time FROM checkpoint_mirror m
+    WHERE m.org_id = p.org_id AND m.pipeline_id = p.id
+    ORDER BY m.epoch DESC, m.generation DESC
+    LIMIT 1
+) c
+WHERE p.org_id = @org_id;

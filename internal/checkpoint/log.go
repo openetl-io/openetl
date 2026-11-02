@@ -136,7 +136,8 @@ func (l *Log) Record(ctx context.Context, ref RecordRef) (*Record, error) {
 
 // Claim takes the pipeline for owner under HEAD's generation plus one. owner
 // must be unique per attempt.
-func (l *Log) Claim(ctx context.Context, owner string) (*Session, error) {
+func (l *Log) Claim(ctx context.Context, owner string) (sess *Session, err error) {
+	defer func(start time.Time) { recordWrite(ctx, "claim", start, err) }(time.Now())
 	for range claimAttempts {
 		cur, v, err := l.readHead(ctx)
 		var (
@@ -166,6 +167,7 @@ func (l *Log) Claim(ctx context.Context, owner string) (*Session, error) {
 			return &Session{log: l, owner: owner, head: next, version: nv}, nil
 		}
 		if errors.Is(werr, ErrPrecondition) {
+			recordConflict(ctx, "claim")
 			continue // lost a race; claim on top of the winner
 		}
 		// Unknown outcome. Only our write carries our owner.
@@ -208,7 +210,8 @@ func (s *Session) Load(ctx context.Context) (*Record, error) {
 // Commit writes rec, setting its Generation and Previous, and moves HEAD to
 // it. On an error other than ErrFenced the outcome is unknown, and calling
 // Commit again with the same rec is safe.
-func (s *Session) Commit(ctx context.Context, rec *Record) error {
+func (s *Session) Commit(ctx context.Context, rec *Record) (err error) {
+	defer func(start time.Time) { recordWrite(ctx, "commit", start, err) }(time.Now())
 	rec.Generation = s.head.Generation
 	rec.Previous = s.head.Record
 	data, err := json.Marshal(rec)
@@ -231,7 +234,8 @@ func (s *Session) Commit(ctx context.Context, rec *Record) error {
 }
 
 // Rewind moves HEAD back to an earlier record, or to none.
-func (s *Session) Rewind(ctx context.Context, to *RecordRef) error {
+func (s *Session) Rewind(ctx context.Context, to *RecordRef) (err error) {
+	defer func(start time.Time) { recordWrite(ctx, "rewind", start, err) }(time.Now())
 	return s.swapHead(ctx, Head{Generation: s.head.Generation, Owner: s.owner, Record: to})
 }
 
@@ -244,6 +248,9 @@ func (s *Session) swapHead(ctx context.Context, next Head) error {
 	if werr == nil {
 		s.head, s.version = next, v
 		return nil
+	}
+	if errors.Is(werr, ErrPrecondition) {
+		recordConflict(ctx, "swap")
 	}
 	// Rejected or unknown: HEAD says which.
 	cur, cv, err := s.log.readHead(ctx)

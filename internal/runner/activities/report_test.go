@@ -14,6 +14,7 @@ import (
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/streamschema"
+	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
 func TestMirroredCheckpoint(t *testing.T) {
@@ -39,7 +40,7 @@ func TestMirroredCheckpoint(t *testing.T) {
 		},
 		Quarantine: []checkpoint.QuarantineFile{{Stream: "users", Rows: 2}, {Stream: "users", Rows: 1}},
 		Forced:     []string{"orders"},
-	}, map[string]uint64{"users": 5})
+	}, map[string]uint64{"users": 5}, []source.Progress{{LagBytes: new(uint64(4096)), Lag: new(1500 * time.Millisecond)}})
 	if req.GetPipelineId() != "p" || req.GetRunId() != "run" || req.GetEpoch() != 7 || req.GetGeneration() != 3 ||
 		req.GetPrevious().GetEpoch() != 6 || req.GetPrevious().GetGeneration() != 2 || !req.GetCreateTime().AsTime().Equal(created) {
 		t.Errorf("request %v", req)
@@ -54,5 +55,9 @@ func TestMirroredCheckpoint(t *testing.T) {
 	}
 	if u := streams[1]; u.GetName() != "users" || u.GetRows() != 10 || u.GetForced() || !u.GetComplete() || u.GetQuarantinedRows() != 3 || u.GetSchemaDigest() != want.Digest || u.GetCollapsedRows() != 5 {
 		t.Errorf("users: %v, want digest %s", u, want.Digest)
+	}
+	if p := req.GetProgress(); len(p) != 1 || p[0].GetStream() != "" || p[0].GetLagBytes() != 4096 || p[0].LagRecords != nil ||
+		p[0].GetLag().AsDuration() != 1500*time.Millisecond || p[0].RetentionLeft != nil {
+		t.Errorf("progress %v", p)
 	}
 }

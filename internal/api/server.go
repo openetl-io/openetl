@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"connectrpc.com/vanguard"
 	"github.com/jackc/pgx/v5"
 
@@ -88,7 +89,11 @@ var openAPI []byte
 // google.api.http rules, transcoded by Vanguard), and DataPlaneService over
 // the first three.
 func (s *Server) Handler() (http.Handler, error) {
-	opts := connect.WithHandlerOptions(connect.WithInterceptors(s.errorInterceptor(), authInterceptor{s}), connect.WithReadMaxBytes(maxRequestBytes))
+	otel, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return nil, err
+	}
+	opts := connect.WithHandlerOptions(connect.WithInterceptors(otel, s.errorInterceptor(), authInterceptor{s}), connect.WithReadMaxBytes(maxRequestBytes))
 	services := []*vanguard.Service{
 		vanguard.NewService(apiv1connect.NewApplyServiceHandler(s, opts, connect.WithReadMaxBytes(maxApplyBytes))),
 		vanguard.NewService(apiv1connect.NewPipelineServiceHandler(s, opts)),

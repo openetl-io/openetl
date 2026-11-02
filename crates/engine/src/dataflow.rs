@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinSet;
 use tonic::Status;
+use tracing::{Instrument as _, Span, debug_span, info_span};
 
 use crate::error::JobError;
 use crate::frame;
@@ -88,9 +89,10 @@ where
         (Sink::Parquet { url }, None) => {
             let (plan, url, events, counters) =
                 (plan.clone(), url.clone(), events.clone(), counters.clone());
+            let span = Span::current();
             Box::pin(async move {
                 tokio::task::spawn_blocking(move || {
-                    write_parquet(&plan, &url, rx, &events, &counters)
+                    span.in_scope(|| write_parquet(&plan, &url, rx, &events, &counters))
                 })
                 .await
                 .map_err(|e| JobError::internal(format!("the Parquet sink failed: {e}")))?
@@ -110,13 +112,9 @@ where
     };
     let mut readers = JoinSet::new();
     for (edge, r) in inbound.into_iter().enumerate() {
-        readers.spawn(read_edge(
-            plan.clone(),
-            edge,
-            r,
-            tx.clone(),
-            counters.clone(),
-        ));
+        readers.spawn(
+            read_edge(plan.clone(), edge, r, tx.clone(), counters.clone()).in_current_span(),
+        );
     }
     drop(tx);
 
@@ -216,8 +214,8 @@ where
                     Rows::decode(f.payload.as_slice()).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
                     .fetch_add(rows.rows.len() as u64, Ordering::Relaxed);
-                let n = shape[local]
-                    .rows(rows.rows.iter().map(Vec::as_slice))
+                let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = rows.rows.len())
+                    .in_scope(|| shape[local].rows(rows.rows.iter().map(Vec::as_slice)))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| String::from_utf8_lossy(&rows.rows[row]).into_owned();
                 hold(&plan, stream, &n.rejected, record, &mut held[local], c)?;
@@ -240,8 +238,8 @@ where
                     send(&tx, Out::Batch(stream, batch)).await?;
                     continue;
                 }
-                let n = shape[local]
-                    .batch(&batch)
+                let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = batch.num_rows())
+                    .in_scope(|| shape[local].batch(&batch))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| openetl_normalize::render_row(&batch, row);
                 hold(&plan, stream, &n.rejected, record, &mut held[local], c)?;
@@ -377,11 +375,18 @@ struct Alignment {
     at_barrier: Vec<VecDeque<(u64, Option<SchemaRef>)>>,
     at_end: Vec<Option<SchemaRef>>,
     quarantined: BTreeMap<u64, Vec<QuarantineFile>>,
+    /// The job's span, and the span of the next epoch to become ready,
+    /// which opened when the one before it was ready.
+    job: Span,
+    epoch: Span,
 }
 
 impl Alignment {
     fn new(streams: usize, first_epoch: u64) -> Self {
+        let job = Span::current();
         Self {
+            epoch: info_span!(parent: &job, "epoch", openetl.epoch = first_epoch),
+            job,
             crossed: vec![first_epoch - 1; streams],
             ended: vec![false; streams],
             ready: first_epoch - 1,
@@ -452,6 +457,11 @@ fn epoch_ready(
     n: u64,
     staged: Vec<u8>,
 ) -> Result<EventsResponse, JobError> {
+    align.epoch = if align.done() && n >= align.highest {
+        Span::none()
+    } else {
+        info_span!(parent: &align.job, "epoch", openetl.epoch = n + 1)
+    };
     let mut schemas = HashMap::new();
     for (s, schema) in align.schemas(n) {
         let encoded = ipc::encode_schema(&schema)

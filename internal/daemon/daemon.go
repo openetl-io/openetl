@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"go.temporal.io/sdk/activity"
@@ -149,6 +151,12 @@ func Run(ctx context.Context, o Options) error {
 			_ = ln.Close()
 			return err
 		}
+		reg, err := srv.RegisterMetrics()
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		defer func() { _ = reg.Unregister() }()
 		if cfg.Web != "" {
 			if h, err = webui.Handler(cfg.Web, h); err != nil {
 				_ = ln.Close()
@@ -291,7 +299,11 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	if !auth.IsRunnerToken(token) {
 		return errors.New("daemon: the runner's token isn't a runner token; openetl dataplane token create makes one")
 	}
-	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL, auth.WithBearer(token)) //nolint:forbidigo // the operator configures the API's address
+	otel, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return err
+	}
+	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL, auth.WithBearer(token), connect.WithInterceptors(otel)) //nolint:forbidigo // the operator configures the API's address
 	versions := &connectorhost.Fetcher{
 		Artifact: dpactivities.Artifacts(apiClient),
 		Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},

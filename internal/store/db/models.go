@@ -56,6 +56,7 @@ type CheckpointMirror struct {
 	CommitTime         time.Time
 	Streams            []byte
 	CreateTime         time.Time
+	Progress           []byte
 }
 
 type ConnectorOp struct {

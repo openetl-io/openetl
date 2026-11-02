@@ -2698,6 +2698,36 @@ components:
                     type: string
                     format: date-time
             description: A user or a service account, which calls the API with its keys.
+        ReadProgress:
+            type: object
+            properties:
+                stream:
+                    type: string
+                    description: 'Empty: the whole read, such as a replication slot''s.'
+                lagBytes:
+                    type: string
+                    description: What the source holds that the read hasn't acknowledged.
+                lagRecords:
+                    type: string
+                lag:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: How far behind in time; zero once the read has caught up.
+                retentionLeftBytes:
+                    type: string
+                    description: |-
+                        How much more the source can take, or how long it waits, before it
+                         discards what the read hasn't acknowledged.
+                retentionLeft:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                time:
+                    type: string
+                    description: When the checkpoint that carried it was recorded.
+                    format: date-time
+            description: |-
+                ReadProgress is what a source reported of how far behind it a read is.
+                 Unset fields are unknown.
         ReadSyncLogResponse:
             type: object
             properties:
@@ -2971,6 +3001,13 @@ components:
                         When its latest epoch was committed; unset if none was, or the
                          control plane no longer keeps it.
                     format: date-time
+                progress:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ReadProgress'
+                    description: |-
+                        How far behind its source the read was at its latest commit, for
+                         sources that report it (CDC, Kafka, Kinesis).
         SyncPipelineRequest:
             type: object
             properties:

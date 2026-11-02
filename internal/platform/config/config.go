@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -48,6 +49,10 @@ type Config struct {
 	RunnerToken string
 	LogLevel    string
 	LogFormat   string
+	// stderr, stdout, or a file rotated by size.
+	LogOutput   string
+	LogMaxSize  int
+	LogMaxFiles int
 }
 
 type option struct {
@@ -74,6 +79,19 @@ var options = []option{
 	{"token-file", "OPENETL_RUNNER_TOKEN_FILE", "", "a file holding the runner's token, which openetl dataplane token create makes (default: the OPENETL_RUNNER_TOKEN variable)", func(c *Config) *string { return &c.TokenFile }},
 	{"log-level", "OPENETL_LOG_LEVEL", "info", "debug, info, warn or error", func(c *Config) *string { return &c.LogLevel }},
 	{"log-format", "OPENETL_LOG_FORMAT", "json", "json or text", func(c *Config) *string { return &c.LogFormat }},
+	{"log-output", "OPENETL_LOG_OUTPUT", "stderr", "stderr, stdout, or a file, rotated by size", func(c *Config) *string { return &c.LogOutput }},
+}
+
+type intOption struct {
+	flag, env string
+	def       int
+	usage     string
+	dst       func(*Config) *int
+}
+
+var intOptions = []intOption{
+	{"log-max-size", "OPENETL_LOG_MAX_SIZE", 100, "megabytes a log file reaches before it's rotated", func(c *Config) *int { return &c.LogMaxSize }},
+	{"log-max-files", "OPENETL_LOG_MAX_FILES", 5, "rotated log files kept", func(c *Config) *int { return &c.LogMaxFiles }},
 }
 
 // Parse parses args. defaults override the built-in defaults, by flag name;
@@ -83,6 +101,17 @@ func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config,
 	for _, o := range options {
 		def := cmp.Or(os.Getenv(o.env), defaults[o.flag], o.def)
 		fs.StringVar(o.dst(&c), o.flag, def, fmt.Sprintf("%s (env %s)", o.usage, o.env))
+	}
+	for _, o := range intOptions {
+		def := o.def
+		if v := cmp.Or(os.Getenv(o.env), defaults[o.flag]); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return c, fmt.Errorf("config: %s: %q isn't a number", o.flag, v)
+			}
+			def = n
+		}
+		fs.IntVar(o.dst(&c), o.flag, def, fmt.Sprintf("%s (env %s)", o.usage, o.env))
 	}
 	if err := fs.Parse(args); err != nil {
 		return c, err

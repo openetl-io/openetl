@@ -33,6 +33,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	ggcr "github.com/google/go-containerregistry/pkg/registry"
+	"go.opentelemetry.io/otel/attribute"
 	"github.com/jackc/pgx/v5"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
@@ -51,6 +52,8 @@ import (
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
+	"github.com/unsuitable001/openetl/internal/platform/telemetry"
+	"github.com/unsuitable001/openetl/internal/platform/telemetry/telemetrytest"
 	"github.com/unsuitable001/openetl/internal/registry"
 	"github.com/unsuitable001/openetl/internal/store/storetest"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
@@ -80,6 +83,9 @@ var env struct {
 	runnerToken  string
 	// The owner key's file.
 	keyFile string
+	// Receives every process's traces and metrics: the server's, and each
+	// runner's through the OTEL_* variables they inherit.
+	collector *telemetrytest.Collector
 }
 
 // The in-process registry is on loopback.
@@ -122,6 +128,21 @@ func setup(m *testing.M) (int, error) {
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", env.openetld, "github.com/unsuitable001/openetl/cmd/openetld").CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("build openetld: %v\n%s", err, out)
 	}
+
+	if env.collector, err = telemetrytest.Start(); err != nil {
+		return 0, err
+	}
+	defer env.collector.Close()
+	for k, v := range env.collector.Env() {
+		if err := os.Setenv(k, v); err != nil {
+			return 0, err
+		}
+	}
+	stopTelemetry, err := telemetry.Start(ctx, telemetry.Options{Service: "openetld", Attributes: []attribute.KeyValue{attribute.String("openetl.role", "server")}})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = stopTelemetry(context.Background()) }()
 
 	env.temporal = cmp.Or(os.Getenv("OPENETL_TEST_TEMPORAL_ADDRESS"), "localhost:7233")
 	env.ns = "openetl-e2e-" + strings.ToLower(rand.Text())[:10]

@@ -4,7 +4,7 @@
 //! `serve` binds both sockets, then prints `ready` on stdout. It exits after
 //! Stop, when the runner closes an edge early, or, with `--watch-stdin`, when
 //! stdin closes. Logs are JSON lines on stderr; `OPENETL_ENGINE_LOG` filters
-//! them.
+//! them. Traces go out over OTLP as the OTEL_* variables say.
 
 mod dataflow;
 mod error;
@@ -13,6 +13,7 @@ mod ipc;
 mod plan;
 mod quarantine;
 mod service;
+mod telemetry;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -24,7 +25,9 @@ use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::{EnvFilter, Layer as _};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "usage: openetl-engine --version
@@ -79,7 +82,22 @@ fn usage() -> ExitCode {
 }
 
 fn serve(args: ServeArgs) -> ExitCode {
-    tracing_subscriber::fmt()
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build();
+    // The gRPC exporter needs the runtime.
+    let traces = match &rt {
+        Ok(rt) => {
+            let _enter = rt.enter();
+            telemetry::provider(VERSION)
+        }
+        Err(_) => Ok(None),
+    };
+    let (provider, traces_err) = match traces {
+        Ok(p) => (p, None),
+        Err(e) => (None, Some(e)),
+    };
+    let logs = tracing_subscriber::fmt::layer()
         .json()
         .flatten_event(true)
         .with_current_span(false)
@@ -87,15 +105,22 @@ fn serve(args: ServeArgs) -> ExitCode {
         .with_writer(std::io::stderr)
         // Reporting a failed write panics once the runner has stopped reading.
         .log_internal_errors(false)
-        .with_env_filter(
+        .with_filter(
             EnvFilter::try_from_env("OPENETL_ENGINE_LOG")
                 .unwrap_or_else(|_| EnvFilter::new("info")),
+        );
+    tracing_subscriber::registry()
+        .with(logs)
+        .with(
+            provider
+                .as_ref()
+                .map(|p| telemetry::layer(p).with_filter(EnvFilter::new(telemetry::FILTER))),
         )
         .init();
-    let rt = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    if let Some(e) = traces_err {
+        warn!(error = %e, "traces aren't exported");
+    }
+    let rt = match rt {
         Ok(rt) => rt,
         Err(e) => {
             error!(error = %e, "starting the runtime failed");
@@ -103,6 +128,11 @@ fn serve(args: ServeArgs) -> ExitCode {
         }
     };
     let res = rt.block_on(run(&args));
+    if let Some(p) = &provider
+        && let Err(e) = p.shutdown()
+    {
+        warn!(error = %e, "flushing traces failed");
+    }
     rt.shutdown_timeout(Duration::from_millis(100));
     for p in [&args.control, &args.data] {
         let _ = std::fs::remove_file(p);
