@@ -27,6 +27,10 @@ spec:
         timestamps: nanosecond
         columns:
           balance: { type: float64 }
+      - name: events
+        require: at_least_once
+        collapse: false
+      - name: logs
   destination:
     ref: warehouse
     namespace: raw_faker
@@ -63,6 +67,12 @@ func TestParsePipeline(t *testing.T) {
 		t.Error("timestamps")
 	case p.GetSource().GetStreams()[0].GetColumns()["balance"].GetType() != apiv1.ColumnType_COLUMN_TYPE_FLOAT64:
 		t.Errorf("columns = %v", p.GetSource().GetStreams()[0].GetColumns())
+	case p.GetSource().GetStreams()[1].GetRequire() != apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE:
+		t.Error("a stream's require")
+	case p.GetSource().GetStreams()[1].Collapse == nil || p.GetSource().GetStreams()[1].GetCollapse():
+		t.Error("collapse: false should be an explicit false")
+	case p.GetSource().GetStreams()[2].Collapse != nil || p.GetSource().GetStreams()[2].GetRequire() != apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED:
+		t.Error("an unset require or collapse should stay unset")
 	case p.GetDestination().GetWrite() != apiv1.WriteMode_WRITE_MODE_APPEND:
 		t.Error("write doesn't default to append")
 	case p.GetDestination().GetNaming() != apiv1.Naming_NAMING_SOURCE:
@@ -150,6 +160,8 @@ func TestParseErrors(t *testing.T) {
 		"zero interval":  header + base + "  delivery: {commit: {interval: 0s}}\n",
 		"infinity":       header + base + "  types: {infinity: drop}\n",
 		"timestamps":     header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, timestamps: millisecond}]}", 1),
+		"stream require": header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, require: once}]}", 1),
+		"collapse":       header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, collapse: yes please}]}", 1),
 		"two documents":  header + base + "---\n" + header + base,
 		"missing source": header + "spec:\n  schedule: {every: 1m}\n  destination: {ref: d}\n",
 		"empty step":     header + base + "  postSync: [{}]\n",

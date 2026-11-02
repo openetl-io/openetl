@@ -74,7 +74,9 @@ func (w *writer) PreCommit(context.Context, destination.Epoch) (destination.Stag
 	return nil, w.d.w.Flush()
 }
 
-func (w *writer) Commit(context.Context, destination.Epoch, destination.Staged) error { return nil }
+func (w *writer) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+	return destination.Committed{}, nil
+}
 
 func (w *writer) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil

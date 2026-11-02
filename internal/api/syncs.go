@@ -94,7 +94,7 @@ func (s *Server) syncsOut(ctx context.Context, pipeline string, rows []db.GetSyn
 	byRun := map[string][]*apiv1.SyncStream{}
 	for _, st := range streams {
 		byRun[st.RunID] = append(byRun[st.RunID], &apiv1.SyncStream{
-			Name: st.Name, Rows: uint64(st.Rows), QuarantinedRows: uint64(st.QuarantinedRows), //nolint:gosec // sums of counts
+			Name: st.Name, Rows: uint64(st.Rows), QuarantinedRows: uint64(st.QuarantinedRows), CollapsedRows: uint64(st.CollapsedRows), //nolint:gosec // sums of counts
 		})
 	}
 	out := make([]*apiv1.Sync, len(rows))

@@ -337,7 +337,7 @@ func TestDestinationCommitProtocol(t *testing.T) {
 	e2 := destination.Epoch{Generation: 1, N: 2}
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		if err := w.Commit(ctx, e1, st1); err != nil {
+		if _, err := w.Commit(ctx, e1, st1); err != nil {
 			t.Error(err)
 		}
 	})
@@ -364,7 +364,7 @@ func TestDestinationCommitProtocol(t *testing.T) {
 	if got := rows(t, dir); got != 20 {
 		t.Fatalf("rows after redoing epoch 2 = %d", got)
 	}
-	err = w.Commit(ctx, e2, st2)
+	_, err = w.Commit(ctx, e2, st2)
 	if !errors.Is(err, destination.ErrFenced) || errs.CodeOf(err) != errs.Fenced {
 		t.Fatalf("the fenced writer's commit = %v", err)
 	}
@@ -384,7 +384,7 @@ func TestDestinationStreamFailure(t *testing.T) {
 	}
 	// Staged for an epoch nobody pre-committed: the commit fails and the
 	// stream stays open.
-	if err := w.Commit(t.Context(), destination.Epoch{Generation: 3, N: 9}, destination.Staged("3-9")); err == nil {
+	if _, err := w.Commit(t.Context(), destination.Epoch{Generation: 3, N: 9}, destination.Staged("3-9")); err == nil {
 		t.Fatal("committing an epoch that wasn't staged succeeded")
 	}
 	b := batch(1)

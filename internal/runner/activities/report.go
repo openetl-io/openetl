@@ -64,14 +64,14 @@ func (r *reporter) schemas(e destination.Epoch, schemas map[string][]byte) {
 
 // checkpoint queues a checkpoint mirror report without blocking. rec must
 // not change.
-func (r *reporter) checkpoint(rec *checkpoint.Record) {
+func (r *reporter) checkpoint(rec *checkpoint.Record, collapsed map[string]uint64) {
 	r.enqueue(report{what: "checkpoint mirror", epoch: rec.Epoch, send: func(ctx context.Context) error {
-		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(r.mirrored(rec)))
+		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(r.mirrored(rec, collapsed)))
 		return err
 	}})
 }
 
-func (r *reporter) mirrored(rec *checkpoint.Record) *dataplanev1.ReportCheckpointRequest {
+func (r *reporter) mirrored(rec *checkpoint.Record, collapsed map[string]uint64) *dataplanev1.ReportCheckpointRequest {
 	req := &dataplanev1.ReportCheckpointRequest{
 		PipelineId: r.pipeline, RunId: r.runID, Generation: rec.Generation, Epoch: rec.Epoch,
 		CreateTime: timestamppb.New(rec.CreatedAt),
@@ -82,7 +82,7 @@ func (r *reporter) mirrored(rec *checkpoint.Record) *dataplanev1.ReportCheckpoin
 	for name, st := range rec.Streams {
 		cs := &dataplanev1.CheckpointStream{
 			Name: name, Rows: st.Rows, Forced: slices.Contains(rec.Forced, name), Complete: st.Complete,
-			SchemaDigest: r.digest(name, st.Schema),
+			SchemaDigest: r.digest(name, st.Schema), CollapsedRows: collapsed[name],
 		}
 		for _, q := range rec.Quarantine {
 			if q.Stream == name {

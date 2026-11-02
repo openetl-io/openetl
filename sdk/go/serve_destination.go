@@ -46,7 +46,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 		Namespace:  open.GetNamespace(),
 	}
 	for _, s := range open.GetStreams() {
-		cfg.Streams = append(cfg.Streams, destination.Stream{Name: s.GetName(), Mode: destination.WriteMode(s.GetMode()), PrimaryKey: s.GetPrimaryKey(), Dedupe: s.GetDedupe()})
+		cfg.Streams = append(cfg.Streams, destination.Stream{Name: s.GetName(), Mode: destination.WriteMode(s.GetMode()), PrimaryKey: s.GetPrimaryKey(), Dedupe: destination.Dedupe(s.GetDedupe())})
 	}
 	w, err := dst.Open(ctx, cfg)
 	if err != nil {
@@ -71,8 +71,8 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 			switch x := m.GetMsg().(type) {
 			case *protocolv1.WriteRequest_Commit:
 				e := epoch(x.Commit.GetEpoch())
-				err := w.Commit(ctx, e, x.Commit.GetStaged())
-				resp = &protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_Committed{Committed: &protocolv1.WriteCommitted{Epoch: x.Commit.GetEpoch(), Error: protoError(err)}}}
+				c, err := w.Commit(ctx, e, x.Commit.GetStaged())
+				resp = &protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_Committed{Committed: &protocolv1.WriteCommitted{Epoch: x.Commit.GetEpoch(), Error: protoError(err), CollapsedRows: c.Collapsed}}}
 			case *protocolv1.WriteRequest_ApplySchema:
 				err := applySchema(ctx, sa, x.ApplySchema)
 				resp = &protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_SchemaApplied{SchemaApplied: &protocolv1.WriteSchemaApplied{Error: protoError(err)}}}

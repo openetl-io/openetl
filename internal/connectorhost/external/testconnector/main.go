@@ -197,11 +197,11 @@ func (w *filesWriter) fence() uint64 {
 	return n
 }
 
-func (w *filesWriter) Commit(_ context.Context, _ destination.Epoch, s destination.Staged) error {
+func (w *filesWriter) Commit(_ context.Context, _ destination.Epoch, s destination.Staged) (destination.Committed, error) {
 	if w.fence() > w.gen {
-		return destination.ErrFenced
+		return destination.Committed{}, destination.ErrFenced
 	}
-	return w.apply(string(s))
+	return destination.Committed{}, w.apply(string(s))
 }
 
 func (w *filesWriter) apply(name string) error {

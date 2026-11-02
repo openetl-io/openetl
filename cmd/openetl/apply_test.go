@@ -37,10 +37,11 @@ func (fakeApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyReques
 			Changes: []*apiv1.PlanChange{{Field: "source.version", Before: `"01"`, After: `"02"`}, {Field: "delivery.require", After: `"DELIVERY_LEVEL_AT_LEAST_ONCE"`}},
 			Streams: []*apiv1.StreamPlan{
 				{Name: "orders", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, Reason: "exact replay"},
-				{Name: "events", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, Reason: "superset replay, and no primary key to dedupe on"},
+				{Name: "events", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, Reason: "superset replay, no primary key, and not collapsed"},
 			},
 			Problems: []string{`delivery.require: stream "events" gets at_least_once`},
 			Notes:    []string{"a note"},
+			Warnings: []*apiv1.PlanWarning{{Stream: "logs", Message: "it has no primary key"}},
 		}},
 	}), nil
 }
@@ -63,8 +64,8 @@ func TestApplyListsDependents(t *testing.T) {
 	}
 	want := "would be updated workspaces/default/sources/shop (version 0123456789ab)\n" +
 		"would be updated workspaces/default/pipelines/shop-to-dw (version fedcba987654), which uses what changed\n"
-	if out.String() != want {
-		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
+	if w := want + "\nwarnings for workspaces/default/pipelines/shop-to-dw:\n  logs: it has no primary key\n"; out.String() != w {
+		t.Errorf("printed\n%s\nwant\n%s", out.String(), w)
 	}
 
 	out.Reset()
@@ -79,9 +80,11 @@ workspaces/default/pipelines/shop-to-dw (version fedcba987654)
     delivery.require: (unset) -> "DELIVERY_LEVEL_AT_LEAST_ONCE"
   streams:
     orders  exactly_once   exact replay
-    events  at_least_once  superset replay, and no primary key to dedupe on
+    events  at_least_once  superset replay, no primary key, and not collapsed
   problems:
     delivery.require: stream "events" gets at_least_once
+  warnings:
+    logs: it has no primary key
   notes:
     a note
 `

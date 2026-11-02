@@ -228,6 +228,59 @@ func (Recovery) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{3}
 }
 
+// Dedupe is which append and overwrite rows an apply skips by _openetl_id.
+type Dedupe int32
+
+const (
+	// None: every staged row is inserted.
+	Dedupe_DEDUPE_UNSPECIFIED Dedupe = 0
+	// One row per ID in the epoch, and only IDs the target doesn't have yet.
+	Dedupe_DEDUPE_TARGET Dedupe = 1
+	// One row per ID in the epoch.
+	Dedupe_DEDUPE_EPOCH Dedupe = 2
+)
+
+// Enum value maps for Dedupe.
+var (
+	Dedupe_name = map[int32]string{
+		0: "DEDUPE_UNSPECIFIED",
+		1: "DEDUPE_TARGET",
+		2: "DEDUPE_EPOCH",
+	}
+	Dedupe_value = map[string]int32{
+		"DEDUPE_UNSPECIFIED": 0,
+		"DEDUPE_TARGET":      1,
+		"DEDUPE_EPOCH":       2,
+	}
+)
+
+func (x Dedupe) Enum() *Dedupe {
+	p := new(Dedupe)
+	*p = x
+	return p
+}
+
+func (x Dedupe) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Dedupe) Descriptor() protoreflect.EnumDescriptor {
+	return file_openetl_connector_v1_destination_proto_enumTypes[4].Descriptor()
+}
+
+func (Dedupe) Type() protoreflect.EnumType {
+	return &file_openetl_connector_v1_destination_proto_enumTypes[4]
+}
+
+func (x Dedupe) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Dedupe.Descriptor instead.
+func (Dedupe) EnumDescriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{4}
+}
+
 type DestinationCapabilities struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SinkClass SinkClass              `protobuf:"varint,1,opt,name=sink_class,json=sinkClass,proto3,enum=openetl.connector.v1.SinkClass" json:"sink_class,omitempty"`
@@ -614,8 +667,8 @@ type WriteStream struct {
 	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Mode       WriteMode              `protobuf:"varint,2,opt,name=mode,proto3,enum=openetl.connector.v1.WriteMode" json:"mode,omitempty"`
 	PrimaryKey []string               `protobuf:"bytes,3,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
-	// Dedupe append and overwrite rows on _openetl_id at apply.
-	Dedupe        bool `protobuf:"varint,4,opt,name=dedupe,proto3" json:"dedupe,omitempty"`
+	// Only for sinks with dedupe_at_apply.
+	Dedupe        Dedupe `protobuf:"varint,4,opt,name=dedupe,proto3,enum=openetl.connector.v1.Dedupe" json:"dedupe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -671,11 +724,11 @@ func (x *WriteStream) GetPrimaryKey() []string {
 	return nil
 }
 
-func (x *WriteStream) GetDedupe() bool {
+func (x *WriteStream) GetDedupe() Dedupe {
 	if x != nil {
 		return x.Dedupe
 	}
-	return false
+	return Dedupe_DEDUPE_UNSPECIFIED
 }
 
 // WriteRecover raises the destination fence to the writer's generation, then
@@ -1318,7 +1371,9 @@ type WriteCommitted struct {
 	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	// Set if the commit failed. The stream stays open, and the commit can be
 	// sent again.
-	Error         *Error `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	Error *Error `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// By stream: staged rows the apply didn't insert, because of dedupe.
+	CollapsedRows map[string]uint64 `protobuf:"bytes,3,rep,name=collapsed_rows,json=collapsedRows,proto3" json:"collapsed_rows,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1367,6 +1422,13 @@ func (x *WriteCommitted) GetError() *Error {
 	return nil
 }
 
+func (x *WriteCommitted) GetCollapsedRows() map[string]uint64 {
+	if x != nil {
+		return x.CollapsedRows
+	}
+	return nil
+}
+
 var File_openetl_connector_v1_destination_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_destination_proto_rawDesc = "" +
@@ -1403,13 +1465,13 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"generation\x18\x04 \x01(\x04R\n" +
 	"generation\x127\n" +
 	"\x05scope\x18\x05 \x01(\x0e2!.openetl.connector.v1.CommitScopeR\x05scope\x12;\n" +
-	"\astreams\x18\x06 \x03(\v2!.openetl.connector.v1.WriteStreamR\astreams\"\x8f\x01\n" +
+	"\astreams\x18\x06 \x03(\v2!.openetl.connector.v1.WriteStreamR\astreams\"\xad\x01\n" +
 	"\vWriteStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04mode\x18\x02 \x01(\x0e2\x1f.openetl.connector.v1.WriteModeR\x04mode\x12\x1f\n" +
 	"\vprimary_key\x18\x03 \x03(\tR\n" +
-	"primaryKey\x12\x16\n" +
-	"\x06dedupe\x18\x04 \x01(\bR\x06dedupe\"Y\n" +
+	"primaryKey\x124\n" +
+	"\x06dedupe\x18\x04 \x01(\x0e2\x1c.openetl.connector.v1.DedupeR\x06dedupe\"Y\n" +
 	"\fWriteRecover\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
 	"\x06staged\x18\x02 \x01(\fR\x06staged\"m\n" +
@@ -1443,10 +1505,14 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\brecovery\x18\x01 \x01(\x0e2\x1e.openetl.connector.v1.RecoveryR\brecovery\"X\n" +
 	"\vWriteStaged\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
-	"\x06staged\x18\x02 \x01(\fR\x06staged\"v\n" +
+	"\x06staged\x18\x02 \x01(\fR\x06staged\"\x98\x02\n" +
 	"\x0eWriteCommitted\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x121\n" +
-	"\x05error\x18\x02 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error*\x8c\x01\n" +
+	"\x05error\x18\x02 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\x12^\n" +
+	"\x0ecollapsed_rows\x18\x03 \x03(\v27.openetl.connector.v1.WriteCommitted.CollapsedRowsEntryR\rcollapsedRows\x1a@\n" +
+	"\x12CollapsedRowsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01*\x8c\x01\n" +
 	"\tSinkClass\x12\x1a\n" +
 	"\x16SINK_CLASS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aSINK_CLASS_STAGE_AND_APPLY\x10\x01\x12#\n" +
@@ -1465,7 +1531,11 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\x14RECOVERY_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10RECOVERY_APPLIED\x10\x01\x12\x13\n" +
 	"\x0fRECOVERY_REDONE\x10\x02\x12\x11\n" +
-	"\rRECOVERY_LOST\x10\x032j\n" +
+	"\rRECOVERY_LOST\x10\x03*E\n" +
+	"\x06Dedupe\x12\x16\n" +
+	"\x12DEDUPE_UNSPECIFIED\x10\x00\x12\x11\n" +
+	"\rDEDUPE_TARGET\x10\x01\x12\x10\n" +
+	"\fDEDUPE_EPOCH\x10\x022j\n" +
 	"\x12DestinationService\x12T\n" +
 	"\x05Write\x12\".openetl.connector.v1.WriteRequest\x1a#.openetl.connector.v1.WriteResponse(\x010\x01B@Z>github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
@@ -1481,69 +1551,73 @@ func file_openetl_connector_v1_destination_proto_rawDescGZIP() []byte {
 	return file_openetl_connector_v1_destination_proto_rawDescData
 }
 
-var file_openetl_connector_v1_destination_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_openetl_connector_v1_destination_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_openetl_connector_v1_destination_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_openetl_connector_v1_destination_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_openetl_connector_v1_destination_proto_goTypes = []any{
 	(SinkClass)(0),                  // 0: openetl.connector.v1.SinkClass
 	(CommitScope)(0),                // 1: openetl.connector.v1.CommitScope
 	(WriteMode)(0),                  // 2: openetl.connector.v1.WriteMode
 	(Recovery)(0),                   // 3: openetl.connector.v1.Recovery
-	(*DestinationCapabilities)(nil), // 4: openetl.connector.v1.DestinationCapabilities
-	(*Epoch)(nil),                   // 5: openetl.connector.v1.Epoch
-	(*WriteRequest)(nil),            // 6: openetl.connector.v1.WriteRequest
-	(*WriteOpen)(nil),               // 7: openetl.connector.v1.WriteOpen
-	(*WriteStream)(nil),             // 8: openetl.connector.v1.WriteStream
-	(*WriteRecover)(nil),            // 9: openetl.connector.v1.WriteRecover
-	(*WriteBatch)(nil),              // 10: openetl.connector.v1.WriteBatch
-	(*WritePreCommit)(nil),          // 11: openetl.connector.v1.WritePreCommit
-	(*WriteCommit)(nil),             // 12: openetl.connector.v1.WriteCommit
-	(*WriteApplySchema)(nil),        // 13: openetl.connector.v1.WriteApplySchema
-	(*StreamSchema)(nil),            // 14: openetl.connector.v1.StreamSchema
-	(*WriteResponse)(nil),           // 15: openetl.connector.v1.WriteResponse
-	(*WriteOpened)(nil),             // 16: openetl.connector.v1.WriteOpened
-	(*WriteSchemaApplied)(nil),      // 17: openetl.connector.v1.WriteSchemaApplied
-	(*WriteRecovered)(nil),          // 18: openetl.connector.v1.WriteRecovered
-	(*WriteStaged)(nil),             // 19: openetl.connector.v1.WriteStaged
-	(*WriteCommitted)(nil),          // 20: openetl.connector.v1.WriteCommitted
-	(*durationpb.Duration)(nil),     // 21: google.protobuf.Duration
-	(*Error)(nil),                   // 22: openetl.connector.v1.Error
+	(Dedupe)(0),                     // 4: openetl.connector.v1.Dedupe
+	(*DestinationCapabilities)(nil), // 5: openetl.connector.v1.DestinationCapabilities
+	(*Epoch)(nil),                   // 6: openetl.connector.v1.Epoch
+	(*WriteRequest)(nil),            // 7: openetl.connector.v1.WriteRequest
+	(*WriteOpen)(nil),               // 8: openetl.connector.v1.WriteOpen
+	(*WriteStream)(nil),             // 9: openetl.connector.v1.WriteStream
+	(*WriteRecover)(nil),            // 10: openetl.connector.v1.WriteRecover
+	(*WriteBatch)(nil),              // 11: openetl.connector.v1.WriteBatch
+	(*WritePreCommit)(nil),          // 12: openetl.connector.v1.WritePreCommit
+	(*WriteCommit)(nil),             // 13: openetl.connector.v1.WriteCommit
+	(*WriteApplySchema)(nil),        // 14: openetl.connector.v1.WriteApplySchema
+	(*StreamSchema)(nil),            // 15: openetl.connector.v1.StreamSchema
+	(*WriteResponse)(nil),           // 16: openetl.connector.v1.WriteResponse
+	(*WriteOpened)(nil),             // 17: openetl.connector.v1.WriteOpened
+	(*WriteSchemaApplied)(nil),      // 18: openetl.connector.v1.WriteSchemaApplied
+	(*WriteRecovered)(nil),          // 19: openetl.connector.v1.WriteRecovered
+	(*WriteStaged)(nil),             // 20: openetl.connector.v1.WriteStaged
+	(*WriteCommitted)(nil),          // 21: openetl.connector.v1.WriteCommitted
+	nil,                             // 22: openetl.connector.v1.WriteCommitted.CollapsedRowsEntry
+	(*durationpb.Duration)(nil),     // 23: google.protobuf.Duration
+	(*Error)(nil),                   // 24: openetl.connector.v1.Error
 }
 var file_openetl_connector_v1_destination_proto_depIdxs = []int32{
 	0,  // 0: openetl.connector.v1.DestinationCapabilities.sink_class:type_name -> openetl.connector.v1.SinkClass
 	1,  // 1: openetl.connector.v1.DestinationCapabilities.scopes:type_name -> openetl.connector.v1.CommitScope
-	21, // 2: openetl.connector.v1.DestinationCapabilities.default_commit_interval:type_name -> google.protobuf.Duration
-	21, // 3: openetl.connector.v1.DestinationCapabilities.min_commit_interval:type_name -> google.protobuf.Duration
-	7,  // 4: openetl.connector.v1.WriteRequest.open:type_name -> openetl.connector.v1.WriteOpen
-	9,  // 5: openetl.connector.v1.WriteRequest.recover:type_name -> openetl.connector.v1.WriteRecover
-	10, // 6: openetl.connector.v1.WriteRequest.batch:type_name -> openetl.connector.v1.WriteBatch
-	11, // 7: openetl.connector.v1.WriteRequest.pre_commit:type_name -> openetl.connector.v1.WritePreCommit
-	12, // 8: openetl.connector.v1.WriteRequest.commit:type_name -> openetl.connector.v1.WriteCommit
-	13, // 9: openetl.connector.v1.WriteRequest.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
+	23, // 2: openetl.connector.v1.DestinationCapabilities.default_commit_interval:type_name -> google.protobuf.Duration
+	23, // 3: openetl.connector.v1.DestinationCapabilities.min_commit_interval:type_name -> google.protobuf.Duration
+	8,  // 4: openetl.connector.v1.WriteRequest.open:type_name -> openetl.connector.v1.WriteOpen
+	10, // 5: openetl.connector.v1.WriteRequest.recover:type_name -> openetl.connector.v1.WriteRecover
+	11, // 6: openetl.connector.v1.WriteRequest.batch:type_name -> openetl.connector.v1.WriteBatch
+	12, // 7: openetl.connector.v1.WriteRequest.pre_commit:type_name -> openetl.connector.v1.WritePreCommit
+	13, // 8: openetl.connector.v1.WriteRequest.commit:type_name -> openetl.connector.v1.WriteCommit
+	14, // 9: openetl.connector.v1.WriteRequest.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
 	1,  // 10: openetl.connector.v1.WriteOpen.scope:type_name -> openetl.connector.v1.CommitScope
-	8,  // 11: openetl.connector.v1.WriteOpen.streams:type_name -> openetl.connector.v1.WriteStream
+	9,  // 11: openetl.connector.v1.WriteOpen.streams:type_name -> openetl.connector.v1.WriteStream
 	2,  // 12: openetl.connector.v1.WriteStream.mode:type_name -> openetl.connector.v1.WriteMode
-	5,  // 13: openetl.connector.v1.WriteRecover.epoch:type_name -> openetl.connector.v1.Epoch
-	5,  // 14: openetl.connector.v1.WriteBatch.epoch:type_name -> openetl.connector.v1.Epoch
-	5,  // 15: openetl.connector.v1.WritePreCommit.epoch:type_name -> openetl.connector.v1.Epoch
-	5,  // 16: openetl.connector.v1.WriteCommit.epoch:type_name -> openetl.connector.v1.Epoch
-	14, // 17: openetl.connector.v1.WriteApplySchema.streams:type_name -> openetl.connector.v1.StreamSchema
-	18, // 18: openetl.connector.v1.WriteResponse.recovered:type_name -> openetl.connector.v1.WriteRecovered
-	19, // 19: openetl.connector.v1.WriteResponse.staged:type_name -> openetl.connector.v1.WriteStaged
-	20, // 20: openetl.connector.v1.WriteResponse.committed:type_name -> openetl.connector.v1.WriteCommitted
-	16, // 21: openetl.connector.v1.WriteResponse.opened:type_name -> openetl.connector.v1.WriteOpened
-	17, // 22: openetl.connector.v1.WriteResponse.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
-	22, // 23: openetl.connector.v1.WriteSchemaApplied.error:type_name -> openetl.connector.v1.Error
-	3,  // 24: openetl.connector.v1.WriteRecovered.recovery:type_name -> openetl.connector.v1.Recovery
-	5,  // 25: openetl.connector.v1.WriteStaged.epoch:type_name -> openetl.connector.v1.Epoch
-	5,  // 26: openetl.connector.v1.WriteCommitted.epoch:type_name -> openetl.connector.v1.Epoch
-	22, // 27: openetl.connector.v1.WriteCommitted.error:type_name -> openetl.connector.v1.Error
-	6,  // 28: openetl.connector.v1.DestinationService.Write:input_type -> openetl.connector.v1.WriteRequest
-	15, // 29: openetl.connector.v1.DestinationService.Write:output_type -> openetl.connector.v1.WriteResponse
-	29, // [29:30] is the sub-list for method output_type
-	28, // [28:29] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	4,  // 13: openetl.connector.v1.WriteStream.dedupe:type_name -> openetl.connector.v1.Dedupe
+	6,  // 14: openetl.connector.v1.WriteRecover.epoch:type_name -> openetl.connector.v1.Epoch
+	6,  // 15: openetl.connector.v1.WriteBatch.epoch:type_name -> openetl.connector.v1.Epoch
+	6,  // 16: openetl.connector.v1.WritePreCommit.epoch:type_name -> openetl.connector.v1.Epoch
+	6,  // 17: openetl.connector.v1.WriteCommit.epoch:type_name -> openetl.connector.v1.Epoch
+	15, // 18: openetl.connector.v1.WriteApplySchema.streams:type_name -> openetl.connector.v1.StreamSchema
+	19, // 19: openetl.connector.v1.WriteResponse.recovered:type_name -> openetl.connector.v1.WriteRecovered
+	20, // 20: openetl.connector.v1.WriteResponse.staged:type_name -> openetl.connector.v1.WriteStaged
+	21, // 21: openetl.connector.v1.WriteResponse.committed:type_name -> openetl.connector.v1.WriteCommitted
+	17, // 22: openetl.connector.v1.WriteResponse.opened:type_name -> openetl.connector.v1.WriteOpened
+	18, // 23: openetl.connector.v1.WriteResponse.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
+	24, // 24: openetl.connector.v1.WriteSchemaApplied.error:type_name -> openetl.connector.v1.Error
+	3,  // 25: openetl.connector.v1.WriteRecovered.recovery:type_name -> openetl.connector.v1.Recovery
+	6,  // 26: openetl.connector.v1.WriteStaged.epoch:type_name -> openetl.connector.v1.Epoch
+	6,  // 27: openetl.connector.v1.WriteCommitted.epoch:type_name -> openetl.connector.v1.Epoch
+	24, // 28: openetl.connector.v1.WriteCommitted.error:type_name -> openetl.connector.v1.Error
+	22, // 29: openetl.connector.v1.WriteCommitted.collapsed_rows:type_name -> openetl.connector.v1.WriteCommitted.CollapsedRowsEntry
+	7,  // 30: openetl.connector.v1.DestinationService.Write:input_type -> openetl.connector.v1.WriteRequest
+	16, // 31: openetl.connector.v1.DestinationService.Write:output_type -> openetl.connector.v1.WriteResponse
+	31, // [31:32] is the sub-list for method output_type
+	30, // [30:31] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_destination_proto_init() }
@@ -1572,8 +1646,8 @@ func file_openetl_connector_v1_destination_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_connector_v1_destination_proto_rawDesc), len(file_openetl_connector_v1_destination_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   17,
+			NumEnums:      5,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

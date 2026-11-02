@@ -130,18 +130,18 @@ func (w *parquetWriter) PreCommit(context.Context, destination.Epoch) (destinati
 	return nil, errEngineWrites
 }
 
-func (w *parquetWriter) Commit(_ context.Context, e destination.Epoch, s destination.Staged) error {
+func (w *parquetWriter) Commit(_ context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
 	d, err := w.descriptor(e, s)
 	if err != nil {
-		return err
+		return destination.Committed{}, err
 	}
 	for _, st := range d.Streams {
 		if err := w.apply(st); err != nil {
-			return err
+			return destination.Committed{}, err
 		}
 	}
 	w.dropStaging(d)
-	return nil
+	return destination.Committed{}, nil
 }
 
 func (w *parquetWriter) Recover(_ context.Context, _ uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {

@@ -126,13 +126,13 @@ type zombieWriter struct {
 	d *zombieDest
 }
 
-func (w *zombieWriter) Commit(ctx context.Context, e destination.Epoch, s destination.Staged) error {
+func (w *zombieWriter) Commit(ctx context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
 	if e.N == 2 {
 		w.d.once.Do(func() { close(w.d.committing) })
 		select {
 		case <-w.d.release:
 		case <-ctx.Done():
-			return ctx.Err()
+			return destination.Committed{}, ctx.Err()
 		}
 	}
 	return w.Writer.Commit(ctx, e, s)

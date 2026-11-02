@@ -116,7 +116,9 @@ func (q *Queries) ListCheckpoints(ctx context.Context, arg ListCheckpointsParams
 const syncStreams = `-- name: SyncStreams :many
 SELECT c.run_id, (st ->> 'name')::text AS name,
     sum((st ->> 'rows')::bigint)::bigint AS rows,
-    sum((st ->> 'quarantined_rows')::bigint)::bigint AS quarantined_rows
+    sum((st ->> 'quarantined_rows')::bigint)::bigint AS quarantined_rows,
+    -- Checkpoints mirrored before it was counted have none.
+    coalesce(sum((st ->> 'collapsed_rows')::bigint), 0)::bigint AS collapsed_rows
 FROM checkpoint_mirror c
 CROSS JOIN LATERAL jsonb_array_elements(c.streams) AS st
 WHERE c.org_id = $1 AND c.pipeline_id = $2 AND c.run_id = ANY($3::text[])
@@ -137,6 +139,7 @@ type SyncStreamsRow struct {
 	Name            string
 	Rows            int64
 	QuarantinedRows int64
+	CollapsedRows   int64
 }
 
 // What the syncs' committed epochs carried, by sync and stream. Checkpoints
@@ -160,6 +163,7 @@ func (q *Queries) SyncStreams(ctx context.Context, arg SyncStreamsParams) ([]Syn
 			&i.Name,
 			&i.Rows,
 			&i.QuarantinedRows,
+			&i.CollapsedRows,
 		); err != nil {
 			return nil, err
 		}

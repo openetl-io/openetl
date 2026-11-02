@@ -28,6 +28,12 @@ type Config struct {
 	// Rows before its resume point that a resumed read emits again, like a
 	// cursor's lookback window. Above 0, replay is superset.
 	Overlap int `json:"overlap"`
+	// The streams declare no primary key, and id as their cursor, like
+	// tables without one.
+	Keyless bool `json:"keyless"`
+	// Every twice-th row is a copy of the row before it, as a table without
+	// a primary key can hold a row twice. Only with keyless.
+	Twice int `json:"twice"`
 }
 
 type Source struct {
@@ -54,6 +60,8 @@ func New(config []byte) (*Source, error) {
 		return nil, errors.New("faker: batchSize must be positive")
 	case cfg.Overlap < 0:
 		return nil, errors.New("faker: overlap must not be negative")
+	case cfg.Twice < 0 || cfg.Twice > 0 && !cfg.Keyless:
+		return nil, errors.New("faker: twice must not be negative, and needs keyless")
 	}
 	if cfg.Delay != "" {
 		d, err := time.ParseDuration(cfg.Delay)
@@ -82,7 +90,11 @@ func (s *Source) Discover(context.Context) (source.Catalog, error) {
 		replay = source.Superset
 	}
 	for _, st := range streams {
-		c.Streams = append(c.Streams, source.CatalogStream{Name: st.name, PrimaryKey: []string{"id"}, Replay: replay})
+		cs := source.CatalogStream{Name: st.name, PrimaryKey: []string{"id"}, Replay: replay}
+		if s.cfg.Keyless {
+			cs.PrimaryKey, cs.CursorField = nil, "id"
+		}
+		c.Streams = append(c.Streams, cs)
 	}
 	return c, nil
 }
@@ -122,8 +134,12 @@ func (s *Source) readStream(ctx context.Context, idx, next int, out source.Emitt
 		end := min(next+s.cfg.BatchSize, s.cfg.Count)
 		rows := make([]json.RawMessage, 0, end-next)
 		for i := next; i < end; i++ {
-			r := rand.New(rand.NewPCG(s.cfg.Seed, uint64(i)<<8|uint64(idx))) //nolint:gosec // generated test data must be reproducible
-			b, err := json.Marshal(st.row(r, i, s.cfg.Count))
+			from := i
+			if s.cfg.Twice > 0 && i > 0 && i%s.cfg.Twice == 0 {
+				from = i - 1
+			}
+			r := rand.New(rand.NewPCG(s.cfg.Seed, uint64(from)<<8|uint64(idx))) //nolint:gosec // generated test data must be reproducible
+			b, err := json.Marshal(st.row(r, from, s.cfg.Count))
 			if err != nil {
 				return err
 			}

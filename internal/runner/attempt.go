@@ -38,10 +38,15 @@ type Stream struct {
 	Overrides map[string]arrow.DataType
 	// Timestamps keep nanoseconds, which the destination must too.
 	NanosecondTimestamps bool
+	// Overrides Settings.Require; 0: the pipeline's.
+	Require delivery.Level
+	// Whether rows with the same content become one; nil: the default
+	// delivery.Stream gives.
+	Collapse *bool
 }
 
 func (s Stream) delivery() delivery.Stream {
-	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0}
+	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse}
 }
 
 // Declared is Schema with Overrides applied.
@@ -106,8 +111,9 @@ type Job struct {
 	// Arrow IPC stream holding only the schema. It must not block.
 	OnSchemas func(e destination.Epoch, schemas map[string][]byte)
 	// Called after an epoch commits, and after OnSchemas, with its record,
-	// which it must not modify. It must not block.
-	OnCheckpoint func(rec *checkpoint.Record)
+	// which it must not modify, and the rows each stream's apply didn't
+	// insert because of dedupe. It must not block.
+	OnCheckpoint func(rec *checkpoint.Record, collapsed map[string]uint64)
 	// Closing it stops the attempt at its next checkpoint with ErrDrained,
 	// unless the read has already ended, in which case it finishes.
 	Drain <-chan struct{}
@@ -183,7 +189,7 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			Name:       s.Name,
 			Mode:       s.Mode,
 			PrimaryKey: s.PrimaryKey,
-			Dedupe:     delivery.ShouldDedupe(caps, s.delivery(), job.Settings.Require, forced[s.Name]),
+			Dedupe:     delivery.Dedupe(caps, s.delivery(), job.Settings.Require, forced[s.Name]),
 		})
 		canForce[s.Name] = delivery.CanForce(caps, s.delivery(), job.Settings.Require)
 	}
@@ -610,7 +616,15 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		return fmt.Errorf("runner: epoch %d: %w", n, err)
 	}
 	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
-	if err := retry(ctx, func() error { return c.w.Commit(ctx, e, st.desc) }, destination.ErrFenced); err != nil {
+	collapsed := map[string]uint64{}
+	err = retry(ctx, func() error {
+		done, err := c.w.Commit(ctx, e, st.desc)
+		for name, rows := range done.Collapsed {
+			collapsed[name] += rows
+		}
+		return err
+	}, destination.ErrFenced)
+	if err != nil {
 		return fmt.Errorf("runner: commit epoch %d: %w", n, err)
 	}
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
@@ -629,7 +643,7 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		}
 	}
 	if c.job.OnCheckpoint != nil {
-		c.job.OnCheckpoint(rec)
+		c.job.OnCheckpoint(rec, collapsed)
 	}
 	select {
 	case c.events <- event{kind: evCommitted, epoch: n}:

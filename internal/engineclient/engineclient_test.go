@@ -599,7 +599,7 @@ func (d *memDest) PreCommit(_ context.Context, e destination.Epoch) (destination
 	return destination.Staged(strconv.FormatUint(e.N, 10)), nil
 }
 
-func (d *memDest) Commit(_ context.Context, e destination.Epoch, _ destination.Staged) error {
+func (d *memDest) Commit(_ context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for stream, ids := range d.pending[e.N] {
@@ -609,7 +609,7 @@ func (d *memDest) Commit(_ context.Context, e destination.Epoch, _ destination.S
 	d.commits++
 	close(d.committed)
 	d.committed = make(chan struct{})
-	return nil
+	return destination.Committed{}, nil
 }
 
 func (d *memDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
@@ -697,7 +697,7 @@ func TestRunAttemptForwardsEncodedBatches(t *testing.T) {
 		Destination: dest,
 		Dataflow:    &Dataflow{Options: opts},
 		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline},
-		OnCheckpoint: func(rec *checkpoint.Record) {
+		OnCheckpoint: func(rec *checkpoint.Record, _ map[string]uint64) {
 			rows += rec.Streams["users"].Rows
 		},
 	}
@@ -983,12 +983,12 @@ func (d *discardDest) PreCommit(context.Context, destination.Epoch) (destination
 	return nil, errors.New("the engine sink was asked to pre-commit")
 }
 
-func (d *discardDest) Commit(_ context.Context, e destination.Epoch, s destination.Staged) error {
+func (d *discardDest) Commit(_ context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
 	if len(s) != 0 {
-		return fmt.Errorf("epoch %d staged %q", e.N, s)
+		return destination.Committed{}, fmt.Errorf("epoch %d staged %q", e.N, s)
 	}
 	d.committed = append(d.committed, e.N)
-	return nil
+	return destination.Committed{}, nil
 }
 
 func (d *discardDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {

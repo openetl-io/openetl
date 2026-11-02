@@ -32,15 +32,22 @@ type Row = GraphStream & {
   mode?: SyncMode;
   cursor?: string;
   reason?: string;
-  dedupe?: boolean;
+  warning?: string;
   quarantined?: bigint;
+  collapsed?: bigint;
   schema?: number;
 };
 
-function Callout({ tone, children }: { tone: "problem" | "note"; children: React.ReactNode }) {
-  const Icon = tone === "problem" ? TriangleAlert : Info;
+const calloutTone = {
+  problem: "flex gap-2 text-failed",
+  warning: "flex gap-2 text-degraded",
+  note: "flex gap-2 text-muted-foreground",
+};
+
+function Callout({ tone, children }: { tone: keyof typeof calloutTone; children: React.ReactNode }) {
+  const Icon = tone === "note" ? Info : TriangleAlert;
   return (
-    <p className={tone === "problem" ? "flex gap-2 text-failed" : "flex gap-2 text-muted-foreground"}>
+    <p className={calloutTone[tone]}>
       <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
       <span>{children}</span>
     </p>
@@ -71,9 +78,11 @@ export function Overview({
       if (!r) m.set(name, (r = { name }));
       return r;
     };
-    for (const s of plan.data?.plan?.streams ?? []) Object.assign(get(s.name), { level: s.level, reason: s.reason, dedupe: s.dedupe });
+    for (const s of plan.data?.plan?.streams ?? []) Object.assign(get(s.name), { level: s.level, reason: s.reason });
+    for (const w of plan.data?.plan?.warnings ?? []) if (w.stream) get(w.stream).warning = w.message;
     for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor });
-    for (const s of last?.streams ?? []) Object.assign(get(s.name), { rows: s.rows, quarantined: s.quarantinedRows });
+    for (const s of last?.streams ?? [])
+      Object.assign(get(s.name), { rows: s.rows, quarantined: s.quarantinedRows, collapsed: s.collapsedRows });
     for (const s of schemas.data?.streamSchemas ?? []) get(s.stream).schema = Math.max(get(s.stream).schema ?? 0, s.version);
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [plan.data, spec, last, schemas.data]);
@@ -81,6 +90,7 @@ export function Overview({
   const failed = pipeline.status?.lastSync?.state === SyncState.FAILED ? pipeline.status.lastSync : undefined;
   const problems = plan.data?.plan?.problems ?? [];
   const notes = plan.data?.plan?.notes ?? [];
+  const warnings = (plan.data?.plan?.warnings ?? []).filter((w) => !w.stream).map((w) => w.message);
 
   return (
     <div className="grid gap-6">
@@ -129,11 +139,16 @@ export function Overview({
           </span>
         </div>
         {plan.error && <ErrorNote title="Couldn't plan the pipeline" message={errorMessage(plan.error)} />}
-        {(problems.length > 0 || notes.length > 0) && (
+        {(problems.length > 0 || warnings.length > 0 || notes.length > 0) && (
           <div className="grid gap-1.5">
             {problems.map((p) => (
               <Callout key={p} tone="problem">
                 {sentence(p)}
+              </Callout>
+            ))}
+            {warnings.map((w) => (
+              <Callout key={w} tone="warning">
+                {sentence(w)}
               </Callout>
             ))}
             {notes.map((n) => (
@@ -144,7 +159,7 @@ export function Overview({
           </div>
         )}
         <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full min-w-[720px] border-collapse">
+          <table className="w-full min-w-[800px] border-collapse">
             <thead>
               <tr className="border-b text-left text-[0.8125rem] text-muted-foreground">
                 <th scope="col" className="px-4 py-2 font-normal">Stream</th>
@@ -153,6 +168,7 @@ export function Overview({
                 <th scope="col" className="px-4 py-2 font-normal">Schema</th>
                 <th scope="col" className="px-4 py-2 text-right font-normal">Rows</th>
                 <th scope="col" className="px-4 py-2 text-right font-normal">Quarantined</th>
+                <th scope="col" className="px-4 py-2 text-right font-normal">Collapsed</th>
               </tr>
             </thead>
             <tbody>
@@ -169,15 +185,22 @@ export function Overview({
                   </td>
                   <td className="px-4 py-2">
                     {s.level !== undefined ? (
-                      <Tooltip>
-                        <TooltipTrigger className="cursor-help underline decoration-dotted decoration-muted-foreground/60 underline-offset-4">
-                          {levelLabel[s.level]}
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-xs">
-                          {s.reason}
-                          {s.dedupe && " Deduped on _openetl_id when applied."}
-                        </TooltipContent>
-                      </Tooltip>
+                      <span className="inline-flex items-center gap-1.5">
+                        <Tooltip>
+                          <TooltipTrigger className="cursor-help underline decoration-dotted decoration-muted-foreground/60 underline-offset-4">
+                            {levelLabel[s.level]}
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs">{sentence(s.reason ?? "")}.</TooltipContent>
+                        </Tooltip>
+                        {s.warning && (
+                          <Tooltip>
+                            <TooltipTrigger aria-label={`Warning: ${s.name} ${s.warning}`}>
+                              <TriangleAlert className="size-3.5 text-degraded" />
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-sm">{sentence(s.warning)}</TooltipContent>
+                          </Tooltip>
+                        )}
+                      </span>
                     ) : (
                       <span className="text-muted-foreground">
                         {plan.data?.plan?.streams.length ? "Not in the plan" : "Checked when it syncs"}
@@ -204,11 +227,20 @@ export function Overview({
                   <td className="px-4 py-2 text-right font-mono text-[0.8125rem] tabular">
                     {s.quarantined ? <span className="text-degraded">{full(s.quarantined)}</span> : <span className="text-muted-foreground">0</span>}
                   </td>
+                  <td className="px-4 py-2 text-right font-mono text-[0.8125rem] tabular">
+                    {s.collapsed ? (
+                      <span title="Rows not inserted because a row with the same _openetl_id was already in the epoch or the table">
+                        {full(s.collapsed)}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">0</span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {streams.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-muted-foreground">
+                  <td colSpan={7} className="px-4 py-6 text-muted-foreground">
                     No streams to show yet. They show once a sync commits rows, or once the plan can list them, after{" "}
                     <code className="font-mono text-[0.8125rem] text-foreground">openetl discover {spec?.source?.ref}</code>.
                   </td>

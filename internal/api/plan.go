@@ -155,8 +155,8 @@ func (s *Server) plan(ctx context.Context, q *db.Queries, p *planned) (*apiv1.Pi
 			out.Notes = append(out.Notes, fmt.Sprintf("source %q was last discovered with another config, and the plan uses that catalog (openetl discover %s)", src, src))
 		}
 	}
-	streams, problems := plan.Pipeline(p.v.spec, cat, caps)
-	out.Streams = streams
+	streams, problems, warnings := plan.Pipeline(p.v.spec, cat, caps)
+	out.Streams, out.Warnings = streams, warnings
 	for _, e := range problems {
 		out.Problems = append(out.Problems, e.Error())
 	}

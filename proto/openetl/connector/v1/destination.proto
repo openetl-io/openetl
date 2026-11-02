@@ -95,8 +95,18 @@ message WriteStream {
   string name = 1;
   WriteMode mode = 2;
   repeated string primary_key = 3;
-  // Dedupe append and overwrite rows on _openetl_id at apply.
-  bool dedupe = 4;
+  // Only for sinks with dedupe_at_apply.
+  Dedupe dedupe = 4;
+}
+
+// Dedupe is which append and overwrite rows an apply skips by _openetl_id.
+enum Dedupe {
+  // None: every staged row is inserted.
+  DEDUPE_UNSPECIFIED = 0;
+  // One row per ID in the epoch, and only IDs the target doesn't have yet.
+  DEDUPE_TARGET = 1;
+  // One row per ID in the epoch.
+  DEDUPE_EPOCH = 2;
 }
 
 // WriteRecover raises the destination fence to the writer's generation, then
@@ -177,4 +187,6 @@ message WriteCommitted {
   // Set if the commit failed. The stream stays open, and the commit can be
   // sent again.
   Error error = 2;
+  // By stream: staged rows the apply didn't insert, because of dedupe.
+  map<string, uint64> collapsed_rows = 3;
 }

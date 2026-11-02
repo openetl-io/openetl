@@ -131,8 +131,30 @@ func TestOverlapRepeatsRowsBeforeTheResumePoint(t *testing.T) {
 	}
 }
 
+func TestKeylessRowsHeldTwice(t *testing.T) {
+	s, err := New([]byte(`{"count": 25, "keyless": true, "twice": 10}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat, err := s.Discover(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cs := range cat.Streams {
+		if len(cs.PrimaryKey) != 0 || cs.CursorField != "id" {
+			t.Errorf("%s: primary key %v, cursor %q", cs.Name, cs.PrimaryKey, cs.CursorField)
+		}
+	}
+	rows := read(t, s, nil).rows["users"]
+	for i := 1; i < len(rows); i++ {
+		if same, want := rows[i] == rows[i-1], i%10 == 0; same != want {
+			t.Errorf("row %d is a copy of row %d: %v, want %v", i, i-1, same, want)
+		}
+	}
+}
+
 func TestConfigErrors(t *testing.T) {
-	for _, cfg := range []string{`{"count": -1}`, `{"batchSize": 0}`, `{"delay": "soon"}`, `{"rows": 5}`, `{"overlap": -1}`} {
+	for _, cfg := range []string{`{"count": -1}`, `{"batchSize": 0}`, `{"delay": "soon"}`, `{"rows": 5}`, `{"overlap": -1}`, `{"twice": 3}`} {
 		if _, err := New([]byte(cfg)); err == nil {
 			t.Errorf("New(%s) succeeded", cfg)
 		}

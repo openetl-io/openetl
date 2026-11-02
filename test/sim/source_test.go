@@ -44,7 +44,9 @@ type upstream struct {
 	trimmed int // exact: offsets below this were discarded after an ack
 }
 
-func newUpstream(rng *rand.Rand, name string, replay source.Replay) *upstream {
+// newUpstream makes a stream's records. With twice, some are held twice, as
+// a table without a primary key can.
+func newUpstream(rng *rand.Rand, name string, replay source.Replay, twice bool) *upstream {
 	u := &upstream{name: name, replay: replay, pageSize: 1 + rng.IntN(5)}
 	n := 5 + rng.IntN(36)
 	keys := 2 + rng.IntN(8)
@@ -69,8 +71,13 @@ func newUpstream(rng *rand.Rand, name string, replay source.Replay) *upstream {
 			key = fmt.Sprintf("x%d", i)
 		}
 		last[key] = seq
-		u.records = append(u.records, record{Key: key, Seq: seq, Value: fmt.Sprintf("%s@%d", key, seq)})
+		r := record{Key: key, Seq: seq, Value: fmt.Sprintf("%s@%d", key, seq)}
+		u.records = append(u.records, r)
+		if twice && rng.IntN(5) == 0 {
+			u.records = append(u.records, r)
+		}
 	}
+	n = len(u.records)
 	u.resumeAt = make([]bool, n+1)
 	for i := range u.resumeAt {
 		u.resumeAt[i] = rng.IntN(100) < 60

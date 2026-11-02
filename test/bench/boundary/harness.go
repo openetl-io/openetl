@@ -167,8 +167,8 @@ func (discardWriter) PreCommit(context.Context, destination.Epoch) (destination.
 	return nil, nil
 }
 
-func (discardWriter) Commit(context.Context, destination.Epoch, destination.Staged) error {
-	return nil
+func (discardWriter) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+	return destination.Committed{}, nil
 }
 
 func (discardWriter) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {

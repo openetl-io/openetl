@@ -49,6 +49,9 @@ message SyncStream {
   // Quarantined rows included.
   uint64 rows = 2;
   uint64 quarantined_rows = 3;
+  // Rows the destination didn't insert because a row with the same
+  // _openetl_id was earlier in the epoch or already there.
+  uint64 collapsed_rows = 4;
 }
 
 enum SyncState {

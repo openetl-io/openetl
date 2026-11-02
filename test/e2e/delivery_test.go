@@ -10,7 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
 // The retry re-reads 150 rows per stream that are already applied. The
@@ -87,4 +91,100 @@ func TestPlanChecksFailTheSync(t *testing.T) {
 			t.Errorf("error %q doesn't say %q", msg, want)
 		}
 	}
+}
+
+// A superset stream without a primary key, whose source holds some rows
+// twice, synced twice. The second sync reads every row again, with the same
+// IDs, since the stream's cursor is part of them. Each combination of
+// collapse and require does what the plan warns it does, and the syncs count
+// what collapsed.
+func TestCollapse(t *testing.T) {
+	startRunner(t)
+	// 300 rows a sync, in batches of 50; rows 10, 20, ... 290 copy the row
+	// before them, so 271 are distinct. 24 copies are in the same batch as
+	// their original, and so in the same epoch.
+	const faker = `{"count": 300, "batchSize": 50, "overlap": 1, "keyless": true, "twice": 10}`
+	for _, tc := range []struct {
+		name, stream, warning string
+		indexed               bool
+		// Rows in the table after both syncs.
+		rows func(n int) bool
+	}{
+		{name: "default", stream: `{"name": "users"}`, warning: "within each epoch and against the target", indexed: true,
+			rows: func(n int) bool { return n == 271 }},
+		{name: "epoch", stream: `{"name": "users", "require": "at_least_once", "collapse": true}`, warning: "within each epoch only",
+			rows: func(n int) bool { return n >= 2*271 && n <= 600-2*24 }},
+		{name: "none", stream: `{"name": "users", "require": "at_least_once"}`, warning: "doesn't collapse, so every row lands",
+			rows: func(n int) bool { return n == 600 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := unique("collapse-" + tc.name)
+			res := applyAll(t, false, collapseDocs(t, name, faker, tc.stream)...)
+			plan := res.GetPlans()[0]
+			if len(plan.GetWarnings()) != 1 || plan.GetWarnings()[0].GetStream() != "users" || !strings.Contains(plan.GetWarnings()[0].GetMessage(), tc.warning) {
+				t.Errorf("warnings %v, want one for users that says %q", plan.GetWarnings(), tc.warning)
+			}
+			if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
+				t.Fatalf("first sync %s: %s", status, stats)
+			}
+			if status, stats := syncNow(t, name); status != "succeeded" {
+				t.Fatalf("second sync %s: %s", status, stats)
+			}
+			table := pgx.Identifier{schema(name), "users"}.Sanitize()
+			rows, err := query[int](t, "SELECT count(*) FROM "+table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.rows(rows) {
+				t.Errorf("users has %d rows", rows)
+			}
+			if n, err := query[int](t, "SELECT count(DISTINCT id) FROM "+table); err != nil || n != 271 {
+				t.Errorf("users has %d distinct ids (%v), want 271", n, err)
+			}
+			if n, err := query[int](t, "SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND tablename = 'users'", schema(name)); err != nil || (n == 1) != tc.indexed {
+				t.Errorf("users has %d indexes (%v); want one: %v", n, err, tc.indexed)
+			}
+			// Each sync emitted 300 rows; what didn't land collapsed.
+			var emitted, collapsed uint64
+			eventually(t, 10*time.Second, "both syncs' checkpoints in the mirror", func() bool {
+				res, err := syncs().ListSyncs(t.Context(), connect.NewRequest(&apiv1.ListSyncsRequest{Parent: "workspaces/default/pipelines/" + name}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				emitted, collapsed = 0, 0
+				for _, s := range res.Msg.GetSyncs() {
+					for _, st := range s.GetStreams() {
+						emitted += st.GetRows()
+						collapsed += st.GetCollapsedRows()
+					}
+				}
+				return emitted == 600
+			})
+			if collapsed != 600-uint64(rows) { //nolint:gosec // a row count
+				t.Errorf("the syncs collapsed %d rows; %d of 600 landed", collapsed, rows)
+			}
+		})
+	}
+
+	// Without collapsing, exactly_once is out of reach, and Apply refuses.
+	name := unique("collapse-refused")
+	res := applyAll(t, true, collapseDocs(t, name, faker, `{"name": "users", "collapse": false}`)...)
+	if want := `stream "users" gets at_least_once (superset replay, no primary key, and not collapsed), below exactly_once`; !strings.Contains(strings.Join(res.GetPlans()[0].GetProblems(), "\n"), want) {
+		t.Errorf("problems %v, want one that says %q", res.GetPlans()[0].GetProblems(), want)
+	}
+}
+
+// collapseDocs discovers the source first, so that the plan checks streams.
+func collapseDocs(t *testing.T, name, faker, stream string) []string {
+	t.Helper()
+	d := pipelineDocs(name, faker, `{}`)
+	apply(t, d[0])
+	sources := apiv1connect.NewSourceServiceClient(env.http, env.apiURL)
+	if _, err := sources.DiscoverSource(t.Context(), connect.NewRequest(&apiv1.DiscoverSourceRequest{Name: "workspaces/default/sources/" + name})); err != nil {
+		t.Fatal(err)
+	}
+	d[2] = fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
+		"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q, "streams": [%s]},
+		"destination": {"ref": %q, "namespace": %q}}}`, name, name, stream, name, schema(name))
+	return d
 }

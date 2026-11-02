@@ -50,11 +50,19 @@ func TestPipeline(t *testing.T) {
 		caps     destination.Capabilities
 		streams  string
 		problems []string
+		warnings []string
 	}{
 		{name: "no catalog", caps: parquet, spec: `{"delivery": {"commit": {"scope": "COMMIT_SCOPE_PIPELINE"}}}`,
 			problems: []string{"delivery.commit.scope: the destination doesn't support pipeline"}},
 		{name: "every stream", cat: catalog, caps: warehouse,
-			streams:  "orders exactly_once exact replay; events exactly_once+dedupe superset replay, deduped at apply; logs at_least_once superset replay, and no primary key to dedupe on",
+			streams:  "orders exactly_once exact replay; events exactly_once+dedupe superset replay, deduped at apply; logs exactly_once+dedupe+collapse superset replay, no primary key: collapsed within each epoch and against the target",
+			warnings: []string{"logs: it has no primary key, so rows with the same content collapse into one, within each epoch and against the target"}},
+		{name: "stream settings", cat: catalog, caps: warehouse,
+			spec:     `{"source": {"streams": [{"name": "events", "require": "DELIVERY_LEVEL_AT_LEAST_ONCE", "collapse": true}, {"name": "logs", "require": "DELIVERY_LEVEL_AT_LEAST_ONCE", "collapse": true}]}}`,
+			streams:  "events at_least_once superset replay, not deduped under at_least_once; logs at_least_once+dedupe+collapse superset replay, no primary key: collapsed within each epoch",
+			warnings: []string{"events: it has a primary key, so collapse is ignored", "logs: it has no primary key, so rows with the same content collapse into one within each epoch only"}},
+		{name: "no collapse", cat: catalog, caps: warehouse, spec: `{"source": {"streams": [{"name": "logs", "collapse": false}]}}`,
+			streams:  "logs at_least_once superset replay, no primary key, and not collapsed",
 			problems: []string{`delivery.require: stream "logs" gets at_least_once`}},
 		{name: "named streams", cat: catalog, caps: warehouse, spec: `{"source": {"streams": [{"name": "orders"}, {"name": "gone"}]}}`,
 			streams: "orders exactly_once exact replay", problems: []string{`the source has no stream "gone"`}},
@@ -75,12 +83,15 @@ func TestPipeline(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			streams, problems := Pipeline(spec, tc.cat, tc.caps)
+			streams, problems, warnings := Pipeline(spec, tc.cat, tc.caps)
 			var got []string
 			for _, s := range streams {
 				level := strings.ToLower(strings.TrimPrefix(s.GetLevel().String(), "DELIVERY_LEVEL_"))
 				if s.GetDedupe() {
 					level += "+dedupe"
+				}
+				if s.GetCollapse() {
+					level += "+collapse"
 				}
 				got = append(got, s.GetName()+" "+level+" "+s.GetReason())
 			}
@@ -93,6 +104,14 @@ func TestPipeline(t *testing.T) {
 			for i, p := range problems {
 				if !strings.HasPrefix(p.Error(), tc.problems[i]) {
 					t.Errorf("problem %d: %q, want %q", i, p, tc.problems[i])
+				}
+			}
+			if len(warnings) != len(tc.warnings) {
+				t.Fatalf("warnings %v, want %v", warnings, tc.warnings)
+			}
+			for i, w := range warnings {
+				if got := w.GetStream() + ": " + w.GetMessage(); !strings.HasPrefix(got, tc.warnings[i]) {
+					t.Errorf("warning %d: %q, want %q", i, got, tc.warnings[i])
 				}
 			}
 		})

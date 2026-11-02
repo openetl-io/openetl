@@ -53,7 +53,7 @@ func newWarehouse(dedupeCapable bool) *warehouse {
 type stagedStream struct {
 	Name   string `json:"name"`
 	Mode   int    `json:"mode"`
-	Dedupe bool   `json:"dedupe"`
+	Dedupe int    `json:"dedupe"`
 }
 
 type warehouseStaged struct {
@@ -65,8 +65,9 @@ type warehouseStaged struct {
 var errStagingMissing = errors.New("sim: staging missing")
 
 // applyTx is one destination transaction. It checks every precondition
-// before changing anything.
-func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []stagedStream) error {
+// before changing anything, and adds the rows each stream's dedupe skipped
+// to collapsed.
+func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []stagedStream, collapsed map[string]uint64) error {
 	wh.mu.Lock()
 	defer wh.mu.Unlock()
 	if wh.fence > applierGen {
@@ -84,14 +85,17 @@ func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []st
 	}
 	for _, s := range todo {
 		k := stagingKey{st.Gen, st.N, s.Name}
-		wh.apply(s, wh.staging[k])
+		if n := wh.apply(s, wh.staging[k]); n > 0 {
+			collapsed[s.Name] += n
+		}
 		wh.loads[marker{s.Name, st.Gen, st.N}] = true
 		delete(wh.staging, k)
 	}
 	return nil
 }
 
-func (wh *warehouse) apply(s stagedStream, rows []row) {
+// apply returns the rows its dedupe skipped.
+func (wh *warehouse) apply(s stagedStream, rows []row) (collapsed uint64) {
 	switch destination.WriteMode(s.Mode) {
 	case destination.Merge:
 		m := wh.merged[s.Name]
@@ -107,15 +111,19 @@ func (wh *warehouse) apply(s stagedStream, rows []row) {
 		}
 	default:
 		var have map[string]bool
-		if s.Dedupe {
+		switch destination.Dedupe(s.Dedupe) {
+		case destination.DedupeTarget:
 			have = map[string]bool{}
 			for _, r := range wh.tables[s.Name] {
 				have[r.ID] = true
 			}
+		case destination.DedupeEpoch:
+			have = map[string]bool{}
 		}
 		for _, r := range rows {
 			if have != nil {
 				if have[r.ID] {
+					collapsed++
 					continue
 				}
 				have[r.ID] = true
@@ -124,6 +132,7 @@ func (wh *warehouse) apply(s stagedStream, rows []row) {
 			wh.applies[r.ID]++
 		}
 	}
+	return collapsed
 }
 
 func (wh *warehouse) missing(st warehouseStaged) (missing []stagedStream, staged int) {
@@ -207,18 +216,18 @@ func (w *warehouseWriter) PreCommit(ctx context.Context, e destination.Epoch) (d
 		if err != nil {
 			return nil, err
 		}
-		st.Streams = append(st.Streams, stagedStream{Name: s.Name, Mode: int(s.Mode), Dedupe: s.Dedupe})
+		st.Streams = append(st.Streams, stagedStream{Name: s.Name, Mode: int(s.Mode), Dedupe: int(s.Dedupe)})
 	}
 	delete(w.buf, e.N)
 	return json.Marshal(st)
 }
 
-func (w *warehouseWriter) applyScoped(ctx context.Context, st warehouseStaged, streams []stagedStream) error {
+func (w *warehouseWriter) applyScoped(ctx context.Context, st warehouseStaged, streams []stagedStream, collapsed map[string]uint64) error {
 	if w.cfg.Scope == destination.ScopePipeline {
-		return outcome(w.w.sched.point(ctx, w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, streams) })
+		return outcome(w.w.sched.point(ctx, w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, streams, collapsed) })
 	}
 	for _, s := range streams {
-		err := outcome(w.w.sched.point(ctx, w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, []stagedStream{s}) })
+		err := outcome(w.w.sched.point(ctx, w.attempt, "sink.apply"), func() error { return w.wh.applyTx(w.cfg.Generation, st, []stagedStream{s}, collapsed) })
 		if err != nil {
 			return err
 		}
@@ -226,12 +235,13 @@ func (w *warehouseWriter) applyScoped(ctx context.Context, st warehouseStaged, s
 	return nil
 }
 
-func (w *warehouseWriter) Commit(ctx context.Context, _ destination.Epoch, s destination.Staged) error {
+func (w *warehouseWriter) Commit(ctx context.Context, _ destination.Epoch, s destination.Staged) (destination.Committed, error) {
 	var st warehouseStaged
 	if err := json.Unmarshal(s, &st); err != nil {
-		return err
+		return destination.Committed{}, err
 	}
-	return w.applyScoped(ctx, st, st.Streams)
+	c := destination.Committed{Collapsed: map[string]uint64{}}
+	return c, w.applyScoped(ctx, st, st.Streams, c.Collapsed)
 }
 
 func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
@@ -260,7 +270,7 @@ func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination
 	case len(missing) == 0:
 		r = destination.Applied
 	case staged == len(missing):
-		if err := w.applyScoped(ctx, st, missing); err != nil {
+		if err := w.applyScoped(ctx, st, missing, map[string]uint64{}); err != nil {
 			return 0, err
 		}
 		r = destination.Redone
@@ -399,12 +409,12 @@ func (w *kafkaWriter) PreCommit(ctx context.Context, e destination.Epoch) (desti
 	return json.Marshal(kafkaStaged{Slot: slot, Epoch: w.epochs[slot], Gen: e.Generation, N: e.N})
 }
 
-func (w *kafkaWriter) Commit(ctx context.Context, _ destination.Epoch, s destination.Staged) error {
+func (w *kafkaWriter) Commit(ctx context.Context, _ destination.Epoch, s destination.Staged) (destination.Committed, error) {
 	var st kafkaStaged
 	if err := json.Unmarshal(s, &st); err != nil {
-		return err
+		return destination.Committed{}, err
 	}
-	return outcome(w.w.sched.point(ctx, w.attempt, "kafka.commit"), func() error {
+	return destination.Committed{}, outcome(w.w.sched.point(ctx, w.attempt, "kafka.commit"), func() error {
 		w.b.mu.Lock()
 		defer w.b.mu.Unlock()
 		if w.b.markers[[2]uint64{st.Gen, st.N}] {
@@ -494,8 +504,8 @@ func (d *webhookDest) PreCommit(ctx context.Context, _ destination.Epoch) (desti
 	return destination.Staged("{}"), nil
 }
 
-func (d *webhookDest) Commit(context.Context, destination.Epoch, destination.Staged) error {
-	return nil
+func (d *webhookDest) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+	return destination.Committed{}, nil
 }
 
 func (d *webhookDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {

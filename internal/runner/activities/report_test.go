@@ -39,7 +39,7 @@ func TestMirroredCheckpoint(t *testing.T) {
 		},
 		Quarantine: []checkpoint.QuarantineFile{{Stream: "users", Rows: 2}, {Stream: "users", Rows: 1}},
 		Forced:     []string{"orders"},
-	})
+	}, map[string]uint64{"users": 5})
 	if req.GetPipelineId() != "p" || req.GetRunId() != "run" || req.GetEpoch() != 7 || req.GetGeneration() != 3 ||
 		req.GetPrevious().GetEpoch() != 6 || req.GetPrevious().GetGeneration() != 2 || !req.GetCreateTime().AsTime().Equal(created) {
 		t.Errorf("request %v", req)
@@ -49,10 +49,10 @@ func TestMirroredCheckpoint(t *testing.T) {
 	if len(streams) != 2 {
 		t.Fatalf("streams %v", streams)
 	}
-	if o := streams[0]; o.GetName() != "orders" || o.GetRows() != 4 || !o.GetForced() || o.GetComplete() || o.GetQuarantinedRows() != 0 || o.GetSchemaDigest() != "" {
+	if o := streams[0]; o.GetName() != "orders" || o.GetRows() != 4 || !o.GetForced() || o.GetComplete() || o.GetQuarantinedRows() != 0 || o.GetSchemaDigest() != "" || o.GetCollapsedRows() != 0 {
 		t.Errorf("orders: %v", o)
 	}
-	if u := streams[1]; u.GetName() != "users" || u.GetRows() != 10 || u.GetForced() || !u.GetComplete() || u.GetQuarantinedRows() != 3 || u.GetSchemaDigest() != want.Digest {
+	if u := streams[1]; u.GetName() != "users" || u.GetRows() != 10 || u.GetForced() || !u.GetComplete() || u.GetQuarantinedRows() != 3 || u.GetSchemaDigest() != want.Digest || u.GetCollapsedRows() != 5 {
 		t.Errorf("users: %v, want digest %s", u, want.Digest)
 	}
 }

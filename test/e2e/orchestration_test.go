@@ -118,13 +118,18 @@ func syncCount(t *testing.T, pipeline string) int {
 	return n
 }
 
-// syncNow starts a sync and waits for it to finish.
+// syncNow starts a sync and waits for it to finish. The last sync's
+// workflow can still be running for a moment after its row says it ended.
 func syncNow(t *testing.T, pipeline string) (status, stats string) {
 	t.Helper()
 	before := syncCount(t, pipeline)
-	if _, err := pipelines().SyncPipeline(t.Context(), connect.NewRequest(&apiv1.SyncPipelineRequest{Name: "workspaces/default/pipelines/" + pipeline})); err != nil {
-		t.Fatal(err)
-	}
+	eventually(t, 10*time.Second, "the last sync's workflow to end", func() bool {
+		_, err := pipelines().SyncPipeline(t.Context(), connect.NewRequest(&apiv1.SyncPipelineRequest{Name: "workspaces/default/pipelines/" + pipeline}))
+		if err != nil && connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatal(err)
+		}
+		return err == nil
+	})
 	eventually(t, 30*time.Second, "the sync to start", func() bool { return syncCount(t, pipeline) > before })
 	return waitSync(t, pipeline, 60*time.Second)
 }

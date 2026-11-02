@@ -104,13 +104,25 @@ func (c Capabilities) SupportsScope(s Scope) bool {
 	return false
 }
 
+// Dedupe is which append and overwrite rows an apply skips by _openetl_id.
+type Dedupe int
+
+const (
+	// DedupeNone inserts every staged row.
+	DedupeNone Dedupe = iota
+	// DedupeTarget inserts one row per ID in the epoch, and only IDs the
+	// target doesn't have yet.
+	DedupeTarget
+	// DedupeEpoch inserts one row per ID in the epoch.
+	DedupeEpoch
+)
+
 type Stream struct {
 	Name       string
 	Mode       WriteMode
 	PrimaryKey []string
-	// Dedupe append and overwrite writes on _openetl_id at apply. Only set
-	// for sinks with DedupeAtApply.
-	Dedupe bool
+	// Only set for sinks with DedupeAtApply.
+	Dedupe Dedupe
 }
 
 type OpenConfig struct {
@@ -144,7 +156,7 @@ type Writer interface {
 	// epoch visible with an (e.Generation, e.N) marker per stream, behind the
 	// fence: in one transaction, or one per stream with ScopeStream.
 	// Idempotent.
-	Commit(ctx context.Context, e Epoch, s Staged) error
+	Commit(ctx context.Context, e Epoch, s Staged) (Committed, error)
 	// Recover raises the fence to gen, then reports Applied, applies the
 	// streams whose marker is missing and reports Redone, or reports Lost.
 	// With a zero e it only raises the fence and reports Applied. Otherwise it
@@ -153,6 +165,14 @@ type Writer interface {
 	// e.N, which no recovery checks again.
 	Recover(ctx context.Context, gen uint64, e Epoch, s Staged) (Recovery, error)
 	Close(ctx context.Context) error
+}
+
+// Committed is what a Commit applied.
+type Committed struct {
+	// By stream: staged rows the apply didn't insert, because of Dedupe.
+	// Streams it applied in an earlier call have none. A Commit that fails
+	// returns those it applied before failing.
+	Collapsed map[string]uint64
 }
 
 // StreamSchema is a stream's schema as the dataflow shaped it: destination

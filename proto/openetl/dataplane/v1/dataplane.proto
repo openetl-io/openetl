@@ -109,6 +109,9 @@ message CheckpointStream {
   // The stream's schema, as its schema history keys it; empty if it has
   // none yet.
   string schema_digest = 6;
+  // Rows the apply didn't insert because a row with the same _openetl_id
+  // was earlier in the epoch or already in the destination.
+  uint64 collapsed_rows = 7;
 }
 
 message ReportCheckpointResponse {

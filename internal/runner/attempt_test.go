@@ -115,16 +115,16 @@ func (d *blockingDest) PreCommit(_ context.Context, e destination.Epoch) (destin
 	return nil, nil
 }
 
-func (d *blockingDest) Commit(ctx context.Context, e destination.Epoch, _ destination.Staged) error {
+func (d *blockingDest) Commit(ctx context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
 	if e.N != 1 {
-		return nil
+		return destination.Committed{}, nil
 	}
 	close(d.committing1)
 	select {
 	case <-d.preCommitted2:
-		return nil
+		return destination.Committed{}, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return destination.Committed{}, ctx.Err()
 	}
 }
 
@@ -230,7 +230,7 @@ func TestRecordsCountRows(t *testing.T) {
 		for _, pages := range []int{2, 3} {
 			committed := make(chan uint64, 16)
 			j := job(log, fmt.Sprintf("a%d", pages), ackSource{pages: pages, committed: committed, acks: new([]string)}, runner.Passthrough{Convert: columnless}, committed)
-			j.OnCheckpoint = func(rec *checkpoint.Record) {
+			j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
 				epochs = append(epochs, rec.Epoch)
 				if n := rec.Streams["s"].Rows; n > 1 {
 					t.Errorf("epoch %d read %d rows, want at most 1", rec.Epoch, n)
@@ -350,7 +350,7 @@ func TestForwardedBatches(t *testing.T) {
 		defer cancel()
 		j := job(checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), "a1", encodedSource{pages: 3}, runner.Passthrough{}, make(chan uint64, 16))
 		var rows uint64
-		j.OnCheckpoint = func(rec *checkpoint.Record) { rows += rec.Streams["s"].Rows }
+		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) { rows += rec.Streams["s"].Rows }
 		if _, err := runner.RunAttempt(ctx, j); err != nil {
 			t.Fatal(err)
 		}
@@ -475,8 +475,8 @@ func (d *countingDest) PreCommit(context.Context, destination.Epoch) (destinatio
 	return nil, nil
 }
 
-func (d *countingDest) Commit(context.Context, destination.Epoch, destination.Staged) error {
-	return nil
+func (d *countingDest) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+	return destination.Committed{}, nil
 }
 
 func (d *countingDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {

@@ -189,8 +189,11 @@ type SyncStream struct {
 	// Quarantined rows included.
 	Rows            uint64 `protobuf:"varint,2,opt,name=rows,proto3" json:"rows,omitempty"`
 	QuarantinedRows uint64 `protobuf:"varint,3,opt,name=quarantined_rows,json=quarantinedRows,proto3" json:"quarantined_rows,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Rows the destination didn't insert because a row with the same
+	// _openetl_id was earlier in the epoch or already there.
+	CollapsedRows uint64 `protobuf:"varint,4,opt,name=collapsed_rows,json=collapsedRows,proto3" json:"collapsed_rows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SyncStream) Reset() {
@@ -240,6 +243,13 @@ func (x *SyncStream) GetRows() uint64 {
 func (x *SyncStream) GetQuarantinedRows() uint64 {
 	if x != nil {
 		return x.QuarantinedRows
+	}
+	return 0
+}
+
+func (x *SyncStream) GetCollapsedRows() uint64 {
+	if x != nil {
+		return x.CollapsedRows
 	}
 	return 0
 }
@@ -658,12 +668,13 @@ const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\bend_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\x12\x1d\n" +
 	"\n" +
 	"data_plane\x18\a \x01(\tR\tdataPlane\x124\n" +
-	"\astreams\x18\b \x03(\v2\x1a.openetl.api.v1.SyncStreamR\astreams\"_\n" +
+	"\astreams\x18\b \x03(\v2\x1a.openetl.api.v1.SyncStreamR\astreams\"\x86\x01\n" +
 	"\n" +
 	"SyncStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\x04R\x04rows\x12)\n" +
-	"\x10quarantined_rows\x18\x03 \x01(\x04R\x0fquarantinedRows\"f\n" +
+	"\x10quarantined_rows\x18\x03 \x01(\x04R\x0fquarantinedRows\x12%\n" +
+	"\x0ecollapsed_rows\x18\x04 \x01(\x04R\rcollapsedRows\"f\n" +
 	"\x10ListSyncsRequest\x12\x16\n" +
 	"\x06parent\x18\x01 \x01(\tR\x06parent\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12\x1d\n" +

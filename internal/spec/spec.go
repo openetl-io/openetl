@@ -199,6 +199,8 @@ type streamYAML struct {
 	Sync       string `yaml:"sync"`
 	Cursor     string `yaml:"cursor"`
 	Timestamps string `yaml:"timestamps"`
+	Require    string `yaml:"require"`
+	Collapse   *bool  `yaml:"collapse"`
 	Columns    map[string]struct {
 		Op   string `yaml:"op"`
 		Type string `yaml:"type"`
@@ -260,11 +262,14 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, fmt.Errorf("source.streams[%d]: missing or repeated name %q", i, s.Name)
 		}
 		seen[s.Name] = true
-		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor}
+		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor, Collapse: s.Collapse}
 		if st.Sync, err = enum(apiv1.SyncMode_value, "SYNC_MODE_", "sync", s.Sync, apiv1.SyncMode_SYNC_MODE_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
 		}
 		if st.Timestamps, err = enum(apiv1.TimestampUnit_value, "TIMESTAMP_UNIT_", "timestamps", s.Timestamps, apiv1.TimestampUnit_TIMESTAMP_UNIT_UNSPECIFIED); err != nil {
+			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
+		}
+		if st.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", "require", s.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
 		}
 		for name, c := range s.Columns {

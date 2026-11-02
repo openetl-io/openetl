@@ -210,16 +210,43 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	if mode == planAll {
 		return printPlans(out, res.Msg)
 	}
+	printWarnings(out, res.Msg)
 	return nil
+}
+
+// printWarnings prints the plan warnings of each pipeline the apply created
+// or changed.
+func printWarnings(out io.Writer, res *apiv1.ApplyResponse) {
+	changed := changedPipelines(res)
+	for _, p := range res.GetPlans() {
+		if changed[p.GetPipeline()] && len(p.GetWarnings()) > 0 {
+			fmt.Fprintf(out, "\nwarnings for %s:\n", p.GetPipeline())
+			for _, w := range p.GetWarnings() {
+				fmt.Fprintf(out, "  %s\n", warningText(w))
+			}
+		}
+	}
+}
+
+func warningText(w *apiv1.PlanWarning) string {
+	if w.GetStream() == "" {
+		return w.GetMessage()
+	}
+	return w.GetStream() + ": " + w.GetMessage()
+}
+
+func changedPipelines(res *apiv1.ApplyResponse) map[string]bool {
+	changed := map[string]bool{}
+	for _, r := range slices.Concat(res.GetResources(), res.GetDependents()) {
+		changed[r.GetName()] = r.GetAction() != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED
+	}
+	return changed
 }
 
 // printPlans prints each pipeline's plan, and fails if one the apply would
 // create or change has problems.
 func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
-	changed := map[string]bool{}
-	for _, r := range slices.Concat(res.GetResources(), res.GetDependents()) {
-		changed[r.GetName()] = r.GetAction() != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED
-	}
+	changed := changedPipelines(res)
 	failed := false
 	for _, p := range res.GetPlans() {
 		fmt.Fprintf(out, "\n%s (version %.12s)\n", p.GetPipeline(), p.GetVersion())
@@ -237,10 +264,14 @@ func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
 			}
 			_ = tw.Flush()
 		}
+		var warnings []string
+		for _, w := range p.GetWarnings() {
+			warnings = append(warnings, warningText(w))
+		}
 		for _, list := range []struct {
 			title string
 			items []string
-		}{{"problems", p.GetProblems()}, {"notes", p.GetNotes()}} {
+		}{{"problems", p.GetProblems()}, {"warnings", warnings}, {"notes", p.GetNotes()}} {
 			if len(list.items) > 0 {
 				fmt.Fprintf(out, "  %s:\n", list.title)
 				for _, item := range list.items {

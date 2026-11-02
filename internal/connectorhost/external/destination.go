@@ -82,7 +82,7 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		Scope:      protocolv1.CommitScope(cfg.Scope), //nolint:gosec // small
 	}
 	for _, s := range cfg.Streams {
-		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: s.Name, Mode: protocolv1.WriteMode(s.Mode), PrimaryKey: s.PrimaryKey, Dedupe: s.Dedupe}) //nolint:gosec // small
+		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: s.Name, Mode: protocolv1.WriteMode(s.Mode), PrimaryKey: s.PrimaryKey, Dedupe: protocolv1.Dedupe(s.Dedupe)}) //nolint:gosec // small
 	}
 	// The stream lives until Close, or until ctx is done.
 	sctx, cancel := context.WithCancel(ctx)
@@ -231,12 +231,15 @@ func (w *writer) PreCommit(ctx context.Context, e destination.Epoch) (destinatio
 	return st.GetStaged(), nil
 }
 
-func (w *writer) Commit(ctx context.Context, e destination.Epoch, s destination.Staged) error {
+func (w *writer) Commit(ctx context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
 	c, err := call(ctx, w, &protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: epochProto(e), Staged: s}}}, w.committed)
 	if err != nil {
-		return err
+		return destination.Committed{}, err
 	}
-	return fenced(errs.FromProto(c.GetError()))
+	if err := fenced(errs.FromProto(c.GetError())); err != nil {
+		return destination.Committed{}, err
+	}
+	return destination.Committed{Collapsed: c.GetCollapsedRows()}, nil
 }
 
 // Close ends the stream and waits for the destination to close its writer.

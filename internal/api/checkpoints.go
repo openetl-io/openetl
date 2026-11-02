@@ -27,6 +27,7 @@ type mirroredStream struct {
 	Name            string `json:"name"`
 	Rows            uint64 `json:"rows"`
 	QuarantinedRows uint64 `json:"quarantined_rows"`
+	CollapsedRows   uint64 `json:"collapsed_rows"`
 	Forced          bool   `json:"forced"`
 	Complete        bool   `json:"complete"`
 	SchemaDigest    string `json:"schema_digest"`
@@ -56,7 +57,7 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	streams := make([]mirroredStream, 0, len(m.GetStreams()))
 	for _, st := range m.GetStreams() {
 		streams = append(streams, mirroredStream{
-			Name: st.GetName(), Rows: st.GetRows(), QuarantinedRows: st.GetQuarantinedRows(),
+			Name: st.GetName(), Rows: st.GetRows(), QuarantinedRows: st.GetQuarantinedRows(), CollapsedRows: st.GetCollapsedRows(),
 			Forced: st.GetForced(), Complete: st.GetComplete(), SchemaDigest: st.GetSchemaDigest(),
 		})
 	}
@@ -133,8 +134,8 @@ func (s *Server) ListCheckpoints(ctx context.Context, req *connect.Request[apiv1
 		}
 		for _, st := range streams {
 			c.Streams = append(c.Streams, &apiv1.CheckpointStream{
-				Name: st.Name, Rows: st.Rows, QuarantinedRows: st.QuarantinedRows, Forced: st.Forced, Complete: st.Complete,
-				SchemaVersion: versions[st.Name+"\x00"+st.SchemaDigest],
+				Name: st.Name, Rows: st.Rows, QuarantinedRows: st.QuarantinedRows, CollapsedRows: st.CollapsedRows,
+				Forced: st.Forced, Complete: st.Complete, SchemaVersion: versions[st.Name+"\x00"+st.SchemaDigest],
 			})
 		}
 		res.Checkpoints = append(res.Checkpoints, c)

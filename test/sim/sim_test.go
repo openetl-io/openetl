@@ -1,13 +1,15 @@
 // Package sim is a seeded simulation of the commit protocol. Each seed runs
 // the real runner against fake sources and a fake sink under injected faults,
 // crashes and zombie attempts, then checks no loss, no duplicates where
-// exactly-once, and the right final rows where effectively-once.
+// exactly-once, and the right final rows where effectively-once. Streams
+// without a primary key hold some rows twice, and check what collapses.
 //
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace
 package sim
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,13 +66,15 @@ func TestSimulation(t *testing.T) {
 }
 
 type streamCfg struct {
-	name   string
-	replay source.Replay
-	keyed  bool
+	name     string
+	replay   source.Replay
+	keyed    bool
+	require  delivery.Level
+	collapse *bool
 }
 
 func (s streamCfg) delivery(mode destination.WriteMode) delivery.Stream {
-	return delivery.Stream{Name: s.name, Replay: s.replay, Mode: mode, Keyed: s.keyed}
+	return delivery.Stream{Name: s.name, Replay: s.replay, Mode: mode, Keyed: s.keyed, Require: s.require, Collapse: s.collapse}
 }
 
 type config struct {
@@ -90,7 +94,14 @@ func (c config) String() string {
 		c.kind, c.mode, c.settings.Scope, c.settings.Require, c.settings.CommitMaxBytes,
 		c.settings.CommitInterval, c.settings.ResumePointTimeout, c.faults, c.zombies, c.keep)
 	for _, s := range c.streams {
-		fmt.Fprintf(&b, "%s(%v, keyed=%v) ", s.name, s.replay, s.keyed)
+		fmt.Fprintf(&b, "%s(%v, keyed=%v", s.name, s.replay, s.keyed)
+		if s.require != 0 {
+			fmt.Fprintf(&b, ", require=%v", s.require)
+		}
+		if s.collapse != nil {
+			fmt.Fprintf(&b, ", collapse=%v", *s.collapse)
+		}
+		b.WriteString(") ")
 	}
 	return b.String()
 }
@@ -105,8 +116,15 @@ func randomConfig(rng *rand.Rand, kind string) config {
 		if rng.IntN(2) == 0 {
 			r = source.Superset
 		}
-		keyed := c.mode == destination.Merge || rng.IntN(4) != 0
-		c.streams = append(c.streams, streamCfg{name: fmt.Sprintf("s%d", i), replay: r, keyed: keyed})
+		s := streamCfg{name: fmt.Sprintf("s%d", i), replay: r, keyed: c.mode == destination.Merge || rng.IntN(3) != 0}
+		if rng.IntN(3) == 0 {
+			s.require = []delivery.Level{delivery.AtLeastOnce, delivery.ExactlyOnce}[rng.IntN(2)]
+		}
+		// Only a sink that can dedupe can collapse.
+		if kind == "warehouse" && c.mode == destination.Append && rng.IntN(2) == 0 {
+			s.collapse = new(rng.IntN(2) == 0)
+		}
+		c.streams = append(c.streams, s)
 	}
 	c.settings = delivery.Settings{
 		Require:        delivery.ExactlyOnce,
@@ -178,7 +196,7 @@ func (w *world) job(attempt int) runner.Job {
 		KeepRecords: w.cfg.keep,
 	}
 	for _, s := range w.cfg.streams {
-		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode}
+		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, Require: s.require, Collapse: s.collapse}
 		if s.keyed {
 			st.PrimaryKey = []string{"key"}
 		}
@@ -206,22 +224,36 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		forced:    map[string]bool{},
 	}
 	for _, s := range cfg.streams {
-		w.upstreams[s.name] = newUpstream(rng, s.name, s.replay)
+		w.upstreams[s.name] = newUpstream(rng, s.name, s.replay, !s.keyed)
 	}
-	// Require no more than every stream can get, so the plan passes and a
+	// Each stream requires no more than it can get, so the plan passes and a
 	// forced barrier may never lower a stream below it.
 	caps := w.destination(0).Capabilities()
-	for _, s := range cfg.streams {
-		w.cfg.settings.Require = min(w.cfg.settings.Require, delivery.PlanStream(caps, s.delivery(cfg.mode), delivery.ExactlyOnce).Level)
+	var planned []delivery.Stream
+	for i, s := range w.cfg.streams {
+		if p := delivery.PlanStream(caps, s.delivery(cfg.mode), cfg.settings.Require); p.Level < cmp.Or(s.require, cfg.settings.Require) {
+			w.cfg.streams[i].require = p.Level
+		}
+		planned = append(planned, w.cfg.streams[i].delivery(cfg.mode))
+	}
+	res.config = w.cfg.String()
+	if err := delivery.Check(caps, w.cfg.settings, planned); err != nil {
+		res.failure = "the generated config fails the plan: " + err.Error()
+		return res
 	}
 	w.sched = newScheduler(rng, cfg.faults, cfg.zombies)
-	res.config = w.cfg.String()
 	res.stats = map[string]int{}
 
 	attempts := 0
 	err := w.sched.run(func(attempt int) error {
 		attempts = max(attempts, attempt)
-		r, err := runner.RunAttempt(context.Background(), w.job(attempt))
+		j := w.job(attempt)
+		j.OnCheckpoint = func(_ *checkpoint.Record, collapsed map[string]uint64) {
+			for _, n := range collapsed {
+				res.stats["collapsed rows"] += int(n)
+			}
+		}
+		r, err := runner.RunAttempt(context.Background(), j)
 		if errors.Is(err, checkpoint.ErrFenced) || errors.Is(err, destination.ErrFenced) {
 			res.stats["fenced attempts"]++
 		}
@@ -253,25 +285,34 @@ func (w *world) check(caps destination.Capabilities, stats map[string]int) strin
 	for _, s := range w.cfg.streams {
 		u := w.upstreams[s.name]
 		ds := s.delivery(w.cfg.mode)
-		level := delivery.PlanStream(caps, ds, w.cfg.settings.Require).Level
+		require := cmp.Or(s.require, w.cfg.settings.Require)
+		p := delivery.PlanStream(caps, ds, w.cfg.settings.Require)
+		level, forcedDedupe := p.Level, destination.DedupeNone
 		if forced[s.name] {
 			stats["forced streams"]++
-			ds.Replay = source.Superset
-			if lower := delivery.PlanStream(caps, ds, w.cfg.settings.Require).Level; lower < w.cfg.settings.Require {
-				problems = append(problems, fmt.Sprintf("%s: a barrier was forced although it lowers the stream to %v, below the required %v", s.name, lower, w.cfg.settings.Require))
+			f := delivery.PlanStream(caps, ds.Forced(w.cfg.settings.Require), w.cfg.settings.Require)
+			if f.Level < require {
+				problems = append(problems, fmt.Sprintf("%s: a barrier was forced although it lowers the stream to %v, below the required %v", s.name, f.Level, require))
 			} else {
-				level = min(level, lower)
+				level, forcedDedupe = min(level, f.Level), f.Dedupe
 			}
 		}
 		stats["level:"+level.String()]++
+		if p.Collapse {
+			stats["collapsing streams"]++
+		}
 		expected := map[string]record{}
+		copies := map[string]int{}
 		for _, r := range u.records {
-			expected[recordID(s.name, r.Key, r.Seq)] = r
+			id := recordID(s.name, r.Key, r.Seq)
+			expected[id] = r
+			copies[id]++
 		}
 		if w.cfg.mode == destination.Merge {
 			problems = append(problems, w.checkMerge(s.name, u, expected, level)...)
 		} else {
-			problems = append(problems, checkAppend(s.name, w.visible(s.name), expected, level)...)
+			lo, hi := appendBounds(level, p.Dedupe, forcedDedupe)
+			problems = append(problems, checkAppend(s.name, w.visible(s.name), expected, copies, lo, hi)...)
 		}
 	}
 	if len(problems) > 8 {
@@ -303,7 +344,31 @@ func (w *world) visible(stream string) []row {
 	}
 }
 
-func checkAppend(stream string, rows []row, expected map[string]record, level delivery.Level) []string {
+// appendBounds returns how many times a row the source holds m times may
+// land in an append table, as functions of m: the plan's dedupe, and the
+// dedupe after a restore from a forced barrier, if one was forced.
+func appendBounds(level delivery.Level, dedupe, forced destination.Dedupe) (lo, hi func(m int) int) {
+	same := func(m int) int { return m }
+	one := func(int) int { return 1 }
+	many := func(int) int { return 1 << 30 }
+	lo = same
+	if dedupe != destination.DedupeNone || forced != destination.DedupeNone {
+		// Collapsing loses the source's second copies.
+		lo = one
+	}
+	switch {
+	case level != delivery.ExactlyOnce:
+		return lo, many
+	case dedupe == destination.DedupeTarget:
+		return one, one
+	default:
+		// Exact: every copy lands once, unless a restore from a forced
+		// barrier collapsed the rest of an attempt.
+		return lo, same
+	}
+}
+
+func checkAppend(stream string, rows []row, expected map[string]record, copies map[string]int, lo, hi func(int) int) []string {
 	var problems []string
 	count := map[string]int{}
 	for _, r := range rows {
@@ -313,11 +378,14 @@ func checkAppend(stream string, rows []row, expected map[string]record, level de
 		count[r.ID]++
 	}
 	for id, r := range expected {
+		m := copies[id]
 		switch n := count[id]; {
 		case n == 0:
 			problems = append(problems, fmt.Sprintf("%s: LOST %s@%d", stream, r.Key, r.Seq))
-		case n > 1 && level == delivery.ExactlyOnce:
-			problems = append(problems, fmt.Sprintf("%s: DUPLICATED %s@%d ×%d (exactly-once)", stream, r.Key, r.Seq, n))
+		case n < lo(m):
+			problems = append(problems, fmt.Sprintf("%s: LOST a copy of %s@%d: %d of the source's %d", stream, r.Key, r.Seq, n, m))
+		case n > hi(m):
+			problems = append(problems, fmt.Sprintf("%s: DUPLICATED %s@%d ×%d, the source holds %d (exactly-once)", stream, r.Key, r.Seq, n, m))
 		}
 	}
 	return problems

@@ -1884,6 +1884,11 @@ components:
                     type: integer
                     description: The StreamSchema version it carried; 0 if it had none yet.
                     format: int32
+                collapsedRows:
+                    type: string
+                    description: |-
+                        Rows the apply didn't insert because a row with the same _openetl_id
+                         was earlier in the epoch or already in the destination.
         Commit:
             type: object
             properties:
@@ -2466,6 +2471,11 @@ components:
                     items:
                         type: string
                     description: What the plan couldn't check, and why.
+                warnings:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PlanWarning'
+                    description: What a sync will do that may not be wanted, such as collapsing rows.
             description: |-
                 PipelinePlan is how a pipeline version would sync, as far as the control
                  plane can tell from the source's latest catalog and the destination's
@@ -2561,6 +2571,21 @@ components:
                         - TIMESTAMP_UNIT_NANOSECOND
                     type: string
                     format: enum
+                require:
+                    enum:
+                        - DELIVERY_LEVEL_UNSPECIFIED
+                        - DELIVERY_LEVEL_AT_LEAST_ONCE
+                        - DELIVERY_LEVEL_EFFECTIVELY_ONCE
+                        - DELIVERY_LEVEL_EXACTLY_ONCE
+                    type: string
+                    description: Overrides delivery.require for this stream.
+                    format: enum
+                collapse:
+                    type: boolean
+                    description: |-
+                        Rows with the same content become one row. Only for streams without a
+                         primary key. Unset: true for a superset stream whose require is above
+                         at least once, otherwise false.
         PipelineVersion:
             type: object
             properties:
@@ -2607,6 +2632,14 @@ components:
                     type: string
                     description: As JSON; empty where the field is unset.
                 after:
+                    type: string
+        PlanWarning:
+            type: object
+            properties:
+                stream:
+                    type: string
+                    description: Empty if it's about the whole pipeline.
+                message:
                     type: string
         PostSyncStep:
             type: object
@@ -2825,6 +2858,11 @@ components:
                 reason:
                     type: string
                     description: What sets the level.
+                collapse:
+                    type: boolean
+                    description: |-
+                        Rows with the same content become one row: within each epoch, and
+                         against the target too when the level is exactly once.
         StreamSchema:
             type: object
             properties:
@@ -2908,6 +2946,11 @@ components:
                     description: Quarantined rows included.
                 quarantinedRows:
                     type: string
+                collapsedRows:
+                    type: string
+                    description: |-
+                        Rows the destination didn't insert because a row with the same
+                         _openetl_id was earlier in the epoch or already there.
         Types:
             type: object
             properties:

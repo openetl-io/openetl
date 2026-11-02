@@ -65,6 +65,9 @@ export function CheckpointsTab({ workspace, pipeline, running }: { workspace: st
                           {s.quarantinedRows > 0n && (
                             <span className="font-mono text-degraded tabular">{compact(s.quarantinedRows)} quarantined</span>
                           )}
+                          {s.collapsedRows > 0n && (
+                            <span className="font-mono text-muted-foreground tabular">{compact(s.collapsedRows)} collapsed</span>
+                          )}
                           {s.schemaVersion > 0 && <span className="font-mono text-muted-foreground">v{s.schemaVersion}</span>}
                           {s.forced && (
                             <Tooltip>

@@ -36,11 +36,8 @@ func Settings(d *apiv1.Delivery, caps destination.Capabilities) delivery.Setting
 	if caps.SupportsScope(destination.ScopePipeline) {
 		s.Scope = destination.ScopePipeline
 	}
-	switch d.GetRequire() {
-	case apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE:
-		s.Require = delivery.AtLeastOnce
-	case apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE:
-		s.Require = delivery.EffectivelyOnce
+	if r := Level(d.GetRequire()); r != 0 {
+		s.Require = r
 	}
 	if c := d.GetCommit(); c != nil {
 		if c.GetInterval() != nil {
@@ -72,6 +69,26 @@ func WriteMode(p *apiv1.PipelineSpec) destination.WriteMode {
 	return destination.Append
 }
 
+// Level is a spec's delivery level; 0 if it's unset.
+func Level(l apiv1.DeliveryLevel) delivery.Level {
+	for k, v := range levels {
+		if v == l {
+			return k
+		}
+	}
+	return 0
+}
+
+// deliveryStream is what sets a stream's level: the catalog's, and the
+// spec's settings for it, if it names the stream.
+func deliveryStream(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream, mode destination.WriteMode) delivery.Stream {
+	d := delivery.Stream{Name: cs.GetName(), Replay: replay(cs.GetReplay()), Mode: mode, Keyed: len(cs.GetPrimaryKey()) > 0, Require: Level(ps.GetRequire())}
+	if ps != nil {
+		d.Collapse = ps.Collapse
+	}
+	return d
+}
+
 var levels = map[delivery.Level]apiv1.DeliveryLevel{
 	delivery.AtLeastOnce:     apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE,
 	delivery.EffectivelyOnce: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE,
@@ -79,11 +96,12 @@ var levels = map[delivery.Level]apiv1.DeliveryLevel{
 }
 
 // Pipeline plans each stream the spec reads, and returns every check a sync
-// would fail. Without a catalog, it checks only the settings.
-func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities) ([]*apiv1.StreamPlan, []error) {
+// would fail and what the plan warns about. Without a catalog, it checks
+// only the settings.
+func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities) ([]*apiv1.StreamPlan, []error, []*apiv1.PlanWarning) {
 	settings := Settings(spec.GetDelivery(), caps)
 	if cat == nil {
-		return nil, delivery.Problems(caps, settings, nil)
+		return nil, delivery.Problems(caps, settings, nil), nil
 	}
 	var problems []error
 	type selected struct {
@@ -122,12 +140,17 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		if s.ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND && !caps.NanosecondTimestamps {
 			problems = append(problems, fmt.Errorf("stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", name))
 		}
-		d := delivery.Stream{Name: name, Replay: replay(s.cs.GetReplay()), Mode: mode, Keyed: len(s.cs.GetPrimaryKey()) > 0}
+		d := deliveryStream(s.cs, s.ps, mode)
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
-		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe, Reason: p.Why})
+		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why})
 	}
-	return plans, append(problems, delivery.Problems(caps, settings, ds)...)
+	problems = append(problems, delivery.Problems(caps, settings, ds)...)
+	var warnings []*apiv1.PlanWarning
+	for _, w := range delivery.Warnings(caps, settings, ds) {
+		warnings = append(warnings, &apiv1.PlanWarning{Stream: w.Stream, Message: w.Message})
+	}
+	return plans, problems, warnings
 }
 
 func replay(r apiv1.Replay) source.Replay {

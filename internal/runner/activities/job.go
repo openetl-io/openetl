@@ -61,6 +61,10 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			CursorField:          cmp.Or(ps.GetCursor(), cs.CursorField),
 			Schema:               cs.Schema,
 			NanosecondTimestamps: ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
+			Require:              plan.Level(ps.GetRequire()),
+		}
+		if ps != nil {
+			s.Collapse = ps.Collapse
 		}
 		for name, c := range ps.GetColumns() {
 			if t := columnTypes[c.GetType()]; t != nil {

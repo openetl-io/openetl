@@ -205,6 +205,12 @@ message PipelineStream {
   // By source column name.
   map<string, PipelineColumn> columns = 4;
   TimestampUnit timestamps = 5;
+  // Overrides delivery.require for this stream.
+  DeliveryLevel require = 6;
+  // Rows with the same content become one row. Only for streams without a
+  // primary key. Unset: true for a superset stream whose require is above
+  // at least once, otherwise false.
+  optional bool collapse = 7;
 }
 
 // The unit timestamps arrive in. Nanoseconds need a destination that
@@ -402,6 +408,14 @@ message PipelinePlan {
   repeated string problems = 5;
   // What the plan couldn't check, and why.
   repeated string notes = 6;
+  // What a sync will do that may not be wanted, such as collapsing rows.
+  repeated PlanWarning warnings = 7;
+}
+
+message PlanWarning {
+  // Empty if it's about the whole pipeline.
+  string stream = 1;
+  string message = 2;
 }
 
 message PlanChange {
@@ -421,6 +435,9 @@ message StreamPlan {
   bool dedupe = 3;
   // What sets the level.
   string reason = 4;
+  // Rows with the same content become one row: within each epoch, and
+  // against the target too when the level is exactly once.
+  bool collapse = 5;
 }
 
 // StreamSchema is a version of a stream's schema, as the destination has it.
@@ -489,6 +506,9 @@ message CheckpointStream {
   bool complete = 5;
   // The StreamSchema version it carried; 0 if it had none yet.
   int32 schema_version = 6;
+  // Rows the apply didn't insert because a row with the same _openetl_id
+  // was earlier in the epoch or already in the destination.
+  uint64 collapsed_rows = 7;
 }
 
 message ListCheckpointsRequest {

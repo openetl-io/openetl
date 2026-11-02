@@ -544,7 +544,10 @@ type CheckpointStream struct {
 	Complete bool `protobuf:"varint,5,opt,name=complete,proto3" json:"complete,omitempty"`
 	// The stream's schema, as its schema history keys it; empty if it has
 	// none yet.
-	SchemaDigest  string `protobuf:"bytes,6,opt,name=schema_digest,json=schemaDigest,proto3" json:"schema_digest,omitempty"`
+	SchemaDigest string `protobuf:"bytes,6,opt,name=schema_digest,json=schemaDigest,proto3" json:"schema_digest,omitempty"`
+	// Rows the apply didn't insert because a row with the same _openetl_id
+	// was earlier in the epoch or already in the destination.
+	CollapsedRows uint64 `protobuf:"varint,7,opt,name=collapsed_rows,json=collapsedRows,proto3" json:"collapsed_rows,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -619,6 +622,13 @@ func (x *CheckpointStream) GetSchemaDigest() string {
 		return x.SchemaDigest
 	}
 	return ""
+}
+
+func (x *CheckpointStream) GetCollapsedRows() uint64 {
+	if x != nil {
+		return x.CollapsedRows
+	}
+	return 0
 }
 
 type ReportCheckpointResponse struct {
@@ -1105,14 +1115,15 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x01 \x01(\x04R\n" +
 	"generation\x12\x14\n" +
-	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\"\xbe\x01\n" +
+	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\"\xe5\x01\n" +
 	"\x10CheckpointStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\x04R\x04rows\x12)\n" +
 	"\x10quarantined_rows\x18\x03 \x01(\x04R\x0fquarantinedRows\x12\x16\n" +
 	"\x06forced\x18\x04 \x01(\bR\x06forced\x12\x1a\n" +
 	"\bcomplete\x18\x05 \x01(\bR\bcomplete\x12#\n" +
-	"\rschema_digest\x18\x06 \x01(\tR\fschemaDigest\"0\n" +
+	"\rschema_digest\x18\x06 \x01(\tR\fschemaDigest\x12%\n" +
+	"\x0ecollapsed_rows\x18\a \x01(\x04R\rcollapsedRows\"0\n" +
 	"\x18ReportCheckpointResponse\x12\x14\n" +
 	"\x05added\x18\x01 \x01(\bR\x05added\"\x93\x01\n" +
 	"\x19GetConnectorConfigRequest\x12\x1d\n" +
