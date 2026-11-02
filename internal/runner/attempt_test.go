@@ -187,8 +187,9 @@ func TestAttemptsPruneTheLog(t *testing.T) {
 		for i, pages := range []int{3, 6, 9} {
 			committed := make(chan uint64, 16)
 			j := job(log, fmt.Sprintf("a%d", i), ackSource{pages: pages, committed: committed, acks: new([]string)}, runner.Passthrough{Convert: columnless}, committed)
-			// Above each attempt's commits, so only attempts' starts prune.
-			j.KeepRecords = 4
+			// Above each attempt's commits (3, or 4 if the completion has an
+			// epoch of its own), so only attempts' starts prune.
+			j.KeepRecords = 5
 			var err error
 			if res, err = runner.RunAttempt(ctx, j); err != nil {
 				t.Fatal(err)
@@ -213,8 +214,8 @@ func TestAttemptsPruneTheLog(t *testing.T) {
 				t.Errorf("record %d-g%d is left", e, g)
 			}
 		}
-		if r := res.Restored; !slices.Equal(older, []uint64{r - 3, r - 2, r - 1, r}) || len(newer) != res.Committed {
-			t.Fatalf("records %v up to the restored %d and %v after, want the last 4 and the %d committed", older, r, newer, res.Committed)
+		if r := res.Restored; !slices.Equal(older, []uint64{r - 4, r - 3, r - 2, r - 1, r}) || len(newer) != res.Committed {
+			t.Fatalf("records %v up to the restored %d and %v after, want the last 5 and the %d committed", older, r, newer, res.Committed)
 		}
 	})
 }
