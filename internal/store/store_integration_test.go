@@ -194,6 +194,80 @@ func TestDropMirrorPartitions(t *testing.T) {
 	}
 }
 
+// Migration 15 partitions the audit log by month and keeps its entries. A
+// month's partition is created when an entry first needs it, and goes once
+// the whole month is before the cutoff.
+func TestAuditLogPartitions(t *testing.T) {
+	ctx := t.Context()
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.MigrateTo(ctx, 14); err != nil {
+		t.Fatal(err)
+	}
+	org := uuid.New()
+	entry := func(at time.Time) db.InsertAuditEntryParams {
+		return db.InsertAuditEntryParams{OrgID: org, ID: uuid.Must(uuid.NewV7()), Time: at, Actor: "principals/a", Method: "m", Resources: []string{"r"}, Details: []byte("{}")}
+	}
+	for _, at := range []time.Time{time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 30, 23, 59, 0, 0, time.UTC), time.Now()} {
+		if err := s.InsertAuditEntry(ctx, entry(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteAuditEntry(ctx, entry(time.Date(2025, 1, 10, 0, 0, 0, 0, time.FixedZone("x", -5*3600)))); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ListAuditEntries(ctx, db.ListAuditEntriesParams{OrgID: org, MaxRows: 10}); err != nil || len(got) != 4 {
+		t.Fatalf("%d entries, %v", len(got), err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	partitions := func() []string {
+		rows, err := conn.Query(ctx, `SELECT c.relname::text FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+			WHERE i.inhparent = 'audit_log'::regclass ORDER BY 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return names
+	}
+	month := func(t time.Time) string { return "audit_log_" + t.UTC().Format("200601") }
+	now := time.Now()
+	next := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	if got := partitions(); got[0] != "audit_log_202501" || got[1] != "audit_log_202608" || got[2] != "audit_log_202609" || got[len(got)-1] != month(next) {
+		t.Fatalf("partitions %v", got)
+	}
+	if _, err := conn.Exec(ctx, "DELETE FROM audit_log"); err == nil {
+		t.Error("an entry was deleted from a partition")
+	}
+
+	dropped, err := s.DropAuditPartitions(ctx, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"audit_log_202501", "audit_log_202608", "audit_log_202609"}; !slices.Equal(dropped, want) {
+		t.Fatalf("dropped %v, want %v", dropped, want)
+	}
+	if got := partitions(); got[0] != "audit_log_202610" || got[len(got)-1] != month(next) {
+		t.Errorf("partitions left %v", got)
+	}
+	if got, err := s.ListAuditEntries(ctx, db.ListAuditEntriesParams{OrgID: org, MaxRows: 10}); err != nil || len(got) != 1 {
+		t.Errorf("%d entries left, %v", len(got), err)
+	}
+}
+
 // Migration 11 pins what pipeline versions from before it ran: their
 // sources' and destinations' current configs, and their dbt projects'
 // current bundles. Versions whose source is gone go.

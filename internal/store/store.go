@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -42,9 +43,15 @@ func Open(ctx context.Context, url string) (*Store, error) {
 
 func (s *Store) Close() { s.pool.Close() }
 
-// Migrate applies pending migrations. Concurrent callers wait on a session
-// lock.
-func (s *Store) Migrate(ctx context.Context) error { return s.migrate(ctx, 0) }
+// Migrate applies pending migrations, and creates the audit log's
+// partitions for this month and the next. Concurrent callers wait on a
+// session lock.
+func (s *Store) Migrate(ctx context.Context) error {
+	if err := s.migrate(ctx, 0); err != nil {
+		return err
+	}
+	return s.EnsureAuditPartitions(ctx, time.Now())
+}
 
 // migrate applies pending migrations up to version, or every one if it's 0.
 func (s *Store) migrate(ctx context.Context, version int64) error {

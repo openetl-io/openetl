@@ -119,7 +119,7 @@ func (s *Server) audit(ctx context.Context, req connect.AnyRequest, call connect
 	}
 	e := &entry{resources: []string{}}
 	e.touched(named(req.Any()))
-	err = s.Store.InsertAuditEntry(ctx, db.InsertAuditEntryParams{
+	err = s.Store.WriteAuditEntry(ctx, db.InsertAuditEntryParams{
 		OrgID: c.org, ID: id, Time: time.Now(), Actor: c.actor(), Credential: c.credential(),
 		Method: req.Spec().Procedure, Resources: e.resources, Details: []byte("{}"),
 		Peer: req.Peer().Addr, UserAgent: truncate(req.Header().Get("User-Agent"), maxUserAgent),

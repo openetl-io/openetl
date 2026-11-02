@@ -53,6 +53,8 @@ type Config struct {
 	LogOutput   string
 	LogMaxSize  int
 	LogMaxFiles int
+	// Days the audit log keeps entries at least; 0 keeps every entry.
+	AuditRetentionDays int
 }
 
 type option struct {
@@ -92,6 +94,7 @@ type intOption struct {
 var intOptions = []intOption{
 	{"log-max-size", "OPENETL_LOG_MAX_SIZE", 100, "megabytes a log file reaches before it's rotated", func(c *Config) *int { return &c.LogMaxSize }},
 	{"log-max-files", "OPENETL_LOG_MAX_FILES", 5, "rotated log files kept", func(c *Config) *int { return &c.LogMaxFiles }},
+	{"audit-retention-days", "OPENETL_AUDIT_RETENTION_DAYS", 90, "days the audit log keeps entries at least: a month's entries go once the month ended that long ago; 0 keeps every entry", func(c *Config) *int { return &c.AuditRetentionDays }},
 }
 
 // Parse parses args. defaults override the built-in defaults, by flag name;
@@ -120,6 +123,9 @@ func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config,
 		return c, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	c.RunnerToken = os.Getenv("OPENETL_RUNNER_TOKEN")
+	if c.AuditRetentionDays < 0 {
+		return c, fmt.Errorf("config: audit-retention-days is %d; it can't be negative", c.AuditRetentionDays)
+	}
 	if c.DataPlane == "" || strings.ContainsAny(c.DataPlane, ". /") {
 		return c, errors.New("config: the data plane ID must be non-empty, without dots, slashes or spaces")
 	}

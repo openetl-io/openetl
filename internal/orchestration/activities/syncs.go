@@ -237,6 +237,19 @@ func (a *Activities) DropMirrorPartitions(ctx context.Context, in contract.DropM
 	return dropped, temporalx.ApplicationError(err)
 }
 
+// AuditPartitions creates the audit log's next month's partition, and drops
+// the months that end by in.Before.
+func (a *Activities) AuditPartitions(ctx context.Context, in contract.AuditPartitionsInput) ([]string, error) {
+	if err := a.Store.EnsureAuditPartitions(ctx, in.Now); err != nil {
+		return nil, temporalx.ApplicationError(err)
+	}
+	if in.Before.IsZero() {
+		return nil, nil
+	}
+	dropped, err := a.Store.DropAuditPartitions(ctx, in.Before)
+	return dropped, temporalx.ApplicationError(err)
+}
+
 func ids(a, b string) (uuid.UUID, uuid.UUID, error) {
 	x, err := uuid.Parse(a)
 	if err != nil {

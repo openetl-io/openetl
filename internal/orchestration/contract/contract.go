@@ -29,6 +29,7 @@ const (
 	DiscoverSource       = "DiscoverSource"
 	TeardownSource       = "TeardownSource"
 	DropMirrorPartitions = "DropMirrorPartitions"
+	AuditPartitions      = "AuditPartitions"
 	ReadLogs             = "ReadLogs"
 )
 
@@ -285,11 +286,23 @@ type ConnectorOpInput struct {
 type RetentionInput struct {
 	// How long the checkpoint mirror keeps a day's checkpoints.
 	CheckpointHistory time.Duration
+	// How long the audit log keeps an entry at least: a month goes once it
+	// ended that long ago. Zero keeps every entry.
+	AuditHistory time.Duration
 }
 
 type RetentionResult struct {
 	// The checkpoint mirror's partitions dropped.
 	MirrorPartitions []string
+	// The audit log's.
+	AuditPartitions []string
+}
+
+type AuditPartitionsInput struct {
+	// The next month's partition is created ahead.
+	Now time.Time
+	// Months that end by then are dropped; none if it's zero.
+	Before time.Time
 }
 
 type DropMirrorPartitionsInput struct {

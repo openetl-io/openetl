@@ -166,7 +166,7 @@ func Run(ctx context.Context, o Options) error {
 		g.Go(func() error { return serve(gctx, ln, h, o.Ready, log) })
 	}
 	if o.Roles.Orchestrator {
-		g.Go(func() error { return orchestrate(gctx, tc, st, o.Workflows) })
+		g.Go(func() error { return orchestrate(gctx, cfg, tc, st, o.Workflows) })
 	}
 	if o.Roles.Runner {
 		g.Go(func() error { return runRunner(gctx, cfg, tc, log.With("role", "runner")) })
@@ -254,9 +254,13 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, ready func(stri
 	return nil
 }
 
-func orchestrate(ctx context.Context, tc client.Client, st *store.Store, wf workflows.Workflows) error {
+func orchestrate(ctx context.Context, cfg config.Config, tc client.Client, st *store.Store, wf workflows.Workflows) error {
 	sched := &schedules.Schedules{Client: tc}
-	if err := sched.EnsureRetention(ctx, contract.RetentionInput{CheckpointHistory: contract.DefaultCheckpointHistory}); err != nil {
+	retention := contract.RetentionInput{
+		CheckpointHistory: contract.DefaultCheckpointHistory,
+		AuditHistory:      time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour,
+	}
+	if err := sched.EnsureRetention(ctx, retention); err != nil {
 		return err
 	}
 	w := worker.New(tc, contract.OrchestratorQueue, worker.Options{})
@@ -271,6 +275,7 @@ func orchestrate(ctx context.Context, tc client.Client, st *store.Store, wf work
 	w.RegisterActivityWithOptions(acts.GetStreamState, activity.RegisterOptions{Name: contract.GetStreamState})
 	w.RegisterActivityWithOptions(acts.StartRun, activity.RegisterOptions{Name: contract.StartRun})
 	w.RegisterActivityWithOptions(acts.DropMirrorPartitions, activity.RegisterOptions{Name: contract.DropMirrorPartitions})
+	w.RegisterActivityWithOptions(acts.AuditPartitions, activity.RegisterOptions{Name: contract.AuditPartitions})
 	return runWorker(ctx, w)
 }
 
