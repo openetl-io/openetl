@@ -101,6 +101,12 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
+      # The whole stack's images and the connectors' builds don't fit beside
+      # the runner's preinstalled SDKs, none of which the job uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
       - uses: actions/checkout@v5
       # The official connectors; a nested module, so ./... skips it.
       - uses: actions/checkout@v5
