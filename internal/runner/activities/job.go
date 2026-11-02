@@ -59,7 +59,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		}
 		read := plan.ReadMode(declared, ps)
 		mode := plan.StreamMode(p, caps, read)
-		if err := plan.SyncProblem(mode, cs.Name, read); err != nil {
+		if err := errors.Join(plan.SyncProblem(mode, cs.Name, read), plan.ReadProblem(p, cs.Name, read)); err != nil {
 			return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
 		}
 		s := runner.Stream{
@@ -126,7 +126,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		Streams:            streams,
 		Destination:        dst,
 		Namespace:          p.GetDestination().GetNamespace(),
-		Settings:           plan.Settings(p.GetDelivery(), dst.Capabilities()),
+		Settings:           plan.Settings(p, dst.Capabilities()),
 		KeepSourceNames:    p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
 		SchemaPolicy:       policy,
 		QuarantineInfinity: p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_QUARANTINE,

@@ -8,7 +8,9 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
 
-// SyncService reads pipelines' syncs and their logs.
+// SyncService reads pipelines' syncs and their logs. A continuous
+// pipeline's syncs are its runs: each runs one version until it is stopped
+// or fails.
 service SyncService {
   // Newest first.
   rpc ListSyncs(ListSyncsRequest) returns (ListSyncsResponse) {
@@ -42,6 +44,11 @@ message Sync {
   // What its committed epochs carried, by stream, from the checkpoints the
   // control plane keeps (30 days).
   repeated SyncStream streams = 8;
+  // A continuous pipeline's run.
+  bool continuous = 9;
+  // When its latest epoch was committed; unset if none was, or the
+  // control plane no longer keeps it.
+  google.protobuf.Timestamp last_commit_time = 10;
 }
 
 message SyncStream {
@@ -59,6 +66,9 @@ enum SyncState {
   SYNC_STATE_RUNNING = 1;
   SYNC_STATE_SUCCEEDED = 2;
   SYNC_STATE_FAILED = 3;
+  // A continuous pipeline's run that stopped when asked to: for a new
+  // version, a pause, or a change of mode.
+  SYNC_STATE_STOPPED = 4;
 }
 
 message ListSyncsRequest {

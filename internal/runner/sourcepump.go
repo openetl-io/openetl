@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -100,6 +101,9 @@ type sourcePump struct {
 	done          bool
 	forceTimer    *time.Timer
 	forceC        <-chan time.Time
+	// Counts what the source emitted, for the coordinator to skip epochs
+	// that would hold nothing.
+	emitted atomic.Uint64
 }
 
 var _ source.Forwarder = (*sourcePump)(nil)
@@ -215,6 +219,7 @@ func (p *sourcePump) handle(e emit) error {
 	if st.complete {
 		return fmt.Errorf("runner: source emitted on stream %q after completing it", e.stream)
 	}
+	p.emitted.Add(1)
 	switch e.kind {
 	case emitRows, emitBatch:
 		f := Frame{Kind: FrameRows, Stream: e.stream, Rows: e.rows}

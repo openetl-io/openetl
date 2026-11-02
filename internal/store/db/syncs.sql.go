@@ -37,7 +37,7 @@ func (q *Queries) FinishSync(ctx context.Context, arg FinishSyncParams) error {
 }
 
 const getSync = `-- name: GetSync :one
-SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
+SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, s.continuous, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
 FROM syncs s
 JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
 LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
@@ -62,6 +62,7 @@ type GetSyncRow struct {
 	Stats       []byte
 	StartTime   time.Time
 	EndTime     *time.Time
+	Continuous  bool
 	DataPlaneID string
 }
 
@@ -80,6 +81,7 @@ func (q *Queries) GetSync(ctx context.Context, arg GetSyncParams) (GetSyncRow, e
 		&i.Stats,
 		&i.StartTime,
 		&i.EndTime,
+		&i.Continuous,
 		&i.DataPlaneID,
 	)
 	return i, err
@@ -106,7 +108,7 @@ func (q *Queries) LastSyncSuccess(ctx context.Context, arg LastSyncSuccessParams
 }
 
 const listSyncs = `-- name: ListSyncs :many
-SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
+SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, s.continuous, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
 FROM syncs s
 JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
 LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
@@ -136,6 +138,7 @@ type ListSyncsRow struct {
 	Stats       []byte
 	StartTime   time.Time
 	EndTime     *time.Time
+	Continuous  bool
 	DataPlaneID string
 }
 
@@ -168,6 +171,7 @@ func (q *Queries) ListSyncs(ctx context.Context, arg ListSyncsParams) ([]ListSyn
 			&i.Stats,
 			&i.StartTime,
 			&i.EndTime,
+			&i.Continuous,
 			&i.DataPlaneID,
 		); err != nil {
 			return nil, err
@@ -181,8 +185,8 @@ func (q *Queries) ListSyncs(ctx context.Context, arg ListSyncsParams) ([]ListSyn
 }
 
 const startSync = `-- name: StartSync :one
-INSERT INTO syncs (org_id, id, pipeline_id, version, workflow_id, run_id, status)
-VALUES ($1, $2, $3, $4, $5, $6, 'running')
+INSERT INTO syncs (org_id, id, pipeline_id, version, workflow_id, run_id, status, continuous)
+VALUES ($1, $2, $3, $4, $5, $6, 'running', $7)
 ON CONFLICT (org_id, run_id) DO UPDATE SET status = syncs.status
 RETURNING id
 `
@@ -194,6 +198,7 @@ type StartSyncParams struct {
 	Version    string
 	WorkflowID string
 	RunID      string
+	Continuous bool
 }
 
 func (q *Queries) StartSync(ctx context.Context, arg StartSyncParams) (uuid.UUID, error) {
@@ -204,6 +209,7 @@ func (q *Queries) StartSync(ctx context.Context, arg StartSyncParams) (uuid.UUID
 		arg.Version,
 		arg.WorkflowID,
 		arg.RunID,
+		arg.Continuous,
 	)
 	var id uuid.UUID
 	err := row.Scan(&id)

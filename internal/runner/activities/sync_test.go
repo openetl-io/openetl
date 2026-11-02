@@ -3,6 +3,11 @@ package activities
 import (
 	"path/filepath"
 	"testing"
+	"time"
+
+	"go.temporal.io/sdk/activity"
+
+	"github.com/unsuitable001/openetl/internal/platform/errs"
 )
 
 func TestQuarantineURL(t *testing.T) {
@@ -19,5 +24,19 @@ func TestQuarantineURL(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("quarantineURL(%q) = %q, %v; want %q", storage, got, err, want)
 		}
+	}
+}
+
+func TestLateStart(t *testing.T) {
+	info := activity.Info{HeartbeatTimeout: time.Minute, StartedTime: time.Now().Add(-30 * time.Second)}
+	if err := lateStart(info); err != nil {
+		t.Errorf("30 s late: %v", err)
+	}
+	info.StartedTime = time.Now().Add(-2 * time.Minute)
+	if err := lateStart(info); errs.CodeOf(err) != errs.Transient {
+		t.Errorf("2 min late: %v, want TRANSIENT", err)
+	}
+	if err := lateStart(activity.Info{StartedTime: info.StartedTime}); err != nil {
+		t.Errorf("no heartbeat timeout: %v", err)
 	}
 }

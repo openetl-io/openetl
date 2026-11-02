@@ -262,6 +262,7 @@ type Sync struct {
 	Stats      []byte
 	StartTime  time.Time
 	EndTime    *time.Time
+	Continuous bool
 }
 
 type Workspace struct {

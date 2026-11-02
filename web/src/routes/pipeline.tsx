@@ -10,12 +10,12 @@ import { RelativeTime } from "@/components/relative-time";
 import { StatusBadge } from "@/components/status";
 import { SyncStrip } from "@/components/sync-strip";
 import { DestinationService, SourceService } from "@/gen/openetl/api/v1/connection_pb";
-import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
+import { PipelineMode, PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { errorCode, errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
 import { destinationName, pipelineName, shortDigest, sourceName } from "@/lib/names";
-import { scheduleLabel, stale } from "@/lib/pipeline";
+import { lastUpdate, scheduleLabel, stale } from "@/lib/pipeline";
 import { pipelineStatus } from "@/lib/status";
 import { Overview } from "./pipeline-overview";
 import { SyncsTab } from "./pipeline-syncs";
@@ -79,7 +79,7 @@ export function PipelinePage() {
   }
   const pl = p.data?.pipeline;
   const status = pl ? pipelineStatus(pl) : undefined;
-  const lastSuccess = dateOf(pl?.status?.lastSuccessTime);
+  const lastSuccess = pl && lastUpdate(pl);
 
   return (
     <div className="grid gap-6">
@@ -115,7 +115,7 @@ export function PipelinePage() {
             <Fact label="Schedule">
               {pl.paused ? "Paused" : <span className={spec?.schedule?.trigger.case === "cron" ? "font-mono text-[0.8125rem]" : undefined}>{scheduleLabel(spec)}</span>}
             </Fact>
-            <Fact label="Last success">
+            <Fact label={spec?.mode === PipelineMode.CONTINUOUS ? "Last commit" : "Last success"}>
               {lastSuccess ? (
                 <span className={stale(pl) ? "text-degraded" : undefined}>
                   <RelativeTime date={lastSuccess} />

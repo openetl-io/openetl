@@ -241,14 +241,21 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		res.Restored = restored.Epoch
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
-	if n, err := sess.Prune(ctx, restored, cmp.Or(job.KeepRecords, defaultKeepRecords)); err != nil {
+	prune(ctx, sess, restored, job.keep(), log)
+
+	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reported: map[string]*arrow.Schema{}}
+	return res, c.run(ctx, restored, canForce)
+}
+
+func (j *Job) keep() int { return cmp.Or(j.KeepRecords, defaultKeepRecords) }
+
+// prune is best effort: a later prune deletes what it leaves.
+func prune(ctx context.Context, sess *checkpoint.Session, restored *checkpoint.Record, keep int, log *slog.Logger) {
+	if n, err := sess.Prune(ctx, restored, keep); err != nil {
 		log.Warn("pruning the checkpoint log failed", "deleted", n, "err", err)
 	} else if n > 0 {
 		log.Debug("pruned the checkpoint log", "deleted", n)
 	}
-
-	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reported: map[string]*arrow.Schema{}}
-	return res, c.run(ctx, restored, canForce)
 }
 
 func (j *Job) validate() error {
@@ -347,6 +354,8 @@ type coordinator struct {
 	applied     map[string]*arrow.Schema // owned by the committer: each stream's schema last applied
 	reported    map[string]*arrow.Schema // owned by the committer: each stream's schema last passed to OnSchemas
 	readStarts  map[string]int64
+	sincePrune  int    // owned by the committer: commits since it last pruned
+	seen        uint64 // what the source had emitted when the last barrier was requested
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
@@ -483,6 +492,7 @@ func (c *coordinator) loop(ctx context.Context) error {
 				c.drainEpoch = n
 			}
 			c.pending[n] = &epochState{}
+			c.seen = c.pump.emitted.Load()
 			if err := c.pump.requestBarrier(n); err != nil {
 				return err
 			}
@@ -494,7 +504,8 @@ func (c *coordinator) loop(ctx context.Context) error {
 				return err
 			}
 		case <-tick:
-			c.want = true
+			// An idle source's epoch would hold nothing.
+			c.want = c.want || c.pump.emitted.Load() != c.seen
 		case <-drain:
 			drain = nil
 			c.draining, c.want = true, true
@@ -668,6 +679,12 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) erro
 		}
 	}
 	c.ackStates = st.states
+
+	// A long job prunes as it goes, not only when it starts.
+	if c.sincePrune++; c.sincePrune >= c.job.keep() {
+		c.sincePrune = 0
+		prune(ctx, c.sess, rec, c.job.keep(), c.log)
+	}
 	return nil
 }
 

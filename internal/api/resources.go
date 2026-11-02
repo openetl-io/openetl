@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/internal/orchestration/schedules"
+	"github.com/unsuitable001/openetl/internal/plan"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
 )
@@ -142,8 +143,8 @@ func (s *Server) ListPipelines(ctx context.Context, req *connect.Request[apiv1.L
 	return connect.NewResponse(res), nil
 }
 
-// DeletePipeline removes its schedule first, so a failure leaves a pipeline
-// that applying again reschedules.
+// DeletePipeline removes its schedule and stops its supervisor first, so a
+// failure leaves a pipeline that applying again runs.
 func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.DeletePipelineRequest]) (*connect.Response[apiv1.DeletePipelineResponse], error) {
 	_, p, err := s.getPipeline(ctx, req.Msg.GetName())
 	if err != nil {
@@ -153,6 +154,9 @@ func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.
 		return nil, err
 	}
 	if err := s.Schedules.Delete(ctx, p.ID.String()); err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+	if err := s.Schedules.StopStream(ctx, p.ID.String()); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
 	if _, err := s.Store.DeletePipeline(ctx, db.DeletePipelineParams{OrgID: s.Tenant.Org, ID: p.ID}); err != nil {
@@ -177,9 +181,10 @@ func (s *Server) ResumePipeline(ctx context.Context, req *connect.Request[apiv1.
 	return connect.NewResponse(&apiv1.ResumePipelineResponse{Pipeline: p}), nil
 }
 
-// setPaused records the state first: syncs check it before they run, so a
-// schedule left behind by a failure can't run a paused pipeline. Calling it
-// again repairs the schedule.
+// setPaused records the state first: syncs and supervisors check it before
+// they run, so a schedule left behind by a failure can't run a paused
+// pipeline. Calling it again repairs the schedule, or for a continuous
+// pipeline, has its supervisor stop or start its job.
 func (s *Server) setPaused(ctx context.Context, name string, paused bool) (*apiv1.Pipeline, error) {
 	ws, p, err := s.getPipeline(ctx, name)
 	if err != nil {
@@ -188,12 +193,21 @@ func (s *Server) setPaused(ctx context.Context, name string, paused bool) (*apiv
 	if err := s.Store.SetPipelinePaused(ctx, db.SetPipelinePausedParams{OrgID: s.Tenant.Org, ID: p.ID, Paused: paused}); err != nil {
 		return nil, err
 	}
-	if err := s.Schedules.SetPaused(ctx, p.ID.String(), paused); err != nil {
-		s.log().Error("schedule pause failed", "pipeline", p.ID, "paused", paused, "err", err)
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the pipeline's state was stored, but its schedule couldn't be changed; try again: %w", err))
-	}
 	p.Paused = paused
-	return s.pipeline(ctx, ws, p)
+	out, err := s.pipeline(ctx, ws, p)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Continuous(out.GetSpec()) {
+		err = s.Schedules.Refresh(ctx, s.Tenant.Org.String(), p.ID.String())
+	} else {
+		err = s.Schedules.SetPaused(ctx, p.ID.String(), paused)
+	}
+	if err != nil {
+		s.log().Error("schedule pause failed", "pipeline", p.ID, "paused", paused, "err", err)
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the pipeline's state was stored, but what runs it couldn't be changed; try again: %w", err))
+	}
+	return out, nil
 }
 
 func (s *Server) SyncPipeline(ctx context.Context, req *connect.Request[apiv1.SyncPipelineRequest]) (*connect.Response[apiv1.SyncPipelineResponse], error) {
@@ -203,6 +217,17 @@ func (s *Server) SyncPipeline(ctx context.Context, req *connect.Request[apiv1.Sy
 	}
 	if p.Paused {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s is paused; resume it first", req.Msg.GetName()))
+	}
+	v, err := s.Store.GetPipelineVersion(ctx, db.GetPipelineVersionParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Version: p.Version})
+	if err != nil {
+		return nil, err
+	}
+	var spec apiv1.PipelineSpec
+	if err := protojson.Unmarshal(v.Spec, &spec); err != nil {
+		return nil, err
+	}
+	if plan.Continuous(&spec) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s is continuous, so it has no syncs to start", req.Msg.GetName()))
 	}
 	err = s.Schedules.Trigger(ctx, p.ID.String())
 	switch {

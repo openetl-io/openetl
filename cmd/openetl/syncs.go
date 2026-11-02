@@ -39,7 +39,7 @@ func runSyncs(ctx context.Context, args []string, out io.Writer) error {
 	}
 	req := &apiv1.ListSyncsRequest{Parent: "workspaces/" + *workspace + "/pipelines/" + rest[0]}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "SYNC\tSTATE\tSTARTED\tTOOK\tROWS\tVERSION\tERROR")
+	fmt.Fprintln(tw, "SYNC\tSTATE\tSTARTED\tTOOK\tROWS\tVERSION\tLAST COMMIT\tERROR")
 	for left := *limit; left > 0; {
 		req.PageSize = int32(min(left, 500))
 		res, err := c.ListSyncs(ctx, connect.NewRequest(req))
@@ -60,7 +60,7 @@ func runSyncs(ctx context.Context, args []string, out io.Writer) error {
 			for _, st := range s.GetStreams() {
 				rows += st.GetRows()
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", path.Base(s.GetName()), state, when(s.GetStartTime()), took, rows, s.GetVersion(), msg)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", path.Base(s.GetName()), state, when(s.GetStartTime()), took, rows, s.GetVersion(), when(s.GetLastCommitTime()), msg)
 		}
 		left -= len(res.Msg.GetSyncs())
 		if req.PageToken = res.Msg.GetNextPageToken(); req.PageToken == "" {

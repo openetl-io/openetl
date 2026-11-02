@@ -1,7 +1,7 @@
-// Package faker is a bounded source of generated rows. Row i of a stream
-// depends only on the seed and i, so a resumed read yields exactly the rows
-// after its resume point, or with an overlap, those and the ones just before
-// it.
+// Package faker is a source of generated rows, bounded unless endless. Row
+// i of a stream depends only on the seed and i, so a resumed read yields
+// exactly the rows after its resume point, or with an overlap, those and the
+// ones just before it.
 package faker
 
 import (
@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"strconv"
 	"time"
 
@@ -19,7 +20,8 @@ import (
 
 type Config struct {
 	Seed uint64 `json:"seed"`
-	// Rows per stream. Default 1000.
+	// Rows per stream. Default 1000. Endless streams use it only for
+	// purchases' user_id.
 	Count int `json:"count"`
 	// Rows per batch; each batch ends at a resume point. Default 100.
 	BatchSize int `json:"batchSize"`
@@ -34,6 +36,9 @@ type Config struct {
 	// Every twice-th row is a copy of the row before it, as a table without
 	// a primary key can hold a row twice. Only with keyless.
 	Twice int `json:"twice"`
+	// Streams never end, as for a continuous pipeline: each round emits a
+	// batch of every stream, then waits delay.
+	Endless bool `json:"endless"`
 }
 
 type Source struct {
@@ -91,6 +96,9 @@ func (s *Source) Discover(context.Context) (source.Catalog, error) {
 	}
 	for _, st := range streams {
 		cs := source.CatalogStream{Name: st.name, PrimaryKey: []string{"id"}, Replay: replay, SyncModes: []source.SyncMode{source.FullRefresh}}
+		if s.cfg.Endless {
+			cs.SyncModes = []source.SyncMode{source.Stream}
+		}
 		if s.cfg.Keyless {
 			cs.PrimaryKey, cs.CursorField = nil, "id"
 		}
@@ -105,14 +113,11 @@ type state struct {
 }
 
 func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
-	for _, cs := range req.Streams {
-		idx := -1
-		for i, st := range streams {
-			if st.name == cs.Name {
-				idx = i
-			}
-		}
-		if idx < 0 {
+	idxs := make([]int, len(req.Streams))
+	nexts := make([]int, len(req.Streams))
+	for i, cs := range req.Streams {
+		idxs[i] = slices.IndexFunc(streams, func(st stream) bool { return st.name == cs.Name })
+		if idxs[i] < 0 {
 			return fmt.Errorf("faker: unknown stream %q", cs.Name)
 		}
 		var st state
@@ -121,7 +126,23 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 				return fmt.Errorf("faker: %s state: %w", cs.Name, err)
 			}
 		}
-		if err := s.readStream(ctx, idx, max(st.Next-s.cfg.Overlap, 0), out); err != nil {
+		nexts[i] = max(st.Next-s.cfg.Overlap, 0)
+	}
+	if s.cfg.Endless {
+		for {
+			for i, idx := range idxs {
+				var err error
+				if nexts[i], err = s.batch(idx, nexts[i], out); err != nil {
+					return err
+				}
+			}
+			if err := s.pause(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	for i, idx := range idxs {
+		if err := s.readStream(ctx, idx, nexts[i], out); err != nil {
 			return err
 		}
 	}
@@ -129,44 +150,63 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 }
 
 func (s *Source) readStream(ctx context.Context, idx, next int, out source.Emitter) error {
-	st := streams[idx]
 	for next < s.cfg.Count {
-		end := min(next+s.cfg.BatchSize, s.cfg.Count)
-		rows := make([]json.RawMessage, 0, end-next)
-		for i := next; i < end; i++ {
-			from := i
-			if s.cfg.Twice > 0 && i > 0 && i%s.cfg.Twice == 0 {
-				from = i - 1
-			}
-			r := rand.New(rand.NewPCG(s.cfg.Seed, uint64(from)<<8|uint64(idx))) //nolint:gosec // generated test data must be reproducible
-			b, err := json.Marshal(st.row(r, from, s.cfg.Count))
-			if err != nil {
+		var err error
+		if next, err = s.batch(idx, next, out); err != nil {
+			return err
+		}
+		if next < s.cfg.Count {
+			if err := s.pause(ctx); err != nil {
 				return err
-			}
-			rows = append(rows, b)
-		}
-		if err := out.Rows(st.name, rows); err != nil {
-			return err
-		}
-		next = end
-		resume, err := json.Marshal(state{Next: next})
-		if err != nil {
-			return err
-		}
-		if err := out.ResumePoint(st.name, resume); err != nil {
-			return err
-		}
-		if s.delay > 0 && next < s.cfg.Count {
-			t := time.NewTimer(s.delay)
-			select {
-			case <-t.C:
-			case <-ctx.Done():
-				t.Stop()
-				return ctx.Err()
 			}
 		}
 	}
-	return out.Complete(st.name, nil)
+	return out.Complete(streams[idx].name, nil)
+}
+
+// batch emits the stream's rows from next, then a resume point, and returns
+// the row after them.
+func (s *Source) batch(idx, next int, out source.Emitter) (int, error) {
+	st := streams[idx]
+	end := next + s.cfg.BatchSize
+	if !s.cfg.Endless {
+		end = min(end, s.cfg.Count)
+	}
+	rows := make([]json.RawMessage, 0, end-next)
+	for i := next; i < end; i++ {
+		from := i
+		if s.cfg.Twice > 0 && i > 0 && i%s.cfg.Twice == 0 {
+			from = i - 1
+		}
+		r := rand.New(rand.NewPCG(s.cfg.Seed, uint64(from)<<8|uint64(idx))) //nolint:gosec // generated test data must be reproducible
+		b, err := json.Marshal(st.row(r, from, s.cfg.Count))
+		if err != nil {
+			return next, err
+		}
+		rows = append(rows, b)
+	}
+	if err := out.Rows(st.name, rows); err != nil {
+		return next, err
+	}
+	resume, err := json.Marshal(state{Next: end})
+	if err != nil {
+		return next, err
+	}
+	return end, out.ResumePoint(st.name, resume)
+}
+
+func (s *Source) pause(ctx context.Context) error {
+	if s.delay <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(s.delay)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 var (

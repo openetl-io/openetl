@@ -35,6 +35,8 @@ const (
 	Incremental
 	// CDC reads a changelog.
 	CDC
+	// Stream reads events that never end (Kafka, Kinesis).
+	Stream
 )
 
 func (r Replay) String() string {

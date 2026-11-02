@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/plan"
 	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
@@ -31,6 +32,24 @@ type schedule struct {
 	pipelineID string
 	spec       *apiv1.Schedule
 	paused     bool
+	continuous bool
+}
+
+// runs is what runs a pipeline an apply changed: its schedule, or if it's
+// continuous, its supervisor. Each is set again on every apply, which repairs
+// one an earlier apply failed to set.
+func (s *Server) runs(ctx context.Context, sc schedule) error {
+	if sc.continuous {
+		// A sync still running is fenced by the stream job.
+		if err := s.Schedules.Delete(ctx, sc.pipelineID); err != nil {
+			return err
+		}
+		return s.Schedules.Refresh(ctx, s.Tenant.Org.String(), sc.pipelineID)
+	}
+	if err := s.Schedules.StopStream(ctx, sc.pipelineID); err != nil {
+		return err
+	}
+	return s.Schedules.Upsert(ctx, s.Tenant.Org.String(), sc.pipelineID, sc.spec, sc.paused)
 }
 
 func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequest]) (*connect.Response[apiv1.ApplyResponse], error) {
@@ -104,7 +123,10 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 
 	res := &apiv1.ApplyResponse{Resources: make([]*apiv1.AppliedResource, len(docs))}
 	var scheds []schedule
+	// Pipelines a source or destination change gave a version.
+	var dependents []*planned
 	err := s.Store.Tx(ctx, func(q *db.Queries) error {
+		dependents = nil
 		ch := newChanges()
 		for _, i := range order {
 			applied, sched, err := s.applyOne(ctx, q, docs[i], client+":"+origins[i], ch)
@@ -117,9 +139,11 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 			}
 		}
 		var err error
+		defined := len(ch.pipelines)
 		if res.Dependents, err = s.repin(ctx, q, ch); err != nil {
 			return err
 		}
+		dependents = ch.pipelines[defined:]
 		for _, p := range ch.pipelines {
 			pl, err := s.plan(ctx, q, p)
 			if err != nil {
@@ -144,10 +168,15 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		return nil, err
 	}
 	auditApplied(ctx, res)
+	for _, d := range dependents {
+		if plan.Continuous(d.v.spec) {
+			scheds = append(scheds, schedule{pipelineID: d.id.String(), continuous: true})
+		}
+	}
 	for _, sc := range scheds {
-		if err := s.Schedules.Upsert(ctx, s.Tenant.Org.String(), sc.pipelineID, sc.spec, sc.paused); err != nil {
+		if err := s.runs(ctx, sc); err != nil {
 			s.log().Error("schedule update failed", "pipeline", sc.pipelineID, "err", err)
-			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the definitions were stored, but a schedule couldn't be updated; apply again: %w", err))
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the definitions were stored, but what runs a pipeline couldn't be updated; apply again: %w", err))
 		}
 	}
 	return connect.NewResponse(res), nil
@@ -426,7 +455,7 @@ func (s *Server) applyPipeline(ctx context.Context, q *db.Queries, doc *spec.Doc
 		return nil, nil, err
 	}
 	ch.pipelines = append(ch.pipelines, &planned{id: id, name: res.Name, prev: cur.Version, version: res.Version, action: res.Action, v: v})
-	return res, &schedule{pipelineID: id.String(), spec: doc.Pipeline.GetSchedule(), paused: cur.Paused}, nil
+	return res, &schedule{pipelineID: id.String(), spec: doc.Pipeline.GetSchedule(), paused: cur.Paused, continuous: plan.Continuous(doc.Pipeline)}, nil
 }
 
 // changes is what an Apply has changed so far: sources, destinations and dbt

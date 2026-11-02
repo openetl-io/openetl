@@ -1,6 +1,6 @@
 -- name: StartSync :one
-INSERT INTO syncs (org_id, id, pipeline_id, version, workflow_id, run_id, status)
-VALUES (@org_id, @id, @pipeline_id, @version, @workflow_id, @run_id, 'running')
+INSERT INTO syncs (org_id, id, pipeline_id, version, workflow_id, run_id, status, continuous)
+VALUES (@org_id, @id, @pipeline_id, @version, @workflow_id, @run_id, 'running', @continuous)
 ON CONFLICT (org_id, run_id) DO UPDATE SET status = syncs.status
 RETURNING id;
 

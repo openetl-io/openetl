@@ -12,14 +12,18 @@ import (
 const (
 	OrchestratorQueue = "cp.orchestrator"
 
-	SyncWorkflow        = "SyncWorkflow"
-	ConnectorOpWorkflow = "ConnectorOpWorkflow"
-	RetentionWorkflow   = "RetentionWorkflow"
-	ReadLogsWorkflow    = "ReadLogsWorkflow"
+	SyncWorkflow             = "SyncWorkflow"
+	StreamSupervisorWorkflow = "StreamSupervisorWorkflow"
+	ConnectorOpWorkflow      = "ConnectorOpWorkflow"
+	RetentionWorkflow        = "RetentionWorkflow"
+	ReadLogsWorkflow         = "ReadLogsWorkflow"
 
 	StartSync            = "StartSync"
 	FinishSync           = "FinishSync"
 	RunSyncAttempt       = "RunSyncAttempt"
+	GetStreamState       = "GetStreamState"
+	StartRun             = "StartRun"
+	RunStreamJob         = "RunStreamJob"
 	RunDbt               = "RunDbt"
 	CheckConnector       = "CheckConnector"
 	DiscoverSource       = "DiscoverSource"
@@ -72,6 +76,10 @@ const OpTimeout = 15 * time.Minute
 
 func BatchQueue(dataPlane string) string { return "dp." + dataPlane + ".batch" }
 
+// StreamQueue serves continuous pipelines' jobs, which hold a runner's slot
+// for as long as they run.
+func StreamQueue(dataPlane string) string { return "dp." + dataPlane + ".stream" }
+
 // LogsQueue serves reads of a data plane's logs, apart from the batch
 // queue, so busy runners still answer them.
 func LogsQueue(dataPlane string) string { return "dp." + dataPlane + ".logs" }
@@ -83,6 +91,13 @@ func SyncWorkflowID(pipelineID string) string { return "sync/" + pipelineID }
 
 func ScheduleID(pipelineID string) string { return "schedule/" + pipelineID }
 
+func StreamWorkflowID(pipelineID string) string { return "stream/" + pipelineID }
+
+// RefreshSignal asks a continuous pipeline's supervisor to look at the
+// pipeline again: a new version, a pause or resume, a change of mode, or
+// its deletion. It carries nothing.
+const RefreshSignal = "refresh"
+
 func OpWorkflowID(id string) string { return "op/" + id }
 
 func LogsWorkflowID(id string) string { return "logs/" + id }
@@ -93,11 +108,13 @@ type SyncInput struct {
 }
 
 type StartSyncResult struct {
-	// Empty if the pipeline is paused, and no sync was recorded.
+	// Empty if the pipeline is paused or continuous, and no sync was
+	// recorded.
 	SyncID      string
 	Version     string
 	DataPlane   string
 	Paused      bool
+	Continuous  bool
 	WorkspaceID string
 	// Of the source and the destination.
 	Connectors []string
@@ -176,6 +193,9 @@ type FinishSyncInput struct {
 	SyncID string
 	// Empty on success.
 	Error string
+	// A continuous pipeline's run that stopped when asked to, for a new
+	// version, a pause or a change of mode.
+	Stopped bool
 	// The attempt that committed the sync's data; nil if none did.
 	Result *AttemptResult
 	// The post-sync steps that succeeded.
@@ -185,6 +205,60 @@ type FinishSyncInput struct {
 type SyncResult struct {
 	SyncID  string
 	Attempt AttemptResult
+}
+
+type StreamInput struct {
+	OrgID      string
+	PipelineID string
+	// The run a previous workflow run continued as new in the middle of;
+	// nil to look at the pipeline and start one.
+	Run *StreamRun
+}
+
+// StreamState is what a continuous pipeline's supervisor acts on.
+type StreamState struct {
+	// False once the pipeline is deleted or scheduled, which ends the
+	// supervisor.
+	Continuous  bool
+	Paused      bool
+	Version     string
+	DataPlane   string
+	WorkspaceID string
+	// Of the source and the destination.
+	Connectors []string
+}
+
+// StreamRun is one run of a continuous pipeline: a version running from when
+// it starts until it is stopped or fails.
+type StreamRun struct {
+	State  StreamState
+	SyncID string
+	RunKey string
+	// Attempts before the current one, which drained.
+	Earlier int32
+}
+
+type StartRunInput struct {
+	OrgID      string
+	PipelineID string
+	Version    string
+}
+
+type StartRunResult struct {
+	SyncID string
+	// Joins the run's checkpoints in the control plane's mirror
+	// (syncs.run_id).
+	RunKey string
+}
+
+type StreamJobInput struct {
+	OrgID      string
+	PipelineID string
+	Version    string
+	SyncID     string
+	RunKey     string
+	// Attempts the run ran before this activity, which drained.
+	Earlier int32
 }
 
 type ConnectorOpInput struct {

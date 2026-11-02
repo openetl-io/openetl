@@ -1,7 +1,9 @@
 package faker
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -161,5 +163,65 @@ func TestConfigErrors(t *testing.T) {
 	}
 	if _, err := New(nil); err != nil {
 		t.Errorf("New(nil): %v", err)
+	}
+}
+
+// stopAfter cancels the read once every stream has n rows.
+type stopAfter struct {
+	*recorder
+	n      int
+	cancel func()
+}
+
+func (s stopAfter) ResumePoint(stream string, state []byte) error {
+	_ = s.recorder.ResumePoint(stream, state)
+	if len(s.rows["users"]) >= s.n && len(s.rows["purchases"]) >= s.n {
+		s.cancel()
+	}
+	return nil
+}
+
+func TestEndlessStreamsInterleaveAndResume(t *testing.T) {
+	s, err := New([]byte(`{"seed": 7, "batchSize": 10, "endless": true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat, err := s.Discover(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cs := range cat.Streams {
+		if !slices.Equal(cs.SyncModes, []source.SyncMode{source.Stream}) {
+			t.Errorf("%s: sync modes %v, want stream", cs.Name, cs.SyncModes)
+		}
+	}
+	endless := func(states map[string][]byte, n int) *recorder {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		rec := stopAfter{recorder: newRecorder(), n: n, cancel: cancel}
+		var req source.ReadRequest
+		for _, cs := range cat.Streams {
+			req.Streams = append(req.Streams, source.ConfiguredStream{Name: cs.Name, State: states[cs.Name]})
+		}
+		if err := s.Read(ctx, req, rec); !errors.Is(err, context.Canceled) {
+			t.Fatalf("read: %v, want it cancelled", err)
+		}
+		if len(rec.complete) > 0 {
+			t.Errorf("completed %v", rec.complete)
+		}
+		return rec.recorder
+	}
+	first := endless(nil, 30)
+	// The first stream's batch can't run ahead of the second's by more than one.
+	if u, p := len(first.resumes["users"]), len(first.resumes["purchases"]); u != 3 || p != 3 {
+		t.Errorf("resume points: users %d, purchases %d, want 3 each", u, p)
+	}
+	whole := endless(nil, 50)
+	states := map[string][]byte{"users": first.resumes["users"][2], "purchases": first.resumes["purchases"][2]}
+	rest := endless(states, 20)
+	for _, name := range []string{"users", "purchases"} {
+		if got := slices.Concat(first.rows[name], rest.rows[name]); !slices.Equal(got, whole.rows[name]) {
+			t.Errorf("%s: resumed rows differ from one read's", name)
+		}
 	}
 }

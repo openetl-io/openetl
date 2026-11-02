@@ -31,6 +31,9 @@ const (
 	SyncState_SYNC_STATE_RUNNING     SyncState = 1
 	SyncState_SYNC_STATE_SUCCEEDED   SyncState = 2
 	SyncState_SYNC_STATE_FAILED      SyncState = 3
+	// A continuous pipeline's run that stopped when asked to: for a new
+	// version, a pause, or a change of mode.
+	SyncState_SYNC_STATE_STOPPED SyncState = 4
 )
 
 // Enum value maps for SyncState.
@@ -40,12 +43,14 @@ var (
 		1: "SYNC_STATE_RUNNING",
 		2: "SYNC_STATE_SUCCEEDED",
 		3: "SYNC_STATE_FAILED",
+		4: "SYNC_STATE_STOPPED",
 	}
 	SyncState_value = map[string]int32{
 		"SYNC_STATE_UNSPECIFIED": 0,
 		"SYNC_STATE_RUNNING":     1,
 		"SYNC_STATE_SUCCEEDED":   2,
 		"SYNC_STATE_FAILED":      3,
+		"SYNC_STATE_STOPPED":     4,
 	}
 )
 
@@ -92,9 +97,14 @@ type Sync struct {
 	DataPlane string `protobuf:"bytes,7,opt,name=data_plane,json=dataPlane,proto3" json:"data_plane,omitempty"`
 	// What its committed epochs carried, by stream, from the checkpoints the
 	// control plane keeps (30 days).
-	Streams       []*SyncStream `protobuf:"bytes,8,rep,name=streams,proto3" json:"streams,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Streams []*SyncStream `protobuf:"bytes,8,rep,name=streams,proto3" json:"streams,omitempty"`
+	// A continuous pipeline's run.
+	Continuous bool `protobuf:"varint,9,opt,name=continuous,proto3" json:"continuous,omitempty"`
+	// When its latest epoch was committed; unset if none was, or the
+	// control plane no longer keeps it.
+	LastCommitTime *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=last_commit_time,json=lastCommitTime,proto3" json:"last_commit_time,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Sync) Reset() {
@@ -179,6 +189,20 @@ func (x *Sync) GetDataPlane() string {
 func (x *Sync) GetStreams() []*SyncStream {
 	if x != nil {
 		return x.Streams
+	}
+	return nil
+}
+
+func (x *Sync) GetContinuous() bool {
+	if x != nil {
+		return x.Continuous
+	}
+	return false
+}
+
+func (x *Sync) GetLastCommitTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastCommitTime
 	}
 	return nil
 }
@@ -657,7 +681,7 @@ var File_openetl_api_v1_sync_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\n" +
-	"\x19openetl/api/v1/sync.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc2\x02\n" +
+	"\x19openetl/api/v1/sync.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa8\x03\n" +
 	"\x04Sync\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12/\n" +
@@ -668,7 +692,12 @@ const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\bend_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\x12\x1d\n" +
 	"\n" +
 	"data_plane\x18\a \x01(\tR\tdataPlane\x124\n" +
-	"\astreams\x18\b \x03(\v2\x1a.openetl.api.v1.SyncStreamR\astreams\"\x86\x01\n" +
+	"\astreams\x18\b \x03(\v2\x1a.openetl.api.v1.SyncStreamR\astreams\x12\x1e\n" +
+	"\n" +
+	"continuous\x18\t \x01(\bR\n" +
+	"continuous\x12D\n" +
+	"\x10last_commit_time\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\x0elastCommitTime\"\x86\x01\n" +
 	"\n" +
 	"SyncStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
@@ -700,12 +729,13 @@ const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x18\n" +
 	"\aattempt\x18\x04 \x01(\x05R\aattempt\x12$\n" +
 	"\x0epost_sync_step\x18\x05 \x01(\x05R\fpostSyncStep\x12-\n" +
-	"\x05attrs\x18\x06 \x01(\v2\x17.google.protobuf.StructR\x05attrs*p\n" +
+	"\x05attrs\x18\x06 \x01(\v2\x17.google.protobuf.StructR\x05attrs*\x88\x01\n" +
 	"\tSyncState\x12\x1a\n" +
 	"\x16SYNC_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SYNC_STATE_RUNNING\x10\x01\x12\x18\n" +
 	"\x14SYNC_STATE_SUCCEEDED\x10\x02\x12\x15\n" +
-	"\x11SYNC_STATE_FAILED\x10\x032\xac\x03\n" +
+	"\x11SYNC_STATE_FAILED\x10\x03\x12\x16\n" +
+	"\x12SYNC_STATE_STOPPED\x10\x042\xac\x03\n" +
 	"\vSyncService\x12\x85\x01\n" +
 	"\tListSyncs\x12 .openetl.api.v1.ListSyncsRequest\x1a!.openetl.api.v1.ListSyncsResponse\"3\x82\xd3\xe4\x93\x02-\x12+/v1/{parent=workspaces/*/pipelines/*}/syncs\x12\x7f\n" +
 	"\aGetSync\x12\x1e.openetl.api.v1.GetSyncRequest\x1a\x1f.openetl.api.v1.GetSyncResponse\"3\x82\xd3\xe4\x93\x02-\x12+/v1/{name=workspaces/*/pipelines/*/syncs/*}\x12\x93\x01\n" +
@@ -744,22 +774,23 @@ var file_openetl_api_v1_sync_proto_depIdxs = []int32{
 	10, // 1: openetl.api.v1.Sync.start_time:type_name -> google.protobuf.Timestamp
 	10, // 2: openetl.api.v1.Sync.end_time:type_name -> google.protobuf.Timestamp
 	2,  // 3: openetl.api.v1.Sync.streams:type_name -> openetl.api.v1.SyncStream
-	1,  // 4: openetl.api.v1.ListSyncsResponse.syncs:type_name -> openetl.api.v1.Sync
-	1,  // 5: openetl.api.v1.GetSyncResponse.sync:type_name -> openetl.api.v1.Sync
-	9,  // 6: openetl.api.v1.ReadSyncLogResponse.entries:type_name -> openetl.api.v1.LogEntry
-	10, // 7: openetl.api.v1.LogEntry.time:type_name -> google.protobuf.Timestamp
-	11, // 8: openetl.api.v1.LogEntry.attrs:type_name -> google.protobuf.Struct
-	3,  // 9: openetl.api.v1.SyncService.ListSyncs:input_type -> openetl.api.v1.ListSyncsRequest
-	5,  // 10: openetl.api.v1.SyncService.GetSync:input_type -> openetl.api.v1.GetSyncRequest
-	7,  // 11: openetl.api.v1.SyncService.ReadSyncLog:input_type -> openetl.api.v1.ReadSyncLogRequest
-	4,  // 12: openetl.api.v1.SyncService.ListSyncs:output_type -> openetl.api.v1.ListSyncsResponse
-	6,  // 13: openetl.api.v1.SyncService.GetSync:output_type -> openetl.api.v1.GetSyncResponse
-	8,  // 14: openetl.api.v1.SyncService.ReadSyncLog:output_type -> openetl.api.v1.ReadSyncLogResponse
-	12, // [12:15] is the sub-list for method output_type
-	9,  // [9:12] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	10, // 4: openetl.api.v1.Sync.last_commit_time:type_name -> google.protobuf.Timestamp
+	1,  // 5: openetl.api.v1.ListSyncsResponse.syncs:type_name -> openetl.api.v1.Sync
+	1,  // 6: openetl.api.v1.GetSyncResponse.sync:type_name -> openetl.api.v1.Sync
+	9,  // 7: openetl.api.v1.ReadSyncLogResponse.entries:type_name -> openetl.api.v1.LogEntry
+	10, // 8: openetl.api.v1.LogEntry.time:type_name -> google.protobuf.Timestamp
+	11, // 9: openetl.api.v1.LogEntry.attrs:type_name -> google.protobuf.Struct
+	3,  // 10: openetl.api.v1.SyncService.ListSyncs:input_type -> openetl.api.v1.ListSyncsRequest
+	5,  // 11: openetl.api.v1.SyncService.GetSync:input_type -> openetl.api.v1.GetSyncRequest
+	7,  // 12: openetl.api.v1.SyncService.ReadSyncLog:input_type -> openetl.api.v1.ReadSyncLogRequest
+	4,  // 13: openetl.api.v1.SyncService.ListSyncs:output_type -> openetl.api.v1.ListSyncsResponse
+	6,  // 14: openetl.api.v1.SyncService.GetSync:output_type -> openetl.api.v1.GetSyncResponse
+	8,  // 15: openetl.api.v1.SyncService.ReadSyncLog:output_type -> openetl.api.v1.ReadSyncLogResponse
+	13, // [13:16] is the sub-list for method output_type
+	10, // [10:13] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_sync_proto_init() }

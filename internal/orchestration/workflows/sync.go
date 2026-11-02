@@ -23,28 +23,38 @@ const (
 // Workflows holds settings shared by every run. They must not change while
 // workflows are running, or replays diverge.
 type Workflows struct {
-	// The first retry delay of a failed sync attempt. Zero: 30 s.
+	// The first retry delay of a failed sync attempt (zero: 30 s) or stream
+	// job (zero: 5 s).
 	AttemptRetry time.Duration
 	// How long an attempt may go without a heartbeat. Zero: 2 min.
 	AttemptHeartbeat time.Duration
+	// How long a stream job may go without a heartbeat. Zero: 90 s.
+	StreamHeartbeat time.Duration
+}
+
+// cpOptions are for control-plane activities.
+var cpOptions = workflow.ActivityOptions{
+	TaskQueue:           contract.OrchestratorQueue,
+	StartToCloseTimeout: 30 * time.Second,
+	RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 10, NonRetryableErrorTypes: errs.NonRetryable()},
 }
 
 // Sync runs one sync of a pipeline: it records the sync, runs attempts on
 // the pipeline's data plane until one succeeds or retries run out, runs the
 // post-sync steps there, then records the outcome. It does nothing if the
-// pipeline is paused.
+// pipeline is paused or continuous.
 func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.SyncResult, error) {
-	cp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		TaskQueue:           contract.OrchestratorQueue,
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 10, NonRetryableErrorTypes: errs.NonRetryable()},
-	})
+	cp := workflow.WithActivityOptions(ctx, cpOptions)
 	var started contract.StartSyncResult
 	if err := workflow.ExecuteActivity(cp, contract.StartSync, in).Get(ctx, &started); err != nil {
 		return nil, err
 	}
-	if started.Paused {
+	switch {
+	case started.Paused:
 		workflow.GetLogger(ctx).Info("the pipeline is paused; not syncing")
+		return nil, nil
+	case started.Continuous:
+		workflow.GetLogger(ctx).Info("the pipeline is continuous; not syncing")
 		return nil, nil
 	}
 	err := workflow.UpsertTypedSearchAttributes(ctx,

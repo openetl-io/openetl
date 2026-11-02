@@ -21,16 +21,16 @@ import { DestinationService, SourceService } from "@/gen/openetl/api/v1/connecti
 import { PipelineService, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { errorMessage } from "@/lib/api";
-import { compact, dateOf } from "@/lib/format";
+import { compact } from "@/lib/format";
 import { lastSegment } from "@/lib/names";
-import { scheduleLabel, stale } from "@/lib/pipeline";
+import { lastUpdate, scheduleLabel, stale } from "@/lib/pipeline";
 import { pipelineStatus, rows, type Status } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import type { PipelineFilter } from "@/router";
 
 const route = getRouteApi("/_app/workspaces/$workspace/pipelines");
 
-const severity: Record<Status, number> = { failed: 0, degraded: 1, running: 2, idle: 3, healthy: 4, paused: 5 };
+const severity: Record<Status, number> = { failed: 0, degraded: 1, running: 2, idle: 3, stopped: 3, healthy: 4, paused: 5 };
 
 const filters: { id: PipelineFilter; label: string; has: (s: Status) => boolean }[] = [
   { id: "all", label: "All", has: () => true },
@@ -120,11 +120,11 @@ export function PipelinesPage() {
       },
       {
         id: "fresh",
-        header: "Last success",
-        accessorFn: (p) => dateOf(p.status?.lastSuccessTime)?.getTime() ?? 0,
+        header: "Last update",
+        accessorFn: (p) => lastUpdate(p)?.getTime() ?? 0,
         cell: ({ row }) => {
           const p = row.original;
-          const t = dateOf(p.status?.lastSuccessTime);
+          const t = lastUpdate(p);
           if (!t) return <span className="text-muted-foreground">Never</span>;
           return stale(p) ? (
             <Tooltip>

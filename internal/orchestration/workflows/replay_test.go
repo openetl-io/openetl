@@ -23,6 +23,7 @@ func TestReplayHistories(t *testing.T) {
 	}
 	r := worker.NewWorkflowReplayer()
 	r.RegisterWorkflowWithOptions(workflows.Workflows{}.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
+	r.RegisterWorkflowWithOptions(workflows.Workflows{}.StreamSupervisor, workflow.RegisterOptions{Name: contract.StreamSupervisorWorkflow})
 	r.RegisterWorkflowWithOptions(workflows.Workflows{}.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
 	r.RegisterWorkflowWithOptions(workflows.Workflows{}.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
 	r.RegisterWorkflowWithOptions(workflows.Workflows{}.ReadLogs, workflow.RegisterOptions{Name: contract.ReadLogsWorkflow})

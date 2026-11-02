@@ -1,4 +1,5 @@
-// Package schedules keeps one Temporal schedule per scheduled pipeline.
+// Package schedules keeps what runs each pipeline in Temporal: a schedule
+// per scheduled pipeline, and a supervisor per continuous one.
 package schedules
 
 import (
@@ -132,6 +133,32 @@ func (s *Schedules) Trigger(ctx context.Context, pipelineID string) error {
 	}
 	if err := h.Trigger(ctx, client.ScheduleTriggerOptions{Overlap: enumspb.SCHEDULE_OVERLAP_POLICY_SKIP}); err != nil {
 		return fmt.Errorf("schedules: trigger %s: %w", pipelineID, err)
+	}
+	return nil
+}
+
+// Refresh starts the continuous pipeline's supervisor, or signals the one
+// running to look at the pipeline again.
+func (s *Schedules) Refresh(ctx context.Context, orgID, pipelineID string) error {
+	id := contract.StreamWorkflowID(pipelineID)
+	_, err := s.Client.SignalWithStartWorkflow(ctx, id, contract.RefreshSignal, nil,
+		client.StartWorkflowOptions{ID: id, TaskQueue: contract.OrchestratorQueue},
+		contract.StreamSupervisorWorkflow, contract.StreamInput{OrgID: orgID, PipelineID: pipelineID})
+	if err != nil {
+		return fmt.Errorf("schedules: refresh %s: %w", id, err)
+	}
+	return nil
+}
+
+// StopStream cancels the pipeline's supervisor, if one is running, which
+// stops its job at a checkpoint.
+func (s *Schedules) StopStream(ctx context.Context, pipelineID string) error {
+	err := s.Client.CancelWorkflow(ctx, contract.StreamWorkflowID(pipelineID), "")
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("schedules: stop %s: %w", contract.StreamWorkflowID(pipelineID), err)
 	}
 	return nil
 }

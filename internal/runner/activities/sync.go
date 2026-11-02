@@ -68,10 +68,17 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 	attempt := int(in.Earlier + info.Attempt)
 	log, done := attemptLog(ctx, a.Logs, log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", attempt), in.OrgID, in.PipelineID, in.SyncID, 0, attempt)
 	defer done()
+	if err := lateStart(info); err != nil {
+		log.Warn("sync attempt not started", "err", err)
+		return contract.AttemptResult{}, temporalx.ApplicationError(err)
+	}
 	if attempt == 1 {
 		defer pruneLogs(ctx, a.Logs, a.LogHistory, in.OrgID, in.PipelineID, log)()
 	}
-	res, err := a.run(ctx, in, info, log)
+	res, err := a.run(ctx, ctx, attemptParams{
+		org: in.OrgID, pipeline: in.PipelineID, version: in.Version,
+		sync: info.WorkflowExecution.RunID, drain: activity.GetWorkerStopChannel(ctx),
+	}, log)
 	switch {
 	case errors.Is(err, runner.ErrDrained):
 		log.Info("sync attempt drained", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
@@ -84,9 +91,96 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 	return res, temporalx.ApplicationError(err)
 }
 
-func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.Info, log *slog.Logger) (contract.AttemptResult, error) {
+// streamDrain is how long a stream job has to stop at a checkpoint once
+// it's asked to, as long as the worker's stop timeout.
+const streamDrain = 2 * time.Minute
+
+// RunStreamJob runs a continuous pipeline's job until it is asked to stop.
+// Heartbeats carry the last committed epoch. A job doesn't stop when
+// heartbeats fail, since a Temporal outage would then stop every job, and
+// fencing makes a job Temporal replaced harmless. When the activity is
+// cancelled, or Temporal says it no longer exists, the job stops at its next
+// checkpoint and the activity reports itself cancelled. When the worker
+// stops, it fails with DRAINING instead, whose details are the attempt
+// number.
+func (a *Sync) RunStreamJob(ctx context.Context, in contract.StreamJobInput) (contract.AttemptResult, error) {
+	log := a.Logger
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	info := activity.GetInfo(ctx)
+	attempt := int(in.Earlier + info.Attempt)
+	log, done := attemptLog(ctx, a.Logs, log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", attempt), in.OrgID, in.PipelineID, in.SyncID, 0, attempt)
+	defer done()
+	if err := lateStart(info); err != nil {
+		log.Warn("stream job not started", "err", err)
+		return contract.AttemptResult{}, temporalx.ApplicationError(err)
+	}
+	if attempt == 1 {
+		defer pruneLogs(ctx, a.Logs, a.LogHistory, in.OrgID, in.PipelineID, log)()
+	}
+
+	// The job outlives the activity's context by up to streamDrain.
+	jobCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancel()
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-activity.GetWorkerStopChannel(ctx):
+		case <-jobCtx.Done():
+			return
+		}
+		close(stop)
+		t := time.NewTimer(streamDrain)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			log.Warn("the job didn't stop at a checkpoint in time")
+			cancel()
+		case <-jobCtx.Done():
+		}
+	}()
+	log.Info("stream job starting")
+	res, err := a.run(jobCtx, ctx, attemptParams{
+		org: in.OrgID, pipeline: in.PipelineID, version: in.Version,
+		sync: in.RunKey, drain: stop,
+	}, log)
+	switch {
+	case errors.Is(err, runner.ErrDrained) && ctx.Err() != nil:
+		log.Info("stream job stopped", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
+		return res, temporal.NewCanceledError()
+	case errors.Is(err, runner.ErrDrained):
+		log.Info("stream job drained", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
+		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Draining.String(), temporal.ApplicationErrorOptions{Details: []any{info.Attempt}})
+	case err == nil:
+		err = errs.New(errs.ContractChanged, "the source ended every stream, and a continuous pipeline's streams don't end")
+	case ctx.Err() != nil:
+		log.Info("stream job stopped", "err", err)
+		return res, temporal.NewCanceledError()
+	}
+	log.Warn("stream job failed", "code", errs.CodeOf(err).String(), "err", err)
+	if errs.CodeOf(err) == errs.Fenced {
+		// Retried, unlike a sync's: see the supervisor.
+		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Fenced.String(), temporal.ApplicationErrorOptions{Cause: err})
+	}
+	return res, temporalx.ApplicationError(err)
+}
+
+type attemptParams struct {
+	org, pipeline, version string
+	// The attempt's sync, which the checkpoint mirror joins on: the
+	// workflow's run for a sync, the run's key for a stream job.
+	sync string
+	// Closing it stops the attempt at its next checkpoint.
+	drain <-chan struct{}
+}
+
+// run runs an attempt on ctx; actx is the activity's, for heartbeats.
+func (a *Sync) run(ctx, actx context.Context, p attemptParams, log *slog.Logger) (contract.AttemptResult, error) {
 	var out contract.AttemptResult
-	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
+	info := activity.GetInfo(actx)
+	spec, err := syncSpec(ctx, a.API, p.org, p.pipeline, p.version)
 	if err != nil {
 		return out, err
 	}
@@ -108,7 +202,7 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 		return out, err
 	}
 	job.Owner = fmt.Sprintf("%s/%s/%d/%s", info.WorkflowExecution.RunID, info.ActivityID, info.Attempt, rand.Text()[:8])
-	job.Sync = info.WorkflowExecution.RunID
+	job.Sync = p.sync
 	job.Log = checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId())
 	if a.Storage != "" {
 		if job.QuarantineURL, err = quarantineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId()); err != nil {
@@ -119,13 +213,13 @@ func (a *Sync) run(ctx context.Context, in contract.AttemptInput, info activity.
 	engine.Logger = log.With("component", "engine")
 	job.Dataflow = &engineclient.Dataflow{Options: engine}
 	job.Logger = log
-	job.Drain = activity.GetWorkerStopChannel(ctx)
+	job.Drain = p.drain
 
 	var last atomic.Uint64
 	job.OnCommit = last.Store
-	reports := newReporter(ctx, a.API, spec.GetPipelineId(), info.WorkflowExecution.RunID, log)
+	reports := newReporter(ctx, a.API, spec.GetPipelineId(), p.sync, log)
 	job.OnSchemas, job.OnCheckpoint = reports.schemas, reports.checkpoint
-	stop := heartbeats(ctx, func() any { return last.Load() })
+	stop := heartbeats(actx, func() any { return last.Load() })
 	r, err := runner.RunAttempt(ctx, job)
 	stop()
 	reports.close(5 * time.Second)

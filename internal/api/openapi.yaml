@@ -2939,6 +2939,7 @@ components:
                         - SYNC_STATE_RUNNING
                         - SYNC_STATE_SUCCEEDED
                         - SYNC_STATE_FAILED
+                        - SYNC_STATE_STOPPED
                     type: string
                     format: enum
                 error:
@@ -2961,6 +2962,15 @@ components:
                     description: |-
                         What its committed epochs carried, by stream, from the checkpoints the
                          control plane keeps (30 days).
+                continuous:
+                    type: boolean
+                    description: A continuous pipeline's run.
+                lastCommitTime:
+                    type: string
+                    description: |-
+                        When its latest epoch was committed; unset if none was, or the
+                         control plane no longer keeps it.
+                    format: date-time
         SyncPipelineRequest:
             type: object
             properties:
@@ -3037,4 +3047,7 @@ tags:
         SourceService reads and deletes sources. ApplyService creates and changes
          them.
     - name: SyncService
-      description: SyncService reads pipelines' syncs and their logs.
+      description: |-
+        SyncService reads pipelines' syncs and their logs. A continuous
+         pipeline's syncs are its runs: each runs one version until it is stopped
+         or fails.

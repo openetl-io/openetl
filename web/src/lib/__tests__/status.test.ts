@@ -17,5 +17,6 @@ describe("pipelineStatus", () => {
     expect(p(sync(SyncState.SUCCEEDED))).toBe("healthy");
     expect(p(sync(SyncState.SUCCEEDED, 3n))).toBe("degraded");
     expect(p(sync(SyncState.FAILED), true)).toBe("paused");
+    expect(p(sync(SyncState.STOPPED))).toBe("stopped");
   });
 });

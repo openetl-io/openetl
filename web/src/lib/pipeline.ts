@@ -14,6 +14,15 @@ export function scheduleLabel(spec?: PipelineSpec) {
   }
 }
 
+/**
+ * When the pipeline's data last changed: when a continuous pipeline's run
+ * last committed, or a scheduled one's last sync that succeeded ended.
+ */
+export function lastUpdate(p: Pipeline) {
+  if (p.spec?.mode === PipelineMode.CONTINUOUS) return dateOf(p.status?.lastSync?.lastCommitTime);
+  return dateOf(p.status?.lastSuccessTime);
+}
+
 /** The data is stale when the last success is older than two schedule intervals. */
 export function stale(p: Pipeline, now = Date.now()) {
   const t = p.spec?.schedule?.trigger;

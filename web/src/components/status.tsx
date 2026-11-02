@@ -1,4 +1,4 @@
-import { CircleCheck, CircleDashed, CirclePause, CircleX, LoaderCircle, TriangleAlert, type LucideIcon } from "lucide-react";
+import { CircleCheck, CircleDashed, CirclePause, CircleStop, CircleX, LoaderCircle, TriangleAlert, type LucideIcon } from "lucide-react";
 import { statusLabel, type Status } from "@/lib/status";
 import { cn } from "@/lib/utils";
 
@@ -8,6 +8,7 @@ const icons: Record<Status, LucideIcon> = {
   degraded: TriangleAlert,
   failed: CircleX,
   paused: CirclePause,
+  stopped: CircleStop,
   idle: CircleDashed,
 };
 
@@ -17,6 +18,7 @@ export const statusText: Record<Status, string> = {
   degraded: "text-degraded",
   failed: "text-failed",
   paused: "text-paused",
+  stopped: "text-muted-foreground",
   idle: "text-muted-foreground",
 };
 
@@ -26,6 +28,7 @@ export const statusFill: Record<Status, string> = {
   degraded: "bg-degraded",
   failed: "bg-failed",
   paused: "bg-paused",
+  stopped: "bg-idle",
   idle: "bg-idle",
 };
 

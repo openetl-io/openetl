@@ -167,7 +167,7 @@ func setup(m *testing.M) (int, error) {
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
 			Listener:  ln,
 			Ready:     func(string) { close(ready) },
-			Workflows: workflows.Workflows{AttemptRetry: time.Second, AttemptHeartbeat: 4 * time.Second},
+			Workflows: workflows.Workflows{AttemptRetry: time.Second, AttemptHeartbeat: 4 * time.Second, StreamHeartbeat: 4 * time.Second},
 		})
 	}()
 	select {

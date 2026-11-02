@@ -32,6 +32,11 @@ type Scheduler interface {
 	SetPaused(ctx context.Context, pipelineID string, paused bool) error
 	// Returns schedules.ErrSyncRunning if a sync is running.
 	Trigger(ctx context.Context, pipelineID string) error
+	// Starts a continuous pipeline's supervisor, or has it look at the
+	// pipeline again.
+	Refresh(ctx context.Context, orgID, pipelineID string) error
+	// Stops the pipeline's supervisor, if it has one.
+	StopStream(ctx context.Context, pipelineID string) error
 }
 
 type Server struct {

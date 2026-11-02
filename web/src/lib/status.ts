@@ -1,7 +1,7 @@
 import type { Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 
-export type Status = "healthy" | "running" | "degraded" | "failed" | "paused" | "idle";
+export type Status = "healthy" | "running" | "degraded" | "failed" | "paused" | "stopped" | "idle";
 
 export const statusLabel: Record<Status, string> = {
   healthy: "Healthy",
@@ -9,6 +9,7 @@ export const statusLabel: Record<Status, string> = {
   degraded: "Degraded",
   failed: "Failed",
   paused: "Paused",
+  stopped: "Stopped",
   idle: "Never synced",
 };
 
@@ -31,6 +32,8 @@ export function syncStatus(s: Sync): Status {
       return "failed";
     case SyncState.SUCCEEDED:
       return rows(s).quarantined > 0n ? "degraded" : "healthy";
+    case SyncState.STOPPED:
+      return "stopped";
     default:
       return "idle";
   }

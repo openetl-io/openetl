@@ -30,8 +30,16 @@ func TestSettings(t *testing.T) {
 		t.Errorf("defaults into parquet: %+v", s)
 	}
 	d := &apiv1.Delivery{Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, Commit: &apiv1.Commit{Interval: durationpb.New(time.Minute), Scope: apiv1.CommitScope_COMMIT_SCOPE_STREAM}}
-	if s := Settings(d, warehouse); s.Require != delivery.AtLeastOnce || s.Scope != destination.ScopeStream || s.CommitInterval != time.Minute {
+	if s := Settings(&apiv1.PipelineSpec{Delivery: d}, warehouse); s.Require != delivery.AtLeastOnce || s.Scope != destination.ScopeStream || s.CommitInterval != time.Minute {
 		t.Errorf("settings %+v", s)
+	}
+	continuous := &apiv1.PipelineSpec{Mode: apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS}
+	if s := Settings(continuous, warehouse); s.CommitInterval != 10*time.Second {
+		t.Errorf("a continuous pipeline commits every %v by default", s.CommitInterval)
+	}
+	continuous.Delivery = d
+	if s := Settings(continuous, warehouse); s.CommitInterval != time.Minute {
+		t.Errorf("a continuous pipeline's own interval: %v", s.CommitInterval)
 	}
 }
 
@@ -42,6 +50,9 @@ var catalog = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 	{Name: "events", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
 	{Name: "logs", Replay: apiv1.Replay_REPLAY_SUPERSET},
 }}
+
+var withTopic = &apiv1.Catalog{Streams: append(catalog.GetStreams(),
+	&apiv1.CatalogStream{Name: "topic", Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_STREAM}})}
 
 func TestPipeline(t *testing.T) {
 	for _, tc := range []struct {
@@ -88,6 +99,21 @@ func TestPipeline(t *testing.T) {
 			spec:     `{"destination": {"write": "WRITE_MODE_OVERWRITE"}, "source": {"streams": [{"name": "events"}]}}`,
 			streams:  "events exactly_once+dedupe superset replay, deduped at apply",
 			problems: []string{`destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream "events" is read with incremental`}},
+		{name: "continuous", cat: withTopic, caps: warehouse,
+			spec:    `{"mode": "PIPELINE_MODE_CONTINUOUS", "source": {"streams": [{"name": "topic"}, {"name": "orders", "sync": "SYNC_MODE_CDC"}]}}`,
+			streams: "topic exactly_once exact replay; orders exactly_once exact replay"},
+		{name: "continuous with reads that end", cat: catalog, caps: warehouse,
+			spec:    `{"mode": "PIPELINE_MODE_CONTINUOUS", "source": {"streams": [{"name": "orders"}, {"name": "events"}, {"name": "logs"}]}}`,
+			streams: "orders exactly_once exact replay; events exactly_once+dedupe superset replay, deduped at apply; logs exactly_once+dedupe+collapse superset replay, no primary key: collapsed within each epoch and against the target",
+			problems: []string{
+				`stream "orders" is read with full_refresh, whose reads end, and a continuous pipeline needs streams read with cdc or stream`,
+				`stream "events" is read with incremental, whose reads end`,
+				`stream "logs": the source doesn't say how it reads it`,
+			},
+			warnings: []string{"logs: it has no primary key"}},
+		{name: "continuous, no catalog", caps: warehouse,
+			spec:     `{"mode": "PIPELINE_MODE_CONTINUOUS", "source": {"streams": [{"name": "a", "sync": "SYNC_MODE_INCREMENTAL"}, {"name": "b"}]}}`,
+			problems: []string{`stream "a" is read with incremental, whose reads end`}},
 		{name: "deletes without merge", cat: catalog, caps: warehouse, spec: `{"destination": {"deletes": "DELETE_MODE_HARD"}, "source": {"streams": [{"name": "orders"}]}}`,
 			streams: "orders exactly_once exact replay", warnings: []string{": destination.deletes applies only to merge"}},
 	} {

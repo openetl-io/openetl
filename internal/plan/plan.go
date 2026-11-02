@@ -24,8 +24,12 @@ const (
 	defaultResumePointTimeout = time.Minute
 )
 
-// Settings settles spec.delivery against the destination's capabilities.
-func Settings(d *apiv1.Delivery, caps destination.Capabilities) delivery.Settings {
+// A continuous pipeline's commit interval unless it sets one.
+const continuousCommitInterval = 10 * time.Second
+
+// Settings settles the spec's delivery against the destination's
+// capabilities.
+func Settings(p *apiv1.PipelineSpec, caps destination.Capabilities) delivery.Settings {
 	s := delivery.Settings{
 		Require:            delivery.ExactlyOnce,
 		CommitInterval:     defaultCommitInterval,
@@ -33,6 +37,10 @@ func Settings(d *apiv1.Delivery, caps destination.Capabilities) delivery.Setting
 		Scope:              destination.ScopeStream,
 		ResumePointTimeout: defaultResumePointTimeout,
 	}
+	if Continuous(p) {
+		s.CommitInterval = continuousCommitInterval
+	}
+	d := p.GetDelivery()
 	if caps.SupportsScope(destination.ScopePipeline) {
 		s.Scope = destination.ScopePipeline
 	}
@@ -104,6 +112,29 @@ func Deletes(p *apiv1.PipelineSpec) destination.DeleteMode {
 	return destination.SoftDelete
 }
 
+func Continuous(p *apiv1.PipelineSpec) bool {
+	return p.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS
+}
+
+// ReadProblem fails a stream of a continuous pipeline whose read ends: it
+// needs cdc or stream.
+func ReadProblem(p *apiv1.PipelineSpec, stream string, read apiv1.SyncMode) error {
+	if !Continuous(p) {
+		return nil
+	}
+	switch read {
+	case apiv1.SyncMode_SYNC_MODE_CDC, apiv1.SyncMode_SYNC_MODE_STREAM:
+		return nil
+	case apiv1.SyncMode_SYNC_MODE_UNSPECIFIED:
+		return fmt.Errorf("stream %q: the source doesn't say how it reads it, and a continuous pipeline needs streams read with cdc or stream", stream)
+	}
+	return fmt.Errorf("stream %q is read with %s, whose reads end, and a continuous pipeline needs streams read with cdc or stream", stream, syncName(read))
+}
+
+func syncName(m apiv1.SyncMode) string {
+	return strings.ToLower(strings.TrimPrefix(m.String(), "SYNC_MODE_"))
+}
+
 // SyncProblem fails a stream whose read mode its write mode can't take:
 // overwrite replaces the table with what one read wrote, so it needs a full
 // refresh.
@@ -114,7 +145,7 @@ func SyncProblem(mode destination.WriteMode, stream string, read apiv1.SyncMode)
 	switch read {
 	case apiv1.SyncMode_SYNC_MODE_INCREMENTAL, apiv1.SyncMode_SYNC_MODE_CDC, apiv1.SyncMode_SYNC_MODE_STREAM:
 		return fmt.Errorf("destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream %q is read with %s",
-			stream, strings.ToLower(strings.TrimPrefix(read.String(), "SYNC_MODE_")))
+			stream, syncName(read))
 	}
 	return nil
 }
@@ -149,7 +180,7 @@ var levels = map[delivery.Level]apiv1.DeliveryLevel{
 // would fail and what the plan warns about. Without a catalog, it checks
 // only the settings.
 func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities) ([]*apiv1.StreamPlan, []error, []*apiv1.PlanWarning) {
-	settings := Settings(spec.GetDelivery(), caps)
+	settings := Settings(spec, caps)
 	var warnings []*apiv1.PlanWarning
 	if spec.GetDestination().GetDeletes() != apiv1.DeleteMode_DELETE_MODE_UNSPECIFIED && WriteMode(spec) != destination.Merge {
 		warnings = append(warnings, &apiv1.PlanWarning{Message: "destination.deletes applies only to merge, so it's ignored"})
@@ -164,6 +195,12 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		for _, ps := range spec.GetSource().GetStreams() {
 			read := ReadMode(nil, ps)
 			if err := SyncProblem(StreamMode(spec, caps, read), ps.GetName(), read); err != nil {
+				problems = append(problems, err)
+			}
+			if read == apiv1.SyncMode_SYNC_MODE_UNSPECIFIED {
+				continue
+			}
+			if err := ReadProblem(spec, ps.GetName(), read); err != nil {
 				problems = append(problems, err)
 			}
 		}
@@ -208,6 +245,9 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		read := ReadMode(s.cs.GetSyncModes(), s.ps)
 		mode := StreamMode(spec, caps, read)
 		if err := SyncProblem(mode, name, read); err != nil {
+			problems = append(problems, err)
+		}
+		if err := ReadProblem(spec, name, read); err != nil {
 			problems = append(problems, err)
 		}
 		d := deliveryStream(s.cs, s.ps, mode)

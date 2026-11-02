@@ -22,7 +22,8 @@ SELECT c.run_id, (st ->> 'name')::text AS name,
     sum((st ->> 'rows')::bigint)::bigint AS rows,
     sum((st ->> 'quarantined_rows')::bigint)::bigint AS quarantined_rows,
     -- Checkpoints mirrored before it was counted have none.
-    coalesce(sum((st ->> 'collapsed_rows')::bigint), 0)::bigint AS collapsed_rows
+    coalesce(sum((st ->> 'collapsed_rows')::bigint), 0)::bigint AS collapsed_rows,
+    max(c.commit_time)::timestamptz AS last_commit_time
 FROM checkpoint_mirror c
 CROSS JOIN LATERAL jsonb_array_elements(c.streams) AS st
 WHERE c.org_id = @org_id AND c.pipeline_id = @pipeline_id AND c.run_id = ANY(@run_ids::text[])

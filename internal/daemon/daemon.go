@@ -253,12 +253,15 @@ func orchestrate(ctx context.Context, tc client.Client, st *store.Store, wf work
 	}
 	w := worker.New(tc, contract.OrchestratorQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(wf.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
+	w.RegisterWorkflowWithOptions(wf.StreamSupervisor, workflow.RegisterOptions{Name: contract.StreamSupervisorWorkflow})
 	w.RegisterWorkflowWithOptions(wf.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
 	w.RegisterWorkflowWithOptions(wf.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
 	w.RegisterWorkflowWithOptions(wf.ReadLogs, workflow.RegisterOptions{Name: contract.ReadLogsWorkflow})
 	acts := &cpactivities.Activities{Store: st}
 	w.RegisterActivityWithOptions(acts.StartSync, activity.RegisterOptions{Name: contract.StartSync})
 	w.RegisterActivityWithOptions(acts.FinishSync, activity.RegisterOptions{Name: contract.FinishSync})
+	w.RegisterActivityWithOptions(acts.GetStreamState, activity.RegisterOptions{Name: contract.GetStreamState})
+	w.RegisterActivityWithOptions(acts.StartRun, activity.RegisterOptions{Name: contract.StartRun})
 	w.RegisterActivityWithOptions(acts.DropMirrorPartitions, activity.RegisterOptions{Name: contract.DropMirrorPartitions})
 	return runWorker(ctx, w)
 }
@@ -318,11 +321,21 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
+	// A continuous pipeline's job holds its slot for as long as it runs.
+	stream := worker.New(tc, contract.StreamQueue(cfg.DataPlane), worker.Options{
+		MaxConcurrentActivityExecutionSize: 8,
+		// Jobs drain to a checkpoint for up to this long.
+		WorkerStopTimeout: 2 * time.Minute,
+		// A job learns it's cancelled from a heartbeat.
+		MaxHeartbeatThrottleInterval: 30 * time.Second,
+	})
+	stream.RegisterActivityWithOptions(sync.RunStreamJob, activity.RegisterOptions{Name: contract.RunStreamJob})
 	logs := worker.New(tc, contract.LogsQueue(cfg.DataPlane), worker.Options{MaxConcurrentActivityExecutionSize: 8})
 	logs.RegisterActivityWithOptions((&dpactivities.Logs{Store: cps}).ReadLogs, activity.RegisterOptions{Name: contract.ReadLogs})
-	log.Info("runner polling", "queues", []string{contract.BatchQueue(cfg.DataPlane), contract.LogsQueue(cfg.DataPlane)}, "checkpoints", cfg.Checkpoints)
+	log.Info("runner polling", "queues", []string{contract.BatchQueue(cfg.DataPlane), contract.StreamQueue(cfg.DataPlane), contract.LogsQueue(cfg.DataPlane)}, "checkpoints", cfg.Checkpoints)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return runWorker(gctx, w) })
+	g.Go(func() error { return runWorker(gctx, stream) })
 	g.Go(func() error { return runWorker(gctx, logs) })
 	return g.Wait()
 }

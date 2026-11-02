@@ -33,15 +33,17 @@ var syncStates = map[string]apiv1.SyncState{
 	"running":   apiv1.SyncState_SYNC_STATE_RUNNING,
 	"succeeded": apiv1.SyncState_SYNC_STATE_SUCCEEDED,
 	"failed":    apiv1.SyncState_SYNC_STATE_FAILED,
+	"stopped":   apiv1.SyncState_SYNC_STATE_STOPPED,
 }
 
 func syncOut(pipeline string, r db.GetSyncRow) *apiv1.Sync {
 	out := &apiv1.Sync{
-		Name:      pipeline + "/syncs/" + r.ID.String(),
-		Version:   r.Version,
-		State:     syncStates[r.Status],
-		StartTime: timestamppb.New(r.StartTime),
-		DataPlane: r.DataPlaneID,
+		Name:       pipeline + "/syncs/" + r.ID.String(),
+		Version:    r.Version,
+		State:      syncStates[r.Status],
+		StartTime:  timestamppb.New(r.StartTime),
+		DataPlane:  r.DataPlaneID,
+		Continuous: r.Continuous,
 	}
 	if r.Error != nil {
 		out.Error = *r.Error
@@ -92,15 +94,22 @@ func (s *Server) syncsOut(ctx context.Context, pipeline string, rows []db.GetSyn
 		return nil, err
 	}
 	byRun := map[string][]*apiv1.SyncStream{}
+	lastCommit := map[string]time.Time{}
 	for _, st := range streams {
 		byRun[st.RunID] = append(byRun[st.RunID], &apiv1.SyncStream{
 			Name: st.Name, Rows: uint64(st.Rows), QuarantinedRows: uint64(st.QuarantinedRows), CollapsedRows: uint64(st.CollapsedRows), //nolint:gosec // sums of counts
 		})
+		if st.LastCommitTime.After(lastCommit[st.RunID]) {
+			lastCommit[st.RunID] = st.LastCommitTime
+		}
 	}
 	out := make([]*apiv1.Sync, len(rows))
 	for i, r := range rows {
 		out[i] = syncOut(pipeline, r)
 		out[i].Streams = byRun[r.RunID]
+		if t, ok := lastCommit[r.RunID]; ok {
+			out[i].LastCommitTime = timestamppb.New(t)
+		}
 	}
 	return out, nil
 }

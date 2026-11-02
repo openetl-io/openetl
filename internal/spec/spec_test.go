@@ -104,6 +104,16 @@ func TestParsePipeline(t *testing.T) {
 	}
 }
 
+func TestParseContinuousPipeline(t *testing.T) {
+	doc, err := Parse([]byte("apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  mode: continuous\n  source: {ref: s}\n  destination: {ref: d}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := doc.Pipeline; p.GetMode() != apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS || p.Schedule != nil {
+		t.Errorf("mode %v, schedule %v", p.GetMode(), p.GetSchedule())
+	}
+}
+
 func TestParseDbtProject(t *testing.T) {
 	doc, err := Parse([]byte("apiVersion: openetl.io/v1alpha1\nkind: DbtProject\nmetadata: {name: analytics}\nspec: {bundle: aGVsbG8=}\n"))
 	if err != nil {
@@ -144,33 +154,34 @@ func TestParseErrors(t *testing.T) {
 	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\n"
 	base := "spec:\n  schedule: {every: 1m}\n  source: {ref: s}\n  destination: {ref: d}\n"
 	for name, doc := range map[string]string{
-		"apiVersion":     strings.Replace(header, "v1alpha1", "v2", 1) + base,
-		"bad name":       strings.Replace(header, "name: p", "name: P_1", 1) + base,
-		"unknown kind":   strings.Replace(header, "Pipeline", "Job", 1) + base,
-		"unknown field":  header + base + "  heal: {mode: auto-safe}\n",
-		"no schedule":    header + "spec:\n  source: {ref: s}\n  destination: {ref: d}\n",
-		"two triggers":   header + "spec:\n  schedule: {every: 1m, cron: '* * * * *'}\n  source: {ref: s}\n  destination: {ref: d}\n",
-		"continuous":     header + base + "  mode: continuous\n",
-		"enum case":      header + base + "  schemaPolicy: ALLOW_ALL\n",
-		"unknown enum":   header + strings.Replace(base, "{ref: d}", "{ref: d, write: upsert}", 1),
-		"naming":         header + strings.Replace(base, "{ref: d}", "{ref: d, naming: exact}", 1),
-		"deletes":        header + strings.Replace(base, "{ref: d}", "{ref: d, deletes: purge}", 1),
-		"column ops":     header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {op: hash}}}]}", 1),
-		"column type":    header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {type: int64}}}]}", 1),
-		"no column type": header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {}}}]}", 1),
-		"repeated":       header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a}, {name: a}]}", 1),
-		"size":           header + base + "  delivery: {commit: {maxBytes: lots}}\n",
-		"zero timeout":   header + base + "  delivery: {resumePointTimeout: 0s}\n",
-		"zero interval":  header + base + "  delivery: {commit: {interval: 0s}}\n",
-		"infinity":       header + base + "  types: {infinity: drop}\n",
-		"timestamps":     header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, timestamps: millisecond}]}", 1),
-		"stream require": header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, require: once}]}", 1),
-		"collapse":       header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, collapse: yes please}]}", 1),
-		"two documents":  header + base + "---\n" + header + base,
-		"missing source": header + "spec:\n  schedule: {every: 1m}\n  destination: {ref: d}\n",
-		"empty step":     header + base + "  postSync: [{}]\n",
-		"dbt command":    header + base + "  postSync: [{dbt: {project: a, command: seed}}]\n",
-		"dbt project":    header + base + "  postSync: [{dbt: {project: A_1}}]\n",
+		"apiVersion":                 strings.Replace(header, "v1alpha1", "v2", 1) + base,
+		"bad name":                   strings.Replace(header, "name: p", "name: P_1", 1) + base,
+		"unknown kind":               strings.Replace(header, "Pipeline", "Job", 1) + base,
+		"unknown field":              header + base + "  heal: {mode: auto-safe}\n",
+		"no schedule":                header + "spec:\n  source: {ref: s}\n  destination: {ref: d}\n",
+		"two triggers":               header + "spec:\n  schedule: {every: 1m, cron: '* * * * *'}\n  source: {ref: s}\n  destination: {ref: d}\n",
+		"continuous with a schedule": header + base + "  mode: continuous\n",
+		"continuous postSync":        header + "spec:\n  mode: continuous\n  source: {ref: s}\n  destination: {ref: d}\n  postSync: [{dbt: {project: a}}]\n",
+		"enum case":                  header + base + "  schemaPolicy: ALLOW_ALL\n",
+		"unknown enum":               header + strings.Replace(base, "{ref: d}", "{ref: d, write: upsert}", 1),
+		"naming":                     header + strings.Replace(base, "{ref: d}", "{ref: d, naming: exact}", 1),
+		"deletes":                    header + strings.Replace(base, "{ref: d}", "{ref: d, deletes: purge}", 1),
+		"column ops":                 header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {op: hash}}}]}", 1),
+		"column type":                header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {type: int64}}}]}", 1),
+		"no column type":             header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {}}}]}", 1),
+		"repeated":                   header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a}, {name: a}]}", 1),
+		"size":                       header + base + "  delivery: {commit: {maxBytes: lots}}\n",
+		"zero timeout":               header + base + "  delivery: {resumePointTimeout: 0s}\n",
+		"zero interval":              header + base + "  delivery: {commit: {interval: 0s}}\n",
+		"infinity":                   header + base + "  types: {infinity: drop}\n",
+		"timestamps":                 header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, timestamps: millisecond}]}", 1),
+		"stream require":             header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, require: once}]}", 1),
+		"collapse":                   header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, collapse: yes please}]}", 1),
+		"two documents":              header + base + "---\n" + header + base,
+		"missing source":             header + "spec:\n  schedule: {every: 1m}\n  destination: {ref: d}\n",
+		"empty step":                 header + base + "  postSync: [{}]\n",
+		"dbt command":                header + base + "  postSync: [{dbt: {project: a, command: seed}}]\n",
+		"dbt project":                header + base + "  postSync: [{dbt: {project: A_1}}]\n",
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: parsed", name)

@@ -218,6 +218,29 @@ type deliveryYAML struct {
 	ResumePointTimeout string `yaml:"resumePointTimeout"`
 }
 
+func parseSchedule(y *scheduleYAML) (*apiv1.Schedule, error) {
+	sc := &apiv1.Schedule{}
+	if y.Every != "" {
+		d, err := duration("schedule.every", y.Every)
+		if err != nil {
+			return nil, err
+		}
+		if d.AsDuration() <= 0 {
+			return nil, errors.New("schedule.every must be positive")
+		}
+		sc.Trigger = &apiv1.Schedule_Every{Every: d}
+	} else {
+		sc.Trigger = &apiv1.Schedule_Cron{Cron: y.Cron}
+	}
+	if y.Jitter != "" {
+		var err error
+		if sc.Jitter, err = duration("schedule.jitter", y.Jitter); err != nil {
+			return nil, err
+		}
+	}
+	return sc, nil
+}
+
 func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	var y pipelineYAML
 	if err := strict(b, &y); err != nil {
@@ -228,27 +251,17 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	if p.Mode, err = enum(apiv1.PipelineMode_value, "PIPELINE_MODE_", "mode", y.Mode, apiv1.PipelineMode_PIPELINE_MODE_SCHEDULED); err != nil {
 		return nil, err
 	}
-	if p.Mode != apiv1.PipelineMode_PIPELINE_MODE_SCHEDULED {
-		return nil, errors.New("mode: only scheduled pipelines are supported so far")
-	}
-	if y.Schedule == nil || (y.Schedule.Every == "") == (y.Schedule.Cron == "") {
+	continuous := p.Mode == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS
+	switch {
+	case continuous && y.Schedule != nil:
+		return nil, errors.New("schedule: a continuous pipeline runs all the time, so it has no schedule")
+	case continuous && len(y.PostSync) > 0:
+		return nil, errors.New("postSync: steps run after a sync, and a continuous pipeline has no syncs")
+	case !continuous && (y.Schedule == nil || (y.Schedule.Every == "") == (y.Schedule.Cron == "")):
 		return nil, errors.New("schedule needs one of every or cron")
 	}
-	p.Schedule = &apiv1.Schedule{}
-	if y.Schedule.Every != "" {
-		d, err := duration("schedule.every", y.Schedule.Every)
-		if err != nil {
-			return nil, err
-		}
-		if d.AsDuration() <= 0 {
-			return nil, errors.New("schedule.every must be positive")
-		}
-		p.Schedule.Trigger = &apiv1.Schedule_Every{Every: d}
-	} else {
-		p.Schedule.Trigger = &apiv1.Schedule_Cron{Cron: y.Schedule.Cron}
-	}
-	if y.Schedule.Jitter != "" {
-		if p.Schedule.Jitter, err = duration("schedule.jitter", y.Schedule.Jitter); err != nil {
+	if y.Schedule != nil {
+		if p.Schedule, err = parseSchedule(y.Schedule); err != nil {
 			return nil, err
 		}
 	}

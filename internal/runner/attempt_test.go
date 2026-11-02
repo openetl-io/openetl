@@ -187,7 +187,8 @@ func TestAttemptsPruneTheLog(t *testing.T) {
 		for i, pages := range []int{3, 6, 9} {
 			committed := make(chan uint64, 16)
 			j := job(log, fmt.Sprintf("a%d", i), ackSource{pages: pages, committed: committed, acks: new([]string)}, runner.Passthrough{Convert: columnless}, committed)
-			j.KeepRecords = 3
+			// Above each attempt's commits, so only attempts' starts prune.
+			j.KeepRecords = 4
 			var err error
 			if res, err = runner.RunAttempt(ctx, j); err != nil {
 				t.Fatal(err)
@@ -212,8 +213,43 @@ func TestAttemptsPruneTheLog(t *testing.T) {
 				t.Errorf("record %d-g%d is left", e, g)
 			}
 		}
-		if r := res.Restored; !slices.Equal(older, []uint64{r - 2, r - 1, r}) || len(newer) != res.Committed {
-			t.Fatalf("records %v up to the restored %d and %v after, want the last 3 and the %d committed", older, r, newer, res.Committed)
+		if r := res.Restored; !slices.Equal(older, []uint64{r - 3, r - 2, r - 1, r}) || len(newer) != res.Committed {
+			t.Fatalf("records %v up to the restored %d and %v after, want the last 4 and the %d committed", older, r, newer, res.Committed)
+		}
+	})
+}
+
+// A job prunes every KeepRecords commits, so a long one keeps few records.
+func TestJobsPruneAsTheyGo(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		store := checkpoint.NewMemStore()
+		committed := make(chan uint64, 64)
+		j := job(checkpoint.NewLog(store, "org", "p"), "a1", ackSource{pages: 20, committed: committed, acks: new([]string)}, runner.Passthrough{Convert: columnless}, committed)
+		j.KeepRecords = 3
+		res, err := runner.RunAttempt(ctx, j)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys, err := store.List(ctx, "org/p/_checkpoints/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var epochs []uint64
+		for _, k := range keys {
+			var e, g uint64
+			if _, err := fmt.Sscanf(strings.TrimPrefix(k, "org/p/_checkpoints/"), "%d-g%d.json", &e, &g); err == nil {
+				epochs = append(epochs, e)
+			}
+		}
+		// The last prune kept 3, and the commits since are left.
+		var want []uint64
+		for e := res.Last - uint64(3+res.Committed%3) + 1; e <= res.Last; e++ {
+			want = append(want, e)
+		}
+		if res.Committed < 20 || !slices.Equal(epochs, want) {
+			t.Fatalf("after %d commits, records %v, want %v", res.Committed, epochs, want)
 		}
 	})
 }
@@ -767,4 +803,64 @@ func (d *readsDest) StartReads(_ context.Context, starts map[string]time.Time) e
 func (d *readsDest) EndRead(_ context.Context, e destination.Epoch, s string) error {
 	d.log = append(d.log, fmt.Sprintf("end %d %s", e.N, s))
 	return nil
+}
+
+// A continuous job commits on its interval while its source emits, commits
+// nothing while it idles, and stops at a checkpoint when drained. The next
+// job carries on from there.
+func TestContinuousJob(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		dest := &countingDest{}
+		run := func(owner string, pages int) runner.Result {
+			drain := make(chan struct{})
+			j := job(log, owner, endlessSource{pages: pages}, runner.Passthrough{Convert: columnless}, make(chan uint64, 64))
+			j.Destination, j.Drain = dest, drain
+			j.Settings.CommitMaxBytes = 1 << 40
+			j.Settings.CommitInterval = 2200 * time.Millisecond
+			time.AfterFunc(time.Minute, func() { close(drain) })
+			res, err := runner.RunAttempt(ctx, j)
+			if !errors.Is(err, runner.ErrDrained) {
+				t.Fatalf("%s: got %v, want ErrDrained", owner, err)
+			}
+			return res
+		}
+		// Rows at 1 to 5 s land in epochs at 2.2, 4.4 and 6.6 s, and the
+		// drain's epoch at a minute holds nothing.
+		if res := run("a1", 5); res.Committed != 4 || dest.rows != 5 {
+			t.Fatalf("committed %d epochs and %d rows, want 4 and 5", res.Committed, dest.rows)
+		}
+		if res := run("a2", 8); res.Restored != 4 || dest.rows != 8 {
+			t.Fatalf("restored %d and wrote %d rows, want 4 and 8", res.Restored, dest.rows)
+		}
+	})
+}
+
+// endlessSource emits a row and a resume point a second from its state, up
+// to pages, then idles until it's cancelled, as a quiet stream does.
+type endlessSource struct{ pages int }
+
+func (s endlessSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	i := 0
+	if st := req.Streams[0].State; st != nil {
+		i, _ = strconv.Atoi(string(st))
+	}
+	for ; ; i++ {
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if i >= s.pages {
+			continue
+		}
+		if err := out.Rows("s", []json.RawMessage{json.RawMessage(`{}`)}); err != nil {
+			return err
+		}
+		if err := out.ResumePoint("s", strconv.AppendInt(nil, int64(i+1), 10)); err != nil {
+			return err
+		}
+	}
 }
