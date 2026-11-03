@@ -52,6 +52,9 @@ message AppliedResource {
   string kind = 1;
   string name = 2;
   ApplyAction action = 3;
+  // Empty for a pipeline in a validate_only apply that also creates its
+  // source or destination: the version hashes their IDs, which only the
+  // apply assigns.
   string version = 4;
 }
 

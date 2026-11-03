@@ -166,12 +166,20 @@ func checkVersions(t *testing.T, name, v1, v2 string) {
 }
 
 // The plan uses the source's latest catalog and the destination's declared
-// capabilities, and Apply refuses a change whose plan fails.
+// capabilities, and Apply refuses a change whose plan fails. A dry run that
+// creates a pipeline's source or destination gives the pipeline no version.
 func TestPlan(t *testing.T) {
 	startRunner(t)
 	name := unique("plan")
 	faker := `{"seed": 5, "count": 20, "overlap": 5}`
+	dry := applyAll(t, true, pipelineDocs(name, faker, `{}`)...)
+	if r, p := dry.GetResources(), dry.GetPlans(); r[0].GetVersion() == "" || r[1].GetVersion() == "" || r[2].GetVersion() != "" || p[0].GetVersion() != "" {
+		t.Errorf("a dry run creating the source and destination: %v; plan %v", r, p)
+	}
 	first := applyAll(t, false, pipelineDocs(name, faker, `{}`)...)
+	if v := first.GetResources()[2].GetVersion(); v == "" || first.GetPlans()[0].GetVersion() != v {
+		t.Errorf("applied: %v; plan %v", first.GetResources(), first.GetPlans())
+	}
 	if p := first.GetPlans(); len(p) != 1 || len(p[0].GetStreams()) != 0 || len(p[0].GetNotes()) != 1 || !strings.Contains(p[0].GetNotes()[0], "hasn't been discovered") {
 		t.Fatalf("before discovery: %v", p)
 	}

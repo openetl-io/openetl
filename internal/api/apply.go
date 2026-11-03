@@ -153,6 +153,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 			res.Plans = append(res.Plans, pl)
 		}
 		if req.Msg.GetValidateOnly() {
+			unknownVersions(res, ch)
 			return errValidateOnly
 		}
 		if err := refuse(ch, res.Plans); err != nil {
@@ -181,6 +182,24 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		}
 	}
 	return connect.NewResponse(res), nil
+}
+
+// unknownVersions clears the version of each pipeline whose source or
+// destination the dry run created: a pipeline's version hashes their IDs,
+// and the apply will give them others.
+func unknownVersions(res *apiv1.ApplyResponse, ch *changes) {
+	unknown := map[string]bool{}
+	for i, p := range ch.pipelines {
+		if ch.created[p.v.src.ID] || ch.created[p.v.dst.ID] {
+			unknown[p.name] = true
+			res.Plans[i].Version = ""
+		}
+	}
+	for _, r := range res.GetResources() {
+		if unknown[r.GetName()] {
+			r.Version = ""
+		}
+	}
 }
 
 // documentName is the resource a document defines.
@@ -307,6 +326,7 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		res.Action, cur.id = apiv1.ApplyAction_APPLY_ACTION_CREATED, uuid.New()
+		ch.created[cur.id] = true
 		if doc.Kind == spec.KindSource {
 			err = q.InsertSource(ctx, db.InsertSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, ID: cur.id, Name: doc.Name, Spec: stored, Version: version, ConnectorDigest: connector, Secrets: secrets})
 		} else {
@@ -493,11 +513,13 @@ type changes struct {
 	sources      map[uuid.UUID]string
 	destinations map[uuid.UUID]string
 	dbtProjects  map[uuid.UUID]string
-	pipelines    []*planned
+	// The sources and destinations it created.
+	created   map[uuid.UUID]bool
+	pipelines []*planned
 }
 
 func newChanges() *changes {
-	return &changes{sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{}}
+	return &changes{sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{}, created: map[uuid.UUID]bool{}}
 }
 
 // repin gives a new version to each pipeline whose current version pins a

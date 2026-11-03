@@ -997,6 +997,8 @@ export type PipelinePlan = Message<"openetl.api.v1.PipelinePlan"> & {
   pipeline: string;
 
   /**
+   * Empty when only the apply can know it, as AppliedResource.version says.
+   *
    * @generated from field: string version = 2;
    */
   version: string;

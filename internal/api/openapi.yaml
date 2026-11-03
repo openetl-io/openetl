@@ -2057,6 +2057,10 @@ components:
                     format: enum
                 version:
                     type: string
+                    description: |-
+                        Empty for a pipeline in a validate_only apply that also creates its
+                         source or destination: the version hashes their IDs, which only the
+                         apply assigns.
         ApplyRequest:
             type: object
             properties:
@@ -3076,6 +3080,7 @@ components:
                     description: workspaces/{workspace}/pipelines/{pipeline}
                 version:
                     type: string
+                    description: Empty when only the apply can know it, as AppliedResource.version says.
                 changes:
                     type: array
                     items:

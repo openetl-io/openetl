@@ -265,11 +265,14 @@ func (x *ApplyResponse) GetPlans() []*PipelinePlan {
 }
 
 type AppliedResource struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Action        ApplyAction            `protobuf:"varint,3,opt,name=action,proto3,enum=openetl.api.v1.ApplyAction" json:"action,omitempty"`
-	Version       string                 `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Kind   string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	Name   string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Action ApplyAction            `protobuf:"varint,3,opt,name=action,proto3,enum=openetl.api.v1.ApplyAction" json:"action,omitempty"`
+	// Empty for a pipeline in a validate_only apply that also creates its
+	// source or destination: the version hashes their IDs, which only the
+	// apply assigns.
+	Version       string `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

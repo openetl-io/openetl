@@ -28,11 +28,15 @@ func (fakeApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyReques
 	return connect.NewResponse(&apiv1.ApplyResponse{
 		Resources: []*apiv1.AppliedResource{
 			{Name: "workspaces/default/sources/shop", Action: apiv1.ApplyAction_APPLY_ACTION_UPDATED, Version: "0123456789abcdef"},
+			{Name: "workspaces/default/destinations/lake", Action: apiv1.ApplyAction_APPLY_ACTION_CREATED, Version: "abababababababab"},
+			{Name: "workspaces/default/pipelines/shop-to-lake", Action: apiv1.ApplyAction_APPLY_ACTION_CREATED},
 		},
 		Dependents: []*apiv1.AppliedResource{
 			{Name: "workspaces/default/pipelines/shop-to-dw", Action: apiv1.ApplyAction_APPLY_ACTION_UPDATED, Version: "fedcba9876543210"},
 		},
 		Plans: []*apiv1.PipelinePlan{{
+			Pipeline: "workspaces/default/pipelines/shop-to-lake",
+		}, {
 			Pipeline: "workspaces/default/pipelines/shop-to-dw", Version: "fedcba9876543210",
 			Changes: []*apiv1.PlanChange{{Field: "source.version", Before: `"01"`, After: `"02"`}, {Field: "delivery.require", After: `"DELIVERY_LEVEL_AT_LEAST_ONCE"`}},
 			Streams: []*apiv1.StreamPlan{
@@ -47,7 +51,8 @@ func (fakeApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyReques
 }
 
 // openetl apply lists the pipelines that a change gave new versions, and
-// openetl plan shows their plans.
+// openetl plan shows their plans. A pipeline a dry run can't give a version
+// shows that only the apply knows it.
 func TestApplyListsDependents(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewApplyServiceHandler(fakeApply{}))
@@ -63,6 +68,8 @@ func TestApplyListsDependents(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "would be updated workspaces/default/sources/shop (version 0123456789ab)\n" +
+		"would be created workspaces/default/destinations/lake (version abababababab)\n" +
+		"would be created workspaces/default/pipelines/shop-to-lake (version known after apply)\n" +
 		"would be updated workspaces/default/pipelines/shop-to-dw (version fedcba987654), which uses what changed\n"
 	if w := want + "\nwarnings for workspaces/default/pipelines/shop-to-dw:\n  logs: it has no primary key\n"; out.String() != w {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), w)
@@ -74,6 +81,8 @@ func TestApplyListsDependents(t *testing.T) {
 		t.Errorf("a plan with problems: %v", err)
 	}
 	want += `
+workspaces/default/pipelines/shop-to-lake (version known after apply)
+
 workspaces/default/pipelines/shop-to-dw (version fedcba987654)
   changes:
     source.version: "01" -> "02"

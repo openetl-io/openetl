@@ -421,6 +421,7 @@ message GetPipelinePlanResponse {
 message PipelinePlan {
   // workspaces/{workspace}/pipelines/{pipeline}
   string pipeline = 1;
+  // Empty when only the apply can know it, as AppliedResource.version says.
   string version = 2;
   // What differs from the version that was current; empty for a new
   // pipeline.

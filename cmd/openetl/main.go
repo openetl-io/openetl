@@ -210,16 +210,25 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 		return action
 	}
 	for _, r := range res.Msg.GetResources() {
-		fmt.Fprintf(out, "%s %s (version %.12s)\n", verb(r), r.GetName(), r.GetVersion())
+		fmt.Fprintf(out, "%s %s (%s)\n", verb(r), r.GetName(), versionText(r.GetVersion()))
 	}
 	for _, r := range res.Msg.GetDependents() {
-		fmt.Fprintf(out, "%s %s (version %.12s), which uses what changed\n", verb(r), r.GetName(), r.GetVersion())
+		fmt.Fprintf(out, "%s %s (%s), which uses what changed\n", verb(r), r.GetName(), versionText(r.GetVersion()))
 	}
 	if mode == planAll {
 		return printPlans(out, res.Msg)
 	}
 	printWarnings(out, res.Msg)
 	return nil
+}
+
+// A dry run gives no version to a pipeline that uses a source or destination
+// the apply creates.
+func versionText(v string) string {
+	if v == "" {
+		return "version known after apply"
+	}
+	return fmt.Sprintf("version %.12s", v)
 }
 
 // printWarnings prints the plan warnings of each pipeline the apply created
@@ -257,7 +266,7 @@ func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
 	changed := changedPipelines(res)
 	failed := false
 	for _, p := range res.GetPlans() {
-		fmt.Fprintf(out, "\n%s (version %.12s)\n", p.GetPipeline(), p.GetVersion())
+		fmt.Fprintf(out, "\n%s (%s)\n", p.GetPipeline(), versionText(p.GetVersion()))
 		if len(p.GetChanges()) > 0 {
 			fmt.Fprintln(out, "  changes:")
 			for _, c := range p.GetChanges() {

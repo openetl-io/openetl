@@ -133,6 +133,10 @@ export type AppliedResource = Message<"openetl.api.v1.AppliedResource"> & {
   action: ApplyAction;
 
   /**
+   * Empty for a pipeline in a validate_only apply that also creates its
+   * source or destination: the version hashes their IDs, which only the
+   * apply assigns.
+   *
    * @generated from field: string version = 4;
    */
   version: string;

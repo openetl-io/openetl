@@ -2752,7 +2752,8 @@ type PipelinePlan struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}/pipelines/{pipeline}
 	Pipeline string `protobuf:"bytes,1,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
-	Version  string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	// Empty when only the apply can know it, as AppliedResource.version says.
+	Version string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
 	// What differs from the version that was current; empty for a new
 	// pipeline.
 	Changes []*PlanChange `protobuf:"bytes,3,rep,name=changes,proto3" json:"changes,omitempty"`
