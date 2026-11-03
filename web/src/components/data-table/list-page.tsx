@@ -1,9 +1,8 @@
 import type { ReactNode } from "react";
 import type { Row, Table } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
-import { ErrorNote } from "@/components/empty";
 import { PageHeader } from "@/components/page-header";
-import { errorMessage } from "@/lib/api";
+import { QueryError } from "@/components/query-error";
 import { DataTable } from "./data-table";
 import { Pagination } from "./pagination";
 
@@ -20,6 +19,7 @@ export function ListPage<T>({
   empty,
   onRowClick,
   onReset,
+  footer,
 }: {
   title: string;
   /** Before filtering; unset while loading. */
@@ -35,6 +35,8 @@ export function ListPage<T>({
   onRowClick?: (row: Row<T>) => void;
   /** Clears the filters, offered when they hide every row. */
   onReset?: () => void;
+  /** Below the pages, such as a button that loads older rows. */
+  footer?: ReactNode;
 }) {
   if (count === 0) {
     return (
@@ -49,7 +51,7 @@ export function ListPage<T>({
       <PageHeader title={title} count={count} actions={actions} />
       {toolbar}
       {error ? (
-        <ErrorNote title={`Couldn't list ${noun[1]}`} message={errorMessage(error)} />
+        <QueryError title={`Couldn't list ${noun[1]}`} error={error} />
       ) : (
         <>
           <DataTable
@@ -68,6 +70,7 @@ export function ListPage<T>({
             }
           />
           <Pagination table={table} noun={noun} />
+          {footer}
         </>
       )}
     </div>

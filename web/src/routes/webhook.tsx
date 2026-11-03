@@ -1,9 +1,10 @@
 import { useMemo } from "react";
 import { Code } from "@connectrpc/connect";
-import { useQuery } from "@connectrpc/connect-query";
+import { useInfiniteQuery, useQuery } from "@connectrpc/connect-query";
 import { getRouteApi } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Webhook as WebhookIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DataTable } from "@/components/data-table/data-table";
 import { Pagination } from "@/components/data-table/pagination";
@@ -22,8 +23,12 @@ import { dateOf, duration, durationMs } from "@/lib/format";
 const route = getRouteApi("/_app/workspaces/$workspace/webhooks/$webhook");
 
 function Deliveries({ name }: { name: string }) {
-  const deliveries = useQuery(WebhookService.method.listWebhookDeliveries, { parent: name, pageSize: 500 }, { refetchInterval: 15_000 });
-  const rows = useMemo(() => deliveries.data?.deliveries ?? [], [deliveries.data]);
+  const deliveries = useInfiniteQuery(
+    WebhookService.method.listWebhookDeliveries,
+    { parent: name, pageSize: 500, pageToken: "" },
+    { pageParamKey: "pageToken", getNextPageParam: (r) => r.nextPageToken || undefined, refetchInterval: 15_000 },
+  );
+  const rows = useMemo(() => deliveries.data?.pages.flatMap((p) => p.deliveries) ?? [], [deliveries.data]);
   const columns = useMemo<ColumnDef<WebhookDelivery>[]>(
     () => [
       {
@@ -48,7 +53,8 @@ function Deliveries({ name }: { name: string }) {
         header: "Response",
         cell: ({ row }) => {
           const d = row.original;
-          const text = d.responseStatus ? String(d.responseStatus) : "—";
+          // No status: the endpoint never answered, such as a name that didn't resolve.
+          const text = d.responseStatus ? String(d.responseStatus) : d.error ? "No response" : "—";
           if (!d.error) return <span className="tabular-nums">{text}</span>;
           return (
             <Tooltip>
@@ -102,6 +108,11 @@ function Deliveries({ name }: { name: string }) {
     <div className="grid gap-3">
       <DataTable table={table} loading={deliveries.isPending} empty="No events have matched this webhook yet." />
       <Pagination table={table} noun={["delivery", "deliveries"]} />
+      {deliveries.hasNextPage && (
+        <Button variant="outline" size="sm" className="w-fit" disabled={deliveries.isFetchingNextPage} onClick={() => deliveries.fetchNextPage()}>
+          {deliveries.isFetchingNextPage ? "Loading…" : "Load older deliveries"}
+        </Button>
+      )}
     </div>
   );
 }

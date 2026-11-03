@@ -18,7 +18,7 @@ const CodeView = lazy(() => import("@/components/code-view"));
 const route = getRouteApi("/_app/workspaces/$workspace/pipelines/$pipeline");
 
 function Digest({ value }: { value: string }) {
-  if (!value) return <span className="text-muted-foreground">Built in</span>;
+  if (!value) return <span>not pinned</span>;
   return (
     <button
       onClick={() => void navigator.clipboard.writeText(value).then(() => toast("Copied the digest"))}

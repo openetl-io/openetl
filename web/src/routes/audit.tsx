@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@connectrpc/connect-query";
+import { useInfiniteQuery } from "@connectrpc/connect-query";
 import { getRouteApi } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ScrollText } from "lucide-react";
 import { stringify } from "yaml";
+import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { CodeBlock } from "@/components/code-block";
 import { FacetedFilter } from "@/components/data-table/faceted-filter";
@@ -22,22 +23,29 @@ import { lastSegment } from "@/lib/names";
 
 const route = getRouteApi("/_app/workspaces/$workspace/audit");
 
-/** "PipelineService/SyncPipeline" from "openetl.api.v1.PipelineService/SyncPipeline". */
+/**
+ * PipelineService and SyncPipeline from "/openetl.api.v1.PipelineService/SyncPipeline";
+ * what the server did itself, such as "openetld bootstrap", has no service.
+ */
 const call = (e: AuditEntry) => {
-  const [service = "", method = ""] = e.method.split("/");
-  return { service: service.split(".").pop() ?? "", method };
+  const [service, method] = e.method.replace(/^\//, "").split("/");
+  return method ? { service: service?.split(".").pop() ?? "", method } : { service: "", method: e.method };
 };
-const result = (e: AuditEntry) => (e.code && e.code !== "OK" ? e.code : "OK");
+/** The call's Connect code, such as ok or permission_denied. */
+const result = (e: AuditEntry) => e.code.toLowerCase() || "ok";
+
+/** "admin" for principals/admin, "default data plane" for a runner's dataPlanes/default. */
+const actorLabel = (a: string) => (a.startsWith("dataPlanes/") ? `${lastSegment(a)} data plane` : lastSegment(a));
 
 const facets = {
-  actor: (e: AuditEntry) => lastSegment(e.actor),
+  actor: (e: AuditEntry) => actorLabel(e.actor),
   method: (e: AuditEntry) => call(e).method,
   result,
 };
 
 function Result({ entry }: { entry: AuditEntry }) {
   const r = result(entry);
-  return r === "OK" ? <span className="text-muted-foreground">OK</span> : <span className="font-mono text-[0.8125rem] text-failed">{r}</span>;
+  return r === "ok" ? <span className="text-muted-foreground">OK</span> : <span className="font-mono text-[0.8125rem] text-failed">{r}</span>;
 }
 
 function EntrySheet({ entry, onClose }: { entry?: AuditEntry; onClose: () => void }) {
@@ -51,7 +59,7 @@ function EntrySheet({ entry, onClose }: { entry?: AuditEntry; onClose: () => voi
             <SheetHeader>
               <SheetTitle>{call(entry).method}</SheetTitle>
               <SheetDescription>
-                {lastSegment(entry.actor)}
+                {actorLabel(entry.actor)}
                 {t && `, ${absolute(t)}`}
               </SheetDescription>
             </SheetHeader>
@@ -93,8 +101,13 @@ function EntrySheet({ entry, onClose }: { entry?: AuditEntry; onClose: () => voi
 export function AuditPage() {
   const search = route.useSearch();
   const navigate = route.useNavigate();
-  const entries = useQuery(AuditService.method.listAuditEntries, { pageSize: 500 }, { refetchInterval: 30_000 });
-  const all = useMemo(() => entries.data?.entries ?? [], [entries.data]);
+  // The newest 500 first; older pages load on request, since 90 days of entries can be many.
+  const entries = useInfiniteQuery(
+    AuditService.method.listAuditEntries,
+    { pageSize: 500, pageToken: "" },
+    { pageParamKey: "pageToken", getNextPageParam: (r) => r.nextPageToken || undefined, refetchInterval: 30_000 },
+  );
+  const all = useMemo(() => entries.data?.pages.flatMap((p) => p.entries) ?? [], [entries.data]);
   const list = useListFilter({ rows: all, search, facets, text: (e) => [e.actor, e.method, ...e.resources] });
   const setSearch = (s: Partial<typeof search>) => navigate({ search: (prev) => ({ ...prev, ...s }), replace: true });
   const reset = () => setSearch({ q: undefined, actor: undefined, method: undefined, result: undefined });
@@ -113,8 +126,9 @@ export function AuditPage() {
       },
       {
         id: "actor",
-        accessorFn: (e) => lastSegment(e.actor),
+        accessorFn: (e) => actorLabel(e.actor),
         header: ({ column }) => <SortHeader column={column} title="Actor" />,
+        cell: ({ row }) => <ResourceLink name={row.original.actor} label={actorLabel(row.original.actor)} />,
       },
       {
         id: "method",
@@ -165,6 +179,13 @@ export function AuditPage() {
         noun={["entry", "entries"]}
         onRowClick={(r) => setOpen(r.original)}
         onReset={reset}
+        footer={
+          entries.hasNextPage && (
+            <Button variant="outline" size="sm" className="w-fit" disabled={entries.isFetchingNextPage} onClick={() => entries.fetchNextPage()}>
+              {entries.isFetchingNextPage ? "Loading…" : "Load older entries"}
+            </Button>
+          )
+        }
         empty={<EmptyState icon={ScrollText} title="Nothing in the audit log yet" description="Every change, and every read of a secret, lands here with who made it. Entries are kept for 90 days." />}
         toolbar={
           <Toolbar search={search.q ?? ""} onSearch={(q) => setSearch({ q: q || undefined })} placeholder="Search the audit log" filtered={list.filtered} onReset={reset}>

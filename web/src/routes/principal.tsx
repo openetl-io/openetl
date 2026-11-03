@@ -10,11 +10,11 @@ import { DataTable } from "@/components/data-table/data-table";
 import { SortHeader } from "@/components/data-table/sort-header";
 import { useDataTable } from "@/components/data-table/use-data-table";
 import { DescriptionItem, DetailHeader, Section } from "@/components/detail-header";
-import { ErrorNote } from "@/components/empty";
+import { QueryError } from "@/components/query-error";
 import { EmptyState } from "@/components/empty-state";
 import { RelativeTime } from "@/components/relative-time";
 import { AccessService, type Key } from "@/gen/openetl/api/v1/access_pb";
-import { errorCode, errorMessage } from "@/lib/api";
+import { errorCode } from "@/lib/api";
 import { dateOf } from "@/lib/format";
 
 const route = getRouteApi("/_app/workspaces/$workspace/access/$principal");
@@ -57,7 +57,7 @@ function Keys({ principal }: { principal: string }) {
     [],
   );
   const table = useDataTable({ data: rows, columns, sort: [{ id: "created", desc: true }], paged: false });
-  if (keys.error) return <ErrorNote title="Couldn't list API keys" message={errorMessage(keys.error)} />;
+  if (keys.error) return <QueryError title="Couldn't list API keys" error={keys.error} />;
   return <DataTable table={table} loading={keys.isPending} empty="No API keys." />;
 }
 
@@ -69,7 +69,7 @@ export function PrincipalPage() {
     return errorCode(q.error) === Code.NotFound ? (
       <EmptyState icon={Users} title={`There's no principal ${principal}`} />
     ) : (
-      <ErrorNote title="Couldn't load the principal" message={errorMessage(q.error)} />
+      <QueryError title="Couldn't load the principal" error={q.error} />
     );
   }
   const p = q.data?.principal;

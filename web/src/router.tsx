@@ -70,7 +70,7 @@ const sync = createRoute({
   getParentRoute: () => app,
   path: "/workspaces/$workspace/pipelines/$pipeline/syncs/$sync",
   staticData: {
-    crumbs: (p) => [page("Pipelines", "pipelines")(p), page(p.pipeline!, `pipelines/${p.pipeline}`)(p), { label: `Sync ${p.sync}` }],
+    crumbs: (p) => [page("Pipelines", "pipelines")(p), page(p.pipeline!, `pipelines/${p.pipeline}`)(p), { label: `Sync ${p.sync!.slice(-8)}` }],
   },
   component: lazyRouteComponent(() => import("@/routes/sync"), "SyncPage"),
 });
@@ -86,7 +86,7 @@ const incidents = createRoute({
 const incident = createRoute({
   getParentRoute: () => app,
   path: "/workspaces/$workspace/incidents/$pipeline/$incident",
-  staticData: { crumbs: (p) => [page("Incidents", "incidents")(p), { label: `${p.pipeline} · ${p.incident}` }] },
+  staticData: { crumbs: (p) => [page("Incidents", "incidents")(p), { label: `${p.pipeline} · ${p.incident!.slice(-8)}` }] },
   component: lazyRouteComponent(() => import("@/routes/incident"), "IncidentPage"),
 });
 

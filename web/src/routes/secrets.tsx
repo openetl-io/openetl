@@ -23,7 +23,7 @@ export function SecretsPage() {
   const navigate = route.useNavigate();
   const secrets = useQuery(SecretService.method.listSecrets, { parent: `workspaces/${workspace}`, pageSize: 500 });
   const all = useMemo(() => secrets.data?.secrets ?? [], [secrets.data]);
-  const list = useListFilter({ rows: all, search, facets: {}, text: (s) => [lastSegment(s.name), ...s.usedBy.map(lastSegment)] });
+  const list = useListFilter({ rows: all, search, facets: {}, text: (s) => [lastSegment(s.name), s.ref, ...s.usedBy.map(lastSegment)] });
 
   const columns = useMemo<ColumnDef<Secret>[]>(
     () => [
@@ -34,9 +34,14 @@ export function SecretsPage() {
         cell: ({ getValue }) => <span className="font-medium">{getValue<string>()}</span>,
       },
       {
-        id: "ref",
-        header: "Reference",
-        cell: ({ row }) => <span className="font-mono text-[0.8125rem] text-muted-foreground">{row.original.ref}</span>,
+        id: "value",
+        header: "Value",
+        cell: ({ row }) =>
+          row.original.ref ? (
+            <span className="font-mono text-[0.8125rem]">{row.original.ref}</span>
+          ) : (
+            <span className="text-muted-foreground">Sealed here</span>
+          ),
         meta: { className: "hidden lg:table-cell" },
       },
       {

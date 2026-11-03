@@ -11,7 +11,7 @@ import { Toolbar } from "@/components/data-table/toolbar";
 import { useDataTable } from "@/components/data-table/use-data-table";
 import { EmptyState } from "@/components/empty-state";
 import { NewPipelineButton } from "@/components/new-pipeline";
-import { Freshness, IncidentCount, Schedule } from "@/components/pipeline-fields";
+import { FailedAttempts, Freshness, IncidentCount, Schedule } from "@/components/pipeline-fields";
 import { StatusBadge, StatusIcon } from "@/components/status";
 import { useConnectors } from "@/lib/connectors";
 import { PipelineService, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
@@ -75,6 +75,7 @@ export function PipelinesPage() {
         cell: ({ row }) => (
           <span className="flex items-center gap-2">
             <StatusBadge status={pipelineStatus(row.original)} />
+            <FailedAttempts pipeline={row.original} className="hidden sm:inline-flex" />
             <IncidentCount count={row.original.status?.openIncidents ?? 0} className="hidden sm:inline-flex" />
           </span>
         ),

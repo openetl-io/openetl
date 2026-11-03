@@ -1,9 +1,20 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 
 const linkClass = "hover:underline";
 
-/** A link to a resource by its API name, workspaces/{workspace}/{collection}/{id}; plain text for kinds without a page. */
+/** A link to a resource by its API name, workspaces/{workspace}/{collection}/{id} or principals/{id}; plain text for kinds without a page. */
 export function ResourceLink({ name, label }: { name: string; label?: string }) {
+  const current = useParams({ strict: false }).workspace ?? "default";
+  if (name.startsWith("principals/")) {
+    const principal = name.split("/")[1] ?? "";
+    return name.split("/").length === 2 ? (
+      <Link to="/workspaces/$workspace/access/$principal" params={{ workspace: current, principal }} className={linkClass}>
+        {label ?? principal}
+      </Link>
+    ) : (
+      <span>{label ?? name}</span>
+    );
+  }
   const [, workspace = "", collection, id = ""] = name.split("/");
   const text = label ?? id;
   switch (collection) {

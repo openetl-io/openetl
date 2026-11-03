@@ -167,8 +167,8 @@ export const deliveries = new Map<string, WebhookDelivery[]>(
         eventType: events[(i + wi) % events.length],
         state,
         attempts: failing ? 3 + (i % 3) : 1,
-        responseStatus: failing ? 503 : 200,
-        error: failing ? "503 Service Unavailable" : "",
+        responseStatus: failing ? (i % 2 ? 503 : 0) : 200,
+        error: failing ? (i % 2 ? "503 Service Unavailable" : "dial tcp: lookup hooks.example.com: no such host") : "",
         latency: { nanos: (80 + ((i * 37) % 300)) * 1_000_000 },
         lastAttemptTime: ago(i * 47 + 3),
         nextAttemptTime: state === DeliveryState.PENDING ? ago(-6) : undefined,
@@ -191,7 +191,7 @@ export const secrets: Secret[] = [
 ].map(([id, used, days]) =>
   create(SecretSchema, {
     name: `${ws}/secrets/${id}`,
-    ref: `secret://${id}`,
+    ref: id === "aws-lake" ? "aws-sm://prod/openetl/lake?region=eu-west-1" : "",
     usedBy: (used as string[]).map((u) => `${ws}/${u}`),
     createTime: ago((days as number) * 24 * 60),
     updateTime: ago((days as number) * 24 * 60),
@@ -248,18 +248,19 @@ export const runnerTokens = new Map<string, RunnerToken[]>([
 ]);
 
 const calls: [string, string, string[], string?][] = [
-  ["principals/ci-deploy", "openetl.api.v1.ApplyService/Apply", [`${ws}/pipelines/orders-to-warehouse`]],
-  ["principals/alex", "openetl.api.v1.PipelineService/SyncPipeline", [`${ws}/pipelines/billing-to-warehouse`]],
-  ["principals/alex", "openetl.api.v1.IncidentService/ResolveIncident", [`${ws}/pipelines/orders-cdc/incidents/0c9e`]],
-  ["principals/priya", "openetl.api.v1.SecretService/UpdateSecret", [`${ws}/secrets/inventory-db-password`]],
-  ["principals/admin", "openetl.api.v1.AccessService/CreateKey", ["principals/ci-deploy"]],
-  ["principals/sam", "openetl.api.v1.PipelineService/PausePipeline", [`${ws}/pipelines/payments-to-archive`], "PERMISSION_DENIED"],
-  ["principals/priya", "openetl.api.v1.AccessService/DisablePrincipal", ["principals/sam"]],
-  ["principals/ci-deploy", "openetl.api.v1.ApplyService/Apply", [`${ws}/pipelines/events-to-lake`, `${ws}/sources/events`]],
-  ["principals/priya", "openetl.api.v1.PipelineService/PausePipeline", [`${ws}/pipelines/payments-to-archive`]],
-  ["principals/admin", "openetl.api.v1.WebhookService/DisableWebhook", [`${ws}/webhooks/legacy-ingest`]],
+  ["principals/ci-deploy", "/openetl.api.v1.ApplyService/Apply", [`${ws}/pipelines/orders-to-warehouse`]],
+  ["principals/alex", "/openetl.api.v1.PipelineService/SyncPipeline", [`${ws}/pipelines/billing-to-warehouse`]],
+  ["principals/alex", "/openetl.api.v1.IncidentService/ResolveIncident", [`${ws}/pipelines/orders-cdc/incidents/0c9e`]],
+  ["principals/priya", "/openetl.api.v1.SecretService/UpdateSecret", [`${ws}/secrets/inventory-db-password`]],
+  ["principals/admin", "/openetl.api.v1.AccessService/CreateKey", ["principals/ci-deploy"]],
+  ["principals/sam", "/openetl.api.v1.PipelineService/PausePipeline", [`${ws}/pipelines/payments-to-archive`], "permission_denied"],
+  ["principals/priya", "/openetl.api.v1.AccessService/DisablePrincipal", ["principals/sam"]],
+  ["principals/ci-deploy", "/openetl.api.v1.ApplyService/Apply", [`${ws}/pipelines/events-to-lake`, `${ws}/sources/events`]],
+  ["principals/priya", "/openetl.api.v1.PipelineService/PausePipeline", [`${ws}/pipelines/payments-to-archive`]],
+  ["principals/admin", "/openetl.api.v1.WebhookService/DisableWebhook", [`${ws}/webhooks/legacy-ingest`]],
+  ["dataPlanes/default", "/openetl.dataplane.v1.DataPlaneService/GetSyncSpec", [`${ws}/pipelines/orders-to-warehouse`, `${ws}/secrets/orders-db-password`]],
 ];
-export const auditEntries: AuditEntry[] = Array.from({ length: 40 }, (_, i) => {
+export const auditEntries: AuditEntry[] = [...Array.from({ length: 40 }, (_, i) => {
   const [actor, method, resources, code] = calls[i % calls.length]!;
   return create(AuditEntrySchema, {
     name: `auditEntries/${(0x3f00 + i).toString(16)}`,
@@ -271,7 +272,16 @@ export const auditEntries: AuditEntry[] = Array.from({ length: 40 }, (_, i) => {
     resources,
     peer: `10.0.${i % 4}.${20 + (i % 9)}`,
     userAgent: i % 3 ? "openetl-cli/0.1.0" : "Mozilla/5.0",
-    code: code ?? "",
-    error: code ? "the principal's role doesn't allow it" : "",
+    code: code ?? "ok",
+    error: code ? "principals/sam needs pipelines.pause (operator or above) on workspace default" : "",
   });
-});
+}),
+  create(AuditEntrySchema, {
+    name: "auditEntries/3e00",
+    time: ago(40 * 24 * 60),
+    actor: "openetld",
+    method: "openetld bootstrap",
+    resources: ["principals/admin", "principals/admin/keys/k1"],
+    code: "ok",
+  }),
+];

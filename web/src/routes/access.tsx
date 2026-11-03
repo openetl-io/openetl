@@ -11,11 +11,10 @@ import { SortHeader } from "@/components/data-table/sort-header";
 import { Toolbar } from "@/components/data-table/toolbar";
 import { useDataTable } from "@/components/data-table/use-data-table";
 import { Section } from "@/components/detail-header";
-import { ErrorNote } from "@/components/empty";
+import { QueryError } from "@/components/query-error";
 import { PageHeader } from "@/components/page-header";
 import { RelativeTime } from "@/components/relative-time";
 import { AccessService, Role, type Principal, type RunnerToken } from "@/gen/openetl/api/v1/access_pb";
-import { errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
 import { useListFilter } from "@/lib/list-filter";
 import { lastSegment } from "@/lib/names";
@@ -105,7 +104,7 @@ function Principals() {
         />
       </Toolbar>
       {principals.error ? (
-        <ErrorNote title="Couldn't list principals" message={errorMessage(principals.error)} />
+        <QueryError title="Couldn't list principals" error={principals.error} />
       ) : (
         <>
           <DataTable
@@ -151,7 +150,7 @@ function PlaneTokens({ plane }: { plane: string }) {
   return (
     <Section title={`Data plane ${lastSegment(plane)}`}>
       {tokens.error ? (
-        <ErrorNote title="Couldn't list runner tokens" message={errorMessage(tokens.error)} />
+        <QueryError title="Couldn't list runner tokens" error={tokens.error} />
       ) : (
         <DataTable table={table} loading={tokens.isPending} empty={`No runner tokens. Runners join with one: openetl dataplane token create ${lastSegment(plane)}`} />
       )}
@@ -161,7 +160,7 @@ function PlaneTokens({ plane }: { plane: string }) {
 
 function RunnerTokens() {
   const planes = useQuery(AccessService.method.listDataPlanes, {});
-  if (planes.error) return <ErrorNote title="Couldn't list data planes" message={errorMessage(planes.error)} />;
+  if (planes.error) return <QueryError title="Couldn't list data planes" error={planes.error} />;
   return <div className="grid gap-8">{planes.data?.dataPlanes.map((p) => <PlaneTokens key={p.name} plane={p.name} />)}</div>;
 }
 

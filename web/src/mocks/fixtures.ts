@@ -51,10 +51,10 @@ const configs: Record<string, (id: string) => Record<string, string | number>> =
 const updated = (i: number) => ts(Date.now() - (3 + i * 5) * 24 * 3_600_000);
 
 export const sources: Source[] = sourceDefs.map(([id, c, slug], i) =>
-  create(SourceSchema, { name: `${workspace}/sources/${id}`, spec: { connector: c, config: configs[c]?.(id) }, connector: connector("source", c, slug), updateTime: updated(i) }),
+  create(SourceSchema, { name: `${workspace}/sources/${id}`, spec: { connector: c, config: configs[c]?.(id) }, connector: slug ? connector("source", c, slug) : undefined, updateTime: updated(i) }),
 );
 export const destinations: Destination[] = destinationDefs.map(([id, c, slug], i) =>
-  create(DestinationSchema, { name: `${workspace}/destinations/${id}`, spec: { connector: c, config: configs[c]?.(id) }, connector: connector("destination", c, slug), updateTime: updated(i + 1) }),
+  create(DestinationSchema, { name: `${workspace}/destinations/${id}`, spec: { connector: c, config: configs[c]?.(id) }, connector: slug ? connector("destination", c, slug) : undefined, updateTime: updated(i + 1) }),
 );
 
 type Def = {
@@ -64,7 +64,7 @@ type Def = {
   every?: number;
   cron?: string;
   continuous?: boolean;
-  outcome: "succeeded" | "running" | "failed" | "quarantined" | "stopped" | "never";
+  outcome: "succeeded" | "running" | "retrying" | "failed" | "quarantined" | "stopped" | "never";
   paused?: boolean;
   rows: number;
   incidents?: number;
@@ -80,7 +80,7 @@ const defs: Def[] = [
   { name: "inventory-snapshot", source: "inventory-db", destination: "raw-archive", cron: "0 2 * * *", outcome: "succeeded", rows: 3_904_112, streams: ["public.stock", "public.warehouses"] },
   { name: "clickstream-to-lake", source: "clickstream", destination: "lake-glue", continuous: true, outcome: "running", rows: 912_408_337, streams: ["page_views"] },
   { name: "events-to-lake", source: "events", destination: "lake", every: 30, outcome: "quarantined", incidents: 1, rows: 2_118_440, streams: ["orders.v1", "payments.v1", "shipments.v1"] },
-  { name: "customers-to-warehouse", source: "orders-db", destination: "warehouse", every: 30, outcome: "running", rows: 88_402, streams: ["public.customers"] },
+  { name: "customers-to-warehouse", source: "orders-db", destination: "warehouse", every: 30, outcome: "retrying", rows: 88_402, streams: ["public.customers"] },
   { name: "payments-to-archive", source: "billing-db", destination: "raw-archive", every: 360, outcome: "succeeded", paused: true, rows: 640_221, streams: ["public.payments"] },
   { name: "events-fanout", source: "events", destination: "events-out", continuous: true, outcome: "stopped", rows: 7_220_118, streams: ["orders.v1"] },
   { name: "legacy-orders", source: "orders-db", destination: "raw-archive", outcome: "never", rows: 0, streams: ["public.orders_2019"] },
@@ -148,13 +148,13 @@ function history(d: Def): Sync[] {
   }
   const every = (d.every ?? 24 * 60) * min;
   // The latest sync started long enough ago to have ended, unless it's running.
-  const last = d.paused ? now - 3 * 24 * 60 * min : d.outcome === "running" ? now - 2 * min : now - 5 * min - rnd() * every * 0.8;
+  const last = d.paused ? now - 3 * 24 * 60 * min : d.outcome === "running" || d.outcome === "retrying" ? now - 2 * min : now - 5 * min - rnd() * every * 0.8;
   return Array.from({ length: 40 }, (_, i) => {
     const start = last - i * every;
     const took = (40 + rnd() * 200) * 1000;
     let state = SyncState.SUCCEEDED;
     let quarantined = 0;
-    if (i === 0 && d.outcome === "running") state = SyncState.RUNNING;
+    if (i === 0 && (d.outcome === "running" || d.outcome === "retrying")) state = SyncState.RUNNING;
     else if (i < (d.failing ?? 0)) state = SyncState.FAILED;
     else if (i === 0 && d.outcome === "quarantined") quarantined = 61;
     else if (rnd() < 0.04) state = SyncState.FAILED;
@@ -164,7 +164,8 @@ function history(d: Def): Sync[] {
       version: pipelineVersion,
       state,
       error: state === SyncState.FAILED ? failure : "",
-      failedAttempts: state === SyncState.FAILED ? 3 : 0,
+      failedAttempts: state === SyncState.FAILED ? 3 : i === 0 && d.outcome === "retrying" ? 2 : 0,
+      lastAttemptError: i === 0 && d.outcome === "retrying" ? "runner: open destination: INTERNAL: postgres: connect: too many connections for role \"openetl\" (SQLSTATE 53300)" : "",
       startTime: ts(start),
       endTime: state === SyncState.RUNNING ? undefined : ts(start + took),
       lastCommitTime: state === SyncState.SUCCEEDED ? ts(start + took) : undefined,

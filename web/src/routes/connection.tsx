@@ -5,6 +5,7 @@ import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Database, Warehouse } from "lucide-react";
 import { stringify } from "yaml";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CodeBlock } from "@/components/code-block";
 import { ConnectorLogo } from "@/components/connector";
 import { DataTable } from "@/components/data-table/data-table";
@@ -115,7 +116,10 @@ function ConnectionPage({ kind }: { kind: Kind }) {
             </DescriptionItem>
             <DescriptionItem label="Version">
               {!v?.version ? (
-                <span className="text-muted-foreground">Built in</span>
+                <Tooltip>
+                  <TooltipTrigger className="text-muted-foreground">Not pinned</TooltipTrigger>
+                  <TooltipContent className="max-w-xs">No connector version by digest: a built-in connector, or the runner's own build.</TooltipContent>
+                </Tooltip>
               ) : v.releaseUrl ? (
                 <a href={v.releaseUrl} target="_blank" rel="noreferrer noopener" className="hover:underline">
                   {v.version}

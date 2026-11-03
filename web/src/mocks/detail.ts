@@ -14,7 +14,7 @@ import {
   type StreamSchema,
 } from "@/gen/openetl/api/v1/pipeline_pb";
 import { LogEntrySchema, SyncState, type LogEntry, type Sync } from "@/gen/openetl/api/v1/sync_pb";
-import { pipelines, syncs } from "./fixtures";
+import { destinations, pipelines, syncs } from "./fixtures";
 
 // What a pipeline's tabs and a sync's page read, made up from the pipeline
 // and its syncs.
@@ -27,7 +27,15 @@ const find = (name: string) => pipelines.find((p) => p.name === name);
 export function plan(name: string): PipelinePlan | undefined {
   const p = find(name);
   if (!p) return undefined;
-  const merge = p.spec?.destination?.ref === "warehouse";
+  const dst = p.spec?.destination?.ref ?? "";
+  if (!destinations.find((d) => d.name.endsWith(`/destinations/${dst}`))?.connector) {
+    return create(PipelinePlanSchema, {
+      pipeline: name,
+      version: p.version,
+      notes: [`the control plane doesn't know destination "${dst}"'s capabilities, so only the runner checks delivery, before each sync`],
+    });
+  }
+  const merge = dst === "warehouse";
   const kafka = p.spec?.source?.ref === "events" || p.spec?.destination?.ref === "events-out";
   return create(PipelinePlanSchema, {
     pipeline: name,
@@ -47,11 +55,11 @@ export function plan(name: string): PipelinePlan | undefined {
 }
 
 const columnsFor = (stream: string) => [
-  { name: "id", type: "bigint", nullable: false, source: "id" },
-  { name: stream.split(".").pop()!.replace(/s$/, "") + "_ref", type: "text", nullable: true, source: "ref" },
-  { name: "amount", type: "numeric(18,2)", nullable: true, source: "amount" },
-  { name: "updated_at", type: "timestamptz", nullable: false, source: "updated_at" },
-  { name: "_openetl_id", type: "bytea", nullable: false, source: "" },
+  { name: "id", type: "int64", nullable: false, source: "" },
+  { name: stream.split(".").pop()!.replace(/s$/, "") + "_ref", type: "utf8", nullable: true, source: "ref" },
+  { name: "amount", type: "decimal128(18, 2)", nullable: true, source: "" },
+  { name: "updated_at", type: "timestamp[us, tz=UTC]", nullable: false, source: "" },
+  { name: "_openetl_id", type: "extension<arrow.uuid>", nullable: false, source: "" },
 ];
 
 export function schemas(name: string): StreamSchema[] {
@@ -62,7 +70,7 @@ export function schemas(name: string): StreamSchema[] {
     const table = `${p.spec?.destination?.ref === "warehouse" ? "analytics" : "raw"}.${s.name.split(".").pop()!.replace(/\./g, "_")}`;
     const first = create(StreamSchemaSchema, { stream: s.name, version: 1, table, columns: v1, generation: 1n, epoch: 1n, createTime: ts(Date.now() - 30 * 86_400_000) });
     if (i > 0) return [first];
-    const v2 = [...v1.slice(0, 2), { ...v1[2]!, type: "numeric(20,4)" }, v1[3]!, { name: "currency", type: "text", nullable: true, source: "currency" }, v1[4]!];
+    const v2 = [...v1.slice(0, 2), { ...v1[2]!, type: "decimal128(20, 4)" }, v1[3]!, { name: "currency", type: "utf8", nullable: true, source: "" }, v1[4]!];
     return [first, create(StreamSchemaSchema, { stream: s.name, version: 2, table, columns: v2, generation: 1n, epoch: 412n, createTime: ts(Date.now() - 6 * 86_400_000) })];
   });
 }

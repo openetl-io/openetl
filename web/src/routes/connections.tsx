@@ -101,7 +101,7 @@ function ConnectionsList({ kind }: { kind: Kind }) {
           row.original.version?.version ? (
             <span className="font-mono text-[0.8125rem]">{row.original.version.version}</span>
           ) : (
-            <span className="text-muted-foreground">Built in</span>
+            <span className="text-muted-foreground">Not pinned</span>
           ),
         meta: { className: "hidden sm:table-cell" },
       },

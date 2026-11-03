@@ -62,7 +62,7 @@ const columns: ColumnDef<DiffRow>[] = [
   },
   {
     id: "source",
-    header: "From source column",
+    header: "Renamed from",
     cell: ({ row }) => <span className="font-mono text-[0.8125rem] text-muted-foreground">{row.original.col.source}</span>,
     meta: { className: "hidden md:table-cell" },
   },
