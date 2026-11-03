@@ -1,11 +1,15 @@
 package activities
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 )
@@ -23,6 +27,28 @@ func TestQuarantineURL(t *testing.T) {
 		got, err := quarantineURL(storage, "o", "p")
 		if err != nil || got != want {
 			t.Errorf("quarantineURL(%q) = %q, %v; want %q", storage, got, err, want)
+		}
+	}
+}
+
+func TestReplaced(t *testing.T) {
+	for _, err := range []error{
+		temporal.NewCanceledError(),
+		serviceerror.NewNotFound("invalid activityID or activity already timed out or invoking workflow is completed"),
+		serviceerror.NewNamespaceNotFound("ns"),
+		fmt.Errorf("heartbeat: %w", activity.ErrActivityReset),
+	} {
+		if !replaced(err) {
+			t.Errorf("replaced(%v) = false", err)
+		}
+	}
+	for _, err := range []error{
+		serviceerror.NewUnavailable("connection refused"),
+		context.DeadlineExceeded,
+		serviceerror.NewResourceExhausted(0, "busy"),
+	} {
+		if replaced(err) {
+			t.Errorf("replaced(%v) = true: the job would stop when Temporal can't be reached", err)
 		}
 	}
 }

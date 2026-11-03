@@ -839,6 +839,40 @@ func TestContinuousJob(t *testing.T) {
 	})
 }
 
+// An attempt that fails once another attempt has claimed the pipeline was
+// fenced, whatever it failed on, as a source connection the other took over.
+// One that fails while it holds the pipeline wasn't.
+func TestFailureAfterAnotherClaimIsFenced(t *testing.T) {
+	for _, claimed := range []bool{false, true} {
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		lost := errors.New("terminating connection due to administrator command")
+		src := failingSource{err: lost, before: func() {
+			if claimed {
+				if _, err := log.Claim(t.Context(), "a2"); err != nil {
+					t.Error(err)
+				}
+			}
+		}}
+		_, err := runner.RunAttempt(t.Context(), job(log, "a1", src, runner.Passthrough{Convert: columnless}, make(chan uint64, 64)))
+		if !errors.Is(err, lost) {
+			t.Errorf("claimed by another: %v; got %v, want the source's error", claimed, err)
+		}
+		if errors.Is(err, checkpoint.ErrFenced) != claimed {
+			t.Errorf("claimed by another: %v; got %v", claimed, err)
+		}
+	}
+}
+
+type failingSource struct {
+	err    error
+	before func()
+}
+
+func (s failingSource) Read(context.Context, source.ReadRequest, source.Emitter) error {
+	s.before()
+	return s.err
+}
+
 // endlessSource emits a row and a resume point a second from its state, up
 // to pages, then idles until it's cancelled, as a quiet stream does.
 type endlessSource struct{ pages int }

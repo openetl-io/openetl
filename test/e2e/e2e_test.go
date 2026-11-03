@@ -369,8 +369,15 @@ type runner struct {
 
 func startRunner(t *testing.T) *runner {
 	t.Helper()
+	return startRunnerVia(t, env.temporal, env.apiURL)
+}
+
+// startRunnerVia starts a runner that reaches Temporal and the API at these
+// addresses.
+func startRunnerVia(t *testing.T, temporal, apiURL string) *runner {
+	t.Helper()
 	args := []string{"runner",
-		"--api-url", env.apiURL, "--temporal-address", env.temporal, "--temporal-namespace", env.ns,
+		"--api-url", apiURL, "--temporal-address", temporal, "--temporal-namespace", env.ns,
 		"--checkpoints", env.checkpoints, "--engine", env.engine, "--cache", env.cache, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--log-format", "text"}
 	if env.dbt != "" {
 		args = append(args, "--dbt", env.dbt)

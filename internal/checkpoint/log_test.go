@@ -74,6 +74,12 @@ func TestReplacedSessionIsFenced(t *testing.T) {
 	if err := old.Rewind(t.Context(), nil); !errors.Is(err, checkpoint.ErrFenced) {
 		t.Fatalf("stale Rewind: err = %v, want ErrFenced", err)
 	}
+	if err := old.Check(t.Context()); !errors.Is(err, checkpoint.ErrFenced) {
+		t.Fatalf("stale Check: err = %v, want ErrFenced", err)
+	}
+	if err := replacement.Check(t.Context()); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
 	// The replacement still sees epoch 1, and commits on top of it.
 	commit(t, replacement, 2)
 	rec, err := claim(t, l, "third").Load(t.Context())

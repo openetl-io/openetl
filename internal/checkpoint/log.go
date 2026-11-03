@@ -233,6 +233,19 @@ func (s *Session) Commit(ctx context.Context, rec *Record) (err error) {
 	return s.swapHead(ctx, Head{Generation: s.head.Generation, Owner: s.owner, Record: &ref})
 }
 
+// Check reads HEAD, and returns ErrFenced if another attempt has claimed the
+// pipeline since this session did.
+func (s *Session) Check(ctx context.Context) error {
+	cur, _, err := s.log.readHead(ctx)
+	if err != nil {
+		return fmt.Errorf("checkpoint: read HEAD: %w", err)
+	}
+	if cur.Generation != s.head.Generation || cur.Owner != s.owner {
+		return fmt.Errorf("%w: HEAD is generation %d (%s), this session is %d", ErrFenced, cur.Generation, cur.Owner, s.head.Generation)
+	}
+	return nil
+}
+
 // Rewind moves HEAD back to an earlier record, or to none.
 func (s *Session) Rewind(ctx context.Context, to *RecordRef) (err error) {
 	defer func(start time.Time) { recordWrite(ctx, "rewind", start, err) }(time.Now())

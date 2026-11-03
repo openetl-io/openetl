@@ -204,8 +204,6 @@ func catalogProto(cat source.Catalog) *apiv1.Catalog {
 	return out
 }
 
-// heartbeats records a heartbeat with progress() every 30 s, or a quarter
-// of the heartbeat timeout if that's shorter, until stop is called.
 // lateStart reports whether the attempt starts long after Temporal handed it
 // to this runner, as when the runner was frozen. Temporal has timed it out
 // since, and the attempt that replaced it may be running: claiming the
@@ -217,6 +215,8 @@ func lateStart(info activity.Info) error {
 	return nil
 }
 
+// heartbeats records a heartbeat with progress() every 30 s, or a quarter
+// of the heartbeat timeout if that's shorter, until stop is called.
 func heartbeats(ctx context.Context, progress func() any) (stop func()) {
 	every := 30 * time.Second
 	if t := activity.GetInfo(ctx).HeartbeatTimeout / 4; t > 0 && t < every {

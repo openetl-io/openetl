@@ -177,6 +177,17 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if err != nil {
 		return res, err
 	}
+	// An attempt that fails once another has claimed the pipeline was fenced,
+	// whatever it failed on: staging the other's recovery dropped, or a
+	// source connection the other took over.
+	defer func() {
+		if err == nil || errors.Is(err, ErrDrained) || errors.Is(err, checkpoint.ErrFenced) || errors.Is(err, destination.ErrFenced) {
+			return
+		}
+		if ferr := sess.Check(context.WithoutCancel(ctx)); errors.Is(ferr, checkpoint.ErrFenced) {
+			err = fmt.Errorf("%w; the attempt failed with: %w", ferr, err)
+		}
+	}()
 	res.Generation = sess.Generation()
 	log = log.With("generation", res.Generation)
 
