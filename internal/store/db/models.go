@@ -174,6 +174,23 @@ type Outbox struct {
 	DispatchTime *time.Time
 }
 
+type Password struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+	Hash        string
+	Failures    int32
+	LockedUntil *time.Time
+	UpdateTime  time.Time
+}
+
+type PasswordLink struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+	Hash        []byte
+	ExpireTime  time.Time
+	CreateTime  time.Time
+}
+
 type Pipeline struct {
 	OrgID         uuid.UUID
 	WorkspaceID   uuid.UUID
@@ -244,6 +261,18 @@ type Secret struct {
 	CreateTime  time.Time
 	UpdateTime  time.Time
 	Ref         *string
+}
+
+type Session struct {
+	OrgID        uuid.UUID
+	ID           uuid.UUID
+	PrincipalID  uuid.UUID
+	Hash         []byte
+	ExpireTime   time.Time
+	LastUsedTime time.Time
+	CreateTime   time.Time
+	Peer         string
+	UserAgent    string
 }
 
 type Source struct {

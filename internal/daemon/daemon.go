@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"connectrpc.com/connect"
@@ -154,6 +156,10 @@ func Run(ctx context.Context, o Options) error {
 			LaggingAfter: lagging,
 			Logger:       log.With("role", "server"),
 		}
+		if err := configureSignIn(srv, cfg, ln.Addr(), log); err != nil {
+			_ = ln.Close()
+			return err
+		}
 		h, err := srv.Handler()
 		if err != nil {
 			_ = ln.Close()
@@ -188,6 +194,57 @@ func Run(ctx context.Context, o Options) error {
 		g.Go(func() error { return runRunner(gctx, cfg, tc, log.With("role", "runner")) })
 	}
 	return g.Wait()
+}
+
+// configureSignIn sets the server's sign-in from cfg (ADR-0020). It refuses
+// --auth none on an address that isn't loopback, unless that's allowed.
+func configureSignIn(srv *api.Server, cfg config.Config, addr net.Addr, log *slog.Logger) error {
+	host, port := "localhost", ""
+	loopback := false
+	if a, ok := addr.(*net.TCPAddr); ok {
+		loopback, port = a.IP.IsLoopback(), strconv.Itoa(a.Port)
+		if !loopback && !a.IP.IsUnspecified() {
+			host = a.IP.String()
+		}
+	}
+	srv.Authless = cfg.Auth == "none"
+	switch {
+	case srv.Authless && !loopback && !cfg.AuthNoneAllowRemote:
+		return fmt.Errorf("daemon: --auth none on %s, which isn't a loopback address, would make anyone who can reach it an owner; add --auth-none-allow-remote if that's what you want", addr)
+	case srv.Authless && !loopback:
+		log.Warn("sign-in is off on an address that isn't loopback: anyone who can reach this server acts as an owner", "listen", addr.String())
+	case srv.Authless:
+		log.Warn("sign-in is off: anyone who can reach this server acts as an owner", "listen", addr.String())
+	}
+	if cfg.SignInRate < 0 {
+		return fmt.Errorf("daemon: --sign-in-rate is %d; it can't be negative", cfg.SignInRate)
+	}
+	srv.SignInRate = cfg.SignInRate
+	srv.PublicURL = cfg.PublicURL
+	if srv.PublicURL == "" {
+		srv.PublicURL = "http://" + net.JoinHostPort(host, port)
+	}
+	u, err := url.Parse(srv.PublicURL)
+	if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("daemon: --public-url %q isn't an http or https URL", cfg.PublicURL)
+	}
+	if ip := net.ParseIP(u.Hostname()); u.Scheme == "http" && !srv.Authless && u.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		log.Warn("browsers reach this server over plain http, so passwords and session cookies cross the network unencrypted; put TLS in front of it and set --public-url to its https URL", "public_url", srv.PublicURL)
+	}
+	for _, d := range []struct {
+		flag, value string
+		dst         *time.Duration
+	}{{"session-idle-timeout", cfg.SessionIdleTimeout, &srv.SessionIdle}, {"session-max-age", cfg.SessionMaxAge, &srv.SessionMaxAge}} {
+		if d.value == "" {
+			continue
+		}
+		v, err := time.ParseDuration(d.value)
+		if err != nil || v <= 0 {
+			return fmt.Errorf("daemon: --%s %q isn't a positive duration", d.flag, d.value)
+		}
+		*d.dst = v
+	}
+	return nil
 }
 
 // writeOwnerKey makes the bootstrap principal an owner with a new key, and

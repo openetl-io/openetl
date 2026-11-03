@@ -18,6 +18,10 @@ func TestAudited(t *testing.T) {
 		if r.runner {
 			want = name == "GetSyncSpec" || name == "GetConnectorConfig"
 		}
+		// Sign-in's handlers write their own entries.
+		if r.public() {
+			want = false
+		}
 		if got := audited(proc, r); got != want {
 			t.Errorf("%s: audited %v, want %v", proc, got, want)
 		}

@@ -58,6 +58,18 @@ type Config struct {
 	LogMaxFiles int
 	// Days the audit log keeps entries at least; 0 keeps every entry.
 	AuditRetentionDays int
+	// How browsers sign in: password, or none, which makes calls without a
+	// credential act as an owner. Empty: password.
+	Auth string
+	// Lets --auth none serve on an address that isn't loopback.
+	AuthNoneAllowRemote bool
+	// The URL browsers use. Empty: http:// and the listen address.
+	PublicURL string
+	// Go durations; empty: 12h and 168h.
+	SessionIdleTimeout string
+	SessionMaxAge      string
+	// Sign-ins a minute each client address may make; 0: 20.
+	SignInRate int
 }
 
 type option struct {
@@ -86,6 +98,19 @@ var options = []option{
 	{"log-level", "OPENETL_LOG_LEVEL", "info", "debug, info, warn or error", func(c *Config) *string { return &c.LogLevel }},
 	{"log-format", "OPENETL_LOG_FORMAT", "json", "json or text", func(c *Config) *string { return &c.LogFormat }},
 	{"log-output", "OPENETL_LOG_OUTPUT", "stderr", "stderr, stdout, or a file, rotated by size", func(c *Config) *string { return &c.LogOutput }},
+	{"auth", "OPENETL_AUTH", "password", "how browsers sign in: password, or none, which makes every call without a credential an owner's (loopback only, unless --auth-none-allow-remote)", func(c *Config) *string { return &c.Auth }},
+	{"public-url", "OPENETL_PUBLIC_URL", "", "the URL browsers use, which password links start with; an https one makes the session cookie Secure (default: http:// and the listen address)", func(c *Config) *string { return &c.PublicURL }},
+	{"session-idle-timeout", "OPENETL_SESSION_IDLE_TIMEOUT", "12h", "how long a UI session lasts unused, as a Go duration", func(c *Config) *string { return &c.SessionIdleTimeout }},
+	{"session-max-age", "OPENETL_SESSION_MAX_AGE", "168h", "how long a UI session lasts in all, as a Go duration", func(c *Config) *string { return &c.SessionMaxAge }},
+}
+
+type boolOption struct {
+	flag, env, usage string
+	dst              func(*Config) *bool
+}
+
+var boolOptions = []boolOption{
+	{"auth-none-allow-remote", "OPENETL_AUTH_NONE_ALLOW_REMOTE", "let --auth none serve on an address that isn't loopback, such as a private network or behind an authenticating proxy", func(c *Config) *bool { return &c.AuthNoneAllowRemote }},
 }
 
 type intOption struct {
@@ -98,6 +123,7 @@ type intOption struct {
 var intOptions = []intOption{
 	{"log-max-size", "OPENETL_LOG_MAX_SIZE", 100, "megabytes a log file reaches before it's rotated", func(c *Config) *int { return &c.LogMaxSize }},
 	{"log-max-files", "OPENETL_LOG_MAX_FILES", 5, "rotated log files kept", func(c *Config) *int { return &c.LogMaxFiles }},
+	{"sign-in-rate", "OPENETL_SIGN_IN_RATE", 20, "sign-ins a minute each client address may make; behind a proxy, every user shares its address", func(c *Config) *int { return &c.SignInRate }},
 	{"audit-retention-days", "OPENETL_AUDIT_RETENTION_DAYS", 90, "days the audit log keeps entries at least: a month's entries go once the month ended that long ago; 0 keeps every entry", func(c *Config) *int { return &c.AuditRetentionDays }},
 }
 
@@ -120,6 +146,17 @@ func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config,
 		}
 		fs.IntVar(o.dst(&c), o.flag, def, fmt.Sprintf("%s (env %s)", o.usage, o.env))
 	}
+	for _, o := range boolOptions {
+		var def bool
+		if v := cmp.Or(os.Getenv(o.env), defaults[o.flag]); v != "" {
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return c, fmt.Errorf("config: %s: %q isn't true or false", o.flag, v)
+			}
+			def = b
+		}
+		fs.BoolVar(o.dst(&c), o.flag, def, fmt.Sprintf("%s (env %s)", o.usage, o.env))
+	}
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -129,6 +166,9 @@ func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config,
 	c.RunnerToken = os.Getenv("OPENETL_RUNNER_TOKEN")
 	if c.AuditRetentionDays < 0 {
 		return c, fmt.Errorf("config: audit-retention-days is %d; it can't be negative", c.AuditRetentionDays)
+	}
+	if c.Auth != "password" && c.Auth != "none" {
+		return c, fmt.Errorf("config: auth is %q; it must be password or none", c.Auth)
 	}
 	if c.DataPlane == "" || strings.ContainsAny(c.DataPlane, ". /") {
 		return c, errors.New("config: the data plane ID must be non-empty, without dots, slashes or spaces")

@@ -1,91 +1,85 @@
 import { useState } from "react";
-import { createClient, Code } from "@connectrpc/connect";
+import { Code } from "@connectrpc/connect";
+import { useMutation } from "@connectrpc/connect-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { AuthLayout, RememberMe } from "@/components/auth-layout";
 import { Button } from "@/components/ui/button";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Logo } from "@/components/logo";
-import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
-import { errorCode, errorMessage, storeKey, transport, clearKey } from "@/lib/api";
+import { AccessService } from "@/gen/openetl/api/v1/access_pb";
+import { errorCode, errorMessage } from "@/lib/api";
+import { sentence } from "@/lib/format";
+import { afterSignIn } from "@/lib/sign-in";
+
+function signInError(err: unknown) {
+  switch (errorCode(err)) {
+    case Code.Unauthenticated:
+      return "Wrong email or password. After too many tries the account locks for a while; an admin can send you a link to set a new password.";
+    case Code.ResourceExhausted:
+      return "Too many sign-ins from this address. Try again in a minute.";
+    default:
+      return `Couldn't sign in: ${sentence(errorMessage(err))}`;
+  }
+}
 
 export function SignIn() {
   const { next } = useSearch({ from: "/sign-in" });
   const navigate = useNavigate();
-  const [key, setKey] = useState("");
+  const queries = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
-  const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError(undefined);
-    storeKey(key.trim(), remember);
-    try {
-      await createClient(PipelineService, transport).listPipelines({ parent: "workspaces/default", pageSize: 1 });
-    } catch (err) {
-      // A key without access to the default workspace is still a key.
-      const code = errorCode(err);
-      if (code === Code.Unauthenticated) {
-        setError("That key isn't valid. Keys start with oetl_ and are printed once, when they're created.");
-        clearKey();
-        setBusy(false);
-        return;
-      }
-      if (code !== Code.PermissionDenied && code !== Code.NotFound) {
-        setError(`Couldn't reach the API: ${errorMessage(err)}`);
-        clearKey();
-        setBusy(false);
-        return;
-      }
-    }
-    const to = next && next.startsWith("/") && !next.startsWith("/sign-in") ? next : "/";
-    void navigate({ to });
-  };
+  const signIn = useMutation(AccessService.method.createSession, {
+    onSuccess: () => {
+      queries.clear();
+      void navigate({ to: afterSignIn(next) });
+    },
+  });
+  const error = signIn.error ? signInError(signIn.error) : undefined;
 
   return (
-    <div className="grid min-h-dvh place-items-center px-4">
-      <form onSubmit={submit} className="grid w-full max-w-sm gap-6">
-        <div className="grid justify-items-start gap-4">
-          <Logo motion="intro" className="size-12" />
-          <div className="grid gap-1">
-            <h1 className="text-xl font-semibold tracking-tight">Sign in to OpenETL</h1>
-            <p className="text-muted-foreground">
-              With an API key. The server wrote its owner's key to <code className="font-mono text-[0.8125rem]">.openetl/admin.key</code> on
-              first start, and <code className="font-mono text-[0.8125rem]">openetl key create</code> makes more.
-            </p>
-          </div>
-        </div>
-        <div className="grid gap-2">
-          <label htmlFor="key" className="font-medium">
-            API key
-          </label>
-          <Input
-            id="key"
-            type="password"
-            autoComplete="current-password"
-            spellCheck={false}
-            required
-            autoFocus
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? "key-error" : undefined}
-            className="font-mono"
-          />
-          {error && (
-            <p id="key-error" className="text-failed">
-              {error}
-            </p>
-          )}
-          <label className="flex items-center gap-2 text-muted-foreground">
-            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="size-4 accent-signal" />
-            Keep me signed in on this device
-          </label>
-        </div>
-        <Button type="submit" disabled={busy || key.trim() === ""}>
-          {busy ? "Signing in…" : "Sign in"}
-        </Button>
+    <AuthLayout title="Sign in to OpenETL">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          signIn.mutate({ email: email.trim(), password, remember });
+        }}
+      >
+        <FieldGroup>
+          <Field data-invalid={error ? true : undefined}>
+            <FieldLabel htmlFor="email">Email</FieldLabel>
+            <Input
+              id="email"
+              type="email"
+              autoComplete="username"
+              required
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              aria-invalid={error ? true : undefined}
+            />
+          </Field>
+          <Field data-invalid={error ? true : undefined}>
+            <FieldLabel htmlFor="password">Password</FieldLabel>
+            <Input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? "sign-in-error" : undefined}
+            />
+            <FieldError id="sign-in-error">{error}</FieldError>
+          </Field>
+          <RememberMe checked={remember} onChange={setRemember} />
+          <Button type="submit" disabled={signIn.isPending || email.trim() === "" || password === ""}>
+            {signIn.isPending ? "Signing in…" : "Sign in"}
+          </Button>
+        </FieldGroup>
       </form>
-    </div>
+    </AuthLayout>
   );
 }

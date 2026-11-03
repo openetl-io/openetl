@@ -13,7 +13,7 @@ import (
 )
 
 const authenticateAPIKey = `-- name: AuthenticateAPIKey :one
-SELECT k.org_id, k.id, k.principal_id, p.name AS principal, k.last_used_time,
+SELECT k.org_id, k.id, k.principal_id, p.name AS principal, k.last_used_time, k.expire_time,
     array(
         SELECT b.role || coalesce('/' || w.name, '')
         FROM role_bindings b LEFT JOIN workspaces w ON w.org_id = b.org_id AND w.id = b.workspace_id
@@ -29,6 +29,7 @@ type AuthenticateAPIKeyRow struct {
 	PrincipalID  uuid.UUID
 	Principal    string
 	LastUsedTime *time.Time
+	ExpireTime   *time.Time
 	Bindings     []string
 }
 
@@ -43,6 +44,7 @@ func (q *Queries) AuthenticateAPIKey(ctx context.Context, hash []byte) (Authenti
 		&i.PrincipalID,
 		&i.Principal,
 		&i.LastUsedTime,
+		&i.ExpireTime,
 		&i.Bindings,
 	)
 	return i, err
@@ -70,6 +72,64 @@ func (q *Queries) AuthenticateRunnerToken(ctx context.Context, hash []byte) (Aut
 		&i.LastUsedTime,
 	)
 	return i, err
+}
+
+const authenticateSession = `-- name: AuthenticateSession :one
+SELECT s.org_id, s.id, s.principal_id, p.name AS principal, s.last_used_time, s.expire_time,
+    array(
+        SELECT b.role || coalesce('/' || w.name, '')
+        FROM role_bindings b LEFT JOIN workspaces w ON w.org_id = b.org_id AND w.id = b.workspace_id
+        WHERE b.org_id = s.org_id AND b.principal_id = s.principal_id
+    )::text[] AS bindings
+FROM sessions s JOIN principals p ON p.org_id = s.org_id AND p.id = s.principal_id
+WHERE s.hash = $1 AND NOT p.disabled AND s.expire_time > now() AND s.last_used_time > $2
+`
+
+type AuthenticateSessionParams struct {
+	Hash      []byte
+	IdleSince time.Time
+}
+
+type AuthenticateSessionRow struct {
+	OrgID        uuid.UUID
+	ID           uuid.UUID
+	PrincipalID  uuid.UUID
+	Principal    string
+	LastUsedTime time.Time
+	ExpireTime   time.Time
+	Bindings     []string
+}
+
+// Before the org is known, so it isn't scoped by org_id. A session idle
+// since before idle_since has ended.
+func (q *Queries) AuthenticateSession(ctx context.Context, arg AuthenticateSessionParams) (AuthenticateSessionRow, error) {
+	row := q.db.QueryRow(ctx, authenticateSession, arg.Hash, arg.IdleSince)
+	var i AuthenticateSessionRow
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.PrincipalID,
+		&i.Principal,
+		&i.LastUsedTime,
+		&i.ExpireTime,
+		&i.Bindings,
+	)
+	return i, err
+}
+
+const clearSignInFailures = `-- name: ClearSignInFailures :exec
+UPDATE passwords SET failures = 0, locked_until = NULL
+WHERE org_id = $1 AND principal_id = $2 AND failures > 0
+`
+
+type ClearSignInFailuresParams struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+}
+
+func (q *Queries) ClearSignInFailures(ctx context.Context, arg ClearSignInFailuresParams) error {
+	_, err := q.db.Exec(ctx, clearSignInFailures, arg.OrgID, arg.PrincipalID)
+	return err
 }
 
 const createPrincipal = `-- name: CreatePrincipal :exec
@@ -130,6 +190,22 @@ func (q *Queries) DeleteConnectorOp(ctx context.Context, arg DeleteConnectorOpPa
 	return err
 }
 
+const deleteEndedSessions = `-- name: DeleteEndedSessions :exec
+DELETE FROM sessions
+WHERE org_id = $1 AND principal_id = $2 AND (expire_time <= now() OR last_used_time <= $3)
+`
+
+type DeleteEndedSessionsParams struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+	IdleSince   time.Time
+}
+
+func (q *Queries) DeleteEndedSessions(ctx context.Context, arg DeleteEndedSessionsParams) error {
+	_, err := q.db.Exec(ctx, deleteEndedSessions, arg.OrgID, arg.PrincipalID, arg.IdleSince)
+	return err
+}
+
 const deleteExpiredConnectorOps = `-- name: DeleteExpiredConnectorOps :exec
 DELETE FROM connector_ops WHERE org_id = $1 AND expire_time < now()
 `
@@ -137,6 +213,23 @@ DELETE FROM connector_ops WHERE org_id = $1 AND expire_time < now()
 func (q *Queries) DeleteExpiredConnectorOps(ctx context.Context, orgID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, deleteExpiredConnectorOps, orgID)
 	return err
+}
+
+const deletePasswordLink = `-- name: DeletePasswordLink :execrows
+DELETE FROM password_links WHERE org_id = $1 AND hash = $2
+`
+
+type DeletePasswordLinkParams struct {
+	OrgID uuid.UUID
+	Hash  []byte
+}
+
+func (q *Queries) DeletePasswordLink(ctx context.Context, arg DeletePasswordLinkParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePasswordLink, arg.OrgID, arg.Hash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deletePrincipal = `-- name: DeletePrincipal :execrows
@@ -200,6 +293,50 @@ func (q *Queries) DeleteRunnerToken(ctx context.Context, arg DeleteRunnerTokenPa
 	return result.RowsAffected(), nil
 }
 
+const deleteSessionByHash = `-- name: DeleteSessionByHash :one
+WITH deleted AS (
+    DELETE FROM sessions WHERE org_id = $1 AND hash = $2 RETURNING id, principal_id
+)
+SELECT d.id, p.name AS principal
+FROM deleted d JOIN principals p ON p.org_id = $1 AND p.id = d.principal_id
+`
+
+type DeleteSessionByHashParams struct {
+	OrgID uuid.UUID
+	Hash  []byte
+}
+
+type DeleteSessionByHashRow struct {
+	ID        uuid.UUID
+	Principal string
+}
+
+func (q *Queries) DeleteSessionByHash(ctx context.Context, arg DeleteSessionByHashParams) (DeleteSessionByHashRow, error) {
+	row := q.db.QueryRow(ctx, deleteSessionByHash, arg.OrgID, arg.Hash)
+	var i DeleteSessionByHashRow
+	err := row.Scan(&i.ID, &i.Principal)
+	return i, err
+}
+
+const deleteSessions = `-- name: DeleteSessions :execrows
+DELETE FROM sessions WHERE org_id = $1 AND principal_id = $2 AND id <> $3
+`
+
+type DeleteSessionsParams struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+	Keep        uuid.UUID
+}
+
+// Every session of a principal but keep, which may be the nil UUID.
+func (q *Queries) DeleteSessions(ctx context.Context, arg DeleteSessionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSessions, arg.OrgID, arg.PrincipalID, arg.Keep)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getConnectorOp = `-- name: GetConnectorOp :one
 SELECT source_id, destination_id FROM connector_ops
 WHERE org_id = $1 AND id = $2 AND data_plane_id = $3 AND expire_time > now()
@@ -220,6 +357,52 @@ func (q *Queries) GetConnectorOp(ctx context.Context, arg GetConnectorOpParams) 
 	row := q.db.QueryRow(ctx, getConnectorOp, arg.OrgID, arg.ID, arg.DataPlaneID)
 	var i GetConnectorOpRow
 	err := row.Scan(&i.SourceID, &i.DestinationID)
+	return i, err
+}
+
+const getPassword = `-- name: GetPassword :one
+SELECT hash, locked_until FROM passwords WHERE org_id = $1 AND principal_id = $2
+`
+
+type GetPasswordParams struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+}
+
+type GetPasswordRow struct {
+	Hash        string
+	LockedUntil *time.Time
+}
+
+func (q *Queries) GetPassword(ctx context.Context, arg GetPasswordParams) (GetPasswordRow, error) {
+	row := q.db.QueryRow(ctx, getPassword, arg.OrgID, arg.PrincipalID)
+	var i GetPasswordRow
+	err := row.Scan(&i.Hash, &i.LockedUntil)
+	return i, err
+}
+
+const getPasswordLink = `-- name: GetPasswordLink :one
+SELECT p.id, p.name, p.email
+FROM password_links l JOIN principals p ON p.org_id = l.org_id AND p.id = l.principal_id
+WHERE l.org_id = $1 AND l.hash = $2 AND l.expire_time > now() AND NOT p.disabled
+`
+
+type GetPasswordLinkParams struct {
+	OrgID uuid.UUID
+	Hash  []byte
+}
+
+type GetPasswordLinkRow struct {
+	ID    uuid.UUID
+	Name  string
+	Email string
+}
+
+// A link's user, if the link is still good.
+func (q *Queries) GetPasswordLink(ctx context.Context, arg GetPasswordLinkParams) (GetPasswordLinkRow, error) {
+	row := q.db.QueryRow(ctx, getPasswordLink, arg.OrgID, arg.Hash)
+	var i GetPasswordLinkRow
+	err := row.Scan(&i.ID, &i.Name, &i.Email)
 	return i, err
 }
 
@@ -244,6 +427,37 @@ func (q *Queries) GetPrincipal(ctx context.Context, arg GetPrincipalParams) (Pri
 		&i.Email,
 		&i.Disabled,
 		&i.CreateTime,
+	)
+	return i, err
+}
+
+const getSignIn = `-- name: GetSignIn :one
+SELECT p.id, p.name, pw.hash, pw.locked_until
+FROM principals p LEFT JOIN passwords pw ON pw.org_id = p.org_id AND pw.principal_id = p.id
+WHERE p.org_id = $1 AND lower(p.email) = lower($2) AND p.type = 'user' AND NOT p.disabled
+`
+
+type GetSignInParams struct {
+	OrgID uuid.UUID
+	Email string
+}
+
+type GetSignInRow struct {
+	ID          uuid.UUID
+	Name        string
+	Hash        *string
+	LockedUntil *time.Time
+}
+
+// A user who may sign in, by email, with their password if they have one.
+func (q *Queries) GetSignIn(ctx context.Context, arg GetSignInParams) (GetSignInRow, error) {
+	row := q.db.QueryRow(ctx, getSignIn, arg.OrgID, arg.Email)
+	var i GetSignInRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Hash,
+		&i.LockedUntil,
 	)
 	return i, err
 }
@@ -346,6 +560,34 @@ func (q *Queries) InsertRunnerToken(ctx context.Context, arg InsertRunnerTokenPa
 		arg.DataPlaneID,
 		arg.Hash,
 		arg.Prefix,
+	)
+	return err
+}
+
+const insertSession = `-- name: InsertSession :exec
+INSERT INTO sessions (org_id, id, principal_id, hash, expire_time, peer, user_agent)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertSessionParams struct {
+	OrgID       uuid.UUID
+	ID          uuid.UUID
+	PrincipalID uuid.UUID
+	Hash        []byte
+	ExpireTime  time.Time
+	Peer        string
+	UserAgent   string
+}
+
+func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
+	_, err := q.db.Exec(ctx, insertSession,
+		arg.OrgID,
+		arg.ID,
+		arg.PrincipalID,
+		arg.Hash,
+		arg.ExpireTime,
+		arg.Peer,
+		arg.UserAgent,
 	)
 	return err
 }
@@ -604,6 +846,54 @@ func (q *Queries) PipelineOnDataPlane(ctx context.Context, arg PipelineOnDataPla
 	return i, err
 }
 
+const recordSignInFailure = `-- name: RecordSignInFailure :exec
+UPDATE passwords SET
+    failures = CASE WHEN locked_until <= now() THEN 1 ELSE failures + 1 END,
+    locked_until = CASE
+        WHEN locked_until > now() THEN locked_until
+        WHEN (CASE WHEN locked_until <= now() THEN 1 ELSE failures + 1 END) >= $1::integer
+            THEN now() + make_interval(secs => $2::integer)
+    END
+WHERE org_id = $3 AND principal_id = $4
+`
+
+type RecordSignInFailureParams struct {
+	MaxFailures int32
+	LockSeconds int32
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+}
+
+// Counts a failed sign-in, and locks the password for lock_seconds once
+// max_failures fail in a row. The count starts again once a lock is over.
+func (q *Queries) RecordSignInFailure(ctx context.Context, arg RecordSignInFailureParams) error {
+	_, err := q.db.Exec(ctx, recordSignInFailure,
+		arg.MaxFailures,
+		arg.LockSeconds,
+		arg.OrgID,
+		arg.PrincipalID,
+	)
+	return err
+}
+
+const setPassword = `-- name: SetPassword :exec
+INSERT INTO passwords (org_id, principal_id, hash)
+VALUES ($1, $2, $3)
+ON CONFLICT (org_id, principal_id) DO UPDATE SET hash = excluded.hash, failures = 0, locked_until = NULL, update_time = now()
+`
+
+type SetPasswordParams struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+	Hash        string
+}
+
+// Sets a password and clears its failures and lock.
+func (q *Queries) SetPassword(ctx context.Context, arg SetPasswordParams) error {
+	_, err := q.db.Exec(ctx, setPassword, arg.OrgID, arg.PrincipalID, arg.Hash)
+	return err
+}
+
 const setPrincipalDisabled = `-- name: SetPrincipalDisabled :exec
 UPDATE principals SET disabled = $1 WHERE org_id = $2 AND id = $3
 `
@@ -644,5 +934,42 @@ type TouchRunnerTokenParams struct {
 
 func (q *Queries) TouchRunnerToken(ctx context.Context, arg TouchRunnerTokenParams) error {
 	_, err := q.db.Exec(ctx, touchRunnerToken, arg.OrgID, arg.ID)
+	return err
+}
+
+const touchSession = `-- name: TouchSession :exec
+UPDATE sessions SET last_used_time = now() WHERE org_id = $1 AND id = $2
+`
+
+type TouchSessionParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+func (q *Queries) TouchSession(ctx context.Context, arg TouchSessionParams) error {
+	_, err := q.db.Exec(ctx, touchSession, arg.OrgID, arg.ID)
+	return err
+}
+
+const upsertPasswordLink = `-- name: UpsertPasswordLink :exec
+INSERT INTO password_links (org_id, principal_id, hash, expire_time)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (org_id, principal_id) DO UPDATE SET hash = excluded.hash, expire_time = excluded.expire_time, create_time = now()
+`
+
+type UpsertPasswordLinkParams struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+	Hash        []byte
+	ExpireTime  time.Time
+}
+
+func (q *Queries) UpsertPasswordLink(ctx context.Context, arg UpsertPasswordLinkParams) error {
+	_, err := q.db.Exec(ctx, upsertPasswordLink,
+		arg.OrgID,
+		arg.PrincipalID,
+		arg.Hash,
+		arg.ExpireTime,
+	)
 	return err
 }

@@ -1,8 +1,12 @@
-import { createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect } from "@tanstack/react-router";
-import { hasKey } from "@/lib/api";
+import { Code, type Transport } from "@connectrpc/connect";
+import type { QueryClient } from "@tanstack/react-query";
+import { createRootRouteWithContext, createRoute, createRouter, lazyRouteComponent, redirect } from "@tanstack/react-router";
+import { errorCode } from "@/lib/api";
+import { callerQuery } from "@/lib/caller";
 import { listSearch } from "@/lib/list-filter";
 import { Root, Shell } from "@/components/shell";
 import { SignIn } from "@/routes/sign-in";
+import { SetPassword } from "@/routes/set-password";
 import { tabs, type Tab } from "@/routes/tabs";
 import { NotFound } from "@/routes/not-found";
 
@@ -17,20 +21,41 @@ declare module "@tanstack/react-router" {
   }
 }
 
-const root = createRootRoute({ component: Root, notFoundComponent: NotFound });
+export type RouterContext = { queries: QueryClient; transport: Transport };
+
+const root = createRootRouteWithContext<RouterContext>()({ component: Root, notFoundComponent: NotFound });
+
+/** The caller, or undefined when nobody is signed in. Other errors are the pages' to show. */
+async function caller({ queries, transport }: RouterContext) {
+  try {
+    return await queries.ensureQueryData(callerQuery(transport));
+  } catch (err) {
+    if (errorCode(err) === Code.Unauthenticated) return undefined;
+    return null;
+  }
+}
 
 const signIn = createRoute({
   getParentRoute: () => root,
   path: "/sign-in",
   validateSearch: (s: Record<string, unknown>): { next?: string } => ({ next: str(s.next) }),
+  beforeLoad: async ({ context }) => {
+    if ((await caller(context))?.authless) throw redirect({ to: "/" });
+  },
   component: SignIn,
+});
+
+const setPassword = createRoute({
+  getParentRoute: () => root,
+  path: "/set-password",
+  component: SetPassword,
 });
 
 const app = createRoute({
   getParentRoute: () => root,
   id: "_app",
-  beforeLoad: ({ location }) => {
-    if (!hasKey()) throw redirect({ to: "/sign-in", search: { next: location.href } });
+  beforeLoad: async ({ context, location }) => {
+    if ((await caller(context)) === undefined) throw redirect({ to: "/sign-in", search: { next: location.href } });
   },
   component: Shell,
 });
@@ -180,6 +205,7 @@ const audit = createRoute({
 export const router = createRouter({
   routeTree: root.addChildren([
     signIn,
+    setPassword,
     app.addChildren([
       index,
       pipelines,
@@ -200,6 +226,7 @@ export const router = createRouter({
       audit,
     ]),
   ]),
+  context: { queries: undefined!, transport: undefined! },
   defaultPreload: "intent",
   scrollRestoration: true,
 });

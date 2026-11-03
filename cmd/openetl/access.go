@@ -24,14 +24,16 @@ import (
 const principalUsage = `usage: openetl principal <command> [flags]
 
 Commands:
-  create NAME        create a service account, or a user with --user
-  list               list principals and their roles
-  delete NAME        delete a principal, with its keys and roles
-  disable NAME       stop a principal's keys from working
-  enable NAME        let them work again
-  grant NAME ROLE    grant viewer, operator, editor, admin or owner, on the
-                     org or, with --workspace, one workspace
-  revoke NAME ROLE   revoke it
+  create NAME          create a service account, or a user with --user
+  list                 list principals and their roles
+  delete NAME          delete a principal, with its keys and roles
+  disable NAME         stop a principal's keys from working, and sign it out
+  enable NAME          let its keys work again
+  grant NAME ROLE      grant viewer, operator, editor, admin or owner, on the
+                       org or, with --workspace, one workspace
+  revoke NAME ROLE     revoke it
+  password-link NAME   print a one-use link for a user to set their password
+  sign-out NAME        end every UI session of a user
 `
 
 const keyUsage = `usage: openetl key <command> [flags]
@@ -82,12 +84,13 @@ func runPrincipal(ctx context.Context, args []string, out io.Writer) error {
 	cmd := "principal " + sub
 	switch sub {
 	case "create":
-		var user *bool
+		var user, link *bool
 		var email, display *string
 		conn, a, err := subcommand(cmd, args, 1, "NAME", func(fs *flag.FlagSet) {
 			user = fs.Bool("user", false, "a user, rather than a service account")
-			email = fs.String("email", "", "the user's email")
+			email = fs.String("email", "", "the user's email, which they sign in with")
 			display = fs.String("display-name", "", "a name to show")
+			link = fs.Bool("password-link", false, "also print a one-use link for the user to set their password")
 		})
 		if err != nil {
 			return err
@@ -105,6 +108,41 @@ func runPrincipal(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(out, "created", res.Msg.GetPrincipal().GetName())
+		if !*link {
+			return nil
+		}
+		return printPasswordLink(ctx, c, res.Msg.GetPrincipal().GetName(), nil, out)
+	case "password-link":
+		var expires *string
+		conn, a, err := subcommand(cmd, args, 1, "NAME", func(fs *flag.FlagSet) {
+			expires = fs.String("expires", "24h", "how long the link works, such as 2h or 7d; at most 7d")
+		})
+		if err != nil {
+			return err
+		}
+		d, err := parseDuration(*expires)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("--expires %q isn't a positive duration", *expires)
+		}
+		c, err := client(conn, apiv1connect.NewAccessServiceClient)
+		if err != nil {
+			return err
+		}
+		return printPasswordLink(ctx, c, "principals/"+a[0], timestamppb.New(time.Now().Add(d)), out)
+	case "sign-out":
+		conn, a, err := subcommand(cmd, args, 1, "NAME", nil)
+		if err != nil {
+			return err
+		}
+		c, err := client(conn, apiv1connect.NewAccessServiceClient)
+		if err != nil {
+			return err
+		}
+		name := "principals/" + a[0]
+		if _, err := c.RevokeSessions(ctx, connect.NewRequest(&apiv1.RevokeSessionsRequest{Name: name})); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "signed out", name, "everywhere")
 		return nil
 	case "list":
 		conn, _, err := subcommand(cmd, args, 0, "", nil)
@@ -170,6 +208,51 @@ func runPrincipal(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprint(os.Stderr, principalUsage)
 	return fmt.Errorf("unknown principal command %q", sub)
+}
+
+func printPasswordLink(ctx context.Context, c apiv1connect.AccessServiceClient, name string, expire *timestamppb.Timestamp, out io.Writer) error {
+	res, err := c.CreatePasswordLink(ctx, connect.NewRequest(&apiv1.CreatePasswordLinkRequest{Name: name, ExpireTime: expire}))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "a link for %s to set their password, which works once until %s; send it to them yourself:\n%s\n",
+		name, res.Msg.GetExpireTime().AsTime().Local().Format(time.DateTime), res.Msg.GetUrl())
+	return nil
+}
+
+func runWhoami(ctx context.Context, args []string, out io.Writer) error {
+	var workspace *string
+	conn, _, err := subcommand("whoami", args, 0, "", func(fs *flag.FlagSet) {
+		workspace = fs.String("workspace", "", "list the permissions held in this workspace (default: those on the org)")
+	})
+	if err != nil {
+		return err
+	}
+	c, err := client(conn, apiv1connect.NewAccessServiceClient)
+	if err != nil {
+		return err
+	}
+	req := &apiv1.GetCallerRequest{}
+	if *workspace != "" {
+		req.Workspace = "workspaces/" + *workspace
+	}
+	res, err := c.GetCaller(ctx, connect.NewRequest(req))
+	if err != nil {
+		return err
+	}
+	m := res.Msg
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "principal\t%s\n", m.GetPrincipal().GetName())
+	if e := m.GetPrincipal().GetEmail(); e != "" {
+		fmt.Fprintf(w, "email\t%s\n", e)
+	}
+	fmt.Fprintf(w, "roles\t%s\n", cmp.Or(roleNames(m.GetPrincipal().GetRoleBindings()), "none"))
+	fmt.Fprintf(w, "credential\t%s\n", cmp.Or(m.GetCredential(), "none: sign-in is off"))
+	if m.GetExpireTime() != nil {
+		fmt.Fprintf(w, "expires\t%s\n", m.GetExpireTime().AsTime().Local().Format(time.DateTime))
+	}
+	fmt.Fprintf(w, "permissions\t%s\n", cmp.Or(strings.Join(m.GetPermissions(), " "), "none"))
+	return w.Flush()
 }
 
 func roleNames(bs []*apiv1.RoleBinding) string {

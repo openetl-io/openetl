@@ -1,65 +1,39 @@
 import { Code, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
+import { AccessService } from "@/gen/openetl/api/v1/access_pb";
 
-// The API key lives in sessionStorage, or in localStorage when the viewer
-// asks to be remembered on this device.
-const keyName = "openetl.key";
+// The browser's session cookie authenticates every call; the page holds no
+// credential.
 
-export function readKey(): string | null {
-  try {
-    return sessionStorage.getItem(keyName) ?? localStorage.getItem(keyName);
-  } catch {
-    return null;
-  }
-}
-
-export function storeKey(key: string, remember: boolean) {
-  try {
-    sessionStorage.setItem(keyName, key);
-    if (remember) localStorage.setItem(keyName, key);
-  } catch {
-    // Without storage the key lasts until the page reloads.
-  }
-  memoryKey = key;
-}
-
-export function clearKey() {
-  memoryKey = null;
-  try {
-    sessionStorage.removeItem(keyName);
-    localStorage.removeItem(keyName);
-  } catch {
-    // Nothing stored.
-  }
-}
-
-let memoryKey: string | null = readKey();
 let onSignedOut: () => void = () => {};
 
 export function whenSignedOut(f: () => void) {
   onSignedOut = f;
 }
 
-export function hasKey() {
-  return memoryKey !== null;
-}
+// These answer UNAUTHENTICATED for a wrong password or an ended session,
+// which the pages calling them handle.
+const ownsUnauthenticated = new Set<string>([
+  AccessService.method.getCaller.name,
+  AccessService.method.createSession.name,
+  AccessService.method.deleteSession.name,
+  AccessService.method.setPassword.name,
+  AccessService.method.changePassword.name,
+]);
 
-const auth: Interceptor = (next) => async (req) => {
-  if (memoryKey) req.header.set("Authorization", `Bearer ${memoryKey}`);
+export const signedOut: Interceptor = (next) => async (req) => {
   try {
     return await next(req);
   } catch (err) {
-    if (ConnectError.from(err).code === Code.Unauthenticated) {
-      clearKey();
-      onSignedOut();
-    }
+    const own = req.service.typeName === AccessService.typeName && ownsUnauthenticated.has(req.method.name);
+    if (!own && ConnectError.from(err).code === Code.Unauthenticated) onSignedOut();
     throw err;
   }
 };
 
 export const transport = createConnectTransport({
   baseUrl: window.location.origin,
-  interceptors: [auth],
+  interceptors: [signedOut],
 });
 
 export function errorMessage(err: unknown): string {

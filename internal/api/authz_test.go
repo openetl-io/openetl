@@ -34,7 +34,7 @@ func TestEveryRPCHasARule(t *testing.T) {
 					if r.runner != (pkg == "openetl.dataplane.v1") {
 						t.Errorf("%s: only DataPlaneService takes runner tokens", proc)
 					}
-					if !r.runner {
+					if !r.runner && !r.public() {
 						if _, ok := permissions[r.permission]; !ok {
 							t.Errorf("%s: no permission %q", proc, r.permission)
 						}

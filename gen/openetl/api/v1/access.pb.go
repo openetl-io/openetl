@@ -1858,6 +1858,759 @@ func (*DeleteRunnerTokenResponse) Descriptor() ([]byte, []int) {
 	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{34}
 }
 
+type GetCallerRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// workspaces/{workspace}, for the permissions held there. Empty: those on
+	// the org.
+	Workspace     string `protobuf:"bytes,1,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetCallerRequest) Reset() {
+	*x = GetCallerRequest{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetCallerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetCallerRequest) ProtoMessage() {}
+
+func (x *GetCallerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetCallerRequest.ProtoReflect.Descriptor instead.
+func (*GetCallerRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *GetCallerRequest) GetWorkspace() string {
+	if x != nil {
+		return x.Workspace
+	}
+	return ""
+}
+
+type GetCallerResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Principal *Principal             `protobuf:"bytes,1,opt,name=principal,proto3" json:"principal,omitempty"`
+	// principals/{principal}/keys/{key} or principals/{principal}/sessions/{session}.
+	// Empty when sign-in is off and the call had no credential.
+	Credential string `protobuf:"bytes,2,opt,name=credential,proto3" json:"credential,omitempty"`
+	// When the credential stops working unless it's used, for a session;
+	// unset for a key that doesn't expire.
+	ExpireTime *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
+	// What the caller may do in the workspace, or on the org: permissions
+	// such as pipelines.sync.
+	Permissions []string `protobuf:"bytes,4,rep,name=permissions,proto3" json:"permissions,omitempty"`
+	// Sign-in is off (openetld --auth none), so calls without a credential
+	// act as principals/local, an owner.
+	Authless      bool `protobuf:"varint,5,opt,name=authless,proto3" json:"authless,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetCallerResponse) Reset() {
+	*x = GetCallerResponse{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetCallerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetCallerResponse) ProtoMessage() {}
+
+func (x *GetCallerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetCallerResponse.ProtoReflect.Descriptor instead.
+func (*GetCallerResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *GetCallerResponse) GetPrincipal() *Principal {
+	if x != nil {
+		return x.Principal
+	}
+	return nil
+}
+
+func (x *GetCallerResponse) GetCredential() string {
+	if x != nil {
+		return x.Credential
+	}
+	return ""
+}
+
+func (x *GetCallerResponse) GetExpireTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpireTime
+	}
+	return nil
+}
+
+func (x *GetCallerResponse) GetPermissions() []string {
+	if x != nil {
+		return x.Permissions
+	}
+	return nil
+}
+
+func (x *GetCallerResponse) GetAuthless() bool {
+	if x != nil {
+		return x.Authless
+	}
+	return false
+}
+
+// A user's sign-in in a browser, which holds it as a cookie.
+type Session struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// principals/{principal}/sessions/{session}
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	// When it ends unless it's used again: its idle timeout from its last
+	// use, at most its maximum age from its creation.
+	ExpireTime    *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Session) Reset() {
+	*x = Session{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Session) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Session) ProtoMessage() {}
+
+func (x *Session) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Session.ProtoReflect.Descriptor instead.
+func (*Session) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *Session) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Session) GetCreateTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreateTime
+	}
+	return nil
+}
+
+func (x *Session) GetExpireTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpireTime
+	}
+	return nil
+}
+
+type CreateSessionRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Email    string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
+	Password string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	// Keep the cookie when the browser closes, until the session ends.
+	Remember      bool `protobuf:"varint,3,opt,name=remember,proto3" json:"remember,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSessionRequest) Reset() {
+	*x = CreateSessionRequest{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSessionRequest) ProtoMessage() {}
+
+func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSessionRequest.ProtoReflect.Descriptor instead.
+func (*CreateSessionRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *CreateSessionRequest) GetEmail() string {
+	if x != nil {
+		return x.Email
+	}
+	return ""
+}
+
+func (x *CreateSessionRequest) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *CreateSessionRequest) GetRemember() bool {
+	if x != nil {
+		return x.Remember
+	}
+	return false
+}
+
+type CreateSessionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Session       *Session               `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSessionResponse) Reset() {
+	*x = CreateSessionResponse{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSessionResponse) ProtoMessage() {}
+
+func (x *CreateSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSessionResponse.ProtoReflect.Descriptor instead.
+func (*CreateSessionResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *CreateSessionResponse) GetSession() *Session {
+	if x != nil {
+		return x.Session
+	}
+	return nil
+}
+
+type DeleteSessionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSessionRequest) Reset() {
+	*x = DeleteSessionRequest{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSessionRequest) ProtoMessage() {}
+
+func (x *DeleteSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSessionRequest.ProtoReflect.Descriptor instead.
+func (*DeleteSessionRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{40}
+}
+
+type DeleteSessionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSessionResponse) Reset() {
+	*x = DeleteSessionResponse{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSessionResponse) ProtoMessage() {}
+
+func (x *DeleteSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSessionResponse.ProtoReflect.Descriptor instead.
+func (*DeleteSessionResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{41}
+}
+
+type RevokeSessionsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// principals/{principal}
+	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeSessionsRequest) Reset() {
+	*x = RevokeSessionsRequest{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeSessionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeSessionsRequest) ProtoMessage() {}
+
+func (x *RevokeSessionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeSessionsRequest.ProtoReflect.Descriptor instead.
+func (*RevokeSessionsRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *RevokeSessionsRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type RevokeSessionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeSessionsResponse) Reset() {
+	*x = RevokeSessionsResponse{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeSessionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeSessionsResponse) ProtoMessage() {}
+
+func (x *RevokeSessionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeSessionsResponse.ProtoReflect.Descriptor instead.
+func (*RevokeSessionsResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{43}
+}
+
+type CreatePasswordLinkRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// principals/{principal}
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Unset: in 24 hours. At most 7 days ahead.
+	ExpireTime    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreatePasswordLinkRequest) Reset() {
+	*x = CreatePasswordLinkRequest{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePasswordLinkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePasswordLinkRequest) ProtoMessage() {}
+
+func (x *CreatePasswordLinkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePasswordLinkRequest.ProtoReflect.Descriptor instead.
+func (*CreatePasswordLinkRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *CreatePasswordLinkRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CreatePasswordLinkRequest) GetExpireTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpireTime
+	}
+	return nil
+}
+
+type CreatePasswordLinkResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// {public URL}/set-password#{token}. The API never returns it again.
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	ExpireTime    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreatePasswordLinkResponse) Reset() {
+	*x = CreatePasswordLinkResponse{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePasswordLinkResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePasswordLinkResponse) ProtoMessage() {}
+
+func (x *CreatePasswordLinkResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePasswordLinkResponse.ProtoReflect.Descriptor instead.
+func (*CreatePasswordLinkResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *CreatePasswordLinkResponse) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *CreatePasswordLinkResponse) GetExpireTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpireTime
+	}
+	return nil
+}
+
+type SetPasswordRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The part of the link after #.
+	Token    string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	Password string `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	// As in CreateSessionRequest.
+	Remember      bool `protobuf:"varint,3,opt,name=remember,proto3" json:"remember,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPasswordRequest) Reset() {
+	*x = SetPasswordRequest{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPasswordRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPasswordRequest) ProtoMessage() {}
+
+func (x *SetPasswordRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPasswordRequest.ProtoReflect.Descriptor instead.
+func (*SetPasswordRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *SetPasswordRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *SetPasswordRequest) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *SetPasswordRequest) GetRemember() bool {
+	if x != nil {
+		return x.Remember
+	}
+	return false
+}
+
+type SetPasswordResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Session       *Session               `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPasswordResponse) Reset() {
+	*x = SetPasswordResponse{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPasswordResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPasswordResponse) ProtoMessage() {}
+
+func (x *SetPasswordResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPasswordResponse.ProtoReflect.Descriptor instead.
+func (*SetPasswordResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *SetPasswordResponse) GetSession() *Session {
+	if x != nil {
+		return x.Session
+	}
+	return nil
+}
+
+type ChangePasswordRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	CurrentPassword string                 `protobuf:"bytes,1,opt,name=current_password,json=currentPassword,proto3" json:"current_password,omitempty"`
+	NewPassword     string                 `protobuf:"bytes,2,opt,name=new_password,json=newPassword,proto3" json:"new_password,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ChangePasswordRequest) Reset() {
+	*x = ChangePasswordRequest{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChangePasswordRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChangePasswordRequest) ProtoMessage() {}
+
+func (x *ChangePasswordRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChangePasswordRequest.ProtoReflect.Descriptor instead.
+func (*ChangePasswordRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *ChangePasswordRequest) GetCurrentPassword() string {
+	if x != nil {
+		return x.CurrentPassword
+	}
+	return ""
+}
+
+func (x *ChangePasswordRequest) GetNewPassword() string {
+	if x != nil {
+		return x.NewPassword
+	}
+	return ""
+}
+
+type ChangePasswordResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChangePasswordResponse) Reset() {
+	*x = ChangePasswordResponse{}
+	mi := &file_openetl_api_v1_access_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChangePasswordResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChangePasswordResponse) ProtoMessage() {}
+
+func (x *ChangePasswordResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_access_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChangePasswordResponse.ProtoReflect.Descriptor instead.
+func (*ChangePasswordResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_access_proto_rawDescGZIP(), []int{49}
+}
+
 var File_openetl_api_v1_access_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_access_proto_rawDesc = "" +
@@ -1961,7 +2714,53 @@ const file_openetl_api_v1_access_proto_rawDesc = "" +
 	"\x06tokens\x18\x01 \x03(\v2\x1b.openetl.api.v1.RunnerTokenR\x06tokens\".\n" +
 	"\x18DeleteRunnerTokenRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"\x1b\n" +
-	"\x19DeleteRunnerTokenResponse*l\n" +
+	"\x19DeleteRunnerTokenResponse\"0\n" +
+	"\x10GetCallerRequest\x12\x1c\n" +
+	"\tworkspace\x18\x01 \x01(\tR\tworkspace\"\xe7\x01\n" +
+	"\x11GetCallerResponse\x127\n" +
+	"\tprincipal\x18\x01 \x01(\v2\x19.openetl.api.v1.PrincipalR\tprincipal\x12\x1e\n" +
+	"\n" +
+	"credential\x18\x02 \x01(\tR\n" +
+	"credential\x12;\n" +
+	"\vexpire_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expireTime\x12 \n" +
+	"\vpermissions\x18\x04 \x03(\tR\vpermissions\x12\x1a\n" +
+	"\bauthless\x18\x05 \x01(\bR\bauthless\"\x97\x01\n" +
+	"\aSession\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12;\n" +
+	"\vcreate_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"createTime\x12;\n" +
+	"\vexpire_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expireTime\"d\n" +
+	"\x14CreateSessionRequest\x12\x14\n" +
+	"\x05email\x18\x01 \x01(\tR\x05email\x12\x1a\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x1a\n" +
+	"\bremember\x18\x03 \x01(\bR\bremember\"J\n" +
+	"\x15CreateSessionResponse\x121\n" +
+	"\asession\x18\x01 \x01(\v2\x17.openetl.api.v1.SessionR\asession\"\x16\n" +
+	"\x14DeleteSessionRequest\"\x17\n" +
+	"\x15DeleteSessionResponse\"+\n" +
+	"\x15RevokeSessionsRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"\x18\n" +
+	"\x16RevokeSessionsResponse\"l\n" +
+	"\x19CreatePasswordLinkRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12;\n" +
+	"\vexpire_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expireTime\"k\n" +
+	"\x1aCreatePasswordLinkResponse\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12;\n" +
+	"\vexpire_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expireTime\"b\n" +
+	"\x12SetPasswordRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1a\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x1a\n" +
+	"\bremember\x18\x03 \x01(\bR\bremember\"H\n" +
+	"\x13SetPasswordResponse\x121\n" +
+	"\asession\x18\x01 \x01(\v2\x17.openetl.api.v1.SessionR\asession\"e\n" +
+	"\x15ChangePasswordRequest\x12)\n" +
+	"\x10current_password\x18\x01 \x01(\tR\x0fcurrentPassword\x12!\n" +
+	"\fnew_password\x18\x02 \x01(\tR\vnewPassword\"\x18\n" +
+	"\x16ChangePasswordResponse*l\n" +
 	"\rPrincipalType\x12\x1e\n" +
 	"\x1aPRINCIPAL_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13PRINCIPAL_TYPE_USER\x10\x01\x12\"\n" +
@@ -1974,7 +2773,7 @@ const file_openetl_api_v1_access_proto_rawDesc = "" +
 	"\n" +
 	"ROLE_ADMIN\x10\x04\x12\x0e\n" +
 	"\n" +
-	"ROLE_OWNER\x10\x052\xe1\x0f\n" +
+	"ROLE_OWNER\x10\x052\x9d\x16\n" +
 	"\rAccessService\x12\x85\x01\n" +
 	"\x0fCreatePrincipal\x12&.openetl.api.v1.CreatePrincipalRequest\x1a'.openetl.api.v1.CreatePrincipalResponse\"!\x82\xd3\xe4\x93\x02\x1b:\tprincipal\"\x0e/v1/principals\x12z\n" +
 	"\fGetPrincipal\x12#.openetl.api.v1.GetPrincipalRequest\x1a$.openetl.api.v1.GetPrincipalResponse\"\x1f\x82\xd3\xe4\x93\x02\x19\x12\x17/v1/{name=principals/*}\x12w\n" +
@@ -1991,7 +2790,15 @@ const file_openetl_api_v1_access_proto_rawDesc = "" +
 	"\x0eListDataPlanes\x12%.openetl.api.v1.ListDataPlanesRequest\x1a&.openetl.api.v1.ListDataPlanesResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/dataPlanes\x12\x95\x01\n" +
 	"\x11CreateRunnerToken\x12(.openetl.api.v1.CreateRunnerTokenRequest\x1a).openetl.api.v1.CreateRunnerTokenResponse\"+\x82\xd3\xe4\x93\x02%:\x01*\" /v1/{parent=dataPlanes/*}/tokens\x12\x8f\x01\n" +
 	"\x10ListRunnerTokens\x12'.openetl.api.v1.ListRunnerTokensRequest\x1a(.openetl.api.v1.ListRunnerTokensResponse\"(\x82\xd3\xe4\x93\x02\"\x12 /v1/{parent=dataPlanes/*}/tokens\x12\x92\x01\n" +
-	"\x11DeleteRunnerToken\x12(.openetl.api.v1.DeleteRunnerTokenRequest\x1a).openetl.api.v1.DeleteRunnerTokenResponse\"(\x82\xd3\xe4\x93\x02\"* /v1/{name=dataPlanes/*/tokens/*}B;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x11DeleteRunnerToken\x12(.openetl.api.v1.DeleteRunnerTokenRequest\x1a).openetl.api.v1.DeleteRunnerTokenResponse\"(\x82\xd3\xe4\x93\x02\"* /v1/{name=dataPlanes/*/tokens/*}\x12d\n" +
+	"\tGetCaller\x12 .openetl.api.v1.GetCallerRequest\x1a!.openetl.api.v1.GetCallerResponse\"\x12\x82\xd3\xe4\x93\x02\f\x12\n" +
+	"/v1/caller\x12^\n" +
+	"\rCreateSession\x12$.openetl.api.v1.CreateSessionRequest\x1a%.openetl.api.v1.CreateSessionResponse\"\x00\x12^\n" +
+	"\rDeleteSession\x12$.openetl.api.v1.DeleteSessionRequest\x1a%.openetl.api.v1.DeleteSessionResponse\"\x00\x12\x92\x01\n" +
+	"\x0eRevokeSessions\x12%.openetl.api.v1.RevokeSessionsRequest\x1a&.openetl.api.v1.RevokeSessionsResponse\"1\x82\xd3\xe4\x93\x02+:\x01*\"&/v1/{name=principals/*}:revokeSessions\x12\x9c\x01\n" +
+	"\x12CreatePasswordLink\x12).openetl.api.v1.CreatePasswordLinkRequest\x1a*.openetl.api.v1.CreatePasswordLinkResponse\"/\x82\xd3\xe4\x93\x02):\x01*\"$/v1/{name=principals/*}:passwordLink\x12X\n" +
+	"\vSetPassword\x12\".openetl.api.v1.SetPasswordRequest\x1a#.openetl.api.v1.SetPasswordResponse\"\x00\x12\x85\x01\n" +
+	"\x0eChangePassword\x12%.openetl.api.v1.ChangePasswordRequest\x1a&.openetl.api.v1.ChangePasswordResponse\"$\x82\xd3\xe4\x93\x02\x1e:\x01*\"\x19/v1/caller:changePasswordB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_access_proto_rawDescOnce sync.Once
@@ -2006,51 +2813,66 @@ func file_openetl_api_v1_access_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_api_v1_access_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_openetl_api_v1_access_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_openetl_api_v1_access_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
 var file_openetl_api_v1_access_proto_goTypes = []any{
-	(PrincipalType)(0),                // 0: openetl.api.v1.PrincipalType
-	(Role)(0),                         // 1: openetl.api.v1.Role
-	(*Principal)(nil),                 // 2: openetl.api.v1.Principal
-	(*RoleBinding)(nil),               // 3: openetl.api.v1.RoleBinding
-	(*CreatePrincipalRequest)(nil),    // 4: openetl.api.v1.CreatePrincipalRequest
-	(*CreatePrincipalResponse)(nil),   // 5: openetl.api.v1.CreatePrincipalResponse
-	(*GetPrincipalRequest)(nil),       // 6: openetl.api.v1.GetPrincipalRequest
-	(*GetPrincipalResponse)(nil),      // 7: openetl.api.v1.GetPrincipalResponse
-	(*ListPrincipalsRequest)(nil),     // 8: openetl.api.v1.ListPrincipalsRequest
-	(*ListPrincipalsResponse)(nil),    // 9: openetl.api.v1.ListPrincipalsResponse
-	(*DeletePrincipalRequest)(nil),    // 10: openetl.api.v1.DeletePrincipalRequest
-	(*DeletePrincipalResponse)(nil),   // 11: openetl.api.v1.DeletePrincipalResponse
-	(*DisablePrincipalRequest)(nil),   // 12: openetl.api.v1.DisablePrincipalRequest
-	(*DisablePrincipalResponse)(nil),  // 13: openetl.api.v1.DisablePrincipalResponse
-	(*EnablePrincipalRequest)(nil),    // 14: openetl.api.v1.EnablePrincipalRequest
-	(*EnablePrincipalResponse)(nil),   // 15: openetl.api.v1.EnablePrincipalResponse
-	(*GrantRoleRequest)(nil),          // 16: openetl.api.v1.GrantRoleRequest
-	(*GrantRoleResponse)(nil),         // 17: openetl.api.v1.GrantRoleResponse
-	(*RevokeRoleRequest)(nil),         // 18: openetl.api.v1.RevokeRoleRequest
-	(*RevokeRoleResponse)(nil),        // 19: openetl.api.v1.RevokeRoleResponse
-	(*Key)(nil),                       // 20: openetl.api.v1.Key
-	(*CreateKeyRequest)(nil),          // 21: openetl.api.v1.CreateKeyRequest
-	(*CreateKeyResponse)(nil),         // 22: openetl.api.v1.CreateKeyResponse
-	(*ListKeysRequest)(nil),           // 23: openetl.api.v1.ListKeysRequest
-	(*ListKeysResponse)(nil),          // 24: openetl.api.v1.ListKeysResponse
-	(*DeleteKeyRequest)(nil),          // 25: openetl.api.v1.DeleteKeyRequest
-	(*DeleteKeyResponse)(nil),         // 26: openetl.api.v1.DeleteKeyResponse
-	(*DataPlane)(nil),                 // 27: openetl.api.v1.DataPlane
-	(*ListDataPlanesRequest)(nil),     // 28: openetl.api.v1.ListDataPlanesRequest
-	(*ListDataPlanesResponse)(nil),    // 29: openetl.api.v1.ListDataPlanesResponse
-	(*RunnerToken)(nil),               // 30: openetl.api.v1.RunnerToken
-	(*CreateRunnerTokenRequest)(nil),  // 31: openetl.api.v1.CreateRunnerTokenRequest
-	(*CreateRunnerTokenResponse)(nil), // 32: openetl.api.v1.CreateRunnerTokenResponse
-	(*ListRunnerTokensRequest)(nil),   // 33: openetl.api.v1.ListRunnerTokensRequest
-	(*ListRunnerTokensResponse)(nil),  // 34: openetl.api.v1.ListRunnerTokensResponse
-	(*DeleteRunnerTokenRequest)(nil),  // 35: openetl.api.v1.DeleteRunnerTokenRequest
-	(*DeleteRunnerTokenResponse)(nil), // 36: openetl.api.v1.DeleteRunnerTokenResponse
-	(*timestamppb.Timestamp)(nil),     // 37: google.protobuf.Timestamp
+	(PrincipalType)(0),                 // 0: openetl.api.v1.PrincipalType
+	(Role)(0),                          // 1: openetl.api.v1.Role
+	(*Principal)(nil),                  // 2: openetl.api.v1.Principal
+	(*RoleBinding)(nil),                // 3: openetl.api.v1.RoleBinding
+	(*CreatePrincipalRequest)(nil),     // 4: openetl.api.v1.CreatePrincipalRequest
+	(*CreatePrincipalResponse)(nil),    // 5: openetl.api.v1.CreatePrincipalResponse
+	(*GetPrincipalRequest)(nil),        // 6: openetl.api.v1.GetPrincipalRequest
+	(*GetPrincipalResponse)(nil),       // 7: openetl.api.v1.GetPrincipalResponse
+	(*ListPrincipalsRequest)(nil),      // 8: openetl.api.v1.ListPrincipalsRequest
+	(*ListPrincipalsResponse)(nil),     // 9: openetl.api.v1.ListPrincipalsResponse
+	(*DeletePrincipalRequest)(nil),     // 10: openetl.api.v1.DeletePrincipalRequest
+	(*DeletePrincipalResponse)(nil),    // 11: openetl.api.v1.DeletePrincipalResponse
+	(*DisablePrincipalRequest)(nil),    // 12: openetl.api.v1.DisablePrincipalRequest
+	(*DisablePrincipalResponse)(nil),   // 13: openetl.api.v1.DisablePrincipalResponse
+	(*EnablePrincipalRequest)(nil),     // 14: openetl.api.v1.EnablePrincipalRequest
+	(*EnablePrincipalResponse)(nil),    // 15: openetl.api.v1.EnablePrincipalResponse
+	(*GrantRoleRequest)(nil),           // 16: openetl.api.v1.GrantRoleRequest
+	(*GrantRoleResponse)(nil),          // 17: openetl.api.v1.GrantRoleResponse
+	(*RevokeRoleRequest)(nil),          // 18: openetl.api.v1.RevokeRoleRequest
+	(*RevokeRoleResponse)(nil),         // 19: openetl.api.v1.RevokeRoleResponse
+	(*Key)(nil),                        // 20: openetl.api.v1.Key
+	(*CreateKeyRequest)(nil),           // 21: openetl.api.v1.CreateKeyRequest
+	(*CreateKeyResponse)(nil),          // 22: openetl.api.v1.CreateKeyResponse
+	(*ListKeysRequest)(nil),            // 23: openetl.api.v1.ListKeysRequest
+	(*ListKeysResponse)(nil),           // 24: openetl.api.v1.ListKeysResponse
+	(*DeleteKeyRequest)(nil),           // 25: openetl.api.v1.DeleteKeyRequest
+	(*DeleteKeyResponse)(nil),          // 26: openetl.api.v1.DeleteKeyResponse
+	(*DataPlane)(nil),                  // 27: openetl.api.v1.DataPlane
+	(*ListDataPlanesRequest)(nil),      // 28: openetl.api.v1.ListDataPlanesRequest
+	(*ListDataPlanesResponse)(nil),     // 29: openetl.api.v1.ListDataPlanesResponse
+	(*RunnerToken)(nil),                // 30: openetl.api.v1.RunnerToken
+	(*CreateRunnerTokenRequest)(nil),   // 31: openetl.api.v1.CreateRunnerTokenRequest
+	(*CreateRunnerTokenResponse)(nil),  // 32: openetl.api.v1.CreateRunnerTokenResponse
+	(*ListRunnerTokensRequest)(nil),    // 33: openetl.api.v1.ListRunnerTokensRequest
+	(*ListRunnerTokensResponse)(nil),   // 34: openetl.api.v1.ListRunnerTokensResponse
+	(*DeleteRunnerTokenRequest)(nil),   // 35: openetl.api.v1.DeleteRunnerTokenRequest
+	(*DeleteRunnerTokenResponse)(nil),  // 36: openetl.api.v1.DeleteRunnerTokenResponse
+	(*GetCallerRequest)(nil),           // 37: openetl.api.v1.GetCallerRequest
+	(*GetCallerResponse)(nil),          // 38: openetl.api.v1.GetCallerResponse
+	(*Session)(nil),                    // 39: openetl.api.v1.Session
+	(*CreateSessionRequest)(nil),       // 40: openetl.api.v1.CreateSessionRequest
+	(*CreateSessionResponse)(nil),      // 41: openetl.api.v1.CreateSessionResponse
+	(*DeleteSessionRequest)(nil),       // 42: openetl.api.v1.DeleteSessionRequest
+	(*DeleteSessionResponse)(nil),      // 43: openetl.api.v1.DeleteSessionResponse
+	(*RevokeSessionsRequest)(nil),      // 44: openetl.api.v1.RevokeSessionsRequest
+	(*RevokeSessionsResponse)(nil),     // 45: openetl.api.v1.RevokeSessionsResponse
+	(*CreatePasswordLinkRequest)(nil),  // 46: openetl.api.v1.CreatePasswordLinkRequest
+	(*CreatePasswordLinkResponse)(nil), // 47: openetl.api.v1.CreatePasswordLinkResponse
+	(*SetPasswordRequest)(nil),         // 48: openetl.api.v1.SetPasswordRequest
+	(*SetPasswordResponse)(nil),        // 49: openetl.api.v1.SetPasswordResponse
+	(*ChangePasswordRequest)(nil),      // 50: openetl.api.v1.ChangePasswordRequest
+	(*ChangePasswordResponse)(nil),     // 51: openetl.api.v1.ChangePasswordResponse
+	(*timestamppb.Timestamp)(nil),      // 52: google.protobuf.Timestamp
 }
 var file_openetl_api_v1_access_proto_depIdxs = []int32{
 	0,  // 0: openetl.api.v1.Principal.type:type_name -> openetl.api.v1.PrincipalType
 	3,  // 1: openetl.api.v1.Principal.role_bindings:type_name -> openetl.api.v1.RoleBinding
-	37, // 2: openetl.api.v1.Principal.create_time:type_name -> google.protobuf.Timestamp
+	52, // 2: openetl.api.v1.Principal.create_time:type_name -> google.protobuf.Timestamp
 	1,  // 3: openetl.api.v1.RoleBinding.role:type_name -> openetl.api.v1.Role
 	2,  // 4: openetl.api.v1.CreatePrincipalRequest.principal:type_name -> openetl.api.v1.Principal
 	2,  // 5: openetl.api.v1.CreatePrincipalResponse.principal:type_name -> openetl.api.v1.Principal
@@ -2062,53 +2884,75 @@ var file_openetl_api_v1_access_proto_depIdxs = []int32{
 	2,  // 11: openetl.api.v1.GrantRoleResponse.principal:type_name -> openetl.api.v1.Principal
 	3,  // 12: openetl.api.v1.RevokeRoleRequest.binding:type_name -> openetl.api.v1.RoleBinding
 	2,  // 13: openetl.api.v1.RevokeRoleResponse.principal:type_name -> openetl.api.v1.Principal
-	37, // 14: openetl.api.v1.Key.expire_time:type_name -> google.protobuf.Timestamp
-	37, // 15: openetl.api.v1.Key.create_time:type_name -> google.protobuf.Timestamp
-	37, // 16: openetl.api.v1.Key.last_used_time:type_name -> google.protobuf.Timestamp
-	37, // 17: openetl.api.v1.CreateKeyRequest.expire_time:type_name -> google.protobuf.Timestamp
+	52, // 14: openetl.api.v1.Key.expire_time:type_name -> google.protobuf.Timestamp
+	52, // 15: openetl.api.v1.Key.create_time:type_name -> google.protobuf.Timestamp
+	52, // 16: openetl.api.v1.Key.last_used_time:type_name -> google.protobuf.Timestamp
+	52, // 17: openetl.api.v1.CreateKeyRequest.expire_time:type_name -> google.protobuf.Timestamp
 	20, // 18: openetl.api.v1.CreateKeyResponse.key:type_name -> openetl.api.v1.Key
 	20, // 19: openetl.api.v1.ListKeysResponse.keys:type_name -> openetl.api.v1.Key
-	37, // 20: openetl.api.v1.DataPlane.create_time:type_name -> google.protobuf.Timestamp
+	52, // 20: openetl.api.v1.DataPlane.create_time:type_name -> google.protobuf.Timestamp
 	27, // 21: openetl.api.v1.ListDataPlanesResponse.data_planes:type_name -> openetl.api.v1.DataPlane
-	37, // 22: openetl.api.v1.RunnerToken.create_time:type_name -> google.protobuf.Timestamp
-	37, // 23: openetl.api.v1.RunnerToken.last_used_time:type_name -> google.protobuf.Timestamp
+	52, // 22: openetl.api.v1.RunnerToken.create_time:type_name -> google.protobuf.Timestamp
+	52, // 23: openetl.api.v1.RunnerToken.last_used_time:type_name -> google.protobuf.Timestamp
 	30, // 24: openetl.api.v1.CreateRunnerTokenResponse.token:type_name -> openetl.api.v1.RunnerToken
 	30, // 25: openetl.api.v1.ListRunnerTokensResponse.tokens:type_name -> openetl.api.v1.RunnerToken
-	4,  // 26: openetl.api.v1.AccessService.CreatePrincipal:input_type -> openetl.api.v1.CreatePrincipalRequest
-	6,  // 27: openetl.api.v1.AccessService.GetPrincipal:input_type -> openetl.api.v1.GetPrincipalRequest
-	8,  // 28: openetl.api.v1.AccessService.ListPrincipals:input_type -> openetl.api.v1.ListPrincipalsRequest
-	10, // 29: openetl.api.v1.AccessService.DeletePrincipal:input_type -> openetl.api.v1.DeletePrincipalRequest
-	12, // 30: openetl.api.v1.AccessService.DisablePrincipal:input_type -> openetl.api.v1.DisablePrincipalRequest
-	14, // 31: openetl.api.v1.AccessService.EnablePrincipal:input_type -> openetl.api.v1.EnablePrincipalRequest
-	16, // 32: openetl.api.v1.AccessService.GrantRole:input_type -> openetl.api.v1.GrantRoleRequest
-	18, // 33: openetl.api.v1.AccessService.RevokeRole:input_type -> openetl.api.v1.RevokeRoleRequest
-	21, // 34: openetl.api.v1.AccessService.CreateKey:input_type -> openetl.api.v1.CreateKeyRequest
-	23, // 35: openetl.api.v1.AccessService.ListKeys:input_type -> openetl.api.v1.ListKeysRequest
-	25, // 36: openetl.api.v1.AccessService.DeleteKey:input_type -> openetl.api.v1.DeleteKeyRequest
-	28, // 37: openetl.api.v1.AccessService.ListDataPlanes:input_type -> openetl.api.v1.ListDataPlanesRequest
-	31, // 38: openetl.api.v1.AccessService.CreateRunnerToken:input_type -> openetl.api.v1.CreateRunnerTokenRequest
-	33, // 39: openetl.api.v1.AccessService.ListRunnerTokens:input_type -> openetl.api.v1.ListRunnerTokensRequest
-	35, // 40: openetl.api.v1.AccessService.DeleteRunnerToken:input_type -> openetl.api.v1.DeleteRunnerTokenRequest
-	5,  // 41: openetl.api.v1.AccessService.CreatePrincipal:output_type -> openetl.api.v1.CreatePrincipalResponse
-	7,  // 42: openetl.api.v1.AccessService.GetPrincipal:output_type -> openetl.api.v1.GetPrincipalResponse
-	9,  // 43: openetl.api.v1.AccessService.ListPrincipals:output_type -> openetl.api.v1.ListPrincipalsResponse
-	11, // 44: openetl.api.v1.AccessService.DeletePrincipal:output_type -> openetl.api.v1.DeletePrincipalResponse
-	13, // 45: openetl.api.v1.AccessService.DisablePrincipal:output_type -> openetl.api.v1.DisablePrincipalResponse
-	15, // 46: openetl.api.v1.AccessService.EnablePrincipal:output_type -> openetl.api.v1.EnablePrincipalResponse
-	17, // 47: openetl.api.v1.AccessService.GrantRole:output_type -> openetl.api.v1.GrantRoleResponse
-	19, // 48: openetl.api.v1.AccessService.RevokeRole:output_type -> openetl.api.v1.RevokeRoleResponse
-	22, // 49: openetl.api.v1.AccessService.CreateKey:output_type -> openetl.api.v1.CreateKeyResponse
-	24, // 50: openetl.api.v1.AccessService.ListKeys:output_type -> openetl.api.v1.ListKeysResponse
-	26, // 51: openetl.api.v1.AccessService.DeleteKey:output_type -> openetl.api.v1.DeleteKeyResponse
-	29, // 52: openetl.api.v1.AccessService.ListDataPlanes:output_type -> openetl.api.v1.ListDataPlanesResponse
-	32, // 53: openetl.api.v1.AccessService.CreateRunnerToken:output_type -> openetl.api.v1.CreateRunnerTokenResponse
-	34, // 54: openetl.api.v1.AccessService.ListRunnerTokens:output_type -> openetl.api.v1.ListRunnerTokensResponse
-	36, // 55: openetl.api.v1.AccessService.DeleteRunnerToken:output_type -> openetl.api.v1.DeleteRunnerTokenResponse
-	41, // [41:56] is the sub-list for method output_type
-	26, // [26:41] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	2,  // 26: openetl.api.v1.GetCallerResponse.principal:type_name -> openetl.api.v1.Principal
+	52, // 27: openetl.api.v1.GetCallerResponse.expire_time:type_name -> google.protobuf.Timestamp
+	52, // 28: openetl.api.v1.Session.create_time:type_name -> google.protobuf.Timestamp
+	52, // 29: openetl.api.v1.Session.expire_time:type_name -> google.protobuf.Timestamp
+	39, // 30: openetl.api.v1.CreateSessionResponse.session:type_name -> openetl.api.v1.Session
+	52, // 31: openetl.api.v1.CreatePasswordLinkRequest.expire_time:type_name -> google.protobuf.Timestamp
+	52, // 32: openetl.api.v1.CreatePasswordLinkResponse.expire_time:type_name -> google.protobuf.Timestamp
+	39, // 33: openetl.api.v1.SetPasswordResponse.session:type_name -> openetl.api.v1.Session
+	4,  // 34: openetl.api.v1.AccessService.CreatePrincipal:input_type -> openetl.api.v1.CreatePrincipalRequest
+	6,  // 35: openetl.api.v1.AccessService.GetPrincipal:input_type -> openetl.api.v1.GetPrincipalRequest
+	8,  // 36: openetl.api.v1.AccessService.ListPrincipals:input_type -> openetl.api.v1.ListPrincipalsRequest
+	10, // 37: openetl.api.v1.AccessService.DeletePrincipal:input_type -> openetl.api.v1.DeletePrincipalRequest
+	12, // 38: openetl.api.v1.AccessService.DisablePrincipal:input_type -> openetl.api.v1.DisablePrincipalRequest
+	14, // 39: openetl.api.v1.AccessService.EnablePrincipal:input_type -> openetl.api.v1.EnablePrincipalRequest
+	16, // 40: openetl.api.v1.AccessService.GrantRole:input_type -> openetl.api.v1.GrantRoleRequest
+	18, // 41: openetl.api.v1.AccessService.RevokeRole:input_type -> openetl.api.v1.RevokeRoleRequest
+	21, // 42: openetl.api.v1.AccessService.CreateKey:input_type -> openetl.api.v1.CreateKeyRequest
+	23, // 43: openetl.api.v1.AccessService.ListKeys:input_type -> openetl.api.v1.ListKeysRequest
+	25, // 44: openetl.api.v1.AccessService.DeleteKey:input_type -> openetl.api.v1.DeleteKeyRequest
+	28, // 45: openetl.api.v1.AccessService.ListDataPlanes:input_type -> openetl.api.v1.ListDataPlanesRequest
+	31, // 46: openetl.api.v1.AccessService.CreateRunnerToken:input_type -> openetl.api.v1.CreateRunnerTokenRequest
+	33, // 47: openetl.api.v1.AccessService.ListRunnerTokens:input_type -> openetl.api.v1.ListRunnerTokensRequest
+	35, // 48: openetl.api.v1.AccessService.DeleteRunnerToken:input_type -> openetl.api.v1.DeleteRunnerTokenRequest
+	37, // 49: openetl.api.v1.AccessService.GetCaller:input_type -> openetl.api.v1.GetCallerRequest
+	40, // 50: openetl.api.v1.AccessService.CreateSession:input_type -> openetl.api.v1.CreateSessionRequest
+	42, // 51: openetl.api.v1.AccessService.DeleteSession:input_type -> openetl.api.v1.DeleteSessionRequest
+	44, // 52: openetl.api.v1.AccessService.RevokeSessions:input_type -> openetl.api.v1.RevokeSessionsRequest
+	46, // 53: openetl.api.v1.AccessService.CreatePasswordLink:input_type -> openetl.api.v1.CreatePasswordLinkRequest
+	48, // 54: openetl.api.v1.AccessService.SetPassword:input_type -> openetl.api.v1.SetPasswordRequest
+	50, // 55: openetl.api.v1.AccessService.ChangePassword:input_type -> openetl.api.v1.ChangePasswordRequest
+	5,  // 56: openetl.api.v1.AccessService.CreatePrincipal:output_type -> openetl.api.v1.CreatePrincipalResponse
+	7,  // 57: openetl.api.v1.AccessService.GetPrincipal:output_type -> openetl.api.v1.GetPrincipalResponse
+	9,  // 58: openetl.api.v1.AccessService.ListPrincipals:output_type -> openetl.api.v1.ListPrincipalsResponse
+	11, // 59: openetl.api.v1.AccessService.DeletePrincipal:output_type -> openetl.api.v1.DeletePrincipalResponse
+	13, // 60: openetl.api.v1.AccessService.DisablePrincipal:output_type -> openetl.api.v1.DisablePrincipalResponse
+	15, // 61: openetl.api.v1.AccessService.EnablePrincipal:output_type -> openetl.api.v1.EnablePrincipalResponse
+	17, // 62: openetl.api.v1.AccessService.GrantRole:output_type -> openetl.api.v1.GrantRoleResponse
+	19, // 63: openetl.api.v1.AccessService.RevokeRole:output_type -> openetl.api.v1.RevokeRoleResponse
+	22, // 64: openetl.api.v1.AccessService.CreateKey:output_type -> openetl.api.v1.CreateKeyResponse
+	24, // 65: openetl.api.v1.AccessService.ListKeys:output_type -> openetl.api.v1.ListKeysResponse
+	26, // 66: openetl.api.v1.AccessService.DeleteKey:output_type -> openetl.api.v1.DeleteKeyResponse
+	29, // 67: openetl.api.v1.AccessService.ListDataPlanes:output_type -> openetl.api.v1.ListDataPlanesResponse
+	32, // 68: openetl.api.v1.AccessService.CreateRunnerToken:output_type -> openetl.api.v1.CreateRunnerTokenResponse
+	34, // 69: openetl.api.v1.AccessService.ListRunnerTokens:output_type -> openetl.api.v1.ListRunnerTokensResponse
+	36, // 70: openetl.api.v1.AccessService.DeleteRunnerToken:output_type -> openetl.api.v1.DeleteRunnerTokenResponse
+	38, // 71: openetl.api.v1.AccessService.GetCaller:output_type -> openetl.api.v1.GetCallerResponse
+	41, // 72: openetl.api.v1.AccessService.CreateSession:output_type -> openetl.api.v1.CreateSessionResponse
+	43, // 73: openetl.api.v1.AccessService.DeleteSession:output_type -> openetl.api.v1.DeleteSessionResponse
+	45, // 74: openetl.api.v1.AccessService.RevokeSessions:output_type -> openetl.api.v1.RevokeSessionsResponse
+	47, // 75: openetl.api.v1.AccessService.CreatePasswordLink:output_type -> openetl.api.v1.CreatePasswordLinkResponse
+	49, // 76: openetl.api.v1.AccessService.SetPassword:output_type -> openetl.api.v1.SetPasswordResponse
+	51, // 77: openetl.api.v1.AccessService.ChangePassword:output_type -> openetl.api.v1.ChangePasswordResponse
+	56, // [56:78] is the sub-list for method output_type
+	34, // [34:56] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_access_proto_init() }
@@ -2122,7 +2966,7 @@ func file_openetl_api_v1_access_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_access_proto_rawDesc), len(file_openetl_api_v1_access_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   35,
+			NumMessages:   50,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

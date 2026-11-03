@@ -62,6 +62,11 @@ var permissions = map[string]auth.Role{
 	"runnerTokens.create": auth.Admin,
 	"runnerTokens.delete": auth.Admin,
 	"audit.get":           auth.Admin,
+	"sessions.revoke":     auth.Admin,
+	"passwords.reset":     auth.Admin,
+	// Any principal, on itself.
+	"caller.get":      auth.None,
+	"password.change": auth.None,
 	// Granting or revoking owner, and changing an owner or its keys.
 	"owners.manage": auth.Owner,
 }
@@ -76,12 +81,20 @@ type rule struct {
 	runner bool
 }
 
+// noCredential is the permission of sign-in's calls, which take no
+// credential. Their handlers check what they need, and write their own
+// audit entries.
+const noCredential = "public"
+
+func (r rule) public() bool { return r.permission == noCredential }
+
 var (
 	onOrg    = func(any) (string, error) { return "", nil }
 	inName   = func(m any) (string, error) { return workspaceOf(m.(interface{ GetName() string }).GetName()) }
 	inParent = func(m any) (string, error) { return workspaceOf(m.(interface{ GetParent() string }).GetParent()) }
 	inSecret = func(m any) (string, error) { return workspaceOf(m.(*apiv1.UpdateSecretRequest).GetSecret().GetName()) }
 	runner   = rule{runner: true}
+	public   = rule{permission: noCredential}
 )
 
 // rules has every RPC the server serves; one that isn't here is refused.
@@ -125,21 +138,28 @@ var rules = map[string]rule{
 	apiv1connect.SecretServiceDeleteSecretProcedure: {"secrets.delete", inName, false},
 
 	// The handlers also check owners.manage where an owner is involved.
-	apiv1connect.AccessServiceCreatePrincipalProcedure:   {"principals.create", onOrg, false},
-	apiv1connect.AccessServiceGetPrincipalProcedure:      {"principals.get", onOrg, false},
-	apiv1connect.AccessServiceListPrincipalsProcedure:    {"principals.get", onOrg, false},
-	apiv1connect.AccessServiceDeletePrincipalProcedure:   {"principals.delete", onOrg, false},
-	apiv1connect.AccessServiceDisablePrincipalProcedure:  {"principals.update", onOrg, false},
-	apiv1connect.AccessServiceEnablePrincipalProcedure:   {"principals.update", onOrg, false},
-	apiv1connect.AccessServiceGrantRoleProcedure:         {"roles.grant", onOrg, false},
-	apiv1connect.AccessServiceRevokeRoleProcedure:        {"roles.grant", onOrg, false},
-	apiv1connect.AccessServiceCreateKeyProcedure:         {"keys.create", onOrg, false},
-	apiv1connect.AccessServiceListKeysProcedure:          {"keys.get", onOrg, false},
-	apiv1connect.AccessServiceDeleteKeyProcedure:         {"keys.delete", onOrg, false},
-	apiv1connect.AccessServiceListDataPlanesProcedure:    {"dataPlanes.get", onOrg, false},
-	apiv1connect.AccessServiceCreateRunnerTokenProcedure: {"runnerTokens.create", onOrg, false},
-	apiv1connect.AccessServiceListRunnerTokensProcedure:  {"runnerTokens.get", onOrg, false},
-	apiv1connect.AccessServiceDeleteRunnerTokenProcedure: {"runnerTokens.delete", onOrg, false},
+	apiv1connect.AccessServiceCreatePrincipalProcedure:    {"principals.create", onOrg, false},
+	apiv1connect.AccessServiceGetPrincipalProcedure:       {"principals.get", onOrg, false},
+	apiv1connect.AccessServiceListPrincipalsProcedure:     {"principals.get", onOrg, false},
+	apiv1connect.AccessServiceDeletePrincipalProcedure:    {"principals.delete", onOrg, false},
+	apiv1connect.AccessServiceDisablePrincipalProcedure:   {"principals.update", onOrg, false},
+	apiv1connect.AccessServiceEnablePrincipalProcedure:    {"principals.update", onOrg, false},
+	apiv1connect.AccessServiceGrantRoleProcedure:          {"roles.grant", onOrg, false},
+	apiv1connect.AccessServiceRevokeRoleProcedure:         {"roles.grant", onOrg, false},
+	apiv1connect.AccessServiceCreateKeyProcedure:          {"keys.create", onOrg, false},
+	apiv1connect.AccessServiceListKeysProcedure:           {"keys.get", onOrg, false},
+	apiv1connect.AccessServiceDeleteKeyProcedure:          {"keys.delete", onOrg, false},
+	apiv1connect.AccessServiceListDataPlanesProcedure:     {"dataPlanes.get", onOrg, false},
+	apiv1connect.AccessServiceCreateRunnerTokenProcedure:  {"runnerTokens.create", onOrg, false},
+	apiv1connect.AccessServiceListRunnerTokensProcedure:   {"runnerTokens.get", onOrg, false},
+	apiv1connect.AccessServiceDeleteRunnerTokenProcedure:  {"runnerTokens.delete", onOrg, false},
+	apiv1connect.AccessServiceGetCallerProcedure:          {"caller.get", onOrg, false},
+	apiv1connect.AccessServiceChangePasswordProcedure:     {"password.change", onOrg, false},
+	apiv1connect.AccessServiceRevokeSessionsProcedure:     {"sessions.revoke", onOrg, false},
+	apiv1connect.AccessServiceCreatePasswordLinkProcedure: {"passwords.reset", onOrg, false},
+	apiv1connect.AccessServiceCreateSessionProcedure:      public,
+	apiv1connect.AccessServiceDeleteSessionProcedure:      public,
+	apiv1connect.AccessServiceSetPasswordProcedure:        public,
 
 	apiv1connect.AuditServiceListAuditEntriesProcedure: {"audit.get", onOrg, false},
 
@@ -174,13 +194,17 @@ func workspaceOf(name string) (string, error) {
 	return ws, nil
 }
 
-// A caller is an API key's principal, or a runner token's data plane.
+// A caller is an API key's or a session's principal, or a runner token's
+// data plane.
 type caller struct {
 	org         uuid.UUID
 	principal   string
 	principalID uuid.UUID
 	key         uuid.UUID
-	roles       auth.Bindings
+	session     uuid.UUID
+	// When the key or session stops working; nil if never.
+	expire *time.Time
+	roles  auth.Bindings
 
 	dataPlane string
 	token     uuid.UUID
@@ -224,6 +248,9 @@ func (a authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		r, ok := rules[procedure]
 		if !ok {
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("%s has no permission, so nobody may call it", procedure))
+		}
+		if r.public() {
+			return next(ctx, req)
 		}
 		c, err := a.s.authenticate(ctx, req.Header(), r.runner)
 		if err != nil {
@@ -270,13 +297,20 @@ const lastUsedEvery = time.Minute
 
 func (s *Server) authenticate(ctx context.Context, h http.Header, runner bool) (*caller, error) {
 	secret, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer ")
+	if !ok && !runner {
+		if s.Authless {
+			return s.local(), nil
+		}
+		if c, found, err := s.sessionCaller(ctx, h); found || err != nil {
+			return c, err
+		}
+	}
 	switch {
 	case !ok || secret == "":
-		what := "an API key"
 		if runner {
-			what = "a runner token"
+			return nil, unauthenticated("send a runner token as Authorization: Bearer")
 		}
-		return nil, unauthenticated("send %s as Authorization: Bearer", what)
+		return nil, unauthenticated("sign in, or send an API key as Authorization: Bearer")
 	case runner && !auth.IsRunnerToken(secret):
 		return nil, unauthenticated("DataPlaneService takes runner tokens, not API keys")
 	case !runner && auth.IsRunnerToken(secret):
@@ -310,7 +344,9 @@ func (s *Server) authenticate(ctx context.Context, h http.Header, runner bool) (
 			return nil, err
 		}
 	}
-	return &caller{org: k.OrgID, principal: principalName(k.Principal), principalID: k.PrincipalID, key: k.ID, roles: auth.ParseBindings(k.Bindings)}, nil
+	return &caller{
+		org: k.OrgID, principal: principalName(k.Principal), principalID: k.PrincipalID, key: k.ID, expire: k.ExpireTime, roles: auth.ParseBindings(k.Bindings),
+	}, nil
 }
 
 func stale(last *time.Time) bool { return last == nil || time.Since(*last) >= lastUsedEvery }

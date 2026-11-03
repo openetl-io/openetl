@@ -237,6 +237,11 @@ func (s *Server) setDisabled(ctx context.Context, name string, disabled bool) (*
 		if err := q.SetPrincipalDisabled(ctx, db.SetPrincipalDisabledParams{OrgID: s.Tenant.Org, ID: p.ID, Disabled: disabled}); err != nil {
 			return err
 		}
+		if disabled {
+			if _, err := q.DeleteSessions(ctx, db.DeleteSessionsParams{OrgID: s.Tenant.Org, PrincipalID: p.ID}); err != nil {
+				return err
+			}
+		}
 		p.Disabled = disabled
 		out, err = s.onePrincipal(ctx, q, p)
 		return err

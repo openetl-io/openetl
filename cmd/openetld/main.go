@@ -64,6 +64,7 @@ func run(ctx context.Context, args []string) error {
 	case "dev":
 		roles = daemon.Roles{Server: true, Orchestrator: true, Runner: true}
 		defaults["log-format"] = "text"
+		defaults["auth"] = "none"
 	case "bootstrap-key":
 	case "gateway", "agent":
 		return fmt.Errorf("the %s role isn't built yet", role)

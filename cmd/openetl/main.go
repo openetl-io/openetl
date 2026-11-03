@@ -45,8 +45,10 @@ Commands:
                   package and apply connector versions
   secret set|list|delete
                   store the secrets that configs name
-  principal create|list|delete|disable|enable|grant|revoke
-                  manage users and service accounts, and their roles
+  principal create|list|delete|disable|enable|grant|revoke|password-link|sign-out
+                  manage users and service accounts, their roles, and users'
+                  passwords and sessions
+  whoami          show who the API key is, and what it may do
   key create|list|delete
                   manage principals' API keys
   dataplane list|token
@@ -94,6 +96,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runSecret(ctx, args[1:], out)
 	case "principal":
 		return runPrincipal(ctx, args[1:], out)
+	case "whoami":
+		return runWhoami(ctx, args[1:], out)
 	case "key":
 		return runKey(ctx, args[1:], out)
 	case "dataplane":

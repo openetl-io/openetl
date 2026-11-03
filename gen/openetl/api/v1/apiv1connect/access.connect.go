@@ -74,6 +74,26 @@ const (
 	// AccessServiceDeleteRunnerTokenProcedure is the fully-qualified name of the AccessService's
 	// DeleteRunnerToken RPC.
 	AccessServiceDeleteRunnerTokenProcedure = "/openetl.api.v1.AccessService/DeleteRunnerToken"
+	// AccessServiceGetCallerProcedure is the fully-qualified name of the AccessService's GetCaller RPC.
+	AccessServiceGetCallerProcedure = "/openetl.api.v1.AccessService/GetCaller"
+	// AccessServiceCreateSessionProcedure is the fully-qualified name of the AccessService's
+	// CreateSession RPC.
+	AccessServiceCreateSessionProcedure = "/openetl.api.v1.AccessService/CreateSession"
+	// AccessServiceDeleteSessionProcedure is the fully-qualified name of the AccessService's
+	// DeleteSession RPC.
+	AccessServiceDeleteSessionProcedure = "/openetl.api.v1.AccessService/DeleteSession"
+	// AccessServiceRevokeSessionsProcedure is the fully-qualified name of the AccessService's
+	// RevokeSessions RPC.
+	AccessServiceRevokeSessionsProcedure = "/openetl.api.v1.AccessService/RevokeSessions"
+	// AccessServiceCreatePasswordLinkProcedure is the fully-qualified name of the AccessService's
+	// CreatePasswordLink RPC.
+	AccessServiceCreatePasswordLinkProcedure = "/openetl.api.v1.AccessService/CreatePasswordLink"
+	// AccessServiceSetPasswordProcedure is the fully-qualified name of the AccessService's SetPassword
+	// RPC.
+	AccessServiceSetPasswordProcedure = "/openetl.api.v1.AccessService/SetPassword"
+	// AccessServiceChangePasswordProcedure is the fully-qualified name of the AccessService's
+	// ChangePassword RPC.
+	AccessServiceChangePasswordProcedure = "/openetl.api.v1.AccessService/ChangePassword"
 )
 
 // AccessServiceClient is a client for the openetl.api.v1.AccessService service.
@@ -103,6 +123,26 @@ type AccessServiceClient interface {
 	ListRunnerTokens(context.Context, *connect.Request[v1.ListRunnerTokensRequest]) (*connect.Response[v1.ListRunnerTokensResponse], error)
 	// The token stops working at once.
 	DeleteRunnerToken(context.Context, *connect.Request[v1.DeleteRunnerTokenRequest]) (*connect.Response[v1.DeleteRunnerTokenResponse], error)
+	// Who is calling, and what they may do. Any credential may ask.
+	GetCaller(context.Context, *connect.Request[v1.GetCallerRequest]) (*connect.Response[v1.GetCallerResponse], error)
+	// Signs a user in with their email and password, and sets the session's
+	// cookie. It takes no credential, and only browsers' Connect calls from the
+	// server's own origin. A wrong email or password and a locked account all
+	// fail with UNAUTHENTICATED.
+	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error)
+	// Ends the caller's session, if it has one, and clears its cookie. Like
+	// CreateSession, only browsers' Connect calls from the server's origin.
+	DeleteSession(context.Context, *connect.Request[v1.DeleteSessionRequest]) (*connect.Response[v1.DeleteSessionResponse], error)
+	// Ends every session of a user.
+	RevokeSessions(context.Context, *connect.Request[v1.RevokeSessionsRequest]) (*connect.Response[v1.RevokeSessionsResponse], error)
+	// A one-use link for a user to set their password, which replaces the
+	// user's previous link. The user needs an email to sign in with.
+	CreatePasswordLink(context.Context, *connect.Request[v1.CreatePasswordLinkRequest]) (*connect.Response[v1.CreatePasswordLinkResponse], error)
+	// Sets a user's password from a link's token, ends their sessions, and
+	// signs them in. Like CreateSession, it takes no credential.
+	SetPassword(context.Context, *connect.Request[v1.SetPasswordRequest]) (*connect.Response[v1.SetPasswordResponse], error)
+	// Changes the caller's own password, and ends their other sessions.
+	ChangePassword(context.Context, *connect.Request[v1.ChangePasswordRequest]) (*connect.Response[v1.ChangePasswordResponse], error)
 }
 
 // NewAccessServiceClient constructs a client for the openetl.api.v1.AccessService service. By
@@ -206,26 +246,75 @@ func NewAccessServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(accessServiceMethods.ByName("DeleteRunnerToken")),
 			connect.WithClientOptions(opts...),
 		),
+		getCaller: connect.NewClient[v1.GetCallerRequest, v1.GetCallerResponse](
+			httpClient,
+			baseURL+AccessServiceGetCallerProcedure,
+			connect.WithSchema(accessServiceMethods.ByName("GetCaller")),
+			connect.WithClientOptions(opts...),
+		),
+		createSession: connect.NewClient[v1.CreateSessionRequest, v1.CreateSessionResponse](
+			httpClient,
+			baseURL+AccessServiceCreateSessionProcedure,
+			connect.WithSchema(accessServiceMethods.ByName("CreateSession")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSession: connect.NewClient[v1.DeleteSessionRequest, v1.DeleteSessionResponse](
+			httpClient,
+			baseURL+AccessServiceDeleteSessionProcedure,
+			connect.WithSchema(accessServiceMethods.ByName("DeleteSession")),
+			connect.WithClientOptions(opts...),
+		),
+		revokeSessions: connect.NewClient[v1.RevokeSessionsRequest, v1.RevokeSessionsResponse](
+			httpClient,
+			baseURL+AccessServiceRevokeSessionsProcedure,
+			connect.WithSchema(accessServiceMethods.ByName("RevokeSessions")),
+			connect.WithClientOptions(opts...),
+		),
+		createPasswordLink: connect.NewClient[v1.CreatePasswordLinkRequest, v1.CreatePasswordLinkResponse](
+			httpClient,
+			baseURL+AccessServiceCreatePasswordLinkProcedure,
+			connect.WithSchema(accessServiceMethods.ByName("CreatePasswordLink")),
+			connect.WithClientOptions(opts...),
+		),
+		setPassword: connect.NewClient[v1.SetPasswordRequest, v1.SetPasswordResponse](
+			httpClient,
+			baseURL+AccessServiceSetPasswordProcedure,
+			connect.WithSchema(accessServiceMethods.ByName("SetPassword")),
+			connect.WithClientOptions(opts...),
+		),
+		changePassword: connect.NewClient[v1.ChangePasswordRequest, v1.ChangePasswordResponse](
+			httpClient,
+			baseURL+AccessServiceChangePasswordProcedure,
+			connect.WithSchema(accessServiceMethods.ByName("ChangePassword")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // accessServiceClient implements AccessServiceClient.
 type accessServiceClient struct {
-	createPrincipal   *connect.Client[v1.CreatePrincipalRequest, v1.CreatePrincipalResponse]
-	getPrincipal      *connect.Client[v1.GetPrincipalRequest, v1.GetPrincipalResponse]
-	listPrincipals    *connect.Client[v1.ListPrincipalsRequest, v1.ListPrincipalsResponse]
-	deletePrincipal   *connect.Client[v1.DeletePrincipalRequest, v1.DeletePrincipalResponse]
-	disablePrincipal  *connect.Client[v1.DisablePrincipalRequest, v1.DisablePrincipalResponse]
-	enablePrincipal   *connect.Client[v1.EnablePrincipalRequest, v1.EnablePrincipalResponse]
-	grantRole         *connect.Client[v1.GrantRoleRequest, v1.GrantRoleResponse]
-	revokeRole        *connect.Client[v1.RevokeRoleRequest, v1.RevokeRoleResponse]
-	createKey         *connect.Client[v1.CreateKeyRequest, v1.CreateKeyResponse]
-	listKeys          *connect.Client[v1.ListKeysRequest, v1.ListKeysResponse]
-	deleteKey         *connect.Client[v1.DeleteKeyRequest, v1.DeleteKeyResponse]
-	listDataPlanes    *connect.Client[v1.ListDataPlanesRequest, v1.ListDataPlanesResponse]
-	createRunnerToken *connect.Client[v1.CreateRunnerTokenRequest, v1.CreateRunnerTokenResponse]
-	listRunnerTokens  *connect.Client[v1.ListRunnerTokensRequest, v1.ListRunnerTokensResponse]
-	deleteRunnerToken *connect.Client[v1.DeleteRunnerTokenRequest, v1.DeleteRunnerTokenResponse]
+	createPrincipal    *connect.Client[v1.CreatePrincipalRequest, v1.CreatePrincipalResponse]
+	getPrincipal       *connect.Client[v1.GetPrincipalRequest, v1.GetPrincipalResponse]
+	listPrincipals     *connect.Client[v1.ListPrincipalsRequest, v1.ListPrincipalsResponse]
+	deletePrincipal    *connect.Client[v1.DeletePrincipalRequest, v1.DeletePrincipalResponse]
+	disablePrincipal   *connect.Client[v1.DisablePrincipalRequest, v1.DisablePrincipalResponse]
+	enablePrincipal    *connect.Client[v1.EnablePrincipalRequest, v1.EnablePrincipalResponse]
+	grantRole          *connect.Client[v1.GrantRoleRequest, v1.GrantRoleResponse]
+	revokeRole         *connect.Client[v1.RevokeRoleRequest, v1.RevokeRoleResponse]
+	createKey          *connect.Client[v1.CreateKeyRequest, v1.CreateKeyResponse]
+	listKeys           *connect.Client[v1.ListKeysRequest, v1.ListKeysResponse]
+	deleteKey          *connect.Client[v1.DeleteKeyRequest, v1.DeleteKeyResponse]
+	listDataPlanes     *connect.Client[v1.ListDataPlanesRequest, v1.ListDataPlanesResponse]
+	createRunnerToken  *connect.Client[v1.CreateRunnerTokenRequest, v1.CreateRunnerTokenResponse]
+	listRunnerTokens   *connect.Client[v1.ListRunnerTokensRequest, v1.ListRunnerTokensResponse]
+	deleteRunnerToken  *connect.Client[v1.DeleteRunnerTokenRequest, v1.DeleteRunnerTokenResponse]
+	getCaller          *connect.Client[v1.GetCallerRequest, v1.GetCallerResponse]
+	createSession      *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
+	deleteSession      *connect.Client[v1.DeleteSessionRequest, v1.DeleteSessionResponse]
+	revokeSessions     *connect.Client[v1.RevokeSessionsRequest, v1.RevokeSessionsResponse]
+	createPasswordLink *connect.Client[v1.CreatePasswordLinkRequest, v1.CreatePasswordLinkResponse]
+	setPassword        *connect.Client[v1.SetPasswordRequest, v1.SetPasswordResponse]
+	changePassword     *connect.Client[v1.ChangePasswordRequest, v1.ChangePasswordResponse]
 }
 
 // CreatePrincipal calls openetl.api.v1.AccessService.CreatePrincipal.
@@ -303,6 +392,41 @@ func (c *accessServiceClient) DeleteRunnerToken(ctx context.Context, req *connec
 	return c.deleteRunnerToken.CallUnary(ctx, req)
 }
 
+// GetCaller calls openetl.api.v1.AccessService.GetCaller.
+func (c *accessServiceClient) GetCaller(ctx context.Context, req *connect.Request[v1.GetCallerRequest]) (*connect.Response[v1.GetCallerResponse], error) {
+	return c.getCaller.CallUnary(ctx, req)
+}
+
+// CreateSession calls openetl.api.v1.AccessService.CreateSession.
+func (c *accessServiceClient) CreateSession(ctx context.Context, req *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error) {
+	return c.createSession.CallUnary(ctx, req)
+}
+
+// DeleteSession calls openetl.api.v1.AccessService.DeleteSession.
+func (c *accessServiceClient) DeleteSession(ctx context.Context, req *connect.Request[v1.DeleteSessionRequest]) (*connect.Response[v1.DeleteSessionResponse], error) {
+	return c.deleteSession.CallUnary(ctx, req)
+}
+
+// RevokeSessions calls openetl.api.v1.AccessService.RevokeSessions.
+func (c *accessServiceClient) RevokeSessions(ctx context.Context, req *connect.Request[v1.RevokeSessionsRequest]) (*connect.Response[v1.RevokeSessionsResponse], error) {
+	return c.revokeSessions.CallUnary(ctx, req)
+}
+
+// CreatePasswordLink calls openetl.api.v1.AccessService.CreatePasswordLink.
+func (c *accessServiceClient) CreatePasswordLink(ctx context.Context, req *connect.Request[v1.CreatePasswordLinkRequest]) (*connect.Response[v1.CreatePasswordLinkResponse], error) {
+	return c.createPasswordLink.CallUnary(ctx, req)
+}
+
+// SetPassword calls openetl.api.v1.AccessService.SetPassword.
+func (c *accessServiceClient) SetPassword(ctx context.Context, req *connect.Request[v1.SetPasswordRequest]) (*connect.Response[v1.SetPasswordResponse], error) {
+	return c.setPassword.CallUnary(ctx, req)
+}
+
+// ChangePassword calls openetl.api.v1.AccessService.ChangePassword.
+func (c *accessServiceClient) ChangePassword(ctx context.Context, req *connect.Request[v1.ChangePasswordRequest]) (*connect.Response[v1.ChangePasswordResponse], error) {
+	return c.changePassword.CallUnary(ctx, req)
+}
+
 // AccessServiceHandler is an implementation of the openetl.api.v1.AccessService service.
 type AccessServiceHandler interface {
 	CreatePrincipal(context.Context, *connect.Request[v1.CreatePrincipalRequest]) (*connect.Response[v1.CreatePrincipalResponse], error)
@@ -330,6 +454,26 @@ type AccessServiceHandler interface {
 	ListRunnerTokens(context.Context, *connect.Request[v1.ListRunnerTokensRequest]) (*connect.Response[v1.ListRunnerTokensResponse], error)
 	// The token stops working at once.
 	DeleteRunnerToken(context.Context, *connect.Request[v1.DeleteRunnerTokenRequest]) (*connect.Response[v1.DeleteRunnerTokenResponse], error)
+	// Who is calling, and what they may do. Any credential may ask.
+	GetCaller(context.Context, *connect.Request[v1.GetCallerRequest]) (*connect.Response[v1.GetCallerResponse], error)
+	// Signs a user in with their email and password, and sets the session's
+	// cookie. It takes no credential, and only browsers' Connect calls from the
+	// server's own origin. A wrong email or password and a locked account all
+	// fail with UNAUTHENTICATED.
+	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error)
+	// Ends the caller's session, if it has one, and clears its cookie. Like
+	// CreateSession, only browsers' Connect calls from the server's origin.
+	DeleteSession(context.Context, *connect.Request[v1.DeleteSessionRequest]) (*connect.Response[v1.DeleteSessionResponse], error)
+	// Ends every session of a user.
+	RevokeSessions(context.Context, *connect.Request[v1.RevokeSessionsRequest]) (*connect.Response[v1.RevokeSessionsResponse], error)
+	// A one-use link for a user to set their password, which replaces the
+	// user's previous link. The user needs an email to sign in with.
+	CreatePasswordLink(context.Context, *connect.Request[v1.CreatePasswordLinkRequest]) (*connect.Response[v1.CreatePasswordLinkResponse], error)
+	// Sets a user's password from a link's token, ends their sessions, and
+	// signs them in. Like CreateSession, it takes no credential.
+	SetPassword(context.Context, *connect.Request[v1.SetPasswordRequest]) (*connect.Response[v1.SetPasswordResponse], error)
+	// Changes the caller's own password, and ends their other sessions.
+	ChangePassword(context.Context, *connect.Request[v1.ChangePasswordRequest]) (*connect.Response[v1.ChangePasswordResponse], error)
 }
 
 // NewAccessServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -429,6 +573,48 @@ func NewAccessServiceHandler(svc AccessServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(accessServiceMethods.ByName("DeleteRunnerToken")),
 		connect.WithHandlerOptions(opts...),
 	)
+	accessServiceGetCallerHandler := connect.NewUnaryHandler(
+		AccessServiceGetCallerProcedure,
+		svc.GetCaller,
+		connect.WithSchema(accessServiceMethods.ByName("GetCaller")),
+		connect.WithHandlerOptions(opts...),
+	)
+	accessServiceCreateSessionHandler := connect.NewUnaryHandler(
+		AccessServiceCreateSessionProcedure,
+		svc.CreateSession,
+		connect.WithSchema(accessServiceMethods.ByName("CreateSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	accessServiceDeleteSessionHandler := connect.NewUnaryHandler(
+		AccessServiceDeleteSessionProcedure,
+		svc.DeleteSession,
+		connect.WithSchema(accessServiceMethods.ByName("DeleteSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	accessServiceRevokeSessionsHandler := connect.NewUnaryHandler(
+		AccessServiceRevokeSessionsProcedure,
+		svc.RevokeSessions,
+		connect.WithSchema(accessServiceMethods.ByName("RevokeSessions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	accessServiceCreatePasswordLinkHandler := connect.NewUnaryHandler(
+		AccessServiceCreatePasswordLinkProcedure,
+		svc.CreatePasswordLink,
+		connect.WithSchema(accessServiceMethods.ByName("CreatePasswordLink")),
+		connect.WithHandlerOptions(opts...),
+	)
+	accessServiceSetPasswordHandler := connect.NewUnaryHandler(
+		AccessServiceSetPasswordProcedure,
+		svc.SetPassword,
+		connect.WithSchema(accessServiceMethods.ByName("SetPassword")),
+		connect.WithHandlerOptions(opts...),
+	)
+	accessServiceChangePasswordHandler := connect.NewUnaryHandler(
+		AccessServiceChangePasswordProcedure,
+		svc.ChangePassword,
+		connect.WithSchema(accessServiceMethods.ByName("ChangePassword")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.api.v1.AccessService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AccessServiceCreatePrincipalProcedure:
@@ -461,6 +647,20 @@ func NewAccessServiceHandler(svc AccessServiceHandler, opts ...connect.HandlerOp
 			accessServiceListRunnerTokensHandler.ServeHTTP(w, r)
 		case AccessServiceDeleteRunnerTokenProcedure:
 			accessServiceDeleteRunnerTokenHandler.ServeHTTP(w, r)
+		case AccessServiceGetCallerProcedure:
+			accessServiceGetCallerHandler.ServeHTTP(w, r)
+		case AccessServiceCreateSessionProcedure:
+			accessServiceCreateSessionHandler.ServeHTTP(w, r)
+		case AccessServiceDeleteSessionProcedure:
+			accessServiceDeleteSessionHandler.ServeHTTP(w, r)
+		case AccessServiceRevokeSessionsProcedure:
+			accessServiceRevokeSessionsHandler.ServeHTTP(w, r)
+		case AccessServiceCreatePasswordLinkProcedure:
+			accessServiceCreatePasswordLinkHandler.ServeHTTP(w, r)
+		case AccessServiceSetPasswordProcedure:
+			accessServiceSetPasswordHandler.ServeHTTP(w, r)
+		case AccessServiceChangePasswordProcedure:
+			accessServiceChangePasswordHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -528,4 +728,32 @@ func (UnimplementedAccessServiceHandler) ListRunnerTokens(context.Context, *conn
 
 func (UnimplementedAccessServiceHandler) DeleteRunnerToken(context.Context, *connect.Request[v1.DeleteRunnerTokenRequest]) (*connect.Response[v1.DeleteRunnerTokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.AccessService.DeleteRunnerToken is not implemented"))
+}
+
+func (UnimplementedAccessServiceHandler) GetCaller(context.Context, *connect.Request[v1.GetCallerRequest]) (*connect.Response[v1.GetCallerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.AccessService.GetCaller is not implemented"))
+}
+
+func (UnimplementedAccessServiceHandler) CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.AccessService.CreateSession is not implemented"))
+}
+
+func (UnimplementedAccessServiceHandler) DeleteSession(context.Context, *connect.Request[v1.DeleteSessionRequest]) (*connect.Response[v1.DeleteSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.AccessService.DeleteSession is not implemented"))
+}
+
+func (UnimplementedAccessServiceHandler) RevokeSessions(context.Context, *connect.Request[v1.RevokeSessionsRequest]) (*connect.Response[v1.RevokeSessionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.AccessService.RevokeSessions is not implemented"))
+}
+
+func (UnimplementedAccessServiceHandler) CreatePasswordLink(context.Context, *connect.Request[v1.CreatePasswordLinkRequest]) (*connect.Response[v1.CreatePasswordLinkResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.AccessService.CreatePasswordLink is not implemented"))
+}
+
+func (UnimplementedAccessServiceHandler) SetPassword(context.Context, *connect.Request[v1.SetPasswordRequest]) (*connect.Response[v1.SetPasswordResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.AccessService.SetPassword is not implemented"))
+}
+
+func (UnimplementedAccessServiceHandler) ChangePassword(context.Context, *connect.Request[v1.ChangePasswordRequest]) (*connect.Response[v1.ChangePasswordResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.AccessService.ChangePassword is not implemented"))
 }

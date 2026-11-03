@@ -13,7 +13,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file openetl/api/v1/access.proto.
  */
 export const file_openetl_api_v1_access: GenFile = /*@__PURE__*/
-  fileDesc("ChtvcGVuZXRsL2FwaS92MS9hY2Nlc3MucHJvdG8SDm9wZW5ldGwuYXBpLnYxIuIBCglQcmluY2lwYWwSDAoEbmFtZRgBIAEoCRIrCgR0eXBlGAIgASgOMh0ub3BlbmV0bC5hcGkudjEuUHJpbmNpcGFsVHlwZRIUCgxkaXNwbGF5X25hbWUYAyABKAkSDQoFZW1haWwYBCABKAkSEAoIZGlzYWJsZWQYBSABKAgSMgoNcm9sZV9iaW5kaW5ncxgGIAMoCzIbLm9wZW5ldGwuYXBpLnYxLlJvbGVCaW5kaW5nEi8KC2NyZWF0ZV90aW1lGAcgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJECgtSb2xlQmluZGluZxIiCgRyb2xlGAEgASgOMhQub3BlbmV0bC5hcGkudjEuUm9sZRIRCgl3b3Jrc3BhY2UYAiABKAkiXAoWQ3JlYXRlUHJpbmNpcGFsUmVxdWVzdBIsCglwcmluY2lwYWwYASABKAsyGS5vcGVuZXRsLmFwaS52MS5QcmluY2lwYWwSFAoMcHJpbmNpcGFsX2lkGAIgASgJIkcKF0NyZWF0ZVByaW5jaXBhbFJlc3BvbnNlEiwKCXByaW5jaXBhbBgBIAEoCzIZLm9wZW5ldGwuYXBpLnYxLlByaW5jaXBhbCIjChNHZXRQcmluY2lwYWxSZXF1ZXN0EgwKBG5hbWUYASABKAkiRAoUR2V0UHJpbmNpcGFsUmVzcG9uc2USLAoJcHJpbmNpcGFsGAEgASgLMhkub3BlbmV0bC5hcGkudjEuUHJpbmNpcGFsIj4KFUxpc3RQcmluY2lwYWxzUmVxdWVzdBIRCglwYWdlX3NpemUYASABKAUSEgoKcGFnZV90b2tlbhgCIAEoCSJgChZMaXN0UHJpbmNpcGFsc1Jlc3BvbnNlEi0KCnByaW5jaXBhbHMYASADKAsyGS5vcGVuZXRsLmFwaS52MS5QcmluY2lwYWwSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJIiYKFkRlbGV0ZVByaW5jaXBhbFJlcXVlc3QSDAoEbmFtZRgBIAEoCSIZChdEZWxldGVQcmluY2lwYWxSZXNwb25zZSInChdEaXNhYmxlUHJpbmNpcGFsUmVxdWVzdBIMCgRuYW1lGAEgASgJIkgKGERpc2FibGVQcmluY2lwYWxSZXNwb25zZRIsCglwcmluY2lwYWwYASABKAsyGS5vcGVuZXRsLmFwaS52MS5QcmluY2lwYWwiJgoWRW5hYmxlUHJpbmNpcGFsUmVxdWVzdBIMCgRuYW1lGAEgASgJIkcKF0VuYWJsZVByaW5jaXBhbFJlc3BvbnNlEiwKCXByaW5jaXBhbBgBIAEoCzIZLm9wZW5ldGwuYXBpLnYxLlByaW5jaXBhbCJOChBHcmFudFJvbGVSZXF1ZXN0EgwKBG5hbWUYASABKAkSLAoHYmluZGluZxgCIAEoCzIbLm9wZW5ldGwuYXBpLnYxLlJvbGVCaW5kaW5nIkEKEUdyYW50Um9sZVJlc3BvbnNlEiwKCXByaW5jaXBhbBgBIAEoCzIZLm9wZW5ldGwuYXBpLnYxLlByaW5jaXBhbCJPChFSZXZva2VSb2xlUmVxdWVzdBIMCgRuYW1lGAEgASgJEiwKB2JpbmRpbmcYAiABKAsyGy5vcGVuZXRsLmFwaS52MS5Sb2xlQmluZGluZyJCChJSZXZva2VSb2xlUmVzcG9uc2USLAoJcHJpbmNpcGFsGAEgASgLMhkub3BlbmV0bC5hcGkudjEuUHJpbmNpcGFsIrkBCgNLZXkSDAoEbmFtZRgBIAEoCRIOCgZwcmVmaXgYAiABKAkSLwoLZXhwaXJlX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KC2NyZWF0ZV90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIyCg5sYXN0X3VzZWRfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiUwoQQ3JlYXRlS2V5UmVxdWVzdBIOCgZwYXJlbnQYASABKAkSLwoLZXhwaXJlX3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIkUKEUNyZWF0ZUtleVJlc3BvbnNlEiAKA2tleRgBIAEoCzITLm9wZW5ldGwuYXBpLnYxLktleRIOCgZzZWNyZXQYAiABKAkiIQoPTGlzdEtleXNSZXF1ZXN0Eg4KBnBhcmVudBgBIAEoCSI1ChBMaXN0S2V5c1Jlc3BvbnNlEiEKBGtleXMYASADKAsyEy5vcGVuZXRsLmFwaS52MS5LZXkiIAoQRGVsZXRlS2V5UmVxdWVzdBIMCgRuYW1lGAEgASgJIhMKEURlbGV0ZUtleVJlc3BvbnNlIkoKCURhdGFQbGFuZRIMCgRuYW1lGAEgASgJEi8KC2NyZWF0ZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCIXChVMaXN0RGF0YVBsYW5lc1JlcXVlc3QiSAoWTGlzdERhdGFQbGFuZXNSZXNwb25zZRIuCgtkYXRhX3BsYW5lcxgBIAMoCzIZLm9wZW5ldGwuYXBpLnYxLkRhdGFQbGFuZSKQAQoLUnVubmVyVG9rZW4SDAoEbmFtZRgBIAEoCRIOCgZwcmVmaXgYAiABKAkSLwoLY3JlYXRlX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEjIKDmxhc3RfdXNlZF90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCIqChhDcmVhdGVSdW5uZXJUb2tlblJlcXVlc3QSDgoGcGFyZW50GAEgASgJIlcKGUNyZWF0ZVJ1bm5lclRva2VuUmVzcG9uc2USKgoFdG9rZW4YASABKAsyGy5vcGVuZXRsLmFwaS52MS5SdW5uZXJUb2tlbhIOCgZzZWNyZXQYAiABKAkiKQoXTGlzdFJ1bm5lclRva2Vuc1JlcXVlc3QSDgoGcGFyZW50GAEgASgJIkcKGExpc3RSdW5uZXJUb2tlbnNSZXNwb25zZRIrCgZ0b2tlbnMYASADKAsyGy5vcGVuZXRsLmFwaS52MS5SdW5uZXJUb2tlbiIoChhEZWxldGVSdW5uZXJUb2tlblJlcXVlc3QSDAoEbmFtZRgBIAEoCSIbChlEZWxldGVSdW5uZXJUb2tlblJlc3BvbnNlKmwKDVByaW5jaXBhbFR5cGUSHgoaUFJJTkNJUEFMX1RZUEVfVU5TUEVDSUZJRUQQABIXChNQUklOQ0lQQUxfVFlQRV9VU0VSEAESIgoeUFJJTkNJUEFMX1RZUEVfU0VSVklDRV9BQ0NPVU5UEAIqcQoEUm9sZRIUChBST0xFX1VOU1BFQ0lGSUVEEAASDwoLUk9MRV9WSUVXRVIQARIRCg1ST0xFX09QRVJBVE9SEAISDwoLUk9MRV9FRElUT1IQAxIOCgpST0xFX0FETUlOEAQSDgoKUk9MRV9PV05FUhAFMuEPCg1BY2Nlc3NTZXJ2aWNlEoUBCg9DcmVhdGVQcmluY2lwYWwSJi5vcGVuZXRsLmFwaS52MS5DcmVhdGVQcmluY2lwYWxSZXF1ZXN0Gicub3BlbmV0bC5hcGkudjEuQ3JlYXRlUHJpbmNpcGFsUmVzcG9uc2UiIYLT5JMCGzoJcHJpbmNpcGFsIg4vdjEvcHJpbmNpcGFscxJ6CgxHZXRQcmluY2lwYWwSIy5vcGVuZXRsLmFwaS52MS5HZXRQcmluY2lwYWxSZXF1ZXN0GiQub3BlbmV0bC5hcGkudjEuR2V0UHJpbmNpcGFsUmVzcG9uc2UiH4LT5JMCGRIXL3YxL3tuYW1lPXByaW5jaXBhbHMvKn0SdwoOTGlzdFByaW5jaXBhbHMSJS5vcGVuZXRsLmFwaS52MS5MaXN0UHJpbmNpcGFsc1JlcXVlc3QaJi5vcGVuZXRsLmFwaS52MS5MaXN0UHJpbmNpcGFsc1Jlc3BvbnNlIhaC0+STAhASDi92MS9wcmluY2lwYWxzEoMBCg9EZWxldGVQcmluY2lwYWwSJi5vcGVuZXRsLmFwaS52MS5EZWxldGVQcmluY2lwYWxSZXF1ZXN0Gicub3BlbmV0bC5hcGkudjEuRGVsZXRlUHJpbmNpcGFsUmVzcG9uc2UiH4LT5JMCGSoXL3YxL3tuYW1lPXByaW5jaXBhbHMvKn0SkQEKEERpc2FibGVQcmluY2lwYWwSJy5vcGVuZXRsLmFwaS52MS5EaXNhYmxlUHJpbmNpcGFsUmVxdWVzdBooLm9wZW5ldGwuYXBpLnYxLkRpc2FibGVQcmluY2lwYWxSZXNwb25zZSIqgtPkkwIkOgEqIh8vdjEve25hbWU9cHJpbmNpcGFscy8qfTpkaXNhYmxlEo0BCg9FbmFibGVQcmluY2lwYWwSJi5vcGVuZXRsLmFwaS52MS5FbmFibGVQcmluY2lwYWxSZXF1ZXN0Gicub3BlbmV0bC5hcGkudjEuRW5hYmxlUHJpbmNpcGFsUmVzcG9uc2UiKYLT5JMCIzoBKiIeL3YxL3tuYW1lPXByaW5jaXBhbHMvKn06ZW5hYmxlEn4KCUdyYW50Um9sZRIgLm9wZW5ldGwuYXBpLnYxLkdyYW50Um9sZVJlcXVlc3QaIS5vcGVuZXRsLmFwaS52MS5HcmFudFJvbGVSZXNwb25zZSIsgtPkkwImOgEqIiEvdjEve25hbWU9cHJpbmNpcGFscy8qfTpncmFudFJvbGUSggEKClJldm9rZVJvbGUSIS5vcGVuZXRsLmFwaS52MS5SZXZva2VSb2xlUmVxdWVzdBoiLm9wZW5ldGwuYXBpLnYxLlJldm9rZVJvbGVSZXNwb25zZSItgtPkkwInOgEqIiIvdjEve25hbWU9cHJpbmNpcGFscy8qfTpyZXZva2VSb2xlEnsKCUNyZWF0ZUtleRIgLm9wZW5ldGwuYXBpLnYxLkNyZWF0ZUtleVJlcXVlc3QaIS5vcGVuZXRsLmFwaS52MS5DcmVhdGVLZXlSZXNwb25zZSIpgtPkkwIjOgEqIh4vdjEve3BhcmVudD1wcmluY2lwYWxzLyp9L2tleXMSdQoITGlzdEtleXMSHy5vcGVuZXRsLmFwaS52MS5MaXN0S2V5c1JlcXVlc3QaIC5vcGVuZXRsLmFwaS52MS5MaXN0S2V5c1Jlc3BvbnNlIiaC0+STAiASHi92MS97cGFyZW50PXByaW5jaXBhbHMvKn0va2V5cxJ4CglEZWxldGVLZXkSIC5vcGVuZXRsLmFwaS52MS5EZWxldGVLZXlSZXF1ZXN0GiEub3BlbmV0bC5hcGkudjEuRGVsZXRlS2V5UmVzcG9uc2UiJoLT5JMCICoeL3YxL3tuYW1lPXByaW5jaXBhbHMvKi9rZXlzLyp9EncKDkxpc3REYXRhUGxhbmVzEiUub3BlbmV0bC5hcGkudjEuTGlzdERhdGFQbGFuZXNSZXF1ZXN0GiYub3BlbmV0bC5hcGkudjEuTGlzdERhdGFQbGFuZXNSZXNwb25zZSIWgtPkkwIQEg4vdjEvZGF0YVBsYW5lcxKVAQoRQ3JlYXRlUnVubmVyVG9rZW4SKC5vcGVuZXRsLmFwaS52MS5DcmVhdGVSdW5uZXJUb2tlblJlcXVlc3QaKS5vcGVuZXRsLmFwaS52MS5DcmVhdGVSdW5uZXJUb2tlblJlc3BvbnNlIiuC0+STAiU6ASoiIC92MS97cGFyZW50PWRhdGFQbGFuZXMvKn0vdG9rZW5zEo8BChBMaXN0UnVubmVyVG9rZW5zEicub3BlbmV0bC5hcGkudjEuTGlzdFJ1bm5lclRva2Vuc1JlcXVlc3QaKC5vcGVuZXRsLmFwaS52MS5MaXN0UnVubmVyVG9rZW5zUmVzcG9uc2UiKILT5JMCIhIgL3YxL3twYXJlbnQ9ZGF0YVBsYW5lcy8qfS90b2tlbnMSkgEKEURlbGV0ZVJ1bm5lclRva2VuEigub3BlbmV0bC5hcGkudjEuRGVsZXRlUnVubmVyVG9rZW5SZXF1ZXN0Gikub3BlbmV0bC5hcGkudjEuRGVsZXRlUnVubmVyVG9rZW5SZXNwb25zZSIogtPkkwIiKiAvdjEve25hbWU9ZGF0YVBsYW5lcy8qL3Rva2Vucy8qfUI7WjlnaXRodWIuY29tL3Vuc3VpdGFibGUwMDEvb3BlbmV0bC9nZW4vb3BlbmV0bC9hcGkvdjE7YXBpdjFiBnByb3RvMw", [file_google_api_annotations, file_google_protobuf_timestamp]);
+  fileDesc("ChtvcGVuZXRsL2FwaS92MS9hY2Nlc3MucHJvdG8SDm9wZW5ldGwuYXBpLnYxIuIBCglQcmluY2lwYWwSDAoEbmFtZRgBIAEoCRIrCgR0eXBlGAIgASgOMh0ub3BlbmV0bC5hcGkudjEuUHJpbmNpcGFsVHlwZRIUCgxkaXNwbGF5X25hbWUYAyABKAkSDQoFZW1haWwYBCABKAkSEAoIZGlzYWJsZWQYBSABKAgSMgoNcm9sZV9iaW5kaW5ncxgGIAMoCzIbLm9wZW5ldGwuYXBpLnYxLlJvbGVCaW5kaW5nEi8KC2NyZWF0ZV90aW1lGAcgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJECgtSb2xlQmluZGluZxIiCgRyb2xlGAEgASgOMhQub3BlbmV0bC5hcGkudjEuUm9sZRIRCgl3b3Jrc3BhY2UYAiABKAkiXAoWQ3JlYXRlUHJpbmNpcGFsUmVxdWVzdBIsCglwcmluY2lwYWwYASABKAsyGS5vcGVuZXRsLmFwaS52MS5QcmluY2lwYWwSFAoMcHJpbmNpcGFsX2lkGAIgASgJIkcKF0NyZWF0ZVByaW5jaXBhbFJlc3BvbnNlEiwKCXByaW5jaXBhbBgBIAEoCzIZLm9wZW5ldGwuYXBpLnYxLlByaW5jaXBhbCIjChNHZXRQcmluY2lwYWxSZXF1ZXN0EgwKBG5hbWUYASABKAkiRAoUR2V0UHJpbmNpcGFsUmVzcG9uc2USLAoJcHJpbmNpcGFsGAEgASgLMhkub3BlbmV0bC5hcGkudjEuUHJpbmNpcGFsIj4KFUxpc3RQcmluY2lwYWxzUmVxdWVzdBIRCglwYWdlX3NpemUYASABKAUSEgoKcGFnZV90b2tlbhgCIAEoCSJgChZMaXN0UHJpbmNpcGFsc1Jlc3BvbnNlEi0KCnByaW5jaXBhbHMYASADKAsyGS5vcGVuZXRsLmFwaS52MS5QcmluY2lwYWwSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJIiYKFkRlbGV0ZVByaW5jaXBhbFJlcXVlc3QSDAoEbmFtZRgBIAEoCSIZChdEZWxldGVQcmluY2lwYWxSZXNwb25zZSInChdEaXNhYmxlUHJpbmNpcGFsUmVxdWVzdBIMCgRuYW1lGAEgASgJIkgKGERpc2FibGVQcmluY2lwYWxSZXNwb25zZRIsCglwcmluY2lwYWwYASABKAsyGS5vcGVuZXRsLmFwaS52MS5QcmluY2lwYWwiJgoWRW5hYmxlUHJpbmNpcGFsUmVxdWVzdBIMCgRuYW1lGAEgASgJIkcKF0VuYWJsZVByaW5jaXBhbFJlc3BvbnNlEiwKCXByaW5jaXBhbBgBIAEoCzIZLm9wZW5ldGwuYXBpLnYxLlByaW5jaXBhbCJOChBHcmFudFJvbGVSZXF1ZXN0EgwKBG5hbWUYASABKAkSLAoHYmluZGluZxgCIAEoCzIbLm9wZW5ldGwuYXBpLnYxLlJvbGVCaW5kaW5nIkEKEUdyYW50Um9sZVJlc3BvbnNlEiwKCXByaW5jaXBhbBgBIAEoCzIZLm9wZW5ldGwuYXBpLnYxLlByaW5jaXBhbCJPChFSZXZva2VSb2xlUmVxdWVzdBIMCgRuYW1lGAEgASgJEiwKB2JpbmRpbmcYAiABKAsyGy5vcGVuZXRsLmFwaS52MS5Sb2xlQmluZGluZyJCChJSZXZva2VSb2xlUmVzcG9uc2USLAoJcHJpbmNpcGFsGAEgASgLMhkub3BlbmV0bC5hcGkudjEuUHJpbmNpcGFsIrkBCgNLZXkSDAoEbmFtZRgBIAEoCRIOCgZwcmVmaXgYAiABKAkSLwoLZXhwaXJlX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KC2NyZWF0ZV90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIyCg5sYXN0X3VzZWRfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiUwoQQ3JlYXRlS2V5UmVxdWVzdBIOCgZwYXJlbnQYASABKAkSLwoLZXhwaXJlX3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIkUKEUNyZWF0ZUtleVJlc3BvbnNlEiAKA2tleRgBIAEoCzITLm9wZW5ldGwuYXBpLnYxLktleRIOCgZzZWNyZXQYAiABKAkiIQoPTGlzdEtleXNSZXF1ZXN0Eg4KBnBhcmVudBgBIAEoCSI1ChBMaXN0S2V5c1Jlc3BvbnNlEiEKBGtleXMYASADKAsyEy5vcGVuZXRsLmFwaS52MS5LZXkiIAoQRGVsZXRlS2V5UmVxdWVzdBIMCgRuYW1lGAEgASgJIhMKEURlbGV0ZUtleVJlc3BvbnNlIkoKCURhdGFQbGFuZRIMCgRuYW1lGAEgASgJEi8KC2NyZWF0ZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCIXChVMaXN0RGF0YVBsYW5lc1JlcXVlc3QiSAoWTGlzdERhdGFQbGFuZXNSZXNwb25zZRIuCgtkYXRhX3BsYW5lcxgBIAMoCzIZLm9wZW5ldGwuYXBpLnYxLkRhdGFQbGFuZSKQAQoLUnVubmVyVG9rZW4SDAoEbmFtZRgBIAEoCRIOCgZwcmVmaXgYAiABKAkSLwoLY3JlYXRlX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEjIKDmxhc3RfdXNlZF90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCIqChhDcmVhdGVSdW5uZXJUb2tlblJlcXVlc3QSDgoGcGFyZW50GAEgASgJIlcKGUNyZWF0ZVJ1bm5lclRva2VuUmVzcG9uc2USKgoFdG9rZW4YASABKAsyGy5vcGVuZXRsLmFwaS52MS5SdW5uZXJUb2tlbhIOCgZzZWNyZXQYAiABKAkiKQoXTGlzdFJ1bm5lclRva2Vuc1JlcXVlc3QSDgoGcGFyZW50GAEgASgJIkcKGExpc3RSdW5uZXJUb2tlbnNSZXNwb25zZRIrCgZ0b2tlbnMYASADKAsyGy5vcGVuZXRsLmFwaS52MS5SdW5uZXJUb2tlbiIoChhEZWxldGVSdW5uZXJUb2tlblJlcXVlc3QSDAoEbmFtZRgBIAEoCSIbChlEZWxldGVSdW5uZXJUb2tlblJlc3BvbnNlIiUKEEdldENhbGxlclJlcXVlc3QSEQoJd29ya3NwYWNlGAEgASgJIq0BChFHZXRDYWxsZXJSZXNwb25zZRIsCglwcmluY2lwYWwYASABKAsyGS5vcGVuZXRsLmFwaS52MS5QcmluY2lwYWwSEgoKY3JlZGVudGlhbBgCIAEoCRIvCgtleHBpcmVfdGltZRgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEwoLcGVybWlzc2lvbnMYBCADKAkSEAoIYXV0aGxlc3MYBSABKAgieQoHU2Vzc2lvbhIMCgRuYW1lGAEgASgJEi8KC2NyZWF0ZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIvCgtleHBpcmVfdGltZRgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiSQoUQ3JlYXRlU2Vzc2lvblJlcXVlc3QSDQoFZW1haWwYASABKAkSEAoIcGFzc3dvcmQYAiABKAkSEAoIcmVtZW1iZXIYAyABKAgiQQoVQ3JlYXRlU2Vzc2lvblJlc3BvbnNlEigKB3Nlc3Npb24YASABKAsyFy5vcGVuZXRsLmFwaS52MS5TZXNzaW9uIhYKFERlbGV0ZVNlc3Npb25SZXF1ZXN0IhcKFURlbGV0ZVNlc3Npb25SZXNwb25zZSIlChVSZXZva2VTZXNzaW9uc1JlcXVlc3QSDAoEbmFtZRgBIAEoCSIYChZSZXZva2VTZXNzaW9uc1Jlc3BvbnNlIloKGUNyZWF0ZVBhc3N3b3JkTGlua1JlcXVlc3QSDAoEbmFtZRgBIAEoCRIvCgtleHBpcmVfdGltZRgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiWgoaQ3JlYXRlUGFzc3dvcmRMaW5rUmVzcG9uc2USCwoDdXJsGAEgASgJEi8KC2V4cGlyZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJHChJTZXRQYXNzd29yZFJlcXVlc3QSDQoFdG9rZW4YASABKAkSEAoIcGFzc3dvcmQYAiABKAkSEAoIcmVtZW1iZXIYAyABKAgiPwoTU2V0UGFzc3dvcmRSZXNwb25zZRIoCgdzZXNzaW9uGAEgASgLMhcub3BlbmV0bC5hcGkudjEuU2Vzc2lvbiJHChVDaGFuZ2VQYXNzd29yZFJlcXVlc3QSGAoQY3VycmVudF9wYXNzd29yZBgBIAEoCRIUCgxuZXdfcGFzc3dvcmQYAiABKAkiGAoWQ2hhbmdlUGFzc3dvcmRSZXNwb25zZSpsCg1QcmluY2lwYWxUeXBlEh4KGlBSSU5DSVBBTF9UWVBFX1VOU1BFQ0lGSUVEEAASFwoTUFJJTkNJUEFMX1RZUEVfVVNFUhABEiIKHlBSSU5DSVBBTF9UWVBFX1NFUlZJQ0VfQUNDT1VOVBACKnEKBFJvbGUSFAoQUk9MRV9VTlNQRUNJRklFRBAAEg8KC1JPTEVfVklFV0VSEAESEQoNUk9MRV9PUEVSQVRPUhACEg8KC1JPTEVfRURJVE9SEAMSDgoKUk9MRV9BRE1JThAEEg4KClJPTEVfT1dORVIQBTKdFgoNQWNjZXNzU2VydmljZRKFAQoPQ3JlYXRlUHJpbmNpcGFsEiYub3BlbmV0bC5hcGkudjEuQ3JlYXRlUHJpbmNpcGFsUmVxdWVzdBonLm9wZW5ldGwuYXBpLnYxLkNyZWF0ZVByaW5jaXBhbFJlc3BvbnNlIiGC0+STAhs6CXByaW5jaXBhbCIOL3YxL3ByaW5jaXBhbHMSegoMR2V0UHJpbmNpcGFsEiMub3BlbmV0bC5hcGkudjEuR2V0UHJpbmNpcGFsUmVxdWVzdBokLm9wZW5ldGwuYXBpLnYxLkdldFByaW5jaXBhbFJlc3BvbnNlIh+C0+STAhkSFy92MS97bmFtZT1wcmluY2lwYWxzLyp9EncKDkxpc3RQcmluY2lwYWxzEiUub3BlbmV0bC5hcGkudjEuTGlzdFByaW5jaXBhbHNSZXF1ZXN0GiYub3BlbmV0bC5hcGkudjEuTGlzdFByaW5jaXBhbHNSZXNwb25zZSIWgtPkkwIQEg4vdjEvcHJpbmNpcGFscxKDAQoPRGVsZXRlUHJpbmNpcGFsEiYub3BlbmV0bC5hcGkudjEuRGVsZXRlUHJpbmNpcGFsUmVxdWVzdBonLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZVByaW5jaXBhbFJlc3BvbnNlIh+C0+STAhkqFy92MS97bmFtZT1wcmluY2lwYWxzLyp9EpEBChBEaXNhYmxlUHJpbmNpcGFsEicub3BlbmV0bC5hcGkudjEuRGlzYWJsZVByaW5jaXBhbFJlcXVlc3QaKC5vcGVuZXRsLmFwaS52MS5EaXNhYmxlUHJpbmNpcGFsUmVzcG9uc2UiKoLT5JMCJDoBKiIfL3YxL3tuYW1lPXByaW5jaXBhbHMvKn06ZGlzYWJsZRKNAQoPRW5hYmxlUHJpbmNpcGFsEiYub3BlbmV0bC5hcGkudjEuRW5hYmxlUHJpbmNpcGFsUmVxdWVzdBonLm9wZW5ldGwuYXBpLnYxLkVuYWJsZVByaW5jaXBhbFJlc3BvbnNlIimC0+STAiM6ASoiHi92MS97bmFtZT1wcmluY2lwYWxzLyp9OmVuYWJsZRJ+CglHcmFudFJvbGUSIC5vcGVuZXRsLmFwaS52MS5HcmFudFJvbGVSZXF1ZXN0GiEub3BlbmV0bC5hcGkudjEuR3JhbnRSb2xlUmVzcG9uc2UiLILT5JMCJjoBKiIhL3YxL3tuYW1lPXByaW5jaXBhbHMvKn06Z3JhbnRSb2xlEoIBCgpSZXZva2VSb2xlEiEub3BlbmV0bC5hcGkudjEuUmV2b2tlUm9sZVJlcXVlc3QaIi5vcGVuZXRsLmFwaS52MS5SZXZva2VSb2xlUmVzcG9uc2UiLYLT5JMCJzoBKiIiL3YxL3tuYW1lPXByaW5jaXBhbHMvKn06cmV2b2tlUm9sZRJ7CglDcmVhdGVLZXkSIC5vcGVuZXRsLmFwaS52MS5DcmVhdGVLZXlSZXF1ZXN0GiEub3BlbmV0bC5hcGkudjEuQ3JlYXRlS2V5UmVzcG9uc2UiKYLT5JMCIzoBKiIeL3YxL3twYXJlbnQ9cHJpbmNpcGFscy8qfS9rZXlzEnUKCExpc3RLZXlzEh8ub3BlbmV0bC5hcGkudjEuTGlzdEtleXNSZXF1ZXN0GiAub3BlbmV0bC5hcGkudjEuTGlzdEtleXNSZXNwb25zZSImgtPkkwIgEh4vdjEve3BhcmVudD1wcmluY2lwYWxzLyp9L2tleXMSeAoJRGVsZXRlS2V5EiAub3BlbmV0bC5hcGkudjEuRGVsZXRlS2V5UmVxdWVzdBohLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZUtleVJlc3BvbnNlIiaC0+STAiAqHi92MS97bmFtZT1wcmluY2lwYWxzLyova2V5cy8qfRJ3Cg5MaXN0RGF0YVBsYW5lcxIlLm9wZW5ldGwuYXBpLnYxLkxpc3REYXRhUGxhbmVzUmVxdWVzdBomLm9wZW5ldGwuYXBpLnYxLkxpc3REYXRhUGxhbmVzUmVzcG9uc2UiFoLT5JMCEBIOL3YxL2RhdGFQbGFuZXMSlQEKEUNyZWF0ZVJ1bm5lclRva2VuEigub3BlbmV0bC5hcGkudjEuQ3JlYXRlUnVubmVyVG9rZW5SZXF1ZXN0Gikub3BlbmV0bC5hcGkudjEuQ3JlYXRlUnVubmVyVG9rZW5SZXNwb25zZSIrgtPkkwIlOgEqIiAvdjEve3BhcmVudD1kYXRhUGxhbmVzLyp9L3Rva2VucxKPAQoQTGlzdFJ1bm5lclRva2VucxInLm9wZW5ldGwuYXBpLnYxLkxpc3RSdW5uZXJUb2tlbnNSZXF1ZXN0Gigub3BlbmV0bC5hcGkudjEuTGlzdFJ1bm5lclRva2Vuc1Jlc3BvbnNlIiiC0+STAiISIC92MS97cGFyZW50PWRhdGFQbGFuZXMvKn0vdG9rZW5zEpIBChFEZWxldGVSdW5uZXJUb2tlbhIoLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZVJ1bm5lclRva2VuUmVxdWVzdBopLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZVJ1bm5lclRva2VuUmVzcG9uc2UiKILT5JMCIiogL3YxL3tuYW1lPWRhdGFQbGFuZXMvKi90b2tlbnMvKn0SZAoJR2V0Q2FsbGVyEiAub3BlbmV0bC5hcGkudjEuR2V0Q2FsbGVyUmVxdWVzdBohLm9wZW5ldGwuYXBpLnYxLkdldENhbGxlclJlc3BvbnNlIhKC0+STAgwSCi92MS9jYWxsZXISXgoNQ3JlYXRlU2Vzc2lvbhIkLm9wZW5ldGwuYXBpLnYxLkNyZWF0ZVNlc3Npb25SZXF1ZXN0GiUub3BlbmV0bC5hcGkudjEuQ3JlYXRlU2Vzc2lvblJlc3BvbnNlIgASXgoNRGVsZXRlU2Vzc2lvbhIkLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZVNlc3Npb25SZXF1ZXN0GiUub3BlbmV0bC5hcGkudjEuRGVsZXRlU2Vzc2lvblJlc3BvbnNlIgASkgEKDlJldm9rZVNlc3Npb25zEiUub3BlbmV0bC5hcGkudjEuUmV2b2tlU2Vzc2lvbnNSZXF1ZXN0GiYub3BlbmV0bC5hcGkudjEuUmV2b2tlU2Vzc2lvbnNSZXNwb25zZSIxgtPkkwIrOgEqIiYvdjEve25hbWU9cHJpbmNpcGFscy8qfTpyZXZva2VTZXNzaW9ucxKcAQoSQ3JlYXRlUGFzc3dvcmRMaW5rEikub3BlbmV0bC5hcGkudjEuQ3JlYXRlUGFzc3dvcmRMaW5rUmVxdWVzdBoqLm9wZW5ldGwuYXBpLnYxLkNyZWF0ZVBhc3N3b3JkTGlua1Jlc3BvbnNlIi+C0+STAik6ASoiJC92MS97bmFtZT1wcmluY2lwYWxzLyp9OnBhc3N3b3JkTGluaxJYCgtTZXRQYXNzd29yZBIiLm9wZW5ldGwuYXBpLnYxLlNldFBhc3N3b3JkUmVxdWVzdBojLm9wZW5ldGwuYXBpLnYxLlNldFBhc3N3b3JkUmVzcG9uc2UiABKFAQoOQ2hhbmdlUGFzc3dvcmQSJS5vcGVuZXRsLmFwaS52MS5DaGFuZ2VQYXNzd29yZFJlcXVlc3QaJi5vcGVuZXRsLmFwaS52MS5DaGFuZ2VQYXNzd29yZFJlc3BvbnNlIiSC0+STAh46ASoiGS92MS9jYWxsZXI6Y2hhbmdlUGFzc3dvcmRCO1o5Z2l0aHViLmNvbS91bnN1aXRhYmxlMDAxL29wZW5ldGwvZ2VuL29wZW5ldGwvYXBpL3YxO2FwaXYxYgZwcm90bzM", [file_google_api_annotations, file_google_protobuf_timestamp]);
 
 /**
  * A user or a service account, which calls the API with its keys.
@@ -761,6 +761,346 @@ export const DeleteRunnerTokenResponseSchema: GenMessage<DeleteRunnerTokenRespon
   messageDesc(file_openetl_api_v1_access, 34);
 
 /**
+ * @generated from message openetl.api.v1.GetCallerRequest
+ */
+export type GetCallerRequest = Message<"openetl.api.v1.GetCallerRequest"> & {
+  /**
+   * workspaces/{workspace}, for the permissions held there. Empty: those on
+   * the org.
+   *
+   * @generated from field: string workspace = 1;
+   */
+  workspace: string;
+};
+
+/**
+ * Describes the message openetl.api.v1.GetCallerRequest.
+ * Use `create(GetCallerRequestSchema)` to create a new message.
+ */
+export const GetCallerRequestSchema: GenMessage<GetCallerRequest> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 35);
+
+/**
+ * @generated from message openetl.api.v1.GetCallerResponse
+ */
+export type GetCallerResponse = Message<"openetl.api.v1.GetCallerResponse"> & {
+  /**
+   * @generated from field: openetl.api.v1.Principal principal = 1;
+   */
+  principal?: Principal | undefined;
+
+  /**
+   * principals/{principal}/keys/{key} or principals/{principal}/sessions/{session}.
+   * Empty when sign-in is off and the call had no credential.
+   *
+   * @generated from field: string credential = 2;
+   */
+  credential: string;
+
+  /**
+   * When the credential stops working unless it's used, for a session;
+   * unset for a key that doesn't expire.
+   *
+   * @generated from field: google.protobuf.Timestamp expire_time = 3;
+   */
+  expireTime?: Timestamp | undefined;
+
+  /**
+   * What the caller may do in the workspace, or on the org: permissions
+   * such as pipelines.sync.
+   *
+   * @generated from field: repeated string permissions = 4;
+   */
+  permissions: string[];
+
+  /**
+   * Sign-in is off (openetld --auth none), so calls without a credential
+   * act as principals/local, an owner.
+   *
+   * @generated from field: bool authless = 5;
+   */
+  authless: boolean;
+};
+
+/**
+ * Describes the message openetl.api.v1.GetCallerResponse.
+ * Use `create(GetCallerResponseSchema)` to create a new message.
+ */
+export const GetCallerResponseSchema: GenMessage<GetCallerResponse> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 36);
+
+/**
+ * A user's sign-in in a browser, which holds it as a cookie.
+ *
+ * @generated from message openetl.api.v1.Session
+ */
+export type Session = Message<"openetl.api.v1.Session"> & {
+  /**
+   * principals/{principal}/sessions/{session}
+   *
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp create_time = 2;
+   */
+  createTime?: Timestamp | undefined;
+
+  /**
+   * When it ends unless it's used again: its idle timeout from its last
+   * use, at most its maximum age from its creation.
+   *
+   * @generated from field: google.protobuf.Timestamp expire_time = 3;
+   */
+  expireTime?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message openetl.api.v1.Session.
+ * Use `create(SessionSchema)` to create a new message.
+ */
+export const SessionSchema: GenMessage<Session> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 37);
+
+/**
+ * @generated from message openetl.api.v1.CreateSessionRequest
+ */
+export type CreateSessionRequest = Message<"openetl.api.v1.CreateSessionRequest"> & {
+  /**
+   * @generated from field: string email = 1;
+   */
+  email: string;
+
+  /**
+   * @generated from field: string password = 2;
+   */
+  password: string;
+
+  /**
+   * Keep the cookie when the browser closes, until the session ends.
+   *
+   * @generated from field: bool remember = 3;
+   */
+  remember: boolean;
+};
+
+/**
+ * Describes the message openetl.api.v1.CreateSessionRequest.
+ * Use `create(CreateSessionRequestSchema)` to create a new message.
+ */
+export const CreateSessionRequestSchema: GenMessage<CreateSessionRequest> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 38);
+
+/**
+ * @generated from message openetl.api.v1.CreateSessionResponse
+ */
+export type CreateSessionResponse = Message<"openetl.api.v1.CreateSessionResponse"> & {
+  /**
+   * @generated from field: openetl.api.v1.Session session = 1;
+   */
+  session?: Session | undefined;
+};
+
+/**
+ * Describes the message openetl.api.v1.CreateSessionResponse.
+ * Use `create(CreateSessionResponseSchema)` to create a new message.
+ */
+export const CreateSessionResponseSchema: GenMessage<CreateSessionResponse> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 39);
+
+/**
+ * @generated from message openetl.api.v1.DeleteSessionRequest
+ */
+export type DeleteSessionRequest = Message<"openetl.api.v1.DeleteSessionRequest"> & {
+};
+
+/**
+ * Describes the message openetl.api.v1.DeleteSessionRequest.
+ * Use `create(DeleteSessionRequestSchema)` to create a new message.
+ */
+export const DeleteSessionRequestSchema: GenMessage<DeleteSessionRequest> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 40);
+
+/**
+ * @generated from message openetl.api.v1.DeleteSessionResponse
+ */
+export type DeleteSessionResponse = Message<"openetl.api.v1.DeleteSessionResponse"> & {
+};
+
+/**
+ * Describes the message openetl.api.v1.DeleteSessionResponse.
+ * Use `create(DeleteSessionResponseSchema)` to create a new message.
+ */
+export const DeleteSessionResponseSchema: GenMessage<DeleteSessionResponse> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 41);
+
+/**
+ * @generated from message openetl.api.v1.RevokeSessionsRequest
+ */
+export type RevokeSessionsRequest = Message<"openetl.api.v1.RevokeSessionsRequest"> & {
+  /**
+   * principals/{principal}
+   *
+   * @generated from field: string name = 1;
+   */
+  name: string;
+};
+
+/**
+ * Describes the message openetl.api.v1.RevokeSessionsRequest.
+ * Use `create(RevokeSessionsRequestSchema)` to create a new message.
+ */
+export const RevokeSessionsRequestSchema: GenMessage<RevokeSessionsRequest> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 42);
+
+/**
+ * @generated from message openetl.api.v1.RevokeSessionsResponse
+ */
+export type RevokeSessionsResponse = Message<"openetl.api.v1.RevokeSessionsResponse"> & {
+};
+
+/**
+ * Describes the message openetl.api.v1.RevokeSessionsResponse.
+ * Use `create(RevokeSessionsResponseSchema)` to create a new message.
+ */
+export const RevokeSessionsResponseSchema: GenMessage<RevokeSessionsResponse> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 43);
+
+/**
+ * @generated from message openetl.api.v1.CreatePasswordLinkRequest
+ */
+export type CreatePasswordLinkRequest = Message<"openetl.api.v1.CreatePasswordLinkRequest"> & {
+  /**
+   * principals/{principal}
+   *
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * Unset: in 24 hours. At most 7 days ahead.
+   *
+   * @generated from field: google.protobuf.Timestamp expire_time = 2;
+   */
+  expireTime?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message openetl.api.v1.CreatePasswordLinkRequest.
+ * Use `create(CreatePasswordLinkRequestSchema)` to create a new message.
+ */
+export const CreatePasswordLinkRequestSchema: GenMessage<CreatePasswordLinkRequest> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 44);
+
+/**
+ * @generated from message openetl.api.v1.CreatePasswordLinkResponse
+ */
+export type CreatePasswordLinkResponse = Message<"openetl.api.v1.CreatePasswordLinkResponse"> & {
+  /**
+   * {public URL}/set-password#{token}. The API never returns it again.
+   *
+   * @generated from field: string url = 1;
+   */
+  url: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp expire_time = 2;
+   */
+  expireTime?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message openetl.api.v1.CreatePasswordLinkResponse.
+ * Use `create(CreatePasswordLinkResponseSchema)` to create a new message.
+ */
+export const CreatePasswordLinkResponseSchema: GenMessage<CreatePasswordLinkResponse> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 45);
+
+/**
+ * @generated from message openetl.api.v1.SetPasswordRequest
+ */
+export type SetPasswordRequest = Message<"openetl.api.v1.SetPasswordRequest"> & {
+  /**
+   * The part of the link after #.
+   *
+   * @generated from field: string token = 1;
+   */
+  token: string;
+
+  /**
+   * @generated from field: string password = 2;
+   */
+  password: string;
+
+  /**
+   * As in CreateSessionRequest.
+   *
+   * @generated from field: bool remember = 3;
+   */
+  remember: boolean;
+};
+
+/**
+ * Describes the message openetl.api.v1.SetPasswordRequest.
+ * Use `create(SetPasswordRequestSchema)` to create a new message.
+ */
+export const SetPasswordRequestSchema: GenMessage<SetPasswordRequest> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 46);
+
+/**
+ * @generated from message openetl.api.v1.SetPasswordResponse
+ */
+export type SetPasswordResponse = Message<"openetl.api.v1.SetPasswordResponse"> & {
+  /**
+   * @generated from field: openetl.api.v1.Session session = 1;
+   */
+  session?: Session | undefined;
+};
+
+/**
+ * Describes the message openetl.api.v1.SetPasswordResponse.
+ * Use `create(SetPasswordResponseSchema)` to create a new message.
+ */
+export const SetPasswordResponseSchema: GenMessage<SetPasswordResponse> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 47);
+
+/**
+ * @generated from message openetl.api.v1.ChangePasswordRequest
+ */
+export type ChangePasswordRequest = Message<"openetl.api.v1.ChangePasswordRequest"> & {
+  /**
+   * @generated from field: string current_password = 1;
+   */
+  currentPassword: string;
+
+  /**
+   * @generated from field: string new_password = 2;
+   */
+  newPassword: string;
+};
+
+/**
+ * Describes the message openetl.api.v1.ChangePasswordRequest.
+ * Use `create(ChangePasswordRequestSchema)` to create a new message.
+ */
+export const ChangePasswordRequestSchema: GenMessage<ChangePasswordRequest> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 48);
+
+/**
+ * @generated from message openetl.api.v1.ChangePasswordResponse
+ */
+export type ChangePasswordResponse = Message<"openetl.api.v1.ChangePasswordResponse"> & {
+};
+
+/**
+ * Describes the message openetl.api.v1.ChangePasswordResponse.
+ * Use `create(ChangePasswordResponseSchema)` to create a new message.
+ */
+export const ChangePasswordResponseSchema: GenMessage<ChangePasswordResponse> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_access, 49);
+
+/**
  * @generated from enum openetl.api.v1.PrincipalType
  */
 export enum PrincipalType {
@@ -987,6 +1327,82 @@ export const AccessService: GenService<{
     methodKind: "unary";
     input: typeof DeleteRunnerTokenRequestSchema;
     output: typeof DeleteRunnerTokenResponseSchema;
+  },
+  /**
+   * Who is calling, and what they may do. Any credential may ask.
+   *
+   * @generated from rpc openetl.api.v1.AccessService.GetCaller
+   */
+  getCaller: {
+    methodKind: "unary";
+    input: typeof GetCallerRequestSchema;
+    output: typeof GetCallerResponseSchema;
+  },
+  /**
+   * Signs a user in with their email and password, and sets the session's
+   * cookie. It takes no credential, and only browsers' Connect calls from the
+   * server's own origin. A wrong email or password and a locked account all
+   * fail with UNAUTHENTICATED.
+   *
+   * @generated from rpc openetl.api.v1.AccessService.CreateSession
+   */
+  createSession: {
+    methodKind: "unary";
+    input: typeof CreateSessionRequestSchema;
+    output: typeof CreateSessionResponseSchema;
+  },
+  /**
+   * Ends the caller's session, if it has one, and clears its cookie. Like
+   * CreateSession, only browsers' Connect calls from the server's origin.
+   *
+   * @generated from rpc openetl.api.v1.AccessService.DeleteSession
+   */
+  deleteSession: {
+    methodKind: "unary";
+    input: typeof DeleteSessionRequestSchema;
+    output: typeof DeleteSessionResponseSchema;
+  },
+  /**
+   * Ends every session of a user.
+   *
+   * @generated from rpc openetl.api.v1.AccessService.RevokeSessions
+   */
+  revokeSessions: {
+    methodKind: "unary";
+    input: typeof RevokeSessionsRequestSchema;
+    output: typeof RevokeSessionsResponseSchema;
+  },
+  /**
+   * A one-use link for a user to set their password, which replaces the
+   * user's previous link. The user needs an email to sign in with.
+   *
+   * @generated from rpc openetl.api.v1.AccessService.CreatePasswordLink
+   */
+  createPasswordLink: {
+    methodKind: "unary";
+    input: typeof CreatePasswordLinkRequestSchema;
+    output: typeof CreatePasswordLinkResponseSchema;
+  },
+  /**
+   * Sets a user's password from a link's token, ends their sessions, and
+   * signs them in. Like CreateSession, it takes no credential.
+   *
+   * @generated from rpc openetl.api.v1.AccessService.SetPassword
+   */
+  setPassword: {
+    methodKind: "unary";
+    input: typeof SetPasswordRequestSchema;
+    output: typeof SetPasswordResponseSchema;
+  },
+  /**
+   * Changes the caller's own password, and ends their other sessions.
+   *
+   * @generated from rpc openetl.api.v1.AccessService.ChangePassword
+   */
+  changePassword: {
+    methodKind: "unary";
+    input: typeof ChangePasswordRequestSchema;
+    output: typeof ChangePasswordResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_openetl_api_v1_access, 0);

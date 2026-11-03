@@ -61,7 +61,19 @@ type Server struct {
 	// How far behind its source a continuous pipeline's read gets before
 	// it's lagging. Zero: 5 min.
 	LaggingAfter time.Duration
-	Logger       *slog.Logger
+	// Sign-in is off: calls without a credential act as LocalPrincipal, an
+	// owner (ADR-0020).
+	Authless bool
+	// The URL browsers use. Password links start with it, and an https one
+	// makes the session's cookie Secure. Empty: http://localhost.
+	PublicURL string
+	// How long a session lasts idle, and in all. Zero: 12 hours and 7 days.
+	SessionIdle, SessionMaxAge time.Duration
+	// Sign-ins a minute each client address may make. Zero: 20.
+	SignInRate int
+	Logger     *slog.Logger
+
+	signIns signIns
 }
 
 var (
@@ -119,7 +131,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		return nil, err
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/", transcoder)
+	guarded, err := s.guardCookies(transcoder)
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle("/", guarded)
 	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(s, opts, connect.WithReadMaxBytes(maxRunnerBytes)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {

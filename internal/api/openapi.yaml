@@ -63,6 +63,58 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/caller:
+        get:
+            tags:
+                - AccessService
+            description: Who is calling, and what they may do. Any credential may ask.
+            operationId: AccessService_GetCaller
+            parameters:
+                - name: workspace
+                  in: query
+                  description: |-
+                    workspaces/{workspace}, for the permissions held there. Empty: those on
+                     the org.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetCallerResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/caller:changePassword:
+        post:
+            tags:
+                - AccessService
+            description: Changes the caller's own password, and ends their other sessions.
+            operationId: AccessService_ChangePassword
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ChangePasswordRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ChangePasswordResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/dataPlanes:
         get:
             tags:
@@ -465,6 +517,40 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}:passwordLink:
+        post:
+            tags:
+                - AccessService
+            description: |-
+                A one-use link for a user to set their password, which replaces the
+                 user's previous link. The user needs an email to sign in with.
+            operationId: AccessService_CreatePasswordLink
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreatePasswordLinkRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/CreatePasswordLinkResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/principals/{principal}:revokeRole:
         post:
             tags:
@@ -491,6 +577,38 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/RevokeRoleResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/principals/{principal}:revokeSessions:
+        post:
+            tags:
+                - AccessService
+            description: Ends every session of a user.
+            operationId: AccessService_RevokeSessions
+            parameters:
+                - name: principal
+                  in: path
+                  description: The principal id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RevokeSessionsRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RevokeSessionsResponse'
                 default:
                     description: Default error response
                     content:
@@ -2210,6 +2328,16 @@ components:
                     description: |-
                         How the source can read the stream, the way it reads it first; empty if
                          it doesn't say.
+        ChangePasswordRequest:
+            type: object
+            properties:
+                currentPassword:
+                    type: string
+                newPassword:
+                    type: string
+        ChangePasswordResponse:
+            type: object
+            properties: {}
         CheckDestinationRequest:
             type: object
             properties:
@@ -2372,6 +2500,25 @@ components:
                     $ref: '#/components/schemas/Key'
                 secret:
                     type: string
+        CreatePasswordLinkRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: principals/{principal}
+                expireTime:
+                    type: string
+                    description: 'Unset: in 24 hours. At most 7 days ahead.'
+                    format: date-time
+        CreatePasswordLinkResponse:
+            type: object
+            properties:
+                url:
+                    type: string
+                    description: '{public URL}/set-password#{token}. The API never returns it again.'
+                expireTime:
+                    type: string
+                    format: date-time
         CreatePrincipalResponse:
             type: object
             properties:
@@ -2580,6 +2727,34 @@ components:
             properties:
                 webhook:
                     $ref: '#/components/schemas/Webhook'
+        GetCallerResponse:
+            type: object
+            properties:
+                principal:
+                    $ref: '#/components/schemas/Principal'
+                credential:
+                    type: string
+                    description: |-
+                        principals/{principal}/keys/{key} or principals/{principal}/sessions/{session}.
+                         Empty when sign-in is off and the call had no credential.
+                expireTime:
+                    type: string
+                    description: |-
+                        When the credential stops working unless it's used, for a session;
+                         unset for a key that doesn't expire.
+                    format: date-time
+                permissions:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        What the caller may do in the workspace, or on the org: permissions
+                         such as pipelines.sync.
+                authless:
+                    type: boolean
+                    description: |-
+                        Sign-in is off (openetld --auth none), so calls without a credential
+                         act as principals/local, an owner.
         GetDbtProjectResponse:
             type: object
             properties:
@@ -3393,6 +3568,15 @@ components:
             properties:
                 principal:
                     $ref: '#/components/schemas/Principal'
+        RevokeSessionsRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: principals/{principal}
+        RevokeSessionsResponse:
+            type: object
+            properties: {}
         RoleBinding:
             type: object
             properties:

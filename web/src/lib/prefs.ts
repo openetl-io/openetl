@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 // Theme and density are per-viewer conveniences, kept in localStorage.
-// index.html applies them before the first paint.
+// public/theme.js applies them before the first paint.
 
 export type Theme = "light" | "dark" | "system";
 export type Density = "comfortable" | "compact";

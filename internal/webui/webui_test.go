@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +48,71 @@ func TestHandler(t *testing.T) {
 	}
 	if _, err := Handler(t.TempDir(), api); err == nil {
 		t.Error("a directory without index.html was accepted")
+	}
+}
+
+func TestPolicy(t *testing.T) {
+	dir := t.TempDir()
+	hash := "'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='"
+	for name, body := range map[string]string{
+		"index.html": `<meta property="csp-nonce" nonce="OPENETL_CSP_NONCE"><script nonce="OPENETL_CSP_NONCE"></script>`,
+		"csp.json":   `{"styleHashes": ["` + hash + `", "'unsafe-inline'", "'sha256-x'; script-src *"]}`,
+		"logo.svg":   "<svg/>",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := Handler(dir, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		return rec
+	}
+	nonce := regexp.MustCompile(`'nonce-([A-Za-z0-9+/=]+)'`)
+	seen := map[string]bool{}
+	for range 2 {
+		rec := get("/workspaces/default/pipelines")
+		csp := rec.Header().Get("Content-Security-Policy")
+		m := nonce.FindStringSubmatch(csp)
+		if m == nil {
+			t.Fatalf("no nonce in %q", csp)
+		}
+		if seen[m[1]] {
+			t.Errorf("nonce %s served twice", m[1])
+		}
+		seen[m[1]] = true
+		want := `<meta property="csp-nonce" nonce="` + m[1] + `"><script nonce="` + m[1] + `"></script>`
+		if rec.Body.String() != want {
+			t.Errorf("body %q; want %q", rec.Body.String(), want)
+		}
+		for _, part := range []string{"default-src 'none'", "script-src 'self';", "style-src 'self' 'nonce-" + m[1] + "' " + hash + ";", "frame-ancestors 'none'"} {
+			if !strings.Contains(csp, part) {
+				t.Errorf("CSP %q lacks %q", csp, part)
+			}
+		}
+		if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "script-src *") {
+			t.Errorf("CSP %q took csp.json's entries that aren't hashes", csp)
+		}
+	}
+	rec := get("/logo.svg")
+	if csp := rec.Header().Get("Content-Security-Policy"); !strings.HasPrefix(csp, "default-src 'none'") || strings.Contains(csp, "nonce") {
+		t.Errorf("a file's CSP is %q", csp)
+	}
+	for _, rec := range []*httptest.ResponseRecorder{rec, get("/")} {
+		for k, v := range map[string]string{
+			"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "same-origin",
+			"Cross-Origin-Opener-Policy": "same-origin",
+		} {
+			if got := rec.Header().Get(k); got != v {
+				t.Errorf("%s: %q; want %q", k, got, v)
+			}
+		}
+		if p := rec.Header().Get("Permissions-Policy"); !strings.Contains(p, "camera=()") || !strings.Contains(p, "microphone=()") {
+			t.Errorf("Permissions-Policy %q", p)
+		}
 	}
 }

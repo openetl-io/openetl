@@ -4,6 +4,7 @@ import { EditorView, lineNumbers } from "@codemirror/view";
 import { yaml } from "@codemirror/lang-yaml";
 import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
+import { cspNonce } from "@/lib/csp";
 
 const highlight = HighlightStyle.define([
   { tag: [tags.propertyName, tags.definition(tags.propertyName)], color: "var(--foreground)" },
@@ -34,6 +35,7 @@ export default function CodeView({ value, label }: { value: string; label: strin
           yaml(),
           syntaxHighlighting(highlight),
           theme,
+          EditorView.cspNonce.of(cspNonce),
           EditorState.readOnly.of(true),
           EditorView.editable.of(false),
           EditorView.contentAttributes.of({ "aria-label": label }),

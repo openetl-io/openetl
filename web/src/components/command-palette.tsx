@@ -25,7 +25,7 @@ export function CommandPalette({
   open: boolean;
   onOpenChange: (o: boolean) => void;
   workspace: string;
-  signOut: () => void;
+  signOut?: () => void;
 }) {
   const navigate = useNavigate();
   const { dark, density, toggleTheme, toggleDensity } = usePrefs();
@@ -82,10 +82,12 @@ export function CommandPalette({
             <Rows3 className="text-muted-foreground" />
             {density === "compact" ? "Use comfortable rows" : "Use compact rows"}
           </CommandItem>
-          <CommandItem onSelect={run(signOut)}>
-            <LogOut className="text-muted-foreground" />
-            Sign out
-          </CommandItem>
+          {signOut && (
+            <CommandItem onSelect={run(signOut)}>
+              <LogOut className="text-muted-foreground" />
+              Sign out
+            </CommandItem>
+          )}
         </CommandGroup>
       </CommandList>
     </CommandDialog>

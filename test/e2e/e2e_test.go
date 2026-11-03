@@ -180,7 +180,7 @@ func setup(m *testing.M) (int, error) {
 			Config: config.Config{
 				DatabaseURL: env.dbURL, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
 				Connectors: env.noConnectors, EgressAllow: egressAllow, SecretsKey: filepath.Join(dir, "secrets.key"),
-				BootstrapKeyFile: env.keyFile,
+				BootstrapKeyFile: env.keyFile, SignInRate: 1000,
 			},
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
 			Listener:  ln,

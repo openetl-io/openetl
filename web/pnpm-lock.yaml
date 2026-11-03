@@ -68,6 +68,9 @@ importers:
       codemirror:
         specifier: ^6.0.2
         version: 6.0.2
+      get-nonce:
+        specifier: 1.0.1
+        version: 1.0.1
       lucide-react:
         specifier: ^1.66.0
         version: 1.66.0(@types/react@19.3.0)(react@19.3.1)

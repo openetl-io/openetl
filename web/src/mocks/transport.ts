@@ -10,7 +10,11 @@ import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { destinations, pipelines, sources, syncs } from "./fixtures";
 import { checkpoints, log, plan, schemas, versions } from "./detail";
-import { auditEntries, dataPlanes, dbtProjects, deliveries, incidents, keys, principals, runnerTokens, secrets, webhooks } from "./workspace";
+import { auditEntries, dataPlanes, dbtProjects, deliveries, incidents, keys, principals as others, runnerTokens, secrets, webhooks } from "./workspace";
+import { accessSession, requireSession, user } from "./session";
+import { signedOut } from "@/lib/api";
+
+const principals = [user, ...others];
 
 // The API the UI reads, in memory. Methods not here answer Unimplemented.
 
@@ -70,6 +74,11 @@ export const mockTransport = createRouterTransport(({ service }) => {
     listKeys: async ({ parent }) => (await latency(), { keys: keys.get(parent) ?? [] }),
     listDataPlanes: async () => (await latency(), { dataPlanes }),
     listRunnerTokens: async ({ parent }) => (await latency(), { tokens: runnerTokens.get(parent) ?? [] }),
+    getCaller: async () => (await latency(), accessSession.getCaller()),
+    createSession: async (req) => (await latency(), accessSession.createSession(req)),
+    deleteSession: async () => (await latency(), accessSession.deleteSession()),
+    setPassword: async (req) => (await latency(), accessSession.setPassword(req)),
+    changePassword: async (req) => (await latency(), accessSession.changePassword(req)),
   });
   service(AuditService, {
     listAuditEntries: async ({ actor, resource, method }) => {
@@ -81,4 +90,4 @@ export const mockTransport = createRouterTransport(({ service }) => {
       };
     },
   });
-});
+}, { transport: { interceptors: [signedOut] }, router: { interceptors: [requireSession] } });

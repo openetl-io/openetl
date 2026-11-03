@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { useQuery } from "@connectrpc/connect-query";
 import { Link, useLocation } from "@tanstack/react-router";
-import { ChevronsUpDown, KeyRound, LogOut } from "lucide-react";
+import { Bot, ChevronsUpDown, KeyRound, LogOut, ShieldOff, UserRound } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,8 +27,12 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
+import type { GetCallerResponse } from "@/gen/openetl/api/v1/access_pb";
 import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
+import { callerName, hasSession, isUser, useCaller, useSignOut } from "@/lib/caller";
 import { usePrefs, type Density, type Theme } from "@/lib/prefs";
+import { bindingLabel } from "./access-fields";
+import { ChangePasswordDialog } from "./change-password";
 import { Logo } from "./logo";
 import { nav, type NavItem, type Page } from "./nav";
 
@@ -55,26 +60,51 @@ function NavGroup({ label, items, workspace, counts }: { label?: string; items: 
   );
 }
 
-function Account({ signOut }: { signOut: () => void }) {
+function AccountTile({ caller }: { caller?: GetCallerResponse }) {
+  const Icon = !caller ? UserRound : caller.authless ? ShieldOff : isUser(caller) ? UserRound : Bot;
+  return (
+    <span className="grid size-8 shrink-0 place-items-center rounded-md border bg-background">
+      <Icon className="size-4" aria-hidden />
+    </span>
+  );
+}
+
+/** The caller's roles, highest first. */
+const roles = (c: GetCallerResponse) => [...(c.principal?.roleBindings ?? [])].sort((a, b) => b.role - a.role).map(bindingLabel);
+
+function Account() {
   const { isMobile } = useSidebar();
   const { theme, density, setTheme, setDensity } = usePrefs();
+  const { data: caller } = useCaller();
+  const signOut = useSignOut();
+  const [changing, setChanging] = useState(false);
+  const name = caller ? (caller.authless ? "Sign-in is off" : callerName(caller)) : "…";
+  const detail = caller ? (caller.authless ? "Everyone here is an owner" : caller.principal?.email || roles(caller)[0] || "No role") : "";
   return (
     <SidebarMenu>
       <SidebarMenuItem>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent">
-              <span className="grid size-8 shrink-0 place-items-center rounded-md border bg-background">
-                <KeyRound className="size-4" aria-hidden />
-              </span>
+              <AccountTile caller={caller} />
               <span className="grid min-w-0 flex-1 text-left leading-tight">
-                <span className="truncate font-medium">API key</span>
-                <span className="truncate text-xs text-muted-foreground">Signed in on this browser</span>
+                <span className="truncate font-medium">{name}</span>
+                <span className="truncate text-xs text-muted-foreground">{detail}</span>
               </span>
               <ChevronsUpDown className="ml-auto size-4 text-muted-foreground" aria-hidden />
             </SidebarMenuButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent side={isMobile ? "top" : "right"} align="end" className="w-56">
+          <DropdownMenuContent side={isMobile ? "top" : "right"} align="end" className="w-60">
+            {caller && (
+              <>
+                <DropdownMenuLabel className="grid gap-0.5 font-normal">
+                  <span className="truncate font-medium">{name}</span>
+                  {caller.principal?.email && <span className="truncate text-muted-foreground">{caller.principal.email}</span>}
+                  <span className="text-xs text-muted-foreground">{roles(caller).join(" · ") || "No role"}</span>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuLabel className="text-xs text-muted-foreground">Theme</DropdownMenuLabel>
             <DropdownMenuRadioGroup value={theme} onValueChange={(v) => setTheme(v as Theme)}>
               <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
@@ -87,19 +117,30 @@ function Account({ signOut }: { signOut: () => void }) {
               <DropdownMenuRadioItem value="comfortable">Comfortable</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="compact">Compact</DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={signOut}>
-              <LogOut />
-              Sign out
-            </DropdownMenuItem>
+            {caller && hasSession(caller) && (
+              <>
+                <DropdownMenuSeparator />
+                {isUser(caller) && (
+                  <DropdownMenuItem onSelect={() => setChanging(true)}>
+                    <KeyRound />
+                    Change password
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={signOut}>
+                  <LogOut />
+                  Sign out
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
+        <ChangePasswordDialog open={changing} onOpenChange={setChanging} />
       </SidebarMenuItem>
     </SidebarMenu>
   );
 }
 
-export function AppSidebar({ workspace, signOut }: { workspace: string; signOut: () => void }) {
+export function AppSidebar({ workspace }: { workspace: string }) {
   const pipelines = useQuery(
     PipelineService.method.listPipelines,
     { parent: `workspaces/${workspace}`, pageSize: 500 },
@@ -129,7 +170,7 @@ export function AppSidebar({ workspace, signOut }: { workspace: string; signOut:
         ))}
       </SidebarContent>
       <SidebarFooter>
-        <Account signOut={signOut} />
+        <Account />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

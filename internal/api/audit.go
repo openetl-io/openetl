@@ -31,7 +31,7 @@ func audited(procedure string, r rule) bool {
 	if r.runner {
 		return readsSecrets[procedure]
 	}
-	return !strings.HasSuffix(r.permission, ".get")
+	return !r.public() && !strings.HasSuffix(r.permission, ".get")
 }
 
 // An entry is what an audited call's handler adds to its audit log entry.
@@ -89,10 +89,15 @@ func (c *caller) actor() string {
 }
 
 func (c *caller) credential() string {
-	if c.dataPlane != "" {
+	switch {
+	case c.dataPlane != "":
 		return "dataPlanes/" + c.dataPlane + "/tokens/" + c.token.String()
+	case c.session != uuid.Nil:
+		return c.principal + "/sessions/" + c.session.String()
+	case c.key != uuid.Nil:
+		return c.principal + "/keys/" + c.key.String()
 	}
-	return c.principal + "/keys/" + c.key.String()
+	return ""
 }
 
 // Longer user agents and errors are cut.

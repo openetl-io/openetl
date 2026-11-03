@@ -87,6 +87,43 @@ service AccessService {
   rpc DeleteRunnerToken(DeleteRunnerTokenRequest) returns (DeleteRunnerTokenResponse) {
     option (google.api.http) = {delete: "/v1/{name=dataPlanes/*/tokens/*}"};
   }
+  // Who is calling, and what they may do. Any credential may ask.
+  rpc GetCaller(GetCallerRequest) returns (GetCallerResponse) {
+    option (google.api.http) = {get: "/v1/caller"};
+  }
+  // Signs a user in with their email and password, and sets the session's
+  // cookie. It takes no credential, and only browsers' Connect calls from the
+  // server's own origin. A wrong email or password and a locked account all
+  // fail with UNAUTHENTICATED.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse) {}
+  // Ends the caller's session, if it has one, and clears its cookie. Like
+  // CreateSession, only browsers' Connect calls from the server's origin.
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse) {}
+  // Ends every session of a user.
+  rpc RevokeSessions(RevokeSessionsRequest) returns (RevokeSessionsResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=principals/*}:revokeSessions"
+      body: "*"
+    };
+  }
+  // A one-use link for a user to set their password, which replaces the
+  // user's previous link. The user needs an email to sign in with.
+  rpc CreatePasswordLink(CreatePasswordLinkRequest) returns (CreatePasswordLinkResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=principals/*}:passwordLink"
+      body: "*"
+    };
+  }
+  // Sets a user's password from a link's token, ends their sessions, and
+  // signs them in. Like CreateSession, it takes no credential.
+  rpc SetPassword(SetPasswordRequest) returns (SetPasswordResponse) {}
+  // Changes the caller's own password, and ends their other sessions.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse) {
+    option (google.api.http) = {
+      post: "/v1/caller:changePassword"
+      body: "*"
+    };
+  }
 }
 
 // A user or a service account, which calls the API with its keys.
@@ -294,3 +331,89 @@ message DeleteRunnerTokenRequest {
 }
 
 message DeleteRunnerTokenResponse {}
+
+message GetCallerRequest {
+  // workspaces/{workspace}, for the permissions held there. Empty: those on
+  // the org.
+  string workspace = 1;
+}
+
+message GetCallerResponse {
+  Principal principal = 1;
+  // principals/{principal}/keys/{key} or principals/{principal}/sessions/{session}.
+  // Empty when sign-in is off and the call had no credential.
+  string credential = 2;
+  // When the credential stops working unless it's used, for a session;
+  // unset for a key that doesn't expire.
+  google.protobuf.Timestamp expire_time = 3;
+  // What the caller may do in the workspace, or on the org: permissions
+  // such as pipelines.sync.
+  repeated string permissions = 4;
+  // Sign-in is off (openetld --auth none), so calls without a credential
+  // act as principals/local, an owner.
+  bool authless = 5;
+}
+
+// A user's sign-in in a browser, which holds it as a cookie.
+message Session {
+  // principals/{principal}/sessions/{session}
+  string name = 1;
+  google.protobuf.Timestamp create_time = 2;
+  // When it ends unless it's used again: its idle timeout from its last
+  // use, at most its maximum age from its creation.
+  google.protobuf.Timestamp expire_time = 3;
+}
+
+message CreateSessionRequest {
+  string email = 1;
+  string password = 2;
+  // Keep the cookie when the browser closes, until the session ends.
+  bool remember = 3;
+}
+
+message CreateSessionResponse {
+  Session session = 1;
+}
+
+message DeleteSessionRequest {}
+
+message DeleteSessionResponse {}
+
+message RevokeSessionsRequest {
+  // principals/{principal}
+  string name = 1;
+}
+
+message RevokeSessionsResponse {}
+
+message CreatePasswordLinkRequest {
+  // principals/{principal}
+  string name = 1;
+  // Unset: in 24 hours. At most 7 days ahead.
+  google.protobuf.Timestamp expire_time = 2;
+}
+
+message CreatePasswordLinkResponse {
+  // {public URL}/set-password#{token}. The API never returns it again.
+  string url = 1;
+  google.protobuf.Timestamp expire_time = 2;
+}
+
+message SetPasswordRequest {
+  // The part of the link after #.
+  string token = 1;
+  string password = 2;
+  // As in CreateSessionRequest.
+  bool remember = 3;
+}
+
+message SetPasswordResponse {
+  Session session = 1;
+}
+
+message ChangePasswordRequest {
+  string current_password = 1;
+  string new_password = 2;
+}
+
+message ChangePasswordResponse {}

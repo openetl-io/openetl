@@ -55,7 +55,7 @@ DELETE FROM api_keys WHERE org_id = @org_id AND principal_id = @principal_id AND
 -- Before the org is known, so it isn't scoped by org_id. Each binding is
 -- role/workspace, or the role alone on the org.
 -- name: AuthenticateAPIKey :one
-SELECT k.org_id, k.id, k.principal_id, p.name AS principal, k.last_used_time,
+SELECT k.org_id, k.id, k.principal_id, p.name AS principal, k.last_used_time, k.expire_time,
     array(
         SELECT b.role || coalesce('/' || w.name, '')
         FROM role_bindings b LEFT JOIN workspaces w ON w.org_id = b.org_id AND w.id = b.workspace_id
@@ -112,3 +112,82 @@ SELECT
 
 -- name: ListDataPlanes :many
 SELECT id, create_time FROM data_planes WHERE org_id = @org_id ORDER BY id;
+
+-- A user who may sign in, by email, with their password if they have one.
+-- name: GetSignIn :one
+SELECT p.id, p.name, pw.hash, pw.locked_until
+FROM principals p LEFT JOIN passwords pw ON pw.org_id = p.org_id AND pw.principal_id = p.id
+WHERE p.org_id = @org_id AND lower(p.email) = lower(@email) AND p.type = 'user' AND NOT p.disabled;
+
+-- name: GetPassword :one
+SELECT hash, locked_until FROM passwords WHERE org_id = @org_id AND principal_id = @principal_id;
+
+-- Sets a password and clears its failures and lock.
+-- name: SetPassword :exec
+INSERT INTO passwords (org_id, principal_id, hash)
+VALUES (@org_id, @principal_id, @hash)
+ON CONFLICT (org_id, principal_id) DO UPDATE SET hash = excluded.hash, failures = 0, locked_until = NULL, update_time = now();
+
+-- Counts a failed sign-in, and locks the password for lock_seconds once
+-- max_failures fail in a row. The count starts again once a lock is over.
+-- name: RecordSignInFailure :exec
+UPDATE passwords SET
+    failures = CASE WHEN locked_until <= now() THEN 1 ELSE failures + 1 END,
+    locked_until = CASE
+        WHEN locked_until > now() THEN locked_until
+        WHEN (CASE WHEN locked_until <= now() THEN 1 ELSE failures + 1 END) >= @max_failures::integer
+            THEN now() + make_interval(secs => @lock_seconds::integer)
+    END
+WHERE org_id = @org_id AND principal_id = @principal_id;
+
+-- name: ClearSignInFailures :exec
+UPDATE passwords SET failures = 0, locked_until = NULL
+WHERE org_id = @org_id AND principal_id = @principal_id AND failures > 0;
+
+-- name: UpsertPasswordLink :exec
+INSERT INTO password_links (org_id, principal_id, hash, expire_time)
+VALUES (@org_id, @principal_id, @hash, @expire_time)
+ON CONFLICT (org_id, principal_id) DO UPDATE SET hash = excluded.hash, expire_time = excluded.expire_time, create_time = now();
+
+-- A link's user, if the link is still good.
+-- name: GetPasswordLink :one
+SELECT p.id, p.name, p.email
+FROM password_links l JOIN principals p ON p.org_id = l.org_id AND p.id = l.principal_id
+WHERE l.org_id = @org_id AND l.hash = @hash AND l.expire_time > now() AND NOT p.disabled;
+
+-- name: DeletePasswordLink :execrows
+DELETE FROM password_links WHERE org_id = @org_id AND hash = @hash;
+
+-- name: InsertSession :exec
+INSERT INTO sessions (org_id, id, principal_id, hash, expire_time, peer, user_agent)
+VALUES (@org_id, @id, @principal_id, @hash, @expire_time, @peer, @user_agent);
+
+-- Before the org is known, so it isn't scoped by org_id. A session idle
+-- since before idle_since has ended.
+-- name: AuthenticateSession :one
+SELECT s.org_id, s.id, s.principal_id, p.name AS principal, s.last_used_time, s.expire_time,
+    array(
+        SELECT b.role || coalesce('/' || w.name, '')
+        FROM role_bindings b LEFT JOIN workspaces w ON w.org_id = b.org_id AND w.id = b.workspace_id
+        WHERE b.org_id = s.org_id AND b.principal_id = s.principal_id
+    )::text[] AS bindings
+FROM sessions s JOIN principals p ON p.org_id = s.org_id AND p.id = s.principal_id
+WHERE s.hash = @hash AND NOT p.disabled AND s.expire_time > now() AND s.last_used_time > @idle_since;
+
+-- name: TouchSession :exec
+UPDATE sessions SET last_used_time = now() WHERE org_id = @org_id AND id = @id;
+
+-- name: DeleteSessionByHash :one
+WITH deleted AS (
+    DELETE FROM sessions WHERE org_id = @org_id AND hash = @hash RETURNING id, principal_id
+)
+SELECT d.id, p.name AS principal
+FROM deleted d JOIN principals p ON p.org_id = @org_id AND p.id = d.principal_id;
+
+-- Every session of a principal but keep, which may be the nil UUID.
+-- name: DeleteSessions :execrows
+DELETE FROM sessions WHERE org_id = @org_id AND principal_id = @principal_id AND id <> @keep;
+
+-- name: DeleteEndedSessions :exec
+DELETE FROM sessions
+WHERE org_id = @org_id AND principal_id = @principal_id AND (expire_time <= now() OR last_used_time <= @idle_since);
