@@ -13,7 +13,7 @@ import type { JsonObject, Message } from "@bufbuild/protobuf";
  * Describes the file openetl/api/v1/connection.proto.
  */
 export const file_openetl_api_v1_connection: GenFile = /*@__PURE__*/
-  fileDesc("Ch9vcGVuZXRsL2FwaS92MS9jb25uZWN0aW9uLnByb3RvEg5vcGVuZXRsLmFwaS52MSLGAQoGU291cmNlEgwKBG5hbWUYASABKAkSLQoEc3BlYxgCIAEoCzIfLm9wZW5ldGwuYXBpLnYxLkNvbm5lY3RvckNvbmZpZxIPCgd2ZXJzaW9uGAMgASgJEgwKBGV0YWcYBCABKAkSLwoLY3JlYXRlX3RpbWUYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KC3VwZGF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCLLAQoLRGVzdGluYXRpb24SDAoEbmFtZRgBIAEoCRItCgRzcGVjGAIgASgLMh8ub3BlbmV0bC5hcGkudjEuQ29ubmVjdG9yQ29uZmlnEg8KB3ZlcnNpb24YAyABKAkSDAoEZXRhZxgEIAEoCRIvCgtjcmVhdGVfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoLdXBkYXRlX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIk0KD0Nvbm5lY3RvckNvbmZpZxIRCgljb25uZWN0b3IYASABKAkSJwoGY29uZmlnGAIgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdCIgChBHZXRTb3VyY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkiOwoRR2V0U291cmNlUmVzcG9uc2USJgoGc291cmNlGAEgASgLMhYub3BlbmV0bC5hcGkudjEuU291cmNlIksKEkxpc3RTb3VyY2VzUmVxdWVzdBIOCgZwYXJlbnQYASABKAkSEQoJcGFnZV9zaXplGAIgASgFEhIKCnBhZ2VfdG9rZW4YAyABKAkiVwoTTGlzdFNvdXJjZXNSZXNwb25zZRInCgdzb3VyY2VzGAEgAygLMhYub3BlbmV0bC5hcGkudjEuU291cmNlEhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSIxChNEZWxldGVTb3VyY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSDAoEZXRhZxgCIAEoCSIWChREZWxldGVTb3VyY2VSZXNwb25zZSIlChVHZXREZXN0aW5hdGlvblJlcXVlc3QSDAoEbmFtZRgBIAEoCSJKChZHZXREZXN0aW5hdGlvblJlc3BvbnNlEjAKC2Rlc3RpbmF0aW9uGAEgASgLMhsub3BlbmV0bC5hcGkudjEuRGVzdGluYXRpb24iUAoXTGlzdERlc3RpbmF0aW9uc1JlcXVlc3QSDgoGcGFyZW50GAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoBRISCgpwYWdlX3Rva2VuGAMgASgJImYKGExpc3REZXN0aW5hdGlvbnNSZXNwb25zZRIxCgxkZXN0aW5hdGlvbnMYASADKAsyGy5vcGVuZXRsLmFwaS52MS5EZXN0aW5hdGlvbhIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiNgoYRGVsZXRlRGVzdGluYXRpb25SZXF1ZXN0EgwKBG5hbWUYASABKAkSDAoEZXRhZxgCIAEoCSIbChlEZWxldGVEZXN0aW5hdGlvblJlc3BvbnNlIjYKEkNoZWNrU291cmNlUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCmRhdGFfcGxhbmUYAiABKAkiQgoTQ2hlY2tTb3VyY2VSZXNwb25zZRIrCgZyZXN1bHQYASABKAsyGy5vcGVuZXRsLmFwaS52MS5DaGVja1Jlc3VsdCI7ChdDaGVja0Rlc3RpbmF0aW9uUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCmRhdGFfcGxhbmUYAiABKAkiRwoYQ2hlY2tEZXN0aW5hdGlvblJlc3BvbnNlEisKBnJlc3VsdBgBIAEoCzIbLm9wZW5ldGwuYXBpLnYxLkNoZWNrUmVzdWx0IkkKC0NoZWNrUmVzdWx0EgoKAm9rGAEgASgIEgwKBGNvZGUYAiABKAkSDwoHbWVzc2FnZRgDIAEoCRIPCgd2ZXJzaW9uGAQgASgJIjkKFURpc2NvdmVyU291cmNlUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCmRhdGFfcGxhbmUYAiABKAkiQgoWRGlzY292ZXJTb3VyY2VSZXNwb25zZRIoCgdjYXRhbG9nGAEgASgLMhcub3BlbmV0bC5hcGkudjEuQ2F0YWxvZyJ9CgdDYXRhbG9nEi4KB3N0cmVhbXMYASADKAsyHS5vcGVuZXRsLmFwaS52MS5DYXRhbG9nU3RyZWFtEg8KB3ZlcnNpb24YAiABKAkSMQoNZGlzY292ZXJfdGltZRgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAizgEKDUNhdGFsb2dTdHJlYW0SDAoEbmFtZRgBIAEoCRITCgtwcmltYXJ5X2tleRgCIAMoCRIUCgxjdXJzb3JfZmllbGQYAyABKAkSJgoGcmVwbGF5GAQgASgOMhYub3BlbmV0bC5hcGkudjEuUmVwbGF5Ei4KB2NvbHVtbnMYBSADKAsyHS5vcGVuZXRsLmFwaS52MS5DYXRhbG9nQ29sdW1uEiwKCnN5bmNfbW9kZXMYBiADKA4yGC5vcGVuZXRsLmFwaS52MS5TeW5jTW9kZSI9Cg1DYXRhbG9nQ29sdW1uEgwKBG5hbWUYASABKAkSDAoEdHlwZRgCIAEoCRIQCghudWxsYWJsZRgDIAEoCCqFAQoIU3luY01vZGUSGQoVU1lOQ19NT0RFX1VOU1BFQ0lGSUVEEAASGgoWU1lOQ19NT0RFX0ZVTExfUkVGUkVTSBABEhkKFVNZTkNfTU9ERV9JTkNSRU1FTlRBTBACEhEKDVNZTkNfTU9ERV9DREMQAxIUChBTWU5DX01PREVfU1RSRUFNEAQqRwoGUmVwbGF5EhYKElJFUExBWV9VTlNQRUNJRklFRBAAEhAKDFJFUExBWV9FWEFDVBABEhMKD1JFUExBWV9TVVBFUlNFVBACMr0FCg1Tb3VyY2VTZXJ2aWNlEnsKCUdldFNvdXJjZRIgLm9wZW5ldGwuYXBpLnYxLkdldFNvdXJjZVJlcXVlc3QaIS5vcGVuZXRsLmFwaS52MS5HZXRTb3VyY2VSZXNwb25zZSIpgtPkkwIjEiEvdjEve25hbWU9d29ya3NwYWNlcy8qL3NvdXJjZXMvKn0SgQEKC0xpc3RTb3VyY2VzEiIub3BlbmV0bC5hcGkudjEuTGlzdFNvdXJjZXNSZXF1ZXN0GiMub3BlbmV0bC5hcGkudjEuTGlzdFNvdXJjZXNSZXNwb25zZSIpgtPkkwIjEiEvdjEve3BhcmVudD13b3Jrc3BhY2VzLyp9L3NvdXJjZXMShAEKDERlbGV0ZVNvdXJjZRIjLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZVNvdXJjZVJlcXVlc3QaJC5vcGVuZXRsLmFwaS52MS5EZWxldGVTb3VyY2VSZXNwb25zZSIpgtPkkwIjKiEvdjEve25hbWU9d29ya3NwYWNlcy8qL3NvdXJjZXMvKn0SigEKC0NoZWNrU291cmNlEiIub3BlbmV0bC5hcGkudjEuQ2hlY2tTb3VyY2VSZXF1ZXN0GiMub3BlbmV0bC5hcGkudjEuQ2hlY2tTb3VyY2VSZXNwb25zZSIygtPkkwIsOgEqIicvdjEve25hbWU9d29ya3NwYWNlcy8qL3NvdXJjZXMvKn06Y2hlY2sSlgEKDkRpc2NvdmVyU291cmNlEiUub3BlbmV0bC5hcGkudjEuRGlzY292ZXJTb3VyY2VSZXF1ZXN0GiYub3BlbmV0bC5hcGkudjEuRGlzY292ZXJTb3VyY2VSZXNwb25zZSI1gtPkkwIvOgEqIiovdjEve25hbWU9d29ya3NwYWNlcy8qL3NvdXJjZXMvKn06ZGlzY292ZXIy+gQKEkRlc3RpbmF0aW9uU2VydmljZRKPAQoOR2V0RGVzdGluYXRpb24SJS5vcGVuZXRsLmFwaS52MS5HZXREZXN0aW5hdGlvblJlcXVlc3QaJi5vcGVuZXRsLmFwaS52MS5HZXREZXN0aW5hdGlvblJlc3BvbnNlIi6C0+STAigSJi92MS97bmFtZT13b3Jrc3BhY2VzLyovZGVzdGluYXRpb25zLyp9EpUBChBMaXN0RGVzdGluYXRpb25zEicub3BlbmV0bC5hcGkudjEuTGlzdERlc3RpbmF0aW9uc1JlcXVlc3QaKC5vcGVuZXRsLmFwaS52MS5MaXN0RGVzdGluYXRpb25zUmVzcG9uc2UiLoLT5JMCKBImL3YxL3twYXJlbnQ9d29ya3NwYWNlcy8qfS9kZXN0aW5hdGlvbnMSmAEKEURlbGV0ZURlc3RpbmF0aW9uEigub3BlbmV0bC5hcGkudjEuRGVsZXRlRGVzdGluYXRpb25SZXF1ZXN0Gikub3BlbmV0bC5hcGkudjEuRGVsZXRlRGVzdGluYXRpb25SZXNwb25zZSIugtPkkwIoKiYvdjEve25hbWU9d29ya3NwYWNlcy8qL2Rlc3RpbmF0aW9ucy8qfRKeAQoQQ2hlY2tEZXN0aW5hdGlvbhInLm9wZW5ldGwuYXBpLnYxLkNoZWNrRGVzdGluYXRpb25SZXF1ZXN0Gigub3BlbmV0bC5hcGkudjEuQ2hlY2tEZXN0aW5hdGlvblJlc3BvbnNlIjeC0+STAjE6ASoiLC92MS97bmFtZT13b3Jrc3BhY2VzLyovZGVzdGluYXRpb25zLyp9OmNoZWNrQjtaOWdpdGh1Yi5jb20vdW5zdWl0YWJsZTAwMS9vcGVuZXRsL2dlbi9vcGVuZXRsL2FwaS92MTthcGl2MWIGcHJvdG8z", [file_google_api_annotations, file_google_protobuf_struct, file_google_protobuf_timestamp]);
+  fileDesc("Ch9vcGVuZXRsL2FwaS92MS9jb25uZWN0aW9uLnByb3RvEg5vcGVuZXRsLmFwaS52MSL7AQoGU291cmNlEgwKBG5hbWUYASABKAkSLQoEc3BlYxgCIAEoCzIfLm9wZW5ldGwuYXBpLnYxLkNvbm5lY3RvckNvbmZpZxIPCgd2ZXJzaW9uGAMgASgJEgwKBGV0YWcYBCABKAkSLwoLY3JlYXRlX3RpbWUYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KC3VwZGF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIzCgljb25uZWN0b3IYByABKAsyIC5vcGVuZXRsLmFwaS52MS5Db25uZWN0b3JWZXJzaW9uIoACCgtEZXN0aW5hdGlvbhIMCgRuYW1lGAEgASgJEi0KBHNwZWMYAiABKAsyHy5vcGVuZXRsLmFwaS52MS5Db25uZWN0b3JDb25maWcSDwoHdmVyc2lvbhgDIAEoCRIMCgRldGFnGAQgASgJEi8KC2NyZWF0ZV90aW1lGAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIvCgt1cGRhdGVfdGltZRgGIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASMwoJY29ubmVjdG9yGAcgASgLMiAub3BlbmV0bC5hcGkudjEuQ29ubmVjdG9yVmVyc2lvbiKJAQoQQ29ubmVjdG9yVmVyc2lvbhIMCgRuYW1lGAEgASgJEg8KB3ZlcnNpb24YAiABKAkSDgoGZGlnZXN0GAMgASgJEg4KBmF1dGhvchgEIAEoCRIMCgRsb2dvGAUgASgJEhMKC3JlbGVhc2VfdGFnGAYgASgJEhMKC3JlbGVhc2VfdXJsGAcgASgJIk0KD0Nvbm5lY3RvckNvbmZpZxIRCgljb25uZWN0b3IYASABKAkSJwoGY29uZmlnGAIgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdCIgChBHZXRTb3VyY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkiOwoRR2V0U291cmNlUmVzcG9uc2USJgoGc291cmNlGAEgASgLMhYub3BlbmV0bC5hcGkudjEuU291cmNlIksKEkxpc3RTb3VyY2VzUmVxdWVzdBIOCgZwYXJlbnQYASABKAkSEQoJcGFnZV9zaXplGAIgASgFEhIKCnBhZ2VfdG9rZW4YAyABKAkiVwoTTGlzdFNvdXJjZXNSZXNwb25zZRInCgdzb3VyY2VzGAEgAygLMhYub3BlbmV0bC5hcGkudjEuU291cmNlEhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSIxChNEZWxldGVTb3VyY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSDAoEZXRhZxgCIAEoCSIWChREZWxldGVTb3VyY2VSZXNwb25zZSIlChVHZXREZXN0aW5hdGlvblJlcXVlc3QSDAoEbmFtZRgBIAEoCSJKChZHZXREZXN0aW5hdGlvblJlc3BvbnNlEjAKC2Rlc3RpbmF0aW9uGAEgASgLMhsub3BlbmV0bC5hcGkudjEuRGVzdGluYXRpb24iUAoXTGlzdERlc3RpbmF0aW9uc1JlcXVlc3QSDgoGcGFyZW50GAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoBRISCgpwYWdlX3Rva2VuGAMgASgJImYKGExpc3REZXN0aW5hdGlvbnNSZXNwb25zZRIxCgxkZXN0aW5hdGlvbnMYASADKAsyGy5vcGVuZXRsLmFwaS52MS5EZXN0aW5hdGlvbhIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiNgoYRGVsZXRlRGVzdGluYXRpb25SZXF1ZXN0EgwKBG5hbWUYASABKAkSDAoEZXRhZxgCIAEoCSIbChlEZWxldGVEZXN0aW5hdGlvblJlc3BvbnNlIjYKEkNoZWNrU291cmNlUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCmRhdGFfcGxhbmUYAiABKAkiQgoTQ2hlY2tTb3VyY2VSZXNwb25zZRIrCgZyZXN1bHQYASABKAsyGy5vcGVuZXRsLmFwaS52MS5DaGVja1Jlc3VsdCI7ChdDaGVja0Rlc3RpbmF0aW9uUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCmRhdGFfcGxhbmUYAiABKAkiRwoYQ2hlY2tEZXN0aW5hdGlvblJlc3BvbnNlEisKBnJlc3VsdBgBIAEoCzIbLm9wZW5ldGwuYXBpLnYxLkNoZWNrUmVzdWx0IkkKC0NoZWNrUmVzdWx0EgoKAm9rGAEgASgIEgwKBGNvZGUYAiABKAkSDwoHbWVzc2FnZRgDIAEoCRIPCgd2ZXJzaW9uGAQgASgJIjkKFURpc2NvdmVyU291cmNlUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCmRhdGFfcGxhbmUYAiABKAkiQgoWRGlzY292ZXJTb3VyY2VSZXNwb25zZRIoCgdjYXRhbG9nGAEgASgLMhcub3BlbmV0bC5hcGkudjEuQ2F0YWxvZyJ9CgdDYXRhbG9nEi4KB3N0cmVhbXMYASADKAsyHS5vcGVuZXRsLmFwaS52MS5DYXRhbG9nU3RyZWFtEg8KB3ZlcnNpb24YAiABKAkSMQoNZGlzY292ZXJfdGltZRgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAizgEKDUNhdGFsb2dTdHJlYW0SDAoEbmFtZRgBIAEoCRITCgtwcmltYXJ5X2tleRgCIAMoCRIUCgxjdXJzb3JfZmllbGQYAyABKAkSJgoGcmVwbGF5GAQgASgOMhYub3BlbmV0bC5hcGkudjEuUmVwbGF5Ei4KB2NvbHVtbnMYBSADKAsyHS5vcGVuZXRsLmFwaS52MS5DYXRhbG9nQ29sdW1uEiwKCnN5bmNfbW9kZXMYBiADKA4yGC5vcGVuZXRsLmFwaS52MS5TeW5jTW9kZSI9Cg1DYXRhbG9nQ29sdW1uEgwKBG5hbWUYASABKAkSDAoEdHlwZRgCIAEoCRIQCghudWxsYWJsZRgDIAEoCCqFAQoIU3luY01vZGUSGQoVU1lOQ19NT0RFX1VOU1BFQ0lGSUVEEAASGgoWU1lOQ19NT0RFX0ZVTExfUkVGUkVTSBABEhkKFVNZTkNfTU9ERV9JTkNSRU1FTlRBTBACEhEKDVNZTkNfTU9ERV9DREMQAxIUChBTWU5DX01PREVfU1RSRUFNEAQqRwoGUmVwbGF5EhYKElJFUExBWV9VTlNQRUNJRklFRBAAEhAKDFJFUExBWV9FWEFDVBABEhMKD1JFUExBWV9TVVBFUlNFVBACMr0FCg1Tb3VyY2VTZXJ2aWNlEnsKCUdldFNvdXJjZRIgLm9wZW5ldGwuYXBpLnYxLkdldFNvdXJjZVJlcXVlc3QaIS5vcGVuZXRsLmFwaS52MS5HZXRTb3VyY2VSZXNwb25zZSIpgtPkkwIjEiEvdjEve25hbWU9d29ya3NwYWNlcy8qL3NvdXJjZXMvKn0SgQEKC0xpc3RTb3VyY2VzEiIub3BlbmV0bC5hcGkudjEuTGlzdFNvdXJjZXNSZXF1ZXN0GiMub3BlbmV0bC5hcGkudjEuTGlzdFNvdXJjZXNSZXNwb25zZSIpgtPkkwIjEiEvdjEve3BhcmVudD13b3Jrc3BhY2VzLyp9L3NvdXJjZXMShAEKDERlbGV0ZVNvdXJjZRIjLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZVNvdXJjZVJlcXVlc3QaJC5vcGVuZXRsLmFwaS52MS5EZWxldGVTb3VyY2VSZXNwb25zZSIpgtPkkwIjKiEvdjEve25hbWU9d29ya3NwYWNlcy8qL3NvdXJjZXMvKn0SigEKC0NoZWNrU291cmNlEiIub3BlbmV0bC5hcGkudjEuQ2hlY2tTb3VyY2VSZXF1ZXN0GiMub3BlbmV0bC5hcGkudjEuQ2hlY2tTb3VyY2VSZXNwb25zZSIygtPkkwIsOgEqIicvdjEve25hbWU9d29ya3NwYWNlcy8qL3NvdXJjZXMvKn06Y2hlY2sSlgEKDkRpc2NvdmVyU291cmNlEiUub3BlbmV0bC5hcGkudjEuRGlzY292ZXJTb3VyY2VSZXF1ZXN0GiYub3BlbmV0bC5hcGkudjEuRGlzY292ZXJTb3VyY2VSZXNwb25zZSI1gtPkkwIvOgEqIiovdjEve25hbWU9d29ya3NwYWNlcy8qL3NvdXJjZXMvKn06ZGlzY292ZXIy+gQKEkRlc3RpbmF0aW9uU2VydmljZRKPAQoOR2V0RGVzdGluYXRpb24SJS5vcGVuZXRsLmFwaS52MS5HZXREZXN0aW5hdGlvblJlcXVlc3QaJi5vcGVuZXRsLmFwaS52MS5HZXREZXN0aW5hdGlvblJlc3BvbnNlIi6C0+STAigSJi92MS97bmFtZT13b3Jrc3BhY2VzLyovZGVzdGluYXRpb25zLyp9EpUBChBMaXN0RGVzdGluYXRpb25zEicub3BlbmV0bC5hcGkudjEuTGlzdERlc3RpbmF0aW9uc1JlcXVlc3QaKC5vcGVuZXRsLmFwaS52MS5MaXN0RGVzdGluYXRpb25zUmVzcG9uc2UiLoLT5JMCKBImL3YxL3twYXJlbnQ9d29ya3NwYWNlcy8qfS9kZXN0aW5hdGlvbnMSmAEKEURlbGV0ZURlc3RpbmF0aW9uEigub3BlbmV0bC5hcGkudjEuRGVsZXRlRGVzdGluYXRpb25SZXF1ZXN0Gikub3BlbmV0bC5hcGkudjEuRGVsZXRlRGVzdGluYXRpb25SZXNwb25zZSIugtPkkwIoKiYvdjEve25hbWU9d29ya3NwYWNlcy8qL2Rlc3RpbmF0aW9ucy8qfRKeAQoQQ2hlY2tEZXN0aW5hdGlvbhInLm9wZW5ldGwuYXBpLnYxLkNoZWNrRGVzdGluYXRpb25SZXF1ZXN0Gigub3BlbmV0bC5hcGkudjEuQ2hlY2tEZXN0aW5hdGlvblJlc3BvbnNlIjeC0+STAjE6ASoiLC92MS97bmFtZT13b3Jrc3BhY2VzLyovZGVzdGluYXRpb25zLyp9OmNoZWNrQjtaOWdpdGh1Yi5jb20vdW5zdWl0YWJsZTAwMS9vcGVuZXRsL2dlbi9vcGVuZXRsL2FwaS92MTthcGl2MWIGcHJvdG8z", [file_google_api_annotations, file_google_protobuf_struct, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message openetl.api.v1.Source
@@ -50,6 +50,14 @@ export type Source = Message<"openetl.api.v1.Source"> & {
    * @generated from field: google.protobuf.Timestamp update_time = 6;
    */
   updateTime?: Timestamp | undefined;
+
+  /**
+   * The applied connector version it runs. Unset for built-in connectors
+   * and ones from a runner's connectors directory.
+   *
+   * @generated from field: openetl.api.v1.ConnectorVersion connector = 7;
+   */
+  connector?: ConnectorVersion | undefined;
 };
 
 /**
@@ -94,6 +102,14 @@ export type Destination = Message<"openetl.api.v1.Destination"> & {
    * @generated from field: google.protobuf.Timestamp update_time = 6;
    */
   updateTime?: Timestamp | undefined;
+
+  /**
+   * The applied connector version it runs. Unset for built-in connectors
+   * and ones from a runner's connectors directory.
+   *
+   * @generated from field: openetl.api.v1.ConnectorVersion connector = 7;
+   */
+  connector?: ConnectorVersion | undefined;
 };
 
 /**
@@ -102,6 +118,66 @@ export type Destination = Message<"openetl.api.v1.Destination"> & {
  */
 export const DestinationSchema: GenMessage<Destination> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_connection, 1);
+
+/**
+ * ConnectorVersion is an applied connector version, with what its metadata
+ * says about it.
+ *
+ * @generated from message openetl.api.v1.ConnectorVersion
+ */
+export type ConnectorVersion = Message<"openetl.api.v1.ConnectorVersion"> & {
+  /**
+   * connectors/{kind}-{name}/versions/{version}
+   *
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string version = 2;
+   */
+  version: string;
+
+  /**
+   * sha256:{hex}
+   *
+   * @generated from field: string digest = 3;
+   */
+  digest: string;
+
+  /**
+   * @generated from field: string author = 4;
+   */
+  author: string;
+
+  /**
+   * An https URL of an image.
+   *
+   * @generated from field: string logo = 5;
+   */
+  logo: string;
+
+  /**
+   * The git tag the version was released from.
+   *
+   * @generated from field: string release_tag = 6;
+   */
+  releaseTag: string;
+
+  /**
+   * An https URL, such as the release's page.
+   *
+   * @generated from field: string release_url = 7;
+   */
+  releaseUrl: string;
+};
+
+/**
+ * Describes the message openetl.api.v1.ConnectorVersion.
+ * Use `create(ConnectorVersionSchema)` to create a new message.
+ */
+export const ConnectorVersionSchema: GenMessage<ConnectorVersion> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_connection, 2);
 
 /**
  * ConnectorConfig is the spec of a Source or Destination document.
@@ -129,7 +205,7 @@ export type ConnectorConfig = Message<"openetl.api.v1.ConnectorConfig"> & {
  * Use `create(ConnectorConfigSchema)` to create a new message.
  */
 export const ConnectorConfigSchema: GenMessage<ConnectorConfig> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 2);
+  messageDesc(file_openetl_api_v1_connection, 3);
 
 /**
  * @generated from message openetl.api.v1.GetSourceRequest
@@ -146,7 +222,7 @@ export type GetSourceRequest = Message<"openetl.api.v1.GetSourceRequest"> & {
  * Use `create(GetSourceRequestSchema)` to create a new message.
  */
 export const GetSourceRequestSchema: GenMessage<GetSourceRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 3);
+  messageDesc(file_openetl_api_v1_connection, 4);
 
 /**
  * @generated from message openetl.api.v1.GetSourceResponse
@@ -163,7 +239,7 @@ export type GetSourceResponse = Message<"openetl.api.v1.GetSourceResponse"> & {
  * Use `create(GetSourceResponseSchema)` to create a new message.
  */
 export const GetSourceResponseSchema: GenMessage<GetSourceResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 4);
+  messageDesc(file_openetl_api_v1_connection, 5);
 
 /**
  * @generated from message openetl.api.v1.ListSourcesRequest
@@ -192,7 +268,7 @@ export type ListSourcesRequest = Message<"openetl.api.v1.ListSourcesRequest"> & 
  * Use `create(ListSourcesRequestSchema)` to create a new message.
  */
 export const ListSourcesRequestSchema: GenMessage<ListSourcesRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 5);
+  messageDesc(file_openetl_api_v1_connection, 6);
 
 /**
  * @generated from message openetl.api.v1.ListSourcesResponse
@@ -214,7 +290,7 @@ export type ListSourcesResponse = Message<"openetl.api.v1.ListSourcesResponse"> 
  * Use `create(ListSourcesResponseSchema)` to create a new message.
  */
 export const ListSourcesResponseSchema: GenMessage<ListSourcesResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 6);
+  messageDesc(file_openetl_api_v1_connection, 7);
 
 /**
  * @generated from message openetl.api.v1.DeleteSourceRequest
@@ -238,7 +314,7 @@ export type DeleteSourceRequest = Message<"openetl.api.v1.DeleteSourceRequest"> 
  * Use `create(DeleteSourceRequestSchema)` to create a new message.
  */
 export const DeleteSourceRequestSchema: GenMessage<DeleteSourceRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 7);
+  messageDesc(file_openetl_api_v1_connection, 8);
 
 /**
  * @generated from message openetl.api.v1.DeleteSourceResponse
@@ -251,7 +327,7 @@ export type DeleteSourceResponse = Message<"openetl.api.v1.DeleteSourceResponse"
  * Use `create(DeleteSourceResponseSchema)` to create a new message.
  */
 export const DeleteSourceResponseSchema: GenMessage<DeleteSourceResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 8);
+  messageDesc(file_openetl_api_v1_connection, 9);
 
 /**
  * @generated from message openetl.api.v1.GetDestinationRequest
@@ -268,7 +344,7 @@ export type GetDestinationRequest = Message<"openetl.api.v1.GetDestinationReques
  * Use `create(GetDestinationRequestSchema)` to create a new message.
  */
 export const GetDestinationRequestSchema: GenMessage<GetDestinationRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 9);
+  messageDesc(file_openetl_api_v1_connection, 10);
 
 /**
  * @generated from message openetl.api.v1.GetDestinationResponse
@@ -285,7 +361,7 @@ export type GetDestinationResponse = Message<"openetl.api.v1.GetDestinationRespo
  * Use `create(GetDestinationResponseSchema)` to create a new message.
  */
 export const GetDestinationResponseSchema: GenMessage<GetDestinationResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 10);
+  messageDesc(file_openetl_api_v1_connection, 11);
 
 /**
  * @generated from message openetl.api.v1.ListDestinationsRequest
@@ -314,7 +390,7 @@ export type ListDestinationsRequest = Message<"openetl.api.v1.ListDestinationsRe
  * Use `create(ListDestinationsRequestSchema)` to create a new message.
  */
 export const ListDestinationsRequestSchema: GenMessage<ListDestinationsRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 11);
+  messageDesc(file_openetl_api_v1_connection, 12);
 
 /**
  * @generated from message openetl.api.v1.ListDestinationsResponse
@@ -336,7 +412,7 @@ export type ListDestinationsResponse = Message<"openetl.api.v1.ListDestinationsR
  * Use `create(ListDestinationsResponseSchema)` to create a new message.
  */
 export const ListDestinationsResponseSchema: GenMessage<ListDestinationsResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 12);
+  messageDesc(file_openetl_api_v1_connection, 13);
 
 /**
  * @generated from message openetl.api.v1.DeleteDestinationRequest
@@ -360,7 +436,7 @@ export type DeleteDestinationRequest = Message<"openetl.api.v1.DeleteDestination
  * Use `create(DeleteDestinationRequestSchema)` to create a new message.
  */
 export const DeleteDestinationRequestSchema: GenMessage<DeleteDestinationRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 13);
+  messageDesc(file_openetl_api_v1_connection, 14);
 
 /**
  * @generated from message openetl.api.v1.DeleteDestinationResponse
@@ -373,7 +449,7 @@ export type DeleteDestinationResponse = Message<"openetl.api.v1.DeleteDestinatio
  * Use `create(DeleteDestinationResponseSchema)` to create a new message.
  */
 export const DeleteDestinationResponseSchema: GenMessage<DeleteDestinationResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 14);
+  messageDesc(file_openetl_api_v1_connection, 15);
 
 /**
  * @generated from message openetl.api.v1.CheckSourceRequest
@@ -397,7 +473,7 @@ export type CheckSourceRequest = Message<"openetl.api.v1.CheckSourceRequest"> & 
  * Use `create(CheckSourceRequestSchema)` to create a new message.
  */
 export const CheckSourceRequestSchema: GenMessage<CheckSourceRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 15);
+  messageDesc(file_openetl_api_v1_connection, 16);
 
 /**
  * @generated from message openetl.api.v1.CheckSourceResponse
@@ -414,7 +490,7 @@ export type CheckSourceResponse = Message<"openetl.api.v1.CheckSourceResponse"> 
  * Use `create(CheckSourceResponseSchema)` to create a new message.
  */
 export const CheckSourceResponseSchema: GenMessage<CheckSourceResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 16);
+  messageDesc(file_openetl_api_v1_connection, 17);
 
 /**
  * @generated from message openetl.api.v1.CheckDestinationRequest
@@ -438,7 +514,7 @@ export type CheckDestinationRequest = Message<"openetl.api.v1.CheckDestinationRe
  * Use `create(CheckDestinationRequestSchema)` to create a new message.
  */
 export const CheckDestinationRequestSchema: GenMessage<CheckDestinationRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 17);
+  messageDesc(file_openetl_api_v1_connection, 18);
 
 /**
  * @generated from message openetl.api.v1.CheckDestinationResponse
@@ -455,7 +531,7 @@ export type CheckDestinationResponse = Message<"openetl.api.v1.CheckDestinationR
  * Use `create(CheckDestinationResponseSchema)` to create a new message.
  */
 export const CheckDestinationResponseSchema: GenMessage<CheckDestinationResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 18);
+  messageDesc(file_openetl_api_v1_connection, 19);
 
 /**
  * CheckResult is a connector's answer to Check. A connector without a check
@@ -494,7 +570,7 @@ export type CheckResult = Message<"openetl.api.v1.CheckResult"> & {
  * Use `create(CheckResultSchema)` to create a new message.
  */
 export const CheckResultSchema: GenMessage<CheckResult> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 19);
+  messageDesc(file_openetl_api_v1_connection, 20);
 
 /**
  * @generated from message openetl.api.v1.DiscoverSourceRequest
@@ -518,7 +594,7 @@ export type DiscoverSourceRequest = Message<"openetl.api.v1.DiscoverSourceReques
  * Use `create(DiscoverSourceRequestSchema)` to create a new message.
  */
 export const DiscoverSourceRequestSchema: GenMessage<DiscoverSourceRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 20);
+  messageDesc(file_openetl_api_v1_connection, 21);
 
 /**
  * @generated from message openetl.api.v1.DiscoverSourceResponse
@@ -535,7 +611,7 @@ export type DiscoverSourceResponse = Message<"openetl.api.v1.DiscoverSourceRespo
  * Use `create(DiscoverSourceResponseSchema)` to create a new message.
  */
 export const DiscoverSourceResponseSchema: GenMessage<DiscoverSourceResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 21);
+  messageDesc(file_openetl_api_v1_connection, 22);
 
 /**
  * Catalog is what a source's Discover found.
@@ -566,7 +642,7 @@ export type Catalog = Message<"openetl.api.v1.Catalog"> & {
  * Use `create(CatalogSchema)` to create a new message.
  */
 export const CatalogSchema: GenMessage<Catalog> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 22);
+  messageDesc(file_openetl_api_v1_connection, 23);
 
 /**
  * @generated from message openetl.api.v1.CatalogStream
@@ -616,7 +692,7 @@ export type CatalogStream = Message<"openetl.api.v1.CatalogStream"> & {
  * Use `create(CatalogStreamSchema)` to create a new message.
  */
 export const CatalogStreamSchema: GenMessage<CatalogStream> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 23);
+  messageDesc(file_openetl_api_v1_connection, 24);
 
 /**
  * @generated from message openetl.api.v1.CatalogColumn
@@ -646,7 +722,7 @@ export type CatalogColumn = Message<"openetl.api.v1.CatalogColumn"> & {
  * Use `create(CatalogColumnSchema)` to create a new message.
  */
 export const CatalogColumnSchema: GenMessage<CatalogColumn> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connection, 24);
+  messageDesc(file_openetl_api_v1_connection, 25);
 
 /**
  * @generated from enum openetl.api.v1.SyncMode

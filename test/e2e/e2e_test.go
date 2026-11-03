@@ -12,12 +12,9 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +31,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
-	ggcr "github.com/google/go-containerregistry/pkg/registry"
 	"go.opentelemetry.io/otel/attribute"
 	"github.com/jackc/pgx/v5"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -51,12 +47,11 @@ import (
 	"github.com/unsuitable001/openetl/internal/auth"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/daemon"
-	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
 	"github.com/unsuitable001/openetl/internal/platform/telemetry"
 	"github.com/unsuitable001/openetl/internal/platform/telemetry/telemetrytest"
-	"github.com/unsuitable001/openetl/internal/registry"
+	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/internal/store/storetest"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
@@ -64,10 +59,10 @@ import (
 
 var env struct {
 	openetld, engine string
-	// The official connectors, built from openetl-connectors. Syncs run them
-	// from images in an in-process registry, by their applied descriptors.
+	// The official connectors, built from openetl-connectors. Syncs download
+	// them from a file server, by their applied descriptors.
 	connectors    string
-	registry      string
+	downloads     string
 	temporal, ns  string
 	dbURL, apiURL string
 	checkpoints   string
@@ -90,7 +85,7 @@ var env struct {
 	collector *telemetrytest.Collector
 }
 
-// The in-process registry is on loopback.
+// The connectors' file server is on loopback.
 const egressAllow = "127.0.0.1/32"
 
 func TestMain(m *testing.M) {
@@ -168,9 +163,9 @@ func setup(m *testing.M) (int, error) {
 	}
 	defer drop()
 
-	reg := httptest.NewServer(ggcr.New(ggcr.Logger(log.New(io.Discard, "", 0))))
-	defer reg.Close()
-	env.registry = strings.TrimPrefix(reg.URL, "http://")
+	files := httptest.NewServer(http.FileServer(http.Dir(env.connectors)))
+	defer files.Close()
+	env.downloads = files.URL
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
@@ -234,9 +229,8 @@ func setup(m *testing.M) (int, error) {
 }
 
 // applyOfficialConnectors packages the official connectors into the test
-// registry, for this platform, and applies their descriptors.
+// file server's descriptors, for this platform, and applies them.
 func applyOfficialConnectors(ctx context.Context) error {
-	c := &registry.Client{Policy: netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix(egressAllow)}}}
 	req := &apiv1.ApplyRequest{}
 	for _, exe := range []string{"source-postgres", "destination-postgres", "destination-iceberg", "destination-s3", "source-kafka", "destination-kafka", "source-kinesis", "destination-kinesis"} {
 		path := filepath.Join(env.connectors, exe)
@@ -246,7 +240,8 @@ func applyOfficialConnectors(ctx context.Context) error {
 			continue
 		}
 		_, name, _ := strings.Cut(exe, "-")
-		doc, err := connectorhost.Package(ctx, c, env.registry+"/openetl-connectors/"+exe+":e2e", name, "0.1.0", []registry.Executable{{Platform: registry.Platform(), Path: path}})
+		info := spec.Info{Author: "OpenETL", ReleaseTag: exe + "/v0.1.0"}
+		doc, err := connectorhost.Package(ctx, name, "0.1.0", info, []connectorhost.Executable{{Platform: connectorhost.Platform(), Path: path, URL: env.downloads + "/" + exe}})
 		if err != nil {
 			return fmt.Errorf("package %s: %w", exe, err)
 		}

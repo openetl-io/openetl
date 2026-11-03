@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,8 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/spec"
 )
 
 func manifest(name, version, path string) string {
@@ -123,6 +126,43 @@ func TestExternalConnectorsArePinned(t *testing.T) {
 	if err != nil || len(ents) == 0 {
 		t.Fatalf("no executables in the runner's cache: %v", err)
 	}
+	got, err := apiv1connect.NewDestinationServiceClient(env.http, env.apiURL).GetDestination(t.Context(),
+		connect.NewRequest(&apiv1.GetDestinationRequest{Name: "workspaces/default/destinations/" + name}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := got.Msg.GetDestination().GetConnector(); c.GetDigest() != digest || c.GetVersion() != "0.1.0" ||
+		c.GetAuthor() != "OpenETL" || c.GetReleaseTag() != "destination-postgres/v0.1.0" {
+		t.Errorf("the destination's connector version is %v", c)
+	}
+
+	// A descriptor without digests is pinned to what its URLs serve when
+	// it's applied.
+	exe := filepath.Join(env.connectors, "destination-postgres")
+	desc, err := connectorhost.Package(t.Context(), "postgres", "0.1.1", spec.Info{}, []connectorhost.Executable{
+		{Platform: connectorhost.Platform(), Path: exe, URL: env.downloads + "/destination-postgres"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpinned := regexp.MustCompile(`(?m)^\s*digest: \S+\n`).ReplaceAllString(string(desc), "")
+	if err := applyErr(t, unpinned); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := query[string](t, `SELECT convert_from(a.content, 'UTF8') FROM connector_versions v JOIN artifacts a USING (org_id, digest)
+		WHERE v.kind = 'destination' AND v.name = 'postgres' AND v.version = '0.1.1'`)
+	if err != nil || !strings.Contains(stored, connectorhost.Digest(content)) {
+		t.Errorf("the applied descriptor %s, %v: want the binary pinned to %s", stored, err, connectorhost.Digest(content))
+	}
+	missing := strings.Replace(strings.Replace(unpinned, "0.1.1", "0.1.2", 1), env.downloads+"/destination-postgres", env.downloads+"/missing", 1)
+	if err := applyErr(t, missing); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("a descriptor whose binary isn't there: %v", err)
+	}
+
 	if err := applyErr(t, destinationDoc(name, `{"connector": "postgres@sha256:`+strings.Repeat("0", 64)+`", "config": {}}`)); err == nil {
 		t.Error("applied a destination on a digest that isn't a version")
 	}

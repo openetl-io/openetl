@@ -67,6 +67,9 @@ message Source {
   string etag = 4;
   google.protobuf.Timestamp create_time = 5;
   google.protobuf.Timestamp update_time = 6;
+  // The applied connector version it runs. Unset for built-in connectors
+  // and ones from a runner's connectors directory.
+  ConnectorVersion connector = 7;
 }
 
 message Destination {
@@ -77,6 +80,26 @@ message Destination {
   string etag = 4;
   google.protobuf.Timestamp create_time = 5;
   google.protobuf.Timestamp update_time = 6;
+  // The applied connector version it runs. Unset for built-in connectors
+  // and ones from a runner's connectors directory.
+  ConnectorVersion connector = 7;
+}
+
+// ConnectorVersion is an applied connector version, with what its metadata
+// says about it.
+message ConnectorVersion {
+  // connectors/{kind}-{name}/versions/{version}
+  string name = 1;
+  string version = 2;
+  // sha256:{hex}
+  string digest = 3;
+  string author = 4;
+  // An https URL of an image.
+  string logo = 5;
+  // The git tag the version was released from.
+  string release_tag = 6;
+  // An https URL, such as the release's page.
+  string release_url = 7;
 }
 
 // ConnectorConfig is the spec of a Source or Destination document.

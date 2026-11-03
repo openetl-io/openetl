@@ -6,24 +6,20 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
 	"strings"
 
-	"github.com/google/go-containerregistry/pkg/authn"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/netguard"
-	"github.com/unsuitable001/openetl/internal/registry"
 	"github.com/unsuitable001/openetl/internal/spec"
 )
 
 const connectorUsage = `usage: openetl connector <command> [flags]
 
 Commands:
-  package   push an external connector's executables as an image, and write
-            its descriptor
+  package   write the descriptor of an external connector's executables,
+            which runners download from the URLs you give
   apply -f FILE
             apply the connector versions in FILE: descriptors and manifests
 `
@@ -46,37 +42,54 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 func runPackage(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("openetl connector package", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: openetl connector package --image REGISTRY/REPOSITORY:TAG --name NAME --version VERSION --exe OS/ARCH=PATH ... [-o FILE]")
-		fmt.Fprintln(fs.Output(), "\nOne executable must be for this machine's platform, which is run once to read its spec.")
+		fmt.Fprintln(fs.Output(), "usage: openetl connector package --name NAME --version VERSION --exe OS/ARCH=PATH ... (--url OS/ARCH=URL ... | --url-template URL) [-o FILE]")
+		fmt.Fprintln(fs.Output(), "\nWrites the descriptor of executables you publish yourself, such as a git release's assets. One must be for this machine's platform, which is run once to read its spec.")
 		fs.PrintDefaults()
 	}
-	var exes files
+	var exes, urls files
 	fs.Var(&exes, "exe", "an executable for a platform, as os/arch=path; repeatable")
-	image := fs.String("image", "", "the image to push, with a tag")
+	fs.Var(&urls, "url", "where runners download a platform's executable, as os/arch=url; repeatable")
+	template := fs.String("url-template", "", "where runners download each executable, with {os} and {arch} in it")
 	name := fs.String("name", "", "the connector's name, such as postgres")
 	version := fs.String("version", "", "the connector's version, such as 0.1.0")
+	var info spec.Info
+	fs.StringVar(&info.Author, "author", "", "who made the connector")
+	fs.StringVar(&info.Logo, "logo", "", "an https URL of its logo, for the UI")
+	fs.StringVar(&info.ReleaseTag, "release-tag", "", "the git tag the executables were built from")
+	fs.StringVar(&info.ReleaseURL, "release-url", "", "an https URL of the release, such as its page")
 	output := fs.String("o", "-", "where to write the descriptor")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *image == "" || *name == "" || *version == "" || len(exes) == 0 || fs.NArg() > 0 {
+	if *name == "" || *version == "" || len(exes) == 0 || (len(urls) == 0) == (*template == "") || fs.NArg() > 0 {
 		fs.Usage()
-		return errors.New("package needs --image, --name, --version and at least one --exe")
+		return errors.New("package needs --name, --version, at least one --exe, and --url or --url-template")
 	}
-	var push []registry.Executable
+	byPlatform := map[string]string{}
+	for _, u := range urls {
+		platform, url, ok := strings.Cut(u, "=")
+		if !ok {
+			return fmt.Errorf("--url %q isn't os/arch=url", u)
+		}
+		byPlatform[platform] = url
+	}
+	var pkg []connectorhost.Executable
 	for _, e := range exes {
 		platform, path, ok := strings.Cut(e, "=")
 		if !ok {
 			return fmt.Errorf("--exe %q isn't os/arch=path", e)
 		}
-		push = append(push, registry.Executable{Platform: platform, Path: path})
+		url := byPlatform[platform]
+		if *template != "" {
+			goos, arch, _ := strings.Cut(platform, "/")
+			url = strings.NewReplacer("{os}", goos, "{arch}", arch).Replace(*template)
+		}
+		if url == "" {
+			return fmt.Errorf("--exe for %s has no --url", platform)
+		}
+		pkg = append(pkg, connectorhost.Executable{Platform: platform, Path: path, URL: url})
 	}
-	// The user names the registry, so any address is allowed.
-	c := &registry.Client{
-		Policy:   netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}},
-		Keychain: authn.DefaultKeychain,
-	}
-	doc, err := connectorhost.Package(ctx, c, *image, *name, *version, push)
+	doc, err := connectorhost.Package(ctx, *name, *version, info, pkg)
 	if err != nil {
 		return err
 	}

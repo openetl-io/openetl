@@ -303,16 +303,42 @@ func (c connection) config() (*apiv1.ConnectorConfig, error) {
 	return cfg, protojson.Unmarshal(c.spec, cfg)
 }
 
-func (c connection) source(ws string) (*apiv1.Source, error) {
+func (c connection) source(ws string, versions map[string]*apiv1.ConnectorVersion) (*apiv1.Source, error) {
 	cfg, err := c.config()
 	return &apiv1.Source{Name: resourceName(ws, "sources", c.name), Spec: cfg, Version: c.version, Etag: etag(c.revision),
-		CreateTime: timestamppb.New(c.created), UpdateTime: timestamppb.New(c.updated)}, err
+		CreateTime: timestamppb.New(c.created), UpdateTime: timestamppb.New(c.updated), Connector: versions[c.connector]}, err
 }
 
-func (c connection) destination(ws string) (*apiv1.Destination, error) {
+func (c connection) destination(ws string, versions map[string]*apiv1.ConnectorVersion) (*apiv1.Destination, error) {
 	cfg, err := c.config()
 	return &apiv1.Destination{Name: resourceName(ws, "destinations", c.name), Spec: cfg, Version: c.version, Etag: etag(c.revision),
-		CreateTime: timestamppb.New(c.created), UpdateTime: timestamppb.New(c.updated)}, err
+		CreateTime: timestamppb.New(c.created), UpdateTime: timestamppb.New(c.updated), Connector: versions[c.connector]}, err
+}
+
+// connectorVersions returns the applied connector versions cs run, by
+// digest.
+func (s *Server) connectorVersions(ctx context.Context, cs ...connection) (map[string]*apiv1.ConnectorVersion, error) {
+	var digests []string
+	for _, c := range cs {
+		if c.connector != "" {
+			digests = append(digests, c.connector)
+		}
+	}
+	out := map[string]*apiv1.ConnectorVersion{}
+	if len(digests) == 0 {
+		return out, nil
+	}
+	rows, err := s.Store.ConnectorVersionsByDigest(ctx, db.ConnectorVersionsByDigestParams{OrgID: s.Tenant.Org, Digests: digests})
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.Digest] = &apiv1.ConnectorVersion{
+			Name: connectorName(r.Kind, r.Name, r.Version), Version: r.Version, Digest: r.Digest,
+			Author: r.Author, Logo: r.Logo, ReleaseTag: r.ReleaseTag, ReleaseUrl: r.ReleaseUrl,
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) getSource(ctx context.Context, name string) (string, connection, error) {
@@ -352,7 +378,11 @@ func (s *Server) GetSource(ctx context.Context, req *connect.Request[apiv1.GetSo
 	if err != nil {
 		return nil, err
 	}
-	out, err := c.source(ws)
+	versions, err := s.connectorVersions(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.source(ws, versions)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +394,11 @@ func (s *Server) GetDestination(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, err
 	}
-	out, err := c.destination(ws)
+	versions, err := s.connectorVersions(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.destination(ws, versions)
 	if err != nil {
 		return nil, err
 	}
@@ -385,8 +419,16 @@ func (s *Server) ListSources(ctx context.Context, req *connect.Request[apiv1.Lis
 		rows = rows[:n-1]
 		res.NextPageToken = nextToken(rows[len(rows)-1].Name)
 	}
-	for _, r := range rows {
-		out, err := fromSource(r).source(ws)
+	cs := make([]connection, len(rows))
+	for i, r := range rows {
+		cs[i] = fromSource(r)
+	}
+	versions, err := s.connectorVersions(ctx, cs...)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range cs {
+		out, err := c.source(ws, versions)
 		if err != nil {
 			return nil, err
 		}
@@ -409,8 +451,16 @@ func (s *Server) ListDestinations(ctx context.Context, req *connect.Request[apiv
 		rows = rows[:n-1]
 		res.NextPageToken = nextToken(rows[len(rows)-1].Name)
 	}
-	for _, r := range rows {
-		out, err := fromDestination(r).destination(ws)
+	cs := make([]connection, len(rows))
+	for i, r := range rows {
+		cs[i] = fromDestination(r)
+	}
+	versions, err := s.connectorVersions(ctx, cs...)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range cs {
+		out, err := c.destination(ws, versions)
 		if err != nil {
 			return nil, err
 		}

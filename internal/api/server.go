@@ -22,7 +22,6 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/registry"
 	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/store"
 )
@@ -54,8 +53,9 @@ type Server struct {
 	// and the connectors directory matter. Applied connector versions are
 	// added to it.
 	Connectors connectorhost.Env
-	// Pins external connectors' images. Nil: they can't be applied.
-	Registry *registry.Client
+	// Downloads external connectors' binaries, to pin the digests their
+	// descriptors leave out. Nil: only pinned descriptors can be applied.
+	Downloads *http.Client
 	// Seals secrets' values. Nil: secrets can't be stored.
 	Secrets *secrets.Keyring
 	// How far behind its source a continuous pipeline's read gets before

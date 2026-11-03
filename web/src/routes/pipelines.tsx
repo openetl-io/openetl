@@ -13,11 +13,12 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ConnectorLogo, connectorLabel } from "@/components/connector";
 import { Empty, ErrorNote } from "@/components/empty";
 import { RelativeTime } from "@/components/relative-time";
 import { StatusBadge } from "@/components/status";
 import { SyncStrip } from "@/components/sync-strip";
-import { DestinationService, SourceService } from "@/gen/openetl/api/v1/connection_pb";
+import { type ConnectorVersion, DestinationService, SourceService } from "@/gen/openetl/api/v1/connection_pb";
 import { PipelineService, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { errorMessage } from "@/lib/api";
@@ -58,9 +59,9 @@ export function PipelinesPage() {
   const sources = useQuery(SourceService.method.listSources, { parent, pageSize: 500 });
   const destinations = useQuery(DestinationService.method.listDestinations, { parent, pageSize: 500 });
   const connector = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const s of sources.data?.sources ?? []) m.set(`s/${lastSegment(s.name)}`, s.spec?.connector ?? "");
-    for (const d of destinations.data?.destinations ?? []) m.set(`d/${lastSegment(d.name)}`, d.spec?.connector ?? "");
+    const m = new Map<string, { label: string; version?: ConnectorVersion }>();
+    for (const s of sources.data?.sources ?? []) m.set(`s/${lastSegment(s.name)}`, { label: connectorLabel(s.spec?.connector, s.connector), version: s.connector });
+    for (const d of destinations.data?.destinations ?? []) m.set(`d/${lastSegment(d.name)}`, { label: connectorLabel(d.spec?.connector, d.connector), version: d.connector });
     return m;
   }, [sources.data, destinations.data]);
   const [sorting, setSorting] = useState<SortingState>([{ id: "status", desc: false }]);
@@ -110,11 +111,13 @@ export function PipelinesPage() {
                 {lastSegment(p.name)}
               </Link>
               <span className="truncate text-[0.8125rem] text-muted-foreground">
+                <ConnectorLogo version={connector.get(`s/${src}`)?.version} className="mr-1" />
                 <span className="text-foreground/80">{src}</span>
-                {connector.get(`s/${src}`) && ` (${connector.get(`s/${src}`)})`}
+                {connector.get(`s/${src}`)?.label && ` (${connector.get(`s/${src}`)?.label})`}
                 <span aria-label="to"> → </span>
+                <ConnectorLogo version={connector.get(`d/${dst}`)?.version} className="mr-1" />
                 <span className="text-foreground/80">{dst}</span>
-                {connector.get(`d/${dst}`) && ` (${connector.get(`d/${dst}`)})`}
+                {connector.get(`d/${dst}`)?.label && ` (${connector.get(`d/${dst}`)?.label})`}
               </span>
             </div>
           );

@@ -99,7 +99,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("%s: %w", origins[i], errors.Unwrap(err)))
 		}
 	}
-	if err := s.pinImages(ctx, docs, origins); err != nil {
+	if err := s.pinBinaries(ctx, docs, origins); err != nil {
 		return nil, err
 	}
 	// Sources and destinations refer to connector versions, and pipelines to

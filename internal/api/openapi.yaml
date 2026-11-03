@@ -2326,6 +2326,31 @@ components:
                     type: object
                     description: Secret fields hold secret references, never values.
             description: ConnectorConfig is the spec of a Source or Destination document.
+        ConnectorVersion:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: connectors/{kind}-{name}/versions/{version}
+                version:
+                    type: string
+                digest:
+                    type: string
+                    description: sha256:{hex}
+                author:
+                    type: string
+                logo:
+                    type: string
+                    description: An https URL of an image.
+                releaseTag:
+                    type: string
+                    description: The git tag the version was released from.
+                releaseUrl:
+                    type: string
+                    description: An https URL, such as the release's page.
+            description: |-
+                ConnectorVersion is an applied connector version, with what its metadata
+                 says about it.
         CreateKeyRequest:
             type: object
             properties:
@@ -2480,6 +2505,12 @@ components:
                 updateTime:
                     type: string
                     format: date-time
+                connector:
+                    allOf:
+                        - $ref: '#/components/schemas/ConnectorVersion'
+                    description: |-
+                        The applied connector version it runs. Unset for built-in connectors
+                         and ones from a runner's connectors directory.
         DisablePrincipalRequest:
             type: object
             properties:
@@ -3469,6 +3500,12 @@ components:
                 updateTime:
                     type: string
                     format: date-time
+                connector:
+                    allOf:
+                        - $ref: '#/components/schemas/ConnectorVersion'
+                    description: |-
+                        The applied connector version it runs. Unset for built-in connectors
+                         and ones from a runner's connectors directory.
         Status:
             type: object
             properties:

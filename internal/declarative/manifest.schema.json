@@ -23,6 +23,25 @@
           "description": "Semantic version.",
           "type": "string",
           "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+        },
+        "author": {
+          "description": "Who made the connector.",
+          "type": "string",
+          "maxLength": 200
+        },
+        "logo": {
+          "description": "An https URL of the connector's logo, which the UI shows.",
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "release": {
+          "description": "The git release this version comes from.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tag": { "description": "The git tag.", "type": "string", "maxLength": 255 },
+            "url": { "description": "An https URL, such as the release's page.", "type": "string", "pattern": "^https://" }
+          }
         }
       }
     },

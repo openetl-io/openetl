@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { Info, TriangleAlert } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { connectorLabel } from "@/components/connector";
 import { ErrorNote } from "@/components/empty";
 import { Incidents } from "@/components/incidents";
 import { IncidentService, IncidentState } from "@/gen/openetl/api/v1/incident_pb";
@@ -14,7 +15,7 @@ import {
   DbtCommand,
   type Pipeline,
 } from "@/gen/openetl/api/v1/pipeline_pb";
-import { SyncMode } from "@/gen/openetl/api/v1/connection_pb";
+import { type ConnectorVersion, SyncMode } from "@/gen/openetl/api/v1/connection_pb";
 import { SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { errorMessage } from "@/lib/api";
 import { compact, enumLabel, full, sentence } from "@/lib/format";
@@ -57,6 +58,8 @@ function Callout({ tone, children }: { tone: keyof typeof calloutTone; children:
   );
 }
 
+type ConnectorRef = { ref?: string; version?: ConnectorVersion };
+
 export function Overview({
   workspace,
   pipeline,
@@ -66,7 +69,7 @@ export function Overview({
   workspace: string;
   pipeline: Pipeline;
   syncs: Sync[];
-  connectors: { source?: string; destination?: string };
+  connectors: { source: ConnectorRef; destination: ConnectorRef };
 }) {
   const plan = useQuery(PipelineService.method.getPipelinePlan, { name: pipeline.name });
   const schemas = useQuery(PipelineService.method.listStreamSchemas, { parent: pipeline.name, pageSize: 500 });
@@ -125,10 +128,11 @@ export function Overview({
       <section aria-label="Graph" className="h-[340px] overflow-hidden rounded-lg border bg-card">
         <Suspense fallback={<Skeleton className="size-full rounded-none" />}>
           <PipelineGraph
-            source={{ name: spec?.source?.ref ?? "", connector: connectors.source }}
+            source={{ name: spec?.source?.ref ?? "", connector: connectorLabel(connectors.source.ref, connectors.source.version), logo: connectors.source.version?.logo }}
             destination={{
               name: spec?.destination?.ref ?? "",
-              connector: connectors.destination,
+              connector: connectorLabel(connectors.destination.ref, connectors.destination.version),
+              logo: connectors.destination.version?.logo,
               detail: [spec?.destination?.namespace && `schema ${spec.destination.namespace}`, enumLabel(WriteMode[spec?.destination?.write ?? 0])]
                 .filter(Boolean)
                 .join(", "),

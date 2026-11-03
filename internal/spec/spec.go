@@ -47,7 +47,9 @@ type Document struct {
 	Name      string
 	Workspace string
 	// Connector versions only: a semantic version.
-	Version    string
+	Version string
+	// Connector versions only.
+	Info       Info
 	Connector  *apiv1.ConnectorConfig
 	Pipeline   *apiv1.PipelineSpec
 	Descriptor *Descriptor
@@ -66,9 +68,50 @@ type envelope struct {
 }
 
 type metadata struct {
-	Name      string `yaml:"name"`
-	Workspace string `yaml:"workspace"`
-	Version   string `yaml:"version"`
+	Name      string       `yaml:"name"`
+	Workspace string       `yaml:"workspace"`
+	Version   string       `yaml:"version"`
+	Author    string       `yaml:"author"`
+	Logo      string       `yaml:"logo"`
+	Release   *releaseYAML `yaml:"release"`
+}
+
+type releaseYAML struct {
+	Tag string `yaml:"tag,omitempty" json:"tag,omitempty"`
+	URL string `yaml:"url,omitempty" json:"url,omitempty"`
+}
+
+// Info describes a connector version for people and the UI: who made it,
+// its logo, and the git release it came from. All of it is optional.
+type Info struct {
+	Author string
+	// An https URL of an image.
+	Logo       string
+	ReleaseTag string
+	// An https URL, such as the release's page.
+	ReleaseURL string
+}
+
+func parseInfo(m metadata) (Info, error) {
+	info := Info{Author: m.Author, Logo: m.Logo}
+	if m.Release != nil {
+		info.ReleaseTag, info.ReleaseURL = m.Release.Tag, m.Release.URL
+	}
+	switch {
+	case len(info.Author) > 200:
+		return info, errors.New("metadata.author is longer than 200 characters")
+	case len(info.ReleaseTag) > 255 || strings.ContainsAny(info.ReleaseTag, " \t\n"):
+		return info, fmt.Errorf("metadata.release.tag %q isn't a git tag", info.ReleaseTag)
+	}
+	for field, v := range map[string]string{"metadata.logo": info.Logo, "metadata.release.url": info.ReleaseURL} {
+		if v == "" {
+			continue
+		}
+		if u, err := url.Parse(v); err != nil || u.Scheme != "https" || u.Host == "" || len(v) > 2048 {
+			return info, fmt.Errorf("%s %q must be an https URL", field, v)
+		}
+	}
+	return info, nil
 }
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
@@ -102,6 +145,12 @@ func Parse(content []byte) (*Document, error) {
 		return nil, fmt.Errorf("metadata.version %q must be a semantic version, such as 1.2.0", env.Metadata.Version)
 	case !versioned && env.Metadata.Version != "":
 		return nil, fmt.Errorf("metadata.version: a %s has no version", env.Kind)
+	case !versioned && (env.Metadata.Author != "" || env.Metadata.Logo != "" || env.Metadata.Release != nil):
+		return nil, fmt.Errorf("metadata: author, logo and release are a connector version's, not a %s's", env.Kind)
+	}
+	var err error
+	if doc.Info, err = parseInfo(env.Metadata); err != nil {
+		return nil, err
 	}
 	spec, err := yaml.Marshal(&env.Spec)
 	if err != nil {

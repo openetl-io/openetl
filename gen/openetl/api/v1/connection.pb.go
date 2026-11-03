@@ -134,12 +134,15 @@ func (Replay) EnumDescriptor() ([]byte, []int) {
 type Source struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}/sources/{source}
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Spec          *ConnectorConfig       `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
-	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
-	Etag          string                 `protobuf:"bytes,4,opt,name=etag,proto3" json:"etag,omitempty"`
-	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
-	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Spec       *ConnectorConfig       `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
+	Version    string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	Etag       string                 `protobuf:"bytes,4,opt,name=etag,proto3" json:"etag,omitempty"`
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	UpdateTime *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
+	// The applied connector version it runs. Unset for built-in connectors
+	// and ones from a runner's connectors directory.
+	Connector     *ConnectorVersion `protobuf:"bytes,7,opt,name=connector,proto3" json:"connector,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -216,15 +219,25 @@ func (x *Source) GetUpdateTime() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Source) GetConnector() *ConnectorVersion {
+	if x != nil {
+		return x.Connector
+	}
+	return nil
+}
+
 type Destination struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}/destinations/{destination}
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Spec          *ConnectorConfig       `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
-	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
-	Etag          string                 `protobuf:"bytes,4,opt,name=etag,proto3" json:"etag,omitempty"`
-	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
-	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Spec       *ConnectorConfig       `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
+	Version    string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	Etag       string                 `protobuf:"bytes,4,opt,name=etag,proto3" json:"etag,omitempty"`
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	UpdateTime *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
+	// The applied connector version it runs. Unset for built-in connectors
+	// and ones from a runner's connectors directory.
+	Connector     *ConnectorVersion `protobuf:"bytes,7,opt,name=connector,proto3" json:"connector,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -301,6 +314,112 @@ func (x *Destination) GetUpdateTime() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Destination) GetConnector() *ConnectorVersion {
+	if x != nil {
+		return x.Connector
+	}
+	return nil
+}
+
+// ConnectorVersion is an applied connector version, with what its metadata
+// says about it.
+type ConnectorVersion struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// connectors/{kind}-{name}/versions/{version}
+	Name    string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Version string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	// sha256:{hex}
+	Digest string `protobuf:"bytes,3,opt,name=digest,proto3" json:"digest,omitempty"`
+	Author string `protobuf:"bytes,4,opt,name=author,proto3" json:"author,omitempty"`
+	// An https URL of an image.
+	Logo string `protobuf:"bytes,5,opt,name=logo,proto3" json:"logo,omitempty"`
+	// The git tag the version was released from.
+	ReleaseTag string `protobuf:"bytes,6,opt,name=release_tag,json=releaseTag,proto3" json:"release_tag,omitempty"`
+	// An https URL, such as the release's page.
+	ReleaseUrl    string `protobuf:"bytes,7,opt,name=release_url,json=releaseUrl,proto3" json:"release_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectorVersion) Reset() {
+	*x = ConnectorVersion{}
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectorVersion) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectorVersion) ProtoMessage() {}
+
+func (x *ConnectorVersion) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectorVersion.ProtoReflect.Descriptor instead.
+func (*ConnectorVersion) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ConnectorVersion) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetDigest() string {
+	if x != nil {
+		return x.Digest
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetAuthor() string {
+	if x != nil {
+		return x.Author
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetLogo() string {
+	if x != nil {
+		return x.Logo
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetReleaseTag() string {
+	if x != nil {
+		return x.ReleaseTag
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetReleaseUrl() string {
+	if x != nil {
+		return x.ReleaseUrl
+	}
+	return ""
+}
+
 // ConnectorConfig is the spec of a Source or Destination document.
 type ConnectorConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -314,7 +433,7 @@ type ConnectorConfig struct {
 
 func (x *ConnectorConfig) Reset() {
 	*x = ConnectorConfig{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[2]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -326,7 +445,7 @@ func (x *ConnectorConfig) String() string {
 func (*ConnectorConfig) ProtoMessage() {}
 
 func (x *ConnectorConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[2]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -339,7 +458,7 @@ func (x *ConnectorConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectorConfig.ProtoReflect.Descriptor instead.
 func (*ConnectorConfig) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{2}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ConnectorConfig) GetConnector() string {
@@ -365,7 +484,7 @@ type GetSourceRequest struct {
 
 func (x *GetSourceRequest) Reset() {
 	*x = GetSourceRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[3]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -377,7 +496,7 @@ func (x *GetSourceRequest) String() string {
 func (*GetSourceRequest) ProtoMessage() {}
 
 func (x *GetSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[3]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -390,7 +509,7 @@ func (x *GetSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSourceRequest.ProtoReflect.Descriptor instead.
 func (*GetSourceRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{3}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetSourceRequest) GetName() string {
@@ -409,7 +528,7 @@ type GetSourceResponse struct {
 
 func (x *GetSourceResponse) Reset() {
 	*x = GetSourceResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[4]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -421,7 +540,7 @@ func (x *GetSourceResponse) String() string {
 func (*GetSourceResponse) ProtoMessage() {}
 
 func (x *GetSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[4]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -434,7 +553,7 @@ func (x *GetSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSourceResponse.ProtoReflect.Descriptor instead.
 func (*GetSourceResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{4}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GetSourceResponse) GetSource() *Source {
@@ -456,7 +575,7 @@ type ListSourcesRequest struct {
 
 func (x *ListSourcesRequest) Reset() {
 	*x = ListSourcesRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[5]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -468,7 +587,7 @@ func (x *ListSourcesRequest) String() string {
 func (*ListSourcesRequest) ProtoMessage() {}
 
 func (x *ListSourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[5]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -481,7 +600,7 @@ func (x *ListSourcesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSourcesRequest.ProtoReflect.Descriptor instead.
 func (*ListSourcesRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{5}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListSourcesRequest) GetParent() string {
@@ -515,7 +634,7 @@ type ListSourcesResponse struct {
 
 func (x *ListSourcesResponse) Reset() {
 	*x = ListSourcesResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[6]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -527,7 +646,7 @@ func (x *ListSourcesResponse) String() string {
 func (*ListSourcesResponse) ProtoMessage() {}
 
 func (x *ListSourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[6]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -540,7 +659,7 @@ func (x *ListSourcesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSourcesResponse.ProtoReflect.Descriptor instead.
 func (*ListSourcesResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{6}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListSourcesResponse) GetSources() []*Source {
@@ -568,7 +687,7 @@ type DeleteSourceRequest struct {
 
 func (x *DeleteSourceRequest) Reset() {
 	*x = DeleteSourceRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[7]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -580,7 +699,7 @@ func (x *DeleteSourceRequest) String() string {
 func (*DeleteSourceRequest) ProtoMessage() {}
 
 func (x *DeleteSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[7]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -593,7 +712,7 @@ func (x *DeleteSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSourceRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSourceRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{7}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DeleteSourceRequest) GetName() string {
@@ -618,7 +737,7 @@ type DeleteSourceResponse struct {
 
 func (x *DeleteSourceResponse) Reset() {
 	*x = DeleteSourceResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[8]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -630,7 +749,7 @@ func (x *DeleteSourceResponse) String() string {
 func (*DeleteSourceResponse) ProtoMessage() {}
 
 func (x *DeleteSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[8]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -643,7 +762,7 @@ func (x *DeleteSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSourceResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSourceResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{8}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{9}
 }
 
 type GetDestinationRequest struct {
@@ -655,7 +774,7 @@ type GetDestinationRequest struct {
 
 func (x *GetDestinationRequest) Reset() {
 	*x = GetDestinationRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[9]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -667,7 +786,7 @@ func (x *GetDestinationRequest) String() string {
 func (*GetDestinationRequest) ProtoMessage() {}
 
 func (x *GetDestinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[9]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -680,7 +799,7 @@ func (x *GetDestinationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDestinationRequest.ProtoReflect.Descriptor instead.
 func (*GetDestinationRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{9}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetDestinationRequest) GetName() string {
@@ -699,7 +818,7 @@ type GetDestinationResponse struct {
 
 func (x *GetDestinationResponse) Reset() {
 	*x = GetDestinationResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[10]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -711,7 +830,7 @@ func (x *GetDestinationResponse) String() string {
 func (*GetDestinationResponse) ProtoMessage() {}
 
 func (x *GetDestinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[10]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -724,7 +843,7 @@ func (x *GetDestinationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDestinationResponse.ProtoReflect.Descriptor instead.
 func (*GetDestinationResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{10}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetDestinationResponse) GetDestination() *Destination {
@@ -746,7 +865,7 @@ type ListDestinationsRequest struct {
 
 func (x *ListDestinationsRequest) Reset() {
 	*x = ListDestinationsRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[11]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -758,7 +877,7 @@ func (x *ListDestinationsRequest) String() string {
 func (*ListDestinationsRequest) ProtoMessage() {}
 
 func (x *ListDestinationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[11]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -771,7 +890,7 @@ func (x *ListDestinationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDestinationsRequest.ProtoReflect.Descriptor instead.
 func (*ListDestinationsRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{11}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListDestinationsRequest) GetParent() string {
@@ -805,7 +924,7 @@ type ListDestinationsResponse struct {
 
 func (x *ListDestinationsResponse) Reset() {
 	*x = ListDestinationsResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[12]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -817,7 +936,7 @@ func (x *ListDestinationsResponse) String() string {
 func (*ListDestinationsResponse) ProtoMessage() {}
 
 func (x *ListDestinationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[12]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -830,7 +949,7 @@ func (x *ListDestinationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDestinationsResponse.ProtoReflect.Descriptor instead.
 func (*ListDestinationsResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{12}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListDestinationsResponse) GetDestinations() []*Destination {
@@ -858,7 +977,7 @@ type DeleteDestinationRequest struct {
 
 func (x *DeleteDestinationRequest) Reset() {
 	*x = DeleteDestinationRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[13]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -870,7 +989,7 @@ func (x *DeleteDestinationRequest) String() string {
 func (*DeleteDestinationRequest) ProtoMessage() {}
 
 func (x *DeleteDestinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[13]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -883,7 +1002,7 @@ func (x *DeleteDestinationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDestinationRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDestinationRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{13}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeleteDestinationRequest) GetName() string {
@@ -908,7 +1027,7 @@ type DeleteDestinationResponse struct {
 
 func (x *DeleteDestinationResponse) Reset() {
 	*x = DeleteDestinationResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[14]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -920,7 +1039,7 @@ func (x *DeleteDestinationResponse) String() string {
 func (*DeleteDestinationResponse) ProtoMessage() {}
 
 func (x *DeleteDestinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[14]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -933,7 +1052,7 @@ func (x *DeleteDestinationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDestinationResponse.ProtoReflect.Descriptor instead.
 func (*DeleteDestinationResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{14}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{15}
 }
 
 type CheckSourceRequest struct {
@@ -947,7 +1066,7 @@ type CheckSourceRequest struct {
 
 func (x *CheckSourceRequest) Reset() {
 	*x = CheckSourceRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[15]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -959,7 +1078,7 @@ func (x *CheckSourceRequest) String() string {
 func (*CheckSourceRequest) ProtoMessage() {}
 
 func (x *CheckSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[15]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -972,7 +1091,7 @@ func (x *CheckSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckSourceRequest.ProtoReflect.Descriptor instead.
 func (*CheckSourceRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{15}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CheckSourceRequest) GetName() string {
@@ -998,7 +1117,7 @@ type CheckSourceResponse struct {
 
 func (x *CheckSourceResponse) Reset() {
 	*x = CheckSourceResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[16]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1010,7 +1129,7 @@ func (x *CheckSourceResponse) String() string {
 func (*CheckSourceResponse) ProtoMessage() {}
 
 func (x *CheckSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[16]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1023,7 +1142,7 @@ func (x *CheckSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckSourceResponse.ProtoReflect.Descriptor instead.
 func (*CheckSourceResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{16}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CheckSourceResponse) GetResult() *CheckResult {
@@ -1044,7 +1163,7 @@ type CheckDestinationRequest struct {
 
 func (x *CheckDestinationRequest) Reset() {
 	*x = CheckDestinationRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[17]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1056,7 +1175,7 @@ func (x *CheckDestinationRequest) String() string {
 func (*CheckDestinationRequest) ProtoMessage() {}
 
 func (x *CheckDestinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[17]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1069,7 +1188,7 @@ func (x *CheckDestinationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckDestinationRequest.ProtoReflect.Descriptor instead.
 func (*CheckDestinationRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{17}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CheckDestinationRequest) GetName() string {
@@ -1095,7 +1214,7 @@ type CheckDestinationResponse struct {
 
 func (x *CheckDestinationResponse) Reset() {
 	*x = CheckDestinationResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[18]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1107,7 +1226,7 @@ func (x *CheckDestinationResponse) String() string {
 func (*CheckDestinationResponse) ProtoMessage() {}
 
 func (x *CheckDestinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[18]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1120,7 +1239,7 @@ func (x *CheckDestinationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckDestinationResponse.ProtoReflect.Descriptor instead.
 func (*CheckDestinationResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{18}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CheckDestinationResponse) GetResult() *CheckResult {
@@ -1146,7 +1265,7 @@ type CheckResult struct {
 
 func (x *CheckResult) Reset() {
 	*x = CheckResult{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[19]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1158,7 +1277,7 @@ func (x *CheckResult) String() string {
 func (*CheckResult) ProtoMessage() {}
 
 func (x *CheckResult) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[19]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1171,7 +1290,7 @@ func (x *CheckResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckResult.ProtoReflect.Descriptor instead.
 func (*CheckResult) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{19}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CheckResult) GetOk() bool {
@@ -1213,7 +1332,7 @@ type DiscoverSourceRequest struct {
 
 func (x *DiscoverSourceRequest) Reset() {
 	*x = DiscoverSourceRequest{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[20]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1225,7 +1344,7 @@ func (x *DiscoverSourceRequest) String() string {
 func (*DiscoverSourceRequest) ProtoMessage() {}
 
 func (x *DiscoverSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[20]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1238,7 +1357,7 @@ func (x *DiscoverSourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiscoverSourceRequest.ProtoReflect.Descriptor instead.
 func (*DiscoverSourceRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{20}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DiscoverSourceRequest) GetName() string {
@@ -1264,7 +1383,7 @@ type DiscoverSourceResponse struct {
 
 func (x *DiscoverSourceResponse) Reset() {
 	*x = DiscoverSourceResponse{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[21]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1276,7 +1395,7 @@ func (x *DiscoverSourceResponse) String() string {
 func (*DiscoverSourceResponse) ProtoMessage() {}
 
 func (x *DiscoverSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[21]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1289,7 +1408,7 @@ func (x *DiscoverSourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiscoverSourceResponse.ProtoReflect.Descriptor instead.
 func (*DiscoverSourceResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{21}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DiscoverSourceResponse) GetCatalog() *Catalog {
@@ -1312,7 +1431,7 @@ type Catalog struct {
 
 func (x *Catalog) Reset() {
 	*x = Catalog{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[22]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1324,7 +1443,7 @@ func (x *Catalog) String() string {
 func (*Catalog) ProtoMessage() {}
 
 func (x *Catalog) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[22]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1337,7 +1456,7 @@ func (x *Catalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Catalog.ProtoReflect.Descriptor instead.
 func (*Catalog) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{22}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Catalog) GetStreams() []*CatalogStream {
@@ -1380,7 +1499,7 @@ type CatalogStream struct {
 
 func (x *CatalogStream) Reset() {
 	*x = CatalogStream{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[23]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1392,7 +1511,7 @@ func (x *CatalogStream) String() string {
 func (*CatalogStream) ProtoMessage() {}
 
 func (x *CatalogStream) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[23]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1405,7 +1524,7 @@ func (x *CatalogStream) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogStream.ProtoReflect.Descriptor instead.
 func (*CatalogStream) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{23}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CatalogStream) GetName() string {
@@ -1463,7 +1582,7 @@ type CatalogColumn struct {
 
 func (x *CatalogColumn) Reset() {
 	*x = CatalogColumn{}
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[24]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1475,7 +1594,7 @@ func (x *CatalogColumn) String() string {
 func (*CatalogColumn) ProtoMessage() {}
 
 func (x *CatalogColumn) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connection_proto_msgTypes[24]
+	mi := &file_openetl_api_v1_connection_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1488,7 +1607,7 @@ func (x *CatalogColumn) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogColumn.ProtoReflect.Descriptor instead.
 func (*CatalogColumn) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{24}
+	return file_openetl_api_v1_connection_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CatalogColumn) GetName() string {
@@ -1516,7 +1635,7 @@ var File_openetl_api_v1_connection_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\n" +
-	"\x1fopenetl/api/v1/connection.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf9\x01\n" +
+	"\x1fopenetl/api/v1/connection.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb9\x02\n" +
 	"\x06Source\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04spec\x18\x02 \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\x04spec\x12\x18\n" +
@@ -1525,7 +1644,8 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\vcreate_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12;\n" +
 	"\vupdate_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"updateTime\"\xfe\x01\n" +
+	"updateTime\x12>\n" +
+	"\tconnector\x18\a \x01(\v2 .openetl.api.v1.ConnectorVersionR\tconnector\"\xbe\x02\n" +
 	"\vDestination\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04spec\x18\x02 \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\x04spec\x12\x18\n" +
@@ -1534,7 +1654,18 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\vcreate_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12;\n" +
 	"\vupdate_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"updateTime\"`\n" +
+	"updateTime\x12>\n" +
+	"\tconnector\x18\a \x01(\v2 .openetl.api.v1.ConnectorVersionR\tconnector\"\xc6\x01\n" +
+	"\x10ConnectorVersion\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12\x16\n" +
+	"\x06digest\x18\x03 \x01(\tR\x06digest\x12\x16\n" +
+	"\x06author\x18\x04 \x01(\tR\x06author\x12\x12\n" +
+	"\x04logo\x18\x05 \x01(\tR\x04logo\x12\x1f\n" +
+	"\vrelease_tag\x18\x06 \x01(\tR\n" +
+	"releaseTag\x12\x1f\n" +
+	"\vrelease_url\x18\a \x01(\tR\n" +
+	"releaseUrl\"`\n" +
 	"\x0fConnectorConfig\x12\x1c\n" +
 	"\tconnector\x18\x01 \x01(\tR\tconnector\x12/\n" +
 	"\x06config\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x06config\"&\n" +
@@ -1645,81 +1776,84 @@ func file_openetl_api_v1_connection_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_api_v1_connection_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_openetl_api_v1_connection_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_openetl_api_v1_connection_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_openetl_api_v1_connection_proto_goTypes = []any{
 	(SyncMode)(0),                     // 0: openetl.api.v1.SyncMode
 	(Replay)(0),                       // 1: openetl.api.v1.Replay
 	(*Source)(nil),                    // 2: openetl.api.v1.Source
 	(*Destination)(nil),               // 3: openetl.api.v1.Destination
-	(*ConnectorConfig)(nil),           // 4: openetl.api.v1.ConnectorConfig
-	(*GetSourceRequest)(nil),          // 5: openetl.api.v1.GetSourceRequest
-	(*GetSourceResponse)(nil),         // 6: openetl.api.v1.GetSourceResponse
-	(*ListSourcesRequest)(nil),        // 7: openetl.api.v1.ListSourcesRequest
-	(*ListSourcesResponse)(nil),       // 8: openetl.api.v1.ListSourcesResponse
-	(*DeleteSourceRequest)(nil),       // 9: openetl.api.v1.DeleteSourceRequest
-	(*DeleteSourceResponse)(nil),      // 10: openetl.api.v1.DeleteSourceResponse
-	(*GetDestinationRequest)(nil),     // 11: openetl.api.v1.GetDestinationRequest
-	(*GetDestinationResponse)(nil),    // 12: openetl.api.v1.GetDestinationResponse
-	(*ListDestinationsRequest)(nil),   // 13: openetl.api.v1.ListDestinationsRequest
-	(*ListDestinationsResponse)(nil),  // 14: openetl.api.v1.ListDestinationsResponse
-	(*DeleteDestinationRequest)(nil),  // 15: openetl.api.v1.DeleteDestinationRequest
-	(*DeleteDestinationResponse)(nil), // 16: openetl.api.v1.DeleteDestinationResponse
-	(*CheckSourceRequest)(nil),        // 17: openetl.api.v1.CheckSourceRequest
-	(*CheckSourceResponse)(nil),       // 18: openetl.api.v1.CheckSourceResponse
-	(*CheckDestinationRequest)(nil),   // 19: openetl.api.v1.CheckDestinationRequest
-	(*CheckDestinationResponse)(nil),  // 20: openetl.api.v1.CheckDestinationResponse
-	(*CheckResult)(nil),               // 21: openetl.api.v1.CheckResult
-	(*DiscoverSourceRequest)(nil),     // 22: openetl.api.v1.DiscoverSourceRequest
-	(*DiscoverSourceResponse)(nil),    // 23: openetl.api.v1.DiscoverSourceResponse
-	(*Catalog)(nil),                   // 24: openetl.api.v1.Catalog
-	(*CatalogStream)(nil),             // 25: openetl.api.v1.CatalogStream
-	(*CatalogColumn)(nil),             // 26: openetl.api.v1.CatalogColumn
-	(*timestamppb.Timestamp)(nil),     // 27: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),           // 28: google.protobuf.Struct
+	(*ConnectorVersion)(nil),          // 4: openetl.api.v1.ConnectorVersion
+	(*ConnectorConfig)(nil),           // 5: openetl.api.v1.ConnectorConfig
+	(*GetSourceRequest)(nil),          // 6: openetl.api.v1.GetSourceRequest
+	(*GetSourceResponse)(nil),         // 7: openetl.api.v1.GetSourceResponse
+	(*ListSourcesRequest)(nil),        // 8: openetl.api.v1.ListSourcesRequest
+	(*ListSourcesResponse)(nil),       // 9: openetl.api.v1.ListSourcesResponse
+	(*DeleteSourceRequest)(nil),       // 10: openetl.api.v1.DeleteSourceRequest
+	(*DeleteSourceResponse)(nil),      // 11: openetl.api.v1.DeleteSourceResponse
+	(*GetDestinationRequest)(nil),     // 12: openetl.api.v1.GetDestinationRequest
+	(*GetDestinationResponse)(nil),    // 13: openetl.api.v1.GetDestinationResponse
+	(*ListDestinationsRequest)(nil),   // 14: openetl.api.v1.ListDestinationsRequest
+	(*ListDestinationsResponse)(nil),  // 15: openetl.api.v1.ListDestinationsResponse
+	(*DeleteDestinationRequest)(nil),  // 16: openetl.api.v1.DeleteDestinationRequest
+	(*DeleteDestinationResponse)(nil), // 17: openetl.api.v1.DeleteDestinationResponse
+	(*CheckSourceRequest)(nil),        // 18: openetl.api.v1.CheckSourceRequest
+	(*CheckSourceResponse)(nil),       // 19: openetl.api.v1.CheckSourceResponse
+	(*CheckDestinationRequest)(nil),   // 20: openetl.api.v1.CheckDestinationRequest
+	(*CheckDestinationResponse)(nil),  // 21: openetl.api.v1.CheckDestinationResponse
+	(*CheckResult)(nil),               // 22: openetl.api.v1.CheckResult
+	(*DiscoverSourceRequest)(nil),     // 23: openetl.api.v1.DiscoverSourceRequest
+	(*DiscoverSourceResponse)(nil),    // 24: openetl.api.v1.DiscoverSourceResponse
+	(*Catalog)(nil),                   // 25: openetl.api.v1.Catalog
+	(*CatalogStream)(nil),             // 26: openetl.api.v1.CatalogStream
+	(*CatalogColumn)(nil),             // 27: openetl.api.v1.CatalogColumn
+	(*timestamppb.Timestamp)(nil),     // 28: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),           // 29: google.protobuf.Struct
 }
 var file_openetl_api_v1_connection_proto_depIdxs = []int32{
-	4,  // 0: openetl.api.v1.Source.spec:type_name -> openetl.api.v1.ConnectorConfig
-	27, // 1: openetl.api.v1.Source.create_time:type_name -> google.protobuf.Timestamp
-	27, // 2: openetl.api.v1.Source.update_time:type_name -> google.protobuf.Timestamp
-	4,  // 3: openetl.api.v1.Destination.spec:type_name -> openetl.api.v1.ConnectorConfig
-	27, // 4: openetl.api.v1.Destination.create_time:type_name -> google.protobuf.Timestamp
-	27, // 5: openetl.api.v1.Destination.update_time:type_name -> google.protobuf.Timestamp
-	28, // 6: openetl.api.v1.ConnectorConfig.config:type_name -> google.protobuf.Struct
-	2,  // 7: openetl.api.v1.GetSourceResponse.source:type_name -> openetl.api.v1.Source
-	2,  // 8: openetl.api.v1.ListSourcesResponse.sources:type_name -> openetl.api.v1.Source
-	3,  // 9: openetl.api.v1.GetDestinationResponse.destination:type_name -> openetl.api.v1.Destination
-	3,  // 10: openetl.api.v1.ListDestinationsResponse.destinations:type_name -> openetl.api.v1.Destination
-	21, // 11: openetl.api.v1.CheckSourceResponse.result:type_name -> openetl.api.v1.CheckResult
-	21, // 12: openetl.api.v1.CheckDestinationResponse.result:type_name -> openetl.api.v1.CheckResult
-	24, // 13: openetl.api.v1.DiscoverSourceResponse.catalog:type_name -> openetl.api.v1.Catalog
-	25, // 14: openetl.api.v1.Catalog.streams:type_name -> openetl.api.v1.CatalogStream
-	27, // 15: openetl.api.v1.Catalog.discover_time:type_name -> google.protobuf.Timestamp
-	1,  // 16: openetl.api.v1.CatalogStream.replay:type_name -> openetl.api.v1.Replay
-	26, // 17: openetl.api.v1.CatalogStream.columns:type_name -> openetl.api.v1.CatalogColumn
-	0,  // 18: openetl.api.v1.CatalogStream.sync_modes:type_name -> openetl.api.v1.SyncMode
-	5,  // 19: openetl.api.v1.SourceService.GetSource:input_type -> openetl.api.v1.GetSourceRequest
-	7,  // 20: openetl.api.v1.SourceService.ListSources:input_type -> openetl.api.v1.ListSourcesRequest
-	9,  // 21: openetl.api.v1.SourceService.DeleteSource:input_type -> openetl.api.v1.DeleteSourceRequest
-	17, // 22: openetl.api.v1.SourceService.CheckSource:input_type -> openetl.api.v1.CheckSourceRequest
-	22, // 23: openetl.api.v1.SourceService.DiscoverSource:input_type -> openetl.api.v1.DiscoverSourceRequest
-	11, // 24: openetl.api.v1.DestinationService.GetDestination:input_type -> openetl.api.v1.GetDestinationRequest
-	13, // 25: openetl.api.v1.DestinationService.ListDestinations:input_type -> openetl.api.v1.ListDestinationsRequest
-	15, // 26: openetl.api.v1.DestinationService.DeleteDestination:input_type -> openetl.api.v1.DeleteDestinationRequest
-	19, // 27: openetl.api.v1.DestinationService.CheckDestination:input_type -> openetl.api.v1.CheckDestinationRequest
-	6,  // 28: openetl.api.v1.SourceService.GetSource:output_type -> openetl.api.v1.GetSourceResponse
-	8,  // 29: openetl.api.v1.SourceService.ListSources:output_type -> openetl.api.v1.ListSourcesResponse
-	10, // 30: openetl.api.v1.SourceService.DeleteSource:output_type -> openetl.api.v1.DeleteSourceResponse
-	18, // 31: openetl.api.v1.SourceService.CheckSource:output_type -> openetl.api.v1.CheckSourceResponse
-	23, // 32: openetl.api.v1.SourceService.DiscoverSource:output_type -> openetl.api.v1.DiscoverSourceResponse
-	12, // 33: openetl.api.v1.DestinationService.GetDestination:output_type -> openetl.api.v1.GetDestinationResponse
-	14, // 34: openetl.api.v1.DestinationService.ListDestinations:output_type -> openetl.api.v1.ListDestinationsResponse
-	16, // 35: openetl.api.v1.DestinationService.DeleteDestination:output_type -> openetl.api.v1.DeleteDestinationResponse
-	20, // 36: openetl.api.v1.DestinationService.CheckDestination:output_type -> openetl.api.v1.CheckDestinationResponse
-	28, // [28:37] is the sub-list for method output_type
-	19, // [19:28] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	5,  // 0: openetl.api.v1.Source.spec:type_name -> openetl.api.v1.ConnectorConfig
+	28, // 1: openetl.api.v1.Source.create_time:type_name -> google.protobuf.Timestamp
+	28, // 2: openetl.api.v1.Source.update_time:type_name -> google.protobuf.Timestamp
+	4,  // 3: openetl.api.v1.Source.connector:type_name -> openetl.api.v1.ConnectorVersion
+	5,  // 4: openetl.api.v1.Destination.spec:type_name -> openetl.api.v1.ConnectorConfig
+	28, // 5: openetl.api.v1.Destination.create_time:type_name -> google.protobuf.Timestamp
+	28, // 6: openetl.api.v1.Destination.update_time:type_name -> google.protobuf.Timestamp
+	4,  // 7: openetl.api.v1.Destination.connector:type_name -> openetl.api.v1.ConnectorVersion
+	29, // 8: openetl.api.v1.ConnectorConfig.config:type_name -> google.protobuf.Struct
+	2,  // 9: openetl.api.v1.GetSourceResponse.source:type_name -> openetl.api.v1.Source
+	2,  // 10: openetl.api.v1.ListSourcesResponse.sources:type_name -> openetl.api.v1.Source
+	3,  // 11: openetl.api.v1.GetDestinationResponse.destination:type_name -> openetl.api.v1.Destination
+	3,  // 12: openetl.api.v1.ListDestinationsResponse.destinations:type_name -> openetl.api.v1.Destination
+	22, // 13: openetl.api.v1.CheckSourceResponse.result:type_name -> openetl.api.v1.CheckResult
+	22, // 14: openetl.api.v1.CheckDestinationResponse.result:type_name -> openetl.api.v1.CheckResult
+	25, // 15: openetl.api.v1.DiscoverSourceResponse.catalog:type_name -> openetl.api.v1.Catalog
+	26, // 16: openetl.api.v1.Catalog.streams:type_name -> openetl.api.v1.CatalogStream
+	28, // 17: openetl.api.v1.Catalog.discover_time:type_name -> google.protobuf.Timestamp
+	1,  // 18: openetl.api.v1.CatalogStream.replay:type_name -> openetl.api.v1.Replay
+	27, // 19: openetl.api.v1.CatalogStream.columns:type_name -> openetl.api.v1.CatalogColumn
+	0,  // 20: openetl.api.v1.CatalogStream.sync_modes:type_name -> openetl.api.v1.SyncMode
+	6,  // 21: openetl.api.v1.SourceService.GetSource:input_type -> openetl.api.v1.GetSourceRequest
+	8,  // 22: openetl.api.v1.SourceService.ListSources:input_type -> openetl.api.v1.ListSourcesRequest
+	10, // 23: openetl.api.v1.SourceService.DeleteSource:input_type -> openetl.api.v1.DeleteSourceRequest
+	18, // 24: openetl.api.v1.SourceService.CheckSource:input_type -> openetl.api.v1.CheckSourceRequest
+	23, // 25: openetl.api.v1.SourceService.DiscoverSource:input_type -> openetl.api.v1.DiscoverSourceRequest
+	12, // 26: openetl.api.v1.DestinationService.GetDestination:input_type -> openetl.api.v1.GetDestinationRequest
+	14, // 27: openetl.api.v1.DestinationService.ListDestinations:input_type -> openetl.api.v1.ListDestinationsRequest
+	16, // 28: openetl.api.v1.DestinationService.DeleteDestination:input_type -> openetl.api.v1.DeleteDestinationRequest
+	20, // 29: openetl.api.v1.DestinationService.CheckDestination:input_type -> openetl.api.v1.CheckDestinationRequest
+	7,  // 30: openetl.api.v1.SourceService.GetSource:output_type -> openetl.api.v1.GetSourceResponse
+	9,  // 31: openetl.api.v1.SourceService.ListSources:output_type -> openetl.api.v1.ListSourcesResponse
+	11, // 32: openetl.api.v1.SourceService.DeleteSource:output_type -> openetl.api.v1.DeleteSourceResponse
+	19, // 33: openetl.api.v1.SourceService.CheckSource:output_type -> openetl.api.v1.CheckSourceResponse
+	24, // 34: openetl.api.v1.SourceService.DiscoverSource:output_type -> openetl.api.v1.DiscoverSourceResponse
+	13, // 35: openetl.api.v1.DestinationService.GetDestination:output_type -> openetl.api.v1.GetDestinationResponse
+	15, // 36: openetl.api.v1.DestinationService.ListDestinations:output_type -> openetl.api.v1.ListDestinationsResponse
+	17, // 37: openetl.api.v1.DestinationService.DeleteDestination:output_type -> openetl.api.v1.DeleteDestinationResponse
+	21, // 38: openetl.api.v1.DestinationService.CheckDestination:output_type -> openetl.api.v1.CheckDestinationResponse
+	30, // [30:39] is the sub-list for method output_type
+	21, // [21:30] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_connection_proto_init() }
@@ -1733,7 +1867,7 @@ func file_openetl_api_v1_connection_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_connection_proto_rawDesc), len(file_openetl_api_v1_connection_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   25,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

@@ -29,22 +29,19 @@ func connectorKind(doc *spec.Document) string {
 	return "source"
 }
 
-// pinImages pins each descriptor's image to its digest, which also checks
-// that it exists. It runs before the transaction, since it talks to
-// registries.
-func (s *Server) pinImages(ctx context.Context, docs []*spec.Document, origins []string) error {
+// pinBinaries downloads the binaries whose digests descriptors leave out,
+// to pin them. It runs before the transaction, since it downloads.
+func (s *Server) pinBinaries(ctx context.Context, docs []*spec.Document, origins []string) error {
 	for i, doc := range docs {
-		if doc.Kind != spec.KindConnector {
+		if doc.Kind != spec.KindConnector || len(doc.Descriptor.Unpinned()) == 0 {
 			continue
 		}
-		if s.Registry == nil {
-			return invalid("%s: this server can't reach registries, so it can't apply external connectors", origins[i])
+		if s.Downloads == nil {
+			return invalid("%s: this server doesn't download binaries, so each needs its digest", origins[i])
 		}
-		img, err := s.Registry.Resolve(ctx, doc.Descriptor.Image)
-		if err != nil {
+		if err := connectorhost.PinBinaries(ctx, s.Downloads, doc.Descriptor); err != nil {
 			return invalid("%s: %v", origins[i], err)
 		}
-		doc.Descriptor.Image = img.Ref
 	}
 	return nil
 }
@@ -56,7 +53,7 @@ func (s *Server) applyConnectorVersion(ctx context.Context, q *db.Queries, doc *
 	media := connectorhost.MediaTypeManifest
 	if doc.Kind == spec.KindConnector {
 		var err error
-		if content, err = spec.EncodeDescriptor(doc.Name, doc.Version, doc.Descriptor); err != nil {
+		if content, err = spec.EncodeDescriptor(doc.Name, doc.Version, doc.Info, doc.Descriptor); err != nil {
 			return nil, invalid("%v", err)
 		}
 		media = connectorhost.MediaTypeDescriptor
@@ -81,6 +78,7 @@ func (s *Server) applyConnectorVersion(ctx context.Context, q *db.Queries, doc *
 	}
 	err = q.InsertConnectorVersion(ctx, db.InsertConnectorVersionParams{
 		OrgID: s.Tenant.Org, Kind: v.Kind, Name: v.Name, Version: v.Version, Digest: v.Digest, Provenance: provenance,
+		Author: v.Info.Author, Logo: v.Info.Logo, ReleaseTag: v.Info.ReleaseTag, ReleaseUrl: v.Info.ReleaseURL,
 	})
 	res.Action = apiv1.ApplyAction_APPLY_ACTION_CREATED
 	return res, err

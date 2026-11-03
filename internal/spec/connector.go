@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -24,19 +26,49 @@ func CompareVersions(a, b string) int { return semver.Compare("v"+a, "v"+b) }
 // Prerelease reports whether a semantic version is a prerelease.
 func Prerelease(v string) bool { return semver.Prerelease("v"+v) != "" }
 
-// Descriptor is an external connector's version: its image, and the spec its
-// executable returns, which the runner checks.
+// Descriptor is an external connector's version: where its executables are,
+// and the spec they return, which the runner checks.
 type Descriptor struct {
-	// A tag, or repository@sha256:… once applied.
-	Image string
-	Spec  *protocolv1.SpecResponse
+	// By platform, as os/arch.
+	Binaries map[string]Binary
+	Spec     *protocolv1.SpecResponse
+}
+
+// Binary is one platform's executable, downloaded over HTTP.
+type Binary struct {
+	URL string
+	// sha256:{hex}. The API fills in a missing one when the version is
+	// applied.
+	Digest string
+}
+
+// Unpinned returns the platforms whose binaries have no digest.
+func (d *Descriptor) Unpinned() []string {
+	var out []string
+	for p, b := range d.Binaries {
+		if b.Digest == "" {
+			out = append(out, p)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+var (
+	platformPattern = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+$`)
+	digestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
+
+type binaryYAML struct {
+	URL    string `yaml:"url" json:"url"`
+	Digest string `yaml:"digest,omitempty" json:"digest,omitempty"`
 }
 
 // descriptorYAML is a Connector document's spec. Enums are lowercase.
 type descriptorYAML struct {
-	Image    string `yaml:"image" json:"image"`
-	Protocol string `yaml:"protocol" json:"protocol"`
-	Kind     string `yaml:"kind" json:"kind"`
+	Binaries map[string]binaryYAML `yaml:"binaries" json:"binaries"`
+	Protocol string                `yaml:"protocol" json:"protocol"`
+	Kind     string                `yaml:"kind" json:"kind"`
 	Egress   struct {
 		Tier  string   `yaml:"tier" json:"tier"`
 		Allow []string `yaml:"allow,omitempty" json:"allow,omitempty"`
@@ -66,8 +98,21 @@ func parseDescriptor(b []byte) (*Descriptor, error) {
 	if err := strict(b, &y); err != nil {
 		return nil, err
 	}
-	if y.Image == "" {
-		return nil, errors.New("image is missing")
+	if len(y.Binaries) == 0 {
+		return nil, errors.New("binaries, the executables by platform, are missing")
+	}
+	bins := map[string]Binary{}
+	for p, b := range y.Binaries {
+		u, err := url.Parse(b.URL)
+		switch {
+		case !platformPattern.MatchString(p):
+			return nil, fmt.Errorf("binaries: %q isn't a platform, such as linux/amd64", p)
+		case err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "":
+			return nil, fmt.Errorf("binaries.%s.url %q must be an http or https URL", p, b.URL)
+		case b.Digest != "" && !digestPattern.MatchString(b.Digest):
+			return nil, fmt.Errorf("binaries.%s.digest %q isn't sha256:{hex}", p, b.Digest)
+		}
+		bins[p] = Binary(b)
 	}
 	if y.Protocol != "v1" {
 		return nil, fmt.Errorf("protocol %q isn't v1", y.Protocol)
@@ -100,7 +145,7 @@ func parseDescriptor(b []byte) (*Descriptor, error) {
 	} else if s.Destination, err = parseCapabilities(y.Capabilities); err != nil {
 		return nil, fmt.Errorf("capabilities: %w", err)
 	}
-	return &Descriptor{Image: y.Image, Spec: s}, nil
+	return &Descriptor{Binaries: bins, Spec: s}, nil
 }
 
 func parseCapabilities(y *capabilitiesYAML) (*protocolv1.DestinationCapabilities, error) {
@@ -160,15 +205,24 @@ type descriptorDoc struct {
 }
 
 type versionedMeta struct {
-	Name    string `yaml:"name" json:"name"`
-	Version string `yaml:"version" json:"version"`
+	Name    string       `yaml:"name" json:"name"`
+	Version string       `yaml:"version" json:"version"`
+	Author  string       `yaml:"author,omitempty" json:"author,omitempty"`
+	Logo    string       `yaml:"logo,omitempty" json:"logo,omitempty"`
+	Release *releaseYAML `yaml:"release,omitempty" json:"release,omitempty"`
 }
 
 func toYAML(d *Descriptor) (descriptorYAML, error) {
 	s := d.Spec
 	y := descriptorYAML{
-		Image: d.Image, Protocol: s.GetProtocolVersion(), Kind: lower(s.GetKind().String(), "CONNECTOR_KIND_"),
+		Protocol: s.GetProtocolVersion(), Kind: lower(s.GetKind().String(), "CONNECTOR_KIND_"),
 		Setup: s.GetSetup(), Acknowledges: s.GetSource().GetAcknowledges(),
+	}
+	if d.Binaries != nil {
+		y.Binaries = map[string]binaryYAML{}
+		for p, b := range d.Binaries {
+			y.Binaries[p] = binaryYAML(b)
+		}
 	}
 	y.Egress.Tier = lower(s.GetEgress().GetTier().String(), "EGRESS_TIER_")
 	y.Egress.Allow = s.GetEgress().GetAllow()
@@ -209,15 +263,19 @@ func toYAML(d *Descriptor) (descriptorYAML, error) {
 	return y, nil
 }
 
-func descriptorDocument(name, version string, d *Descriptor) (descriptorDoc, error) {
+func descriptorDocument(name, version string, info Info, d *Descriptor) (descriptorDoc, error) {
 	y, err := toYAML(d)
-	return descriptorDoc{APIVersion: APIVersion, Kind: KindConnector, Metadata: versionedMeta{name, version}, Spec: y}, err
+	meta := versionedMeta{Name: name, Version: version, Author: info.Author, Logo: info.Logo}
+	if info.ReleaseTag != "" || info.ReleaseURL != "" {
+		meta.Release = &releaseYAML{Tag: info.ReleaseTag, URL: info.ReleaseURL}
+	}
+	return descriptorDoc{APIVersion: APIVersion, Kind: KindConnector, Metadata: meta, Spec: y}, err
 }
 
 // EncodeDescriptor encodes a Connector document as canonical JSON: the same
 // descriptor always gives the same bytes.
-func EncodeDescriptor(name, version string, d *Descriptor) ([]byte, error) {
-	doc, err := descriptorDocument(name, version, d)
+func EncodeDescriptor(name, version string, info Info, d *Descriptor) ([]byte, error) {
+	doc, err := descriptorDocument(name, version, info, d)
 	if err != nil {
 		return nil, err
 	}
@@ -225,8 +283,8 @@ func EncodeDescriptor(name, version string, d *Descriptor) ([]byte, error) {
 }
 
 // MarshalDescriptor writes a Connector document as YAML.
-func MarshalDescriptor(name, version string, d *Descriptor) ([]byte, error) {
-	doc, err := descriptorDocument(name, version, d)
+func MarshalDescriptor(name, version string, info Info, d *Descriptor) ([]byte, error) {
+	doc, err := descriptorDocument(name, version, info, d)
 	if err != nil {
 		return nil, err
 	}

@@ -76,6 +76,10 @@ type ConnectorVersion struct {
 	Digest     string
 	Provenance string
 	CreateTime time.Time
+	Author     string
+	Logo       string
+	ReleaseTag string
+	ReleaseUrl string
 }
 
 type DataPlane struct {

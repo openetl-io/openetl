@@ -38,7 +38,6 @@ import (
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
-	"github.com/unsuitable001/openetl/internal/registry"
 	dpactivities "github.com/unsuitable001/openetl/internal/runner/activities"
 	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/secretstore"
@@ -150,7 +149,7 @@ func Run(ctx context.Context, o Options) error {
 		srv := &api.Server{
 			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc}, Logs: &ops.Ops{Client: tc},
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
-			Registry:     &registry.Client{Policy: netguard.Policy{Allow: allow}},
+			Downloads:    (&netguard.Policy{Allow: allow}).Client(),
 			Secrets:      keyring,
 			LaggingAfter: lagging,
 			Logger:       log.With("role", "server"),
@@ -328,7 +327,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL, auth.WithBearer(token), connect.WithInterceptors(otel)) //nolint:forbidigo // the operator configures the API's address
 	versions := &connectorhost.Fetcher{
 		Artifact: dpactivities.Artifacts(apiClient),
-		Registry: &registry.Client{Policy: netguard.Policy{Allow: allow}},
+		Client:   (&netguard.Policy{Allow: allow}).Client(),
 		Cache:    cfg.Cache,
 	}
 	stores := &secretstore.Reader{}

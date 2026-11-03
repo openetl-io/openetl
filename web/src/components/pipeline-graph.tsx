@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   BaseEdge,
   Handle,
@@ -18,9 +18,9 @@ import { usePrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
 export type GraphStream = { name: string; rows?: bigint; level?: DeliveryLevel };
-type End = { name: string; connector?: string; detail?: string };
+type End = { name: string; connector?: string; detail?: string; logo?: string };
 
-type EndNode = Node<{ kind: "source" | "destination" | "step"; title: string; detail?: string }, "end">;
+type EndNode = Node<{ kind: "source" | "destination" | "step"; title: string; detail?: string; logo?: string }, "end">;
 type StreamNode = Node<{ name: string; rows?: bigint; live: boolean }, "stream">;
 
 const kindIcon = { source: Database, destination: Database, step: Hammer };
@@ -28,11 +28,16 @@ const kindLabel = { source: "Source", destination: "Destination", step: "After e
 
 function EndView({ data }: NodeProps<EndNode>) {
   const Icon = kindIcon[data.kind];
+  const [logoFailed, setLogoFailed] = useState(false);
   return (
     <div className="w-[220px] rounded-lg border bg-card px-3 py-2.5 shadow-[0_1px_0_var(--border)]">
       {data.kind !== "source" && <Handle type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-border" />}
       <div className="flex items-center gap-2 text-[0.75rem] text-muted-foreground">
-        <Icon className="size-3.5" aria-hidden />
+        {data.logo && !logoFailed ? (
+          <img src={data.logo} alt="" referrerPolicy="no-referrer" onError={() => setLogoFailed(true)} className="size-3.5 rounded-sm object-contain" />
+        ) : (
+          <Icon className="size-3.5" aria-hidden />
+        )}
         {kindLabel[data.kind]}
       </div>
       <div className="mt-1 truncate font-medium">{data.title}</div>
@@ -99,8 +104,8 @@ export default function PipelineGraph({
     const height = Math.max(streams.length, 1) * gap;
     const mid = height / 2 - 30;
     const nodes: Node[] = [
-      { id: "source", type: "end", position: { x: 0, y: mid }, data: { kind: "source", title: source.name, detail: source.connector } },
-      { id: "destination", type: "end", position: { x: 640, y: mid }, data: { kind: "destination", title: destination.name, detail: [destination.connector, destination.detail].filter(Boolean).join(", ") } },
+      { id: "source", type: "end", position: { x: 0, y: mid }, data: { kind: "source", title: source.name, detail: source.connector, logo: source.logo } },
+      { id: "destination", type: "end", position: { x: 640, y: mid }, data: { kind: "destination", title: destination.name, detail: [destination.connector, destination.detail].filter(Boolean).join(", "), logo: destination.logo } },
     ];
     const edges: Edge[] = [];
     streams.forEach((s, i) => {

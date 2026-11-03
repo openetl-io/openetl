@@ -5,6 +5,7 @@ import { ArrowLeft } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ConnectorLogo, ConnectorName } from "@/components/connector";
 import { Empty, ErrorNote } from "@/components/empty";
 import { RelativeTime } from "@/components/relative-time";
 import { StatusBadge } from "@/components/status";
@@ -101,15 +102,23 @@ export function PipelinePage() {
         {pl ? (
           <dl className="grid grid-cols-2 gap-x-8 gap-y-3 sm:grid-cols-3 lg:flex lg:flex-wrap">
             <Fact label="Source">
+              <ConnectorLogo version={source.data?.source?.connector} className="mr-1.5" />
               {spec?.source?.ref}
               {source.data?.source?.spec?.connector && (
-                <span className="text-muted-foreground"> ({source.data.source.spec.connector})</span>
+                <span className="text-muted-foreground">
+                  {" ("}
+                  <ConnectorName connector={source.data.source.spec.connector} version={source.data.source.connector} />)
+                </span>
               )}
             </Fact>
             <Fact label="Destination">
+              <ConnectorLogo version={destination.data?.destination?.connector} className="mr-1.5" />
               {spec?.destination?.ref}
               {destination.data?.destination?.spec?.connector && (
-                <span className="text-muted-foreground"> ({destination.data.destination.spec.connector})</span>
+                <span className="text-muted-foreground">
+                  {" ("}
+                  <ConnectorName connector={destination.data.destination.spec.connector} version={destination.data.destination.connector} />)
+                </span>
               )}
               {spec?.destination?.namespace && <span className="text-muted-foreground">, schema {spec.destination.namespace}</span>}
             </Fact>
@@ -176,7 +185,10 @@ export function PipelinePage() {
           ))}
         </TabsList>
         <TabsContent value="overview" className="pt-4">
-          {pl && <Overview workspace={workspace} pipeline={pl} syncs={syncs.data?.syncs ?? []} connectors={{ source: source.data?.source?.spec?.connector, destination: destination.data?.destination?.spec?.connector }} />}
+          {pl && <Overview workspace={workspace} pipeline={pl} syncs={syncs.data?.syncs ?? []} connectors={{
+                source: { ref: source.data?.source?.spec?.connector, version: source.data?.source?.connector },
+                destination: { ref: destination.data?.destination?.spec?.connector, version: destination.data?.destination?.connector },
+              }} />}
         </TabsContent>
         <TabsContent value="syncs" className="pt-4">
           <SyncsTab workspace={workspace} pipeline={pipeline} running={running} />

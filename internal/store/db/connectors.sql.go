@@ -11,6 +11,47 @@ import (
 	"github.com/google/uuid"
 )
 
+const connectorVersionsByDigest = `-- name: ConnectorVersionsByDigest :many
+SELECT org_id, kind, name, version, digest, provenance, create_time, author, logo, release_tag, release_url FROM connector_versions WHERE org_id = $1 AND digest = ANY($2::text[])
+`
+
+type ConnectorVersionsByDigestParams struct {
+	OrgID   uuid.UUID
+	Digests []string
+}
+
+func (q *Queries) ConnectorVersionsByDigest(ctx context.Context, arg ConnectorVersionsByDigestParams) ([]ConnectorVersion, error) {
+	rows, err := q.db.Query(ctx, connectorVersionsByDigest, arg.OrgID, arg.Digests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ConnectorVersion
+	for rows.Next() {
+		var i ConnectorVersion
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.Kind,
+			&i.Name,
+			&i.Version,
+			&i.Digest,
+			&i.Provenance,
+			&i.CreateTime,
+			&i.Author,
+			&i.Logo,
+			&i.ReleaseTag,
+			&i.ReleaseUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getArtifact = `-- name: GetArtifact :one
 SELECT org_id, digest, media_type, content, create_time FROM artifacts WHERE org_id = $1 AND digest = $2
 `
@@ -34,7 +75,7 @@ func (q *Queries) GetArtifact(ctx context.Context, arg GetArtifactParams) (Artif
 }
 
 const getConnectorVersion = `-- name: GetConnectorVersion :one
-SELECT org_id, kind, name, version, digest, provenance, create_time FROM connector_versions
+SELECT org_id, kind, name, version, digest, provenance, create_time, author, logo, release_tag, release_url FROM connector_versions
 WHERE org_id = $1 AND kind = $2 AND name = $3 AND version = $4
 `
 
@@ -61,6 +102,10 @@ func (q *Queries) GetConnectorVersion(ctx context.Context, arg GetConnectorVersi
 		&i.Digest,
 		&i.Provenance,
 		&i.CreateTime,
+		&i.Author,
+		&i.Logo,
+		&i.ReleaseTag,
+		&i.ReleaseUrl,
 	)
 	return i, err
 }
@@ -89,8 +134,8 @@ func (q *Queries) InsertArtifact(ctx context.Context, arg InsertArtifactParams) 
 }
 
 const insertConnectorVersion = `-- name: InsertConnectorVersion :exec
-INSERT INTO connector_versions (org_id, kind, name, version, digest, provenance)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO connector_versions (org_id, kind, name, version, digest, provenance, author, logo, release_tag, release_url)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
 
 type InsertConnectorVersionParams struct {
@@ -100,6 +145,10 @@ type InsertConnectorVersionParams struct {
 	Version    string
 	Digest     string
 	Provenance string
+	Author     string
+	Logo       string
+	ReleaseTag string
+	ReleaseUrl string
 }
 
 func (q *Queries) InsertConnectorVersion(ctx context.Context, arg InsertConnectorVersionParams) error {
@@ -110,12 +159,16 @@ func (q *Queries) InsertConnectorVersion(ctx context.Context, arg InsertConnecto
 		arg.Version,
 		arg.Digest,
 		arg.Provenance,
+		arg.Author,
+		arg.Logo,
+		arg.ReleaseTag,
+		arg.ReleaseUrl,
 	)
 	return err
 }
 
 const listConnectorVersions = `-- name: ListConnectorVersions :many
-SELECT org_id, kind, name, version, digest, provenance, create_time FROM connector_versions
+SELECT org_id, kind, name, version, digest, provenance, create_time, author, logo, release_tag, release_url FROM connector_versions
 WHERE org_id = $1 AND kind = $2 AND name = $3
 `
 
@@ -142,6 +195,10 @@ func (q *Queries) ListConnectorVersions(ctx context.Context, arg ListConnectorVe
 			&i.Digest,
 			&i.Provenance,
 			&i.CreateTime,
+			&i.Author,
+			&i.Logo,
+			&i.ReleaseTag,
+			&i.ReleaseUrl,
 		); err != nil {
 			return nil, err
 		}

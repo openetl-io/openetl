@@ -3,26 +3,23 @@ package connectorhost
 import (
 	"context"
 	"errors"
-	"io"
-	"log"
+	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
-
-	ggcr "github.com/google/go-containerregistry/pkg/registry"
 
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/registry"
 	"github.com/unsuitable001/openetl/internal/spec"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
-func testDescriptor(image string) *spec.Descriptor {
-	return &spec.Descriptor{Image: image, Spec: &protocolv1.SpecResponse{
+func testDescriptor(bins map[string]spec.Binary) *spec.Descriptor {
+	return &spec.Descriptor{Binaries: bins, Spec: &protocolv1.SpecResponse{
 		ProtocolVersion: "v1",
 		Kind:            protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE,
 		Egress:          &protocolv1.Egress{Tier: protocolv1.EgressTier_EGRESS_TIER_RAW},
@@ -39,7 +36,9 @@ func TestParseVersion(t *testing.T) {
 	if m.Kind != "source" || m.Name != "acme" || m.Version != "0.1.0" || m.Manifest == nil || m.Digest != Digest([]byte(acme)) {
 		t.Fatalf("manifest version = %+v", m)
 	}
-	b, err := spec.EncodeDescriptor("pg", "1.0.0", testDescriptor("ghcr.io/x/source-pg@sha256:"+strings.Repeat("0", 64)))
+	pinned := map[string]spec.Binary{"linux/amd64": {URL: "https://example.com/source-pg", Digest: "sha256:" + strings.Repeat("0", 64)}}
+	info := spec.Info{Author: "Example", Logo: "https://example.com/pg.svg", ReleaseTag: "source-pg/v1.0.0"}
+	b, err := spec.EncodeDescriptor("pg", "1.0.0", info, testDescriptor(pinned))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +46,12 @@ func TestParseVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Kind != "source" || d.Name != "pg" || d.Descriptor == nil {
+	if d.Kind != "source" || d.Name != "pg" || d.Descriptor == nil || d.Info != info {
 		t.Fatalf("descriptor version = %+v", d)
+	}
+	unpinned, _ := spec.EncodeDescriptor("pg", "1.0.0", spec.Info{}, testDescriptor(map[string]spec.Binary{"linux/amd64": {URL: "https://example.com/source-pg"}}))
+	if _, err := ParseVersion(unpinned); err == nil || !strings.Contains(err.Error(), "no digest") {
+		t.Errorf("a descriptor with a binary unpinned: %v", err)
 	}
 
 	env := Env{}.With(m).With(d)
@@ -68,7 +71,7 @@ func TestParseVersion(t *testing.T) {
 		t.Errorf("unknown source: %v", err)
 	}
 
-	builtin, _ := spec.EncodeDescriptor("faker", "1.0.0", testDescriptor("ghcr.io/x/y@sha256:"+strings.Repeat("0", 64)))
+	builtin, _ := spec.EncodeDescriptor("faker", "1.0.0", spec.Info{}, testDescriptor(pinned))
 	if _, err := ParseVersion(builtin); err == nil {
 		t.Error("a version of a built-in connector parsed")
 	}
@@ -79,19 +82,32 @@ func TestParseVersion(t *testing.T) {
 
 func TestFetcher(t *testing.T) {
 	ctx := context.Background()
-	srv := httptest.NewServer(ggcr.New(ggcr.Logger(log.New(io.Discard, "", 0))))
-	defer srv.Close()
-	reg := &registry.Client{Policy: netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}}}
 	tmp := t.TempDir()
-	exe := filepath.Join(tmp, "source-pg")
-	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	body := []byte("#!/bin/sh\n")
+	var downloads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloads.Add(1)
+		if r.URL.Path != "/source-pg" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	client := (&netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}}).Client()
+
+	d := testDescriptor(map[string]spec.Binary{Platform(): {URL: srv.URL + "/source-pg"}, "plan9/386": {URL: srv.URL + "/missing"}})
+	if err := PinBinaries(ctx, client, d); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("pinning a binary that isn't there: %v", err)
+	}
+	delete(d.Binaries, "plan9/386")
+	if err := PinBinaries(ctx, client, d); err != nil {
 		t.Fatal(err)
 	}
-	image, err := reg.Push(ctx, strings.TrimPrefix(srv.URL, "http://")+"/source-pg:1.0.0", []registry.Executable{{Platform: registry.Platform(), Path: exe}})
-	if err != nil {
-		t.Fatal(err)
+	if got := d.Binaries[Platform()].Digest; got != Digest(body) {
+		t.Fatalf("pinned digest %s, want %s", got, Digest(body))
 	}
-	content, err := spec.EncodeDescriptor("pg", "1.0.0", testDescriptor(image))
+	content, err := spec.EncodeDescriptor("pg", "1.0.0", spec.Info{}, d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,9 +121,10 @@ func TestFetcher(t *testing.T) {
 			}
 			return content, nil
 		},
-		Registry: reg,
-		Cache:    filepath.Join(tmp, "cache"),
+		Client: client,
+		Cache:  filepath.Join(tmp, "cache"),
 	}
+	downloads.Store(0)
 	v, err := f.Fetch(ctx, digest)
 	if err != nil {
 		t.Fatal(err)
@@ -115,8 +132,33 @@ func TestFetcher(t *testing.T) {
 	if filepath.Base(v.Executable) != "source-pg" || !strings.HasPrefix(v.Executable, f.Cache) {
 		t.Errorf("executable %s", v.Executable)
 	}
-	if _, err := f.Fetch(ctx, digest); err != nil || fetches != 1 {
-		t.Errorf("a second fetch: %v, %d fetches from the API", err, fetches)
+	if fi, err := os.Stat(v.Executable); err != nil || fi.Mode().Perm()&0o100 == 0 {
+		t.Errorf("the executable: %v, %v", fi, err)
+	}
+	if _, err := f.Fetch(ctx, digest); err != nil || fetches != 1 || downloads.Load() != 1 {
+		t.Errorf("a second fetch: %v, %d fetches from the API, %d downloads", err, fetches, downloads.Load())
+	}
+
+	// A binary that isn't what its digest says fails, and isn't cached.
+	body = []byte("something else")
+	wrong := testDescriptor(map[string]spec.Binary{Platform(): {URL: srv.URL + "/source-pg", Digest: "sha256:" + strings.Repeat("1", 64)}})
+	otherContent, _ := spec.EncodeDescriptor("pg", "1.0.1", spec.Info{}, wrong)
+	f.Artifact = func(context.Context, string) ([]byte, error) { return otherContent, nil }
+	if _, err := f.Fetch(ctx, Digest(otherContent)); errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "has digest") {
+		t.Errorf("a binary with another digest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.Cache, "executables", "sha256-"+strings.Repeat("1", 64))); !os.IsNotExist(err) {
+		t.Errorf("a binary with another digest was cached: %v", err)
+	}
+	elsewhere := testDescriptor(map[string]spec.Binary{"plan9/386": {URL: srv.URL + "/source-pg", Digest: Digest(body)}})
+	elsewhereContent, _ := spec.EncodeDescriptor("pg", "1.0.2", spec.Info{}, elsewhere)
+	f.Artifact = func(context.Context, string) ([]byte, error) { return elsewhereContent, nil }
+	if _, err := f.Fetch(ctx, Digest(elsewhereContent)); errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "no binary for") {
+		t.Errorf("no binary for this platform: %v", err)
+	}
+	f.Artifact = func(context.Context, string) ([]byte, error) {
+		fetches++
+		return content, nil
 	}
 
 	// A cached artifact that doesn't match its digest is fetched again.
