@@ -6,7 +6,8 @@
 # SeaweedFS (S3), fake-gcs-server (GCS) and Azurite (Azure Blob) all enforce
 # conditional writes, for the checkpoint log's per-provider tests. An Iceberg
 # REST catalog keeps its tables in the S3 store, for destination-iceberg.
-# Kafka and a schema registry are for source-kafka and destination-kafka.
+# Kafka and a schema registry are for source-kafka and destination-kafka,
+# and kinesis-mock for source-kinesis and destination-kinesis.
 
 name: openetl-dev
 
@@ -123,6 +124,24 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+
+  # kinesis-mock (MIT), in memory, on plain HTTP. moto's Kinesis can't
+  # reshard: it keeps routing records to a split shard.
+  kinesis:
+    image: ghcr.io/etspaceman/kinesis-mock:0.6.2
+    environment:
+      KINESIS_MOCK_PLAIN_PORT: "4568"
+      CREATE_STREAM_DURATION: 100ms
+      SPLIT_SHARD_DURATION: 100ms
+      MERGE_SHARDS_DURATION: 100ms
+      SHARD_LIMIT: "100000"
+      ON_DEMAND_STREAM_COUNT_LIMIT: "10000"
+      LOG_LEVEL: WARN
+    ports: ["4568:4568"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:4568/healthcheck"]
+      interval: 2s
+      retries: 30
 
 volumes:
   postgres:

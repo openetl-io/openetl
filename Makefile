@@ -55,7 +55,7 @@ web-dev: web/node_modules/.modules.yaml ## Run the UI's dev server against the A
 	pnpm --dir web dev
 
 .PHONY: deps-up deps-down
-deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure, Kafka)
+deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure, Kafka, Kinesis)
 	docker compose -f deploy/compose/dev.yml up -d --wait
 deps-down: ## Stop local dependencies
 	docker compose -f deploy/compose/dev.yml down

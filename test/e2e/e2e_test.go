@@ -236,7 +236,7 @@ func setup(m *testing.M) (int, error) {
 func applyOfficialConnectors(ctx context.Context) error {
 	c := &registry.Client{Policy: netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix(egressAllow)}}}
 	req := &apiv1.ApplyRequest{}
-	for _, exe := range []string{"source-postgres", "destination-postgres", "destination-iceberg", "destination-s3", "source-kafka", "destination-kafka"} {
+	for _, exe := range []string{"source-postgres", "destination-postgres", "destination-iceberg", "destination-s3", "source-kafka", "destination-kafka", "source-kinesis", "destination-kinesis"} {
 		path := filepath.Join(env.connectors, exe)
 		// Builds from before them have only the Postgres connectors; the
 		// others' tests skip.
