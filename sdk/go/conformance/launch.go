@@ -106,17 +106,17 @@ func Exec(exe string, env ...string) Launcher {
 		select {
 		case <-ready:
 		case <-exited:
-			p.Close()
+			_ = p.Close()
 			return nil, fmt.Errorf("%s exited before it was ready: %s", filepath.Base(exe), p.Output())
 		case <-ctx.Done():
-			p.Close()
+			_ = p.Close()
 			return nil, ctx.Err()
 		case <-time.After(readyTimeout):
-			p.Close()
+			_ = p.Close()
 			return nil, fmt.Errorf("%s wasn't ready after %s: %s", filepath.Base(exe), readyTimeout, p.Output())
 		}
 		if err := p.bind(ctx, config); err != nil {
-			p.Close()
+			_ = p.Close()
 			return nil, err
 		}
 		return p, nil
@@ -132,23 +132,27 @@ func InProcess(c sdk.Connector) Launcher {
 		}
 		cctx, cancel := context.WithCancel(context.Background())
 		ready := make(chan struct{})
-		done := make(chan error, 1)
-		go func() { done <- c.Run(cctx, p.socket, p.hostSocket, func() { close(ready) }) }()
+		done := make(chan struct{})
+		var runErr error
+		go func() {
+			defer close(done)
+			runErr = c.Run(cctx, p.socket, p.hostSocket, func() { close(ready) })
+		}()
 		p.stop = func() {
 			cancel()
 			<-done
 		}
 		select {
 		case <-ready:
-		case err := <-done:
-			p.Close()
-			return nil, fmt.Errorf("%s: %w", c.Name, err)
+		case <-done:
+			_ = p.Close()
+			return nil, fmt.Errorf("%s: %w", c.Name, runErr)
 		case <-ctx.Done():
-			p.Close()
+			_ = p.Close()
 			return nil, ctx.Err()
 		}
 		if err := p.bind(ctx, config); err != nil {
-			p.Close()
+			_ = p.Close()
 			return nil, err
 		}
 		return p, nil
@@ -165,7 +169,7 @@ func Build(t T, pkg string) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	exe := filepath.Join(dir, filepath.Base(pkg))
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", exe, pkg)
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", exe, pkg) //nolint:gosec // the test names the package
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build %s: %v\n%s", pkg, err, out)
 	}

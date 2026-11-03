@@ -93,7 +93,7 @@ func (s *memSource) Discover(context.Context) (source.Catalog, error) {
 	}}, nil
 }
 
-func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+func (s *memSource) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
 	if err := s.c.check(); err != nil {
 		if s.bug == "check-internal" && s.c.Token != "good" {
 			return errors.New("bad token")
@@ -218,7 +218,7 @@ func sourceSuite(bug string) conformance.SourceSuite {
 		}),
 		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
 		Streams: []conformance.Stream{{Name: "users", Mode: source.FullRefresh}, {Name: "events", Mode: source.Incremental}},
-		AddRecords: func(_ context.Context, stream string) (int, error) {
+		AddRecords: func(context.Context, string) (int, error) {
 			up.mu.Lock()
 			defer up.mu.Unlock()
 			up.events += 3

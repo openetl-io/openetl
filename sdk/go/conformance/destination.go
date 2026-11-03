@@ -333,7 +333,7 @@ func (s *session) wantRecovery(gen uint64, got protocolv1.Recovery, want ...prot
 
 // Write: commit: nothing is visible before Commit, Commit makes the epoch
 // visible once, and a second Commit of it changes nothing.
-func (r *destinationRun) checkCommit(t T, s *session) {
+func (r *destinationRun) checkCommit(_ T, s *session) {
 	w, rec := s.begin(1, nil, nil)
 	s.wantRecovery(1, rec, protocolv1.Recovery_RECOVERY_APPLIED)
 	e1 := map[string][]record{"alpha": records(0, 3, "a"), "beta": records(0, 2, "b")}
@@ -354,7 +354,7 @@ func (r *destinationRun) checkCommit(t T, s *session) {
 // Write: crash after pre-commit: a runner died before it recorded the
 // epoch. The next attempt recovers the epoch before it, then writes the
 // lost one's records again, and each lands once.
-func (r *destinationRun) checkCrashAfterPreCommit(t T, s *session) {
+func (r *destinationRun) checkCrashAfterPreCommit(_ T, s *session) {
 	w, _ := s.begin(1, nil, nil)
 	e1 := map[string][]record{"alpha": records(0, 3, "a"), "beta": records(0, 1, "b")}
 	staged1 := s.stage(w, epoch(1, 1), e1)
@@ -377,7 +377,7 @@ func (r *destinationRun) checkCrashAfterPreCommit(t T, s *session) {
 // but before Commit. Stage-and-apply destinations apply what was staged; a
 // transactional stream's transaction died with its producer, so the epoch
 // is lost and written again.
-func (r *destinationRun) checkCrashAfterRecord(t T, s *session) {
+func (r *destinationRun) checkCrashAfterRecord(_ T, s *session) {
 	w, _ := s.begin(1, nil, nil)
 	e1 := map[string][]record{"alpha": records(0, 3, "a"), "beta": records(0, 2, "b")}
 	staged := s.stage(w, epoch(1, 1), e1)
@@ -402,7 +402,7 @@ func (r *destinationRun) checkCrashAfterRecord(t T, s *session) {
 
 // Write: crash after commit: recovering an epoch that was committed finds
 // it applied and applies nothing again.
-func (r *destinationRun) checkCrashAfterCommit(t T, s *session) {
+func (r *destinationRun) checkCrashAfterCommit(_ T, s *session) {
 	w, _ := s.begin(1, nil, nil)
 	e1 := map[string][]record{"alpha": records(0, 3, "a"), "beta": records(0, 2, "b")}
 	staged := s.stage(w, epoch(1, 1), e1)
