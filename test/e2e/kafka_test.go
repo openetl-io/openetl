@@ -244,7 +244,7 @@ func TestKafkaEngineKilledMidSync(t *testing.T) {
 	name := unique("kafka-engine-killed")
 	ns := schema(name)
 	apply(t, docs(name, icebergSlowFaker, kafkaDest(t, ns), `{"commit": {"interval": "1s"}}`)...)
-	pid := r.engine(t)
+	pid := r.engine(t, name)
 	eventually(t, 30*time.Second, "a checkpoint", func() bool { return checkpointRecords(t, name) > 0 })
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		t.Fatal(err)

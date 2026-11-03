@@ -175,7 +175,7 @@ func TestIcebergEngineKilledMidSync(t *testing.T) {
 	name := unique("iceberg-engine-killed")
 	ns := schema(name)
 	apply(t, icebergDocs(name, icebergSlowFaker, icebergDest(t, ns), "overwrite", `{"commit": {"interval": "1s"}}`)...)
-	pid := r.engine(t)
+	pid := r.engine(t, name)
 	eventually(t, 30*time.Second, "a checkpoint", func() bool { return checkpointRecords(t, name) > 0 })
 	// Gone already if its attempt failed, as a busy Temporal can make it.
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {

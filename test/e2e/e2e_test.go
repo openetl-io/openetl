@@ -21,6 +21,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -404,8 +406,24 @@ func (r *runner) kill(t *testing.T) {
 	<-r.done
 }
 
-// engine returns the PID of the runner's engine process, once it has one.
-func (r *runner) engine(t *testing.T) int { return r.child(t, "openetl-engine") }
+// engine returns the PID of the engine the runner last started for
+// pipeline, once it has one. The runner also picks up streams earlier tests
+// left running, so it goes by the pipeline its "engine ready" line names.
+func (r *runner) engine(t *testing.T, pipeline string) int {
+	t.Helper()
+	id := mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", pipeline)
+	ready := regexp.MustCompile(`msg="engine ready" .*pipeline=` + id + ` .* pid=(\d+)`)
+	var pid int
+	eventually(t, 30*time.Second, "the runner to start an engine for "+pipeline, func() bool {
+		m := ready.FindAllStringSubmatch(r.out.String(), -1)
+		if len(m) == 0 {
+			return false
+		}
+		pid, _ = strconv.Atoi(m[len(m)-1][1])
+		return true
+	})
+	return pid
+}
 
 // child returns the PID of the runner's child process whose name starts
 // with name, once it has one. Linux keeps 15 bytes of a name.
@@ -579,7 +597,7 @@ func TestEngineKilledMidSync(t *testing.T) {
 	r := startRunner(t)
 	name := unique("engine-killed")
 	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
-	pid := r.engine(t)
+	pid := r.engine(t, name)
 	eventually(t, 30*time.Second, "a committed epoch", func() bool { return committedEpochs(t, schema(name)) > 0 })
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
@@ -598,7 +616,7 @@ func TestRunnerKilledMidSync(t *testing.T) {
 	first := startRunner(t)
 	name := unique("runner-killed")
 	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
-	engine := first.engine(t)
+	engine := first.engine(t, name)
 	dst := first.child(t, "destination-pos")
 	eventually(t, 30*time.Second, "a committed epoch", func() bool { return committedEpochs(t, schema(name)) > 0 })
 	first.kill(t)
@@ -704,7 +722,7 @@ func TestParquetEngineKilledMidSync(t *testing.T) {
 	name := unique("parquet-killed")
 	dir := t.TempDir()
 	apply(t, docs(name, `{"connector": "faker", "config": `+slowFaker+`}`, parquetDest(dir), `{"commit": {"interval": "1s"}}`)...)
-	pid := r.engine(t)
+	pid := r.engine(t, name)
 	eventually(t, 30*time.Second, "a committed epoch", func() bool {
 		m, _ := filepath.Glob(filepath.Join(dir, "_openetl", "loads", "*", "*"))
 		return len(m) > 0

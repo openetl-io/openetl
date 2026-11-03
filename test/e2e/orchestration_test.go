@@ -59,7 +59,7 @@ func TestRunnerDrains(t *testing.T) {
 	first := startRunner(t)
 	name := unique("drained")
 	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
-	first.engine(t)
+	first.engine(t, name)
 	eventually(t, 30*time.Second, "a committed epoch", func() bool { return committedEpochs(t, schema(name)) > 0 })
 	if err := first.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func TestCompletedStreamIsNotReadAgain(t *testing.T) {
 	r := startRunner(t)
 	name := unique("completed")
 	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
-	pid := r.engine(t)
+	pid := r.engine(t, name)
 	eventually(t, 30*time.Second, "users to complete", func() bool {
 		n, err := query[int](t, `SELECT count(*) FROM checkpoint_mirror m JOIN pipelines p ON p.id = m.pipeline_id,
 			jsonb_array_elements(m.streams) s WHERE p.name = $1 AND s->>'name' = 'users' AND (s->>'complete')::boolean`, name)

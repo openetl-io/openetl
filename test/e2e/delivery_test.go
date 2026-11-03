@@ -24,7 +24,7 @@ func TestSupersetKilledMidSync(t *testing.T) {
 	name := unique("superset-killed")
 	faker := `{"seed": 3, "count": 2000, "batchSize": 50, "delay": "50ms", "overlap": 150}`
 	apply(t, pipelineDocs(name, faker, `{"commit": {"interval": "1s"}}`)...)
-	pid := r.engine(t)
+	pid := r.engine(t, name)
 	eventually(t, 30*time.Second, "a committed epoch", func() bool { return committedEpochs(t, schema(name)) > 0 })
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
