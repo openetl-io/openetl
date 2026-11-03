@@ -1,7 +1,11 @@
 import { useMemo } from "react";
 import { useQuery } from "@connectrpc/connect-query";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
+import type { ColumnDef } from "@tanstack/react-table";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DataTable } from "@/components/data-table/data-table";
+import { useDataTable } from "@/components/data-table/use-data-table";
 import { Empty, ErrorNote } from "@/components/empty";
 import { RelativeTime } from "@/components/relative-time";
 import { PipelineService, type SchemaColumn, type StreamSchema } from "@/gen/openetl/api/v1/pipeline_pb";
@@ -29,6 +33,69 @@ export function diff(prev: SchemaColumn[] | undefined, cur: SchemaColumn[]) {
   return out;
 }
 
+type DiffRow = ReturnType<typeof diff>[number];
+
+const columns: ColumnDef<DiffRow>[] = [
+  {
+    id: "column",
+    header: "Column",
+    cell: ({ row }) => <span className="font-mono text-[0.8125rem]">{row.original.col.name}</span>,
+  },
+  {
+    id: "type",
+    header: "Type",
+    cell: ({ row }) => {
+      const { col, was } = row.original;
+      return (
+        <span className="font-mono text-[0.8125rem]">
+          {was && was.type !== col.type && <span className="text-muted-foreground line-through">{was.type} </span>}
+          {col.type}
+        </span>
+      );
+    },
+  },
+  {
+    id: "nulls",
+    header: "Nulls",
+    cell: ({ row }) => <span className="text-muted-foreground">{row.original.col.nullable ? "Allowed" : "Not null"}</span>,
+    meta: { className: "hidden sm:table-cell" },
+  },
+  {
+    id: "source",
+    header: "From source column",
+    cell: ({ row }) => <span className="font-mono text-[0.8125rem] text-muted-foreground">{row.original.col.source}</span>,
+    meta: { className: "hidden md:table-cell" },
+  },
+  {
+    id: "change",
+    header: "Change",
+    cell: ({ row }) => {
+      const c = row.original.change;
+      return (
+        <span className={cn("font-medium", c === "added" && "text-healthy", c === "removed" && "text-failed", c === "changed" && "text-degraded")}>
+          {changeLabel[c]}
+        </span>
+      );
+    },
+  },
+];
+
+function ColumnsTable({ rows }: { rows: DiffRow[] }) {
+  const table = useDataTable({ data: rows, columns, paged: false });
+  return (
+    <DataTable
+      table={table}
+      rowClassName={(r) =>
+        cn(
+          r.original.change === "removed" && "text-muted-foreground line-through decoration-failed/60",
+          r.original.change === "added" && "bg-healthy/5",
+          r.original.change === "changed" && "bg-degraded/5",
+        )
+      }
+    />
+  );
+}
+
 export function SchemasTab({ workspace, pipeline }: { workspace: string; pipeline: string }) {
   const { stream, version } = route.useSearch();
   const navigate = useNavigate({ from: "/workspaces/$workspace/pipelines/$pipeline" });
@@ -50,7 +117,6 @@ export function SchemasTab({ workspace, pipeline }: { workspace: string; pipelin
   const n = Number(version);
   const shown = versions.find((v) => v.version === n) ?? versions[versions.length - 1]!;
   const prev = versions.find((v) => v.version === shown.version - 1);
-  const rows = diff(prev?.columns, shown.columns);
 
   return (
     <div className="grid gap-6 md:grid-cols-[220px_1fr]">
@@ -58,94 +124,49 @@ export function SchemasTab({ workspace, pipeline }: { workspace: string; pipelin
         {names.map((s) => {
           const vs = byStream.get(s)!;
           return (
-            <button
+            <Button
               key={s}
+              variant={s === selected ? "secondary" : "ghost"}
+              size="sm"
               onClick={() => navigate({ search: (q) => ({ ...q, stream: s, version: undefined }) })}
               aria-current={s === selected ? "true" : undefined}
-              className={cn(
-                "flex items-center justify-between gap-2 rounded-md px-3 py-1.5 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
-                s === selected && "bg-secondary font-medium",
-              )}
+              className="justify-between font-normal"
             >
               <span className="truncate">{s}</span>
               <span className="font-mono text-xs text-muted-foreground">v{vs[vs.length - 1]!.version}</span>
-            </button>
+            </Button>
           );
         })}
       </nav>
       <div className="grid min-w-0 content-start gap-4">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <h2 className="text-lg font-semibold tracking-tight">{selected}</h2>
+          <h2 className="text-base font-semibold">{selected}</h2>
           <span className="text-muted-foreground">
             into <code className="font-mono text-[0.8125rem] text-foreground">{shown.table}</code>
           </span>
           <div role="tablist" aria-label="Versions" className="flex flex-wrap gap-1 sm:ml-auto">
             {versions.map((v) => (
-              <button
+              <Button
                 key={v.version}
                 role="tab"
                 aria-selected={v.version === shown.version}
+                variant={v.version === shown.version ? "secondary" : "ghost"}
+                size="xs"
                 onClick={() => navigate({ search: (q) => ({ ...q, stream: selected, version: String(v.version) }) })}
-                className={cn(
-                  "rounded-full border px-2.5 py-0.5 font-mono text-[0.8125rem] hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
-                  v.version === shown.version && "border-foreground bg-foreground text-background hover:bg-foreground",
-                )}
+                className="font-mono"
               >
                 v{v.version}
-              </button>
+              </Button>
             ))}
           </div>
         </div>
         <p className="text-muted-foreground">
           Version {shown.version}, first seen <RelativeTime date={dateOf(shown.createTime)!} />, at epoch{" "}
-          <span className="font-mono tabular">{shown.epoch.toString()}</span> of generation{" "}
-          <span className="font-mono tabular">{shown.generation.toString()}</span>.
+          <span className="font-mono tabular-nums">{shown.epoch.toString()}</span> of generation{" "}
+          <span className="font-mono tabular-nums">{shown.generation.toString()}</span>.
           {prev ? ` Changes are against version ${prev.version}.` : ""}
         </p>
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full min-w-[560px] border-collapse">
-            <thead>
-              <tr className="border-b text-left text-[0.8125rem] text-muted-foreground">
-                <th scope="col" className="px-4 py-2 font-normal">Column</th>
-                <th scope="col" className="px-4 py-2 font-normal">Type</th>
-                <th scope="col" className="px-4 py-2 font-normal">Nulls</th>
-                <th scope="col" className="px-4 py-2 font-normal">From source column</th>
-                <th scope="col" className="px-4 py-2 font-normal">Change</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(({ col, change, was }) => (
-                <tr
-                  key={`${change}:${col.name}`}
-                  className={cn(
-                    "border-b last:border-b-0 [&>td:not(:last-child)]:decoration-failed/60",
-                    change === "removed" && "text-muted-foreground [&>td:not(:last-child)]:line-through",
-                    change === "added" && "bg-healthy/5",
-                    change === "changed" && "bg-degraded/5",
-                  )}
-                >
-                  <td className="h-row px-4 py-1.5 font-mono text-[0.8125rem]">{col.name}</td>
-                  <td className="px-4 py-1.5 font-mono text-[0.8125rem]">
-                    {was && was.type !== col.type && <span className="text-muted-foreground line-through">{was.type} </span>}
-                    {col.type}
-                  </td>
-                  <td className="px-4 py-1.5 text-muted-foreground">{col.nullable ? "Allowed" : "Not null"}</td>
-                  <td className="px-4 py-1.5 font-mono text-[0.8125rem] text-muted-foreground">{col.source}</td>
-                  <td
-                    className={cn(
-                      "px-4 py-1.5 font-medium",
-                      change === "added" && "text-healthy",
-                      change === "removed" && "text-failed",
-                      change === "changed" && "text-degraded",
-                    )}
-                  >
-                    {changeLabel[change]}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ColumnsTable rows={diff(prev?.columns, shown.columns)} />
       </div>
     </div>
   );

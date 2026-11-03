@@ -5,80 +5,87 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* The tokens. Every color, radius and type decision lives here, for both
-   themes. Ink is the logo's tile; signal is the one accent, and it also
-   means "running". */
+/* The tokens, for both themes. Neutral zinc grays, ink for primary actions,
+   and one blue accent (signal) that also means running. Status colors are
+   four hues and gray. */
 :root {
-  --ink: oklch(0.19 0.004 285);
-  --paper: oklch(0.977 0.003 265);
-
-  --background: var(--paper);
-  --foreground: var(--ink);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.21 0.006 285.9);
   --card: oklch(1 0 0);
-  --card-foreground: var(--ink);
+  --card-foreground: var(--foreground);
   --popover: oklch(1 0 0);
-  --popover-foreground: var(--ink);
-  --primary: var(--ink);
-  --primary-foreground: oklch(0.967 0.001 286);
-  --secondary: oklch(0.95 0.004 265);
-  --secondary-foreground: var(--ink);
-  --muted: oklch(0.955 0.004 265);
-  --muted-foreground: oklch(0.5 0.014 265);
-  --accent: oklch(0.948 0.006 265);
-  --accent-foreground: var(--ink);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.21 0.006 285.9);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.967 0.001 286.4);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.967 0.001 286.4);
+  --muted-foreground: oklch(0.52 0.014 285.9);
+  --accent: oklch(0.955 0.002 286.3);
+  --accent-foreground: var(--foreground);
   --destructive: var(--status-failed);
-  --border: oklch(0.912 0.006 265);
-  --input: oklch(0.88 0.008 265);
-  --signal: oklch(0.53 0.21 266);
-  --signal-soft: oklch(0.95 0.03 266);
+  --border: oklch(0.92 0.004 286.3);
+  --input: oklch(0.88 0.005 286.3);
+  --signal: oklch(0.53 0.21 262);
+  --signal-soft: oklch(0.96 0.02 255);
   --ring: var(--signal);
 
-  --status-healthy: oklch(0.5 0.13 155);
+  --sidebar: oklch(0.982 0.001 286.4);
+  --sidebar-foreground: oklch(0.37 0.012 285.8);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.94 0.003 286.3);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+
+  --status-healthy: oklch(0.52 0.13 152);
   --status-running: var(--signal);
-  --status-degraded: oklch(0.53 0.13 60);
-  --status-failed: oklch(0.52 0.2 27);
-  --status-paused: oklch(0.52 0.018 265);
-  --status-approval: oklch(0.54 0.2 300);
-  --status-idle: oklch(0.82 0.008 265);
+  --status-degraded: oklch(0.55 0.13 62);
+  --status-failed: oklch(0.53 0.2 27);
+  --status-paused: oklch(0.55 0.012 286);
+  --status-idle: oklch(0.82 0.005 286);
 
   --radius: 0.5rem;
-  --row: 2.75rem;
+  --row: 2.5rem;
   --gutter: 1.5rem;
-  font-size: 14px;
 }
 
 :root[data-density="compact"] {
-  --row: 2.125rem;
+  --row: 2rem;
   --gutter: 1rem;
-  font-size: 13px;
 }
 
 .dark {
-  --background: oklch(0.185 0.008 265);
-  --foreground: oklch(0.95 0.004 265);
-  --card: oklch(0.215 0.009 265);
-  --card-foreground: oklch(0.95 0.004 265);
-  --popover: oklch(0.235 0.01 265);
-  --popover-foreground: oklch(0.95 0.004 265);
-  --primary: oklch(0.967 0.001 286);
-  --primary-foreground: var(--ink);
-  --secondary: oklch(0.26 0.01 265);
-  --secondary-foreground: oklch(0.95 0.004 265);
-  --muted: oklch(0.245 0.01 265);
-  --muted-foreground: oklch(0.7 0.014 265);
-  --accent: oklch(0.27 0.012 265);
-  --accent-foreground: oklch(0.95 0.004 265);
-  --border: oklch(0.3 0.011 265);
-  --input: oklch(0.34 0.012 265);
-  --signal: oklch(0.72 0.14 268);
-  --signal-soft: oklch(0.29 0.05 268);
+  --background: oklch(0.16 0.004 286);
+  --foreground: oklch(0.95 0.002 286);
+  --card: oklch(0.185 0.005 286);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.21 0.006 286);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.95 0.002 286);
+  --primary-foreground: oklch(0.21 0.006 285.9);
+  --secondary: oklch(0.25 0.006 286);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.23 0.006 286);
+  --muted-foreground: oklch(0.71 0.013 286);
+  --accent: oklch(0.26 0.006 286);
+  --accent-foreground: var(--foreground);
+  --border: oklch(0.28 0.006 286);
+  --input: oklch(0.33 0.007 286);
+  --signal: oklch(0.71 0.15 258);
+  --signal-soft: oklch(0.28 0.06 260);
 
-  --status-healthy: oklch(0.74 0.14 155);
+  --sidebar: oklch(0.185 0.005 286);
+  --sidebar-foreground: oklch(0.8 0.008 286);
+  --sidebar-accent: oklch(0.26 0.006 286);
+  --sidebar-accent-foreground: var(--foreground);
+
+  --status-healthy: oklch(0.74 0.14 152);
   --status-degraded: oklch(0.8 0.13 75);
   --status-failed: oklch(0.7 0.17 25);
-  --status-paused: oklch(0.68 0.018 265);
-  --status-approval: oklch(0.73 0.14 300);
-  --status-idle: oklch(0.36 0.012 265);
+  --status-paused: oklch(0.68 0.012 286);
+  --status-idle: oklch(0.38 0.008 286);
 }
 
 @theme inline {
@@ -104,12 +111,19 @@
   --color-ring: var(--ring);
   --color-signal: var(--signal);
   --color-signal-soft: var(--signal-soft);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
   --color-healthy: var(--status-healthy);
   --color-running: var(--status-running);
   --color-degraded: var(--status-degraded);
   --color-failed: var(--status-failed);
   --color-paused: var(--status-paused);
-  --color-approval: var(--status-approval);
   --color-idle: var(--status-idle);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -130,7 +144,7 @@
     color-scheme: dark;
   }
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background text-sm text-foreground antialiased;
     font-feature-settings: "ss01", "cv11";
   }
   ::selection {

@@ -1,13 +1,24 @@
-import { useEffect, useState } from "react";
-import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
-import { ChevronRight, LogOut, Moon, Rows3, Rows4, Search, Sun } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
+import { Outlet, useMatches, useNavigate, useParams, useRouter } from "@tanstack/react-router";
+import { Search } from "lucide-react";
 import { Toaster } from "sonner";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Kbd } from "@/components/ui/kbd";
+import { Separator } from "@/components/ui/separator";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { clearKey } from "@/lib/api";
 import { usePrefs } from "@/lib/prefs";
+import { AppSidebar } from "./app-sidebar";
 import { CommandPalette } from "./command-palette";
-import { Logo } from "./logo";
 
 export function Root() {
   const { dark } = usePrefs();
@@ -19,24 +30,46 @@ export function Root() {
   );
 }
 
-function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+/** Where the page sits: the workspace, then the crumbs its route declares. */
+function Crumbs() {
+  const matches = useMatches();
+  const router = useRouter();
+  const leaf = matches[matches.length - 1];
+  const { workspace = "default" } = useParams({ strict: false });
+  const crumbs = leaf?.staticData.crumbs?.(leaf.params as Record<string, string>) ?? [];
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-sm" onClick={onClick} aria-label={label}>
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
+    <Breadcrumb className="min-w-0">
+      <BreadcrumbList className="flex-nowrap">
+        <BreadcrumbItem className="hidden sm:inline-flex">{workspace}</BreadcrumbItem>
+        {crumbs.map((c, i) => (
+          <Fragment key={i}>
+            <BreadcrumbSeparator className={i === 0 ? "hidden sm:inline-flex" : undefined} />
+            <BreadcrumbItem className="min-w-0">
+              {c.to ? (
+                <BreadcrumbLink
+                  href={c.to}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    router.history.push(c.to!);
+                  }}
+                  className="truncate"
+                >
+                  {c.label}
+                </BreadcrumbLink>
+              ) : (
+                <BreadcrumbPage className="truncate">{c.label}</BreadcrumbPage>
+              )}
+            </BreadcrumbItem>
+          </Fragment>
+        ))}
+      </BreadcrumbList>
+    </Breadcrumb>
   );
 }
 
 export function Shell() {
-  const params = useParams({ strict: false });
-  const workspace = params.workspace ?? "default";
+  const { workspace = "default" } = useParams({ strict: false });
   const navigate = useNavigate();
-  const { dark, density, toggleTheme, toggleDensity } = usePrefs();
   const [palette, setPalette] = useState(false);
 
   useEffect(() => {
@@ -56,68 +89,30 @@ export function Shell() {
   };
 
   return (
-    <div className="min-h-dvh">
-      <header className="sticky top-0 z-30 border-b bg-background/85 backdrop-blur-md">
-        <div className="mx-auto flex h-12 max-w-[1400px] items-center gap-3 px-gutter">
-          <Link
-            to="/workspaces/$workspace/pipelines"
-            params={{ workspace }}
-            search={{ q: undefined, show: undefined }}
-            className="group flex items-center gap-2 rounded-md font-semibold tracking-tight outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring"
+    <SidebarProvider defaultOpen={!document.cookie.includes("sidebar_state=false")}>
+      <AppSidebar workspace={workspace} signOut={signOut} />
+      <SidebarInset className="min-w-0">
+        <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b bg-background px-4">
+          <SidebarTrigger className="-ml-1" />
+          <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-4" />
+          <Crumbs />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPalette(true)}
+            className="ml-auto w-8 justify-start px-2 text-muted-foreground sm:w-60"
+            aria-label="Search"
           >
-            <Logo className="size-6" />
-            <span>OpenETL</span>
-          </Link>
-          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 text-muted-foreground">
-            <ChevronRight className="size-4 shrink-0 opacity-50" aria-hidden />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="truncate">{workspace}</span>
-              </TooltipTrigger>
-              <TooltipContent>Workspace</TooltipContent>
-            </Tooltip>
-            {params.pipeline && (
-              <>
-                <ChevronRight className="size-4 shrink-0 opacity-50" aria-hidden />
-                <Link
-                  to="/workspaces/$workspace/pipelines/$pipeline"
-                  params={{ workspace, pipeline: params.pipeline }}
-                  search={{ tab: undefined, stream: undefined, version: undefined }}
-                  className="truncate hover:text-foreground"
-                >
-                  {params.pipeline}
-                </Link>
-              </>
-            )}
-          </nav>
-          <div className="ml-auto flex items-center gap-1">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPalette(true)}
-              className="mr-1 w-9 justify-start gap-2 px-2.5 text-muted-foreground sm:w-56"
-              aria-label="Search pipelines"
-            >
-              <Search className="size-4" aria-hidden />
-              <span className="hidden sm:inline">Search pipelines</span>
-              <kbd className="ml-auto hidden rounded border bg-muted px-1.5 font-sans text-[0.6875rem] sm:inline">⌘K</kbd>
-            </Button>
-            <IconButton label={dark ? "Use the light theme" : "Use the dark theme"} onClick={toggleTheme}>
-              {dark ? <Sun /> : <Moon />}
-            </IconButton>
-            <IconButton label={density === "compact" ? "Comfortable rows" : "Compact rows"} onClick={toggleDensity}>
-              {density === "compact" ? <Rows3 /> : <Rows4 />}
-            </IconButton>
-            <IconButton label="Sign out" onClick={signOut}>
-              <LogOut />
-            </IconButton>
-          </div>
+            <Search aria-hidden />
+            <span className="hidden sm:inline">Search</span>
+            <Kbd className="ml-auto hidden sm:inline-flex">⌘K</Kbd>
+          </Button>
+        </header>
+        <div className="mx-auto w-full max-w-[1600px] px-gutter pt-6 pb-16">
+          <Outlet />
         </div>
-      </header>
-      <main className="mx-auto max-w-[1400px] px-gutter pt-6 pb-16">
-        <Outlet />
-      </main>
+      </SidebarInset>
       <CommandPalette open={palette} onOpenChange={setPalette} workspace={workspace} signOut={signOut} />
-    </div>
+    </SidebarProvider>
   );
 }

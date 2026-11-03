@@ -1,13 +1,17 @@
 import { Code } from "@connectrpc/connect";
 import { useQuery } from "@connectrpc/connect-query";
-import { Link, getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
+import { getRouteApi, useNavigate } from "@tanstack/react-router";
+import { Workflow } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ConnectorLogo, ConnectorName } from "@/components/connector";
-import { Empty, ErrorNote } from "@/components/empty";
+import { ConnectorLogo } from "@/components/connector";
+import { DescriptionItem, DetailHeader } from "@/components/detail-header";
+import { ErrorNote } from "@/components/empty";
+import { EmptyState } from "@/components/empty-state";
+import { Freshness, Schedule } from "@/components/pipeline-fields";
 import { RelativeTime } from "@/components/relative-time";
+import { ResourceLink } from "@/components/resource-link";
 import { StatusBadge } from "@/components/status";
 import { SyncStrip } from "@/components/sync-strip";
 import { DestinationService, SourceService } from "@/gen/openetl/api/v1/connection_pb";
@@ -16,8 +20,9 @@ import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { errorCode, errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
 import { destinationName, pipelineName, shortDigest, sourceName } from "@/lib/names";
-import { lag, lastUpdate, scheduleLabel, stale } from "@/lib/pipeline";
+import { lag } from "@/lib/pipeline";
 import { pipelineStatus } from "@/lib/status";
+import { connectorName } from "@/lib/connectors";
 import { Overview } from "./pipeline-overview";
 import { SyncsTab } from "./pipeline-syncs";
 import { SchemasTab } from "./pipeline-schemas";
@@ -38,15 +43,6 @@ const route = getRouteApi("/_app/workspaces/$workspace/pipelines/$pipeline");
 /** The syncs every tab shares: the header's strip, the overview and the Syncs tab. */
 export const recentSyncs = 50;
 
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid min-w-0 gap-0.5">
-      <dt className="text-[0.8125rem] text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 truncate">{children}</dd>
-    </div>
-  );
-}
-
 export function PipelinePage() {
   const { workspace, pipeline } = route.useParams();
   const { tab = "overview" } = route.useSearch();
@@ -54,17 +50,9 @@ export function PipelinePage() {
   const name = pipelineName(workspace, pipeline);
   const p = useQuery(PipelineService.method.getPipeline, { name }, { refetchInterval: (q) => (q.state.data?.pipeline && pipelineStatus(q.state.data.pipeline) === "running" ? 3_000 : 15_000) });
   const running = p.data?.pipeline ? pipelineStatus(p.data.pipeline) === "running" : false;
-  const syncs = useQuery(
-    SyncService.method.listSyncs,
-    { parent: name, pageSize: recentSyncs },
-    { refetchInterval: running ? 3_000 : 15_000 },
-  );
+  const syncs = useQuery(SyncService.method.listSyncs, { parent: name, pageSize: recentSyncs }, { refetchInterval: running ? 3_000 : 15_000 });
   const spec = p.data?.pipeline?.spec;
-  const source = useQuery(
-    SourceService.method.getSource,
-    { name: sourceName(workspace, spec?.source?.ref ?? "") },
-    { enabled: !!spec?.source?.ref },
-  );
+  const source = useQuery(SourceService.method.getSource, { name: sourceName(workspace, spec?.source?.ref ?? "") }, { enabled: !!spec?.source?.ref });
   const destination = useQuery(
     DestinationService.method.getDestination,
     { name: destinationName(workspace, spec?.destination?.ref ?? "") },
@@ -73,122 +61,97 @@ export function PipelinePage() {
 
   if (p.error) {
     return errorCode(p.error) === Code.NotFound ? (
-      <Empty title={`There's no pipeline ${pipeline} in ${workspace}`} command={`openetl apply -f ${pipeline}.yaml`} />
+      <EmptyState icon={Workflow} title={`There's no pipeline ${pipeline} in ${workspace}`} command={`openetl apply -f ${pipeline}.yaml`} />
     ) : (
       <ErrorNote title="Couldn't load the pipeline" message={errorMessage(p.error)} />
     );
   }
   const pl = p.data?.pipeline;
-  const status = pl ? pipelineStatus(pl) : undefined;
-  const lastSuccess = pl && lastUpdate(pl);
-  const behind = spec?.mode === PipelineMode.CONTINUOUS ? lag(pl?.status?.lastSync) : undefined;
+  const src = source.data?.source;
+  const dst = destination.data?.destination;
+  const continuous = spec?.mode === PipelineMode.CONTINUOUS;
+  const behind = continuous ? lag(pl?.status?.lastSync) : undefined;
+  const latest = syncs.data?.syncs[0];
 
   return (
     <div className="grid gap-6">
-      <div className="grid gap-4">
-        <Link
-          to="/workspaces/$workspace/pipelines"
-          params={{ workspace }}
-          search={{ q: undefined, show: undefined }}
-          className="inline-flex w-fit items-center gap-1 text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="size-4" aria-hidden />
-          Pipelines
-        </Link>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight break-all">{pipeline}</h1>
-          {status ? <StatusBadge status={status} /> : <Skeleton className="h-5 w-20" />}
-        </div>
-        {pl ? (
-          <dl className="grid grid-cols-2 gap-x-8 gap-y-3 sm:grid-cols-3 lg:flex lg:flex-wrap">
-            <Fact label="Source">
-              <ConnectorLogo version={source.data?.source?.connector} className="mr-1.5" />
-              {spec?.source?.ref}
-              {source.data?.source?.spec?.connector && (
-                <span className="text-muted-foreground">
-                  {" ("}
-                  <ConnectorName connector={source.data.source.spec.connector} version={source.data.source.connector} />)
-                </span>
-              )}
-            </Fact>
-            <Fact label="Destination">
-              <ConnectorLogo version={destination.data?.destination?.connector} className="mr-1.5" />
-              {spec?.destination?.ref}
-              {destination.data?.destination?.spec?.connector && (
-                <span className="text-muted-foreground">
-                  {" ("}
-                  <ConnectorName connector={destination.data.destination.spec.connector} version={destination.data.destination.connector} />)
-                </span>
-              )}
-              {spec?.destination?.namespace && <span className="text-muted-foreground">, schema {spec.destination.namespace}</span>}
-            </Fact>
-            <Fact label="Schedule">
-              {pl.paused ? "Paused" : <span className={spec?.schedule?.trigger.case === "cron" ? "font-mono text-[0.8125rem]" : undefined}>{scheduleLabel(spec)}</span>}
-            </Fact>
-            <Fact label={spec?.mode === PipelineMode.CONTINUOUS ? "Last commit" : "Last success"}>
-              {lastSuccess ? (
-                <span className={stale(pl) ? "text-degraded" : undefined}>
-                  <RelativeTime date={lastSuccess} />
-                </span>
-              ) : (
-                "Never"
-              )}
-            </Fact>
-            {behind && <Fact label="Behind source">{behind}</Fact>}
-            <Fact label="Version">
+      <DetailHeader title={pipeline} status={pl && <StatusBadge status={pipelineStatus(pl)} />}>
+        {pl && (
+          <>
+            <DescriptionItem label="Source">
+              <span className="inline-flex items-center gap-2">
+                <ConnectorLogo connector={connectorName(src?.spec?.connector)} version={src?.connector} />
+                <ResourceLink name={sourceName(workspace, spec?.source?.ref ?? "")} />
+              </span>
+            </DescriptionItem>
+            <DescriptionItem label="Destination">
+              <span className="inline-flex items-center gap-2">
+                <ConnectorLogo connector={connectorName(dst?.spec?.connector)} version={dst?.connector} />
+                <ResourceLink name={destinationName(workspace, spec?.destination?.ref ?? "")} />
+                {spec?.destination?.namespace && <span className="text-muted-foreground">schema {spec.destination.namespace}</span>}
+              </span>
+            </DescriptionItem>
+            <DescriptionItem label="Schedule">{pl.paused ? "Paused" : <Schedule pipeline={pl} />}</DescriptionItem>
+            <DescriptionItem label={continuous ? "Last commit" : "Last success"}>
+              <Freshness pipeline={pl} />
+            </DescriptionItem>
+            {behind && <DescriptionItem label="Behind source">{behind}</DescriptionItem>}
+            <DescriptionItem label="Version">
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
-                    onClick={() => navigate({ search: { tab: "versions", version: pl.version } })}
-                    className="font-mono text-[0.8125rem] hover:text-signal"
-                  >
+                  <button onClick={() => navigate({ search: { tab: "versions", version: pl.version } })} className="font-mono text-[0.8125rem] hover:underline">
                     {shortDigest(pl.version)}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent className="font-mono">{pl.version}</TooltipContent>
               </Tooltip>
-            </Fact>
-          </dl>
-        ) : (
-          <Skeleton className="h-10 w-full max-w-3xl" />
+            </DescriptionItem>
+          </>
         )}
-        <div className="grid gap-2 rounded-lg border bg-card px-4 py-3">
-          <div className="flex items-baseline justify-between gap-4 text-[0.8125rem] text-muted-foreground">
-            <span>Last {Math.min(syncs.data?.syncs.length ?? 0, recentSyncs)} syncs, oldest on the left</span>
-            {syncs.data?.syncs[0] && (
-              <span>
-                Latest started <RelativeTime date={dateOf(syncs.data.syncs[0].startTime)!} />
-              </span>
-            )}
-          </div>
-          {syncs.data ? (
-            syncs.data.syncs.length ? (
-              <SyncStrip syncs={syncs.data.syncs} workspace={workspace} pipeline={pipeline} size="lg" className="min-h-2.5 flex-wrap" />
-            ) : (
-              <p className="text-muted-foreground">
-                No syncs yet. The schedule starts one, or{" "}
-                <code className="font-mono text-[0.8125rem] text-foreground">openetl sync {pipeline}</code> does now.
-              </p>
-            )
-          ) : (
-            <Skeleton className="h-2.5 w-full" />
+      </DetailHeader>
+
+      <div className="grid gap-2 rounded-lg border px-4 py-3">
+        <div className="flex items-baseline justify-between gap-4 text-[0.8125rem] text-muted-foreground">
+          <span>Last {Math.min(syncs.data?.syncs.length ?? 0, recentSyncs)} syncs, oldest on the left</span>
+          {latest && (
+            <span>
+              Latest started <RelativeTime date={dateOf(latest.startTime)!} />
+            </span>
           )}
         </div>
+        {syncs.data ? (
+          syncs.data.syncs.length ? (
+            <SyncStrip syncs={syncs.data.syncs} workspace={workspace} pipeline={pipeline} size="lg" className="min-h-2.5 flex-wrap" />
+          ) : (
+            <p className="text-muted-foreground">
+              No syncs yet. The schedule starts one, or <code className="font-mono text-[0.8125rem] text-foreground">openetl sync {pipeline}</code> does now.
+            </p>
+          )
+        ) : (
+          <Skeleton className="h-2.5 w-full" />
+        )}
       </div>
 
       <Tabs value={tab} onValueChange={(t) => navigate({ search: { tab: t === "overview" ? undefined : (t as Tab) } })}>
-        <TabsList className="w-full justify-start overflow-x-auto sm:w-fit">
+        <TabsList variant="line" className="w-full justify-start overflow-x-auto contain-inline-size">
           {tabs.map((t) => (
-            <TabsTrigger key={t} value={t}>
+            <TabsTrigger key={t} value={t} className="flex-none">
               {tabLabel[t]}
             </TabsTrigger>
           ))}
         </TabsList>
         <TabsContent value="overview" className="pt-4">
-          {pl && <Overview workspace={workspace} pipeline={pl} syncs={syncs.data?.syncs ?? []} connectors={{
-                source: { ref: source.data?.source?.spec?.connector, version: source.data?.source?.connector },
-                destination: { ref: destination.data?.destination?.spec?.connector, version: destination.data?.destination?.connector },
-              }} />}
+          {pl && (
+            <Overview
+              workspace={workspace}
+              pipeline={pl}
+              syncs={syncs.data?.syncs ?? []}
+              connectors={{
+                source: { ref: src?.spec?.connector, version: src?.connector },
+                destination: { ref: dst?.spec?.connector, version: dst?.connector },
+              }}
+            />
+          )}
         </TabsContent>
         <TabsContent value="syncs" className="pt-4">
           <SyncsTab workspace={workspace} pipeline={pipeline} running={running} />

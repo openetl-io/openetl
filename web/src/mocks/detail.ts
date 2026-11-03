@@ -1,0 +1,119 @@
+import { create } from "@bufbuild/protobuf";
+import { timestampFromMs } from "@bufbuild/protobuf/wkt";
+import {
+  CheckpointSchema,
+  DeliveryLevel,
+  PipelinePlanSchema,
+  PipelineVersionSchema,
+  StreamSchemaSchema,
+  WriteMode,
+  type Checkpoint,
+  type Pipeline,
+  type PipelinePlan,
+  type PipelineVersion,
+  type StreamSchema,
+} from "@/gen/openetl/api/v1/pipeline_pb";
+import { LogEntrySchema, SyncState, type LogEntry, type Sync } from "@/gen/openetl/api/v1/sync_pb";
+import { pipelines, syncs } from "./fixtures";
+
+// What a pipeline's tabs and a sync's page read, made up from the pipeline
+// and its syncs.
+
+const ts = (ms: number) => timestampFromMs(Math.round(ms));
+const ms = (t?: { seconds: bigint; nanos: number }) => (t ? Number(t.seconds) * 1000 + t.nanos / 1e6 : Date.now());
+
+const find = (name: string) => pipelines.find((p) => p.name === name);
+
+export function plan(name: string): PipelinePlan | undefined {
+  const p = find(name);
+  if (!p) return undefined;
+  const merge = p.spec?.destination?.ref === "warehouse";
+  const kafka = p.spec?.source?.ref === "events" || p.spec?.destination?.ref === "events-out";
+  return create(PipelinePlanSchema, {
+    pipeline: name,
+    version: p.version,
+    streams: (p.spec?.source?.streams ?? []).map((s) => ({
+      name: s.name,
+      level: kafka ? DeliveryLevel.AT_LEAST_ONCE : merge ? DeliveryLevel.EFFECTIVELY_ONCE : DeliveryLevel.EXACTLY_ONCE,
+      write: merge ? WriteMode.MERGE : WriteMode.APPEND,
+      reason: kafka
+        ? "the destination acknowledges records but can't dedupe them"
+        : merge
+          ? "merge on the primary key makes a repeated record land once"
+          : "the destination commits each epoch with its checkpoint",
+    })),
+    notes: p.spec?.destination?.ref === "raw-archive" ? ["each sync writes a new set of Parquet files under the run's prefix"] : [],
+  });
+}
+
+const columnsFor = (stream: string) => [
+  { name: "id", type: "bigint", nullable: false, source: "id" },
+  { name: stream.split(".").pop()!.replace(/s$/, "") + "_ref", type: "text", nullable: true, source: "ref" },
+  { name: "amount", type: "numeric(18,2)", nullable: true, source: "amount" },
+  { name: "updated_at", type: "timestamptz", nullable: false, source: "updated_at" },
+  { name: "_openetl_id", type: "bytea", nullable: false, source: "" },
+];
+
+export function schemas(name: string): StreamSchema[] {
+  const p = find(name);
+  if (!p) return [];
+  return (p.spec?.source?.streams ?? []).flatMap((s, i) => {
+    const v1 = columnsFor(s.name);
+    const table = `${p.spec?.destination?.ref === "warehouse" ? "analytics" : "raw"}.${s.name.split(".").pop()!.replace(/\./g, "_")}`;
+    const first = create(StreamSchemaSchema, { stream: s.name, version: 1, table, columns: v1, generation: 1n, epoch: 1n, createTime: ts(Date.now() - 30 * 86_400_000) });
+    if (i > 0) return [first];
+    const v2 = [...v1.slice(0, 2), { ...v1[2]!, type: "numeric(20,4)" }, v1[3]!, { name: "currency", type: "text", nullable: true, source: "currency" }, v1[4]!];
+    return [first, create(StreamSchemaSchema, { stream: s.name, version: 2, table, columns: v2, generation: 1n, epoch: 412n, createTime: ts(Date.now() - 6 * 86_400_000) })];
+  });
+}
+
+export function checkpoints(name: string): Checkpoint[] {
+  const committed = (syncs.get(name) ?? []).filter((s) => s.state === SyncState.SUCCEEDED || s.lastCommitTime);
+  return committed.slice(0, 30).map((s, i) =>
+    create(CheckpointSchema, {
+      generation: 1n,
+      epoch: BigInt(900 - i),
+      previousGeneration: 1n,
+      previousEpoch: BigInt(899 - i),
+      sync: s.name,
+      commitTime: s.lastCommitTime ?? s.endTime,
+      streams: s.streams.map((st, j) => ({ name: st.name, rows: st.rows, quarantinedRows: st.quarantinedRows, schemaVersion: j === 0 ? 2 : 1, complete: !s.continuous })),
+    }),
+  );
+}
+
+export function versions(p: Pipeline): PipelineVersion[] {
+  return [0, 1, 2].map((i) =>
+    create(PipelineVersionSchema, {
+      name: `${p.name}/versions/${i === 0 ? p.version : `sha256:${(0x7a3c19 + i * 4099).toString(16).padEnd(64, "0")}`}`,
+      spec: p.spec,
+      dataPlane: "default",
+      provenance: i === 0 ? "git: acme/data-pipelines@4e1a9c2 by ci-deploy" : `openetl apply by priya`,
+      createTime: ts(Date.now() - (2 + i * 9) * 86_400_000),
+      current: i === 0,
+    }),
+  );
+}
+
+export function log(s: Sync): LogEntry[] {
+  const start = ms(s.startTime);
+  const end = s.endTime ? ms(s.endTime) : Date.now();
+  const lines: [string, string, Record<string, string | number>][] = [
+    ["INFO", "attempt started", { component: "runner", data_plane: s.dataPlane }],
+    ["INFO", "engine ready", { component: "runner", engine: "0.1.0" }],
+    ["INFO", "connected", { component: "source", host: "orders-db.internal" }],
+    ...s.streams.map((st): [string, string, Record<string, string | number>] => ["INFO", "stream read", { component: "source", stream: st.name, rows: Number(st.rows) }]),
+    ["DEBUG", "epoch staged", { component: "engine", epoch: 900 }],
+  ];
+  if (s.state === SyncState.FAILED) {
+    lines.push(["WARN", "write failed, retrying", { component: "destination", attempt: 1 }]);
+    lines.push(["ERROR", s.error, { component: "destination" }]);
+  } else if (s.state !== SyncState.RUNNING) {
+    if (s.streams.some((st) => st.quarantinedRows > 0n)) lines.push(["WARN", "rows quarantined", { component: "engine", stream: s.streams[0]!.name, rows: Number(s.streams[0]!.quarantinedRows) }]);
+    lines.push(["INFO", "epoch committed", { component: "destination", epoch: 900 }]);
+    lines.push(["INFO", "attempt finished", { component: "runner" }]);
+  }
+  return lines.map(([level, message, attrs], i) =>
+    create(LogEntrySchema, { time: ts(start + ((end - start) * i) / lines.length), level, message, attempt: 1, attrs }),
+  );
+}

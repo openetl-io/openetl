@@ -1,25 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@connectrpc/connect-query";
+import { useQuery, useTransport } from "@connectrpc/connect-query";
 import { createClient } from "@connectrpc/connect";
 import { Link, getRouteApi } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownToLine, ArrowLeft, Search } from "lucide-react";
+import { ArrowDownToLine, Search } from "lucide-react";
 import type { JsonObject } from "@bufbuild/protobuf";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DescriptionItem, DetailHeader } from "@/components/detail-header";
 import { ErrorNote } from "@/components/empty";
 import { RelativeTime } from "@/components/relative-time";
 import { StatusBadge } from "@/components/status";
 import { SyncService, SyncState, type LogEntry } from "@/gen/openetl/api/v1/sync_pb";
-import { errorMessage, transport } from "@/lib/api";
+import { errorMessage } from "@/lib/api";
 import { clock, compact, dateOf, duration, full } from "@/lib/format";
 import { shortDigest, syncName } from "@/lib/names";
 import { rows, syncStatus } from "@/lib/status";
-import { cn } from "@/lib/utils";
 
 const route = getRouteApi("/_app/workspaces/$workspace/pipelines/$pipeline/syncs/$sync");
-const client = createClient(SyncService, transport);
 
 type Level = "all" | "warn" | "error";
 const levelRank: Record<string, number> = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
@@ -32,6 +32,8 @@ const levelTone: Record<string, string> = {
 
 /** Reads the log a page at a time, and keeps reading while the sync runs. */
 function useSyncLog(name: string) {
+  const transport = useTransport();
+  const client = useMemo(() => createClient(SyncService, transport), [transport]);
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string>();
   const [done, setDone] = useState(false);
@@ -63,7 +65,7 @@ function useSyncLog(name: string) {
     return () => {
       stop = true;
     };
-  }, [name, attempt]);
+  }, [client, name, attempt]);
   return { entries, error, done, retry: () => setAttempt((n) => n + 1) };
 }
 
@@ -101,33 +103,20 @@ function LogView({ entries, live }: { entries: LogEntry[]; live: boolean }) {
   return (
     <div className="grid gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div role="tablist" aria-label="Levels" className="flex rounded-lg border bg-card p-0.5">
-          {(
-            [
-              ["all", "All"],
-              ["warn", "Warnings and errors"],
-              ["error", "Errors"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              role="tab"
-              aria-selected={level === id}
-              onClick={() => setLevel(id)}
-              className={cn(
-                "rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring",
-                level === id && "bg-secondary text-foreground",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <div className="relative">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-          <Input type="search" placeholder="Find in the log" aria-label="Find in the log" value={q} onChange={(e) => setQ(e.target.value)} className="h-8 w-56 pl-8" />
-        </div>
-        <span className="text-[0.8125rem] text-muted-foreground tabular">
+        <Tabs value={level} onValueChange={(l) => setLevel(l as Level)}>
+          <TabsList aria-label="Levels">
+            <TabsTrigger value="all">All</TabsTrigger>
+            <TabsTrigger value="warn">Warnings and errors</TabsTrigger>
+            <TabsTrigger value="error">Errors</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <InputGroup className="h-8 w-56">
+          <InputGroupAddon>
+            <Search aria-hidden />
+          </InputGroupAddon>
+          <InputGroupInput type="search" placeholder="Find in the log" aria-label="Find in the log" value={q} onChange={(e) => setQ(e.target.value)} />
+        </InputGroup>
+        <span className="text-[0.8125rem] text-muted-foreground tabular-nums">
           {shown.length === entries.length ? `${full(entries.length)} lines` : `${full(shown.length)} of ${full(entries.length)} lines`}
         </span>
         {live && (
@@ -164,11 +153,11 @@ function LogView({ entries, live }: { entries: LogEntry[]; live: boolean }) {
                     {taskLabel(e)}
                   </div>
                 )}
-                <div className="grid grid-cols-[7.5rem_3.5rem_6rem_1fr] gap-3 px-4 py-0.5 hover:bg-accent/50">
-                  <span className="text-muted-foreground tabular">{t ? clock(t) : ""}</span>
+                <div className="grid grid-cols-[auto_auto_1fr] gap-x-3 px-4 py-0.5 hover:bg-accent/50 sm:grid-cols-[7.5rem_3.5rem_6rem_1fr]">
+                  <span className="text-muted-foreground tabular-nums">{t ? clock(t) : ""}</span>
                   <span className={levelTone[e.level] ?? ""}>{e.level || "—"}</span>
                   <span className="truncate text-muted-foreground">{component}</span>
-                  <span className="min-w-0 break-words whitespace-pre-wrap">
+                  <span className="col-span-full min-w-0 wrap-break-word whitespace-pre-wrap sm:col-span-1">
                     {e.message}
                     {attrsText(e.attrs) && <span className="text-muted-foreground"> {attrsText(e.attrs)}</span>}
                   </span>
@@ -200,76 +189,54 @@ export function SyncPage() {
 
   return (
     <div className="grid gap-6">
-      <Link
-        to="/workspaces/$workspace/pipelines/$pipeline"
-        params={{ workspace, pipeline }}
-        search={{ tab: "syncs", stream: undefined, version: undefined }}
-        className="inline-flex w-fit items-center gap-1 text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="size-4" aria-hidden />
-        {pipeline}
-      </Link>
       {s.error ? (
         <ErrorNote title="Couldn't load the sync" message={errorMessage(s.error)} />
-      ) : !it ? (
-        <Skeleton className="h-24" />
       ) : (
         <div className="grid gap-4">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Sync <span className="font-mono text-xl">{sync.slice(-8)}</span>
-            </h1>
-            <StatusBadge status={syncStatus(it)} />
-          </div>
-          <dl className="flex flex-wrap gap-x-8 gap-y-3">
-            <div className="grid gap-0.5">
-              <dt className="text-[0.8125rem] text-muted-foreground">Started</dt>
-              <dd>{start && <RelativeTime date={start} />}</dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-[0.8125rem] text-muted-foreground">{end ? "Took" : "Running for"}</dt>
-              <dd className="tabular">{start && duration((end?.getTime() ?? Date.now()) - start.getTime())}</dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-[0.8125rem] text-muted-foreground">Rows</dt>
-              <dd className="tabular">
-                {r && full(r.all)}
-                {r && r.quarantined > 0n && <span className="text-degraded">, {full(r.quarantined)} quarantined</span>}
-              </dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-[0.8125rem] text-muted-foreground">Version</dt>
-              <dd>
-                <Link
-                  to="/workspaces/$workspace/pipelines/$pipeline"
-                  params={{ workspace, pipeline }}
-                  search={{ tab: "versions", version: it.version }}
-                  className="font-mono text-[0.8125rem] hover:text-signal"
-                >
-                  {shortDigest(it.version)}
-                </Link>
-              </dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-[0.8125rem] text-muted-foreground">Data plane</dt>
-              <dd>{it.dataPlane}</dd>
-            </div>
-          </dl>
-          {it.streams.length > 0 && (
+          <DetailHeader title={`Sync ${sync.slice(-8)}`} status={it && <StatusBadge status={syncStatus(it)} />}>
+            {it && (
+              <>
+                <DescriptionItem label="Started">{start && <RelativeTime date={start} />}</DescriptionItem>
+                <DescriptionItem label={end ? "Took" : "Running for"}>
+                  <span className="tabular-nums">{start && duration((end?.getTime() ?? Date.now()) - start.getTime())}</span>
+                </DescriptionItem>
+                <DescriptionItem label="Rows">
+                  <span className="tabular-nums">
+                    {r && full(r.all)}
+                    {r && r.quarantined > 0n && <span className="text-degraded">, {full(r.quarantined)} quarantined</span>}
+                  </span>
+                </DescriptionItem>
+                <DescriptionItem label="Version">
+                  <Link
+                    to="/workspaces/$workspace/pipelines/$pipeline"
+                    params={{ workspace, pipeline }}
+                    search={{ tab: "versions", version: it.version }}
+                    className="font-mono text-[0.8125rem] hover:underline"
+                  >
+                    {shortDigest(it.version)}
+                  </Link>
+                </DescriptionItem>
+                <DescriptionItem label="Data plane">{it.dataPlane}</DescriptionItem>
+              </>
+            )}
+          </DetailHeader>
+          {it && it.streams.length > 0 && (
             <ul aria-label="Rows by stream" className="flex flex-wrap gap-1.5">
               {it.streams.map((st) => (
-                <li key={st.name} className="inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-0.5 text-[0.8125rem]">
-                  {st.name}
-                  <span className="font-mono text-muted-foreground tabular">{compact(st.rows)}</span>
+                <li key={st.name}>
+                  <Badge variant="outline" className="gap-1.5 font-normal">
+                    {st.name}
+                    <span className="text-muted-foreground tabular-nums">{compact(st.rows)}</span>
+                  </Badge>
                 </li>
               ))}
             </ul>
           )}
-          {it.error && <ErrorNote title="Why it failed" message={it.error} />}
+          {it?.error && <ErrorNote title="Why it failed" message={it.error} />}
         </div>
       )}
       <section className="grid gap-2" aria-labelledby="log-h">
-        <h2 id="log-h" className="text-lg font-semibold tracking-tight">
+        <h2 id="log-h" className="text-base font-semibold">
           Log
         </h2>
         {log.error ? (

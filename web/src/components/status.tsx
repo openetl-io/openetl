@@ -32,12 +32,21 @@ export const statusFill: Record<Status, string> = {
   idle: "bg-idle",
 };
 
-/** Status is always an icon and a label, never color alone. */
-export function StatusBadge({ status, label, className }: { status: Status; label?: string; className?: string }) {
+export function StatusIcon({ status, className }: { status: Status; className?: string }) {
   const Icon = icons[status];
   return (
-    <span className={cn("inline-flex items-center gap-1.5 font-medium whitespace-nowrap", statusText[status], className)}>
-      <Icon className={cn("size-4", status === "running" && "animate-spin [animation-duration:1.6s]")} aria-hidden />
+    <Icon
+      className={cn("size-4 shrink-0", statusText[status], status === "running" && "animate-spin [animation-duration:1.6s]", className)}
+      aria-hidden
+    />
+  );
+}
+
+/** Status is always an icon and a label, never color alone. Only the icon takes the status's color, except for a failure. */
+export function StatusBadge({ status, label, className }: { status: Status; label?: string; className?: string }) {
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap", status === "failed" && "text-failed", className)}>
+      <StatusIcon status={status} />
       <span>{label ?? statusLabel[status]}</span>
     </span>
   );

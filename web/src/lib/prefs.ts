@@ -3,13 +3,15 @@ import { useCallback, useSyncExternalStore } from "react";
 // Theme and density are per-viewer conveniences, kept in localStorage.
 // index.html applies them before the first paint.
 
-type Prefs = { theme: "light" | "dark" | "system"; density: "comfortable" | "compact" };
+export type Theme = "light" | "dark" | "system";
+export type Density = "comfortable" | "compact";
+type Prefs = { theme: Theme; density: Density };
 
 function read(): Prefs {
   try {
     return {
-      theme: (localStorage.getItem("openetl.theme") as Prefs["theme"]) ?? "system",
-      density: (localStorage.getItem("openetl.density") as Prefs["density"]) ?? "comfortable",
+      theme: (localStorage.getItem("openetl.theme") as Theme) ?? "system",
+      density: (localStorage.getItem("openetl.density") as Density) ?? "comfortable",
     };
   } catch {
     return { theme: "system", density: "comfortable" };
@@ -50,5 +52,7 @@ export function usePrefs() {
     () => set({ density: prefs.density === "compact" ? "comfortable" : "compact" }),
     [],
   );
-  return { ...p, dark: isDark(), toggleTheme, toggleDensity };
+  const setTheme = useCallback((theme: Theme) => set({ theme }), []);
+  const setDensity = useCallback((density: Density) => set({ density }), []);
+  return { ...p, dark: isDark(), toggleTheme, toggleDensity, setTheme, setDensity };
 }

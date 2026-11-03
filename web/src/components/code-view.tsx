@@ -8,7 +8,7 @@ import { tags } from "@lezer/highlight";
 const highlight = HighlightStyle.define([
   { tag: [tags.propertyName, tags.definition(tags.propertyName)], color: "var(--foreground)" },
   { tag: [tags.string, tags.special(tags.string)], color: "var(--signal)" },
-  { tag: [tags.number, tags.bool, tags.null], color: "var(--status-approval)" },
+  { tag: [tags.number, tags.bool, tags.null], color: "var(--status-degraded)" },
   { tag: [tags.comment, tags.meta, tags.punctuation], color: "var(--muted-foreground)" },
 ]);
 

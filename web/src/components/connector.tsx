@@ -1,21 +1,39 @@
 import { useState } from "react";
-
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ConnectorVersion } from "@/gen/openetl/api/v1/connection_pb";
 import { cn } from "@/lib/utils";
 
-/** A connector version's logo, from its metadata. Nothing when it has none or the image doesn't load. */
-export function ConnectorLogo({ version, className }: { version?: ConnectorVersion; className?: string }) {
+/**
+ * A connector's mark on a neutral chip, so it reads on either theme: its logo
+ * from its metadata, or its name's first letter when it has none (built-in
+ * connectors) or the image doesn't load.
+ */
+export function ConnectorLogo({ version, connector, className }: { version?: ConnectorVersion; connector?: string; className?: string }) {
   const [failed, setFailed] = useState<string>();
-  if (!version?.logo || failed === version.logo) return null;
+  const logo = version?.logo && failed !== version.logo ? version.logo : undefined;
+  const initial = (connector ?? version?.name.split("/")[1]?.replace(/^(source|destination)-/, "") ?? "").charAt(0).toUpperCase();
+  if (!logo && !initial) return null;
   return (
-    <img
-      src={version.logo}
-      alt=""
-      loading="lazy"
-      referrerPolicy="no-referrer"
-      onError={() => setFailed(version.logo)}
-      className={cn("inline-block size-4 shrink-0 rounded-sm object-contain align-[-0.1875em]", className)}
-    />
+    <span
+      aria-hidden
+      className={cn(
+        "inline-grid size-5 shrink-0 place-items-center rounded-sm bg-white align-[-0.3125em] ring-1 ring-black/10 dark:ring-white/10",
+        className,
+      )}
+    >
+      {logo ? (
+        <img
+          src={logo}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(logo)}
+          className="size-3.5 object-contain"
+        />
+      ) : (
+        <span className="text-[0.6875rem] leading-none font-semibold text-zinc-600">{initial}</span>
+      )}
+    </span>
   );
 }
 
@@ -25,24 +43,18 @@ export function connectorLabel(ref?: string, version?: ConnectorVersion): string
   return version?.version ? `${name} ${version.version}` : name;
 }
 
-function connectorTitle(version?: ConnectorVersion): string | undefined {
-  if (!version) return undefined;
-  return [version.author && `By ${version.author}`, version.releaseTag && `released as ${version.releaseTag}`].filter(Boolean).join(", ") || undefined;
-}
-
-/** The connector's label, linked to its release when its metadata names one. */
-export function ConnectorName({ connector, version }: { connector?: string; version?: ConnectorVersion }) {
+/** A source or destination: its connector's mark and its name, with the connector on hover. */
+export function ConnectorRef({ name, connector, version }: { name: string; connector?: string; version?: ConnectorVersion }) {
   const label = connectorLabel(connector, version);
-  if (!version?.releaseUrl) return <span title={connectorTitle(version)}>{label}</span>;
   return (
-    <a
-      href={version.releaseUrl}
-      target="_blank"
-      rel="noreferrer noopener"
-      title={connectorTitle(version)}
-      className="underline decoration-border underline-offset-2 hover:decoration-foreground"
-    >
-      {label}
-    </a>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex max-w-full min-w-0 items-center gap-2">
+          <ConnectorLogo version={version} connector={connector} />
+          <span className="truncate">{name}</span>
+        </span>
+      </TooltipTrigger>
+      {label && <TooltipContent>{label}</TooltipContent>}
+    </Tooltip>
   );
 }

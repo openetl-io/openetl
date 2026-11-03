@@ -3,7 +3,8 @@ import { cn } from "@/lib/utils";
 
 // The Soft mark: the O is the source, and three streams leave it. With
 // motion "hover", the streams slide out again when a parent .group is
-// hovered or focused; with "intro", they slide out once.
+// hovered or focused; with "intro", they slide out once. On the dark theme
+// the tile turns light and the O and streams ink, so the tile doesn't vanish.
 const tile =
   "M332.8 0c62.73 0 94.09 0 118.05 12.21a112 112 0 0 1 48.95 48.95c12.21 23.96 12.21 55.32 12.21 118.05L512 332.8c0 62.73 0 94.09-12.21 118.05a112 112 0 0 1-48.95 48.95c-23.96 12.21-55.32 12.21-118.05 12.21L179.2 512c-62.73 0-94.09 0-118.05-12.21a112 112 0 0 1-48.95-48.95C0 426.89 0 395.53 0 332.8L0 179.2c0-62.73 0-94.09 12.21-118.05a112 112 0 0 1 48.95-48.95C85.11 0 116.47 0 179.2 0Z";
 const ring = "M38 256A150 150 0 1 0 338 256A150 150 0 1 0 38 256ZM98 256A90 90 0 1 0 278 256A90 90 0 1 0 98 256Z";
@@ -28,11 +29,11 @@ export function Logo({ className, motion = "hover" }: { className?: string; moti
           </clipPath>
         ))}
       </defs>
-      <path d={tile} fill="#141416" />
-      <path d={ring} fill="#F4F4F5" fillRule="evenodd" />
+      <path d={tile} className="fill-[#141416] dark:fill-[#F4F4F5]" />
+      <path d={ring} className="fill-[#F4F4F5] dark:fill-[#141416]" fillRule="evenodd" />
       {streams.map((s, i) => (
         <g key={i} clipPath={`url(#${id}-${i})`}>
-          <path className={`oe-s${i + 1}`} d={s.d} fill="#F4F4F5" />
+          <path className={`oe-s${i + 1} fill-[#F4F4F5] dark:fill-[#141416]`} d={s.d} />
         </g>
       ))}
     </svg>

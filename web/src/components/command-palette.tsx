@@ -13,6 +13,7 @@ import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
 import { lastSegment } from "@/lib/names";
 import { usePrefs } from "@/lib/prefs";
 import { pipelineStatus } from "@/lib/status";
+import { nav } from "./nav";
 import { StatusBadge } from "./status";
 
 export function CommandPalette({
@@ -38,8 +39,8 @@ export function CommandPalette({
     f();
   };
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange} title="Search" description="Jump to a pipeline, or run a command">
-      <CommandInput placeholder="Jump to a pipeline, or run a command" />
+    <CommandDialog open={open} onOpenChange={onOpenChange} title="Search" description="Jump to a page or a pipeline, or run a command">
+      <CommandInput placeholder="Jump to a page or a pipeline, or run a command" />
       <CommandList>
         <CommandEmpty>Nothing matches.</CommandEmpty>
         <CommandGroup heading={`Pipelines in ${workspace}`}>
@@ -63,6 +64,14 @@ export function CommandPalette({
               </CommandItem>
             );
           })}
+        </CommandGroup>
+        <CommandGroup heading="Go to">
+          {nav.flatMap((g) => g.items).map((it) => (
+            <CommandItem key={it.to} value={`go ${it.label}`} onSelect={run(() => navigate({ to: it.to, params: { workspace }, search: {} }))}>
+              <it.icon className="text-muted-foreground" />
+              {it.label}
+            </CommandItem>
+          ))}
         </CommandGroup>
         <CommandGroup heading="Commands">
           <CommandItem onSelect={run(toggleTheme)}>

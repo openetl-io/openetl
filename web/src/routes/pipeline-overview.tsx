@@ -1,10 +1,13 @@
-import { lazy, Suspense, useMemo } from "react";
+import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import { useQuery } from "@connectrpc/connect-query";
 import { Link } from "@tanstack/react-router";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Info, TriangleAlert } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { connectorLabel } from "@/components/connector";
+import { DataTable } from "@/components/data-table/data-table";
+import { useDataTable } from "@/components/data-table/use-data-table";
 import { ErrorNote } from "@/components/empty";
 import { Incidents } from "@/components/incidents";
 import { IncidentService, IncidentState } from "@/gen/openetl/api/v1/incident_pb";
@@ -150,7 +153,7 @@ export function Overview({
 
       <section className="grid gap-3" aria-labelledby="streams-h">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 id="streams-h" className="text-lg font-semibold tracking-tight">
+          <h2 id="streams-h" className="text-base font-semibold">
             Streams
           </h2>
           <span className="text-[0.8125rem] text-muted-foreground">
@@ -177,100 +180,141 @@ export function Overview({
             ))}
           </div>
         )}
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full min-w-[800px] border-collapse">
-            <thead>
-              <tr className="border-b text-left text-[0.8125rem] text-muted-foreground">
-                <th scope="col" className="px-4 py-2 font-normal">Stream</th>
-                <th scope="col" className="px-4 py-2 font-normal">Read</th>
-                <th scope="col" className="px-4 py-2 font-normal">Write</th>
-                <th scope="col" className="px-4 py-2 font-normal">Delivery</th>
-                <th scope="col" className="px-4 py-2 font-normal">Schema</th>
-                <th scope="col" className="px-4 py-2 text-right font-normal">Rows</th>
-                <th scope="col" className="px-4 py-2 text-right font-normal">Quarantined</th>
-                <th scope="col" className="px-4 py-2 text-right font-normal">Collapsed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {streams.map((s) => (
-                <tr key={s.name} className="border-b last:border-b-0">
-                  <td className="h-row px-4 py-2 font-medium">{s.name}</td>
-                  <td className="px-4 py-2 text-muted-foreground">
-                    {enumLabel(SyncMode[s.mode ?? 0]) || "Source default"}
-                    {s.cursor && (
-                      <>
-                        {" "}on <code className="font-mono text-[0.8125rem] text-foreground">{s.cursor}</code>
-                      </>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 text-muted-foreground">{enumLabel(WriteMode[s.write ?? 0]) || "Unknown"}</td>
-                  <td className="px-4 py-2">
-                    {s.level !== undefined ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <Tooltip>
-                          <TooltipTrigger className="cursor-help underline decoration-dotted decoration-muted-foreground/60 underline-offset-4">
-                            {levelLabel[s.level]}
-                          </TooltipTrigger>
-                          <TooltipContent className="max-w-xs">{sentence(s.reason ?? "")}.</TooltipContent>
-                        </Tooltip>
-                        {s.warning && (
-                          <Tooltip>
-                            <TooltipTrigger aria-label={`Warning: ${s.name} ${s.warning}`}>
-                              <TriangleAlert className="size-3.5 text-degraded" />
-                            </TooltipTrigger>
-                            <TooltipContent className="max-w-sm">{sentence(s.warning)}</TooltipContent>
-                          </Tooltip>
-                        )}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">
-                        {plan.data?.plan?.streams.length ? "Not in the plan" : "Checked when it syncs"}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2">
-                    {s.schema ? (
-                      <Link
-                        to="/workspaces/$workspace/pipelines/$pipeline"
-                        params={{ workspace, pipeline: lastSegment(pipeline.name) }}
-                        search={{ tab: "schemas", stream: s.name }}
-                        className="font-mono text-[0.8125rem] hover:text-signal"
-                      >
-                        v{s.schema}
-                      </Link>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-[0.8125rem] tabular">
-                    {s.rows !== undefined ? <span title={full(s.rows)}>{compact(s.rows)}</span> : "—"}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-[0.8125rem] tabular">
-                    {s.quarantined ? <span className="text-degraded">{full(s.quarantined)}</span> : <span className="text-muted-foreground">0</span>}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-[0.8125rem] tabular">
-                    {s.collapsed ? (
-                      <span title="Rows not inserted because a row with the same _openetl_id was already in the epoch or the table">
-                        {full(s.collapsed)}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">0</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {streams.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-4 py-6 text-muted-foreground">
-                    No streams to show yet. They show once a sync commits rows, or once the plan can list them, after{" "}
-                    <code className="font-mono text-[0.8125rem] text-foreground">openetl discover {spec?.source?.ref}</code>.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <StreamsTable
+          workspace={workspace}
+          pipeline={lastSegment(pipeline.name)}
+          streams={streams}
+          planned={!!plan.data?.plan?.streams.length}
+          empty={
+            <>
+              No streams to show yet. They show once a sync commits rows, or once the plan can list them, after{" "}
+              <code className="font-mono text-[0.8125rem] text-foreground">openetl discover {spec?.source?.ref}</code>.
+            </>
+          }
+        />
       </section>
     </div>
   );
+}
+
+function StreamsTable({
+  workspace,
+  pipeline,
+  streams,
+  planned,
+  empty,
+}: {
+  workspace: string;
+  pipeline: string;
+  streams: Row[];
+  planned: boolean;
+  empty: ReactNode;
+}) {
+  const columns = useMemo<ColumnDef<Row>[]>(
+    () => [
+      {
+        id: "name",
+        header: "Stream",
+        cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+      },
+      {
+        id: "read",
+        header: "Read",
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">
+            {enumLabel(SyncMode[row.original.mode ?? 0]) || "Source default"}
+            {row.original.cursor && (
+              <>
+                {" "}on <code className="font-mono text-[0.8125rem] text-foreground">{row.original.cursor}</code>
+              </>
+            )}
+          </span>
+        ),
+        meta: { className: "hidden md:table-cell" },
+      },
+      {
+        id: "write",
+        header: "Write",
+        cell: ({ row }) => <span className="text-muted-foreground">{enumLabel(WriteMode[row.original.write ?? 0]) || "Unknown"}</span>,
+        meta: { className: "hidden lg:table-cell" },
+      },
+      {
+        id: "delivery",
+        header: "Delivery",
+        cell: ({ row }) => {
+          const s = row.original;
+          if (s.level === undefined) return <span className="text-muted-foreground">{planned ? "Not in the plan" : "Checked when it syncs"}</span>;
+          return (
+            <span className="inline-flex items-center gap-1.5">
+              <Tooltip>
+                <TooltipTrigger className="cursor-help underline decoration-muted-foreground/60 decoration-dotted underline-offset-4">
+                  {levelLabel[s.level]}
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">{sentence(s.reason ?? "")}.</TooltipContent>
+              </Tooltip>
+              {s.warning && (
+                <Tooltip>
+                  <TooltipTrigger aria-label={`Warning: ${s.name} ${s.warning}`}>
+                    <TriangleAlert className="size-3.5 text-degraded" />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-sm">{sentence(s.warning)}</TooltipContent>
+                </Tooltip>
+              )}
+            </span>
+          );
+        },
+      },
+      {
+        id: "schema",
+        header: "Schema",
+        cell: ({ row }) =>
+          row.original.schema ? (
+            <Link
+              to="/workspaces/$workspace/pipelines/$pipeline"
+              params={{ workspace, pipeline }}
+              search={{ tab: "schemas", stream: row.original.name }}
+              className="font-mono text-[0.8125rem] hover:underline"
+            >
+              v{row.original.schema}
+            </Link>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          ),
+        meta: { className: "hidden sm:table-cell" },
+      },
+      {
+        id: "rows",
+        header: "Rows",
+        cell: ({ row }) => <span className="tabular-nums">{row.original.rows !== undefined ? <span title={full(row.original.rows)}>{compact(row.original.rows)}</span> : "—"}</span>,
+        meta: { align: "right" },
+      },
+      {
+        id: "quarantined",
+        header: "Quarantined",
+        cell: ({ row }) =>
+          row.original.quarantined ? (
+            <span className="text-degraded tabular-nums">{full(row.original.quarantined)}</span>
+          ) : (
+            <span className="text-muted-foreground">0</span>
+          ),
+        meta: { align: "right", className: "hidden md:table-cell" },
+      },
+      {
+        id: "collapsed",
+        header: "Collapsed",
+        cell: ({ row }) =>
+          row.original.collapsed ? (
+            <span className="tabular-nums" title="Rows not inserted because a row with the same _openetl_id was already in the epoch or the table">
+              {full(row.original.collapsed)}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">0</span>
+          ),
+        meta: { align: "right", className: "hidden xl:table-cell" },
+      },
+    ],
+    [workspace, pipeline, planned],
+  );
+  const table = useDataTable({ data: streams, columns, paged: false });
+  return <DataTable table={table} empty={empty} />;
 }
