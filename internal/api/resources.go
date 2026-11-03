@@ -64,6 +64,13 @@ func (s *Server) pipeline(ctx context.Context, ws string, p db.Pipeline) (*apiv1
 
 func (s *Server) pipelineStatus(ctx context.Context, name string, id uuid.UUID) (*apiv1.PipelineStatus, error) {
 	out := &apiv1.PipelineStatus{}
+	open, err := s.Store.CountOpenIncidents(ctx, db.CountOpenIncidentsParams{OrgID: s.Tenant.Org, PipelineIds: []uuid.UUID{id}})
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range open {
+		out.OpenIncidents = o.Open
+	}
 	latest, err := s.Store.ListSyncs(ctx, db.ListSyncsParams{OrgID: s.Tenant.Org, PipelineID: id, MaxRows: 1})
 	if err != nil || len(latest) == 0 {
 		return out, err

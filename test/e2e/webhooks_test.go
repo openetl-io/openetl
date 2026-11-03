@@ -252,7 +252,8 @@ func TestWebhookSchemaBlocked(t *testing.T) {
 }
 
 // A continuous pipeline whose source reports it's further behind than the
-// server's 5 minutes is lagging, once, until it's back within half of it.
+// server's 5 minutes is lagging, once, until it's back within half of it,
+// with an incident while it is.
 func TestWebhookLagging(t *testing.T) {
 	startRunner(t)
 	r := newHookReceiver(t)
@@ -289,9 +290,13 @@ func TestWebhookLagging(t *testing.T) {
 	if lagging["lagSeconds"] != 600.0 || lagging["thresholdSeconds"] != 300.0 || lagging["stream"] != "users" || lagging["sync"] != "workspaces/default/pipelines/"+name+"/syncs/"+sync {
 		t.Errorf("pipeline.lagging's data %v", lagging)
 	}
+	if inc := waitIncident(t, name, apiv1.IncidentClass_INCIDENT_CLASS_LAGGING, apiv1.IncidentState_INCIDENT_STATE_OPEN); inc.GetDetails()["lag_seconds"] != "600" {
+		t.Errorf("lagging incident %v", inc)
+	}
 	report(1_000_004, time.Minute)
 	report(1_000_005, 0)
 	r.wait(t, events.PipelineRecovered)
+	waitIncident(t, name, apiv1.IncidentClass_INCIDENT_CLASS_LAGGING, apiv1.IncidentState_INCIDENT_STATE_RESOLVED)
 	time.Sleep(2 * time.Second)
 	var n int
 	for _, e := range r.events() {

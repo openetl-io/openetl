@@ -28,6 +28,10 @@ service DataPlaneService {
   // An artifact by digest, such as a connector version's descriptor or
   // manifest. Its content never changes, so runners cache it.
   rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse);
+  // Records an attempt of a sync or a stream job that failed, so the
+  // control plane sees retries Temporal hides, such as a crash loop. An
+  // attempt already reported is skipped.
+  rpc ReportAttemptFailure(ReportAttemptFailureRequest) returns (ReportAttemptFailureResponse);
 }
 
 message GetSyncSpecRequest {
@@ -166,3 +170,18 @@ message GetArtifactResponse {
   string media_type = 1;
   bytes content = 2;
 }
+
+message ReportAttemptFailureRequest {
+  string pipeline_id = 1;
+  // The sync's Temporal run, or the stream job's run key.
+  string run_id = 2;
+  // Counting attempts that drained.
+  int32 attempt = 3;
+  // The error's taxonomy code, such as INTERNAL.
+  string code = 4;
+  string message = 5;
+  // When it failed, on the data plane's clock.
+  google.protobuf.Timestamp time = 6;
+}
+
+message ReportAttemptFailureResponse {}

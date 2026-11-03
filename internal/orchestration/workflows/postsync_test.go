@@ -85,7 +85,7 @@ func TestFailedDbtFailsTheSync(t *testing.T) {
 	if err == nil || strings.Join(ran, ",") != "a" {
 		t.Fatalf("ran %v, error %v", ran, err)
 	}
-	if !strings.Contains(finished.Error, "post-sync step 1, dbt project a") || !strings.Contains(finished.Error, "model.a: boom") {
+	if want := "post-sync step 1, dbt project a: " + contract.DbtFailed + ": dbt build exited with 1: model.a: boom"; finished.Error != want {
 		t.Errorf("recorded error %q", finished.Error)
 	}
 	if finished.Result == nil || finished.Result.Committed != 2 || len(finished.PostSync) != 0 {

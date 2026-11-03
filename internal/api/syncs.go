@@ -52,6 +52,13 @@ func syncOut(pipeline string, r db.GetSyncRow) *apiv1.Sync {
 	if r.EndTime != nil {
 		out.EndTime = timestamppb.New(*r.EndTime)
 	}
+	out.FailedAttempts = r.FailedAttempts
+	if r.LastAttemptError != nil {
+		out.LastAttemptError = *r.LastAttemptError
+	}
+	if r.LastAttemptTime != nil {
+		out.LastAttemptTime = timestamppb.New(*r.LastAttemptTime)
+	}
 	return out
 }
 

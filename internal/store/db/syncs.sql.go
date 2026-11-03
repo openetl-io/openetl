@@ -15,7 +15,7 @@ import (
 const finishSync = `-- name: FinishSync :one
 UPDATE syncs SET status = $1, error = $2, stats = $3, end_time = now()
 WHERE org_id = $4 AND id = $5
-RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous
+RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous, failed_attempts, last_failed_attempt, failures_since_commit, last_attempt_error, last_attempt_code, last_attempt_time
 `
 
 type FinishSyncParams struct {
@@ -48,12 +48,18 @@ func (q *Queries) FinishSync(ctx context.Context, arg FinishSyncParams) (Sync, e
 		&i.StartTime,
 		&i.EndTime,
 		&i.Continuous,
+		&i.FailedAttempts,
+		&i.LastFailedAttempt,
+		&i.FailuresSinceCommit,
+		&i.LastAttemptError,
+		&i.LastAttemptCode,
+		&i.LastAttemptTime,
 	)
 	return i, err
 }
 
 const getSync = `-- name: GetSync :one
-SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, s.continuous, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
+SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, s.continuous, s.failed_attempts, s.last_failed_attempt, s.failures_since_commit, s.last_attempt_error, s.last_attempt_code, s.last_attempt_time, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
 FROM syncs s
 JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
 LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
@@ -67,19 +73,25 @@ type GetSyncParams struct {
 }
 
 type GetSyncRow struct {
-	OrgID       uuid.UUID
-	ID          uuid.UUID
-	PipelineID  uuid.UUID
-	Version     string
-	WorkflowID  string
-	RunID       string
-	Status      string
-	Error       *string
-	Stats       []byte
-	StartTime   time.Time
-	EndTime     *time.Time
-	Continuous  bool
-	DataPlaneID string
+	OrgID               uuid.UUID
+	ID                  uuid.UUID
+	PipelineID          uuid.UUID
+	Version             string
+	WorkflowID          string
+	RunID               string
+	Status              string
+	Error               *string
+	Stats               []byte
+	StartTime           time.Time
+	EndTime             *time.Time
+	Continuous          bool
+	FailedAttempts      int32
+	LastFailedAttempt   int32
+	FailuresSinceCommit int32
+	LastAttemptError    *string
+	LastAttemptCode     *string
+	LastAttemptTime     *time.Time
+	DataPlaneID         string
 }
 
 func (q *Queries) GetSync(ctx context.Context, arg GetSyncParams) (GetSyncRow, error) {
@@ -98,13 +110,19 @@ func (q *Queries) GetSync(ctx context.Context, arg GetSyncParams) (GetSyncRow, e
 		&i.StartTime,
 		&i.EndTime,
 		&i.Continuous,
+		&i.FailedAttempts,
+		&i.LastFailedAttempt,
+		&i.FailuresSinceCommit,
+		&i.LastAttemptError,
+		&i.LastAttemptCode,
+		&i.LastAttemptTime,
 		&i.DataPlaneID,
 	)
 	return i, err
 }
 
 const getSyncByRun = `-- name: GetSyncByRun :one
-SELECT org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous FROM syncs WHERE org_id = $1 AND pipeline_id = $2 AND run_id = $3
+SELECT org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous, failed_attempts, last_failed_attempt, failures_since_commit, last_attempt_error, last_attempt_code, last_attempt_time FROM syncs WHERE org_id = $1 AND pipeline_id = $2 AND run_id = $3
 `
 
 type GetSyncByRunParams struct {
@@ -129,6 +147,12 @@ func (q *Queries) GetSyncByRun(ctx context.Context, arg GetSyncByRunParams) (Syn
 		&i.StartTime,
 		&i.EndTime,
 		&i.Continuous,
+		&i.FailedAttempts,
+		&i.LastFailedAttempt,
+		&i.FailuresSinceCommit,
+		&i.LastAttemptError,
+		&i.LastAttemptCode,
+		&i.LastAttemptTime,
 	)
 	return i, err
 }
@@ -154,7 +178,7 @@ func (q *Queries) LastSyncSuccess(ctx context.Context, arg LastSyncSuccessParams
 }
 
 const listSyncs = `-- name: ListSyncs :many
-SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, s.continuous, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
+SELECT s.org_id, s.id, s.pipeline_id, s.version, s.workflow_id, s.run_id, s.status, s.error, s.stats, s.start_time, s.end_time, s.continuous, s.failed_attempts, s.last_failed_attempt, s.failures_since_commit, s.last_attempt_error, s.last_attempt_code, s.last_attempt_time, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
 FROM syncs s
 JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
 LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
@@ -173,19 +197,25 @@ type ListSyncsParams struct {
 }
 
 type ListSyncsRow struct {
-	OrgID       uuid.UUID
-	ID          uuid.UUID
-	PipelineID  uuid.UUID
-	Version     string
-	WorkflowID  string
-	RunID       string
-	Status      string
-	Error       *string
-	Stats       []byte
-	StartTime   time.Time
-	EndTime     *time.Time
-	Continuous  bool
-	DataPlaneID string
+	OrgID               uuid.UUID
+	ID                  uuid.UUID
+	PipelineID          uuid.UUID
+	Version             string
+	WorkflowID          string
+	RunID               string
+	Status              string
+	Error               *string
+	Stats               []byte
+	StartTime           time.Time
+	EndTime             *time.Time
+	Continuous          bool
+	FailedAttempts      int32
+	LastFailedAttempt   int32
+	FailuresSinceCommit int32
+	LastAttemptError    *string
+	LastAttemptCode     *string
+	LastAttemptTime     *time.Time
+	DataPlaneID         string
 }
 
 // Newest first, after the sync (before_time, before_id) if given. The data
@@ -218,6 +248,12 @@ func (q *Queries) ListSyncs(ctx context.Context, arg ListSyncsParams) ([]ListSyn
 			&i.StartTime,
 			&i.EndTime,
 			&i.Continuous,
+			&i.FailedAttempts,
+			&i.LastFailedAttempt,
+			&i.FailuresSinceCommit,
+			&i.LastAttemptError,
+			&i.LastAttemptCode,
+			&i.LastAttemptTime,
 			&i.DataPlaneID,
 		); err != nil {
 			return nil, err
@@ -230,11 +266,66 @@ func (q *Queries) ListSyncs(ctx context.Context, arg ListSyncsParams) ([]ListSyn
 	return items, nil
 }
 
+const recordAttemptFailure = `-- name: RecordAttemptFailure :one
+UPDATE syncs SET
+    failed_attempts = failed_attempts + 1,
+    failures_since_commit = failures_since_commit + 1,
+    last_failed_attempt = $1, last_attempt_error = $2, last_attempt_code = $3, last_attempt_time = $4
+WHERE org_id = $5 AND pipeline_id = $6 AND run_id = $7 AND last_failed_attempt < $1
+  AND status = 'running'
+RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous, failed_attempts, last_failed_attempt, failures_since_commit, last_attempt_error, last_attempt_code, last_attempt_time
+`
+
+type RecordAttemptFailureParams struct {
+	Attempt    int32
+	Error      *string
+	Code       *string
+	Time       *time.Time
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	RunID      string
+}
+
+// An attempt's failure, once however often it's reported.
+func (q *Queries) RecordAttemptFailure(ctx context.Context, arg RecordAttemptFailureParams) (Sync, error) {
+	row := q.db.QueryRow(ctx, recordAttemptFailure,
+		arg.Attempt,
+		arg.Error,
+		arg.Code,
+		arg.Time,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.RunID,
+	)
+	var i Sync
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.PipelineID,
+		&i.Version,
+		&i.WorkflowID,
+		&i.RunID,
+		&i.Status,
+		&i.Error,
+		&i.Stats,
+		&i.StartTime,
+		&i.EndTime,
+		&i.Continuous,
+		&i.FailedAttempts,
+		&i.LastFailedAttempt,
+		&i.FailuresSinceCommit,
+		&i.LastAttemptError,
+		&i.LastAttemptCode,
+		&i.LastAttemptTime,
+	)
+	return i, err
+}
+
 const startSync = `-- name: StartSync :one
 INSERT INTO syncs (org_id, id, pipeline_id, version, workflow_id, run_id, status, continuous)
 VALUES ($1, $2, $3, $4, $5, $6, 'running', $7)
 ON CONFLICT (org_id, run_id) DO UPDATE SET status = syncs.status
-RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous
+RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous, failed_attempts, last_failed_attempt, failures_since_commit, last_attempt_error, last_attempt_code, last_attempt_time
 `
 
 type StartSyncParams struct {
@@ -271,6 +362,31 @@ func (q *Queries) StartSync(ctx context.Context, arg StartSyncParams) (Sync, err
 		&i.StartTime,
 		&i.EndTime,
 		&i.Continuous,
+		&i.FailedAttempts,
+		&i.LastFailedAttempt,
+		&i.FailuresSinceCommit,
+		&i.LastAttemptError,
+		&i.LastAttemptCode,
+		&i.LastAttemptTime,
 	)
 	return i, err
+}
+
+const syncCommitted = `-- name: SyncCommitted :execrows
+UPDATE syncs SET failures_since_commit = 0
+WHERE org_id = $1 AND pipeline_id = $2 AND run_id = $3 AND failures_since_commit > 0
+`
+
+type SyncCommittedParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	RunID      string
+}
+
+func (q *Queries) SyncCommitted(ctx context.Context, arg SyncCommittedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, syncCommitted, arg.OrgID, arg.PipelineID, arg.RunID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

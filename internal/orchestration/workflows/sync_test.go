@@ -3,7 +3,6 @@ package workflows_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"go.temporal.io/sdk/activity"
@@ -57,8 +56,8 @@ func TestNonRetryableCodesFailTheSync(t *testing.T) {
 		if err == nil || calls != 1 {
 			t.Errorf("%s: %d attempts and error %v, want 1 attempt and an error", code, calls, err)
 		}
-		if !strings.Contains(finished.Error, code.String()) {
-			t.Errorf("%s: recorded %q", code, finished.Error)
+		if want := code.String() + ": attempt failed"; finished.Error != want || finished.Code != code.String() {
+			t.Errorf("%s: recorded %q (%s), want %q without Temporal's wrapping", code, finished.Error, finished.Code, want)
 		}
 	}
 }

@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/internal/events"
+	"github.com/unsuitable001/openetl/internal/heal"
 	"github.com/unsuitable001/openetl/internal/store"
 	"github.com/unsuitable001/openetl/internal/store/db"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
@@ -119,10 +120,43 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkLag(ctx, id, m); err != nil {
+	if err := s.afterCheckpoint(ctx, id, m); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&dataplanev1.ReportCheckpointResponse{Added: added}), nil
+}
+
+// afterCheckpoint is what a running sync's commit tells heal. A continuous
+// run's commit resolves the incidents progress resolves, and ends a crash
+// loop's count; the read's lag and retention, and the streams' quarantined
+// rows, open or resolve theirs.
+func (s *Server) afterCheckpoint(ctx context.Context, pipeline uuid.UUID, m *dataplanev1.ReportCheckpointRequest) error {
+	sync, err := s.Store.GetSyncByRun(ctx, db.GetSyncByRunParams{OrgID: s.Tenant.Org, PipelineID: pipeline, RunID: m.GetRunId()})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil || sync.Status != "running" {
+		return err
+	}
+	if sync.Continuous {
+		err := s.Store.Tx(ctx, func(q *db.Queries) error {
+			if _, err := q.SyncCommitted(ctx, db.SyncCommittedParams{OrgID: s.Tenant.Org, PipelineID: pipeline, RunID: m.GetRunId()}); err != nil {
+				return err
+			}
+			_, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, heal.ResolvedByProgress, nil, fmt.Sprintf("run %s committed epoch %d", sync.ID, m.GetEpoch()))
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		if err := s.checkLag(ctx, pipeline, sync, m); err != nil {
+			return err
+		}
+	}
+	if err := s.checkRetention(ctx, pipeline, sync, m); err != nil {
+		return err
+	}
+	return s.checkQuarantine(ctx, pipeline, sync, m)
 }
 
 // defaultLaggingAfter is how far behind its source a continuous pipeline's
@@ -134,7 +168,7 @@ const defaultLaggingAfter = 5 * time.Minute
 // LaggingAfter, and pipeline.recovered once it's back within half of it.
 // The pipeline's lagging_since holds the state, so each crossing is recorded
 // once, however often a checkpoint is reported.
-func (s *Server) checkLag(ctx context.Context, pipeline uuid.UUID, m *dataplanev1.ReportCheckpointRequest) error {
+func (s *Server) checkLag(ctx context.Context, pipeline uuid.UUID, sync db.Sync, m *dataplanev1.ReportCheckpointRequest) error {
 	var worst *protocolv1.Progress
 	for _, p := range m.GetProgress() {
 		if p.GetLag() != nil && (worst == nil || p.GetLag().AsDuration() > worst.GetLag().AsDuration()) {
@@ -143,13 +177,6 @@ func (s *Server) checkLag(ctx context.Context, pipeline uuid.UUID, m *dataplanev
 	}
 	if worst == nil {
 		return nil
-	}
-	sync, err := s.Store.GetSyncByRun(ctx, db.GetSyncByRunParams{OrgID: s.Tenant.Org, PipelineID: pipeline, RunID: m.GetRunId()})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil || !sync.Continuous || sync.Status != "running" {
-		return err
 	}
 	threshold, lag := cmp.Or(s.LaggingAfter, defaultLaggingAfter), worst.GetLag().AsDuration()
 	if lag > threshold/2 && lag <= threshold {
@@ -164,12 +191,28 @@ func (s *Server) checkLag(ctx context.Context, pipeline uuid.UUID, m *dataplanev
 				return err
 			}
 			since = time.Now()
+			_, err = heal.Observe(ctx, q, s.Tenant.Org, heal.Observation{
+				Pipeline: pipeline, Version: sync.Version, Class: heal.Lagging, Severity: heal.Warning,
+				Message: fmt.Sprintf("The read is %s behind its source, past the server's threshold of %s.", lag.Round(time.Second), threshold),
+				Details: map[string]string{
+					"lag_seconds": strconv.FormatFloat(lag.Seconds(), 'f', 0, 64), "threshold_seconds": strconv.FormatFloat(threshold.Seconds(), 'f', 0, 64),
+					"stream": worst.GetStream(),
+				},
+				Sync: &sync.ID, Key: sync.ID.String() + "/" + since.Format(time.RFC3339Nano),
+			})
+			if err != nil {
+				return err
+			}
 		} else {
 			was, err := q.StopLagging(ctx, db.StopLaggingParams{OrgID: s.Tenant.Org, ID: pipeline})
 			if err != nil || len(was) == 0 {
 				return err
 			}
 			typ, since = events.PipelineRecovered, was[0]
+			resolution := fmt.Sprintf("the read is %s behind its source, within half the threshold", lag.Round(time.Second))
+			if _, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, []string{string(heal.Lagging)}, nil, resolution); err != nil {
+				return err
+			}
 		}
 		names, err := q.GetPipelineNames(ctx, db.GetPipelineNamesParams{OrgID: s.Tenant.Org, ID: pipeline})
 		if err != nil {
@@ -184,6 +227,139 @@ func (s *Server) checkLag(ctx context.Context, pipeline uuid.UUID, m *dataplanev
 			},
 		})
 		return err
+	})
+}
+
+// A read is at risk from the share of what its source keeps for it that
+// it has used, and safe again under the last.
+const (
+	retentionAtRisk   = 0.5
+	retentionCritical = 0.8
+	retentionSafe     = 0.4
+)
+
+// checkRetention opens retention_at_risk when a read has used half of what
+// its source keeps for it, by bytes or time, turns it critical at 80%, and
+// resolves it under 40%.
+func (s *Server) checkRetention(ctx context.Context, pipeline uuid.UUID, sync db.Sync, m *dataplanev1.ReportCheckpointRequest) error {
+	used, at := -1.0, (*protocolv1.Progress)(nil)
+	for _, p := range m.GetProgress() {
+		if u := retentionUsed(p); u > used {
+			used, at = u, p
+		}
+	}
+	if at == nil || (used >= retentionSafe && used < retentionAtRisk) {
+		return nil
+	}
+	return s.Store.Tx(ctx, func(q *db.Queries) error {
+		if used < retentionSafe {
+			_, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, []string{string(heal.RetentionAtRisk)}, nil,
+				fmt.Sprintf("the read has used %.0f%% of what its source keeps for it", used*100))
+			return err
+		}
+		o := heal.Observation{
+			Pipeline: pipeline, Version: sync.Version, Class: heal.RetentionAtRisk, Severity: heal.Warning, Stream: at.GetStream(),
+			Details: map[string]string{"used": fmt.Sprintf("%.0f%%", used*100)},
+			Sync:    &sync.ID, Key: sync.ID.String(),
+		}
+		if used >= retentionCritical {
+			o.Severity = heal.Critical
+		}
+		var have []string
+		if at.LagBytes != nil && at.RetentionLeftBytes != nil {
+			o.Details["lag_bytes"], o.Details["retention_left_bytes"] = strconv.FormatUint(at.GetLagBytes(), 10), strconv.FormatUint(at.GetRetentionLeftBytes(), 10)
+			have = append(have, fmt.Sprintf("%d bytes behind with %d left", at.GetLagBytes(), at.GetRetentionLeftBytes()))
+		}
+		if at.GetLag() != nil && at.GetRetentionLeft() != nil {
+			lag, left := at.GetLag().AsDuration(), at.GetRetentionLeft().AsDuration()
+			o.Details["lag_seconds"], o.Details["retention_left_seconds"] = strconv.FormatFloat(lag.Seconds(), 'f', 0, 64), strconv.FormatFloat(left.Seconds(), 'f', 0, 64)
+			have = append(have, fmt.Sprintf("%s behind with %s left", lag.Round(time.Second), left.Round(time.Second)))
+		}
+		o.Message = fmt.Sprintf("The read has used %.0f%% of what its source keeps for it: %s.", used*100, strings.Join(have, "; "))
+		_, err := heal.Observe(ctx, q, s.Tenant.Org, o)
+		return err
+	})
+}
+
+// retentionUsed is the share of what its source keeps for it that a read
+// has used, by bytes or by time, whichever is more; -1 if p doesn't say.
+func retentionUsed(p *protocolv1.Progress) float64 {
+	used := -1.0
+	if p.LagBytes != nil && p.RetentionLeftBytes != nil && p.GetLagBytes()+p.GetRetentionLeftBytes() > 0 {
+		used = float64(p.GetLagBytes()) / float64(p.GetLagBytes()+p.GetRetentionLeftBytes())
+	}
+	if p.GetLag() != nil && p.GetRetentionLeft() != nil {
+		lag, left := p.GetLag().AsDuration(), p.GetRetentionLeft().AsDuration()
+		if lag+left > 0 {
+			used = max(used, lag.Seconds()/(lag+left).Seconds())
+		}
+	}
+	return used
+}
+
+// A stream quarantining more than quarantineShare of its rows, and at least
+// quarantineMinRows of them, in the sync's last quarantineWindow of commits
+// opens a quarantine incident; under half the share, with at least
+// quarantineMinRows rows, resolves it.
+const (
+	quarantineShare   = 0.01
+	quarantineMinRows = 100
+	quarantineWindow  = time.Hour
+)
+
+func (s *Server) checkQuarantine(ctx context.Context, pipeline uuid.UUID, sync db.Sync, m *dataplanev1.ReportCheckpointRequest) error {
+	check := map[string]bool{}
+	for _, st := range m.GetStreams() {
+		if st.GetQuarantinedRows() > 0 {
+			check[st.GetName()] = true
+		}
+	}
+	open, err := s.Store.OpenIncidents(ctx, db.OpenIncidentsParams{OrgID: s.Tenant.Org, PipelineID: pipeline, Class: string(heal.Quarantine)})
+	if err != nil {
+		return err
+	}
+	for _, o := range open {
+		check[o.Stream] = true
+	}
+	if len(check) == 0 {
+		return nil
+	}
+	totals, err := s.Store.SyncStreams(ctx, db.SyncStreamsParams{
+		OrgID: s.Tenant.Org, PipelineID: pipeline, RunIds: []string{m.GetRunId()}, Since: m.GetCreateTime().AsTime().Add(-quarantineWindow),
+	})
+	if err != nil {
+		return err
+	}
+	return s.Store.Tx(ctx, func(q *db.Queries) error {
+		for _, t := range totals {
+			if !check[t.Name] || t.Rows < quarantineMinRows {
+				continue
+			}
+			share := float64(t.QuarantinedRows) / float64(t.Rows)
+			switch {
+			case t.QuarantinedRows >= quarantineMinRows && share > quarantineShare:
+				_, err := heal.Observe(ctx, q, s.Tenant.Org, heal.Observation{
+					Pipeline: pipeline, Version: sync.Version, Stream: t.Name, Class: heal.Quarantine, Severity: heal.Warning,
+					Message: fmt.Sprintf("%d of the stream's %d rows in the last hour were quarantined.", t.QuarantinedRows, t.Rows),
+					Details: map[string]string{
+						"share": fmt.Sprintf("%.1f%%", share*100), "quarantined_rows": strconv.FormatInt(t.QuarantinedRows, 10),
+						"rows": strconv.FormatInt(t.Rows, 10),
+					},
+					Sync: &sync.ID, Key: sync.ID.String(),
+				})
+				if err != nil {
+					return err
+				}
+			case share < quarantineShare/2:
+				stream := t.Name
+				_, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, []string{string(heal.Quarantine)}, &stream,
+					fmt.Sprintf("%.2f%% of the stream's rows in the last hour were quarantined", share*100))
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 }
 

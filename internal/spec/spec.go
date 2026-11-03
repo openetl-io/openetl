@@ -184,6 +184,9 @@ type pipelineYAML struct {
 		Infinity string `yaml:"infinity"`
 	} `yaml:"types"`
 	PostSync []postSyncYAML `yaml:"postSync"`
+	Heal     *struct {
+		Mode string `yaml:"mode"`
+	} `yaml:"heal"`
 }
 
 type postSyncYAML struct {
@@ -333,6 +336,12 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	if y.Types != nil {
 		p.Types = &apiv1.Types{}
 		if p.Types.Infinity, err = enum(apiv1.Infinity_value, "INFINITY_", "types.infinity", y.Types.Infinity, apiv1.Infinity_INFINITY_UNSPECIFIED); err != nil {
+			return nil, err
+		}
+	}
+	if y.Heal != nil {
+		p.Heal = &apiv1.Heal{}
+		if p.Heal.Mode, err = enum(apiv1.HealMode_value, "HEAL_MODE_", "heal.mode", y.Heal.Mode, apiv1.HealMode_HEAL_MODE_UNSPECIFIED); err != nil {
 			return nil, err
 		}
 	}

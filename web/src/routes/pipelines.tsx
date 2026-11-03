@@ -77,7 +77,19 @@ export function PipelinesPage() {
         id: "status",
         header: "Status",
         accessorFn: (p) => severity[pipelineStatus(p)],
-        cell: ({ row }) => <StatusBadge status={pipelineStatus(row.original)} />,
+        cell: ({ row }) => {
+          const open = row.original.status?.openIncidents ?? 0;
+          return (
+            <span className="flex flex-wrap items-center gap-x-2">
+              <StatusBadge status={pipelineStatus(row.original)} />
+              {open > 0 && (
+                <span className="text-[0.8125rem] whitespace-nowrap text-degraded">
+                  {open === 1 ? "1 incident" : `${open} incidents`}
+                </span>
+              )}
+            </span>
+          );
+        },
       },
       {
         id: "name",

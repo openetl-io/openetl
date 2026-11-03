@@ -883,6 +883,142 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/incidents:
+        get:
+            tags:
+                - IncidentService
+            description: |-
+                Newest first. The parent workspaces/{workspace}/pipelines/- lists every
+                 pipeline's.
+            operationId: IncidentService_ListIncidents
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: state
+                  in: query
+                  description: 'Unset: every state.'
+                  schema:
+                    enum:
+                        - INCIDENT_STATE_UNSPECIFIED
+                        - INCIDENT_STATE_OPEN
+                        - INCIDENT_STATE_RESOLVED
+                    type: string
+                    format: enum
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListIncidentsResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/incidents/{incident}:
+        get:
+            tags:
+                - IncidentService
+            operationId: IncidentService_GetIncident
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: incident
+                  in: path
+                  description: The incident id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetIncidentResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/incidents/{incident}:resolve:
+        post:
+            tags:
+                - IncidentService
+            description: |-
+                Resolves an open incident, such as one fixed in a way the control plane
+                 can't see. If it happens again, a new one opens.
+            operationId: IncidentService_ResolveIncident
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: incident
+                  in: path
+                  description: The incident id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ResolveIncidentRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ResolveIncidentResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines/{pipeline}/plan:
         get:
             tags:
@@ -2419,6 +2555,11 @@ components:
             properties:
                 destination:
                     $ref: '#/components/schemas/Destination'
+        GetIncidentResponse:
+            type: object
+            properties:
+                incident:
+                    $ref: '#/components/schemas/Incident'
         GetPipelinePlanResponse:
             type: object
             properties:
@@ -2480,6 +2621,123 @@ components:
             properties:
                 principal:
                     $ref: '#/components/schemas/Principal'
+        Heal:
+            type: object
+            properties:
+                mode:
+                    enum:
+                        - HEAL_MODE_UNSPECIFIED
+                        - HEAL_MODE_OFF
+                        - HEAL_MODE_SUGGEST
+                        - HEAL_MODE_AUTO_SAFE
+                        - HEAL_MODE_AUTO
+                    type: string
+                    format: enum
+            description: What heal's playbooks may do about the pipeline's incidents.
+        HealAction:
+            type: object
+            properties:
+                kind:
+                    enum:
+                        - HEAL_ACTION_KIND_UNSPECIFIED
+                        - HEAL_ACTION_KIND_PAUSE
+                    type: string
+                    format: enum
+                state:
+                    enum:
+                        - HEAL_ACTION_STATE_UNSPECIFIED
+                        - HEAL_ACTION_STATE_APPLIED
+                        - HEAL_ACTION_STATE_PROPOSED
+                    type: string
+                    format: enum
+                description:
+                    type: string
+                time:
+                    type: string
+                    format: date-time
+            description: HealAction is what a playbook did about an incident, or proposes.
+        Incident:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}/incidents/{incident}
+                class:
+                    enum:
+                        - INCIDENT_CLASS_UNSPECIFIED
+                        - INCIDENT_CLASS_SYNC_FAILED
+                        - INCIDENT_CLASS_AUTH
+                        - INCIDENT_CLASS_SCHEMA_BLOCKED
+                        - INCIDENT_CLASS_RATE_LIMITED
+                        - INCIDENT_CLASS_POSITION_LOST
+                        - INCIDENT_CLASS_CRASH_LOOP
+                        - INCIDENT_CLASS_LAGGING
+                        - INCIDENT_CLASS_RETENTION_AT_RISK
+                        - INCIDENT_CLASS_QUARANTINE
+                    type: string
+                    format: enum
+                code:
+                    type: string
+                    description: The taxonomy code of the error it came from, such as AUTH_INVALID.
+                stream:
+                    type: string
+                    description: 'Empty: the whole pipeline.'
+                state:
+                    enum:
+                        - INCIDENT_STATE_UNSPECIFIED
+                        - INCIDENT_STATE_OPEN
+                        - INCIDENT_STATE_RESOLVED
+                    type: string
+                    format: enum
+                severity:
+                    enum:
+                        - INCIDENT_SEVERITY_UNSPECIFIED
+                        - INCIDENT_SEVERITY_WARNING
+                        - INCIDENT_SEVERITY_CRITICAL
+                    type: string
+                    format: enum
+                summary:
+                    type: string
+                message:
+                    type: string
+                    description: The latest error, or what was measured.
+                nextSteps:
+                    type: string
+                fingerprint:
+                    type: string
+                    description: |-
+                        A digest of the class, the code, the error without its specifics, and
+                         the connector versions; the same on every pipeline the same fault hits.
+                occurrences:
+                    type: integer
+                    description: |-
+                        The syncs or runs it happened in, or the times a condition was seen
+                         again.
+                    format: int32
+                actions:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/HealAction'
+                details:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: What it was seen with last, such as lag_seconds.
+                sync:
+                    type: string
+                    description: The sync or run it was seen in last.
+                firstSeenTime:
+                    type: string
+                    format: date-time
+                lastSeenTime:
+                    type: string
+                    format: date-time
+                resolveTime:
+                    type: string
+                    format: date-time
+                resolution:
+                    type: string
+                    description: 'How it was resolved: by progress, or by whom.'
         Key:
             type: object
             properties:
@@ -2542,6 +2800,15 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/Destination'
+                nextPageToken:
+                    type: string
+        ListIncidentsResponse:
+            type: object
+            properties:
+                incidents:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Incident'
                 nextPageToken:
                     type: string
         ListKeysResponse:
@@ -2858,6 +3125,8 @@ components:
                     description: |-
                         Run in order after a sync's data is committed. A step that fails fails
                          the sync, and the steps after it don't run.
+                heal:
+                    $ref: '#/components/schemas/Heal'
             description: |-
                 PipelineSpec is the spec of a Pipeline document. Unset fields take their
                  defaults.
@@ -2872,6 +3141,10 @@ components:
                     type: string
                     description: When the latest sync that succeeded ended; unset if none has.
                     format: date-time
+                openIncidents:
+                    type: integer
+                    description: Incidents open on it.
+                    format: int32
             description: PipelineStatus is what the pipeline's syncs did.
         PipelineStream:
             type: object
@@ -3048,6 +3321,19 @@ components:
                     description: |-
                         Where the next page starts. Unset once the sync has ended and every
                          entry is read; while it runs, more may follow, so read again with it.
+        ResolveIncidentRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                comment:
+                    type: string
+                    description: Recorded in the resolution.
+        ResolveIncidentResponse:
+            type: object
+            properties:
+                incident:
+                    $ref: '#/components/schemas/Incident'
         ResumePipelineRequest:
             type: object
             properties:
@@ -3316,6 +3602,17 @@ components:
                     description: |-
                         How far behind its source the read was at its latest commit, for
                          sources that report it (CDC, Kafka, Kinesis).
+                failedAttempts:
+                    type: integer
+                    description: |-
+                        Its attempts that failed, as runners reported them, and the latest
+                         one's error. A sync still running may be retrying.
+                    format: int32
+                lastAttemptError:
+                    type: string
+                lastAttemptTime:
+                    type: string
+                    format: date-time
         SyncPipelineRequest:
             type: object
             properties:
@@ -3500,6 +3797,11 @@ tags:
       description: |-
         DestinationService reads and deletes destinations. ApplyService creates and
          changes them.
+    - name: IncidentService
+      description: |-
+        IncidentService reads incidents and resolves them by hand. The control
+         plane opens them, and resolves most once their pipeline makes progress
+         again.
     - name: PipelineService
       description: |-
         PipelineService reads and deletes pipelines. ApplyService creates and

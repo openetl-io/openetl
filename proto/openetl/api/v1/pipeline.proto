@@ -119,6 +119,8 @@ message PipelineStatus {
   Sync last_sync = 1;
   // When the latest sync that succeeded ended; unset if none has.
   google.protobuf.Timestamp last_success_time = 2;
+  // Incidents open on it.
+  int32 open_incidents = 3;
 }
 
 // PipelineSpec is the spec of a Pipeline document. Unset fields take their
@@ -135,6 +137,25 @@ message PipelineSpec {
   // Run in order after a sync's data is committed. A step that fails fails
   // the sync, and the steps after it don't run.
   repeated PostSyncStep post_sync = 9;
+  Heal heal = 10;
+}
+
+// What heal's playbooks may do about the pipeline's incidents.
+message Heal {
+  HealMode mode = 1;
+}
+
+enum HealMode {
+  HEAL_MODE_UNSPECIFIED = 0;
+  // Open incidents and notify; take no action.
+  HEAL_MODE_OFF = 1;
+  // Apply only actions that can't hold data back (none yet), and propose
+  // the rest.
+  HEAL_MODE_SUGGEST = 2;
+  // Apply every playbook's actions. The default.
+  HEAL_MODE_AUTO_SAFE = 3;
+  // As auto_safe, until agentic repair exists.
+  HEAL_MODE_AUTO = 4;
 }
 
 message PostSyncStep {

@@ -46,6 +46,8 @@ spec:
   postSync:
     - dbt: { project: analytics, select: "tag:shop", schema: marts }
     - dbt: { project: checks, command: test }
+  heal:
+    mode: suggest
 `
 
 func TestParsePipeline(t *testing.T) {
@@ -90,6 +92,8 @@ func TestParsePipeline(t *testing.T) {
 		t.Error("resumePointTimeout: none should be an explicit zero")
 	case p.GetTypes().GetInfinity() != apiv1.Infinity_INFINITY_QUARANTINE:
 		t.Error("types.infinity")
+	case p.GetHeal().GetMode() != apiv1.HealMode_HEAL_MODE_SUGGEST:
+		t.Error("heal.mode")
 	case len(p.GetPostSync()) != 2:
 		t.Fatalf("postSync = %v", p.GetPostSync())
 	}
@@ -204,6 +208,7 @@ func TestParseErrors(t *testing.T) {
 		"zero timeout":               header + base + "  delivery: {resumePointTimeout: 0s}\n",
 		"zero interval":              header + base + "  delivery: {commit: {interval: 0s}}\n",
 		"infinity":                   header + base + "  types: {infinity: drop}\n",
+		"heal mode":                  header + base + "  heal: {mode: auto-safe}\n",
 		"timestamps":                 header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, timestamps: millisecond}]}", 1),
 		"stream require":             header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, require: once}]}", 1),
 		"collapse":                   header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, collapse: yes please}]}", 1),

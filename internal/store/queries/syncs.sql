@@ -37,3 +37,17 @@ SELECT end_time FROM syncs
 WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND status = 'succeeded'
 ORDER BY start_time DESC, id DESC
 LIMIT 1;
+
+-- name: RecordAttemptFailure :one
+-- An attempt's failure, once however often it's reported.
+UPDATE syncs SET
+    failed_attempts = failed_attempts + 1,
+    failures_since_commit = failures_since_commit + 1,
+    last_failed_attempt = @attempt, last_attempt_error = @error, last_attempt_code = @code, last_attempt_time = @time
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND run_id = @run_id AND last_failed_attempt < @attempt
+  AND status = 'running'
+RETURNING *;
+
+-- name: SyncCommitted :execrows
+UPDATE syncs SET failures_since_commit = 0
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND run_id = @run_id AND failures_since_commit > 0;

@@ -5,6 +5,7 @@ package workflows
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -114,7 +115,7 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 		finish.PostSync, err = postSync(ctx, in, started, retry, heartbeat)
 	}
 	if err != nil {
-		finish.Error, finish.Code = err.Error(), code(err)
+		finish.Error, finish.Code = message(err), code(err)
 	}
 	// Recorded even if the workflow is being cancelled.
 	fctx, _ := workflow.NewDisconnectedContext(cp)
@@ -154,6 +155,27 @@ func postSync(ctx workflow.Context, in contract.SyncInput, started contract.Star
 		results = append(results, contract.PostSyncResult{Dbt: &r})
 	}
 	return results, nil
+}
+
+// message is what err says without Temporal's wrapping: the activity's own
+// message, after its code, in place of the activity error.
+func message(err error) string {
+	act, ok := errors.AsType[*temporal.ActivityError](err)
+	if !ok {
+		return err.Error()
+	}
+	inner := act.Unwrap()
+	if inner == nil {
+		return err.Error()
+	}
+	cause := inner.Error()
+	if app, ok := errors.AsType[*temporal.ApplicationError](inner); ok {
+		cause = app.Message()
+		if t := app.Type(); t != "" && !strings.HasPrefix(cause, t+": ") {
+			cause = t + ": " + cause
+		}
+	}
+	return strings.Replace(err.Error(), act.Error(), cause, 1)
 }
 
 // code is the taxonomy code an activity failed with, if any.

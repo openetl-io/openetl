@@ -88,7 +88,7 @@ func (w Workflows) StreamSupervisor(ctx workflow.Context, in contract.StreamInpu
 		}
 		finish := contract.FinishSyncInput{OrgID: in.OrgID, SyncID: in.Run.SyncID, Stopped: end == runStopped}
 		if end == runFailed {
-			finish.Error, finish.Code = err.Error(), code(err)
+			finish.Error, finish.Code = message(err), code(err)
 		} else if err != nil {
 			log.Info("the run stopped", "err", err)
 		}

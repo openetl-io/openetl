@@ -120,6 +120,31 @@ type DestinationVersion struct {
 	CreateTime      time.Time
 }
 
+type Incident struct {
+	OrgID         uuid.UUID
+	ID            uuid.UUID
+	WorkspaceID   uuid.UUID
+	PipelineID    uuid.UUID
+	Stream        string
+	Class         string
+	Code          *string
+	Fingerprint   string
+	Status        string
+	Severity      string
+	Summary       string
+	Message       string
+	NextSteps     string
+	Details       []byte
+	Actions       []byte
+	SyncID        *uuid.UUID
+	OccurrenceKey string
+	Occurrences   int32
+	FirstSeenTime time.Time
+	LastSeenTime  time.Time
+	ResolveTime   *time.Time
+	Resolution    *string
+}
+
 type Org struct {
 	ID         uuid.UUID
 	Name       string
@@ -266,18 +291,24 @@ type StreamSchema struct {
 }
 
 type Sync struct {
-	OrgID      uuid.UUID
-	ID         uuid.UUID
-	PipelineID uuid.UUID
-	Version    string
-	WorkflowID string
-	RunID      string
-	Status     string
-	Error      *string
-	Stats      []byte
-	StartTime  time.Time
-	EndTime    *time.Time
-	Continuous bool
+	OrgID               uuid.UUID
+	ID                  uuid.UUID
+	PipelineID          uuid.UUID
+	Version             string
+	WorkflowID          string
+	RunID               string
+	Status              string
+	Error               *string
+	Stats               []byte
+	StartTime           time.Time
+	EndTime             *time.Time
+	Continuous          bool
+	FailedAttempts      int32
+	LastFailedAttempt   int32
+	FailuresSinceCommit int32
+	LastAttemptError    *string
+	LastAttemptCode     *string
+	LastAttemptTime     *time.Time
 }
 
 type Webhook struct {

@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 
 	"github.com/unsuitable001/openetl/internal/events"
+	"github.com/unsuitable001/openetl/internal/heal"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
@@ -26,6 +27,11 @@ import (
 
 type Activities struct {
 	Store *store.Store
+	// Pauses the schedules of pipelines a playbook paused. Nil: only the
+	// pipeline is, which stops its syncs all the same.
+	Schedules interface {
+		SetPaused(ctx context.Context, pipelineID string, paused bool) error
+	}
 }
 
 // StartSync records a running sync of the pipeline's current version, unless
@@ -165,20 +171,44 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 			return err
 		}
 	}
+	var seen heal.Seen
+	var pipeline uuid.UUID
 	err = a.Store.Tx(ctx, func(q *db.Queries) error {
 		row, err := q.FinishSync(ctx, params)
 		if err != nil {
 			return err
 		}
+		pipeline = row.PipelineID
 		typ := map[string]string{"succeeded": events.SyncSucceeded, "stopped": events.SyncStopped, "failed": events.SyncFailed}[params.Status]
 		if err := recordSync(ctx, q, typ, row, in.Code); err != nil {
 			return err
 		}
 		if in.Code == errs.SchemaDrift.String() {
-			return recordSync(ctx, q, events.SchemaBlocked, row, in.Code)
+			if err := recordSync(ctx, q, events.SchemaBlocked, row, in.Code); err != nil {
+				return err
+			}
 		}
-		return nil
+		switch params.Status {
+		case "failed":
+			class := heal.ClassOf(in.Code)
+			seen, err = heal.Observe(ctx, q, org, heal.Observation{
+				Pipeline: row.PipelineID, Version: row.Version, Stream: heal.StreamOf(class, in.Error), Class: class,
+				Code: in.Code, Message: in.Error, Sync: &row.ID, Key: row.ID.String(),
+			})
+		case "succeeded":
+			_, err = heal.Resolve(ctx, q, org, row.PipelineID, heal.ResolvedByProgress, nil, "sync "+row.ID.String()+" succeeded")
+		}
+		// A pipeline deleted meanwhile has nothing to heal.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
 	})
+	if err == nil && seen.Paused && !seen.Continuous && a.Schedules != nil {
+		if perr := a.Schedules.SetPaused(ctx, pipeline.String(), true); perr != nil {
+			activity.GetLogger(ctx).Warn("pausing the schedule failed; the pipeline is paused, so its syncs do nothing", "pipeline", pipeline, "err", perr)
+		}
+	}
 	return temporalx.ApplicationError(err)
 }
 

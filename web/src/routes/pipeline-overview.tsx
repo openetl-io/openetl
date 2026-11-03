@@ -5,6 +5,8 @@ import { Info, TriangleAlert } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ErrorNote } from "@/components/empty";
+import { Incidents } from "@/components/incidents";
+import { IncidentService, IncidentState } from "@/gen/openetl/api/v1/incident_pb";
 import {
   DeliveryLevel,
   PipelineService,
@@ -88,13 +90,25 @@ export function Overview({
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [plan.data, spec, last, schemas.data]);
 
-  const failed = pipeline.status?.lastSync?.state === SyncState.FAILED ? pipeline.status.lastSync : undefined;
+  const incidents = useQuery(IncidentService.method.listIncidents, { parent: pipeline.name, state: IncidentState.OPEN });
+  const lastSync = pipeline.status?.lastSync;
+  // An open incident that came from it says more than its error.
+  const failed =
+    lastSync?.state === SyncState.FAILED && !incidents.data?.incidents.some((i) => i.sync === lastSync.name) ? lastSync : undefined;
+  const retrying = live && last.failedAttempts > 0 ? last : undefined;
   const problems = plan.data?.plan?.problems ?? [];
   const notes = plan.data?.plan?.notes ?? [];
   const warnings = (plan.data?.plan?.warnings ?? []).filter((w) => !w.stream).map((w) => w.message);
 
   return (
     <div className="grid gap-6">
+      <Incidents workspace={workspace} pipeline={pipeline.name} live={live} />
+      {retrying && (
+        <Callout tone="warning">
+          {retrying.failedAttempts === 1 ? "An attempt" : `${retrying.failedAttempts} attempts`} of this {retrying.continuous ? "run" : "sync"} failed,
+          and it's retrying. The latest: <span className="font-mono text-[0.8125rem]">{retrying.lastAttemptError.split("\n")[0]}</span>
+        </Callout>
+      )}
       {failed && (
         <div className="grid gap-2">
           <ErrorNote title="The last sync failed" message={failed.error || "It ended without an error message."} />

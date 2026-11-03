@@ -44,6 +44,8 @@ var permissions = map[string]auth.Role{
 	"webhooks.update":     auth.Operator,
 	"webhooks.test":       auth.Operator,
 	"webhooks.delete":     auth.Editor,
+	"incidents.get":       auth.Viewer,
+	"incidents.resolve":   auth.Operator,
 	// Sources, destinations, pipelines, dbt projects and webhooks.
 	"documents.apply":     auth.Editor,
 	"connectors.apply":    auth.Admin,
@@ -149,12 +151,17 @@ var rules = map[string]rule{
 	apiv1connect.WebhookServiceTestWebhookProcedure:           {"webhooks.test", inName, false},
 	apiv1connect.WebhookServiceListWebhookDeliveriesProcedure: {"webhooks.get", inParent, false},
 
-	dataplanev1connect.DataPlaneServiceGetSyncSpecProcedure:        runner,
-	dataplanev1connect.DataPlaneServiceReportSchemasProcedure:      runner,
-	dataplanev1connect.DataPlaneServiceReportCheckpointProcedure:   runner,
-	dataplanev1connect.DataPlaneServiceGetConnectorConfigProcedure: runner,
-	dataplanev1connect.DataPlaneServiceReportCatalogProcedure:      runner,
-	dataplanev1connect.DataPlaneServiceGetArtifactProcedure:        runner,
+	apiv1connect.IncidentServiceGetIncidentProcedure:     {"incidents.get", inName, false},
+	apiv1connect.IncidentServiceListIncidentsProcedure:   {"incidents.get", inParent, false},
+	apiv1connect.IncidentServiceResolveIncidentProcedure: {"incidents.resolve", inName, false},
+
+	dataplanev1connect.DataPlaneServiceGetSyncSpecProcedure:          runner,
+	dataplanev1connect.DataPlaneServiceReportSchemasProcedure:        runner,
+	dataplanev1connect.DataPlaneServiceReportCheckpointProcedure:     runner,
+	dataplanev1connect.DataPlaneServiceGetConnectorConfigProcedure:   runner,
+	dataplanev1connect.DataPlaneServiceReportCatalogProcedure:        runner,
+	dataplanev1connect.DataPlaneServiceGetArtifactProcedure:          runner,
+	dataplanev1connect.DataPlaneServiceReportAttemptFailureProcedure: runner,
 }
 
 // workspaceOf is the workspace in a name or parent, workspaces/{w}/….

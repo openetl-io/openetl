@@ -75,6 +75,7 @@ var (
 	_ apiv1connect.AccessServiceHandler          = (*Server)(nil)
 	_ apiv1connect.AuditServiceHandler           = (*Server)(nil)
 	_ apiv1connect.WebhookServiceHandler         = (*Server)(nil)
+	_ apiv1connect.IncidentServiceHandler        = (*Server)(nil)
 	_ dataplanev1connect.DataPlaneServiceHandler = (*Server)(nil)
 )
 
@@ -110,6 +111,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		vanguard.NewService(apiv1connect.NewAccessServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewAuditServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewWebhookServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewIncidentServiceHandler(s, opts)),
 	}
 	// REST bodies are buffered whole before the handler's limit applies.
 	transcoder, err := vanguard.NewTranscoder(services, vanguard.WithDefaultServiceOptions(vanguard.WithMaxMessageBufferBytes(2*maxApplyBytes)))

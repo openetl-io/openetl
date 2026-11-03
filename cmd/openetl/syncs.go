@@ -52,7 +52,12 @@ func runSyncs(ctx context.Context, args []string, out io.Writer) error {
 				took = s.GetEndTime().AsTime().Sub(s.GetStartTime().AsTime()).Round(time.Second).String()
 			}
 			state := strings.ToLower(strings.TrimPrefix(s.GetState().String(), "SYNC_STATE_"))
-			msg, _, _ := strings.Cut(s.GetError(), "\n")
+			msg := s.GetError()
+			if n := s.GetFailedAttempts(); n > 0 && s.GetState() == apiv1.SyncState_SYNC_STATE_RUNNING {
+				state += fmt.Sprintf(", %d failed", n)
+				msg = s.GetLastAttemptError()
+			}
+			msg, _, _ = strings.Cut(msg, "\n")
 			if len(msg) > 80 {
 				msg = msg[:79] + "…"
 			}

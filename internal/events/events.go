@@ -30,6 +30,9 @@ const (
 	PipelineRecovered = "pipeline.recovered"
 	SchemaChanged     = "schema.changed"
 	SchemaBlocked     = "schema.blocked"
+	IncidentOpened    = "incident.opened"
+	IncidentEscalated = "incident.escalated"
+	IncidentResolved  = "incident.resolved"
 	WebhookTest       = "webhook.test"
 )
 
@@ -38,6 +41,7 @@ var Types = []string{
 	SyncStarted, SyncSucceeded, SyncFailed, SyncStopped,
 	PipelineCreated, PipelineUpdated, PipelineDeleted, PipelinePaused, PipelineResumed, PipelineLagging, PipelineRecovered,
 	SchemaChanged, SchemaBlocked,
+	IncidentOpened, IncidentEscalated, IncidentResolved,
 	WebhookTest,
 }
 
@@ -133,6 +137,8 @@ type Pipeline struct {
 	PreviousVersion string `json:"previousVersion,omitempty"`
 	// Where the version came from, such as cli:shop.yaml#3.
 	Provenance string `json:"provenance,omitempty"`
+	// The incident a playbook paused it for.
+	Incident string `json:"incident,omitempty"`
 }
 
 // Lag is a continuous pipeline's read falling behind, or catching up.
@@ -162,6 +168,29 @@ type Schema struct {
 	Added    []string `json:"added,omitempty"`
 	Removed  []string `json:"removed,omitempty"`
 	Changed  []string `json:"changed,omitempty"`
+}
+
+// Incident is an incident opened, escalated or resolved.
+type Incident struct {
+	Incident string `json:"incident"`
+	Pipeline string `json:"pipeline"`
+	Stream   string `json:"stream,omitempty"`
+	// Such as auth or crash_loop.
+	Class string `json:"class"`
+	// The error's taxonomy code, if it came from one.
+	Code        string            `json:"code,omitempty"`
+	Severity    string            `json:"severity"`
+	Summary     string            `json:"summary"`
+	Message     string            `json:"message"`
+	NextSteps   string            `json:"nextSteps,omitempty"`
+	Fingerprint string            `json:"fingerprint"`
+	Occurrences int32             `json:"occurrences"`
+	Details     map[string]string `json:"details,omitempty"`
+	Sync        string            `json:"sync,omitempty"`
+	FirstSeen   time.Time         `json:"firstSeenTime"`
+	LastSeen    time.Time         `json:"lastSeenTime"`
+	Resolved    *time.Time        `json:"resolveTime,omitempty"`
+	Resolution  string            `json:"resolution,omitempty"`
 }
 
 type Test struct {

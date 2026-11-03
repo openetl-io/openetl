@@ -3,12 +3,12 @@ package events
 import "testing"
 
 func TestPatterns(t *testing.T) {
-	for _, p := range []string{"*", "sync.*", "sync.failed", "*.lagging", "schema.*"} {
+	for _, p := range []string{"*", "sync.*", "sync.failed", "*.lagging", "schema.*", "incident.*"} {
 		if err := CheckPattern(p); err != nil {
 			t.Errorf("%q: %v", p, err)
 		}
 	}
-	for _, p := range []string{"", "sync", "incident.*", "sync.faild", "[", "Sync.*"} {
+	for _, p := range []string{"", "sync", "heal.*", "sync.faild", "[", "Sync.*"} {
 		if err := CheckPattern(p); err == nil {
 			t.Errorf("%q passed", p)
 		}

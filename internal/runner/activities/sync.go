@@ -20,6 +20,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
@@ -87,6 +88,7 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Draining.String(), temporal.ApplicationErrorOptions{Details: []any{info.Attempt}})
 	case err != nil:
 		log.Warn("sync attempt failed", "code", errs.CodeOf(err).String(), "err", err)
+		a.reportFailure(ctx, in.PipelineID, info.WorkflowExecution.RunID, attempt, err, log)
 	default:
 		log.Info("sync attempt finished", "generation", res.Generation, "recovery", res.Recovery, "restored", res.Restored, "committed", res.Committed)
 	}
@@ -163,11 +165,26 @@ func (a *Sync) RunStreamJob(ctx context.Context, in contract.StreamJobInput) (co
 		return res, temporal.NewCanceledError()
 	}
 	log.Warn("stream job failed", "code", errs.CodeOf(err).String(), "err", err)
+	a.reportFailure(ctx, in.PipelineID, in.RunKey, attempt, err, log)
 	if errs.CodeOf(err) == errs.Fenced {
 		// Retried, unlike a sync's: see the supervisor.
 		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Fenced.String(), temporal.ApplicationErrorOptions{Cause: err})
 	}
 	return res, temporalx.ApplicationError(err)
+}
+
+// reportFailure tells the control plane an attempt failed, which Temporal
+// shows only once retries run out. It's best effort.
+func (a *Sync) reportFailure(ctx context.Context, pipeline, run string, attempt int, err error, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, rerr := a.API.ReportAttemptFailure(ctx, connect.NewRequest(&dataplanev1.ReportAttemptFailureRequest{
+		PipelineId: pipeline, RunId: run, Attempt: int32(attempt), //nolint:gosec // attempts are few
+		Code: errs.CodeOf(err).String(), Message: err.Error(), Time: timestamppb.Now(),
+	}))
+	if rerr != nil {
+		log.Warn("reporting the failed attempt failed", "err", rerr)
+	}
 }
 
 type attemptParams struct {

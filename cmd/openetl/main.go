@@ -54,6 +54,8 @@ Commands:
   audit list      list who changed what, and who read secrets
   webhook list|deliveries|test|disable|enable|delete
                   manage the webhooks platform events go to
+  incident list|get|resolve
+                  see what's wrong with pipelines, and what heal did
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file
 (.openetl/admin.key by default, where openetld writes the owner's key).
@@ -100,6 +102,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runAudit(ctx, args[1:], out)
 	case "webhook":
 		return runWebhook(ctx, args[1:], out)
+	case "incident":
+		return runIncident(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "syncs":

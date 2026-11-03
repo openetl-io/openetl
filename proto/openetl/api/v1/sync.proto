@@ -53,6 +53,11 @@ message Sync {
   // How far behind its source the read was at its latest commit, for
   // sources that report it (CDC, Kafka, Kinesis).
   repeated ReadProgress progress = 11;
+  // Its attempts that failed, as runners reported them, and the latest
+  // one's error. A sync still running may be retrying.
+  int32 failed_attempts = 12;
+  string last_attempt_error = 13;
+  google.protobuf.Timestamp last_attempt_time = 14;
 }
 
 // ReadProgress is what a source reported of how far behind it a read is.
