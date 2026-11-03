@@ -68,10 +68,14 @@ func kinesisActive(t *testing.T, stream string) {
 }
 
 // kinesisData reads every record of a stream, as JSON objects; nil if the
-// stream doesn't exist yet.
+// stream doesn't exist yet, or is still being created.
 func kinesisData(t *testing.T, stream string) []map[string]any {
 	t.Helper()
 	cl := kinesisClient()
+	d, err := cl.DescribeStreamSummary(t.Context(), &kinesis.DescribeStreamSummaryInput{StreamName: aws.String(stream)})
+	if err != nil || d.StreamDescriptionSummary.StreamStatus == types.StreamStatusCreating {
+		return nil
+	}
 	shards, err := cl.ListShards(t.Context(), &kinesis.ListShardsInput{StreamName: aws.String(stream)})
 	if err != nil {
 		return nil
