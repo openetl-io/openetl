@@ -12,6 +12,7 @@ import { destinations, pipelines, sources, syncs } from "./fixtures";
 import { checkpoints, log, plan, schemas, versions } from "./detail";
 import { auditEntries, dataPlanes, dbtProjects, deliveries, incidents, keys, principals as others, runnerTokens, secrets, webhooks } from "./workspace";
 import { accessSession, requireSession, user } from "./session";
+import { resolve, sendTest, setDisabled, setPaused, startSync } from "./actions";
 import { signedOut } from "@/lib/api";
 
 const principals = [user, ...others];
@@ -34,6 +35,9 @@ export const mockTransport = createRouterTransport(({ service }) => {
     listStreamSchemas: async ({ parent }) => (await latency(), { streamSchemas: schemas(parent) }),
     listCheckpoints: async ({ parent }) => (await latency(), { checkpoints: checkpoints(parent) }),
     listPipelineVersions: async ({ parent }) => (await latency(), { pipelineVersions: versions(find(pipelines, parent)) }),
+    pausePipeline: async ({ name }) => (await latency(), setPaused(find(pipelines, name), true)),
+    resumePipeline: async ({ name }) => (await latency(), setPaused(find(pipelines, name), false)),
+    syncPipeline: async ({ name }) => (await latency(), startSync(find(pipelines, name))),
   });
   service(SourceService, {
     listSources: async () => (await latency(), { sources }),
@@ -55,11 +59,15 @@ export const mockTransport = createRouterTransport(({ service }) => {
       return { incidents: state === IncidentState.UNSPECIFIED ? all : all.filter((i) => i.state === state) };
     },
     getIncident: async ({ name }) => (await latency(), { incident: find(incidents, name) }),
+    resolveIncident: async ({ name, comment }) => (await latency(), resolve(find(incidents, name), comment)),
   });
   service(WebhookService, {
     listWebhooks: async () => (await latency(), { webhooks }),
     getWebhook: async ({ name }) => (await latency(), { webhook: find(webhooks, name) }),
     listWebhookDeliveries: async ({ parent }) => (await latency(), { deliveries: deliveries.get(parent) ?? [] }),
+    disableWebhook: async ({ name }) => (await latency(), setDisabled(find(webhooks, name), true)),
+    enableWebhook: async ({ name }) => (await latency(), setDisabled(find(webhooks, name), false)),
+    testWebhook: async ({ name }) => (await latency(), sendTest(find(webhooks, name))),
   });
   service(SecretService, {
     listSecrets: async () => (await latency(), { secrets }),
@@ -79,6 +87,7 @@ export const mockTransport = createRouterTransport(({ service }) => {
     deleteSession: async () => (await latency(), accessSession.deleteSession()),
     setPassword: async (req) => (await latency(), accessSession.setPassword(req)),
     changePassword: async (req) => (await latency(), accessSession.changePassword(req)),
+    revokeSessions: async (req) => (await latency(), accessSession.revokeSessions(req)),
   });
   service(AuditService, {
     listAuditEntries: async ({ actor, resource, method }) => {

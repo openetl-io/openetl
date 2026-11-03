@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { Code, type Transport } from "@connectrpc/connect";
 import { createQueryOptions, useMutation, useQuery } from "@connectrpc/connect-query";
 import { useQueryClient } from "@tanstack/react-query";
@@ -14,6 +15,15 @@ export const callerQuery = (transport: Transport) => createQueryOptions(AccessSe
 
 export function useCaller() {
   return useQuery(AccessService.method.getCaller, {}, { staleTime: 60_000 });
+}
+
+/**
+ * Whether the caller may do something, such as pipelines.sync: in the
+ * workspace, or on the org without one. Nothing until the caller loads.
+ */
+export function useCan(workspace?: string) {
+  const { data } = useQuery(AccessService.method.getCaller, workspace ? { workspace: `workspaces/${workspace}` } : {}, { staleTime: 60_000 });
+  return useCallback((permission: string) => data?.permissions.includes(permission) ?? false, [data]);
 }
 
 export const callerName = (c: GetCallerResponse) => c.principal?.displayName || lastSegment(c.principal?.name ?? "");

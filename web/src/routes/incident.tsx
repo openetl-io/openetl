@@ -6,6 +6,7 @@ import { CodeBlock } from "@/components/code-block";
 import { DescriptionItem, DescriptionList, DetailHeader, Section } from "@/components/detail-header";
 import { ErrorNote } from "@/components/empty";
 import { EmptyState } from "@/components/empty-state";
+import { IncidentActions } from "@/components/incident-actions";
 import { IncidentStateBadge, Severity, kindLabel } from "@/components/incident-fields";
 import { RelativeTime } from "@/components/relative-time";
 import { ResourceLink } from "@/components/resource-link";
@@ -46,6 +47,7 @@ export function IncidentPage() {
             <IncidentStateBadge state={i.state} />
           </span>
         )}
+        actions={i && <IncidentActions workspace={workspace} incident={i} />}
       >
         {i && (
           <>

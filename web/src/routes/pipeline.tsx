@@ -9,6 +9,7 @@ import { ConnectorLogo } from "@/components/connector";
 import { DescriptionItem, DetailHeader } from "@/components/detail-header";
 import { ErrorNote } from "@/components/empty";
 import { EmptyState } from "@/components/empty-state";
+import { PipelineActions } from "@/components/pipeline-actions";
 import { Freshness, Schedule } from "@/components/pipeline-fields";
 import { RelativeTime } from "@/components/relative-time";
 import { ResourceLink } from "@/components/resource-link";
@@ -75,7 +76,11 @@ export function PipelinePage() {
 
   return (
     <div className="grid gap-6">
-      <DetailHeader title={pipeline} status={pl && <StatusBadge status={pipelineStatus(pl)} />}>
+      <DetailHeader
+        title={pipeline}
+        status={pl && <StatusBadge status={pipelineStatus(pl)} />}
+        actions={pl && <PipelineActions workspace={workspace} pipeline={pl} />}
+      >
         {pl && (
           <>
             <DescriptionItem label="Source">

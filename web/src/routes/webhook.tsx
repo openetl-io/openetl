@@ -15,6 +15,7 @@ import { ErrorNote } from "@/components/empty";
 import { EmptyState } from "@/components/empty-state";
 import { RelativeTime } from "@/components/relative-time";
 import { UsedBy } from "@/components/resource-link";
+import { WebhookActions } from "@/components/webhook-actions";
 import { DeliveryStateBadge, Events, WebhookStateBadge } from "@/components/webhook-fields";
 import { WebhookService, type WebhookDelivery } from "@/gen/openetl/api/v1/webhook_pb";
 import { errorCode, errorMessage } from "@/lib/api";
@@ -135,7 +136,11 @@ export function WebhookPage() {
 
   return (
     <div className="grid gap-8">
-      <DetailHeader title={webhook} status={w && <WebhookStateBadge webhook={w} />}>
+      <DetailHeader
+        title={webhook}
+        status={w && <WebhookStateBadge webhook={w} />}
+        actions={w && <WebhookActions workspace={workspace} webhook={w} />}
+      >
         {w && (
           <>
             <DescriptionItem label="URL">

@@ -10,6 +10,7 @@ import { DataTable } from "@/components/data-table/data-table";
 import { SortHeader } from "@/components/data-table/sort-header";
 import { useDataTable } from "@/components/data-table/use-data-table";
 import { DescriptionItem, DetailHeader, Section } from "@/components/detail-header";
+import { PrincipalActions } from "@/components/principal-actions";
 import { QueryError } from "@/components/query-error";
 import { EmptyState } from "@/components/empty-state";
 import { RelativeTime } from "@/components/relative-time";
@@ -77,7 +78,11 @@ export function PrincipalPage() {
 
   return (
     <div className="grid gap-8">
-      <DetailHeader title={p?.displayName || principal} status={p && <PrincipalStatus disabled={p.disabled} />}>
+      <DetailHeader
+        title={p?.displayName || principal}
+        status={p && <PrincipalStatus disabled={p.disabled} />}
+        actions={p && <PrincipalActions principal={p} />}
+      >
         {p && (
           <>
             <DescriptionItem label="ID">
