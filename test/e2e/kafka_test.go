@@ -162,7 +162,7 @@ func TestPostgresCDCToKafka(t *testing.T) {
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
 			"spec": {"mode": "continuous", "source": {"ref": %q}, "destination": {"ref": %q}, "delivery": {"commit": {"interval": "1s"}}}}`, name, name, name))
 	t.Cleanup(func() {
-		_, _ = pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
 	})
 	ops := func() map[string]int {
 		out := map[string]int{}

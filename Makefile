@@ -106,7 +106,7 @@ test: tools web/node_modules/.modules.yaml ## Unit tests (fast, no Docker), incl
 
 .PHONY: test-integration
 test-integration: ## Integration tests against the compose deps
-	go test -tags integration ./...
+	go test -tags integration -count=1 ./...
 
 .PHONY: sim
 sim: ## Commit-protocol simulation; SEEDS=n runs n seeds per sink kind

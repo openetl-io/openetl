@@ -47,7 +47,7 @@ func TestPostgresCDC(t *testing.T) {
 			"delivery": {"commit": {"interval": "1s"}}}}`, name, name, name, out))
 	pipeline := "workspaces/default/pipelines/" + name
 	t.Cleanup(func() {
-		_, _ = pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: pipeline}))
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: pipeline}))
 	})
 	id := mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
 	slot := "openetl_" + stripDashes(id)

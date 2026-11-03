@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -154,7 +155,7 @@ func TestIncidentCrashLoop(t *testing.T) {
 	ds[1] = strings.Replace(ds[1], `"e2e-dsn"`, `"`+dsn+`"`, 1)
 	apply(t, ds...)
 	t.Cleanup(func() {
-		_, _ = pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
 	})
 	inc := waitIncident(t, name, apiv1.IncidentClass_INCIDENT_CLASS_CRASH_LOOP, apiv1.IncidentState_INCIDENT_STATE_OPEN)
 	if inc.GetMessage() == "" || inc.GetDetails()["failures"] == "" || len(inc.GetActions()) != 0 {

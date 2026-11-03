@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -38,7 +39,7 @@ func startContinuous(t *testing.T, name string) {
 	t.Helper()
 	apply(t, continuousDocs(name, endlessFaker)...)
 	t.Cleanup(func() {
-		_, _ = pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
 	})
 }
 
