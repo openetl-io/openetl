@@ -103,7 +103,13 @@ func topicValues(t *testing.T, topic string) []map[string]any {
 func checkTopics(t *testing.T, namespace string, want int, tables ...string) {
 	t.Helper()
 	for _, table := range tables {
+		// A transaction's commit returns before its markers reach the
+		// partitions, so its records can be a moment from being readable.
 		vals := topicValues(t, namespace+"."+table)
+		for deadline := time.Now().Add(30 * time.Second); len(vals) < want && time.Now().Before(deadline); {
+			time.Sleep(200 * time.Millisecond)
+			vals = topicValues(t, namespace+"."+table)
+		}
 		seen := map[float64]bool{}
 		for _, v := range vals {
 			id, _ := v["id"].(float64)
