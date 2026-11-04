@@ -70,6 +70,10 @@ type Faults struct {
 	// does: half the sinks are inside it, and the other readers pass over
 	// its barrier.
 	AbortOnStop bool
+	// Consulted when the job's tasks restart: the JobManager restarts
+	// without high availability, so they restore from the checkpoint the
+	// job was deployed from, not the newest.
+	NoHA func() bool
 }
 
 // Cluster is a fake runner.Flink.
@@ -80,12 +84,28 @@ type Cluster struct {
 	Faults   Faults
 	// Logf traces what the cluster does; nil: nothing.
 	Logf func(format string, args ...any)
+	// Point, if set, is called at each step of a job's tasks, with the run
+	// of tasks it's in, numbered from 1 across the cluster. It applies the
+	// step, or fails the run with an error.
+	Point func(ctx context.Context, run int, op string, apply func() error) error
+	// A job whose tasks restart this many times without completing a
+	// checkpoint fails, as a bounded restart strategy makes it. Zero: never.
+	MaxRestarts int
+	// After a task failure, the job fails once more as soon as its tasks
+	// have connected, and restores from the same checkpoint again, as
+	// openetl-flink's enumerator makes it.
+	FailOnceMore bool
 
 	mu         sync.Mutex
 	jobs       map[string]*Job
 	completed  map[string][]runner.FlinkCheckpoint
 	savepoints map[string]savepoint
 	deploys    int
+	runs       int
+	// Every checkpoint ever completed, and every savepoint taken by hand,
+	// by job.
+	everCompleted map[string]map[int64]bool
+	byHand        map[string]map[int64]bool
 }
 
 type savepoint struct {
@@ -94,7 +114,37 @@ type savepoint struct {
 }
 
 func NewCluster(b *Bridge) *Cluster {
-	return &Cluster{Bridge: b, jobs: map[string]*Job{}, completed: map[string][]runner.FlinkCheckpoint{}, savepoints: map[string]savepoint{}}
+	return &Cluster{Bridge: b, jobs: map[string]*Job{}, completed: map[string][]runner.FlinkCheckpoint{}, savepoints: map[string]savepoint{},
+		everCompleted: map[string]map[int64]bool{}, byHand: map[string]map[int64]bool{}}
+}
+
+// EverCompleted says whether job's checkpoint id completed.
+func (c *Cluster) EverCompleted(job string, id int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.everCompleted[job][id]
+}
+
+// TakenByHand says whether job's checkpoint id was a savepoint taken by
+// hand.
+func (c *Cluster) TakenByHand(job string, id int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.byHand[job][id]
+}
+
+// Running counts the jobs not ended.
+func (c *Cluster) Running() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.jobs)
+}
+
+func mark(m map[string]map[int64]bool, job string, id int64) {
+	if m[job] == nil {
+		m[job] = map[int64]bool{}
+	}
+	m[job][id] = true
 }
 
 func (c *Cluster) logf(format string, args ...any) {
@@ -174,13 +224,13 @@ func (c *Cluster) Deploy(_ context.Context, d runner.FlinkDeploy) (runner.FlinkJ
 	if interval == 0 {
 		interval = d.CheckpointInterval
 	}
-	j := &Job{cluster: c, id: fmt.Sprintf("job-g%d", d.Generation), h: h, interval: interval, next: r + 1, done: make(chan struct{})}
+	j := &Job{cluster: c, id: fmt.Sprintf("job-g%d", d.Generation), h: h, interval: interval, from: r, next: r + 1, done: make(chan struct{})}
 	c.mu.Lock()
 	c.jobs[j.id] = j
 	c.deploys++
 	c.mu.Unlock()
 	c.logf("flink: deploy %s from %q (checkpoint %d)", j.id, d.RestoreFrom, r)
-	j.start(r)
+	j.start(r, false)
 	return j, nil
 }
 
@@ -192,6 +242,7 @@ func (c *Cluster) complete(job string, id int64) {
 		cs = cs[len(cs)-2:]
 	}
 	c.completed[job] = cs
+	mark(c.everCompleted, job, id)
 }
 
 // Job is a deployed fake job. Its tasks run as a series of runs; a failure
@@ -201,6 +252,7 @@ type Job struct {
 	id       string
 	h        bridgev1.BridgeServiceServer
 	interval time.Duration
+	from     int64 // the checkpoint it was deployed from
 
 	mu             sync.Mutex
 	next           int64 // the next checkpoint ID
@@ -208,6 +260,7 @@ type Job struct {
 	stopping       string
 	abortedForStop bool
 	stopErr        chan error
+	restarts       int // since the last completed checkpoint
 	ended          bool
 	result         error
 	done           chan struct{}
@@ -245,6 +298,13 @@ func (j *Job) Stop(ctx context.Context, dir string) error {
 	select {
 	case err := <-stopErr:
 		return err
+	case <-j.done:
+		select {
+		case err := <-stopErr:
+			return err
+		default:
+			return errors.New("flinktest: the job ended before its stop's savepoint")
+		}
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -270,9 +330,13 @@ func (j *Job) finish(result error) {
 }
 
 // start starts a run of the job's tasks, restored from checkpoint r.
-func (j *Job) start(r int64) {
+func (j *Job) start(r int64, failOnce bool) {
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &taskRun{job: j, restored: r, ctx: ctx, cancel: cancel}
+	j.cluster.mu.Lock()
+	j.cluster.runs++
+	id := j.cluster.runs
+	j.cluster.mu.Unlock()
+	run := &taskRun{job: j, id: id, restored: r, failOnce: failOnce, ctx: ctx, cancel: cancel}
 	j.mu.Lock()
 	if j.ended {
 		j.mu.Unlock()
@@ -294,12 +358,34 @@ func (j *Job) start(r int64) {
 		}
 		j.cluster.logf("flink: %s's tasks failed: %v", j.id, err)
 		cancel()
-		// Restart from the newest completed checkpoint, as Flink does.
+		// A stop whose savepoint fails leaves the job running.
+		j.mu.Lock()
+		if j.stopping != "" {
+			j.stopErr <- fmt.Errorf("flinktest: the stop's savepoint failed: %w", err)
+			j.stopping, j.stopErr = "", nil
+		}
+		j.restarts++
+		exhausted := j.cluster.MaxRestarts > 0 && j.restarts > j.cluster.MaxRestarts
+		j.mu.Unlock()
+		if exhausted {
+			go j.finish(&runner.FlinkFailed{Message: "the restart strategy gave up: " + err.Error()})
+			return
+		}
+		if run.failOnce {
+			go j.start(run.restored, false)
+			return
+		}
+		// Restart from the newest completed checkpoint, as Flink does with
+		// high availability.
 		r := run.restored
 		if cs, _ := j.cluster.Completed(context.Background(), j.id); len(cs) > 0 {
 			r = cs[len(cs)-1].ID
 		}
-		go j.start(r)
+		if f := j.cluster.Faults.NoHA; f != nil && f() {
+			r = j.from
+			j.cluster.logf("flink: %s's JobManager restarts without HA, from checkpoint %d", j.id, r)
+		}
+		go j.start(r, j.cluster.FailOnceMore)
 	}()
 }
 
@@ -308,10 +394,24 @@ var errFinished = errors.New("flinktest: finished")
 // taskRun is one run of a job's tasks.
 type taskRun struct {
 	job      *Job
+	id       int
 	restored int64
+	// The run fails once it has opened its calls (Cluster.FailOnceMore).
+	failOnce bool
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+}
+
+// point runs a step of the tasks; nil apply is a step with no effect.
+func (r *taskRun) point(op string, apply func() error) error {
+	if apply == nil {
+		apply = func() error { return nil }
+	}
+	if p := r.job.cluster.Point; p != nil {
+		return p(r.ctx, r.id, op, apply)
+	}
+	return apply()
 }
 
 func (r *taskRun) tasks() error {
@@ -319,6 +419,9 @@ func (r *taskRun) tasks() error {
 	j := r.job
 	desc, err := j.h.Describe(ctx, &bridgev1.DescribeRequest{})
 	if err != nil {
+		return err
+	}
+	if err := r.point("flink.hello", nil); err != nil {
 		return err
 	}
 	coord := newBidi[bridgev1.CoordinateRequest, bridgev1.CoordinateResponse](ctx)
@@ -350,6 +453,11 @@ func (r *taskRun) tasks() error {
 		}()
 		go func() { errc <- r.read(rd, sink, barriers) }()
 	}
+	if r.failOnce {
+		return r.point("flink.failOnceMore", func() error {
+			return errors.New("flinktest: the enumerator fails the job once more after a restart")
+		})
+	}
 	tick := time.NewTicker(j.interval)
 	defer tick.Stop()
 	for {
@@ -380,6 +488,9 @@ func (r *taskRun) read(rd *serverStream[bridgev1.ReadResponse], sink *bidi[bridg
 		}
 		switch m := res.GetMessage().(type) {
 		case *bridgev1.ReadResponse_Batch:
+			if err := r.point("flink.batch", nil); err != nil {
+				return err
+			}
 			if err := sink.send(&bridgev1.WriteRequest{Message: &bridgev1.WriteRequest_Batch{Batch: m.Batch}}); err != nil {
 				return err
 			}
@@ -400,6 +511,10 @@ func (r *taskRun) read(rd *serverStream[bridgev1.ReadResponse], sink *bidi[bridg
 				// Passed over: its checkpoint was aborted.
 				b.acked <- nil
 				continue
+			}
+			if err := r.point("flink.barrier", nil); err != nil {
+				b.acked <- err
+				return err
 			}
 			b.acked <- sink.call(&bridgev1.WriteRequest{Message: &bridgev1.WriteRequest_Barrier{Barrier: &bridgev1.SinkBarrier{Checkpoint: b.c, Type: typ}}})
 		}
@@ -431,6 +546,9 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 	stop := typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT
 	failTasks := !stop && f.FailTasks != nil && f.FailTasks(c)
 	decline := !stop && f.DeclineAfterRecord != nil && f.DeclineAfterRecord(c)
+	if err := r.point("flink.start", nil); err != nil {
+		return err
+	}
 	if err := coord.call(&bridgev1.CoordinateRequest{Message: &bridgev1.CoordinateRequest_Started{Started: &bridgev1.CheckpointStarted{Checkpoint: c}}}); err != nil {
 		return fmt.Errorf("start checkpoint %d: %w", c, err)
 	}
@@ -452,7 +570,7 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 		}
 	}
 	if abortForStop {
-		return r.abortForStop(coord, c, held)
+		return r.abortForStop(coord, c, held, errc)
 	}
 	for _, b := range held {
 		b.release <- typ
@@ -461,6 +579,7 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 		var err error
 		select {
 		case err = <-b.acked:
+		case err = <-errc:
 		case <-r.ctx.Done():
 			return r.ctx.Err()
 		}
@@ -473,22 +592,42 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 		_ = coord.call(&bridgev1.CoordinateRequest{Message: &bridgev1.CoordinateRequest_Outcome{Outcome: &bridgev1.CheckpointOutcome{Checkpoint: c}}})
 		return fmt.Errorf("flinktest: checkpoint %d declined", c)
 	}
-	switch typ {
-	case bridgev1.BarrierType_BARRIER_TYPE_SAVEPOINT:
+	if typ == bridgev1.BarrierType_BARRIER_TYPE_SAVEPOINT {
 		j.cluster.logf("flink: %s took savepoint %d by hand", j.id, c)
+		j.cluster.mu.Lock()
+		mark(j.cluster.byHand, j.id, c)
+		j.cluster.mu.Unlock()
 		return nil
-	case bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT:
+	}
+	// A failure here leaves the checkpoint undecided; after it, completed
+	// with no notice.
+	err := r.point("flink.complete", func() error {
+		if !stop {
+			j.cluster.complete(j.id, c)
+			j.mu.Lock()
+			j.restarts = 0
+			j.mu.Unlock()
+			return nil
+		}
 		j.cluster.mu.Lock()
 		j.cluster.savepoints[stopDir] = savepoint{path: fmt.Sprintf("%s/savepoint-%d", stopDir, c), id: c}
 		j.cluster.mu.Unlock()
-	default:
-		j.cluster.complete(j.id, c)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := r.point("flink.notify", nil); err != nil {
+		return err
 	}
 	if err := coord.call(&bridgev1.CoordinateRequest{Message: &bridgev1.CoordinateRequest_Outcome{Outcome: &bridgev1.CheckpointOutcome{Checkpoint: c, Completed: true}}}); err != nil {
 		return fmt.Errorf("checkpoint %d's outcome: %w", c, err)
 	}
 	if typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT {
 		j.cluster.logf("flink: %s stopped with savepoint %d", j.id, c)
+		j.mu.Lock()
+		j.stopping, j.stopErr = "", nil
+		j.mu.Unlock()
 		stopErr <- nil
 		return errFinished
 	}
@@ -498,7 +637,7 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 // abortForStop aborts checkpoint c with half its sinks inside it. The
 // runner takes the abort, since the job is stopping, and releases them; the
 // other readers pass over the barrier.
-func (r *taskRun) abortForStop(coord *bidi[bridgev1.CoordinateRequest, bridgev1.CoordinateResponse], c int64, held []readerBarrier) error {
+func (r *taskRun) abortForStop(coord *bidi[bridgev1.CoordinateRequest, bridgev1.CoordinateResponse], c int64, held []readerBarrier, errc <-chan error) error {
 	inside := held[:len(held)/2]
 	for _, b := range inside {
 		b.release <- bridgev1.BarrierType_BARRIER_TYPE_CHECKPOINT
@@ -518,6 +657,8 @@ func (r *taskRun) abortForStop(coord *bidi[bridgev1.CoordinateRequest, bridgev1.
 			if err != nil {
 				return fmt.Errorf("checkpoint %d: a barrier inside the aborted checkpoint was refused: %w", c, err)
 			}
+		case err := <-errc:
+			return err
 		case <-r.ctx.Done():
 			return r.ctx.Err()
 		}
