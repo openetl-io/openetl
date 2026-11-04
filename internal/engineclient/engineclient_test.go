@@ -1071,3 +1071,51 @@ func TestRunAttemptIntoTheDiscardSink(t *testing.T) {
 		t.Errorf("committed %d epochs: %v; want epoch 1", res.Committed, dest.committed)
 	}
 }
+
+// An empty batch in a declared schema, or no rows, gives a stream's schema
+// before any row comes, for a Flink job built before the data.
+func TestEmptyFramesReportTheirSchema(t *testing.T) {
+	ctx := testContext(t)
+	declared := arrow.NewSchema([]arrow.Field{{Name: "Id", Type: arrow.PrimitiveTypes.Int32}, {Name: "note", Type: arrow.BinaryTypes.String, Nullable: true}}, nil)
+	p := plan("a", "b")
+	p.Streams[0].Schema = declared
+	p.ReportSchemas = true
+	b := array.NewRecordBuilder(memory.DefaultAllocator, declared)
+	empty := b.NewRecordBatch()
+	b.Release()
+	got, err := run(ctx, &Dataflow{Options: options(t, nil)}, p,
+		runner.Frame{Kind: runner.FrameBatch, Stream: "a", Batch: empty},
+		runner.Frame{Kind: runner.FrameRows, Stream: "b", Rows: []json.RawMessage{}},
+	)
+	defer release(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range got["a"] {
+		if f.Kind == runner.FrameBatch {
+			t.Errorf("an empty batch came out: %d rows", f.Batch.NumRows())
+		}
+	}
+	names := func(stream string) []string {
+		for _, f := range got[stream] {
+			if f.Kind != runner.FrameSchema {
+				continue
+			}
+			sc, err := ipc.NewReader(bytes.NewReader(f.Schema))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sc.Release()
+			var out []string
+			for _, fd := range sc.Schema().Fields() {
+				out = append(out, fd.Name+":"+fd.Type.String())
+			}
+			return out
+		}
+		return nil
+	}
+	t.Logf("a: %v; b: %v", names("a"), names("b"))
+	if a := names("a"); len(a) == 0 || a[0] != "id:int32" {
+		t.Errorf("stream a's schema: %v", a)
+	}
+}
