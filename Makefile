@@ -57,10 +57,11 @@ web: web/node_modules/.modules.yaml ## Build the UI into web/dist
 web-dev: web/node_modules/.modules.yaml ## Run the UI's dev server against the API on localhost:8080
 	pnpm --dir web dev
 
+# DEPS names the services to start, e.g. DEPS="postgres s3"; all by default.
 .PHONY: deps-up deps-down
 deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure, Kafka, Kinesis, Spark)
 	@mkdir -p $(OPENETL_SPARK_SHARE)
-	docker compose -f deploy/compose/dev.yml up -d --wait
+	docker compose -f deploy/compose/dev.yml up -d --wait $(DEPS)
 deps-down: ## Stop local dependencies
 	docker compose -f deploy/compose/dev.yml down
 
@@ -77,6 +78,7 @@ connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connec
 # openetl-spark (ADR-0022): the jar, built and tested in a pinned Maven image,
 # so no JDK is needed on the host; and the Python package's tests. The tests
 # start Spark, whose Hadoop login needs a passwd entry for the container's user.
+# MAVEN_FLAGS=-DskipTests builds the jar without them.
 MAVEN_IMAGE := maven:3.9.12-eclipse-temurin-17
 MAVEN_REPO ?= $(HOME)/.m2
 .PHONY: spark-lib
@@ -85,7 +87,7 @@ spark-lib: ## Build and test openetl-spark (the jar into libs/openetl-spark/java
 	@printf 'root:x:0:0::/root:/bin/sh\nopenetl:x:%s:%s::/var/maven:/bin/sh\n' $$(id -u) $$(id -g) > .openetl/maven-passwd
 	docker run --rm -u $$(id -u):$$(id -g) -v $(CURDIR)/.openetl/maven-passwd:/etc/passwd:ro \
 		-e MAVEN_CONFIG=/var/maven/.m2 -v $(MAVEN_REPO):/var/maven/.m2 \
-		-v $(CURDIR)/libs/openetl-spark/java:/src -w /src $(MAVEN_IMAGE) mvn -B -q -Duser.home=/var/maven package
+		-v $(CURDIR)/libs/openetl-spark/java:/src -w /src $(MAVEN_IMAGE) mvn -B -q -Duser.home=/var/maven $(MAVEN_FLAGS) package
 	cd libs/openetl-spark/python && PYTHONPATH=. python3 -m unittest discover -s tests
 
 .PHONY: engine
@@ -122,9 +124,12 @@ test: tools web/node_modules/.modules.yaml ## Unit tests (fast, no Docker), incl
 	cargo test --workspace
 	pnpm --dir web test
 
+# Only the packages with integration tests: make test runs the rest. They need
+# the compose Postgres, S3, GCS and Azure.
+INTEGRATION_PKGS = $(shell grep -rlE '^//go:build .*integration' --include='*_test.go' cmd internal sdk test | xargs -n1 dirname | sort -u | sed 's|^|./|')
 .PHONY: test-integration
 test-integration: ## Integration tests against the compose deps
-	go test -tags integration -count=1 ./...
+	go test -tags integration -count=1 $(INTEGRATION_PKGS)
 
 .PHONY: sim
 sim: ## Commit-protocol simulation; SEEDS=n runs n seeds per sink kind
