@@ -324,3 +324,9 @@ func TestFlinkAttemptsResumeWhenTheEpochIsLost(t *testing.T) {
 		}})
 	})
 }
+
+func TestFlinkStopAbortsTheCheckpointInFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runFlinkCase(t, flinkCase{streams: []string{"a", "b", "c", "d"}, rows: 80, faults: flinktest.Faults{AbortOnStop: true}})
+	})
+}

@@ -101,6 +101,7 @@ type flinkSegment struct {
 	carry       []*flinkCut
 	epochs      map[uint64]*flinkEpoch
 	byC         map[int64]uint64 // recorded checkpoints waiting for their outcome
+	aborted     map[int64]bool   // checkpoints aborted while the job stops
 	lastN       uint64
 	committedN  uint64
 	commitReady bool
@@ -137,6 +138,9 @@ type flinkCut struct {
 	barriers int
 	typ      bridgev1.BarrierType
 	replies  []chan error
+	// Aborted while the job stops: the readers pass over its barrier, so
+	// its rows go into the next record.
+	aborted bool
 }
 
 type flinkEpoch struct {
@@ -200,7 +204,7 @@ func newFlinkSegment(a *flinkAttempt, restored *checkpoint.Record, learn bool) *
 		queues: map[string]*readQueue{}, cutC: map[uint64]int64{}, out: map[uint64]int{}, known: map[string][]byte{},
 		sinks: map[sinkKey]bool{}, outRows: map[string]uint64{},
 		readers: map[string]bool{}, parallelism: map[string]int32{},
-		cuts: map[int64]*flinkCut{}, byK: map[uint64]*flinkCut{}, epochs: map[uint64]*flinkEpoch{}, byC: map[int64]uint64{},
+		cuts: map[int64]*flinkCut{}, byK: map[uint64]*flinkCut{}, epochs: map[uint64]*flinkEpoch{}, byC: map[int64]uint64{}, aborted: map[int64]bool{},
 	}
 	s.cond = sync.NewCond(&s.mu)
 	for _, st := range a.job.Streams {
@@ -973,6 +977,10 @@ func (s *flinkSegment) handle(ev segEvent) error {
 		}
 		cut.ready = ev.ready
 	case segSinkBarrier:
+		if s.aborted[ev.checkpoint] {
+			ev.reply <- nil
+			return nil
+		}
 		cut := s.cuts[ev.checkpoint]
 		if cut == nil {
 			ev.reply <- fmt.Errorf("runner: a barrier for checkpoint %d, which didn't start", ev.checkpoint)
@@ -1059,7 +1067,12 @@ func (s *flinkSegment) coordinate(m coordMsg) error {
 	case *bridgev1.CoordinateRequest_Outcome:
 		c := r.Outcome.GetCheckpoint()
 		if !r.Outcome.GetCompleted() {
-			m.reply <- nil
+			if s.abortWhileStopping(c) {
+				m.reply <- nil
+				return nil
+			}
+			// Ending the call fails the job, and the restore decides C.
+			m.reply <- fmt.Errorf("runner: checkpoint %d was aborted", c)
 			s.a.log.Info("a Flink checkpoint was aborted; the job is restarting", "checkpoint", c)
 			return errRestarting
 		}
@@ -1076,6 +1089,31 @@ func (s *flinkSegment) coordinate(m coordMsg) error {
 		m.reply <- errors.New("runner: an empty message")
 	}
 	return nil
+}
+
+// abortWhileStopping takes an abort that stopping with a savepoint caused,
+// which the job carries on from, if nothing ended an epoch at C yet: its
+// barriers are released, and its rows go into the next record.
+func (s *flinkSegment) abortWhileStopping(c int64) bool {
+	if s.a.stopDir == "" {
+		return false
+	}
+	if _, ok := s.byC[c]; ok {
+		return false
+	}
+	for _, ep := range s.epochs {
+		if ep.c == c {
+			return false
+		}
+	}
+	s.aborted[c] = true
+	if cut := s.cuts[c]; cut != nil {
+		cut.aborted = true
+		refuse(cut.replies, nil)
+		cut.replies = nil
+	}
+	s.a.log.Info("a Flink checkpoint was aborted by the stop; its rows go into the next record", "checkpoint", c)
+	return true
 }
 
 // progress requests the next barrier, decides checkpoints whose barriers
@@ -1100,7 +1138,7 @@ func (s *flinkSegment) progress(ctx context.Context) error {
 	}
 	for len(s.order) > 0 {
 		cut := s.cuts[s.order[0]]
-		if !cut.placed || cut.ready == nil || !s.allSinks(cut.barriers) {
+		if !cut.placed || cut.ready == nil || !cut.aborted && !s.allSinks(cut.barriers) {
 			break
 		}
 		s.order = s.order[1:]
@@ -1152,11 +1190,11 @@ func (s *flinkSegment) allSinks(barriers int) bool {
 }
 
 // decide ends an epoch at a checkpoint whose every barrier has arrived. A
-// savepoint taken by hand ends none: what it covers goes into the next
-// epoch. So does a checkpoint with no rows since the last record, whose
+// savepoint taken by hand, or a checkpoint the stop aborted, ends none: what
+// it covers goes into the next epoch. So does a checkpoint with no rows since the last record, whose
 // barriers are released once that record's epoch is committed.
 func (s *flinkSegment) decide(cut *flinkCut) error {
-	if cut.typ == bridgev1.BarrierType_BARRIER_TYPE_SAVEPOINT || cut.typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT && s.a.stopDir == "" {
+	if cut.aborted || cut.typ == bridgev1.BarrierType_BARRIER_TYPE_SAVEPOINT || cut.typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT && s.a.stopDir == "" {
 		s.carry = append(s.carry, cut)
 		refuse(cut.replies, nil)
 		return nil

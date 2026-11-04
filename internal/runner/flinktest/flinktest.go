@@ -66,6 +66,10 @@ type Faults struct {
 	FailTasks func(c int64) bool
 	// A savepoint taken by hand, in place of the checkpoint.
 	SavepointByHand func(c int64) bool
+	// A stop aborts the checkpoint in flight, as Flink's stop-with-savepoint
+	// does: half the sinks are inside it, and the other readers pass over
+	// its barrier.
+	AbortOnStop bool
 }
 
 // Cluster is a fake runner.Flink.
@@ -198,14 +202,15 @@ type Job struct {
 	h        bridgev1.BridgeServiceServer
 	interval time.Duration
 
-	mu       sync.Mutex
-	next     int64 // the next checkpoint ID
-	run      *taskRun
-	stopping string
-	stopErr  chan error
-	ended    bool
-	result   error
-	done     chan struct{}
+	mu             sync.Mutex
+	next           int64 // the next checkpoint ID
+	run            *taskRun
+	stopping       string
+	abortedForStop bool
+	stopErr        chan error
+	ended          bool
+	result         error
+	done           chan struct{}
 }
 
 func (j *Job) ID() string { return j.id }
@@ -391,6 +396,11 @@ func (r *taskRun) read(rd *serverStream[bridgev1.ReadResponse], sink *bidi[bridg
 			case <-r.ctx.Done():
 				return r.ctx.Err()
 			}
+			if typ == bridgev1.BarrierType_BARRIER_TYPE_UNSPECIFIED {
+				// Passed over: its checkpoint was aborted.
+				b.acked <- nil
+				continue
+			}
 			b.acked <- sink.call(&bridgev1.WriteRequest{Message: &bridgev1.WriteRequest_Barrier{Barrier: &bridgev1.SinkBarrier{Checkpoint: b.c, Type: typ}}})
 		}
 	}
@@ -406,9 +416,12 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 	c := j.next
 	j.next++
 	stopDir, stopErr := j.stopping, j.stopErr
+	abortForStop := stopDir != "" && f.AbortOnStop && !j.abortedForStop
+	j.abortedForStop = j.abortedForStop || abortForStop
 	j.mu.Unlock()
 	typ := bridgev1.BarrierType_BARRIER_TYPE_CHECKPOINT
 	switch {
+	case abortForStop:
 	case stopDir != "":
 		typ = bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT
 	case f.SavepointByHand != nil && f.SavepointByHand(c):
@@ -437,6 +450,9 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 		case <-r.ctx.Done():
 			return r.ctx.Err()
 		}
+	}
+	if abortForStop {
+		return r.abortForStop(coord, c, held)
 	}
 	for _, b := range held {
 		b.release <- typ
@@ -475,6 +491,36 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 		j.cluster.logf("flink: %s stopped with savepoint %d", j.id, c)
 		stopErr <- nil
 		return errFinished
+	}
+	return nil
+}
+
+// abortForStop aborts checkpoint c with half its sinks inside it. The
+// runner takes the abort, since the job is stopping, and releases them; the
+// other readers pass over the barrier.
+func (r *taskRun) abortForStop(coord *bidi[bridgev1.CoordinateRequest, bridgev1.CoordinateResponse], c int64, held []readerBarrier) error {
+	inside := held[:len(held)/2]
+	for _, b := range inside {
+		b.release <- bridgev1.BarrierType_BARRIER_TYPE_CHECKPOINT
+	}
+	// Let the sinks' barriers reach the runner before the abort.
+	time.Sleep(time.Millisecond)
+	r.job.cluster.logf("flink: %s's stop aborts checkpoint %d", r.job.id, c)
+	if err := coord.call(&bridgev1.CoordinateRequest{Message: &bridgev1.CoordinateRequest_Outcome{Outcome: &bridgev1.CheckpointOutcome{Checkpoint: c}}}); err != nil {
+		return fmt.Errorf("checkpoint %d's abort: %w", c, err)
+	}
+	for _, b := range held[len(held)/2:] {
+		b.release <- bridgev1.BarrierType_BARRIER_TYPE_UNSPECIFIED
+	}
+	for _, b := range held {
+		select {
+		case err := <-b.acked:
+			if err != nil {
+				return fmt.Errorf("checkpoint %d: a barrier inside the aborted checkpoint was refused: %w", c, err)
+			}
+		case <-r.ctx.Done():
+			return r.ctx.Err()
+		}
 	}
 	return nil
 }

@@ -330,9 +330,11 @@ func (c *Cluster) Deploy(ctx context.Context, d runner.FlinkDeploy) (runner.Flin
 }
 
 // Restarts allowed within restartInterval before the job fails for good,
-// so a record that keeps crashing the user's code ends it.
+// so a record that keeps crashing the user's code ends it. A task's failure
+// takes two: openetl-flink's enumerator fails the job after the tasks
+// restart, so the runner hears where they restored.
 const (
-	maxRestarts       = 3
+	maxRestarts       = 6
 	restartInterval   = 10 * time.Minute
 	restartDelay      = 10 * time.Second
 	checkpointTimeout = 10 * time.Minute

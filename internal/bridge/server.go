@@ -38,7 +38,7 @@ const Protocol = "v1"
 
 const (
 	protocolHeader = "openetl-bridge-protocol"
-	maxMessage     = 64 << 20
+	maxMessage     = 256 << 20
 )
 
 // Server is a runner's bridge listener.
