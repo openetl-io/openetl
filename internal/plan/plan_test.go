@@ -58,7 +58,7 @@ var catalog = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 	{Name: "orders", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, Columns: []*apiv1.CatalogColumn{
 		{Name: "id", Type: "int64"}, {Name: "total", Type: "decimal(38, 9)"},
 	}, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}},
-	{Name: "events", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
+	{Name: "events", PrimaryKey: []string{"id"}, CursorField: "at", Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
 	{Name: "logs", Replay: apiv1.Replay_REPLAY_SUPERSET},
 }}
 
@@ -103,13 +103,17 @@ func TestPipeline(t *testing.T) {
 		{name: "merge into parquet, no catalog", caps: parquet, spec: `{"destination": {"write": "WRITE_MODE_MERGE"}}`,
 			problems: []string{`destination.write: the destination doesn't support merge`}},
 		{name: "overwrite an incremental stream", cat: catalog, caps: warehouse,
-			spec:     `{"destination": {"write": "WRITE_MODE_OVERWRITE"}, "source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_INCREMENTAL"}, {"name": "events", "sync": "SYNC_MODE_FULL_REFRESH"}]}}`,
-			streams:  "orders exactly_once exact replay; events exactly_once+dedupe superset replay, deduped at apply",
+			spec:     `{"destination": {"write": "WRITE_MODE_OVERWRITE"}, "source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_INCREMENTAL", "cursor": "id"}, {"name": "events", "sync": "SYNC_MODE_FULL_REFRESH"}]}}`,
+			streams:  "orders exactly_once+dedupe superset replay, deduped at apply; events exactly_once+dedupe superset replay, deduped at apply",
 			problems: []string{`destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream "orders" is read with incremental`}},
 		{name: "overwrite a stream the source reads incrementally", cat: catalog, caps: warehouse,
 			spec:     `{"destination": {"write": "WRITE_MODE_OVERWRITE"}, "source": {"streams": [{"name": "events"}]}}`,
 			streams:  "events exactly_once+dedupe superset replay, deduped at apply",
 			problems: []string{`destination.write: overwrite replaces each table with what one read wrote, so it needs full_refresh, and stream "events" is read with incremental`}},
+		{name: "incremental without a cursor", cat: catalog, caps: warehouse, spec: `{"source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_INCREMENTAL"}]}}`,
+			streams: "orders exactly_once+dedupe superset replay, deduped at apply", problems: []string{`stream "orders" is read with incremental, which needs a cursor`}},
+		{name: "incremental with the spec's cursor", cat: catalog, caps: parquet, spec: `{"source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_INCREMENTAL", "cursor": "id"}]}}`,
+			streams: "orders at_least_once superset replay, and the destination can't dedupe", problems: []string{`delivery.require: stream "orders" gets at_least_once`}},
 		{name: "continuous", cat: withTopic, caps: warehouse,
 			spec:    `{"mode": "PIPELINE_MODE_CONTINUOUS", "source": {"streams": [{"name": "topic"}, {"name": "orders", "sync": "SYNC_MODE_CDC"}]}}`,
 			streams: "topic exactly_once exact replay; orders exactly_once exact replay"},
@@ -281,7 +285,7 @@ func protojsonUnmarshal(s string, m *apiv1.PipelineSpec) error {
 func TestTransformOutputs(t *testing.T) {
 	cat := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 		{Name: "orders", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}},
-		{Name: "events", Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
+		{Name: "events", CursorField: "at", Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
 	}}
 	spark := func(outputs ...*apiv1.TransformOutput) *apiv1.PipelineSpec {
 		return &apiv1.PipelineSpec{

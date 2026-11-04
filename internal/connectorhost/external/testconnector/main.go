@@ -47,6 +47,8 @@ func main() {
 		sdk.Serve(sdk.Connector{Name: "future", RequiredFeatures: []string{"from-the-future"}, Source: func([]byte, host.Host) (source.Source, error) { return env{}, nil }})
 	case "source-supports":
 		sdk.Serve(sdk.Connector{Name: "supports", Source: func(_ []byte, h host.Host) (source.Source, error) { return supports{h}, nil }})
+	case "source-echo":
+		sdk.Serve(sdk.Connector{Name: "echo", Source: func([]byte, host.Host) (source.Source, error) { return echo{}, nil }})
 	case "destination-files":
 		sdk.Serve(sdk.Connector{
 			Name:         "files",
@@ -144,6 +146,29 @@ func (s supports) Read(_ context.Context, _ source.ReadRequest, out source.Emitt
 		return err
 	}
 	return out.Complete("supports", nil)
+}
+
+// echo emits one row per stream it's asked to read: how it was asked.
+type echo struct{}
+
+func (echo) Discover(context.Context) (source.Catalog, error) {
+	return source.Catalog{Streams: []source.CatalogStream{{Name: "echo"}}}, nil
+}
+
+func (echo) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
+	for _, cs := range req.Streams {
+		b, err := json.Marshal(map[string]any{"mode": cs.SyncMode, "cursor": cs.Cursor, "state": string(cs.State)})
+		if err != nil {
+			return err
+		}
+		if err := out.Rows(cs.Name, []json.RawMessage{b}); err != nil {
+			return err
+		}
+		if err := out.Complete(cs.Name, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // files is a stage-and-apply destination in a directory: a fence file,

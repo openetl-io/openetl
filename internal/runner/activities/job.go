@@ -62,10 +62,14 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			declared[i] = apiv1.SyncMode(m) //nolint:gosec // small
 		}
 		read := plan.ReadMode(p, declared, ps)
+		replay, cursor := plan.Replay(cs.Replay, read), cmp.Or(ps.GetCursor(), cs.CursorField)
+		if err := plan.CursorProblem(cs.Name, read, cursor); err != nil {
+			return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
+		}
 		// A transform's inputs aren't written; its outputs are.
 		mode := destination.Append
 		if transformed {
-			in := plan.Input{Name: cs.Name, PrimaryKey: cs.PrimaryKey, Read: read, Replay: cs.Replay, Spec: ps}
+			in := plan.Input{Name: cs.Name, PrimaryKey: cs.PrimaryKey, Read: read, Replay: replay, Spec: ps}
 			if err := plan.InputProblem(p, in); err != nil {
 				return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
 			}
@@ -78,11 +82,11 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		}
 		s := runner.Stream{
 			Name:                 cs.Name,
-			Replay:               cs.Replay,
+			Replay:               replay,
 			Read:                 source.SyncMode(read),
 			Mode:                 mode,
 			PrimaryKey:           cs.PrimaryKey,
-			CursorField:          cmp.Or(ps.GetCursor(), cs.CursorField),
+			CursorField:          cursor,
 			Schema:               cs.Schema,
 			NanosecondTimestamps: ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
 			Require:              plan.Level(ps.GetRequire()),

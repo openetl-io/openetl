@@ -350,7 +350,7 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 
 	req := source.ReadRequest{Pipeline: job.Pipeline, Continuous: true}
 	for _, st := range job.Streams {
-		req.Streams = append(req.Streams, source.ConfiguredStream{Name: st.Name, SyncMode: st.Read, State: states[st.Name]})
+		req.Streams = append(req.Streams, source.ConfiguredStream{Name: st.Name, SyncMode: st.Read, Cursor: st.CursorField, State: states[st.Name]})
 	}
 	g.Go(func() error {
 		if err := job.Source.Read(gctx, req, c.pump); err != nil {

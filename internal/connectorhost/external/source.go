@@ -137,7 +137,7 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 	}
 	preq := &protocolv1.ReadRequest{Config: p.config, Pipeline: req.Pipeline, Continuous: req.Continuous}
 	for _, cs := range req.Streams {
-		preq.Streams = append(preq.Streams, &protocolv1.ConfiguredStream{Name: cs.Name, SyncMode: protocolv1.SyncMode(cs.SyncMode), State: cs.State}) //nolint:gosec // small
+		preq.Streams = append(preq.Streams, &protocolv1.ConfiguredStream{Name: cs.Name, SyncMode: protocolv1.SyncMode(cs.SyncMode), Cursor: cs.Cursor, State: cs.State}) //nolint:gosec // small
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

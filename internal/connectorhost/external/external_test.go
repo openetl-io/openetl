@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	if out, err := exec.Command("go", "build", "-o", bin, "./testconnector").CombinedOutput(); err != nil {
 		panic(string(out))
 	}
-	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "source-future", "source-supports", "destination-files"} {
+	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "source-future", "source-supports", "source-echo", "destination-files"} {
 		if err := os.Link(bin, filepath.Join(dir, name)); err != nil {
 			panic(err)
 		}
@@ -251,6 +251,20 @@ func TestHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(out.raw) != 1 || string(out.raw[0]) != `{"other":false,"testing":true}` {
+		t.Errorf("the connector saw %s", out.raw)
+	}
+}
+
+// A stream's read mode, cursor and state reach the connector.
+func TestConfiguredStreams(t *testing.T) {
+	src := NewSource(exe("source-echo"), nil, Options{})
+	defer func() { _ = src.Close() }()
+	var out collect
+	req := source.ReadRequest{Streams: []source.ConfiguredStream{{Name: "echo", SyncMode: source.Incremental, Cursor: "updated_at", State: []byte(`{"since":"5"}`)}}}
+	if err := src.Read(t.Context(), req, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.raw) != 1 || string(out.raw[0]) != `{"cursor":"updated_at","mode":2,"state":"{\"since\":\"5\"}"}` {
 		t.Errorf("the connector saw %s", out.raw)
 	}
 }

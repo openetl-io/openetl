@@ -11,7 +11,7 @@ func TestFlinkTransformInputs(t *testing.T) {
 	cat := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 		{Name: "payments", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, apiv1.SyncMode_SYNC_MODE_CDC}},
 		{Name: "hooks", Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_STREAM}},
-		{Name: "orders", Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
+		{Name: "orders", CursorField: "at", Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
 	}}
 	flink := &apiv1.PipelineSpec{
 		Mode:      apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
@@ -25,7 +25,8 @@ func TestFlinkTransformInputs(t *testing.T) {
 	}
 	flink.Source.Streams = []*apiv1.PipelineStream{{Name: "hooks"}, {Name: "orders"}}
 	_, problems, _ = Pipeline(flink, cat, warehouse)
-	if len(problems) != 2 || !strings.Contains(problems[0].Error(), `stream "hooks" doesn't replay exactly`) || !strings.Contains(problems[1].Error(), `stream "orders" is read with incremental`) {
+	if len(problems) != 3 || !strings.Contains(problems[0].Error(), `stream "hooks" doesn't replay exactly`) || !strings.Contains(problems[1].Error(), `stream "orders" is read with incremental`) ||
+		!strings.Contains(problems[2].Error(), `stream "orders" doesn't replay exactly`) {
 		t.Errorf("problems = %v", problems)
 	}
 }

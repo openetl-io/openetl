@@ -5,6 +5,7 @@
 package plan
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -178,8 +179,8 @@ func Level(l apiv1.DeliveryLevel) delivery.Level {
 
 // deliveryStream is what sets a stream's level: the catalog's, and the
 // spec's settings for it, if it names the stream.
-func deliveryStream(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream, mode destination.WriteMode) delivery.Stream {
-	d := delivery.Stream{Name: cs.GetName(), Replay: replay(cs.GetReplay()), Mode: mode, Keyed: len(cs.GetPrimaryKey()) > 0, Require: Level(ps.GetRequire())}
+func deliveryStream(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream, read apiv1.SyncMode, mode destination.WriteMode) delivery.Stream {
+	d := delivery.Stream{Name: cs.GetName(), Replay: Replay(replay(cs.GetReplay()), read), Mode: mode, Keyed: len(cs.GetPrimaryKey()) > 0, Require: Level(ps.GetRequire())}
 	if ps != nil {
 		d.Collapse = ps.Collapse
 	}
@@ -264,8 +265,11 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 			problems = append(problems, fmt.Errorf("stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", name))
 		}
 		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
+		if err := CursorProblem(name, read, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField())); err != nil {
+			problems = append(problems, err)
+		}
 		if spec.GetTransform() != nil {
-			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: replay(s.cs.GetReplay()), Spec: s.ps}
+			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read), Spec: s.ps}
 			inputs = append(inputs, in)
 			for _, err := range []error{ReadProblem(spec, name, read), InputProblem(spec, in)} {
 				if err != nil {
@@ -282,7 +286,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		if err := ReadProblem(spec, name, read); err != nil {
 			problems = append(problems, err)
 		}
-		d := deliveryStream(s.cs, s.ps, mode)
+		d := deliveryStream(s.cs, s.ps, read, mode)
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
 		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
@@ -306,6 +310,24 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		warnings = append(warnings, &apiv1.PlanWarning{Stream: w.Stream, Message: w.Message})
 	}
 	return plans, problems, warnings
+}
+
+// Replay is how a stream replays as it's read: as its catalog says, but
+// superset when it's read with incremental, since each read starts at the
+// last one's cursor floor, ties included.
+func Replay(r source.Replay, read apiv1.SyncMode) source.Replay {
+	if read == apiv1.SyncMode_SYNC_MODE_INCREMENTAL {
+		return source.Superset
+	}
+	return r
+}
+
+// CursorProblem fails a stream read with incremental without a cursor.
+func CursorProblem(stream string, read apiv1.SyncMode, cursor string) error {
+	if read == apiv1.SyncMode_SYNC_MODE_INCREMENTAL && cursor == "" {
+		return fmt.Errorf("stream %q is read with incremental, which needs a cursor: the source names none, so set source.streams[].cursor", stream)
+	}
+	return nil
 }
 
 func replay(r apiv1.Replay) source.Replay {

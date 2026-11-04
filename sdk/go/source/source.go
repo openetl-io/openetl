@@ -55,6 +55,9 @@ type ConfiguredStream struct {
 	Name string
 	// How the pipeline reads the stream; 0 if the platform doesn't say.
 	SyncMode SyncMode
+	// The field an incremental read orders by: the pipeline's choice, or
+	// the catalog's default.
+	Cursor string
 	// Nil: start from the beginning.
 	State []byte
 }

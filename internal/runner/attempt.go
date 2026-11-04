@@ -725,7 +725,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	req := source.ReadRequest{Pipeline: c.job.Pipeline, Continuous: c.job.Continuous}
 	for _, s := range c.job.Streams {
 		if !done[s.Name] {
-			req.Streams = append(req.Streams, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, State: states[s.Name]})
+			req.Streams = append(req.Streams, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, State: states[s.Name]})
 		}
 	}
 	g.Go(func() error {
