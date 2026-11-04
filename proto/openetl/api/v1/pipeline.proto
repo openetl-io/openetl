@@ -4,6 +4,7 @@ package openetl.api.v1;
 
 import "google/api/annotations.proto";
 import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 import "openetl/api/v1/connection.proto";
 import "openetl/api/v1/sync.proto";
@@ -143,6 +144,20 @@ message PipelineSpec {
   // The user's code between the source and the destination. Scheduled
   // pipelines only.
   Transform transform = 11;
+  SparkAccess spark_access = 12;
+}
+
+// SparkAccess is how the pipeline's Spark applications reach its _spark/
+// prefix of the data plane's store. Unset: with the cluster's own identity,
+// which reaches every pipeline's.
+message SparkAccess {
+  // On EMR: the runtime role each step runs as (ExecutionRoleArn, EMR 6.7
+  // and later). It's all the step's AWS access, the user's own data's too.
+  string emr_role = 1;
+  // Elsewhere: S3A keys for the data plane's bucket alone: accessKeyId, a
+  // value or a secret reference, {"secret": NAME}, and secretAccessKey, a
+  // secret reference.
+  google.protobuf.Struct keys = 2;
 }
 
 message Transform {

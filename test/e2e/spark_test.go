@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 
@@ -62,6 +64,14 @@ func codeInS3(t *testing.T, path string) (string, string) {
 	if _, err := c.CreateBucket(t.Context(), &s3.CreateBucketInput{Bucket: &bucket}); err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
+	// SeaweedFS gives each bucket a volume, and caps their number.
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = c.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: aws.String("jobs/app.jar")})
+		if _, err := c.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &bucket}); err != nil {
+			t.Logf("delete bucket %s: %v", bucket, err)
+		}
+	})
 	st, err := objectstore.Open(t.Context(), "s3://"+bucket+endpoint)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +87,8 @@ func codeInS3(t *testing.T, path string) (string, string) {
 // A sync runs its Spark step on the compose stack's standalone master after
 // its data lands: the application reads the sync's context through
 // openetl-spark. One that fails fails the sync with SPARK_FAILED, and a Spark
-// cluster can't be deleted while a pipeline uses it.
+// cluster, or a secret the pipeline's sparkAccess names, can't be deleted
+// while a pipeline uses it.
 func TestSparkPostSync(t *testing.T) {
 	share, submit, lib, tests := sparkEnv(t)
 	name := unique("spark")
@@ -174,9 +185,45 @@ func TestSparkPostSync(t *testing.T) {
 		t.Errorf("error %q", msg)
 	}
 
+	// sparkAccess: an EMR role is refused when no cluster is EMR's; a secret
+	// its keys name can't be deleted while the pipeline names it; and S3A
+	// keys fail a sync whose runner's store isn't on S3.
+	withAccess := func(access string) []string {
+		d := step()
+		d[2] = strings.Replace(d[2], `"postSync":`, `"sparkAccess": `+access+`, "postSync":`, 1)
+		return d
+	}
+	if err := applyErr(t, withAccess(`{"emrRole": "arn:aws:iam::123456789012:role/openetl"}`)...); err == nil || !strings.Contains(err.Error(), "sparkAccess.emrRole is for EMR clusters") {
+		t.Errorf("an EMR role without an EMR cluster: %v", err)
+	}
+	key := setSecret(t, "s3cret")
+	apply(t, withAccess(fmt.Sprintf(`{"keys": {"accessKeyId": "AKIAEXAMPLE", "secretAccessKey": {"secret": %q}}}`, key))...)
+	secrets := apiv1connect.NewSecretServiceClient(env.http, env.apiURL)
+	deleteKey := func() error {
+		_, err := secrets.DeleteSecret(t.Context(), connect.NewRequest(&apiv1.DeleteSecretRequest{Name: "workspaces/default/secrets/" + key}))
+		return err
+	}
+	if err := deleteKey(); connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), pipelineName) {
+		t.Errorf("deleting a secret the pipeline names: %v", err)
+	}
+	failed := latestSync(t, name)
+	if _, err := pipelines().SyncPipeline(t.Context(), connect.NewRequest(&apiv1.SyncPipelineRequest{Name: pipelineName})); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 4*time.Minute, "the sync with S3A keys", func() bool {
+		s := latestSync(t, name)
+		return s.GetName() != failed.GetName() && s.GetState() == apiv1.SyncState_SYNC_STATE_FAILED
+	})
+	if msg := lastSyncError(t, name); !strings.Contains(msg, "CONFIG_INVALID") || !strings.Contains(msg, "sparkAccess.keys are S3A's") {
+		t.Errorf("error %q", msg)
+	}
+
 	apply(t, pipelineDocs(name, `{"seed": 9, "count": 25}`, `{}`)[2])
 	if _, err := clusters.DeleteSparkCluster(t.Context(), connect.NewRequest(&apiv1.DeleteSparkClusterRequest{Name: clusterName})); err != nil {
 		t.Errorf("deleting the cluster once unused: %v", err)
+	}
+	if err := deleteKey(); err != nil {
+		t.Errorf("deleting the secret once unused: %v", err)
 	}
 }
 

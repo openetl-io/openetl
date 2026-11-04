@@ -143,6 +143,21 @@ func (a *Area) URI(key string, emr bool) string {
 	return u.String()
 }
 
+// S3AKeys are the properties that give an application S3A keys for the
+// area's bucket alone, so the cluster's own identity still serves the
+// user's other buckets.
+func (a *Area) S3AKeys(id, secret string) (map[string]string, error) {
+	if a.base.Scheme != "s3" {
+		return nil, errs.New(errs.ConfigInvalid, "spark: sparkAccess.keys are S3A's, for a data plane store on S3, and this runner's is a directory")
+	}
+	p := "spark.hadoop.fs.s3a.bucket." + a.base.Host + "."
+	return map[string]string{
+		p + "aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+		p + "access.key":               id,
+		p + "secret.key":               secret,
+	}, nil
+}
+
 // CodeKey is where the checked copy of a file with digest sum is kept.
 func CodeKey(sum, uri string) string {
 	name := path.Base(strings.SplitN(uri, "?", 2)[0])

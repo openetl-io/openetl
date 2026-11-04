@@ -376,11 +376,13 @@ type pinned struct {
 	dbt map[string]string
 	// Each Spark cluster's version, by name.
 	spark map[string]string
+	// The secrets its sparkAccess names.
+	secrets []string
 }
 
 // pin resolves what a pipeline's spec names in its workspace.
 func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, wsID uuid.UUID, workspace string) (*pinned, error) {
-	v := &pinned{spec: p, dataPlane: cmp.Or(p.GetDataPlane(), s.DefaultDataPlane), dbt: map[string]string{}, spark: map[string]string{}}
+	v := &pinned{spec: p, dataPlane: cmp.Or(p.GetDataPlane(), s.DefaultDataPlane), dbt: map[string]string{}, spark: map[string]string{}, secrets: []string{}}
 	var err error
 	v.src, err = q.GetSource(ctx, db.GetSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: p.GetSource().GetRef()})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -396,16 +398,22 @@ func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, 
 	if err != nil {
 		return nil, err
 	}
+	// Which kinds of Spark cluster the pipeline uses: on EMR, and not.
+	kinds := map[bool]bool{}
 	if t := p.GetTransform().GetSpark(); t != nil {
-		if v.spark[t.GetCluster()], err = pinSparkCluster(ctx, q, s.Tenant.Org, wsID, workspace, t.GetCluster(), t.GetCode()); err != nil {
+		var emr bool
+		if v.spark[t.GetCluster()], emr, err = pinSparkCluster(ctx, q, s.Tenant.Org, wsID, workspace, t.GetCluster(), t.GetCode()); err != nil {
 			return nil, err
 		}
+		kinds[emr] = true
 	}
 	for _, step := range p.GetPostSync() {
 		if sp := step.GetSpark(); sp != nil {
-			if v.spark[sp.GetCluster()], err = pinSparkCluster(ctx, q, s.Tenant.Org, wsID, workspace, sp.GetCluster(), sp.GetCode()); err != nil {
+			var emr bool
+			if v.spark[sp.GetCluster()], emr, err = pinSparkCluster(ctx, q, s.Tenant.Org, wsID, workspace, sp.GetCluster(), sp.GetCode()); err != nil {
 				return nil, err
 			}
+			kinds[emr] = true
 			continue
 		}
 		name := step.GetDbt().GetProject()
@@ -417,6 +425,23 @@ func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, 
 			return nil, err
 		}
 		v.dbt[name] = proj.Digest
+	}
+	if a := p.GetSparkAccess(); a != nil {
+		switch {
+		case a.GetEmrRole() != "" && !kinds[true]:
+			return nil, invalid("sparkAccess.emrRole is for EMR clusters, and the pipeline uses none")
+		case a.GetKeys() != nil && !kinds[false]:
+			return nil, invalid("sparkAccess.keys are for clusters other than EMR's, and the pipeline uses only EMR's; give it emrRole")
+		}
+		for _, f := range a.GetKeys().GetFields() {
+			if name, ok := secretRef(f); ok && !slices.Contains(v.secrets, name) {
+				v.secrets = append(v.secrets, name)
+			}
+		}
+		slices.Sort(v.secrets)
+		if err := s.checkSecretsExist(ctx, q, wsID, workspace, v.secrets); err != nil {
+			return nil, err
+		}
 	}
 	if _, err := q.GetDataPlane(ctx, db.GetDataPlaneParams{OrgID: s.Tenant.Org, ID: v.dataPlane}); errors.Is(err, pgx.ErrNoRows) {
 		return nil, invalid("data plane %q doesn't exist", v.dataPlane)
@@ -480,6 +505,7 @@ func (v *pinned) store(ctx context.Context, q *db.Queries, org, wsID uuid.UUID, 
 		OrgID: org, PipelineID: id, Version: version, Spec: spec,
 		SourceID: v.src.ID, DestinationID: v.dst.ID, DataPlaneID: v.dataPlane,
 		SourceVersion: v.src.Version, DestinationVersion: v.dst.Version, Dbt: dbt, SparkClusters: spark, Provenance: provenance,
+		Secrets: v.secrets,
 	})
 	return action, version, id, err
 }

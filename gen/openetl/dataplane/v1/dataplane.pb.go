@@ -96,8 +96,11 @@ type GetSyncSpecResponse struct {
 	DestinationSecrets []*ExternalSecret `protobuf:"bytes,11,rep,name=destination_secrets,json=destinationSecrets,proto3" json:"destination_secrets,omitempty"`
 	// The Spark clusters the version pins, by name.
 	SparkClusters map[string]*PinnedSparkCluster `protobuf:"bytes,12,rep,name=spark_clusters,json=sparkClusters,proto3" json:"spark_clusters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Fields of the pipeline's spark_access.keys that name secrets in cloud
+	// secret stores.
+	SparkAccessSecrets []*ExternalSecret `protobuf:"bytes,13,rep,name=spark_access_secrets,json=sparkAccessSecrets,proto3" json:"spark_access_secrets,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *GetSyncSpecResponse) Reset() {
@@ -210,6 +213,13 @@ func (x *GetSyncSpecResponse) GetDestinationSecrets() []*ExternalSecret {
 func (x *GetSyncSpecResponse) GetSparkClusters() map[string]*PinnedSparkCluster {
 	if x != nil {
 		return x.SparkClusters
+	}
+	return nil
+}
+
+func (x *GetSyncSpecResponse) GetSparkAccessSecrets() []*ExternalSecret {
+	if x != nil {
+		return x.SparkAccessSecrets
 	}
 	return nil
 }
@@ -1289,7 +1299,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x12GetSyncSpecRequest\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion\"\x91\x06\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\"\xe9\x06\n" +
 	"\x13GetSyncSpecResponse\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x1f\n" +
 	"\vpipeline_id\x18\x02 \x01(\tR\n" +
@@ -1305,7 +1315,8 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x0esource_secrets\x18\n" +
 	" \x03(\v2$.openetl.dataplane.v1.ExternalSecretR\rsourceSecrets\x12U\n" +
 	"\x13destination_secrets\x18\v \x03(\v2$.openetl.dataplane.v1.ExternalSecretR\x12destinationSecrets\x12c\n" +
-	"\x0espark_clusters\x18\f \x03(\v2<.openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntryR\rsparkClusters\x1aj\n" +
+	"\x0espark_clusters\x18\f \x03(\v2<.openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntryR\rsparkClusters\x12V\n" +
+	"\x14spark_access_secrets\x18\r \x03(\v2$.openetl.dataplane.v1.ExternalSecretR\x12sparkAccessSecrets\x1aj\n" +
 	"\x12SparkClustersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12>\n" +
 	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedSparkClusterR\x05value:\x028\x01\"\xa4\x01\n" +
@@ -1454,38 +1465,39 @@ var file_openetl_dataplane_v1_dataplane_proto_depIdxs = []int32{
 	3,  // 3: openetl.dataplane.v1.GetSyncSpecResponse.source_secrets:type_name -> openetl.dataplane.v1.ExternalSecret
 	3,  // 4: openetl.dataplane.v1.GetSyncSpecResponse.destination_secrets:type_name -> openetl.dataplane.v1.ExternalSecret
 	18, // 5: openetl.dataplane.v1.GetSyncSpecResponse.spark_clusters:type_name -> openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry
-	23, // 6: openetl.dataplane.v1.PinnedSparkCluster.spec:type_name -> openetl.api.v1.SparkClusterSpec
-	3,  // 7: openetl.dataplane.v1.PinnedSparkCluster.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
-	19, // 8: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
-	20, // 9: openetl.dataplane.v1.ReportSchemasRequest.output_schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.OutputSchemasEntry
-	7,  // 10: openetl.dataplane.v1.ReportCheckpointRequest.previous:type_name -> openetl.dataplane.v1.CheckpointRef
-	24, // 11: openetl.dataplane.v1.ReportCheckpointRequest.create_time:type_name -> google.protobuf.Timestamp
-	8,  // 12: openetl.dataplane.v1.ReportCheckpointRequest.streams:type_name -> openetl.dataplane.v1.CheckpointStream
-	25, // 13: openetl.dataplane.v1.ReportCheckpointRequest.progress:type_name -> openetl.connector.v1.Progress
-	22, // 14: openetl.dataplane.v1.GetConnectorConfigResponse.config:type_name -> openetl.api.v1.ConnectorConfig
-	3,  // 15: openetl.dataplane.v1.GetConnectorConfigResponse.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
-	26, // 16: openetl.dataplane.v1.ReportCatalogRequest.catalog:type_name -> openetl.api.v1.Catalog
-	24, // 17: openetl.dataplane.v1.ReportAttemptFailureRequest.time:type_name -> google.protobuf.Timestamp
-	2,  // 18: openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedSparkCluster
-	0,  // 19: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
-	4,  // 20: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
-	6,  // 21: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
-	10, // 22: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:input_type -> openetl.dataplane.v1.GetConnectorConfigRequest
-	12, // 23: openetl.dataplane.v1.DataPlaneService.ReportCatalog:input_type -> openetl.dataplane.v1.ReportCatalogRequest
-	14, // 24: openetl.dataplane.v1.DataPlaneService.GetArtifact:input_type -> openetl.dataplane.v1.GetArtifactRequest
-	16, // 25: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:input_type -> openetl.dataplane.v1.ReportAttemptFailureRequest
-	1,  // 26: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
-	5,  // 27: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
-	9,  // 28: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
-	11, // 29: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:output_type -> openetl.dataplane.v1.GetConnectorConfigResponse
-	13, // 30: openetl.dataplane.v1.DataPlaneService.ReportCatalog:output_type -> openetl.dataplane.v1.ReportCatalogResponse
-	15, // 31: openetl.dataplane.v1.DataPlaneService.GetArtifact:output_type -> openetl.dataplane.v1.GetArtifactResponse
-	17, // 32: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:output_type -> openetl.dataplane.v1.ReportAttemptFailureResponse
-	26, // [26:33] is the sub-list for method output_type
-	19, // [19:26] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	3,  // 6: openetl.dataplane.v1.GetSyncSpecResponse.spark_access_secrets:type_name -> openetl.dataplane.v1.ExternalSecret
+	23, // 7: openetl.dataplane.v1.PinnedSparkCluster.spec:type_name -> openetl.api.v1.SparkClusterSpec
+	3,  // 8: openetl.dataplane.v1.PinnedSparkCluster.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
+	19, // 9: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	20, // 10: openetl.dataplane.v1.ReportSchemasRequest.output_schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.OutputSchemasEntry
+	7,  // 11: openetl.dataplane.v1.ReportCheckpointRequest.previous:type_name -> openetl.dataplane.v1.CheckpointRef
+	24, // 12: openetl.dataplane.v1.ReportCheckpointRequest.create_time:type_name -> google.protobuf.Timestamp
+	8,  // 13: openetl.dataplane.v1.ReportCheckpointRequest.streams:type_name -> openetl.dataplane.v1.CheckpointStream
+	25, // 14: openetl.dataplane.v1.ReportCheckpointRequest.progress:type_name -> openetl.connector.v1.Progress
+	22, // 15: openetl.dataplane.v1.GetConnectorConfigResponse.config:type_name -> openetl.api.v1.ConnectorConfig
+	3,  // 16: openetl.dataplane.v1.GetConnectorConfigResponse.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
+	26, // 17: openetl.dataplane.v1.ReportCatalogRequest.catalog:type_name -> openetl.api.v1.Catalog
+	24, // 18: openetl.dataplane.v1.ReportAttemptFailureRequest.time:type_name -> google.protobuf.Timestamp
+	2,  // 19: openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedSparkCluster
+	0,  // 20: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
+	4,  // 21: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
+	6,  // 22: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
+	10, // 23: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:input_type -> openetl.dataplane.v1.GetConnectorConfigRequest
+	12, // 24: openetl.dataplane.v1.DataPlaneService.ReportCatalog:input_type -> openetl.dataplane.v1.ReportCatalogRequest
+	14, // 25: openetl.dataplane.v1.DataPlaneService.GetArtifact:input_type -> openetl.dataplane.v1.GetArtifactRequest
+	16, // 26: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:input_type -> openetl.dataplane.v1.ReportAttemptFailureRequest
+	1,  // 27: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
+	5,  // 28: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
+	9,  // 29: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
+	11, // 30: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:output_type -> openetl.dataplane.v1.GetConnectorConfigResponse
+	13, // 31: openetl.dataplane.v1.DataPlaneService.ReportCatalog:output_type -> openetl.dataplane.v1.ReportCatalogResponse
+	15, // 32: openetl.dataplane.v1.DataPlaneService.GetArtifact:output_type -> openetl.dataplane.v1.GetArtifactResponse
+	17, // 33: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:output_type -> openetl.dataplane.v1.ReportAttemptFailureResponse
+	27, // [27:34] is the sub-list for method output_type
+	20, // [20:27] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_openetl_dataplane_v1_dataplane_proto_init() }

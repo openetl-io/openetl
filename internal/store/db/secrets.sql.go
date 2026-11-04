@@ -187,6 +187,45 @@ func (q *Queries) ListDestinationsUsingSecrets(ctx context.Context, arg ListDest
 	return items, nil
 }
 
+const listPipelinesUsingSecrets = `-- name: ListPipelinesUsingSecrets :many
+SELECT p.name, v.secrets FROM pipelines p
+JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
+WHERE p.org_id = $1 AND p.workspace_id = $2 AND v.secrets && $3::text[]
+ORDER BY p.name
+`
+
+type ListPipelinesUsingSecretsParams struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	Names       []string
+}
+
+type ListPipelinesUsingSecretsRow struct {
+	Name    string
+	Secrets []string
+}
+
+// The pipelines whose current versions name any of the secrets.
+func (q *Queries) ListPipelinesUsingSecrets(ctx context.Context, arg ListPipelinesUsingSecretsParams) ([]ListPipelinesUsingSecretsRow, error) {
+	rows, err := q.db.Query(ctx, listPipelinesUsingSecrets, arg.OrgID, arg.WorkspaceID, arg.Names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPipelinesUsingSecretsRow
+	for rows.Next() {
+		var i ListPipelinesUsingSecretsRow
+		if err := rows.Scan(&i.Name, &i.Secrets); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSecrets = `-- name: ListSecrets :many
 SELECT org_id, workspace_id, id, name, ciphertext, revision, create_time, update_time, ref FROM secrets
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3
@@ -262,6 +301,43 @@ func (q *Queries) ListSourcesUsingSecrets(ctx context.Context, arg ListSourcesUs
 	var items []ListSourcesUsingSecretsRow
 	for rows.Next() {
 		var i ListSourcesUsingSecretsRow
+		if err := rows.Scan(&i.Name, &i.Secrets); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSparkClustersUsingSecrets = `-- name: ListSparkClustersUsingSecrets :many
+SELECT name, secrets FROM spark_clusters
+WHERE org_id = $1 AND workspace_id = $2 AND secrets && $3::text[]
+ORDER BY name
+`
+
+type ListSparkClustersUsingSecretsParams struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	Names       []string
+}
+
+type ListSparkClustersUsingSecretsRow struct {
+	Name    string
+	Secrets []string
+}
+
+func (q *Queries) ListSparkClustersUsingSecrets(ctx context.Context, arg ListSparkClustersUsingSecretsParams) ([]ListSparkClustersUsingSecretsRow, error) {
+	rows, err := q.db.Query(ctx, listSparkClustersUsingSecrets, arg.OrgID, arg.WorkspaceID, arg.Names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSparkClustersUsingSecretsRow
+	for rows.Next() {
+		var i ListSparkClustersUsingSecretsRow
 		if err := rows.Scan(&i.Name, &i.Secrets); err != nil {
 			return nil, err
 		}

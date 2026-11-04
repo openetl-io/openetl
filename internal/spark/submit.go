@@ -24,6 +24,8 @@ type Application struct {
 	Args      []string
 	// The cluster's properties, then the step's, then the runner's.
 	Conf map[string]string
+	// On EMR, the runtime role the step runs as. Empty: the cluster's.
+	Role string
 }
 
 // Name is the submission's name for a sync's post-sync step: lowercase, and

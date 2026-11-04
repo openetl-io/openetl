@@ -3464,6 +3464,8 @@ components:
                     description: |-
                         The user's code between the source and the destination. Scheduled
                          pipelines only.
+                sparkAccess:
+                    $ref: '#/components/schemas/SparkAccess'
             description: |-
                 PipelineSpec is the spec of a Pipeline document. Unset fields take their
                  defaults.
@@ -3828,6 +3830,24 @@ components:
                     description: |-
                         The applied connector version it runs. Unset for built-in connectors
                          and ones from a runner's connectors directory.
+        SparkAccess:
+            type: object
+            properties:
+                emrRole:
+                    type: string
+                    description: |-
+                        On EMR: the runtime role each step runs as (ExecutionRoleArn, EMR 6.7
+                         and later). It's all the step's AWS access, the user's own data's too.
+                keys:
+                    type: object
+                    description: |-
+                        Elsewhere: S3A keys for the data plane's bucket alone: accessKeyId, a
+                         value or a secret reference, {"secret": NAME}, and secretAccessKey, a
+                         secret reference.
+            description: |-
+                SparkAccess is how the pipeline's Spark applications reach its _spark/
+                 prefix of the data plane's store. Unset: with the cluster's own identity,
+                 which reaches every pipeline's.
         SparkCluster:
             type: object
             properties:

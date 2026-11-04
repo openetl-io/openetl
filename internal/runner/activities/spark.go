@@ -132,6 +132,9 @@ func (a *Spark) run(ctx context.Context, in contract.SparkInput, log *slog.Logge
 	}
 	maps.Copy(app.Conf, step.Conf)
 	app.Conf["spark.openetl.context"] = area.URI(ctxKey, emr)
+	if err := a.grant(ctx, spec, emr, area, &app); err != nil {
+		return res, err
+	}
 	sub, err := spark.New(ctx, pc.GetSpec(), conf, spark.Options{SparkSubmit: a.SparkSubmit, HTTP: a.HTTP, Logger: log, EMR: a.EMR})
 	if err != nil {
 		return res, err
@@ -199,14 +202,18 @@ func (a *Spark) transform(ctx context.Context, spec *dataplanev1.GetSyncSpecResp
 		if err != nil {
 			return nil, err
 		}
+		emr := pc.GetSpec().GetEmr() != nil
 		app := spark.Application{
-			Code: area.URI(key, pc.GetSpec().GetEmr() != nil), Python: t.GetCode().GetPython() != "",
+			Code: area.URI(key, emr), Python: t.GetCode().GetPython() != "",
 			MainClass: t.GetCode().GetMainClass(), Conf: maps.Clone(conf),
 		}
 		if app.Conf == nil {
 			app.Conf = map[string]string{}
 		}
 		maps.Copy(app.Conf, t.GetConf())
+		if err := a.grant(ctx, spec, emr, area, &app); err != nil {
+			return nil, err
+		}
 		return spark.NewTransform(area, a.Storage, sub, app, outputs, log.With("component", "spark"))
 	}()
 	if err != nil {
@@ -214,6 +221,34 @@ func (a *Spark) transform(ctx context.Context, spec *dataplanev1.GetSyncSpecResp
 		return nil, nil, err
 	}
 	return tr, area, nil
+}
+
+// grant gives app the pipeline's grant on its _spark/ prefix, if its
+// sparkAccess has one for the cluster: on EMR, the step's runtime role;
+// elsewhere, S3A keys for the data plane's bucket alone.
+func (a *Spark) grant(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, emr bool, area *spark.Area, app *spark.Application) error {
+	access := spec.GetPipeline().GetSparkAccess()
+	if emr {
+		app.Role = access.GetEmrRole()
+		return nil
+	}
+	keys := access.GetKeys()
+	if keys == nil {
+		return nil
+	}
+	if err := readSecrets(ctx, a.Secrets, &apiv1.ConnectorConfig{Config: keys}, spec.GetSparkAccessSecrets()); err != nil {
+		return fmt.Errorf("sparkAccess.keys: %w", err)
+	}
+	id, secret := keys.GetFields()["accessKeyId"].GetStringValue(), keys.GetFields()["secretAccessKey"].GetStringValue()
+	if id == "" || secret == "" {
+		return errs.New(errs.Internal, "spark: sparkAccess.keys' secrets weren't read")
+	}
+	conf, err := area.S3AKeys(id, secret)
+	if err != nil {
+		return err
+	}
+	maps.Copy(app.Conf, conf)
+	return nil
 }
 
 // clusterConf is the cluster's properties as text, with the secrets in

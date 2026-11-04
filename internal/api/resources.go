@@ -567,5 +567,10 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if res.SparkClusters, err = s.pinnedSparkClusters(ctx, row.WorkspaceID, id, row.Version); err != nil {
 		return nil, err
 	}
+	if keys := res.Pipeline.GetSparkAccess().GetKeys(); keys != nil {
+		if res.SparkAccessSecrets, err = s.resolveSecrets(ctx, "the pipeline's sparkAccess", row.WorkspaceID, &apiv1.ConnectorConfig{Config: keys}, row.SparkAccessSecrets); err != nil {
+			return nil, err
+		}
+	}
 	return connect.NewResponse(res), nil
 }

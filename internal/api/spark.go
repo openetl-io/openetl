@@ -65,23 +65,24 @@ func (s *Server) applySparkCluster(ctx context.Context, q *db.Queries, doc *spec
 }
 
 // pinSparkCluster resolves a Spark step's cluster, and refuses a step the
-// cluster can't run.
-func pinSparkCluster(ctx context.Context, q *db.Queries, org, wsID uuid.UUID, workspace, cluster string, code *apiv1.SparkCode) (string, error) {
+// cluster can't run. It returns the cluster's version, and whether it's on
+// EMR.
+func pinSparkCluster(ctx context.Context, q *db.Queries, org, wsID uuid.UUID, workspace, cluster string, code *apiv1.SparkCode) (string, bool, error) {
 	c, err := q.ShareSparkCluster(ctx, db.ShareSparkClusterParams{OrgID: org, WorkspaceID: wsID, Name: cluster})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", invalid("Spark cluster %q doesn't exist in workspace %q", cluster, workspace)
+		return "", false, invalid("Spark cluster %q doesn't exist in workspace %q", cluster, workspace)
 	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	var cs apiv1.SparkClusterSpec
 	if err := protojson.Unmarshal(c.Spec, &cs); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if strings.HasPrefix(cs.GetSubmit().GetMaster(), "spark://") && code.GetPython() != "" {
-		return "", invalid("Spark cluster %q is a standalone master, which can't run a Python application in cluster deploy mode; use a jar, or a YARN, Kubernetes or EMR cluster", cluster)
+		return "", false, invalid("Spark cluster %q is a standalone master, which can't run a Python application in cluster deploy mode; use a jar, or a YARN, Kubernetes or EMR cluster", cluster)
 	}
-	return c.Version, nil
+	return c.Version, cs.GetEmr() != nil, nil
 }
 
 // sparkClusterUsers lists the pipelines whose current versions use each

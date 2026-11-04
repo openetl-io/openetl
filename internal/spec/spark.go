@@ -218,3 +218,47 @@ func parseSparkTransform(y *sparkTransformYAML) (*apiv1.SparkTransform, error) {
 	}
 	return t, nil
 }
+
+type sparkAccessYAML struct {
+	EmrRole string `yaml:"emrRole"`
+	Keys    *struct {
+		AccessKeyID     yaml.Node `yaml:"accessKeyId"`
+		SecretAccessKey yaml.Node `yaml:"secretAccessKey"`
+	} `yaml:"keys"`
+}
+
+var iamRole = regexp.MustCompile(`^arn:aws[a-z-]*:iam::\d{12}:role/\S+$`)
+
+func parseSparkAccess(y *sparkAccessYAML) (*apiv1.SparkAccess, error) {
+	const field = "sparkAccess"
+	switch {
+	case y.EmrRole == "" && y.Keys == nil:
+		return nil, fmt.Errorf("%s needs emrRole, keys, or both", field)
+	case y.EmrRole != "" && !iamRole.MatchString(y.EmrRole):
+		return nil, fmt.Errorf("%s.emrRole: %q isn't an IAM role's ARN", field, y.EmrRole)
+	}
+	a := &apiv1.SparkAccess{EmrRole: y.EmrRole}
+	if y.Keys == nil {
+		return a, nil
+	}
+	a.Keys = &structpb.Struct{Fields: map[string]*structpb.Value{}}
+	for _, k := range []struct {
+		name string
+		n    *yaml.Node
+	}{{"accessKeyId", &y.Keys.AccessKeyID}, {"secretAccessKey", &y.Keys.SecretAccessKey}} {
+		f := field + ".keys." + k.name
+		n := k.n
+		if n.Kind == 0 {
+			return nil, fmt.Errorf("%s is missing", f)
+		}
+		v, err := sparkConfValue(f, n)
+		if err != nil {
+			return nil, err
+		}
+		if k.name == "secretAccessKey" && v.GetStructValue() == nil {
+			return nil, fmt.Errorf("%s: a secret reference, such as {secret: name}, so the key isn't kept in the pipeline's spec", f)
+		}
+		a.Keys.Fields[k.name] = v
+	}
+	return a, nil
+}

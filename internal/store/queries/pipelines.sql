@@ -24,9 +24,9 @@ DELETE FROM pipelines WHERE org_id = @org_id AND id = @id;
 
 -- name: InsertPipelineVersion :exec
 INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id,
-    source_version, destination_version, dbt, spark_clusters, provenance)
+    source_version, destination_version, dbt, spark_clusters, provenance, secrets)
 VALUES (@org_id, @pipeline_id, @version, @spec, @source_id, @destination_id, @data_plane_id,
-    @source_version, @destination_version, @dbt, @spark_clusters, @provenance)
+    @source_version, @destination_version, @dbt, @spark_clusters, @provenance, @secrets)
 ON CONFLICT (org_id, pipeline_id, version) DO NOTHING;
 
 -- name: GetPipelineVersion :one
@@ -36,7 +36,7 @@ SELECT * FROM pipeline_versions WHERE org_id = @org_id AND pipeline_id = @pipeli
 SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.spark_clusters, v.source_version, v.destination_version,
     sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
-    sv.secrets AS source_secrets, dv.secrets AS destination_secrets,
+    sv.secrets AS source_secrets, dv.secrets AS destination_secrets, v.secrets AS spark_access_secrets,
     p.workspace_id, p.name AS pipeline, w.name AS workspace
 FROM pipeline_versions v
 JOIN pipelines p ON p.org_id = v.org_id AND p.id = v.pipeline_id

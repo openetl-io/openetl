@@ -119,3 +119,35 @@ func TestParseSparkTransform(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSparkAccess(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\n"
+	base := "spec:\n  schedule: {every: 1m}\n  source: {ref: s}\n  destination: {ref: d}\n"
+	step := "  postSync: [{spark: {cluster: lab, code: {jar: 's3://j/a.jar', sha256: " + strings.Repeat("ab", 32) + "}}}]\n"
+	role := "arn:aws:iam::123456789012:role/openetl-orders"
+	doc, err := Parse([]byte(header + base + step + "  sparkAccess:\n    emrRole: " + role + "\n    keys: {accessKeyId: AKIAEXAMPLE, secretAccessKey: {secret: orders-spark}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := doc.Pipeline.GetSparkAccess()
+	keys := a.GetKeys().GetFields()
+	if a.GetEmrRole() != role || keys["accessKeyId"].GetStringValue() != "AKIAEXAMPLE" ||
+		keys["secretAccessKey"].GetStructValue().GetFields()["secret"].GetStringValue() != "orders-spark" {
+		t.Errorf("sparkAccess = %v", a)
+	}
+	for name, doc := range map[string]string{
+		"no spark":   header + base + "  sparkAccess: {emrRole: " + role + "}\n",
+		"empty":      header + base + step + "  sparkAccess: {}\n",
+		"role":       header + base + step + "  sparkAccess: {emrRole: openetl-orders}\n",
+		"user":       header + base + step + "  sparkAccess: {emrRole: 'arn:aws:iam::123456789012:user/x'}\n",
+		"one key":    header + base + step + "  sparkAccess: {keys: {secretAccessKey: {secret: k}}}\n",
+		"secret":     header + base + step + "  sparkAccess: {keys: {accessKeyId: a, secretAccessKey: {secret: K}}}\n",
+		"plain key":  header + base + step + "  sparkAccess: {keys: {accessKeyId: a, secretAccessKey: b}}\n",
+		"other key":  header + base + step + "  sparkAccess: {keys: {accessKeyId: a, secretAccessKey: {secret: k}, sessionToken: c}}\n",
+		"other part": header + base + step + "  sparkAccess: {emrRole: " + role + ", profile: x}\n",
+	} {
+		if _, err := Parse([]byte(doc)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}

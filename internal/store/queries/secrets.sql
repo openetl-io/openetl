@@ -48,3 +48,15 @@ ORDER BY name;
 SELECT name, secrets FROM destinations
 WHERE org_id = @org_id AND workspace_id = @workspace_id AND secrets && @names::text[]
 ORDER BY name;
+
+-- name: ListSparkClustersUsingSecrets :many
+SELECT name, secrets FROM spark_clusters
+WHERE org_id = @org_id AND workspace_id = @workspace_id AND secrets && @names::text[]
+ORDER BY name;
+
+-- The pipelines whose current versions name any of the secrets.
+-- name: ListPipelinesUsingSecrets :many
+SELECT p.name, v.secrets FROM pipelines p
+JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
+WHERE p.org_id = @org_id AND p.workspace_id = @workspace_id AND v.secrets && @names::text[]
+ORDER BY p.name;

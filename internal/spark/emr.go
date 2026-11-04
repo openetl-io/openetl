@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/emr"
 	"github.com/aws/aws-sdk-go-v2/service/emr/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
@@ -131,15 +132,25 @@ func (e *emrSteps) Submit(ctx context.Context, app Application) (string, error) 
 		return "", err
 	}
 	args := append([]string{"spark-submit"}, submitArgs("", app, nil)...)
-	out, err := e.api.AddJobFlowSteps(ctx, &emr.AddJobFlowStepsInput{
+	in := &emr.AddJobFlowStepsInput{
 		JobFlowId: aws.String(cluster),
 		Steps: []types.StepConfig{{
 			Name:            aws.String(app.Name),
 			ActionOnFailure: types.ActionOnFailureContinue,
 			HadoopJarStep:   &types.HadoopJarStepConfig{Jar: aws.String("command-runner.jar"), Args: args},
 		}},
-	})
-	if err != nil {
+	}
+	if app.Role != "" {
+		in.ExecutionRoleArn = aws.String(app.Role)
+	}
+	out, err := e.api.AddJobFlowSteps(ctx, in)
+	var api smithy.APIError
+	switch {
+	case errors.As(err, &api) && (api.ErrorCode() == "ValidationException" || api.ErrorCode() == "InvalidRequestException"):
+		// Such as a cluster that requires runtime roles, or one that can't
+		// assume the pipeline's.
+		return "", errs.Wrap(errs.ConfigInvalid, err, "spark: EMR cluster "+cluster+" refused the step; a cluster with runtime roles needs the pipeline's sparkAccess.emrRole")
+	case err != nil:
 		return "", errs.Wrap(errs.Transient, err, "spark: add a step to EMR cluster "+cluster)
 	}
 	if len(out.StepIds) != 1 {

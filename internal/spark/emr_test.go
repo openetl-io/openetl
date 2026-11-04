@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/emr"
 	"github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/aws/smithy-go"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
@@ -40,12 +41,20 @@ type fakeEMR struct {
 	failure  *types.FailureDetails
 	logs     map[string][]byte
 	canceled []string
+	// The runtime role each added step runs as.
+	roles []string
+	// Required: steps without a runtime role are refused.
+	runtimeRoles bool
 }
 
 func (f *fakeEMR) AddJobFlowSteps(_ context.Context, in *emr.AddJobFlowStepsInput, _ ...func(*emr.Options)) (*emr.AddJobFlowStepsOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.runtimeRoles && in.ExecutionRoleArn == nil {
+		return nil, &smithy.GenericAPIError{Code: "ValidationException", Message: "Runtime roles are required for this cluster."}
+	}
 	f.added = append(f.added, in.Steps...)
+	f.roles = append(f.roles, aws.ToString(in.ExecutionRoleArn))
 	id := "s-" + strings.Repeat("A", len(f.added))
 	f.steps = append([]types.StepSummary{{Id: aws.String(id), Name: in.Steps[0].Name}}, f.steps...)
 	return &emr.AddJobFlowStepsOutput{StepIds: []string{id}}, nil
@@ -160,6 +169,17 @@ func TestEMR(t *testing.T) {
 	}
 	if err := sub.Kill(ctx, id); err != nil || len(fake.canceled) != 1 || fake.canceled[0] != "s-A" {
 		t.Errorf("kill: %v, canceled %v", err, fake.canceled)
+	}
+	// A cluster with runtime roles refuses a step without one, and runs one
+	// with the pipeline's.
+	fake.runtimeRoles = true
+	if _, err := sub.Submit(ctx, app); errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "sparkAccess.emrRole") {
+		t.Errorf("without a runtime role: %v", err)
+	}
+	withRole := app
+	withRole.Role = "arn:aws:iam::123456789012:role/openetl-p"
+	if _, err := sub.Submit(ctx, withRole); err != nil || fake.roles[len(fake.roles)-1] != withRole.Role || fake.roles[0] != "" {
+		t.Errorf("with a runtime role: %v, roles %q", err, fake.roles)
 	}
 	fake.clusters = append(fake.clusters, types.ClusterSummary{Id: aws.String("j-NIGHTLY2"), Name: aws.String("nightly")})
 	if _, err := sub.Submit(ctx, app); errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "j-NIGHTLY, j-NIGHTLY2") {

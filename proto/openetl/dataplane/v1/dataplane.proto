@@ -59,6 +59,9 @@ message GetSyncSpecResponse {
   repeated ExternalSecret destination_secrets = 11;
   // The Spark clusters the version pins, by name.
   map<string, PinnedSparkCluster> spark_clusters = 12;
+  // Fields of the pipeline's spark_access.keys that name secrets in cloud
+  // secret stores.
+  repeated ExternalSecret spark_access_secrets = 13;
 }
 
 message PinnedSparkCluster {

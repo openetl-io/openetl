@@ -244,6 +244,7 @@ type pipelineYAML struct {
 	Transform *struct {
 		Spark *sparkTransformYAML `yaml:"spark"`
 	} `yaml:"transform"`
+	SparkAccess *sparkAccessYAML `yaml:"sparkAccess"`
 }
 
 type postSyncYAML struct {
@@ -442,6 +443,14 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, err
 		}
 		p.PostSync = append(p.PostSync, &apiv1.PostSyncStep{Step: &apiv1.PostSyncStep_Dbt{Dbt: step}})
+	}
+	if y.SparkAccess != nil {
+		if !spark && !slices.ContainsFunc(p.PostSync, func(s *apiv1.PostSyncStep) bool { return s.GetSpark() != nil }) {
+			return nil, errors.New("sparkAccess: the pipeline runs no Spark transform or step")
+		}
+		if p.SparkAccess, err = parseSparkAccess(y.SparkAccess); err != nil {
+			return nil, err
+		}
 	}
 	return p, nil
 }

@@ -101,6 +101,20 @@ func TestURIs(t *testing.T) {
 	if _, err := Open(t.Context(), "gs://lake", "org", "p"); errs.CodeOf(err) != errs.ConfigInvalid {
 		t.Errorf("GCS: %v", err)
 	}
+	// Keys for the bucket alone, so the cluster's identity serves the rest.
+	keys, err := a.S3AKeys("AKIA", "s3cret")
+	if err != nil || len(keys) != 3 || keys["spark.hadoop.fs.s3a.bucket.lake.access.key"] != "AKIA" || keys["spark.hadoop.fs.s3a.bucket.lake.secret.key"] != "s3cret" ||
+		keys["spark.hadoop.fs.s3a.bucket.lake.aws.credentials.provider"] != "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider" {
+		t.Errorf("S3A keys: %v, %v", keys, err)
+	}
+	dir, err := Open(t.Context(), t.TempDir(), "org", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dir.Close() }()
+	if _, err := dir.S3AKeys("AKIA", "s3cret"); errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Errorf("S3A keys for a directory: %v", err)
+	}
 }
 
 func TestBuildContext(t *testing.T) {

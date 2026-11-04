@@ -27,6 +27,8 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/spark"
 )
 
 type sparkAPI struct {
@@ -225,4 +227,52 @@ func sum(b []byte) string {
 
 func asApplicationError(err error, target **temporal.ApplicationError) bool {
 	return errors.As(err, target)
+}
+
+func TestGrant(t *testing.T) {
+	keys := func() *structpb.Struct {
+		s, _ := structpb.NewStruct(map[string]any{"accessKeyId": "AKIA", "secretAccessKey": "s3cret"})
+		return s
+	}
+	spec := func(access *apiv1.SparkAccess, external ...*dataplanev1.ExternalSecret) *dataplanev1.GetSyncSpecResponse {
+		return &dataplanev1.GetSyncSpecResponse{Pipeline: &apiv1.PipelineSpec{SparkAccess: access}, SparkAccessSecrets: external}
+	}
+	area, err := spark.Open(t.Context(), "s3://lake/base?endpoint=http://127.0.0.1:1", "org", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = area.Close() }()
+	a := &Spark{}
+	role := "arn:aws:iam::123456789012:role/openetl-p"
+	both := &apiv1.SparkAccess{EmrRole: role, Keys: keys()}
+
+	app := spark.Application{Conf: map[string]string{"spark.hadoop.fs.s3a.bucket.lake.access.key": "the user's"}}
+	if err := a.grant(t.Context(), spec(both), false, area, &app); err != nil || app.Role != "" ||
+		app.Conf["spark.hadoop.fs.s3a.bucket.lake.access.key"] != "AKIA" || app.Conf["spark.hadoop.fs.s3a.bucket.lake.secret.key"] != "s3cret" {
+		t.Errorf("S3A: %v, %+v", err, app)
+	}
+	app = spark.Application{Conf: map[string]string{}}
+	if err := a.grant(t.Context(), spec(both), true, area, &app); err != nil || app.Role != role || len(app.Conf) != 0 {
+		t.Errorf("EMR: %v, %+v", err, app)
+	}
+	app = spark.Application{Conf: map[string]string{}}
+	if err := a.grant(t.Context(), spec(nil), false, area, &app); err != nil || len(app.Conf) != 0 {
+		t.Errorf("no access: %v, %+v", err, app)
+	}
+
+	dir, err := spark.Open(t.Context(), t.TempDir(), "org", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dir.Close() }()
+	if err := a.grant(t.Context(), spec(&apiv1.SparkAccess{Keys: keys()}), false, dir, &spark.Application{Conf: map[string]string{}}); errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Errorf("keys for a directory: %v", err)
+	}
+	// A secret in a cloud store, and a runner that can't read those.
+	cloud := keys()
+	cloud.Fields["secretAccessKey"] = structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{"secret": structpb.NewStringValue("k")}})
+	ext := &dataplanev1.ExternalSecret{Field: "secretAccessKey", Secret: "workspaces/default/secrets/k", Ref: "aws-sm://k"}
+	if err := a.grant(t.Context(), spec(&apiv1.SparkAccess{Keys: cloud}, ext), false, area, &spark.Application{Conf: map[string]string{}}); errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Errorf("a cloud secret without a reader: %v", err)
+	}
 }

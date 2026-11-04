@@ -221,6 +221,7 @@ type PipelineVersion struct {
 	Dbt                []byte
 	Provenance         string
 	SparkClusters      []byte
+	Secrets            []string
 }
 
 type Principal struct {
