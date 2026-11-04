@@ -140,7 +140,7 @@ func (e *emrTarget) deploy(ctx context.Context, j *job) (runner.FlinkJob, error)
 	return &emrJob{e: e, id: j.id, name: j.name, cluster: cluster, step: step}, nil
 }
 
-func (e *emrTarget) cancelAll(ctx context.Context, prefix string) error {
+func (e *emrTarget) cancelAll(ctx context.Context, prefix string, _ []string) error {
 	cluster, err := e.cluster(ctx)
 	if err != nil {
 		return err

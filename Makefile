@@ -59,7 +59,7 @@ web-dev: web/node_modules/.modules.yaml ## Run the UI's dev server against the A
 
 # DEPS names the services to start, e.g. DEPS="postgres s3"; all by default.
 .PHONY: deps-up deps-down
-deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure, Kafka, Kinesis, Spark)
+deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure, Kafka, Kinesis, Spark, Flink)
 	@mkdir -p $(OPENETL_SPARK_SHARE)
 	docker compose -f deploy/compose/dev.yml up -d --wait $(DEPS)
 deps-down: ## Stop local dependencies

@@ -133,6 +133,11 @@ func (a *Area) Exists(ctx context.Context, key string) (bool, error) {
 	return a.bucket.Exists(ctx, key)
 }
 
+// Write writes key.
+func (a *Area) Write(ctx context.Context, key string, b []byte) error {
+	return a.bucket.WriteAll(ctx, key, b, nil)
+}
+
 // Read reads key.
 func (a *Area) Read(ctx context.Context, key string) (io.ReadCloser, error) {
 	return a.bucket.NewReader(ctx, key, nil)

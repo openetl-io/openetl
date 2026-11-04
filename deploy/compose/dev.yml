@@ -7,8 +7,9 @@
 # conditional writes, for the checkpoint log's per-provider tests. An Iceberg
 # REST catalog keeps its tables in the S3 store, for destination-iceberg.
 # Kafka and a schema registry are for source-kafka and destination-kafka,
-# kinesis-mock for source-kinesis and destination-kinesis, and a Spark
-# standalone cluster for Spark steps.
+# kinesis-mock for source-kinesis and destination-kinesis, a Spark
+# standalone cluster for Spark steps, and a Flink session cluster for Flink
+# transforms.
 
 name: openetl-dev
 
@@ -174,6 +175,41 @@ services:
     volumes: ["${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}:${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}"]
     depends_on:
       spark-master:
+        condition: service_healthy
+
+  # A Flink session cluster for Flink transforms, through its REST API on
+  # 8091. Checkpoints and savepoints go to the S3 store through Hadoop's S3
+  # filesystem, and jobs reach a runner on the host, for its bridge, at
+  # host.docker.internal. Failover and retained checkpoints are the cluster's
+  # own settings, which runners need as set here.
+  flink-jobmanager:
+    image: flink:1.20.5
+    command: jobmanager
+    ports: ["8091:8081"]
+    environment: &flink-env
+      ENABLE_BUILT_IN_PLUGINS: flink-s3-fs-hadoop-1.20.5.jar
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.execution.failover-strategy: full
+        execution.checkpointing.num-retained: 2
+        taskmanager.numberOfTaskSlots: 4
+        s3.endpoint: http://s3:8333
+        s3.path.style.access: true
+        s3.access-key: any
+        s3.secret-key: any
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/overview"]
+      interval: 2s
+      retries: 60
+
+  flink-taskmanager:
+    image: flink:1.20.5
+    command: taskmanager
+    environment: *flink-env
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      flink-jobmanager:
         condition: service_healthy
 
 volumes:

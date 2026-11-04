@@ -103,6 +103,11 @@ func (f *fakeREST) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		if terminal(j.State) {
+			w.WriteHeader(http.StatusConflict)
+			reply(map[string]any{"errors": []string{"Job cancellation failed because the job has already reached another terminal state (" + j.State + ")."}})
+			return
+		}
 		f.cancelled = append(f.cancelled, j.ID)
 		j.State = "CANCELED"
 		w.WriteHeader(http.StatusAccepted)
@@ -238,6 +243,9 @@ func TestRESTJobLifecycle(t *testing.T) {
 	}
 	if !slices.Equal(f.cancelled, []string{j3.ID()}) || f.jobs["other"].State != "RUNNING" {
 		t.Errorf("cancelled = %v", f.cancelled)
+	}
+	if notes, err := c.area.Dirs(t.Context(), jobsDir); err != nil || len(notes) != 0 {
+		t.Errorf("notes left: %v, %v", notes, err)
 	}
 	if err := j3.Wait(t.Context()); errs.CodeOf(err) != errs.Transient {
 		t.Errorf("a cancelled job's wait: %v", err)

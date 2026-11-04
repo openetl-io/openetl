@@ -213,7 +213,7 @@ func toAny(s []string) []any {
 	return out
 }
 
-func (k *kubernetes) cancelAll(ctx context.Context, _ string) error {
+func (k *kubernetes) cancelAll(ctx context.Context, _ string, _ []string) error {
 	all, err := k.kube.List(ctx, labelPipeline+"="+k.c.s.Pipeline)
 	if err != nil {
 		return err

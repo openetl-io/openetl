@@ -31,8 +31,11 @@ type client struct {
 	token string
 }
 
-// errNotFound: the API answered 404.
-var errNotFound = errors.New("flink: not found")
+// The API answered 404 or 409.
+var (
+	errNotFound = errors.New("flink: not found")
+	errConflict = errors.New("flink: conflict")
+)
 
 func (cl *client) do(ctx context.Context, method, p string, body io.Reader, contentType string, out any) error {
 	u := *cl.base
@@ -63,6 +66,8 @@ func (cl *client) do(ctx context.Context, method, p string, body io.Reader, cont
 	switch {
 	case res.StatusCode == http.StatusNotFound:
 		return fmt.Errorf("%w: %s %s", errNotFound, method, p)
+	case res.StatusCode == http.StatusConflict:
+		return fmt.Errorf("%w: %s %s: %s", errConflict, method, p, restErrors(b))
 	case res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden:
 		return errs.New(errs.ConfigInvalid, "flink: %s %s: %s", method, redactURL(&u), res.Status)
 	case res.StatusCode >= 400:
@@ -81,15 +86,23 @@ func (cl *client) do(ctx context.Context, method, p string, body io.Reader, cont
 	return nil
 }
 
-// restErrors is a failed call's "errors", or its body.
+// restErrors is a failed call's "errors", each a stack trace cut to its
+// first line and its root cause, or its body.
 func restErrors(b []byte) string {
 	var e struct {
 		Errors []string `json:"errors"`
 	}
-	if json.Unmarshal(b, &e) == nil && len(e.Errors) > 0 {
-		return strings.Join(e.Errors, "; ")
+	if json.Unmarshal(b, &e) != nil || len(e.Errors) == 0 {
+		return string(b[:min(len(b), 2000)])
 	}
-	return string(b[:min(len(b), 2000)])
+	out := make([]string, len(e.Errors))
+	for i, msg := range e.Errors {
+		out[i] = firstLine(msg)
+		if j := strings.LastIndex(msg, "Caused by: "); j >= 0 {
+			out[i] += " … " + firstLine(msg[j:])
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 func (cl *client) json(ctx context.Context, method, p string, in, out any) error {
@@ -113,13 +126,6 @@ type jobState struct {
 
 func terminal(state string) bool {
 	return state == "FAILED" || state == "CANCELED" || state == "FINISHED"
-}
-
-func (cl *client) jobs(ctx context.Context) ([]jobState, error) {
-	var out struct {
-		Jobs []jobState `json:"jobs"`
-	}
-	return out.Jobs, cl.json(ctx, http.MethodGet, "jobs/overview", nil, &out)
 }
 
 func (cl *client) job(ctx context.Context, id string) (jobState, error) {
@@ -152,10 +158,7 @@ func (cl *client) exception(ctx context.Context, id string) string {
 // left.
 func (cl *client) cancel(ctx context.Context, id string) error {
 	err := cl.json(ctx, http.MethodPatch, "jobs/"+id+"?mode=cancel", nil, nil)
-	if errors.Is(err, errNotFound) {
-		return nil
-	}
-	if err != nil && strings.Contains(err.Error(), "not in a cancellable state") {
+	if errors.Is(err, errNotFound) || errors.Is(err, errConflict) {
 		return nil
 	}
 	return err
@@ -363,18 +366,10 @@ func (r *rest) deploy(ctx context.Context, j *job) (runner.FlinkJob, error) {
 	return &restJob{r: r, id: j.id}, nil
 }
 
-func (r *rest) cancelAll(ctx context.Context, prefix string) error {
-	jobs, err := r.cl.jobs(ctx)
-	if err != nil {
-		return err
-	}
-	var ids []string
-	for _, j := range jobs {
-		if strings.HasPrefix(j.Name, prefix) && !terminal(j.State) {
-			if err := r.cl.cancel(ctx, j.ID); err != nil {
-				return err
-			}
-			ids = append(ids, j.ID)
+func (r *rest) cancelAll(ctx context.Context, _ string, ids []string) error {
+	for _, id := range ids {
+		if err := r.cl.cancel(ctx, id); err != nil {
+			return err
 		}
 	}
 	for _, id := range ids {

@@ -77,9 +77,9 @@ var _ runner.Flink = (*Cluster)(nil)
 // target is how one kind of cluster deploys and finds jobs.
 type target interface {
 	deploy(ctx context.Context, j *job) (runner.FlinkJob, error)
-	// cancelAll cancels every job named with prefix, and returns once each
-	// is terminal.
-	cancelAll(ctx context.Context, prefix string) error
+	// cancelAll cancels every job named with prefix, or among ids, the jobs
+	// deployed and not yet seen terminal, and returns once each is.
+	cancelAll(ctx context.Context, prefix string, ids []string) error
 }
 
 // job is one generation's deployment.
@@ -187,13 +187,30 @@ func JobName(pipeline string, gen uint64) string {
 
 func namePrefix(pipeline string) string { return "openetl-" + strings.ToLower(pipeline) + "-g" }
 
+// CancelAll finds the pipeline's jobs by name on Kubernetes and EMR, where
+// the runner names them, and on a session cluster by the IDs deployments
+// noted in the area, since a job's main can name it.
 func (c *Cluster) CancelAll(ctx context.Context) error {
-	return c.target.cancelAll(ctx, namePrefix(c.s.Pipeline))
+	ids, err := c.area.Dirs(ctx, jobsDir)
+	if err != nil {
+		return errs.Wrap(errs.Transient, err, "flink: list the pipeline's jobs")
+	}
+	if err := c.target.cancelAll(ctx, namePrefix(c.s.Pipeline), ids); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := c.area.Drop(ctx, jobsDir+id+"/"); err != nil {
+			c.log.Warn("dropping a cancelled job's note failed", "job", id, "err", err)
+		}
+	}
+	return nil
 }
 
 const (
 	checkpointsDir = "checkpoints/"
 	savepointsDir  = "savepoints/"
+	// Notes of the jobs deployed and not yet seen cancelled.
+	jobsDir = "jobs/"
 )
 
 func (c *Cluster) Completed(ctx context.Context, jobID string) ([]runner.FlinkCheckpoint, error) {
@@ -305,6 +322,9 @@ func (c *Cluster) Deploy(ctx context.Context, d runner.FlinkDeploy) (runner.Flin
 		args: []string{"--openetl.bridge", d.Bridge, "--openetl.fingerprint", d.Fingerprint, "--openetl.token", d.Token},
 	}
 	j.conf = c.conf(j, d.CheckpointInterval)
+	if err := c.area.Write(ctx, jobsDir+j.id+"/_deployed", nil); err != nil {
+		return nil, errs.Wrap(errs.Transient, err, "flink: note the job")
+	}
 	c.log.Info("deploying the Flink job", "job", j.id, "name", j.name, "restore", j.restore)
 	return c.target.deploy(ctx, j)
 }
