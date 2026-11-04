@@ -42,6 +42,10 @@ const DbtFailed = "DBT_FAILED"
 // It isn't retried; the next sync runs the step again.
 const SparkFailed = "SPARK_FAILED"
 
+// FlinkFailed is the error type of a continuous pipeline's Flink job that
+// failed past its restart strategy. It fails the run.
+const FlinkFailed = "FLINK_FAILED"
+
 // One retention schedule runs for the whole deployment.
 const (
 	RetentionWorkflowID = "gc"

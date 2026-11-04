@@ -122,7 +122,7 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 
 // streamDrain is how long a stream job has to stop at a checkpoint once
 // it's asked to, as long as the worker's stop timeout.
-const streamDrain = 2 * time.Minute
+const streamDrain = 10 * time.Minute
 
 // RunStreamJob runs a continuous pipeline's job until it is asked to stop.
 // Heartbeats carry the last committed epoch. A job doesn't stop when
@@ -204,6 +204,9 @@ func (a *Sync) RunStreamJob(ctx context.Context, in contract.StreamJobInput) (co
 	}
 	log.Warn("stream job failed", "code", errs.CodeOf(err).String(), "err", err)
 	a.reportFailure(ctx, in.PipelineID, in.RunKey, attempt, err, log)
+	if failed := (*runner.FlinkFailed)(nil); errors.As(err, &failed) {
+		return res, temporal.NewNonRetryableApplicationError(err.Error(), contract.FlinkFailed, nil)
+	}
 	if errs.CodeOf(err) == errs.Fenced {
 		// Retried, unlike a sync's: see the supervisor.
 		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Fenced.String(), temporal.ApplicationErrorOptions{Cause: err})

@@ -245,6 +245,13 @@ func (a *flinkAttempt) claim(ctx context.Context) (head, prev *checkpoint.Record
 // Flink restores from, starts a segment there, and deploys the job once the
 // segment knows every stream's schema.
 func (a *flinkAttempt) deploy(ctx context.Context) (*flinkSegment, error) {
+	// A zombie must not take the pipeline back from the attempt that
+	// replaced it.
+	if a.sess != nil {
+		if err := a.sess.Check(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if err := a.job.Flink.CancelAll(ctx); err != nil {
 		return nil, fmt.Errorf("runner: cancel the pipeline's Flink jobs: %w", err)
 	}
@@ -491,6 +498,10 @@ func (a *flinkAttempt) restart(ctx context.Context, prev *flinkSegment, hello *c
 	if h.GetJobId() != a.fjob.ID() {
 		hello.reply <- errors.New("runner: another job's enumerator")
 		return nil, errs.New(errs.Internal, "runner: the enumerator of Flink job %s connected, and this attempt deployed %s", h.GetJobId(), a.fjob.ID())
+	}
+	if err := a.sess.Check(ctx); err != nil {
+		hello.reply <- err
+		return nil, err
 	}
 	r := h.GetRestoredCheckpoint()
 	head, before := prev.head, prev.headPrev
