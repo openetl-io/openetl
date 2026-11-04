@@ -19,7 +19,6 @@ import (
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/internal/runner/flinktest"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
@@ -369,8 +368,9 @@ func oneStreamJob(log *checkpoint.Log, dest *exactDest, f runner.Flink, bridge r
 // Without high availability, a JobManager that restarts restores the
 // checkpoint the job was deployed from. When HEAD is the job's first record
 // and its checkpoint completed, that's before an epoch the destination may
-// have made visible, so the runner refuses it rather than move HEAD back.
-func TestFlinkRestoreBeforeACompletedCheckpointIsRefused(t *testing.T) {
+// have made visible, so the runner doesn't move HEAD back: it deploys the job
+// again from the checkpoint HEAD stands at, which Flink still retains.
+func TestFlinkRestoreBeforeACompletedCheckpointDeploysAgain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
 		dest := newExactDest()
@@ -381,16 +381,26 @@ func TestFlinkRestoreBeforeACompletedCheckpointIsRefused(t *testing.T) {
 		cluster.Point = failSecondStart(nil)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		_, err := runner.RunAttempt(ctx, oneStreamJob(log, dest, cluster, bridge, 200, nil))
-		if errs.CodeOf(err) != errs.PositionLost {
-			t.Errorf("attempt: %v, want POSITION_LOST", err)
+		const rows = 200
+		drain := make(chan struct{})
+		go func() {
+			for dest.count() < rows {
+				select {
+				case <-time.After(5 * time.Millisecond):
+				case <-ctx.Done():
+					return
+				}
+			}
+			close(drain)
+		}()
+		_, err := runner.RunAttempt(ctx, oneStreamJob(log, dest, cluster, bridge, rows, drain))
+		if !errors.Is(err, runner.ErrDrained) {
+			t.Fatalf("attempt: %v", err)
 		}
-		dest.mu.Lock()
-		defer dest.mu.Unlock()
-		ids := slices.Sorted(slices.Values(dest.rows["a"]))
-		if len(slices.Compact(slices.Clone(ids))) != len(ids) {
-			t.Errorf("rows landed twice: %v", ids)
+		if n := cluster.Deploys(); n < 2 {
+			t.Errorf("deployed %d times, want the job deployed again after its restore", n)
 		}
+		dest.check(t, []string{"a"}, rows)
 	})
 }
 

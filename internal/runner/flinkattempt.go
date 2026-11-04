@@ -176,8 +176,7 @@ func (a *flinkAttempt) run(ctx context.Context) error {
 		} else {
 			seg, err = a.restart(ctx, prevSeg, hello)
 		}
-		if errors.Is(err, errMovedOn) {
-			a.log.Info("another attempt moved HEAD while the Flink job restarted; deploying the job again")
+		if errors.Is(err, errDeployAgain) {
 			hello, prevSeg = nil, nil
 			continue
 		}
@@ -525,9 +524,11 @@ func (a *flinkAttempt) restart(ctx context.Context, prev *flinkSegment, hello *c
 	default:
 		// Only a JobManager that restarts without high availability goes
 		// back past a checkpoint that completed, as HEAD's did, or past the
-		// one before it.
-		hello.reply <- errors.New("runner: refused")
-		return nil, errs.New(errs.PositionLost, "runner: the Flink job restored checkpoint %d, older than the one the pipeline's records stand at (%d); a JobManager that restarts without high availability does this", r, head.Flink.Checkpoint)
+		// one before it. A deploy settles HEAD afresh, from the checkpoints
+		// Flink still retains.
+		hello.reply <- errors.New("runner: the job restored a checkpoint the pipeline's records don't stand at")
+		a.log.Warn("the Flink job restored a checkpoint older than the pipeline's records; deploying it again", "restored", r, "head", head.Flink.Checkpoint)
+		return nil, errDeployAgain
 	}
 	cur, _, err := a.claim(ctx)
 	if err != nil {
@@ -537,7 +538,8 @@ func (a *flinkAttempt) restart(ctx context.Context, prev *flinkSegment, hello *c
 		// Another attempt claimed the pipeline and wrote to it since, so
 		// what the job restored says nothing about HEAD.
 		hello.reply <- errors.New("runner: the pipeline moved on")
-		return nil, errMovedOn
+		a.log.Info("another attempt moved HEAD while the Flink job restarted; deploying the job again")
+		return nil, errDeployAgain
 	}
 	if restored == head {
 		_, err = a.recover(ctx, head, nil, true)
@@ -557,9 +559,10 @@ func (a *flinkAttempt) restart(ctx context.Context, prev *flinkSegment, hello *c
 	return seg, nil
 }
 
-// errMovedOn: HEAD isn't where the segment left it, so the attempt settles
-// it afresh and deploys again.
-var errMovedOn = errors.New("runner: another attempt moved HEAD")
+// errDeployAgain: what the restarted tasks restored can't be settled in
+// place, because another attempt moved HEAD, or because the job went back
+// past HEAD's checkpoint. The attempt settles HEAD afresh and deploys again.
+var errDeployAgain = errors.New("runner: the Flink job is deployed again")
 
 func sameRecord(a, b *checkpoint.Record) bool {
 	if a == nil || b == nil {
