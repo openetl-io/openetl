@@ -157,6 +157,15 @@ e2e: connectors ## Full-stack scenarios against the compose deps
 	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
 	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
 
+# The chaos suite needs the compose Postgres, Temporal, S3 and Kafka.
+# CHAOS_FLAGS passes its flags, e.g. CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'.
+CHAOS_TIMEOUT ?= 3h
+.PHONY: chaos
+chaos: connectors ## Randomized pipelines under crashes, partitions and store faults
+	cargo build -p openetl-engine
+	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
+	go test -tags 'e2e chaos' -count=1 -timeout $(CHAOS_TIMEOUT) -run TestChaos -v ./test/e2e $(CHAOS_FLAGS)
+
 .PHONY: clean
 clean: ## Remove build outputs
 	rm -rf $(BIN) target web/dist web/node_modules

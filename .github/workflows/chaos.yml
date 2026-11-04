@@ -1,0 +1,86 @@
+name: chaos
+
+# On demand: gh workflow run chaos.yml --ref <branch> -f runs=100 -f shards=4.
+# Each shard runs its share of the runs, from a seed of its own, against a
+# compose stack of its own.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs per shard
+        default: "50"
+      shards:
+        description: Shards, as a JSON array of their seeds
+        default: "[1, 2]"
+      parallel:
+        description: Runs at a time in each shard
+        default: "3"
+      flags:
+        description: More of the suite's flags, such as -chaos.only=cdc
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ${{ fromJSON(inputs.shards) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: unsuitable001/openetl-connectors
+          ref: move-postgres
+          path: openetl-connectors
+          ssh-key: ${{ secrets.CONNECTORS_DEPLOY_KEY }}
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ github.job }}-
+      - name: Start Postgres, Temporal, S3 and Kafka
+        run: (set +e; make deps-up DEPS="postgres temporal s3 kafka"; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
+      - name: Build the engine and the connectors
+        run: |
+          make connectors CONNECTORS_SRC=openetl-connectors
+          cargo build -p openetl-engine
+      - name: Wait for the services
+        timeout-minutes: 10
+        run: |
+          until [ -f "$RUNNER_TEMP/deps.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/deps.log"
+          exit "$(cat "$RUNNER_TEMP/deps.status")"
+      - name: Randomized pipelines under faults
+        env:
+          OPENETL_CHAOS_REPORT: ${{ runner.temp }}/chaos-report.txt
+        run: |
+          mkdir -p "$RUNNER_TEMP/chaos-logs"
+          make chaos CONNECTORS_SRC=openetl-connectors CHAOS_TIMEOUT=290m \
+            CHAOS_FLAGS="-chaos.runs=${{ inputs.runs }} -chaos.parallel=${{ inputs.parallel }} -chaos.seed=${{ matrix.seed }} -chaos.logs=$RUNNER_TEMP/chaos-logs ${{ inputs.flags }}"
+      - name: Report
+        if: always()
+        run: cat "$RUNNER_TEMP/chaos-report.txt" >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Runners' logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-logs-${{ matrix.seed }}
+          path: ${{ runner.temp }}/chaos-logs
+          retention-days: 7
