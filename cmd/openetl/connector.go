@@ -14,8 +14,11 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/unsuitable001/openetl/internal/connectorhost/external"
 	"github.com/unsuitable001/openetl/internal/connectorpkg"
 	"github.com/unsuitable001/openetl/internal/spec"
+	"github.com/unsuitable001/openetl/sdk/go/conformance"
+	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
 const connectorUsage = `usage: openetl connector <command> [flags]
@@ -28,6 +31,17 @@ Commands:
             check each directory's openetl-connector.yaml, without building
   apply -f FILE
             apply the connector versions in FILE: descriptors and manifests
+  spec TARGET
+            print a connector's spec
+  check --config FILE TARGET
+            check that a connector reaches its upstream with a config
+  discover --config FILE TARGET
+            list a source's streams and columns
+  read --config FILE TARGET
+            read a source's records into a table, JSON lines or Parquet
+
+TARGET is an executable, a descriptor or a manifest; --image REF or
+--attach ADDR stand in for it. Run openetl connector <command> -h for more.
 `
 
 func runConnector(ctx context.Context, args []string, out io.Writer) error {
@@ -42,6 +56,14 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 		return runValidate(args[1:], out)
 	case "apply":
 		return runApplyDocuments(ctx, "openetl connector apply", args[1:], out, applyConnectors)
+	case "spec":
+		return runConnectorSpec(ctx, args[1:], out)
+	case "check":
+		return runConnectorCheck(ctx, args[1:], out)
+	case "discover":
+		return runConnectorDiscover(ctx, args[1:], out)
+	case "read":
+		return runConnectorRead(ctx, args[1:], out)
 	}
 	fmt.Fprint(os.Stderr, connectorUsage)
 	return fmt.Errorf("unknown connector command %q", args[0])
@@ -77,7 +99,8 @@ func runPackage(ctx context.Context, args []string, out io.Writer) error {
 	}
 	o := connectorpkg.Options{
 		Out: *outDir, URLTemplate: *urls,
-		Registry: &connectorpkg.Registry{Client: &http.Client{Timeout: time.Minute}},
+		Registry:  &connectorpkg.Registry{Client: &http.Client{Timeout: time.Minute}},
+		ImageSpec: imageSpec,
 	}
 	if *platforms != "" {
 		o.Platforms = strings.Split(*platforms, ",")
@@ -94,6 +117,20 @@ func runPackage(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintf(out, "%s %s: %s\n", j.file.FullName(), j.version, res.Descriptor)
 	}
 	return nil
+}
+
+// imageSpec reads an image-only role's spec, through Docker or Podman.
+func imageSpec(ctx context.Context, image, role string, command []string) (*protocolv1.SpecResponse, error) {
+	engine, err := conformance.ContainerEngine()
+	if err != nil {
+		return nil, err
+	}
+	p, err := conformance.Container(engine, image, command, conformance.Resources{}, conformance.Options{Role: role})(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = p.Close() }()
+	return protocolv1.NewConnectorServiceClient(p.Conn()).Spec(ctx, &protocolv1.SpecRequest{Host: external.Host()})
 }
 
 type packageJob struct {

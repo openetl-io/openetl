@@ -40,7 +40,7 @@ type Options struct {
 	Registry *Registry
 	// Reads the spec of a role that only has an image; nil: such a role
 	// fails.
-	ImageSpec func(ctx context.Context, image string, command []string) (*protocolv1.SpecResponse, error)
+	ImageSpec func(ctx context.Context, image, role string, command []string) (*protocolv1.SpecResponse, error)
 	// Builds' output; nil: discarded.
 	Log io.Writer
 }
@@ -145,7 +145,7 @@ func Package(ctx context.Context, f *File, o Options) (*Result, error) {
 				if o.ImageSpec == nil {
 					return nil, fmt.Errorf("the %s role has only an image, and reading its spec needs Docker or Podman", role)
 				}
-				if pr.Spec, err = o.ImageSpec(ctx, r.Image+"@"+digest, r.Command); err != nil {
+				if pr.Spec, err = o.ImageSpec(ctx, r.Image+"@"+digest, role, r.Command); err != nil {
 					return nil, fmt.Errorf("read the %s role's spec from its image: %w", role, err)
 				}
 			}

@@ -3,6 +3,7 @@ package conformance_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -29,7 +30,7 @@ func readLaunch(t *testing.T, p conformance.Process) map[string]string {
 	var rec map[string]string
 	for {
 		m, err := stream.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return rec
 		}
 		if err != nil {
@@ -106,7 +107,7 @@ func TestAttach(t *testing.T) {
 	for _, addr := range []string{"tcp://127.0.0.1:" + freePort(t), "unix://" + filepath.Join(shortTemp(t), "c.sock")} {
 		var cmd *exec.Cmd
 		p, err := conformance.Attach(addr, conformance.Options{Role: "source"}, func(env []string) {
-			cmd = exec.CommandContext(t.Context(), exe) //nolint:gosec // the test's own connector
+			cmd = exec.CommandContext(t.Context(), exe)
 			cmd.Env = append(os.Environ(), env...)
 			go func() {
 				time.Sleep(300 * time.Millisecond)
@@ -129,7 +130,7 @@ func TestAttach(t *testing.T) {
 
 	// A connector started with another launch's token is refused.
 	addr := "tcp://127.0.0.1:" + freePort(t)
-	cmd := exec.CommandContext(t.Context(), exe) //nolint:gosec // the test's own connector
+	cmd := exec.CommandContext(t.Context(), exe)
 	cmd.Env = append(os.Environ(), "OPENETL_CONNECTOR_ADDR="+addr, "OPENETL_HOST_ADDR=tcp://127.0.0.1:1", "OPENETL_TOKEN=stale", "OPENETL_CONNECTOR_ROLE=source")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

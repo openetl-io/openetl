@@ -33,7 +33,7 @@ const (
 	EnvHostAddr = "OPENETL_HOST_ADDR"
 	// Set with TCP addresses: the connector refuses calls without it, and
 	// sends it to host services.
-	EnvToken = "OPENETL_TOKEN"
+	EnvToken = "OPENETL_TOKEN" //nolint:gosec // a variable's name
 	// source or destination: the role to serve, for an executable with both.
 	EnvRole = "OPENETL_CONNECTOR_ROLE"
 	// Set to 1: exit when stdin closes.

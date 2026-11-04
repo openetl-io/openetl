@@ -766,6 +766,23 @@ func SameSpec(got, want *protocolv1.SpecResponse) string {
 	return ""
 }
 
+// RoleSpec is a connector's spec as a descriptor's role carries it, with
+// the role, for YAML or JSON.
+type RoleSpec struct {
+	Role     string        `yaml:"role" json:"role"`
+	Requires *requiresYAML `yaml:"requires,omitempty" json:"requires,omitempty"`
+	specYAML `yaml:",inline"`
+}
+
+// RoleSpecOf is s as its descriptor would carry it.
+func RoleSpecOf(s *protocolv1.SpecResponse) (*RoleSpec, error) {
+	y, err := roleToYAML(&Role{Spec: s})
+	if err != nil {
+		return nil, err
+	}
+	return &RoleSpec{Role: RoleOf(s), Requires: y.Requires, specYAML: y.specYAML}, nil
+}
+
 // KindOf is a role's connector kind.
 func KindOf(role string) protocolv1.ConnectorKind {
 	switch role {

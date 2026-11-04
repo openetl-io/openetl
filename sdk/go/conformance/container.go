@@ -85,8 +85,8 @@ func Container(engine, image string, command []string, res Resources, o Options)
 		case !o.TCP:
 			if uid == 0 {
 				uid, gid = 65532, 65532
-				_ = os.Chmod(p.dir, 0o777) //nolint:gosec // the container's user isn't ours
-				_ = os.Chmod(p.hostAddr[len("unix://"):], 0o666)
+				_ = os.Chmod(p.dir, 0o777)                       //nolint:gosec // the container's user isn't ours
+				_ = os.Chmod(p.hostAddr[len("unix://"):], 0o666) //nolint:gosec // as above
 			}
 			if engine == "podman" {
 				args = append(args, "--userns=keep-id")
