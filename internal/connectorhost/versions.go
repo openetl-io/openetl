@@ -271,10 +271,14 @@ func (f *Fetcher) executable(ctx context.Context, b spec.Binary, name string) (s
 	if got != b.Digest {
 		return "", &DigestError{URL: b.URL, Want: b.Digest, Got: got}
 	}
-	// Another download of the same binary may have won the rename.
+	// Another download of the same binary may have won the rename, or put it
+	// there under another name, as a package whose roles share it does.
 	if err := os.Rename(tmp, final); err != nil {
-		if _, serr := os.Stat(exe); serr != nil {
-			return "", err
+		if _, serr := os.Stat(exe); serr == nil {
+			return exe, nil
+		}
+		if rerr := os.Rename(filepath.Join(tmp, name), exe); rerr != nil {
+			return "", fmt.Errorf("%w; and into the existing directory: %w", err, rerr)
 		}
 	}
 	return exe, nil

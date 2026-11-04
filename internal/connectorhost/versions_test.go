@@ -200,3 +200,21 @@ func TestFetcher(t *testing.T) {
 		t.Errorf("a digest that isn't one: %v", err)
 	}
 }
+
+// Two names of one binary, as roles sharing an executable have, are cached
+// side by side under its digest.
+func TestExecutableUnderTwoNames(t *testing.T) {
+	body := []byte("#!/bin/sh\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(body) }))
+	defer srv.Close()
+	f := &Fetcher{Client: (&netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}}).Client(), Cache: t.TempDir()}
+	for _, name := range []string{"full-source", "full-destination", "full-source"} {
+		exe, err := f.executable(t.Context(), spec.Binary{URL: srv.URL + "/" + name, Digest: Digest(body)}, name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if b, err := os.ReadFile(exe); err != nil || filepath.Base(exe) != name || string(b) != string(body) {
+			t.Errorf("%s: %s, %q, %v", name, exe, b, err)
+		}
+	}
+}
