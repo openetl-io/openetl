@@ -44,11 +44,27 @@ func TestTelemetry(t *testing.T) {
 		"engine batch",
 	}
 	var got []string
+	defer func() {
+		if t.Failed() {
+			t.Logf("the trace last looked at held %q", got)
+		}
+	}()
 	eventually(t, 30*time.Second, "the sync's spans in one trace", func() bool {
 		got = traceOf(env.collector.Spans(), func(s telemetrytest.Span) bool { return s.Name == "commit" && s.Attrs["openetl.pipeline"] == id })
 		return containsAll(got, sync)
 	})
 
+	// The collector has the whole run's spans, and earlier tests' discovers
+	// can have traces cut short, by a runner killed before it exported.
+	isDiscover := func(s telemetrytest.Span) bool {
+		return s.Name == "openetl.api.v1.SourceService/DiscoverSource" && s.Role == "server"
+	}
+	earlier := map[string]bool{}
+	for _, s := range env.collector.Spans() {
+		if isDiscover(s) {
+			earlier[s.TraceID] = true
+		}
+	}
 	if _, err := apiv1connect.NewSourceServiceClient(env.http, env.apiURL).DiscoverSource(t.Context(), connect.NewRequest(&apiv1.DiscoverSourceRequest{
 		Name: "workspaces/default/sources/" + name,
 	})); err != nil {
@@ -60,9 +76,7 @@ func TestTelemetry(t *testing.T) {
 		"runner RunActivity:" + contract.DiscoverSource,
 	}
 	eventually(t, 30*time.Second, "the discover's spans in one trace", func() bool {
-		got = traceOf(env.collector.Spans(), func(s telemetrytest.Span) bool {
-			return s.Name == "openetl.api.v1.SourceService/DiscoverSource" && s.Role == "server"
-		})
+		got = traceOf(env.collector.Spans(), func(s telemetrytest.Span) bool { return isDiscover(s) && !earlier[s.TraceID] })
 		return containsAll(got, discover)
 	})
 
