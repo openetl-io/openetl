@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,15 +18,24 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/configschema"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/host"
+	"github.com/unsuitable001/openetl/sdk/go/internal/launch"
 	"github.com/unsuitable001/openetl/sdk/go/internal/rpcerr"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
-// What the runner sets when it starts an external connector.
+// The launch contract: what the runner sets when it starts an external
+// connector.
 const (
-	EnvSocket     = "OPENETL_CONNECTOR_SOCKET"
-	EnvHostSocket = "OPENETL_HOST_SOCKET"
+	// Where the connector serves: unix:///path or tcp://host:port.
+	EnvConnectorAddr = "OPENETL_CONNECTOR_ADDR"
+	// Where host services are.
+	EnvHostAddr = "OPENETL_HOST_ADDR"
+	// Set with TCP addresses: the connector refuses calls without it, and
+	// sends it to host services.
+	EnvToken = "OPENETL_TOKEN"
+	// source or destination: the role to serve, for an executable with both.
+	EnvRole = "OPENETL_CONNECTOR_ROLE"
 	// Set to 1: exit when stdin closes.
 	EnvWatchStdin = "OPENETL_WATCH_STDIN"
 )
@@ -41,13 +49,13 @@ const socketBuffer = 1 << 20
 // a window update every few KiB of a batch.
 const flowWindow = 16 << 20
 
-// Connector is what an external connector's main serves: a source or a
-// destination.
+// Connector is what an external connector's main serves: a source, a
+// destination, or both, one per process, as EnvRole says.
 type Connector struct {
 	Name string
-	// A JSON Schema for the config. Top-level properties marked
-	// "x-secret": true hold secret names. On the proxy and raw egress tiers,
-	// the connector gets each replaced by the secret's value.
+	// A JSON Schema for the config. Properties marked "x-secret": true, at
+	// any depth, hold secret names. On the proxy and raw egress tiers, the
+	// connector gets each replaced by the secret's value.
 	ConfigSchema []byte
 	Egress       Egress
 
@@ -83,10 +91,26 @@ const (
 	EgressRaw
 )
 
-// Serve serves c as an external connector: on the socket EnvSocket names,
-// with host services on EnvHostSocket's. It prints "ready" on stdout once it
-// listens, and returns on SIGTERM or SIGINT, or when stdin closes if
-// EnvWatchStdin is 1. If serving fails, it exits with status 1.
+// Launch is what the runner tells a connector it starts: the launch
+// contract's variables.
+type Launch struct {
+	// unix:///path or tcp://host:port.
+	Addr, HostAddr string
+	// Required with a TCP address.
+	Token string
+	// source or destination; empty for a connector with one role.
+	Role string
+}
+
+// LaunchFromEnv reads the launch contract's variables.
+func LaunchFromEnv() Launch {
+	return Launch{Addr: os.Getenv(EnvConnectorAddr), HostAddr: os.Getenv(EnvHostAddr), Token: os.Getenv(EnvToken), Role: os.Getenv(EnvRole)}
+}
+
+// Serve serves c as an external connector, where the launch contract's
+// variables say. It prints "ready" on stdout once it listens, and returns on
+// SIGTERM or SIGINT, or when stdin closes if EnvWatchStdin is 1. If serving
+// fails, it exits with status 1.
 func Serve(c Connector) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
@@ -96,7 +120,7 @@ func Serve(c Connector) {
 			stop()
 		}()
 	}
-	err := c.Run(ctx, os.Getenv(EnvSocket), os.Getenv(EnvHostSocket), func() { fmt.Println("ready") })
+	err := c.Run(ctx, LaunchFromEnv(), func() { fmt.Println("ready") })
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", c.Name, err)
 		stop()
@@ -104,36 +128,48 @@ func Serve(c Connector) {
 	}
 }
 
-// Run serves c on socket until ctx is done, with host services on
-// hostSocket. ready, if set, is called once it listens.
-func (c Connector) Run(ctx context.Context, socket, hostSocket string, ready func()) error {
-	if (c.Source == nil) == (c.Destination == nil) {
-		return errors.New("a connector is a source or a destination")
+// Run serves c at l.Addr until ctx is done, with host services at
+// l.HostAddr. ready, if set, is called once it listens.
+func (c Connector) Run(ctx context.Context, l Launch, ready func()) error {
+	c, err := c.role(l.Role)
+	if err != nil {
+		return err
 	}
-	if socket == "" || hostSocket == "" {
-		return fmt.Errorf("run me from openetl: %s and %s must name sockets", EnvSocket, EnvHostSocket)
+	if l.Addr == "" || l.HostAddr == "" {
+		return fmt.Errorf("run me from openetl: %s and %s must name addresses", EnvConnectorAddr, EnvHostAddr)
+	}
+	addr, err := launch.Parse(l.Addr)
+	if err != nil {
+		return fmt.Errorf("%s: %w", EnvConnectorAddr, err)
+	}
+	hostAddr, err := launch.Parse(l.HostAddr)
+	if err != nil {
+		return fmt.Errorf("%s: %w", EnvHostAddr, err)
+	}
+	if (addr.Network == "tcp" || hostAddr.Network == "tcp") && l.Token == "" {
+		return fmt.Errorf("a TCP address needs %s", EnvToken)
 	}
 	b, err := newBase(c)
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient("unix://"+hostSocket,
+	conn, err := grpc.NewClient(hostAddr.Target(), append(launch.DialOptions(l.Token),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(MaxMessageSize), grpc.MaxCallSendMsgSize(MaxMessageSize)))
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(MaxMessageSize), grpc.MaxCallSendMsgSize(MaxMessageSize)))...)
 	if err != nil {
 		return fmt.Errorf("host services: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 	b.host = host.NewClient(conn)
 
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "unix", socket)
+	ln, err := launch.Listen(ctx, addr)
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(grpc.MaxRecvMsgSize(MaxMessageSize), grpc.MaxSendMsgSize(MaxMessageSize),
+	srv := grpc.NewServer(append(launch.ServerOptions(l.Token),
+		grpc.MaxRecvMsgSize(MaxMessageSize), grpc.MaxSendMsgSize(MaxMessageSize),
 		grpc.ReadBufferSize(socketBuffer), grpc.WriteBufferSize(socketBuffer),
-		grpc.InitialWindowSize(flowWindow), grpc.InitialConnWindowSize(flowWindow))
+		grpc.InitialWindowSize(flowWindow), grpc.InitialConnWindowSize(flowWindow))...)
 	protocolv1.RegisterConnectorServiceServer(srv, b)
 	if c.Source != nil {
 		protocolv1.RegisterSourceServiceServer(srv, &sourceServer{base: b})
@@ -141,7 +177,7 @@ func (c Connector) Run(ctx context.Context, socket, hostSocket string, ready fun
 		protocolv1.RegisterDestinationServiceServer(srv, &destinationServer{base: b})
 	}
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(sizedListener{ln.(*net.UnixListener)}) }()
+	go func() { errc <- srv.Serve(ln) }()
 	if ready != nil {
 		ready()
 	}
@@ -165,17 +201,20 @@ func (c Connector) Run(ctx context.Context, socket, hostSocket string, ready fun
 	return nil
 }
 
-// sizedListener gives each connection 1 MiB socket buffers: the defaults
-// (8 KiB on darwin) cost a context switch every few KiB of a batch.
-type sizedListener struct{ *net.UnixListener }
-
-func (l sizedListener) Accept() (net.Conn, error) {
-	c, err := l.AcceptUnix()
-	if err != nil {
-		return nil, err
+// role is c as the role it serves: its only one, whatever role names, so
+// the runner learns of a mismatch from Spec, or the one named.
+func (c Connector) role(role string) (Connector, error) {
+	switch {
+	case c.Source == nil && c.Destination == nil:
+		return c, errors.New("a connector is a source, a destination or both")
+	case c.Source == nil || c.Destination == nil:
+	case role == "source":
+		c.Destination = nil
+	case role == "destination":
+		c.Source = nil
+	default:
+		return c, fmt.Errorf("%s has both roles, so %s must be source or destination, not %q", c.Name, EnvRole, role)
 	}
-	_ = c.SetReadBuffer(socketBuffer)
-	_ = c.SetWriteBuffer(socketBuffer)
 	return c, nil
 }
 

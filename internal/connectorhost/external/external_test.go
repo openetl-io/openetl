@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	if out, err := exec.Command("go", "build", "-o", bin, "./testconnector").CombinedOutput(); err != nil {
 		panic(string(out))
 	}
-	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "source-future", "source-supports", "source-echo", "destination-files"} {
+	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "source-future", "source-supports", "source-echo", "destination-files", "source-both"} {
 		if err := os.Link(bin, filepath.Join(dir, name)); err != nil {
 			panic(err)
 		}
@@ -229,8 +229,26 @@ func TestConnectorsDontInheritTheEnvironment(t *testing.T) {
 		}
 		names = append(names, v.Name)
 	}
-	if slices.Contains(names, "AWS_SECRET_ACCESS_KEY") || !slices.Contains(names, "OPENETL_CONNECTOR_SOCKET") {
+	if slices.Contains(names, "AWS_SECRET_ACCESS_KEY") || !slices.Contains(names, "OPENETL_CONNECTOR_ADDR") || !slices.Contains(names, "OPENETL_CONNECTOR_ROLE") {
 		t.Fatalf("the connector's environment: %v", names)
+	}
+}
+
+// An executable with both roles serves the one the runner starts.
+func TestRolesShareAnExecutable(t *testing.T) {
+	for _, kind := range []protocolv1.ConnectorKind{protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE, protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION} {
+		s, err := ReadSpec(t.Context(), exe("source-both"), kind, Options{})
+		if err != nil || s.GetKind() != kind {
+			t.Errorf("as a %s: %v, %v", kind, s.GetKind(), err)
+		}
+	}
+	if _, err := ReadSpec(t.Context(), exe("source-both"), protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED, Options{}); err == nil {
+		t.Error("started without a role")
+	}
+	src := NewSource(exe("source-both"), []byte(`{"seed": 1, "count": 3}`), Options{})
+	defer func() { _ = src.Close() }()
+	if _, err := src.Discover(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }
 

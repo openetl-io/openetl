@@ -209,7 +209,7 @@ func TestExecutableUnderTwoNames(t *testing.T) {
 	defer srv.Close()
 	f := &Fetcher{Client: (&netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}}).Client(), Cache: t.TempDir()}
 	for _, name := range []string{"full-source", "full-destination", "full-source"} {
-		exe, err := f.executable(t.Context(), spec.Binary{URL: srv.URL + "/" + name, Digest: Digest(body)}, name)
+		exe, err := f.Executable(t.Context(), spec.Binary{URL: srv.URL + "/" + name, Digest: Digest(body)}, name)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

@@ -766,6 +766,17 @@ func SameSpec(got, want *protocolv1.SpecResponse) string {
 	return ""
 }
 
+// KindOf is a role's connector kind.
+func KindOf(role string) protocolv1.ConnectorKind {
+	switch role {
+	case RoleSource:
+		return protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE
+	case RoleDestination:
+		return protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION
+	}
+	return protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED
+}
+
 // RoleOf is a spec's role: source or destination.
 func RoleOf(s *protocolv1.SpecResponse) string {
 	if s.GetKind() == protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION {

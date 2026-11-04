@@ -105,7 +105,7 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 		_ = os.RemoveAll(dir)
 		return nil, errs.Wrap(errs.Internal, err, "connector: host services socket")
 	}
-	if err := p.run(ctx, exe, socket, hostSocket); err != nil {
+	if err := p.run(ctx, exe, kind, socket, hostSocket); err != nil {
 		_ = hostLn.Close()
 		return nil, err
 	}
@@ -161,9 +161,10 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 	return p, nil
 }
 
-// ReadSpec runs exe just long enough to read its spec.
-func ReadSpec(ctx context.Context, exe string, opts Options) (*protocolv1.SpecResponse, error) {
-	p, err := start(ctx, exe, protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED, nil, opts)
+// ReadSpec runs exe just long enough to read its spec as kind, which is
+// unspecified for an executable with one role.
+func ReadSpec(ctx context.Context, exe string, kind protocolv1.ConnectorKind, opts Options) (*protocolv1.SpecResponse, error) {
+	p, err := start(ctx, exe, kind, nil, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -172,14 +173,17 @@ func ReadSpec(ctx context.Context, exe string, opts Options) (*protocolv1.SpecRe
 }
 
 // run starts the executable and connects to it once it's ready.
-func (p *process) run(ctx context.Context, exe, socket, hostSocket string) error {
+func (p *process) run(ctx context.Context, exe string, kind protocolv1.ConnectorKind, socket, hostSocket string) error {
 	p.cmd = exec.Command(exe) //nolint:noctx // close stops it
 	for _, k := range passEnv {
 		if v, ok := os.LookupEnv(k); ok {
 			p.cmd.Env = append(p.cmd.Env, k+"="+v)
 		}
 	}
-	p.cmd.Env = append(p.cmd.Env, sdk.EnvSocket+"="+socket, sdk.EnvHostSocket+"="+hostSocket, sdk.EnvWatchStdin+"=1")
+	p.cmd.Env = append(p.cmd.Env, sdk.EnvConnectorAddr+"=unix://"+socket, sdk.EnvHostAddr+"=unix://"+hostSocket, sdk.EnvWatchStdin+"=1")
+	if kind != protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED {
+		p.cmd.Env = append(p.cmd.Env, sdk.EnvRole+"="+connspec.RoleOf(&protocolv1.SpecResponse{Kind: kind}))
+	}
 	stdin, err1 := p.cmd.StdinPipe()
 	stdout, err2 := p.cmd.StdoutPipe()
 	stderr, err3 := p.cmd.StderrPipe()

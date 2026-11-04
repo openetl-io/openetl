@@ -230,7 +230,7 @@ func (f *Fetcher) Fetch(ctx context.Context, digest, role string) (*Version, err
 		return v, nil
 	}
 	_, short := spec.SplitName(v.Name)
-	r.Executable, err = f.executable(ctx, r.Binaries[Platform()], role+"-"+short)
+	r.Executable, err = f.Executable(ctx, r.Binaries[Platform()], role+"-"+short)
 	var mismatch *DigestError
 	switch {
 	case errors.As(err, &mismatch):
@@ -241,8 +241,8 @@ func (f *Fetcher) Fetch(ctx context.Context, digest, role string) (*Version, err
 	return v, nil
 }
 
-// executable downloads b into {Cache}/executables/sha256-{hex}/name, once.
-func (f *Fetcher) executable(ctx context.Context, b spec.Binary, name string) (string, error) {
+// Executable downloads b into {Cache}/executables/sha256-{hex}/name, once.
+func (f *Fetcher) Executable(ctx context.Context, b spec.Binary, name string) (string, error) {
 	dir := filepath.Join(f.Cache, "executables")
 	final := filepath.Join(dir, strings.Replace(b.Digest, ":", "-", 1))
 	exe := filepath.Join(final, name)
@@ -419,7 +419,7 @@ func Package(ctx context.Context, name, version string, info spec.Info, roles ma
 		}
 		if host != "" {
 			var err error
-			if r.Spec, err = external.ReadSpec(ctx, host, external.Options{Logger: slog.New(slog.DiscardHandler)}); err != nil {
+			if r.Spec, err = external.ReadSpec(ctx, host, spec.KindOf(role), external.Options{Logger: slog.New(slog.DiscardHandler)}); err != nil {
 				return nil, fmt.Errorf("read %s's spec: %w", host, err)
 			}
 		}

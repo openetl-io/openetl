@@ -28,6 +28,17 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
+var filesConnector = sdk.Connector{
+	Name:         "files",
+	ConfigSchema: []byte(`{"type": "object", "properties": {"dir": {"type": "string"}, "token": {"type": "string", "x-secret": true}}}`),
+	Egress:       sdk.Egress{Tier: sdk.EgressRaw},
+	Destination:  newFiles,
+	Capabilities: destination.Capabilities{
+		Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopePipeline}, MaxIdentifierLength: 63,
+		WriteModes: []destination.WriteMode{destination.Append, destination.Overwrite},
+	},
+}
+
 func main() {
 	name := filepath.Base(os.Args[0])
 	// A release asset, NAME-ROLE-OS-ARCH, serves as ROLE-NAME.
@@ -50,16 +61,11 @@ func main() {
 	case "source-echo":
 		sdk.Serve(sdk.Connector{Name: "echo", Source: func([]byte, host.Host) (source.Source, error) { return echo{}, nil }})
 	case "destination-files":
-		sdk.Serve(sdk.Connector{
-			Name:         "files",
-			ConfigSchema: []byte(`{"type": "object", "properties": {"dir": {"type": "string"}, "token": {"type": "string", "x-secret": true}}}`),
-			Egress:       sdk.Egress{Tier: sdk.EgressRaw},
-			Destination:  newFiles,
-			Capabilities: destination.Capabilities{
-				Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopePipeline}, MaxIdentifierLength: 63,
-				WriteModes: []destination.WriteMode{destination.Append, destination.Overwrite},
-			},
-		})
+		sdk.Serve(filesConnector)
+	case "source-both", "destination-both":
+		both := filesConnector
+		both.Name, both.Source = "both", func(c []byte, _ host.Host) (source.Source, error) { return faker.New(c) }
+		sdk.Serve(both)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown connector", os.Args[0])
 		os.Exit(2)
