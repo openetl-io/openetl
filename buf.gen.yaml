@@ -11,3 +11,4 @@ inputs:
     paths:
       - proto/openetl/connector
       - proto/openetl/engine
+      - proto/openetl/bridge

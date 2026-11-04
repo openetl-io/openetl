@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package openetl.bridge.v1;
+
+option go_package = "github.com/unsuitable001/openetl/gen/openetl/bridge/v1;bridgev1";
+option java_multiple_files = true;
+option java_package = "io.openetl.bridge.v1";
+
+// BridgeService is served by a runner to the Flink job it deployed for one
+// attempt of a continuous pipeline. Over TLS with the runner's certificate,
+// whose SHA-256 fingerprint the job gets at deploy. Every call carries the
+// attempt's token as "authorization: Bearer TOKEN" and the library's
+// protocol as "openetl-bridge-protocol: v1"; the runner refuses another
+// major version.
+//
+// The job has one OpenEtlSource over every stream, with a split per stream,
+// and one OpenEtlSink per output. Checkpoints are induced: a reader takes
+// checkpoint C where the runner put C's barrier in each of its splits.
+//
+// A dropped call is never resumed. The runner fails the attempt's epoch in
+// flight, and the job's failover reconnects.
+service BridgeService {
+  // The pipeline's streams and outputs, for building the job graph.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  // The source's SplitEnumerator, from start to close. It sends hello, then
+  // each checkpoint's start and outcome, and waits for each one's ack before
+  // returning from the callback that sent it.
+  rpc Coordinate(stream CoordinateRequest) returns (stream CoordinateResponse);
+  // One split's records and barriers, for the reader it's assigned to.
+  rpc Read(ReadRequest) returns (stream ReadResponse);
+  // One sink subtask's rows and barriers. It sends hello, then batches and
+  // barriers; each barrier waits for its ack. Refusing a barrier ends the
+  // call with ABORTED.
+  rpc Write(stream WriteRequest) returns (stream WriteResponse);
+}
+
+message DescribeRequest {}
+
+message DescribeResponse {
+  string pipeline = 1;
+  // Each stream's schema, as an Arrow IPC stream holding only the schema.
+  // Its batches on Read have this schema.
+  repeated Schema streams = 2;
+  // The outputs a sink may write, with their schemas when the record has
+  // them. A sink's batches give their own.
+  repeated Schema outputs = 3;
+}
+
+message Schema {
+  string name = 1;
+  bytes arrow = 2;
+  // The stream is a changelog: _openetl_op is set on each row, and maps to
+  // Flink's row kinds.
+  bool changelog = 3;
+  repeated string primary_key = 4;
+}
+
+message CoordinateRequest {
+  oneof message {
+    EnumeratorHello hello = 1;
+    // From snapshotState(C), before any reader can take C.
+    CheckpointStarted started = 2;
+    // From notifyCheckpointComplete and notifyCheckpointAborted.
+    CheckpointOutcome outcome = 3;
+  }
+}
+
+message EnumeratorHello {
+  // Flink's job ID, as hex.
+  string job_id = 1;
+  // The checkpoint the enumerator was restored from; 0 for none.
+  int64 restored_checkpoint = 2;
+}
+
+message CheckpointStarted {
+  int64 checkpoint = 1;
+}
+
+message CheckpointOutcome {
+  int64 checkpoint = 1;
+  bool completed = 2;
+}
+
+message CoordinateResponse {
+  // Answers hello, started or outcome, in order.
+  Ack ack = 1;
+}
+
+message Ack {
+  int64 checkpoint = 1;
+}
+
+message ReadRequest {
+  string stream = 1;
+  // The reader's subtask index.
+  int32 subtask = 2;
+  // The checkpoint the split was restored from; 0 for none.
+  int64 restored_checkpoint = 3;
+}
+
+message ReadResponse {
+  oneof message {
+    // An Arrow IPC stream holding one batch, in the stream's schema.
+    bytes batch = 1;
+    // Everything before it belongs to checkpoint C. The reader's split
+    // state at C is C itself; the runner keeps the resume point.
+    Barrier barrier = 2;
+  }
+}
+
+message Barrier {
+  int64 checkpoint = 1;
+}
+
+message WriteRequest {
+  oneof message {
+    SinkHello hello = 1;
+    // An Arrow IPC stream holding one batch of the subtask's output.
+    bytes batch = 2;
+    SinkBarrier barrier = 3;
+  }
+}
+
+message SinkHello {
+  string output = 1;
+  int32 subtask = 2;
+  int32 parallelism = 3;
+  // From the operator's restored state; 0 for none.
+  int64 restored_checkpoint = 4;
+}
+
+message SinkBarrier {
+  int64 checkpoint = 1;
+  BarrierType type = 2;
+}
+
+enum BarrierType {
+  BARRIER_TYPE_UNSPECIFIED = 0;
+  BARRIER_TYPE_CHECKPOINT = 1;
+  // Taken by hand. It ends no epoch.
+  BARRIER_TYPE_SAVEPOINT = 2;
+  // Stop-with-savepoint's, which commits like a checkpoint.
+  BARRIER_TYPE_SYNC_SAVEPOINT = 3;
+}
+
+message WriteResponse {
+  // Answers hello and each barrier, in order.
+  Ack ack = 1;
+}
