@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	if out, err := exec.Command("go", "build", "-o", bin, "./testconnector").CombinedOutput(); err != nil {
 		panic(string(out))
 	}
-	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "destination-files"} {
+	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "source-future", "source-supports", "destination-files"} {
 		if err := os.Link(bin, filepath.Join(dir, name)); err != nil {
 			panic(err)
 		}
@@ -231,6 +231,27 @@ func TestConnectorsDontInheritTheEnvironment(t *testing.T) {
 	}
 	if slices.Contains(names, "AWS_SECRET_ACCESS_KEY") || !slices.Contains(names, "OPENETL_CONNECTOR_SOCKET") {
 		t.Fatalf("the connector's environment: %v", names)
+	}
+}
+
+// The runner tells a connector its features in Spec, and refuses one that
+// needs a feature it hasn't.
+func TestHandshake(t *testing.T) {
+	src := NewSource(exe("source-future"), nil, Options{})
+	defer func() { _ = src.Close() }()
+	if err := src.Start(t.Context()); errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "from-the-future") {
+		t.Errorf("a connector needing a feature the runner hasn't: %v", err)
+	}
+	Features = []string{"testing"}
+	defer func() { Features = nil }()
+	sup := NewSource(exe("source-supports"), nil, Options{})
+	defer func() { _ = sup.Close() }()
+	var out collect
+	if err := sup.Read(t.Context(), source.ReadRequest{Streams: []source.ConfiguredStream{{Name: "supports"}}}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.raw) != 1 || string(out.raw[0]) != `{"other":false,"testing":true}` {
+		t.Errorf("the connector saw %s", out.raw)
 	}
 }
 

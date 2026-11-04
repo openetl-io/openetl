@@ -34,6 +34,9 @@ service DataPlaneService {
   // control plane sees retries Temporal hides, such as a crash loop. An
   // attempt already reported is skipped.
   rpc ReportAttemptFailure(ReportAttemptFailureRequest) returns (ReportAttemptFailureResponse);
+  // What a runner is and can run, when it starts and every minute. The plan
+  // checks connectors against the runners its data plane reported lately.
+  rpc ReportRunner(ReportRunnerRequest) returns (ReportRunnerResponse);
 }
 
 message GetSyncSpecRequest {
@@ -220,3 +223,21 @@ message ReportAttemptFailureRequest {
 }
 
 message ReportAttemptFailureResponse {}
+
+message ReportRunnerRequest {
+  // Unique to the runner process, such as host:pid.
+  string runner = 1;
+  // Its release, such as 0.1.0; "dev" for a build from source.
+  string release = 2;
+  // The connector protocol, "v1".
+  string protocol = 3;
+  // Additions to the protocol after its baseline that it has.
+  repeated string features = 4;
+  // How it starts connectors: "subprocess" for binaries; container
+  // launchers, such as "docker", from 0.2.
+  repeated string launchers = 5;
+  // os/arch.
+  string platform = 6;
+}
+
+message ReportRunnerResponse {}

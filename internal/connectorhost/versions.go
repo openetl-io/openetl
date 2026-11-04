@@ -21,7 +21,6 @@ import (
 	"github.com/unsuitable001/openetl/internal/declarative"
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/telemetry"
 	"github.com/unsuitable001/openetl/internal/spec"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
@@ -158,25 +157,8 @@ func (e Env) With(v *Version, role string) Env {
 	return e
 }
 
-// Protocol is the connector protocol this platform speaks.
-const Protocol = "v1"
-
-// Features are this platform's additions to the protocol after the alpha.
-var Features []string
-
-// Host is what this platform tells a connector about itself.
-func Host() *protocolv1.Host {
-	return &protocolv1.Host{Version: Release(), Protocol: Protocol, Features: Features}
-}
-
 // Release is this build's release, such as 0.1.0, or "dev".
-func Release() string {
-	v := strings.TrimPrefix(telemetry.Version(), "v")
-	if !spec.ValidVersion(v) {
-		return "dev"
-	}
-	return v
-}
+func Release() string { return external.Release() }
 
 // Runnable reports why this runner can't run a role, or "" if it can: one
 // without a manifest needs the protocol, every required feature, a release
@@ -188,11 +170,11 @@ func Runnable(r *spec.Role) string {
 	if r.Manifest != nil {
 		return ""
 	}
-	if p := r.Spec.GetProtocolVersion(); p != Protocol {
-		return fmt.Sprintf("it speaks protocol %s, and this runner speaks %s", p, Protocol)
+	if p := r.Spec.GetProtocolVersion(); p != external.Protocol {
+		return fmt.Sprintf("it speaks protocol %s, and this runner speaks %s", p, external.Protocol)
 	}
 	for _, f := range r.Spec.GetRequiredFeatures() {
-		if !slices.Contains(Features, f) {
+		if !slices.Contains(external.Features, f) {
 			return fmt.Sprintf("it needs the feature %s, which this runner doesn't have", f)
 		}
 	}

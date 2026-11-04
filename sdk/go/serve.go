@@ -58,6 +58,11 @@ type Connector struct {
 
 	Destination  func(config []byte, h host.Host) (destination.Destination, error)
 	Capabilities destination.Capabilities
+
+	// Additions to the protocol after its baseline that the connector can't
+	// run without. A platform without one refuses it. host.Supports tells
+	// the connector about the rest.
+	RequiredFeatures []string
 }
 
 type Egress struct {
@@ -203,11 +208,15 @@ func newBase(c Connector) (*base, error) {
 	return b, nil
 }
 
-func (b *base) Spec(context.Context, *protocolv1.SpecRequest) (*protocolv1.SpecResponse, error) {
+func (b *base) Spec(_ context.Context, req *protocolv1.SpecRequest) (*protocolv1.SpecResponse, error) {
+	if b.host != nil {
+		b.host.SetPlatform(req.GetHost())
+	}
 	resp := &protocolv1.SpecResponse{
-		ProtocolVersion: "v1",
-		ConfigSchema:    b.c.ConfigSchema,
-		Egress:          &protocolv1.Egress{Tier: protocolv1.EgressTier(max(b.c.Egress.Tier, EgressHost)), Allow: b.c.Egress.Allow}, //nolint:gosec // small
+		ProtocolVersion:  "v1",
+		ConfigSchema:     b.c.ConfigSchema,
+		Egress:           &protocolv1.Egress{Tier: protocolv1.EgressTier(max(b.c.Egress.Tier, EgressHost)), Allow: b.c.Egress.Allow}, //nolint:gosec // small
+		RequiredFeatures: b.c.RequiredFeatures,
 	}
 	if b.c.Source != nil {
 		resp.Kind = protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE

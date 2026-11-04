@@ -44,3 +44,19 @@ LIMIT 1;
 SELECT v.*, r.role, r.digest FROM connector_versions v
 JOIN connector_roles r USING (org_id, name, version)
 WHERE v.org_id = @org_id AND r.digest = ANY(@digests::text[]);
+
+-- name: ReportRunner :exec
+INSERT INTO runners (org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time)
+VALUES (@org_id, @data_plane_id, @id, @release, @protocol, @features, @launchers, @platform, now())
+ON CONFLICT (org_id, data_plane_id, id) DO UPDATE SET
+    release = EXCLUDED.release, protocol = EXCLUDED.protocol, features = EXCLUDED.features,
+    launchers = EXCLUDED.launchers, platform = EXCLUDED.platform, report_time = now();
+
+-- name: RecentRunners :many
+-- A data plane's runners that reported since @since; old reports go.
+SELECT * FROM runners
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND report_time >= @since
+ORDER BY id;
+
+-- name: DeleteStaleRunners :exec
+DELETE FROM runners WHERE org_id = @org_id AND report_time < @before;

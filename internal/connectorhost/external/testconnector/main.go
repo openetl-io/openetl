@@ -43,6 +43,10 @@ func main() {
 		sdk.Serve(sdk.Connector{Name: "crash", Source: func([]byte, host.Host) (source.Source, error) { return crash{}, nil }})
 	case "source-env":
 		sdk.Serve(sdk.Connector{Name: "env", Source: func([]byte, host.Host) (source.Source, error) { return env{}, nil }})
+	case "source-future":
+		sdk.Serve(sdk.Connector{Name: "future", RequiredFeatures: []string{"from-the-future"}, Source: func([]byte, host.Host) (source.Source, error) { return env{}, nil }})
+	case "source-supports":
+		sdk.Serve(sdk.Connector{Name: "supports", Source: func(_ []byte, h host.Host) (source.Source, error) { return supports{h}, nil }})
 	case "destination-files":
 		sdk.Serve(sdk.Connector{
 			Name:         "files",
@@ -122,6 +126,24 @@ func (env) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) err
 		return err
 	}
 	return out.Complete("env", nil)
+}
+
+// supports emits one row: whether its host supports the feature "testing".
+type supports struct{ h host.Host }
+
+func (supports) Discover(context.Context) (source.Catalog, error) {
+	return source.Catalog{Streams: []source.CatalogStream{{Name: "supports"}}}, nil
+}
+
+func (s supports) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
+	b, err := json.Marshal(map[string]bool{"testing": host.Supports(s.h, "testing"), "other": host.Supports(s.h, "other")})
+	if err != nil {
+		return err
+	}
+	if err := out.Rows("supports", []json.RawMessage{b}); err != nil {
+		return err
+	}
+	return out.Complete("supports", nil)
 }
 
 // files is a stage-and-apply destination in a directory: a fence file,

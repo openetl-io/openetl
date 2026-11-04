@@ -54,6 +54,9 @@ const (
 	// DataPlaneServiceReportAttemptFailureProcedure is the fully-qualified name of the
 	// DataPlaneService's ReportAttemptFailure RPC.
 	DataPlaneServiceReportAttemptFailureProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportAttemptFailure"
+	// DataPlaneServiceReportRunnerProcedure is the fully-qualified name of the DataPlaneService's
+	// ReportRunner RPC.
+	DataPlaneServiceReportRunnerProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportRunner"
 )
 
 // DataPlaneServiceClient is a client for the openetl.dataplane.v1.DataPlaneService service.
@@ -78,6 +81,9 @@ type DataPlaneServiceClient interface {
 	// control plane sees retries Temporal hides, such as a crash loop. An
 	// attempt already reported is skipped.
 	ReportAttemptFailure(context.Context, *connect.Request[v1.ReportAttemptFailureRequest]) (*connect.Response[v1.ReportAttemptFailureResponse], error)
+	// What a runner is and can run, when it starts and every minute. The plan
+	// checks connectors against the runners its data plane reported lately.
+	ReportRunner(context.Context, *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error)
 }
 
 // NewDataPlaneServiceClient constructs a client for the openetl.dataplane.v1.DataPlaneService
@@ -133,6 +139,12 @@ func NewDataPlaneServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportAttemptFailure")),
 			connect.WithClientOptions(opts...),
 		),
+		reportRunner: connect.NewClient[v1.ReportRunnerRequest, v1.ReportRunnerResponse](
+			httpClient,
+			baseURL+DataPlaneServiceReportRunnerProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportRunner")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -145,6 +157,7 @@ type dataPlaneServiceClient struct {
 	reportCatalog        *connect.Client[v1.ReportCatalogRequest, v1.ReportCatalogResponse]
 	getArtifact          *connect.Client[v1.GetArtifactRequest, v1.GetArtifactResponse]
 	reportAttemptFailure *connect.Client[v1.ReportAttemptFailureRequest, v1.ReportAttemptFailureResponse]
+	reportRunner         *connect.Client[v1.ReportRunnerRequest, v1.ReportRunnerResponse]
 }
 
 // GetSyncSpec calls openetl.dataplane.v1.DataPlaneService.GetSyncSpec.
@@ -182,6 +195,11 @@ func (c *dataPlaneServiceClient) ReportAttemptFailure(ctx context.Context, req *
 	return c.reportAttemptFailure.CallUnary(ctx, req)
 }
 
+// ReportRunner calls openetl.dataplane.v1.DataPlaneService.ReportRunner.
+func (c *dataPlaneServiceClient) ReportRunner(ctx context.Context, req *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error) {
+	return c.reportRunner.CallUnary(ctx, req)
+}
+
 // DataPlaneServiceHandler is an implementation of the openetl.dataplane.v1.DataPlaneService
 // service.
 type DataPlaneServiceHandler interface {
@@ -205,6 +223,9 @@ type DataPlaneServiceHandler interface {
 	// control plane sees retries Temporal hides, such as a crash loop. An
 	// attempt already reported is skipped.
 	ReportAttemptFailure(context.Context, *connect.Request[v1.ReportAttemptFailureRequest]) (*connect.Response[v1.ReportAttemptFailureResponse], error)
+	// What a runner is and can run, when it starts and every minute. The plan
+	// checks connectors against the runners its data plane reported lately.
+	ReportRunner(context.Context, *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error)
 }
 
 // NewDataPlaneServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -256,6 +277,12 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportAttemptFailure")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dataPlaneServiceReportRunnerHandler := connect.NewUnaryHandler(
+		DataPlaneServiceReportRunnerProcedure,
+		svc.ReportRunner,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportRunner")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.dataplane.v1.DataPlaneService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DataPlaneServiceGetSyncSpecProcedure:
@@ -272,6 +299,8 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 			dataPlaneServiceGetArtifactHandler.ServeHTTP(w, r)
 		case DataPlaneServiceReportAttemptFailureProcedure:
 			dataPlaneServiceReportAttemptFailureHandler.ServeHTTP(w, r)
+		case DataPlaneServiceReportRunnerProcedure:
+			dataPlaneServiceReportRunnerHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -307,4 +336,8 @@ func (UnimplementedDataPlaneServiceHandler) GetArtifact(context.Context, *connec
 
 func (UnimplementedDataPlaneServiceHandler) ReportAttemptFailure(context.Context, *connect.Request[v1.ReportAttemptFailureRequest]) (*connect.Response[v1.ReportAttemptFailureResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) ReportRunner(context.Context, *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportRunner is not implemented"))
 }

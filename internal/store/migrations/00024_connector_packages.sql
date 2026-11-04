@@ -38,7 +38,24 @@ ALTER TABLE connector_versions
 ALTER TABLE connector_roles
     ADD FOREIGN KEY (org_id, name, version) REFERENCES connector_versions (org_id, name, version);
 
+-- What each runner last reported of itself, for the plan's checks of
+-- connectors against a data plane's runners.
+CREATE TABLE runners (
+    org_id        uuid NOT NULL,
+    data_plane_id text NOT NULL,
+    id            text NOT NULL,
+    release       text NOT NULL,
+    protocol      text NOT NULL,
+    features      text[] NOT NULL,
+    launchers     text[] NOT NULL,
+    platform      text NOT NULL,
+    report_time   timestamptz NOT NULL,
+    PRIMARY KEY (org_id, data_plane_id, id),
+    FOREIGN KEY (org_id, data_plane_id) REFERENCES data_planes (org_id, id)
+);
+
 -- +goose Down
+DROP TABLE runners;
 ALTER TABLE connector_roles DROP CONSTRAINT connector_roles_org_id_name_version_fkey;
 ALTER TABLE connector_versions
     DROP CONSTRAINT connector_versions_pkey,

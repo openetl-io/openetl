@@ -20,7 +20,8 @@ import (
 // Client is the Host an external connector reaches over its host services
 // socket.
 type Client struct {
-	c protocolv1.HostServiceClient
+	c        protocolv1.HostServiceClient
+	features []string
 }
 
 var _ Host = (*Client)(nil)
@@ -28,6 +29,13 @@ var _ Host = (*Client)(nil)
 func NewClient(conn grpc.ClientConnInterface) *Client {
 	return &Client{c: protocolv1.NewHostServiceClient(conn)}
 }
+
+// SetPlatform records what the platform said of itself in Spec. The SDK
+// calls it.
+func (c *Client) SetPlatform(h *protocolv1.Host) { c.features = h.GetFeatures() }
+
+// Features are the platform's additions to the protocol after its baseline.
+func (c *Client) Features() []string { return c.features }
 
 func (c *Client) HTTP(ctx context.Context, req *Request) (*Response, error) {
 	p := &protocolv1.HTTPRequest{

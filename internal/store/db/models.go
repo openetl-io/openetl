@@ -278,6 +278,18 @@ type RoleBinding struct {
 	CreateTime  time.Time
 }
 
+type Runner struct {
+	OrgID       uuid.UUID
+	DataPlaneID string
+	ID          string
+	Release     string
+	Protocol    string
+	Features    []string
+	Launchers   []string
+	Platform    string
+	ReportTime  time.Time
+}
+
 type RunnerToken struct {
 	OrgID        uuid.UUID
 	ID           uuid.UUID

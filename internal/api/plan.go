@@ -138,6 +138,24 @@ func (s *Server) plan(ctx context.Context, q *db.Queries, p *planned) (*apiv1.Pi
 			return nil, err
 		}
 	}
+	unrunnable, notes, err := s.checkRunners(ctx, q, p.v)
+	if err != nil {
+		return nil, err
+	}
+	out.Problems, out.Notes = unrunnable, notes
+	for _, c := range []struct {
+		kind, ref, digest string
+		spec              []byte
+	}{{"source", p.v.spec.GetSource().GetRef(), p.v.src.ConnectorDigest, p.v.src.Spec}, {"destination", p.v.spec.GetDestination().GetRef(), p.v.dst.ConnectorDigest, p.v.dst.Spec}} {
+		var cfg apiv1.ConnectorConfig
+		if c.digest == "" || protojson.Unmarshal(c.spec, &cfg) != nil {
+			continue
+		}
+		if name, ref := connectorhost.SplitRef(cfg.GetConnector()); ref == "" {
+			out.Warnings = append(out.Warnings, &apiv1.PlanWarning{Message: fmt.Sprintf(
+				"%s %q names connector %s without a version, so applying it again may pin a newer one; %s@MAJOR keeps to one major version", c.kind, c.ref, name, name)})
+		}
+	}
 	src, dst := p.v.spec.GetSource().GetRef(), p.v.spec.GetDestination().GetRef()
 	caps, known, err := s.capabilities(ctx, q, p.v.dst)
 	if err != nil {
@@ -164,7 +182,7 @@ func (s *Server) plan(ctx context.Context, q *db.Queries, p *planned) (*apiv1.Pi
 		}
 	}
 	streams, problems, warnings := plan.Pipeline(p.v.spec, cat, caps)
-	out.Streams, out.Warnings = streams, warnings
+	out.Streams, out.Warnings = streams, append(out.Warnings, warnings...)
 	for _, e := range problems {
 		out.Problems = append(out.Problems, e.Error())
 	}

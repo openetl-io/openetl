@@ -111,13 +111,18 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 	}
 
 	sctx, cancel := context.WithTimeout(ctx, specTimeout)
-	spec, err := protocolv1.NewConnectorServiceClient(p.conn).Spec(sctx, &protocolv1.SpecRequest{})
+	spec, err := protocolv1.NewConnectorServiceClient(p.conn).Spec(sctx, &protocolv1.SpecRequest{Host: Host()})
 	cancel()
 	if err != nil {
 		err = p.failure(errs.FromStatus(err))
 		_ = hostLn.Close()
 		p.close()
 		return nil, fmt.Errorf("connector: spec: %w", err)
+	}
+	if err := checkSpec(filepath.Base(exe), spec); err != nil {
+		_ = hostLn.Close()
+		p.close()
+		return nil, err
 	}
 	if kind != protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED && spec.GetKind() != kind {
 		_ = hostLn.Close()

@@ -19,6 +19,7 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/spec"
+	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
 func manifest(name, version, path string) string {
@@ -216,6 +217,30 @@ func TestConnectorPackages(t *testing.T) {
 	}
 	if err := applyErr(t, sourceDoc(src, fmt.Sprintf(`{"connector": "%s@1.x", "config": {}}`, name))); err == nil {
 		t.Error("a constraint that isn't one")
+	}
+
+	// An image-only role is refused before a sync while runners have no
+	// container launcher.
+	startRunner(t)
+	deadline := time.Now().Add(10 * time.Second)
+	for n, _ := query[int64](t, "SELECT count(*) FROM runners WHERE data_plane_id = 'default'"); n == 0 && time.Now().Before(deadline); n, _ = query[int64](t, "SELECT count(*) FROM runners WHERE data_plane_id = 'default'") {
+		time.Sleep(100 * time.Millisecond)
+	}
+	imaged := "acme/" + unique("image")
+	dspec := &protocolv1.SpecResponse{ProtocolVersion: "v1", Kind: protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION, Egress: &protocolv1.Egress{Tier: protocolv1.EgressTier_EGRESS_TIER_RAW},
+		ConfigSchema: []byte(`{"type": "object"}`), Destination: &protocolv1.DestinationCapabilities{SinkClass: protocolv1.SinkClass_SINK_CLASS_STAGE_AND_APPLY}}
+	doc, err := connectorhost.Package(t.Context(), imaged, "1.0.0", spec.Info{Repository: first}, map[string]connectorhost.PackageRole{
+		"destination": {Spec: dspec, Image: &spec.Image{Ref: "ghcr.io/acme/image", Digest: "sha256:" + strings.Repeat("4", 64), Platforms: []string{"linux/amd64"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply(t, string(doc))
+	pipe := unique("imaged")
+	docs := pipelineDocs(pipe, `{"seed": 1, "count": 5}`, `{"require": "at_least_once"}`)
+	docs[1] = destinationDoc(pipe, fmt.Sprintf(`{"connector": "%s@1", "config": {}}`, imaged))
+	if err := applyErr(t, docs...); err == nil || !strings.Contains(err.Error(), "has only an image, and runner") {
+		t.Errorf("a pipeline into an image-only destination: %v", err)
 	}
 
 	legacy := unique("legacy")

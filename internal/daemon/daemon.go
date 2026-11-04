@@ -25,6 +25,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"golang.org/x/sync/errgroup"
 
+	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/api"
 	"github.com/unsuitable001/openetl/internal/auth"
@@ -32,6 +33,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/checkpoint/openstore"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/connectorhost/external"
 	"github.com/unsuitable001/openetl/internal/engineclient"
 	"github.com/unsuitable001/openetl/internal/netguard"
 	cpactivities "github.com/unsuitable001/openetl/internal/orchestration/activities"
@@ -445,7 +447,33 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	g.Go(func() error { return runWorker(gctx, w) })
 	g.Go(func() error { return runWorker(gctx, stream) })
 	g.Go(func() error { return runWorker(gctx, logs) })
+	g.Go(func() error {
+		reportRunner(gctx, apiClient, log)
+		return nil
+	})
 	return g.Wait()
+}
+
+// reportRunner tells the API what this runner is and can run, now and every
+// minute, for the plan's checks. A failed report is logged, not fatal.
+func reportRunner(ctx context.Context, api dataplanev1connect.DataPlaneServiceClient, log *slog.Logger) {
+	host, _ := os.Hostname()
+	req := &dataplanev1.ReportRunnerRequest{
+		Runner: fmt.Sprintf("%s:%d", host, os.Getpid()), Release: external.Release(), Protocol: external.Protocol,
+		Features: external.Features, Launchers: []string{"subprocess"}, Platform: connectorhost.Platform(),
+	}
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		if _, err := api.ReportRunner(ctx, connect.NewRequest(req)); err != nil && ctx.Err() == nil {
+			log.Warn("reporting the runner to the API failed", "err", err)
+		}
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // connectorsDir is where external connectors are: connectors/ next to

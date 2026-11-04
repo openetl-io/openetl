@@ -79,6 +79,20 @@ func (q *Queries) ConnectorVersionsByDigest(ctx context.Context, arg ConnectorVe
 	return items, nil
 }
 
+const deleteStaleRunners = `-- name: DeleteStaleRunners :exec
+DELETE FROM runners WHERE org_id = $1 AND report_time < $2
+`
+
+type DeleteStaleRunnersParams struct {
+	OrgID  uuid.UUID
+	Before time.Time
+}
+
+func (q *Queries) DeleteStaleRunners(ctx context.Context, arg DeleteStaleRunnersParams) error {
+	_, err := q.db.Exec(ctx, deleteStaleRunners, arg.OrgID, arg.Before)
+	return err
+}
+
 const getArtifact = `-- name: GetArtifact :one
 SELECT org_id, digest, media_type, content, create_time FROM artifacts WHERE org_id = $1 AND digest = $2
 `
@@ -360,4 +374,80 @@ func (q *Queries) ListVersionRoles(ctx context.Context, arg ListVersionRolesPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const recentRunners = `-- name: RecentRunners :many
+SELECT org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time FROM runners
+WHERE org_id = $1 AND data_plane_id = $2 AND report_time >= $3
+ORDER BY id
+`
+
+type RecentRunnersParams struct {
+	OrgID       uuid.UUID
+	DataPlaneID string
+	Since       time.Time
+}
+
+// A data plane's runners that reported since @since; old reports go.
+func (q *Queries) RecentRunners(ctx context.Context, arg RecentRunnersParams) ([]Runner, error) {
+	rows, err := q.db.Query(ctx, recentRunners, arg.OrgID, arg.DataPlaneID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Runner
+	for rows.Next() {
+		var i Runner
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.DataPlaneID,
+			&i.ID,
+			&i.Release,
+			&i.Protocol,
+			&i.Features,
+			&i.Launchers,
+			&i.Platform,
+			&i.ReportTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reportRunner = `-- name: ReportRunner :exec
+INSERT INTO runners (org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+ON CONFLICT (org_id, data_plane_id, id) DO UPDATE SET
+    release = EXCLUDED.release, protocol = EXCLUDED.protocol, features = EXCLUDED.features,
+    launchers = EXCLUDED.launchers, platform = EXCLUDED.platform, report_time = now()
+`
+
+type ReportRunnerParams struct {
+	OrgID       uuid.UUID
+	DataPlaneID string
+	ID          string
+	Release     string
+	Protocol    string
+	Features    []string
+	Launchers   []string
+	Platform    string
+}
+
+func (q *Queries) ReportRunner(ctx context.Context, arg ReportRunnerParams) error {
+	_, err := q.db.Exec(ctx, reportRunner,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.ID,
+		arg.Release,
+		arg.Protocol,
+		arg.Features,
+		arg.Launchers,
+		arg.Platform,
+	)
+	return err
 }

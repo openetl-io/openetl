@@ -9,11 +9,19 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
+
+// Supports reports whether h's platform has feature, an addition to the
+// protocol after its baseline. A host that doesn't say has none.
+func Supports(h Host, feature string) bool {
+	f, ok := h.(interface{ Features() []string })
+	return ok && slices.Contains(f.Features(), feature)
+}
 
 type Host interface {
 	// HTTP sends req, retrying within its budget. A final status of 400 or

@@ -120,9 +120,14 @@ func TestCollapse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			name := unique("collapse-" + tc.name)
 			res := applyAll(t, false, collapseDocs(t, name, faker, tc.stream)...)
-			plan := res.GetPlans()[0]
-			if len(plan.GetWarnings()) != 1 || plan.GetWarnings()[0].GetStream() != "users" || !strings.Contains(plan.GetWarnings()[0].GetMessage(), tc.warning) {
-				t.Errorf("warnings %v, want one for users that says %q", plan.GetWarnings(), tc.warning)
+			var users []*apiv1.PlanWarning
+			for _, w := range res.GetPlans()[0].GetWarnings() {
+				if w.GetStream() != "" {
+					users = append(users, w)
+				}
+			}
+			if len(users) != 1 || users[0].GetStream() != "users" || !strings.Contains(users[0].GetMessage(), tc.warning) {
+				t.Errorf("warnings %v, want one for users that says %q", users, tc.warning)
 			}
 			if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
 				t.Fatalf("first sync %s: %s", status, stats)

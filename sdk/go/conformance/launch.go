@@ -35,6 +35,10 @@ const (
 	maxOutput     = 1 << 20
 )
 
+// Host is what the kit tells a connector about its platform in Spec. A
+// platform's own tools set theirs.
+var Host = &protocolv1.Host{Version: "dev", Protocol: "v1"}
+
 // The runner passes a connector only these of its environment.
 var passEnv = []string{"PATH", "HOME", "TMPDIR", "TZ", "LANG", "SSL_CERT_FILE", "SSL_CERT_DIR"}
 
@@ -223,7 +227,7 @@ func (p *proc) bind(ctx context.Context, config []byte) error {
 		return err
 	}
 	p.conn = conn
-	spec, err := protocolv1.NewConnectorServiceClient(conn).Spec(ctx, &protocolv1.SpecRequest{})
+	spec, err := protocolv1.NewConnectorServiceClient(conn).Spec(ctx, &protocolv1.SpecRequest{Host: Host})
 	if err != nil {
 		return fmt.Errorf("spec: %w", rpcerr.FromStatus(err))
 	}

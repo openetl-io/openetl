@@ -45,7 +45,7 @@ func (c *common) process(t T) Process {
 		defer cancel()
 		c.proc, c.procErr = c.launch(ctx, c.config)
 		if c.procErr == nil {
-			c.spec, c.procErr = protocolv1.NewConnectorServiceClient(c.proc.Conn()).Spec(ctx, &protocolv1.SpecRequest{})
+			c.spec, c.procErr = protocolv1.NewConnectorServiceClient(c.proc.Conn()).Spec(ctx, &protocolv1.SpecRequest{Host: Host})
 			c.procErr = rpcerr.FromStatus(c.procErr)
 		}
 	}
