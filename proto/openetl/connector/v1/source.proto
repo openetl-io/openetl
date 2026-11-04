@@ -40,7 +40,10 @@ message CatalogStream {
   bytes json_schema = 2;
   // Declared logical types, by field name, as an Arrow IPC stream with no
   // batches; empty: inferred from the records. Rows on either lane may carry
-  // a declared field as text, which the platform parses.
+  // a declared field as text, which the platform parses. A stream the
+  // source can read with cdc also declares its op and seq control columns
+  // here, marked as in its batches, since the platform needs seq's type
+  // before the stream's first batch.
   bytes arrow_schema = 3;
   repeated string primary_key = 4;
   // How the source can read the stream, the way it reads it first; empty if

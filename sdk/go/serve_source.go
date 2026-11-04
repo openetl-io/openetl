@@ -35,7 +35,15 @@ func (s *sourceServer) Discover(ctx context.Context, req *protocolv1.DiscoverReq
 	}
 	pc := &protocolv1.Catalog{}
 	for _, cs := range cat.Streams {
-		schema, err := arrowipc.EncodeSchema(cs.Schema)
+		declared := cs.Schema
+		if cs.Seq != nil {
+			var fields []arrow.Field
+			if declared != nil {
+				fields = declared.Fields()
+			}
+			declared = arrow.NewSchema(append(fields, source.OpField(), source.SeqField(cs.Seq)), nil)
+		}
+		schema, err := arrowipc.EncodeSchema(declared)
 		if err != nil {
 			return nil, status(err)
 		}

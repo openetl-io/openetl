@@ -50,7 +50,8 @@ message Schema {
   string name = 1;
   bytes arrow = 2;
   // The stream is a changelog: _openetl_op is set on each row, and maps to
-  // Flink's row kinds.
+  // Flink's row kinds. Outputs are changelogs when any stream is, so a job
+  // may delete from them, whatever they're written with.
   bool changelog = 3;
   repeated string primary_key = 4;
 }

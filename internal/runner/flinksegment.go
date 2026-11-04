@@ -464,6 +464,15 @@ func (s *flinkSegment) prime(ctx context.Context, from <-chan Frame, to chan<- F
 		for _, st := range s.a.job.Streams {
 			f := Frame{Kind: FrameRows, Stream: st.Name, Rows: []json.RawMessage{}}
 			if sc := st.Declared(); sc != nil {
+				// A changelog's batches carry op and seq. Without seq's
+				// type, the stream's schema is learned from its first batch.
+				if st.Read == source.CDC {
+					if st.Seq == nil {
+						continue
+					}
+					md := sc.Metadata()
+					sc = arrow.NewSchema(append(sc.Fields(), source.OpField(), source.SeqField(st.Seq)), &md)
+				}
 				b := array.NewRecordBuilder(memory.DefaultAllocator, sc)
 				f = Frame{Kind: FrameBatch, Stream: st.Name, Batch: b.NewRecordBatch()}
 				b.Release()

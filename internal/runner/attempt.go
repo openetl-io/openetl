@@ -38,6 +38,8 @@ type Stream struct {
 	CursorField string
 	// Declared logical types under source names; nil: inferred.
 	Schema *arrow.Schema
+	// Its seq control column's type, if the source declares one.
+	Seq arrow.DataType
 	// Decimal columns that arrive as another type instead, by source name:
 	// String or Float64.
 	Overrides map[string]arrow.DataType

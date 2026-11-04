@@ -98,6 +98,7 @@ type Cluster struct {
 
 	mu         sync.Mutex
 	jobs       map[string]*Job
+	described  *bridgev1.DescribeResponse
 	completed  map[string][]runner.FlinkCheckpoint
 	savepoints map[string]savepoint
 	deploys    int
@@ -154,6 +155,13 @@ func (c *Cluster) logf(format string, args ...any) {
 }
 
 // Deploys counts the jobs deployed.
+// Described is what the runner last described to a job's tasks.
+func (c *Cluster) Described() *bridgev1.DescribeResponse {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.described
+}
+
 func (c *Cluster) Deploys() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -421,6 +429,9 @@ func (r *taskRun) tasks() error {
 	if err != nil {
 		return err
 	}
+	j.cluster.mu.Lock()
+	j.cluster.described = desc
+	j.cluster.mu.Unlock()
 	if err := r.point("flink.hello", nil); err != nil {
 		return err
 	}

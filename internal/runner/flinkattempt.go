@@ -719,11 +719,15 @@ func (a *flinkAttempt) Describe(context.Context, *bridgev1.DescribeRequest) (*br
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	res := &bridgev1.DescribeResponse{Pipeline: a.job.Pipeline}
+	changelog := false
 	for _, s := range a.job.Streams {
 		res.Streams = append(res.Streams, &bridgev1.Schema{Name: s.Name, Arrow: a.schemas[s.Name], Changelog: s.Read == source.CDC, PrimaryKey: s.PrimaryKey})
+		changelog = changelog || s.Read == source.CDC
 	}
+	// Over a changelog, outputs keep each row's op, appended ones too, as
+	// they would without the transform.
 	for _, o := range a.job.Outputs {
-		res.Outputs = append(res.Outputs, &bridgev1.Schema{Name: o.Name, PrimaryKey: o.PrimaryKey, Changelog: o.Read == source.CDC})
+		res.Outputs = append(res.Outputs, &bridgev1.Schema{Name: o.Name, PrimaryKey: o.PrimaryKey, Changelog: changelog})
 	}
 	return res, nil
 }

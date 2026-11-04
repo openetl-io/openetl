@@ -203,7 +203,10 @@ func (d *exactDest) count() int {
 }
 
 type flinkCase struct {
-	streams  []string
+	streams []string
+	// Streams read with CDC, and the seq type each declares.
+	cdc      map[string]arrow.DataType
+	flow     runner.Dataflow
 	rows     int
 	faults   flinktest.Faults
 	lost     bool
@@ -221,8 +224,16 @@ func runFlinkCase(t *testing.T, c flinkCase) (*exactDest, *checkpoint.Log, *flin
 	dest.lost = c.lost
 	var streams, outputs []runner.Stream
 	for _, s := range c.streams {
-		streams = append(streams, runner.Stream{Name: s, Replay: source.Exact, Read: source.Incremental, Mode: destination.Append, Schema: idSchema})
+		st := runner.Stream{Name: s, Replay: source.Exact, Read: source.Incremental, Mode: destination.Append, Schema: idSchema}
+		if seq, ok := c.cdc[s]; ok {
+			st.Read, st.Seq = source.CDC, seq
+		}
+		streams = append(streams, st)
 		outputs = append(outputs, runner.Stream{Name: s, Replay: source.Exact, Mode: destination.Append, Transformed: true})
+	}
+	var flow runner.Dataflow = runner.Passthrough{Convert: idRows}
+	if c.flow != nil {
+		flow = c.flow
 	}
 	job := func(owner string, drain <-chan struct{}) runner.Job {
 		return runner.Job{
@@ -231,7 +242,7 @@ func runFlinkCase(t *testing.T, c flinkCase) (*exactDest, *checkpoint.Log, *flin
 			Streams:     streams,
 			Outputs:     outputs,
 			Destination: dest,
-			Dataflow:    runner.Passthrough{Convert: idRows},
+			Dataflow:    flow,
 			Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline, CommitInterval: 10 * time.Millisecond},
 			Flink:       cluster,
 			Bridge:      bridge,
@@ -283,6 +294,75 @@ func TestFlinkPassesEveryRowOnce(t *testing.T) {
 			t.Errorf("the drain's record: %+v", rec.Flink)
 		}
 	})
+}
+
+// Before any row, the first dataflow learns each stream's schema from an
+// empty batch of its declared one. A changelog's batch carries op and seq,
+// so a CDC stream that declares seq's type gets them, and one that doesn't
+// is learned from its first batch. Outputs over changelogs are changelogs
+// too, appended ones included, so the job may delete from them.
+func TestFlinkPrimesChangelogsWithTheirControlColumns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		flow := &primerFlow{Passthrough: runner.Passthrough{Convert: idRows}, first: map[string]runner.Frame{}}
+		seq := &arrow.Decimal128Type{Precision: 38, Scale: 0}
+		_, _, cluster := runFlinkCase(t, flinkCase{streams: []string{"a", "b"}, rows: 40, cdc: map[string]arrow.DataType{"a": seq, "b": nil}, flow: flow})
+		for _, o := range cluster.Described().GetOutputs() {
+			if !o.GetChangelog() {
+				t.Errorf("appended output %s over changelogs isn't one", o.GetName())
+			}
+		}
+		a, b := flow.first["a"], flow.first["b"]
+		if a.Kind != runner.FrameBatch || a.Batch.NumRows() != 0 {
+			t.Fatalf("a's first frame: %+v", a)
+		}
+		controls := map[string]arrow.DataType{}
+		for _, f := range a.Batch.Schema().Fields() {
+			if c, ok := f.Metadata.GetValue(source.ControlKey); ok {
+				controls[c] = f.Type
+			}
+		}
+		if len(controls) != 2 || !arrow.TypeEqual(controls["op"], arrow.BinaryTypes.String) || !arrow.TypeEqual(controls["seq"], seq) {
+			t.Errorf("a's primer has control columns %v", controls)
+		}
+		if (b.Kind == runner.FrameBatch && b.Batch.NumRows() == 0) || (b.Kind == runner.FrameRows && len(b.Rows) == 0) {
+			t.Errorf("b, without seq's type, was primed: %+v", b)
+		}
+	})
+}
+
+// primerFlow records each stream's first frame into the first dataflow, and
+// passes primers on without their control columns, as the engine splits
+// them off.
+type primerFlow struct {
+	runner.Passthrough
+	mu    sync.Mutex
+	first map[string]runner.Frame
+}
+
+func (p *primerFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+	if !plan.ReportSchemas {
+		return p.Passthrough.Run(ctx, plan, in, out)
+	}
+	mid := make(chan runner.Frame)
+	go func() {
+		defer close(mid)
+		for f := range in {
+			p.mu.Lock()
+			if _, ok := p.first[f.Stream]; !ok && f.Stream != "" {
+				p.first[f.Stream] = f
+			}
+			p.mu.Unlock()
+			if f.Kind == runner.FrameBatch && f.Batch.NumRows() == 0 {
+				f.Batch = array.NewRecordBatch(idSchema, []arrow.Array{array.NewInt64Builder(memory.DefaultAllocator).NewArray()}, 0)
+			}
+			select {
+			case mid <- f:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return p.Passthrough.Run(ctx, plan, mid, out)
 }
 
 func TestFlinkTaskFailuresRestoreInPlace(t *testing.T) {

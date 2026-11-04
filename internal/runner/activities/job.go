@@ -88,6 +88,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			PrimaryKey:           cs.PrimaryKey,
 			CursorField:          cursor,
 			Schema:               cs.Schema,
+			Seq:                  cs.Seq,
 			NanosecondTimestamps: ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
 			Require:              plan.Level(ps.GetRequire()),
 			Deletes:              deletes,

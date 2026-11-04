@@ -106,6 +106,32 @@ func controlField(name string, t arrow.DataType, control string) arrow.Field {
 	return arrow.Field{Name: name, Type: t, Nullable: true, Metadata: arrow.NewMetadata([]string{ControlKey}, []string{control})}
 }
 
+// SplitDeclared splits a stream's declared schema, as Discover sends it, into
+// its fields and the type of its seq control column, if it declares one.
+func SplitDeclared(s *arrow.Schema) (*arrow.Schema, arrow.DataType) {
+	if s == nil {
+		return nil, nil
+	}
+	var fields []arrow.Field
+	var seq arrow.DataType
+	for _, f := range s.Fields() {
+		switch c, ok := f.Metadata.GetValue(ControlKey); {
+		case !ok:
+			fields = append(fields, f)
+		case c == "seq":
+			seq = f.Type
+		}
+	}
+	if len(fields) == s.NumFields() {
+		return s, nil
+	}
+	if len(fields) == 0 {
+		return nil, seq
+	}
+	md := s.Metadata()
+	return arrow.NewSchema(fields, &md), seq
+}
+
 // Emitter receives what a source reads. Its methods block under
 // backpressure, and fail once the read is cancelled; Read returns that error.
 type Emitter interface {
@@ -174,6 +200,9 @@ type CatalogStream struct {
 	// How the source can read the stream, the way it reads it first; nil if
 	// it doesn't say.
 	SyncModes []SyncMode
+	// The type of its seq control column, when it's read with CDC. The
+	// platform needs it before the stream's first batch.
+	Seq arrow.DataType
 }
 
 type Catalog struct {

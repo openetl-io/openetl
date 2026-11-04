@@ -180,7 +180,8 @@ type Schema struct {
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Arrow []byte                 `protobuf:"bytes,2,opt,name=arrow,proto3" json:"arrow,omitempty"`
 	// The stream is a changelog: _openetl_op is set on each row, and maps to
-	// Flink's row kinds.
+	// Flink's row kinds. Outputs are changelogs when any stream is, so a job
+	// may delete from them, whatever they're written with.
 	Changelog     bool     `protobuf:"varint,3,opt,name=changelog,proto3" json:"changelog,omitempty"`
 	PrimaryKey    []string `protobuf:"bytes,4,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
 	unknownFields protoimpl.UnknownFields

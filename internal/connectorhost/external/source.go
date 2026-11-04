@@ -120,8 +120,8 @@ func (s *Source) Discover(ctx context.Context) (source.Catalog, error) {
 			PrimaryKey:  cs.GetPrimaryKey(),
 			CursorField: cs.GetDefaultCursor(),
 			Replay:      source.Replay(cs.GetReplay()),
-			Schema:      schema,
 		}
+		st.Schema, st.Seq = source.SplitDeclared(schema)
 		for _, m := range cs.GetSyncModes() {
 			st.SyncModes = append(st.SyncModes, source.SyncMode(m))
 		}

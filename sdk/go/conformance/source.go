@@ -143,7 +143,7 @@ func (r *sourceRun) checkDiscover(t T) {
 			sch, err := arrowipc.DecodeSchema(b)
 			if err != nil {
 				t.Errorf("%s: the Arrow schema doesn't decode: %v", name, err)
-			} else {
+			} else if sch, _ = source.SplitDeclared(sch); sch != nil {
 				for _, f := range sch.Fields() {
 					fields[f.Name] = true
 				}
@@ -300,6 +300,7 @@ func (r *sourceRun) checkFull(t T) {
 		if err != nil {
 			continue
 		}
+		decl, _ = source.SplitDeclared(decl)
 		checkRecords(t, name, decl, events)
 		checkKeys(t, name, cat[name].GetPrimaryKey(), cs.GetSyncMode(), events)
 	}

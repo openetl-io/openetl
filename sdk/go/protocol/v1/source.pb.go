@@ -312,7 +312,10 @@ type CatalogStream struct {
 	JsonSchema []byte `protobuf:"bytes,2,opt,name=json_schema,json=jsonSchema,proto3" json:"json_schema,omitempty"`
 	// Declared logical types, by field name, as an Arrow IPC stream with no
 	// batches; empty: inferred from the records. Rows on either lane may carry
-	// a declared field as text, which the platform parses.
+	// a declared field as text, which the platform parses. A stream the
+	// source can read with cdc also declares its op and seq control columns
+	// here, marked as in its batches, since the platform needs seq's type
+	// before the stream's first batch.
 	ArrowSchema []byte   `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
 	PrimaryKey  []string `protobuf:"bytes,4,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
 	// How the source can read the stream, the way it reads it first; empty if
