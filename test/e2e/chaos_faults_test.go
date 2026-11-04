@@ -60,7 +60,8 @@ type faultBook struct {
 }
 
 type pipeFaults struct {
-	armed string
+	// Crash points armed, in the order they fire.
+	armed []string
 	// The chance that a request under the pipeline gets an injected
 	// object-store fault.
 	noise float64
@@ -102,10 +103,7 @@ func (b *faultBook) arm(pipeline, point string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if f := b.pipes[pipeline]; f != nil {
-		if f.armed != "" {
-			f.counts["missed crash "+f.armed]++
-		}
-		f.armed = point
+		f.armed = append(f.armed, point)
 	}
 }
 
@@ -114,10 +112,10 @@ func (b *faultBook) quiet(pipeline string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if f := b.pipes[pipeline]; f != nil {
-		if f.armed != "" {
-			f.counts["missed crash "+f.armed]++
+		for _, p := range f.armed {
+			f.counts["missed crash "+p]++
 		}
-		f.armed, f.noise = "", 0
+		f.armed, f.noise = nil, 0
 	}
 }
 
@@ -136,19 +134,23 @@ func (b *faultBook) decide(slot int, pipeline string, kind int) action {
 	if f == nil {
 		return action{}
 	}
+	armed := ""
+	if len(f.armed) > 0 {
+		armed = f.armed[0]
+	}
 	fire := func(a action) action {
-		f.counts["crash "+f.armed]++
-		f.armed = ""
+		f.counts["crash "+armed]++
+		f.armed = f.armed[1:]
 		return a
 	}
 	switch {
-	case f.armed == crashStaged && kind == reqRecord:
+	case armed == crashStaged && kind == reqRecord:
 		return fire(action{kind: actKillBefore})
-	case f.armed == crashRecorded && kind == reqRecord:
+	case armed == crashRecorded && kind == reqRecord:
 		return fire(action{kind: actKillAfter})
-	case f.armed == crashHead && kind == reqHead && f.recorded[slot]:
+	case armed == crashHead && kind == reqHead && f.recorded[slot]:
 		return fire(action{kind: actKillAfter})
-	case f.armed == crashCommit && kind == reqHead && f.recorded[slot]:
+	case armed == crashCommit && kind == reqHead && f.recorded[slot]:
 		return fire(action{kind: actKillLater, later: upTo(b.rng, 300*time.Millisecond)})
 	}
 	if f.noise == 0 || b.rng.Float64() >= f.noise {

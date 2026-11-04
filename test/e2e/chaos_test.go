@@ -132,7 +132,12 @@ func (c chaosConfig) pipelineDoc(name, pipeSource, pipeDest string) string {
 	if c.maxBytes != "" {
 		commit["maxBytes"] = c.maxBytes
 	}
-	spec := map[string]any{"source": src, "destination": dst, "delivery": map[string]any{"require": "exactly_once", "commit": commit}}
+	// A superset stream merged by key is effectively once at most.
+	require := "exactly_once"
+	if c.source == "incremental" && c.write == "merge" {
+		require = "effectively_once"
+	}
+	spec := map[string]any{"source": src, "destination": dst, "delivery": map[string]any{"require": require, "commit": commit}}
 	if c.continuous {
 		spec["mode"] = "continuous"
 	} else {
