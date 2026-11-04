@@ -36,6 +36,11 @@ func TestBindSecrets(t *testing.T) {
 		{name: "a bad name", config: `{"dsn": {"secret": "Bad_Name"}}`, props: []string{"dsn"}, known: true, err: "lowercase"},
 		{name: "not a secret property", config: `{"opts": {"secret": "x"}}`, known: true, want: []string{}, masked: `{"opts":{"secret":"x"}}`},
 		{name: "an unknown schema", config: `{"dsn": {"secret": "pg"}, "token": "t"}`, want: []string{"pg"}, masked: `{"dsn":"secret","token":"t"}`},
+		{name: "a nested secret", config: `{"auth": {"oauth": {"client_secret": {"secret": "cs"}, "client_id": "id"}}}`, props: []string{"auth.oauth.client_secret", "auth.password"}, known: true,
+			want: []string{"cs"}, masked: `{"auth":{"oauth":{"client_id":"id","client_secret":"secret"}}}`},
+		{name: "a nested value", config: `{"auth": {"password": "hunter2"}}`, props: []string{"auth.password"}, known: true, err: "config.auth.password is a secret"},
+		{name: "nested, unknown schema", config: `{"auth": {"token": {"secret": "tk"}}, "hosts": [{"secret": "no"}]}`, want: []string{"tk"},
+			masked: `{"auth":{"token":"secret"},"hosts":[{"secret":"no"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			names, masked, err := bindSecrets(config(tc.config), tc.props, tc.known)

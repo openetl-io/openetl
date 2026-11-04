@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	sdk "github.com/unsuitable001/openetl/sdk/go"
+	"github.com/unsuitable001/openetl/sdk/go/configschema"
 	"github.com/unsuitable001/openetl/sdk/go/internal/rpcerr"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
@@ -263,36 +264,35 @@ func (p *proc) cleanup() {
 	_ = os.RemoveAll(p.dir)
 }
 
-// splitSecrets replaces each top-level property the schema marks x-secret
-// with its name, and returns the values by name, as the runner does.
+// splitSecrets replaces each property the schema marks x-secret, at any
+// depth, with its dotted path, and returns the values by path, as the runner
+// does.
 func splitSecrets(schema, config []byte) ([]byte, map[string]string, error) {
 	secrets := map[string]string{}
 	if len(schema) == 0 || len(bytes.TrimSpace(config)) == 0 {
 		return config, secrets, nil
 	}
-	var s struct {
-		Properties map[string]struct {
-			Secret bool `json:"x-secret"`
-		} `json:"properties"`
+	paths, err := configschema.SecretPaths(schema)
+	if err != nil {
+		return nil, nil, err
 	}
-	if err := json.Unmarshal(schema, &s); err != nil {
-		return nil, nil, fmt.Errorf("config schema: %w", err)
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(config, &m); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(config))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
 		return nil, nil, fmt.Errorf("the config isn't a JSON object: %w", err)
 	}
-	for k, prop := range s.Properties {
-		v, ok := m[k]
-		if !prop.Secret || !ok {
+	for _, k := range paths {
+		v, ok := configschema.Lookup(m, k)
+		if !ok {
 			continue
 		}
-		var value string
-		if err := json.Unmarshal(v, &value); err != nil {
+		value, ok := v.(string)
+		if !ok {
 			return nil, nil, fmt.Errorf("config.%s is a secret, so a string", k)
 		}
 		secrets[k] = value
-		m[k], _ = json.Marshal(k)
+		configschema.Replace(m, k, k)
 	}
 	out, err := json.Marshal(m)
 	return out, secrets, err

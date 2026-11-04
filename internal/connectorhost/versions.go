@@ -103,6 +103,8 @@ func ParseVersion(content []byte) (*Version, error) {
 				}
 			} else if _, err := external.CompileSchema(r.Spec.GetConfigSchema()); err != nil {
 				return nil, fmt.Errorf("roles.%s.config: %w", name, err)
+			} else if _, err := external.SecretProperties(r.Spec.GetConfigSchema()); err != nil {
+				return nil, fmt.Errorf("roles.%s.config: %w", name, err)
 			}
 			v.Roles[name] = role
 		}

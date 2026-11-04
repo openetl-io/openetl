@@ -3,7 +3,6 @@ package external
 import (
 	"bytes"
 	"encoding/json"
-	"slices"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -11,11 +10,12 @@ import (
 	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	sdk "github.com/unsuitable001/openetl/sdk/go"
+	"github.com/unsuitable001/openetl/sdk/go/configschema"
 )
 
-// splitSecrets moves the config's secrets, the top-level properties the
-// schema marks x-secret, into host services, and leaves each one's property
-// name in its place as the secret's name.
+// splitSecrets moves the config's secrets, the properties the schema marks
+// x-secret at any depth, into host services, and leaves each one's dotted
+// path in its place as the secret's name.
 func splitSecrets(schema, config []byte) ([]byte, hostservices.StaticSecrets, error) {
 	secrets := hostservices.StaticSecrets{}
 	if len(schema) == 0 || len(bytes.TrimSpace(config)) == 0 {
@@ -25,52 +25,33 @@ func splitSecrets(schema, config []byte) ([]byte, hostservices.StaticSecrets, er
 	if err != nil {
 		return nil, nil, err
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(config, &m); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(config))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
 		return nil, nil, errs.New(errs.ConfigInvalid, "connector: the config isn't a JSON object")
 	}
 	for _, k := range props {
-		v, ok := m[k]
+		v, ok := configschema.Lookup(m, k)
 		if !ok {
 			continue
 		}
-		var value string
-		if err := json.Unmarshal(v, &value); err != nil {
+		value, ok := v.(string)
+		if !ok {
 			return nil, nil, errs.New(errs.ConfigInvalid, "connector: config.%s is a secret, so a string", k)
 		}
 		secrets[k] = sdk.NewSecret(value)
-		name, err := json.Marshal(k)
-		if err != nil {
-			return nil, nil, err
-		}
-		m[k] = name
+		configschema.Replace(m, k, k)
 	}
 	out, err := json.Marshal(m)
 	return out, secrets, err
 }
 
-// SecretProperties lists the top-level properties a config schema marks
-// x-secret.
+// SecretProperties lists the properties a config schema marks x-secret, as
+// dotted paths, at any depth. A secret inside an array is an error.
 func SecretProperties(schema []byte) ([]string, error) {
-	if len(schema) == 0 {
-		return nil, nil
-	}
-	var s struct {
-		Properties map[string]struct {
-			Secret bool `json:"x-secret"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(schema, &s); err != nil {
-		return nil, errs.Wrap(errs.ConfigInvalid, err, "connector: config schema")
-	}
-	var props []string
-	for k, p := range s.Properties {
-		if p.Secret {
-			props = append(props, k)
-		}
-	}
-	slices.Sort(props)
-	return props, nil
+	props, err := configschema.SecretPaths(schema)
+	return props, errs.Wrap(errs.ConfigInvalid, err, "connector")
 }
 
 // CompileSchema checks that schema, a connector's config schema, is a JSON

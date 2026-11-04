@@ -381,7 +381,7 @@ func (x *PinnedSparkCluster) GetSecrets() []*ExternalSecret {
 // keeps its {"secret": NAME} until the runner reads the store.
 type ExternalSecret struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The config's top-level field.
+	// The config field, as a dotted path such as auth.client_secret.
 	Field string `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
 	// workspaces/{workspace}/secrets/{secret}
 	Secret string `protobuf:"bytes,2,opt,name=secret,proto3" json:"secret,omitempty"`

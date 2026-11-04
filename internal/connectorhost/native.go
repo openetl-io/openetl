@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	"github.com/unsuitable001/openetl/connectors/native/faker"
 	"github.com/unsuitable001/openetl/connectors/native/stdout"
 	"github.com/unsuitable001/openetl/internal/connectorhost/external"
@@ -279,4 +281,38 @@ func shortName(name string) string {
 func SplitRef(connector string) (name, ref string) {
 	name, ref, _ = strings.Cut(connector, "@")
 	return name, ref
+}
+
+// ConfigValue is the value at a dotted path in a config, such as
+// auth.client_secret.
+func ConfigValue(cfg *structpb.Struct, path string) (*structpb.Value, bool) {
+	parent, key, ok := configParent(cfg, path)
+	if !ok {
+		return nil, false
+	}
+	v, ok := parent.GetFields()[key]
+	return v, ok
+}
+
+// SetConfigValue sets the value at a dotted path that's already set, and
+// reports whether it was.
+func SetConfigValue(cfg *structpb.Struct, path string, v *structpb.Value) bool {
+	parent, key, ok := configParent(cfg, path)
+	if _, set := parent.GetFields()[key]; !ok || !set {
+		return false
+	}
+	parent.Fields[key] = v
+	return true
+}
+
+func configParent(cfg *structpb.Struct, path string) (*structpb.Struct, string, bool) {
+	parts := strings.Split(path, ".")
+	for _, p := range parts[:len(parts)-1] {
+		next := cfg.GetFields()[p].GetStructValue()
+		if next == nil {
+			return nil, "", false
+		}
+		cfg = next
+	}
+	return cfg, parts[len(parts)-1], true
 }

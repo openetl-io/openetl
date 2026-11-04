@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/spec"
@@ -282,30 +284,58 @@ func secretRef(v *structpb.Value) (string, bool) {
 	return name.StringValue, true
 }
 
+// secretRefs are the {"secret": NAME} values in a config's objects, by dotted
+// path.
+func secretRefs(cfg *structpb.Struct, prefix string) map[string]*structpb.Value {
+	refs := map[string]*structpb.Value{}
+	for k, v := range cfg.GetFields() {
+		if _, ok := secretRef(v); ok {
+			refs[prefix+k] = v
+		} else if sv := v.GetStructValue(); sv != nil {
+			maps.Copy(refs, secretRefs(sv, prefix+k+"."))
+		}
+	}
+	return refs
+}
+
 // bindSecrets checks a config's secret references. With the connector's
-// secret properties known, each one the config sets must name a secret as
-// {"secret": NAME}; with them unknown, any top-level {"secret": NAME} names
-// one. It returns the secrets named, and the config with a placeholder for
-// each, to validate.
+// secret properties known, as dotted paths, each one the config sets must
+// name a secret as {"secret": NAME}; with them unknown, any {"secret": NAME}
+// in an object names one. It returns the secrets named, and the config with
+// a placeholder for each, to validate.
 func bindSecrets(config *structpb.Struct, props []string, known bool) ([]string, *structpb.Struct, error) {
 	names := []string{}
-	out := &structpb.Struct{Fields: map[string]*structpb.Value{}}
-	for k, v := range config.GetFields() {
-		out.Fields[k] = v
-		name, ok := secretRef(v)
-		secret := slices.Contains(props, k)
-		switch {
-		case known && !secret:
-			continue
-		case !ok && secret:
-			return nil, nil, invalid("config.%s is a secret, so the config names it as {secret: NAME}; store its value with openetl secret set NAME", k)
-		case !ok:
-			continue
-		case !spec.ValidName(name):
-			return nil, nil, invalid("config.%s: secret name %q must be lowercase letters, digits and dashes", k, name)
+	var walk func(in *structpb.Struct, prefix string) (*structpb.Struct, error)
+	walk = func(in *structpb.Struct, prefix string) (*structpb.Struct, error) {
+		out := &structpb.Struct{Fields: map[string]*structpb.Value{}}
+		for k, v := range in.GetFields() {
+			path := prefix + k
+			out.Fields[k] = v
+			name, ok := secretRef(v)
+			secret := slices.Contains(props, path)
+			switch {
+			case !ok && secret:
+				return nil, invalid("config.%s is a secret, so the config names it as {secret: NAME}; store its value with openetl secret set NAME", path)
+			case !ok || known && !secret:
+				if sv := v.GetStructValue(); sv != nil {
+					inner, err := walk(sv, path+".")
+					if err != nil {
+						return nil, err
+					}
+					out.Fields[k] = structpb.NewStructValue(inner)
+				}
+				continue
+			case !spec.ValidName(name):
+				return nil, invalid("config.%s: secret name %q must be lowercase letters, digits and dashes", path, name)
+			}
+			names = append(names, name)
+			out.Fields[k] = structpb.NewStringValue("secret")
 		}
-		names = append(names, name)
-		out.Fields[k] = structpb.NewStringValue("secret")
+		return out, nil
+	}
+	out, err := walk(config, "")
+	if err != nil {
+		return nil, nil, err
 	}
 	slices.Sort(names)
 	return slices.Compact(names), out, nil
@@ -345,9 +375,9 @@ func (s *Server) resolveSecrets(ctx context.Context, what string, wsID uuid.UUID
 		byName[r.Name] = r
 	}
 	var external []*dataplanev1.ExternalSecret
-	for k, v := range cfg.GetConfig().GetFields() {
-		name, ok := secretRef(v)
-		if !ok || !slices.Contains(names, name) {
+	for k, v := range secretRefs(cfg.GetConfig(), "") {
+		name, _ := secretRef(v)
+		if !slices.Contains(names, name) {
 			continue
 		}
 		r, ok := byName[name]
@@ -367,7 +397,7 @@ func (s *Server) resolveSecrets(ctx context.Context, what string, wsID uuid.UUID
 		if err != nil {
 			return nil, err
 		}
-		cfg.Config.Fields[k] = structpb.NewStringValue(string(value))
+		connectorhost.SetConfigValue(cfg.Config, k, structpb.NewStringValue(string(value)))
 	}
 	slices.SortFunc(external, func(a, b *dataplanev1.ExternalSecret) int { return strings.Compare(a.GetField(), b.GetField()) })
 	return external, nil

@@ -428,7 +428,7 @@ func syncSpec(ctx context.Context, api dataplanev1connect.DataPlaneServiceClient
 // store to its value, read with the runner's cloud identity.
 func readSecrets(ctx context.Context, r *secretstore.Reader, cfg *apiv1.ConnectorConfig, external []*dataplanev1.ExternalSecret) error {
 	for _, e := range external {
-		if _, ok := cfg.GetConfig().GetFields()[e.GetField()]; !ok {
+		if _, ok := connectorhost.ConfigValue(cfg.GetConfig(), e.GetField()); !ok {
 			return errs.New(errs.Internal, "config.%s names %s, but the config has no such field", e.GetField(), e.GetSecret())
 		}
 		if r == nil {
@@ -438,7 +438,7 @@ func readSecrets(ctx context.Context, r *secretstore.Reader, cfg *apiv1.Connecto
 		if err != nil {
 			return fmt.Errorf("config.%s names %s: %w", e.GetField(), e.GetSecret(), err)
 		}
-		cfg.Config.Fields[e.GetField()] = structpb.NewStringValue(v)
+		connectorhost.SetConfigValue(cfg.Config, e.GetField(), structpb.NewStringValue(v))
 	}
 	return nil
 }

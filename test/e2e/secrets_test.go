@@ -57,7 +57,9 @@ func TestSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := protojson.Marshal(got.Msg)
+	// Only the spec: the connector's name and repository have "openetl" in
+	// them, which is the test database's password.
+	b, err := protojson.Marshal(got.Msg.GetDestination().GetSpec())
 	if err != nil {
 		t.Fatal(err)
 	}

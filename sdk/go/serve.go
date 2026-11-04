@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/unsuitable001/openetl/sdk/go/configschema"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/host"
 	"github.com/unsuitable001/openetl/sdk/go/internal/rpcerr"
@@ -183,29 +184,15 @@ type base struct {
 	protocolv1.UnimplementedConnectorServiceServer
 	c    Connector
 	host *host.Client
-	// Top-level config properties that hold secret names.
+	// Config properties that hold secret names, as dotted paths.
 	secrets []string
 }
 
 func newBase(c Connector) (*base, error) {
 	b := &base{c: c}
-	if len(c.ConfigSchema) == 0 {
-		return b, nil
-	}
-	var schema struct {
-		Properties map[string]struct {
-			Secret bool `json:"x-secret"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(c.ConfigSchema, &schema); err != nil {
-		return nil, fmt.Errorf("config schema: %w", err)
-	}
-	for name, p := range schema.Properties {
-		if p.Secret {
-			b.secrets = append(b.secrets, name)
-		}
-	}
-	return b, nil
+	var err error
+	b.secrets, err = configschema.SecretPaths(c.ConfigSchema)
+	return b, err
 }
 
 func (b *base) Spec(_ context.Context, req *protocolv1.SpecRequest) (*protocolv1.SpecResponse, error) {
@@ -292,26 +279,26 @@ func (b *base) config(ctx context.Context, config []byte) ([]byte, error) {
 	if len(b.secrets) == 0 || b.c.Egress.Tier < EgressProxy || len(bytes.TrimSpace(config)) == 0 {
 		return config, nil
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(config, &m); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(config))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
 		return nil, configError(fmt.Errorf("config: %w", err))
 	}
 	for _, k := range b.secrets {
-		v, ok := m[k]
+		v, ok := configschema.Lookup(m, k)
 		if !ok {
 			continue
 		}
-		var name string
-		if err := json.Unmarshal(v, &name); err != nil {
+		name, ok := v.(string)
+		if !ok {
 			return nil, configError(fmt.Errorf("config.%s must name a secret", k))
 		}
 		val, err := b.host.GetSecret(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf("config.%s: %w", k, err)
 		}
-		if m[k], err = json.Marshal(val); err != nil {
-			return nil, err
-		}
+		configschema.Replace(m, k, val)
 	}
 	return json.Marshal(m)
 }

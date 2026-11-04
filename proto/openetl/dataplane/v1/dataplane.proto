@@ -95,7 +95,7 @@ message PinnedSparkCluster {
 // A config field that names a secret held in a cloud secret store. The field
 // keeps its {"secret": NAME} until the runner reads the store.
 message ExternalSecret {
-  // The config's top-level field.
+  // The config field, as a dotted path such as auth.client_secret.
   string field = 1;
   // workspaces/{workspace}/secrets/{secret}
   string secret = 2;
