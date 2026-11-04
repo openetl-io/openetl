@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,22 @@ import (
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/connectorpkg"
 )
+
+func TestConnectorSchemas(t *testing.T) {
+	for _, kind := range []string{"file", "descriptor", "manifest"} {
+		var buf bytes.Buffer
+		if err := run(t.Context(), []string{"connector", "schema", kind}, &buf); err != nil {
+			t.Fatal(err)
+		}
+		var v map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &v); err != nil || v["$id"] == nil {
+			t.Errorf("%s: %v", kind, err)
+		}
+	}
+	if err := run(t.Context(), []string{"connector", "schema", "pipeline"}, io.Discard); err == nil {
+		t.Error("a schema there isn't")
+	}
+}
 
 func TestPackage(t *testing.T) {
 	files, acme := "../../internal/connectorpkg/testdata/files", "../../internal/connectorpkg/testdata/acme"

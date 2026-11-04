@@ -2,12 +2,15 @@ package spec
 
 import (
 	"bytes"
+	"encoding/json"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+	"go.yaml.in/yaml/v3"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -239,33 +242,40 @@ func TestParsePackage(t *testing.T) {
 	}
 }
 
+// only is pkgDescriptor with one role.
+func only(role string) string {
+	return pkgDescriptor[:strings.Index(pkgDescriptor, "    source:")] + role
+}
+
+// badPackages are descriptors Parse refuses.
+var badPackages = map[string]string{
+	"no repository":     strings.Replace(pkgDescriptor, "  repository: https://github.com/acme/openetl-salesforce\n", "", 1),
+	"no roles":          pkgDescriptor[:strings.Index(pkgDescriptor, "  roles:")] + "  roles: {}\n",
+	"another role":      strings.Replace(pkgDescriptor, "    destination:", "    sink:", 1),
+	"no runtime":        only("    source:\n      requires: {protocol: v1}\n      runtime: {}\n      egress: {tier: host}\n      config: {}\n"),
+	"image tag":         strings.Replace(pkgDescriptor, "ref: ghcr.io/acme/salesforce-source", "ref: ghcr.io/acme/salesforce-source:1.2.0", 1),
+	"image digest":      strings.Replace(pkgDescriptor, `digest: "sha256:2222`, `digest: "sha256:22`, 1),
+	"image platforms":   strings.Replace(pkgDescriptor, "platforms: [linux/amd64, linux/arm64]", "platforms: []", 1),
+	"cpu":               strings.Replace(pkgDescriptor, `cpu: "1"`, `cpu: one`, 1),
+	"memory":            strings.Replace(pkgDescriptor, "memory: 512Mi", "memory: 512MiB", 1),
+	"state reads":       strings.Replace(pkgDescriptor, "state: {version: 2, reads: 1}", "state: {version: 2, reads: 3}", 1),
+	"feature":           strings.Replace(pkgDescriptor, "features: [staged-v2]", "features: [Staged]", 1),
+	"platform":          strings.Replace(pkgDescriptor, "platform: 0.1.0", "platform: latest", 1),
+	"protocol":          strings.Replace(pkgDescriptor, "requires: {protocol: v1}", "requires: {protocol: v2}", 1),
+	"no protocol":       strings.Replace(pkgDescriptor, "requires: {protocol: v1}\n", "", 1),
+	"tags":              strings.Replace(pkgDescriptor, "tags: [crm, saas]", "tags: [CRM]", 1),
+	"license":           strings.Replace(pkgDescriptor, "license: Apache-2.0", "license: 'Apache 2.0, or MIT; \"see\" LICENSE'", 1),
+	"docs":              strings.Replace(pkgDescriptor, "docs: https://github", "docs: http://github", 1),
+	"manifest dest":     strings.Replace(pkgDescriptor, "      runtime:\n        image: {ref: ghcr.io/acme/salesforce-destination", "      runtime:\n        manifest: {a: 1}\n        image: {ref: ghcr.io/acme/salesforce-destination", 1),
+	"manifest and spec": only("    source:\n      runtime:\n        manifest: {a: 1}\n      egress: {tier: host}\n"),
+	"unknown field":     pkgDescriptor + "      heal: true\n",
+	"v1alpha2 source":   "apiVersion: openetl.io/v1alpha2\nkind: Source\nmetadata: {name: s}\nspec: {connector: faker}\n",
+	"bad owner":         strings.Replace(pkgDescriptor, "name: acme/salesforce", "name: Acme/salesforce", 1),
+	"two slashes":       strings.Replace(pkgDescriptor, "name: acme/salesforce", "name: acme/x/salesforce", 1),
+}
+
 func TestParsePackageErrors(t *testing.T) {
-	only := func(role string) string { return pkgDescriptor[:strings.Index(pkgDescriptor, "    source:")] + role }
-	for name, doc := range map[string]string{
-		"no repository":     strings.Replace(pkgDescriptor, "  repository: https://github.com/acme/openetl-salesforce\n", "", 1),
-		"no roles":          pkgDescriptor[:strings.Index(pkgDescriptor, "  roles:")] + "  roles: {}\n",
-		"another role":      strings.Replace(pkgDescriptor, "    destination:", "    sink:", 1),
-		"no runtime":        only("    source:\n      requires: {protocol: v1}\n      runtime: {}\n      egress: {tier: host}\n      config: {}\n"),
-		"image tag":         strings.Replace(pkgDescriptor, "ref: ghcr.io/acme/salesforce-source", "ref: ghcr.io/acme/salesforce-source:1.2.0", 1),
-		"image digest":      strings.Replace(pkgDescriptor, `digest: "sha256:2222`, `digest: "sha256:22`, 1),
-		"image platforms":   strings.Replace(pkgDescriptor, "platforms: [linux/amd64, linux/arm64]", "platforms: []", 1),
-		"cpu":               strings.Replace(pkgDescriptor, `cpu: "1"`, `cpu: one`, 1),
-		"memory":            strings.Replace(pkgDescriptor, "memory: 512Mi", "memory: 512MiB", 1),
-		"state reads":       strings.Replace(pkgDescriptor, "state: {version: 2, reads: 1}", "state: {version: 2, reads: 3}", 1),
-		"feature":           strings.Replace(pkgDescriptor, "features: [staged-v2]", "features: [Staged]", 1),
-		"platform":          strings.Replace(pkgDescriptor, "platform: 0.1.0", "platform: latest", 1),
-		"protocol":          strings.Replace(pkgDescriptor, "requires: {protocol: v1}", "requires: {protocol: v2}", 1),
-		"no protocol":       strings.Replace(pkgDescriptor, "requires: {protocol: v1}\n", "", 1),
-		"tags":              strings.Replace(pkgDescriptor, "tags: [crm, saas]", "tags: [CRM]", 1),
-		"license":           strings.Replace(pkgDescriptor, "license: Apache-2.0", "license: 'Apache 2.0, or MIT; \"see\" LICENSE'", 1),
-		"docs":              strings.Replace(pkgDescriptor, "docs: https://github", "docs: http://github", 1),
-		"manifest dest":     strings.Replace(pkgDescriptor, "      runtime:\n        image: {ref: ghcr.io/acme/salesforce-destination", "      runtime:\n        manifest: {a: 1}\n        image: {ref: ghcr.io/acme/salesforce-destination", 1),
-		"manifest and spec": only("    source:\n      runtime:\n        manifest: {a: 1}\n      egress: {tier: host}\n"),
-		"unknown field":     pkgDescriptor + "      heal: true\n",
-		"v1alpha2 source":   "apiVersion: openetl.io/v1alpha2\nkind: Source\nmetadata: {name: s}\nspec: {connector: faker}\n",
-		"bad owner":         strings.Replace(pkgDescriptor, "name: acme/salesforce", "name: Acme/salesforce", 1),
-		"two slashes":       strings.Replace(pkgDescriptor, "name: acme/salesforce", "name: acme/x/salesforce", 1),
-	} {
+	for name, doc := range badPackages {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: parsed", name)
 		}
@@ -386,5 +396,82 @@ func TestDescriptorNumbers(t *testing.T) {
 	}
 	if diff := SameSpec(spec, doc.Descriptor.Roles[RoleSource].Spec); diff != "" {
 		t.Errorf("the connector's spec and its descriptor's differ: %s", diff)
+	}
+}
+
+// The published schema takes what Parse takes, and refuses what it refuses,
+// but for the rules a schema can't say.
+func TestDescriptorSchema(t *testing.T) {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(DescriptorSchema()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("connector.schema.json", doc); err != nil {
+		t.Fatal(err)
+	}
+	sch, err := c.Compile("connector.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validate := func(y string) error {
+		var v any
+		if err := yaml.Unmarshal([]byte(y), &v); err != nil {
+			return err
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(b))
+		if err != nil {
+			return err
+		}
+		return sch.Validate(inst)
+	}
+	parsed, err := Parse([]byte(pkgDescriptor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := EncodeDescriptor(parsed.Name, parsed.Version, parsed.Info, parsed.Descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, d := range map[string]string{
+		"the example":  pkgDescriptor,
+		"its encoding": string(encoded),
+		"a manifest":   only("    source:\n      requires: {platform: 0.1.0}\n      runtime:\n        manifest: {config: {type: object}, http: {base_url: https://example.com}, streams: []}\n"),
+		"binaries":     only("    source:\n      requires: {protocol: v1}\n      runtime:\n        binaries:\n          linux/amd64: {url: \"http://127.0.0.1:8000/x\"}\n      egress: {tier: raw}\n      config: {}\n"),
+	} {
+		if _, err := Parse([]byte(d)); err != nil {
+			t.Fatalf("%s doesn't parse: %v", name, err)
+		}
+		if err := validate(d); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, d := range badPackages {
+		if name == "state reads" {
+			continue
+		}
+		if err := validate(d); err == nil {
+			t.Errorf("%s: the schema takes it", name)
+		}
+	}
+	for name, d := range map[string]string{
+		"capabilities on a source":    strings.Replace(pkgDescriptor, "      acknowledges: true", "      acknowledges: true\n      capabilities: {class: deliver_and_ack}", 1),
+		"no capabilities":             strings.Replace(pkgDescriptor, "      capabilities: {class: deliver_and_ack, writeModes: [append, merge]}\n", "", 1),
+		"a duration":                  strings.Replace(pkgDescriptor, "{class: deliver_and_ack, writeModes", "{class: deliver_and_ack, minCommitInterval: 1 second, writeModes", 1),
+		"a protocol for a manifest":   only("    source:\n      requires: {protocol: v1}\n      runtime:\n        manifest: {a: 1}\n"),
+		"no egress for a binary":      only("    source:\n      requires: {protocol: v1}\n      runtime:\n        binaries:\n          linux/amd64: {url: https://example.com/x}\n      config: {}\n"),
+		"an empty argument":           strings.Replace(pkgDescriptor, `command: [/connector, serve]`, `command: [/connector, ""]`, 1),
+		"an unpinned binary's digest": strings.Replace(pkgDescriptor, `digest: "sha256:1111`, `digest: "sha1:1111`, 1),
+	} {
+		if _, err := Parse([]byte(d)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+		if err := validate(d); err == nil {
+			t.Errorf("%s: the schema takes it", name)
+		}
 	}
 }

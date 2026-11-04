@@ -10,8 +10,42 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+	"go.yaml.in/yaml/v3"
+
 	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/spec"
 )
+
+// checkDescriptorSchema checks a descriptor package wrote against its
+// published schema.
+func checkDescriptorSchema(t *testing.T, descriptor []byte) {
+	t.Helper()
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(spec.DescriptorSchema()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("connector.schema.json", doc); err != nil {
+		t.Fatal(err)
+	}
+	sch, err := c.Compile("connector.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v any
+	if err := yaml.Unmarshal(descriptor, &v); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(v)
+	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sch.Validate(inst); err != nil {
+		t.Errorf("the descriptor isn't what the schema says: %v\n%s", err, descriptor)
+	}
+}
 
 func TestParseFile(t *testing.T) {
 	f, err := Load("testdata/files")
@@ -93,6 +127,7 @@ func TestPackage(t *testing.T) {
 	if filepath.Base(res.Descriptor) != "files.connector.yaml" {
 		t.Errorf("descriptor %s", res.Descriptor)
 	}
+	checkDescriptorSchema(t, b)
 	v, err := connectorhost.ParseVersion(b)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, b)
@@ -128,6 +163,7 @@ func TestPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(res.Descriptor)
+	checkDescriptorSchema(t, b)
 	mv, err := connectorhost.ParseVersion(b)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, b)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/unsuitable001/openetl/internal/connectorhost/external"
 	"github.com/unsuitable001/openetl/internal/connectorpkg"
+	"github.com/unsuitable001/openetl/internal/declarative"
 	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/sdk/go/conformance"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
@@ -39,6 +40,9 @@ Commands:
             list a source's streams and columns
   read --config FILE TARGET
             read a source's records into a table, JSON lines or Parquet
+  schema file|descriptor|manifest
+            print the JSON Schema of openetl-connector.yaml, a descriptor
+            or a manifest, for editors
 
 TARGET is an executable, a descriptor or a manifest; --image REF or
 --attach ADDR stand in for it. Run openetl connector <command> -h for more.
@@ -64,6 +68,13 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 		return runConnectorDiscover(ctx, args[1:], out)
 	case "read":
 		return runConnectorRead(ctx, args[1:], out)
+	case "schema":
+		schemas := map[string]func() []byte{"file": connectorpkg.Schema, "descriptor": spec.DescriptorSchema, "manifest": declarative.Schema}
+		if len(args) != 2 || schemas[args[1]] == nil {
+			return errors.New("schema takes file, descriptor or manifest")
+		}
+		_, err := out.Write(schemas[args[1]]())
+		return err
 	}
 	fmt.Fprint(os.Stderr, connectorUsage)
 	return fmt.Errorf("unknown connector command %q", args[0])

@@ -2,6 +2,7 @@ package spec
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,13 @@ import (
 
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
+
+//go:embed connector.schema.json
+var descriptorSchema []byte
+
+// DescriptorSchema is a v1alpha2 descriptor's JSON Schema. Parse checks
+// more than it says, such as a state's reads being at most its version.
+func DescriptorSchema() []byte { return bytes.Clone(descriptorSchema) }
 
 // APIVersionConnector is a Connector descriptor's: a package with roles.
 // A v1alpha1 descriptor reads as a package with one role.
