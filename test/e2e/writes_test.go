@@ -16,7 +16,7 @@ import (
 func writeDocs(t *testing.T, name, in, out, write string, setup ...string) []string {
 	t.Helper()
 	run(t, append([]string{"CREATE SCHEMA " + pgx.Identifier{in}.Sanitize()}, setup...)...)
-	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q, "chunkRows": 50}}`, in)
+	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q, "chunkRows": 10}}`, in)
 	dst := `{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`
 	d := docs(name, src, dst, `{}`)
 	d[2] = fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},

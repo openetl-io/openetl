@@ -51,9 +51,9 @@ type Area struct {
 	// For a store without credentials, which can't presign: its files' plain
 	// URLs, which work where it allows unsigned reads.
 	unsigned func(p string) string
-	urlTTL time.Duration
-	log    *slog.Logger
-	now    func() time.Time
+	urlTTL   time.Duration
+	log      *slog.Logger
+	now      func() time.Time
 
 	mu      sync.Mutex
 	files   map[string]bool // paths handed to the destination
