@@ -413,6 +413,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		API: apiClient, Secrets: stores, Checkpoints: cps, Storage: cfg.Checkpoints,
 		HTTP: (&netguard.Policy{Allow: allow}).Client(), SparkSubmit: cfg.SparkSubmit, Logger: log, Logs: cps,
 	}
+	sync.Spark = sparkSteps
 	w.RegisterActivityWithOptions(sparkSteps.RunSpark, activity.RegisterOptions{Name: contract.RunSpark})
 	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})

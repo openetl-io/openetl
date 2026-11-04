@@ -36,6 +36,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/internal/secretstore"
+	"github.com/unsuitable001/openetl/internal/spark"
 	"github.com/unsuitable001/openetl/internal/staging"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
@@ -61,6 +62,8 @@ type Sync struct {
 	LogHistory time.Duration
 	// Stream jobs heartbeat through it.
 	Temporal Heartbeater
+	// Runs pipelines' Spark transforms. Nil: they fail.
+	Spark *Spark
 }
 
 // Heartbeater records a heartbeat for the activity a task token names, and
@@ -97,7 +100,12 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 	}, log)
 	stop()
 	countAttempt(ctx, in.OrgID, in.PipelineID, "sync", attempt, false, err)
+	var failed *spark.Failed
 	switch {
+	case errors.As(err, &failed):
+		log.Warn("sync attempt failed: the Spark transform failed", "err", err)
+		a.reportFailure(ctx, in.PipelineID, info.WorkflowExecution.RunID, attempt, err, log)
+		return res, temporal.NewNonRetryableApplicationError(err.Error(), contract.SparkFailed, nil)
 	case errors.Is(err, runner.ErrDrained):
 		log.Info("sync attempt drained", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
 		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Draining.String(), temporal.ApplicationErrorOptions{Details: []any{info.Attempt}})
@@ -345,6 +353,21 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 		}
 		defer func() { _ = area.Close() }()
 		job.Staging = area
+	}
+	if spec.GetPipeline().GetTransform().GetSpark() != nil {
+		if a.Spark == nil {
+			return out, errs.New(errs.ConfigInvalid, "this runner can't run Spark transforms")
+		}
+		names := make([]string, len(job.Outputs))
+		for i, o := range job.Outputs {
+			names[i] = o.Name
+		}
+		tr, area, err := a.Spark.transform(ctx, spec, names, log)
+		if err != nil {
+			return out, err
+		}
+		defer func() { _ = area.Close() }()
+		job.Transform = tr
 	}
 	engine := a.Engine
 	engine.Logger = log.With("component", "engine")

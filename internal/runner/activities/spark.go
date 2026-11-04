@@ -49,11 +49,6 @@ type Spark struct {
 	Poll time.Duration
 }
 
-// sparkFailed is an application that ran and failed.
-type sparkFailed struct{ msg string }
-
-func (f *sparkFailed) Error() string { return f.msg }
-
 // RunSpark runs a Spark step's application to its end. One that fails is a
 // non-retryable SPARK_FAILED error. A retried activity finds the
 // application its earlier attempt submitted, and waits for it.
@@ -69,7 +64,7 @@ func (a *Spark) RunSpark(ctx context.Context, in contract.SparkInput) (contract.
 	stop := heartbeats(ctx, func() any { return nil })
 	res, err := a.run(ctx, in, log)
 	stop()
-	var f *sparkFailed
+	var f *spark.Failed
 	switch {
 	case errors.As(err, &f):
 		log.Warn("the Spark application failed", "err", f)
@@ -105,17 +100,9 @@ func (a *Spark) run(ctx context.Context, in contract.SparkInput, log *slog.Logge
 		return res, err
 	}
 	defer func() { _ = area.Close() }()
-
-	uri := step.Jar
-	if step.Python != "" {
-		uri = step.Python
-	}
-	code, err := area.StageCode(ctx, uri, step.SHA256, a.HTTP)
+	code, err := a.stageCode(ctx, area, stepCode(step), spec.GetPipeline(), log)
 	if err != nil {
 		return res, err
-	}
-	if err := area.DropCode(ctx, pinnedCode(spec.GetPipeline())); err != nil {
-		log.Warn("dropping old copies of the pipeline's Spark code failed; the next step tries again", "err", err)
 	}
 	dst := spec.GetDestination()
 	name, _ := connectorhost.SplitRef(dst.GetConnector())
@@ -158,9 +145,75 @@ func (a *Spark) run(ctx context.Context, in contract.SparkInput, log *slog.Logge
 	st, err := a.watch(ctx, sub, id, log)
 	res.State, res.URL, res.Seconds = st.State, st.URL, time.Since(start).Seconds()
 	if err == nil && st.Failed {
-		err = &sparkFailed{msg: st.Message}
+		err = &spark.Failed{Message: st.Message}
 	}
 	return res, err
+}
+
+func stepCode(step contract.SparkStep) *apiv1.SparkCode {
+	if step.Python != "" {
+		return &apiv1.SparkCode{File: &apiv1.SparkCode_Python{Python: step.Python}, Sha256: step.SHA256}
+	}
+	return &apiv1.SparkCode{File: &apiv1.SparkCode_Jar{Jar: step.Jar}, Sha256: step.SHA256}
+}
+
+// stageCode copies code into the pipeline's area, checked, and drops the
+// copies its version no longer pins. It returns the copy's key.
+func (a *Spark) stageCode(ctx context.Context, area *spark.Area, code *apiv1.SparkCode, p *apiv1.PipelineSpec, log *slog.Logger) (string, error) {
+	key, err := area.StageCode(ctx, code.GetJar()+code.GetPython(), code.GetSha256(), a.HTTP)
+	if err != nil {
+		return "", err
+	}
+	if err := area.DropCode(ctx, pinnedCode(p)); err != nil {
+		log.Warn("dropping old copies of the pipeline's Spark code failed; the next run tries again", "err", err)
+	}
+	return key, nil
+}
+
+// transform prepares a sync attempt's Spark transform: its code checked and
+// copied, and the cluster it's submitted to. Close the area when the
+// attempt ends.
+func (a *Spark) transform(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, outputs []string, log *slog.Logger) (*spark.Transform, *spark.Area, error) {
+	t := spec.GetPipeline().GetTransform().GetSpark()
+	if a.Storage == "" {
+		return nil, nil, errs.New(errs.ConfigInvalid, "a Spark transform needs the data plane's object store, and this runner has none")
+	}
+	pc := spec.GetSparkClusters()[t.GetCluster()]
+	if pc == nil {
+		return nil, nil, errs.New(errs.ConfigInvalid, "the pipeline version pins no version of Spark cluster %s", t.GetCluster())
+	}
+	conf, err := a.clusterConf(ctx, pc)
+	if err != nil {
+		return nil, nil, err
+	}
+	area, err := spark.Open(ctx, a.Storage, spec.GetOrgId(), spec.GetPipelineId())
+	if err != nil {
+		return nil, nil, err
+	}
+	tr, err := func() (*spark.Transform, error) {
+		key, err := a.stageCode(ctx, area, t.GetCode(), spec.GetPipeline(), log)
+		if err != nil {
+			return nil, err
+		}
+		sub, err := spark.New(ctx, pc.GetSpec(), conf, spark.Options{SparkSubmit: a.SparkSubmit, HTTP: a.HTTP, Logger: log, EMR: a.EMR})
+		if err != nil {
+			return nil, err
+		}
+		app := spark.Application{
+			Code: area.URI(key, pc.GetSpec().GetEmr() != nil), Python: t.GetCode().GetPython() != "",
+			MainClass: t.GetCode().GetMainClass(), Conf: maps.Clone(conf),
+		}
+		if app.Conf == nil {
+			app.Conf = map[string]string{}
+		}
+		maps.Copy(app.Conf, t.GetConf())
+		return spark.NewTransform(area, a.Storage, sub, app, outputs, log.With("component", "spark"))
+	}()
+	if err != nil {
+		_ = area.Close()
+		return nil, nil, err
+	}
+	return tr, area, nil
 }
 
 // clusterConf is the cluster's properties as text, with the secrets in
