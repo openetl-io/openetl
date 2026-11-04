@@ -60,6 +60,10 @@ type upstream struct {
 	mu     sync.Mutex
 	users  int64
 	events int64
+	// Users carry a control sequence that each read numbers anew, as a
+	// changelog's snapshot does.
+	seq   bool
+	reads int64
 }
 
 type memSource struct {
@@ -72,6 +76,9 @@ var usersSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "id", Type: arrow.PrimitiveTypes.Int64},
 	{Name: "name", Type: arrow.BinaryTypes.String, Nullable: true},
 }, nil)
+
+var usersSeqSchema = arrow.NewSchema(append(usersSchema.Fields(),
+	arrow.Field{Name: "_seq", Type: arrow.PrimitiveTypes.Int64, Metadata: arrow.NewMetadata([]string{source.ControlKey}, []string{"seq"})}), nil)
 
 var eventsSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "id", Type: arrow.PrimitiveTypes.Int64},
@@ -102,12 +109,17 @@ func (s *memSource) Read(_ context.Context, req source.ReadRequest, out source.E
 	}
 	s.up.mu.Lock()
 	users, events := s.up.users, s.up.events
+	s.up.reads++
+	seq := s.up.reads
+	if !s.up.seq {
+		seq = 0
+	}
 	s.up.mu.Unlock()
 	for _, st := range req.Streams {
 		var err error
 		switch st.Name {
 		case "users":
-			err = s.readUsers(users, st.State, out)
+			err = s.readUsers(users, seq, st.State, out)
 		case "events":
 			err = s.readEvents(events, st.State, out)
 		default:
@@ -120,7 +132,8 @@ func (s *memSource) Read(_ context.Context, req source.ReadRequest, out source.E
 	return nil
 }
 
-func (s *memSource) readUsers(n int64, state []byte, out source.Emitter) error {
+// readUsers reads users from the state on; with seq above 0, they carry it.
+func (s *memSource) readUsers(n, seq int64, state []byte, out source.Emitter) error {
 	var from int64
 	if state != nil {
 		if err := json.Unmarshal(state, &from); err != nil {
@@ -140,7 +153,11 @@ func (s *memSource) readUsers(n int64, state []byte, out source.Emitter) error {
 			}
 			ids, names = append(ids, id), append(names, fmt.Sprintf("u%d", j))
 		}
-		if err := out.Records("users", usersBatch(ids, names)); err != nil {
+		batch := usersBatch(ids, names)
+		if seq > 0 {
+			batch = withSeq(batch, seq)
+		}
+		if err := out.Records("users", batch); err != nil {
 			return err
 		}
 		st, _ := json.Marshal(to)
@@ -198,6 +215,18 @@ func usersBatch(ids []int64, names []string) arrow.RecordBatch {
 	return b.NewRecordBatch()
 }
 
+func withSeq(rec arrow.RecordBatch, seq int64) arrow.RecordBatch {
+	defer rec.Release()
+	b := array.NewInt64Builder(memory.DefaultAllocator)
+	defer b.Release()
+	for range rec.NumRows() {
+		b.Append(seq)
+	}
+	col := b.NewArray()
+	defer col.Release()
+	return array.NewRecordBatch(usersSeqSchema, append(rec.Columns(), col), rec.NumRows())
+}
+
 func eventsBatch(ids, ts []int64) arrow.RecordBatch {
 	b := array.NewRecordBuilder(memory.DefaultAllocator, eventsSchema)
 	defer b.Release()
@@ -207,7 +236,10 @@ func eventsBatch(ids, ts []int64) arrow.RecordBatch {
 }
 
 func sourceSuite(bug string) conformance.SourceSuite {
-	up := &upstream{users: 23, events: 18}
+	return memSuite(&upstream{users: 23, events: 18}, bug)
+}
+
+func memSuite(up *upstream, bug string) conformance.SourceSuite {
 	return conformance.SourceSuite{
 		Launch: conformance.InProcess(sdk.Connector{
 			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw},
@@ -229,6 +261,12 @@ func sourceSuite(bug string) conformance.SourceSuite {
 
 func TestSourcePasses(t *testing.T) {
 	sourceSuite("").Test(t)
+}
+
+// Records read again after a resume point are the same records, though
+// their control sequence is new.
+func TestSourceSequencesAreNotRecords(t *testing.T) {
+	memSuite(&upstream{users: 23, events: 18, seq: true}, "").Test(t)
 }
 
 func TestSourceBugsFail(t *testing.T) {

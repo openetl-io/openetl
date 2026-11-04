@@ -22,17 +22,20 @@ import (
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
-// row is one record: each field's value as JSON, and the whole record as a
-// JSON object with sorted keys, which identifies it.
+// row is one record: each field's value as JSON, and the record as a JSON
+// object with sorted keys, which identifies it. Control fields aren't in
+// the object: a changelog's snapshot rows read again take a new sequence.
 type row struct {
 	text   string
 	fields map[string]string
 }
 
-func newRow(fields map[string]string) row {
+func newRow(fields map[string]string, control ...string) row {
 	keys := make([]string, 0, len(fields))
 	for k := range fields {
-		keys = append(keys, k)
+		if !slices.Contains(control, k) {
+			keys = append(keys, k)
+		}
 	}
 	slices.Sort(keys)
 	var b strings.Builder
@@ -153,13 +156,19 @@ func decodeBatch(b *protocolv1.RecordBatch) (event, error) {
 }
 
 func recordRows(rec arrow.RecordBatch) []row {
+	var control []string
+	for _, f := range rec.Schema().Fields() {
+		if _, ok := f.Metadata.GetValue("openetl.control"); ok {
+			control = append(control, f.Name)
+		}
+	}
 	out := make([]row, rec.NumRows())
 	for i := range out {
 		fields := make(map[string]string, rec.NumCols())
 		for c, f := range rec.Schema().Fields() {
 			fields[f.Name] = cell(rec.Column(c), i)
 		}
-		out[i] = newRow(fields)
+		out[i] = newRow(fields, control...)
 	}
 	return out
 }
