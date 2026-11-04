@@ -25,9 +25,14 @@ import (
 )
 
 // batchSource emits pages of one-row batches, with a resume point after each.
-type batchSource struct{ pages map[string]int }
+// A pause after each lets a barrier in between pages, in a synctest bubble,
+// so the read takes more than one epoch.
+type batchSource struct {
+	pages map[string]int
+	pause time.Duration
+}
 
-func (s batchSource) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
+func (s batchSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
 	for _, cs := range req.Streams {
 		from, _ := strconv.Atoi(string(cs.State))
 		for i := from; i < s.pages[cs.Name]; i++ {
@@ -36,6 +41,13 @@ func (s batchSource) Read(_ context.Context, req source.ReadRequest, out source.
 			}
 			if err := out.ResumePoint(cs.Name, []byte(strconv.Itoa(i+1))); err != nil {
 				return err
+			}
+			if s.pause > 0 {
+				select {
+				case <-time.After(s.pause):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
 		}
 		if err := out.Complete(cs.Name, []byte(strconv.Itoa(s.pages[cs.Name]))); err != nil {
@@ -301,6 +313,7 @@ func TestTransformFailureIsRedone(t *testing.T) {
 		var committed uint64
 		count := func(rec *checkpoint.Record, _ map[string]uint64) { committed += rec.Outputs["out"].Rows }
 		j := transformJob(log, "a1", &fakeTransform{c: c, failAt: 2}, dst, pages, outAppend)
+		j.Source = batchSource{pages: pages, pause: time.Second}
 		j.OnCheckpoint = count
 		_, err := runner.RunAttempt(ctx, j)
 		if errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "transform epoch 2") {
