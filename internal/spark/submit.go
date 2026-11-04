@@ -60,7 +60,7 @@ type Submitter interface {
 type Options struct {
 	// The spark-submit to run. Empty: spark-submit on PATH.
 	SparkSubmit string
-	// For a YARN ResourceManager's REST API.
+	// For a standalone master's UI and a YARN ResourceManager's REST API.
 	HTTP *http.Client
 	// Gets spark-submit's output.
 	Logger *slog.Logger
@@ -84,7 +84,7 @@ func New(ctx context.Context, spec *apiv1.SparkClusterSpec, conf map[string]stri
 	sub := &submit{bin: o.SparkSubmit, master: master, log: o.Logger}
 	switch {
 	case strings.HasPrefix(master, "spark://"):
-		return &standalone{sub}, nil
+		return &standalone{submit: sub, ui: standaloneUI(master, spec.GetSubmit().GetUi()), http: o.HTTP}, nil
 	case strings.HasPrefix(master, "k8s://"):
 		ns := conf["spark.kubernetes.namespace"]
 		if ns == "" {

@@ -17,6 +17,9 @@ TOOL_PKGS := \
 BIN := $(CURDIR)/bin
 CARGO_DENY_VERSION := 0.20.2
 
+# Mounted at the same path in the compose stack's Spark containers.
+export OPENETL_SPARK_SHARE ?= $(CURDIR)/.openetl/spark
+
 GO_MODULES := . sdk/go
 GO_PACKAGES := ./... ./sdk/go/...
 SEEDS ?= 500
@@ -55,7 +58,8 @@ web-dev: web/node_modules/.modules.yaml ## Run the UI's dev server against the A
 	pnpm --dir web dev
 
 .PHONY: deps-up deps-down
-deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure, Kafka, Kinesis)
+deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure, Kafka, Kinesis, Spark)
+	@mkdir -p $(OPENETL_SPARK_SHARE)
 	docker compose -f deploy/compose/dev.yml up -d --wait
 deps-down: ## Stop local dependencies
 	docker compose -f deploy/compose/dev.yml down
@@ -69,6 +73,17 @@ connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connec
 	@mkdir -p $(BIN)/connectors
 	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/unsuitable001/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
 	cd $(CONNECTORS_SRC) && GOWORK=$(BIN)/connectors.work go build -o $(BIN)/connectors/ ./cmd/...
+
+# openetl-spark (ADR-0022): the jar, built and tested in a pinned Maven image,
+# so no JDK is needed on the host; and the Python package's tests.
+MAVEN_IMAGE := maven:3.9.12-eclipse-temurin-17
+MAVEN_REPO ?= $(HOME)/.m2
+.PHONY: spark-lib
+spark-lib: ## Build and test openetl-spark (the jar into libs/openetl-spark/java/target)
+	@mkdir -p $(MAVEN_REPO)
+	docker run --rm -u $$(id -u):$$(id -g) -e MAVEN_CONFIG=/var/maven/.m2 -v $(MAVEN_REPO):/var/maven/.m2 \
+		-v $(CURDIR)/libs/openetl-spark/java:/src -w /src $(MAVEN_IMAGE) mvn -B -q -Duser.home=/var/maven package
+	cd libs/openetl-spark/python && PYTHONPATH=. python3 -m unittest discover -s tests
 
 .PHONY: engine
 engine: ## Build openetl-engine
@@ -120,7 +135,9 @@ bench-boundary: engine connectors ## Runner/engine boundary benchmark
 .PHONY: e2e
 e2e: connectors ## Full-stack scenarios against the compose deps
 	cargo build -p openetl-engine
-	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
+	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
+	OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit OPENETL_SPARK_LIB=$(CURDIR)/libs/openetl-spark/java/target \
+	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
 
 .PHONY: clean
 clean: ## Remove build outputs

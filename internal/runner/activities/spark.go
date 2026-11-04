@@ -119,7 +119,9 @@ func (a *Spark) run(ctx context.Context, in contract.SparkInput, log *slog.Logge
 	}
 	dst := spec.GetDestination()
 	name, _ := connectorhost.SplitRef(dst.GetConnector())
-	c, err := spark.BuildContext(ctx, checkpoint.NewLog(a.Checkpoints, in.OrgID, in.PipelineID), in.PipelineID, in.SyncID,
+	// The step runs in the sync's workflow, whose run its records name.
+	run := activity.GetInfo(ctx).WorkflowExecution.RunID
+	c, err := spark.BuildContext(ctx, checkpoint.NewLog(a.Checkpoints, in.OrgID, in.PipelineID), in.PipelineID, in.SyncID, run,
 		spark.Destination{Connector: name, Namespace: spec.GetPipeline().GetDestination().GetNamespace()})
 	if err != nil {
 		return res, errs.Wrap(errs.Transient, err, "spark: read the checkpoint log")

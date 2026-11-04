@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openetl-spark"
+version = "0.1.0"
+description = "PySpark applications' side of openetl: the sync's context for post-sync steps."
+license = { text = "MIT" }
+requires-python = ">=3.8"
+# PySpark comes from the cluster.
+dependencies = []
+
+[tool.setuptools]
+packages = ["openetl_spark"]

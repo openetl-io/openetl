@@ -53,6 +53,10 @@ message SparkSubmit {
   // Spark properties for every application. A value can be a secret
   // reference, {"secret": NAME}.
   google.protobuf.Struct conf = 2;
+  // A standalone master's web UI, through which the runner watches and kills
+  // drivers: spark-submit's --status and --kill need the master's REST
+  // server, which is off by default. Unset: port 8080 on the master's host.
+  string ui = 3;
 }
 
 // SparkEmr adds steps to a cluster of EMR on EC2.

@@ -3,9 +3,14 @@ package spark
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -69,16 +74,17 @@ func lastLines(lines []string, n int) string {
 	return strings.Join(lines[max(0, len(lines)-n):], " | ")
 }
 
-// standalone submits to a standalone master, whose drivers can be found only
-// by the ID it assigns.
-type standalone struct{ *submit }
+// standalone submits to a standalone master with spark-submit, then watches
+// and kills drivers through the master's web UI: spark-submit's --status
+// and --kill need its REST server, which is off by default. Drivers can be
+// found only by the ID the master assigns.
+type standalone struct {
+	*submit
+	ui   string
+	http *http.Client
+}
 
-var (
-	standaloneSubmitted = regexp.MustCompile(`Driver successfully submitted as (driver-\S+)`)
-	standaloneState     = regexp.MustCompile(`State of (?:driver )?(driver-\S+) is ([A-Z_]+)`)
-	standaloneException = regexp.MustCompile(`Exception from cluster was: (.*)`)
-	standaloneUnknown   = regexp.MustCompile(`did not recognize (driver-\S+)`)
-)
+var standaloneSubmitted = regexp.MustCompile(`Driver successfully submitted as (driver-\S+)`)
 
 func (s *standalone) Kind() string { return "standalone" }
 
@@ -95,35 +101,84 @@ func (s *standalone) Submit(ctx context.Context, app Application) (string, error
 
 func (s *standalone) Find(context.Context, string) (string, error) { return "", nil }
 
+type standaloneDriver struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
 func (s *standalone) Status(ctx context.Context, id string) (State, error) {
-	lines, err := s.run(ctx, "--master", s.master, "--status", id)
-	if find(lines, standaloneUnknown) != nil {
-		return State{Done: true, Failed: true, State: "UNKNOWN", Message: "the master no longer knows driver " + id + ", so whether it ran is unknown"}, nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.ui+"/json/", nil)
+	if err != nil {
+		return State{}, err
 	}
-	m := find(lines, standaloneState)
-	if m == nil {
-		if err == nil {
-			err = errors.New("spark-submit didn't say the driver's state: " + lastLines(lines, 3))
+	var master struct {
+		Active    []standaloneDriver `json:"activedrivers"`
+		Completed []standaloneDriver `json:"completeddrivers"`
+	}
+	if err := s.call(req, &master); err != nil {
+		return State{}, err
+	}
+	st := State{URL: s.ui}
+	for _, d := range append(master.Active, master.Completed...) {
+		if d.ID == id {
+			st.State = d.State
 		}
-		return State{}, failed(err, "spark: driver "+id)
 	}
-	st := State{State: m[2]}
 	switch st.State {
+	case "":
+		return State{Done: true, Failed: true, State: "UNKNOWN", URL: s.ui, Message: "the master no longer knows driver " + id + ", so whether it ran is unknown"}, nil
 	case "FINISHED":
 		st.Done = true
 	case "FAILED", "ERROR", "KILLED":
 		st.Done, st.Failed = true, true
-		st.Message = "driver " + id + " ended " + st.State
-		if e := find(lines, standaloneException); e != nil {
-			st.Message += ": " + e[1]
-		}
+		st.Message = "driver " + id + " ended " + st.State + "; its log is on the worker that ran it, in the master's UI"
 	}
 	return st, nil
 }
 
+// Kill asks the master's UI to kill the driver, as its kill link does.
 func (s *standalone) Kill(ctx context.Context, id string) error {
-	_, err := s.run(ctx, "--master", s.master, "--kill", id)
-	return err
+	form := url.Values{"id": {id}, "terminate": {"true"}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.ui+"/driver/kill/", strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return s.call(req, nil)
+}
+
+func (s *standalone) call(req *http.Request, out any) error {
+	res, err := s.http.Do(req)
+	if err != nil {
+		return errs.Wrap(errs.Transient, err, "spark: the master's UI at "+s.ui)
+	}
+	defer func() { _ = res.Body.Close() }()
+	b, err := io.ReadAll(io.LimitReader(res.Body, 16<<20))
+	switch {
+	case err != nil:
+		return errs.Wrap(errs.Transient, err, "spark: the master's UI at "+s.ui)
+	case res.StatusCode/100 != 2:
+		return errs.New(errs.Transient, "spark: the master's UI at %s: %s %s: %s", s.ui, req.Method, req.URL.Path, res.Status)
+	case out == nil:
+		return nil
+	}
+	return json.Unmarshal(b, out)
+}
+
+// standaloneUI is the UI of a master spark://host:port: port 8080 on its
+// host, unless the cluster names another.
+func standaloneUI(master, ui string) string {
+	if ui != "" {
+		return strings.TrimSuffix(ui, "/")
+	}
+	host := strings.TrimPrefix(master, "spark://")
+	// A master URL can list several masters, the first of which is tried
+	// first.
+	host, _, _ = strings.Cut(host, ",")
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return "http://" + net.JoinHostPort(host, "8080")
 }
 
 // kubernetes names each driver pod for its submission, so a second

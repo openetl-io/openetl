@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -107,7 +108,7 @@ func TestBuildContext(t *testing.T) {
 	store := checkpoint.NewMemStore()
 	log := checkpoint.NewLog(store, "org", "p")
 	dst := Destination{Connector: "postgres", Namespace: "shop"}
-	c, err := BuildContext(ctx, log, "p", "s1", dst)
+	c, err := BuildContext(ctx, log, "p", "s1", "r1", dst)
 	if err != nil || *c.After != *c.Through || c.Through.Epoch != 0 || len(c.Streams) != 0 {
 		t.Fatalf("before any record: %+v, %v", c, err)
 	}
@@ -116,12 +117,12 @@ func TestBuildContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	prev := checkpoint.RecordRef{Epoch: 3, Generation: 1}
-	rec := &checkpoint.Record{Epoch: 5, Sync: "s1", SyncStart: &prev, SyncRows: map[string]uint64{"orders": 7, "customers": 2},
+	rec := &checkpoint.Record{Epoch: 5, Sync: "r1", SyncStart: &prev, SyncRows: map[string]uint64{"orders": 7, "customers": 2},
 		Streams: map[string]checkpoint.StreamState{"orders": {Schema: orderSchema(t)}, "customers": {}}}
 	if err := sess.Commit(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	c, err = BuildContext(ctx, log, "p", "s1", dst)
+	c, err = BuildContext(ctx, log, "p", "s1", "r1", dst)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestBuildContext(t *testing.T) {
 	if g, _ := json.Marshal(got); string(g) != want {
 		t.Errorf("context\n %s\nwant\n %s", g, want)
 	}
-	c, err = BuildContext(ctx, log, "p", "s2", dst)
+	c, err = BuildContext(ctx, log, "p", "s2", "r2", dst)
 	if err != nil || *c.After != *c.Through || c.Through.Epoch != 5 || len(c.Streams) != 0 {
 		t.Errorf("a sync that committed nothing: %+v, %v", c, err)
 	}
@@ -177,11 +178,35 @@ func calls(t *testing.T, dir string) []string {
 
 var app = Application{Name: "openetl-s1-2", Code: "file:///data/org/p/_spark/code/x/a.jar", MainClass: "com.acme.Models", Args: []string{"--full"}, Conf: map[string]string{"spark.executor.memory": "2g"}}
 
+// fakeMaster is a standalone master's UI with one driver, in state.
+func fakeMaster(t *testing.T, state *string, killed *string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/json/" && *state == "":
+			_, _ = w.Write([]byte(`{"activedrivers": [], "completeddrivers": []}`))
+		case r.URL.Path == "/json/":
+			_, _ = fmt.Fprintf(w, `{"activedrivers": [], "completeddrivers": [{"id": "driver-0", "state": "FINISHED"}, {"id": "driver-1", "state": %q}]}`, *state)
+		case r.URL.Path == "/driver/kill/" && r.Method == http.MethodPost && r.FormValue("terminate") == "true":
+			*killed = r.FormValue("id")
+			http.Redirect(w, r, "/", http.StatusFound)
+		case r.URL.Path == "/":
+			_, _ = w.Write([]byte("<html>Spark Master</html>"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestStandalone(t *testing.T) {
 	ctx := context.Background()
 	bin, dir := fakeSubmit(t)
-	spec := &apiv1.SparkClusterSpec{Target: &apiv1.SparkClusterSpec_Submit{Submit: &apiv1.SparkSubmit{Master: "spark://m:7077"}}}
-	sub, err := New(ctx, spec, nil, Options{SparkSubmit: bin})
+	var state, killed string
+	ui := fakeMaster(t, &state, &killed)
+	spec := &apiv1.SparkClusterSpec{Target: &apiv1.SparkClusterSpec_Submit{Submit: &apiv1.SparkSubmit{Master: "spark://m:7077", Ui: ui.URL}}}
+	sub, err := New(ctx, spec, nil, Options{SparkSubmit: bin, HTTP: ui.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,28 +221,27 @@ func TestStandalone(t *testing.T) {
 	if id, err := sub.Find(ctx, app.Name); id != "" || err != nil {
 		t.Errorf("found %q, %v on a standalone master", id, err)
 	}
-	for out, want := range map[string]State{
-		"INFO Client: State of driver-1 is RUNNING\nINFO Client: Driver running on 10.0.0.2:7078 (worker-1)\n": {State: "RUNNING"},
-		"INFO Client: State of driver-1 is FINISHED\n":                                                         {Done: true, State: "FINISHED"},
-		// spark-submit exits 0 for a failed driver.
-		"INFO Client: State of driver-1 is FAILED\nINFO Client: State of driver driver-1 is FAILED, exiting spark-submit JVM.\n":    {Done: true, Failed: true, State: "FAILED", Message: "driver driver-1 ended FAILED"},
-		"INFO Client: State of driver-1 is ERROR\nERROR Client: Exception from cluster was: java.io.FileNotFoundException: a.jar\n": {Done: true, Failed: true, State: "ERROR", Message: "driver driver-1 ended ERROR: java.io.FileNotFoundException: a.jar"},
-		"ERROR Client: ERROR: Cluster master did not recognize driver-1\n":                                                          {Done: true, Failed: true, State: "UNKNOWN", Message: "the master no longer knows driver driver-1, so whether it ran is unknown"},
+	for st, want := range map[string]State{
+		"RUNNING":  {State: "RUNNING"},
+		"FINISHED": {Done: true, State: "FINISHED"},
+		"FAILED":   {Done: true, Failed: true, State: "FAILED", Message: "driver driver-1 ended FAILED; its log is on the worker that ran it, in the master's UI"},
+		"":         {Done: true, Failed: true, State: "UNKNOWN", Message: "the master no longer knows driver driver-1, so whether it ran is unknown"},
 	} {
-		say(t, dir, "status", out)
-		if st, err := sub.Status(ctx, "driver-1"); err != nil || st != want {
-			t.Errorf("status from %q: %+v, %v; want %+v", out, st, err, want)
+		state = st
+		want.URL = ui.URL
+		if got, err := sub.Status(ctx, "driver-1"); err != nil || got != want {
+			t.Errorf("status with the driver %q: %+v, %v; want %+v", st, got, err, want)
 		}
 	}
-	say(t, dir, "status", "Exception in thread main: connection refused\n")
-	if err := os.WriteFile(filepath.Join(dir, "exit-status"), []byte("1"), 0o600); err != nil {
-		t.Fatal(err)
+	if err := sub.Kill(ctx, "driver-1"); err != nil || killed != "driver-1" {
+		t.Errorf("kill: %v, killed %q", err, killed)
 	}
+	ui.Close()
 	if _, err := sub.Status(ctx, "driver-1"); errs.CodeOf(err) != errs.Transient {
 		t.Errorf("an unreachable master: %v", err)
 	}
-	if err := sub.Kill(ctx, "driver-1"); err != nil || !strings.HasSuffix(calls(t, dir)[len(calls(t, dir))-1], "--kill driver-1") {
-		t.Errorf("kill: %v, %v", err, calls(t, dir))
+	if got := standaloneUI("spark://m1:7077,m2:7077", ""); got != "http://m1:8080" {
+		t.Errorf("the default UI is %s", got)
 	}
 	missing, err := New(ctx, spec, nil, Options{SparkSubmit: filepath.Join(dir, "nope")})
 	if err != nil {

@@ -1,0 +1,8 @@
+#!/bin/sh
+# spark-submit in the compose stack's Spark master, for a runner on the host:
+#
+#   openetld runner --spark-submit deploy/compose/spark-submit
+#
+# The stack's clusters name their master spark://spark-master:7077, and read
+# the runner's store where OPENETL_SPARK_SHARE mounts it.
+exec docker exec -i "${OPENETL_SPARK_CONTAINER:-openetl-dev-spark-master-1}" /opt/spark/bin/spark-submit "$@"

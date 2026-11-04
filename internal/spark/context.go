@@ -42,8 +42,9 @@ type Stream struct {
 }
 
 // BuildContext is sync's context from the pipeline's latest record, which
-// says what the sync committed (checkpoint.Record.SyncStart).
-func BuildContext(ctx context.Context, log *checkpoint.Log, pipeline, sync string, dst Destination) (*Context, error) {
+// says what the sync committed (checkpoint.Record.SyncStart). Records name
+// their sync by its workflow's run, run.
+func BuildContext(ctx context.Context, log *checkpoint.Log, pipeline, sync, run string, dst Destination) (*Context, error) {
 	head, err := log.Latest(ctx)
 	if err != nil {
 		return nil, err
@@ -55,7 +56,7 @@ func BuildContext(ctx context.Context, log *checkpoint.Log, pipeline, sync strin
 	}
 	ref := head.Ref()
 	c.Through = &ref
-	if head.Sync != sync {
+	if head.Sync != run {
 		c.After = &ref
 		return c, nil
 	}

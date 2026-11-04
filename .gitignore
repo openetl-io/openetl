@@ -18,8 +18,10 @@ profile.cov
 
 # go.work and go.work.sum are committed: see docs on the repo layout.
 
-# Rust
+# Rust, and Maven
 /target/
+/libs/*/java/target/
+__pycache__/
 
 # Web
 node_modules/

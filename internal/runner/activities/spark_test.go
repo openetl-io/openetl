@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +32,7 @@ import (
 type sparkAPI struct {
 	dataplanev1connect.UnimplementedDataPlaneServiceHandler
 	step *apiv1.SparkStep
+	ui   func() string
 }
 
 func (f *sparkAPI) GetSyncSpec(context.Context, *connect.Request[dataplanev1.GetSyncSpecRequest]) (*connect.Response[dataplanev1.GetSyncSpecResponse], error) {
@@ -40,37 +43,41 @@ func (f *sparkAPI) GetSyncSpec(context.Context, *connect.Request[dataplanev1.Get
 		Destination: &apiv1.ConnectorConfig{Connector: "postgres"},
 		SparkClusters: map[string]*dataplanev1.PinnedSparkCluster{"lab": {
 			Version: "cv1",
-			Spec:    &apiv1.SparkClusterSpec{Target: &apiv1.SparkClusterSpec_Submit{Submit: &apiv1.SparkSubmit{Master: "spark://m:7077", Conf: conf}}},
+			Spec:    &apiv1.SparkClusterSpec{Target: &apiv1.SparkClusterSpec_Submit{Submit: &apiv1.SparkSubmit{Master: "spark://m:7077", Conf: conf, Ui: f.ui()}}},
 		}},
 	}), nil
 }
 
-// fakeStandalone is a spark-submit for a standalone master. Each --status
-// prints the next state in dir/states, one a line, and then the last one;
-// --kill records the driver.
-func fakeStandalone(t *testing.T, states ...string) (bin, dir string) {
+// fakeStandalone is a standalone master: a spark-submit that submits
+// driver-1, and a UI that reports the next of states at each look, then the
+// last one, and records a kill in dir/killed.
+func fakeStandalone(t *testing.T, states ...string) (bin, dir, ui string) {
 	t.Helper()
 	dir = t.TempDir()
 	bin = filepath.Join(dir, "spark-submit")
 	script := `#!/bin/sh
-d=$(dirname "$0")
-echo "$*" >> "$d/calls"
-case "$*" in
-*--kill*) echo "$*" > "$d/killed"; exit 0;;
-*--status*)
-  s=$(head -n 1 "$d/states")
-  [ "$(wc -l < "$d/states")" -gt 1 ] && tail -n +2 "$d/states" > "$d/states.next" && mv "$d/states.next" "$d/states"
-  echo "INFO Client: State of driver-1 is $s"; exit 0;;
-esac
+echo "$*" >> "$(dirname "$0")/calls"
 echo "INFO Client: Driver successfully submitted as driver-1"
 `
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "states"), []byte(strings.Join(states, "\n")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return bin, dir
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/json/":
+			_, _ = fmt.Fprintf(w, `{"activedrivers": [{"id": "driver-1", "state": %q}]}`, states[0])
+			if len(states) > 1 {
+				states = states[1:]
+			}
+		case "/driver/kill/":
+			_ = os.WriteFile(filepath.Join(dir, "killed"), []byte(r.FormValue("id")), 0o600)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return bin, dir, srv.URL
 }
 
 func submits(t *testing.T, dir string) int {
@@ -90,8 +97,9 @@ func TestRunSpark(t *testing.T) {
 	code := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(jar) }))
 	defer code.Close()
 	step := &apiv1.SparkStep{Cluster: "lab", Code: &apiv1.SparkCode{File: &apiv1.SparkCode_Jar{Jar: code.URL + "/models.jar"}, Sha256: sum(jar), MainClass: "com.acme.Models"}}
+	var sparkUI string
 	mux := http.NewServeMux()
-	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(&sparkAPI{step: step}))
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(&sparkAPI{step: step, ui: func() string { return sparkUI }}))
 	api := httptest.NewServer(mux)
 	defer api.Close()
 
@@ -106,10 +114,13 @@ func TestRunSpark(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := sess.Commit(t.Context(), &checkpoint.Record{Epoch: 1, Sync: "s1", SyncStart: &checkpoint.RecordRef{}, SyncRows: map[string]uint64{"orders": 3}}); err != nil {
+		// Records name the sync by its workflow's run, as the activity
+		// environment has it.
+		if err := sess.Commit(t.Context(), &checkpoint.Record{Epoch: 1, Sync: "default-test-run-id", SyncStart: &checkpoint.RecordRef{}, SyncRows: map[string]uint64{"orders": 3}}); err != nil {
 			t.Fatal(err)
 		}
-		bin, dir := fakeStandalone(t, states...)
+		bin, dir, ui := fakeStandalone(t, states...)
+		sparkUI = ui
 		return &Spark{
 			API: dataplanev1connect.NewDataPlaneServiceClient(api.Client(), api.URL), Checkpoints: store, Storage: storage,
 			HTTP: code.Client(), SparkSubmit: bin, Logs: store, Poll: 10 * time.Millisecond,
@@ -182,7 +193,7 @@ func TestRunSpark(t *testing.T) {
 		if _, err := run(a, env); err == nil {
 			t.Fatal("it finished")
 		}
-		if b, err := os.ReadFile(filepath.Join(dir, "killed")); err != nil || !strings.Contains(string(b), "--kill driver-1") {
+		if b, err := os.ReadFile(filepath.Join(dir, "killed")); err != nil || string(b) != "driver-1" {
 			t.Errorf("killed %q, %v", b, err)
 		}
 	})

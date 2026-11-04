@@ -3917,6 +3917,12 @@ components:
                     description: |-
                         Spark properties for every application. A value can be a secret
                          reference, {"secret": NAME}.
+                ui:
+                    type: string
+                    description: |-
+                        A standalone master's web UI, through which the runner watches and kills
+                         drivers: spark-submit's --status and --kill need the master's REST
+                         server, which is off by default. Unset: port 8080 on the master's host.
             description: SparkSubmit submits with spark-submit, in cluster deploy mode.
         Status:
             type: object

@@ -210,7 +210,11 @@ type SparkSubmit struct {
 	Master string `protobuf:"bytes,1,opt,name=master,proto3" json:"master,omitempty"`
 	// Spark properties for every application. A value can be a secret
 	// reference, {"secret": NAME}.
-	Conf          *structpb.Struct `protobuf:"bytes,2,opt,name=conf,proto3" json:"conf,omitempty"`
+	Conf *structpb.Struct `protobuf:"bytes,2,opt,name=conf,proto3" json:"conf,omitempty"`
+	// A standalone master's web UI, through which the runner watches and kills
+	// drivers: spark-submit's --status and --kill need the master's REST
+	// server, which is off by default. Unset: port 8080 on the master's host.
+	Ui            string `protobuf:"bytes,3,opt,name=ui,proto3" json:"ui,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -257,6 +261,13 @@ func (x *SparkSubmit) GetConf() *structpb.Struct {
 		return x.Conf
 	}
 	return nil
+}
+
+func (x *SparkSubmit) GetUi() string {
+	if x != nil {
+		return x.Ui
+	}
+	return ""
 }
 
 // SparkEmr adds steps to a cluster of EMR on EC2.
@@ -630,10 +641,11 @@ const file_openetl_api_v1_spark_proto_rawDesc = "" +
 	"\x10SparkClusterSpec\x125\n" +
 	"\x06submit\x18\x01 \x01(\v2\x1b.openetl.api.v1.SparkSubmitH\x00R\x06submit\x12,\n" +
 	"\x03emr\x18\x02 \x01(\v2\x18.openetl.api.v1.SparkEmrH\x00R\x03emrB\b\n" +
-	"\x06target\"R\n" +
+	"\x06target\"b\n" +
 	"\vSparkSubmit\x12\x16\n" +
 	"\x06master\x18\x01 \x01(\tR\x06master\x12+\n" +
-	"\x04conf\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04conf\"d\n" +
+	"\x04conf\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04conf\x12\x0e\n" +
+	"\x02ui\x18\x03 \x01(\tR\x02ui\"d\n" +
 	"\bSparkEmr\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12!\n" +

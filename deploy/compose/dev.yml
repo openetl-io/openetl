@@ -7,7 +7,8 @@
 # conditional writes, for the checkpoint log's per-provider tests. An Iceberg
 # REST catalog keeps its tables in the S3 store, for destination-iceberg.
 # Kafka and a schema registry are for source-kafka and destination-kafka,
-# and kinesis-mock for source-kinesis and destination-kinesis.
+# kinesis-mock for source-kinesis and destination-kinesis, and a Spark
+# standalone cluster for Spark steps.
 
 name: openetl-dev
 
@@ -142,6 +143,35 @@ services:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:4568/healthcheck"]
       interval: 2s
       retries: 30
+
+  # A Spark 3.5 standalone master and worker, for pipelines' Spark steps
+  # (ADR-0022). Clusters name the master spark://spark-master:7077, and
+  # runners on the host submit through deploy/compose/spark-submit, which runs
+  # spark-submit in this container. OPENETL_SPARK_SHARE is mounted at the same
+  # path in both, so a runner whose store is below it hands Spark file:// URIs
+  # it can read, without S3A.
+  spark-master:
+    image: apache/spark:3.5.8
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master"]
+    # The UI, through which runners watch and kill drivers.
+    ports: ["8090:8080"]
+    volumes: ["${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}:${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}"]
+    healthcheck:
+      # The master binds 7077 to spark-master's address, and its UI to all.
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8080"]
+      interval: 2s
+      retries: 30
+
+  spark-worker:
+    image: apache/spark:3.5.8
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    environment:
+      SPARK_WORKER_CORES: "2"
+      SPARK_WORKER_MEMORY: 2g
+    volumes: ["${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}:${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}"]
+    depends_on:
+      spark-master:
+        condition: service_healthy
 
 volumes:
   postgres:

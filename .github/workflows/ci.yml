@@ -143,6 +143,11 @@ jobs:
             ~/go/pkg/mod
           key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
           restore-keys: go-${{ github.job }}-
+      - uses: actions/cache@v6
+        with:
+          path: ~/.m2
+          key: maven-${{ hashFiles('libs/**/pom.xml') }}
+          restore-keys: maven-
       # dbt Core: dbt v2 has no Postgres adapter.
       - name: dbt for post-sync steps
         run: |
@@ -150,14 +155,15 @@ jobs:
           "$RUNNER_TEMP/dbt/bin/pip" install --quiet dbt-core==1.12.6 dbt-postgres==1.11.0
           echo "OPENETL_DBT=$RUNNER_TEMP/dbt/bin/dbt" >> "$GITHUB_ENV"
       # The images pull and the services start while the binaries build.
-      - name: Start Postgres, Temporal, S3, Kafka and Kinesis
+      - name: Start Postgres, Temporal, S3, Kafka, Kinesis and Spark
         run: |
           tail --pid="$(cat "$RUNNER_TEMP/free-disk.pid")" -f /dev/null
           df -h /
           (set +e; make deps-up; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
-      - name: Build the engine, the connectors and the tests
+      - name: Build the engine, the connectors, openetl-spark and the tests
         run: |
           make connectors CONNECTORS_SRC=openetl-connectors
+          make spark-lib
           cargo build -p openetl-engine
           go test -tags e2e -c -o "$RUNNER_TEMP/e2e.test" ./test/e2e
       - name: Wait for the services

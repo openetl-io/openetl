@@ -373,8 +373,8 @@ func startRunner(t *testing.T) *runner {
 }
 
 // startRunnerVia starts a runner that reaches Temporal and the API at these
-// addresses.
-func startRunnerVia(t *testing.T, temporal, apiURL string) *runner {
+// addresses. extra flags override the usual ones.
+func startRunnerVia(t *testing.T, temporal, apiURL string, extra ...string) *runner {
 	t.Helper()
 	args := []string{"runner",
 		"--api-url", apiURL, "--temporal-address", temporal, "--temporal-namespace", env.ns,
@@ -382,6 +382,7 @@ func startRunnerVia(t *testing.T, temporal, apiURL string) *runner {
 	if env.dbt != "" {
 		args = append(args, "--dbt", env.dbt)
 	}
+	args = append(args, extra...)
 	cmd := exec.Command(env.openetld, args...)
 	cmd.Env = append(os.Environ(), "OPENETL_RUNNER_TOKEN="+env.runnerToken)
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}

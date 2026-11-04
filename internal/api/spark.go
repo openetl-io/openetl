@@ -22,7 +22,7 @@ import (
 // applySparkCluster stores a Spark cluster's settings as a new version, as
 // applyConnector does a source's.
 func (s *Server) applySparkCluster(ctx context.Context, q *db.Queries, doc *spec.Document, wsID uuid.UUID, provenance string, ch *changes) (*apiv1.AppliedResource, error) {
-	var secrets []string
+	secrets := []string{}
 	for _, v := range doc.SparkCluster.GetSubmit().GetConf().GetFields() {
 		if name, ok := secretRef(v); ok && !slices.Contains(secrets, name) {
 			secrets = append(secrets, name)

@@ -17,6 +17,7 @@ type sparkClusterYAML struct {
 	Submit *struct {
 		Master string               `yaml:"master"`
 		Conf   map[string]yaml.Node `yaml:"conf"`
+		UI     string               `yaml:"ui"`
 	} `yaml:"submit"`
 	Emr *struct {
 		ClusterID   string `yaml:"clusterId"`
@@ -49,6 +50,12 @@ func parseSparkCluster(b []byte) (*apiv1.SparkClusterSpec, error) {
 	if master != "yarn" && !strings.HasPrefix(master, "spark://") && !strings.HasPrefix(master, "k8s://") {
 		return nil, fmt.Errorf("submit.master %q isn't spark://host:port, yarn or k8s://https://host:port", master)
 	}
+	switch ui := y.Submit.UI; {
+	case ui != "" && !strings.HasPrefix(master, "spark://"):
+		return nil, errors.New("submit.ui is a standalone master's web UI, and this master isn't one")
+	case ui != "" && !strings.HasPrefix(ui, "http://") && !strings.HasPrefix(ui, "https://"):
+		return nil, fmt.Errorf("submit.ui %q isn't an http:// or https:// URL", ui)
+	}
 	conf := &structpb.Struct{Fields: map[string]*structpb.Value{}}
 	for k, n := range y.Submit.Conf {
 		field := "submit.conf." + k
@@ -61,7 +68,7 @@ func parseSparkCluster(b []byte) (*apiv1.SparkClusterSpec, error) {
 		}
 		conf.Fields[k] = v
 	}
-	return &apiv1.SparkClusterSpec{Target: &apiv1.SparkClusterSpec_Submit{Submit: &apiv1.SparkSubmit{Master: master, Conf: conf}}}, nil
+	return &apiv1.SparkClusterSpec{Target: &apiv1.SparkClusterSpec_Submit{Submit: &apiv1.SparkSubmit{Master: master, Conf: conf, Ui: y.Submit.UI}}}, nil
 }
 
 // runnerProperties are the Spark properties the runner sets on every
