@@ -352,12 +352,14 @@ func (t *Transform) wait(ctx context.Context, e destination.Epoch) (*doneDoc, er
 	var lastWatch time.Time
 	var ended *State
 	for {
-		if b, err := t.area.bucket.ReadAll(ctx, key); err == nil {
+		// On a directory store a file shows before its content, so one that
+		// isn't JSON yet is still being written, until the application ends.
+		if b, err := t.area.bucket.ReadAll(ctx, key); err == nil && (json.Valid(b) || ended != nil) {
 			return t.done(b, e)
-		} else if gcerrors.Code(err) != gcerrors.NotFound {
+		} else if err != nil && gcerrors.Code(err) != gcerrors.NotFound {
 			t.log.Warn("reading the epoch's _done.json failed", "epoch", e.N, "err", err)
 		}
-		if b, err := t.area.bucket.ReadAll(ctx, failed); err == nil {
+		if b, err := t.area.bucket.ReadAll(ctx, failed); err == nil && (json.Valid(b) || ended != nil) {
 			var f failedDoc
 			if json.Unmarshal(b, &f) != nil || f.Error == "" {
 				f.Error = strings.TrimSpace(string(b))

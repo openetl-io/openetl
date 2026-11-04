@@ -261,9 +261,15 @@ func TestTransformFailures(t *testing.T) {
 	}
 	defer func() { _ = tr.Stop(ctx) }()
 	failed := `{"version": 1, "epoch": 1, "error": "java.lang.IllegalStateException: asked to fail", "trace": "at com.acme.Enrich"}`
-	if err := os.WriteFile(filepath.Join(root, "1", "_failed.json"), []byte(failed), 0o600); err != nil {
+	// The driver creates the file, then writes it, so the runner can read it
+	// empty first.
+	if err := os.WriteFile(filepath.Join(root, "1", "_failed.json"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = os.WriteFile(filepath.Join(root, "1", "_failed.json"), []byte(failed), 0o600)
+	}()
 	var f *Failed
 	err := tr.Epoch(ctx, destination.Epoch{Generation: 1, N: 1}, nil, nil)
 	if !errors.As(err, &f) || !strings.Contains(f.Message, "asked to fail") {
