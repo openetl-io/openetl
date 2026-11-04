@@ -134,7 +134,7 @@ test: tools web/node_modules/.modules.yaml ## Unit tests (fast, no Docker), incl
 	pnpm --dir web test
 
 # Only the packages with integration tests: make test runs the rest. They need
-# the compose Postgres, S3, GCS and Azure.
+# the compose Postgres, S3, GCS, Azure and Flink.
 INTEGRATION_PKGS = $(shell grep -rlE '^//go:build .*integration' --include='*_test.go' cmd internal sdk test | xargs -n1 dirname | sort -u | sed 's|^|./|')
 .PHONY: test-integration
 test-integration: ## Integration tests against the compose deps

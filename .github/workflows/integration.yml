@@ -28,7 +28,7 @@ jobs:
             ~/go/pkg/mod
           key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
           restore-keys: go-${{ github.job }}-
-      - name: Start Postgres, S3, GCS and Azure
-        run: make deps-up DEPS="postgres s3 gcs azure"
+      - name: Start Postgres, S3, GCS, Azure and Flink
+        run: make deps-up DEPS="postgres s3 gcs azure flink-jobmanager flink-taskmanager"
       - name: Integration tests
         run: make test-integration
