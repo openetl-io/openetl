@@ -64,6 +64,9 @@ func newEMR(ctx context.Context, spec *apiv1.SparkEmr, o Options) (Submitter, er
 	return &emrSteps{api: api, spec: spec, log: o.Logger, logWait: emrLogWait}, nil
 }
 
+// OpenEMR opens EMR's API in region with the AWS SDK's default chain.
+func OpenEMR(ctx context.Context, region string) (EMR, error) { return defaultEMR(ctx, region) }
+
 type awsEMR struct {
 	*emr.Client
 	s3 *s3.Client
@@ -98,18 +101,23 @@ func (e *emrSteps) Kind() string { return "emr" }
 // cluster is the cluster's ID, found by name if the spec gives one: the one
 // active cluster of that name.
 func (e *emrSteps) cluster(ctx context.Context) (string, error) {
-	if id := e.spec.GetClusterId(); id != "" {
+	return FindEMRCluster(ctx, e.api, e.spec.GetClusterId(), e.spec.GetClusterName(), e.spec.GetRegion())
+}
+
+// FindEMRCluster is id, or the one active cluster named name.
+func FindEMRCluster(ctx context.Context, api EMR, id, name, region string) (string, error) {
+	if id != "" {
 		return id, nil
 	}
 	in := &emr.ListClustersInput{ClusterStates: []types.ClusterState{types.ClusterStateStarting, types.ClusterStateBootstrapping, types.ClusterStateRunning, types.ClusterStateWaiting}}
 	var found []string
 	for {
-		out, err := e.api.ListClusters(ctx, in)
+		out, err := api.ListClusters(ctx, in)
 		if err != nil {
-			return "", errs.Wrap(errs.Transient, err, "spark: list EMR clusters")
+			return "", errs.Wrap(errs.Transient, err, "emr: list clusters")
 		}
 		for _, c := range out.Clusters {
-			if aws.ToString(c.Name) == e.spec.GetClusterName() {
+			if aws.ToString(c.Name) == name {
 				found = append(found, aws.ToString(c.Id))
 			}
 		}
@@ -119,11 +127,11 @@ func (e *emrSteps) cluster(ctx context.Context) (string, error) {
 	}
 	switch len(found) {
 	case 0:
-		return "", errs.New(errs.Transient, "spark: no active EMR cluster is named %q in %s", e.spec.GetClusterName(), e.spec.GetRegion())
+		return "", errs.New(errs.Transient, "emr: no active cluster is named %q in %s", name, region)
 	case 1:
 		return found[0], nil
 	}
-	return "", errs.New(errs.ConfigInvalid, "spark: %d active EMR clusters are named %q in %s (%s); name one by clusterId", len(found), e.spec.GetClusterName(), e.spec.GetRegion(), strings.Join(found, ", "))
+	return "", errs.New(errs.ConfigInvalid, "emr: %d active clusters are named %q in %s (%s); name one by clusterId", len(found), name, region, strings.Join(found, ", "))
 }
 
 func (e *emrSteps) Submit(ctx context.Context, app Application) (string, error) {

@@ -30,10 +30,12 @@ import (
 // Dir holds what a pipeline's Spark clusters read, next to its checkpoints.
 const Dir = "_spark"
 
-// Area is a pipeline's _spark/ prefix.
+// Area is a pipeline's _spark/ prefix, or another engine's below OpenDir.
 type Area struct {
 	pipeline string
-	bucket   *blob.Bucket
+	// Prefixes errors.
+	engine string
+	bucket *blob.Bucket
 	// How clusters name the area's keys: an object store's URL, or a
 	// directory's file:// URL, below which each key is.
 	base *url.URL
@@ -43,7 +45,13 @@ type Area struct {
 // objectstore.Open takes it. Only S3 and directories are supported: a
 // directory works where the cluster mounts it at the same path.
 func Open(ctx context.Context, location, org, pipeline string) (*Area, error) {
-	rel := path.Join(org, pipeline, Dir) + "/"
+	return OpenDir(ctx, location, org, pipeline, Dir, "Spark")
+}
+
+// OpenDir opens the pipeline's dir, as Open does its _spark/, for engine's
+// clusters.
+func OpenDir(ctx context.Context, location, org, pipeline, dir, engine string) (*Area, error) {
+	rel := path.Join(org, pipeline, dir) + "/"
 	var base *url.URL
 	switch u, err := url.Parse(location); {
 	case !strings.Contains(location, "://"):
@@ -59,13 +67,13 @@ func Open(ctx context.Context, location, org, pipeline string) (*Area, error) {
 	case u.Scheme == "s3":
 		base = &url.URL{Scheme: "s3", Host: u.Host, Path: "/" + objectstore.Prefix(u) + rel}
 	default:
-		return nil, errs.New(errs.ConfigInvalid, "Spark needs the data plane's store on S3 or in a directory, not %s://", u.Scheme)
+		return nil, errs.New(errs.ConfigInvalid, "%s needs the data plane's store on S3 or in a directory, not %s://", engine, u.Scheme)
 	}
 	root, err := objectstore.Open(ctx, location)
 	if err != nil {
 		return nil, err
 	}
-	return &Area{pipeline: pipeline, bucket: blob.PrefixedBucket(root, rel), base: base}, nil
+	return &Area{pipeline: pipeline, engine: strings.ToLower(engine), bucket: blob.PrefixedBucket(root, rel), base: base}, nil
 }
 
 func (a *Area) Close() error { return a.bucket.Close() }
@@ -111,6 +119,27 @@ func (a *Area) children(ctx context.Context, prefix string) ([]string, error) {
 		}
 	}
 }
+
+// Dirs are the names of the directories below prefix.
+func (a *Area) Dirs(ctx context.Context, prefix string) ([]string, error) {
+	return a.children(ctx, prefix)
+}
+
+// Drop deletes the keys below prefix, and a directory store's directory.
+func (a *Area) Drop(ctx context.Context, prefix string) error { return a.drop(ctx, prefix) }
+
+// Exists reports whether key is there.
+func (a *Area) Exists(ctx context.Context, key string) (bool, error) {
+	return a.bucket.Exists(ctx, key)
+}
+
+// Read reads key.
+func (a *Area) Read(ctx context.Context, key string) (io.ReadCloser, error) {
+	return a.bucket.NewReader(ctx, key, nil)
+}
+
+// Base is the area's URL, below which each key is: s3:// or file://.
+func (a *Area) Base() url.URL { return *a.base }
 
 // drop deletes the keys below prefix, and a directory store's directory.
 func (a *Area) drop(ctx context.Context, prefix string) error {
@@ -173,11 +202,11 @@ func (a *Area) StageCode(ctx context.Context, uri, sum string, client *http.Clie
 	key := CodeKey(sum, uri)
 	switch ok, err := a.bucket.Exists(ctx, key); {
 	case err != nil:
-		return "", errs.Wrap(errs.Transient, err, "spark: check the code's copy")
+		return "", errs.Wrap(errs.Transient, err, a.engine+": check the code's copy")
 	case ok:
 		return key, nil
 	}
-	src, err := fetch(ctx, uri, client)
+	src, err := fetch(ctx, a.engine, uri, client)
 	if err != nil {
 		return "", err
 	}
@@ -187,21 +216,21 @@ func (a *Area) StageCode(ctx context.Context, uri, sum string, client *http.Clie
 	defer cancel()
 	w, err := a.bucket.NewWriter(wctx, key, nil)
 	if err != nil {
-		return "", errs.Wrap(errs.Transient, err, "spark: copy the code")
+		return "", errs.Wrap(errs.Transient, err, a.engine+": copy the code")
 	}
 	h := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(w, h), src); err != nil {
 		cancel()
 		_ = w.Close()
-		return "", errs.Wrap(errs.Transient, err, "spark: copy the code from "+redact(uri))
+		return "", errs.Wrap(errs.Transient, err, a.engine+": copy the code from "+redact(uri))
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != sum {
 		cancel()
 		_ = w.Close()
-		return "", errs.New(errs.ConfigInvalid, "spark: %s has SHA-256 %s, not the %s the pipeline pins", redact(uri), got, sum)
+		return "", errs.New(errs.ConfigInvalid, "%s: %s has SHA-256 %s, not the %s the pipeline pins", a.engine, redact(uri), got, sum)
 	}
 	if err := w.Close(); err != nil {
-		return "", errs.Wrap(errs.Transient, err, "spark: copy the code")
+		return "", errs.Wrap(errs.Transient, err, a.engine+": copy the code")
 	}
 	return key, nil
 }
@@ -234,10 +263,10 @@ func (a *Area) WriteContext(ctx context.Context, sync string, step int, doc []by
 	return key, nil
 }
 
-func fetch(ctx context.Context, uri string, client *http.Client) (io.ReadCloser, error) {
+func fetch(ctx context.Context, engine, uri string, client *http.Client) (io.ReadCloser, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		return nil, errs.Wrap(errs.ConfigInvalid, err, "spark: code URI")
+		return nil, errs.Wrap(errs.ConfigInvalid, err, engine+": code URI")
 	}
 	switch u.Scheme {
 	case "s3", "s3a":
@@ -245,7 +274,7 @@ func fetch(ctx context.Context, uri string, client *http.Client) (io.ReadCloser,
 		u.Scheme, u.Path = "s3", ""
 		b, err := objectstore.Open(ctx, u.String())
 		if err != nil {
-			return nil, errs.Wrap(errs.ConfigInvalid, err, "spark: code bucket")
+			return nil, errs.Wrap(errs.ConfigInvalid, err, engine+": code bucket")
 		}
 		r, err := b.NewReader(ctx, key, nil)
 		if err != nil {
@@ -254,17 +283,17 @@ func fetch(ctx context.Context, uri string, client *http.Client) (io.ReadCloser,
 			if gcerrors.Code(err) == gcerrors.NotFound {
 				code = errs.ConfigInvalid
 			}
-			return nil, errs.Wrap(code, err, "spark: read "+redact(uri))
+			return nil, errs.Wrap(code, err, engine+": read "+redact(uri))
 		}
 		return closeBoth{r, b}, nil
 	case "https":
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 		if err != nil {
-			return nil, errs.Wrap(errs.ConfigInvalid, err, "spark: code URI")
+			return nil, errs.Wrap(errs.ConfigInvalid, err, engine+": code URI")
 		}
 		res, err := client.Do(req)
 		if err != nil {
-			return nil, errs.Wrap(errs.Transient, err, "spark: fetch "+redact(uri))
+			return nil, errs.Wrap(errs.Transient, err, engine+": fetch "+redact(uri))
 		}
 		if res.StatusCode != http.StatusOK {
 			_ = res.Body.Close()
@@ -272,11 +301,11 @@ func fetch(ctx context.Context, uri string, client *http.Client) (io.ReadCloser,
 			if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusUnauthorized {
 				code = errs.ConfigInvalid
 			}
-			return nil, errs.New(code, "spark: fetch %s: %s", redact(uri), res.Status)
+			return nil, errs.New(code, "%s: fetch %s: %s", engine, redact(uri), res.Status)
 		}
 		return res.Body, nil
 	}
-	return nil, errs.New(errs.ConfigInvalid, "spark: %s isn't an s3:// or https:// URI", redact(uri))
+	return nil, errs.New(errs.ConfigInvalid, "%s: %s isn't an s3:// or https:// URI", engine, redact(uri))
 }
 
 type closeBoth struct {
