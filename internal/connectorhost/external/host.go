@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 
+	"golang.org/x/mod/module"
+
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/telemetry"
 	connspec "github.com/unsuitable001/openetl/internal/spec"
@@ -21,9 +23,14 @@ func Host() *protocolv1.Host {
 	return &protocolv1.Host{Version: Release(), Protocol: Protocol, Features: Features}
 }
 
-// Release is this build's release, such as 0.1.0, or "dev".
+// Release is this build's release, such as 0.1.0, or "dev": a build from
+// an untagged commit has a pseudo-version, which Go stamps from the VCS.
 func Release() string {
-	v := strings.TrimPrefix(telemetry.Version(), "v")
+	v := telemetry.Version()
+	if module.IsPseudoVersion(v) {
+		return "dev"
+	}
+	v = strings.TrimPrefix(v, "v")
 	if !connspec.ValidVersion(v) {
 		return "dev"
 	}
