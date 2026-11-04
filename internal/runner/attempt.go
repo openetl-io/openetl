@@ -526,7 +526,11 @@ func (j *Job) validate() error {
 	}
 	streams := make([]delivery.Stream, 0, len(j.sinkStreams()))
 	for _, s := range j.sinkStreams() {
-		streams = append(streams, s.delivery())
+		ds := s.delivery()
+		if j.Flink != nil {
+			ds.Engine = "flink"
+		}
+		streams = append(streams, ds)
 	}
 	return errs.Wrap(errs.ConfigInvalid, delivery.Check(j.Destination.Capabilities(), j.Settings, streams), "runner: plan checks")
 }

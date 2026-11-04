@@ -71,6 +71,9 @@ type Stream struct {
 	// deduped, since once the user's code re-keys, aggregates or explodes
 	// rows, an ID can't tell a repeated input from a new one.
 	Transformed bool
+	// A transform's engine, as the spec names it, for messages; empty:
+	// spark.
+	Engine string
 }
 
 // settled fills in the stream's require and collapse.
@@ -192,7 +195,7 @@ func Problems(caps destination.Capabilities, s Settings, streams []Stream) []err
 		if st.Mode == destination.Merge && !st.Keyed {
 			field := "destination.write"
 			if st.Transformed {
-				field = fmt.Sprintf("transform.spark.outputs[%s].write", st.Name)
+				field = fmt.Sprintf("transform.%s.outputs[%s].write", cmp.Or(st.Engine, "spark"), st.Name)
 			}
 			fails = append(fails, fmt.Errorf("%s: merge needs a primary key, and stream %q has none", field, st.Name))
 			continue
@@ -204,7 +207,7 @@ func Problems(caps destination.Capabilities, s Settings, streams []Stream) []err
 		field := "delivery.require"
 		switch {
 		case st.Require != 0 && st.Transformed:
-			field = fmt.Sprintf("transform.spark.outputs[%s].require", st.Name)
+			field = fmt.Sprintf("transform.%s.outputs[%s].require", cmp.Or(st.Engine, "spark"), st.Name)
 		case st.Require != 0:
 			field = fmt.Sprintf("source.streams[%s].require", st.Name)
 		}

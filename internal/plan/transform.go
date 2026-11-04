@@ -30,6 +30,8 @@ type Output struct {
 	Require delivery.Level
 	// Every input's replay is exact.
 	Exact bool
+	// spark or flink.
+	Engine string
 }
 
 func (o Output) Delivery() delivery.Stream {
@@ -37,7 +39,7 @@ func (o Output) Delivery() delivery.Stream {
 	if o.Exact {
 		r = source.Exact
 	}
-	return delivery.Stream{Name: o.Name, Replay: r, Mode: o.Mode, Keyed: len(o.PrimaryKey) > 0, Require: o.Require, Transformed: true}
+	return delivery.Stream{Name: o.Name, Replay: r, Mode: o.Mode, Keyed: len(o.PrimaryKey) > 0, Require: o.Require, Transformed: true, Engine: o.Engine}
 }
 
 // Outputs are a transform's outputs: the declared ones, or else each
@@ -51,9 +53,9 @@ func Outputs(p *apiv1.PipelineSpec, caps destination.Capabilities, inputs []Inpu
 		exact = exact && in.Replay == source.Exact
 		refresh = refresh && in.Read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH
 	}
-	declared := p.GetTransform().GetSpark().GetOutputs()
+	declared, engine := p.GetTransform().GetSpark().GetOutputs(), "spark"
 	if f := p.GetTransform().GetFlink(); f != nil {
-		declared = f.GetOutputs()
+		declared, engine = f.GetOutputs(), "flink"
 	}
 	if len(declared) == 0 {
 		for _, in := range inputs {
@@ -66,7 +68,7 @@ func Outputs(p *apiv1.PipelineSpec, caps destination.Capabilities, inputs []Inpu
 		if i := slices.IndexFunc(inputs, func(in Input) bool { return in.Name == d.GetName() }); i >= 0 {
 			in = &inputs[i]
 		}
-		o := Output{Name: d.GetName(), PrimaryKey: d.GetPrimaryKey(), Require: Level(d.GetRequire()), Exact: exact}
+		o := Output{Name: d.GetName(), PrimaryKey: d.GetPrimaryKey(), Require: Level(d.GetRequire()), Exact: exact, Engine: engine}
 		if len(o.PrimaryKey) == 0 && in != nil {
 			o.PrimaryKey = in.PrimaryKey
 		}
