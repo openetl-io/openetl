@@ -75,13 +75,16 @@ connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connec
 	cd $(CONNECTORS_SRC) && GOWORK=$(BIN)/connectors.work go build -o $(BIN)/connectors/ ./cmd/...
 
 # openetl-spark (ADR-0022): the jar, built and tested in a pinned Maven image,
-# so no JDK is needed on the host; and the Python package's tests.
+# so no JDK is needed on the host; and the Python package's tests. The tests
+# start Spark, whose Hadoop login needs a passwd entry for the container's user.
 MAVEN_IMAGE := maven:3.9.12-eclipse-temurin-17
 MAVEN_REPO ?= $(HOME)/.m2
 .PHONY: spark-lib
 spark-lib: ## Build and test openetl-spark (the jar into libs/openetl-spark/java/target)
-	@mkdir -p $(MAVEN_REPO)
-	docker run --rm -u $$(id -u):$$(id -g) -e MAVEN_CONFIG=/var/maven/.m2 -v $(MAVEN_REPO):/var/maven/.m2 \
+	@mkdir -p $(MAVEN_REPO) .openetl
+	@printf 'root:x:0:0::/root:/bin/sh\nopenetl:x:%s:%s::/var/maven:/bin/sh\n' $$(id -u) $$(id -g) > .openetl/maven-passwd
+	docker run --rm -u $$(id -u):$$(id -g) -v $(CURDIR)/.openetl/maven-passwd:/etc/passwd:ro \
+		-e MAVEN_CONFIG=/var/maven/.m2 -v $(MAVEN_REPO):/var/maven/.m2 \
 		-v $(CURDIR)/libs/openetl-spark/java:/src -w /src $(MAVEN_IMAGE) mvn -B -q -Duser.home=/var/maven package
 	cd libs/openetl-spark/python && PYTHONPATH=. python3 -m unittest discover -s tests
 

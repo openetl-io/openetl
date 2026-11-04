@@ -1,10 +1,23 @@
-"""What a post-sync PySpark application learns of the sync that ran before it.
+"""PySpark applications' side of openetl.
+
+A post-sync application learns of the sync that ran before it:
 
     from openetl_spark import SyncContext
 
     ctx = SyncContext.load(spark)
     for snapshot in ctx.snapshots(spark, "lake.shop.orders"):
         ...
+
+A pipeline's transform is the application's main, and runs its transform on
+each epoch of a sync:
+
+    import openetl_spark
+
+    def transform(spark, inputs, ctx):
+        return {"orders_enriched": inputs["orders"].join(...)}
+
+    if __name__ == "__main__":
+        openetl_spark.run(transform)
 """
 
 from __future__ import annotations
@@ -13,7 +26,9 @@ import json
 from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional
 
-__all__ = ["CONF", "VERSION", "Ref", "Stream", "SyncContext"]
+from .transform import PROTOCOL, PROTOCOL_VERSION, ROOT, EpochContext, run
+
+__all__ = ["CONF", "PROTOCOL", "PROTOCOL_VERSION", "ROOT", "VERSION", "EpochContext", "Ref", "Stream", "SyncContext", "run"]
 
 #: The Spark property that names the context document.
 CONF = "spark.openetl.context"

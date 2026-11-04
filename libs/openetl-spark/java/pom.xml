@@ -8,7 +8,7 @@
   <artifactId>openetl-spark</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <name>openetl-spark</name>
-  <description>Spark applications' side of openetl: the sync's context for post-sync steps (ADR-0022).</description>
+  <description>Spark applications' side of openetl: the sync's context for post-sync steps, and the driver of a pipeline's transform (ADR-0022).</description>
   <url>https://github.com/unsuitable001/openetl</url>
 
   <licenses>
@@ -25,6 +25,7 @@
     <spark.version>3.5.8</spark.version>
     <!-- What Spark 3.5 ships. -->
     <jackson.version>2.15.2</jackson.version>
+    <slf4j.version>2.0.7</slf4j.version>
   </properties>
 
   <dependencies>
@@ -41,6 +42,12 @@
       <scope>provided</scope>
     </dependency>
     <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <version>5.11.4</version>
@@ -54,6 +61,27 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.2</version>
+        <!-- A local SparkSession on Java 17 needs what spark-submit's launcher
+             opens. -->
+        <configuration>
+          <argLine>
+            -XX:+IgnoreUnrecognizedVMOptions
+            --add-opens=java.base/java.lang=ALL-UNNAMED
+            --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+            --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+            --add-opens=java.base/java.io=ALL-UNNAMED
+            --add-opens=java.base/java.net=ALL-UNNAMED
+            --add-opens=java.base/java.nio=ALL-UNNAMED
+            --add-opens=java.base/java.util=ALL-UNNAMED
+            --add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+            --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+            --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+            --add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+            --add-opens=java.base/sun.security.action=ALL-UNNAMED
+            --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+            -Djdk.reflect.useDirectMethodHandle=false
+          </argLine>
+        </configuration>
       </plugin>
       <!-- The tests jar holds the e2e suite's application. -->
       <plugin>
@@ -65,6 +93,12 @@
             <goals>
               <goal>test-jar</goal>
             </goals>
+            <!-- The tests' logging stays out of what clusters run. -->
+            <configuration>
+              <excludes>
+                <exclude>log4j2.properties</exclude>
+              </excludes>
+            </configuration>
           </execution>
         </executions>
       </plugin>
