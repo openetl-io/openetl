@@ -154,6 +154,7 @@ e2e: connectors ## Full-stack scenarios against the compose deps
 	cargo build -p openetl-engine
 	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
 	OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit OPENETL_SPARK_LIB=$(CURDIR)/libs/openetl-spark/java/target \
+	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
 	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
 
 .PHONY: clean

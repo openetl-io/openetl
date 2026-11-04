@@ -57,16 +57,17 @@ jobs:
           "$RUNNER_TEMP/dbt/bin/pip" install --quiet dbt-core==1.12.6 dbt-postgres==1.11.0
           echo "OPENETL_DBT=$RUNNER_TEMP/dbt/bin/dbt" >> "$GITHUB_ENV"
       # The images pull and the services start while the binaries build.
-      - name: Start Postgres, Temporal, S3, Kafka, Kinesis and Spark
+      - name: Start Postgres, Temporal, S3, Kafka, Kinesis, Spark and Flink
         run: |
           tail --pid="$(cat "$RUNNER_TEMP/free-disk.pid")" -f /dev/null
           df -h /
           (set +e; make deps-up; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
-      # The jar's tests run in spark-lib.
-      - name: Build the engine, the connectors, openetl-spark and the tests
+      # The jars' tests run in spark-lib and flink-lib.
+      - name: Build the engine, the connectors, openetl-spark, openetl-flink and the tests
         run: |
           make connectors CONNECTORS_SRC=openetl-connectors
           make spark-lib MAVEN_FLAGS=-DskipTests
+          make flink-lib MAVEN_FLAGS=-DskipTests
           cargo build -p openetl-engine
           go test -tags e2e -c -o "$RUNNER_TEMP/e2e.test" ./test/e2e
       - name: Wait for the services
@@ -81,6 +82,6 @@ jobs:
       - name: Scheduled syncs through the whole stack, with engine and runner kills
         run: make e2e CONNECTORS_SRC=openetl-connectors
       # A driver's launch failures are in the worker's log.
-      - name: The Spark containers' logs
+      - name: The Spark and Flink containers' logs
         if: failure()
-        run: docker compose -f deploy/compose/dev.yml logs --tail 200 spark-master spark-worker
+        run: docker compose -f deploy/compose/dev.yml logs --tail 200 spark-master spark-worker flink-jobmanager flink-taskmanager
