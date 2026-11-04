@@ -58,7 +58,10 @@ type flinkSegment struct {
 	head, headPrev *checkpoint.Record
 	headSt         *epochState
 	headCommitted  bool
-	hello          *coordMsg
+	// HEAD's Flink checkpoint completed, whether or not its epoch is
+	// committed yet.
+	headCompleted bool
+	hello         *coordMsg
 
 	g          *errgroup.Group
 	gctx       context.Context
@@ -224,7 +227,7 @@ func newFlinkSegment(a *flinkAttempt, restored *checkpoint.Record, learn bool) *
 	}
 	a.mu.Unlock()
 	s.head = restored
-	s.headCommitted = true
+	s.headCommitted, s.headCompleted = true, true
 	if len(s.known) == len(s.streams) {
 		close(s.learned)
 	}
@@ -837,7 +840,7 @@ func (s *flinkSegment) loop(ctx context.Context) (err error) {
 			// The savepoint is complete, whether or not its outcome reached
 			// the enumerator before the job finished.
 			if n, ok := s.byC[s.stopCheckpoint()]; ok && n == s.lastN {
-				s.commitReady = true
+				s.commitReady, s.headCompleted = true, true
 			}
 		case <-connect:
 			connect = nil
@@ -995,13 +998,13 @@ func (s *flinkSegment) handle(ev segEvent) error {
 	case segRecorded:
 		ep := s.epochs[ev.epoch]
 		s.recording = false
-		s.headPrev, s.head, s.headSt, s.headCommitted = s.head, ev.rec, ep.st, false
+		s.headPrev, s.head, s.headSt, s.headCommitted, s.headCompleted = s.head, ev.rec, ep.st, false, false
 		s.lastN = ev.epoch
 		s.byC[ep.c] = ev.epoch
 		delete(s.epochs, ev.epoch)
 		refuse(ep.replies, nil)
 		if s.stopped && ep.typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT {
-			s.commitReady = true
+			s.commitReady, s.headCompleted = true, true
 		}
 	case segCommitted:
 		s.committing = false
@@ -1082,7 +1085,7 @@ func (s *flinkSegment) coordinate(m coordMsg) error {
 				m.reply <- errors.New("runner: out of order")
 				return fmt.Errorf("runner: checkpoint %d of epoch %d completed, and epoch %d is the last recorded, %d the last committed", c, n, s.lastN, s.committedN)
 			}
-			s.commitReady = true
+			s.commitReady, s.headCompleted = true, true
 		}
 		m.reply <- nil
 	default:

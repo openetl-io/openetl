@@ -520,11 +520,14 @@ func (a *flinkAttempt) restart(ctx context.Context, prev *flinkSegment, hello *c
 			return nil, err
 		}
 		restored = head
-	case before == nil || before.Flink == nil || before.Flink.Job != a.fjob.ID() || r >= before.Flink.Checkpoint:
+	case !prev.headCompleted && (before == nil || before.Flink == nil || before.Flink.Job != a.fjob.ID() || r >= before.Flink.Checkpoint):
 		restored = before
 	default:
+		// Only a JobManager that restarts without high availability goes
+		// back past a checkpoint that completed, as HEAD's did, or past the
+		// one before it.
 		hello.reply <- errors.New("runner: refused")
-		return nil, errs.New(errs.PositionLost, "runner: the Flink job restored checkpoint %d, older than the one the pipeline's records stand at (%d); a JobManager that restarts without high availability does this", r, before.Flink.Checkpoint)
+		return nil, errs.New(errs.PositionLost, "runner: the Flink job restored checkpoint %d, older than the one the pipeline's records stand at (%d); a JobManager that restarts without high availability does this", r, head.Flink.Checkpoint)
 	}
 	cur, _, err := a.claim(ctx)
 	if err != nil {

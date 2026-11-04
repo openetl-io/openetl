@@ -19,6 +19,7 @@ import (
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
+	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/internal/runner/flinktest"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
@@ -363,6 +364,34 @@ func oneStreamJob(log *checkpoint.Log, dest *exactDest, f runner.Flink, bridge r
 		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline, CommitInterval: 10 * time.Millisecond},
 		Flink:       f, Bridge: bridge, Drain: drain,
 	}
+}
+
+// Without high availability, a JobManager that restarts restores the
+// checkpoint the job was deployed from. When HEAD is the job's first record
+// and its checkpoint completed, that's before an epoch the destination may
+// have made visible, so the runner refuses it rather than move HEAD back.
+func TestFlinkRestoreBeforeACompletedCheckpointIsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		dest := newExactDest()
+		bridge := flinktest.NewBridge()
+		cluster := flinktest.NewCluster(bridge)
+		cluster.Logf = t.Logf
+		cluster.Faults.NoHA = func() bool { return true }
+		cluster.Point = failSecondStart(nil)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_, err := runner.RunAttempt(ctx, oneStreamJob(log, dest, cluster, bridge, 200, nil))
+		if errs.CodeOf(err) != errs.PositionLost {
+			t.Errorf("attempt: %v, want POSITION_LOST", err)
+		}
+		dest.mu.Lock()
+		defer dest.mu.Unlock()
+		ids := slices.Sorted(slices.Values(dest.rows["a"]))
+		if len(slices.Compact(slices.Clone(ids))) != len(ids) {
+			t.Errorf("rows landed twice: %v", ids)
+		}
+	})
 }
 
 // hookStore runs before ahead of the next swap of HEAD, once armed.
