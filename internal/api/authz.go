@@ -39,6 +39,8 @@ var permissions = map[string]auth.Role{
 	"dbtProjects.delete":   auth.Editor,
 	"sparkClusters.get":    auth.Viewer,
 	"sparkClusters.delete": auth.Editor,
+	"flinkClusters.get":    auth.Viewer,
+	"flinkClusters.delete": auth.Editor,
 	"secrets.get":          auth.Viewer,
 	"secrets.update":       auth.Editor,
 	"secrets.delete":       auth.Editor,
@@ -137,6 +139,10 @@ var rules = map[string]rule{
 	apiv1connect.SparkClusterServiceGetSparkClusterProcedure:    {"sparkClusters.get", inName, false},
 	apiv1connect.SparkClusterServiceListSparkClustersProcedure:  {"sparkClusters.get", inParent, false},
 	apiv1connect.SparkClusterServiceDeleteSparkClusterProcedure: {"sparkClusters.delete", inName, false},
+
+	apiv1connect.FlinkClusterServiceGetFlinkClusterProcedure:    {"flinkClusters.get", inName, false},
+	apiv1connect.FlinkClusterServiceListFlinkClustersProcedure:  {"flinkClusters.get", inParent, false},
+	apiv1connect.FlinkClusterServiceDeleteFlinkClusterProcedure: {"flinkClusters.delete", inName, false},
 
 	apiv1connect.SecretServiceGetSecretProcedure:    {"secrets.get", inName, false},
 	apiv1connect.SecretServiceListSecretsProcedure:  {"secrets.get", inParent, false},

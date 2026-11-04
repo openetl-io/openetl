@@ -54,6 +54,11 @@ SELECT name, secrets FROM spark_clusters
 WHERE org_id = @org_id AND workspace_id = @workspace_id AND secrets && @names::text[]
 ORDER BY name;
 
+-- name: ListFlinkClustersUsingSecrets :many
+SELECT name, secrets FROM flink_clusters
+WHERE org_id = @org_id AND workspace_id = @workspace_id AND secrets && @names::text[]
+ORDER BY name;
+
 -- The pipelines whose current versions name any of the secrets.
 -- name: ListPipelinesUsingSecrets :many
 SELECT p.name, v.secrets FROM pipelines p

@@ -100,7 +100,7 @@ type planned struct {
 func (v *pinned) pins() plan.Version {
 	return plan.Version{
 		Spec: v.spec, Source: v.src.Version, Destination: v.dst.Version,
-		SourceConnector: v.src.ConnectorDigest, DestinationConnector: v.dst.ConnectorDigest, Dbt: v.dbt, SparkClusters: v.spark,
+		SourceConnector: v.src.ConnectorDigest, DestinationConnector: v.dst.ConnectorDigest, Dbt: v.dbt, SparkClusters: v.spark, FlinkClusters: v.flink,
 	}
 }
 
@@ -115,7 +115,10 @@ func pinsOf(r db.GetSyncSpecRow) (plan.Version, error) {
 	if err := json.Unmarshal(r.Dbt, &v.Dbt); err != nil {
 		return v, err
 	}
-	return v, json.Unmarshal(r.SparkClusters, &v.SparkClusters)
+	if err := json.Unmarshal(r.SparkClusters, &v.SparkClusters); err != nil {
+		return v, err
+	}
+	return v, json.Unmarshal(r.FlinkClusters, &v.FlinkClusters)
 }
 
 // plan is how the pipeline's new version would sync, from its source's

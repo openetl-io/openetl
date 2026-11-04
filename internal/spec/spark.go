@@ -169,12 +169,14 @@ type sparkTransformYAML struct {
 	Cluster string            `yaml:"cluster"`
 	Code    sparkCodeYAML     `yaml:"code"`
 	Conf    map[string]string `yaml:"conf"`
-	Outputs []struct {
-		Name       string   `yaml:"name"`
-		PrimaryKey []string `yaml:"primaryKey"`
-		Write      string   `yaml:"write"`
-		Require    string   `yaml:"require"`
-	} `yaml:"outputs"`
+	Outputs []outputYAML      `yaml:"outputs"`
+}
+
+type outputYAML struct {
+	Name       string   `yaml:"name"`
+	PrimaryKey []string `yaml:"primaryKey"`
+	Write      string   `yaml:"write"`
+	Require    string   `yaml:"require"`
 }
 
 func parseSparkTransform(y *sparkTransformYAML) (*apiv1.SparkTransform, error) {
@@ -192,9 +194,19 @@ func parseSparkTransform(y *sparkTransformYAML) (*apiv1.SparkTransform, error) {
 	if err := sparkConf(field+".conf", y.Conf); err != nil {
 		return nil, err
 	}
-	t := &apiv1.SparkTransform{Cluster: y.Cluster, Code: code, Conf: y.Conf}
+	outputs, err := parseOutputs(field, y.Outputs)
+	if err != nil {
+		return nil, err
+	}
+	return &apiv1.SparkTransform{Cluster: y.Cluster, Code: code, Conf: y.Conf, Outputs: outputs}, nil
+}
+
+// parseOutputs checks a transform's outputs.
+func parseOutputs(field string, outputs []outputYAML) ([]*apiv1.TransformOutput, error) {
+	var out []*apiv1.TransformOutput
 	seen := map[string]bool{}
-	for i, o := range y.Outputs {
+	var err error
+	for i, o := range outputs {
 		f := fmt.Sprintf("%s.outputs[%d]", field, i)
 		if o.Name == "" || seen[o.Name] {
 			return nil, fmt.Errorf("%s: missing or repeated name %q", f, o.Name)
@@ -207,16 +219,16 @@ func parseSparkTransform(y *sparkTransformYAML) (*apiv1.SparkTransform, error) {
 			}
 			keys[k] = true
 		}
-		out := &apiv1.SparkOutput{Name: o.Name, PrimaryKey: o.PrimaryKey}
-		if out.Write, err = enum(apiv1.WriteMode_value, "WRITE_MODE_", f+".write", o.Write, apiv1.WriteMode_WRITE_MODE_UNSPECIFIED); err != nil {
+		t := &apiv1.TransformOutput{Name: o.Name, PrimaryKey: o.PrimaryKey}
+		if t.Write, err = enum(apiv1.WriteMode_value, "WRITE_MODE_", f+".write", o.Write, apiv1.WriteMode_WRITE_MODE_UNSPECIFIED); err != nil {
 			return nil, err
 		}
-		if out.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", f+".require", o.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
+		if t.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", f+".require", o.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
 			return nil, err
 		}
-		t.Outputs = append(t.Outputs, out)
+		out = append(out, t)
 	}
-	return t, nil
+	return out, nil
 }
 
 type sparkAccessYAML struct {
@@ -230,7 +242,11 @@ type sparkAccessYAML struct {
 var iamRole = regexp.MustCompile(`^arn:aws[a-z-]*:iam::\d{12}:role/\S+$`)
 
 func parseSparkAccess(y *sparkAccessYAML) (*apiv1.SparkAccess, error) {
-	const field = "sparkAccess"
+	return parseAccess("sparkAccess", y)
+}
+
+// parseAccess checks a cluster's access to the data plane's store.
+func parseAccess(field string, y *sparkAccessYAML) (*apiv1.SparkAccess, error) {
 	switch {
 	case y.EmrRole == "" && y.Keys == nil:
 		return nil, fmt.Errorf("%s needs emrRole, keys, or both", field)

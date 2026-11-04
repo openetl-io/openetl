@@ -84,6 +84,7 @@ var (
 	_ apiv1connect.DestinationServiceHandler     = (*Server)(nil)
 	_ apiv1connect.DbtProjectServiceHandler      = (*Server)(nil)
 	_ apiv1connect.SparkClusterServiceHandler    = (*Server)(nil)
+	_ apiv1connect.FlinkClusterServiceHandler    = (*Server)(nil)
 	_ apiv1connect.SecretServiceHandler          = (*Server)(nil)
 	_ apiv1connect.AccessServiceHandler          = (*Server)(nil)
 	_ apiv1connect.AuditServiceHandler           = (*Server)(nil)
@@ -121,6 +122,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		vanguard.NewService(apiv1connect.NewDestinationServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewDbtProjectServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewSparkClusterServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewFlinkClusterServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewSecretServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewAccessServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewAuditServiceHandler(s, opts)),

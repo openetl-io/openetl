@@ -40,7 +40,7 @@ func (o Output) Delivery() delivery.Stream {
 	return delivery.Stream{Name: o.Name, Replay: r, Mode: o.Mode, Keyed: len(o.PrimaryKey) > 0, Require: o.Require, Transformed: true}
 }
 
-// Outputs are a Spark transform's outputs: the declared ones, or else each
+// Outputs are a transform's outputs: the declared ones, or else each
 // input. An output's unset settings are those of the input with its name.
 // Without a write mode anywhere, an output is overwritten when every input
 // is read with full_refresh, merged when its input is a keyed stream read
@@ -52,9 +52,12 @@ func Outputs(p *apiv1.PipelineSpec, caps destination.Capabilities, inputs []Inpu
 		refresh = refresh && in.Read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH
 	}
 	declared := p.GetTransform().GetSpark().GetOutputs()
+	if f := p.GetTransform().GetFlink(); f != nil {
+		declared = f.GetOutputs()
+	}
 	if len(declared) == 0 {
 		for _, in := range inputs {
-			declared = append(declared, &apiv1.SparkOutput{Name: in.Name})
+			declared = append(declared, &apiv1.TransformOutput{Name: in.Name})
 		}
 	}
 	out := make([]Output, 0, len(declared))
@@ -100,4 +103,14 @@ func OutputProblem(o Output, inputs []Input) error {
 		}
 	}
 	return nil
+}
+
+// InputProblem fails a Flink transform's input that doesn't replay exactly
+// from a resume point: the job's checkpoints hold its inputs' resume points,
+// and a restore reads each again from its own.
+func InputProblem(p *apiv1.PipelineSpec, in Input) error {
+	if p.GetTransform().GetFlink() == nil || in.Replay == source.Exact {
+		return nil
+	}
+	return fmt.Errorf("stream %q doesn't replay exactly from a resume point, and a Flink transform's inputs must, since its checkpoints restore them", in.Name)
 }

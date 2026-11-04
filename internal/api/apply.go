@@ -103,7 +103,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		return nil, err
 	}
 	// Sources and destinations refer to connector versions, and pipelines to
-	// sources, destinations, dbt projects and Spark clusters, so each goes
+	// sources, destinations, dbt projects and Spark and Flink clusters, so each goes
 	// before what refers to it.
 	order := make([]int, len(docs))
 	for i := range order {
@@ -209,7 +209,7 @@ func documentName(doc *spec.Document) string {
 	}
 	collection := map[string]string{
 		spec.KindSource: "sources", spec.KindDestination: "destinations", spec.KindPipeline: "pipelines", spec.KindDbtProject: "dbtProjects",
-		spec.KindWebhook: "webhooks", spec.KindSparkCluster: "sparkClusters",
+		spec.KindWebhook: "webhooks", spec.KindSparkCluster: "sparkClusters", spec.KindFlinkCluster: "flinkClusters",
 	}[doc.Kind]
 	return resourceName(doc.Workspace, collection, doc.Name)
 }
@@ -258,6 +258,9 @@ func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document
 		return res, nil, err
 	case spec.KindSparkCluster:
 		res, err := s.applySparkCluster(ctx, q, doc, wsID, provenance, ch)
+		return res, nil, err
+	case spec.KindFlinkCluster:
+		res, err := s.applyFlinkCluster(ctx, q, doc, wsID, provenance, ch)
 		return res, nil, err
 	default:
 		return s.applyPipeline(ctx, q, doc, wsID, provenance, ch)
@@ -376,13 +379,15 @@ type pinned struct {
 	dbt map[string]string
 	// Each Spark cluster's version, by name.
 	spark map[string]string
-	// The secrets its sparkAccess names.
+	// Each Flink cluster's version, by name.
+	flink map[string]string
+	// The secrets its sparkAccess or flinkAccess names.
 	secrets []string
 }
 
 // pin resolves what a pipeline's spec names in its workspace.
 func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, wsID uuid.UUID, workspace string) (*pinned, error) {
-	v := &pinned{spec: p, dataPlane: cmp.Or(p.GetDataPlane(), s.DefaultDataPlane), dbt: map[string]string{}, spark: map[string]string{}, secrets: []string{}}
+	v := &pinned{spec: p, dataPlane: cmp.Or(p.GetDataPlane(), s.DefaultDataPlane), dbt: map[string]string{}, spark: map[string]string{}, flink: map[string]string{}, secrets: []string{}}
 	var err error
 	v.src, err = q.GetSource(ctx, db.GetSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: p.GetSource().GetRef()})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -426,6 +431,12 @@ func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, 
 		}
 		v.dbt[name] = proj.Digest
 	}
+	if t := p.GetTransform().GetFlink(); t != nil {
+		if v.flink[t.GetCluster()], err = pinFlinkCluster(ctx, q, s.Tenant.Org, wsID, workspace, p); err != nil {
+			return nil, err
+		}
+	}
+	keys := p.GetFlinkAccess().GetKeys()
 	if a := p.GetSparkAccess(); a != nil {
 		switch {
 		case a.GetEmrRole() != "" && !kinds[true]:
@@ -433,7 +444,10 @@ func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, 
 		case a.GetKeys() != nil && !kinds[false]:
 			return nil, invalid("sparkAccess.keys are for clusters other than EMR's, and the pipeline uses only EMR's; give it emrRole")
 		}
-		for _, f := range a.GetKeys().GetFields() {
+		keys = a.GetKeys()
+	}
+	if keys != nil {
+		for _, f := range keys.GetFields() {
 			if name, ok := secretRef(f); ok && !slices.Contains(v.secrets, name) {
 				v.secrets = append(v.secrets, name)
 			}
@@ -458,6 +472,9 @@ func (v *pinned) version() (string, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(v.spark)) {
 		extra = append(extra, "spark:"+name+"@"+v.spark[name])
+	}
+	for _, name := range slices.Sorted(maps.Keys(v.flink)) {
+		extra = append(extra, "flink:"+name+"@"+v.flink[name])
 	}
 	return digest(v.spec, extra...)
 }
@@ -501,10 +518,14 @@ func (v *pinned) store(ctx context.Context, q *db.Queries, org, wsID uuid.UUID, 
 	if err != nil {
 		return 0, "", uuid.Nil, err
 	}
+	flink, err := json.Marshal(v.flink)
+	if err != nil {
+		return 0, "", uuid.Nil, err
+	}
 	err = q.InsertPipelineVersion(ctx, db.InsertPipelineVersionParams{
 		OrgID: org, PipelineID: id, Version: version, Spec: spec,
 		SourceID: v.src.ID, DestinationID: v.dst.ID, DataPlaneID: v.dataPlane,
-		SourceVersion: v.src.Version, DestinationVersion: v.dst.Version, Dbt: dbt, SparkClusters: spark, Provenance: provenance,
+		SourceVersion: v.src.Version, DestinationVersion: v.dst.Version, Dbt: dbt, SparkClusters: spark, FlinkClusters: flink, Provenance: provenance,
 		Secrets: v.secrets,
 	})
 	return action, version, id, err
@@ -556,7 +577,7 @@ func (s *Server) recordApplied(ctx context.Context, q *db.Queries, ch *changes) 
 }
 
 // changes is what an Apply has changed so far: sources, destinations, dbt
-// projects and Spark clusters, with the provenance of the documents that
+// projects and Spark and Flink clusters, with the provenance of the documents that
 // changed them, and the pipelines it gave versions, those the documents
 // define first.
 type changes struct {
@@ -564,6 +585,7 @@ type changes struct {
 	destinations  map[uuid.UUID]string
 	dbtProjects   map[uuid.UUID]string
 	sparkClusters map[uuid.UUID]string
+	flinkClusters map[uuid.UUID]string
 	// The sources and destinations it created.
 	created   map[uuid.UUID]bool
 	pipelines []*planned
@@ -572,15 +594,15 @@ type changes struct {
 func newChanges() *changes {
 	return &changes{
 		sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{},
-		sparkClusters: map[uuid.UUID]string{}, created: map[uuid.UUID]bool{},
+		sparkClusters: map[uuid.UUID]string{}, flinkClusters: map[uuid.UUID]string{}, created: map[uuid.UUID]bool{},
 	}
 }
 
 // repin gives a new version to each pipeline whose current version pins a
-// changed source, destination, dbt project or Spark cluster, unless the
+// changed source, destination, dbt project or Spark or Flink cluster, unless the
 // Apply applied the pipeline itself.
 func (s *Server) repin(ctx context.Context, q *db.Queries, ch *changes) ([]*apiv1.AppliedResource, error) {
-	if len(ch.sources)+len(ch.destinations)+len(ch.dbtProjects)+len(ch.sparkClusters) == 0 {
+	if len(ch.sources)+len(ch.destinations)+len(ch.dbtProjects)+len(ch.sparkClusters)+len(ch.flinkClusters) == 0 {
 		return nil, nil
 	}
 	rows, err := q.ListPipelinesUsing(ctx, db.ListPipelinesUsingParams{
@@ -589,6 +611,7 @@ func (s *Server) repin(ctx context.Context, q *db.Queries, ch *changes) ([]*apiv
 		Destinations:  slices.Collect(maps.Keys(ch.destinations)),
 		DbtProjects:   slices.Collect(maps.Keys(ch.dbtProjects)),
 		SparkClusters: slices.Collect(maps.Keys(ch.sparkClusters)),
+		FlinkClusters: slices.Collect(maps.Keys(ch.flinkClusters)),
 	})
 	if err != nil {
 		return nil, err
@@ -655,6 +678,19 @@ func (ch *changes) cause(ctx context.Context, q *db.Queries, org uuid.UUID, r db
 			return "", err
 		}
 		if p, ok := ch.sparkClusters[c.ID]; ok {
+			return p, nil
+		}
+	}
+	var flink map[string]string
+	if err := json.Unmarshal(r.FlinkClusters, &flink); err != nil {
+		return "", err
+	}
+	for _, name := range slices.Sorted(maps.Keys(flink)) {
+		c, err := q.GetFlinkCluster(ctx, db.GetFlinkClusterParams{OrgID: org, WorkspaceID: r.WorkspaceID, Name: name})
+		if err != nil {
+			return "", err
+		}
+		if p, ok := ch.flinkClusters[c.ID]; ok {
 			return p, nil
 		}
 	}

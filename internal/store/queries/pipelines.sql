@@ -24,19 +24,19 @@ DELETE FROM pipelines WHERE org_id = @org_id AND id = @id;
 
 -- name: InsertPipelineVersion :exec
 INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id,
-    source_version, destination_version, dbt, spark_clusters, provenance, secrets)
+    source_version, destination_version, dbt, spark_clusters, flink_clusters, provenance, secrets)
 VALUES (@org_id, @pipeline_id, @version, @spec, @source_id, @destination_id, @data_plane_id,
-    @source_version, @destination_version, @dbt, @spark_clusters, @provenance, @secrets)
+    @source_version, @destination_version, @dbt, @spark_clusters, @flink_clusters, @provenance, @secrets)
 ON CONFLICT (org_id, pipeline_id, version) DO NOTHING;
 
 -- name: GetPipelineVersion :one
 SELECT * FROM pipeline_versions WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND version = @version;
 
 -- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.spark_clusters, v.source_version, v.destination_version,
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.spark_clusters, v.flink_clusters, v.source_version, v.destination_version,
     sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
-    sv.secrets AS source_secrets, dv.secrets AS destination_secrets, v.secrets AS spark_access_secrets,
+    sv.secrets AS source_secrets, dv.secrets AS destination_secrets, v.secrets AS access_secrets,
     p.workspace_id, p.name AS pipeline, w.name AS workspace
 FROM pipeline_versions v
 JOIN pipelines p ON p.org_id = v.org_id AND p.id = v.pipeline_id
@@ -46,9 +46,9 @@ JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.d
 WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id AND v.version = @version;
 
 -- The pipelines whose current versions use any of the sources, destinations,
--- dbt projects or Spark clusters.
+-- dbt projects, Spark clusters or Flink clusters.
 -- name: ListPipelinesUsing :many
-SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt, v.spark_clusters
+SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt, v.spark_clusters, v.flink_clusters
 FROM pipelines p
 JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
 JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
@@ -61,7 +61,11 @@ WHERE p.org_id = @org_id AND (
     OR EXISTS (
         SELECT 1 FROM jsonb_object_keys(v.spark_clusters) k
         JOIN spark_clusters c ON c.org_id = p.org_id AND c.workspace_id = p.workspace_id AND c.name = k
-        WHERE c.id = ANY(@spark_clusters::uuid[])))
+        WHERE c.id = ANY(@spark_clusters::uuid[]))
+    OR EXISTS (
+        SELECT 1 FROM jsonb_object_keys(v.flink_clusters) k
+        JOIN flink_clusters c ON c.org_id = p.org_id AND c.workspace_id = p.workspace_id AND c.name = k
+        WHERE c.id = ANY(@flink_clusters::uuid[])))
 ORDER BY w.name, p.name;
 
 -- name: SetPipelinePaused :execrows

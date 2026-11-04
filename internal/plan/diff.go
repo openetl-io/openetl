@@ -20,6 +20,8 @@ type Version struct {
 	Dbt map[string]string
 	// Each Spark cluster's version, by name.
 	SparkClusters map[string]string
+	// Each Flink cluster's version, by name.
+	FlinkClusters map[string]string
 }
 
 // Diff lists the fields that differ between two versions, by name.
@@ -70,6 +72,9 @@ func (v Version) fields() (map[string]string, error) {
 	}
 	for name, version := range v.SparkClusters {
 		pins["sparkClusters."+name] = version
+	}
+	for name, version := range v.FlinkClusters {
+		pins["flinkClusters."+name] = version
 	}
 	for k, p := range pins {
 		if p != "" {

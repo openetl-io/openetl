@@ -4,6 +4,7 @@ package openetl.dataplane.v1;
 
 import "google/protobuf/timestamp.proto";
 import "openetl/api/v1/connection.proto";
+import "openetl/api/v1/flink.proto";
 import "openetl/api/v1/pipeline.proto";
 import "openetl/api/v1/spark.proto";
 import "openetl/connector/v1/source.proto";
@@ -62,6 +63,23 @@ message GetSyncSpecResponse {
   // Fields of the pipeline's spark_access.keys that name secrets in cloud
   // secret stores.
   repeated ExternalSecret spark_access_secrets = 13;
+  // The Flink clusters the version pins, by name.
+  map<string, PinnedFlinkCluster> flink_clusters = 14;
+  // Fields of the pipeline's flink_access.keys that name secrets in cloud
+  // secret stores.
+  repeated ExternalSecret flink_access_secrets = 15;
+}
+
+// PinnedFlinkCluster's secret references that this server holds are
+// replaced by their values; the rest are listed by where they are.
+message PinnedFlinkCluster {
+  string version = 1;
+  openetl.api.v1.FlinkClusterSpec spec = 2;
+  // Fields of conf that name secrets in cloud secret stores.
+  repeated ExternalSecret secrets = 3;
+  // rest.auth's or kubernetes.kubeconfig's secret, if it's in a cloud
+  // secret store; its field is "auth" or "kubeconfig".
+  repeated ExternalSecret target_secrets = 4;
 }
 
 message PinnedSparkCluster {

@@ -265,7 +265,13 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		}
 		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
 		if spec.GetTransform() != nil {
-			inputs = append(inputs, Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: replay(s.cs.GetReplay()), Spec: s.ps})
+			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: replay(s.cs.GetReplay()), Spec: s.ps}
+			inputs = append(inputs, in)
+			for _, err := range []error{ReadProblem(spec, name, read), InputProblem(spec, in)} {
+				if err != nil {
+					problems = append(problems, err)
+				}
+			}
 			continue
 		}
 		mode := StreamMode(spec, caps, read, len(s.cs.GetPrimaryKey()) > 0)

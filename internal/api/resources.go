@@ -568,7 +568,15 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 		return nil, err
 	}
 	if keys := res.Pipeline.GetSparkAccess().GetKeys(); keys != nil {
-		if res.SparkAccessSecrets, err = s.resolveSecrets(ctx, "the pipeline's sparkAccess", row.WorkspaceID, &apiv1.ConnectorConfig{Config: keys}, row.SparkAccessSecrets); err != nil {
+		if res.SparkAccessSecrets, err = s.resolveSecrets(ctx, "the pipeline's sparkAccess", row.WorkspaceID, &apiv1.ConnectorConfig{Config: keys}, row.AccessSecrets); err != nil {
+			return nil, err
+		}
+	}
+	if res.FlinkClusters, err = s.pinnedFlinkClusters(ctx, row.WorkspaceID, id, row.Version); err != nil {
+		return nil, err
+	}
+	if keys := res.Pipeline.GetFlinkAccess().GetKeys(); keys != nil {
+		if res.FlinkAccessSecrets, err = s.resolveSecrets(ctx, "the pipeline's flinkAccess", row.WorkspaceID, &apiv1.ConnectorConfig{Config: keys}, row.AccessSecrets); err != nil {
 			return nil, err
 		}
 	}

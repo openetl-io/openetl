@@ -858,6 +858,109 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/flinkClusters:
+        get:
+            tags:
+                - FlinkClusterService
+            operationId: FlinkClusterService_ListFlinkClusters
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListFlinkClustersResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/flinkClusters/{flinkCluster}:
+        get:
+            tags:
+                - FlinkClusterService
+            operationId: FlinkClusterService_GetFlinkCluster
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: flinkCluster
+                  in: path
+                  description: The flinkCluster id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetFlinkClusterResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - FlinkClusterService
+            description: |-
+                Fails with FAILED_PRECONDITION while a pipeline's current version uses
+                 it. Older versions keep the settings they pin.
+            operationId: FlinkClusterService_DeleteFlinkCluster
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: flinkCluster
+                  in: path
+                  description: The flinkCluster id.
+                  required: true
+                  schema:
+                    type: string
+                - name: etag
+                  in: query
+                  description: If set, it must match.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteFlinkClusterResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines:
         get:
             tags:
@@ -2702,6 +2805,9 @@ components:
         DeleteDestinationResponse:
             type: object
             properties: {}
+        DeleteFlinkClusterResponse:
+            type: object
+            properties: {}
         DeleteKeyResponse:
             type: object
             properties: {}
@@ -2833,6 +2939,171 @@ components:
             properties:
                 webhook:
                     $ref: '#/components/schemas/Webhook'
+        FlinkAccess:
+            type: object
+            properties:
+                emrRole:
+                    type: string
+                    description: 'On EMR: the runtime role each step runs as (ExecutionRoleArn).'
+                keys:
+                    type: object
+                    description: |-
+                        Elsewhere: S3 keys for the data plane's bucket alone, for Flink's
+                         Hadoop S3 filesystem: accessKeyId, a value or a secret reference,
+                         {"secret": NAME}, and secretAccessKey, a secret reference. A session
+                         cluster reads its filesystems' settings at start, so it can't take them.
+            description: |-
+                FlinkAccess is how the pipeline's Flink job reaches its _flink/ prefix of
+                 the data plane's store, where its code, checkpoints and savepoints are.
+                 Unset: with the cluster's own identity.
+        FlinkCluster:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/flinkClusters/{cluster}
+                spec:
+                    $ref: '#/components/schemas/FlinkClusterSpec'
+                version:
+                    type: string
+                    description: The settings' version, which new pipeline versions pin.
+                etag:
+                    type: string
+                createTime:
+                    type: string
+                    format: date-time
+                updateTime:
+                    type: string
+                    format: date-time
+                usedBy:
+                    type: array
+                    items:
+                        type: string
+                    description: The pipelines whose current versions use it.
+            description: |-
+                FlinkCluster is where a continuous pipeline's Flink job runs. Runners
+                 deploy, stop and watch it. Flink 1.20 only.
+        FlinkClusterSpec:
+            type: object
+            properties:
+                kubernetes:
+                    $ref: '#/components/schemas/FlinkKubernetes'
+                rest:
+                    $ref: '#/components/schemas/FlinkRest'
+                emr:
+                    $ref: '#/components/schemas/FlinkEmr'
+                conf:
+                    type: object
+                    description: |-
+                        Flink configuration for every job. A value can be a secret reference,
+                         {"secret": NAME}. Options the runner sets can't be set here.
+        FlinkCode:
+            type: object
+            properties:
+                jar:
+                    type: string
+                    description: An s3:// or https:// URI the runner can read.
+                sha256:
+                    type: string
+                    description: The file's SHA-256, in hex.
+                mainClass:
+                    type: string
+                    description: 'The job''s main class. Unset: the jar''s manifest names it.'
+            description: |-
+                FlinkCode is a jar, pinned by its digest. The runner checks it and gives
+                 the cluster its own copy.
+        FlinkEmr:
+            type: object
+            properties:
+                clusterId:
+                    type: string
+                    description: |-
+                        One of cluster_id and cluster_name. A name finds the one active cluster
+                         of that name at each deployment, for clusters that are replaced.
+                clusterName:
+                    type: string
+                region:
+                    type: string
+            description: FlinkEmr runs each job on YARN, as a step of a cluster of EMR on EC2.
+        FlinkKubernetes:
+            type: object
+            properties:
+                namespace:
+                    type: string
+                image:
+                    type: string
+                    description: |-
+                        A Flink 1.20 image with an S3 filesystem plugin, which reads the job's
+                         jar and writes its checkpoints. Unset: flink:1.20.
+                serviceAccount:
+                    type: string
+                    description: |-
+                        The service account Flink's pods run as, which HA needs to edit
+                         ConfigMaps. Unset: flink.
+                kubeconfig:
+                    allOf:
+                        - $ref: '#/components/schemas/GoogleProtobufValue'
+                    description: |-
+                        A secret reference, {"secret": NAME}, holding a kubeconfig. Unset: the
+                         runner's own service account, in the cluster it runs in.
+                jobManager:
+                    $ref: '#/components/schemas/FlinkResources'
+                taskManager:
+                    $ref: '#/components/schemas/FlinkResources'
+            description: |-
+                FlinkKubernetes runs each job as a FlinkDeployment of the Flink Kubernetes
+                 Operator, in application mode, with Kubernetes HA.
+        FlinkResources:
+            type: object
+            properties:
+                cpu:
+                    type: number
+                    description: 'CPUs, such as 0.5 or 2. Unset: 1.'
+                    format: double
+                memory:
+                    type: string
+                    description: 'Kubernetes quantity, such as 2048m or 2g. Unset: 2048m.'
+        FlinkRest:
+            type: object
+            properties:
+                url:
+                    type: string
+                    description: The REST API's base URL, such as http://flink:8081.
+                auth:
+                    allOf:
+                        - $ref: '#/components/schemas/GoogleProtobufValue'
+                    description: |-
+                        A secret reference, {"secret": NAME}, holding a bearer token for a proxy
+                         in front of the API. Unset: no token.
+            description: |-
+                FlinkRest runs each job on a standalone session cluster, through its REST
+                 API.
+        FlinkTransform:
+            type: object
+            properties:
+                cluster:
+                    type: string
+                    description: A FlinkCluster in the same workspace.
+                code:
+                    $ref: '#/components/schemas/FlinkCode'
+                parallelism:
+                    type: integer
+                    description: 'The job''s parallelism. Unset: the cluster''s default.'
+                    format: int32
+                conf:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Flink configuration for the job, over the cluster's.
+                outputs:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/TransformOutput'
+                    description: 'Unset: each input stream, under its name and with its settings.'
+            description: |-
+                FlinkTransform runs the user's Flink job, built with openetl-flink, between
+                 a continuous pipeline's source and destination, on a Flink cluster. Its
+                 checkpoints are the pipeline's.
         GetCallerResponse:
             type: object
             properties:
@@ -2871,6 +3142,11 @@ components:
             properties:
                 destination:
                     $ref: '#/components/schemas/Destination'
+        GetFlinkClusterResponse:
+            type: object
+            properties:
+                flinkCluster:
+                    $ref: '#/components/schemas/FlinkCluster'
         GetIncidentResponse:
             type: object
             properties:
@@ -2929,6 +3205,8 @@ components:
                     description: The type of the serialized message.
             additionalProperties: true
             description: Contains an arbitrary serialized message along with a @type that describes the type of the serialized message.
+        GoogleProtobufValue:
+            description: Represents a dynamically typed value which can be either null, a number, a string, a boolean, a recursive struct value, or a list of values.
         GrantRoleRequest:
             type: object
             properties:
@@ -3121,6 +3399,15 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/Destination'
+                nextPageToken:
+                    type: string
+        ListFlinkClustersResponse:
+            type: object
+            properties:
+                flinkClusters:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/FlinkCluster'
                 nextPageToken:
                     type: string
         ListIncidentsResponse:
@@ -3462,10 +3749,12 @@ components:
                     allOf:
                         - $ref: '#/components/schemas/Transform'
                     description: |-
-                        The user's code between the source and the destination. Scheduled
-                         pipelines only.
+                        The user's code between the source and the destination: Spark in a
+                         scheduled pipeline, Flink in a continuous one.
                 sparkAccess:
                     $ref: '#/components/schemas/SparkAccess'
+                flinkAccess:
+                    $ref: '#/components/schemas/FlinkAccess'
             description: |-
                 PipelineSpec is the spec of a Pipeline document. Unset fields take their
                  defaults.
@@ -3550,6 +3839,11 @@ components:
                     additionalProperties:
                         type: string
                     description: Each Spark cluster's version, by cluster name.
+                flinkClusters:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Each Flink cluster's version, by cluster name.
                 dataPlane:
                     type: string
                 provenance:
@@ -3911,34 +4205,6 @@ components:
                 region:
                     type: string
             description: SparkEmr adds steps to a cluster of EMR on EC2.
-        SparkOutput:
-            type: object
-            properties:
-                name:
-                    type: string
-                primaryKey:
-                    type: array
-                    items:
-                        type: string
-                write:
-                    enum:
-                        - WRITE_MODE_UNSPECIFIED
-                        - WRITE_MODE_APPEND
-                        - WRITE_MODE_OVERWRITE
-                        - WRITE_MODE_MERGE
-                    type: string
-                    format: enum
-                require:
-                    enum:
-                        - DELIVERY_LEVEL_UNSPECIFIED
-                        - DELIVERY_LEVEL_AT_LEAST_ONCE
-                        - DELIVERY_LEVEL_EFFECTIVELY_ONCE
-                        - DELIVERY_LEVEL_EXACTLY_ONCE
-                    type: string
-                    format: enum
-            description: |-
-                SparkOutput is one of the transform's outputs. Unset settings take those of
-                 the input stream with its name, if there is one.
         SparkStep:
             type: object
             properties:
@@ -3996,7 +4262,7 @@ components:
                 outputs:
                     type: array
                     items:
-                        $ref: '#/components/schemas/SparkOutput'
+                        $ref: '#/components/schemas/TransformOutput'
                     description: 'Unset: each input stream, under its name and with its settings.'
             description: |-
                 SparkTransform runs the user's openetl-spark Transform on each epoch of a
@@ -4189,6 +4455,36 @@ components:
             properties:
                 spark:
                     $ref: '#/components/schemas/SparkTransform'
+                flink:
+                    $ref: '#/components/schemas/FlinkTransform'
+        TransformOutput:
+            type: object
+            properties:
+                name:
+                    type: string
+                primaryKey:
+                    type: array
+                    items:
+                        type: string
+                write:
+                    enum:
+                        - WRITE_MODE_UNSPECIFIED
+                        - WRITE_MODE_APPEND
+                        - WRITE_MODE_OVERWRITE
+                        - WRITE_MODE_MERGE
+                    type: string
+                    format: enum
+                require:
+                    enum:
+                        - DELIVERY_LEVEL_UNSPECIFIED
+                        - DELIVERY_LEVEL_AT_LEAST_ONCE
+                        - DELIVERY_LEVEL_EFFECTIVELY_ONCE
+                        - DELIVERY_LEVEL_EXACTLY_ONCE
+                    type: string
+                    format: enum
+            description: |-
+                TransformOutput is one of a transform's outputs. Unset settings take those
+                 of the input stream with its name, if there is one.
         Types:
             type: object
             properties:
@@ -4339,6 +4635,10 @@ tags:
       description: |-
         DestinationService reads and deletes destinations. ApplyService creates and
          changes them.
+    - name: FlinkClusterService
+      description: |-
+        FlinkClusterService reads and deletes Flink clusters. ApplyService creates
+         and changes them.
     - name: IncidentService
       description: |-
         IncidentService reads incidents and resolves them by hand. The control

@@ -38,12 +38,14 @@ const (
 	KindWebhook = "Webhook"
 	// Where Spark applications run.
 	KindSparkCluster = "SparkCluster"
+	// Where Flink jobs run.
+	KindFlinkCluster = "FlinkCluster"
 )
 
 // Document is one parsed definition. Connector is set for sources and
 // destinations, Pipeline for pipelines, Descriptor for connectors, Manifest
 // for declarative sources, Bundle for dbt projects, Webhook for webhooks,
-// and SparkCluster for Spark clusters.
+// SparkCluster for Spark clusters, and FlinkCluster for Flink clusters.
 type Document struct {
 	Kind      string
 	Name      string
@@ -61,6 +63,7 @@ type Document struct {
 	Bundle       []byte
 	Webhook      *apiv1.WebhookSpec
 	SparkCluster *apiv1.SparkClusterSpec
+	FlinkCluster *apiv1.FlinkClusterSpec
 }
 
 type envelope struct {
@@ -175,8 +178,10 @@ func Parse(content []byte) (*Document, error) {
 		doc.Webhook, err = parseWebhook(spec)
 	case KindSparkCluster:
 		doc.SparkCluster, err = parseSparkCluster(spec)
+	case KindFlinkCluster:
+		doc.FlinkCluster, err = parseFlinkCluster(spec)
 	default:
-		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, DbtProject, Webhook or SparkCluster", env.Kind)
+		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, DbtProject, Webhook, SparkCluster or FlinkCluster", env.Kind)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("spec: %w", err)
@@ -243,8 +248,10 @@ type pipelineYAML struct {
 	} `yaml:"heal"`
 	Transform *struct {
 		Spark *sparkTransformYAML `yaml:"spark"`
+		Flink *flinkTransformYAML `yaml:"flink"`
 	} `yaml:"transform"`
 	SparkAccess *sparkAccessYAML `yaml:"sparkAccess"`
+	FlinkAccess *sparkAccessYAML `yaml:"flinkAccess"`
 }
 
 type postSyncYAML struct {
@@ -328,12 +335,15 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		return nil, errors.New("postSync: steps run after a sync, and a continuous pipeline has no syncs")
 	case !continuous && (y.Schedule == nil || (y.Schedule.Every == "") == (y.Schedule.Cron == "")):
 		return nil, errors.New("schedule needs one of every or cron")
-	case y.Transform != nil && y.Transform.Spark == nil:
-		return nil, errors.New("transform needs spark")
-	case y.Transform != nil && continuous:
+	case y.Transform != nil && (y.Transform.Spark == nil) == (y.Transform.Flink == nil):
+		return nil, errors.New("transform needs one of spark and flink")
+	case y.Transform != nil && y.Transform.Spark != nil && continuous:
 		return nil, errors.New("transform.spark: a Spark transform runs in a scheduled pipeline's syncs, and a continuous pipeline has none")
+	case y.Transform != nil && y.Transform.Flink != nil && !continuous:
+		return nil, errors.New("transform.flink: a Flink transform runs in a continuous pipeline, and this one is scheduled")
 	}
-	spark := y.Transform != nil
+	spark := y.Transform != nil && y.Transform.Spark != nil
+	flink := y.Transform != nil && y.Transform.Flink != nil
 	if y.Schedule != nil {
 		if p.Schedule, err = parseSchedule(y.Schedule); err != nil {
 			return nil, err
@@ -360,8 +370,8 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		switch {
 		case spark && st.Timestamps == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND:
 			return nil, fmt.Errorf("source.streams[%d].timestamps: Spark keeps only microseconds, so a Spark transform's inputs can't keep nanoseconds", i)
-		case spark && s.Collapse != nil:
-			return nil, fmt.Errorf("source.streams[%d].collapse: a Spark transform's inputs aren't written to the destination, and its outputs aren't collapsed", i)
+		case (spark || flink) && s.Collapse != nil:
+			return nil, fmt.Errorf("source.streams[%d].collapse: a transform's inputs aren't written to the destination, and its outputs aren't collapsed", i)
 		}
 		if st.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", "require", s.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
@@ -422,6 +432,13 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		}
 		p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Spark{Spark: t}}
 	}
+	if flink {
+		t, err := parseFlinkTransform(y.Transform.Flink)
+		if err != nil {
+			return nil, err
+		}
+		p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Flink{Flink: t}}
+	}
 	for i, s := range y.PostSync {
 		field := fmt.Sprintf("postSync[%d]", i)
 		switch {
@@ -449,6 +466,14 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, errors.New("sparkAccess: the pipeline runs no Spark transform or step")
 		}
 		if p.SparkAccess, err = parseSparkAccess(y.SparkAccess); err != nil {
+			return nil, err
+		}
+	}
+	if y.FlinkAccess != nil {
+		if !flink {
+			return nil, errors.New("flinkAccess: the pipeline runs no Flink transform")
+		}
+		if p.FlinkAccess, err = parseFlinkAccess(y.FlinkAccess); err != nil {
 			return nil, err
 		}
 	}

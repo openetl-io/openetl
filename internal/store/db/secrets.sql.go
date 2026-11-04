@@ -187,6 +187,43 @@ func (q *Queries) ListDestinationsUsingSecrets(ctx context.Context, arg ListDest
 	return items, nil
 }
 
+const listFlinkClustersUsingSecrets = `-- name: ListFlinkClustersUsingSecrets :many
+SELECT name, secrets FROM flink_clusters
+WHERE org_id = $1 AND workspace_id = $2 AND secrets && $3::text[]
+ORDER BY name
+`
+
+type ListFlinkClustersUsingSecretsParams struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	Names       []string
+}
+
+type ListFlinkClustersUsingSecretsRow struct {
+	Name    string
+	Secrets []string
+}
+
+func (q *Queries) ListFlinkClustersUsingSecrets(ctx context.Context, arg ListFlinkClustersUsingSecretsParams) ([]ListFlinkClustersUsingSecretsRow, error) {
+	rows, err := q.db.Query(ctx, listFlinkClustersUsingSecrets, arg.OrgID, arg.WorkspaceID, arg.Names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListFlinkClustersUsingSecretsRow
+	for rows.Next() {
+		var i ListFlinkClustersUsingSecretsRow
+		if err := rows.Scan(&i.Name, &i.Secrets); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPipelinesUsingSecrets = `-- name: ListPipelinesUsingSecrets :many
 SELECT p.name, v.secrets FROM pipelines p
 JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version

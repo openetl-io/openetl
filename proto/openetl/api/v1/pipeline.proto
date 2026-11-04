@@ -80,6 +80,8 @@ message PipelineVersion {
   map<string, string> dbt = 5;
   // Each Spark cluster's version, by cluster name.
   map<string, string> spark_clusters = 10;
+  // Each Flink cluster's version, by cluster name.
+  map<string, string> flink_clusters = 11;
   string data_plane = 6;
   // Where it came from, such as cli:shop.yaml#3.
   string provenance = 7;
@@ -141,10 +143,11 @@ message PipelineSpec {
   // the sync, and the steps after it don't run.
   repeated PostSyncStep post_sync = 9;
   Heal heal = 10;
-  // The user's code between the source and the destination. Scheduled
-  // pipelines only.
+  // The user's code between the source and the destination: Spark in a
+  // scheduled pipeline, Flink in a continuous one.
   Transform transform = 11;
   SparkAccess spark_access = 12;
+  FlinkAccess flink_access = 13;
 }
 
 // SparkAccess is how the pipeline's Spark applications reach its _spark/
@@ -160,9 +163,23 @@ message SparkAccess {
   google.protobuf.Struct keys = 2;
 }
 
+// FlinkAccess is how the pipeline's Flink job reaches its _flink/ prefix of
+// the data plane's store, where its code, checkpoints and savepoints are.
+// Unset: with the cluster's own identity.
+message FlinkAccess {
+  // On EMR: the runtime role each step runs as (ExecutionRoleArn).
+  string emr_role = 1;
+  // Elsewhere: S3 keys for the data plane's bucket alone, for Flink's
+  // Hadoop S3 filesystem: accessKeyId, a value or a secret reference,
+  // {"secret": NAME}, and secretAccessKey, a secret reference. A session
+  // cluster reads its filesystems' settings at start, so it can't take them.
+  google.protobuf.Struct keys = 2;
+}
+
 message Transform {
   oneof engine {
     SparkTransform spark = 1;
+    FlinkTransform flink = 2;
   }
 }
 
@@ -176,12 +193,38 @@ message SparkTransform {
   // Spark properties for the application, over the cluster's.
   map<string, string> conf = 3;
   // Unset: each input stream, under its name and with its settings.
-  repeated SparkOutput outputs = 4;
+  repeated TransformOutput outputs = 4;
 }
 
-// SparkOutput is one of the transform's outputs. Unset settings take those of
-// the input stream with its name, if there is one.
-message SparkOutput {
+// FlinkTransform runs the user's Flink job, built with openetl-flink, between
+// a continuous pipeline's source and destination, on a Flink cluster. Its
+// checkpoints are the pipeline's.
+message FlinkTransform {
+  // A FlinkCluster in the same workspace.
+  string cluster = 1;
+  FlinkCode code = 2;
+  // The job's parallelism. Unset: the cluster's default.
+  int32 parallelism = 3;
+  // Flink configuration for the job, over the cluster's.
+  map<string, string> conf = 4;
+  // Unset: each input stream, under its name and with its settings.
+  repeated TransformOutput outputs = 5;
+}
+
+// FlinkCode is a jar, pinned by its digest. The runner checks it and gives
+// the cluster its own copy.
+message FlinkCode {
+  // An s3:// or https:// URI the runner can read.
+  string jar = 1;
+  // The file's SHA-256, in hex.
+  string sha256 = 2;
+  // The job's main class. Unset: the jar's manifest names it.
+  string main_class = 3;
+}
+
+// TransformOutput is one of a transform's outputs. Unset settings take those
+// of the input stream with its name, if there is one.
+message TransformOutput {
   string name = 1;
   repeated string primary_key = 2;
   WriteMode write = 3;

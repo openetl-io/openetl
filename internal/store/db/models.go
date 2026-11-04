@@ -124,6 +124,29 @@ type DestinationVersion struct {
 	CreateTime      time.Time
 }
 
+type FlinkCluster struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	ID          uuid.UUID
+	Name        string
+	Spec        []byte
+	Version     string
+	Secrets     []string
+	Revision    int64
+	CreateTime  time.Time
+	UpdateTime  time.Time
+}
+
+type FlinkClusterVersion struct {
+	OrgID      uuid.UUID
+	ClusterID  uuid.UUID
+	Version    string
+	Spec       []byte
+	Secrets    []string
+	Provenance string
+	CreateTime time.Time
+}
+
 type Incident struct {
 	OrgID         uuid.UUID
 	ID            uuid.UUID
@@ -222,6 +245,7 @@ type PipelineVersion struct {
 	Provenance         string
 	SparkClusters      []byte
 	Secrets            []string
+	FlinkClusters      []byte
 }
 
 type Principal struct {

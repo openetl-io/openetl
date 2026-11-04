@@ -45,7 +45,7 @@ func toSecret(ws string, r db.Secret, usedBy []string) *apiv1.Secret {
 	return out
 }
 
-// secretUsers lists the sources, destinations, webhooks, Spark clusters and
+// secretUsers lists the sources, destinations, webhooks, Spark and Flink clusters and
 // pipelines (by their current versions) that name each secret.
 func (s *Server) secretUsers(ctx context.Context, q *db.Queries, ws string, wsID uuid.UUID, names []string) (map[string][]string, error) {
 	users := map[string][]string{}
@@ -83,6 +83,15 @@ func (s *Server) secretUsers(ctx context.Context, q *db.Queries, ws string, wsID
 	for _, r := range clusters {
 		for _, n := range r.Secrets {
 			users[n] = append(users[n], resourceName(ws, "sparkClusters", r.Name))
+		}
+	}
+	flinks, err := q.ListFlinkClustersUsingSecrets(ctx, db.ListFlinkClustersUsingSecretsParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Names: names})
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range flinks {
+		for _, n := range r.Secrets {
+			users[n] = append(users[n], resourceName(ws, "flinkClusters", r.Name))
 		}
 	}
 	pipes, err := q.ListPipelinesUsingSecrets(ctx, db.ListPipelinesUsingSecretsParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Names: names})

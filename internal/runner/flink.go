@@ -24,6 +24,11 @@ type Flink interface {
 	// Deploy starts a generation's job, and returns once the cluster has
 	// accepted it.
 	Deploy(ctx context.Context, d FlinkDeploy) (FlinkJob, error)
+	// Prune deletes the checkpoint directories of the pipeline's jobs whose
+	// IDs keep doesn't hold, and the savepoint directories, as SavepointDir
+	// names them, that it doesn't hold either. It's best effort per
+	// directory, and fails only if it can't list them.
+	Prune(ctx context.Context, keep []string) error
 }
 
 // FlinkJob is one deployed job.
