@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -585,11 +584,14 @@ func (a *flinkAttempt) pruneFlink(ctx context.Context, head *checkpoint.Record) 
 		}
 		if from != "" {
 			// {dir}/{job}/chk-N, or a savepoint's directory below the one
-			// it was taken into.
-			if base := path.Base(from); strings.HasPrefix(base, "chk-") {
-				keep[path.Base(path.Dir(from))] = true
+			// it was taken into. These are URIs, which path.Dir would
+			// clean.
+			dir, base := splitURI(from)
+			if strings.HasPrefix(base, "chk-") {
+				_, job := splitURI(dir)
+				keep[job] = true
 			} else {
-				keep[path.Dir(from)] = true
+				keep[dir] = true
 			}
 		}
 	}
@@ -624,6 +626,16 @@ func (a *flinkAttempt) pruneFlink(ctx context.Context, head *checkpoint.Record) 
 	if err := pr.Prune(ctx, ids); err != nil {
 		a.log.Warn("pruning the Flink job's checkpoints failed", "err", err)
 	}
+}
+
+// splitURI splits a URI at its last slash, ignoring a trailing one.
+func splitURI(uri string) (dir, base string) {
+	uri = strings.TrimSuffix(uri, "/")
+	i := strings.LastIndex(uri, "/")
+	if i < 0 {
+		return "", uri
+	}
+	return uri[:i], uri[i+1:]
 }
 
 func (a *flinkAttempt) setSegment(seg *flinkSegment) {

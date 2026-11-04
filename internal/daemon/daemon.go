@@ -401,6 +401,7 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		Secrets:     stores,
 		Logs:        cps,
 		Temporal:    tc,
+		HTTP:        (&netguard.Policy{Allow: allow}).Client(),
 	}
 	w := worker.New(tc, contract.BatchQueue(cfg.DataPlane), worker.Options{
 		MaxConcurrentActivityExecutionSize: 4,

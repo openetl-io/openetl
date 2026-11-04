@@ -65,7 +65,11 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		// A transform's inputs aren't written; its outputs are.
 		mode := destination.Append
 		if transformed {
-			inputs = append(inputs, plan.Input{Name: cs.Name, PrimaryKey: cs.PrimaryKey, Read: read, Replay: cs.Replay, Spec: ps})
+			in := plan.Input{Name: cs.Name, PrimaryKey: cs.PrimaryKey, Read: read, Replay: cs.Replay, Spec: ps}
+			if err := plan.InputProblem(p, in); err != nil {
+				return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
+			}
+			inputs = append(inputs, in)
 		} else {
 			mode = plan.StreamMode(p, caps, read, len(cs.PrimaryKey) > 0)
 		}

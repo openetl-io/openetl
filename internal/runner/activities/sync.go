@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -66,6 +67,9 @@ type Sync struct {
 	Spark *Spark
 	// Serves pipelines' Flink jobs. Nil: they fail.
 	Bridge runner.Bridge
+	// Reaches Flink clusters' REST APIs, and fetches https:// code. Nil: a
+	// default client.
+	HTTP *http.Client
 }
 
 // Heartbeater records a heartbeat for the activity a task token names, and
@@ -373,6 +377,14 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 		}
 		defer func() { _ = area.Close() }()
 		job.Transform = tr
+	}
+	if spec.GetPipeline().GetTransform().GetFlink() != nil {
+		fl, err := a.flinkCluster(ctx, spec, log)
+		if err != nil {
+			return out, err
+		}
+		defer func() { _ = fl.Close() }()
+		job.Flink, job.Bridge = fl, a.Bridge
 	}
 	engine := a.Engine
 	engine.Logger = log.With("component", "engine")
