@@ -64,6 +64,8 @@ type Sync struct {
 	Temporal Heartbeater
 	// Runs pipelines' Spark transforms. Nil: they fail.
 	Spark *Spark
+	// Serves pipelines' Flink jobs. Nil: they fail.
+	Bridge runner.Bridge
 }
 
 // Heartbeater records a heartbeat for the activity a task token names, and

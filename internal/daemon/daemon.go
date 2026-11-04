@@ -28,6 +28,7 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/api"
 	"github.com/unsuitable001/openetl/internal/auth"
+	"github.com/unsuitable001/openetl/internal/bridge"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/checkpoint/openstore"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
@@ -414,6 +415,15 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		HTTP: (&netguard.Policy{Allow: allow}).Client(), SparkSubmit: cfg.SparkSubmit, Logger: log, Logs: cps,
 	}
 	sync.Spark = sparkSteps
+	if cfg.BridgeListen != "" {
+		br, err := bridge.Listen(ctx, cfg.BridgeListen, cfg.BridgeAdvertise)
+		if err != nil {
+			return err
+		}
+		defer br.Close()
+		sync.Bridge = br
+		log.Info("serving the bridge to Flink jobs", "listen", cfg.BridgeListen, "advertise", br.Address())
+	}
 	w.RegisterActivityWithOptions(sparkSteps.RunSpark, activity.RegisterOptions{Name: contract.RunSpark})
 	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
@@ -422,8 +432,9 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	// A continuous pipeline's job holds its slot for as long as it runs.
 	stream := worker.New(tc, contract.StreamQueue(cfg.DataPlane), worker.Options{
 		MaxConcurrentActivityExecutionSize: 8,
-		// Jobs drain to a checkpoint for up to this long.
-		WorkerStopTimeout: 2 * time.Minute,
+		// Jobs drain to a checkpoint for up to this long; a Flink job's
+		// drain takes a savepoint, which takes longer with large state.
+		WorkerStopTimeout: 10 * time.Minute,
 	})
 	stream.RegisterActivityWithOptions(sync.RunStreamJob, activity.RegisterOptions{Name: contract.RunStreamJob})
 	logs := worker.New(tc, contract.LogsQueue(cfg.DataPlane), worker.Options{MaxConcurrentActivityExecutionSize: 8})

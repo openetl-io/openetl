@@ -33,6 +33,11 @@ type Config struct {
 	// Spark 3.5's spark-submit, for Spark steps on self-managed clusters.
 	// Empty: spark-submit on PATH.
 	SparkSubmit string
+	// Where the runner serves the bridge to pipelines' Flink jobs, and the
+	// host:port they reach it at. Empty listen: no bridge, so the runner
+	// can't run Flink pipelines.
+	BridgeListen    string
+	BridgeAdvertise string
 	// CIDR prefixes, comma-separated, that connectors, registries and
 	// webhooks may reach besides public addresses.
 	EgressAllow string
@@ -93,6 +98,8 @@ var options = []option{
 	{"cache", "OPENETL_CACHE", ".openetl/cache", "where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables", func(c *Config) *string { return &c.Cache }},
 	{"dbt", "OPENETL_DBT", "", "dbt executable for pipelines' post-sync steps, with the destinations' adapters installed (default: dbt on PATH)", func(c *Config) *string { return &c.Dbt }},
 	{"spark-submit", "OPENETL_SPARK_SUBMIT", "", "Spark 3.5's spark-submit, for pipelines' Spark steps on self-managed clusters (default: spark-submit on PATH)", func(c *Config) *string { return &c.SparkSubmit }},
+	{"bridge-listen", "OPENETL_BRIDGE_LISTEN", "", "where the runner serves the bridge to pipelines' Flink jobs, such as :7710; empty: the runner doesn't run Flink pipelines", func(c *Config) *string { return &c.BridgeListen }},
+	{"bridge-advertise", "OPENETL_BRIDGE_ADVERTISE", "", "the host:port Flink jobs reach this runner's bridge at, which must reach this runner and not a load balancer (default: the listen address)", func(c *Config) *string { return &c.BridgeAdvertise }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
 	{"lagging-after", "OPENETL_LAGGING_AFTER", "5m", "how far behind its source a continuous pipeline's read gets before the server sends pipeline.lagging to webhooks", func(c *Config) *string { return &c.LaggingAfter }},
