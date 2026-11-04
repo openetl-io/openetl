@@ -564,5 +564,8 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if res.DestinationSecrets, err = s.resolveSecrets(ctx, "the destination", row.WorkspaceID, res.Destination, row.DestinationSecrets); err != nil {
 		return nil, err
 	}
+	if res.SparkClusters, err = s.pinnedSparkClusters(ctx, row.WorkspaceID, id, row.Version); err != nil {
+		return nil, err
+	}
 	return connect.NewResponse(res), nil
 }

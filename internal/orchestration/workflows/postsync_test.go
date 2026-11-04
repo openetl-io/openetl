@@ -118,3 +118,51 @@ func TestNoPostSyncAfterAFailedSync(t *testing.T) {
 		t.Errorf("ran %v, error %v, recorded %+v", ran, err, finished)
 	}
 }
+
+// A Spark step runs RunSpark between dbt steps, and its failure fails the
+// sync without a retry.
+func TestSparkStep(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		var suite testsuite.WorkflowTestSuite
+		env := suite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflowWithOptions(workflows.Workflows{}.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
+		s := append(steps("a"), contract.PostSyncStep{Spark: &contract.SparkStep{Cluster: "lab", ClusterVersion: "cv1", Jar: "s3://j/a.jar"}})
+		s = append(s, steps("b")...)
+		env.RegisterActivityWithOptions(func(context.Context, contract.SyncInput) (contract.StartSyncResult, error) {
+			return contract.StartSyncResult{SyncID: "s1", Version: "v1", DataPlane: "dp1", PostSync: s}, nil
+		}, activity.RegisterOptions{Name: contract.StartSync})
+		var finished contract.FinishSyncInput
+		env.RegisterActivityWithOptions(func(_ context.Context, in contract.FinishSyncInput) error {
+			finished = in
+			return nil
+		}, activity.RegisterOptions{Name: contract.FinishSync})
+		env.RegisterActivityWithOptions(func(context.Context, contract.AttemptInput) (contract.AttemptResult, error) {
+			return contract.AttemptResult{Generation: 1, Committed: 2}, nil
+		}, activity.RegisterOptions{Name: contract.RunSyncAttempt})
+		var ran []string
+		env.RegisterActivityWithOptions(func(_ context.Context, in contract.DbtInput) (contract.DbtResult, error) {
+			ran = append(ran, in.Step.Project)
+			return succeed(in)
+		}, activity.RegisterOptions{Name: contract.RunDbt})
+		sparks := 0
+		env.RegisterActivityWithOptions(func(ctx context.Context, in contract.SparkInput) (contract.SparkResult, error) {
+			sparks++
+			ran = append(ran, "spark")
+			if info := activity.GetInfo(ctx); info.TaskQueue != contract.BatchQueue("dp1") || in.StepNumber != 2 || in.SyncID != "s1" || in.Step.ClusterVersion != "cv1" {
+				t.Errorf("RunSpark got %+v on %s", in, info.TaskQueue)
+			}
+			if failed {
+				return contract.SparkResult{}, temporal.NewNonRetryableApplicationError("driver FAILED", contract.SparkFailed, nil)
+			}
+			return contract.SparkResult{Cluster: in.Step.Cluster, Submission: "driver-1", State: "FINISHED"}, nil
+		}, activity.RegisterOptions{Name: contract.RunSpark})
+		env.ExecuteWorkflow(contract.SyncWorkflow, contract.SyncInput{OrgID: "o", PipelineID: "p"})
+		err := env.GetWorkflowError()
+		switch {
+		case !failed && (err != nil || strings.Join(ran, ",") != "a,spark,b" || len(finished.PostSync) != 3 || finished.PostSync[1].Spark.Submission != "driver-1"):
+			t.Errorf("ran %v, recorded %+v, error %v", ran, finished, err)
+		case failed && (err == nil || sparks != 1 || strings.Join(ran, ",") != "a,spark" || !strings.Contains(finished.Error, "post-sync step 2, Spark cluster lab: "+contract.SparkFailed)):
+			t.Errorf("failed: ran %v, %d RunSpark, recorded %q", ran, sparks, finished.Error)
+		}
+	}
+}

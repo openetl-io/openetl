@@ -103,8 +103,8 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		return nil, err
 	}
 	// Sources and destinations refer to connector versions, and pipelines to
-	// sources, destinations and dbt projects, so each goes before what refers
-	// to it.
+	// sources, destinations, dbt projects and Spark clusters, so each goes
+	// before what refers to it.
 	order := make([]int, len(docs))
 	for i := range order {
 		order[i] = i
@@ -209,7 +209,7 @@ func documentName(doc *spec.Document) string {
 	}
 	collection := map[string]string{
 		spec.KindSource: "sources", spec.KindDestination: "destinations", spec.KindPipeline: "pipelines", spec.KindDbtProject: "dbtProjects",
-		spec.KindWebhook: "webhooks",
+		spec.KindWebhook: "webhooks", spec.KindSparkCluster: "sparkClusters",
 	}[doc.Kind]
 	return resourceName(doc.Workspace, collection, doc.Name)
 }
@@ -255,6 +255,9 @@ func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document
 		return res, nil, err
 	case spec.KindWebhook:
 		res, err := s.applyWebhook(ctx, q, doc, wsID)
+		return res, nil, err
+	case spec.KindSparkCluster:
+		res, err := s.applySparkCluster(ctx, q, doc, wsID, provenance, ch)
 		return res, nil, err
 	default:
 		return s.applyPipeline(ctx, q, doc, wsID, provenance, ch)
@@ -371,11 +374,13 @@ type pinned struct {
 	dataPlane string
 	// Each dbt project's bundle, by name.
 	dbt map[string]string
+	// Each Spark cluster's version, by name.
+	spark map[string]string
 }
 
 // pin resolves what a pipeline's spec names in its workspace.
 func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, wsID uuid.UUID, workspace string) (*pinned, error) {
-	v := &pinned{spec: p, dataPlane: cmp.Or(p.GetDataPlane(), s.DefaultDataPlane), dbt: map[string]string{}}
+	v := &pinned{spec: p, dataPlane: cmp.Or(p.GetDataPlane(), s.DefaultDataPlane), dbt: map[string]string{}, spark: map[string]string{}}
 	var err error
 	v.src, err = q.GetSource(ctx, db.GetSourceParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: p.GetSource().GetRef()})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -392,6 +397,12 @@ func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, 
 		return nil, err
 	}
 	for _, step := range p.GetPostSync() {
+		if sp := step.GetSpark(); sp != nil {
+			if v.spark[sp.GetCluster()], err = pinSparkCluster(ctx, q, s.Tenant.Org, wsID, workspace, sp); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		name := step.GetDbt().GetProject()
 		proj, err := q.ShareDbtProject(ctx, db.ShareDbtProjectParams{OrgID: s.Tenant.Org, WorkspaceID: wsID, Name: name})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -414,6 +425,9 @@ func (v *pinned) version() (string, error) {
 	extra := []string{v.src.ID.String(), v.dst.ID.String(), v.dataPlane, v.src.Version, v.dst.Version}
 	for _, name := range slices.Sorted(maps.Keys(v.dbt)) {
 		extra = append(extra, name+"@"+v.dbt[name])
+	}
+	for _, name := range slices.Sorted(maps.Keys(v.spark)) {
+		extra = append(extra, "spark:"+name+"@"+v.spark[name])
 	}
 	return digest(v.spec, extra...)
 }
@@ -453,10 +467,14 @@ func (v *pinned) store(ctx context.Context, q *db.Queries, org, wsID uuid.UUID, 
 	if err != nil {
 		return 0, "", uuid.Nil, err
 	}
+	spark, err := json.Marshal(v.spark)
+	if err != nil {
+		return 0, "", uuid.Nil, err
+	}
 	err = q.InsertPipelineVersion(ctx, db.InsertPipelineVersionParams{
 		OrgID: org, PipelineID: id, Version: version, Spec: spec,
 		SourceID: v.src.ID, DestinationID: v.dst.ID, DataPlaneID: v.dataPlane,
-		SourceVersion: v.src.Version, DestinationVersion: v.dst.Version, Dbt: dbt, Provenance: provenance,
+		SourceVersion: v.src.Version, DestinationVersion: v.dst.Version, Dbt: dbt, SparkClusters: spark, Provenance: provenance,
 	})
 	return action, version, id, err
 }
@@ -506,34 +524,40 @@ func (s *Server) recordApplied(ctx context.Context, q *db.Queries, ch *changes) 
 	return nil
 }
 
-// changes is what an Apply has changed so far: sources, destinations and dbt
-// projects, with the provenance of the documents that changed them, and the
-// pipelines it gave versions, those the documents define first.
+// changes is what an Apply has changed so far: sources, destinations, dbt
+// projects and Spark clusters, with the provenance of the documents that
+// changed them, and the pipelines it gave versions, those the documents
+// define first.
 type changes struct {
-	sources      map[uuid.UUID]string
-	destinations map[uuid.UUID]string
-	dbtProjects  map[uuid.UUID]string
+	sources       map[uuid.UUID]string
+	destinations  map[uuid.UUID]string
+	dbtProjects   map[uuid.UUID]string
+	sparkClusters map[uuid.UUID]string
 	// The sources and destinations it created.
 	created   map[uuid.UUID]bool
 	pipelines []*planned
 }
 
 func newChanges() *changes {
-	return &changes{sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{}, created: map[uuid.UUID]bool{}}
+	return &changes{
+		sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{},
+		sparkClusters: map[uuid.UUID]string{}, created: map[uuid.UUID]bool{},
+	}
 }
 
 // repin gives a new version to each pipeline whose current version pins a
-// changed source, destination or dbt project, unless the Apply applied the
-// pipeline itself.
+// changed source, destination, dbt project or Spark cluster, unless the
+// Apply applied the pipeline itself.
 func (s *Server) repin(ctx context.Context, q *db.Queries, ch *changes) ([]*apiv1.AppliedResource, error) {
-	if len(ch.sources)+len(ch.destinations)+len(ch.dbtProjects) == 0 {
+	if len(ch.sources)+len(ch.destinations)+len(ch.dbtProjects)+len(ch.sparkClusters) == 0 {
 		return nil, nil
 	}
 	rows, err := q.ListPipelinesUsing(ctx, db.ListPipelinesUsingParams{
-		OrgID:        s.Tenant.Org,
-		Sources:      slices.Collect(maps.Keys(ch.sources)),
-		Destinations: slices.Collect(maps.Keys(ch.destinations)),
-		DbtProjects:  slices.Collect(maps.Keys(ch.dbtProjects)),
+		OrgID:         s.Tenant.Org,
+		Sources:       slices.Collect(maps.Keys(ch.sources)),
+		Destinations:  slices.Collect(maps.Keys(ch.destinations)),
+		DbtProjects:   slices.Collect(maps.Keys(ch.dbtProjects)),
+		SparkClusters: slices.Collect(maps.Keys(ch.sparkClusters)),
 	})
 	if err != nil {
 		return nil, err
@@ -587,6 +611,19 @@ func (ch *changes) cause(ctx context.Context, q *db.Queries, org uuid.UUID, r db
 			return "", err
 		}
 		if p, ok := ch.dbtProjects[proj.ID]; ok {
+			return p, nil
+		}
+	}
+	var spark map[string]string
+	if err := json.Unmarshal(r.SparkClusters, &spark); err != nil {
+		return "", err
+	}
+	for _, name := range slices.Sorted(maps.Keys(spark)) {
+		c, err := q.GetSparkCluster(ctx, db.GetSparkClusterParams{OrgID: org, WorkspaceID: r.WorkspaceID, Name: name})
+		if err != nil {
+			return "", err
+		}
+		if p, ok := ch.sparkClusters[c.ID]; ok {
 			return p, nil
 		}
 	}

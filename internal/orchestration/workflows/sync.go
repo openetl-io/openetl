@@ -129,7 +129,7 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 }
 
 // postSync runs the post-sync steps in order, until one fails. A dbt
-// command that fails isn't retried.
+// command or Spark application that fails isn't retried.
 func postSync(ctx workflow.Context, in contract.SyncInput, started contract.StartSyncResult, retry, heartbeat time.Duration) ([]contract.PostSyncResult, error) {
 	dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:           contract.BatchQueue(started.DataPlane),
@@ -144,6 +144,18 @@ func postSync(ctx workflow.Context, in contract.SyncInput, started contract.Star
 	})
 	var results []contract.PostSyncResult
 	for i, step := range started.PostSync {
+		if sp := step.Spark; sp != nil {
+			var r contract.SparkResult
+			err := workflow.ExecuteActivity(dp, contract.RunSpark, contract.SparkInput{
+				OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *sp,
+				SyncID: started.SyncID, StepNumber: i + 1,
+			}).Get(ctx, &r)
+			if err != nil {
+				return results, fmt.Errorf("post-sync step %d, Spark cluster %s: %w", i+1, sp.Cluster, err)
+			}
+			results = append(results, contract.PostSyncResult{Spark: &r})
+			continue
+		}
 		var r contract.DbtResult
 		err := workflow.ExecuteActivity(dp, contract.RunDbt, contract.DbtInput{
 			OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *step.Dbt,

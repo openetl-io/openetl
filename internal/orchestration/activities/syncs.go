@@ -73,7 +73,7 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	if err != nil {
 		return res, err
 	}
-	steps, err := postSync(v.Version, v.Dbt, &spec)
+	steps, err := postSync(v.Version, v.Dbt, v.SparkClusters, &spec)
 	if err != nil {
 		return res, err
 	}
@@ -109,15 +109,30 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	}, nil
 }
 
-// postSync is the pipeline version's post-sync steps, with the bundles it
-// pins.
-func postSync(version string, dbt []byte, spec *apiv1.PipelineSpec) ([]contract.PostSyncStep, error) {
-	var bundles map[string]string
+// postSync is the pipeline version's post-sync steps, with the bundles and
+// Spark clusters' versions it pins.
+func postSync(version string, dbt, spark []byte, spec *apiv1.PipelineSpec) ([]contract.PostSyncStep, error) {
+	var bundles, clusters map[string]string
 	if err := json.Unmarshal(dbt, &bundles); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(spark, &clusters); err != nil {
 		return nil, err
 	}
 	var steps []contract.PostSyncStep
 	for _, s := range spec.GetPostSync() {
+		if sp := s.GetSpark(); sp != nil {
+			cv, ok := clusters[sp.GetCluster()]
+			if !ok {
+				return nil, errs.New(errs.ConfigInvalid, "pipeline version %s pins no version of Spark cluster %q", version, sp.GetCluster())
+			}
+			c := sp.GetCode()
+			steps = append(steps, contract.PostSyncStep{Spark: &contract.SparkStep{
+				Cluster: sp.GetCluster(), ClusterVersion: cv, Jar: c.GetJar(), Python: c.GetPython(),
+				SHA256: c.GetSha256(), MainClass: c.GetMainClass(), Args: sp.GetArgs(), Conf: sp.GetConf(),
+			}})
+			continue
+		}
 		d := s.GetDbt()
 		digest, ok := bundles[d.GetProject()]
 		if !ok {

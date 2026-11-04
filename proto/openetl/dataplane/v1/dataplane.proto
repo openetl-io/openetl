@@ -5,6 +5,7 @@ package openetl.dataplane.v1;
 import "google/protobuf/timestamp.proto";
 import "openetl/api/v1/connection.proto";
 import "openetl/api/v1/pipeline.proto";
+import "openetl/api/v1/spark.proto";
 import "openetl/connector/v1/source.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1";
@@ -56,6 +57,15 @@ message GetSyncSpecResponse {
   // runner reads and sets.
   repeated ExternalSecret source_secrets = 10;
   repeated ExternalSecret destination_secrets = 11;
+  // The Spark clusters the version pins, by name.
+  map<string, PinnedSparkCluster> spark_clusters = 12;
+}
+
+message PinnedSparkCluster {
+  string version = 1;
+  openetl.api.v1.SparkClusterSpec spec = 2;
+  // Fields of submit.conf that name secrets in cloud secret stores.
+  repeated ExternalSecret secrets = 3;
 }
 
 // A config field that names a secret held in a cloud secret store. The field

@@ -25,6 +25,7 @@ const (
 	StartRun             = "StartRun"
 	RunStreamJob         = "RunStreamJob"
 	RunDbt               = "RunDbt"
+	RunSpark             = "RunSpark"
 	CheckConnector       = "CheckConnector"
 	DiscoverSource       = "DiscoverSource"
 	TeardownSource       = "TeardownSource"
@@ -36,6 +37,10 @@ const (
 // DbtFailed is the error type of a dbt command that ran and failed. It isn't
 // retried; the next sync runs the step again.
 const DbtFailed = "DBT_FAILED"
+
+// SparkFailed is the error type of a Spark application that ran and failed.
+// It isn't retried; the next sync runs the step again.
+const SparkFailed = "SPARK_FAILED"
 
 // One retention schedule runs for the whole deployment.
 const (
@@ -126,10 +131,10 @@ type StartSyncResult struct {
 	PostSync []PostSyncStep
 }
 
-// PostSyncStep is one of a pipeline's post-sync steps. Dbt is its only
-// kind.
+// PostSyncStep is one of a pipeline's post-sync steps: Dbt or Spark.
 type PostSyncStep struct {
-	Dbt *DbtStep
+	Dbt   *DbtStep   `json:",omitempty"`
+	Spark *SparkStep `json:",omitempty"`
 }
 
 type DbtStep struct {
@@ -141,6 +146,41 @@ type DbtStep struct {
 	Select, Exclude string
 	// Empty: the schema the pipeline writes to.
 	Schema string
+}
+
+// SparkStep runs the user's own Spark application.
+type SparkStep struct {
+	Cluster string
+	// The cluster's version the pipeline version pins.
+	ClusterVersion string
+	// One of Jar and Python: an s3:// or https:// URI.
+	Jar, Python string
+	SHA256      string
+	MainClass   string
+	Args        []string
+	Conf        map[string]string
+}
+
+type SparkInput struct {
+	OrgID      string
+	PipelineID string
+	Version    string
+	Step       SparkStep
+	SyncID     string
+	// The step's place in the pipeline's post-sync steps, from 1.
+	StepNumber int
+}
+
+type SparkResult struct {
+	Cluster string
+	// What the cluster calls the application: a driver's or YARN
+	// application's ID, a driver pod's name, or an EMR step's ID.
+	Submission string
+	// As the cluster reports it, such as FINISHED or COMPLETED.
+	State   string
+	Seconds float64
+	// The application's UI, where the cluster has one.
+	URL string `json:",omitempty"`
 }
 
 type DbtInput struct {
@@ -167,7 +207,8 @@ type DbtResult struct {
 
 // PostSyncResult is a post-sync step's result.
 type PostSyncResult struct {
-	Dbt *DbtResult `json:",omitempty"`
+	Dbt   *DbtResult   `json:",omitempty"`
+	Spark *SparkResult `json:",omitempty"`
 }
 
 type AttemptInput struct {

@@ -36,12 +36,14 @@ const (
 	KindDbtProject = "DbtProject"
 	// Where a workspace's platform events go.
 	KindWebhook = "Webhook"
+	// Where Spark applications run.
+	KindSparkCluster = "SparkCluster"
 )
 
 // Document is one parsed definition. Connector is set for sources and
 // destinations, Pipeline for pipelines, Descriptor for connectors, Manifest
-// for declarative sources, Bundle for dbt projects, and Webhook for
-// webhooks.
+// for declarative sources, Bundle for dbt projects, Webhook for webhooks,
+// and SparkCluster for Spark clusters.
 type Document struct {
 	Kind      string
 	Name      string
@@ -56,8 +58,9 @@ type Document struct {
 	// The whole manifest, as canonical JSON, for declarative.Load.
 	Manifest []byte
 	// A gzipped tar of the project's files, which dbt.Canonical checks.
-	Bundle  []byte
-	Webhook *apiv1.WebhookSpec
+	Bundle       []byte
+	Webhook      *apiv1.WebhookSpec
+	SparkCluster *apiv1.SparkClusterSpec
 }
 
 type envelope struct {
@@ -170,8 +173,10 @@ func Parse(content []byte) (*Document, error) {
 		doc.Bundle, err = parseDbtProject(spec)
 	case KindWebhook:
 		doc.Webhook, err = parseWebhook(spec)
+	case KindSparkCluster:
+		doc.SparkCluster, err = parseSparkCluster(spec)
 	default:
-		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, DbtProject or Webhook", env.Kind)
+		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, DbtProject, Webhook or SparkCluster", env.Kind)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("spec: %w", err)
@@ -246,6 +251,7 @@ type postSyncYAML struct {
 		Exclude string `yaml:"exclude"`
 		Schema  string `yaml:"schema"`
 	} `yaml:"dbt"`
+	Spark *sparkStepYAML `yaml:"spark"`
 }
 
 type scheduleYAML struct {
@@ -396,8 +402,16 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	}
 	for i, s := range y.PostSync {
 		field := fmt.Sprintf("postSync[%d]", i)
-		if s.Dbt == nil {
-			return nil, fmt.Errorf("%s: needs a dbt step", field)
+		switch {
+		case (s.Dbt == nil) == (s.Spark == nil):
+			return nil, fmt.Errorf("%s: needs one of dbt and spark", field)
+		case s.Spark != nil:
+			step, err := parseSparkStep(field+".spark", s.Spark)
+			if err != nil {
+				return nil, err
+			}
+			p.PostSync = append(p.PostSync, &apiv1.PostSyncStep{Step: &apiv1.PostSyncStep_Spark{Spark: step}})
+			continue
 		}
 		if !ValidName(s.Dbt.Project) {
 			return nil, fmt.Errorf("%s.dbt.project: %q isn't a DbtProject name", field, s.Dbt.Project)

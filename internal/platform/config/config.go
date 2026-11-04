@@ -30,6 +30,9 @@ type Config struct {
 	Cache string
 	// The dbt executable for post-sync steps. Empty: dbt on PATH.
 	Dbt string
+	// Spark 3.5's spark-submit, for Spark steps on self-managed clusters.
+	// Empty: spark-submit on PATH.
+	SparkSubmit string
 	// CIDR prefixes, comma-separated, that connectors, registries and
 	// webhooks may reach besides public addresses.
 	EgressAllow string
@@ -89,6 +92,7 @@ var options = []option{
 	{"connectors", "OPENETL_CONNECTORS", "", "directory of external connector executables, named source-NAME and destination-NAME (default: connectors/ next to openetld)", func(c *Config) *string { return &c.Connectors }},
 	{"cache", "OPENETL_CACHE", ".openetl/cache", "where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables", func(c *Config) *string { return &c.Cache }},
 	{"dbt", "OPENETL_DBT", "", "dbt executable for pipelines' post-sync steps, with the destinations' adapters installed (default: dbt on PATH)", func(c *Config) *string { return &c.Dbt }},
+	{"spark-submit", "OPENETL_SPARK_SUBMIT", "", "Spark 3.5's spark-submit, for pipelines' Spark steps on self-managed clusters (default: spark-submit on PATH)", func(c *Config) *string { return &c.SparkSubmit }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
 	{"lagging-after", "OPENETL_LAGGING_AFTER", "5m", "how far behind its source a continuous pipeline's read gets before the server sends pipeline.lagging to webhooks", func(c *Config) *string { return &c.LaggingAfter }},

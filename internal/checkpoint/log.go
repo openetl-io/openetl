@@ -87,8 +87,14 @@ type Record struct {
 	Forced []string `json:"forced,omitempty"`
 	// The sync that wrote it. A later attempt of the same sync doesn't read
 	// the streams it completed.
-	Sync      string    `json:"sync,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Sync string `json:"sync,omitempty"`
+	// The record the sync started after, the zero ref if none, and the rows
+	// each stream's source emitted in the sync so far. Pruning drops the
+	// sync's earlier records, so this record alone says what the sync
+	// committed. Nil in records from before them, and without a sync.
+	SyncStart *RecordRef        `json:"sync_start,omitempty"`
+	SyncRows  map[string]uint64 `json:"sync_rows,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 // StagedFile is one of an epoch's staged Parquet files, its path below the
@@ -131,6 +137,19 @@ func (l *Log) readHead(ctx context.Context) (Head, Version, error) {
 		return Head{}, "", fmt.Errorf("checkpoint: decode HEAD: %w", err)
 	}
 	return h, v, nil
+}
+
+// Latest is HEAD's record, without claiming the pipeline; nil before the
+// first checkpoint.
+func (l *Log) Latest(ctx context.Context) (*Record, error) {
+	h, _, err := l.readHead(ctx)
+	if errors.Is(err, ErrNotFound) || (err == nil && h.Record == nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return l.Record(ctx, *h.Record)
 }
 
 func (l *Log) Record(ctx context.Context, ref RecordRef) (*Record, error) {

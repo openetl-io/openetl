@@ -491,6 +491,8 @@ type coordinator struct {
 	sincePrune  int                                 // owned by the committer: commits since it last pruned
 	seen        uint64                              // what the source had emitted when the last barrier was requested
 	lastStaged  destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
+	syncStart   *checkpoint.RecordRef               // the record the sync started after; nil if unknown
+	syncRows    map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
 	measures    map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
 }
 
@@ -524,6 +526,9 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	}
 	c.next = c.committed + 1
 	c.res.Last = c.committed
+	if c.job.Sync != "" {
+		c.syncStart, c.syncRows = syncSoFar(restored, c.job.Sync)
+	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	toFlow := make(chan Frame, 16)
@@ -765,6 +770,12 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 		Sync:       c.job.Sync,
 		CreatedAt:  time.Now().UTC(),
 	}
+	if c.syncRows != nil {
+		for name, rows := range st.rows {
+			c.syncRows[name] += rows
+		}
+		rec.SyncStart, rec.SyncRows = c.syncStart, maps.Clone(c.syncRows)
+	}
 	for name, state := range st.states {
 		rec.Streams[name] = checkpoint.StreamState{
 			State:     state,
@@ -976,4 +987,22 @@ func sameSchema(a, b *arrow.Schema) bool {
 		}
 	}
 	return true
+}
+
+// syncSoFar is where the sync started and the rows it has committed, from the
+// record an attempt restored. A record of the same sync from before records
+// carried them leaves the start unknown.
+func syncSoFar(restored *checkpoint.Record, sync string) (*checkpoint.RecordRef, map[string]uint64) {
+	switch {
+	case restored == nil:
+		return &checkpoint.RecordRef{}, map[string]uint64{}
+	case restored.Sync != sync:
+		ref := restored.Ref()
+		return &ref, map[string]uint64{}
+	}
+	rows := maps.Clone(restored.SyncRows)
+	if rows == nil {
+		rows = map[string]uint64{}
+	}
+	return restored.SyncStart, rows
 }

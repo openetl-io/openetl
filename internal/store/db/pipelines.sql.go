@@ -116,7 +116,7 @@ func (q *Queries) GetPipelineNames(ctx context.Context, arg GetPipelineNamesPara
 }
 
 const getPipelineVersion = `-- name: GetPipelineVersion :one
-SELECT org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id, create_time, source_version, destination_version, dbt, provenance FROM pipeline_versions WHERE org_id = $1 AND pipeline_id = $2 AND version = $3
+SELECT org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id, create_time, source_version, destination_version, dbt, provenance, spark_clusters FROM pipeline_versions WHERE org_id = $1 AND pipeline_id = $2 AND version = $3
 `
 
 type GetPipelineVersionParams struct {
@@ -141,12 +141,13 @@ func (q *Queries) GetPipelineVersion(ctx context.Context, arg GetPipelineVersion
 		&i.DestinationVersion,
 		&i.Dbt,
 		&i.Provenance,
+		&i.SparkClusters,
 	)
 	return i, err
 }
 
 const getPipelineVersionPins = `-- name: GetPipelineVersionPins :one
-SELECT v.org_id, v.pipeline_id, v.version, v.spec, v.source_id, v.destination_id, v.data_plane_id, v.create_time, v.source_version, v.destination_version, v.dbt, v.provenance, s.name AS source_name, sv.spec AS source_spec, sv.connector_digest AS source_connector,
+SELECT v.org_id, v.pipeline_id, v.version, v.spec, v.source_id, v.destination_id, v.data_plane_id, v.create_time, v.source_version, v.destination_version, v.dbt, v.provenance, v.spark_clusters, s.name AS source_name, sv.spec AS source_spec, sv.connector_digest AS source_connector,
     d.name AS destination_name, dv.spec AS destination_spec, dv.connector_digest AS destination_connector
 FROM pipeline_versions v
 LEFT JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
@@ -175,6 +176,7 @@ type GetPipelineVersionPinsRow struct {
 	DestinationVersion   string
 	Dbt                  []byte
 	Provenance           string
+	SparkClusters        []byte
 	SourceName           *string
 	SourceSpec           []byte
 	SourceConnector      *string
@@ -199,6 +201,7 @@ func (q *Queries) GetPipelineVersionPins(ctx context.Context, arg GetPipelineVer
 		&i.DestinationVersion,
 		&i.Dbt,
 		&i.Provenance,
+		&i.SparkClusters,
 		&i.SourceName,
 		&i.SourceSpec,
 		&i.SourceConnector,
@@ -210,7 +213,7 @@ func (q *Queries) GetPipelineVersionPins(ctx context.Context, arg GetPipelineVer
 }
 
 const getSyncSpec = `-- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.source_version, v.destination_version,
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.spark_clusters, v.source_version, v.destination_version,
     sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
     sv.secrets AS source_secrets, dv.secrets AS destination_secrets,
@@ -234,6 +237,7 @@ type GetSyncSpecRow struct {
 	DataPlaneID          string
 	PipelineSpec         []byte
 	Dbt                  []byte
+	SparkClusters        []byte
 	SourceVersion        string
 	DestinationVersion   string
 	SourceSpec           []byte
@@ -255,6 +259,7 @@ func (q *Queries) GetSyncSpec(ctx context.Context, arg GetSyncSpecParams) (GetSy
 		&i.DataPlaneID,
 		&i.PipelineSpec,
 		&i.Dbt,
+		&i.SparkClusters,
 		&i.SourceVersion,
 		&i.DestinationVersion,
 		&i.SourceSpec,
@@ -302,9 +307,9 @@ func (q *Queries) InsertPipeline(ctx context.Context, arg InsertPipelineParams) 
 
 const insertPipelineVersion = `-- name: InsertPipelineVersion :exec
 INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id,
-    source_version, destination_version, dbt, provenance)
+    source_version, destination_version, dbt, spark_clusters, provenance)
 VALUES ($1, $2, $3, $4, $5, $6, $7,
-    $8, $9, $10, $11)
+    $8, $9, $10, $11, $12)
 ON CONFLICT (org_id, pipeline_id, version) DO NOTHING
 `
 
@@ -319,6 +324,7 @@ type InsertPipelineVersionParams struct {
 	SourceVersion      string
 	DestinationVersion string
 	Dbt                []byte
+	SparkClusters      []byte
 	Provenance         string
 }
 
@@ -334,13 +340,14 @@ func (q *Queries) InsertPipelineVersion(ctx context.Context, arg InsertPipelineV
 		arg.SourceVersion,
 		arg.DestinationVersion,
 		arg.Dbt,
+		arg.SparkClusters,
 		arg.Provenance,
 	)
 	return err
 }
 
 const listPipelineVersions = `-- name: ListPipelineVersions :many
-SELECT v.org_id, v.pipeline_id, v.version, v.spec, v.source_id, v.destination_id, v.data_plane_id, v.create_time, v.source_version, v.destination_version, v.dbt, v.provenance, s.name AS source_name, sv.spec AS source_spec, sv.connector_digest AS source_connector,
+SELECT v.org_id, v.pipeline_id, v.version, v.spec, v.source_id, v.destination_id, v.data_plane_id, v.create_time, v.source_version, v.destination_version, v.dbt, v.provenance, v.spark_clusters, s.name AS source_name, sv.spec AS source_spec, sv.connector_digest AS source_connector,
     d.name AS destination_name, dv.spec AS destination_spec, dv.connector_digest AS destination_connector
 FROM pipeline_versions v
 LEFT JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
@@ -374,6 +381,7 @@ type ListPipelineVersionsRow struct {
 	DestinationVersion   string
 	Dbt                  []byte
 	Provenance           string
+	SparkClusters        []byte
 	SourceName           *string
 	SourceSpec           []byte
 	SourceConnector      *string
@@ -412,6 +420,7 @@ func (q *Queries) ListPipelineVersions(ctx context.Context, arg ListPipelineVers
 			&i.DestinationVersion,
 			&i.Dbt,
 			&i.Provenance,
+			&i.SparkClusters,
 			&i.SourceName,
 			&i.SourceSpec,
 			&i.SourceConnector,
@@ -482,7 +491,7 @@ func (q *Queries) ListPipelines(ctx context.Context, arg ListPipelinesParams) ([
 }
 
 const listPipelinesUsing = `-- name: ListPipelinesUsing :many
-SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt
+SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt, v.spark_clusters
 FROM pipelines p
 JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
 JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
@@ -491,15 +500,20 @@ WHERE p.org_id = $1 AND (
     OR EXISTS (
         SELECT 1 FROM jsonb_object_keys(v.dbt) k
         JOIN dbt_projects d ON d.org_id = p.org_id AND d.workspace_id = p.workspace_id AND d.name = k
-        WHERE d.id = ANY($4::uuid[])))
+        WHERE d.id = ANY($4::uuid[]))
+    OR EXISTS (
+        SELECT 1 FROM jsonb_object_keys(v.spark_clusters) k
+        JOIN spark_clusters c ON c.org_id = p.org_id AND c.workspace_id = p.workspace_id AND c.name = k
+        WHERE c.id = ANY($5::uuid[])))
 ORDER BY w.name, p.name
 `
 
 type ListPipelinesUsingParams struct {
-	OrgID        uuid.UUID
-	Sources      []uuid.UUID
-	Destinations []uuid.UUID
-	DbtProjects  []uuid.UUID
+	OrgID         uuid.UUID
+	Sources       []uuid.UUID
+	Destinations  []uuid.UUID
+	DbtProjects   []uuid.UUID
+	SparkClusters []uuid.UUID
 }
 
 type ListPipelinesUsingRow struct {
@@ -512,16 +526,18 @@ type ListPipelinesUsingRow struct {
 	Workspace     string
 	Spec          []byte
 	Dbt           []byte
+	SparkClusters []byte
 }
 
-// The pipelines whose current versions use any of the sources, destinations
-// or dbt projects.
+// The pipelines whose current versions use any of the sources, destinations,
+// dbt projects or Spark clusters.
 func (q *Queries) ListPipelinesUsing(ctx context.Context, arg ListPipelinesUsingParams) ([]ListPipelinesUsingRow, error) {
 	rows, err := q.db.Query(ctx, listPipelinesUsing,
 		arg.OrgID,
 		arg.Sources,
 		arg.Destinations,
 		arg.DbtProjects,
+		arg.SparkClusters,
 	)
 	if err != nil {
 		return nil, err
@@ -540,6 +556,7 @@ func (q *Queries) ListPipelinesUsing(ctx context.Context, arg ListPipelinesUsing
 			&i.Workspace,
 			&i.Spec,
 			&i.Dbt,
+			&i.SparkClusters,
 		); err != nil {
 			return nil, err
 		}

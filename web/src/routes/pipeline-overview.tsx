@@ -141,11 +141,18 @@ export function Overview({
                 .join(", "),
             }}
             streams={streams}
-            steps={(spec?.postSync ?? []).flatMap((s) =>
-              s.step.case === "dbt"
-                ? [{ name: s.step.value.project, detail: `dbt ${enumLabel(DbtCommand[s.step.value.command]).toLowerCase() || "build"}` }]
-                : [],
-            )}
+            steps={(spec?.postSync ?? []).flatMap((s) => {
+              switch (s.step.case) {
+                case "dbt":
+                  return [{ name: s.step.value.project, detail: `dbt ${enumLabel(DbtCommand[s.step.value.command]).toLowerCase() || "build"}` }];
+                case "spark": {
+                  const file = s.step.value.code?.file?.value ?? "";
+                  return [{ name: file.replace(/\?.*$/, "").split("/").pop() ?? "", detail: `Spark on ${s.step.value.cluster}` }];
+                }
+                default:
+                  return [];
+              }
+            })}
             live={live}
           />
         </Suspense>

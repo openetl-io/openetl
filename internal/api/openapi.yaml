@@ -1858,6 +1858,109 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/sparkClusters:
+        get:
+            tags:
+                - SparkClusterService
+            operationId: SparkClusterService_ListSparkClusters
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListSparkClustersResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/sparkClusters/{sparkCluster}:
+        get:
+            tags:
+                - SparkClusterService
+            operationId: SparkClusterService_GetSparkCluster
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: sparkCluster
+                  in: path
+                  description: The sparkCluster id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetSparkClusterResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+        delete:
+            tags:
+                - SparkClusterService
+            description: |-
+                Fails with FAILED_PRECONDITION while a pipeline's current version uses
+                 it. Older versions keep the settings they pin.
+            operationId: SparkClusterService_DeleteSparkCluster
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: sparkCluster
+                  in: path
+                  description: The sparkCluster id.
+                  required: true
+                  schema:
+                    type: string
+                - name: etag
+                  in: query
+                  description: If set, it must match.
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteSparkClusterResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/webhooks:
         get:
             tags:
@@ -2617,6 +2720,9 @@ components:
         DeleteSourceResponse:
             type: object
             properties: {}
+        DeleteSparkClusterResponse:
+            type: object
+            properties: {}
         DeleteWebhookResponse:
             type: object
             properties: {}
@@ -2800,6 +2906,11 @@ components:
             properties:
                 source:
                     $ref: '#/components/schemas/Source'
+        GetSparkClusterResponse:
+            type: object
+            properties:
+                sparkCluster:
+                    $ref: '#/components/schemas/SparkCluster'
         GetSyncResponse:
             type: object
             properties:
@@ -3078,6 +3189,15 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/Source'
+                nextPageToken:
+                    type: string
+        ListSparkClustersResponse:
+            type: object
+            properties:
+                sparkClusters:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SparkCluster'
                 nextPageToken:
                     type: string
         ListStreamSchemasResponse:
@@ -3417,6 +3537,11 @@ components:
                     additionalProperties:
                         type: string
                     description: Each dbt project's bundle digest, by project name.
+                sparkClusters:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Each Spark cluster's version, by cluster name.
                 dataPlane:
                     type: string
                 provenance:
@@ -3460,6 +3585,8 @@ components:
             properties:
                 dbt:
                     $ref: '#/components/schemas/DbtStep'
+                spark:
+                    $ref: '#/components/schemas/SparkStep'
         Principal:
             type: object
             properties:
@@ -3695,6 +3822,102 @@ components:
                     description: |-
                         The applied connector version it runs. Unset for built-in connectors
                          and ones from a runner's connectors directory.
+        SparkCluster:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/sparkClusters/{cluster}
+                spec:
+                    $ref: '#/components/schemas/SparkClusterSpec'
+                version:
+                    type: string
+                    description: The settings' version, which new pipeline versions pin.
+                etag:
+                    type: string
+                createTime:
+                    type: string
+                    format: date-time
+                updateTime:
+                    type: string
+                    format: date-time
+                usedBy:
+                    type: array
+                    items:
+                        type: string
+                    description: The pipelines whose current versions use it.
+            description: |-
+                SparkCluster is where a pipeline's Spark applications run. Runners submit
+                 them; drivers run on the cluster.
+        SparkClusterSpec:
+            type: object
+            properties:
+                submit:
+                    $ref: '#/components/schemas/SparkSubmit'
+                emr:
+                    $ref: '#/components/schemas/SparkEmr'
+        SparkCode:
+            type: object
+            properties:
+                jar:
+                    type: string
+                python:
+                    type: string
+                sha256:
+                    type: string
+                    description: The file's SHA-256, in hex.
+                mainClass:
+                    type: string
+                    description: 'A jar''s main class. Unset: the jar''s manifest names it.'
+            description: |-
+                SparkCode is a jar or a Python file, pinned by its digest. The runner checks
+                 it and gives the cluster its own copy.
+        SparkEmr:
+            type: object
+            properties:
+                clusterId:
+                    type: string
+                    description: |-
+                        One of cluster_id and cluster_name. A name finds the one active cluster
+                         of that name at each submission, for clusters that are replaced.
+                clusterName:
+                    type: string
+                region:
+                    type: string
+            description: SparkEmr adds steps to a cluster of EMR on EC2.
+        SparkStep:
+            type: object
+            properties:
+                cluster:
+                    type: string
+                    description: |-
+                        A SparkCluster in the same workspace. A sync runs the settings that were
+                         current when it started.
+                code:
+                    $ref: '#/components/schemas/SparkCode'
+                args:
+                    type: array
+                    items:
+                        type: string
+                    description: The application's arguments.
+                conf:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Spark properties for this application, over the cluster's.
+            description: SparkStep runs the user's own Spark application on a Spark cluster.
+        SparkSubmit:
+            type: object
+            properties:
+                master:
+                    type: string
+                    description: spark://host:port, yarn, or k8s://https://host:port.
+                conf:
+                    type: object
+                    description: |-
+                        Spark properties for every application. A value can be a secret
+                         reference, {"secret": NAME}.
+            description: SparkSubmit submits with spark-submit, in cluster deploy mode.
         Status:
             type: object
             properties:
@@ -4042,6 +4265,10 @@ tags:
       description: |-
         SourceService reads and deletes sources. ApplyService creates and changes
          them.
+    - name: SparkClusterService
+      description: |-
+        SparkClusterService reads and deletes Spark clusters. ApplyService creates
+         and changes them.
     - name: SyncService
       description: |-
         SyncService reads pipelines' syncs and their logs. A continuous

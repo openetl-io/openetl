@@ -77,6 +77,8 @@ message PipelineVersion {
   PinnedConfig destination = 4;
   // Each dbt project's bundle digest, by project name.
   map<string, string> dbt = 5;
+  // Each Spark cluster's version, by cluster name.
+  map<string, string> spark_clusters = 10;
   string data_plane = 6;
   // Where it came from, such as cli:shop.yaml#3.
   string provenance = 7;
@@ -161,6 +163,7 @@ enum HealMode {
 message PostSyncStep {
   oneof step {
     DbtStep dbt = 1;
+    SparkStep spark = 2;
   }
 }
 
@@ -175,6 +178,32 @@ message DbtStep {
   string exclude = 4;
   // The target schema. Unset: the schema the pipeline writes to.
   string schema = 5;
+}
+
+// SparkStep runs the user's own Spark application on a Spark cluster.
+message SparkStep {
+  // A SparkCluster in the same workspace. A sync runs the settings that were
+  // current when it started.
+  string cluster = 1;
+  SparkCode code = 2;
+  // The application's arguments.
+  repeated string args = 3;
+  // Spark properties for this application, over the cluster's.
+  map<string, string> conf = 4;
+}
+
+// SparkCode is a jar or a Python file, pinned by its digest. The runner checks
+// it and gives the cluster its own copy.
+message SparkCode {
+  // An s3:// or https:// URI the runner can read.
+  oneof file {
+    string jar = 1;
+    string python = 2;
+  }
+  // The file's SHA-256, in hex.
+  string sha256 = 3;
+  // A jar's main class. Unset: the jar's manifest names it.
+  string main_class = 4;
 }
 
 enum DbtCommand {

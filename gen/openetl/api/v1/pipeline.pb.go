@@ -711,8 +711,10 @@ type PipelineVersion struct {
 	Source      *PinnedConfig `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
 	Destination *PinnedConfig `protobuf:"bytes,4,opt,name=destination,proto3" json:"destination,omitempty"`
 	// Each dbt project's bundle digest, by project name.
-	Dbt       map[string]string `protobuf:"bytes,5,rep,name=dbt,proto3" json:"dbt,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	DataPlane string            `protobuf:"bytes,6,opt,name=data_plane,json=dataPlane,proto3" json:"data_plane,omitempty"`
+	Dbt map[string]string `protobuf:"bytes,5,rep,name=dbt,proto3" json:"dbt,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Each Spark cluster's version, by cluster name.
+	SparkClusters map[string]string `protobuf:"bytes,10,rep,name=spark_clusters,json=sparkClusters,proto3" json:"spark_clusters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DataPlane     string            `protobuf:"bytes,6,opt,name=data_plane,json=dataPlane,proto3" json:"data_plane,omitempty"`
 	// Where it came from, such as cli:shop.yaml#3.
 	Provenance string `protobuf:"bytes,7,opt,name=provenance,proto3" json:"provenance,omitempty"`
 	// When it was first made.
@@ -784,6 +786,13 @@ func (x *PipelineVersion) GetDestination() *PinnedConfig {
 func (x *PipelineVersion) GetDbt() map[string]string {
 	if x != nil {
 		return x.Dbt
+	}
+	return nil
+}
+
+func (x *PipelineVersion) GetSparkClusters() map[string]string {
+	if x != nil {
+		return x.SparkClusters
 	}
 	return nil
 }
@@ -1227,6 +1236,7 @@ type PostSyncStep struct {
 	// Types that are valid to be assigned to Step:
 	//
 	//	*PostSyncStep_Dbt
+	//	*PostSyncStep_Spark
 	Step          isPostSyncStep_Step `protobuf_oneof:"step"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1278,6 +1288,15 @@ func (x *PostSyncStep) GetDbt() *DbtStep {
 	return nil
 }
 
+func (x *PostSyncStep) GetSpark() *SparkStep {
+	if x != nil {
+		if x, ok := x.Step.(*PostSyncStep_Spark); ok {
+			return x.Spark
+		}
+	}
+	return nil
+}
+
 type isPostSyncStep_Step interface {
 	isPostSyncStep_Step()
 }
@@ -1286,7 +1305,13 @@ type PostSyncStep_Dbt struct {
 	Dbt *DbtStep `protobuf:"bytes,1,opt,name=dbt,proto3,oneof"`
 }
 
+type PostSyncStep_Spark struct {
+	Spark *SparkStep `protobuf:"bytes,2,opt,name=spark,proto3,oneof"`
+}
+
 func (*PostSyncStep_Dbt) isPostSyncStep_Step() {}
+
+func (*PostSyncStep_Spark) isPostSyncStep_Step() {}
 
 // DbtStep runs a dbt project against the pipeline's destination.
 type DbtStep struct {
@@ -1369,6 +1394,183 @@ func (x *DbtStep) GetSchema() string {
 	return ""
 }
 
+// SparkStep runs the user's own Spark application on a Spark cluster.
+type SparkStep struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// A SparkCluster in the same workspace. A sync runs the settings that were
+	// current when it started.
+	Cluster string     `protobuf:"bytes,1,opt,name=cluster,proto3" json:"cluster,omitempty"`
+	Code    *SparkCode `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
+	// The application's arguments.
+	Args []string `protobuf:"bytes,3,rep,name=args,proto3" json:"args,omitempty"`
+	// Spark properties for this application, over the cluster's.
+	Conf          map[string]string `protobuf:"bytes,4,rep,name=conf,proto3" json:"conf,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SparkStep) Reset() {
+	*x = SparkStep{}
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SparkStep) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SparkStep) ProtoMessage() {}
+
+func (x *SparkStep) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SparkStep.ProtoReflect.Descriptor instead.
+func (*SparkStep) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *SparkStep) GetCluster() string {
+	if x != nil {
+		return x.Cluster
+	}
+	return ""
+}
+
+func (x *SparkStep) GetCode() *SparkCode {
+	if x != nil {
+		return x.Code
+	}
+	return nil
+}
+
+func (x *SparkStep) GetArgs() []string {
+	if x != nil {
+		return x.Args
+	}
+	return nil
+}
+
+func (x *SparkStep) GetConf() map[string]string {
+	if x != nil {
+		return x.Conf
+	}
+	return nil
+}
+
+// SparkCode is a jar or a Python file, pinned by its digest. The runner checks
+// it and gives the cluster its own copy.
+type SparkCode struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// An s3:// or https:// URI the runner can read.
+	//
+	// Types that are valid to be assigned to File:
+	//
+	//	*SparkCode_Jar
+	//	*SparkCode_Python
+	File isSparkCode_File `protobuf_oneof:"file"`
+	// The file's SHA-256, in hex.
+	Sha256 string `protobuf:"bytes,3,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	// A jar's main class. Unset: the jar's manifest names it.
+	MainClass     string `protobuf:"bytes,4,opt,name=main_class,json=mainClass,proto3" json:"main_class,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SparkCode) Reset() {
+	*x = SparkCode{}
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SparkCode) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SparkCode) ProtoMessage() {}
+
+func (x *SparkCode) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SparkCode.ProtoReflect.Descriptor instead.
+func (*SparkCode) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *SparkCode) GetFile() isSparkCode_File {
+	if x != nil {
+		return x.File
+	}
+	return nil
+}
+
+func (x *SparkCode) GetJar() string {
+	if x != nil {
+		if x, ok := x.File.(*SparkCode_Jar); ok {
+			return x.Jar
+		}
+	}
+	return ""
+}
+
+func (x *SparkCode) GetPython() string {
+	if x != nil {
+		if x, ok := x.File.(*SparkCode_Python); ok {
+			return x.Python
+		}
+	}
+	return ""
+}
+
+func (x *SparkCode) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *SparkCode) GetMainClass() string {
+	if x != nil {
+		return x.MainClass
+	}
+	return ""
+}
+
+type isSparkCode_File interface {
+	isSparkCode_File()
+}
+
+type SparkCode_Jar struct {
+	Jar string `protobuf:"bytes,1,opt,name=jar,proto3,oneof"`
+}
+
+type SparkCode_Python struct {
+	Python string `protobuf:"bytes,2,opt,name=python,proto3,oneof"`
+}
+
+func (*SparkCode_Jar) isSparkCode_File() {}
+
+func (*SparkCode_Python) isSparkCode_File() {}
+
 // How values map to logical types where a pipeline has a choice.
 type Types struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1379,7 +1581,7 @@ type Types struct {
 
 func (x *Types) Reset() {
 	*x = Types{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[8]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1391,7 +1593,7 @@ func (x *Types) String() string {
 func (*Types) ProtoMessage() {}
 
 func (x *Types) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[8]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1404,7 +1606,7 @@ func (x *Types) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Types.ProtoReflect.Descriptor instead.
 func (*Types) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{8}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Types) GetInfinity() Infinity {
@@ -1429,7 +1631,7 @@ type Schedule struct {
 
 func (x *Schedule) Reset() {
 	*x = Schedule{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[9]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1441,7 +1643,7 @@ func (x *Schedule) String() string {
 func (*Schedule) ProtoMessage() {}
 
 func (x *Schedule) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[9]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1454,7 +1656,7 @@ func (x *Schedule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Schedule.ProtoReflect.Descriptor instead.
 func (*Schedule) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{9}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Schedule) GetTrigger() isSchedule_Trigger {
@@ -1516,7 +1718,7 @@ type PipelineSource struct {
 
 func (x *PipelineSource) Reset() {
 	*x = PipelineSource{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[10]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1528,7 +1730,7 @@ func (x *PipelineSource) String() string {
 func (*PipelineSource) ProtoMessage() {}
 
 func (x *PipelineSource) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[10]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1541,7 +1743,7 @@ func (x *PipelineSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineSource.ProtoReflect.Descriptor instead.
 func (*PipelineSource) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{10}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *PipelineSource) GetRef() string {
@@ -1578,7 +1780,7 @@ type PipelineStream struct {
 
 func (x *PipelineStream) Reset() {
 	*x = PipelineStream{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[11]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1590,7 +1792,7 @@ func (x *PipelineStream) String() string {
 func (*PipelineStream) ProtoMessage() {}
 
 func (x *PipelineStream) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[11]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1603,7 +1805,7 @@ func (x *PipelineStream) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineStream.ProtoReflect.Descriptor instead.
 func (*PipelineStream) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{11}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *PipelineStream) GetName() string {
@@ -1666,7 +1868,7 @@ type PipelineColumn struct {
 
 func (x *PipelineColumn) Reset() {
 	*x = PipelineColumn{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[12]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1678,7 +1880,7 @@ func (x *PipelineColumn) String() string {
 func (*PipelineColumn) ProtoMessage() {}
 
 func (x *PipelineColumn) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[12]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1691,7 +1893,7 @@ func (x *PipelineColumn) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineColumn.ProtoReflect.Descriptor instead.
 func (*PipelineColumn) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{12}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PipelineColumn) GetOp() ColumnOpKind {
@@ -1724,7 +1926,7 @@ type PipelineDestination struct {
 
 func (x *PipelineDestination) Reset() {
 	*x = PipelineDestination{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[13]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1736,7 +1938,7 @@ func (x *PipelineDestination) String() string {
 func (*PipelineDestination) ProtoMessage() {}
 
 func (x *PipelineDestination) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[13]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1749,7 +1951,7 @@ func (x *PipelineDestination) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineDestination.ProtoReflect.Descriptor instead.
 func (*PipelineDestination) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{13}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PipelineDestination) GetRef() string {
@@ -1800,7 +2002,7 @@ type Delivery struct {
 
 func (x *Delivery) Reset() {
 	*x = Delivery{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[14]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1812,7 +2014,7 @@ func (x *Delivery) String() string {
 func (*Delivery) ProtoMessage() {}
 
 func (x *Delivery) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[14]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1825,7 +2027,7 @@ func (x *Delivery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Delivery.ProtoReflect.Descriptor instead.
 func (*Delivery) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{14}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Delivery) GetRequire() DeliveryLevel {
@@ -1860,7 +2062,7 @@ type Commit struct {
 
 func (x *Commit) Reset() {
 	*x = Commit{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[15]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1872,7 +2074,7 @@ func (x *Commit) String() string {
 func (*Commit) ProtoMessage() {}
 
 func (x *Commit) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[15]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1885,7 +2087,7 @@ func (x *Commit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Commit.ProtoReflect.Descriptor instead.
 func (*Commit) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{15}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Commit) GetInterval() *durationpb.Duration {
@@ -1918,7 +2120,7 @@ type GetPipelineRequest struct {
 
 func (x *GetPipelineRequest) Reset() {
 	*x = GetPipelineRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[16]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1930,7 +2132,7 @@ func (x *GetPipelineRequest) String() string {
 func (*GetPipelineRequest) ProtoMessage() {}
 
 func (x *GetPipelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[16]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1943,7 +2145,7 @@ func (x *GetPipelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelineRequest.ProtoReflect.Descriptor instead.
 func (*GetPipelineRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{16}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetPipelineRequest) GetName() string {
@@ -1962,7 +2164,7 @@ type GetPipelineResponse struct {
 
 func (x *GetPipelineResponse) Reset() {
 	*x = GetPipelineResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[17]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1974,7 +2176,7 @@ func (x *GetPipelineResponse) String() string {
 func (*GetPipelineResponse) ProtoMessage() {}
 
 func (x *GetPipelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[17]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1987,7 +2189,7 @@ func (x *GetPipelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelineResponse.ProtoReflect.Descriptor instead.
 func (*GetPipelineResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{17}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetPipelineResponse) GetPipeline() *Pipeline {
@@ -2009,7 +2211,7 @@ type ListPipelinesRequest struct {
 
 func (x *ListPipelinesRequest) Reset() {
 	*x = ListPipelinesRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[18]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2021,7 +2223,7 @@ func (x *ListPipelinesRequest) String() string {
 func (*ListPipelinesRequest) ProtoMessage() {}
 
 func (x *ListPipelinesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[18]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2034,7 +2236,7 @@ func (x *ListPipelinesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPipelinesRequest.ProtoReflect.Descriptor instead.
 func (*ListPipelinesRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{18}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ListPipelinesRequest) GetParent() string {
@@ -2068,7 +2270,7 @@ type ListPipelinesResponse struct {
 
 func (x *ListPipelinesResponse) Reset() {
 	*x = ListPipelinesResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[19]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2080,7 +2282,7 @@ func (x *ListPipelinesResponse) String() string {
 func (*ListPipelinesResponse) ProtoMessage() {}
 
 func (x *ListPipelinesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[19]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2093,7 +2295,7 @@ func (x *ListPipelinesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPipelinesResponse.ProtoReflect.Descriptor instead.
 func (*ListPipelinesResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{19}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ListPipelinesResponse) GetPipelines() []*Pipeline {
@@ -2121,7 +2323,7 @@ type DeletePipelineRequest struct {
 
 func (x *DeletePipelineRequest) Reset() {
 	*x = DeletePipelineRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[20]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2133,7 +2335,7 @@ func (x *DeletePipelineRequest) String() string {
 func (*DeletePipelineRequest) ProtoMessage() {}
 
 func (x *DeletePipelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[20]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2146,7 +2348,7 @@ func (x *DeletePipelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeletePipelineRequest.ProtoReflect.Descriptor instead.
 func (*DeletePipelineRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{20}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DeletePipelineRequest) GetName() string {
@@ -2171,7 +2373,7 @@ type DeletePipelineResponse struct {
 
 func (x *DeletePipelineResponse) Reset() {
 	*x = DeletePipelineResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[21]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2183,7 +2385,7 @@ func (x *DeletePipelineResponse) String() string {
 func (*DeletePipelineResponse) ProtoMessage() {}
 
 func (x *DeletePipelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[21]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2196,7 +2398,7 @@ func (x *DeletePipelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeletePipelineResponse.ProtoReflect.Descriptor instead.
 func (*DeletePipelineResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{21}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{23}
 }
 
 type PausePipelineRequest struct {
@@ -2208,7 +2410,7 @@ type PausePipelineRequest struct {
 
 func (x *PausePipelineRequest) Reset() {
 	*x = PausePipelineRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[22]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2220,7 +2422,7 @@ func (x *PausePipelineRequest) String() string {
 func (*PausePipelineRequest) ProtoMessage() {}
 
 func (x *PausePipelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[22]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2233,7 +2435,7 @@ func (x *PausePipelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PausePipelineRequest.ProtoReflect.Descriptor instead.
 func (*PausePipelineRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{22}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PausePipelineRequest) GetName() string {
@@ -2252,7 +2454,7 @@ type PausePipelineResponse struct {
 
 func (x *PausePipelineResponse) Reset() {
 	*x = PausePipelineResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[23]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2264,7 +2466,7 @@ func (x *PausePipelineResponse) String() string {
 func (*PausePipelineResponse) ProtoMessage() {}
 
 func (x *PausePipelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[23]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2277,7 +2479,7 @@ func (x *PausePipelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PausePipelineResponse.ProtoReflect.Descriptor instead.
 func (*PausePipelineResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{23}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *PausePipelineResponse) GetPipeline() *Pipeline {
@@ -2296,7 +2498,7 @@ type ResumePipelineRequest struct {
 
 func (x *ResumePipelineRequest) Reset() {
 	*x = ResumePipelineRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[24]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2308,7 +2510,7 @@ func (x *ResumePipelineRequest) String() string {
 func (*ResumePipelineRequest) ProtoMessage() {}
 
 func (x *ResumePipelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[24]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2321,7 +2523,7 @@ func (x *ResumePipelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumePipelineRequest.ProtoReflect.Descriptor instead.
 func (*ResumePipelineRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{24}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ResumePipelineRequest) GetName() string {
@@ -2340,7 +2542,7 @@ type ResumePipelineResponse struct {
 
 func (x *ResumePipelineResponse) Reset() {
 	*x = ResumePipelineResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[25]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2352,7 +2554,7 @@ func (x *ResumePipelineResponse) String() string {
 func (*ResumePipelineResponse) ProtoMessage() {}
 
 func (x *ResumePipelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[25]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2365,7 +2567,7 @@ func (x *ResumePipelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumePipelineResponse.ProtoReflect.Descriptor instead.
 func (*ResumePipelineResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{25}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ResumePipelineResponse) GetPipeline() *Pipeline {
@@ -2384,7 +2586,7 @@ type SyncPipelineRequest struct {
 
 func (x *SyncPipelineRequest) Reset() {
 	*x = SyncPipelineRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[26]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2396,7 +2598,7 @@ func (x *SyncPipelineRequest) String() string {
 func (*SyncPipelineRequest) ProtoMessage() {}
 
 func (x *SyncPipelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[26]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2409,7 +2611,7 @@ func (x *SyncPipelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncPipelineRequest.ProtoReflect.Descriptor instead.
 func (*SyncPipelineRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{26}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SyncPipelineRequest) GetName() string {
@@ -2427,7 +2629,7 @@ type SyncPipelineResponse struct {
 
 func (x *SyncPipelineResponse) Reset() {
 	*x = SyncPipelineResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[27]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2439,7 +2641,7 @@ func (x *SyncPipelineResponse) String() string {
 func (*SyncPipelineResponse) ProtoMessage() {}
 
 func (x *SyncPipelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[27]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2452,7 +2654,7 @@ func (x *SyncPipelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncPipelineResponse.ProtoReflect.Descriptor instead.
 func (*SyncPipelineResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{27}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{29}
 }
 
 type ListPipelineVersionsRequest struct {
@@ -2467,7 +2669,7 @@ type ListPipelineVersionsRequest struct {
 
 func (x *ListPipelineVersionsRequest) Reset() {
 	*x = ListPipelineVersionsRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[28]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2479,7 +2681,7 @@ func (x *ListPipelineVersionsRequest) String() string {
 func (*ListPipelineVersionsRequest) ProtoMessage() {}
 
 func (x *ListPipelineVersionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[28]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2492,7 +2694,7 @@ func (x *ListPipelineVersionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPipelineVersionsRequest.ProtoReflect.Descriptor instead.
 func (*ListPipelineVersionsRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{28}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListPipelineVersionsRequest) GetParent() string {
@@ -2526,7 +2728,7 @@ type ListPipelineVersionsResponse struct {
 
 func (x *ListPipelineVersionsResponse) Reset() {
 	*x = ListPipelineVersionsResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[29]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2538,7 +2740,7 @@ func (x *ListPipelineVersionsResponse) String() string {
 func (*ListPipelineVersionsResponse) ProtoMessage() {}
 
 func (x *ListPipelineVersionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[29]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2551,7 +2753,7 @@ func (x *ListPipelineVersionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPipelineVersionsResponse.ProtoReflect.Descriptor instead.
 func (*ListPipelineVersionsResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{29}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListPipelineVersionsResponse) GetPipelineVersions() []*PipelineVersion {
@@ -2577,7 +2779,7 @@ type GetPipelineVersionRequest struct {
 
 func (x *GetPipelineVersionRequest) Reset() {
 	*x = GetPipelineVersionRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[30]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2589,7 +2791,7 @@ func (x *GetPipelineVersionRequest) String() string {
 func (*GetPipelineVersionRequest) ProtoMessage() {}
 
 func (x *GetPipelineVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[30]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2602,7 +2804,7 @@ func (x *GetPipelineVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelineVersionRequest.ProtoReflect.Descriptor instead.
 func (*GetPipelineVersionRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{30}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetPipelineVersionRequest) GetName() string {
@@ -2621,7 +2823,7 @@ type GetPipelineVersionResponse struct {
 
 func (x *GetPipelineVersionResponse) Reset() {
 	*x = GetPipelineVersionResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[31]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2633,7 +2835,7 @@ func (x *GetPipelineVersionResponse) String() string {
 func (*GetPipelineVersionResponse) ProtoMessage() {}
 
 func (x *GetPipelineVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[31]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2646,7 +2848,7 @@ func (x *GetPipelineVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelineVersionResponse.ProtoReflect.Descriptor instead.
 func (*GetPipelineVersionResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{31}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *GetPipelineVersionResponse) GetPipelineVersion() *PipelineVersion {
@@ -2666,7 +2868,7 @@ type GetPipelinePlanRequest struct {
 
 func (x *GetPipelinePlanRequest) Reset() {
 	*x = GetPipelinePlanRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[32]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2678,7 +2880,7 @@ func (x *GetPipelinePlanRequest) String() string {
 func (*GetPipelinePlanRequest) ProtoMessage() {}
 
 func (x *GetPipelinePlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[32]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2691,7 +2893,7 @@ func (x *GetPipelinePlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelinePlanRequest.ProtoReflect.Descriptor instead.
 func (*GetPipelinePlanRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{32}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *GetPipelinePlanRequest) GetName() string {
@@ -2710,7 +2912,7 @@ type GetPipelinePlanResponse struct {
 
 func (x *GetPipelinePlanResponse) Reset() {
 	*x = GetPipelinePlanResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[33]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2722,7 +2924,7 @@ func (x *GetPipelinePlanResponse) String() string {
 func (*GetPipelinePlanResponse) ProtoMessage() {}
 
 func (x *GetPipelinePlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[33]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2735,7 +2937,7 @@ func (x *GetPipelinePlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelinePlanResponse.ProtoReflect.Descriptor instead.
 func (*GetPipelinePlanResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{33}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *GetPipelinePlanResponse) GetPlan() *PipelinePlan {
@@ -2771,7 +2973,7 @@ type PipelinePlan struct {
 
 func (x *PipelinePlan) Reset() {
 	*x = PipelinePlan{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[34]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2783,7 +2985,7 @@ func (x *PipelinePlan) String() string {
 func (*PipelinePlan) ProtoMessage() {}
 
 func (x *PipelinePlan) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[34]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2796,7 +2998,7 @@ func (x *PipelinePlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelinePlan.ProtoReflect.Descriptor instead.
 func (*PipelinePlan) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{34}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *PipelinePlan) GetPipeline() string {
@@ -2859,7 +3061,7 @@ type PlanWarning struct {
 
 func (x *PlanWarning) Reset() {
 	*x = PlanWarning{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[35]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2871,7 +3073,7 @@ func (x *PlanWarning) String() string {
 func (*PlanWarning) ProtoMessage() {}
 
 func (x *PlanWarning) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[35]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2884,7 +3086,7 @@ func (x *PlanWarning) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanWarning.ProtoReflect.Descriptor instead.
 func (*PlanWarning) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{35}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *PlanWarning) GetStream() string {
@@ -2916,7 +3118,7 @@ type PlanChange struct {
 
 func (x *PlanChange) Reset() {
 	*x = PlanChange{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[36]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2928,7 +3130,7 @@ func (x *PlanChange) String() string {
 func (*PlanChange) ProtoMessage() {}
 
 func (x *PlanChange) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[36]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2941,7 +3143,7 @@ func (x *PlanChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanChange.ProtoReflect.Descriptor instead.
 func (*PlanChange) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{36}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PlanChange) GetField() string {
@@ -2985,7 +3187,7 @@ type StreamPlan struct {
 
 func (x *StreamPlan) Reset() {
 	*x = StreamPlan{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[37]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2997,7 +3199,7 @@ func (x *StreamPlan) String() string {
 func (*StreamPlan) ProtoMessage() {}
 
 func (x *StreamPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[37]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3010,7 +3212,7 @@ func (x *StreamPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamPlan.ProtoReflect.Descriptor instead.
 func (*StreamPlan) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{37}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *StreamPlan) GetName() string {
@@ -3076,7 +3278,7 @@ type StreamSchema struct {
 
 func (x *StreamSchema) Reset() {
 	*x = StreamSchema{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[38]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3088,7 +3290,7 @@ func (x *StreamSchema) String() string {
 func (*StreamSchema) ProtoMessage() {}
 
 func (x *StreamSchema) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[38]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3101,7 +3303,7 @@ func (x *StreamSchema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamSchema.ProtoReflect.Descriptor instead.
 func (*StreamSchema) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{38}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *StreamSchema) GetStream() string {
@@ -3174,7 +3376,7 @@ type SchemaColumn struct {
 
 func (x *SchemaColumn) Reset() {
 	*x = SchemaColumn{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[39]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3186,7 +3388,7 @@ func (x *SchemaColumn) String() string {
 func (*SchemaColumn) ProtoMessage() {}
 
 func (x *SchemaColumn) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[39]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3199,7 +3401,7 @@ func (x *SchemaColumn) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchemaColumn.ProtoReflect.Descriptor instead.
 func (*SchemaColumn) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{39}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *SchemaColumn) GetName() string {
@@ -3244,7 +3446,7 @@ type ListStreamSchemasRequest struct {
 
 func (x *ListStreamSchemasRequest) Reset() {
 	*x = ListStreamSchemasRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[40]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3256,7 +3458,7 @@ func (x *ListStreamSchemasRequest) String() string {
 func (*ListStreamSchemasRequest) ProtoMessage() {}
 
 func (x *ListStreamSchemasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[40]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3269,7 +3471,7 @@ func (x *ListStreamSchemasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStreamSchemasRequest.ProtoReflect.Descriptor instead.
 func (*ListStreamSchemasRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{40}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ListStreamSchemasRequest) GetParent() string {
@@ -3310,7 +3512,7 @@ type ListStreamSchemasResponse struct {
 
 func (x *ListStreamSchemasResponse) Reset() {
 	*x = ListStreamSchemasResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[41]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3322,7 +3524,7 @@ func (x *ListStreamSchemasResponse) String() string {
 func (*ListStreamSchemasResponse) ProtoMessage() {}
 
 func (x *ListStreamSchemasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[41]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3335,7 +3537,7 @@ func (x *ListStreamSchemasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStreamSchemasResponse.ProtoReflect.Descriptor instead.
 func (*ListStreamSchemasResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{41}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ListStreamSchemasResponse) GetStreamSchemas() []*StreamSchema {
@@ -3373,7 +3575,7 @@ type Checkpoint struct {
 
 func (x *Checkpoint) Reset() {
 	*x = Checkpoint{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[42]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3385,7 +3587,7 @@ func (x *Checkpoint) String() string {
 func (*Checkpoint) ProtoMessage() {}
 
 func (x *Checkpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[42]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3398,7 +3600,7 @@ func (x *Checkpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Checkpoint.ProtoReflect.Descriptor instead.
 func (*Checkpoint) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{42}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *Checkpoint) GetGeneration() uint64 {
@@ -3471,7 +3673,7 @@ type CheckpointStream struct {
 
 func (x *CheckpointStream) Reset() {
 	*x = CheckpointStream{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[43]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3483,7 +3685,7 @@ func (x *CheckpointStream) String() string {
 func (*CheckpointStream) ProtoMessage() {}
 
 func (x *CheckpointStream) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[43]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3496,7 +3698,7 @@ func (x *CheckpointStream) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckpointStream.ProtoReflect.Descriptor instead.
 func (*CheckpointStream) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{43}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CheckpointStream) GetName() string {
@@ -3560,7 +3762,7 @@ type ListCheckpointsRequest struct {
 
 func (x *ListCheckpointsRequest) Reset() {
 	*x = ListCheckpointsRequest{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[44]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3572,7 +3774,7 @@ func (x *ListCheckpointsRequest) String() string {
 func (*ListCheckpointsRequest) ProtoMessage() {}
 
 func (x *ListCheckpointsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[44]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3585,7 +3787,7 @@ func (x *ListCheckpointsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCheckpointsRequest.ProtoReflect.Descriptor instead.
 func (*ListCheckpointsRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{44}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ListCheckpointsRequest) GetParent() string {
@@ -3619,7 +3821,7 @@ type ListCheckpointsResponse struct {
 
 func (x *ListCheckpointsResponse) Reset() {
 	*x = ListCheckpointsResponse{}
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[45]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3631,7 +3833,7 @@ func (x *ListCheckpointsResponse) String() string {
 func (*ListCheckpointsResponse) ProtoMessage() {}
 
 func (x *ListCheckpointsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[45]
+	mi := &file_openetl_api_v1_pipeline_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3644,7 +3846,7 @@ func (x *ListCheckpointsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCheckpointsResponse.ProtoReflect.Descriptor instead.
 func (*ListCheckpointsResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{45}
+	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListCheckpointsResponse) GetCheckpoints() []*Checkpoint {
@@ -3665,13 +3867,15 @@ var File_openetl_api_v1_pipeline_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\n" +
-	"\x1dopenetl/api/v1/pipeline.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1fopenetl/api/v1/connection.proto\x1a\x19openetl/api/v1/sync.proto\"\xd7\x03\n" +
+	"\x1dopenetl/api/v1/pipeline.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1fopenetl/api/v1/connection.proto\x1a\x19openetl/api/v1/sync.proto\"\xf4\x04\n" +
 	"\x0fPipelineVersion\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x120\n" +
 	"\x04spec\x18\x02 \x01(\v2\x1c.openetl.api.v1.PipelineSpecR\x04spec\x124\n" +
 	"\x06source\x18\x03 \x01(\v2\x1c.openetl.api.v1.PinnedConfigR\x06source\x12>\n" +
 	"\vdestination\x18\x04 \x01(\v2\x1c.openetl.api.v1.PinnedConfigR\vdestination\x12:\n" +
-	"\x03dbt\x18\x05 \x03(\v2(.openetl.api.v1.PipelineVersion.DbtEntryR\x03dbt\x12\x1d\n" +
+	"\x03dbt\x18\x05 \x03(\v2(.openetl.api.v1.PipelineVersion.DbtEntryR\x03dbt\x12Y\n" +
+	"\x0espark_clusters\x18\n" +
+	" \x03(\v22.openetl.api.v1.PipelineVersion.SparkClustersEntryR\rsparkClusters\x12\x1d\n" +
 	"\n" +
 	"data_plane\x18\x06 \x01(\tR\tdataPlane\x12\x1e\n" +
 	"\n" +
@@ -3681,6 +3885,9 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"createTime\x12\x18\n" +
 	"\acurrent\x18\t \x01(\bR\acurrent\x1a6\n" +
 	"\bDbtEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a@\n" +
+	"\x12SparkClustersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8f\x01\n" +
 	"\fPinnedConfig\x12\x12\n" +
@@ -3717,16 +3924,32 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x04heal\x18\n" +
 	" \x01(\v2\x14.openetl.api.v1.HealR\x04heal\"4\n" +
 	"\x04Heal\x12,\n" +
-	"\x04mode\x18\x01 \x01(\x0e2\x18.openetl.api.v1.HealModeR\x04mode\"C\n" +
+	"\x04mode\x18\x01 \x01(\x0e2\x18.openetl.api.v1.HealModeR\x04mode\"v\n" +
 	"\fPostSyncStep\x12+\n" +
-	"\x03dbt\x18\x01 \x01(\v2\x17.openetl.api.v1.DbtStepH\x00R\x03dbtB\x06\n" +
+	"\x03dbt\x18\x01 \x01(\v2\x17.openetl.api.v1.DbtStepH\x00R\x03dbt\x121\n" +
+	"\x05spark\x18\x02 \x01(\v2\x19.openetl.api.v1.SparkStepH\x00R\x05sparkB\x06\n" +
 	"\x04step\"\xa3\x01\n" +
 	"\aDbtStep\x12\x18\n" +
 	"\aproject\x18\x01 \x01(\tR\aproject\x124\n" +
 	"\acommand\x18\x02 \x01(\x0e2\x1a.openetl.api.v1.DbtCommandR\acommand\x12\x16\n" +
 	"\x06select\x18\x03 \x01(\tR\x06select\x12\x18\n" +
 	"\aexclude\x18\x04 \x01(\tR\aexclude\x12\x16\n" +
-	"\x06schema\x18\x05 \x01(\tR\x06schema\"=\n" +
+	"\x06schema\x18\x05 \x01(\tR\x06schema\"\xda\x01\n" +
+	"\tSparkStep\x12\x18\n" +
+	"\acluster\x18\x01 \x01(\tR\acluster\x12-\n" +
+	"\x04code\x18\x02 \x01(\v2\x19.openetl.api.v1.SparkCodeR\x04code\x12\x12\n" +
+	"\x04args\x18\x03 \x03(\tR\x04args\x127\n" +
+	"\x04conf\x18\x04 \x03(\v2#.openetl.api.v1.SparkStep.ConfEntryR\x04conf\x1a7\n" +
+	"\tConfEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"x\n" +
+	"\tSparkCode\x12\x12\n" +
+	"\x03jar\x18\x01 \x01(\tH\x00R\x03jar\x12\x18\n" +
+	"\x06python\x18\x02 \x01(\tH\x00R\x06python\x12\x16\n" +
+	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12\x1d\n" +
+	"\n" +
+	"main_class\x18\x04 \x01(\tR\tmainClassB\x06\n" +
+	"\x04file\"=\n" +
 	"\x05Types\x124\n" +
 	"\binfinity\x18\x01 \x01(\x0e2\x18.openetl.api.v1.InfinityR\binfinity\"\x91\x01\n" +
 	"\bSchedule\x121\n" +
@@ -3977,7 +4200,7 @@ func file_openetl_api_v1_pipeline_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_api_v1_pipeline_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_openetl_api_v1_pipeline_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
+var file_openetl_api_v1_pipeline_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
 var file_openetl_api_v1_pipeline_proto_goTypes = []any{
 	(HealMode)(0),                        // 0: openetl.api.v1.HealMode
 	(DbtCommand)(0),                      // 1: openetl.api.v1.DbtCommand
@@ -4000,141 +4223,149 @@ var file_openetl_api_v1_pipeline_proto_goTypes = []any{
 	(*Heal)(nil),                         // 18: openetl.api.v1.Heal
 	(*PostSyncStep)(nil),                 // 19: openetl.api.v1.PostSyncStep
 	(*DbtStep)(nil),                      // 20: openetl.api.v1.DbtStep
-	(*Types)(nil),                        // 21: openetl.api.v1.Types
-	(*Schedule)(nil),                     // 22: openetl.api.v1.Schedule
-	(*PipelineSource)(nil),               // 23: openetl.api.v1.PipelineSource
-	(*PipelineStream)(nil),               // 24: openetl.api.v1.PipelineStream
-	(*PipelineColumn)(nil),               // 25: openetl.api.v1.PipelineColumn
-	(*PipelineDestination)(nil),          // 26: openetl.api.v1.PipelineDestination
-	(*Delivery)(nil),                     // 27: openetl.api.v1.Delivery
-	(*Commit)(nil),                       // 28: openetl.api.v1.Commit
-	(*GetPipelineRequest)(nil),           // 29: openetl.api.v1.GetPipelineRequest
-	(*GetPipelineResponse)(nil),          // 30: openetl.api.v1.GetPipelineResponse
-	(*ListPipelinesRequest)(nil),         // 31: openetl.api.v1.ListPipelinesRequest
-	(*ListPipelinesResponse)(nil),        // 32: openetl.api.v1.ListPipelinesResponse
-	(*DeletePipelineRequest)(nil),        // 33: openetl.api.v1.DeletePipelineRequest
-	(*DeletePipelineResponse)(nil),       // 34: openetl.api.v1.DeletePipelineResponse
-	(*PausePipelineRequest)(nil),         // 35: openetl.api.v1.PausePipelineRequest
-	(*PausePipelineResponse)(nil),        // 36: openetl.api.v1.PausePipelineResponse
-	(*ResumePipelineRequest)(nil),        // 37: openetl.api.v1.ResumePipelineRequest
-	(*ResumePipelineResponse)(nil),       // 38: openetl.api.v1.ResumePipelineResponse
-	(*SyncPipelineRequest)(nil),          // 39: openetl.api.v1.SyncPipelineRequest
-	(*SyncPipelineResponse)(nil),         // 40: openetl.api.v1.SyncPipelineResponse
-	(*ListPipelineVersionsRequest)(nil),  // 41: openetl.api.v1.ListPipelineVersionsRequest
-	(*ListPipelineVersionsResponse)(nil), // 42: openetl.api.v1.ListPipelineVersionsResponse
-	(*GetPipelineVersionRequest)(nil),    // 43: openetl.api.v1.GetPipelineVersionRequest
-	(*GetPipelineVersionResponse)(nil),   // 44: openetl.api.v1.GetPipelineVersionResponse
-	(*GetPipelinePlanRequest)(nil),       // 45: openetl.api.v1.GetPipelinePlanRequest
-	(*GetPipelinePlanResponse)(nil),      // 46: openetl.api.v1.GetPipelinePlanResponse
-	(*PipelinePlan)(nil),                 // 47: openetl.api.v1.PipelinePlan
-	(*PlanWarning)(nil),                  // 48: openetl.api.v1.PlanWarning
-	(*PlanChange)(nil),                   // 49: openetl.api.v1.PlanChange
-	(*StreamPlan)(nil),                   // 50: openetl.api.v1.StreamPlan
-	(*StreamSchema)(nil),                 // 51: openetl.api.v1.StreamSchema
-	(*SchemaColumn)(nil),                 // 52: openetl.api.v1.SchemaColumn
-	(*ListStreamSchemasRequest)(nil),     // 53: openetl.api.v1.ListStreamSchemasRequest
-	(*ListStreamSchemasResponse)(nil),    // 54: openetl.api.v1.ListStreamSchemasResponse
-	(*Checkpoint)(nil),                   // 55: openetl.api.v1.Checkpoint
-	(*CheckpointStream)(nil),             // 56: openetl.api.v1.CheckpointStream
-	(*ListCheckpointsRequest)(nil),       // 57: openetl.api.v1.ListCheckpointsRequest
-	(*ListCheckpointsResponse)(nil),      // 58: openetl.api.v1.ListCheckpointsResponse
-	nil,                                  // 59: openetl.api.v1.PipelineVersion.DbtEntry
-	nil,                                  // 60: openetl.api.v1.PipelineStream.ColumnsEntry
-	(*timestamppb.Timestamp)(nil),        // 61: google.protobuf.Timestamp
-	(*ConnectorConfig)(nil),              // 62: openetl.api.v1.ConnectorConfig
-	(*Sync)(nil),                         // 63: openetl.api.v1.Sync
-	(*durationpb.Duration)(nil),          // 64: google.protobuf.Duration
-	(SyncMode)(0),                        // 65: openetl.api.v1.SyncMode
+	(*SparkStep)(nil),                    // 21: openetl.api.v1.SparkStep
+	(*SparkCode)(nil),                    // 22: openetl.api.v1.SparkCode
+	(*Types)(nil),                        // 23: openetl.api.v1.Types
+	(*Schedule)(nil),                     // 24: openetl.api.v1.Schedule
+	(*PipelineSource)(nil),               // 25: openetl.api.v1.PipelineSource
+	(*PipelineStream)(nil),               // 26: openetl.api.v1.PipelineStream
+	(*PipelineColumn)(nil),               // 27: openetl.api.v1.PipelineColumn
+	(*PipelineDestination)(nil),          // 28: openetl.api.v1.PipelineDestination
+	(*Delivery)(nil),                     // 29: openetl.api.v1.Delivery
+	(*Commit)(nil),                       // 30: openetl.api.v1.Commit
+	(*GetPipelineRequest)(nil),           // 31: openetl.api.v1.GetPipelineRequest
+	(*GetPipelineResponse)(nil),          // 32: openetl.api.v1.GetPipelineResponse
+	(*ListPipelinesRequest)(nil),         // 33: openetl.api.v1.ListPipelinesRequest
+	(*ListPipelinesResponse)(nil),        // 34: openetl.api.v1.ListPipelinesResponse
+	(*DeletePipelineRequest)(nil),        // 35: openetl.api.v1.DeletePipelineRequest
+	(*DeletePipelineResponse)(nil),       // 36: openetl.api.v1.DeletePipelineResponse
+	(*PausePipelineRequest)(nil),         // 37: openetl.api.v1.PausePipelineRequest
+	(*PausePipelineResponse)(nil),        // 38: openetl.api.v1.PausePipelineResponse
+	(*ResumePipelineRequest)(nil),        // 39: openetl.api.v1.ResumePipelineRequest
+	(*ResumePipelineResponse)(nil),       // 40: openetl.api.v1.ResumePipelineResponse
+	(*SyncPipelineRequest)(nil),          // 41: openetl.api.v1.SyncPipelineRequest
+	(*SyncPipelineResponse)(nil),         // 42: openetl.api.v1.SyncPipelineResponse
+	(*ListPipelineVersionsRequest)(nil),  // 43: openetl.api.v1.ListPipelineVersionsRequest
+	(*ListPipelineVersionsResponse)(nil), // 44: openetl.api.v1.ListPipelineVersionsResponse
+	(*GetPipelineVersionRequest)(nil),    // 45: openetl.api.v1.GetPipelineVersionRequest
+	(*GetPipelineVersionResponse)(nil),   // 46: openetl.api.v1.GetPipelineVersionResponse
+	(*GetPipelinePlanRequest)(nil),       // 47: openetl.api.v1.GetPipelinePlanRequest
+	(*GetPipelinePlanResponse)(nil),      // 48: openetl.api.v1.GetPipelinePlanResponse
+	(*PipelinePlan)(nil),                 // 49: openetl.api.v1.PipelinePlan
+	(*PlanWarning)(nil),                  // 50: openetl.api.v1.PlanWarning
+	(*PlanChange)(nil),                   // 51: openetl.api.v1.PlanChange
+	(*StreamPlan)(nil),                   // 52: openetl.api.v1.StreamPlan
+	(*StreamSchema)(nil),                 // 53: openetl.api.v1.StreamSchema
+	(*SchemaColumn)(nil),                 // 54: openetl.api.v1.SchemaColumn
+	(*ListStreamSchemasRequest)(nil),     // 55: openetl.api.v1.ListStreamSchemasRequest
+	(*ListStreamSchemasResponse)(nil),    // 56: openetl.api.v1.ListStreamSchemasResponse
+	(*Checkpoint)(nil),                   // 57: openetl.api.v1.Checkpoint
+	(*CheckpointStream)(nil),             // 58: openetl.api.v1.CheckpointStream
+	(*ListCheckpointsRequest)(nil),       // 59: openetl.api.v1.ListCheckpointsRequest
+	(*ListCheckpointsResponse)(nil),      // 60: openetl.api.v1.ListCheckpointsResponse
+	nil,                                  // 61: openetl.api.v1.PipelineVersion.DbtEntry
+	nil,                                  // 62: openetl.api.v1.PipelineVersion.SparkClustersEntry
+	nil,                                  // 63: openetl.api.v1.SparkStep.ConfEntry
+	nil,                                  // 64: openetl.api.v1.PipelineStream.ColumnsEntry
+	(*timestamppb.Timestamp)(nil),        // 65: google.protobuf.Timestamp
+	(*ConnectorConfig)(nil),              // 66: openetl.api.v1.ConnectorConfig
+	(*Sync)(nil),                         // 67: openetl.api.v1.Sync
+	(*durationpb.Duration)(nil),          // 68: google.protobuf.Duration
+	(SyncMode)(0),                        // 69: openetl.api.v1.SyncMode
 }
 var file_openetl_api_v1_pipeline_proto_depIdxs = []int32{
 	17, // 0: openetl.api.v1.PipelineVersion.spec:type_name -> openetl.api.v1.PipelineSpec
 	14, // 1: openetl.api.v1.PipelineVersion.source:type_name -> openetl.api.v1.PinnedConfig
 	14, // 2: openetl.api.v1.PipelineVersion.destination:type_name -> openetl.api.v1.PinnedConfig
-	59, // 3: openetl.api.v1.PipelineVersion.dbt:type_name -> openetl.api.v1.PipelineVersion.DbtEntry
-	61, // 4: openetl.api.v1.PipelineVersion.create_time:type_name -> google.protobuf.Timestamp
-	62, // 5: openetl.api.v1.PinnedConfig.spec:type_name -> openetl.api.v1.ConnectorConfig
-	17, // 6: openetl.api.v1.Pipeline.spec:type_name -> openetl.api.v1.PipelineSpec
-	61, // 7: openetl.api.v1.Pipeline.create_time:type_name -> google.protobuf.Timestamp
-	61, // 8: openetl.api.v1.Pipeline.update_time:type_name -> google.protobuf.Timestamp
-	16, // 9: openetl.api.v1.Pipeline.status:type_name -> openetl.api.v1.PipelineStatus
-	63, // 10: openetl.api.v1.PipelineStatus.last_sync:type_name -> openetl.api.v1.Sync
-	61, // 11: openetl.api.v1.PipelineStatus.last_success_time:type_name -> google.protobuf.Timestamp
-	3,  // 12: openetl.api.v1.PipelineSpec.mode:type_name -> openetl.api.v1.PipelineMode
-	22, // 13: openetl.api.v1.PipelineSpec.schedule:type_name -> openetl.api.v1.Schedule
-	23, // 14: openetl.api.v1.PipelineSpec.source:type_name -> openetl.api.v1.PipelineSource
-	26, // 15: openetl.api.v1.PipelineSpec.destination:type_name -> openetl.api.v1.PipelineDestination
-	10, // 16: openetl.api.v1.PipelineSpec.schema_policy:type_name -> openetl.api.v1.SchemaPolicy
-	27, // 17: openetl.api.v1.PipelineSpec.delivery:type_name -> openetl.api.v1.Delivery
-	21, // 18: openetl.api.v1.PipelineSpec.types:type_name -> openetl.api.v1.Types
-	19, // 19: openetl.api.v1.PipelineSpec.post_sync:type_name -> openetl.api.v1.PostSyncStep
-	18, // 20: openetl.api.v1.PipelineSpec.heal:type_name -> openetl.api.v1.Heal
-	0,  // 21: openetl.api.v1.Heal.mode:type_name -> openetl.api.v1.HealMode
-	20, // 22: openetl.api.v1.PostSyncStep.dbt:type_name -> openetl.api.v1.DbtStep
-	1,  // 23: openetl.api.v1.DbtStep.command:type_name -> openetl.api.v1.DbtCommand
-	2,  // 24: openetl.api.v1.Types.infinity:type_name -> openetl.api.v1.Infinity
-	64, // 25: openetl.api.v1.Schedule.every:type_name -> google.protobuf.Duration
-	64, // 26: openetl.api.v1.Schedule.jitter:type_name -> google.protobuf.Duration
-	24, // 27: openetl.api.v1.PipelineSource.streams:type_name -> openetl.api.v1.PipelineStream
-	65, // 28: openetl.api.v1.PipelineStream.sync:type_name -> openetl.api.v1.SyncMode
-	60, // 29: openetl.api.v1.PipelineStream.columns:type_name -> openetl.api.v1.PipelineStream.ColumnsEntry
-	4,  // 30: openetl.api.v1.PipelineStream.timestamps:type_name -> openetl.api.v1.TimestampUnit
-	11, // 31: openetl.api.v1.PipelineStream.require:type_name -> openetl.api.v1.DeliveryLevel
-	6,  // 32: openetl.api.v1.PipelineColumn.op:type_name -> openetl.api.v1.ColumnOpKind
-	5,  // 33: openetl.api.v1.PipelineColumn.type:type_name -> openetl.api.v1.ColumnType
-	9,  // 34: openetl.api.v1.PipelineDestination.write:type_name -> openetl.api.v1.WriteMode
-	8,  // 35: openetl.api.v1.PipelineDestination.naming:type_name -> openetl.api.v1.Naming
-	7,  // 36: openetl.api.v1.PipelineDestination.deletes:type_name -> openetl.api.v1.DeleteMode
-	11, // 37: openetl.api.v1.Delivery.require:type_name -> openetl.api.v1.DeliveryLevel
-	28, // 38: openetl.api.v1.Delivery.commit:type_name -> openetl.api.v1.Commit
-	64, // 39: openetl.api.v1.Delivery.resume_point_timeout:type_name -> google.protobuf.Duration
-	64, // 40: openetl.api.v1.Commit.interval:type_name -> google.protobuf.Duration
-	12, // 41: openetl.api.v1.Commit.scope:type_name -> openetl.api.v1.CommitScope
-	15, // 42: openetl.api.v1.GetPipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
-	15, // 43: openetl.api.v1.ListPipelinesResponse.pipelines:type_name -> openetl.api.v1.Pipeline
-	15, // 44: openetl.api.v1.PausePipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
-	15, // 45: openetl.api.v1.ResumePipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
-	13, // 46: openetl.api.v1.ListPipelineVersionsResponse.pipeline_versions:type_name -> openetl.api.v1.PipelineVersion
-	13, // 47: openetl.api.v1.GetPipelineVersionResponse.pipeline_version:type_name -> openetl.api.v1.PipelineVersion
-	47, // 48: openetl.api.v1.GetPipelinePlanResponse.plan:type_name -> openetl.api.v1.PipelinePlan
-	49, // 49: openetl.api.v1.PipelinePlan.changes:type_name -> openetl.api.v1.PlanChange
-	50, // 50: openetl.api.v1.PipelinePlan.streams:type_name -> openetl.api.v1.StreamPlan
-	48, // 51: openetl.api.v1.PipelinePlan.warnings:type_name -> openetl.api.v1.PlanWarning
-	11, // 52: openetl.api.v1.StreamPlan.level:type_name -> openetl.api.v1.DeliveryLevel
-	9,  // 53: openetl.api.v1.StreamPlan.write:type_name -> openetl.api.v1.WriteMode
-	52, // 54: openetl.api.v1.StreamSchema.columns:type_name -> openetl.api.v1.SchemaColumn
-	61, // 55: openetl.api.v1.StreamSchema.create_time:type_name -> google.protobuf.Timestamp
-	51, // 56: openetl.api.v1.ListStreamSchemasResponse.stream_schemas:type_name -> openetl.api.v1.StreamSchema
-	61, // 57: openetl.api.v1.Checkpoint.commit_time:type_name -> google.protobuf.Timestamp
-	56, // 58: openetl.api.v1.Checkpoint.streams:type_name -> openetl.api.v1.CheckpointStream
-	55, // 59: openetl.api.v1.ListCheckpointsResponse.checkpoints:type_name -> openetl.api.v1.Checkpoint
-	25, // 60: openetl.api.v1.PipelineStream.ColumnsEntry.value:type_name -> openetl.api.v1.PipelineColumn
-	29, // 61: openetl.api.v1.PipelineService.GetPipeline:input_type -> openetl.api.v1.GetPipelineRequest
-	31, // 62: openetl.api.v1.PipelineService.ListPipelines:input_type -> openetl.api.v1.ListPipelinesRequest
-	33, // 63: openetl.api.v1.PipelineService.DeletePipeline:input_type -> openetl.api.v1.DeletePipelineRequest
-	35, // 64: openetl.api.v1.PipelineService.PausePipeline:input_type -> openetl.api.v1.PausePipelineRequest
-	37, // 65: openetl.api.v1.PipelineService.ResumePipeline:input_type -> openetl.api.v1.ResumePipelineRequest
-	39, // 66: openetl.api.v1.PipelineService.SyncPipeline:input_type -> openetl.api.v1.SyncPipelineRequest
-	41, // 67: openetl.api.v1.PipelineService.ListPipelineVersions:input_type -> openetl.api.v1.ListPipelineVersionsRequest
-	43, // 68: openetl.api.v1.PipelineService.GetPipelineVersion:input_type -> openetl.api.v1.GetPipelineVersionRequest
-	45, // 69: openetl.api.v1.PipelineService.GetPipelinePlan:input_type -> openetl.api.v1.GetPipelinePlanRequest
-	53, // 70: openetl.api.v1.PipelineService.ListStreamSchemas:input_type -> openetl.api.v1.ListStreamSchemasRequest
-	57, // 71: openetl.api.v1.PipelineService.ListCheckpoints:input_type -> openetl.api.v1.ListCheckpointsRequest
-	30, // 72: openetl.api.v1.PipelineService.GetPipeline:output_type -> openetl.api.v1.GetPipelineResponse
-	32, // 73: openetl.api.v1.PipelineService.ListPipelines:output_type -> openetl.api.v1.ListPipelinesResponse
-	34, // 74: openetl.api.v1.PipelineService.DeletePipeline:output_type -> openetl.api.v1.DeletePipelineResponse
-	36, // 75: openetl.api.v1.PipelineService.PausePipeline:output_type -> openetl.api.v1.PausePipelineResponse
-	38, // 76: openetl.api.v1.PipelineService.ResumePipeline:output_type -> openetl.api.v1.ResumePipelineResponse
-	40, // 77: openetl.api.v1.PipelineService.SyncPipeline:output_type -> openetl.api.v1.SyncPipelineResponse
-	42, // 78: openetl.api.v1.PipelineService.ListPipelineVersions:output_type -> openetl.api.v1.ListPipelineVersionsResponse
-	44, // 79: openetl.api.v1.PipelineService.GetPipelineVersion:output_type -> openetl.api.v1.GetPipelineVersionResponse
-	46, // 80: openetl.api.v1.PipelineService.GetPipelinePlan:output_type -> openetl.api.v1.GetPipelinePlanResponse
-	54, // 81: openetl.api.v1.PipelineService.ListStreamSchemas:output_type -> openetl.api.v1.ListStreamSchemasResponse
-	58, // 82: openetl.api.v1.PipelineService.ListCheckpoints:output_type -> openetl.api.v1.ListCheckpointsResponse
-	72, // [72:83] is the sub-list for method output_type
-	61, // [61:72] is the sub-list for method input_type
-	61, // [61:61] is the sub-list for extension type_name
-	61, // [61:61] is the sub-list for extension extendee
-	0,  // [0:61] is the sub-list for field type_name
+	61, // 3: openetl.api.v1.PipelineVersion.dbt:type_name -> openetl.api.v1.PipelineVersion.DbtEntry
+	62, // 4: openetl.api.v1.PipelineVersion.spark_clusters:type_name -> openetl.api.v1.PipelineVersion.SparkClustersEntry
+	65, // 5: openetl.api.v1.PipelineVersion.create_time:type_name -> google.protobuf.Timestamp
+	66, // 6: openetl.api.v1.PinnedConfig.spec:type_name -> openetl.api.v1.ConnectorConfig
+	17, // 7: openetl.api.v1.Pipeline.spec:type_name -> openetl.api.v1.PipelineSpec
+	65, // 8: openetl.api.v1.Pipeline.create_time:type_name -> google.protobuf.Timestamp
+	65, // 9: openetl.api.v1.Pipeline.update_time:type_name -> google.protobuf.Timestamp
+	16, // 10: openetl.api.v1.Pipeline.status:type_name -> openetl.api.v1.PipelineStatus
+	67, // 11: openetl.api.v1.PipelineStatus.last_sync:type_name -> openetl.api.v1.Sync
+	65, // 12: openetl.api.v1.PipelineStatus.last_success_time:type_name -> google.protobuf.Timestamp
+	3,  // 13: openetl.api.v1.PipelineSpec.mode:type_name -> openetl.api.v1.PipelineMode
+	24, // 14: openetl.api.v1.PipelineSpec.schedule:type_name -> openetl.api.v1.Schedule
+	25, // 15: openetl.api.v1.PipelineSpec.source:type_name -> openetl.api.v1.PipelineSource
+	28, // 16: openetl.api.v1.PipelineSpec.destination:type_name -> openetl.api.v1.PipelineDestination
+	10, // 17: openetl.api.v1.PipelineSpec.schema_policy:type_name -> openetl.api.v1.SchemaPolicy
+	29, // 18: openetl.api.v1.PipelineSpec.delivery:type_name -> openetl.api.v1.Delivery
+	23, // 19: openetl.api.v1.PipelineSpec.types:type_name -> openetl.api.v1.Types
+	19, // 20: openetl.api.v1.PipelineSpec.post_sync:type_name -> openetl.api.v1.PostSyncStep
+	18, // 21: openetl.api.v1.PipelineSpec.heal:type_name -> openetl.api.v1.Heal
+	0,  // 22: openetl.api.v1.Heal.mode:type_name -> openetl.api.v1.HealMode
+	20, // 23: openetl.api.v1.PostSyncStep.dbt:type_name -> openetl.api.v1.DbtStep
+	21, // 24: openetl.api.v1.PostSyncStep.spark:type_name -> openetl.api.v1.SparkStep
+	1,  // 25: openetl.api.v1.DbtStep.command:type_name -> openetl.api.v1.DbtCommand
+	22, // 26: openetl.api.v1.SparkStep.code:type_name -> openetl.api.v1.SparkCode
+	63, // 27: openetl.api.v1.SparkStep.conf:type_name -> openetl.api.v1.SparkStep.ConfEntry
+	2,  // 28: openetl.api.v1.Types.infinity:type_name -> openetl.api.v1.Infinity
+	68, // 29: openetl.api.v1.Schedule.every:type_name -> google.protobuf.Duration
+	68, // 30: openetl.api.v1.Schedule.jitter:type_name -> google.protobuf.Duration
+	26, // 31: openetl.api.v1.PipelineSource.streams:type_name -> openetl.api.v1.PipelineStream
+	69, // 32: openetl.api.v1.PipelineStream.sync:type_name -> openetl.api.v1.SyncMode
+	64, // 33: openetl.api.v1.PipelineStream.columns:type_name -> openetl.api.v1.PipelineStream.ColumnsEntry
+	4,  // 34: openetl.api.v1.PipelineStream.timestamps:type_name -> openetl.api.v1.TimestampUnit
+	11, // 35: openetl.api.v1.PipelineStream.require:type_name -> openetl.api.v1.DeliveryLevel
+	6,  // 36: openetl.api.v1.PipelineColumn.op:type_name -> openetl.api.v1.ColumnOpKind
+	5,  // 37: openetl.api.v1.PipelineColumn.type:type_name -> openetl.api.v1.ColumnType
+	9,  // 38: openetl.api.v1.PipelineDestination.write:type_name -> openetl.api.v1.WriteMode
+	8,  // 39: openetl.api.v1.PipelineDestination.naming:type_name -> openetl.api.v1.Naming
+	7,  // 40: openetl.api.v1.PipelineDestination.deletes:type_name -> openetl.api.v1.DeleteMode
+	11, // 41: openetl.api.v1.Delivery.require:type_name -> openetl.api.v1.DeliveryLevel
+	30, // 42: openetl.api.v1.Delivery.commit:type_name -> openetl.api.v1.Commit
+	68, // 43: openetl.api.v1.Delivery.resume_point_timeout:type_name -> google.protobuf.Duration
+	68, // 44: openetl.api.v1.Commit.interval:type_name -> google.protobuf.Duration
+	12, // 45: openetl.api.v1.Commit.scope:type_name -> openetl.api.v1.CommitScope
+	15, // 46: openetl.api.v1.GetPipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
+	15, // 47: openetl.api.v1.ListPipelinesResponse.pipelines:type_name -> openetl.api.v1.Pipeline
+	15, // 48: openetl.api.v1.PausePipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
+	15, // 49: openetl.api.v1.ResumePipelineResponse.pipeline:type_name -> openetl.api.v1.Pipeline
+	13, // 50: openetl.api.v1.ListPipelineVersionsResponse.pipeline_versions:type_name -> openetl.api.v1.PipelineVersion
+	13, // 51: openetl.api.v1.GetPipelineVersionResponse.pipeline_version:type_name -> openetl.api.v1.PipelineVersion
+	49, // 52: openetl.api.v1.GetPipelinePlanResponse.plan:type_name -> openetl.api.v1.PipelinePlan
+	51, // 53: openetl.api.v1.PipelinePlan.changes:type_name -> openetl.api.v1.PlanChange
+	52, // 54: openetl.api.v1.PipelinePlan.streams:type_name -> openetl.api.v1.StreamPlan
+	50, // 55: openetl.api.v1.PipelinePlan.warnings:type_name -> openetl.api.v1.PlanWarning
+	11, // 56: openetl.api.v1.StreamPlan.level:type_name -> openetl.api.v1.DeliveryLevel
+	9,  // 57: openetl.api.v1.StreamPlan.write:type_name -> openetl.api.v1.WriteMode
+	54, // 58: openetl.api.v1.StreamSchema.columns:type_name -> openetl.api.v1.SchemaColumn
+	65, // 59: openetl.api.v1.StreamSchema.create_time:type_name -> google.protobuf.Timestamp
+	53, // 60: openetl.api.v1.ListStreamSchemasResponse.stream_schemas:type_name -> openetl.api.v1.StreamSchema
+	65, // 61: openetl.api.v1.Checkpoint.commit_time:type_name -> google.protobuf.Timestamp
+	58, // 62: openetl.api.v1.Checkpoint.streams:type_name -> openetl.api.v1.CheckpointStream
+	57, // 63: openetl.api.v1.ListCheckpointsResponse.checkpoints:type_name -> openetl.api.v1.Checkpoint
+	27, // 64: openetl.api.v1.PipelineStream.ColumnsEntry.value:type_name -> openetl.api.v1.PipelineColumn
+	31, // 65: openetl.api.v1.PipelineService.GetPipeline:input_type -> openetl.api.v1.GetPipelineRequest
+	33, // 66: openetl.api.v1.PipelineService.ListPipelines:input_type -> openetl.api.v1.ListPipelinesRequest
+	35, // 67: openetl.api.v1.PipelineService.DeletePipeline:input_type -> openetl.api.v1.DeletePipelineRequest
+	37, // 68: openetl.api.v1.PipelineService.PausePipeline:input_type -> openetl.api.v1.PausePipelineRequest
+	39, // 69: openetl.api.v1.PipelineService.ResumePipeline:input_type -> openetl.api.v1.ResumePipelineRequest
+	41, // 70: openetl.api.v1.PipelineService.SyncPipeline:input_type -> openetl.api.v1.SyncPipelineRequest
+	43, // 71: openetl.api.v1.PipelineService.ListPipelineVersions:input_type -> openetl.api.v1.ListPipelineVersionsRequest
+	45, // 72: openetl.api.v1.PipelineService.GetPipelineVersion:input_type -> openetl.api.v1.GetPipelineVersionRequest
+	47, // 73: openetl.api.v1.PipelineService.GetPipelinePlan:input_type -> openetl.api.v1.GetPipelinePlanRequest
+	55, // 74: openetl.api.v1.PipelineService.ListStreamSchemas:input_type -> openetl.api.v1.ListStreamSchemasRequest
+	59, // 75: openetl.api.v1.PipelineService.ListCheckpoints:input_type -> openetl.api.v1.ListCheckpointsRequest
+	32, // 76: openetl.api.v1.PipelineService.GetPipeline:output_type -> openetl.api.v1.GetPipelineResponse
+	34, // 77: openetl.api.v1.PipelineService.ListPipelines:output_type -> openetl.api.v1.ListPipelinesResponse
+	36, // 78: openetl.api.v1.PipelineService.DeletePipeline:output_type -> openetl.api.v1.DeletePipelineResponse
+	38, // 79: openetl.api.v1.PipelineService.PausePipeline:output_type -> openetl.api.v1.PausePipelineResponse
+	40, // 80: openetl.api.v1.PipelineService.ResumePipeline:output_type -> openetl.api.v1.ResumePipelineResponse
+	42, // 81: openetl.api.v1.PipelineService.SyncPipeline:output_type -> openetl.api.v1.SyncPipelineResponse
+	44, // 82: openetl.api.v1.PipelineService.ListPipelineVersions:output_type -> openetl.api.v1.ListPipelineVersionsResponse
+	46, // 83: openetl.api.v1.PipelineService.GetPipelineVersion:output_type -> openetl.api.v1.GetPipelineVersionResponse
+	48, // 84: openetl.api.v1.PipelineService.GetPipelinePlan:output_type -> openetl.api.v1.GetPipelinePlanResponse
+	56, // 85: openetl.api.v1.PipelineService.ListStreamSchemas:output_type -> openetl.api.v1.ListStreamSchemasResponse
+	60, // 86: openetl.api.v1.PipelineService.ListCheckpoints:output_type -> openetl.api.v1.ListCheckpointsResponse
+	76, // [76:87] is the sub-list for method output_type
+	65, // [65:76] is the sub-list for method input_type
+	65, // [65:65] is the sub-list for extension type_name
+	65, // [65:65] is the sub-list for extension extendee
+	0,  // [0:65] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_pipeline_proto_init() }
@@ -4146,19 +4377,24 @@ func file_openetl_api_v1_pipeline_proto_init() {
 	file_openetl_api_v1_sync_proto_init()
 	file_openetl_api_v1_pipeline_proto_msgTypes[6].OneofWrappers = []any{
 		(*PostSyncStep_Dbt)(nil),
+		(*PostSyncStep_Spark)(nil),
 	}
 	file_openetl_api_v1_pipeline_proto_msgTypes[9].OneofWrappers = []any{
+		(*SparkCode_Jar)(nil),
+		(*SparkCode_Python)(nil),
+	}
+	file_openetl_api_v1_pipeline_proto_msgTypes[11].OneofWrappers = []any{
 		(*Schedule_Every)(nil),
 		(*Schedule_Cron)(nil),
 	}
-	file_openetl_api_v1_pipeline_proto_msgTypes[11].OneofWrappers = []any{}
+	file_openetl_api_v1_pipeline_proto_msgTypes[13].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_pipeline_proto_rawDesc), len(file_openetl_api_v1_pipeline_proto_rawDesc)),
 			NumEnums:      13,
-			NumMessages:   48,
+			NumMessages:   52,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

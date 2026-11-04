@@ -24,16 +24,16 @@ DELETE FROM pipelines WHERE org_id = @org_id AND id = @id;
 
 -- name: InsertPipelineVersion :exec
 INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id,
-    source_version, destination_version, dbt, provenance)
+    source_version, destination_version, dbt, spark_clusters, provenance)
 VALUES (@org_id, @pipeline_id, @version, @spec, @source_id, @destination_id, @data_plane_id,
-    @source_version, @destination_version, @dbt, @provenance)
+    @source_version, @destination_version, @dbt, @spark_clusters, @provenance)
 ON CONFLICT (org_id, pipeline_id, version) DO NOTHING;
 
 -- name: GetPipelineVersion :one
 SELECT * FROM pipeline_versions WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND version = @version;
 
 -- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.source_version, v.destination_version,
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.spark_clusters, v.source_version, v.destination_version,
     sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
     sv.secrets AS source_secrets, dv.secrets AS destination_secrets,
@@ -45,10 +45,10 @@ JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source_id A
 JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
 WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id AND v.version = @version;
 
--- The pipelines whose current versions use any of the sources, destinations
--- or dbt projects.
+-- The pipelines whose current versions use any of the sources, destinations,
+-- dbt projects or Spark clusters.
 -- name: ListPipelinesUsing :many
-SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt
+SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt, v.spark_clusters
 FROM pipelines p
 JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
 JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
@@ -57,7 +57,11 @@ WHERE p.org_id = @org_id AND (
     OR EXISTS (
         SELECT 1 FROM jsonb_object_keys(v.dbt) k
         JOIN dbt_projects d ON d.org_id = p.org_id AND d.workspace_id = p.workspace_id AND d.name = k
-        WHERE d.id = ANY(@dbt_projects::uuid[])))
+        WHERE d.id = ANY(@dbt_projects::uuid[]))
+    OR EXISTS (
+        SELECT 1 FROM jsonb_object_keys(v.spark_clusters) k
+        JOIN spark_clusters c ON c.org_id = p.org_id AND c.workspace_id = p.workspace_id AND c.name = k
+        WHERE c.id = ANY(@spark_clusters::uuid[])))
 ORDER BY w.name, p.name;
 
 -- name: SetPipelinePaused :execrows

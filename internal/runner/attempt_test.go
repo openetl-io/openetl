@@ -899,3 +899,42 @@ func (s endlessSource) Read(ctx context.Context, req source.ReadRequest, out sou
 		}
 	}
 }
+
+// Each record says where its sync started and what the sync has committed so
+// far, across the sync's attempts, so the last one holds the whole sync.
+func TestRecordsCarryTheSyncSoFar(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		read := map[string]int{}
+		attempts := 0
+		attempt := func(sync string, fail bool) *checkpoint.Record {
+			committed := make(chan uint64, 16)
+			attempts++
+			j := job(log, fmt.Sprintf("a%d", attempts), fullSource{pages: 2, committed: committed, read: read, fail: fail}, runner.Passthrough{Convert: columnless}, committed)
+			j.Sync = sync
+			j.Streams = []runner.Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append}, {Name: "b", Replay: source.Exact, Mode: destination.Append}}
+			_, _ = runner.RunAttempt(ctx, j)
+			time.Sleep(time.Second)
+			head, err := log.Latest(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return head
+		}
+		check := func(head *checkpoint.Record, sync string, start checkpoint.RecordRef, a, b uint64) {
+			t.Helper()
+			if head.Sync != sync || head.SyncStart == nil || *head.SyncStart != start || head.SyncRows["a"] != a || head.SyncRows["b"] != b {
+				t.Errorf("HEAD %d-g%d: sync %s from %+v with %v; want %s from %+v with a: %d, b: %d", head.Epoch, head.Generation, head.Sync, head.SyncStart, head.SyncRows, sync, start, a, b)
+			}
+		}
+		check(attempt("s1", true), "s1", checkpoint.RecordRef{}, 2, 1)
+		first := attempt("s1", false)
+		check(first, "s1", checkpoint.RecordRef{}, 2, 2)
+		check(attempt("s2", false), "s2", first.Ref(), 2, 2)
+		if head, err := log.Latest(ctx); err != nil || head == nil {
+			t.Fatalf("Latest: %v, %v", head, err)
+		}
+	})
+}

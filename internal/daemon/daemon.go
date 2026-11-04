@@ -409,6 +409,11 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	w.RegisterActivityWithOptions(sync.RunSyncAttempt, activity.RegisterOptions{Name: contract.RunSyncAttempt})
 	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Secrets: stores, Executable: cfg.Dbt, Logger: log, Logs: cps}
 	w.RegisterActivityWithOptions(dbt.RunDbt, activity.RegisterOptions{Name: contract.RunDbt})
+	sparkSteps := &dpactivities.Spark{
+		API: apiClient, Secrets: stores, Checkpoints: cps, Storage: cfg.Checkpoints,
+		HTTP: (&netguard.Policy{Allow: allow}).Client(), SparkSubmit: cfg.SparkSubmit, Logger: log, Logs: cps,
+	}
+	w.RegisterActivityWithOptions(sparkSteps.RunSpark, activity.RegisterOptions{Name: contract.RunSpark})
 	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})

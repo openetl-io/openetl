@@ -220,6 +220,7 @@ type PipelineVersion struct {
 	DestinationVersion string
 	Dbt                []byte
 	Provenance         string
+	SparkClusters      []byte
 }
 
 type Principal struct {
@@ -307,6 +308,29 @@ type SourceVersion struct {
 	Secrets         []string
 	Provenance      string
 	CreateTime      time.Time
+}
+
+type SparkCluster struct {
+	OrgID       uuid.UUID
+	WorkspaceID uuid.UUID
+	ID          uuid.UUID
+	Name        string
+	Spec        []byte
+	Version     string
+	Secrets     []string
+	Revision    int64
+	CreateTime  time.Time
+	UpdateTime  time.Time
+}
+
+type SparkClusterVersion struct {
+	OrgID      uuid.UUID
+	ClusterID  uuid.UUID
+	Version    string
+	Spec       []byte
+	Secrets    []string
+	Provenance string
+	CreateTime time.Time
 }
 
 type StreamSchema struct {

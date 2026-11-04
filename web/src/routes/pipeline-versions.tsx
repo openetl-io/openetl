@@ -101,6 +101,14 @@ export function VersionsTab({ workspace, pipeline, current }: { workspace: strin
               </dd>
             </div>
           ))}
+          {Object.entries(shown.sparkClusters).map(([cluster, version]) => (
+            <div key={cluster} className="grid gap-0.5">
+              <dt className="text-[0.8125rem] text-muted-foreground">Spark cluster {cluster}</dt>
+              <dd>
+                <Digest value={version} />
+              </dd>
+            </div>
+          ))}
         </dl>
         <div className="grid gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
