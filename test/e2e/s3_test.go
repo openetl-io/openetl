@@ -21,11 +21,32 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 	"gocloud.dev/blob"
 
 	"github.com/unsuitable001/openetl/internal/platform/objectstore"
 )
+
+// dropBucket empties an S3 bucket and deletes it, for a test's cleanup.
+// SeaweedFS gives each bucket a volume, and caps their number.
+func dropBucket(t *testing.T, c *s3.Client, bucket string) {
+	ctx := context.Background()
+	pages := s3.NewListObjectsV2Paginator(c, &s3.ListObjectsV2Input{Bucket: &bucket})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			t.Logf("list bucket %s: %v", bucket, err)
+			return
+		}
+		for _, o := range page.Contents {
+			_, _ = c.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: o.Key})
+		}
+	}
+	if _, err := c.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &bucket}); err != nil {
+		t.Logf("delete bucket %s: %v", bucket, err)
+	}
+}
 
 // s3Dest returns a destination spec writing under a new prefix of the S3
 // store's s3-destination bucket, and the bucket at that prefix. It skips the
@@ -46,7 +67,18 @@ func s3Dest(t *testing.T) (string, *blob.Bucket) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = b.Close() })
+	t.Cleanup(func() {
+		ctx := context.Background()
+		it := b.List(nil)
+		for {
+			obj, err := it.Next(ctx)
+			if err != nil {
+				break
+			}
+			_ = b.Delete(ctx, obj.Key)
+		}
+		_ = b.Close()
+	})
 	key := setSecret(t, "openetl")
 	return fmt.Sprintf(`{"connector": "s3", "config": {"url": %q, "endpoint": %q, "region": "us-east-1",
 		"accessKeyId": {"secret": %q}, "secretAccessKey": {"secret": %q}}}`, "s3://s3-destination/"+prefix, s3Endpoint(), key, key), b

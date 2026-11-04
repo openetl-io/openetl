@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 
@@ -64,14 +62,7 @@ func codeInS3(t *testing.T, path string) (string, string) {
 	if _, err := c.CreateBucket(t.Context(), &s3.CreateBucketInput{Bucket: &bucket}); err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
-	// SeaweedFS gives each bucket a volume, and caps their number.
-	t.Cleanup(func() {
-		ctx := context.Background()
-		_, _ = c.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: aws.String("jobs/app.jar")})
-		if _, err := c.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &bucket}); err != nil {
-			t.Logf("delete bucket %s: %v", bucket, err)
-		}
-	})
+	t.Cleanup(func() { dropBucket(t, c, bucket) })
 	st, err := objectstore.Open(t.Context(), "s3://"+bucket+endpoint)
 	if err != nil {
 		t.Fatal(err)

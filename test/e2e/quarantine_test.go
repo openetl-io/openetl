@@ -49,6 +49,7 @@ func TestQuarantineInObjectStorage(t *testing.T) {
 			if _, err := c.CreateBucket(t.Context(), &s3.CreateBucketInput{Bucket: &bucket}); err != nil {
 				t.Fatalf("create bucket: %v", err)
 			}
+			t.Cleanup(func() { dropBucket(t, c, bucket) })
 			return storage
 		}},
 		{"gs", func(t *testing.T, bucket string) string {
