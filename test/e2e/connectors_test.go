@@ -243,6 +243,43 @@ func TestConnectorPackages(t *testing.T) {
 		t.Errorf("a pipeline into an image-only destination: %v", err)
 	}
 
+	// A descriptor with every field round-trips through package and Apply,
+	// and the runner runs its binary, though the role has an image too.
+	full := "acme/" + unique("full")
+	exe := filepath.Join(env.connectors, "destination-postgres")
+	doc, err = connectorhost.Package(t.Context(), full, "1.0.0", spec.Info{
+		Description: "Every field", License: "MIT", Repository: first, Docs: first + "#readme", Author: "Acme",
+		Logo: "https://example.com/logo.svg", Tags: []string{"test"}, ReleaseTag: "full/v1.0.0", ReleaseURL: first + "/releases/tag/full/v1.0.0",
+	}, map[string]connectorhost.PackageRole{
+		"destination": {
+			Executables: []connectorhost.Executable{{Platform: connectorhost.Platform(), Path: exe, URL: env.downloads + "/destination-postgres"}},
+			Image:       &spec.Image{Ref: "ghcr.io/acme/full", Digest: "sha256:" + strings.Repeat("5", 64), Platforms: []string{"linux/amd64", "linux/arm64"}, Command: []string{"/connector"}, Attestation: "https://example.com/attestation"},
+			Resources:   spec.Resources{CPU: "500m", Memory: "256Mi", Disk: "1Gi"},
+			State:       &spec.State{Version: 2, Reads: 1},
+			Platform:    "0.0.1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply(t, string(doc))
+	stored, err := query[string](t, `SELECT convert_from(a.content, 'UTF8') FROM connector_roles r JOIN artifacts a USING (org_id, digest) WHERE r.name = $1`, full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"attestation"`, `"command"`, `"resources"`, `"state"`, `"platform":"0.0.1"`, `"tags"`, `"license"`, `"docs"`} {
+		if !strings.Contains(stored, field) {
+			t.Errorf("the stored descriptor has no %s: %s", field, stored)
+		}
+	}
+	runs := unique("full")
+	docs = pipelineDocs(runs, `{"seed": 2, "count": 20}`, `{"require": "at_least_once"}`)
+	docs[1] = destinationDoc(runs, fmt.Sprintf(`{"connector": "%s@1.0", "config": {"dsn": {"secret": "e2e-dsn"}}}`, full))
+	apply(t, docs...)
+	if status, stats := waitSync(t, runs, 60*time.Second); status != "succeeded" {
+		t.Errorf("a sync into the full descriptor's destination: %s %s", status, stats)
+	}
+
 	legacy := unique("legacy")
 	v1alpha1 := func(role string) string {
 		exe := filepath.Join(env.connectors, role+"-postgres")
