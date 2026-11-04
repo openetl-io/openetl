@@ -172,13 +172,35 @@ func TestStagedEpochs(t *testing.T) {
 		want = []string{
 			"hand 1/2 s 1", "files 1/2 s 1/2/s/part-00000.parquet", "recover 1/2 mine in 2", "flush 1/2",
 			"sweep 1/2 in 2",
-			"hand 2/3 s 1", "files 2/3 s 2/3/s/part-00000.parquet", "precommit 2/3",
-			"drop 1/2", "commit 2/3 mine", "flush 2/3",
 		}
-		if !slices.Equal(got, want) {
-			t.Fatalf("the second attempt:\n got %s\nwant %s", strings.Join(got, "\n     "), strings.Join(want, "\n     "))
+		if !slices.Equal(got[:min(len(got), len(want))], want) {
+			t.Fatalf("the second attempt's recovery:\n got %s\nwant %s", strings.Join(got, "\n     "), strings.Join(want, "\n     "))
+		}
+		// Epoch 3 commits while the next can already be pre-committed, and the
+		// source's completion may need an empty epoch 4, so only these orders
+		// are fixed.
+		inOrder(t, got, "hand 2/3 s 1", "files 2/3 s 2/3/s/part-00000.parquet", "precommit 2/3", "drop 1/2", "commit 2/3 mine", "flush 2/3")
+		if slices.Contains(got, "precommit 2/4") {
+			// It staged nothing, so it gets no files, and its record drops epoch 3's.
+			inOrder(t, got, "precommit 2/4", "drop 2/3", "commit 2/4 mine")
+			if slices.ContainsFunc(got, func(c string) bool { return strings.HasPrefix(c, "hand 2/4") || c == "flush 2/4" }) {
+				t.Errorf("an epoch that staged nothing was handed over or flushed: %v", got)
+			}
 		}
 	})
+}
+
+// inOrder checks that log holds each of calls, in that order.
+func inOrder(t *testing.T, log []string, calls ...string) {
+	t.Helper()
+	last := -1
+	for _, call := range calls {
+		i := slices.Index(log, call)
+		if i <= last {
+			t.Fatalf("%q isn't after %v in:\n     %s", call, calls[:max(0, slices.Index(calls, call))], strings.Join(log, "\n     "))
+		}
+		last = i
+	}
 }
 
 func equalFiles(a, b map[string][]checkpoint.StagedFile) bool {
