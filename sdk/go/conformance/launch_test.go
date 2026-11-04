@@ -106,15 +106,19 @@ func TestAttach(t *testing.T) {
 	exe := conformance.Build(t, "./testdata/both")
 	for _, addr := range []string{"tcp://127.0.0.1:" + freePort(t), "unix://" + filepath.Join(shortTemp(t), "c.sock")} {
 		var cmd *exec.Cmd
+		started := make(chan error, 1)
 		p, err := conformance.Attach(addr, conformance.Options{Role: "source"}, func(env []string) {
 			cmd = exec.CommandContext(t.Context(), exe)
 			cmd.Env = append(os.Environ(), env...)
 			go func() {
 				time.Sleep(300 * time.Millisecond)
-				_ = cmd.Start()
+				started <- cmd.Start()
 			}()
 		})(t.Context(), nil)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := <-started; err != nil {
 			t.Fatal(err)
 		}
 		if rec := readLaunch(t, p); rec["addr"] != addr {
