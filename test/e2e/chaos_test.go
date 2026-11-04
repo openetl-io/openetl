@@ -51,8 +51,13 @@ type chaosConfig struct {
 	i    int
 	seed uint64
 	// cdc, incremental or kafka.
-	source     string
+	source string
+	// postgres, iceberg or kafka.
+	dest       string
 	continuous bool
+	// "", flink or spark.
+	transform   string
+	parallelism int
 	// merge or append.
 	write    string
 	scope    string
@@ -74,33 +79,76 @@ const (
 	faultSource      = "kill source"
 	faultDestination = "kill destination"
 	faultPartition   = "partition runner"
+	faultDriver      = "kill Spark driver"
+	faultTaskManager = "kill Flink TaskManager"
+	faultJobManager  = "kill Flink JobManager"
 )
 
 func drawConfig(seed uint64, i int) chaosConfig {
 	rng := rand.New(rand.NewPCG(seed, uint64(i)))
 	pick := func(xs ...string) string { return xs[rng.IntN(len(xs))] }
-	c := chaosConfig{i: i, seed: seed, source: pick("cdc", "incremental", "kafka")}
+	c := chaosConfig{i: i, seed: seed, source: pick("cdc", "incremental", "kafka"), dest: pick("postgres", "postgres", "iceberg", "kafka")}
 	c.continuous = c.source != "incremental" && rng.IntN(2) == 0
+	// A transform takes the mode it needs: Flink's is continuous, over
+	// sources that replay exactly; Spark's scheduled. A run drawn with one
+	// that isn't set up keeps the mode and goes without.
+	switch pick("", "", "", "", "flink", "spark") {
+	case "flink":
+		c.transform, c.continuous, c.parallelism = "flink", true, 1+rng.IntN(2)
+		if c.source == "incremental" {
+			c.source = "cdc"
+		}
+	case "spark":
+		c.transform, c.continuous = "spark", false
+	}
+	// Kafka only appends, and neither Kafka nor Iceberg dedupes, so a
+	// superset stream is merged into Iceberg.
+	if c.source == "incremental" && c.dest == "kafka" {
+		c.dest = "iceberg"
+	}
 	c.write = "append"
-	if c.source != "kafka" && rng.IntN(2) == 0 {
+	if c.source != "kafka" && c.dest != "kafka" && rng.IntN(2) == 0 {
+		c.write = "merge"
+	}
+	if c.source == "incremental" && (c.dest == "iceberg" || c.transform == "spark") {
 		c.write = "merge"
 	}
 	c.scope = pick("pipeline", "stream")
+	if c.dest == "kafka" {
+		c.scope = "pipeline"
+	}
 	c.interval = pick("1s", "2s", "3s")
 	if !c.continuous {
 		c.every = pick("5s", "10s", "20s")
 		c.maxBytes = pick("", "8KB", "64KB")
 	}
+	// Spark's runners keep their checkpoints in a directory, without the
+	// proxy that crashes them at the protocol's steps and adds noise.
 	for range rng.IntN(4) {
-		c.faults = append(c.faults, "crash "+pick(crashPoints...))
+		if p := pick(crashPoints...); c.transform != "spark" {
+			c.faults = append(c.faults, "crash "+p)
+		}
 	}
-	for range rng.IntN(3) {
-		c.faults = append(c.faults, pick(faultKill, faultKill, faultDrain, faultEngine, faultSource, faultDestination))
+	faults := []string{faultKill, faultKill, faultDrain, faultEngine, faultSource, faultDestination}
+	switch c.transform {
+	case "spark":
+		faults = append(faults, faultDriver, faultDriver, faultDriver)
+	case "flink":
+		faults = append(faults, faultTaskManager, faultTaskManager, faultJobManager)
+	}
+	n := rng.IntN(3)
+	if c.transform != "" {
+		n++
+	}
+	for range n {
+		c.faults = append(c.faults, pick(faults...))
 	}
 	if rng.IntN(4) == 0 {
 		c.faults = append(c.faults, faultPartition)
 	}
-	c.noise = []float64{0, 0, 0.01, 0.03}[rng.IntN(4)]
+	if c.noise = []float64{0, 0, 0.01, 0.03}[rng.IntN(4)]; c.transform == "spark" {
+		c.noise = 0
+	}
 	return c
 }
 
@@ -109,7 +157,23 @@ func (c chaosConfig) name() string {
 	if c.continuous {
 		mode = "continuous"
 	}
-	return fmt.Sprintf("%s-%s-%s-%s", c.source, mode, c.write, c.scope)
+	name := fmt.Sprintf("%s-%s-%s-%s-%s", c.source, mode, c.write, c.scope, c.dest)
+	if c.transform != "" {
+		name += "-" + c.transform
+	}
+	return name
+}
+
+// writing is how long the run changes its source. A transform's first sync
+// takes a while, and the run writes nothing until it has landed.
+func (c chaosConfig) writing() time.Duration {
+	if c.writeFor > 0 {
+		return c.writeFor
+	}
+	if c.transform != "" {
+		return 2 * *chaosWrite
+	}
+	return *chaosWrite
 }
 
 func (c chaosConfig) String() string {
@@ -123,7 +187,7 @@ func (c chaosConfig) String() string {
 	return fmt.Sprintf("%s %s noise=%v faults=[%s]", c.name(), commit, c.noise, strings.Join(c.faults, ", "))
 }
 
-func (c chaosConfig) pipelineDoc(name, pipeSource, pipeDest string) string {
+func (c chaosConfig) pipelineDoc(name, pipeSource, pipeDest string, transform map[string]any, dataPlane string) string {
 	src, dst := map[string]any{}, map[string]any{}
 	_ = json.Unmarshal([]byte(pipeSource), &src)
 	_ = json.Unmarshal([]byte(pipeDest), &dst)
@@ -143,12 +207,26 @@ func (c chaosConfig) pipelineDoc(name, pipeSource, pipeDest string) string {
 	} else {
 		spec["schedule"] = map[string]string{"every": c.every}
 	}
+	if transform != nil {
+		spec["transform"] = transform
+	}
+	if dataPlane != "" {
+		spec["dataPlane"] = dataPlane
+	}
 	return mustJSON(map[string]any{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": map[string]string{"name": name}, "spec": spec})
 }
 
 type chaosSuite struct {
 	pool *chaosPool
 	book *faultBook
+	// Set up when compose runs them. Spark's runs go to a pool of their own.
+	flink, spark *transformSetup
+	sparkPool    *chaosPool
+	// Runs with a transform wait for one of these. The compose Spark worker
+	// fits one application, and the Flink TaskManager four slots.
+	sparkRuns, flinkRuns chan struct{}
+	// Held while a Flink container is down.
+	cluster sync.Mutex
 
 	mu       sync.Mutex
 	results  []runResult
@@ -179,7 +257,7 @@ func TestChaos(t *testing.T) {
 	sem := make(chan struct{}, *chaosParallel)
 	t.Run("runs", func(t *testing.T) {
 		for i := range *chaosRuns {
-			cfg := drawConfig(seed, i)
+			cfg := s.setUp(drawConfig(seed, i))
 			if *chaosOnly != "" && !slices.ContainsFunc(strings.Split(*chaosOnly, ","), func(s string) bool { return strings.Contains(cfg.name(), s) }) {
 				continue
 			}
@@ -201,16 +279,23 @@ func TestChaos(t *testing.T) {
 func TestChaosChecks(t *testing.T) {
 	s := newChaosSuite(t, 1, 1)
 	kinds := []chaosConfig{
-		{source: "cdc", continuous: true, write: "merge"},
-		{source: "cdc", continuous: true, write: "append"},
-		{source: "incremental", write: "merge"},
-		{source: "incremental", write: "append"},
-		{source: "kafka", write: "append"},
+		{source: "cdc", continuous: true, write: "merge", dest: "postgres"},
+		{source: "cdc", continuous: true, write: "append", dest: "postgres"},
+		{source: "incremental", write: "merge", dest: "postgres"},
+		{source: "incremental", write: "append", dest: "postgres"},
+		{source: "kafka", write: "append", dest: "postgres"},
+		{source: "cdc", continuous: true, write: "merge", dest: "iceberg"},
+		{source: "cdc", continuous: true, write: "append", dest: "kafka"},
+		{source: "incremental", write: "merge", dest: "iceberg"},
+		{source: "kafka", write: "append", dest: "iceberg"},
 	}
 	for i, c := range kinds {
 		for _, plant := range []string{plantLoss, plantExtra} {
 			c := c
 			c.i, c.seed, c.plant, c.scope, c.interval, c.writeFor = i, 1, plant, "stream", "1s", 5*time.Second
+			if c.dest == "kafka" {
+				c.scope = "pipeline"
+			}
 			if !c.continuous {
 				c.every = "5s"
 			}
@@ -238,28 +323,60 @@ func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 		t.Fatalf("create bucket: %v", err)
 	}
 	t.Cleanup(func() { dropBucket(t, c, bucket) })
-	s := &chaosSuite{book: newFaultBook(seed)}
+	s := &chaosSuite{book: newFaultBook(seed), sparkRuns: make(chan struct{}, 1), flinkRuns: make(chan struct{}, 2)}
+	s.flink, s.spark = setupFlink(t), setupSpark(t)
 	ctx, stop := context.WithCancel(context.Background())
-	s.pool = startPool(ctx, t, runners, bucket, *chaosLogs, s.book)
+	s.pool = startPool(ctx, t, poolConfig{runners: runners, bucket: bucket, dataPlane: "default", token: env.runnerToken, bridge: s.flink != nil}, *chaosLogs, s.book)
+	if s.spark != nil {
+		s.sparkPool = s.startSparkPool(ctx, t, runners)
+	}
 	t.Cleanup(stop)
 	return s
+}
+
+// poolFor is the pool whose runners run c's pipeline.
+func (s *chaosSuite) poolFor(c chaosConfig) *chaosPool {
+	if c.transform == "spark" {
+		return s.sparkPool
+	}
+	return s.pool
+}
+
+// setUp drops a transform the suite has no cluster for.
+func (s *chaosSuite) setUp(c chaosConfig) chaosConfig {
+	if c.transform == "flink" && s.flink == nil || c.transform == "spark" && s.spark == nil {
+		c.transform = ""
+		c.faults = slices.DeleteFunc(c.faults, func(f string) bool {
+			return f == faultDriver || f == faultTaskManager || f == faultJobManager
+		})
+	}
+	return c
 }
 
 func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	t.Logf("config: %s", c)
 	rng := rand.New(rand.NewPCG(c.seed, uint64(c.i)<<32|0xc4a05))
 	name := unique("chaos-" + c.source)
+	switch c.transform {
+	case "spark":
+		s.sparkRuns <- struct{}{}
+		defer func() { <-s.sparkRuns }()
+	case "flink":
+		s.flinkRuns <- struct{}{}
+		defer func() { <-s.flinkRuns }()
+	}
 	var w workload
 	if c.source == "kafka" {
-		w = newKafkaWork(t, name)
+		w = newKafkaWork(t, c, name)
 	} else {
 		w = newPGWork(t, c, name)
 	}
 	src, dst, pipeSource, pipeDest := w.docs()
+	transform, dataPlane := s.transformSpec(c)
 	apply(t,
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
-		c.pipelineDoc(name, pipeSource, pipeDest))
+		c.pipelineDoc(name, pipeSource, pipeDest, transform, dataPlane))
 	pipeline := mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
 	s.book.add(pipeline, c.noise)
 	res := runResult{c: c}
@@ -282,7 +399,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		}
 	})
 
-	writeCtx, stopWrite := context.WithTimeout(t.Context(), cmp.Or(c.writeFor, *chaosWrite))
+	writeCtx, stopWrite := context.WithTimeout(t.Context(), c.writing())
 	defer stopWrite()
 	var faults sync.WaitGroup
 	faults.Go(func() { s.inject(writeCtx, t.Context(), c, rng, pipeline) })
@@ -356,7 +473,7 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 	}
 	var events []event
 	for _, f := range c.faults {
-		write := cmp.Or(c.writeFor, *chaosWrite)
+		write := c.writing()
 		events = append(events, event{at: write/10 + upTo(rng, write*8/10), fault: f})
 	}
 	slices.SortFunc(events, func(a, b event) int { return cmp.Compare(a.at, b.at) })
@@ -373,7 +490,16 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 			s.book.arm(pipeline, point)
 			continue
 		}
-		sl, engine := s.locate(base, pipeline)
+		switch e.fault {
+		case faultDriver, faultTaskManager, faultJobManager:
+			if s.clusterFault(base, &partitions, e.fault, rng, pipeline) {
+				s.book.count(pipeline, e.fault)
+			} else {
+				s.book.count(pipeline, "missed "+e.fault)
+			}
+			continue
+		}
+		sl, engine := s.locate(base, s.poolFor(c), pipeline)
 		if sl == nil {
 			s.book.count(pipeline, "missed "+e.fault)
 			continue
@@ -403,12 +529,42 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 
 func kill(pid int) bool { return pid > 0 && syscall.Kill(pid, syscall.SIGKILL) == nil }
 
+// clusterFault kills the pipeline's Spark driver, or takes a Flink
+// container down for a few seconds in the background. A driver waits up to
+// 30 seconds for the pipeline's next sync.
+func (s *chaosSuite) clusterFault(ctx context.Context, bg *sync.WaitGroup, fault string, rng *rand.Rand, pipeline string) bool {
+	switch fault {
+	case faultDriver:
+		for deadline := time.Now().Add(30 * time.Second); ctx.Err() == nil && time.Now().Before(deadline); pause(ctx, 500*time.Millisecond) {
+			if killDriver(pipeline) {
+				return true
+			}
+		}
+		return false
+	case faultTaskManager, faultJobManager:
+		service := "flink-taskmanager"
+		if fault == faultJobManager {
+			service = "flink-jobmanager"
+		}
+		if !s.cluster.TryLock() {
+			return false
+		}
+		seed := rng.Uint64()
+		bg.Go(func() {
+			defer s.cluster.Unlock()
+			downFor(ctx, service, rand.New(rand.NewPCG(seed, 0)))
+		})
+		return true
+	}
+	return false
+}
+
 // locate waits up to 30 seconds, long enough for a scheduled pipeline's
-// next sync, for a runner with a live engine for the pipeline, and returns
-// its slot and the engine's PID.
-func (s *chaosSuite) locate(ctx context.Context, pipeline string) (*slot, int) {
+// next sync, for a runner of the pool with a live engine for the pipeline,
+// and returns its slot and the engine's PID.
+func (s *chaosSuite) locate(ctx context.Context, pool *chaosPool, pipeline string) (*slot, int) {
 	for deadline := time.Now().Add(30 * time.Second); ctx.Err() == nil && time.Now().Before(deadline); pause(ctx, 250*time.Millisecond) {
-		for _, sl := range s.pool.slots {
+		for _, sl := range pool.slots {
 			if pid := sl.engine(pipeline); pid > 0 && syscall.Kill(pid, 0) == nil {
 				return sl, pid
 			}
@@ -468,19 +624,23 @@ func (s *chaosSuite) report(t *testing.T, seed uint64) {
 		settles = append(settles, r.settle)
 	}
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
-		fmt.Fprintf(&b, "  %-40s %4d runs, %d failed\n", name, byName[name][0], byName[name][1])
+		fmt.Fprintf(&b, "  %-52s %4d runs, %d failed\n", name, byName[name][0], byName[name][1])
 	}
 	b.WriteString("faults:\n")
 	for _, k := range slices.Sorted(maps.Keys(faults)) {
 		fmt.Fprintf(&b, "  %-30s %d\n", k, faults[k])
 	}
 	started := 0
-	for _, sl := range s.pool.slots {
+	slots := s.pool.slots
+	if s.sparkPool != nil {
+		slots = append(slices.Clone(slots), s.sparkPool.slots...)
+	}
+	for _, sl := range slots {
 		sl.mu.Lock()
 		started += sl.started
 		sl.mu.Unlock()
 	}
-	fmt.Fprintf(&b, "changes checked: %d\nrunners started: %d in %d slots\n", changes, started, len(s.pool.slots))
+	fmt.Fprintf(&b, "changes checked: %d\nrunners started: %d in %d slots\n", changes, started, len(slots))
 	fmt.Fprintf(&b, "continuous jobs resuming after their runner was killed: %s\n", quantiles(resumes))
 	fmt.Fprintf(&b, "settling after the writes stopped: %s\n", quantiles(settles))
 	if len(failed) > 0 {

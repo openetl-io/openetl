@@ -21,8 +21,8 @@ import (
 // a workload makes is also written to its truth table, in the same
 // transaction where the source is Postgres.
 type workload interface {
-	// docs are the run's Source and Destination, and its pipeline's source
-	// and destination settings.
+	// docs are the run's Source and Destination specs, and its pipeline's
+	// source and destination settings.
 	docs() (src, dst, pipeSource, pipeDest string)
 	// loaded reports whether what the source held before the pipeline
 	// started has landed. A run writes no more until it has.
@@ -55,6 +55,7 @@ var chaosTables = []string{"a", "b"}
 type pgWork struct {
 	c              chaosConfig
 	in, out, truth string
+	dest           *chaosDest
 	next           map[string]int64
 	live           map[string]*idSet
 	deletes, incr  bool
@@ -89,6 +90,7 @@ func newPGWork(t *testing.T, c chaosConfig, name string) *pgWork {
 		}
 	}
 	run(t, qs...)
+	w.dest = newChaosDest(t, c.dest, w.out, chaosTables)
 	return w
 }
 
@@ -108,7 +110,7 @@ func (w *pgWork) docs() (src, dst, pipeSource, pipeDest string) {
 		cfg["publication"], cfg["snapshotChunkRows"] = w.in, 50
 	}
 	return mustJSON(map[string]any{"connector": "postgres", "config": cfg}),
-		`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`,
+		w.dest.spec,
 		mustJSON(map[string]any{"streams": streams}),
 		mustJSON(map[string]string{"namespace": w.out, "write": w.c.write})
 }
@@ -123,6 +125,9 @@ func mustJSON(v any) string {
 
 func (w *pgWork) loaded(t *testing.T) bool {
 	t.Helper()
+	if w.dest.refresh(t.Context()) != nil {
+		return false
+	}
 	for _, tbl := range chaosTables {
 		n, err := query[int](t, "SELECT count(*) FROM "+pgx.Identifier{w.out, tbl}.Sanitize())
 		if err != nil || n < preloaded {
@@ -199,6 +204,9 @@ func pause(ctx context.Context, d time.Duration) {
 
 func (w *pgWork) check(t *testing.T) (missing, extra int, detail string) {
 	t.Helper()
+	if err := w.dest.refresh(t.Context()); err != nil {
+		return 1, 0, "the destination: " + err.Error()
+	}
 	var details []string
 	for _, tbl := range chaosTables {
 		in, out := pgx.Identifier{w.in, tbl}.Sanitize(), pgx.Identifier{w.out, tbl}.Sanitize()
@@ -243,14 +251,14 @@ func (w *pgWork) plant(t *testing.T, what string) {
 	out, in := pgx.Identifier{w.out, chaosTables[0]}.Sanitize(), pgx.Identifier{w.in, chaosTables[0]}.Sanitize()
 	switch {
 	case what == plantLoss && w.incr:
-		run(t, "DELETE FROM "+out+" WHERE (id, v) IN (SELECT id, v FROM "+in+" LIMIT 1)")
+		w.dest.exec(t, "DELETE FROM "+out+" WHERE (id, v) IN (SELECT id, v FROM "+in+" LIMIT 1)")
 	case what == plantLoss:
-		run(t, "DELETE FROM "+out+" WHERE ctid = (SELECT ctid FROM "+out+" WHERE "+w.notDeleted+" LIMIT 1)")
+		w.dest.exec(t, "DELETE FROM "+out+" WHERE ctid = (SELECT ctid FROM "+out+" WHERE "+w.notDeleted+" LIMIT 1)")
 	case w.c.write == "merge":
 		// Its keys are unique, so a row that was never in the source.
-		run(t, "UPDATE "+out+" SET id = -id WHERE id = (SELECT id FROM "+out+" WHERE "+w.notDeleted+" LIMIT 1)")
+		w.dest.exec(t, "UPDATE "+out+" SET id = -id WHERE id = (SELECT id FROM "+out+" WHERE "+w.notDeleted+" LIMIT 1)")
 	default:
-		run(t, "INSERT INTO "+out+" SELECT * FROM "+out+" LIMIT 1")
+		w.dest.exec(t, "INSERT INTO "+out+" SELECT * FROM "+out+" LIMIT 1")
 	}
 }
 
@@ -274,6 +282,7 @@ func counts(t *testing.T, q string) (int, int, error) {
 
 func (w *pgWork) drop(t *testing.T) {
 	t.Helper()
+	w.dest.drop()
 	conn, err := pgx.Connect(context.Background(), env.dbURL)
 	if err != nil {
 		return
@@ -287,13 +296,14 @@ func (w *pgWork) drop(t *testing.T) {
 
 type kafkaWork struct {
 	out, truth string
+	dest       *chaosDest
 	topics     []string
 	versions   map[string]map[int64]int64
 	next       map[string]int64
 	cl         *kgo.Client
 }
 
-func newKafkaWork(t *testing.T, name string) *kafkaWork {
+func newKafkaWork(t *testing.T, c chaosConfig, name string) *kafkaWork {
 	t.Helper()
 	sch := schema(name)
 	w := &kafkaWork{out: sch + "_out", truth: sch + "_truth", versions: map[string]map[int64]int64{}, next: map[string]int64{}}
@@ -323,6 +333,7 @@ func newKafkaWork(t *testing.T, name string) *kafkaWork {
 	if err := w.produce(t.Context(), recs, rows); err != nil {
 		t.Fatal(err)
 	}
+	w.dest = newChaosDest(t, c.dest, w.out, w.topics)
 	return w
 }
 
@@ -348,7 +359,7 @@ func (w *kafkaWork) produce(ctx context.Context, recs []*kgo.Record, rows [][]an
 
 func (w *kafkaWork) docs() (src, dst, pipeSource, pipeDest string) {
 	return mustJSON(map[string]any{"connector": "kafka", "config": map[string]any{"brokers": []string{kafkaBrokers()}, "topics": w.topics}}),
-		`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`,
+		w.dest.spec,
 		`{}`,
 		mustJSON(map[string]string{"namespace": w.out, "write": "append"})
 }
@@ -381,6 +392,9 @@ func (w *kafkaWork) write(ctx context.Context, rng *rand.Rand) error {
 
 func (w *kafkaWork) check(t *testing.T) (missing, extra int, detail string) {
 	t.Helper()
+	if err := w.dest.refresh(t.Context()); err != nil {
+		return 1, 0, "the destination: " + err.Error()
+	}
 	var details []string
 	for _, topic := range w.topics {
 		out := pgx.Identifier{w.out, topic}.Sanitize()
@@ -405,9 +419,9 @@ func (w *kafkaWork) plant(t *testing.T, what string) {
 	t.Helper()
 	out := pgx.Identifier{w.out, w.topics[0]}.Sanitize()
 	if what == plantLoss {
-		run(t, "DELETE FROM "+out+" WHERE ctid = (SELECT ctid FROM "+out+" LIMIT 1)")
+		w.dest.exec(t, "DELETE FROM "+out+" WHERE ctid = (SELECT ctid FROM "+out+" LIMIT 1)")
 	} else {
-		run(t, "INSERT INTO "+out+" SELECT * FROM "+out+" LIMIT 1")
+		w.dest.exec(t, "INSERT INTO "+out+" SELECT * FROM "+out+" LIMIT 1")
 	}
 }
 
@@ -421,6 +435,7 @@ func (w *kafkaWork) drop(t *testing.T) {
 	t.Helper()
 	_, _ = kadm.NewClient(w.cl).DeleteTopics(context.Background(), w.topics...)
 	w.cl.Close()
+	w.dest.drop()
 	conn, err := pgx.Connect(context.Background(), env.dbURL)
 	if err != nil {
 		return

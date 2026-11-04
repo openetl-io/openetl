@@ -3,10 +3,12 @@
 package e2e
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,11 +24,12 @@ import (
 	"time"
 )
 
-// chaosPool keeps a runner going in each slot. Each slot reaches the object
-// store, Temporal and the API through proxies of its own: the store's
-// injects the faults runs arm, and the others partition it. A runner that
+// chaosPool keeps a runner going in each slot. Each slot reaches Temporal
+// and the API through proxies of its own, which partition it, and an S3
+// store through a third, which injects the faults runs arm. A runner that
 // dies is started again after a pause.
 type chaosPool struct {
+	cfg   poolConfig
 	store string
 	logs  string
 	slots []*slot
@@ -34,34 +37,65 @@ type chaosPool struct {
 	wg    sync.WaitGroup
 }
 
+type poolConfig struct {
+	runners int
+	// The first slot's index. Indices are unique across a suite's pools.
+	first int
+	// Checkpoints go to bucket, through each slot's proxy, or else to the
+	// directory dir.
+	bucket, dir      string
+	dataPlane, token string
+	// Runners take Flink jobs' bridge connections.
+	bridge      bool
+	sparkSubmit string
+}
+
 type slot struct {
 	i             int
 	pool          *chaosPool
 	s3            *s3Proxy
 	temporal, api *proxy
-	mu            sync.Mutex
-	cur           *runner
-	started       int
+	// The port the runner's bridge listens on, or 0.
+	bridge  int
+	mu      sync.Mutex
+	cur     *runner
+	started int
 }
 
-func startPool(ctx context.Context, t *testing.T, n int, bucket, logs string, book *faultBook) *chaosPool {
+func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, book *faultBook) *chaosPool {
 	t.Helper()
-	p := &chaosPool{logs: logs, book: book}
+	p := &chaosPool{cfg: cfg, logs: logs, book: book}
 	target, err := url.Parse(s3Endpoint())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range n {
-		s := &slot{i: i, pool: p, temporal: startProxy(t, env.temporal), api: startProxy(t, strings.TrimPrefix(env.apiURL, "http://"))}
-		s.s3 = startS3Proxy(t, s, target)
+	for i := range cfg.runners {
+		s := &slot{i: cfg.first + i, pool: p, temporal: startProxy(t, env.temporal), api: startProxy(t, strings.TrimPrefix(env.apiURL, "http://"))}
+		if cfg.bucket != "" {
+			s.s3 = startS3Proxy(t, s, target)
+		}
+		if cfg.bridge {
+			s.bridge = freePort(t)
+		}
 		p.slots = append(p.slots, s)
 	}
-	p.store = "s3://" + bucket + "?endpoint="
+	p.store = "s3://" + cfg.bucket + "?endpoint="
 	for _, s := range p.slots {
 		p.wg.Go(func() { s.supervise(ctx) })
 	}
 	t.Cleanup(p.wg.Wait)
 	return p
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // supervise starts the slot's runner, and starts it again 1 to 5 seconds
@@ -92,12 +126,24 @@ func (s *slot) supervise(ctx context.Context) {
 }
 
 func (s *slot) start() (*runner, error) {
+	cfg := s.pool.cfg
+	store := cfg.dir
+	if s.s3 != nil {
+		store = s.pool.store + url.QueryEscape("http://"+s.s3.addr())
+	}
 	args := []string{"runner",
 		"--api-url", "http://" + s.api.addr(), "--temporal-address", s.temporal.addr(), "--temporal-namespace", env.ns,
-		"--checkpoints", s.pool.store + url.QueryEscape("http://"+s.s3.addr()),
+		"--data-plane", cfg.dataPlane, "--checkpoints", store,
 		"--engine", env.engine, "--cache", env.cache, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--log-format", "text"}
+	if s.bridge > 0 {
+		host := cmp.Or(os.Getenv("OPENETL_TEST_BRIDGE_HOST"), "0.0.0.0")
+		args = append(args, "--bridge-listen", fmt.Sprintf("%s:%d", host, s.bridge), "--bridge-advertise", fmt.Sprintf("host.docker.internal:%d", s.bridge))
+	}
+	if cfg.sparkSubmit != "" {
+		args = append(args, "--spark-submit", cfg.sparkSubmit)
+	}
 	cmd := exec.Command(env.openetld, args...)
-	cmd.Env = append(os.Environ(), "OPENETL_RUNNER_TOKEN="+env.runnerToken)
+	cmd.Env = append(os.Environ(), "OPENETL_RUNNER_TOKEN="+cfg.token)
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
 	if err := cmd.Start(); err != nil {

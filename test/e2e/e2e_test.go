@@ -177,6 +177,12 @@ func setup(m *testing.M) (int, error) {
 	env.apiURL = "http://" + ln.Addr().String()
 	ready := make(chan struct{})
 	done := make(chan error, 1)
+	// Short timeouts, so tests don't wait out production's, unless
+	// OPENETL_E2E_TIMEOUTS=production measures with them.
+	wf := workflows.Workflows{AttemptRetry: time.Second, AttemptHeartbeat: 4 * time.Second, StreamHeartbeat: 4 * time.Second}
+	if os.Getenv("OPENETL_E2E_TIMEOUTS") == "production" {
+		wf = workflows.Workflows{}
+	}
 	go func() {
 		done <- daemon.Run(ctx, daemon.Options{
 			Config: config.Config{
@@ -187,7 +193,7 @@ func setup(m *testing.M) (int, error) {
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
 			Listener:  ln,
 			Ready:     func(string) { close(ready) },
-			Workflows: workflows.Workflows{AttemptRetry: time.Second, AttemptHeartbeat: 4 * time.Second, StreamHeartbeat: 4 * time.Second},
+			Workflows: wf,
 		})
 	}()
 	select {
