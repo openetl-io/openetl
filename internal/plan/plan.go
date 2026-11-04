@@ -247,6 +247,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 
 	var plans []*apiv1.StreamPlan
 	var ds []delivery.Stream
+	var inputs []Input
 	merges := false
 	for _, s := range streams {
 		name := s.cs.GetName()
@@ -263,6 +264,10 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 			problems = append(problems, fmt.Errorf("stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", name))
 		}
 		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
+		if spec.GetTransform() != nil {
+			inputs = append(inputs, Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: replay(s.cs.GetReplay()), Spec: s.ps})
+			continue
+		}
 		mode := StreamMode(spec, caps, read, len(s.cs.GetPrimaryKey()) > 0)
 		merges = merges || mode == destination.Merge
 		if err := SyncProblem(mode, name, read); err != nil {
@@ -276,6 +281,18 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		p := delivery.PlanStream(caps, d, settings.Require)
 		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
 			Write: apiv1.WriteMode(mode)}) //nolint:gosec // small
+	}
+	if spec.GetTransform() != nil {
+		for _, o := range Outputs(spec, caps, inputs) {
+			if err := OutputProblem(o, inputs); err != nil {
+				problems = append(problems, err)
+			}
+			merges = merges || o.Mode == destination.Merge
+			d := o.Delivery()
+			ds = append(ds, d)
+			p := delivery.PlanStream(caps, d, settings.Require)
+			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiv1.WriteMode(o.Mode)}) //nolint:gosec // small
+		}
 	}
 	deletesIgnored(merges || len(streams) == 0 && WriteMode(spec) == destination.Merge)
 	problems = append(problems, delivery.Problems(caps, settings, ds)...)

@@ -71,6 +71,31 @@ func (r *readEnds) endsAt(stream string, epoch uint64) bool {
 	return r.at[stream] == epoch
 }
 
+type readEnder interface {
+	endsAt(stream string, epoch uint64) bool
+}
+
+// lastEnd ends a transform's outputs' reads in the epoch where the last of
+// the inputs read ends.
+type lastEnd struct {
+	ends   *readEnds
+	inputs []string
+}
+
+func (l lastEnd) endsAt(_ string, epoch uint64) bool {
+	l.ends.mu.Lock()
+	defer l.ends.mu.Unlock()
+	last := uint64(0)
+	for _, s := range l.inputs {
+		at, ok := l.ends.at[s]
+		if !ok {
+			return false
+		}
+		last = max(last, at)
+	}
+	return len(l.inputs) > 0 && last == epoch
+}
+
 // sourcePump is the connector's Emitter. It places each requested barrier on
 // every stream right after that stream's next resume point. Only run touches
 // its state.

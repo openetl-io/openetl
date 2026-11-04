@@ -99,9 +99,10 @@ where
                 .map_err(|e| JobError::internal(format!("the Parquet sink failed: {e}")))?
             })
         }
-        (Sink::Staged { url }, None) => Box::pin(write_staged(
+        (Sink::Staged { url, dir }, None) => Box::pin(write_staged(
             plan.clone(),
             url.clone(),
+            dir.clone(),
             rx,
             events.clone(),
             counters.clone(),
@@ -636,11 +637,12 @@ fn write_parquet(
 async fn write_staged(
     plan: Arc<Plan>,
     url: String,
+    dir: String,
     mut rx: mpsc::Receiver<Out>,
     events: Events,
     counters: Arc<Vec<Counters>>,
 ) -> Result<bool, JobError> {
-    let mut staging = Staging::open(&url, plan.generation, plan.first_epoch, &plan.streams)?;
+    let mut staging = Staging::open(&url, &dir, plan.generation, plan.first_epoch, &plan.streams)?;
     let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
     while !align.done() {
         let Some(item) = rx.recv().await else {

@@ -60,8 +60,8 @@ func newReporter(ctx context.Context, api dataplanev1connect.DataPlaneServiceCli
 }
 
 // schemas queues a schema history report without blocking.
-func (r *reporter) schemas(e destination.Epoch, schemas map[string][]byte) {
-	req := &dataplanev1.ReportSchemasRequest{PipelineId: r.pipeline, Generation: e.Generation, Epoch: e.N, Schemas: schemas}
+func (r *reporter) schemas(e destination.Epoch, schemas, outputs map[string][]byte) {
+	req := &dataplanev1.ReportSchemasRequest{PipelineId: r.pipeline, Generation: e.Generation, Epoch: e.N, Schemas: schemas, OutputSchemas: outputs}
 	r.enqueue(report{what: "schema history", epoch: e.N, send: func(ctx context.Context) error {
 		_, err := r.api.ReportSchemas(ctx, connect.NewRequest(req))
 		return err

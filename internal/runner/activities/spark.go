@@ -184,9 +184,12 @@ func (a *Spark) clusterConf(ctx context.Context, pc *dataplanev1.PinnedSparkClus
 	return conf, nil
 }
 
-// pinnedCode is the code copies a pipeline's Spark steps run.
+// pinnedCode is the code copies a pipeline's Spark transform and steps run.
 func pinnedCode(p *apiv1.PipelineSpec) map[string]bool {
 	keep := map[string]bool{}
+	if c := p.GetTransform().GetSpark().GetCode(); c != nil {
+		keep[spark.CodeKey(c.GetSha256(), c.GetJar()+c.GetPython())] = true
+	}
 	for _, s := range p.GetPostSync() {
 		if c := s.GetSpark().GetCode(); c != nil {
 			keep[spark.CodeKey(c.GetSha256(), c.GetJar()+c.GetPython())] = true

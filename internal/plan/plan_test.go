@@ -277,3 +277,52 @@ func TestDiff(t *testing.T) {
 func protojsonUnmarshal(s string, m *apiv1.PipelineSpec) error {
 	return protojson.Unmarshal([]byte(s), m)
 }
+
+func TestTransformOutputs(t *testing.T) {
+	cat := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
+		{Name: "orders", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}},
+		{Name: "events", Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
+	}}
+	spark := func(outputs ...*apiv1.SparkOutput) *apiv1.PipelineSpec {
+		return &apiv1.PipelineSpec{
+			Delivery:  &apiv1.Delivery{Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE},
+			Transform: &apiv1.Transform{Engine: &apiv1.Transform_Spark{Spark: &apiv1.SparkTransform{Outputs: outputs}}},
+		}
+	}
+	// Unset: each input, with its settings; one input is superset and
+	// incremental, so nothing is overwritten or exact.
+	plans, problems, _ := Pipeline(spark(), cat, warehouse)
+	if len(problems) != 0 || len(plans) != 2 || plans[0].GetName() != "orders" || plans[0].GetWrite() != apiv1.WriteMode_WRITE_MODE_APPEND ||
+		plans[0].GetLevel() != apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE || plans[0].GetDedupe() || plans[1].GetName() != "events" {
+		t.Errorf("plans = %v, problems = %v", plans, problems)
+	}
+	merged := spark(&apiv1.SparkOutput{Name: "enriched", PrimaryKey: []string{"order_id"}, Write: apiv1.WriteMode_WRITE_MODE_MERGE, Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE})
+	plans, problems, _ = Pipeline(merged, cat, warehouse)
+	if len(problems) != 0 || len(plans) != 1 || plans[0].GetLevel() != apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE {
+		t.Errorf("plans = %v, problems = %v", plans, problems)
+	}
+	exactly := spark(&apiv1.SparkOutput{Name: "enriched", Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE})
+	if _, problems, _ = Pipeline(exactly, cat, warehouse); len(problems) != 1 || !strings.Contains(problems[0].Error(), "transform.spark.outputs[enriched].require") {
+		t.Errorf("problems = %v", problems)
+	}
+	over := spark(&apiv1.SparkOutput{Name: "orders", Write: apiv1.WriteMode_WRITE_MODE_OVERWRITE})
+	if _, problems, _ = Pipeline(over, cat, warehouse); len(problems) != 1 || !strings.Contains(problems[0].Error(), `stream "events" is read with incremental`) {
+		t.Errorf("problems = %v", problems)
+	}
+	unkeyed := spark(&apiv1.SparkOutput{Name: "totals", Write: apiv1.WriteMode_WRITE_MODE_MERGE})
+	if _, problems, _ = Pipeline(unkeyed, cat, warehouse); len(problems) != 1 || !strings.Contains(problems[0].Error(), "transform.spark.outputs[totals].write") {
+		t.Errorf("problems = %v", problems)
+	}
+
+	// Every input full_refresh and exact: outputs are overwritten, exactly once.
+	refresh := &apiv1.Catalog{Streams: cat.GetStreams()[:1]}
+	exactly.Delivery = nil
+	plans, problems, _ = Pipeline(exactly, refresh, warehouse)
+	if len(problems) != 0 || plans[0].GetWrite() != apiv1.WriteMode_WRITE_MODE_OVERWRITE || plans[0].GetLevel() != apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE {
+		t.Errorf("plans = %v, problems = %v", plans, problems)
+	}
+	cdc := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{{Name: "orders", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_CDC}}}}
+	if plans, _, _ = Pipeline(spark(), cdc, warehouse); plans[0].GetWrite() != apiv1.WriteMode_WRITE_MODE_MERGE {
+		t.Errorf("a keyed output of a cdc input is merged: %v", plans)
+	}
+}

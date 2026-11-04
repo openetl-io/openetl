@@ -290,3 +290,42 @@ func TestWarnings(t *testing.T) {
 		t.Errorf("parquet: %v", w)
 	}
 }
+
+func TestTransformed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		caps   destination.Capabilities
+		s      Stream
+		want   Level
+		dedupe destination.Dedupe
+	}{
+		{"exact inputs", postgres, Stream{Replay: source.Exact, Mode: destination.Append, Keyed: true}, ExactlyOnce, none},
+		{"superset inputs", postgres, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true}, AtLeastOnce, none},
+		{"superset inputs, unkeyed, collapse", postgres, Stream{Replay: source.Superset, Mode: destination.Append, Collapse: ptr(true)}, AtLeastOnce, none},
+		{"superset inputs, merge", postgres, Stream{Replay: source.Superset, Mode: destination.Merge, Keyed: true}, EffectivelyOnce, none},
+		{"superset inputs, kafka", kafka, Stream{Replay: source.Superset, Mode: destination.Append}, AtLeastOnce, none},
+		{"exact inputs, kafka", kafka, Stream{Replay: source.Exact, Mode: destination.Append}, ExactlyOnce, none},
+		{"exact inputs, webhook", webhook, Stream{Replay: source.Exact, Mode: destination.Append}, AtLeastOnce, none},
+	} {
+		tc.s.Name, tc.s.Transformed = "out", true
+		p := PlanStream(tc.caps, tc.s, ExactlyOnce)
+		if p.Level != tc.want || p.Dedupe != tc.dedupe || p.Collapse {
+			t.Errorf("%s: plan = %+v, want %v and %v", tc.name, p, tc.want, tc.dedupe)
+		}
+	}
+	out := Stream{Name: "out", Replay: source.Exact, Mode: destination.Append, Keyed: true, Transformed: true}
+	if CanForce(postgres, out, ExactlyOnce) || !CanForce(postgres, out, AtLeastOnce) {
+		t.Error("a forced barrier makes an output over exact inputs at least once")
+	}
+	if Dedupe(postgres, out, ExactlyOnce, true) != none {
+		t.Error("an output is never deduped")
+	}
+	err := Check(postgres, Settings{Require: ExactlyOnce, Scope: destination.ScopeStream},
+		[]Stream{{Name: "out", Replay: source.Superset, Mode: destination.Append, Keyed: true, Require: ExactlyOnce, Transformed: true}})
+	if err == nil || !strings.Contains(err.Error(), "transform.spark.outputs[out].require") {
+		t.Errorf("err = %v", err)
+	}
+	if w := Warnings(postgres, Settings{Require: ExactlyOnce}, []Stream{{Name: "out", Replay: source.Superset, Mode: destination.Append, Transformed: true}}); len(w) != 0 {
+		t.Errorf("warnings = %v", w)
+	}
+}

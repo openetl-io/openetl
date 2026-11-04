@@ -140,6 +140,37 @@ message PipelineSpec {
   // the sync, and the steps after it don't run.
   repeated PostSyncStep post_sync = 9;
   Heal heal = 10;
+  // The user's code between the source and the destination. Scheduled
+  // pipelines only.
+  Transform transform = 11;
+}
+
+message Transform {
+  oneof engine {
+    SparkTransform spark = 1;
+  }
+}
+
+// SparkTransform runs the user's openetl-spark Transform on each epoch of a
+// sync, on a Spark cluster. Its outputs are the destination's streams.
+message SparkTransform {
+  // A SparkCluster in the same workspace.
+  string cluster = 1;
+  // A jar's class is the Transform's; a Python file calls openetl_spark.run.
+  SparkCode code = 2;
+  // Spark properties for the application, over the cluster's.
+  map<string, string> conf = 3;
+  // Unset: each input stream, under its name and with its settings.
+  repeated SparkOutput outputs = 4;
+}
+
+// SparkOutput is one of the transform's outputs. Unset settings take those of
+// the input stream with its name, if there is one.
+message SparkOutput {
+  string name = 1;
+  repeated string primary_key = 2;
+  WriteMode write = 3;
+  DeliveryLevel require = 4;
 }
 
 // What heal's playbooks may do about the pipeline's incidents.
@@ -510,6 +541,9 @@ message StreamSchema {
   uint64 generation = 6;
   uint64 epoch = 7;
   google.protobuf.Timestamp create_time = 8;
+  // One of a transform's outputs, which are the destination's tables. The
+  // rest are the source's streams as the transform reads them.
+  bool output = 9;
 }
 
 message SchemaColumn {

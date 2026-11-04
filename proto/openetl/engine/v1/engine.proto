@@ -150,11 +150,14 @@ message ParquetSink {
 
 // StagedSink stages each epoch as Parquet files below url, for a destination
 // connector that loads them (DELIVERY_STAGED), at
-// {g}/{N}/{stream}/part-{k}.parquet with the stream's name percent-encoded.
-// EpochReady.files lists them.
+// {g}/{N}/{stream}/part-{k}.parquet with the stream's name percent-encoded,
+// or {g}/{N}/{dir}/{stream}/part-{k}.parquet with a dir. EpochReady.files
+// lists them.
 message StagedSink {
   // As quarantine_url.
   string url = 1;
+  // One path segment; empty for none.
+  string dir = 2;
 }
 
 // DiscardSink drops every batch and reports each epoch ready with nothing

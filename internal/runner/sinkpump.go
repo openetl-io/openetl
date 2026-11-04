@@ -24,14 +24,14 @@ type sinkPump struct {
 	in         <-chan Frame
 	events     chan<- event
 	starts     map[string]time.Time // the streams the attempt reads
-	ends       *readEnds
+	ends       readEnder
 
 	epochOf   map[string]uint64 // each stream's current epoch
 	seen      map[uint64]int    // streams that crossed each barrier
 	nextReady uint64
 }
 
-func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, staging Staging, streams []Stream, starts map[string]time.Time, ends *readEnds, in <-chan Frame, events chan<- event) *sinkPump {
+func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, staging Staging, streams []Stream, starts map[string]time.Time, ends readEnder, in <-chan Frame, events chan<- event) *sinkPump {
 	s := &sinkPump{w: w, gen: gen, engineSink: engineSink, staging: staging, in: in, events: events, starts: starts, ends: ends, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextReady: firstEpoch}
 	for _, st := range streams {
 		s.epochOf[st.Name] = firstEpoch

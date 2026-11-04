@@ -48,9 +48,11 @@ pub enum Sink {
     Parquet {
         url: String,
     },
-    /// Parquet staged below url for a destination connector to load.
+    /// Parquet staged below url for a destination connector to load, in
+    /// each epoch's dir if it isn't empty.
     Staged {
         url: String,
+        dir: String,
     },
     Discard,
 }
@@ -238,7 +240,18 @@ impl Plan {
                 Sink::Runner { edge, out_index }
             }
             sink_plan::Sink::Parquet(p) => Sink::Parquet { url: p.url },
-            sink_plan::Sink::Staged(s) => Sink::Staged { url: s.url },
+            sink_plan::Sink::Staged(s) => {
+                if s.dir.contains('/') || s.dir == "." || s.dir == ".." {
+                    return Err(JobError::config(format!(
+                        "the staged sink's dir {:?} isn't one path segment",
+                        s.dir
+                    )));
+                }
+                Sink::Staged {
+                    url: s.url,
+                    dir: s.dir,
+                }
+            }
             sink_plan::Sink::Discard(_) => Sink::Discard,
         };
 
@@ -400,7 +413,10 @@ pub(crate) mod tests {
         let mut req = request(streams);
         req.edges.pop();
         req.sink = Some(SinkPlan {
-            sink: Some(sink_plan::Sink::Staged(StagedSink { url: url.into() })),
+            sink: Some(sink_plan::Sink::Staged(StagedSink {
+                url: url.into(),
+                dir: String::new(),
+            })),
         });
         req
     }
@@ -408,7 +424,7 @@ pub(crate) mod tests {
     #[test]
     fn a_staged_sink_has_no_outbound_edge() {
         let p = Plan::from_request(staged_request(&["a", "b"], "s3://bucket/x")).unwrap();
-        assert!(matches!(p.sink, Sink::Staged { url } if url == "s3://bucket/x"));
+        assert!(matches!(p.sink, Sink::Staged { url, .. } if url == "s3://bucket/x"));
         let mut req = staged_request(&["a", "b"], "s3://bucket/x");
         req.edges
             .push(edge("out", EdgeDirection::FromEngine, &["a", "b"]));

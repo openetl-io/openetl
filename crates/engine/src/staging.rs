@@ -1,7 +1,8 @@
-//! Staging for a destination that loads Parquet files (DELIVERY_STAGED).
-//! Each stream's batches in epoch N go to `{g}/{N}/{stream}/part-{k}.parquet`
-//! below the sink's URL, with the stream's name percent-encoded, and the
-//! epoch's EpochReady lists them.
+//! Staging for a destination that loads Parquet files (DELIVERY_STAGED), and
+//! for a Spark transform's inputs. Each stream's batches in epoch N go to
+//! `{g}/{N}/{stream}/part-{k}.parquet` below the sink's URL, or
+//! `{g}/{N}/{dir}/{stream}/part-{k}.parquet` with a dir, with the stream's
+//! name percent-encoded, and the epoch's EpochReady lists them.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +28,8 @@ const MAX_FILE_BYTES: usize = 256 << 20;
 
 pub struct Staging {
     location: Location,
+    /// Empty for none.
+    dir: String,
     generation: u64,
     props: WriterProperties,
     streams: Vec<Stream>,
@@ -52,6 +55,7 @@ struct Part {
 impl Staging {
     pub fn open(
         url: &str,
+        dir: &str,
         generation: u64,
         first_epoch: u64,
         streams: &[String],
@@ -62,6 +66,7 @@ impl Staging {
             .build();
         Ok(Self {
             location: Location::open(url, "staging URL")?,
+            dir: dir.to_owned(),
             generation,
             props,
             streams: streams
@@ -92,6 +97,7 @@ impl Staging {
             Some(p) => p,
             None => st.part.insert(open(
                 &self.location,
+                &self.dir,
                 self.generation,
                 &self.props,
                 st,
@@ -163,17 +169,19 @@ impl Staging {
 
 fn open(
     location: &Location,
+    dir: &str,
     generation: u64,
     props: &WriterProperties,
     st: &Stream,
     schema: SchemaRef,
 ) -> Result<Part, JobError> {
-    let rel = Path::from_iter([
-        generation.to_string(),
-        st.epoch.to_string(),
-        st.name.clone(),
-        format!("part-{:05}.parquet", st.files.len()),
-    ]);
+    let mut parts = vec![generation.to_string(), st.epoch.to_string()];
+    if !dir.is_empty() {
+        parts.push(dir.to_owned());
+    }
+    parts.push(st.name.clone());
+    parts.push(format!("part-{:05}.parquet", st.files.len()));
+    let rel = Path::from_iter(parts);
     let path = Path::from_iter(location.prefix.parts().chain(rel.parts()));
     let out = BufWriter::new(location.store.clone(), path);
     let writer = AsyncArrowWriter::try_new(out, schema.clone(), Some(props.clone()))
@@ -245,7 +253,7 @@ mod tests {
     async fn stages_each_streams_epochs_and_drops_what_no_barrier_ends() {
         let dir = tempfile::tempdir().unwrap();
         let url = format!("file://{}/s", dir.path().display());
-        let mut st = Staging::open(&url, 3, 5, &["a/b".into(), "c".into()]).unwrap();
+        let mut st = Staging::open(&url, "", 3, 5, &["a/b".into(), "c".into()]).unwrap();
         st.write(0, &batch(&[1, 2])).await.unwrap();
         st.write(0, &batch(&[3])).await.unwrap();
         // A new schema starts a new file.
@@ -298,5 +306,17 @@ mod tests {
                     .is_none()
         );
         assert!(st.take(7).is_empty());
+    }
+
+    #[tokio::test]
+    async fn stages_in_each_epochs_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}/s", dir.path().display());
+        let mut st = Staging::open(&url, "in", 2, 7, &["a".into()]).unwrap();
+        st.write(0, &batch(&[1])).await.unwrap();
+        st.seal(0).await.unwrap();
+        let seven = st.take(7);
+        assert_eq!(seven[0].files[0].path, "2/7/in/a/part-00000.parquet");
+        assert_eq!(rows(&dir.path().join("s"), &seven[0].files[0]), [1]);
     }
 }

@@ -101,31 +101,46 @@ func sparkConfValue(field string, n *yaml.Node) (*structpb.Value, error) {
 	return nil, fmt.Errorf("%s: a value, or a secret reference such as {secret: name}", field)
 }
 
+type sparkCodeYAML struct {
+	Jar    string `yaml:"jar"`
+	Python string `yaml:"python"`
+	SHA256 string `yaml:"sha256"`
+	Class  string `yaml:"class"`
+}
+
 type sparkStepYAML struct {
-	Cluster string `yaml:"cluster"`
-	Code    struct {
-		Jar    string `yaml:"jar"`
-		Python string `yaml:"python"`
-		SHA256 string `yaml:"sha256"`
-		Class  string `yaml:"class"`
-	} `yaml:"code"`
-	Args []string          `yaml:"args"`
-	Conf map[string]string `yaml:"conf"`
+	Cluster string            `yaml:"cluster"`
+	Code    sparkCodeYAML     `yaml:"code"`
+	Args    []string          `yaml:"args"`
+	Conf    map[string]string `yaml:"conf"`
 }
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func parseSparkStep(field string, y *sparkStepYAML) (*apiv1.SparkStep, error) {
-	c := y.Code
-	switch {
-	case !ValidName(y.Cluster):
+	if !ValidName(y.Cluster) {
 		return nil, fmt.Errorf("%s.cluster: %q isn't a SparkCluster name", field, y.Cluster)
+	}
+	code, err := parseSparkCode(field+".code", y.Code, "only a jar has a main class")
+	if err != nil {
+		return nil, err
+	}
+	if err := sparkConf(field+".conf", y.Conf); err != nil {
+		return nil, err
+	}
+	return &apiv1.SparkStep{Cluster: y.Cluster, Code: code, Args: y.Args, Conf: y.Conf}, nil
+}
+
+// parseSparkCode checks a code block. pythonClass says why a Python file
+// takes no class.
+func parseSparkCode(field string, c sparkCodeYAML, pythonClass string) (*apiv1.SparkCode, error) {
+	switch {
 	case (c.Jar == "") == (c.Python == ""):
-		return nil, fmt.Errorf("%s.code needs one of jar and python", field)
+		return nil, fmt.Errorf("%s needs one of jar and python", field)
 	case !sha256Pattern.MatchString(c.SHA256):
-		return nil, fmt.Errorf("%s.code.sha256: the file's SHA-256, as 64 lowercase hex digits", field)
+		return nil, fmt.Errorf("%s.sha256: the file's SHA-256, as 64 lowercase hex digits", field)
 	case c.Python != "" && c.Class != "":
-		return nil, fmt.Errorf("%s.code.class: only a jar has a main class", field)
+		return nil, fmt.Errorf("%s.class: %s", field, pythonClass)
 	}
 	code := &apiv1.SparkCode{Sha256: c.SHA256, MainClass: c.Class}
 	uri := c.Jar
@@ -136,12 +151,70 @@ func parseSparkStep(field string, y *sparkStepYAML) (*apiv1.SparkStep, error) {
 		code.File = &apiv1.SparkCode_Python{Python: c.Python}
 	}
 	if !strings.HasPrefix(uri, "s3://") && !strings.HasPrefix(uri, "s3a://") && !strings.HasPrefix(uri, "https://") {
-		return nil, fmt.Errorf("%s.code: %q isn't an s3:// or https:// URI, which the runner can read and check", field, uri)
+		return nil, fmt.Errorf("%s: %q isn't an s3:// or https:// URI, which the runner can read and check", field, uri)
 	}
-	for k := range y.Conf {
-		if err := sparkProperty(field+".conf."+k, k); err != nil {
-			return nil, err
+	return code, nil
+}
+
+func sparkConf(field string, conf map[string]string) error {
+	for k := range conf {
+		if err := sparkProperty(field+"."+k, k); err != nil {
+			return err
 		}
 	}
-	return &apiv1.SparkStep{Cluster: y.Cluster, Code: code, Args: y.Args, Conf: y.Conf}, nil
+	return nil
+}
+
+type sparkTransformYAML struct {
+	Cluster string            `yaml:"cluster"`
+	Code    sparkCodeYAML     `yaml:"code"`
+	Conf    map[string]string `yaml:"conf"`
+	Outputs []struct {
+		Name       string   `yaml:"name"`
+		PrimaryKey []string `yaml:"primaryKey"`
+		Write      string   `yaml:"write"`
+		Require    string   `yaml:"require"`
+	} `yaml:"outputs"`
+}
+
+func parseSparkTransform(y *sparkTransformYAML) (*apiv1.SparkTransform, error) {
+	const field = "transform.spark"
+	if !ValidName(y.Cluster) {
+		return nil, fmt.Errorf("%s.cluster: %q isn't a SparkCluster name", field, y.Cluster)
+	}
+	if y.Code.Jar != "" && y.Code.Class == "" {
+		return nil, fmt.Errorf("%s.code.class: the class in the jar that implements openetl-spark's Transform", field)
+	}
+	code, err := parseSparkCode(field+".code", y.Code, "a Python file calls openetl_spark.run with its transform")
+	if err != nil {
+		return nil, err
+	}
+	if err := sparkConf(field+".conf", y.Conf); err != nil {
+		return nil, err
+	}
+	t := &apiv1.SparkTransform{Cluster: y.Cluster, Code: code, Conf: y.Conf}
+	seen := map[string]bool{}
+	for i, o := range y.Outputs {
+		f := fmt.Sprintf("%s.outputs[%d]", field, i)
+		if o.Name == "" || seen[o.Name] {
+			return nil, fmt.Errorf("%s: missing or repeated name %q", f, o.Name)
+		}
+		seen[o.Name] = true
+		keys := map[string]bool{}
+		for _, k := range o.PrimaryKey {
+			if k == "" || keys[k] {
+				return nil, fmt.Errorf("%s.primaryKey: missing or repeated column %q", f, k)
+			}
+			keys[k] = true
+		}
+		out := &apiv1.SparkOutput{Name: o.Name, PrimaryKey: o.PrimaryKey}
+		if out.Write, err = enum(apiv1.WriteMode_value, "WRITE_MODE_", f+".write", o.Write, apiv1.WriteMode_WRITE_MODE_UNSPECIFIED); err != nil {
+			return nil, err
+		}
+		if out.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", f+".require", o.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
+			return nil, err
+		}
+		t.Outputs = append(t.Outputs, out)
+	}
+	return t, nil
 }

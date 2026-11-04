@@ -12,6 +12,10 @@ import (
 // checkpoints: {org}/{pipeline}/_quarantine/{g}/{N}/{stream}.jsonl.
 const QuarantineDir = "_quarantine"
 
+// QuarantineOutputs holds, below QuarantineDir, what a transform's outputs
+// quarantined, at {g}/{N}/{output}.jsonl, apart from its inputs'.
+const QuarantineOutputs = "_outputs"
+
 // How many earlier generations Prune looks through for quarantined files of
 // epochs that never committed.
 const orphanGenerations = 16
@@ -76,15 +80,17 @@ func (s *Session) Prune(ctx context.Context, restored *Record, keep int) (delete
 		lo = max(lo, restored.Generation)
 	}
 	for g := lo; g < gen; g++ {
-		prefix := fmt.Sprintf("%s%s/%d/", s.log.root, QuarantineDir, g)
-		keys, err := s.log.store.List(ctx, prefix)
-		if err != nil {
-			return 0, fmt.Errorf("checkpoint: prune: %w", err)
-		}
-		for _, k := range keys {
-			n, _, ok := strings.Cut(strings.TrimPrefix(k, prefix), "/")
-			if epoch, err := strconv.ParseUint(n, 10, 64); ok && err == nil && epoch > after {
-				doomed = append(doomed, k)
+		for _, dir := range []string{QuarantineDir, QuarantineDir + "/" + QuarantineOutputs} {
+			prefix := fmt.Sprintf("%s%s/%d/", s.log.root, dir, g)
+			keys, err := s.log.store.List(ctx, prefix)
+			if err != nil {
+				return 0, fmt.Errorf("checkpoint: prune: %w", err)
+			}
+			for _, k := range keys {
+				n, _, ok := strings.Cut(strings.TrimPrefix(k, prefix), "/")
+				if epoch, err := strconv.ParseUint(n, 10, 64); ok && err == nil && epoch > after {
+					doomed = append(doomed, k)
+				}
 			}
 		}
 	}

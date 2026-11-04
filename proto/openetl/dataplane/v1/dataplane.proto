@@ -86,11 +86,15 @@ message ReportSchemasRequest {
   uint64 epoch = 3;
   // By stream; each an Arrow IPC stream holding only the schema.
   map<string, bytes> schemas = 4;
+  // A transform's outputs', by output, kept apart from its input streams'.
+  map<string, bytes> output_schemas = 5;
 }
 
 message ReportSchemasResponse {
   // The streams whose history got a new version.
   repeated string added = 1;
+  // The outputs whose history got a new version.
+  repeated string added_outputs = 2;
 }
 
 message ReportCheckpointRequest {

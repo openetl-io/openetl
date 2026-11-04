@@ -241,6 +241,9 @@ type pipelineYAML struct {
 	Heal     *struct {
 		Mode string `yaml:"mode"`
 	} `yaml:"heal"`
+	Transform *struct {
+		Spark *sparkTransformYAML `yaml:"spark"`
+	} `yaml:"transform"`
 }
 
 type postSyncYAML struct {
@@ -324,7 +327,12 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		return nil, errors.New("postSync: steps run after a sync, and a continuous pipeline has no syncs")
 	case !continuous && (y.Schedule == nil || (y.Schedule.Every == "") == (y.Schedule.Cron == "")):
 		return nil, errors.New("schedule needs one of every or cron")
+	case y.Transform != nil && y.Transform.Spark == nil:
+		return nil, errors.New("transform needs spark")
+	case y.Transform != nil && continuous:
+		return nil, errors.New("transform.spark: a Spark transform runs in a scheduled pipeline's syncs, and a continuous pipeline has none")
 	}
+	spark := y.Transform != nil
 	if y.Schedule != nil {
 		if p.Schedule, err = parseSchedule(y.Schedule); err != nil {
 			return nil, err
@@ -347,6 +355,12 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		}
 		if st.Timestamps, err = enum(apiv1.TimestampUnit_value, "TIMESTAMP_UNIT_", "timestamps", s.Timestamps, apiv1.TimestampUnit_TIMESTAMP_UNIT_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
+		}
+		switch {
+		case spark && st.Timestamps == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND:
+			return nil, fmt.Errorf("source.streams[%d].timestamps: Spark keeps only microseconds, so a Spark transform's inputs can't keep nanoseconds", i)
+		case spark && s.Collapse != nil:
+			return nil, fmt.Errorf("source.streams[%d].collapse: a Spark transform's inputs aren't written to the destination, and its outputs aren't collapsed", i)
 		}
 		if st.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", "require", s.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
@@ -399,6 +413,13 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		if p.Heal.Mode, err = enum(apiv1.HealMode_value, "HEAL_MODE_", "heal.mode", y.Heal.Mode, apiv1.HealMode_HEAL_MODE_UNSPECIFIED); err != nil {
 			return nil, err
 		}
+	}
+	if spark {
+		t, err := parseSparkTransform(y.Transform.Spark)
+		if err != nil {
+			return nil, err
+		}
+		p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Spark{Spark: t}}
 	}
 	for i, s := range y.PostSync {
 		field := fmt.Sprintf("postSync[%d]", i)

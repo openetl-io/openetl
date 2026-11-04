@@ -239,7 +239,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	case plan.Sink.ParquetURL != "":
 		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Parquet{Parquet: &enginev1.ParquetSink{Url: plan.Sink.ParquetURL}}}
 	case plan.Sink.StagedURL != "":
-		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Staged{Staged: &enginev1.StagedSink{Url: plan.Sink.StagedURL}}}
+		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Staged{Staged: &enginev1.StagedSink{Url: plan.Sink.StagedURL, Dir: plan.Sink.StagedDir}}}
 	case plan.Sink.Discard:
 		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Discard{Discard: &enginev1.DiscardSink{}}}
 	default:

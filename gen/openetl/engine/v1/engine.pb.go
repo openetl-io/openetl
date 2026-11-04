@@ -801,12 +801,15 @@ func (x *ParquetSink) GetUrl() string {
 
 // StagedSink stages each epoch as Parquet files below url, for a destination
 // connector that loads them (DELIVERY_STAGED), at
-// {g}/{N}/{stream}/part-{k}.parquet with the stream's name percent-encoded.
-// EpochReady.files lists them.
+// {g}/{N}/{stream}/part-{k}.parquet with the stream's name percent-encoded,
+// or {g}/{N}/{dir}/{stream}/part-{k}.parquet with a dir. EpochReady.files
+// lists them.
 type StagedSink struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// As quarantine_url.
-	Url           string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Url string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	// One path segment; empty for none.
+	Dir           string `protobuf:"bytes,2,opt,name=dir,proto3" json:"dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -844,6 +847,13 @@ func (*StagedSink) Descriptor() ([]byte, []int) {
 func (x *StagedSink) GetUrl() string {
 	if x != nil {
 		return x.Url
+	}
+	return ""
+}
+
+func (x *StagedSink) GetDir() string {
+	if x != nil {
+		return x.Dir
 	}
 	return ""
 }
@@ -1791,10 +1801,11 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"RunnerSink\x12\x12\n" +
 	"\x04edge\x18\x01 \x01(\tR\x04edge\"\x1f\n" +
 	"\vParquetSink\x12\x10\n" +
-	"\x03url\x18\x01 \x01(\tR\x03url\"\x1e\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\"0\n" +
 	"\n" +
 	"StagedSink\x12\x10\n" +
-	"\x03url\x18\x01 \x01(\tR\x03url\"\r\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
+	"\x03dir\x18\x02 \x01(\tR\x03dir\"\r\n" +
 	"\vDiscardSink\"+\n" +
 	"\x06Limits\x12!\n" +
 	"\fmemory_bytes\x18\x01 \x01(\x04R\vmemoryBytes\"\x12\n" +

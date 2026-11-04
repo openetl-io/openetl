@@ -50,8 +50,12 @@ type Ready struct {
 	Snapshots  []checkpoint.Snapshot
 	Quarantine []checkpoint.QuarantineFile
 	// Each stream's schema at its barrier, as an Arrow IPC stream holding
-	// only the schema.
+	// only the schema. With a transform, its inputs'.
 	Schemas map[string][]byte
+	// With a transform, its outputs' schemas, as Schemas, and the rows each
+	// output had.
+	OutputSchemas map[string][]byte
+	OutputRows    map[string]uint64
 }
 
 // Plan is what a dataflow needs to know about one attempt.
@@ -106,8 +110,10 @@ type SinkPlan struct {
 	// Parquet files under this file:// URL.
 	ParquetURL string
 	// Parquet files below this URL, for a DeliveryStaged destination to load
-	// (Staging.URL).
+	// (Staging.URL), or a transform's inputs (Transform.URL).
 	StagedURL string
+	// With StagedURL, each epoch's files go in this directory of it.
+	StagedDir string
 	// The engine drops every batch; its epochs arrive staged with nothing.
 	Discard bool
 }

@@ -396,9 +396,14 @@ func (s *Server) pin(ctx context.Context, q *db.Queries, p *apiv1.PipelineSpec, 
 	if err != nil {
 		return nil, err
 	}
+	if t := p.GetTransform().GetSpark(); t != nil {
+		if v.spark[t.GetCluster()], err = pinSparkCluster(ctx, q, s.Tenant.Org, wsID, workspace, t.GetCluster(), t.GetCode()); err != nil {
+			return nil, err
+		}
+	}
 	for _, step := range p.GetPostSync() {
 		if sp := step.GetSpark(); sp != nil {
-			if v.spark[sp.GetCluster()], err = pinSparkCluster(ctx, q, s.Tenant.Org, wsID, workspace, sp); err != nil {
+			if v.spark[sp.GetCluster()], err = pinSparkCluster(ctx, q, s.Tenant.Org, wsID, workspace, sp.GetCluster(), sp.GetCode()); err != nil {
 				return nil, err
 			}
 			continue

@@ -3458,6 +3458,12 @@ components:
                          the sync, and the steps after it don't run.
                 heal:
                     $ref: '#/components/schemas/Heal'
+                transform:
+                    allOf:
+                        - $ref: '#/components/schemas/Transform'
+                    description: |-
+                        The user's code between the source and the destination. Scheduled
+                         pipelines only.
             description: |-
                 PipelineSpec is the spec of a Pipeline document. Unset fields take their
                  defaults.
@@ -3885,6 +3891,34 @@ components:
                 region:
                     type: string
             description: SparkEmr adds steps to a cluster of EMR on EC2.
+        SparkOutput:
+            type: object
+            properties:
+                name:
+                    type: string
+                primaryKey:
+                    type: array
+                    items:
+                        type: string
+                write:
+                    enum:
+                        - WRITE_MODE_UNSPECIFIED
+                        - WRITE_MODE_APPEND
+                        - WRITE_MODE_OVERWRITE
+                        - WRITE_MODE_MERGE
+                    type: string
+                    format: enum
+                require:
+                    enum:
+                        - DELIVERY_LEVEL_UNSPECIFIED
+                        - DELIVERY_LEVEL_AT_LEAST_ONCE
+                        - DELIVERY_LEVEL_EFFECTIVELY_ONCE
+                        - DELIVERY_LEVEL_EXACTLY_ONCE
+                    type: string
+                    format: enum
+            description: |-
+                SparkOutput is one of the transform's outputs. Unset settings take those of
+                 the input stream with its name, if there is one.
         SparkStep:
             type: object
             properties:
@@ -3924,6 +3958,29 @@ components:
                          drivers: spark-submit's --status and --kill need the master's REST
                          server, which is off by default. Unset: port 8080 on the master's host.
             description: SparkSubmit submits with spark-submit, in cluster deploy mode.
+        SparkTransform:
+            type: object
+            properties:
+                cluster:
+                    type: string
+                    description: A SparkCluster in the same workspace.
+                code:
+                    allOf:
+                        - $ref: '#/components/schemas/SparkCode'
+                    description: A jar's class is the Transform's; a Python file calls openetl_spark.run.
+                conf:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: Spark properties for the application, over the cluster's.
+                outputs:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SparkOutput'
+                    description: 'Unset: each input stream, under its name and with its settings.'
+            description: |-
+                SparkTransform runs the user's openetl-spark Transform on each epoch of a
+                 sync, on a Spark cluster. Its outputs are the destination's streams.
         Status:
             type: object
             properties:
@@ -4002,6 +4059,11 @@ components:
                 createTime:
                     type: string
                     format: date-time
+                output:
+                    type: boolean
+                    description: |-
+                        One of a transform's outputs, which are the destination's tables. The
+                         rest are the source's streams as the transform reads them.
             description: StreamSchema is a version of a stream's schema, as the destination has it.
         Sync:
             type: object
@@ -4102,6 +4164,11 @@ components:
                 delivery:
                     type: string
                     description: The test event's delivery, pending.
+        Transform:
+            type: object
+            properties:
+                spark:
+                    $ref: '#/components/schemas/SparkTransform'
         Types:
             type: object
             properties:

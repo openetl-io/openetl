@@ -53,10 +53,20 @@ type StreamState struct {
 	Rows uint64 `json:"rows,omitempty"`
 }
 
+// OutputState is one of a transform's outputs at a checkpoint.
+type OutputState struct {
+	// As StreamState's.
+	Schema []byte `json:"schema,omitempty"`
+	// Rows the transform output in the epoch, quarantined ones included.
+	Rows uint64 `json:"rows,omitempty"`
+}
+
 // QuarantineFile holds the records of one stream the engine quarantined in
 // an epoch.
 type QuarantineFile struct {
 	Stream string `json:"stream"`
+	// Stream is one of a transform's outputs.
+	Output bool   `json:"output,omitempty"`
 	URL    string `json:"url"`
 	Rows   uint64 `json:"rows"`
 }
@@ -73,11 +83,15 @@ type Record struct {
 	Generation uint64 `json:"generation"`
 	// What HEAD pointed to before this record. Recovery rewinds to it when the
 	// epoch is lost.
-	Previous *RecordRef             `json:"previous,omitempty"`
-	Streams  map[string]StreamState `json:"streams"`
-	Staged   []byte                 `json:"staged,omitempty"`
+	Previous *RecordRef `json:"previous,omitempty"`
+	// The source's streams. With a transform, they're its inputs.
+	Streams map[string]StreamState `json:"streams"`
+	// A transform's outputs, which are the destination's streams. Nil
+	// without a transform.
+	Outputs map[string]OutputState `json:"outputs,omitempty"`
+	Staged  []byte                 `json:"staged,omitempty"`
 	// The files the dataflow staged for a destination that loads them, by
-	// stream.
+	// the destination's stream.
 	Files     map[string][]StagedFile `json:"files,omitempty"`
 	Snapshots []Snapshot              `json:"snapshots,omitempty"`
 	// Records quarantined in this epoch. Files no record lists are orphans.

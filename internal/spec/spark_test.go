@@ -77,3 +77,45 @@ func TestParseSparkStep(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSparkTransform(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\n"
+	base := "spec:\n  schedule: {every: 1m}\n  source: {ref: s, streams: [{name: orders}]}\n  destination: {ref: d}\n"
+	digest := strings.Repeat("ab", 32)
+	jar := "code: {jar: 's3://jobs/enrich.jar', sha256: " + digest + ", class: com.acme.Enrich}"
+	doc, err := Parse([]byte(header + base + "  transform:\n    spark:\n      cluster: lab\n      " + jar +
+		"\n      conf: {spark.executor.memory: 8g}\n      outputs:\n        - {name: orders_enriched, primaryKey: [order_id], write: merge, require: effectively_once}\n        - {name: totals}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := doc.Pipeline.GetTransform().GetSpark()
+	outs := tr.GetOutputs()
+	if tr.GetCluster() != "lab" || tr.GetCode().GetMainClass() != "com.acme.Enrich" || tr.GetConf()["spark.executor.memory"] != "8g" || len(outs) != 2 ||
+		outs[0].GetName() != "orders_enriched" || outs[0].GetPrimaryKey()[0] != "order_id" || outs[0].GetWrite().String() != "WRITE_MODE_MERGE" ||
+		outs[0].GetRequire().String() != "DELIVERY_LEVEL_EFFECTIVELY_ONCE" || outs[1].GetName() != "totals" || outs[1].GetWrite() != 0 {
+		t.Errorf("transform = %v", tr)
+	}
+	if _, err := Parse([]byte(header + base + "  transform: {spark: {cluster: lab, code: {python: 's3://jobs/enrich.py', sha256: " + digest + "}}}\n")); err != nil {
+		t.Error(err)
+	}
+	transform := func(spark string) string { return header + base + "  transform: {spark: " + spark + "}\n" }
+	for name, doc := range map[string]string{
+		"no spark":        header + base + "  transform: {}\n",
+		"continuous":      header + "spec:\n  mode: continuous\n  source: {ref: s}\n  destination: {ref: d}\n  transform: {spark: {cluster: lab, " + jar + "}}\n",
+		"nanoseconds":     header + "spec:\n  schedule: {every: 1m}\n  source: {ref: s, streams: [{name: o, timestamps: nanosecond}]}\n  destination: {ref: d}\n  transform: {spark: {cluster: lab, " + jar + "}}\n",
+		"collapse":        header + "spec:\n  schedule: {every: 1m}\n  source: {ref: s, streams: [{name: o, collapse: true}]}\n  destination: {ref: d}\n  transform: {spark: {cluster: lab, " + jar + "}}\n",
+		"cluster":         transform("{cluster: Lab, " + jar + "}"),
+		"jar, no class":   transform("{cluster: lab, code: {jar: 's3://j/a.jar', sha256: " + digest + "}}"),
+		"python class":    transform("{cluster: lab, code: {python: 's3://j/a.py', sha256: " + digest + ", class: T}}"),
+		"ours":            transform("{cluster: lab, " + jar + ", conf: {spark.openetl.root: x}}"),
+		"no name":         transform("{cluster: lab, " + jar + ", outputs: [{write: merge}]}"),
+		"repeated name":   transform("{cluster: lab, " + jar + ", outputs: [{name: a}, {name: a}]}"),
+		"repeated key":    transform("{cluster: lab, " + jar + ", outputs: [{name: a, primaryKey: [id, id]}]}"),
+		"write":           transform("{cluster: lab, " + jar + ", outputs: [{name: a, write: upsert}]}"),
+		"output collapse": transform("{cluster: lab, " + jar + ", outputs: [{name: a, collapse: true}]}"),
+	} {
+		if _, err := Parse([]byte(doc)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}

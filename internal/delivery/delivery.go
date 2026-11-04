@@ -67,6 +67,10 @@ type Stream struct {
 	// without a primary key. Nil: only for superset streams that require
 	// more than at least once.
 	Collapse *bool
+	// A transform's output (ADR-0022): exact when every input is, and never
+	// deduped, since once the user's code re-keys, aggregates or explodes
+	// rows, an ID can't tell a repeated input from a new one.
+	Transformed bool
 }
 
 // settled fills in the stream's require and collapse.
@@ -116,10 +120,16 @@ func PlanStream(caps destination.Capabilities, s Stream, require Level) Plan {
 	switch {
 	case caps.Class == destination.DeliverAndAck:
 		p.Collapse, p.Why = false, "the destination delivers and acknowledges"
+	case s.Transformed && s.Replay == source.Exact && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
+		p.Collapse, p.Level, p.Why = false, ExactlyOnce, "a transform's output over exact inputs"
 	case s.Replay == source.Exact && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
 		p.Level, p.Why = ExactlyOnce, "exact replay"
+	case s.Transformed && caps.Class == destination.StageAndApply && s.Mode == destination.Merge:
+		p.Collapse, p.Level, p.Why = false, EffectivelyOnce, "a transform's output over superset inputs, written with merge"
 	case caps.Class == destination.StageAndApply && s.Mode == destination.Merge:
 		p.Level, p.Why = EffectivelyOnce, "superset replay, written with merge"
+	case s.Transformed:
+		p.Collapse, p.Why = false, "a transform's output over superset inputs, which isn't deduped unless written with merge"
 	case !canDedupe(caps, s.Mode):
 		p.Why = "superset replay, and the destination can't dedupe"
 	case !s.Keyed && !collapse:
@@ -180,15 +190,22 @@ func Problems(caps destination.Capabilities, s Settings, streams []Stream) []err
 	}
 	for _, st := range streams {
 		if st.Mode == destination.Merge && !st.Keyed {
-			fails = append(fails, fmt.Errorf("destination.write: merge needs a primary key, and stream %q has none", st.Name))
+			field := "destination.write"
+			if st.Transformed {
+				field = fmt.Sprintf("transform.spark.outputs[%s].write", st.Name)
+			}
+			fails = append(fails, fmt.Errorf("%s: merge needs a primary key, and stream %q has none", field, st.Name))
 			continue
 		}
-		if !st.Keyed && st.Collapse != nil && *st.Collapse && !canDedupe(caps, st.Mode) {
+		if !st.Keyed && !st.Transformed && st.Collapse != nil && *st.Collapse && !canDedupe(caps, st.Mode) {
 			fails = append(fails, fmt.Errorf("source.streams[%s].collapse: the destination can't dedupe at apply, so it can't collapse rows", st.Name))
 			continue
 		}
 		field := "delivery.require"
-		if st.Require != 0 {
+		switch {
+		case st.Require != 0 && st.Transformed:
+			field = fmt.Sprintf("transform.spark.outputs[%s].require", st.Name)
+		case st.Require != 0:
 			field = fmt.Sprintf("source.streams[%s].require", st.Name)
 		}
 		require := cmp.Or(st.Require, s.Require)
@@ -213,6 +230,9 @@ type Warning struct {
 func Warnings(caps destination.Capabilities, s Settings, streams []Stream) []Warning {
 	var out []Warning
 	for _, st := range streams {
+		if st.Transformed {
+			continue
+		}
 		if st.Keyed {
 			if st.Collapse != nil {
 				out = append(out, Warning{st.Name, "it has a primary key, so collapse is ignored: its IDs already tell a repeat from a row the source holds twice"})

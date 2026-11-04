@@ -50,10 +50,13 @@ type Stream struct {
 	Collapse *bool
 	// How merge applies deletes; zero: soft.
 	Deletes destination.DeleteMode
+	// One of a transform's outputs, whose Replay is exact when every input's
+	// is. Its Read is CDC when it's a changelog: merged, from a changelog.
+	Transformed bool
 }
 
 func (s Stream) delivery() delivery.Stream {
-	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse}
+	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse, Transformed: s.Transformed}
 }
 
 // Declared is Schema with Overrides applied.
@@ -117,9 +120,10 @@ type Job struct {
 	// must not block.
 	OnCommit func(epoch uint64)
 	// Called after an epoch commits with the schemas that changed since the
-	// last call, the attempt's first holding every stream's. Each is an
-	// Arrow IPC stream holding only the schema. It must not block.
-	OnSchemas func(e destination.Epoch, schemas map[string][]byte)
+	// last call, the source's streams' and a transform's outputs' apart, the
+	// attempt's first holding every one. Each is an Arrow IPC stream holding
+	// only the schema. It must not block.
+	OnSchemas func(e destination.Epoch, schemas, outputs map[string][]byte)
 	// Called after an epoch commits, and after OnSchemas, with its record,
 	// which it must not modify, and the rows each stream's apply didn't
 	// insert because of dedupe. It must not block.
@@ -134,6 +138,19 @@ type Job struct {
 	// Where the dataflow stages epochs for a destination with
 	// destination.DeliveryStaged, which needs one.
 	Staging Staging
+	// The user's code between the source and the destination; nil for
+	// none. With one, Streams are its inputs, and Outputs, which it needs,
+	// the destination's streams.
+	Transform Transform
+	Outputs   []Stream
+}
+
+// sinkStreams are the destination's streams.
+func (j *Job) sinkStreams() []Stream {
+	if j.Transform != nil {
+		return j.Outputs
+	}
+	return j.Streams
 }
 
 // Staging keeps the epochs staged for a destination with
@@ -233,16 +250,26 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 	}
 	cfg := destination.OpenConfig{Pipeline: job.Pipeline, Generation: res.Generation, Scope: job.Settings.Scope, Namespace: job.Namespace, CommitInterval: job.Settings.CommitInterval}
-	canForce := make(map[string]bool, len(job.Streams))
-	for _, s := range job.Streams {
+	for _, s := range job.sinkStreams() {
 		cfg.Streams = append(cfg.Streams, destination.Stream{
 			Name:       s.Name,
 			Mode:       s.Mode,
 			PrimaryKey: s.PrimaryKey,
-			Dedupe:     delivery.Dedupe(caps, s.delivery(), job.Settings.Require, forced[s.Name]),
+			Dedupe:     delivery.Dedupe(caps, s.delivery(), job.Settings.Require, forced[s.Name] || s.Transformed && len(forced) > 0),
 			Deletes:    s.Deletes,
 		})
+	}
+	// A barrier forced on any input makes every output superset.
+	outputsCanForce := true
+	for _, o := range job.Outputs {
+		outputsCanForce = outputsCanForce && delivery.CanForce(caps, o.delivery(), job.Settings.Require)
+	}
+	canForce := make(map[string]bool, len(job.Streams))
+	for _, s := range job.Streams {
 		canForce[s.Name] = delivery.CanForce(caps, s.delivery(), job.Settings.Require)
+		if job.Transform != nil {
+			canForce[s.Name] = outputsCanForce
+		}
 	}
 	w, err := job.Destination.Open(rctx, cfg)
 	if err != nil {
@@ -262,6 +289,9 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		schemas := make(map[string][]byte, len(head.Streams))
 		for name, st := range head.Streams {
 			schemas[name] = st.Schema
+		}
+		if job.Transform != nil {
+			schemas = outputSchemas(head)
 		}
 		// A redone epoch needs its schemas in place.
 		if err := applySchemas(rctx, w, applied, schemas); err != nil {
@@ -301,11 +331,37 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	span.SetAttributes(attribute.Int64("openetl.generation", int64(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", int64(res.Restored))) //nolint:gosec // epochs fit
 	span.End()
 
-	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reported: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}}
+	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied,
+		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}}
 	if restored != nil && len(restored.Files) > 0 {
 		c.lastStaged = destination.Epoch{Generation: restored.Generation, N: restored.Epoch}
 	}
+	if job.Transform != nil {
+		c.outputSchemas = outputSchemas(restored)
+		if err := job.Transform.Start(ctx, res.Generation); err != nil {
+			return res, fmt.Errorf("runner: start the transform: %w", err)
+		}
+		defer func() {
+			if serr := job.Transform.Stop(context.WithoutCancel(ctx)); serr != nil {
+				log.Warn("stopping the transform failed", "err", serr)
+			}
+		}()
+	}
 	return res, c.run(ctx, restored, canForce)
+}
+
+// outputSchemas are a record's outputs' schemas; nil without a record.
+func outputSchemas(r *checkpoint.Record) map[string][]byte {
+	if r == nil {
+		return nil
+	}
+	schemas := make(map[string][]byte, len(r.Outputs))
+	for name, o := range r.Outputs {
+		if o.Schema != nil {
+			schemas[name] = o.Schema
+		}
+	}
+	return schemas
 }
 
 func (j *Job) keep() int { return cmp.Or(j.KeepRecords, defaultKeepRecords) }
@@ -404,8 +460,15 @@ func (j *Job) validate() error {
 	case j.staged() && j.Staging == nil:
 		return errs.New(errs.ConfigInvalid, "runner: the destination loads staged epochs, and this runner has nowhere to stage them")
 	}
+	switch {
+	case j.Transform != nil && len(j.Outputs) == 0:
+		return errs.New(errs.ConfigInvalid, "runner: the transform has no outputs")
+	case j.Transform == nil && len(j.Outputs) > 0:
+		return errors.New("runner: outputs without a transform")
+	case j.Transform != nil && j.Continuous:
+		return errs.New(errs.ConfigInvalid, "runner: a transform runs in a scheduled pipeline's syncs")
+	}
 	seen := make(map[string]bool)
-	streams := make([]delivery.Stream, 0, len(j.Streams))
 	for _, s := range j.Streams {
 		if seen[s.Name] {
 			return errs.New(errs.ConfigInvalid, "runner: stream %q configured twice", s.Name)
@@ -414,9 +477,22 @@ func (j *Job) validate() error {
 		if err := s.checkOverrides(); err != nil {
 			return errs.Wrap(errs.ConfigInvalid, err, "runner")
 		}
-		if s.NanosecondTimestamps && !j.Destination.Capabilities().NanosecondTimestamps {
+		switch {
+		case s.NanosecondTimestamps && j.Transform != nil:
+			return errs.New(errs.ConfigInvalid, "runner: stream %q keeps nanosecond timestamps, and Spark keeps only microseconds", s.Name)
+		case s.NanosecondTimestamps && !j.Destination.Capabilities().NanosecondTimestamps:
 			return errs.New(errs.ConfigInvalid, "runner: stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", s.Name)
 		}
+	}
+	clear(seen)
+	for _, o := range j.Outputs {
+		if seen[o.Name] || !o.Transformed {
+			return errs.New(errs.ConfigInvalid, "runner: output %q configured twice, or not as an output", o.Name)
+		}
+		seen[o.Name] = true
+	}
+	streams := make([]delivery.Stream, 0, len(j.sinkStreams()))
+	for _, s := range j.sinkStreams() {
 		streams = append(streams, s.delivery())
 	}
 	return errs.Wrap(errs.ConfigInvalid, delivery.Check(j.Destination.Capabilities(), j.Settings, streams), "runner: plan checks")
@@ -485,15 +561,19 @@ type coordinator struct {
 	pending     map[uint64]*epochState
 	committed   uint64                   // the last epoch committed or restored
 	ackStates   map[string][]byte        // owned by the committer: states of the committed epoch, acked after the next commit
-	applied     map[string]*arrow.Schema // owned by the committer: each stream's schema last applied
+	applied     map[string]*arrow.Schema // owned by the committer: each sink stream's schema last applied
 	reported    map[string]*arrow.Schema // owned by the committer: each stream's schema last passed to OnSchemas
-	readStarts  map[string]int64
-	sincePrune  int                                 // owned by the committer: commits since it last pruned
-	seen        uint64                              // what the source had emitted when the last barrier was requested
-	lastStaged  destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
-	syncStart   *checkpoint.RecordRef               // the record the sync started after; nil if unknown
-	syncRows    map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
-	measures    map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
+	// Owned by the committer: each output's schema last passed to OnSchemas.
+	reportedOutputs map[string]*arrow.Schema
+	// The restored record's outputs' schemas.
+	outputSchemas map[string][]byte
+	readStarts    map[string]int64
+	sincePrune    int                                 // owned by the committer: commits since it last pruned
+	seen          uint64                              // what the source had emitted when the last barrier was requested
+	lastStaged    destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
+	syncStart     *checkpoint.RecordRef               // the record the sync started after; nil if unknown
+	syncRows      map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
+	measures      map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
@@ -577,7 +657,29 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 			starts[s.Name] = time.UnixMicro(c.readStarts[s.Name]).UTC()
 		}
 	}
-	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, staging, c.job.Streams, starts, ends, fromFlow, c.events)
+	var sinkEnds readEnder = ends
+	if c.job.Transform != nil {
+		// An output's read starts with its inputs' first, and ends with
+		// their last.
+		var first time.Time
+		var reading []string
+		for _, s := range c.job.Streams {
+			if t, ok := starts[s.Name]; ok {
+				reading = append(reading, s.Name)
+				if first.IsZero() || t.Before(first) {
+					first = t
+				}
+			}
+		}
+		starts = map[string]time.Time{}
+		for _, o := range c.job.Outputs {
+			if len(reading) > 0 {
+				starts[o.Name] = first
+			}
+		}
+		sinkEnds = lastEnd{ends: ends, inputs: reading}
+	}
+	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, staging, c.job.sinkStreams(), starts, sinkEnds, fromFlow, c.events)
 
 	req := source.ReadRequest{Pipeline: c.job.Pipeline, Continuous: c.job.Continuous}
 	for _, s := range c.job.Streams {
@@ -594,7 +696,11 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		return c.pump.readDone()
 	})
 	g.Go(c.pump.run)
-	g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
+	if c.job.Transform != nil {
+		c.runTransform(gctx, g, plan, toFlow, fromFlow)
+	} else {
+		g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
+	}
 	g.Go(func() error { return sink.run(gctx) })
 	g.Go(func() error { return c.committer(gctx) })
 	g.Go(func() error {
@@ -662,11 +768,16 @@ func (c *coordinator) loop(ctx context.Context) error {
 	}
 }
 
-// One epoch staging, one waiting to commit.
+// One epoch staging, one waiting to commit; with a transform, one more in
+// it.
 const maxInFlight = 2
 
 func (c *coordinator) shouldRequest() bool {
-	if c.outstanding || c.next-1-c.committed >= maxInFlight {
+	limit := uint64(maxInFlight)
+	if c.job.Transform != nil {
+		limit++
+	}
+	if c.outstanding || c.next-1-c.committed >= limit {
 		return false
 	}
 	if c.readDone {
@@ -785,6 +896,14 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 			Rows:      st.rows[name],
 		}
 	}
+	sinkSchemas := st.flow.Schemas
+	if c.job.Transform != nil {
+		sinkSchemas = st.flow.OutputSchemas
+		rec.Outputs = make(map[string]checkpoint.OutputState, len(c.job.Outputs))
+		for _, o := range c.job.Outputs {
+			rec.Outputs[o.Name] = checkpoint.OutputState{Schema: sinkSchemas[o.Name], Rows: st.flow.OutputRows[o.Name]}
+		}
+	}
 	slices.Sort(rec.Forced)
 	err = retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced)
 	if err != nil {
@@ -792,7 +911,12 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	}
 	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	c.dropStaged(ctx, e, len(rec.Files) > 0)
-	if err := retry(ctx, func() error { return applySchemas(ctx, c.w, c.applied, st.flow.Schemas) }, nil); err != nil {
+	if c.job.Transform != nil {
+		if err := c.job.Transform.Drop(ctx, e); err != nil {
+			c.log.Warn("dropping the transform's files of an epoch failed", "epoch", n, "err", err)
+		}
+	}
+	if err := retry(ctx, func() error { return applySchemas(ctx, c.w, c.applied, sinkSchemas) }, nil); err != nil {
 		return fmt.Errorf("runner: epoch %d: %w", n, err)
 	}
 	collapsed := map[string]uint64{}
@@ -812,17 +936,16 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
 	c.measure(ctx, rec, collapsed, time.Since(start), time.Since(st.requested))
 	if c.job.OnSchemas != nil {
-		changed, err := changedSchemas(c.reported, st.flow.Schemas)
+		inputs, err := changedRaw(c.reported, st.flow.Schemas)
 		if err != nil {
 			return fmt.Errorf("runner: epoch %d: %w", n, err)
 		}
-		if len(changed) > 0 {
-			raw := make(map[string][]byte, len(changed))
-			for _, s := range changed {
-				raw[s.Name] = st.flow.Schemas[s.Name]
-				c.reported[s.Name] = s.Schema
-			}
-			c.job.OnSchemas(e, raw)
+		outputs, err := changedRaw(c.reportedOutputs, st.flow.OutputSchemas)
+		if err != nil {
+			return fmt.Errorf("runner: epoch %d: %w", n, err)
+		}
+		if len(inputs) > 0 || len(outputs) > 0 {
+			c.job.OnSchemas(e, inputs, outputs)
 		}
 	}
 	if c.job.OnCheckpoint != nil {
@@ -920,6 +1043,21 @@ func retry(ctx context.Context, f func() error, fatal error) error {
 		backoff *= 2
 	}
 	return err
+}
+
+// changedRaw returns the schemas that differ from those in known, and
+// records them there; nil if none do.
+func changedRaw(known map[string]*arrow.Schema, schemas map[string][]byte) (map[string][]byte, error) {
+	changed, err := changedSchemas(known, schemas)
+	if err != nil || len(changed) == 0 {
+		return nil, err
+	}
+	raw := make(map[string][]byte, len(changed))
+	for _, s := range changed {
+		raw[s.Name] = schemas[s.Name]
+		known[s.Name] = s.Schema
+	}
+	return raw, nil
 }
 
 // applySchemas applies the schemas that differ from those in applied, if the
