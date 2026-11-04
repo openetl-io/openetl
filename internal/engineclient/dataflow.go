@@ -146,7 +146,9 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	})()
 	g.Go(func() error { return writeEdge(gctx, toEngine, plan.Generation, names, index, alloc, in) })
 	if fromEngine != nil {
-		g.Go(func() error { return readEdge(gctx, fromEngine, plan.Generation, names, alloc, out) })
+		g.Go(func() error {
+			return readEdge(gctx, fromEngine, plan.Generation, names, alloc, plan.ReportSchemas, out)
+		})
 	}
 	g.Go(func() error {
 		select {
@@ -389,7 +391,7 @@ func encode(f runner.Frame, gen uint64, alloc memory.Allocator, buf *bytes.Buffe
 	}
 }
 
-func readEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []string, alloc memory.Allocator, out chan<- runner.Frame) error {
+func readEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []string, alloc memory.Allocator, schemas bool, out chan<- runner.Frame) error {
 	fr := newFrameReader(conn)
 	ended := make([]bool, len(names))
 	open := len(names)
@@ -425,8 +427,15 @@ func readEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []strin
 			}
 			f.Kind, f.Epoch = runner.FrameBarrier, b.GetEpoch().GetN()
 		case enginev1.FrameKind_FRAME_KIND_SCHEMA_CHANGE:
-			// Batches carry their schema; sinks don't apply changes yet.
-			continue
+			if !schemas {
+				// Batches carry their schema; sinks don't apply changes yet.
+				continue
+			}
+			var sc enginev1.SchemaChange
+			if err := proto.Unmarshal(payload, &sc); err != nil {
+				return fmt.Errorf("engineclient: decode a schema change: %w", err)
+			}
+			f.Kind, f.Schema = runner.FrameSchema, sc.GetArrowSchema()
 		case enginev1.FrameKind_FRAME_KIND_END_OF_STREAM:
 			ended[stream] = true
 			open--

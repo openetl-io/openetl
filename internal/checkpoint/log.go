@@ -108,7 +108,21 @@ type Record struct {
 	// committed. Nil in records from before them, and without a sync.
 	SyncStart *RecordRef        `json:"sync_start,omitempty"`
 	SyncRows  map[string]uint64 `json:"sync_rows,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
+	// In a Flink pipeline, the Flink checkpoint the epoch ends at.
+	Flink     *FlinkCheckpoint `json:"flink,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
+}
+
+// FlinkCheckpoint is where a Flink pipeline's record stands in Flink's
+// checkpoints. IDs repeat across jobs, so Job qualifies Checkpoint.
+type FlinkCheckpoint struct {
+	Job        string `json:"job"`
+	Checkpoint int64  `json:"checkpoint"`
+	// A stop's savepoint: the directory it's written below. Empty for a
+	// checkpoint.
+	Savepoint string `json:"savepoint,omitempty"`
+	// The path Job was deployed from; empty for none.
+	From string `json:"from,omitempty"`
 }
 
 // StagedFile is one of an epoch's staged Parquet files, its path below the

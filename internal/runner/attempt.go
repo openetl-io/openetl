@@ -143,11 +143,22 @@ type Job struct {
 	// the destination's streams.
 	Transform Transform
 	Outputs   []Stream
+	// The user's Flink job between the source and the destination of a
+	// continuous pipeline; nil for none. With one, Outputs are the
+	// destination's streams, and Bridge serves the job.
+	Flink  Flink
+	Bridge Bridge
+	// How long the job may run without a reader on every stream and a sink
+	// on every output, from its enumerator's hello. Zero: a minute.
+	FlinkConnectTimeout time.Duration
 }
+
+// transformed: the user's code runs between the source and the destination.
+func (j *Job) transformed() bool { return j.Transform != nil || j.Flink != nil }
 
 // sinkStreams are the destination's streams.
 func (j *Job) sinkStreams() []Stream {
-	if j.Transform != nil {
+	if j.transformed() {
 		return j.Outputs
 	}
 	return j.Streams
@@ -196,12 +207,14 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if err := job.validate(); err != nil {
 		return res, err
 	}
+	if job.Flink != nil {
+		return runFlink(ctx, job)
+	}
 	log := job.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	log = log.With("pipeline", job.Pipeline, "owner", job.Owner)
-	caps := job.Destination.Capabilities()
 	if job.Progress != nil {
 		live.Store(job.Progress, struct{}{})
 		defer live.Delete(job.Progress)
@@ -249,29 +262,8 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			}
 		}
 	}
-	cfg := destination.OpenConfig{Pipeline: job.Pipeline, Generation: res.Generation, Scope: job.Settings.Scope, Namespace: job.Namespace, CommitInterval: job.Settings.CommitInterval}
-	for _, s := range job.sinkStreams() {
-		cfg.Streams = append(cfg.Streams, destination.Stream{
-			Name:       s.Name,
-			Mode:       s.Mode,
-			PrimaryKey: s.PrimaryKey,
-			Dedupe:     delivery.Dedupe(caps, s.delivery(), job.Settings.Require, forced[s.Name] || s.Transformed && len(forced) > 0),
-			Deletes:    s.Deletes,
-		})
-	}
-	// A barrier forced on any input makes every output superset.
-	outputsCanForce := true
-	for _, o := range job.Outputs {
-		outputsCanForce = outputsCanForce && delivery.CanForce(caps, o.delivery(), job.Settings.Require)
-	}
-	canForce := make(map[string]bool, len(job.Streams))
-	for _, s := range job.Streams {
-		canForce[s.Name] = delivery.CanForce(caps, s.delivery(), job.Settings.Require)
-		if job.Transform != nil {
-			canForce[s.Name] = outputsCanForce
-		}
-	}
-	w, err := job.Destination.Open(rctx, cfg)
+	canForce := job.canForce()
+	w, err := job.Destination.Open(rctx, job.openConfig(res.Generation, forced))
 	if err != nil {
 		return res, fmt.Errorf("runner: open destination: %w", err)
 	}
@@ -350,6 +342,41 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 	}
 	return res, c.run(ctx, restored, canForce)
+}
+
+// openConfig is the destination's for generation gen. forced are the
+// streams a record that may be restored was forced on.
+func (j *Job) openConfig(gen uint64, forced map[string]bool) destination.OpenConfig {
+	caps := j.Destination.Capabilities()
+	cfg := destination.OpenConfig{Pipeline: j.Pipeline, Generation: gen, Scope: j.Settings.Scope, Namespace: j.Namespace, CommitInterval: j.Settings.CommitInterval}
+	for _, s := range j.sinkStreams() {
+		cfg.Streams = append(cfg.Streams, destination.Stream{
+			Name:       s.Name,
+			Mode:       s.Mode,
+			PrimaryKey: s.PrimaryKey,
+			Dedupe:     delivery.Dedupe(caps, s.delivery(), j.Settings.Require, forced[s.Name] || s.Transformed && len(forced) > 0),
+			Deletes:    s.Deletes,
+		})
+	}
+	return cfg
+}
+
+// canForce says, by stream, whether a barrier may be forced on it.
+func (j *Job) canForce() map[string]bool {
+	caps := j.Destination.Capabilities()
+	// A barrier forced on any input makes every output superset.
+	outputsCanForce := true
+	for _, o := range j.Outputs {
+		outputsCanForce = outputsCanForce && delivery.CanForce(caps, o.delivery(), j.Settings.Require)
+	}
+	canForce := make(map[string]bool, len(j.Streams))
+	for _, s := range j.Streams {
+		canForce[s.Name] = delivery.CanForce(caps, s.delivery(), j.Settings.Require)
+		if j.Transform != nil || j.Flink != nil {
+			canForce[s.Name] = outputsCanForce
+		}
+	}
+	return canForce
 }
 
 // outputSchemas are a record's outputs' schemas; nil without a record.
@@ -465,10 +492,12 @@ func (j *Job) validate() error {
 	switch {
 	case j.Transform != nil && len(j.Outputs) == 0:
 		return errs.New(errs.ConfigInvalid, "runner: the transform has no outputs")
-	case j.Transform == nil && len(j.Outputs) > 0:
-		return errors.New("runner: outputs without a transform")
 	case j.Transform != nil && j.Continuous:
 		return errs.New(errs.ConfigInvalid, "runner: a transform runs in a scheduled pipeline's syncs")
+	case j.Flink != nil && (!j.Continuous || j.Transform != nil || j.Bridge == nil || len(j.Outputs) == 0):
+		return errs.New(errs.ConfigInvalid, "runner: a Flink job runs in a continuous pipeline, with a bridge and outputs, and without a Spark transform")
+	case j.Flink == nil && j.Transform == nil && len(j.Outputs) > 0:
+		return errors.New("runner: outputs without a transform")
 	}
 	seen := make(map[string]bool)
 	for _, s := range j.Streams {
@@ -482,6 +511,8 @@ func (j *Job) validate() error {
 		switch {
 		case s.NanosecondTimestamps && j.Transform != nil:
 			return errs.New(errs.ConfigInvalid, "runner: stream %q keeps nanosecond timestamps, and Spark keeps only microseconds", s.Name)
+		case j.Flink != nil && s.Replay != source.Exact:
+			return errs.New(errs.ConfigInvalid, "runner: stream %q doesn't replay exactly from a resume point, which a Flink job's restores need", s.Name)
 		case s.NanosecondTimestamps && !j.Destination.Capabilities().NanosecondTimestamps:
 			return errs.New(errs.ConfigInvalid, "runner: stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", s.Name)
 		}
@@ -532,6 +563,8 @@ type epochState struct {
 	rows                  map[string]uint64
 	desc                  destination.Staged
 	flow                  *Ready
+	// In a Flink pipeline, the Flink checkpoint the epoch ends at.
+	flink *checkpoint.FlinkCheckpoint
 }
 
 type commitReq struct {
@@ -576,6 +609,8 @@ type coordinator struct {
 	syncStart     *checkpoint.RecordRef               // the record the sync started after; nil if unknown
 	syncRows      map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
 	measures      map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
+	// Called on the committer's goroutine after it pruned the log.
+	afterPrune func(ctx context.Context, head *checkpoint.Record)
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
@@ -872,6 +907,25 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	start := time.Now()
 	ctx, span := tracer.Start(ctx, "commit", trace.WithAttributes(attribute.String("openetl.pipeline", c.job.Pipeline), attribute.Int64("openetl.epoch", int64(n)))) //nolint:gosec // epochs fit
 	defer func() { endSpan(span, err) }()
+	rec, err := c.record(ctx, n, st)
+	if err != nil {
+		return err
+	}
+	if err := c.apply(ctx, n, st, rec, start); err != nil {
+		return err
+	}
+	select {
+	case c.events <- event{kind: evCommitted, epoch: n}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	c.acknowledge(ctx, st, rec)
+	return nil
+}
+
+// record writes epoch n's checkpoint record, and drops what the epoch
+// before it staged.
+func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*checkpoint.Record, error) {
 	rec := &checkpoint.Record{
 		Epoch:      n,
 		Streams:    make(map[string]checkpoint.StreamState, len(st.states)),
@@ -881,6 +935,7 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 		Quarantine: st.flow.Quarantine,
 		Forced:     st.forced,
 		Sync:       c.job.Sync,
+		Flink:      st.flink,
 		CreatedAt:  time.Now().UTC(),
 	}
 	if c.syncRows != nil {
@@ -898,18 +953,15 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 			Rows:      st.rows[name],
 		}
 	}
-	sinkSchemas := st.flow.Schemas
-	if c.job.Transform != nil {
-		sinkSchemas = st.flow.OutputSchemas
+	if c.job.transformed() {
 		rec.Outputs = make(map[string]checkpoint.OutputState, len(c.job.Outputs))
 		for _, o := range c.job.Outputs {
-			rec.Outputs[o.Name] = checkpoint.OutputState{Schema: sinkSchemas[o.Name], Rows: st.flow.OutputRows[o.Name]}
+			rec.Outputs[o.Name] = checkpoint.OutputState{Schema: st.flow.OutputSchemas[o.Name], Rows: st.flow.OutputRows[o.Name]}
 		}
 	}
 	slices.Sort(rec.Forced)
-	err = retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced)
-	if err != nil {
-		return fmt.Errorf("runner: record checkpoint %d: %w", n, err)
+	if err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced); err != nil {
+		return nil, fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}
 	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	c.dropStaged(ctx, e, len(rec.Files) > 0)
@@ -918,11 +970,22 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 			c.log.Warn("dropping the transform's files of an epoch failed", "epoch", n, "err", err)
 		}
 	}
+	return rec, nil
+}
+
+// apply makes recorded epoch n visible, and reports it. start is when its
+// commit began.
+func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *checkpoint.Record, start time.Time) error {
+	sinkSchemas := st.flow.Schemas
+	if c.job.transformed() {
+		sinkSchemas = st.flow.OutputSchemas
+	}
+	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	if err := retry(ctx, func() error { return applySchemas(ctx, c.w, c.applied, sinkSchemas) }, nil); err != nil {
 		return fmt.Errorf("runner: epoch %d: %w", n, err)
 	}
 	collapsed := map[string]uint64{}
-	err = retry(ctx, func() error {
+	err := retry(ctx, func() error {
 		done, err := c.w.Commit(ctx, e, st.desc)
 		for name, rows := range done.Collapsed {
 			collapsed[name] += rows
@@ -953,16 +1016,16 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	if c.job.OnCheckpoint != nil {
 		c.job.OnCheckpoint(rec, collapsed)
 	}
-	select {
-	case c.events <- event{kind: evCommitted, epoch: n}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return nil
+}
 
+// acknowledge acknowledges the epoch before rec upstream, and prunes now and
+// then.
+func (c *coordinator) acknowledge(ctx context.Context, st *epochState, rec *checkpoint.Record) {
 	// Trail by one checkpoint, so recovery can fall back one record.
 	if ack, ok := c.job.Source.(source.Acknowledger); ok && c.ackStates != nil {
 		if err := ack.Committed(ctx, c.ackStates); err != nil {
-			c.log.Warn("upstream acknowledgement failed; the next commit retries it", "epoch", n-1, "err", err)
+			c.log.Warn("upstream acknowledgement failed; the next commit retries it", "epoch", rec.Epoch-1, "err", err)
 		}
 	}
 	c.ackStates = st.states
@@ -971,8 +1034,10 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	if c.sincePrune++; c.sincePrune >= c.job.keep() {
 		c.sincePrune = 0
 		prune(ctx, c.sess, rec, c.job.keep(), c.job.Staging, c.log)
+		if c.afterPrune != nil {
+			c.afterPrune(ctx, rec)
+		}
 	}
-	return nil
 }
 
 // dropStaged drops the staging of the epoch recorded before e, now that e's

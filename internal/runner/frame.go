@@ -25,6 +25,9 @@ const (
 	// Out of the dataflow only: its part of Epoch is durable, as Ready
 	// describes.
 	FrameReady
+	// Out of the dataflow only, with Plan.ReportSchemas: Stream's schema is
+	// Schema from its next batch on, and from now if it had none.
+	FrameSchema
 )
 
 // Frame is one unit on a job's data path. Barriers travel in band, ordered
@@ -39,6 +42,8 @@ type Frame struct {
 	IPC   []byte
 	Epoch uint64
 	Ready *Ready
+	// An Arrow IPC stream holding only the schema.
+	Schema []byte
 }
 
 // Ready is the dataflow's part of an epoch, recorded in its checkpoint.
@@ -80,6 +85,9 @@ type Plan struct {
 	// From the restored checkpoint, as Ready reported them.
 	Schemas   map[string][]byte
 	Snapshots []checkpoint.Snapshot
+	// out carries FrameSchema frames. An empty batch establishes its
+	// stream's schema without rows.
+	ReportSchemas bool
 }
 
 // SchemaPolicy is how the dataflow takes changes to a stream's established
