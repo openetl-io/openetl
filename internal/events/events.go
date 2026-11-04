@@ -160,14 +160,16 @@ type Column struct {
 
 // Schema is a stream's new schema, and how it differs from the one before.
 type Schema struct {
-	Pipeline string   `json:"pipeline"`
-	Stream   string   `json:"stream"`
-	Version  int32    `json:"version"`
-	Table    string   `json:"table"`
-	Columns  []Column `json:"columns"`
-	Added    []string `json:"added,omitempty"`
-	Removed  []string `json:"removed,omitempty"`
-	Changed  []string `json:"changed,omitempty"`
+	Pipeline string `json:"pipeline"`
+	Stream   string `json:"stream"`
+	// The stream is one of a transform's outputs.
+	Output  bool     `json:"output,omitempty"`
+	Version int32    `json:"version"`
+	Table   string   `json:"table"`
+	Columns []Column `json:"columns"`
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
+	Changed []string `json:"changed,omitempty"`
 }
 
 // Incident is an incident opened, escalated or resolved.

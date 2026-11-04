@@ -242,6 +242,24 @@ func TestSparkTransform(t *testing.T) {
 		t.Errorf("the log has no Spark transform: %v", log)
 	}
 
+	// Schema history keeps the outputs apart from the inputs of their names.
+	pipelineName := "workspaces/default/pipelines/" + name
+	eventually(t, time.Minute, "the outputs' schema history", func() bool {
+		r, err := pipelines().ListStreamSchemas(t.Context(), connect.NewRequest(&apiv1.ListStreamSchemasRequest{Parent: pipelineName}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		epochCol := map[bool]bool{}
+		kinds := map[bool]int{}
+		for _, s := range r.Msg.GetStreamSchemas() {
+			kinds[s.GetOutput()]++
+			for _, c := range s.GetColumns() {
+				epochCol[s.GetOutput()] = epochCol[s.GetOutput()] || c.GetName() == "spark_epoch"
+			}
+		}
+		return kinds[true] == 2 && kinds[false] == 2 && epochCol[true] && !epochCol[false]
+	})
+
 	heads, _ := filepath.Glob(filepath.Join(store, "*", "*", "_checkpoints", "HEAD"))
 	if len(heads) != 1 {
 		t.Fatalf("HEADs: %v", heads)
@@ -272,7 +290,7 @@ func TestSparkTransform(t *testing.T) {
 
 	apply(t, docs(`, "spark.e2e.fail": "true"`)...)
 	first := latestSync(t, name)
-	if _, err := pipelines().SyncPipeline(t.Context(), connect.NewRequest(&apiv1.SyncPipelineRequest{Name: "workspaces/default/pipelines/" + name})); err != nil {
+	if _, err := pipelines().SyncPipeline(t.Context(), connect.NewRequest(&apiv1.SyncPipelineRequest{Name: pipelineName})); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 4*time.Minute, "the failing sync", func() bool {

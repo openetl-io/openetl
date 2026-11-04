@@ -19,3 +19,8 @@ export function shortDigest(d: string, n = 12) {
   const v = d.startsWith("sha256:") ? d.slice(7) : d;
   return v.length > n ? v.slice(0, n) : v;
 }
+
+/** A stream's key in the schemas tab's URL: a transform's output's is o/{name}. */
+export function schemaKey(s: { stream: string; output: boolean }) {
+  return s.output ? `o/${s.stream}` : s.stream;
+}

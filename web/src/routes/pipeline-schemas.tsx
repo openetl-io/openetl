@@ -11,7 +11,7 @@ import { RelativeTime } from "@/components/relative-time";
 import { PipelineService, type SchemaColumn, type StreamSchema } from "@/gen/openetl/api/v1/pipeline_pb";
 import { errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
-import { pipelineName } from "@/lib/names";
+import { pipelineName, schemaKey } from "@/lib/names";
 import { cn } from "@/lib/utils";
 
 const route = getRouteApi("/_app/workspaces/$workspace/pipelines/$pipeline");
@@ -100,9 +100,14 @@ export function SchemasTab({ workspace, pipeline }: { workspace: string; pipelin
   const { stream, version } = route.useSearch();
   const navigate = useNavigate({ from: "/workspaces/$workspace/pipelines/$pipeline" });
   const schemas = useQuery(PipelineService.method.listStreamSchemas, { parent: pipelineName(workspace, pipeline), pageSize: 500 });
+  // A transform's outputs are keyed o/{name}, apart from its inputs, which
+  // can share their names.
   const byStream = useMemo(() => {
     const m = new Map<string, StreamSchema[]>();
-    for (const s of schemas.data?.streamSchemas ?? []) m.set(s.stream, [...(m.get(s.stream) ?? []), s]);
+    for (const s of schemas.data?.streamSchemas ?? []) {
+      const key = schemaKey(s);
+      m.set(key, [...(m.get(key) ?? []), s]);
+    }
     return m;
   }, [schemas.data]);
 
@@ -114,36 +119,52 @@ export function SchemasTab({ workspace, pipeline }: { workspace: string; pipelin
   const names = [...byStream.keys()];
   const selected = stream && byStream.has(stream) ? stream : names[0]!;
   const versions = byStream.get(selected)!;
+  const transformed = names.some((k) => byStream.get(k)![0]!.output);
+  const groups = transformed
+    ? [
+        { label: "Outputs", keys: names.filter((k) => byStream.get(k)![0]!.output) },
+        { label: "Inputs", keys: names.filter((k) => !byStream.get(k)![0]!.output) },
+      ]
+    : [{ label: "", keys: names }];
   const n = Number(version);
   const shown = versions.find((v) => v.version === n) ?? versions[versions.length - 1]!;
   const prev = versions.find((v) => v.version === shown.version - 1);
 
   return (
     <div className="grid gap-6 md:grid-cols-[220px_1fr]">
-      <nav aria-label="Streams" className="grid content-start gap-0.5">
-        {names.map((s) => {
-          const vs = byStream.get(s)!;
-          return (
-            <Button
-              key={s}
-              variant={s === selected ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => navigate({ search: (q) => ({ ...q, stream: s, version: undefined }) })}
-              aria-current={s === selected ? "true" : undefined}
-              className="justify-between font-normal"
-            >
-              <span className="truncate">{s}</span>
-              <span className="font-mono text-xs text-muted-foreground">v{vs[vs.length - 1]!.version}</span>
-            </Button>
-          );
-        })}
+      <nav aria-label="Streams" className="grid content-start gap-3">
+        {groups.map((g) => (
+          <div key={g.label} className="grid gap-0.5">
+            {g.label && <h3 className="px-2 text-xs font-medium text-muted-foreground">{g.label}</h3>}
+            {g.keys.map((k) => {
+              const vs = byStream.get(k)!;
+              return (
+                <Button
+                  key={k}
+                  variant={k === selected ? "secondary" : "ghost"}
+                  size="sm"
+                  onClick={() => navigate({ search: (q) => ({ ...q, stream: k, version: undefined }) })}
+                  aria-current={k === selected ? "true" : undefined}
+                  className="justify-between font-normal"
+                >
+                  <span className="truncate">{vs[0]!.stream}</span>
+                  <span className="font-mono text-xs text-muted-foreground">v{vs[vs.length - 1]!.version}</span>
+                </Button>
+              );
+            })}
+          </div>
+        ))}
       </nav>
       <div className="grid min-w-0 content-start gap-4">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <h2 className="text-base font-semibold">{selected}</h2>
-          <span className="text-muted-foreground">
-            into <code className="font-mono text-[0.8125rem] text-foreground">{shown.table}</code>
-          </span>
+          <h2 className="text-base font-semibold">{shown.stream}</h2>
+          {transformed && !shown.output ? (
+            <span className="text-muted-foreground">as the transform reads it</span>
+          ) : (
+            <span className="text-muted-foreground">
+              into <code className="font-mono text-[0.8125rem] text-foreground">{shown.table}</code>
+            </span>
+          )}
           <div role="tablist" aria-label="Versions" className="flex flex-wrap gap-1 sm:ml-auto">
             {versions.map((v) => (
               <Button

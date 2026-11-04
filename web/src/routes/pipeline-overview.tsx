@@ -22,7 +22,7 @@ import { type ConnectorVersion, SyncMode } from "@/gen/openetl/api/v1/connection
 import { SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { errorMessage } from "@/lib/api";
 import { compact, enumLabel, full, sentence } from "@/lib/format";
-import { lastSegment } from "@/lib/names";
+import { lastSegment, schemaKey } from "@/lib/names";
 import type { GraphStream } from "@/components/pipeline-graph";
 
 const PipelineGraph = lazy(() => import("@/components/pipeline-graph"));
@@ -43,6 +43,7 @@ type Row = GraphStream & {
   quarantined?: bigint;
   collapsed?: bigint;
   schema?: number;
+  schemaKey?: string;
 };
 
 const calloutTone = {
@@ -92,7 +93,14 @@ export function Overview({
     for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor });
     for (const s of last?.streams ?? [])
       Object.assign(get(s.name), { rows: s.rows, quarantined: s.quarantinedRows, collapsed: s.collapsedRows });
-    for (const s of schemas.data?.streamSchemas ?? []) get(s.stream).schema = Math.max(get(s.stream).schema ?? 0, s.version);
+    // A transform's output comes first, and is the destination's stream of
+    // its name; an input of the same name is left to the schemas tab.
+    for (const s of schemas.data?.streamSchemas ?? []) {
+      const r = get(s.stream);
+      if (r.schemaKey && r.schemaKey !== schemaKey(s)) continue;
+      r.schema = Math.max(r.schema ?? 0, s.version);
+      r.schemaKey = schemaKey(s);
+    }
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [plan.data, spec, last, schemas.data]);
 
@@ -279,7 +287,7 @@ function StreamsTable({
             <Link
               to="/workspaces/$workspace/pipelines/$pipeline"
               params={{ workspace, pipeline }}
-              search={{ tab: "schemas", stream: row.original.name }}
+              search={{ tab: "schemas", stream: row.original.schemaKey }}
               className="font-mono text-[0.8125rem] hover:underline"
             >
               v{row.original.schema}

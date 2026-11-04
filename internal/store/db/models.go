@@ -345,6 +345,7 @@ type StreamSchema struct {
 	Generation  int64
 	Epoch       int64
 	CreateTime  time.Time
+	Output      bool
 }
 
 type Sync struct {

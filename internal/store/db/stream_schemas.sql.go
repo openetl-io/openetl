@@ -13,17 +13,18 @@ import (
 )
 
 const addStreamSchema = `-- name: AddStreamSchema :many
-INSERT INTO stream_schemas (org_id, pipeline_id, stream, version, digest, "table", columns, arrow_schema, generation, epoch)
-SELECT $1, $2, $3,
-       coalesce(max(version), 0) + 1, $4, $5, $6, $7, $8, $9
-FROM stream_schemas WHERE org_id = $1 AND pipeline_id = $2 AND stream = $3
-ON CONFLICT (org_id, pipeline_id, stream, digest) DO NOTHING
+INSERT INTO stream_schemas (org_id, pipeline_id, output, stream, version, digest, "table", columns, arrow_schema, generation, epoch)
+SELECT $1, $2, $3, $4,
+       coalesce(max(version), 0) + 1, $5, $6, $7, $8, $9, $10
+FROM stream_schemas WHERE org_id = $1 AND pipeline_id = $2 AND output = $3 AND stream = $4
+ON CONFLICT (org_id, pipeline_id, output, stream, digest) DO NOTHING
 RETURNING version
 `
 
 type AddStreamSchemaParams struct {
 	OrgID       uuid.UUID
 	PipelineID  uuid.UUID
+	Output      bool
 	Stream      string
 	Digest      string
 	TableName   string
@@ -38,6 +39,7 @@ func (q *Queries) AddStreamSchema(ctx context.Context, arg AddStreamSchemaParams
 	rows, err := q.db.Query(ctx, addStreamSchema,
 		arg.OrgID,
 		arg.PipelineID,
+		arg.Output,
 		arg.Stream,
 		arg.Digest,
 		arg.TableName,
@@ -66,12 +68,13 @@ func (q *Queries) AddStreamSchema(ctx context.Context, arg AddStreamSchemaParams
 
 const getStreamSchemaColumns = `-- name: GetStreamSchemaColumns :one
 SELECT columns FROM stream_schemas
-WHERE org_id = $1 AND pipeline_id = $2 AND stream = $3 AND version = $4
+WHERE org_id = $1 AND pipeline_id = $2 AND output = $3 AND stream = $4 AND version = $5
 `
 
 type GetStreamSchemaColumnsParams struct {
 	OrgID      uuid.UUID
 	PipelineID uuid.UUID
+	Output     bool
 	Stream     string
 	Version    int32
 }
@@ -80,6 +83,7 @@ func (q *Queries) GetStreamSchemaColumns(ctx context.Context, arg GetStreamSchem
 	row := q.db.QueryRow(ctx, getStreamSchemaColumns,
 		arg.OrgID,
 		arg.PipelineID,
+		arg.Output,
 		arg.Stream,
 		arg.Version,
 	)
@@ -89,25 +93,27 @@ func (q *Queries) GetStreamSchemaColumns(ctx context.Context, arg GetStreamSchem
 }
 
 const listStreamSchemas = `-- name: ListStreamSchemas :many
-SELECT stream, version, digest, "table", columns, generation, epoch, create_time
+SELECT output, stream, version, digest, "table", columns, generation, epoch, create_time
 FROM stream_schemas
 WHERE org_id = $1 AND pipeline_id = $2
   AND ($3::text = '' OR stream = $3)
-  AND (stream, version) > ($4::text, $5::integer)
-ORDER BY stream, version
-LIMIT $6
+  AND (NOT output, stream, version) > ($4::boolean, $5::text, $6::integer)
+ORDER BY NOT output, stream, version
+LIMIT $7
 `
 
 type ListStreamSchemasParams struct {
 	OrgID        uuid.UUID
 	PipelineID   uuid.UUID
 	Stream       string
+	AfterInput   bool
 	AfterStream  string
 	AfterVersion int32
 	MaxRows      int32
 }
 
 type ListStreamSchemasRow struct {
+	Output     bool
 	Stream     string
 	Version    int32
 	Digest     string
@@ -118,13 +124,14 @@ type ListStreamSchemasRow struct {
 	CreateTime time.Time
 }
 
-// By stream, then version, after (after_stream, after_version); only the
-// stream named, if one is.
+// Outputs first, then by stream and version, after (after_input,
+// after_stream, after_version); only the stream named, if one is.
 func (q *Queries) ListStreamSchemas(ctx context.Context, arg ListStreamSchemasParams) ([]ListStreamSchemasRow, error) {
 	rows, err := q.db.Query(ctx, listStreamSchemas,
 		arg.OrgID,
 		arg.PipelineID,
 		arg.Stream,
+		arg.AfterInput,
 		arg.AfterStream,
 		arg.AfterVersion,
 		arg.MaxRows,
@@ -137,6 +144,7 @@ func (q *Queries) ListStreamSchemas(ctx context.Context, arg ListStreamSchemasPa
 	for rows.Next() {
 		var i ListStreamSchemasRow
 		if err := rows.Scan(
+			&i.Output,
 			&i.Stream,
 			&i.Version,
 			&i.Digest,
@@ -174,7 +182,7 @@ func (q *Queries) LockPipelineSchemas(ctx context.Context, arg LockPipelineSchem
 
 const streamSchemaVersions = `-- name: StreamSchemaVersions :many
 SELECT stream, digest, version FROM stream_schemas
-WHERE org_id = $1 AND pipeline_id = $2
+WHERE org_id = $1 AND pipeline_id = $2 AND NOT output
 `
 
 type StreamSchemaVersionsParams struct {
@@ -188,6 +196,7 @@ type StreamSchemaVersionsRow struct {
 	Version int32
 }
 
+// The source's streams' schemas, which the checkpoint mirror names.
 func (q *Queries) StreamSchemaVersions(ctx context.Context, arg StreamSchemaVersionsParams) ([]StreamSchemaVersionsRow, error) {
 	rows, err := q.db.Query(ctx, streamSchemaVersions, arg.OrgID, arg.PipelineID)
 	if err != nil {
