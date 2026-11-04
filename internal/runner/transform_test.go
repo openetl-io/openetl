@@ -63,6 +63,8 @@ type fakeTransform struct {
 	failAt uint64
 	// Leave out _openetl_seq.
 	noSeq bool
+	// Start fails.
+	failStart bool
 
 	mu     sync.Mutex
 	staged map[string][]arrow.RecordBatch
@@ -91,6 +93,9 @@ func (f *fakeTransform) URL() string { return "mem://spark" }
 
 func (f *fakeTransform) Start(_ context.Context, gen uint64) error {
 	f.c.add("start %d", gen)
+	if f.failStart {
+		return errs.New(errs.Transient, "the submission timed out")
+	}
 	return nil
 }
 
@@ -315,6 +320,22 @@ func TestTransformFailureIsRedone(t *testing.T) {
 		}
 		if committed != 6 {
 			t.Errorf("committed records hold %d output rows, want 6", committed)
+		}
+	})
+}
+
+// A transform that fails to start is stopped anyway, since its submission
+// may have reached the cluster.
+func TestTransformStartFails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := &calls{}
+		_, err := runner.RunAttempt(t.Context(), transformJob(checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), "a1",
+			&fakeTransform{c: c, failStart: true}, &transformDest{}, map[string]int{"a": 1}, outAppend))
+		if errs.CodeOf(err) != errs.Transient {
+			t.Fatalf("err = %v", err)
+		}
+		if got := c.take(); !slices.Equal(got, []string{"start 1", "stop"}) {
+			t.Errorf("calls: %v", got)
 		}
 	})
 }

@@ -4,7 +4,8 @@
 // exactly-once, and the right final rows where effectively-once. Streams
 // without a primary key hold some rows twice, and check what collapses.
 // Overwrite tables start with an earlier read's rows, which the sync's read
-// must replace.
+// must replace. The spark kind puts a Spark transform before one of the
+// other sinks, and checks the runner keeps the transform's contract.
 //
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace
@@ -37,8 +38,9 @@ var (
 )
 
 // parquet is stage-and-apply like warehouse, but can't dedupe or commit
-// across tables.
-var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged"}
+// across tables. spark is one of the others with a Spark transform before
+// it, whose outputs take their inputs' names and settings.
+var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark"}
 
 func TestSimulation(t *testing.T) {
 	for _, kind := range sinkKinds {
@@ -73,14 +75,23 @@ type streamCfg struct {
 	keyed    bool
 	require  delivery.Level
 	collapse *bool
+	// The output of its name, which is exact when every input is.
+	transformed bool
+	outReplay   source.Replay
 }
 
+// delivery is what the destination gets: the stream, or the transform's
+// output of its name.
 func (s streamCfg) delivery(mode destination.WriteMode) delivery.Stream {
+	if s.transformed {
+		return delivery.Stream{Name: s.name, Replay: s.outReplay, Mode: mode, Keyed: s.keyed, Require: s.require, Transformed: true}
+	}
 	return delivery.Stream{Name: s.name, Replay: s.replay, Mode: mode, Keyed: s.keyed, Require: s.require, Collapse: s.collapse}
 }
 
 type config struct {
 	kind     string
+	spark    bool
 	streams  []streamCfg
 	mode     destination.WriteMode
 	settings delivery.Settings
@@ -92,6 +103,9 @@ type config struct {
 
 func (c config) String() string {
 	var b strings.Builder
+	if c.spark {
+		b.WriteString("spark ")
+	}
 	fmt.Fprintf(&b, "sink=%s mode=%d scope=%d require=%v maxBytes=%d interval=%v resumeTimeout=%v faults=%d zombies=%d keep=%d streams=",
 		c.kind, c.mode, c.settings.Scope, c.settings.Require, c.settings.CommitMaxBytes,
 		c.settings.CommitInterval, c.settings.ResumePointTimeout, c.faults, c.zombies, c.keep)
@@ -109,7 +123,11 @@ func (c config) String() string {
 }
 
 func randomConfig(rng *rand.Rand, kind string) config {
-	c := config{kind: kind, mode: destination.Append, faults: rng.IntN(9), zombies: rng.IntN(3)}
+	spark := kind == "spark"
+	if spark {
+		kind = sinkKinds[rng.IntN(len(sinkKinds)-1)]
+	}
+	c := config{kind: kind, spark: spark, mode: destination.Append, faults: rng.IntN(9), zombies: rng.IntN(3)}
 	if kind == "warehouse" {
 		c.mode = []destination.WriteMode{destination.Append, destination.Overwrite, destination.Merge}[rng.IntN(3)]
 	}
@@ -122,11 +140,23 @@ func randomConfig(rng *rand.Rand, kind string) config {
 		if rng.IntN(3) == 0 {
 			s.require = []delivery.Level{delivery.AtLeastOnce, delivery.ExactlyOnce}[rng.IntN(2)]
 		}
-		// Only a sink that can dedupe can collapse.
-		if kind == "warehouse" && c.mode != destination.Merge && rng.IntN(2) == 0 {
+		// Only a sink that can dedupe can collapse, and a transform's
+		// outputs never do.
+		if kind == "warehouse" && !spark && c.mode != destination.Merge && rng.IntN(2) == 0 {
 			s.collapse = new(rng.IntN(2) == 0)
 		}
 		c.streams = append(c.streams, s)
+	}
+	if spark {
+		out := source.Exact
+		for _, s := range c.streams {
+			if s.replay != source.Exact {
+				out = source.Superset
+			}
+		}
+		for i := range c.streams {
+			c.streams[i].transformed, c.streams[i].outReplay = true, out
+		}
 	}
 	c.settings = delivery.Settings{
 		Require:        delivery.ExactlyOnce,
@@ -164,6 +194,7 @@ type world struct {
 	broker    *broker
 	recv      *receiver
 	staged    *stagedStore
+	spark     *sparkCluster
 	lost      error
 	// Streams forced in any record ever written, pruned ones included.
 	forced map[string]bool
@@ -211,6 +242,16 @@ func (w *world) job(attempt int) runner.Job {
 			st.PrimaryKey = []string{"key"}
 		}
 		j.Streams = append(j.Streams, st)
+		if s.transformed {
+			out := runner.Stream{Name: s.name, Replay: s.outReplay, Mode: w.cfg.mode, PrimaryKey: st.PrimaryKey, Require: s.require, Transformed: true}
+			j.Outputs = append(j.Outputs, out)
+		}
+	}
+	if w.cfg.spark {
+		app := &sparkApp{w: w, attempt: attempt}
+		j.Transform = app
+		second := j.Dataflow.(runner.Passthrough)
+		j.Dataflow = sparkFlow{first: runner.Passthrough{Convert: toArrow, Stage: app.stage}, second: second}
 	}
 	return j
 }
@@ -228,10 +269,11 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		cfg:       cfg,
 		store:     checkpoint.NewMemStore(),
 		upstreams: map[string]*upstream{},
-		wh:        newWarehouse(kind == "warehouse"),
+		wh:        newWarehouse(cfg.kind == "warehouse"),
 		broker:    newBroker(),
 		recv:      &receiver{applies: map[string]int{}},
 		staged:    newStagedStore(),
+		spark:     newSparkCluster(),
 		forced:    map[string]bool{},
 	}
 	for _, s := range cfg.streams {
@@ -272,6 +314,13 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 			}
 		}
 		r, err := runner.RunAttempt(context.Background(), j)
+		if app, ok := j.Transform.(*sparkApp); ok {
+			app.mu.Lock()
+			if app.started && !app.stopped {
+				w.spark.problem("a%d returned without stopping its Spark application", attempt)
+			}
+			app.mu.Unlock()
+		}
 		if errors.Is(err, checkpoint.ErrFenced) || errors.Is(err, destination.ErrFenced) {
 			res.stats["fenced attempts"]++
 		}
@@ -285,7 +334,12 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 	res.steps = w.sched.steps
 	res.stats["attempts"] += attempts
 	res.stats["zombies"] += cfg.zombies - w.sched.zombies
+	if cfg.spark {
+		res.stats["spark generations ended by a newer one"] += len(w.spark.dropped)
+	}
 	switch {
+	case len(w.spark.problems) > 0:
+		res.failure = "the Spark transform's contract: " + strings.Join(lastN(w.spark.problems, 8), "; ")
 	case w.lost != nil:
 		res.failure = w.lost.Error()
 	case err != nil:
@@ -306,7 +360,8 @@ func (w *world) check(caps destination.Capabilities, stats map[string]int) strin
 		require := cmp.Or(s.require, w.cfg.settings.Require)
 		p := delivery.PlanStream(caps, ds, w.cfg.settings.Require)
 		level, forcedDedupe := p.Level, destination.DedupeNone
-		if forced[s.name] {
+		// A barrier forced on any input makes every output superset.
+		if forced[s.name] || s.transformed && len(forced) > 0 {
 			stats["forced streams"]++
 			f := delivery.PlanStream(caps, ds.Forced(w.cfg.settings.Require), w.cfg.settings.Require)
 			if f.Level < require {

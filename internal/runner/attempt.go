@@ -338,14 +338,16 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	}
 	if job.Transform != nil {
 		c.outputSchemas = outputSchemas(restored)
-		if err := job.Transform.Start(ctx, res.Generation); err != nil {
-			return res, fmt.Errorf("runner: start the transform: %w", err)
-		}
+		// Stopped even if it didn't start: a submission whose outcome is
+		// unknown may be running.
 		defer func() {
 			if serr := job.Transform.Stop(context.WithoutCancel(ctx)); serr != nil {
 				log.Warn("stopping the transform failed", "err", serr)
 			}
 		}()
+		if err := job.Transform.Start(ctx, res.Generation); err != nil {
+			return res, fmt.Errorf("runner: start the transform: %w", err)
+		}
 	}
 	return res, c.run(ctx, restored, canForce)
 }

@@ -31,12 +31,17 @@ type fakeSubmitter struct {
 	states map[string]State
 	found  map[string]string
 	killed []string
+	// Submit fails with it, after the cluster took the application.
+	submitErr error
 }
 
 func (f *fakeSubmitter) Submit(_ context.Context, app Application) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.apps = append(f.apps, app)
+	if f.submitErr != nil {
+		return "", f.submitErr
+	}
 	id := fmt.Sprintf("driver-%d", len(f.apps))
 	f.states[id] = State{State: "RUNNING"}
 	return id, nil
@@ -271,6 +276,32 @@ func TestTransformFailures(t *testing.T) {
 	err = tr.Epoch(ctx, destination.Epoch{Generation: 1, N: 2}, nil, nil)
 	if errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "ended FAILED without transforming epoch 2: the driver's node was lost") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A transform whose submission fails is stopped too: its _alive stops being
+// rewritten, and _end ends an application the cluster took.
+func TestTransformSubmitFails(t *testing.T) {
+	sub := &fakeSubmitter{states: map[string]State{}, submitErr: errs.New(errs.Transient, "timed out")}
+	tr, root := newTestTransform(t, sub)
+	ctx := t.Context()
+	if err := tr.Start(ctx, 1); errs.CodeOf(err) != errs.Transient {
+		t.Fatalf("start: %v", err)
+	}
+	if err := tr.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "1", "_end")); err != nil {
+		t.Errorf("no _end: %v", err)
+	}
+	alive := filepath.Join(root, "1", "_alive")
+	before, err := os.ReadFile(alive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * tr.Alive)
+	if after, _ := os.ReadFile(alive); string(after) != string(before) {
+		t.Errorf("_alive was rewritten after Stop: %s, then %s", before, after)
 	}
 }
 

@@ -30,7 +30,8 @@ type Transform interface {
 	// Drop deletes what epoch e left, once its record is written. It's best
 	// effort.
 	Drop(ctx context.Context, e destination.Epoch) error
-	// Stop ends the attempt's transform, whether the attempt failed or not.
+	// Stop ends the attempt's transform, whether the attempt failed or not,
+	// and after a Start that failed.
 	Stop(ctx context.Context) error
 }
 
