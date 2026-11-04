@@ -114,10 +114,6 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    env:
-      # Mounted in the Spark containers, whose user must reach it: the
-      # checkout is under /home/runner, which only the runner's user can.
-      OPENETL_SPARK_SHARE: /tmp/openetl-spark
     steps:
       # The whole stack's images and the connectors' builds don't fit beside
       # the runner's preinstalled SDKs, none of which the job uses. Deleting

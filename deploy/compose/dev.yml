@@ -149,9 +149,11 @@ services:
   # runners on the host submit through deploy/compose/spark-submit, which runs
   # spark-submit in this container. OPENETL_SPARK_SHARE is mounted at the same
   # path in both, so a runner whose store is below it hands Spark file:// URIs
-  # it can read, without S3A.
+  # it can read, without S3A. They run as root: a directory store's
+  # directories are the runner's user's alone (0750).
   spark-master:
     image: apache/spark:3.5.8
+    user: root
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master"]
     # The UI, through which runners watch and kill drivers.
     ports: ["8090:8080"]
@@ -164,6 +166,7 @@ services:
 
   spark-worker:
     image: apache/spark:3.5.8
+    user: root
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
     environment:
       SPARK_WORKER_CORES: "2"
