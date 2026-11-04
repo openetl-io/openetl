@@ -68,18 +68,29 @@ type ConnectorOp struct {
 	ExpireTime    time.Time
 }
 
+type ConnectorRole struct {
+	OrgID   uuid.UUID
+	Name    string
+	Version string
+	Role    string
+	Digest  string
+}
+
 type ConnectorVersion struct {
-	OrgID      uuid.UUID
-	Kind       string
-	Name       string
-	Version    string
-	Digest     string
-	Provenance string
-	CreateTime time.Time
-	Author     string
-	Logo       string
-	ReleaseTag string
-	ReleaseUrl string
+	OrgID       uuid.UUID
+	Name        string
+	Version     string
+	Provenance  string
+	CreateTime  time.Time
+	Author      string
+	Logo        string
+	ReleaseTag  string
+	ReleaseUrl  string
+	Description string
+	License     string
+	Repository  string
+	Docs        string
+	Tags        []string
 }
 
 type DataPlane struct {

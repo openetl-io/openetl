@@ -4,70 +4,88 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/spec"
+	"github.com/unsuitable001/openetl/internal/connectorpkg"
 )
 
 func TestPackage(t *testing.T) {
-	exe := filepath.Join(t.TempDir(), "destination-files")
-	if out, err := exec.Command("go", "build", "-o", exe, "../../internal/connectorhost/external/testconnector").CombinedOutput(); err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-	content, err := os.ReadFile(exe)
-	if err != nil {
-		t.Fatal(err)
-	}
+	files, acme := "../../internal/connectorpkg/testdata/files", "../../internal/connectorpkg/testdata/acme"
+	out := t.TempDir()
 	here := connectorhost.Platform()
-	var out bytes.Buffer
-	err = run(t.Context(), []string{"connector", "package", "--name", "files", "--version", "0.3.0",
-		"--exe", here + "=" + exe, "--exe", "plan9/386=" + exe,
-		"--url-template", "https://example.com/releases/download/v0.3.0/destination-files_{os}_{arch}",
-		"--author", "Example", "--logo", "https://example.com/files.svg", "--release-tag", "v0.3.0", "--release-url", "https://example.com/releases/v0.3.0"}, &out)
+	var buf bytes.Buffer
+	err := run(t.Context(), []string{"connector", "package", "--tag", "files/v0.3.0", "--out", out, "--platforms", here, files, acme}, &buf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := connectorhost.ParseVersion(out.Bytes())
+	if got := buf.String(); got != "openetl/files 0.3.0: "+filepath.Join(out, "files.connector.yaml")+"\n" {
+		t.Errorf("printed %q", got)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "files.connector.yaml"))
 	if err != nil {
-		t.Fatalf("%v\n%s", err, out.String())
+		t.Fatal(err)
 	}
-	goos, arch, _ := strings.Cut(here, "/")
-	bin := v.Descriptor.Binaries[here]
-	if v.Kind != "destination" || v.Name != "files" || v.Version != "0.3.0" || len(v.Descriptor.Binaries) != 2 ||
-		bin.URL != "https://example.com/releases/download/v0.3.0/destination-files_"+goos+"_"+arch || bin.Digest != connectorhost.Digest(content) {
-		t.Fatalf("descriptor %+v\n%s", v, out.String())
+	v, err := connectorhost.ParseVersion(b)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, b)
 	}
-	if v.Info != (spec.Info{Author: "Example", Logo: "https://example.com/files.svg", ReleaseTag: "v0.3.0", ReleaseURL: "https://example.com/releases/v0.3.0"}) {
-		t.Errorf("info %+v", v.Info)
+	exe, err := os.ReadFile(filepath.Join(out, connectorpkg.Asset("files", "destination", here)))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "tier: raw") || !strings.Contains(out.String(), "x-secret: true") {
-		t.Errorf("the descriptor leaves out the spec:\n%s", out.String())
+	if bin := v.Roles["destination"].Binaries[here]; v.Version != "0.3.0" || bin.Digest != connectorhost.Digest(exe) || !strings.Contains(bin.URL, "/releases/download/files/v0.3.0/") {
+		t.Errorf("version %s, binary %+v", v.Version, bin)
 	}
 
-	out.Reset()
-	err = run(t.Context(), []string{"connector", "package", "--name", "files", "--version", "0.3.0",
-		"--exe", here + "=" + exe, "--url", here + "=https://example.com/files?platform=" + here}, &out)
-	if err != nil {
+	buf.Reset()
+	if err := run(t.Context(), []string{"connector", "package", "--version", "1.0.0", "--out", out, acme}, &buf); err != nil {
 		t.Fatal(err)
 	}
-	if v, err := connectorhost.ParseVersion(out.Bytes()); err != nil || v.Descriptor.Binaries[here].URL != "https://example.com/files?platform="+here {
-		t.Errorf("--url: %+v, %v", v, err)
+	if !strings.Contains(buf.String(), "example/acme 1.0.0") {
+		t.Errorf("printed %q", buf.String())
+	}
+	b, _ = os.ReadFile(filepath.Join(out, "acme.connector.yaml"))
+	if !strings.Contains(string(b), "tag: v1.0.0") {
+		t.Errorf("a single package's tag:\n%s", b)
 	}
 
 	for name, args := range map[string][]string{
-		"no executable for this platform": {"--exe", "plan9/386=" + exe, "--url", "plan9/386=https://example.com/x"},
-		"no url for an executable":        {"--exe", here + "=" + exe, "--url", "plan9/386=https://example.com/x"},
-		"both kinds of url":               {"--exe", here + "=" + exe, "--url", here + "=https://example.com/x", "--url-template", "https://example.com/{os}"},
-		"a logo over http":                {"--exe", here + "=" + exe, "--url", here + "=https://example.com/x", "--logo", "http://example.com/x.svg"},
+		"no version":          {files},
+		"tag and version":     {"--tag", "v1.0.0", "--version", "1.0.0", files},
+		"no package named so": {"--tag", "other/v1.0.0", files, acme},
+		"a tag for two":       {"--tag", "v1.0.0", files, acme},
+		"not a version":       {"--version", "1.0", files},
+		"no file":             {"--version", "1.0.0", t.TempDir()},
+		"no executable here":  {"--version", "1.0.0", "--platforms", "plan9/386", files},
 	} {
-		err := run(t.Context(), append([]string{"connector", "package", "--name", "files", "--version", "0.3.0"}, args...), io.Discard)
-		if err == nil {
+		if err := run(t.Context(), append([]string{"connector", "package", "--out", t.TempDir()}, args...), io.Discard); err == nil {
 			t.Errorf("%s: packaged", name)
 		}
+	}
+}
+
+func TestValidate(t *testing.T) {
+	files, acme := "../../internal/connectorpkg/testdata/files", "../../internal/connectorpkg/testdata/acme"
+	var buf bytes.Buffer
+	if err := run(t.Context(), []string{"connector", "validate", "--require", "author,logo", files}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if buf.String() != files+": openetl/files\n" {
+		t.Errorf("printed %q", buf.String())
+	}
+	err := run(t.Context(), []string{"connector", "validate", "--require", "author,logo", files, acme}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "example/acme has no author or logo") {
+		t.Errorf("a file without what's required: %v", err)
+	}
+	broken := t.TempDir()
+	if err := os.WriteFile(filepath.Join(broken, connectorpkg.FileName), []byte("name: x\nroles: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t.Context(), []string{"connector", "validate", broken}, io.Discard); err == nil {
+		t.Error("validated a file without a repository or roles")
 	}
 }
 

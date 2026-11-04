@@ -384,3 +384,62 @@ func TestSecretRefsMigration(t *testing.T) {
 		}
 	}
 }
+
+// Migration 24 makes connector versions packages: a source and a
+// destination of one name and version become one version with two roles,
+// and bare names become openetl's.
+func TestConnectorPackagesMigration(t *testing.T) {
+	ctx := t.Context()
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.MigrateTo(ctx, 23); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	org := uuid.New()
+	for _, q := range []string{
+		`INSERT INTO orgs (id, name) VALUES (@org, 'o')`,
+		`INSERT INTO artifacts (org_id, digest, media_type, content) VALUES (@org, 'sha256:s', 'x', ''), (@org, 'sha256:d', 'x', ''), (@org, 'sha256:k', 'x', '')`,
+		`INSERT INTO connector_versions (org_id, kind, name, version, digest, provenance, author, create_time)
+			VALUES (@org, 'destination', 'postgres', '0.1.0', 'sha256:d', 'cli:d', 'Late', now()),
+			       (@org, 'source', 'postgres', '0.1.0', 'sha256:s', 'cli:s', 'Early', now() - interval '1 hour'),
+			       (@org, 'source', 'kafka', '0.2.0', 'sha256:k', 'cli:k', '', now())`,
+	} {
+		if _, err := conn.Exec(ctx, q, pgx.NamedArgs{"org": org}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pg, err := s.GetConnectorVersion(ctx, db.GetConnectorVersionParams{OrgID: org, Name: "openetl/postgres", Version: "0.1.0"})
+	if err != nil || pg.Author != "Early" || pg.Provenance != "cli:s" {
+		t.Fatalf("postgres 0.1.0: %+v, %v", pg, err)
+	}
+	roles, err := s.ListVersionRoles(ctx, db.ListVersionRolesParams{OrgID: org, Name: "openetl/postgres", Version: "0.1.0"})
+	if err != nil || len(roles) != 2 {
+		t.Fatalf("roles %+v, %v", roles, err)
+	}
+	for _, r := range roles {
+		if r.Digest != map[string]string{"source": "sha256:s", "destination": "sha256:d"}[r.Role] {
+			t.Errorf("role %+v", r)
+		}
+	}
+	if got, err := s.ListConnectorRoles(ctx, db.ListConnectorRolesParams{OrgID: org, Name: "openetl/kafka", Role: "source"}); err != nil || len(got) != 1 || got[0].Digest != "sha256:k" {
+		t.Errorf("kafka's source: %+v, %v", got, err)
+	}
+	if got, err := s.ConnectorVersionsByDigest(ctx, db.ConnectorVersionsByDigestParams{OrgID: org, Digests: []string{"sha256:d"}}); err != nil || len(got) != 1 || got[0].Role != "destination" || got[0].Name != "openetl/postgres" {
+		t.Errorf("by digest: %+v, %v", got, err)
+	}
+	if err := s.InsertConnectorRole(ctx, db.InsertConnectorRoleParams{OrgID: org, Name: "openetl/none", Version: "1.0.0", Role: "source", Digest: "sha256:s"}); err == nil {
+		t.Error("a role of a version that doesn't exist")
+	}
+}

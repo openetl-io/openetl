@@ -167,13 +167,17 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	if mode != planAll {
 		dryRun = fs.Bool("dry-run", false, "validate without changing anything")
 	}
+	var transfer files
+	if mode == applyConnectors {
+		fs.Var(&transfer, "transfer", "a connector package whose versions may come from another repository than its earlier ones; repeatable")
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if len(paths) == 0 || fs.NArg() > 0 {
 		return fmt.Errorf("%s takes one or more -f FILE, and no arguments", strings.TrimPrefix(cmd, "openetl "))
 	}
-	req := &apiv1.ApplyRequest{ValidateOnly: *dryRun || mode == planAll, Client: "cli"}
+	req := &apiv1.ApplyRequest{ValidateOnly: *dryRun || mode == planAll, Client: "cli", Transfer: transfer}
 	if *workspace != "" {
 		req.Workspace = "workspaces/" + *workspace
 	}

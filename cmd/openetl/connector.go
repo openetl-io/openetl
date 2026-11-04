@@ -6,20 +6,26 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/connectorpkg"
 	"github.com/unsuitable001/openetl/internal/spec"
 )
 
 const connectorUsage = `usage: openetl connector <command> [flags]
 
 Commands:
-  package   write the descriptor of an external connector's executables,
-            which runners download from the URLs you give
+  package [DIR...] (--tag TAG | --version VERSION)
+            build each directory's openetl-connector.yaml for every platform,
+            and write its executables and descriptor, for a release
+  validate [DIR...]
+            check each directory's openetl-connector.yaml, without building
   apply -f FILE
             apply the connector versions in FILE: descriptors and manifests
 `
@@ -32,6 +38,8 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 	switch args[0] {
 	case "package":
 		return runPackage(ctx, args[1:], out)
+	case "validate":
+		return runValidate(args[1:], out)
 	case "apply":
 		return runApplyDocuments(ctx, "openetl connector apply", args[1:], out, applyConnectors)
 	}
@@ -42,62 +50,145 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 func runPackage(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("openetl connector package", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: openetl connector package --name NAME --version VERSION --exe OS/ARCH=PATH ... (--url OS/ARCH=URL ... | --url-template URL) [-o FILE]")
-		fmt.Fprintln(fs.Output(), "\nWrites the descriptor of executables you publish yourself, such as a git release's assets. One must be for this machine's platform, which is run once to read its spec.")
+		fmt.Fprintln(fs.Output(), "usage: openetl connector package [DIR...] (--tag TAG | --version VERSION) [--out DIR] [--url-template URL] [--platforms LIST]")
+		fmt.Fprintln(fs.Output(), "\nBuilds the package in each DIR (default .) from its openetl-connector.yaml, for every platform, and writes")
+		fmt.Fprintln(fs.Output(), "each executable as its release asset, NAME-ROLE-OS-ARCH, and the descriptor, NAME.connector.yaml, into --out.")
+		fmt.Fprintln(fs.Output(), "--tag NAME/vX.Y.Z picks the DIR whose package is NAME, among DIRs or the subdirectories of ., and --tag vX.Y.Z")
+		fmt.Fprintln(fs.Output(), "takes a repository with one package. --version without --tag packages every DIR, each tagged v{version}, or")
+		fmt.Fprintln(fs.Output(), "NAME/v{version} when there are several.")
 		fs.PrintDefaults()
 	}
-	var exes, urls files
-	fs.Var(&exes, "exe", "an executable for a platform, as os/arch=path; repeatable")
-	fs.Var(&urls, "url", "where runners download a platform's executable, as os/arch=url; repeatable")
-	template := fs.String("url-template", "", "where runners download each executable, with {os} and {arch} in it")
-	name := fs.String("name", "", "the connector's name, such as postgres")
-	version := fs.String("version", "", "the connector's version, such as 0.1.0")
-	var info spec.Info
-	fs.StringVar(&info.Author, "author", "", "who made the connector")
-	fs.StringVar(&info.Logo, "logo", "", "an https URL of its logo, for the UI")
-	fs.StringVar(&info.ReleaseTag, "release-tag", "", "the git tag the executables were built from")
-	fs.StringVar(&info.ReleaseURL, "release-url", "", "an https URL of the release, such as its page")
-	output := fs.String("o", "-", "where to write the descriptor")
+	tag := fs.String("tag", "", "the release's git tag: NAME/vX.Y.Z, or vX.Y.Z")
+	version := fs.String("version", "", "the version, when there's no tag")
+	outDir := fs.String("out", "dist", "where to write the executables and descriptors")
+	urls := fs.String("url-template", "", "where runners download each executable, with {tag}, {asset}, {version}, {name}, {role}, {os} and {arch} (default: the GitHub release's assets)")
+	platforms := fs.String("platforms", "", "the os/arch pairs to build, comma-separated (default: the file's)")
+	verbose := fs.Bool("v", false, "show the builds' output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *name == "" || *version == "" || len(exes) == 0 || (len(urls) == 0) == (*template == "") || fs.NArg() > 0 {
+	if (*tag == "") == (*version == "") {
 		fs.Usage()
-		return errors.New("package needs --name, --version, at least one --exe, and --url or --url-template")
+		return errors.New("package needs --tag or --version")
 	}
-	byPlatform := map[string]string{}
-	for _, u := range urls {
-		platform, url, ok := strings.Cut(u, "=")
-		if !ok {
-			return fmt.Errorf("--url %q isn't os/arch=url", u)
-		}
-		byPlatform[platform] = url
-	}
-	var pkg []connectorhost.Executable
-	for _, e := range exes {
-		platform, path, ok := strings.Cut(e, "=")
-		if !ok {
-			return fmt.Errorf("--exe %q isn't os/arch=path", e)
-		}
-		url := byPlatform[platform]
-		if *template != "" {
-			goos, arch, _ := strings.Cut(platform, "/")
-			url = strings.NewReplacer("{os}", goos, "{arch}", arch).Replace(*template)
-		}
-		if url == "" {
-			return fmt.Errorf("--exe for %s has no --url", platform)
-		}
-		pkg = append(pkg, connectorhost.Executable{Platform: platform, Path: path, URL: url})
-	}
-	doc, err := connectorhost.Package(ctx, *name, *version, info, pkg)
+	jobs, err := packageJobs(fs.Args(), *tag, *version)
 	if err != nil {
 		return err
 	}
-	if *output == "-" {
-		_, err = out.Write(doc)
+	o := connectorpkg.Options{
+		Out: *outDir, URLTemplate: *urls,
+		Registry: &connectorpkg.Registry{Client: &http.Client{Timeout: time.Minute}},
+	}
+	if *platforms != "" {
+		o.Platforms = strings.Split(*platforms, ",")
+	}
+	if *verbose {
+		o.Log = os.Stderr
+	}
+	for _, j := range jobs {
+		o.Version, o.Tag = j.version, j.tag
+		res, err := connectorpkg.Package(ctx, j.file, o)
+		if err != nil {
+			return fmt.Errorf("%s: %w", j.file.Name, err)
+		}
+		fmt.Fprintf(out, "%s %s: %s\n", j.file.FullName(), j.version, res.Descriptor)
+	}
+	return nil
+}
+
+type packageJob struct {
+	file         *connectorpkg.File
+	version, tag string
+}
+
+// packageJobs are the packages to build, each with its version and tag.
+func packageJobs(dirs []string, tag, version string) ([]packageJob, error) {
+	name, v, ok := strings.Cut(tag, "/v")
+	if tag != "" && !ok {
+		name, v = "", strings.TrimPrefix(tag, "v")
+	}
+	if tag != "" {
+		version = v
+	}
+	if !spec.ValidVersion(version) {
+		return nil, fmt.Errorf("version %q isn't a semantic version, such as 1.2.0", version)
+	}
+	searched := len(dirs) == 0 && name != ""
+	if searched {
+		ents, err := os.ReadDir(".")
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range ents {
+			if _, err := os.Stat(filepath.Join(e.Name(), connectorpkg.FileName)); e.IsDir() && err == nil {
+				dirs = append(dirs, e.Name())
+			}
+		}
+	}
+	if len(dirs) == 0 {
+		dirs = []string{"."}
+	}
+	var jobs []packageJob
+	for _, d := range dirs {
+		f, err := connectorpkg.Load(d)
+		if err != nil {
+			return nil, err
+		}
+		if name != "" && f.ShortName() != name {
+			continue
+		}
+		t := tag
+		switch {
+		case t != "":
+		case len(dirs) > 1:
+			t = f.ShortName() + "/v" + version
+		default:
+			t = "v" + version
+		}
+		jobs = append(jobs, packageJob{file: f, version: version, tag: t})
+	}
+	switch {
+	case len(jobs) == 0 && searched:
+		return nil, fmt.Errorf("no directory below . has a package named %s", name)
+	case len(jobs) == 0:
+		return nil, fmt.Errorf("none of %s is the package %s", strings.Join(dirs, ", "), name)
+	case tag != "" && len(jobs) > 1:
+		return nil, fmt.Errorf("tag %s names one package, and %d match it", tag, len(jobs))
+	}
+	return jobs, nil
+}
+
+func runValidate(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("openetl connector validate", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: openetl connector validate [DIR...] [--require FIELD,...]")
+		fmt.Fprintln(fs.Output(), "\nChecks each DIR's openetl-connector.yaml (default .) as package does, without building.")
+		fs.PrintDefaults()
+	}
+	require := fs.String("require", "", "fields each file must set, comma-separated: description, license, docs, logo, author or tags")
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return os.WriteFile(*output, doc, 0o644) //nolint:gosec // a descriptor, not a secret
+	dirs := fs.Args()
+	if len(dirs) == 0 {
+		dirs = []string{"."}
+	}
+	var failed []error
+	for _, d := range dirs {
+		f, err := connectorpkg.Load(d)
+		if err == nil && *require != "" {
+			err = f.Require(strings.Split(*require, ","))
+		}
+		if err == nil {
+			err = f.CheckManifests()
+		}
+		if err != nil {
+			failed = append(failed, fmt.Errorf("%s: %w", d, err))
+			continue
+		}
+		fmt.Fprintf(out, "%s: %s\n", d, f.FullName())
+	}
+	return errors.Join(failed...)
 }
 
 // onlyConnectorVersions checks that every document is a Connector or a

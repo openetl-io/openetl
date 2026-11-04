@@ -21,7 +21,21 @@ service ConnectorService {
   rpc Teardown(TeardownRequest) returns (TeardownResponse);
 }
 
-message SpecRequest {}
+message SpecRequest {
+  // The platform calling; unset from a platform before the alpha.
+  Host host = 1;
+}
+
+// Host is the runner, or the tool, that started the connector.
+message Host {
+  // Its release, such as 0.1.0; "dev" for a build from source.
+  string version = 1;
+  // "v1".
+  string protocol = 2;
+  // Additions to v1 after the alpha that it has. Everything in v1 at the
+  // alpha is the baseline, with no name.
+  repeated string features = 3;
+}
 
 message SpecResponse {
   // "v1".
@@ -33,6 +47,9 @@ message SpecResponse {
   bool setup = 5;
   SourceCapabilities source = 6;
   DestinationCapabilities destination = 7;
+  // Features the connector can't run without; a host without one refuses
+  // it.
+  repeated string required_features = 8;
 }
 
 enum ConnectorKind {

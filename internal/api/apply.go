@@ -73,7 +73,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		}
 		var key string
 		if versioned(doc) {
-			key = "connector/" + connectorKind(doc) + "/" + doc.Name + "@" + doc.Version
+			key = "connector/" + doc.Name + "@" + doc.Version + "/" + strings.Join(roles(doc), "+")
 		} else {
 			doc.Workspace = cmp.Or(doc.Workspace, defWS)
 			key = doc.Kind + "/" + doc.Workspace + "/" + doc.Name
@@ -129,6 +129,9 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	err := s.Store.Tx(ctx, func(q *db.Queries) error {
 		dependents = nil
 		ch := newChanges()
+		for _, name := range req.Msg.GetTransfer() {
+			ch.transfer[spec.FullName(name)] = true
+		}
 		for _, i := range order {
 			applied, sched, err := s.applyOne(ctx, q, docs[i], client+":"+origins[i], ch)
 			if err != nil {
@@ -205,7 +208,7 @@ func unknownVersions(res *apiv1.ApplyResponse, ch *changes) {
 // documentName is the resource a document defines.
 func documentName(doc *spec.Document) string {
 	if versioned(doc) {
-		return connectorName(connectorKind(doc), doc.Name, doc.Version)
+		return connectorName(doc.Name, doc.Version)
 	}
 	collection := map[string]string{
 		spec.KindSource: "sources", spec.KindDestination: "destinations", spec.KindPipeline: "pipelines", spec.KindDbtProject: "dbtProjects",
@@ -239,7 +242,7 @@ func (s *Server) workspace(ctx context.Context, q *db.Queries, name string) (uui
 
 func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document, provenance string, ch *changes) (*apiv1.AppliedResource, *schedule, error) {
 	if versioned(doc) {
-		res, err := s.applyConnectorVersion(ctx, q, doc, provenance)
+		res, err := s.applyConnectorVersion(ctx, q, doc, provenance, ch.transfer)
 		return res, nil, err
 	}
 	wsID, err := s.workspace(ctx, q, doc.Workspace)
@@ -589,12 +592,15 @@ type changes struct {
 	// The sources and destinations it created.
 	created   map[uuid.UUID]bool
 	pipelines []*planned
+	// Connector packages, by full name, whose versions may come from
+	// another repository.
+	transfer map[string]bool
 }
 
 func newChanges() *changes {
 	return &changes{
 		sources: map[uuid.UUID]string{}, destinations: map[uuid.UUID]string{}, dbtProjects: map[uuid.UUID]string{},
-		sparkClusters: map[uuid.UUID]string{}, flinkClusters: map[uuid.UUID]string{}, created: map[uuid.UUID]bool{},
+		sparkClusters: map[uuid.UUID]string{}, flinkClusters: map[uuid.UUID]string{}, created: map[uuid.UUID]bool{}, transfer: map[string]bool{},
 	}
 }
 

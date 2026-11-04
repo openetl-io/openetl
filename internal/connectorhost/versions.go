@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,12 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/unsuitable001/openetl/internal/connectorhost/external"
 	"github.com/unsuitable001/openetl/internal/declarative"
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/telemetry"
 	"github.com/unsuitable001/openetl/internal/spec"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
@@ -29,20 +32,28 @@ const (
 	MediaTypeManifest   = "application/vnd.openetl.manifest.v1+json"
 )
 
-// Version is a connector version: an external connector's descriptor, or a
-// declarative source's manifest.
+// Version is a connector package's version, from one artifact: a
+// descriptor, or a declarative source's manifest, which is a package with a
+// source role.
 type Version struct {
-	// "source" or "destination".
-	Kind    string
+	// owner/name.
 	Name    string
 	Version string
 	Info    spec.Info
 	// Of the artifact: sha256:{hex}.
 	Digest string
-	// One of these.
-	Manifest   *declarative.Connector
-	Descriptor *spec.Descriptor
-	// The descriptor's executable, once a runner downloads it.
+	Roles  map[string]*Role
+	// A v1alpha1 descriptor or a DeclarativeSource document, either of which
+	// may add its one role to a version that lacks it.
+	OneRole bool
+}
+
+// Role is one of a version's roles.
+type Role struct {
+	*spec.Role
+	// A manifest's, loaded.
+	Manifest *declarative.Connector
+	// A binary's, once a runner downloads it.
 	Executable string
 }
 
@@ -66,51 +77,132 @@ func ParseVersion(content []byte) (*Version, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := &Version{Name: doc.Name, Version: doc.Version, Info: doc.Info, Digest: Digest(content)}
+	v := &Version{Name: doc.Name, Version: doc.Version, Info: doc.Info, Digest: Digest(content), Roles: map[string]*Role{}}
 	switch doc.Kind {
 	case spec.KindDeclarativeSource:
-		if v.Manifest, err = declarative.Load(doc.Manifest); err != nil {
+		m, err := declarative.Load(doc.Manifest)
+		if err != nil {
 			return nil, err
 		}
-		v.Kind = "source"
+		var whole struct {
+			Spec json.RawMessage `json:"spec"`
+		}
+		if err := json.Unmarshal(doc.Manifest, &whole); err != nil {
+			return nil, err
+		}
+		v.Roles[spec.RoleSource] = &Role{Role: &spec.Role{Manifest: whole.Spec}, Manifest: m}
+		v.OneRole = true
 	case spec.KindConnector:
-		s := doc.Descriptor.Spec
 		if p := doc.Descriptor.Unpinned(); len(p) > 0 {
 			return nil, fmt.Errorf("binaries for %s have no digest", strings.Join(p, ", "))
 		}
-		if _, err := external.CompileSchema(s.GetConfigSchema()); err != nil {
-			return nil, fmt.Errorf("config: %w", err)
+		for name, r := range doc.Descriptor.Roles {
+			role := &Role{Role: r}
+			if r.Manifest != nil {
+				if role.Manifest, err = loadInline(doc, r.Manifest); err != nil {
+					return nil, fmt.Errorf("roles.%s.runtime.manifest: %w", name, err)
+				}
+			} else if _, err := external.CompileSchema(r.Spec.GetConfigSchema()); err != nil {
+				return nil, fmt.Errorf("roles.%s.config: %w", name, err)
+			}
+			v.Roles[name] = role
 		}
-		v.Descriptor = doc.Descriptor
-		v.Kind = "source"
-		if s.GetKind() == protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION {
-			v.Kind = "destination"
-		}
+		v.OneRole = doc.APIVersion != spec.APIVersionConnector
 	default:
 		return nil, fmt.Errorf("a %s isn't a connector version", doc.Kind)
 	}
-	if Builtin(v.Kind, v.Name) {
-		return nil, fmt.Errorf("%s is a built-in %s connector", v.Name, v.Kind)
+	for role := range v.Roles {
+		if Builtin(role, v.Name) {
+			return nil, fmt.Errorf("%s is a built-in %s connector", v.Name, role)
+		}
 	}
 	return v, nil
 }
 
-// With returns env with v added, for NewSource or NewDestination.
-func (e Env) With(v *Version) Env {
-	if v.Manifest != nil {
+// loadInline loads a descriptor's inline manifest, which is a
+// DeclarativeSource's spec, under the descriptor's name and version.
+func loadInline(doc *spec.Document, manifest []byte) (*declarative.Connector, error) {
+	var m map[string]any
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		return nil, err
+	}
+	full, err := json.Marshal(map[string]any{
+		"apiVersion": spec.APIVersion, "kind": spec.KindDeclarativeSource,
+		"metadata": map[string]any{"name": doc.Name, "version": doc.Version}, "spec": m,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return declarative.Load(full)
+}
+
+// With returns env with v's role added, for NewSource or NewDestination.
+func (e Env) With(v *Version, role string) Env {
+	r := v.Roles[role]
+	switch {
+	case r == nil:
+		return e
+	case r.Manifest != nil:
 		e.Manifests = maps.Clone(e.Manifests)
 		if e.Manifests == nil {
 			e.Manifests = map[string]*declarative.Connector{}
 		}
-		e.Manifests[v.Name] = v.Manifest
-		return e
+		e.Manifests[v.Name] = r.Manifest
+	default:
+		e.Externals = maps.Clone(e.Externals)
+		if e.Externals == nil {
+			e.Externals = map[string]External{}
+		}
+		e.Externals[role+"/"+v.Name] = External{Spec: r.Spec, Executable: r.Executable}
 	}
-	e.Externals = maps.Clone(e.Externals)
-	if e.Externals == nil {
-		e.Externals = map[string]External{}
-	}
-	e.Externals[v.Kind+"/"+v.Name] = External{Spec: v.Descriptor.Spec, Executable: v.Executable}
 	return e
+}
+
+// Protocol is the connector protocol this platform speaks.
+const Protocol = "v1"
+
+// Features are this platform's additions to the protocol after the alpha.
+var Features []string
+
+// Host is what this platform tells a connector about itself.
+func Host() *protocolv1.Host {
+	return &protocolv1.Host{Version: Release(), Protocol: Protocol, Features: Features}
+}
+
+// Release is this build's release, such as 0.1.0, or "dev".
+func Release() string {
+	v := strings.TrimPrefix(telemetry.Version(), "v")
+	if !spec.ValidVersion(v) {
+		return "dev"
+	}
+	return v
+}
+
+// Runnable reports why this runner can't run a role, or "" if it can: one
+// without a manifest needs the protocol, every required feature, a release
+// at least the one it requires, and a binary for this platform.
+func Runnable(r *spec.Role) string {
+	if p := r.Requires.Platform; p != "" && Release() != "dev" && spec.CompareVersions(Release(), p) < 0 {
+		return fmt.Sprintf("it needs openetl %s or later, and this runner is %s", p, Release())
+	}
+	if r.Manifest != nil {
+		return ""
+	}
+	if p := r.Spec.GetProtocolVersion(); p != Protocol {
+		return fmt.Sprintf("it speaks protocol %s, and this runner speaks %s", p, Protocol)
+	}
+	for _, f := range r.Spec.GetRequiredFeatures() {
+		if !slices.Contains(Features, f) {
+			return fmt.Sprintf("it needs the feature %s, which this runner doesn't have", f)
+		}
+	}
+	if _, ok := r.Binaries[Platform()]; ok {
+		return ""
+	}
+	if r.Image != nil {
+		return fmt.Sprintf("it has no binary for %s, only an image, and this runner has no container launcher", Platform())
+	}
+	return fmt.Sprintf("it has no binary for %s", Platform())
 }
 
 // MaxExecutable is the largest binary a runner or the API downloads.
@@ -130,9 +222,10 @@ type Fetcher struct {
 	Cache  string
 }
 
-// Fetch returns the connector version at digest, with its executable
-// downloaded for this platform.
-func (f *Fetcher) Fetch(ctx context.Context, digest string) (*Version, error) {
+// Fetch returns the connector version at digest, with role's executable
+// downloaded for this platform. A role this runner can't run fails with
+// CONFIG_INVALID.
+func (f *Fetcher) Fetch(ctx context.Context, digest, role string) (*Version, error) {
 	content, err := f.Get(ctx, digest)
 	if err != nil {
 		return nil, err
@@ -141,15 +234,19 @@ func (f *Fetcher) Fetch(ctx context.Context, digest string) (*Version, error) {
 	if err != nil {
 		return nil, errs.Wrap(errs.ConfigInvalid, err, "connector version "+digest)
 	}
-	if v.Descriptor == nil {
+	what := fmt.Sprintf("%s %s's %s", v.Name, v.Version, role)
+	r := v.Roles[role]
+	if r == nil {
+		return nil, errs.New(errs.ConfigInvalid, "%s %s has no %s role", v.Name, v.Version, role)
+	}
+	if why := Runnable(r.Role); why != "" {
+		return nil, errs.New(errs.ConfigInvalid, "%s can't run here: %s", what, why)
+	}
+	if r.Manifest != nil {
 		return v, nil
 	}
-	what := fmt.Sprintf("%s connector %s %s", v.Kind, v.Name, v.Version)
-	b, ok := v.Descriptor.Binaries[Platform()]
-	if !ok {
-		return nil, errs.New(errs.ConfigInvalid, "%s has no binary for %s", what, Platform())
-	}
-	v.Executable, err = f.executable(ctx, b, v.Kind+"-"+v.Name)
+	_, short := spec.SplitName(v.Name)
+	r.Executable, err = f.executable(ctx, r.Binaries[Platform()], role+"-"+short)
 	var mismatch *DigestError
 	switch {
 	case errors.As(err, &mismatch):
@@ -231,12 +328,13 @@ func download(ctx context.Context, c *http.Client, url string, w io.Writer) (str
 // in its digest.
 func PinBinaries(ctx context.Context, c *http.Client, d *spec.Descriptor) error {
 	for _, p := range d.Unpinned() {
-		b := d.Binaries[p]
+		role, platform, _ := strings.Cut(p, "/")
+		b := d.Roles[role].Binaries[platform]
 		var err error
 		if b.Digest, err = download(ctx, c, b.URL, io.Discard); err != nil {
-			return fmt.Errorf("binaries.%s: %w", p, err)
+			return fmt.Errorf("roles.%s.runtime.binaries.%s: %w", role, platform, err)
 		}
-		d.Binaries[p] = b
+		d.Roles[role].Binaries[platform] = b
 	}
 	return nil
 }
@@ -289,34 +387,63 @@ type Executable struct {
 	URL      string
 }
 
-// Package returns an external connector's descriptor, as YAML, with each
-// executable's digest. One executable must be for this platform: it runs
-// once, for its spec.
-func Package(ctx context.Context, name, version string, info spec.Info, exes []Executable) ([]byte, error) {
-	host := ""
-	d := &spec.Descriptor{Binaries: map[string]spec.Binary{}}
-	for _, e := range exes {
-		if e.Platform == Platform() {
-			host = e.Path
+// PackageRole is what a role is packaged from. Its Spec is read from
+// Executables' for this platform when it has one, and is Spec otherwise,
+// such as an image's, read through a container runtime.
+type PackageRole struct {
+	Executables []Executable
+	Spec        *protocolv1.SpecResponse
+	Image       *spec.Image
+	// A DeclarativeSource's spec, as canonical JSON.
+	Manifest  []byte
+	Resources spec.Resources
+	State     *spec.State
+	// The oldest release it runs on.
+	Platform string
+}
+
+// Package returns a package's descriptor, as YAML, with each executable's
+// digest.
+func Package(ctx context.Context, name, version string, info spec.Info, roles map[string]PackageRole) ([]byte, error) {
+	d := &spec.Descriptor{Roles: map[string]*spec.Role{}}
+	for role, pr := range roles {
+		r := &spec.Role{Image: pr.Image, Manifest: pr.Manifest, Resources: pr.Resources, State: pr.State, Spec: pr.Spec}
+		r.Requires.Platform = pr.Platform
+		host := ""
+		for _, e := range pr.Executables {
+			if r.Binaries == nil {
+				r.Binaries = map[string]spec.Binary{}
+			}
+			if e.Platform == Platform() {
+				host = e.Path
+			}
+			f, err := os.Open(e.Path)
+			if err != nil {
+				return nil, err
+			}
+			h := sha256.New()
+			_, err = io.Copy(h, f)
+			_ = f.Close()
+			if err != nil {
+				return nil, err
+			}
+			r.Binaries[e.Platform] = spec.Binary{URL: e.URL, Digest: "sha256:" + hex.EncodeToString(h.Sum(nil))}
 		}
-		f, err := os.Open(e.Path)
-		if err != nil {
-			return nil, err
+		if host != "" {
+			var err error
+			if r.Spec, err = external.ReadSpec(ctx, host, external.Options{Logger: slog.New(slog.DiscardHandler)}); err != nil {
+				return nil, fmt.Errorf("read %s's spec: %w", host, err)
+			}
 		}
-		h := sha256.New()
-		_, err = io.Copy(h, f)
-		_ = f.Close()
-		if err != nil {
-			return nil, err
+		switch {
+		case r.Manifest == nil && r.Spec == nil:
+			return nil, fmt.Errorf("the %s role has no executable for %s, so its spec can't be read", role, Platform())
+		case r.Spec != nil && spec.RoleOf(r.Spec) != role:
+			return nil, fmt.Errorf("the %s role's executable is a %s", role, spec.RoleOf(r.Spec))
+		case r.Spec != nil:
+			r.Requires.Protocol, r.Requires.Features = r.Spec.GetProtocolVersion(), r.Spec.GetRequiredFeatures()
 		}
-		d.Binaries[e.Platform] = spec.Binary{URL: e.URL, Digest: "sha256:" + hex.EncodeToString(h.Sum(nil))}
-	}
-	if host == "" {
-		return nil, fmt.Errorf("no executable is for %s, so the spec can't be read", Platform())
-	}
-	var err error
-	if d.Spec, err = external.ReadSpec(ctx, host, external.Options{Logger: slog.New(slog.DiscardHandler)}); err != nil {
-		return nil, fmt.Errorf("read %s's spec: %w", host, err)
+		d.Roles[role] = r
 	}
 	doc, err := spec.MarshalDescriptor(name, version, info, d)
 	if err != nil {

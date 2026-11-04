@@ -20,6 +20,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/enginesink"
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 	"github.com/unsuitable001/openetl/sdk/go/source"
@@ -42,13 +43,15 @@ var (
 type Env struct {
 	// Which addresses connectors may reach besides public ones.
 	Egress netguard.Policy
-	// Declarative sources, by name. Native connectors' names come first.
+	// Declarative sources, by full name, such as openetl/acme. Native
+	// connectors' names come first.
 	Manifests map[string]*declarative.Connector
-	// External connectors with descriptors, by kind and name, such as
-	// source/postgres. Native connectors' names come first.
+	// External connectors with descriptors, by role and full name, such as
+	// source/openetl/postgres. Native connectors' names come first.
 	Externals map[string]External
-	// A directory of external connectors' executables, named source-{name}
-	// and destination-{name}. Names it shares with the others come last.
+	// A directory of external connectors' executables: ROLE-NAME for
+	// openetl/NAME, and OWNER/ROLE-NAME for the rest. Names it shares with
+	// the others come last.
 	Connectors string
 	// Nil: slog's default.
 	Logger *slog.Logger
@@ -57,11 +60,12 @@ type Env struct {
 // NewSource binds a source connector to its config, a JSON object. It does
 // no I/O, so the API can use it to validate; Start starts an external one.
 func NewSource(connector string, config []byte, env Env) (source.Source, error) {
-	if _, native := sources[connector]; !native {
-		if m := env.Manifests[connector]; m != nil {
+	if !Builtin("source", connector) {
+		full := spec.FullName(connector)
+		if m := env.Manifests[full]; m != nil {
 			return declarativeSource(m, config, env)
 		}
-		if x, ok := env.Externals["source/"+connector]; ok {
+		if x, ok := env.Externals["source/"+full]; ok {
 			if err := external.ValidateConfig(connector, x.Spec.GetConfigSchema(), config); err != nil {
 				return nil, err
 			}
@@ -84,16 +88,14 @@ func NewSource(connector string, config []byte, env Env) (source.Source, error) 
 // is false for one only the connectors directory has, whose schema the API
 // doesn't know.
 func SecretProperties(kind, connector string, env Env) (props []string, known bool, err error) {
-	if _, native := sources[connector]; kind == "source" && native {
+	if Builtin(kind, connector) {
 		return nil, true, nil
 	}
-	if _, native := destinations[connector]; kind == "destination" && native {
-		return nil, true, nil
-	}
-	if m := env.Manifests[connector]; kind == "source" && m != nil {
+	full := spec.FullName(connector)
+	if m := env.Manifests[full]; kind == "source" && m != nil {
 		return m.SecretProperties(), true, nil
 	}
-	if x, ok := env.Externals[kind+"/"+connector]; ok {
+	if x, ok := env.Externals[kind+"/"+full]; ok {
 		props, err := external.SecretProperties(x.Spec.GetConfigSchema())
 		return props, true, err
 	}
@@ -102,14 +104,24 @@ func SecretProperties(kind, connector string, env Env) (props []string, known bo
 
 // executable is the external connector's path, or empty if there is none.
 func (e Env) executable(kind, connector string) string {
-	if e.Connectors == "" || strings.ContainsAny(connector, `/\@`) || connector == "" {
+	if e.Connectors == "" || !spec.ValidPackageName(connector) {
 		return ""
 	}
-	p := filepath.Join(e.Connectors, kind+"-"+connector)
+	p := filepath.Join(e.Connectors, ExecutablePath(kind, connector))
 	if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
 		return ""
 	}
 	return p
+}
+
+// ExecutablePath is where a connectors directory keeps a package's role:
+// ROLE-NAME for openetl/NAME, and OWNER/ROLE-NAME for the rest.
+func ExecutablePath(role, name string) string {
+	owner, short := spec.SplitName(name)
+	if owner == spec.OfficialOwner {
+		return role + "-" + short
+	}
+	return filepath.Join(owner, role+"-"+short)
 }
 
 func (e Env) external(spec *protocolv1.SpecResponse) external.Options {
@@ -129,6 +141,19 @@ func (e Env) externals(kind string) []string {
 	for _, ent := range ents {
 		if name, ok := strings.CutPrefix(ent.Name(), kind+"-"); ok && e.executable(kind, name) != "" {
 			names = append(names, name)
+			continue
+		}
+		if !ent.IsDir() || !spec.ValidName(ent.Name()) || ent.Name() == spec.OfficialOwner {
+			continue
+		}
+		owned, err := os.ReadDir(filepath.Join(e.Connectors, ent.Name()))
+		if err != nil {
+			continue
+		}
+		for _, o := range owned {
+			if name, ok := strings.CutPrefix(o.Name(), kind+"-"); ok && e.executable(kind, ent.Name()+"/"+name) != "" {
+				names = append(names, ent.Name()+"/"+name)
+			}
 		}
 	}
 	return names
@@ -172,8 +197,8 @@ func declarativeSource(m *declarative.Connector, config []byte, env Env) (source
 }
 
 func NewDestination(connector string, config []byte, env Env) (destination.Destination, error) {
-	if _, native := destinations[connector]; !native {
-		if x, ok := env.Externals["destination/"+connector]; ok {
+	if !Builtin("destination", connector) {
+		if x, ok := env.Externals["destination/"+spec.FullName(connector)]; ok {
 			if err := external.ValidateConfig(connector, x.Spec.GetConfigSchema(), config); err != nil {
 				return nil, err
 			}
@@ -196,7 +221,7 @@ func lookup[F any](m map[string]F, kind, connector string, env Env) (F, error) {
 	if strings.Contains(connector, "@") {
 		return zero, errs.New(errs.ConfigInvalid, "%s connector %q: resolve its version first", kind, connector)
 	}
-	f, ok := m[connector]
+	f, ok := m[builtinName(connector)]
 	if !ok {
 		names := make([]string, 0, len(m)+len(env.Manifests))
 		for n := range m {
@@ -204,12 +229,12 @@ func lookup[F any](m map[string]F, kind, connector string, env Env) (F, error) {
 		}
 		if kind == "source" {
 			for n := range env.Manifests {
-				names = append(names, n)
+				names = append(names, shortName(n))
 			}
 		}
 		for k := range env.Externals {
 			if n, ok := strings.CutPrefix(k, kind+"/"); ok {
-				names = append(names, n)
+				names = append(names, shortName(n))
 			}
 		}
 		names = append(names, env.externals(kind)...)
@@ -221,14 +246,32 @@ func lookup[F any](m map[string]F, kind, connector string, env Env) (F, error) {
 }
 
 // Builtin reports whether a connector of a kind, "source" or "destination",
-// is compiled into openetld.
+// is compiled into openetld: openetl/NAME, or NAME.
 func Builtin(kind, connector string) bool {
+	name := builtinName(connector)
 	if kind == "source" {
-		_, ok := sources[connector]
+		_, ok := sources[name]
 		return ok
 	}
-	_, ok := destinations[connector]
+	_, ok := destinations[name]
 	return ok
+}
+
+// builtinName is a built-in's key for openetl/NAME or NAME, and "" for
+// another owner's.
+func builtinName(connector string) string {
+	if owner, short := spec.SplitName(connector); owner == spec.OfficialOwner {
+		return short
+	}
+	return ""
+}
+
+// shortName is a full name as a user writes it: bare for openetl's.
+func shortName(name string) string {
+	if owner, short := spec.SplitName(name); owner == spec.OfficialOwner {
+		return short
+	}
+	return name
 }
 
 // SplitRef splits a connector reference, such as postgres, postgres@1.2.0

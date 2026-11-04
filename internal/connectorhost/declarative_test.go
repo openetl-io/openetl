@@ -63,7 +63,7 @@ func TestDeclarativeSources(t *testing.T) {
 	}
 	env := Env{
 		Egress:    netguard.Policy{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}},
-		Manifests: map[string]*declarative.Connector{"acme": m},
+		Manifests: map[string]*declarative.Connector{"openetl/acme": m},
 	}
 	read := func(env Env, key string) (int, error) {
 		s, err := NewSource("acme", cfg(key), env)

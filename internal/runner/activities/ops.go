@@ -39,7 +39,8 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 		return contract.ConnectorOpResult{}, temporalx.ApplicationError(err)
 	}
 	res := contract.ConnectorOpResult{Version: cfg.GetVersion()}
-	env, err := connectorEnv(ctx, a.Connectors, a.Versions, cfg.GetConnector())
+	sd, dd := opDigests(in, cfg.GetConnector())
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
 	if err == nil {
 		err = readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets())
 	}
@@ -50,6 +51,15 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 		res.Code, res.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
 	}
 	return res, nil
+}
+
+// opDigests are an op's connector version digest as the source's or the
+// destination's, for connectorEnv.
+func opDigests(in contract.ConnectorOpInput, digest string) (source, destination string) {
+	if in.SourceID != "" {
+		return digest, ""
+	}
+	return "", digest
 }
 
 func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) error {
@@ -103,7 +113,8 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 	if err != nil {
 		return res, err
 	}
-	env, err := connectorEnv(ctx, a.Connectors, a.Versions, cfg.GetConnector())
+	sd, dd := opDigests(in, cfg.GetConnector())
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
 	if err != nil {
 		return res, err
 	}
@@ -148,7 +159,8 @@ func (a *Ops) teardown(ctx context.Context, in contract.ConnectorOpInput) (contr
 	if err != nil {
 		return res, err
 	}
-	env, err := connectorEnv(ctx, a.Connectors, a.Versions, cfg.GetConnector())
+	sd, dd := opDigests(in, cfg.GetConnector())
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
 	if err != nil {
 		return res, err
 	}
@@ -243,21 +255,21 @@ func heartbeats(ctx context.Context, progress func() any) (stop func()) {
 	}
 }
 
-// connectorEnv is env with the connector versions at digests added; empty
-// digests add nothing.
-func connectorEnv(ctx context.Context, env connectorhost.Env, versions *connectorhost.Fetcher, digests ...string) (connectorhost.Env, error) {
-	for _, d := range digests {
-		if d == "" {
+// connectorEnv is env with the source's and the destination's connector
+// versions added, by digest; an empty digest adds nothing.
+func connectorEnv(ctx context.Context, env connectorhost.Env, versions *connectorhost.Fetcher, source, destination string) (connectorhost.Env, error) {
+	for _, r := range []struct{ role, digest string }{{"source", source}, {"destination", destination}} {
+		if r.digest == "" {
 			continue
 		}
 		if versions == nil {
 			return env, errs.New(errs.ConfigInvalid, "this runner can't fetch connector versions")
 		}
-		v, err := versions.Fetch(ctx, d)
+		v, err := versions.Fetch(ctx, r.digest, r.role)
 		if err != nil {
 			return env, err
 		}
-		env = env.With(v)
+		env = env.With(v, r.role)
 	}
 	return env, nil
 }

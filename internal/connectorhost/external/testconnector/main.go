@@ -29,7 +29,12 @@ import (
 )
 
 func main() {
-	switch filepath.Base(os.Args[0]) {
+	name := filepath.Base(os.Args[0])
+	// A release asset, NAME-ROLE-OS-ARCH, serves as ROLE-NAME.
+	if p := strings.Split(name, "-"); len(p) == 4 && (p[1] == "source" || p[1] == "destination") {
+		name = p[1] + "-" + p[0]
+	}
+	switch name {
 	case "source-faker":
 		sdk.Serve(sdk.Connector{Name: "faker", Source: func(c []byte, _ host.Host) (source.Source, error) { return faker.New(c) }})
 	case "source-typed":

@@ -14,14 +14,15 @@ const min = 60_000;
 const ts = (ms: number) => timestampFromMs(Math.round(ms));
 const logo = (slug: string) => `https://cdn.simpleicons.org/${slug}`;
 
-function connector(kind: "source" | "destination", name: string, logoSlug?: string) {
+function connector(name: string, logoSlug?: string) {
   return {
-    name: `connectors/${kind}-${name}/versions/0.1.0`,
+    name: `connectors/openetl/${name}/versions/0.1.0`,
     version: "0.1.0",
     digest: "sha256:9f3c2a41d0b7e6c58a1f4e2d3c6b9a8170f5e4d3c2b1a09f8e7d6c5b4a392817",
     author: "OpenETL",
     logo: logoSlug ? logo(logoSlug) : "",
-    releaseTag: `${kind}-${name}/v0.1.0`,
+    releaseTag: `${name}/v0.1.0`,
+    repository: "https://github.com/unsuitable001/openetl-connectors",
   };
 }
 
@@ -51,10 +52,10 @@ const configs: Record<string, (id: string) => Record<string, string | number>> =
 const updated = (i: number) => ts(Date.now() - (3 + i * 5) * 24 * 3_600_000);
 
 export const sources: Source[] = sourceDefs.map(([id, c, slug], i) =>
-  create(SourceSchema, { name: `${workspace}/sources/${id}`, spec: { connector: c, config: configs[c]?.(id) }, connector: slug ? connector("source", c, slug) : undefined, updateTime: updated(i) }),
+  create(SourceSchema, { name: `${workspace}/sources/${id}`, spec: { connector: c, config: configs[c]?.(id) }, connector: slug ? connector(c, slug) : undefined, updateTime: updated(i) }),
 );
 export const destinations: Destination[] = destinationDefs.map(([id, c, slug], i) =>
-  create(DestinationSchema, { name: `${workspace}/destinations/${id}`, spec: { connector: c, config: configs[c]?.(id) }, connector: slug ? connector("destination", c, slug) : undefined, updateTime: updated(i + 1) }),
+  create(DestinationSchema, { name: `${workspace}/destinations/${id}`, spec: { connector: c, config: configs[c]?.(id) }, connector: slug ? connector(c, slug) : undefined, updateTime: updated(i + 1) }),
 );
 
 type Def = {

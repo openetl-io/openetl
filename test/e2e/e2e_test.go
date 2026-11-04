@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,8 +33,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
-	"go.opentelemetry.io/otel/attribute"
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/operatorservice/v1"
@@ -228,10 +230,14 @@ func setup(m *testing.M) (int, error) {
 	return code, nil
 }
 
+// officialRepository is the official connectors'.
+const officialRepository = "https://github.com/unsuitable001/openetl-connectors"
+
 // applyOfficialConnectors packages the official connectors into the test
 // file server's descriptors, for this platform, and applies them.
 func applyOfficialConnectors(ctx context.Context) error {
 	req := &apiv1.ApplyRequest{}
+	packages := map[string]map[string]connectorhost.PackageRole{}
 	for _, exe := range []string{"source-postgres", "destination-postgres", "destination-iceberg", "destination-s3", "source-kafka", "destination-kafka", "source-kinesis", "destination-kinesis"} {
 		path := filepath.Join(env.connectors, exe)
 		// Builds from before them have only the Postgres connectors; the
@@ -239,13 +245,19 @@ func applyOfficialConnectors(ctx context.Context) error {
 		if _, err := os.Stat(path); err != nil && !strings.HasSuffix(exe, "-postgres") {
 			continue
 		}
-		_, name, _ := strings.Cut(exe, "-")
-		info := spec.Info{Author: "OpenETL", ReleaseTag: exe + "/v0.1.0"}
-		doc, err := connectorhost.Package(ctx, name, "0.1.0", info, []connectorhost.Executable{{Platform: connectorhost.Platform(), Path: path, URL: env.downloads + "/" + exe}})
-		if err != nil {
-			return fmt.Errorf("package %s: %w", exe, err)
+		role, name, _ := strings.Cut(exe, "-")
+		if packages[name] == nil {
+			packages[name] = map[string]connectorhost.PackageRole{}
 		}
-		req.Documents = append(req.Documents, &apiv1.Document{Origin: exe, Content: doc})
+		packages[name][role] = connectorhost.PackageRole{Executables: []connectorhost.Executable{{Platform: connectorhost.Platform(), Path: path, URL: env.downloads + "/" + exe}}}
+	}
+	for _, name := range slices.Sorted(maps.Keys(packages)) {
+		info := spec.Info{Author: "OpenETL", ReleaseTag: name + "/v0.1.0", Repository: officialRepository}
+		doc, err := connectorhost.Package(ctx, name, "0.1.0", info, packages[name])
+		if err != nil {
+			return fmt.Errorf("package %s: %w", name, err)
+		}
+		req.Documents = append(req.Documents, &apiv1.Document{Origin: name, Content: doc})
 	}
 	_, err := apiv1connect.NewApplyServiceClient(env.http, env.apiURL).Apply(ctx, connect.NewRequest(req))
 	return err

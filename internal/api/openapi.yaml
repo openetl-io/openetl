@@ -2402,6 +2402,13 @@ components:
                     description: |-
                         What's applying, such as "cli", for connector versions' provenance.
                          Empty: "api".
+                transfer:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        Connector packages, by name, whose versions may come from another
+                         repository than their earlier versions.
         ApplyResponse:
             type: object
             properties:
@@ -2669,7 +2676,7 @@ components:
             properties:
                 name:
                     type: string
-                    description: connectors/{kind}-{name}/versions/{version}
+                    description: connectors/{owner}/{name}/versions/{version}
                 version:
                     type: string
                 digest:
@@ -2686,6 +2693,21 @@ components:
                 releaseUrl:
                     type: string
                     description: An https URL, such as the release's page.
+                description:
+                    type: string
+                license:
+                    type: string
+                    description: An SPDX expression.
+                repository:
+                    type: string
+                    description: An https URL of the package's source repository.
+                docs:
+                    type: string
+                    description: An https URL.
+                tags:
+                    type: array
+                    items:
+                        type: string
             description: |-
                 ConnectorVersion is an applied connector version, with what its metadata
                  says about it.

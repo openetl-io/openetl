@@ -34,7 +34,7 @@ type bound struct {
 func (s *Server) bind(kind, name string, v *connectorhost.Version, config *structpb.Struct) (*bound, error) {
 	env := s.Connectors
 	if v != nil {
-		env = env.With(v)
+		env = env.With(v, kind)
 	}
 	props, known, err := connectorhost.SecretProperties(kind, name, env)
 	if err != nil {

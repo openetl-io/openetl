@@ -56,9 +56,14 @@ type manifest struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 		// spec.Parse reads these.
-		Author  string          `json:"author"`
-		Logo    string          `json:"logo"`
-		Release json.RawMessage `json:"release"`
+		Description string          `json:"description"`
+		License     string          `json:"license"`
+		Repository  string          `json:"repository"`
+		Docs        string          `json:"docs"`
+		Tags        []string        `json:"tags"`
+		Author      string          `json:"author"`
+		Logo        string          `json:"logo"`
+		Release     json.RawMessage `json:"release"`
 	} `json:"metadata"`
 	Spec struct {
 		Config json.RawMessage `json:"config"`

@@ -28,6 +28,9 @@ message ApplyRequest {
   // What's applying, such as "cli", for connector versions' provenance.
   // Empty: "api".
   string client = 4;
+  // Connector packages, by name, whose versions may come from another
+  // repository than their earlier versions.
+  repeated string transfer = 5;
 }
 
 // Document is a YAML or JSON definition with apiVersion, kind, metadata and

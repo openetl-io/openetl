@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -49,15 +50,19 @@ func TestParseDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doc.Kind != KindConnector || doc.Name != "postgres" || doc.Version != "0.1.0" {
+	if doc.Kind != KindConnector || doc.Name != "openetl/postgres" || doc.Version != "0.1.0" {
 		t.Fatalf("doc = %+v", doc)
 	}
 	wantInfo := Info{Author: "Example", Logo: "https://example.com/postgres.svg", ReleaseTag: "destination-postgres/v0.1.0", ReleaseURL: "https://example.com/releases/destination-postgres/v0.1.0"}
-	if doc.Info != wantInfo {
+	if !reflect.DeepEqual(doc.Info, wantInfo) {
 		t.Errorf("info = %+v", doc.Info)
 	}
-	if u := doc.Descriptor.Unpinned(); len(u) != 1 || u[0] != "darwin/arm64" || doc.Descriptor.Binaries["linux/amd64"].Digest == "" {
-		t.Errorf("binaries %v, unpinned %v", doc.Descriptor.Binaries, u)
+	if k := doc.Descriptor.Kinds(); len(k) != 1 || k[0] != RoleDestination {
+		t.Fatalf("a v1alpha1 descriptor has roles %v", k)
+	}
+	role := doc.Descriptor.Roles[RoleDestination]
+	if u := doc.Descriptor.Unpinned(); len(u) != 1 || u[0] != "destination/darwin/arm64" || role.Binaries["linux/amd64"].Digest == "" {
+		t.Errorf("binaries %v, unpinned %v", role.Binaries, u)
 	}
 	want := &protocolv1.SpecResponse{
 		ProtocolVersion: "v1",
@@ -74,12 +79,21 @@ func TestParseDescriptor(t *testing.T) {
 			WriteModes:            []protocolv1.WriteMode{protocolv1.WriteMode_WRITE_MODE_APPEND, protocolv1.WriteMode_WRITE_MODE_OVERWRITE, protocolv1.WriteMode_WRITE_MODE_MERGE},
 		},
 	}
-	if !proto.Equal(doc.Descriptor.Spec, want) {
-		t.Errorf("spec = %v\nwant %v", doc.Descriptor.Spec, want)
+	if !proto.Equal(role.Spec, want) {
+		t.Errorf("spec = %v\nwant %v", role.Spec, want)
 	}
 
-	// Writing it out and reading it back changes nothing.
+	// It's written out as v1alpha2, which reads back the same.
 	y, err := MarshalDescriptor(doc.Name, doc.Version, doc.Info, doc.Descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(y), "apiVersion: "+APIVersionConnector+"\n") {
+		t.Errorf("written as:\n%s", y)
+	}
+	info := doc.Info
+	info.Repository = "https://github.com/example/postgres"
+	y, err = MarshalDescriptor(doc.Name, doc.Version, info, doc.Descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,10 +101,10 @@ func TestParseDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, y)
 	}
-	if !proto.Equal(again.Descriptor.Spec, want) || !reflect.DeepEqual(again.Descriptor.Binaries, doc.Descriptor.Binaries) || again.Info != wantInfo {
+	if !proto.Equal(again.Descriptor.Roles[RoleDestination].Spec, want) || !reflect.DeepEqual(again.Descriptor.Roles[RoleDestination].Binaries, role.Binaries) || !reflect.DeepEqual(again.Info, info) {
 		t.Errorf("round trip gave %v, %+v", again.Descriptor, again.Info)
 	}
-	a, err := EncodeDescriptor(doc.Name, doc.Version, doc.Info, doc.Descriptor)
+	a, err := EncodeDescriptor(doc.Name, doc.Version, info, doc.Descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +112,7 @@ func TestParseDescriptor(t *testing.T) {
 	if err != nil || !bytes.Equal(a, b) {
 		t.Errorf("encodings differ:\n%s\n%s", a, b)
 	}
-	if fromJSON, err := Parse(a); err != nil || !proto.Equal(fromJSON.Descriptor.Spec, want) {
+	if fromJSON, err := Parse(a); err != nil || !proto.Equal(fromJSON.Descriptor.Roles[RoleDestination].Spec, want) {
 		t.Errorf("the JSON encoding parses to %v, %v", fromJSON, err)
 	}
 
@@ -120,6 +134,181 @@ func TestParseDescriptor(t *testing.T) {
 	if d := SameSpec(schema, want); d != "config schema" {
 		t.Errorf("another schema: %q", d)
 	}
+	features := proto.Clone(want).(*protocolv1.SpecResponse)
+	features.RequiredFeatures = []string{"staged-v2"}
+	if d := SameSpec(features, want); !strings.Contains(d, "staged-v2") {
+		t.Errorf("another required feature: %q", d)
+	}
+}
+
+// pkgDescriptor has every field v1alpha2 names.
+const pkgDescriptor = `
+apiVersion: openetl.io/v1alpha2
+kind: Connector
+metadata:
+  name: acme/salesforce
+  version: 1.2.0
+  description: Salesforce objects, incrementally and through the Bulk API
+  license: Apache-2.0
+  repository: https://github.com/acme/openetl-salesforce
+  docs: https://github.com/acme/openetl-salesforce#readme
+  logo: https://example.com/salesforce.svg
+  author: Acme
+  tags: [crm, saas]
+  release: {tag: v1.2.0, url: https://github.com/acme/openetl-salesforce/releases/tag/v1.2.0}
+spec:
+  roles:
+    source:
+      requires: {protocol: v1, features: [staged-v2], platform: 0.1.0}
+      runtime:
+        binaries:
+          linux/amd64: {url: https://example.com/source_linux_amd64, digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111", attestation: https://example.com/att}
+        image:
+          ref: ghcr.io/acme/salesforce-source
+          digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          platforms: [linux/amd64, linux/arm64]
+          command: [/connector, serve]
+          attestation: https://example.com/image-att
+      resources: {cpu: "1", memory: 512Mi, disk: 1Gi}
+      state: {version: 2, reads: 1}
+      egress: {tier: proxy, allow: [login.salesforce.com]}
+      acknowledges: true
+      config: {type: object, properties: {auth: {type: object, properties: {client_secret: {type: string, x-secret: true}}}}}
+    destination:
+      requires: {protocol: v1}
+      runtime:
+        image: {ref: ghcr.io/acme/salesforce-destination, digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333", platforms: [linux/amd64]}
+      egress: {tier: host}
+      setup: true
+      capabilities: {class: deliver_and_ack, writeModes: [append, merge]}
+      config: {type: object}
+`
+
+func TestParsePackage(t *testing.T) {
+	doc, err := Parse([]byte(pkgDescriptor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInfo := Info{
+		Description: "Salesforce objects, incrementally and through the Bulk API", License: "Apache-2.0",
+		Repository: "https://github.com/acme/openetl-salesforce", Docs: "https://github.com/acme/openetl-salesforce#readme",
+		Logo: "https://example.com/salesforce.svg", Author: "Acme", Tags: []string{"crm", "saas"},
+		ReleaseTag: "v1.2.0", ReleaseURL: "https://github.com/acme/openetl-salesforce/releases/tag/v1.2.0",
+	}
+	if doc.Name != "acme/salesforce" || !reflect.DeepEqual(doc.Info, wantInfo) {
+		t.Errorf("name %s, info %+v", doc.Name, doc.Info)
+	}
+	src, dst := doc.Descriptor.Roles[RoleSource], doc.Descriptor.Roles[RoleDestination]
+	if src == nil || dst == nil {
+		t.Fatalf("roles %v", doc.Descriptor.Kinds())
+	}
+	if src.Requires.Platform != "0.1.0" || !slices.Equal(src.Spec.GetRequiredFeatures(), []string{"staged-v2"}) || src.Spec.GetProtocolVersion() != "v1" ||
+		src.Resources != (Resources{CPU: "1", Memory: "512Mi", Disk: "1Gi"}) || *src.State != (State{Version: 2, Reads: 1}) ||
+		src.Image.Ref != "ghcr.io/acme/salesforce-source" || !slices.Equal(src.Image.Command, []string{"/connector", "serve"}) ||
+		src.Binaries["linux/amd64"].Attestation != "https://example.com/att" || !src.Spec.GetSource().GetAcknowledges() {
+		t.Errorf("source role %+v", src)
+	}
+	if dst.Binaries != nil || dst.Image == nil || !dst.Spec.GetSetup() || dst.Spec.GetDestination().GetSinkClass() != protocolv1.SinkClass_SINK_CLASS_DELIVER_AND_ACK {
+		t.Errorf("destination role %+v", dst)
+	}
+	a, err := EncodeDescriptor(doc.Name, doc.Version, doc.Info, doc.Descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Parse(a)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, a)
+	}
+	b, err := EncodeDescriptor(again.Name, again.Version, again.Info, again.Descriptor)
+	if err != nil || !bytes.Equal(a, b) {
+		t.Errorf("the round trip changed it:\n%s\n%s", a, b)
+	}
+	for _, field := range []string{"attestation", "platforms", "command", "resources", "state", "requires", "features", "platform", "description", "license", "repository", "docs", "tags"} {
+		if !strings.Contains(string(a), `"`+field+`"`) {
+			t.Errorf("the encoding has no %s: %s", field, a)
+		}
+	}
+
+	manifest, err := Parse([]byte(strings.Replace(pkgDescriptor[:strings.Index(pkgDescriptor, "    source:")], "acme/salesforce", "acme/api", 1) +
+		"    source:\n      runtime:\n        manifest: {config: {type: object}, http: {base_url: https://example.com}, streams: []}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := manifest.Descriptor.Roles[RoleSource]; m.Spec != nil || !strings.Contains(string(m.Manifest), "base_url") {
+		t.Errorf("a manifest role: %+v", m)
+	}
+}
+
+func TestParsePackageErrors(t *testing.T) {
+	only := func(role string) string { return pkgDescriptor[:strings.Index(pkgDescriptor, "    source:")] + role }
+	for name, doc := range map[string]string{
+		"no repository":     strings.Replace(pkgDescriptor, "  repository: https://github.com/acme/openetl-salesforce\n", "", 1),
+		"no roles":          pkgDescriptor[:strings.Index(pkgDescriptor, "  roles:")] + "  roles: {}\n",
+		"another role":      strings.Replace(pkgDescriptor, "    destination:", "    sink:", 1),
+		"no runtime":        only("    source:\n      requires: {protocol: v1}\n      runtime: {}\n      egress: {tier: host}\n      config: {}\n"),
+		"image tag":         strings.Replace(pkgDescriptor, "ref: ghcr.io/acme/salesforce-source", "ref: ghcr.io/acme/salesforce-source:1.2.0", 1),
+		"image digest":      strings.Replace(pkgDescriptor, `digest: "sha256:2222`, `digest: "sha256:22`, 1),
+		"image platforms":   strings.Replace(pkgDescriptor, "platforms: [linux/amd64, linux/arm64]", "platforms: []", 1),
+		"cpu":               strings.Replace(pkgDescriptor, `cpu: "1"`, `cpu: one`, 1),
+		"memory":            strings.Replace(pkgDescriptor, "memory: 512Mi", "memory: 512MiB", 1),
+		"state reads":       strings.Replace(pkgDescriptor, "state: {version: 2, reads: 1}", "state: {version: 2, reads: 3}", 1),
+		"feature":           strings.Replace(pkgDescriptor, "features: [staged-v2]", "features: [Staged]", 1),
+		"platform":          strings.Replace(pkgDescriptor, "platform: 0.1.0", "platform: latest", 1),
+		"protocol":          strings.Replace(pkgDescriptor, "requires: {protocol: v1}", "requires: {protocol: v2}", 1),
+		"no protocol":       strings.Replace(pkgDescriptor, "requires: {protocol: v1}\n", "", 1),
+		"tags":              strings.Replace(pkgDescriptor, "tags: [crm, saas]", "tags: [CRM]", 1),
+		"license":           strings.Replace(pkgDescriptor, "license: Apache-2.0", "license: 'Apache 2.0, or MIT; \"see\" LICENSE'", 1),
+		"docs":              strings.Replace(pkgDescriptor, "docs: https://github", "docs: http://github", 1),
+		"manifest dest":     strings.Replace(pkgDescriptor, "      runtime:\n        image: {ref: ghcr.io/acme/salesforce-destination", "      runtime:\n        manifest: {a: 1}\n        image: {ref: ghcr.io/acme/salesforce-destination", 1),
+		"manifest and spec": only("    source:\n      runtime:\n        manifest: {a: 1}\n      egress: {tier: host}\n"),
+		"unknown field":     pkgDescriptor + "      heal: true\n",
+		"v1alpha2 source":   "apiVersion: openetl.io/v1alpha2\nkind: Source\nmetadata: {name: s}\nspec: {connector: faker}\n",
+		"bad owner":         strings.Replace(pkgDescriptor, "name: acme/salesforce", "name: Acme/salesforce", 1),
+		"two slashes":       strings.Replace(pkgDescriptor, "name: acme/salesforce", "name: acme/x/salesforce", 1),
+	} {
+		if _, err := Parse([]byte(doc)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}
+
+// A role whose config schema is empty keeps it through encoding.
+func TestEmptyConfigSchema(t *testing.T) {
+	d := &Descriptor{Roles: map[string]*Role{RoleSource: {Binaries: map[string]Binary{"linux/amd64": {URL: "https://example.com/x"}}, Spec: &protocolv1.SpecResponse{
+		ProtocolVersion: "v1", Kind: protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE, Egress: &protocolv1.Egress{Tier: protocolv1.EgressTier_EGRESS_TIER_HOST}, Source: &protocolv1.SourceCapabilities{},
+	}}}}
+	for _, encode := range []func(string, string, Info, *Descriptor) ([]byte, error){EncodeDescriptor, MarshalDescriptor} {
+		b, err := encode("x", "1.0.0", Info{Repository: "https://example.com/x"}, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Parse(b); err != nil {
+			t.Errorf("%v\n%s", err, b)
+		}
+	}
+	doc, err := Parse([]byte("apiVersion: openetl.io/v1alpha1\nkind: Connector\nmetadata: {name: x, version: 0.1.0}\nspec:\n  binaries: {linux/amd64: {url: 'https://x/y'}}\n  protocol: v1\n  kind: source\n  egress: {tier: raw}\n  config: {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := EncodeVersion(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := Parse(b); err != nil || again.APIVersion != APIVersion {
+		t.Errorf("a v1alpha1 descriptor encoded: %v\n%s", err, b)
+	}
+}
+
+func TestPackageNames(t *testing.T) {
+	if FullName("postgres") != "openetl/postgres" || FullName("acme/x") != "acme/x" {
+		t.Error("full names")
+	}
+	if o, n := SplitName("postgres"); o != "openetl" || n != "postgres" {
+		t.Errorf("split %s %s", o, n)
+	}
+	if !ValidPackageName("acme/x") || !ValidPackageName("x") || ValidPackageName("acme/") || ValidPackageName("/x") || ValidPackageName("a/b/c") {
+		t.Error("valid names")
+	}
 }
 
 func TestParseDeclarativeSource(t *testing.T) {
@@ -128,11 +317,11 @@ func TestParseDeclarativeSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `{"apiVersion":"openetl.io/v1alpha1","kind":"DeclarativeSource","metadata":{"name":"acme","version":"1.0.0"},"spec":{"a":["x"],"b":1}}`
-	if doc.Name != "acme" || doc.Version != "1.0.0" || string(doc.Manifest) != want {
+	if doc.Name != "openetl/acme" || doc.Version != "1.0.0" || string(doc.Manifest) != want {
 		t.Errorf("doc = %+v, manifest %s", doc, doc.Manifest)
 	}
 	doc, err = Parse([]byte("apiVersion: openetl.io/v1alpha1\nkind: DeclarativeSource\nmetadata: {version: 1.0.0, name: acme, author: Acme, logo: 'https://acme.example/logo.png'}\nspec: {}\n"))
-	if err != nil || doc.Info != (Info{Author: "Acme", Logo: "https://acme.example/logo.png"}) {
+	if err != nil || !reflect.DeepEqual(doc.Info, Info{Author: "Acme", Logo: "https://acme.example/logo.png"}) {
 		t.Errorf("a manifest's info: %+v, %v", doc, err)
 	}
 }
@@ -177,13 +366,14 @@ func TestCompareVersions(t *testing.T) {
 }
 
 func TestDescriptorNumbers(t *testing.T) {
-	d := &Descriptor{Binaries: map[string]Binary{"linux/amd64": {URL: "https://example.com/y"}}, Spec: &protocolv1.SpecResponse{
+	spec := &protocolv1.SpecResponse{
 		ProtocolVersion: "v1", Kind: protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE,
 		Egress:       &protocolv1.Egress{Tier: protocolv1.EgressTier_EGRESS_TIER_HOST},
 		ConfigSchema: []byte(`{"properties": {"n": {"default": 4194304}, "f": {"default": 0.5}, "e": {"default": 4.194304e6}}}`),
 		Source:       &protocolv1.SourceCapabilities{},
-	}}
-	y, err := MarshalDescriptor("x", "1.0.0", Info{}, d)
+	}
+	d := &Descriptor{Roles: map[string]*Role{RoleSource: {Binaries: map[string]Binary{"linux/amd64": {URL: "https://example.com/y"}}, Spec: spec}}}
+	y, err := MarshalDescriptor("x", "1.0.0", Info{Repository: "https://example.com/x"}, d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +384,7 @@ func TestDescriptorNumbers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := SameSpec(d.Spec, doc.Descriptor.Spec); diff != "" {
+	if diff := SameSpec(spec, doc.Descriptor.Roles[RoleSource].Spec); diff != "" {
 		t.Errorf("the connector's spec and its descriptor's differ: %s", diff)
 	}
 }

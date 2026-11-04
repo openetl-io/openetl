@@ -67,7 +67,7 @@ func TestDeclarativeSource(t *testing.T) {
 	name := unique("manifest")
 
 	res := apply(t, manifest(name, "0.1.0", "/v1/contacts"))
-	if res[0].GetAction() != apiv1.ApplyAction_APPLY_ACTION_CREATED || res[0].GetName() != "connectors/source-"+name+"/versions/0.1.0" ||
+	if res[0].GetAction() != apiv1.ApplyAction_APPLY_ACTION_CREATED || res[0].GetName() != "connectors/openetl/"+name+"/versions/0.1.0" ||
 		!strings.HasPrefix(res[0].GetVersion(), "sha256:") {
 		t.Fatalf("applied %v", res[0])
 	}
@@ -132,15 +132,15 @@ func TestExternalConnectorsArePinned(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c := got.Msg.GetDestination().GetConnector(); c.GetDigest() != digest || c.GetVersion() != "0.1.0" ||
-		c.GetAuthor() != "OpenETL" || c.GetReleaseTag() != "destination-postgres/v0.1.0" {
+		c.GetAuthor() != "OpenETL" || c.GetReleaseTag() != "postgres/v0.1.0" || c.GetRepository() != officialRepository {
 		t.Errorf("the destination's connector version is %v", c)
 	}
 
 	// A descriptor without digests is pinned to what its URLs serve when
 	// it's applied.
 	exe := filepath.Join(env.connectors, "destination-postgres")
-	desc, err := connectorhost.Package(t.Context(), "postgres", "0.1.1", spec.Info{}, []connectorhost.Executable{
-		{Platform: connectorhost.Platform(), Path: exe, URL: env.downloads + "/destination-postgres"},
+	desc, err := connectorhost.Package(t.Context(), "postgres", "0.1.1", spec.Info{Repository: officialRepository}, map[string]connectorhost.PackageRole{
+		"destination": {Executables: []connectorhost.Executable{{Platform: connectorhost.Platform(), Path: exe, URL: env.downloads + "/destination-postgres"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -153,8 +153,8 @@ func TestExternalConnectorsArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, err := query[string](t, `SELECT convert_from(a.content, 'UTF8') FROM connector_versions v JOIN artifacts a USING (org_id, digest)
-		WHERE v.kind = 'destination' AND v.name = 'postgres' AND v.version = '0.1.1'`)
+	stored, err := query[string](t, `SELECT convert_from(a.content, 'UTF8') FROM connector_roles r JOIN artifacts a USING (org_id, digest)
+		WHERE r.role = 'destination' AND r.name = 'openetl/postgres' AND r.version = '0.1.1'`)
 	if err != nil || !strings.Contains(stored, connectorhost.Digest(content)) {
 		t.Errorf("the applied descriptor %s, %v: want the binary pinned to %s", stored, err, connectorhost.Digest(content))
 	}
@@ -168,5 +168,81 @@ func TestExternalConnectorsArePinned(t *testing.T) {
 	}
 	if err := applyErr(t, sourceDoc(name, `{"connector": "faker@1.0.0", "config": {}}`)); err == nil || !strings.Contains(err.Error(), "built in") {
 		t.Errorf("a version of a built-in: %v", err)
+	}
+}
+
+// A connector package is owner/name with roles. Its name stays with its
+// repository unless a version is transferred; sources and destinations take
+// version constraints, and a role it hasn't fails at apply. v1alpha1
+// descriptors, one role each, make one version together.
+func TestConnectorPackages(t *testing.T) {
+	name := "acme/" + unique("pkg")
+	pkg := func(version, repo string, roles ...string) string {
+		pr := map[string]connectorhost.PackageRole{}
+		for _, role := range roles {
+			exe := role + "-postgres"
+			pr[role] = connectorhost.PackageRole{Executables: []connectorhost.Executable{{Platform: connectorhost.Platform(), Path: filepath.Join(env.connectors, exe), URL: env.downloads + "/" + exe}}}
+		}
+		doc, err := connectorhost.Package(t.Context(), name, version, spec.Info{Repository: repo}, pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(doc)
+	}
+	first, other := "https://github.com/acme/first", "https://github.com/acme/other"
+	res := apply(t, pkg("1.0.0", first, "source"), pkg("1.2.0", first, "source"))
+	if res[0].GetName() != "connectors/"+name+"/versions/1.0.0" || res[0].GetAction() != apiv1.ApplyAction_APPLY_ACTION_CREATED {
+		t.Errorf("applied %v", res[0])
+	}
+	if err := applyErr(t, pkg("2.0.0", other, "source")); err == nil || !strings.Contains(err.Error(), "--transfer") {
+		t.Errorf("a version from another repository: %v", err)
+	}
+	req := &apiv1.ApplyRequest{Documents: []*apiv1.Document{{Origin: "moved", Content: []byte(pkg("2.0.0", other, "source"))}}, Transfer: []string{name}}
+	if _, err := apiv1connect.NewApplyServiceClient(env.http, env.apiURL).Apply(t.Context(), connect.NewRequest(req)); err != nil {
+		t.Errorf("a transferred version: %v", err)
+	}
+	if err := applyErr(t, pkg("1.0.0", first, "source", "destination")); err == nil || !strings.Contains(err.Error(), "new version") {
+		t.Errorf("a role added to a v1alpha2 version: %v", err)
+	}
+
+	src := unique("pkg")
+	apply(t, sourceDoc(src, fmt.Sprintf(`{"connector": "%s@1", "config": {"dsn": {"secret": "e2e-dsn"}}}`, name)))
+	digest, err := query[string](t, "SELECT connector_digest FROM sources WHERE name = $1", src)
+	if want, _ := query[string](t, "SELECT digest FROM connector_roles WHERE name = $1 AND version = '1.2.0'", name); err != nil || digest != want {
+		t.Errorf("@1 resolved to %s, %v; want 1.2.0's %s", digest, err, want)
+	}
+	if err := applyErr(t, destinationDoc(src, fmt.Sprintf(`{"connector": %q, "config": {}}`, name))); err == nil || !strings.Contains(err.Error(), "no destination role") {
+		t.Errorf("a destination on a package without one: %v", err)
+	}
+	if err := applyErr(t, sourceDoc(src, fmt.Sprintf(`{"connector": "%s@1.x", "config": {}}`, name))); err == nil {
+		t.Error("a constraint that isn't one")
+	}
+
+	legacy := unique("legacy")
+	v1alpha1 := func(role string) string {
+		exe := filepath.Join(env.connectors, role+"-postgres")
+		content, err := os.ReadFile(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		caps := ""
+		if role == "destination" {
+			caps = `, "capabilities": {"class": "stage_and_apply"}`
+		}
+		return fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Connector", "metadata": {"name": %q, "version": "0.1.0"},
+			"spec": {"binaries": {%q: {"url": %q, "digest": %q}}, "protocol": "v1", "kind": %q, "egress": {"tier": "raw"}, "config": {}%s}}`,
+			legacy, connectorhost.Platform(), env.downloads+"/"+role+"-postgres", connectorhost.Digest(content), role, caps)
+	}
+	if res := apply(t, v1alpha1("source")); res[0].GetAction() != apiv1.ApplyAction_APPLY_ACTION_CREATED {
+		t.Errorf("a v1alpha1 source: %v", res[0])
+	}
+	if res := apply(t, v1alpha1("destination")); res[0].GetAction() != apiv1.ApplyAction_APPLY_ACTION_UPDATED {
+		t.Errorf("a v1alpha1 destination of the same version: %v", res[0])
+	}
+	if res := apply(t, v1alpha1("destination")); res[0].GetAction() != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED {
+		t.Errorf("the destination again: %v", res[0])
+	}
+	if n, err := query[int64](t, "SELECT count(*) FROM connector_roles WHERE name = $1", "openetl/"+legacy); err != nil || n != 2 {
+		t.Errorf("%d roles, %v", n, err)
 	}
 }

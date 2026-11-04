@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openetl.io/schemas/openetl-connector.schema.json",
+  "title": "openetl-connector.yaml",
+  "description": "A connector package, as its author writes it. `openetl connector package` builds it and writes its descriptor.",
+  "type": "object",
+  "required": ["name", "repository", "roles"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "description": "owner/name, or name for the official owner, openetl. Each part is lowercase letters, digits and hyphens, at most 63 characters.",
+      "type": "string",
+      "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+    },
+    "description": { "description": "One line.", "type": "string", "maxLength": 500, "pattern": "^[^\\n\\r]*$" },
+    "license": { "description": "An SPDX expression, such as Apache-2.0.", "type": "string", "pattern": "^[A-Za-z0-9.+:()\\- ]{1,100}$" },
+    "repository": { "description": "The package's source repository. Its name stays with it.", "$ref": "#/$defs/https" },
+    "docs": { "$ref": "#/$defs/https" },
+    "logo": { "description": "An image, which the UI shows.", "$ref": "#/$defs/https" },
+    "author": { "type": "string", "maxLength": 200 },
+    "tags": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" }
+    },
+    "platforms": {
+      "description": "The os/arch pairs to build. Default: linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/platform" }
+    },
+    "roles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "source": { "$ref": "#/$defs/role" },
+        "destination": { "$ref": "#/$defs/role" }
+      }
+    }
+  },
+  "$defs": {
+    "https": { "type": "string", "pattern": "^https://[^/?#\\s]+", "maxLength": 2048 },
+    "platform": { "type": "string", "pattern": "^[a-z0-9]+/[a-z0-9]+$" },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [{ "required": ["build"] }, { "required": ["image"] }, { "required": ["manifest"] }],
+      "properties": {
+        "build": {
+          "description": "How to build the role's executable for each platform.",
+          "type": "object",
+          "additionalProperties": false,
+          "oneOf": [{ "required": ["go"] }, { "required": ["command", "output"] }],
+          "properties": {
+            "go": { "description": "A Go main package, relative to this file, cross-compiled with CGO_ENABLED=0.", "type": "string", "minLength": 1 },
+            "command": { "description": "Run once with sh in this file's directory; OPENETL_VERSION and OPENETL_PLATFORMS are set.", "type": "string", "minLength": 1 },
+            "output": { "description": "Where command leaves each platform's executable, relative to this file, with {os} and {arch}.", "type": "string", "minLength": 1 }
+          }
+        },
+        "image": {
+          "description": "An OCI image repository, without a tag: its tag is the release's version.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*(\\.[a-z0-9-]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+$"
+        },
+        "command": {
+          "description": "The image's argv, where it isn't its entrypoint.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "manifest": { "description": "A DeclarativeSource document, relative to this file. Sources only, and nothing else.", "type": "string", "minLength": 1 },
+        "requires": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "platform": { "description": "The oldest openetl release the role runs on.", "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" }
+          }
+        },
+        "resources": {
+          "description": "A container launcher's requests and limits.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string", "pattern": "^([0-9]+m|[0-9]+(\\.[0-9]{1,3})?)$" },
+            "memory": { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti|k|M|G|T)?$" },
+            "disk": { "description": "The size of TMPDIR.", "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti|k|M|G|T)?$" }
+          }
+        },
+        "state": {
+          "description": "The version of the checkpoint state the role writes, and the oldest it can resume from.",
+          "type": "object",
+          "required": ["version", "reads"],
+          "additionalProperties": false,
+          "properties": {
+            "version": { "type": "integer", "minimum": 1 },
+            "reads": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    }
+  }
+}

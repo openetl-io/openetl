@@ -82,7 +82,10 @@ type ApplyRequest struct {
 	ValidateOnly bool        `protobuf:"varint,3,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
 	// What's applying, such as "cli", for connector versions' provenance.
 	// Empty: "api".
-	Client        string `protobuf:"bytes,4,opt,name=client,proto3" json:"client,omitempty"`
+	Client string `protobuf:"bytes,4,opt,name=client,proto3" json:"client,omitempty"`
+	// Connector packages, by name, whose versions may come from another
+	// repository than their earlier versions.
+	Transfer      []string `protobuf:"bytes,5,rep,name=transfer,proto3" json:"transfer,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -143,6 +146,13 @@ func (x *ApplyRequest) GetClient() string {
 		return x.Client
 	}
 	return ""
+}
+
+func (x *ApplyRequest) GetTransfer() []string {
+	if x != nil {
+		return x.Transfer
+	}
+	return nil
 }
 
 // Document is a YAML or JSON definition with apiVersion, kind, metadata and
@@ -339,12 +349,13 @@ var File_openetl_api_v1_apply_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_apply_proto_rawDesc = "" +
 	"\n" +
-	"\x1aopenetl/api/v1/apply.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1dopenetl/api/v1/pipeline.proto\"\xa1\x01\n" +
+	"\x1aopenetl/api/v1/apply.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1dopenetl/api/v1/pipeline.proto\"\xbd\x01\n" +
 	"\fApplyRequest\x12\x1c\n" +
 	"\tworkspace\x18\x01 \x01(\tR\tworkspace\x126\n" +
 	"\tdocuments\x18\x02 \x03(\v2\x18.openetl.api.v1.DocumentR\tdocuments\x12#\n" +
 	"\rvalidate_only\x18\x03 \x01(\bR\fvalidateOnly\x12\x16\n" +
-	"\x06client\x18\x04 \x01(\tR\x06client\"<\n" +
+	"\x06client\x18\x04 \x01(\tR\x06client\x12\x1a\n" +
+	"\btransfer\x18\x05 \x03(\tR\btransfer\"<\n" +
 	"\bDocument\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\tR\x06origin\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\fR\acontent\"\xc3\x01\n" +

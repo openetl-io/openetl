@@ -7,12 +7,15 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 const connectorVersionsByDigest = `-- name: ConnectorVersionsByDigest :many
-SELECT org_id, kind, name, version, digest, provenance, create_time, author, logo, release_tag, release_url FROM connector_versions WHERE org_id = $1 AND digest = ANY($2::text[])
+SELECT v.org_id, v.name, v.version, v.provenance, v.create_time, v.author, v.logo, v.release_tag, v.release_url, v.description, v.license, v.repository, v.docs, v.tags, r.role, r.digest FROM connector_versions v
+JOIN connector_roles r USING (org_id, name, version)
+WHERE v.org_id = $1 AND r.digest = ANY($2::text[])
 `
 
 type ConnectorVersionsByDigestParams struct {
@@ -20,27 +23,51 @@ type ConnectorVersionsByDigestParams struct {
 	Digests []string
 }
 
-func (q *Queries) ConnectorVersionsByDigest(ctx context.Context, arg ConnectorVersionsByDigestParams) ([]ConnectorVersion, error) {
+type ConnectorVersionsByDigestRow struct {
+	OrgID       uuid.UUID
+	Name        string
+	Version     string
+	Provenance  string
+	CreateTime  time.Time
+	Author      string
+	Logo        string
+	ReleaseTag  string
+	ReleaseUrl  string
+	Description string
+	License     string
+	Repository  string
+	Docs        string
+	Tags        []string
+	Role        string
+	Digest      string
+}
+
+func (q *Queries) ConnectorVersionsByDigest(ctx context.Context, arg ConnectorVersionsByDigestParams) ([]ConnectorVersionsByDigestRow, error) {
 	rows, err := q.db.Query(ctx, connectorVersionsByDigest, arg.OrgID, arg.Digests)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ConnectorVersion
+	var items []ConnectorVersionsByDigestRow
 	for rows.Next() {
-		var i ConnectorVersion
+		var i ConnectorVersionsByDigestRow
 		if err := rows.Scan(
 			&i.OrgID,
-			&i.Kind,
 			&i.Name,
 			&i.Version,
-			&i.Digest,
 			&i.Provenance,
 			&i.CreateTime,
 			&i.Author,
 			&i.Logo,
 			&i.ReleaseTag,
 			&i.ReleaseUrl,
+			&i.Description,
+			&i.License,
+			&i.Repository,
+			&i.Docs,
+			&i.Tags,
+			&i.Role,
+			&i.Digest,
 		); err != nil {
 			return nil, err
 		}
@@ -75,37 +102,34 @@ func (q *Queries) GetArtifact(ctx context.Context, arg GetArtifactParams) (Artif
 }
 
 const getConnectorVersion = `-- name: GetConnectorVersion :one
-SELECT org_id, kind, name, version, digest, provenance, create_time, author, logo, release_tag, release_url FROM connector_versions
-WHERE org_id = $1 AND kind = $2 AND name = $3 AND version = $4
+SELECT org_id, name, version, provenance, create_time, author, logo, release_tag, release_url, description, license, repository, docs, tags FROM connector_versions
+WHERE org_id = $1 AND name = $2 AND version = $3
 `
 
 type GetConnectorVersionParams struct {
 	OrgID   uuid.UUID
-	Kind    string
 	Name    string
 	Version string
 }
 
 func (q *Queries) GetConnectorVersion(ctx context.Context, arg GetConnectorVersionParams) (ConnectorVersion, error) {
-	row := q.db.QueryRow(ctx, getConnectorVersion,
-		arg.OrgID,
-		arg.Kind,
-		arg.Name,
-		arg.Version,
-	)
+	row := q.db.QueryRow(ctx, getConnectorVersion, arg.OrgID, arg.Name, arg.Version)
 	var i ConnectorVersion
 	err := row.Scan(
 		&i.OrgID,
-		&i.Kind,
 		&i.Name,
 		&i.Version,
-		&i.Digest,
 		&i.Provenance,
 		&i.CreateTime,
 		&i.Author,
 		&i.Logo,
 		&i.ReleaseTag,
 		&i.ReleaseUrl,
+		&i.Description,
+		&i.License,
+		&i.Repository,
+		&i.Docs,
+		&i.Tags,
 	)
 	return i, err
 }
@@ -133,32 +157,62 @@ func (q *Queries) InsertArtifact(ctx context.Context, arg InsertArtifactParams) 
 	return err
 }
 
+const insertConnectorRole = `-- name: InsertConnectorRole :exec
+INSERT INTO connector_roles (org_id, name, version, role, digest)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertConnectorRoleParams struct {
+	OrgID   uuid.UUID
+	Name    string
+	Version string
+	Role    string
+	Digest  string
+}
+
+func (q *Queries) InsertConnectorRole(ctx context.Context, arg InsertConnectorRoleParams) error {
+	_, err := q.db.Exec(ctx, insertConnectorRole,
+		arg.OrgID,
+		arg.Name,
+		arg.Version,
+		arg.Role,
+		arg.Digest,
+	)
+	return err
+}
+
 const insertConnectorVersion = `-- name: InsertConnectorVersion :exec
-INSERT INTO connector_versions (org_id, kind, name, version, digest, provenance, author, logo, release_tag, release_url)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO connector_versions (org_id, name, version, provenance, description, license, repository, docs, tags, author, logo, release_tag, release_url)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 `
 
 type InsertConnectorVersionParams struct {
-	OrgID      uuid.UUID
-	Kind       string
-	Name       string
-	Version    string
-	Digest     string
-	Provenance string
-	Author     string
-	Logo       string
-	ReleaseTag string
-	ReleaseUrl string
+	OrgID       uuid.UUID
+	Name        string
+	Version     string
+	Provenance  string
+	Description string
+	License     string
+	Repository  string
+	Docs        string
+	Tags        []string
+	Author      string
+	Logo        string
+	ReleaseTag  string
+	ReleaseUrl  string
 }
 
 func (q *Queries) InsertConnectorVersion(ctx context.Context, arg InsertConnectorVersionParams) error {
 	_, err := q.db.Exec(ctx, insertConnectorVersion,
 		arg.OrgID,
-		arg.Kind,
 		arg.Name,
 		arg.Version,
-		arg.Digest,
 		arg.Provenance,
+		arg.Description,
+		arg.License,
+		arg.Repository,
+		arg.Docs,
+		arg.Tags,
 		arg.Author,
 		arg.Logo,
 		arg.ReleaseTag,
@@ -167,19 +221,77 @@ func (q *Queries) InsertConnectorVersion(ctx context.Context, arg InsertConnecto
 	return err
 }
 
+const latestRepository = `-- name: LatestRepository :one
+SELECT repository FROM connector_versions
+WHERE org_id = $1 AND name = $2 AND repository <> ''
+ORDER BY create_time DESC
+LIMIT 1
+`
+
+type LatestRepositoryParams struct {
+	OrgID uuid.UUID
+	Name  string
+}
+
+// The repository of the package's most recently applied version that has
+// one; no rows if none has.
+func (q *Queries) LatestRepository(ctx context.Context, arg LatestRepositoryParams) (string, error) {
+	row := q.db.QueryRow(ctx, latestRepository, arg.OrgID, arg.Name)
+	var repository string
+	err := row.Scan(&repository)
+	return repository, err
+}
+
+const listConnectorRoles = `-- name: ListConnectorRoles :many
+SELECT v.version, r.digest FROM connector_versions v
+JOIN connector_roles r USING (org_id, name, version)
+WHERE v.org_id = $1 AND v.name = $2 AND r.role = $3
+`
+
+type ListConnectorRolesParams struct {
+	OrgID uuid.UUID
+	Name  string
+	Role  string
+}
+
+type ListConnectorRolesRow struct {
+	Version string
+	Digest  string
+}
+
+// A package's versions with role, each with its role's digest.
+func (q *Queries) ListConnectorRoles(ctx context.Context, arg ListConnectorRolesParams) ([]ListConnectorRolesRow, error) {
+	rows, err := q.db.Query(ctx, listConnectorRoles, arg.OrgID, arg.Name, arg.Role)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListConnectorRolesRow
+	for rows.Next() {
+		var i ListConnectorRolesRow
+		if err := rows.Scan(&i.Version, &i.Digest); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConnectorVersions = `-- name: ListConnectorVersions :many
-SELECT org_id, kind, name, version, digest, provenance, create_time, author, logo, release_tag, release_url FROM connector_versions
-WHERE org_id = $1 AND kind = $2 AND name = $3
+SELECT org_id, name, version, provenance, create_time, author, logo, release_tag, release_url, description, license, repository, docs, tags FROM connector_versions
+WHERE org_id = $1 AND name = $2
 `
 
 type ListConnectorVersionsParams struct {
 	OrgID uuid.UUID
-	Kind  string
 	Name  string
 }
 
 func (q *Queries) ListConnectorVersions(ctx context.Context, arg ListConnectorVersionsParams) ([]ConnectorVersion, error) {
-	rows, err := q.db.Query(ctx, listConnectorVersions, arg.OrgID, arg.Kind, arg.Name)
+	rows, err := q.db.Query(ctx, listConnectorVersions, arg.OrgID, arg.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -189,16 +301,56 @@ func (q *Queries) ListConnectorVersions(ctx context.Context, arg ListConnectorVe
 		var i ConnectorVersion
 		if err := rows.Scan(
 			&i.OrgID,
-			&i.Kind,
 			&i.Name,
 			&i.Version,
-			&i.Digest,
 			&i.Provenance,
 			&i.CreateTime,
 			&i.Author,
 			&i.Logo,
 			&i.ReleaseTag,
 			&i.ReleaseUrl,
+			&i.Description,
+			&i.License,
+			&i.Repository,
+			&i.Docs,
+			&i.Tags,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVersionRoles = `-- name: ListVersionRoles :many
+SELECT org_id, name, version, role, digest FROM connector_roles
+WHERE org_id = $1 AND name = $2 AND version = $3
+`
+
+type ListVersionRolesParams struct {
+	OrgID   uuid.UUID
+	Name    string
+	Version string
+}
+
+func (q *Queries) ListVersionRoles(ctx context.Context, arg ListVersionRolesParams) ([]ConnectorRole, error) {
+	rows, err := q.db.Query(ctx, listVersionRoles, arg.OrgID, arg.Name, arg.Version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ConnectorRole
+	for rows.Next() {
+		var i ConnectorRole
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.Name,
+			&i.Version,
+			&i.Role,
+			&i.Digest,
 		); err != nil {
 			return nil, err
 		}

@@ -15,15 +15,20 @@
       "additionalProperties": false,
       "properties": {
         "name": {
-          "description": "The connector's name: lowercase letters, digits and hyphens.",
+          "description": "The connector's package: owner/name, or name for the official owner, openetl. Each part is lowercase letters, digits and hyphens.",
           "type": "string",
-          "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+          "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
         },
         "version": {
           "description": "Semantic version.",
           "type": "string",
           "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
         },
+        "description": { "description": "One line.", "type": "string", "maxLength": 500 },
+        "license": { "description": "An SPDX expression, such as Apache-2.0.", "type": "string", "maxLength": 100 },
+        "repository": { "description": "An https URL of the source repository.", "type": "string", "pattern": "^https://" },
+        "docs": { "description": "An https URL.", "type": "string", "pattern": "^https://" },
+        "tags": { "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" } },
         "author": {
           "description": "Who made the connector.",
           "type": "string",

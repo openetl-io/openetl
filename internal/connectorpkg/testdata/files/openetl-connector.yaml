@@ -1,0 +1,13 @@
+name: files
+description: Files on disk, for tests
+license: Apache-2.0
+repository: https://github.com/example/openetl-files
+docs: https://github.com/example/openetl-files#readme
+logo: https://example.com/files.svg
+author: Example
+tags: [files, test]
+roles:
+  destination:
+    build: { go: ../../../connectorhost/external/testconnector }
+    resources: { cpu: 500m, memory: 256Mi, disk: 1Gi }
+    state: { version: 2, reads: 1 }

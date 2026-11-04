@@ -88,7 +88,7 @@ message Destination {
 // ConnectorVersion is an applied connector version, with what its metadata
 // says about it.
 message ConnectorVersion {
-  // connectors/{kind}-{name}/versions/{version}
+  // connectors/{owner}/{name}/versions/{version}
   string name = 1;
   string version = 2;
   // sha256:{hex}
@@ -100,6 +100,14 @@ message ConnectorVersion {
   string release_tag = 6;
   // An https URL, such as the release's page.
   string release_url = 7;
+  string description = 8;
+  // An SPDX expression.
+  string license = 9;
+  // An https URL of the package's source repository.
+  string repository = 10;
+  // An https URL.
+  string docs = 11;
+  repeated string tags = 12;
 }
 
 // ConnectorConfig is the spec of a Source or Destination document.

@@ -47,9 +47,10 @@ const (
 // for declarative sources, Bundle for dbt projects, Webhook for webhooks,
 // SparkCluster for Spark clusters, and FlinkCluster for Flink clusters.
 type Document struct {
-	Kind      string
-	Name      string
-	Workspace string
+	APIVersion string
+	Kind       string
+	Name       string
+	Workspace  string
 	// Connector versions only: a semantic version.
 	Version string
 	// Connector versions only.
@@ -74,12 +75,21 @@ type envelope struct {
 }
 
 type metadata struct {
-	Name      string       `yaml:"name"`
-	Workspace string       `yaml:"workspace"`
-	Version   string       `yaml:"version"`
-	Author    string       `yaml:"author"`
-	Logo      string       `yaml:"logo"`
-	Release   *releaseYAML `yaml:"release"`
+	Name        string       `yaml:"name"`
+	Workspace   string       `yaml:"workspace"`
+	Version     string       `yaml:"version"`
+	Description string       `yaml:"description"`
+	License     string       `yaml:"license"`
+	Repository  string       `yaml:"repository"`
+	Docs        string       `yaml:"docs"`
+	Author      string       `yaml:"author"`
+	Logo        string       `yaml:"logo"`
+	Tags        []string     `yaml:"tags"`
+	Release     *releaseYAML `yaml:"release"`
+}
+
+func (m metadata) hasInfo() bool {
+	return m.Description != "" || m.License != "" || m.Repository != "" || m.Docs != "" || m.Author != "" || m.Logo != "" || m.Tags != nil || m.Release != nil
 }
 
 type releaseYAML struct {
@@ -87,37 +97,66 @@ type releaseYAML struct {
 	URL string `yaml:"url,omitempty" json:"url,omitempty"`
 }
 
-// Info describes a connector version for people and the UI: who made it,
-// its logo, and the git release it came from. All of it is optional.
+// Info describes a connector version for people and the UI. Only
+// Repository is required, and only of a v1alpha2 descriptor.
 type Info struct {
+	Description string
+	// An SPDX expression.
+	License string
+	// An https URL of the source repository. A package's name stays with it.
+	Repository string
+	// An https URL.
+	Docs   string
 	Author string
 	// An https URL of an image.
 	Logo       string
+	Tags       []string
 	ReleaseTag string
 	// An https URL, such as the release's page.
 	ReleaseURL string
 }
 
+var (
+	tagPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+	licensePattern = regexp.MustCompile(`^[A-Za-z0-9.+:()\- ]{1,100}$`)
+)
+
+// CheckInfo checks a connector version's metadata.
+func CheckInfo(info Info) error {
+	switch {
+	case len(info.Author) > 200:
+		return errors.New("metadata.author is longer than 200 characters")
+	case len(info.Description) > 500 || strings.ContainsAny(info.Description, "\n\r"):
+		return errors.New("metadata.description must be one line of at most 500 characters")
+	case info.License != "" && !licensePattern.MatchString(info.License):
+		return fmt.Errorf("metadata.license %q isn't an SPDX expression, such as Apache-2.0", info.License)
+	case len(info.Tags) > 20:
+		return errors.New("metadata.tags has more than 20 tags")
+	case len(info.ReleaseTag) > 255 || strings.ContainsAny(info.ReleaseTag, " \t\n"):
+		return fmt.Errorf("metadata.release.tag %q isn't a git tag", info.ReleaseTag)
+	}
+	for _, t := range info.Tags {
+		if !tagPattern.MatchString(t) {
+			return fmt.Errorf("metadata.tags: %q must be lowercase letters, digits and hyphens, at most 32 characters", t)
+		}
+	}
+	for _, f := range []struct{ field, v string }{
+		{"metadata.repository", info.Repository}, {"metadata.docs", info.Docs},
+		{"metadata.logo", info.Logo}, {"metadata.release.url", info.ReleaseURL},
+	} {
+		if f.v != "" && !httpURL(f.v, false) {
+			return fmt.Errorf("%s %q must be an https URL", f.field, f.v)
+		}
+	}
+	return nil
+}
+
 func parseInfo(m metadata) (Info, error) {
-	info := Info{Author: m.Author, Logo: m.Logo}
+	info := Info{Description: m.Description, License: m.License, Repository: m.Repository, Docs: m.Docs, Author: m.Author, Logo: m.Logo, Tags: m.Tags}
 	if m.Release != nil {
 		info.ReleaseTag, info.ReleaseURL = m.Release.Tag, m.Release.URL
 	}
-	switch {
-	case len(info.Author) > 200:
-		return info, errors.New("metadata.author is longer than 200 characters")
-	case len(info.ReleaseTag) > 255 || strings.ContainsAny(info.ReleaseTag, " \t\n"):
-		return info, fmt.Errorf("metadata.release.tag %q isn't a git tag", info.ReleaseTag)
-	}
-	for field, v := range map[string]string{"metadata.logo": info.Logo, "metadata.release.url": info.ReleaseURL} {
-		if v == "" {
-			continue
-		}
-		if u, err := url.Parse(v); err != nil || u.Scheme != "https" || u.Host == "" || len(v) > 2048 {
-			return info, fmt.Errorf("%s %q must be an https URL", field, v)
-		}
-	}
-	return info, nil
+	return info, CheckInfo(info)
 }
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
@@ -132,18 +171,27 @@ func Parse(content []byte) (*Document, error) {
 	if err := strict(content, &env); err != nil {
 		return nil, err
 	}
+	versioned := env.Kind == KindConnector || env.Kind == KindDeclarativeSource
 	switch {
-	case env.APIVersion != APIVersion:
-		return nil, fmt.Errorf("apiVersion is %q, want %q", env.APIVersion, APIVersion)
-	case !ValidName(env.Metadata.Name):
+	case env.APIVersion != APIVersion && (env.Kind != KindConnector || env.APIVersion != APIVersionConnector):
+		want := APIVersion
+		if env.Kind == KindConnector {
+			want = APIVersionConnector
+		}
+		return nil, fmt.Errorf("apiVersion is %q, want %q", env.APIVersion, want)
+	case versioned && !ValidPackageName(env.Metadata.Name):
+		return nil, fmt.Errorf("metadata.name %q must be owner/name or name, each lowercase letters, digits and hyphens, at most 63 characters", env.Metadata.Name)
+	case !versioned && !ValidName(env.Metadata.Name):
 		return nil, fmt.Errorf("metadata.name %q must be lowercase letters, digits and hyphens, at most 63 characters", env.Metadata.Name)
 	case env.Metadata.Workspace != "" && !ValidName(env.Metadata.Workspace):
 		return nil, fmt.Errorf("metadata.workspace %q isn't a valid name", env.Metadata.Workspace)
 	case env.Spec.Kind == 0:
 		return nil, errors.New("spec is missing")
 	}
-	doc := &Document{Kind: env.Kind, Name: env.Metadata.Name, Workspace: env.Metadata.Workspace, Version: env.Metadata.Version}
-	versioned := env.Kind == KindConnector || env.Kind == KindDeclarativeSource
+	doc := &Document{APIVersion: env.APIVersion, Kind: env.Kind, Name: env.Metadata.Name, Workspace: env.Metadata.Workspace, Version: env.Metadata.Version}
+	if versioned {
+		doc.Name = FullName(env.Metadata.Name)
+	}
 	switch {
 	case versioned && env.Metadata.Workspace != "":
 		return nil, errors.New("metadata.workspace: connectors belong to the org, not a workspace")
@@ -151,8 +199,10 @@ func Parse(content []byte) (*Document, error) {
 		return nil, fmt.Errorf("metadata.version %q must be a semantic version, such as 1.2.0", env.Metadata.Version)
 	case !versioned && env.Metadata.Version != "":
 		return nil, fmt.Errorf("metadata.version: a %s has no version", env.Kind)
-	case !versioned && (env.Metadata.Author != "" || env.Metadata.Logo != "" || env.Metadata.Release != nil):
-		return nil, fmt.Errorf("metadata: author, logo and release are a connector version's, not a %s's", env.Kind)
+	case !versioned && env.Metadata.hasInfo():
+		return nil, fmt.Errorf("metadata: author, logo, release and the like are a connector version's, not a %s's", env.Kind)
+	case env.APIVersion == APIVersionConnector && env.Metadata.Repository == "":
+		return nil, errors.New("metadata.repository, the package's source repository, is missing")
 	}
 	var err error
 	if doc.Info, err = parseInfo(env.Metadata); err != nil {
@@ -168,7 +218,11 @@ func Parse(content []byte) (*Document, error) {
 	case KindPipeline:
 		doc.Pipeline, err = parsePipeline(spec)
 	case KindConnector:
-		doc.Descriptor, err = parseDescriptor(spec)
+		if env.APIVersion == APIVersionConnector {
+			doc.Descriptor, err = parseDescriptor(spec)
+		} else {
+			doc.Descriptor, err = parseV1alpha1Descriptor(spec)
+		}
 	case KindDeclarativeSource:
 		// declarative.Load checks the rest.
 		doc.Manifest, err = canonicalJSON(content)

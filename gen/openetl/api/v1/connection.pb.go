@@ -325,7 +325,7 @@ func (x *Destination) GetConnector() *ConnectorVersion {
 // says about it.
 type ConnectorVersion struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// connectors/{kind}-{name}/versions/{version}
+	// connectors/{owner}/{name}/versions/{version}
 	Name    string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Version string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
 	// sha256:{hex}
@@ -336,7 +336,15 @@ type ConnectorVersion struct {
 	// The git tag the version was released from.
 	ReleaseTag string `protobuf:"bytes,6,opt,name=release_tag,json=releaseTag,proto3" json:"release_tag,omitempty"`
 	// An https URL, such as the release's page.
-	ReleaseUrl    string `protobuf:"bytes,7,opt,name=release_url,json=releaseUrl,proto3" json:"release_url,omitempty"`
+	ReleaseUrl  string `protobuf:"bytes,7,opt,name=release_url,json=releaseUrl,proto3" json:"release_url,omitempty"`
+	Description string `protobuf:"bytes,8,opt,name=description,proto3" json:"description,omitempty"`
+	// An SPDX expression.
+	License string `protobuf:"bytes,9,opt,name=license,proto3" json:"license,omitempty"`
+	// An https URL of the package's source repository.
+	Repository string `protobuf:"bytes,10,opt,name=repository,proto3" json:"repository,omitempty"`
+	// An https URL.
+	Docs          string   `protobuf:"bytes,11,opt,name=docs,proto3" json:"docs,omitempty"`
+	Tags          []string `protobuf:"bytes,12,rep,name=tags,proto3" json:"tags,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -418,6 +426,41 @@ func (x *ConnectorVersion) GetReleaseUrl() string {
 		return x.ReleaseUrl
 	}
 	return ""
+}
+
+func (x *ConnectorVersion) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetLicense() string {
+	if x != nil {
+		return x.License
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetRepository() string {
+	if x != nil {
+		return x.Repository
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetDocs() string {
+	if x != nil {
+		return x.Docs
+	}
+	return ""
+}
+
+func (x *ConnectorVersion) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
 }
 
 // ConnectorConfig is the spec of a Source or Destination document.
@@ -1655,7 +1698,7 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"createTime\x12;\n" +
 	"\vupdate_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"updateTime\x12>\n" +
-	"\tconnector\x18\a \x01(\v2 .openetl.api.v1.ConnectorVersionR\tconnector\"\xc6\x01\n" +
+	"\tconnector\x18\a \x01(\v2 .openetl.api.v1.ConnectorVersionR\tconnector\"\xca\x02\n" +
 	"\x10ConnectorVersion\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x16\n" +
@@ -1665,7 +1708,15 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\vrelease_tag\x18\x06 \x01(\tR\n" +
 	"releaseTag\x12\x1f\n" +
 	"\vrelease_url\x18\a \x01(\tR\n" +
-	"releaseUrl\"`\n" +
+	"releaseUrl\x12 \n" +
+	"\vdescription\x18\b \x01(\tR\vdescription\x12\x18\n" +
+	"\alicense\x18\t \x01(\tR\alicense\x12\x1e\n" +
+	"\n" +
+	"repository\x18\n" +
+	" \x01(\tR\n" +
+	"repository\x12\x12\n" +
+	"\x04docs\x18\v \x01(\tR\x04docs\x12\x12\n" +
+	"\x04tags\x18\f \x03(\tR\x04tags\"`\n" +
 	"\x0fConnectorConfig\x12\x1c\n" +
 	"\tconnector\x18\x01 \x01(\tR\tconnector\x12/\n" +
 	"\x06config\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x06config\"&\n" +

@@ -334,8 +334,9 @@ func (s *Server) connectorVersions(ctx context.Context, cs ...connection) (map[s
 	}
 	for _, r := range rows {
 		out[r.Digest] = &apiv1.ConnectorVersion{
-			Name: connectorName(r.Kind, r.Name, r.Version), Version: r.Version, Digest: r.Digest,
+			Name: connectorName(r.Name, r.Version), Version: r.Version, Digest: r.Digest,
 			Author: r.Author, Logo: r.Logo, ReleaseTag: r.ReleaseTag, ReleaseUrl: r.ReleaseUrl,
+			Description: r.Description, License: r.License, Repository: r.Repository, Docs: r.Docs, Tags: r.Tags,
 		}
 	}
 	return out, nil
