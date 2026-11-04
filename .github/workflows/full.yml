@@ -62,6 +62,11 @@ jobs:
     if: needs.changed.outputs.run == 'true'
     uses: ./.github/workflows/spark-lib.yml
 
+  flink-lib:
+    needs: changed
+    if: needs.changed.outputs.run == 'true'
+    uses: ./.github/workflows/flink-lib.yml
+
   integration:
     needs: changed
     if: needs.changed.outputs.run == 'true'
@@ -74,7 +79,7 @@ jobs:
     secrets: inherit
 
   full:
-    needs: [changed, go, rust, deny, web, spark-lib, integration, e2e]
+    needs: [changed, go, rust, deny, web, spark-lib, flink-lib, integration, e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:

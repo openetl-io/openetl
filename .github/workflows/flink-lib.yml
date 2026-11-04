@@ -1,0 +1,29 @@
+name: flink-lib
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "libs/openetl-flink/**"
+      - "proto/openetl/bridge/**"
+      - ".github/workflows/flink-lib.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-flink-lib-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flink-lib:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v6
+        with:
+          path: ~/.m2
+          key: maven-${{ github.job }}-${{ hashFiles('libs/**/pom.xml') }}
+          restore-keys: maven-${{ github.job }}-
+      - run: make flink-lib

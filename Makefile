@@ -75,10 +75,11 @@ connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connec
 	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/unsuitable001/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
 	cd $(CONNECTORS_SRC) && GOWORK=$(BIN)/connectors.work go build -o $(BIN)/connectors/ ./cmd/...
 
-# openetl-spark (ADR-0022): the jar, built and tested in a pinned Maven image,
-# so no JDK is needed on the host; and the Python package's tests. The tests
-# start Spark, whose Hadoop login needs a passwd entry for the container's user.
-# MAVEN_FLAGS=-DskipTests builds the jar without them.
+# openetl-spark and openetl-flink (ADR-0022): the jars, built and tested in a
+# pinned Maven image, so no JDK is needed on the host; and openetl-spark's
+# Python package's tests. Spark's tests need a passwd entry for the
+# container's user, for Hadoop's login. MAVEN_FLAGS=-DskipTests builds the
+# jars without their tests.
 MAVEN_IMAGE := maven:3.9.12-eclipse-temurin-17
 MAVEN_REPO ?= $(HOME)/.m2
 .PHONY: spark-lib
@@ -89,6 +90,14 @@ spark-lib: ## Build and test openetl-spark (the jar into libs/openetl-spark/java
 		-e MAVEN_CONFIG=/var/maven/.m2 -v $(MAVEN_REPO):/var/maven/.m2 \
 		-v $(CURDIR)/libs/openetl-spark/java:/src -w /src $(MAVEN_IMAGE) mvn -B -q -Duser.home=/var/maven $(MAVEN_FLAGS) package
 	cd libs/openetl-spark/python && PYTHONPATH=. python3 -m unittest discover -s tests
+
+.PHONY: flink-lib
+flink-lib: ## Build and test openetl-flink (the jar into libs/openetl-flink/java/target)
+	@mkdir -p $(MAVEN_REPO) .openetl
+	@printf 'root:x:0:0::/root:/bin/sh\nopenetl:x:%s:%s::/var/maven:/bin/sh\n' $$(id -u) $$(id -g) > .openetl/maven-passwd
+	docker run --rm -u $$(id -u):$$(id -g) -v $(CURDIR)/.openetl/maven-passwd:/etc/passwd:ro \
+		-e MAVEN_CONFIG=/var/maven/.m2 -v $(MAVEN_REPO):/var/maven/.m2 -v $(CURDIR)/proto:/proto:ro \
+		-v $(CURDIR)/libs/openetl-flink/java:/src -w /src $(MAVEN_IMAGE) mvn -B -q -Duser.home=/var/maven -Dbridge.proto=/proto $(MAVEN_FLAGS) verify
 
 .PHONY: engine
 engine: ## Build openetl-engine
