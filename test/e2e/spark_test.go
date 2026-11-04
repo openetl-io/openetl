@@ -215,7 +215,9 @@ func TestSparkTransform(t *testing.T) {
 		"spec": {"submit": {"master": "spark://spark-master:7077", "ui": "http://127.0.0.1:8090",
 			"conf": {"spark.driver.memory": "512m", "spark.executor.memory": "512m", "spark.hadoop.fs.permissions.umask-mode": "000"}}}}`, name)
 	docs := func(conf string) []string {
-		d := pipelineDocs(name, `{"seed": 4, "count": 300, "batchSize": 50}`, `{"commit": {"maxBytes": "8KB"}}`)
+		// The pause between batches lets barriers in between them, so the
+		// sync takes several epochs however fast the runner is.
+		d := pipelineDocs(name, `{"seed": 4, "count": 300, "batchSize": 50, "delay": "100ms"}`, `{"commit": {"maxBytes": "8KB"}}`)
 		d[2] = strings.Replace(d[2], `"delivery":`, fmt.Sprintf(`"transform": {"spark": {"cluster": %q,
 			"code": {"jar": %q, "sha256": %q, "class": "io.openetl.spark.e2e.EnrichCheck"},
 			"conf": {"spark.jars": %q%s}}}, "delivery":`, name, code, digest, "file://"+libCopy, conf), 1)
