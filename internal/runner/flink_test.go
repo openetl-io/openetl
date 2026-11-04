@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -328,5 +329,123 @@ func TestFlinkAttemptsResumeWhenTheEpochIsLost(t *testing.T) {
 func TestFlinkStopAbortsTheCheckpointInFlight(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		runFlinkCase(t, flinkCase{streams: []string{"a", "b", "c", "d"}, rows: 80, faults: flinktest.Faults{AbortOnStop: true}})
+	})
+}
+
+// failSecondStart fails a job's first run of tasks at its second
+// checkpoint, after the first has completed, and calls then once.
+func failSecondStart(then func()) func(context.Context, int, string, func() error) error {
+	var mu sync.Mutex
+	starts := 0
+	return func(_ context.Context, run int, op string, apply func() error) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if run == 1 && op == "flink.start" {
+			if starts++; starts == 2 {
+				if then != nil {
+					then()
+				}
+				return errors.New("a TaskManager was lost")
+			}
+		}
+		return apply()
+	}
+}
+
+func oneStreamJob(log *checkpoint.Log, dest *exactDest, f runner.Flink, bridge runner.Bridge, rows int, drain <-chan struct{}) runner.Job {
+	return runner.Job{
+		Owner: "a", Pipeline: "p", Continuous: true, Log: log,
+		Source:      countingSource{streams: []string{"a"}, rows: rows, page: 3, pause: 2 * time.Millisecond},
+		Streams:     []runner.Stream{{Name: "a", Replay: source.Exact, Read: source.Incremental, Mode: destination.Append, Schema: idSchema}},
+		Outputs:     []runner.Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append, Transformed: true}},
+		Destination: dest,
+		Dataflow:    runner.Passthrough{Convert: idRows},
+		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline, CommitInterval: 10 * time.Millisecond},
+		Flink:       f, Bridge: bridge, Drain: drain,
+	}
+}
+
+// hookStore runs before ahead of the next swap of HEAD, once armed.
+type hookStore struct {
+	checkpoint.Store
+	mu     sync.Mutex
+	armed  bool
+	before func()
+}
+
+func (h *hookStore) arm() {
+	h.mu.Lock()
+	h.armed = true
+	h.mu.Unlock()
+}
+
+func (h *hookStore) Swap(ctx context.Context, key string, data []byte, prev checkpoint.Version) (checkpoint.Version, error) {
+	h.mu.Lock()
+	run := h.armed && strings.HasSuffix(key, "/HEAD")
+	h.armed = h.armed && !run
+	h.mu.Unlock()
+	if run {
+		h.before()
+	}
+	return h.Store.Swap(ctx, key, data, prev)
+}
+
+// Another attempt claims the pipeline and writes a record between an
+// attempt's check that it isn't fenced and its claim after its job's tasks
+// restarted. The attempt must settle the HEAD it claimed, not the one its
+// segment left, or pruning from that one deletes the other attempt's record
+// from under HEAD.
+func TestFlinkRestartAfterAnotherAttemptMovedHEAD(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		mem := checkpoint.NewMemStore()
+		hooked := &hookStore{Store: mem}
+		hooked.before = func() {
+			ctx := context.Background()
+			sess, err := checkpoint.NewLog(mem, "org", "p").Claim(ctx, "other")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			head, err := sess.Load(ctx)
+			if err != nil || head == nil {
+				t.Errorf("HEAD: %v, %v", head, err)
+				return
+			}
+			if err := sess.Commit(ctx, &checkpoint.Record{Epoch: head.Epoch + 1, Streams: head.Streams, CreatedAt: time.Now().UTC()}); err != nil {
+				t.Error(err)
+			}
+		}
+		log := checkpoint.NewLog(hooked, "org", "p")
+		dest := newExactDest()
+		bridge := flinktest.NewBridge()
+		cluster := flinktest.NewCluster(bridge)
+		cluster.Logf = t.Logf
+		cluster.Point = failSecondStart(hooked.arm)
+		const rows = 80
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		drain := make(chan struct{})
+		go func() {
+			for dest.count() < rows {
+				select {
+				case <-time.After(5 * time.Millisecond):
+				case <-ctx.Done():
+					return
+				}
+			}
+			close(drain)
+		}()
+		if _, err := runner.RunAttempt(ctx, oneStreamJob(log, dest, cluster, bridge, rows, drain)); !errors.Is(err, runner.ErrDrained) {
+			t.Fatalf("attempt: %v", err)
+		}
+		dest.check(t, []string{"a"}, rows)
+		// Pruning keeps 10 records along the chain.
+		rec, err := log.Latest(ctx)
+		for i := 0; err == nil && rec != nil && rec.Previous != nil && i < 9; i++ {
+			rec, err = log.Record(ctx, *rec.Previous)
+		}
+		if err != nil {
+			t.Errorf("HEAD's chain: %v", err)
+		}
 	})
 }

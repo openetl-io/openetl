@@ -176,6 +176,11 @@ func (a *flinkAttempt) run(ctx context.Context) error {
 		} else {
 			seg, err = a.restart(ctx, prevSeg, hello)
 		}
+		if errors.Is(err, errMovedOn) {
+			a.log.Info("another attempt moved HEAD while the Flink job restarted; deploying the job again")
+			hello, prevSeg = nil, nil
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -303,8 +308,10 @@ func (a *flinkAttempt) deploy(ctx context.Context) (*flinkSegment, error) {
 		return nil, fmt.Errorf("runner: deploy the Flink job: %w", err)
 	}
 	a.fjob, a.stopped = fjob, false
-	a.jobDone = make(chan error, 1)
-	go func() { a.jobDone <- fjob.Wait(context.WithoutCancel(ctx)) }()
+	// The job before's outcome mustn't reach this one's channel.
+	done := make(chan error, 1)
+	a.jobDone = done
+	go func() { done <- fjob.Wait(context.WithoutCancel(ctx)) }()
 	a.log.Info("deployed the Flink job", "job", fjob.ID(), "from", from, "ui", fjob.UI())
 	seg.deployed(fjob.ID())
 	return seg, nil
@@ -519,10 +526,16 @@ func (a *flinkAttempt) restart(ctx context.Context, prev *flinkSegment, hello *c
 		hello.reply <- errors.New("runner: refused")
 		return nil, errs.New(errs.PositionLost, "runner: the Flink job restored checkpoint %d, older than the one the pipeline's records stand at (%d); a JobManager that restarts without high availability does this", r, before.Flink.Checkpoint)
 	}
-	if _, _, err := a.claim(ctx); err != nil {
+	cur, _, err := a.claim(ctx)
+	if err != nil {
 		return nil, err
 	}
-	var err error
+	if !sameRecord(cur, head) {
+		// Another attempt claimed the pipeline and wrote to it since, so
+		// what the job restored says nothing about HEAD.
+		hello.reply <- errors.New("runner: the pipeline moved on")
+		return nil, errMovedOn
+	}
 	if restored == head {
 		_, err = a.recover(ctx, head, nil, true)
 	} else {
@@ -539,6 +552,17 @@ func (a *flinkAttempt) restart(ctx context.Context, prev *flinkSegment, hello *c
 	seg.deployed(a.fjob.ID())
 	hello.reply <- nil
 	return seg, nil
+}
+
+// errMovedOn: HEAD isn't where the segment left it, so the attempt settles
+// it afresh and deploys again.
+var errMovedOn = errors.New("runner: another attempt moved HEAD")
+
+func sameRecord(a, b *checkpoint.Record) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Ref() == b.Ref()
 }
 
 func epochOf(r *checkpoint.Record) uint64 {
