@@ -5,7 +5,9 @@
 // without a primary key hold some rows twice, and check what collapses.
 // Overwrite tables start with an earlier read's rows, which the sync's read
 // must replace. The spark kind puts a Spark transform before one of the
-// other sinks, and checks the runner keeps the transform's contract.
+// other sinks, and checks the runner keeps the transform's contract. The
+// flink kind runs a continuous pipeline with a fake Flink job before one of
+// them, and checks the records against what the job did.
 //
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace
@@ -39,8 +41,12 @@ var (
 
 // parquet is stage-and-apply like warehouse, but can't dedupe or commit
 // across tables. spark is one of the others with a Spark transform before
-// it, whose outputs take their inputs' names and settings.
-var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark"}
+// it, whose outputs take their inputs' names and settings; flink is the
+// same with a Flink job, in a continuous pipeline.
+var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark", "flink"}
+
+// The sinks a transform goes before.
+var transformedKinds = sinkKinds[:5]
 
 func TestSimulation(t *testing.T) {
 	for _, kind := range sinkKinds {
@@ -92,6 +98,7 @@ func (s streamCfg) delivery(mode destination.WriteMode) delivery.Stream {
 type config struct {
 	kind     string
 	spark    bool
+	flink    bool
 	streams  []streamCfg
 	mode     destination.WriteMode
 	settings delivery.Settings
@@ -105,6 +112,9 @@ func (c config) String() string {
 	var b strings.Builder
 	if c.spark {
 		b.WriteString("spark ")
+	}
+	if c.flink {
+		b.WriteString("flink ")
 	}
 	fmt.Fprintf(&b, "sink=%s mode=%d scope=%d require=%v maxBytes=%d interval=%v resumeTimeout=%v faults=%d zombies=%d keep=%d streams=",
 		c.kind, c.mode, c.settings.Scope, c.settings.Require, c.settings.CommitMaxBytes,
@@ -123,17 +133,22 @@ func (c config) String() string {
 }
 
 func randomConfig(rng *rand.Rand, kind string) config {
-	spark := kind == "spark"
-	if spark {
-		kind = sinkKinds[rng.IntN(len(sinkKinds)-1)]
+	spark, flink := kind == "spark", kind == "flink"
+	if spark || flink {
+		kind = transformedKinds[rng.IntN(len(transformedKinds))]
 	}
-	c := config{kind: kind, spark: spark, mode: destination.Append, faults: rng.IntN(9), zombies: rng.IntN(3)}
-	if kind == "warehouse" {
+	c := config{kind: kind, spark: spark, flink: flink, mode: destination.Append, faults: rng.IntN(9), zombies: rng.IntN(3)}
+	switch {
+	case kind == "warehouse" && flink:
+		// A continuous read never ends, so never replaces a table.
+		c.mode = []destination.WriteMode{destination.Append, destination.Merge}[rng.IntN(2)]
+	case kind == "warehouse":
 		c.mode = []destination.WriteMode{destination.Append, destination.Overwrite, destination.Merge}[rng.IntN(3)]
 	}
 	for i := range 1 + rng.IntN(3) {
 		r := source.Exact
-		if rng.IntN(2) == 0 {
+		// A Flink job's restores need streams that replay exactly.
+		if rng.IntN(2) == 0 && !flink {
 			r = source.Superset
 		}
 		s := streamCfg{name: fmt.Sprintf("s%d", i), replay: r, keyed: c.mode == destination.Merge || rng.IntN(3) != 0}
@@ -142,12 +157,12 @@ func randomConfig(rng *rand.Rand, kind string) config {
 		}
 		// Only a sink that can dedupe can collapse, and a transform's
 		// outputs never do.
-		if kind == "warehouse" && !spark && c.mode != destination.Merge && rng.IntN(2) == 0 {
+		if kind == "warehouse" && !spark && !flink && c.mode != destination.Merge && rng.IntN(2) == 0 {
 			s.collapse = new(rng.IntN(2) == 0)
 		}
 		c.streams = append(c.streams, s)
 	}
-	if spark {
+	if spark || flink {
 		out := source.Exact
 		for _, s := range c.streams {
 			if s.replay != source.Exact {
@@ -174,7 +189,7 @@ func randomConfig(rng *rand.Rand, kind string) config {
 	if rng.IntN(3) == 0 {
 		c.settings.Require = delivery.AtLeastOnce
 	}
-	if rng.IntN(3) == 0 {
+	if rng.IntN(3) == 0 || flink {
 		c.settings.CommitInterval = time.Duration(5+rng.IntN(55)) * time.Second
 	}
 	if rng.IntN(2) == 0 {
@@ -195,9 +210,15 @@ type world struct {
 	recv      *receiver
 	staged    *stagedStore
 	spark     *sparkCluster
+	flink     *flinkWorld
 	lost      error
 	// Streams forced in any record ever written, pruned ones included.
 	forced map[string]bool
+	// Every checkpoint record ever written.
+	written []*checkpoint.Record
+	// The Flink job restored where the pipeline's records can't follow,
+	// which ends the seed: only a new snapshot recovers.
+	positionLost bool
 }
 
 func (w *world) markLost(err error) {
@@ -220,12 +241,13 @@ func (w *world) destination(attempt int) destination.Destination {
 }
 
 func (w *world) job(attempt int) runner.Job {
+	src := &simSource{w: w, attempt: attempt, continuous: w.cfg.flink}
 	j := runner.Job{
 		Owner:       fmt.Sprintf("a%d", attempt),
 		Sync:        "sync",
 		Pipeline:    "pipe",
 		Log:         checkpoint.NewLog(&simStore{w: w, attempt: attempt}, "org", "pipe"),
-		Source:      &simSource{w: w, attempt: attempt},
+		Source:      src,
 		Destination: w.destination(attempt),
 		Dataflow:    runner.Passthrough{Convert: toArrow},
 		Settings:    w.cfg.settings,
@@ -252,6 +274,9 @@ func (w *world) job(attempt int) runner.Job {
 		j.Transform = app
 		second := j.Dataflow.(runner.Passthrough)
 		j.Dataflow = sparkFlow{first: runner.Passthrough{Convert: toArrow, Stage: app.stage}, second: second}
+	}
+	if w.cfg.flink {
+		w.flinkJob(&j, attempt, src)
 	}
 	return j
 }
@@ -302,6 +327,9 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		return res
 	}
 	w.sched = newScheduler(rng, cfg.faults, cfg.zombies)
+	if cfg.flink {
+		w.flink = newFlinkWorld(rng, w.sched)
+	}
 	res.stats = map[string]int{"write:" + []string{"", "append", "overwrite", "merge"}[cfg.mode]: 1}
 
 	attempts := 0
@@ -324,12 +352,18 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		if errors.Is(err, checkpoint.ErrFenced) || errors.Is(err, destination.ErrFenced) {
 			res.stats["fenced attempts"]++
 		}
+		if cfg.flink {
+			err = w.flinkOutcome(err)
+		}
 		if err == nil {
 			w.sched.tracef("a%d: gen %d, %s, restored %d, committed %d epochs, last %d", attempt, r.Generation, r.Recovery, r.Restored, r.Committed, r.Last)
 			res.stats["recovery:"+r.Recovery.String()]++
 		}
 		return err
 	})
+	if cfg.flink {
+		w.endFlink(res.stats)
+	}
 	res.trace = strings.Join(lastN(w.sched.trace, 400), "\n")
 	res.steps = w.sched.steps
 	res.stats["attempts"] += attempts
@@ -354,6 +388,9 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 func (w *world) check(caps destination.Capabilities, stats map[string]int) string {
 	forced := w.forced
 	problems := w.checkLog()
+	if w.cfg.flink {
+		problems = append(problems, w.checkFlink(w.written)...)
+	}
 	for _, s := range w.cfg.streams {
 		u := w.upstreams[s.name]
 		ds := s.delivery(w.cfg.mode)
@@ -386,10 +423,21 @@ func (w *world) check(caps destination.Capabilities, stats map[string]int) strin
 				problems = append(problems, fmt.Sprintf("%s: the rows of read %d never replaced the table", s.name, k.start))
 			}
 		}
-		if w.cfg.mode == destination.Merge {
+		switch {
+		case w.cfg.mode == destination.Merge && w.positionLost:
+			// What landed, landed once; the rest needs a new snapshot.
+			for id, r := range expected {
+				if n := w.wh.applies[id]; n > 1 && level == delivery.ExactlyOnce {
+					problems = append(problems, fmt.Sprintf("%s: %s@%d applied %d times (exactly-once)", s.name, r.Key, r.Seq, n))
+				}
+			}
+		case w.cfg.mode == destination.Merge:
 			problems = append(problems, w.checkMerge(s.name, u, expected, level)...)
-		} else {
+		default:
 			lo, hi := appendBounds(level, p.Dedupe, forcedDedupe)
+			if w.positionLost {
+				lo = func(int) int { return 0 }
+			}
 			problems = append(problems, checkAppend(s.name, w.visible(s.name), expected, copies, lo, hi)...)
 		}
 	}
@@ -458,7 +506,7 @@ func checkAppend(stream string, rows []row, expected map[string]record, copies m
 	for id, r := range expected {
 		m := copies[id]
 		switch n := count[id]; {
-		case n == 0:
+		case n == 0 && lo(m) > 0:
 			problems = append(problems, fmt.Sprintf("%s: LOST %s@%d", stream, r.Key, r.Seq))
 		case n < lo(m):
 			problems = append(problems, fmt.Sprintf("%s: LOST a copy of %s@%d: %d of the source's %d", stream, r.Key, r.Seq, n, m))

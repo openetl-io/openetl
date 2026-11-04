@@ -148,6 +148,10 @@ var errDataLost = fmt.Errorf("sim: data lost")
 type simSource struct {
 	w       *world
 	attempt int
+	// A continuous pipeline's: no stream completes, and onDone is called
+	// once Read has emitted every record.
+	continuous bool
+	onDone     func()
 }
 
 func (s *simSource) Read(ctx context.Context, req source.ReadRequest, emitter source.Emitter) error {
@@ -165,6 +169,9 @@ func (s *simSource) Read(ctx context.Context, req source.ReadRequest, emitter so
 			return err
 		}
 		if pos >= len(u.records) {
+			if s.continuous {
+				continue
+			}
 			if err := out.Complete(u.name, u.next()); err != nil {
 				return err
 			}
@@ -193,11 +200,16 @@ func (s *simSource) Read(ctx context.Context, req source.ReadRequest, emitter so
 			}
 		}
 		if last {
-			if err := out.Complete(c.u.name, c.u.next()); err != nil {
-				return err
+			if !s.continuous {
+				if err := out.Complete(c.u.name, c.u.next()); err != nil {
+					return err
+				}
 			}
 			open = append(open[:i%len(open)], open[i%len(open)+1:]...)
 		}
+	}
+	if s.onDone != nil {
+		s.onDone()
 	}
 	return nil
 }
@@ -287,6 +299,9 @@ func (s *simStore) Create(ctx context.Context, key string, data []byte) (v check
 			if json.Unmarshal(data, &rec) == nil {
 				for _, st := range rec.Forced {
 					s.w.forced[st] = true
+				}
+				if isRecordKey(key) {
+					s.w.written = append(s.w.written, &rec)
 				}
 			}
 		}
