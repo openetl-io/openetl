@@ -40,8 +40,6 @@ const (
 	FrameKind_FRAME_KIND_ROWS          FrameKind = 3
 	FrameKind_FRAME_KIND_BARRIER       FrameKind = 4
 	FrameKind_FRAME_KIND_SCHEMA_CHANGE FrameKind = 5
-	// From the engine only.
-	FrameKind_FRAME_KIND_STAGED_FILES  FrameKind = 6
 	FrameKind_FRAME_KIND_END_OF_STREAM FrameKind = 7
 )
 
@@ -54,7 +52,6 @@ var (
 		3: "FRAME_KIND_ROWS",
 		4: "FRAME_KIND_BARRIER",
 		5: "FRAME_KIND_SCHEMA_CHANGE",
-		6: "FRAME_KIND_STAGED_FILES",
 		7: "FRAME_KIND_END_OF_STREAM",
 	}
 	FrameKind_value = map[string]int32{
@@ -64,7 +61,6 @@ var (
 		"FRAME_KIND_ROWS":          3,
 		"FRAME_KIND_BARRIER":       4,
 		"FRAME_KIND_SCHEMA_CHANGE": 5,
-		"FRAME_KIND_STAGED_FILES":  6,
 		"FRAME_KIND_END_OF_STREAM": 7,
 	}
 )
@@ -276,119 +272,6 @@ func (x *SchemaChange) GetArrowSchema() []byte {
 	return nil
 }
 
-// StagedFiles lists files the engine staged for a runner sink to load.
-type StagedFiles struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Epoch         *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Files         []*StagedFile          `protobuf:"bytes,2,rep,name=files,proto3" json:"files,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *StagedFiles) Reset() {
-	*x = StagedFiles{}
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *StagedFiles) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StagedFiles) ProtoMessage() {}
-
-func (x *StagedFiles) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StagedFiles.ProtoReflect.Descriptor instead.
-func (*StagedFiles) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *StagedFiles) GetEpoch() *v1.Epoch {
-	if x != nil {
-		return x.Epoch
-	}
-	return nil
-}
-
-func (x *StagedFiles) GetFiles() []*StagedFile {
-	if x != nil {
-		return x.Files
-	}
-	return nil
-}
-
-type StagedFile struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
-	SizeBytes     uint64                 `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
-	Rows          uint64                 `protobuf:"varint,3,opt,name=rows,proto3" json:"rows,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *StagedFile) Reset() {
-	*x = StagedFile{}
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *StagedFile) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StagedFile) ProtoMessage() {}
-
-func (x *StagedFile) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StagedFile.ProtoReflect.Descriptor instead.
-func (*StagedFile) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *StagedFile) GetUrl() string {
-	if x != nil {
-		return x.Url
-	}
-	return ""
-}
-
-func (x *StagedFile) GetSizeBytes() uint64 {
-	if x != nil {
-		return x.SizeBytes
-	}
-	return 0
-}
-
-func (x *StagedFile) GetRows() uint64 {
-	if x != nil {
-		return x.Rows
-	}
-	return 0
-}
-
 type EndOfStream struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -397,7 +280,7 @@ type EndOfStream struct {
 
 func (x *EndOfStream) Reset() {
 	*x = EndOfStream{}
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[6]
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -409,7 +292,7 @@ func (x *EndOfStream) String() string {
 func (*EndOfStream) ProtoMessage() {}
 
 func (x *EndOfStream) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[6]
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -422,7 +305,7 @@ func (x *EndOfStream) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndOfStream.ProtoReflect.Descriptor instead.
 func (*EndOfStream) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{6}
+	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{4}
 }
 
 var File_openetl_engine_v1_frames_proto protoreflect.FileDescriptor
@@ -437,26 +320,16 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\aBarrier\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\"1\n" +
 	"\fSchemaChange\x12!\n" +
-	"\farrow_schema\x18\x01 \x01(\fR\varrowSchema\"u\n" +
-	"\vStagedFiles\x121\n" +
-	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x123\n" +
-	"\x05files\x18\x02 \x03(\v2\x1d.openetl.engine.v1.StagedFileR\x05files\"Q\n" +
-	"\n" +
-	"StagedFile\x12\x10\n" +
-	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1d\n" +
-	"\n" +
-	"size_bytes\x18\x02 \x01(\x04R\tsizeBytes\x12\x12\n" +
-	"\x04rows\x18\x03 \x01(\x04R\x04rows\"\r\n" +
-	"\vEndOfStream*\xd9\x01\n" +
+	"\farrow_schema\x18\x01 \x01(\fR\varrowSchema\"\r\n" +
+	"\vEndOfStream*\xdb\x01\n" +
 	"\tFrameKind\x12\x1a\n" +
 	"\x16FRAME_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10FRAME_KIND_HELLO\x10\x01\x12\x14\n" +
 	"\x10FRAME_KIND_BATCH\x10\x02\x12\x13\n" +
 	"\x0fFRAME_KIND_ROWS\x10\x03\x12\x16\n" +
 	"\x12FRAME_KIND_BARRIER\x10\x04\x12\x1c\n" +
-	"\x18FRAME_KIND_SCHEMA_CHANGE\x10\x05\x12\x1b\n" +
-	"\x17FRAME_KIND_STAGED_FILES\x10\x06\x12\x1c\n" +
-	"\x18FRAME_KIND_END_OF_STREAM\x10\aBAZ?github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
+	"\x18FRAME_KIND_SCHEMA_CHANGE\x10\x05\x12\x1c\n" +
+	"\x18FRAME_KIND_END_OF_STREAM\x10\a\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESBAZ?github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_openetl_engine_v1_frames_proto_rawDescOnce sync.Once
@@ -471,27 +344,23 @@ func file_openetl_engine_v1_frames_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_engine_v1_frames_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_openetl_engine_v1_frames_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_openetl_engine_v1_frames_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_openetl_engine_v1_frames_proto_goTypes = []any{
 	(FrameKind)(0),       // 0: openetl.engine.v1.FrameKind
 	(*Hello)(nil),        // 1: openetl.engine.v1.Hello
 	(*Rows)(nil),         // 2: openetl.engine.v1.Rows
 	(*Barrier)(nil),      // 3: openetl.engine.v1.Barrier
 	(*SchemaChange)(nil), // 4: openetl.engine.v1.SchemaChange
-	(*StagedFiles)(nil),  // 5: openetl.engine.v1.StagedFiles
-	(*StagedFile)(nil),   // 6: openetl.engine.v1.StagedFile
-	(*EndOfStream)(nil),  // 7: openetl.engine.v1.EndOfStream
-	(*v1.Epoch)(nil),     // 8: openetl.connector.v1.Epoch
+	(*EndOfStream)(nil),  // 5: openetl.engine.v1.EndOfStream
+	(*v1.Epoch)(nil),     // 6: openetl.connector.v1.Epoch
 }
 var file_openetl_engine_v1_frames_proto_depIdxs = []int32{
-	8, // 0: openetl.engine.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
-	8, // 1: openetl.engine.v1.StagedFiles.epoch:type_name -> openetl.connector.v1.Epoch
-	6, // 2: openetl.engine.v1.StagedFiles.files:type_name -> openetl.engine.v1.StagedFile
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	6, // 0: openetl.engine.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_openetl_engine_v1_frames_proto_init() }
@@ -505,7 +374,7 @@ func file_openetl_engine_v1_frames_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_engine_v1_frames_proto_rawDesc), len(file_openetl_engine_v1_frames_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

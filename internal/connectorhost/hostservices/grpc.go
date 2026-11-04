@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/host"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
@@ -191,4 +192,41 @@ func (g *Server) Now(ctx context.Context, _ *protocolv1.NowRequest) (*protocolv1
 		return nil, errs.Status(err)
 	}
 	return &protocolv1.NowResponse{Now: timestamppb.New(t)}, nil
+}
+
+func (g *Server) StagedFileURL(ctx context.Context, req *protocolv1.StagedFileURLRequest) (*protocolv1.StagedFileURLResponse, error) {
+	u, expires, err := g.s.StagedFileURL(ctx, req.GetPath())
+	if err != nil {
+		return nil, errs.Status(err)
+	}
+	resp := &protocolv1.StagedFileURLResponse{Url: u}
+	if !expires.IsZero() {
+		resp.Expires = timestamppb.New(expires)
+	}
+	return resp, nil
+}
+
+func (g *Server) PutDeliveryCursor(ctx context.Context, req *protocolv1.PutDeliveryCursorRequest) (*protocolv1.PutDeliveryCursorResponse, error) {
+	if err := g.s.PutDeliveryCursor(ctx, epochFromProto(req.GetEpoch()), req.GetCursor()); err != nil {
+		return nil, errs.Status(err)
+	}
+	return &protocolv1.PutDeliveryCursorResponse{}, nil
+}
+
+func (g *Server) GetDeliveryCursor(ctx context.Context, req *protocolv1.GetDeliveryCursorRequest) (*protocolv1.GetDeliveryCursorResponse, error) {
+	v, ok, err := g.s.GetDeliveryCursor(ctx, epochFromProto(req.GetEpoch()))
+	if err != nil {
+		return nil, errs.Status(err)
+	}
+	if !ok {
+		return &protocolv1.GetDeliveryCursorResponse{}, nil
+	}
+	if v == nil {
+		v = []byte{}
+	}
+	return &protocolv1.GetDeliveryCursorResponse{Cursor: v}, nil
+}
+
+func epochFromProto(e *protocolv1.Epoch) destination.Epoch {
+	return destination.Epoch{Generation: e.GetGeneration(), N: e.GetN()}
 }

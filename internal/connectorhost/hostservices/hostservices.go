@@ -68,6 +68,7 @@ type Services struct {
 	known   []string
 	kv      map[string]kvEntry
 	kvBytes int
+	staging Staging
 
 	now   func() time.Time
 	sleep func(context.Context, time.Duration) error

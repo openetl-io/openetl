@@ -101,6 +101,10 @@ func (w *writer) batch(e *protocolv1.Epoch, stream string, rec arrow.RecordBatch
 	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Batch{Batch: &protocolv1.WriteBatch{Epoch: e, Stream: stream, Arrow: b}}})
 }
 
+func (w *writer) stagedFiles(e *protocolv1.Epoch, stream string, files []*protocolv1.StagedFile) error {
+	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_StagedFiles{StagedFiles: &protocolv1.WriteStagedFiles{Epoch: e, Stream: stream, Files: files}}})
+}
+
 func (w *writer) endRead(e *protocolv1.Epoch, stream string) error {
 	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_EndRead{EndRead: &protocolv1.WriteEndRead{Epoch: e, Stream: stream}}})
 }

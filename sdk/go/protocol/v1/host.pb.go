@@ -1666,11 +1666,287 @@ func (x *NowResponse) GetNow() *timestamppb.Timestamp {
 	return nil
 }
 
+type StagedFileURLRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// A StagedFile's path.
+	Path          string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StagedFileURLRequest) Reset() {
+	*x = StagedFileURLRequest{}
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StagedFileURLRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StagedFileURLRequest) ProtoMessage() {}
+
+func (x *StagedFileURLRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StagedFileURLRequest.ProtoReflect.Descriptor instead.
+func (*StagedFileURLRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_host_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *StagedFileURLRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+type StagedFileURLResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Url   string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	// Unset: it doesn't expire.
+	Expires       *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expires,proto3" json:"expires,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StagedFileURLResponse) Reset() {
+	*x = StagedFileURLResponse{}
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StagedFileURLResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StagedFileURLResponse) ProtoMessage() {}
+
+func (x *StagedFileURLResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StagedFileURLResponse.ProtoReflect.Descriptor instead.
+func (*StagedFileURLResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_host_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *StagedFileURLResponse) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *StagedFileURLResponse) GetExpires() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Expires
+	}
+	return nil
+}
+
+type PutDeliveryCursorRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// A few KB at most.
+	Cursor        []byte `protobuf:"bytes,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutDeliveryCursorRequest) Reset() {
+	*x = PutDeliveryCursorRequest{}
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutDeliveryCursorRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutDeliveryCursorRequest) ProtoMessage() {}
+
+func (x *PutDeliveryCursorRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutDeliveryCursorRequest.ProtoReflect.Descriptor instead.
+func (*PutDeliveryCursorRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_host_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *PutDeliveryCursorRequest) GetEpoch() *Epoch {
+	if x != nil {
+		return x.Epoch
+	}
+	return nil
+}
+
+func (x *PutDeliveryCursorRequest) GetCursor() []byte {
+	if x != nil {
+		return x.Cursor
+	}
+	return nil
+}
+
+type PutDeliveryCursorResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutDeliveryCursorResponse) Reset() {
+	*x = PutDeliveryCursorResponse{}
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutDeliveryCursorResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutDeliveryCursorResponse) ProtoMessage() {}
+
+func (x *PutDeliveryCursorResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutDeliveryCursorResponse.ProtoReflect.Descriptor instead.
+func (*PutDeliveryCursorResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_host_proto_rawDescGZIP(), []int{28}
+}
+
+type GetDeliveryCursorRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDeliveryCursorRequest) Reset() {
+	*x = GetDeliveryCursorRequest{}
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDeliveryCursorRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDeliveryCursorRequest) ProtoMessage() {}
+
+func (x *GetDeliveryCursorRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDeliveryCursorRequest.ProtoReflect.Descriptor instead.
+func (*GetDeliveryCursorRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_host_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *GetDeliveryCursorRequest) GetEpoch() *Epoch {
+	if x != nil {
+		return x.Epoch
+	}
+	return nil
+}
+
+type GetDeliveryCursorResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unset if none was saved.
+	Cursor        []byte `protobuf:"bytes,1,opt,name=cursor,proto3,oneof" json:"cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDeliveryCursorResponse) Reset() {
+	*x = GetDeliveryCursorResponse{}
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDeliveryCursorResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDeliveryCursorResponse) ProtoMessage() {}
+
+func (x *GetDeliveryCursorResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_host_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDeliveryCursorResponse.ProtoReflect.Descriptor instead.
+func (*GetDeliveryCursorResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_host_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *GetDeliveryCursorResponse) GetCursor() []byte {
+	if x != nil {
+		return x.Cursor
+	}
+	return nil
+}
+
 var File_openetl_connector_v1_host_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_host_proto_rawDesc = "" +
 	"\n" +
-	"\x1fopenetl/connector/v1/host.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\xb0\x02\n" +
+	"\x1fopenetl/connector/v1/host.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a&openetl/connector/v1/destination.proto\x1a!openetl/connector/v1/errors.proto\"\xb0\x02\n" +
 	"\vHTTPRequest\x12\x16\n" +
 	"\x06method\x18\x01 \x01(\tR\x06method\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x126\n" +
@@ -1768,7 +2044,21 @@ const file_openetl_connector_v1_host_proto_rawDesc = "" +
 	"\n" +
 	"NowRequest\";\n" +
 	"\vNowResponse\x12,\n" +
-	"\x03now\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x03now*~\n" +
+	"\x03now\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x03now\"*\n" +
+	"\x14StagedFileURLRequest\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\"_\n" +
+	"\x15StagedFileURLResponse\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x124\n" +
+	"\aexpires\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\aexpires\"e\n" +
+	"\x18PutDeliveryCursorRequest\x121\n" +
+	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
+	"\x06cursor\x18\x02 \x01(\fR\x06cursor\"\x1b\n" +
+	"\x19PutDeliveryCursorResponse\"M\n" +
+	"\x18GetDeliveryCursorRequest\x121\n" +
+	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\"C\n" +
+	"\x19GetDeliveryCursorResponse\x12\x1b\n" +
+	"\x06cursor\x18\x01 \x01(\fH\x00R\x06cursor\x88\x01\x01B\t\n" +
+	"\a_cursor*~\n" +
 	"\rHashAlgorithm\x12\x1e\n" +
 	"\x1aHASH_ALGORITHM_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13HASH_ALGORITHM_SHA1\x10\x01\x12\x19\n" +
@@ -1784,7 +2074,7 @@ const file_openetl_connector_v1_host_proto_rawDesc = "" +
 	"\x0fLOG_LEVEL_DEBUG\x10\x01\x12\x12\n" +
 	"\x0eLOG_LEVEL_INFO\x10\x02\x12\x12\n" +
 	"\x0eLOG_LEVEL_WARN\x10\x03\x12\x13\n" +
-	"\x0fLOG_LEVEL_ERROR\x10\x042\xc7\x04\n" +
+	"\x0fLOG_LEVEL_ERROR\x10\x042\x9d\a\n" +
 	"\vHostService\x12O\n" +
 	"\x04HTTP\x12!.openetl.connector.v1.HTTPRequest\x1a\".openetl.connector.v1.HTTPResponse0\x01\x12M\n" +
 	"\x04Sign\x12!.openetl.connector.v1.SignRequest\x1a\".openetl.connector.v1.SignResponse\x12\\\n" +
@@ -1792,7 +2082,10 @@ const file_openetl_connector_v1_host_proto_rawDesc = "" +
 	"\x03Log\x12 .openetl.connector.v1.LogRequest\x1a!.openetl.connector.v1.LogResponse\x12P\n" +
 	"\x05KVGet\x12\".openetl.connector.v1.KVGetRequest\x1a#.openetl.connector.v1.KVGetResponse\x12P\n" +
 	"\x05KVPut\x12\".openetl.connector.v1.KVPutRequest\x1a#.openetl.connector.v1.KVPutResponse\x12J\n" +
-	"\x03Now\x12 .openetl.connector.v1.NowRequest\x1a!.openetl.connector.v1.NowResponseB@Z>github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\x03Now\x12 .openetl.connector.v1.NowRequest\x1a!.openetl.connector.v1.NowResponse\x12h\n" +
+	"\rStagedFileURL\x12*.openetl.connector.v1.StagedFileURLRequest\x1a+.openetl.connector.v1.StagedFileURLResponse\x12t\n" +
+	"\x11PutDeliveryCursor\x12..openetl.connector.v1.PutDeliveryCursorRequest\x1a/.openetl.connector.v1.PutDeliveryCursorResponse\x12t\n" +
+	"\x11GetDeliveryCursor\x12..openetl.connector.v1.GetDeliveryCursorRequest\x1a/.openetl.connector.v1.GetDeliveryCursorResponseB@Z>github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_host_proto_rawDescOnce sync.Once
@@ -1807,45 +2100,52 @@ func file_openetl_connector_v1_host_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_connector_v1_host_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_openetl_connector_v1_host_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_openetl_connector_v1_host_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_openetl_connector_v1_host_proto_goTypes = []any{
-	(HashAlgorithm)(0),            // 0: openetl.connector.v1.HashAlgorithm
-	(JWTAlgorithm)(0),             // 1: openetl.connector.v1.JWTAlgorithm
-	(LogLevel)(0),                 // 2: openetl.connector.v1.LogLevel
-	(*HTTPRequest)(nil),           // 3: openetl.connector.v1.HTTPRequest
-	(*Header)(nil),                // 4: openetl.connector.v1.Header
-	(*HTTPAuth)(nil),              // 5: openetl.connector.v1.HTTPAuth
-	(*BearerAuth)(nil),            // 6: openetl.connector.v1.BearerAuth
-	(*BasicAuth)(nil),             // 7: openetl.connector.v1.BasicAuth
-	(*APIKeyAuth)(nil),            // 8: openetl.connector.v1.APIKeyAuth
-	(*OAuth2Auth)(nil),            // 9: openetl.connector.v1.OAuth2Auth
-	(*AWSSigV4Auth)(nil),          // 10: openetl.connector.v1.AWSSigV4Auth
-	(*HTTPResponse)(nil),          // 11: openetl.connector.v1.HTTPResponse
-	(*HTTPResponseHead)(nil),      // 12: openetl.connector.v1.HTTPResponseHead
-	(*SignRequest)(nil),           // 13: openetl.connector.v1.SignRequest
-	(*HMACSign)(nil),              // 14: openetl.connector.v1.HMACSign
-	(*JWTSign)(nil),               // 15: openetl.connector.v1.JWTSign
-	(*SignResponse)(nil),          // 16: openetl.connector.v1.SignResponse
-	(*GetSecretRequest)(nil),      // 17: openetl.connector.v1.GetSecretRequest
-	(*GetSecretResponse)(nil),     // 18: openetl.connector.v1.GetSecretResponse
-	(*LogRequest)(nil),            // 19: openetl.connector.v1.LogRequest
-	(*LogEntry)(nil),              // 20: openetl.connector.v1.LogEntry
-	(*LogResponse)(nil),           // 21: openetl.connector.v1.LogResponse
-	(*KVGetRequest)(nil),          // 22: openetl.connector.v1.KVGetRequest
-	(*KVGetResponse)(nil),         // 23: openetl.connector.v1.KVGetResponse
-	(*KVPutRequest)(nil),          // 24: openetl.connector.v1.KVPutRequest
-	(*KVPutResponse)(nil),         // 25: openetl.connector.v1.KVPutResponse
-	(*NowRequest)(nil),            // 26: openetl.connector.v1.NowRequest
-	(*NowResponse)(nil),           // 27: openetl.connector.v1.NowResponse
-	nil,                           // 28: openetl.connector.v1.LogEntry.AttrsEntry
-	(*durationpb.Duration)(nil),   // 29: google.protobuf.Duration
-	(*Error)(nil),                 // 30: openetl.connector.v1.Error
-	(*timestamppb.Timestamp)(nil), // 31: google.protobuf.Timestamp
+	(HashAlgorithm)(0),                // 0: openetl.connector.v1.HashAlgorithm
+	(JWTAlgorithm)(0),                 // 1: openetl.connector.v1.JWTAlgorithm
+	(LogLevel)(0),                     // 2: openetl.connector.v1.LogLevel
+	(*HTTPRequest)(nil),               // 3: openetl.connector.v1.HTTPRequest
+	(*Header)(nil),                    // 4: openetl.connector.v1.Header
+	(*HTTPAuth)(nil),                  // 5: openetl.connector.v1.HTTPAuth
+	(*BearerAuth)(nil),                // 6: openetl.connector.v1.BearerAuth
+	(*BasicAuth)(nil),                 // 7: openetl.connector.v1.BasicAuth
+	(*APIKeyAuth)(nil),                // 8: openetl.connector.v1.APIKeyAuth
+	(*OAuth2Auth)(nil),                // 9: openetl.connector.v1.OAuth2Auth
+	(*AWSSigV4Auth)(nil),              // 10: openetl.connector.v1.AWSSigV4Auth
+	(*HTTPResponse)(nil),              // 11: openetl.connector.v1.HTTPResponse
+	(*HTTPResponseHead)(nil),          // 12: openetl.connector.v1.HTTPResponseHead
+	(*SignRequest)(nil),               // 13: openetl.connector.v1.SignRequest
+	(*HMACSign)(nil),                  // 14: openetl.connector.v1.HMACSign
+	(*JWTSign)(nil),                   // 15: openetl.connector.v1.JWTSign
+	(*SignResponse)(nil),              // 16: openetl.connector.v1.SignResponse
+	(*GetSecretRequest)(nil),          // 17: openetl.connector.v1.GetSecretRequest
+	(*GetSecretResponse)(nil),         // 18: openetl.connector.v1.GetSecretResponse
+	(*LogRequest)(nil),                // 19: openetl.connector.v1.LogRequest
+	(*LogEntry)(nil),                  // 20: openetl.connector.v1.LogEntry
+	(*LogResponse)(nil),               // 21: openetl.connector.v1.LogResponse
+	(*KVGetRequest)(nil),              // 22: openetl.connector.v1.KVGetRequest
+	(*KVGetResponse)(nil),             // 23: openetl.connector.v1.KVGetResponse
+	(*KVPutRequest)(nil),              // 24: openetl.connector.v1.KVPutRequest
+	(*KVPutResponse)(nil),             // 25: openetl.connector.v1.KVPutResponse
+	(*NowRequest)(nil),                // 26: openetl.connector.v1.NowRequest
+	(*NowResponse)(nil),               // 27: openetl.connector.v1.NowResponse
+	(*StagedFileURLRequest)(nil),      // 28: openetl.connector.v1.StagedFileURLRequest
+	(*StagedFileURLResponse)(nil),     // 29: openetl.connector.v1.StagedFileURLResponse
+	(*PutDeliveryCursorRequest)(nil),  // 30: openetl.connector.v1.PutDeliveryCursorRequest
+	(*PutDeliveryCursorResponse)(nil), // 31: openetl.connector.v1.PutDeliveryCursorResponse
+	(*GetDeliveryCursorRequest)(nil),  // 32: openetl.connector.v1.GetDeliveryCursorRequest
+	(*GetDeliveryCursorResponse)(nil), // 33: openetl.connector.v1.GetDeliveryCursorResponse
+	nil,                               // 34: openetl.connector.v1.LogEntry.AttrsEntry
+	(*durationpb.Duration)(nil),       // 35: google.protobuf.Duration
+	(*Error)(nil),                     // 36: openetl.connector.v1.Error
+	(*timestamppb.Timestamp)(nil),     // 37: google.protobuf.Timestamp
+	(*Epoch)(nil),                     // 38: openetl.connector.v1.Epoch
 }
 var file_openetl_connector_v1_host_proto_depIdxs = []int32{
 	4,  // 0: openetl.connector.v1.HTTPRequest.headers:type_name -> openetl.connector.v1.Header
 	5,  // 1: openetl.connector.v1.HTTPRequest.auth:type_name -> openetl.connector.v1.HTTPAuth
-	29, // 2: openetl.connector.v1.HTTPRequest.budget:type_name -> google.protobuf.Duration
+	35, // 2: openetl.connector.v1.HTTPRequest.budget:type_name -> google.protobuf.Duration
 	6,  // 3: openetl.connector.v1.HTTPAuth.bearer:type_name -> openetl.connector.v1.BearerAuth
 	7,  // 4: openetl.connector.v1.HTTPAuth.basic:type_name -> openetl.connector.v1.BasicAuth
 	8,  // 5: openetl.connector.v1.HTTPAuth.api_key:type_name -> openetl.connector.v1.APIKeyAuth
@@ -1853,36 +2153,45 @@ var file_openetl_connector_v1_host_proto_depIdxs = []int32{
 	10, // 7: openetl.connector.v1.HTTPAuth.aws_sigv4:type_name -> openetl.connector.v1.AWSSigV4Auth
 	12, // 8: openetl.connector.v1.HTTPResponse.head:type_name -> openetl.connector.v1.HTTPResponseHead
 	4,  // 9: openetl.connector.v1.HTTPResponseHead.headers:type_name -> openetl.connector.v1.Header
-	30, // 10: openetl.connector.v1.HTTPResponseHead.error:type_name -> openetl.connector.v1.Error
+	36, // 10: openetl.connector.v1.HTTPResponseHead.error:type_name -> openetl.connector.v1.Error
 	14, // 11: openetl.connector.v1.SignRequest.hmac:type_name -> openetl.connector.v1.HMACSign
 	15, // 12: openetl.connector.v1.SignRequest.jwt:type_name -> openetl.connector.v1.JWTSign
 	0,  // 13: openetl.connector.v1.HMACSign.hash:type_name -> openetl.connector.v1.HashAlgorithm
 	1,  // 14: openetl.connector.v1.JWTSign.algorithm:type_name -> openetl.connector.v1.JWTAlgorithm
 	20, // 15: openetl.connector.v1.LogRequest.entries:type_name -> openetl.connector.v1.LogEntry
-	31, // 16: openetl.connector.v1.LogEntry.time:type_name -> google.protobuf.Timestamp
+	37, // 16: openetl.connector.v1.LogEntry.time:type_name -> google.protobuf.Timestamp
 	2,  // 17: openetl.connector.v1.LogEntry.level:type_name -> openetl.connector.v1.LogLevel
-	28, // 18: openetl.connector.v1.LogEntry.attrs:type_name -> openetl.connector.v1.LogEntry.AttrsEntry
-	29, // 19: openetl.connector.v1.KVPutRequest.ttl:type_name -> google.protobuf.Duration
-	31, // 20: openetl.connector.v1.NowResponse.now:type_name -> google.protobuf.Timestamp
-	3,  // 21: openetl.connector.v1.HostService.HTTP:input_type -> openetl.connector.v1.HTTPRequest
-	13, // 22: openetl.connector.v1.HostService.Sign:input_type -> openetl.connector.v1.SignRequest
-	17, // 23: openetl.connector.v1.HostService.GetSecret:input_type -> openetl.connector.v1.GetSecretRequest
-	19, // 24: openetl.connector.v1.HostService.Log:input_type -> openetl.connector.v1.LogRequest
-	22, // 25: openetl.connector.v1.HostService.KVGet:input_type -> openetl.connector.v1.KVGetRequest
-	24, // 26: openetl.connector.v1.HostService.KVPut:input_type -> openetl.connector.v1.KVPutRequest
-	26, // 27: openetl.connector.v1.HostService.Now:input_type -> openetl.connector.v1.NowRequest
-	11, // 28: openetl.connector.v1.HostService.HTTP:output_type -> openetl.connector.v1.HTTPResponse
-	16, // 29: openetl.connector.v1.HostService.Sign:output_type -> openetl.connector.v1.SignResponse
-	18, // 30: openetl.connector.v1.HostService.GetSecret:output_type -> openetl.connector.v1.GetSecretResponse
-	21, // 31: openetl.connector.v1.HostService.Log:output_type -> openetl.connector.v1.LogResponse
-	23, // 32: openetl.connector.v1.HostService.KVGet:output_type -> openetl.connector.v1.KVGetResponse
-	25, // 33: openetl.connector.v1.HostService.KVPut:output_type -> openetl.connector.v1.KVPutResponse
-	27, // 34: openetl.connector.v1.HostService.Now:output_type -> openetl.connector.v1.NowResponse
-	28, // [28:35] is the sub-list for method output_type
-	21, // [21:28] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	34, // 18: openetl.connector.v1.LogEntry.attrs:type_name -> openetl.connector.v1.LogEntry.AttrsEntry
+	35, // 19: openetl.connector.v1.KVPutRequest.ttl:type_name -> google.protobuf.Duration
+	37, // 20: openetl.connector.v1.NowResponse.now:type_name -> google.protobuf.Timestamp
+	37, // 21: openetl.connector.v1.StagedFileURLResponse.expires:type_name -> google.protobuf.Timestamp
+	38, // 22: openetl.connector.v1.PutDeliveryCursorRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	38, // 23: openetl.connector.v1.GetDeliveryCursorRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	3,  // 24: openetl.connector.v1.HostService.HTTP:input_type -> openetl.connector.v1.HTTPRequest
+	13, // 25: openetl.connector.v1.HostService.Sign:input_type -> openetl.connector.v1.SignRequest
+	17, // 26: openetl.connector.v1.HostService.GetSecret:input_type -> openetl.connector.v1.GetSecretRequest
+	19, // 27: openetl.connector.v1.HostService.Log:input_type -> openetl.connector.v1.LogRequest
+	22, // 28: openetl.connector.v1.HostService.KVGet:input_type -> openetl.connector.v1.KVGetRequest
+	24, // 29: openetl.connector.v1.HostService.KVPut:input_type -> openetl.connector.v1.KVPutRequest
+	26, // 30: openetl.connector.v1.HostService.Now:input_type -> openetl.connector.v1.NowRequest
+	28, // 31: openetl.connector.v1.HostService.StagedFileURL:input_type -> openetl.connector.v1.StagedFileURLRequest
+	30, // 32: openetl.connector.v1.HostService.PutDeliveryCursor:input_type -> openetl.connector.v1.PutDeliveryCursorRequest
+	32, // 33: openetl.connector.v1.HostService.GetDeliveryCursor:input_type -> openetl.connector.v1.GetDeliveryCursorRequest
+	11, // 34: openetl.connector.v1.HostService.HTTP:output_type -> openetl.connector.v1.HTTPResponse
+	16, // 35: openetl.connector.v1.HostService.Sign:output_type -> openetl.connector.v1.SignResponse
+	18, // 36: openetl.connector.v1.HostService.GetSecret:output_type -> openetl.connector.v1.GetSecretResponse
+	21, // 37: openetl.connector.v1.HostService.Log:output_type -> openetl.connector.v1.LogResponse
+	23, // 38: openetl.connector.v1.HostService.KVGet:output_type -> openetl.connector.v1.KVGetResponse
+	25, // 39: openetl.connector.v1.HostService.KVPut:output_type -> openetl.connector.v1.KVPutResponse
+	27, // 40: openetl.connector.v1.HostService.Now:output_type -> openetl.connector.v1.NowResponse
+	29, // 41: openetl.connector.v1.HostService.StagedFileURL:output_type -> openetl.connector.v1.StagedFileURLResponse
+	31, // 42: openetl.connector.v1.HostService.PutDeliveryCursor:output_type -> openetl.connector.v1.PutDeliveryCursorResponse
+	33, // 43: openetl.connector.v1.HostService.GetDeliveryCursor:output_type -> openetl.connector.v1.GetDeliveryCursorResponse
+	34, // [34:44] is the sub-list for method output_type
+	24, // [24:34] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_host_proto_init() }
@@ -1890,6 +2199,7 @@ func file_openetl_connector_v1_host_proto_init() {
 	if File_openetl_connector_v1_host_proto != nil {
 		return
 	}
+	file_openetl_connector_v1_destination_proto_init()
 	file_openetl_connector_v1_errors_proto_init()
 	file_openetl_connector_v1_host_proto_msgTypes[2].OneofWrappers = []any{
 		(*HTTPAuth_Bearer)(nil),
@@ -1911,13 +2221,14 @@ func file_openetl_connector_v1_host_proto_init() {
 		(*SignRequest_Jwt)(nil),
 	}
 	file_openetl_connector_v1_host_proto_msgTypes[20].OneofWrappers = []any{}
+	file_openetl_connector_v1_host_proto_msgTypes[30].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_connector_v1_host_proto_rawDesc), len(file_openetl_connector_v1_host_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   26,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

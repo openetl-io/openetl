@@ -24,7 +24,7 @@ opentelemetry = { version = "0.33.0", default-features = false, features = ["tra
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
 object_store = { version = "0.14.2", default-features = false, features = ["aws", "azure", "fs", "gcp"] }
-parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap"] }
+parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap", "object_store"] }
 prost = "0.14.4"
 prost-types = "0.14.4"
 serde = { version = "1.0.229", features = ["derive"] }

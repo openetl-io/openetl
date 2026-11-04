@@ -89,7 +89,7 @@ impl Engine {
                 job.edges.insert(edge.id.clone(), tx);
                 Some(rx)
             }
-            Sink::Parquet { .. } | Sink::Discard => None,
+            Sink::Parquet { .. } | Sink::Staged { .. } | Sink::Discard => None,
         };
         *slot = Some(job);
 

@@ -60,6 +60,8 @@ type Options struct {
 	// The spec the connector must return: its descriptor's. Nil: any spec of
 	// the right kind.
 	Spec *protocolv1.SpecResponse
+	// Serves a staged destination's files and cursors (SetStaging).
+	Staging hostservices.Staging
 }
 
 // process is one running connector.
@@ -144,6 +146,9 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 		Logger:        p.log,
 		RevealSecrets: tier == protocolv1.EgressTier_EGRESS_TIER_PROXY || tier == protocolv1.EgressTier_EGRESS_TIER_RAW,
 	})
+	if opts.Staging != nil {
+		hs.SetStaging(opts.Staging)
+	}
 	p.hs.Store(hs)
 	p.host = grpc.NewServer(grpc.MaxRecvMsgSize(sdk.MaxMessageSize), grpc.MaxSendMsgSize(sdk.MaxMessageSize))
 	protocolv1.RegisterHostServiceServer(p.host, hostservices.NewServer(hs))

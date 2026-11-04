@@ -1,6 +1,6 @@
 //! The P0 dataflow: every inbound stream passes through to the sink, with raw
 //! rows normalized to Arrow. A runner sink gets barriers in band; a Parquet
-//! sink stages each epoch and reports it in EpochReady.
+//! or staged sink stages each epoch and reports it in EpochReady.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
@@ -17,7 +17,7 @@ use openetl_normalize::{Error as NormalizeError, Shaper};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
     Barrier, EpochReady, EventsResponse, FrameKind, Metrics, QuarantineFile, Rows, SchemaChange,
-    StreamMetrics, events_response,
+    StagedStream, StreamMetrics, events_response,
 };
 use prost::Message;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -31,6 +31,7 @@ use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
 use crate::plan::{Plan, Sink};
+use crate::staging::Staging;
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
 
@@ -98,6 +99,13 @@ where
                 .map_err(|e| JobError::internal(format!("the Parquet sink failed: {e}")))?
             })
         }
+        (Sink::Staged { url }, None) => Box::pin(write_staged(
+            plan.clone(),
+            url.clone(),
+            rx,
+            events.clone(),
+            counters.clone(),
+        )),
         (Sink::Discard, None) => Box::pin(write_discard(
             plan.clone(),
             rx,
@@ -289,7 +297,7 @@ where
                 ended[local] = true;
                 Out::End(stream, shape[local].schema())
             }
-            k @ (FrameKind::Hello | FrameKind::StagedFiles | FrameKind::Unspecified) => {
+            k @ (FrameKind::Hello | FrameKind::Unspecified) => {
                 return Err(protocol(format!("unexpected {} frame", k.as_str_name())));
             }
         };
@@ -456,6 +464,7 @@ fn epoch_ready(
     align: &mut Alignment,
     n: u64,
     staged: Vec<u8>,
+    files: Vec<StagedStream>,
 ) -> Result<EventsResponse, JobError> {
     align.epoch = if align.done() && n >= align.highest {
         Span::none()
@@ -478,6 +487,7 @@ fn epoch_ready(
             snapshots: Vec::new(),
             schemas,
             quarantine: align.quarantined.remove(&n).unwrap_or_default(),
+            files,
         })),
     })
 }
@@ -549,7 +559,7 @@ where
             w.flush().await.map_err(gone)?;
             for n in ready {
                 // The runner records every EpochReady, so this waits.
-                let ev = epoch_ready(&plan, &mut align, n, Vec::new())?;
+                let ev = epoch_ready(&plan, &mut align, n, Vec::new(), Vec::new())?;
                 let _ = events.send(Ok(ev)).await;
             }
             let _ = events.try_send(Ok(metrics(&plan, &counters)));
@@ -611,12 +621,61 @@ fn write_parquet(
         for n in ready {
             let staged = serde_json::to_vec(&staging.take(n))
                 .map_err(|e| JobError::internal(format!("encode the staged descriptor: {e}")))?;
-            let ev = epoch_ready(plan, &mut align, n, staged)?;
+            let ev = epoch_ready(plan, &mut align, n, staged, Vec::new())?;
             let _ = events.blocking_send(Ok(ev));
         }
         let _ = events.try_send(Ok(metrics(plan, counters)));
     }
     let _ = events.try_send(Ok(metrics(plan, counters)));
+    Ok(true)
+}
+
+/// Stages every stream as Parquet for a destination connector, and lists each
+/// epoch's files in its EpochReady. Returns false if the inbound edges closed
+/// before every stream ended.
+async fn write_staged(
+    plan: Arc<Plan>,
+    url: String,
+    mut rx: mpsc::Receiver<Out>,
+    events: Events,
+    counters: Arc<Vec<Counters>>,
+) -> Result<bool, JobError> {
+    let mut staging = Staging::open(&url, plan.generation, plan.first_epoch, &plan.streams)?;
+    let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
+    while !align.done() {
+        let Some(item) = rx.recv().await else {
+            return Ok(false);
+        };
+        match item {
+            Out::Batch(s, batch) => {
+                staging.write(s, &batch).await?;
+                counters[s]
+                    .rows_out
+                    .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+            }
+            // Each file carries its schema.
+            Out::SchemaChange(..) => {}
+            Out::Barrier(s, epoch, schema, quarantined) => {
+                let bytes = staging.seal(s).await?;
+                counters[s].bytes_out.fetch_add(bytes, Ordering::Relaxed);
+                align.cross(s, epoch.n, schema, quarantined);
+            }
+            Out::End(s, schema) => {
+                staging.end(s).await?;
+                align.end(s, schema);
+            }
+        }
+        let ready = align.advance();
+        if ready.is_empty() {
+            continue;
+        }
+        for n in ready {
+            let ev = epoch_ready(&plan, &mut align, n, Vec::new(), staging.take(n))?;
+            let _ = events.send(Ok(ev)).await;
+        }
+        let _ = events.try_send(Ok(metrics(&plan, &counters)));
+    }
+    let _ = events.try_send(Ok(metrics(&plan, &counters)));
     Ok(true)
 }
 
@@ -650,7 +709,7 @@ async fn write_discard(
             continue;
         }
         for n in ready {
-            let ev = epoch_ready(&plan, &mut align, n, Vec::new())?;
+            let ev = epoch_ready(&plan, &mut align, n, Vec::new(), Vec::new())?;
             let _ = events.send(Ok(ev)).await;
         }
         let _ = events.try_send(Ok(metrics(&plan, &counters)));
@@ -1214,6 +1273,62 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(left, 0, "the unsealed file is removed");
+    }
+
+    #[tokio::test]
+    async fn a_staged_sink_lists_each_epochs_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}/_staging", dir.path().display());
+        let plan = Arc::new(
+            Plan::from_request(crate::plan::tests::staged_request(&["a", "b"], &url)).unwrap(),
+        );
+        let (mut w, engine_in) = duplex(1 << 16);
+        let (tx, mut events) = mpsc::channel(64);
+        let job = tokio::spawn(run::<_, DuplexStream>(
+            plan,
+            vec![BufReader::new(engine_in)],
+            None,
+            tx,
+        ));
+        put(
+            &mut w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"x": 1}"#, r#"{"x": 2}"#]),
+        )
+        .await;
+        put(&mut w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(&mut w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(&mut w, FrameKind::Rows, 1, rows(&[r#"{"y": "s"}"#])).await;
+        put(&mut w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(&mut w, FrameKind::Barrier, 1, barrier(2)).await;
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 3}"#])).await;
+        put(&mut w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(&mut w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        job.await.unwrap().unwrap();
+
+        let mut shape = Vec::new();
+        while let Some(Ok(ev)) = events.recv().await {
+            if let Some(events_response::Event::EpochReady(r)) = ev.event {
+                assert!(r.staged.is_empty());
+                let n = r.epoch.unwrap().n;
+                for st in r.files {
+                    for f in st.files {
+                        assert!(dir.path().join("_staging").join(&f.path).is_file());
+                        shape.push((n, st.stream.clone(), f.path, f.rows));
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            shape,
+            vec![
+                (1, "a".into(), "1/1/a/part-00000.parquet".into(), 2),
+                (2, "b".into(), "1/2/b/part-00000.parquet".into(), 1),
+            ]
+        );
+        assert!(!dir.path().join("_staging/1/3").exists());
     }
 
     #[tokio::test]

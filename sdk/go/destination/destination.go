@@ -61,8 +61,23 @@ const (
 	// commit it in Commit: Kafka.
 	TransactionalStream
 	// DeliverAndAck sinks deliver during the epoch, and PreCommit returns once
-	// everything is acknowledged: webhooks, HTTP APIs.
+	// everything is acknowledged: webhooks, HTTP APIs. With DeliveryStaged
+	// they deliver in Commit instead, from the staged files.
 	DeliverAndAck
+)
+
+// Delivery is how a destination receives each epoch's rows. Zero is
+// DeliveryStreamed.
+type Delivery int
+
+const (
+	// DeliveryStreamed: batches arrive through Write while the epoch is read,
+	// and the sink stages them its own way, if at all.
+	DeliveryStreamed Delivery = iota + 1
+	// DeliveryStaged: the platform stages each epoch as Parquet files, and
+	// hands them over through StagedWriter. It keeps them while the epoch can
+	// be recovered.
+	DeliveryStaged
 )
 
 // Scope is whether all streams' epochs become visible together (Pipeline) or
@@ -111,6 +126,7 @@ type Capabilities struct {
 	NanosecondTimestamps bool
 	// Nil: append only.
 	WriteModes []WriteMode
+	Delivery   Delivery
 }
 
 func (c Capabilities) SupportsScope(s Scope) bool {
@@ -175,7 +191,8 @@ type Writer interface {
 	// Write adds a batch to epoch e. The batch is released after Write
 	// returns; retain it to keep it longer.
 	Write(ctx context.Context, e Epoch, stream string, batch arrow.RecordBatch) error
-	// PreCommit makes epoch e durable but not visible.
+	// PreCommit makes epoch e durable but not visible. A staged epoch is
+	// durable already.
 	PreCommit(ctx context.Context, e Epoch) (Staged, error)
 	// Commit runs after e's checkpoint record is in the log. It makes the
 	// epoch visible with an (e.Generation, e.N) marker per stream, behind the
@@ -205,6 +222,24 @@ type ReadTracker interface {
 	// EndRead says stream's read ended in epoch e: its last batch came
 	// before this call, and PreCommit(e) after it.
 	EndRead(ctx context.Context, e Epoch, stream string) error
+}
+
+// StagedWriter is implemented by the writers of destinations with
+// DeliveryStaged, whose Write is never called. WriteStaged gets each
+// stream's files of epoch e before PreCommit(e), and the files of the epoch
+// being recovered before Recover. Streams without rows in the epoch get no
+// call. Its calls come from the goroutine that calls PreCommit.
+type StagedWriter interface {
+	WriteStaged(ctx context.Context, e Epoch, stream string, files []StagedFile) error
+}
+
+// StagedFile is one Parquet file of a staged epoch. The staging package
+// reads it.
+type StagedFile struct {
+	// Below the pipeline's staging prefix.
+	Path  string
+	Rows  uint64
+	Bytes uint64
 }
 
 // Committed is what a Commit applied.

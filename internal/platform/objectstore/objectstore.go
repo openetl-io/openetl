@@ -118,11 +118,31 @@ func S3Client(u *url.URL) (*s3.Client, error) {
 		opts.BaseEndpoint = aws.String(ep)
 		opts.UsePathStyle = true
 	}
-	if id := os.Getenv("AWS_ACCESS_KEY_ID"); id != "" {
-		creds := aws.Credentials{AccessKeyID: id, SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"), SessionToken: os.Getenv("AWS_SESSION_TOKEN")}
+	if !S3Anonymous() {
+		creds := aws.Credentials{AccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"), SessionToken: os.Getenv("AWS_SESSION_TOKEN")}
 		opts.Credentials = aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) { return creds, nil })
 	}
 	return s3.New(opts), nil
+}
+
+// S3Anonymous reports whether S3Client's clients send their requests
+// unsigned, so they can't presign URLs either.
+func S3Anonymous() bool { return os.Getenv("AWS_ACCESS_KEY_ID") == "" }
+
+// S3ObjectURL is the unsigned URL of key in the bucket u names, as
+// S3Client addresses it: path-style below an endpoint, and virtual-hosted on
+// AWS.
+func S3ObjectURL(u *url.URL, key string) string {
+	q := u.Query()
+	if ep := q.Get("endpoint"); ep != "" {
+		base, err := url.Parse(ep)
+		if err == nil {
+			base.Path = path.Join("/", base.Path, u.Host) + "/" + key
+			return base.String()
+		}
+	}
+	region := cmp.Or(q.Get("region"), "us-east-1")
+	return (&url.URL{Scheme: "https", Host: u.Host + ".s3." + region + ".amazonaws.com", Path: "/" + key}).String()
 }
 
 // GCSClient returns a client for gs://bucket. Credentials are Google's

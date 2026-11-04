@@ -322,6 +322,7 @@ type hostServer struct {
 	mu      sync.Mutex
 	secrets map[string]string
 	kv      map[string]kvEntry
+	staging *stagingArea
 }
 
 type kvEntry struct {

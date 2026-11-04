@@ -29,12 +29,14 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
 	"github.com/unsuitable001/openetl/internal/engineclient"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/internal/secretstore"
+	"github.com/unsuitable001/openetl/internal/staging"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
 
@@ -336,6 +338,14 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 			return out, errs.Wrap(errs.ConfigInvalid, err, "quarantine location")
 		}
 	}
+	if job.Destination.Capabilities().Delivery == destination.DeliveryStaged {
+		area, err := openStaging(ctx, a.Storage, job, log)
+		if err != nil {
+			return out, err
+		}
+		defer func() { _ = area.Close() }()
+		job.Staging = area
+	}
 	engine := a.Engine
 	engine.Logger = log.With("component", "engine")
 	job.Dataflow = &engineclient.Dataflow{Options: engine}
@@ -391,6 +401,24 @@ func readSecrets(ctx context.Context, r *secretstore.Reader, cfg *apiv1.Connecto
 		cfg.Config.Fields[e.GetField()] = structpb.NewStringValue(v)
 	}
 	return nil
+}
+
+// openStaging opens the pipeline's staging for a destination that loads
+// staged epochs, and serves it to the destination's host services.
+func openStaging(ctx context.Context, storage string, job runner.Job, log *slog.Logger) (*staging.Area, error) {
+	dst, ok := job.Destination.(interface{ SetStaging(hostservices.Staging) })
+	switch {
+	case storage == "":
+		return nil, errs.New(errs.ConfigInvalid, "the destination loads staged epochs, and this runner has no object store to stage them in")
+	case !ok:
+		return nil, errs.New(errs.ConfigInvalid, "the destination loads staged epochs, and only an external destination can")
+	}
+	area, err := staging.Open(ctx, storage, job.Org, job.Pipeline, staging.Options{Logger: log})
+	if err != nil {
+		return nil, errs.Wrap(errs.ConfigInvalid, err, "staging location")
+	}
+	dst.SetStaging(area)
+	return area, nil
 }
 
 // quarantineURL is where a pipeline's quarantined records go:

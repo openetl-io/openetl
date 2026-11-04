@@ -131,6 +131,26 @@ type Job struct {
 	KeepRecords int
 	// Gets what the source reports of its progress. Nil: dropped.
 	Progress *Progress
+	// Where the dataflow stages epochs for a destination with
+	// destination.DeliveryStaged, which needs one.
+	Staging Staging
+}
+
+// Staging keeps the epochs staged for a destination with
+// destination.DeliveryStaged: the dataflow writes them below URL, and the
+// destination reads the files it was handed.
+type Staging interface {
+	URL() string
+	// Hand lets the destination read a stream's files of epoch e.
+	Hand(e destination.Epoch, stream string, files []destination.StagedFile) error
+	// Flush writes the latest delivery cursor the destination saved for e,
+	// if it isn't written yet.
+	Flush(ctx context.Context, e destination.Epoch) error
+	// Drop deletes what was staged for e, and its cursor.
+	Drop(ctx context.Context, e destination.Epoch) error
+	// Sweep deletes what's staged except keep's epoch and generation gen's
+	// epochs after it, and returns how many objects it deleted.
+	Sweep(ctx context.Context, keep destination.Epoch, gen uint64) (int, error)
 }
 
 // ErrDrained: the attempt stopped at a checkpoint because Job.Drain closed.
@@ -248,8 +268,16 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 			return res, err
 		}
 	}
+	if job.staged() && head != nil {
+		if err := handOver(rctx, job.Staging, w, e, stagedFiles(head.Files)); err != nil {
+			return res, err
+		}
+	}
 	if res.Recovery, err = w.Recover(rctx, res.Generation, e, staged); err != nil {
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
+	}
+	if job.staged() && head != nil {
+		flush(rctx, job.Staging, e, log)
 	}
 	restored := head
 	if res.Recovery == destination.Lost {
@@ -269,23 +297,96 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		res.Restored = restored.Epoch
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
-	prune(rctx, sess, restored, job.keep(), log)
+	prune(rctx, sess, restored, job.keep(), job.Staging, log)
 	span.SetAttributes(attribute.Int64("openetl.generation", int64(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", int64(res.Restored))) //nolint:gosec // epochs fit
 	span.End()
 
 	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reported: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}}
+	if restored != nil && len(restored.Files) > 0 {
+		c.lastStaged = destination.Epoch{Generation: restored.Generation, N: restored.Epoch}
+	}
 	return res, c.run(ctx, restored, canForce)
 }
 
 func (j *Job) keep() int { return cmp.Or(j.KeepRecords, defaultKeepRecords) }
 
-// prune is best effort: a later prune deletes what it leaves.
-func prune(ctx context.Context, sess *checkpoint.Session, restored *checkpoint.Record, keep int, log *slog.Logger) {
+func (j *Job) staged() bool {
+	return j.Destination.Capabilities().Delivery == destination.DeliveryStaged
+}
+
+// prune is best effort: a later prune deletes what it leaves. Only
+// restored's epoch can be recovered again, so it's the one whose staging is
+// kept, with whatever this attempt stages after it.
+func prune(ctx context.Context, sess *checkpoint.Session, restored *checkpoint.Record, keep int, staging Staging, log *slog.Logger) {
 	if n, err := sess.Prune(ctx, restored, keep); err != nil {
 		log.Warn("pruning the checkpoint log failed", "deleted", n, "err", err)
 	} else if n > 0 {
 		log.Debug("pruned the checkpoint log", "deleted", n)
 	}
+	if staging == nil {
+		return
+	}
+	var e destination.Epoch
+	if restored != nil {
+		e = destination.Epoch{Generation: restored.Generation, N: restored.Epoch}
+	}
+	if n, err := staging.Sweep(ctx, e, sess.Generation()); err != nil {
+		log.Warn("sweeping staged epochs failed", "deleted", n, "err", err)
+	} else if n > 0 {
+		log.Debug("swept staged epochs", "deleted", n)
+	}
+}
+
+// handOver lets the destination read an epoch's staged files, and hands them
+// to its writer, stream by stream.
+func handOver(ctx context.Context, staging Staging, w destination.Writer, e destination.Epoch, files map[string][]destination.StagedFile) error {
+	sw, ok := w.(destination.StagedWriter)
+	if !ok {
+		return errs.New(errs.Internal, "runner: the destination loads staged epochs, and its writer takes no files")
+	}
+	for _, stream := range slices.Sorted(maps.Keys(files)) {
+		if err := staging.Hand(e, stream, files[stream]); err != nil {
+			return fmt.Errorf("runner: epoch %d: %w", e.N, err)
+		}
+		if err := sw.WriteStaged(ctx, e, stream, files[stream]); err != nil {
+			return fmt.Errorf("runner: hand over %s in epoch %d: %w", stream, e.N, err)
+		}
+	}
+	return nil
+}
+
+// flush is best effort: the cursor is a hint, and a lost one only means the
+// next attempt delivers more again.
+func flush(ctx context.Context, staging Staging, e destination.Epoch, log *slog.Logger) {
+	if err := retry(ctx, func() error { return staging.Flush(ctx, e) }, nil); err != nil {
+		log.Warn("writing the delivery cursor failed", "epoch", e.N, "err", err)
+	}
+}
+
+func stagedFiles(m map[string][]checkpoint.StagedFile) map[string][]destination.StagedFile {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string][]destination.StagedFile, len(m))
+	for stream, fs := range m {
+		for _, f := range fs {
+			out[stream] = append(out[stream], destination.StagedFile(f))
+		}
+	}
+	return out
+}
+
+func recordFiles(m map[string][]destination.StagedFile) map[string][]checkpoint.StagedFile {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string][]checkpoint.StagedFile, len(m))
+	for stream, fs := range m {
+		for _, f := range fs {
+			out[stream] = append(out[stream], checkpoint.StagedFile(f))
+		}
+	}
+	return out
 }
 
 func (j *Job) validate() error {
@@ -300,6 +401,8 @@ func (j *Job) validate() error {
 		return fmt.Errorf("runner: the job keeps %d checkpoint records, not at least 2", j.KeepRecords)
 	case j.Settings.Require == 0 || j.Settings.Scope == 0:
 		return errors.New("runner: job settings need Require and Scope")
+	case j.staged() && j.Staging == nil:
+		return errs.New(errs.ConfigInvalid, "runner: the destination loads staged epochs, and this runner has nowhere to stage them")
 	}
 	seen := make(map[string]bool)
 	streams := make([]delivery.Stream, 0, len(j.Streams))
@@ -387,6 +490,7 @@ type coordinator struct {
 	readStarts  map[string]int64
 	sincePrune  int                                 // owned by the committer: commits since it last pruned
 	seen        uint64                              // what the source had emitted when the last barrier was requested
+	lastStaged  destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
 	measures    map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
 }
 
@@ -457,13 +561,18 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	if es, ok := c.job.Destination.(EngineSink); ok {
 		plan.Sink = es.EngineSink()
 	}
+	var staging Staging
+	if c.job.staged() {
+		staging = c.job.Staging
+		plan.Sink = SinkPlan{StagedURL: staging.URL()}
+	}
 	starts := map[string]time.Time{}
 	for _, s := range c.job.Streams {
 		if !done[s.Name] {
 			starts[s.Name] = time.UnixMicro(c.readStarts[s.Name]).UTC()
 		}
 	}
-	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, c.job.Streams, starts, ends, fromFlow, c.events)
+	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, staging, c.job.Streams, starts, ends, fromFlow, c.events)
 
 	req := source.ReadRequest{Pipeline: c.job.Pipeline, Continuous: c.job.Continuous}
 	for _, s := range c.job.Streams {
@@ -649,6 +758,7 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 		Epoch:      n,
 		Streams:    make(map[string]checkpoint.StreamState, len(st.states)),
 		Staged:     st.desc,
+		Files:      recordFiles(st.flow.Files),
 		Snapshots:  st.flow.Snapshots,
 		Quarantine: st.flow.Quarantine,
 		Forced:     st.forced,
@@ -669,10 +779,11 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	if err != nil {
 		return fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}
+	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
+	c.dropStaged(ctx, e, len(rec.Files) > 0)
 	if err := retry(ctx, func() error { return applySchemas(ctx, c.w, c.applied, st.flow.Schemas) }, nil); err != nil {
 		return fmt.Errorf("runner: epoch %d: %w", n, err)
 	}
-	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	collapsed := map[string]uint64{}
 	err = retry(ctx, func() error {
 		done, err := c.w.Commit(ctx, e, st.desc)
@@ -683,6 +794,9 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	}, destination.ErrFenced)
 	if err != nil {
 		return fmt.Errorf("runner: commit epoch %d: %w", n, err)
+	}
+	if len(rec.Files) > 0 {
+		flush(ctx, c.job.Staging, e, c.log)
 	}
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
 	c.measure(ctx, rec, collapsed, time.Since(start), time.Since(st.requested))
@@ -720,9 +834,24 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	// A long job prunes as it goes, not only when it starts.
 	if c.sincePrune++; c.sincePrune >= c.job.keep() {
 		c.sincePrune = 0
-		prune(ctx, c.sess, rec, c.job.keep(), c.log)
+		prune(ctx, c.sess, rec, c.job.keep(), c.job.Staging, c.log)
 	}
 	return nil
+}
+
+// dropStaged drops the staging of the epoch recorded before e, now that e's
+// record is HEAD and it can't be recovered again. It's best effort: the
+// attempt's pruning sweeps what it leaves.
+func (c *coordinator) dropStaged(ctx context.Context, e destination.Epoch, staged bool) {
+	if prev := c.lastStaged; !prev.IsZero() {
+		if err := c.job.Staging.Drop(ctx, prev); err != nil {
+			c.log.Warn("dropping a staged epoch failed", "epoch", prev.N, "generation", prev.Generation, "err", err)
+		}
+		c.lastStaged = destination.Epoch{}
+	}
+	if staged {
+		c.lastStaged = e
+	}
 }
 
 func (c *coordinator) measure(ctx context.Context, rec *checkpoint.Record, collapsed map[string]uint64, commit, epoch time.Duration) {

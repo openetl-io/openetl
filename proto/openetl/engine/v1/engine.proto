@@ -132,6 +132,7 @@ message SinkPlan {
     RunnerSink runner = 1;
     ParquetSink parquet = 2;
     DiscardSink discard = 3;
+    StagedSink staged = 4;
   }
 }
 
@@ -143,7 +144,16 @@ message RunnerSink {
 // ParquetSink stages each epoch as Parquet files under url, and reports them
 // in EpochReady.staged.
 message ParquetSink {
-  // file:// and an absolute path. Object stores come later.
+  // file:// and an absolute path.
+  string url = 1;
+}
+
+// StagedSink stages each epoch as Parquet files below url, for a destination
+// connector that loads them (DELIVERY_STAGED), at
+// {g}/{N}/{stream}/part-{k}.parquet with the stream's name percent-encoded.
+// EpochReady.files lists them.
+message StagedSink {
+  // As quarantine_url.
   string url = 1;
 }
 
@@ -187,6 +197,14 @@ message EpochReady {
   map<string, bytes> schemas = 4;
   // Records quarantined in the epoch, one file per stream that had any.
   repeated QuarantineFile quarantine = 5;
+  // A staged sink's files, by stream, with paths below its URL. Streams
+  // without rows in the epoch are missing.
+  repeated StagedStream files = 6;
+}
+
+message StagedStream {
+  string stream = 1;
+  repeated openetl.connector.v1.StagedFile files = 2;
 }
 
 // QuarantineFile holds JSON lines, one per record: the stream, the reason

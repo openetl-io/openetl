@@ -19,13 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HostService_HTTP_FullMethodName      = "/openetl.connector.v1.HostService/HTTP"
-	HostService_Sign_FullMethodName      = "/openetl.connector.v1.HostService/Sign"
-	HostService_GetSecret_FullMethodName = "/openetl.connector.v1.HostService/GetSecret"
-	HostService_Log_FullMethodName       = "/openetl.connector.v1.HostService/Log"
-	HostService_KVGet_FullMethodName     = "/openetl.connector.v1.HostService/KVGet"
-	HostService_KVPut_FullMethodName     = "/openetl.connector.v1.HostService/KVPut"
-	HostService_Now_FullMethodName       = "/openetl.connector.v1.HostService/Now"
+	HostService_HTTP_FullMethodName              = "/openetl.connector.v1.HostService/HTTP"
+	HostService_Sign_FullMethodName              = "/openetl.connector.v1.HostService/Sign"
+	HostService_GetSecret_FullMethodName         = "/openetl.connector.v1.HostService/GetSecret"
+	HostService_Log_FullMethodName               = "/openetl.connector.v1.HostService/Log"
+	HostService_KVGet_FullMethodName             = "/openetl.connector.v1.HostService/KVGet"
+	HostService_KVPut_FullMethodName             = "/openetl.connector.v1.HostService/KVPut"
+	HostService_Now_FullMethodName               = "/openetl.connector.v1.HostService/Now"
+	HostService_StagedFileURL_FullMethodName     = "/openetl.connector.v1.HostService/StagedFileURL"
+	HostService_PutDeliveryCursor_FullMethodName = "/openetl.connector.v1.HostService/PutDeliveryCursor"
+	HostService_GetDeliveryCursor_FullMethodName = "/openetl.connector.v1.HostService/GetDeliveryCursor"
 )
 
 // HostServiceClient is the client API for HostService service.
@@ -47,6 +50,15 @@ type HostServiceClient interface {
 	KVGet(ctx context.Context, in *KVGetRequest, opts ...grpc.CallOption) (*KVGetResponse, error)
 	KVPut(ctx context.Context, in *KVPutRequest, opts ...grpc.CallOption) (*KVPutResponse, error)
 	Now(ctx context.Context, in *NowRequest, opts ...grpc.CallOption) (*NowResponse, error)
+	// For a destination with DELIVERY_STAGED: a URL to GET one file of an
+	// epoch it was handed, with range requests. Ask again once it expires.
+	StagedFileURL(ctx context.Context, in *StagedFileURLRequest, opts ...grpc.CallOption) (*StagedFileURLResponse, error)
+	// Saves what a staged epoch's commit has delivered, for a later attempt to
+	// resume from. Returns at once. A cursor saved before the connector
+	// answers the commit or recover is kept; earlier ones may be lost with the
+	// attempt. One for an epoch without files is ignored.
+	PutDeliveryCursor(ctx context.Context, in *PutDeliveryCursorRequest, opts ...grpc.CallOption) (*PutDeliveryCursorResponse, error)
+	GetDeliveryCursor(ctx context.Context, in *GetDeliveryCursorRequest, opts ...grpc.CallOption) (*GetDeliveryCursorResponse, error)
 }
 
 type hostServiceClient struct {
@@ -136,6 +148,36 @@ func (c *hostServiceClient) Now(ctx context.Context, in *NowRequest, opts ...grp
 	return out, nil
 }
 
+func (c *hostServiceClient) StagedFileURL(ctx context.Context, in *StagedFileURLRequest, opts ...grpc.CallOption) (*StagedFileURLResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StagedFileURLResponse)
+	err := c.cc.Invoke(ctx, HostService_StagedFileURL_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostServiceClient) PutDeliveryCursor(ctx context.Context, in *PutDeliveryCursorRequest, opts ...grpc.CallOption) (*PutDeliveryCursorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PutDeliveryCursorResponse)
+	err := c.cc.Invoke(ctx, HostService_PutDeliveryCursor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostServiceClient) GetDeliveryCursor(ctx context.Context, in *GetDeliveryCursorRequest, opts ...grpc.CallOption) (*GetDeliveryCursorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDeliveryCursorResponse)
+	err := c.cc.Invoke(ctx, HostService_GetDeliveryCursor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HostServiceServer is the server API for HostService service.
 // All implementations must embed UnimplementedHostServiceServer
 // for forward compatibility.
@@ -155,6 +197,15 @@ type HostServiceServer interface {
 	KVGet(context.Context, *KVGetRequest) (*KVGetResponse, error)
 	KVPut(context.Context, *KVPutRequest) (*KVPutResponse, error)
 	Now(context.Context, *NowRequest) (*NowResponse, error)
+	// For a destination with DELIVERY_STAGED: a URL to GET one file of an
+	// epoch it was handed, with range requests. Ask again once it expires.
+	StagedFileURL(context.Context, *StagedFileURLRequest) (*StagedFileURLResponse, error)
+	// Saves what a staged epoch's commit has delivered, for a later attempt to
+	// resume from. Returns at once. A cursor saved before the connector
+	// answers the commit or recover is kept; earlier ones may be lost with the
+	// attempt. One for an epoch without files is ignored.
+	PutDeliveryCursor(context.Context, *PutDeliveryCursorRequest) (*PutDeliveryCursorResponse, error)
+	GetDeliveryCursor(context.Context, *GetDeliveryCursorRequest) (*GetDeliveryCursorResponse, error)
 	mustEmbedUnimplementedHostServiceServer()
 }
 
@@ -185,6 +236,15 @@ func (UnimplementedHostServiceServer) KVPut(context.Context, *KVPutRequest) (*KV
 }
 func (UnimplementedHostServiceServer) Now(context.Context, *NowRequest) (*NowResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Now not implemented")
+}
+func (UnimplementedHostServiceServer) StagedFileURL(context.Context, *StagedFileURLRequest) (*StagedFileURLResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StagedFileURL not implemented")
+}
+func (UnimplementedHostServiceServer) PutDeliveryCursor(context.Context, *PutDeliveryCursorRequest) (*PutDeliveryCursorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutDeliveryCursor not implemented")
+}
+func (UnimplementedHostServiceServer) GetDeliveryCursor(context.Context, *GetDeliveryCursorRequest) (*GetDeliveryCursorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDeliveryCursor not implemented")
 }
 func (UnimplementedHostServiceServer) mustEmbedUnimplementedHostServiceServer() {}
 func (UnimplementedHostServiceServer) testEmbeddedByValue()                     {}
@@ -326,6 +386,60 @@ func _HostService_Now_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HostService_StagedFileURL_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StagedFileURLRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostServiceServer).StagedFileURL(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostService_StagedFileURL_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostServiceServer).StagedFileURL(ctx, req.(*StagedFileURLRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostService_PutDeliveryCursor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutDeliveryCursorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostServiceServer).PutDeliveryCursor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostService_PutDeliveryCursor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostServiceServer).PutDeliveryCursor(ctx, req.(*PutDeliveryCursorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostService_GetDeliveryCursor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDeliveryCursorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostServiceServer).GetDeliveryCursor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostService_GetDeliveryCursor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostServiceServer).GetDeliveryCursor(ctx, req.(*GetDeliveryCursorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HostService_ServiceDesc is the grpc.ServiceDesc for HostService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -356,6 +470,18 @@ var HostService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Now",
 			Handler:    _HostService_Now_Handler,
+		},
+		{
+			MethodName: "StagedFileURL",
+			Handler:    _HostService_StagedFileURL_Handler,
+		},
+		{
+			MethodName: "PutDeliveryCursor",
+			Handler:    _HostService_PutDeliveryCursor_Handler,
+		},
+		{
+			MethodName: "GetDeliveryCursor",
+			Handler:    _HostService_GetDeliveryCursor_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

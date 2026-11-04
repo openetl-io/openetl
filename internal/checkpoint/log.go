@@ -73,10 +73,13 @@ type Record struct {
 	Generation uint64 `json:"generation"`
 	// What HEAD pointed to before this record. Recovery rewinds to it when the
 	// epoch is lost.
-	Previous  *RecordRef             `json:"previous,omitempty"`
-	Streams   map[string]StreamState `json:"streams"`
-	Staged    []byte                 `json:"staged,omitempty"`
-	Snapshots []Snapshot             `json:"snapshots,omitempty"`
+	Previous *RecordRef             `json:"previous,omitempty"`
+	Streams  map[string]StreamState `json:"streams"`
+	Staged   []byte                 `json:"staged,omitempty"`
+	// The files the dataflow staged for a destination that loads them, by
+	// stream.
+	Files     map[string][]StagedFile `json:"files,omitempty"`
+	Snapshots []Snapshot              `json:"snapshots,omitempty"`
 	// Records quarantined in this epoch. Files no record lists are orphans.
 	Quarantine []QuarantineFile `json:"quarantine,omitempty"`
 	// Streams whose barrier was placed without a resume point. Restoring from
@@ -86,6 +89,14 @@ type Record struct {
 	// the streams it completed.
 	Sync      string    `json:"sync,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// StagedFile is one of an epoch's staged Parquet files, its path below the
+// pipeline's staging prefix.
+type StagedFile struct {
+	Path  string `json:"path"`
+	Rows  uint64 `json:"rows"`
+	Bytes uint64 `json:"bytes"`
 }
 
 func (r *Record) Ref() RecordRef { return RecordRef{Epoch: r.Epoch, Generation: r.Generation} }

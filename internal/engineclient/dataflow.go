@@ -88,6 +88,14 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	engineSink := plan.Sink != runner.SinkPlan{}
 	onReady := func(r *enginev1.EpochReady) error {
 		ready := &runner.Ready{Staged: r.GetStaged(), Schemas: r.GetSchemas()}
+		for _, st := range r.GetFiles() {
+			if ready.Files == nil {
+				ready.Files = map[string][]destination.StagedFile{}
+			}
+			for _, f := range st.GetFiles() {
+				ready.Files[st.GetStream()] = append(ready.Files[st.GetStream()], destination.StagedFile{Path: f.GetPath(), Rows: f.GetRows(), Bytes: f.GetBytes()})
+			}
+		}
 		for _, s := range r.GetSnapshots() {
 			ready.Snapshots = append(ready.Snapshots, checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()})
 		}
@@ -230,6 +238,8 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	switch {
 	case plan.Sink.ParquetURL != "":
 		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Parquet{Parquet: &enginev1.ParquetSink{Url: plan.Sink.ParquetURL}}}
+	case plan.Sink.StagedURL != "":
+		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Staged{Staged: &enginev1.StagedSink{Url: plan.Sink.StagedURL}}}
 	case plan.Sink.Discard:
 		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Discard{Discard: &enginev1.DiscardSink{}}}
 	default:

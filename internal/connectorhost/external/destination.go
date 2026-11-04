@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
@@ -25,9 +26,10 @@ const closeTimeout = 30 * time.Second
 type Destination struct{ instance }
 
 var (
-	_ destination.Destination = (*Destination)(nil)
-	_ destination.Checker     = (*Destination)(nil)
-	_ destination.ReadTracker = (*writer)(nil)
+	_ destination.Destination  = (*Destination)(nil)
+	_ destination.Checker      = (*Destination)(nil)
+	_ destination.ReadTracker  = (*writer)(nil)
+	_ destination.StagedWriter = (*writer)(nil)
 )
 
 // NewDestination binds the destination at exe to config, a JSON object. It
@@ -37,6 +39,19 @@ func NewDestination(exe string, config []byte, opts Options) *Destination {
 }
 
 func (d *Destination) Check(ctx context.Context) error { return d.check(ctx) }
+
+// SetStaging serves st's files and cursors to the destination's host
+// services, now and in any process started later.
+func (d *Destination) SetStaging(st hostservices.Staging) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.opts.Staging = st
+	if d.p != nil {
+		if hs := d.p.hs.Load(); hs != nil {
+			hs.SetStaging(st)
+		}
+	}
+}
 
 // Capabilities come from the spec: the descriptor's, or else the running
 // connector's, so they're zero until Start.
@@ -66,6 +81,7 @@ func Capabilities(spec *protocolv1.SpecResponse) destination.Capabilities {
 		MaxCommitInterval:     pc.GetMaxCommitInterval().AsDuration(),
 		MaxIdentifierLength:   int(pc.GetMaxIdentifierLength()),
 		NanosecondTimestamps:  pc.GetNanosecondTimestamps(),
+		Delivery:              destination.Delivery(pc.GetDelivery()),
 	}
 	for _, s := range pc.GetScopes() {
 		c.Scopes = append(c.Scopes, destination.Scope(s))
@@ -248,6 +264,15 @@ func (w *writer) StartReads(_ context.Context, starts map[string]time.Time) erro
 
 func (w *writer) EndRead(_ context.Context, e destination.Epoch, stream string) error {
 	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_EndRead{EndRead: &protocolv1.WriteEndRead{Epoch: epochProto(e), Stream: stream}}})
+}
+
+// WriteStaged goes unanswered, like a batch.
+func (w *writer) WriteStaged(_ context.Context, e destination.Epoch, stream string, files []destination.StagedFile) error {
+	m := &protocolv1.WriteStagedFiles{Epoch: epochProto(e), Stream: stream, Files: make([]*protocolv1.StagedFile, len(files))}
+	for i, f := range files {
+		m.Files[i] = &protocolv1.StagedFile{Path: f.Path, Rows: f.Rows, Bytes: f.Bytes}
+	}
+	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_StagedFiles{StagedFiles: m}})
 }
 
 func (w *writer) PreCommit(ctx context.Context, e destination.Epoch) (destination.Staged, error) {

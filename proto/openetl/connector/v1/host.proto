@@ -4,6 +4,7 @@ package openetl.connector.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "openetl/connector/v1/destination.proto";
 import "openetl/connector/v1/errors.proto";
 
 option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
@@ -23,6 +24,15 @@ service HostService {
   rpc KVGet(KVGetRequest) returns (KVGetResponse);
   rpc KVPut(KVPutRequest) returns (KVPutResponse);
   rpc Now(NowRequest) returns (NowResponse);
+  // For a destination with DELIVERY_STAGED: a URL to GET one file of an
+  // epoch it was handed, with range requests. Ask again once it expires.
+  rpc StagedFileURL(StagedFileURLRequest) returns (StagedFileURLResponse);
+  // Saves what a staged epoch's commit has delivered, for a later attempt to
+  // resume from. Returns at once. A cursor saved before the connector
+  // answers the commit or recover is kept; earlier ones may be lost with the
+  // attempt. One for an epoch without files is ignored.
+  rpc PutDeliveryCursor(PutDeliveryCursorRequest) returns (PutDeliveryCursorResponse);
+  rpc GetDeliveryCursor(GetDeliveryCursorRequest) returns (GetDeliveryCursorResponse);
 }
 
 message HTTPRequest {
@@ -194,4 +204,32 @@ message NowRequest {}
 
 message NowResponse {
   google.protobuf.Timestamp now = 1;
+}
+
+message StagedFileURLRequest {
+  // A StagedFile's path.
+  string path = 1;
+}
+
+message StagedFileURLResponse {
+  string url = 1;
+  // Unset: it doesn't expire.
+  google.protobuf.Timestamp expires = 2;
+}
+
+message PutDeliveryCursorRequest {
+  Epoch epoch = 1;
+  // A few KB at most.
+  bytes cursor = 2;
+}
+
+message PutDeliveryCursorResponse {}
+
+message GetDeliveryCursorRequest {
+  Epoch epoch = 1;
+}
+
+message GetDeliveryCursorResponse {
+  // Unset if none was saved.
+  optional bytes cursor = 1;
 }

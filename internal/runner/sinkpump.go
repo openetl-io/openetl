@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/unsuitable001/openetl/sdk/go/destination"
@@ -10,12 +12,15 @@ import (
 
 // sinkPump feeds the dataflow's output to the writer, and calls PreCommit(N)
 // once every stream has crossed barrier N. An engine sink's epochs arrive
-// staged, in their FrameReady. A writer that tracks reads gets their starts
-// first, and each read's end when the barrier that ends it comes out.
+// staged, in their FrameReady. So do a staged destination's, whose files the
+// writer gets before PreCommit(N). A writer that tracks reads gets their
+// starts first, and each read's end when the barrier that ends it comes out,
+// or with a staged destination, at the end of its epoch.
 type sinkPump struct {
 	w          destination.Writer
 	gen        uint64
 	engineSink bool
+	staging    Staging // set for a staged destination
 	in         <-chan Frame
 	events     chan<- event
 	starts     map[string]time.Time // the streams the attempt reads
@@ -26,8 +31,8 @@ type sinkPump struct {
 	nextReady uint64
 }
 
-func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, streams []Stream, starts map[string]time.Time, ends *readEnds, in <-chan Frame, events chan<- event) *sinkPump {
-	s := &sinkPump{w: w, gen: gen, engineSink: engineSink, in: in, events: events, starts: starts, ends: ends, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextReady: firstEpoch}
+func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, staging Staging, streams []Stream, starts map[string]time.Time, ends *readEnds, in <-chan Frame, events chan<- event) *sinkPump {
+	s := &sinkPump{w: w, gen: gen, engineSink: engineSink, staging: staging, in: in, events: events, starts: starts, ends: ends, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextReady: firstEpoch}
 	for _, st := range streams {
 		s.epochOf[st.Name] = firstEpoch
 	}
@@ -57,7 +62,12 @@ func (s *sinkPump) run(ctx context.Context) error {
 				return fmt.Errorf("runner: the dataflow reported epoch %d ready, expected %d", f.Epoch, s.nextReady)
 			}
 			s.nextReady++
-			if s.engineSink {
+			switch {
+			case s.staging != nil:
+				if err := s.preCommitStaged(ctx, rt, f.Epoch, f.Ready.Files); err != nil {
+					return err
+				}
+			case s.engineSink:
 				if err := s.staged(ctx, f.Epoch, f.Ready.Staged); err != nil {
 					return err
 				}
@@ -106,6 +116,30 @@ func (s *sinkPump) run(ctx context.Context) error {
 			return fmt.Errorf("runner: unexpected frame kind %d from the dataflow", f.Kind)
 		}
 	}
+}
+
+// preCommitStaged hands the writer epoch n's files, ends the reads that
+// ended in it, and pre-commits it.
+func (s *sinkPump) preCommitStaged(ctx context.Context, rt destination.ReadTracker, n uint64, files map[string][]destination.StagedFile) error {
+	e := destination.Epoch{Generation: s.gen, N: n}
+	if err := handOver(ctx, s.staging, s.w, e, files); err != nil {
+		return err
+	}
+	if rt != nil {
+		for _, stream := range slices.Sorted(maps.Keys(s.epochOf)) {
+			if !s.ends.endsAt(stream, n) {
+				continue
+			}
+			if err := rt.EndRead(ctx, e, stream); err != nil {
+				return fmt.Errorf("runner: end the read of %s in epoch %d: %w", stream, n, err)
+			}
+		}
+	}
+	staged, err := s.w.PreCommit(ctx, e)
+	if err != nil {
+		return fmt.Errorf("runner: pre-commit epoch %d: %w", n, err)
+	}
+	return s.staged(ctx, n, staged)
 }
 
 func (s *sinkPump) staged(ctx context.Context, n uint64, staged destination.Staged) error {

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/unsuitable001/openetl/sdk/go/internal/rpcerr"
@@ -253,11 +254,33 @@ func (c *common) work(t T, p Process) error {
 	}
 	b := buildBatch(kitStreams[0], records(0, 1, "a"), "insert")
 	defer b.Release()
-	if err := w.batch(epoch(1, 1), kitStreams[0], b); err != nil {
+	e := epoch(1, 1)
+	if c.spec.GetDestination().GetDelivery() != protocolv1.Delivery_DELIVERY_STAGED {
+		if err := w.batch(e, kitStreams[0], b); err != nil {
+			return err
+		}
+		_, err = w.preCommit(e)
 		return err
 	}
-	_, err = w.preCommit(epoch(1, 1))
-	return err
+	// A staged destination may reach its upstream only when it delivers, in
+	// commit.
+	a, err := attachStaging(p)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+	files, err := a.stage(e, kitStreams[0], []arrow.RecordBatch{b})
+	if err != nil {
+		return err
+	}
+	if err := w.stagedFiles(e, kitStreams[0], files); err != nil {
+		return err
+	}
+	staged, err := w.preCommit(e)
+	if err != nil {
+		return err
+	}
+	return w.commit(e, staged)
 }
 
 // anyStreams are what a read with another config asks for: the good

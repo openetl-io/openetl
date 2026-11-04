@@ -48,6 +48,10 @@ pub enum Sink {
     Parquet {
         url: String,
     },
+    /// Parquet staged below url for a destination connector to load.
+    Staged {
+        url: String,
+    },
     Discard,
 }
 
@@ -161,7 +165,7 @@ impl Plan {
                     .map_err(|e| JobError::config(e.to_string()))?;
                 None
             }
-            sink_plan::Sink::Discard(_) => None,
+            sink_plan::Sink::Staged(_) | sink_plan::Sink::Discard(_) => None,
         };
 
         let mut ids = HashSet::new();
@@ -234,6 +238,7 @@ impl Plan {
                 Sink::Runner { edge, out_index }
             }
             sink_plan::Sink::Parquet(p) => Sink::Parquet { url: p.url },
+            sink_plan::Sink::Staged(s) => Sink::Staged { url: s.url },
             sink_plan::Sink::Discard(_) => Sink::Discard,
         };
 
@@ -263,7 +268,7 @@ impl Plan {
 pub(crate) mod tests {
     use super::*;
     use openetl_proto::engine::v1::{
-        DiscardSink, Edge, ParquetSink, RunnerSink, SinkPlan, StateSnapshot, StreamPlan,
+        DiscardSink, Edge, ParquetSink, RunnerSink, SinkPlan, StagedSink, StateSnapshot, StreamPlan,
     };
 
     fn edge(id: &str, dir: EdgeDirection, streams: &[&str]) -> Edge {
@@ -389,6 +394,25 @@ pub(crate) mod tests {
     fn a_parquet_sink_has_no_outbound_edge() {
         let p = Plan::from_request(parquet_request(&["a", "b"], "file:///tmp/x")).unwrap();
         assert!(matches!(p.sink, Sink::Parquet { url } if url == "file:///tmp/x"));
+    }
+
+    pub(crate) fn staged_request(streams: &[&str], url: &str) -> StartJobRequest {
+        let mut req = request(streams);
+        req.edges.pop();
+        req.sink = Some(SinkPlan {
+            sink: Some(sink_plan::Sink::Staged(StagedSink { url: url.into() })),
+        });
+        req
+    }
+
+    #[test]
+    fn a_staged_sink_has_no_outbound_edge() {
+        let p = Plan::from_request(staged_request(&["a", "b"], "s3://bucket/x")).unwrap();
+        assert!(matches!(p.sink, Sink::Staged { url } if url == "s3://bucket/x"));
+        let mut req = staged_request(&["a", "b"], "s3://bucket/x");
+        req.edges
+            .push(edge("out", EdgeDirection::FromEngine, &["a", "b"]));
+        assert!(Plan::from_request(req).is_err());
     }
 
     #[test]

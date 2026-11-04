@@ -85,6 +85,7 @@ func (r *destinationRun) checks() []Check {
 		Check{"write/crash-after-record", r.each(r.checkCrashAfterRecord)},
 		Check{"write/crash-after-commit", r.each(r.checkCrashAfterCommit)},
 		Check{"write/fence", r.each(r.checkFence)},
+		Check{"write/staged-resume", r.each(r.checkStagedResume)},
 		Check{"write/overwrite", r.checkOverwrite},
 		Check{"write/merge", r.checkMerge},
 		Check{"write/evolution", r.checkEvolution},
@@ -104,6 +105,25 @@ func (r *destinationRun) drop() {
 
 func (r *destinationRun) class() protocolv1.SinkClass {
 	return r.spec.GetDestination().GetSinkClass()
+}
+
+func (r *destinationRun) staged() bool {
+	return r.spec.GetDestination().GetDelivery() == protocolv1.Delivery_DELIVERY_STAGED
+}
+
+// area is where the kit stages a session's epochs for a staged
+// destination, served by its process's host services until the next
+// session's replaces it, as each pipeline has staging of its own.
+func (r *destinationRun) area(t T) *stagingArea {
+	t.Helper()
+	a, err := attachStaging(r.proc)
+	if err != nil {
+		t.Fatalf("staging: %v", err)
+	}
+	r.common.mu.Lock()
+	r.closers = append(r.closers, a.close)
+	r.common.mu.Unlock()
+	return a
 }
 
 // each runs a write check in every commit scope the destination has.
@@ -128,6 +148,11 @@ type session struct {
 	scope    protocolv1.CommitScope
 	mode     protocolv1.WriteMode
 	data     []arrow.Field
+	// For a staged destination: where its epochs are staged, the batches of
+	// the epoch being written, and each epoch's files by stream.
+	area    *stagingArea
+	pending map[string][]arrow.RecordBatch
+	files   map[string]map[string][]*protocolv1.StagedFile
 }
 
 func (r *destinationRun) session(t T, scope protocolv1.CommitScope, mode protocolv1.WriteMode) *session {
@@ -138,7 +163,18 @@ func (r *destinationRun) session(t T, scope protocolv1.CommitScope, mode protoco
 	r.mu.Lock()
 	r.namespaces = append(r.namespaces, ns)
 	r.mu.Unlock()
-	return &session{t: t, r: r, ns: ns, pipeline: newID(), scope: scope, mode: mode, data: dataFields}
+	s := &session{t: t, r: r, ns: ns, pipeline: newID(), scope: scope, mode: mode, data: dataFields}
+	if r.staged() {
+		s.area, s.pending, s.files = r.area(t), map[string][]arrow.RecordBatch{}, map[string]map[string][]*protocolv1.StagedFile{}
+		t.Cleanup(func() {
+			for _, bs := range s.pending {
+				for _, b := range bs {
+					b.Release()
+				}
+			}
+		})
+	}
+	return s
 }
 
 func (s *session) where() string {
@@ -179,6 +215,8 @@ func (s *session) begin(gen uint64, e *protocolv1.Epoch, staged []byte) (*writer
 		if err := s.applySchemas(w); err != nil {
 			s.t.Fatalf("%s generation %d's apply_schema: %s: %v", s.where(), gen, codeOf(err), err)
 		}
+		// A staged epoch's files are handed over again, as the runner does.
+		s.handOver(w, e)
 	}
 	rec, err := w.recover(e, staged)
 	if err != nil {
@@ -199,7 +237,7 @@ func (s *session) stage(w *writer, e *protocolv1.Epoch, recs map[string][]record
 			continue
 		}
 		b := buildBatch(name, recs[name], "insert")
-		err := w.batch(e, name, b)
+		err := s.write(w, e, name, b)
 		b.Release()
 		if err != nil {
 			s.t.Fatalf("%s a batch of epoch %s: %s: %v", s.where(), epochString(e), codeOf(err), err)
@@ -210,11 +248,83 @@ func (s *session) stage(w *writer, e *protocolv1.Epoch, recs map[string][]record
 			s.t.Fatalf("%s end_read: %v", s.where(), err)
 		}
 	}
-	staged, err := w.preCommit(e)
+	staged, err := s.preCommit(w, e)
 	if err != nil {
 		s.t.Fatalf("%s pre-commit %s: %s: %v", s.where(), epochString(e), codeOf(err), err)
 	}
 	return staged
+}
+
+// write sends a batch of epoch e, or for a staged destination, keeps it for
+// e's files.
+func (s *session) write(w *writer, e *protocolv1.Epoch, stream string, b arrow.RecordBatch) error {
+	if s.area == nil {
+		return w.batch(e, stream, b)
+	}
+	for i := int64(0); i < b.NumRows(); i += recordsPerFile {
+		s.pending[stream] = append(s.pending[stream], b.NewSlice(i, min(i+recordsPerFile, b.NumRows())))
+	}
+	return nil
+}
+
+// preCommit pre-commits e. For a staged destination, it first stages what
+// write kept as e's files, and hands them over.
+func (s *session) preCommit(w *writer, e *protocolv1.Epoch) ([]byte, error) {
+	if s.area != nil {
+		files := map[string][]*protocolv1.StagedFile{}
+		for _, name := range kitStreams {
+			bs := s.pending[name]
+			if len(bs) == 0 {
+				continue
+			}
+			fs, err := s.area.stage(e, name, bs)
+			for _, b := range bs {
+				b.Release()
+			}
+			delete(s.pending, name)
+			if err != nil {
+				return nil, err
+			}
+			files[name] = fs
+		}
+		s.files[epochString(e)] = files
+		s.handOver(w, e)
+	}
+	return w.preCommit(e)
+}
+
+// handOver sends e's staged files, stream by stream.
+func (s *session) handOver(w *writer, e *protocolv1.Epoch) {
+	s.t.Helper()
+	if s.area == nil {
+		return
+	}
+	files := s.files[epochString(e)]
+	for _, name := range kitStreams {
+		if len(files[name]) == 0 {
+			continue
+		}
+		if err := w.stagedFiles(e, name, files[name]); err != nil {
+			s.t.Fatalf("%s staged_files of epoch %s: %s: %v", s.where(), epochString(e), codeOf(err), err)
+		}
+	}
+}
+
+// visible counts the ids each kit stream's records have in the
+// destination.
+func (s *session) visible(ctx context.Context) (map[string]multiset, error) {
+	out := map[string]multiset{}
+	for _, name := range kitStreams {
+		rows, err := s.r.s.Read(ctx, s.ns, name)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = multiset{}
+		for _, row := range rows {
+			out[name][fmt.Sprint(row["id"])]++
+		}
+	}
+	return out, nil
 }
 
 // commit applies the schemas, as the runner does before each commit, and
@@ -384,10 +494,13 @@ func (r *destinationRun) checkCrashAfterRecord(_ T, s *session) {
 	w.crash()
 
 	w2, rec := s.begin(2, epoch(1, 1), staged)
-	switch r.class() {
-	case protocolv1.SinkClass_SINK_CLASS_STAGE_AND_APPLY:
+	switch {
+	case r.staged():
+		// The platform's staging outlives the runner.
 		s.wantRecovery(2, rec, protocolv1.Recovery_RECOVERY_REDONE)
-	case protocolv1.SinkClass_SINK_CLASS_TRANSACTIONAL_STREAM:
+	case r.class() == protocolv1.SinkClass_SINK_CLASS_STAGE_AND_APPLY:
+		s.wantRecovery(2, rec, protocolv1.Recovery_RECOVERY_REDONE)
+	case r.class() == protocolv1.SinkClass_SINK_CLASS_TRANSACTIONAL_STREAM:
 		s.wantRecovery(2, rec, protocolv1.Recovery_RECOVERY_LOST)
 	}
 	if rec == protocolv1.Recovery_RECOVERY_LOST {
@@ -415,6 +528,83 @@ func (r *destinationRun) checkCrashAfterCommit(_ T, s *session) {
 	e2 := map[string][]record{"beta": records(2, 4, "b")}
 	s.commit(w2, epoch(2, 2), s.stage(w2, epoch(2, 2), e2))
 	s.expect("after the next epoch", merged(e1, e2))
+	s.close(w2)
+}
+
+// Write: staged resume: a destination that delivers a staged epoch in Commit,
+// and is cut off just after it saves a delivery cursor, resumes from that
+// cursor. The next attempt delivers every record, and none of those it had
+// delivered when it saved the cursor.
+func (r *destinationRun) checkStagedResume(t T, s *session) {
+	if s.area == nil {
+		t.Skipf("the destination doesn't take staged epochs")
+	}
+	w, _ := s.begin(1, nil, nil)
+	e1 := map[string][]record{"alpha": records(0, 6, "a"), "beta": records(0, 4, "b")}
+	staged := s.stage(w, epoch(1, 1), e1)
+	saved := make(chan map[string]multiset, 1)
+	var once sync.Once
+	s.area.mu.Lock()
+	s.area.onCursor = func(e *protocolv1.Epoch) {
+		if e.GetGeneration() != 1 || e.GetN() != 1 {
+			return
+		}
+		once.Do(func() {
+			v, err := s.visible(context.WithoutCancel(t.Context()))
+			if err != nil {
+				v = nil
+			}
+			w.crash()
+			// The destination's commit is cancelled before it hears back.
+			time.Sleep(200 * time.Millisecond)
+			saved <- v
+		})
+	}
+	s.area.mu.Unlock()
+	defer func() {
+		s.area.mu.Lock()
+		s.area.onCursor = nil
+		s.area.mu.Unlock()
+	}()
+	err := s.tryCommit(w, epoch(1, 1), staged)
+	var delivered map[string]multiset
+	select {
+	case delivered = <-saved:
+	case <-time.After(func() time.Duration {
+		if err != nil {
+			return 10 * time.Second
+		}
+		return 0
+	}()):
+	}
+	switch {
+	case delivered == nil && err == nil:
+		flagf(t, "%s the commit saved no delivery cursor, so a delivery cut off partway is sent again whole", s.where())
+		s.close(w)
+		return
+	case delivered == nil:
+		t.Fatalf("%s commit %s failed before it saved a delivery cursor: %s: %v", s.where(), epochString(epoch(1, 1)), codeOf(err), err)
+	}
+
+	w2, rec := s.begin(2, epoch(1, 1), staged)
+	s.wantRecovery(2, rec, protocolv1.Recovery_RECOVERY_REDONE, protocolv1.Recovery_RECOVERY_APPLIED)
+	s.expect("after resuming the delivery", e1)
+	now, err := s.visible(t.Context())
+	if err != nil {
+		t.Fatalf("%s Read: %v", s.where(), err)
+	}
+	for _, name := range kitStreams {
+		var again []string
+		for id, n := range delivered[name] {
+			if now[name][id] > n {
+				again = append(again, id)
+			}
+		}
+		if len(again) > 0 {
+			slices.Sort(again)
+			t.Errorf("%s %s's ids %v were delivered before the cursor was saved, and again after the resume", s.where(), name, sample(again))
+		}
+	}
 	s.close(w2)
 }
 
@@ -532,12 +722,12 @@ func (r *destinationRun) checkEvolution(t T) {
 		}
 	}
 	rec := buildWideBatch("alpha", records(2, 4, "a"))
-	err = w.batch(epoch(1, 2), "alpha", rec)
+	err = s.write(w, epoch(1, 2), "alpha", rec)
 	rec.Release()
 	if err != nil {
 		t.Fatalf("a batch with the added column: %s: %v", codeOf(err), err)
 	}
-	staged, err := w.preCommit(epoch(1, 2))
+	staged, err := s.preCommit(w, epoch(1, 2))
 	if err != nil {
 		t.Fatalf("pre-commit with the added column: %s: %v", codeOf(err), err)
 	}

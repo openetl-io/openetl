@@ -13,6 +13,8 @@ mod ipc;
 mod plan;
 mod quarantine;
 mod service;
+mod staging;
+mod store;
 mod telemetry;
 
 use std::io::{Read, Write};

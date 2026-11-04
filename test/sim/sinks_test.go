@@ -1,10 +1,12 @@
 package sim
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -579,3 +581,291 @@ func (d *webhookDest) Recover(context.Context, uint64, destination.Epoch, destin
 }
 
 func (d *webhookDest) Close(context.Context) error { return nil }
+
+// ---- Deliver and acknowledge from Parquet the platform staged: an API that
+// takes each epoch in Commit, with a delivery cursor.
+
+// stagedStore is the data plane's staging bucket: files by path, and the
+// cursors written.
+type stagedStore struct {
+	mu      sync.Mutex
+	files   map[string][]row
+	cursors map[destination.Epoch][]byte
+}
+
+func newStagedStore() *stagedStore {
+	return &stagedStore{files: map[string][]row{}, cursors: map[destination.Epoch][]byte{}}
+}
+
+// simStaging is one attempt's staging. Cursors it hasn't written are lost
+// with the attempt.
+type simStaging struct {
+	w       *world
+	s       *stagedStore
+	attempt int
+	mu      sync.Mutex
+	handed  map[string]bool
+	pending map[destination.Epoch][]byte
+}
+
+func newSimStaging(w *world, attempt int) *simStaging {
+	return &simStaging{w: w, s: w.staged, attempt: attempt, handed: map[string]bool{}, pending: map[destination.Epoch][]byte{}}
+}
+
+func epochDir(e destination.Epoch) string { return fmt.Sprintf("%d/%d/", e.Generation, e.N) }
+
+func (s *simStaging) URL() string { return "sim://staging" }
+
+// stage is the dataflow's part: one file per stream and epoch.
+func (s *simStaging) stage(ctx context.Context, e destination.Epoch, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
+	var rows []row
+	for _, b := range batches {
+		rows = append(rows, rowsOf(b)...)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	path := epochDir(e) + stream + "/part-00000.parquet"
+	err := outcome(s.w.sched.point(ctx, s.attempt, "staging.write"), func() error {
+		s.s.mu.Lock()
+		defer s.s.mu.Unlock()
+		s.s.files[path] = rows
+		return nil
+	})
+	return []destination.StagedFile{{Path: path, Rows: uint64(len(rows))}}, err
+}
+
+func (s *simStaging) Hand(_ destination.Epoch, _ string, files []destination.StagedFile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range files {
+		s.handed[f.Path] = true
+	}
+	return nil
+}
+
+func (s *simStaging) Flush(ctx context.Context, e destination.Epoch) error {
+	s.mu.Lock()
+	c, ok := s.pending[e]
+	s.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	return outcome(s.w.sched.point(ctx, s.attempt, "staging.flush"), func() error {
+		s.s.mu.Lock()
+		s.s.cursors[e] = c
+		s.s.mu.Unlock()
+		s.mu.Lock()
+		if bytes.Equal(s.pending[e], c) {
+			delete(s.pending, e)
+		}
+		s.mu.Unlock()
+		return nil
+	})
+}
+
+func (s *simStaging) Drop(ctx context.Context, e destination.Epoch) error {
+	return outcome(s.w.sched.point(ctx, s.attempt, "staging.drop"), func() error {
+		s.s.mu.Lock()
+		defer s.s.mu.Unlock()
+		s.s.drop(func(g, n uint64) bool { return g == e.Generation && n == e.N })
+		return nil
+	})
+}
+
+func (s *simStaging) Sweep(ctx context.Context, keep destination.Epoch, gen uint64) (int, error) {
+	err := outcome(s.w.sched.point(ctx, s.attempt, "staging.sweep"), func() error {
+		s.s.mu.Lock()
+		defer s.s.mu.Unlock()
+		s.s.drop(func(g, n uint64) bool {
+			switch {
+			case g == keep.Generation && g == gen:
+				return n < keep.N
+			case g == keep.Generation:
+				return n != keep.N
+			default:
+				return g < gen
+			}
+		})
+		return nil
+	})
+	return 0, err
+}
+
+func (st *stagedStore) drop(match func(g, n uint64) bool) {
+	for path := range st.files {
+		var g, n uint64
+		if _, err := fmt.Sscanf(path, "%d/%d/", &g, &n); err == nil && match(g, n) {
+			delete(st.files, path)
+		}
+	}
+	for e := range st.cursors {
+		if match(e.Generation, e.N) {
+			delete(st.cursors, e)
+		}
+	}
+}
+
+// read is a presigned GET, of a file handed to this attempt.
+func (s *simStaging) read(ctx context.Context, path string) ([]row, error) {
+	s.mu.Lock()
+	handed := s.handed[path]
+	s.mu.Unlock()
+	if !handed {
+		return nil, fmt.Errorf("sim: %s wasn't handed to the destination", path)
+	}
+	var rows []row
+	err := outcome(s.w.sched.point(ctx, s.attempt, "staging.read"), func() error {
+		s.s.mu.Lock()
+		defer s.s.mu.Unlock()
+		r, ok := s.s.files[path]
+		if !ok {
+			return fmt.Errorf("%w: %s", errStagingMissing, path)
+		}
+		rows = r
+		return nil
+	})
+	return rows, err
+}
+
+// putCursor returns at once; the cursor is written in the background, or
+// only by Flush.
+func (s *simStaging) putCursor(ctx context.Context, e destination.Epoch, c []byte) error {
+	s.mu.Lock()
+	s.pending[e] = c
+	s.mu.Unlock()
+	switch d := s.w.sched.point(ctx, s.attempt, "staging.cursor"); d {
+	case proceed:
+		s.s.mu.Lock()
+		s.s.cursors[e] = c
+		s.s.mu.Unlock()
+	case crashBefore, crashAfter:
+		return errCrashed
+	}
+	return nil
+}
+
+func (s *simStaging) cursor(e destination.Epoch) []byte {
+	s.mu.Lock()
+	c, ok := s.pending[e]
+	s.mu.Unlock()
+	if ok {
+		return c
+	}
+	s.s.mu.Lock()
+	defer s.s.mu.Unlock()
+	return s.s.cursors[e]
+}
+
+type stagedAPIDest struct {
+	w       *world
+	r       *receiver
+	st      *simStaging
+	attempt int
+	mu      sync.Mutex
+	files   map[destination.Epoch]map[string][]destination.StagedFile
+}
+
+type apiCursor struct {
+	Stream, File int
+	Done         bool
+}
+
+func (d *stagedAPIDest) Capabilities() destination.Capabilities {
+	return destination.Capabilities{Class: destination.DeliverAndAck, Scopes: []destination.Scope{destination.ScopePipeline, destination.ScopeStream}, Delivery: destination.DeliveryStaged}
+}
+
+func (d *stagedAPIDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	d.files = map[destination.Epoch]map[string][]destination.StagedFile{}
+	return d, nil
+}
+
+func (d *stagedAPIDest) Write(context.Context, destination.Epoch, string, arrow.RecordBatch) error {
+	return errors.New("sim: a staged destination got a batch")
+}
+
+func (d *stagedAPIDest) WriteStaged(_ context.Context, e destination.Epoch, stream string, files []destination.StagedFile) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.files[e] == nil {
+		d.files[e] = map[string][]destination.StagedFile{}
+	}
+	d.files[e][stream] = files
+	return nil
+}
+
+func (d *stagedAPIDest) PreCommit(ctx context.Context, _ destination.Epoch) (destination.Staged, error) {
+	if err := outcome(d.w.sched.point(ctx, d.attempt, "api.precommit"), nop); err != nil {
+		return nil, err
+	}
+	return destination.Staged("{}"), nil
+}
+
+func (d *stagedAPIDest) Commit(ctx context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
+	_, err := d.deliver(ctx, e)
+	return destination.Committed{}, err
+}
+
+func (d *stagedAPIDest) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ destination.Staged) (destination.Recovery, error) {
+	if e.IsZero() {
+		return destination.Applied, nil
+	}
+	redone, err := d.deliver(ctx, e)
+	if err != nil || !redone {
+		return destination.Applied, err
+	}
+	return destination.Redone, nil
+}
+
+// deliver sends each file from the cursor on, and saves the cursor once the
+// API has each. It reports whether anything was left to send.
+func (d *stagedAPIDest) deliver(ctx context.Context, e destination.Epoch) (bool, error) {
+	var from apiCursor
+	if c := d.st.cursor(e); c != nil {
+		if err := json.Unmarshal(c, &from); err != nil {
+			return false, err
+		}
+	}
+	if from.Done {
+		return false, nil
+	}
+	d.mu.Lock()
+	files := d.files[e]
+	d.mu.Unlock()
+	save := func(c apiCursor) error {
+		b, err := json.Marshal(c)
+		if err != nil {
+			return err
+		}
+		return d.st.putCursor(ctx, e, b)
+	}
+	for si, stream := range slices.Sorted(maps.Keys(files)) {
+		for fi, f := range files[stream] {
+			if si < from.Stream || si == from.Stream && fi < from.File {
+				continue
+			}
+			rows, err := d.st.read(ctx, f.Path)
+			if err != nil {
+				return true, err
+			}
+			err = outcome(d.w.sched.point(ctx, d.attempt, "api.deliver"), func() error {
+				d.r.mu.Lock()
+				defer d.r.mu.Unlock()
+				for _, r := range rows {
+					d.r.delivered = append(d.r.delivered, streamRow{stream, r})
+					d.r.applies[r.ID]++
+				}
+				return nil
+			})
+			if err != nil {
+				return true, err
+			}
+			if err := save(apiCursor{Stream: si, File: fi + 1}); err != nil {
+				return true, err
+			}
+		}
+	}
+	return true, save(apiCursor{Done: true})
+}
+
+func (d *stagedAPIDest) Close(context.Context) error { return nil }

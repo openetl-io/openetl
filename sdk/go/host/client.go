@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/internal/rpcerr"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
@@ -212,4 +213,29 @@ func (c *Client) Now(ctx context.Context) (time.Time, error) {
 		return time.Time{}, rpcerr.FromStatus(err)
 	}
 	return resp.GetNow().AsTime(), nil
+}
+
+func (c *Client) StagedFileURL(ctx context.Context, path string) (string, time.Time, error) {
+	resp, err := c.c.StagedFileURL(ctx, &protocolv1.StagedFileURLRequest{Path: path})
+	if err != nil {
+		return "", time.Time{}, rpcerr.FromStatus(err)
+	}
+	var expires time.Time
+	if resp.Expires != nil {
+		expires = resp.GetExpires().AsTime()
+	}
+	return resp.GetUrl(), expires, nil
+}
+
+func (c *Client) PutDeliveryCursor(ctx context.Context, e destination.Epoch, cursor []byte) error {
+	_, err := c.c.PutDeliveryCursor(ctx, &protocolv1.PutDeliveryCursorRequest{Epoch: &protocolv1.Epoch{Generation: e.Generation, N: e.N}, Cursor: cursor})
+	return rpcerr.FromStatus(err)
+}
+
+func (c *Client) GetDeliveryCursor(ctx context.Context, e destination.Epoch) ([]byte, bool, error) {
+	resp, err := c.c.GetDeliveryCursor(ctx, &protocolv1.GetDeliveryCursorRequest{Epoch: &protocolv1.Epoch{Generation: e.Generation, N: e.N}})
+	if err != nil {
+		return nil, false, rpcerr.FromStatus(err)
+	}
+	return resp.GetCursor(), resp.Cursor != nil, nil
 }

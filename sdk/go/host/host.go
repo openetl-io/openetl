@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/unsuitable001/openetl/sdk/go/destination"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
@@ -29,6 +30,18 @@ type Host interface {
 	// A ttl of zero never expires.
 	KVPut(ctx context.Context, key string, value []byte, ttl time.Duration) error
 	Now(ctx context.Context) (time.Time, error)
+	// StagedFileURL returns a URL to GET one file of a staged epoch the
+	// destination was handed, and when it expires; zero if it doesn't. The
+	// staging package calls it.
+	StagedFileURL(ctx context.Context, path string) (url string, expires time.Time, err error)
+	// PutDeliveryCursor saves what a staged epoch's Commit has delivered,
+	// for a later attempt to resume from. Save it only once the API has
+	// confirmed, so it never leads what was delivered. It returns at once;
+	// one saved before Commit or Recover returns is kept.
+	PutDeliveryCursor(ctx context.Context, e destination.Epoch, cursor []byte) error
+	// GetDeliveryCursor returns the cursor last saved for e. ok is false if
+	// none was.
+	GetDeliveryCursor(ctx context.Context, e destination.Epoch) (cursor []byte, ok bool, err error)
 }
 
 type LogEntry struct {

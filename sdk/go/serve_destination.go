@@ -60,6 +60,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 	}
 	sa, applies := w.(destination.SchemaApplier)
 	rt, _ := w.(destination.ReadTracker)
+	sw, _ := w.(destination.StagedWriter)
 
 	var sendMu sync.Mutex
 	send := func(m *protocolv1.WriteResponse) error {
@@ -121,6 +122,12 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 			if rt != nil {
 				fail = rt.EndRead(ctx, epoch(x.EndRead.GetEpoch()), x.EndRead.GetStream())
 			}
+		case *protocolv1.WriteRequest_StagedFiles:
+			if sw == nil {
+				fail = errors.New("write: staged files sent to a destination that doesn't take them")
+				break
+			}
+			fail = sw.WriteStaged(ctx, epoch(x.StagedFiles.GetEpoch()), x.StagedFiles.GetStream(), stagedFiles(x.StagedFiles.GetFiles()))
 		case *protocolv1.WriteRequest_PreCommit:
 			var st destination.Staged
 			if st, fail = w.PreCommit(ctx, epoch(x.PreCommit.GetEpoch())); fail == nil {
@@ -179,6 +186,14 @@ func applySchema(ctx context.Context, sa destination.SchemaApplier, m *protocolv
 	return sa.ApplySchema(ctx, streams)
 }
 
+func stagedFiles(fs []*protocolv1.StagedFile) []destination.StagedFile {
+	out := make([]destination.StagedFile, len(fs))
+	for i, f := range fs {
+		out[i] = destination.StagedFile{Path: f.GetPath(), Rows: f.GetRows(), Bytes: f.GetBytes()}
+	}
+	return out
+}
+
 func epoch(e *protocolv1.Epoch) destination.Epoch {
 	return destination.Epoch{Generation: e.GetGeneration(), N: e.GetN()}
 }
@@ -188,7 +203,8 @@ func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapa
 		SinkClass:            protocolv1.SinkClass(c.Class), //nolint:gosec // small
 		DedupeAtApply:        c.DedupeAtApply,
 		NanosecondTimestamps: c.NanosecondTimestamps,
-		MaxIdentifierLength:  uint32(c.MaxIdentifierLength), //nolint:gosec // small
+		MaxIdentifierLength:  uint32(c.MaxIdentifierLength),   //nolint:gosec // small
+		Delivery:             protocolv1.Delivery(c.Delivery), //nolint:gosec // small
 	}
 	for _, s := range c.Scopes {
 		p.Scopes = append(p.Scopes, protocolv1.CommitScope(s)) //nolint:gosec // small

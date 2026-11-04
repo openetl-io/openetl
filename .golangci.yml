@@ -82,6 +82,10 @@ linters:
       # The CLI talks to openetld's API, whose address the user gives.
       - path: cmd/openetl/
         linters: [forbidigo]
+      # Staged files come from URLs the runner signed for one object each,
+      # which connectors fetch themselves on every egress tier (ADR-0021).
+      - path: sdk/go/staging/
+        linters: [forbidigo]
 
 formatters:
   enable:

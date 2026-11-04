@@ -38,6 +38,20 @@ message DestinationCapabilities {
   repeated WriteMode write_modes = 8;
   // Unset: no maximum.
   google.protobuf.Duration max_commit_interval = 9;
+  Delivery delivery = 10;
+}
+
+// Delivery is how a destination receives each epoch's rows.
+enum Delivery {
+  // Streamed.
+  DELIVERY_UNSPECIFIED = 0;
+  // As batches while the epoch is read. The destination stages them its own
+  // way, if at all.
+  DELIVERY_STREAMED = 1;
+  // As Parquet files the platform staged, handed over with
+  // WriteStagedFiles. The platform keeps them while the epoch can be
+  // recovered, so a deliver-and-acknowledge sink can deliver in commit.
+  DELIVERY_STAGED = 2;
 }
 
 enum SinkClass {
@@ -85,6 +99,7 @@ message WriteRequest {
     WriteApplySchema apply_schema = 6;
     WriteStartReads start_reads = 7;
     WriteEndRead end_read = 8;
+    WriteStagedFiles staged_files = 9;
   }
 }
 
@@ -164,7 +179,27 @@ message WriteEndRead {
   string stream = 2;
 }
 
-// WritePreCommit stages the epoch durably but invisibly.
+// WriteStagedFiles hands over a stream's files in a staged epoch, in place
+// of its batches: before pre-commit, and for the epoch being recovered after
+// open and before recover. Streams without rows in the epoch get none.
+// Unanswered, like batches.
+message WriteStagedFiles {
+  Epoch epoch = 1;
+  string stream = 2;
+  repeated StagedFile files = 3;
+}
+
+// StagedFile is one Parquet file of a staged epoch, read through host
+// services' StagedFileURL.
+message StagedFile {
+  // Below the pipeline's staging prefix.
+  string path = 1;
+  uint64 rows = 2;
+  uint64 bytes = 3;
+}
+
+// WritePreCommit stages the epoch durably but invisibly. A staged epoch is
+// durable already, in its files.
 message WritePreCommit {
   Epoch epoch = 1;
 }

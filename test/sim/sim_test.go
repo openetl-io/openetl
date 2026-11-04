@@ -38,7 +38,7 @@ var (
 
 // parquet is stage-and-apply like warehouse, but can't dedupe or commit
 // across tables.
-var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook"}
+var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged"}
 
 func TestSimulation(t *testing.T) {
 	for _, kind := range sinkKinds {
@@ -163,6 +163,7 @@ type world struct {
 	wh        *warehouse
 	broker    *broker
 	recv      *receiver
+	staged    *stagedStore
 	lost      error
 	// Streams forced in any record ever written, pruned ones included.
 	forced map[string]bool
@@ -180,6 +181,8 @@ func (w *world) destination(attempt int) destination.Destination {
 		return &kafkaDest{w: w, b: w.broker, attempt: attempt}
 	case "webhook":
 		return &webhookDest{w: w, r: w.recv, attempt: attempt}
+	case "staged":
+		return &stagedAPIDest{w: w, r: w.recv, attempt: attempt}
 	default:
 		return &warehouseDest{w: w, wh: w.wh, attempt: attempt}
 	}
@@ -196,6 +199,11 @@ func (w *world) job(attempt int) runner.Job {
 		Dataflow:    runner.Passthrough{Convert: toArrow},
 		Settings:    w.cfg.settings,
 		KeepRecords: w.cfg.keep,
+	}
+	if d, ok := j.Destination.(*stagedAPIDest); ok {
+		st := newSimStaging(w, attempt)
+		d.st, j.Staging = st, st
+		j.Dataflow = runner.Passthrough{Convert: toArrow, Stage: st.stage}
 	}
 	for _, s := range w.cfg.streams {
 		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, Require: s.require, Collapse: s.collapse}
@@ -223,6 +231,7 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		wh:        newWarehouse(kind == "warehouse"),
 		broker:    newBroker(),
 		recv:      &receiver{applies: map[string]int{}},
+		staged:    newStagedStore(),
 		forced:    map[string]bool{},
 	}
 	for _, s := range cfg.streams {
@@ -345,7 +354,7 @@ func (w *world) visible(stream string) []row {
 			}
 		}
 		return out
-	case "webhook":
+	case "webhook", "staged":
 		var out []row
 		for _, r := range w.recv.delivered {
 			if r.stream == stream {

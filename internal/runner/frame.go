@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -43,7 +44,9 @@ type Frame struct {
 // Ready is the dataflow's part of an epoch, recorded in its checkpoint.
 type Ready struct {
 	// What an engine sink staged.
-	Staged     destination.Staged
+	Staged destination.Staged
+	// What a staged sink staged, by stream; streams without rows are missing.
+	Files      map[string][]destination.StagedFile
 	Snapshots  []checkpoint.Snapshot
 	Quarantine []checkpoint.QuarantineFile
 	// Each stream's schema at its barrier, as an Arrow IPC stream holding
@@ -102,6 +105,9 @@ type Naming struct {
 type SinkPlan struct {
 	// Parquet files under this file:// URL.
 	ParquetURL string
+	// Parquet files below this URL, for a DeliveryStaged destination to load
+	// (Staging.URL).
+	StagedURL string
 	// The engine drops every batch; its epochs arrive staged with nothing.
 	Discard bool
 }
@@ -127,10 +133,26 @@ type Dataflow interface {
 // batches; with none, rows are an error. It reports no schemas.
 type Passthrough struct {
 	Convert func(stream string, rows []json.RawMessage) (arrow.RecordBatch, error)
+	// Stage stages a stream's batches in epoch e, for a plan with
+	// Sink.StagedURL. It must not keep them.
+	Stage func(ctx context.Context, e destination.Epoch, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error)
 }
 
 func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out chan<- Frame) error {
 	defer close(out)
+	staging := plan.Sink.StagedURL != ""
+	if staging && p.Stage == nil {
+		return errors.New("runner: the plan stages its epochs, and the dataflow can't")
+	}
+	held := map[string][]arrow.RecordBatch{}
+	files := map[uint64]map[string][]destination.StagedFile{}
+	defer func() {
+		for _, bs := range held {
+			for _, b := range bs {
+				b.Release()
+			}
+		}
+	}()
 	crossed := make(map[uint64]int)
 	send := func(f Frame) error {
 		select {
@@ -171,8 +193,28 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 			}
 			f = Frame{Kind: FrameBatch, Stream: f.Stream, Batch: batch}
 		}
-		if err := send(f); err != nil {
-			return err
+		switch {
+		case !staging:
+			if err := send(f); err != nil {
+				return err
+			}
+		case f.Kind == FrameBatch:
+			held[f.Stream] = append(held[f.Stream], f.Batch)
+		case f.Kind == FrameBarrier:
+			fs, err := p.Stage(ctx, destination.Epoch{Generation: plan.Generation, N: f.Epoch}, f.Stream, held[f.Stream])
+			for _, b := range held[f.Stream] {
+				b.Release()
+			}
+			delete(held, f.Stream)
+			if err != nil {
+				return fmt.Errorf("runner: stage %s in epoch %d: %w", f.Stream, f.Epoch, err)
+			}
+			if len(fs) > 0 {
+				if files[f.Epoch] == nil {
+					files[f.Epoch] = map[string][]destination.StagedFile{}
+				}
+				files[f.Epoch][f.Stream] = fs
+			}
 		}
 		if f.Kind != FrameBarrier {
 			continue
@@ -181,8 +223,9 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 			continue
 		}
 		delete(crossed, f.Epoch)
-		if err := send(Frame{Kind: FrameReady, Epoch: f.Epoch, Ready: &Ready{}}); err != nil {
+		if err := send(Frame{Kind: FrameReady, Epoch: f.Epoch, Ready: &Ready{Files: files[f.Epoch]}}); err != nil {
 			return err
 		}
+		delete(files, f.Epoch)
 	}
 }
