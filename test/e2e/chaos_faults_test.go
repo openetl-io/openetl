@@ -138,9 +138,14 @@ func (b *faultBook) decide(slot int, pipeline string, kind int) action {
 	if len(f.armed) > 0 {
 		armed = f.armed[0]
 	}
+	// A runner killed before its write is the pipeline's, though it may
+	// not have written for it yet; died times the others.
 	fire := func(a action) action {
 		f.counts["crash "+armed]++
 		f.armed = f.armed[1:]
+		if a.kind == actKillBefore {
+			f.killed = time.Now()
+		}
 		return a
 	}
 	switch {
@@ -197,13 +202,14 @@ func (b *faultBook) wrote(slot int, pipeline string, kind int) {
 }
 
 // died notes that the slot's runner is being killed, which starts the
-// resume clock of each pipeline it was writing.
+// resume clock of each pipeline it was writing, again if its runner died
+// before, so a resume is timed from its runner's last death.
 func (b *faultBook) died(slot int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := time.Now()
 	for _, f := range b.pipes {
-		if f.host == slot && f.killed.IsZero() && now.Sub(f.lastWrite) < 10*time.Second {
+		if f.host == slot && now.Sub(f.lastWrite) < 10*time.Second {
 			f.killed = now
 		}
 	}
