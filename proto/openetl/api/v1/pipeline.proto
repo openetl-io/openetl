@@ -715,6 +715,11 @@ message CheckpointStream {
   // Rows the apply didn't insert because a row with the same _openetl_id
   // was earlier in the epoch or already in the destination.
   uint64 collapsed_rows = 7;
+  // Cells held in the epoch (ADR-0025).
+  uint64 held_cells = 8;
+  // The columns it held at the checkpoint, whole or some of their cells;
+  // discarded ones are left out.
+  repeated string held_columns = 9;
 }
 
 message ListCheckpointsRequest {

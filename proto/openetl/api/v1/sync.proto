@@ -86,6 +86,11 @@ message SyncStream {
   // Rows the destination didn't insert because a row with the same
   // _openetl_id was earlier in the epoch or already there.
   uint64 collapsed_rows = 4;
+  // Cells held in its committed epochs (ADR-0025).
+  uint64 held_cells = 5;
+  // The columns it held at its latest commit, whole or some of their
+  // cells; discarded ones are left out.
+  repeated string held_columns = 6;
 }
 
 enum SyncState {

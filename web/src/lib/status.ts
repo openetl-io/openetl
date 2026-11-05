@@ -13,25 +13,34 @@ export const statusLabel: Record<Status, string> = {
   idle: "Never synced",
 };
 
+/** A sync's rows, and the columns its streams held at its latest commit. */
 export function rows(s: Sync) {
   let all = 0n;
   let quarantined = 0n;
+  let held = 0;
   for (const st of s.streams) {
     all += st.rows;
     quarantined += st.quarantinedRows;
+    held += st.heldColumns.length;
   }
-  return { all, quarantined };
+  return { all, quarantined, held };
 }
 
-/** A sync's status: degraded when it succeeded but quarantined rows. */
+export function heldLabel(columns: number) {
+  return columns === 1 ? "1 column held" : `${columns} columns held`;
+}
+
+/** A sync's status: degraded when it succeeded but quarantined rows or ended holding columns. */
 export function syncStatus(s: Sync): Status {
   switch (s.state) {
     case SyncState.RUNNING:
       return "running";
     case SyncState.FAILED:
       return "failed";
-    case SyncState.SUCCEEDED:
-      return rows(s).quarantined > 0n ? "degraded" : "healthy";
+    case SyncState.SUCCEEDED: {
+      const r = rows(s);
+      return r.quarantined > 0n || r.held > 0 ? "degraded" : "healthy";
+    }
     case SyncState.STOPPED:
       return "stopped";
     default:

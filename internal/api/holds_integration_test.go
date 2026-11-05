@@ -5,6 +5,7 @@ package api_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -47,6 +48,7 @@ type holdsEnv struct {
 	sched    *refreshes
 	pipeline uuid.UUID
 	parent   string
+	url      string
 }
 
 func newHoldsEnv(t *testing.T) *holdsEnv {
@@ -108,6 +110,7 @@ func newHoldsEnv(t *testing.T) *holdsEnv {
 	}
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
+	e.url = ts.URL
 	e.owner = apiv1connect.NewPipelineServiceClient(http.DefaultClient, ts.URL)
 	e.runner = dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, ts.URL, auth.WithBearer(token.Secret))
 
@@ -274,5 +277,71 @@ func TestHoldsReleasesAndTheirIncident(t *testing.T) {
 	}
 	if st, _ := e.incident(t); st != "resolved" {
 		t.Errorf("incident %s", st)
+	}
+}
+
+// Syncs and checkpoints count each stream's held cells, and name the columns
+// it held at their latest commit, discarded ones left out.
+func TestHeldCellsBySyncAndCheckpoint(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	report := func(epoch, cells uint64, holds ...*dataplanev1.CheckpointHold) {
+		t.Helper()
+		_, err := e.runner.ReportCheckpoint(ctx, connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
+			PipelineId: e.pipeline.String(), RunId: "run1", Generation: 1, Epoch: epoch, CreateTime: timestamppb.Now(),
+			Streams: []*dataplanev1.CheckpointStream{{Name: "orders", Rows: 10, HeldCells: cells, Holds: holds}, {Name: "users", Rows: 1}},
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sc := apiv1connect.NewSyncServiceClient(http.DefaultClient, e.url)
+	since := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 1}
+	report(1, 3, &dataplanev1.CheckpointHold{Column: "note", Cells: 3, Reason: "nan", Since: since})
+	report(2, 4,
+		&dataplanev1.CheckpointHold{Column: "note", Cells: 7, Reason: "nan", Since: since},
+		&dataplanev1.CheckpointHold{Column: "note", Whole: true, Reason: "a view depends on it", Since: since},
+		&dataplanev1.CheckpointHold{Column: "amount", Whole: true, Reason: "a view depends on it", Since: since},
+		&dataplanev1.CheckpointHold{Column: "old", Whole: true, Reason: "released", Since: since, Discarded: true})
+
+	syncs, err := sc.ListSyncs(ctx, connect.NewRequest(&apiv1.ListSyncsRequest{Parent: e.parent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(syncs.Msg.GetSyncs()); n != 1 {
+		t.Fatalf("%d syncs", n)
+	}
+	got := map[string]string{}
+	for _, st := range syncs.Msg.GetSyncs()[0].GetStreams() {
+		got[st.GetName()] = fmt.Sprint(st.GetHeldCells(), st.GetHeldColumns())
+	}
+	if got["orders"] != "7 [amount note]" || got["users"] != "0 []" {
+		t.Errorf("the sync's streams hold %v", got)
+	}
+
+	cps, err := e.viewer.ListCheckpoints(ctx, connect.NewRequest(&apiv1.ListCheckpointsRequest{Parent: e.parent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held []string
+	for _, c := range cps.Msg.GetCheckpoints() {
+		for _, st := range c.GetStreams() {
+			if st.GetName() == "orders" {
+				held = append(held, fmt.Sprint(c.GetEpoch(), " ", st.GetHeldCells(), st.GetHeldColumns()))
+			}
+		}
+	}
+	if fmt.Sprint(held) != "[2 4 [amount note] 1 3 [note]]" {
+		t.Errorf("checkpoints hold %v", held)
+	}
+
+	// Patched in: the sync holds nothing at its latest commit.
+	report(3, 0)
+	syncs, err = sc.ListSyncs(ctx, connect.NewRequest(&apiv1.ListSyncsRequest{Parent: e.parent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := syncs.Msg.GetSyncs()[0].GetStreams()[0]; st.GetHeldCells() != 7 || len(st.GetHeldColumns()) != 0 {
+		t.Errorf("orders holds %d cells and %v, once patched in", st.GetHeldCells(), st.GetHeldColumns())
 	}
 }

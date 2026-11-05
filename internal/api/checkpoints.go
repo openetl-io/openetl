@@ -38,6 +38,22 @@ type mirroredStream struct {
 	Forced          bool   `json:"forced"`
 	Complete        bool   `json:"complete"`
 	SchemaDigest    string `json:"schema_digest"`
+	HeldCells       uint64 `json:"held_cells,omitempty"`
+	// The columns it held at the checkpoint; discarded ones count as
+	// nothing.
+	HeldColumns []string `json:"held_columns,omitempty"`
+}
+
+// heldColumns are the columns st holds, whole or some of their cells.
+func heldColumns(st *dataplanev1.CheckpointStream) []string {
+	var out []string
+	for _, h := range st.GetHolds() {
+		if !h.GetDiscarded() && !slices.Contains(out, h.GetColumn()) {
+			out = append(out, h.GetColumn())
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // mirroredProgress is a read's progress as checkpoint_mirror.progress keeps
@@ -85,6 +101,7 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 		streams = append(streams, mirroredStream{
 			Name: st.GetName(), Rows: st.GetRows(), QuarantinedRows: st.GetQuarantinedRows(), CollapsedRows: st.GetCollapsedRows(),
 			Forced: st.GetForced(), Complete: st.GetComplete(), SchemaDigest: st.GetSchemaDigest(),
+			HeldCells: st.GetHeldCells(), HeldColumns: heldColumns(st),
 		})
 	}
 	slices.SortFunc(streams, func(a, b mirroredStream) int { return strings.Compare(a.Name, b.Name) })
@@ -421,6 +438,7 @@ func (s *Server) ListCheckpoints(ctx context.Context, req *connect.Request[apiv1
 			c.Streams = append(c.Streams, &apiv1.CheckpointStream{
 				Name: st.Name, Rows: st.Rows, QuarantinedRows: st.QuarantinedRows, CollapsedRows: st.CollapsedRows,
 				Forced: st.Forced, Complete: st.Complete, SchemaVersion: versions[st.Name+"\x00"+st.SchemaDigest],
+				HeldCells: st.HeldCells, HeldColumns: st.HeldColumns,
 			})
 		}
 		res.Checkpoints = append(res.Checkpoints, c)

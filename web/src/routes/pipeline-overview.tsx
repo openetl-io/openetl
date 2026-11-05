@@ -41,6 +41,7 @@ type Row = GraphStream & {
   reason?: string;
   warning?: string;
   quarantined?: bigint;
+  held?: string[];
   collapsed?: bigint;
   schema?: number;
   schemaKey?: string;
@@ -92,7 +93,7 @@ export function Overview({
     for (const w of plan.data?.plan?.warnings ?? []) if (w.stream) get(w.stream).warning = w.message;
     for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor });
     for (const s of last?.streams ?? [])
-      Object.assign(get(s.name), { rows: s.rows, quarantined: s.quarantinedRows, collapsed: s.collapsedRows });
+      Object.assign(get(s.name), { rows: s.rows, quarantined: s.quarantinedRows, held: s.heldColumns, collapsed: s.collapsedRows });
     // A transform's output comes first, and is the destination's stream of
     // its name; an input of the same name is left to the schemas tab.
     for (const s of schemas.data?.streamSchemas ?? []) {
@@ -313,6 +314,19 @@ function StreamsTable({
             <span className="text-muted-foreground">0</span>
           ),
         meta: { align: "right", className: "hidden md:table-cell" },
+      },
+      {
+        id: "held",
+        header: "Held",
+        cell: ({ row }) =>
+          row.original.held?.length ? (
+            <span className="text-degraded" title="Columns held at the last sync's latest commit, until they're released or discarded">
+              {row.original.held.join(", ")}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          ),
+        meta: { className: "hidden md:table-cell" },
       },
       {
         id: "collapsed",

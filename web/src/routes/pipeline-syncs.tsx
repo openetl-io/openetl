@@ -13,7 +13,7 @@ import { SyncService, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { errorMessage } from "@/lib/api";
 import { compact, dateOf, duration, errorSummary, full } from "@/lib/format";
 import { lastSegment, pipelineName, shortDigest } from "@/lib/names";
-import { rows, syncStatus } from "@/lib/status";
+import { heldLabel, rows, syncStatus } from "@/lib/status";
 
 const columns: ColumnDef<Sync>[] = [
   {
@@ -41,10 +41,11 @@ const columns: ColumnDef<Sync>[] = [
     header: "Rows",
     cell: ({ row }) => {
       const r = rows(row.original);
+      const notes = [r.quarantined > 0n && `${compact(r.quarantined)} quarantined`, r.held > 0 && heldLabel(r.held)].filter(Boolean);
       return (
         <span className="tabular-nums">
           <span title={full(r.all)}>{compact(r.all)}</span>
-          {r.quarantined > 0n && <span className="text-degraded"> ({compact(r.quarantined)} quarantined)</span>}
+          {notes.length > 0 && <span className="text-degraded"> ({notes.join(", ")})</span>}
         </span>
       );
     },

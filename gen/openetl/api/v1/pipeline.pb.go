@@ -4446,6 +4446,11 @@ type CheckpointStream struct {
 	// Rows the apply didn't insert because a row with the same _openetl_id
 	// was earlier in the epoch or already in the destination.
 	CollapsedRows uint64 `protobuf:"varint,7,opt,name=collapsed_rows,json=collapsedRows,proto3" json:"collapsed_rows,omitempty"`
+	// Cells held in the epoch (ADR-0025).
+	HeldCells uint64 `protobuf:"varint,8,opt,name=held_cells,json=heldCells,proto3" json:"held_cells,omitempty"`
+	// The columns it held at the checkpoint, whole or some of their cells;
+	// discarded ones are left out.
+	HeldColumns   []string `protobuf:"bytes,9,rep,name=held_columns,json=heldColumns,proto3" json:"held_columns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4527,6 +4532,20 @@ func (x *CheckpointStream) GetCollapsedRows() uint64 {
 		return x.CollapsedRows
 	}
 	return 0
+}
+
+func (x *CheckpointStream) GetHeldCells() uint64 {
+	if x != nil {
+		return x.HeldCells
+	}
+	return 0
+}
+
+func (x *CheckpointStream) GetHeldColumns() []string {
+	if x != nil {
+		return x.HeldColumns
+	}
+	return nil
 }
 
 type ListCheckpointsRequest struct {
@@ -5363,7 +5382,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x04sync\x18\x05 \x01(\tR\x04sync\x12;\n" +
 	"\vcommit_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"commitTime\x12:\n" +
-	"\astreams\x18\a \x03(\v2 .openetl.api.v1.CheckpointStreamR\astreams\"\xe7\x01\n" +
+	"\astreams\x18\a \x03(\v2 .openetl.api.v1.CheckpointStreamR\astreams\"\xa9\x02\n" +
 	"\x10CheckpointStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\x04R\x04rows\x12)\n" +
@@ -5371,7 +5390,10 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x06forced\x18\x04 \x01(\bR\x06forced\x12\x1a\n" +
 	"\bcomplete\x18\x05 \x01(\bR\bcomplete\x12%\n" +
 	"\x0eschema_version\x18\x06 \x01(\x05R\rschemaVersion\x12%\n" +
-	"\x0ecollapsed_rows\x18\a \x01(\x04R\rcollapsedRows\"l\n" +
+	"\x0ecollapsed_rows\x18\a \x01(\x04R\rcollapsedRows\x12\x1d\n" +
+	"\n" +
+	"held_cells\x18\b \x01(\x04R\theldCells\x12!\n" +
+	"\fheld_columns\x18\t \x03(\tR\vheldColumns\"l\n" +
 	"\x16ListCheckpointsRequest\x12\x16\n" +
 	"\x06parent\x18\x01 \x01(\tR\x06parent\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12\x1d\n" +

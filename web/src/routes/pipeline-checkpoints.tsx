@@ -23,6 +23,8 @@ function StreamChip({ s }: { s: Checkpoint["streams"][number] }) {
       <span>{s.name}</span>
       <span className="text-muted-foreground tabular-nums">{compact(s.rows)}</span>
       {s.quarantinedRows > 0n && <span className="text-degraded tabular-nums">{compact(s.quarantinedRows)} quarantined</span>}
+      {s.heldCells > 0n && <span className="text-degraded tabular-nums">{compact(s.heldCells)} cells held</span>}
+      {s.heldColumns.length > 0 && <span className="text-degraded">{s.heldColumns.join(", ")} held</span>}
       {s.collapsedRows > 0n && <span className="text-muted-foreground tabular-nums">{compact(s.collapsedRows)} collapsed</span>}
       {s.schemaVersion > 0 && <span className="font-mono text-muted-foreground">v{s.schemaVersion}</span>}
       {s.forced && (

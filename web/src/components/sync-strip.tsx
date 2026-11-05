@@ -3,7 +3,7 @@ import type { Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { absolute, compact, dateOf, duration, relative } from "@/lib/format";
 import { lastSegment } from "@/lib/names";
-import { rows, statusLabel, syncStatus } from "@/lib/status";
+import { heldLabel, rows, statusLabel, syncStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import { statusFill } from "./status";
 
@@ -67,6 +67,7 @@ export function SyncStrip({
                 <span className="opacity-80">{absolute(start)}</span>
                 <span className="opacity-80 tabular">
                   {compact(r.all)} rows{r.quarantined > 0n ? `, ${compact(r.quarantined)} quarantined` : ""}
+                  {r.held > 0 ? `, ${heldLabel(r.held)}` : ""}
                 </span>
               </TooltipContent>
             </Tooltip>

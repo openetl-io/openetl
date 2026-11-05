@@ -353,6 +353,11 @@ type SyncStream struct {
 	// Rows the destination didn't insert because a row with the same
 	// _openetl_id was earlier in the epoch or already there.
 	CollapsedRows uint64 `protobuf:"varint,4,opt,name=collapsed_rows,json=collapsedRows,proto3" json:"collapsed_rows,omitempty"`
+	// Cells held in its committed epochs (ADR-0025).
+	HeldCells uint64 `protobuf:"varint,5,opt,name=held_cells,json=heldCells,proto3" json:"held_cells,omitempty"`
+	// The columns it held at its latest commit, whole or some of their
+	// cells; discarded ones are left out.
+	HeldColumns   []string `protobuf:"bytes,6,rep,name=held_columns,json=heldColumns,proto3" json:"held_columns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -413,6 +418,20 @@ func (x *SyncStream) GetCollapsedRows() uint64 {
 		return x.CollapsedRows
 	}
 	return 0
+}
+
+func (x *SyncStream) GetHeldCells() uint64 {
+	if x != nil {
+		return x.HeldCells
+	}
+	return 0
+}
+
+func (x *SyncStream) GetHeldColumns() []string {
+	if x != nil {
+		return x.HeldColumns
+	}
+	return nil
 }
 
 type ListSyncsRequest struct {
@@ -851,13 +870,16 @@ const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\n" +
 	"_lag_bytesB\x0e\n" +
 	"\f_lag_recordsB\x17\n" +
-	"\x15_retention_left_bytes\"\x86\x01\n" +
+	"\x15_retention_left_bytes\"\xc8\x01\n" +
 	"\n" +
 	"SyncStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\x04R\x04rows\x12)\n" +
 	"\x10quarantined_rows\x18\x03 \x01(\x04R\x0fquarantinedRows\x12%\n" +
-	"\x0ecollapsed_rows\x18\x04 \x01(\x04R\rcollapsedRows\"f\n" +
+	"\x0ecollapsed_rows\x18\x04 \x01(\x04R\rcollapsedRows\x12\x1d\n" +
+	"\n" +
+	"held_cells\x18\x05 \x01(\x04R\theldCells\x12!\n" +
+	"\fheld_columns\x18\x06 \x03(\tR\vheldColumns\"f\n" +
 	"\x10ListSyncsRequest\x12\x16\n" +
 	"\x06parent\x18\x01 \x01(\tR\x06parent\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12\x1d\n" +

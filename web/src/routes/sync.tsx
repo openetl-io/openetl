@@ -17,7 +17,7 @@ import { SyncService, SyncState, type LogEntry } from "@/gen/openetl/api/v1/sync
 import { errorMessage } from "@/lib/api";
 import { clock, compact, dateOf, duration, full } from "@/lib/format";
 import { shortDigest, syncName } from "@/lib/names";
-import { rows, syncStatus } from "@/lib/status";
+import { heldLabel, rows, syncStatus } from "@/lib/status";
 
 const route = getRouteApi("/_app/workspaces/$workspace/pipelines/$pipeline/syncs/$sync");
 
@@ -204,6 +204,7 @@ export function SyncPage() {
                   <span className="tabular-nums">
                     {r && full(r.all)}
                     {r && r.quarantined > 0n && <span className="text-degraded">, {full(r.quarantined)} quarantined</span>}
+                    {r && r.held > 0 && <span className="text-degraded">, {heldLabel(r.held)}</span>}
                   </span>
                 </DescriptionItem>
                 <DescriptionItem label="Version">
@@ -227,6 +228,7 @@ export function SyncPage() {
                   <Badge variant="outline" className="gap-1.5 font-normal">
                     {st.name}
                     <span className="text-muted-foreground tabular-nums">{compact(st.rows)}</span>
+                    {st.heldColumns.length > 0 && <span className="text-degraded">{st.heldColumns.join(", ")} held</span>}
                   </Badge>
                 </li>
               ))}

@@ -2761,6 +2761,16 @@ components:
                     description: |-
                         Rows the apply didn't insert because a row with the same _openetl_id
                          was earlier in the epoch or already in the destination.
+                heldCells:
+                    type: string
+                    description: Cells held in the epoch (ADR-0025).
+                heldColumns:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The columns it held at the checkpoint, whole or some of their cells;
+                         discarded ones are left out.
         ColumnGroup:
             type: object
             properties:
@@ -4696,6 +4706,16 @@ components:
                     description: |-
                         Rows the destination didn't insert because a row with the same
                          _openetl_id was earlier in the epoch or already there.
+                heldCells:
+                    type: string
+                    description: Cells held in its committed epochs (ADR-0025).
+                heldColumns:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The columns it held at its latest commit, whole or some of their
+                         cells; discarded ones are left out.
         TestWebhookRequest:
             type: object
             properties:

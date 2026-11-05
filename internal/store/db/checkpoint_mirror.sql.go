@@ -209,6 +209,9 @@ SELECT c.run_id, (st ->> 'name')::text AS name,
     sum((st ->> 'quarantined_rows')::bigint)::bigint AS quarantined_rows,
     -- Checkpoints mirrored before it was counted have none.
     coalesce(sum((st ->> 'collapsed_rows')::bigint), 0)::bigint AS collapsed_rows,
+    coalesce(sum((st ->> 'held_cells')::bigint), 0)::bigint AS held_cells,
+    -- The columns it held at its latest commit.
+    ((array_agg(st -> 'held_columns' ORDER BY c.epoch DESC, c.generation DESC))[1])::jsonb AS held_columns,
     max(c.commit_time)::timestamptz AS last_commit_time
 FROM checkpoint_mirror c
 CROSS JOIN LATERAL jsonb_array_elements(c.streams) AS st
@@ -231,6 +234,8 @@ type SyncStreamsRow struct {
 	Rows            int64
 	QuarantinedRows int64
 	CollapsedRows   int64
+	HeldCells       int64
+	HeldColumns     []byte
 	LastCommitTime  time.Time
 }
 
@@ -256,6 +261,8 @@ func (q *Queries) SyncStreams(ctx context.Context, arg SyncStreamsParams) ([]Syn
 			&i.Rows,
 			&i.QuarantinedRows,
 			&i.CollapsedRows,
+			&i.HeldCells,
+			&i.HeldColumns,
 			&i.LastCommitTime,
 		); err != nil {
 			return nil, err

@@ -4,8 +4,11 @@ import { PipelineSchema, PipelineStatusSchema } from "@/gen/openetl/api/v1/pipel
 import { SyncSchema, SyncState, SyncStreamSchema } from "@/gen/openetl/api/v1/sync_pb";
 import { pipelineStatus } from "../status";
 
-const sync = (state: SyncState, quarantined = 0n) =>
-  create(SyncSchema, { state, streams: [create(SyncStreamSchema, { name: "a", rows: 10n, quarantinedRows: quarantined })] });
+const sync = (state: SyncState, quarantined = 0n, heldColumns: string[] = [], heldCells = 0n) =>
+  create(SyncSchema, {
+    state,
+    streams: [create(SyncStreamSchema, { name: "a", rows: 10n, quarantinedRows: quarantined, heldColumns, heldCells })],
+  });
 
 describe("pipelineStatus", () => {
   it("follows the last sync, and paused wins", () => {
@@ -16,6 +19,9 @@ describe("pipelineStatus", () => {
     expect(p(sync(SyncState.FAILED))).toBe("failed");
     expect(p(sync(SyncState.SUCCEEDED))).toBe("healthy");
     expect(p(sync(SyncState.SUCCEEDED, 3n))).toBe("degraded");
+    expect(p(sync(SyncState.SUCCEEDED, 0n, ["amount"]))).toBe("degraded");
+    // Cells held and patched in before the sync ended leave nothing held.
+    expect(p(sync(SyncState.SUCCEEDED, 0n, [], 4n))).toBe("healthy");
     expect(p(sync(SyncState.FAILED), true)).toBe("paused");
     expect(p(sync(SyncState.STOPPED))).toBe("stopped");
   });

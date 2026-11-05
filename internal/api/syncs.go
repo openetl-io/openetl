@@ -104,9 +104,16 @@ func (s *Server) syncsOut(ctx context.Context, pipeline string, rows []db.GetSyn
 	byRun := map[string][]*apiv1.SyncStream{}
 	lastCommit := map[string]time.Time{}
 	for _, st := range streams {
-		byRun[st.RunID] = append(byRun[st.RunID], &apiv1.SyncStream{
+		ss := &apiv1.SyncStream{
 			Name: st.Name, Rows: uint64(st.Rows), QuarantinedRows: uint64(st.QuarantinedRows), CollapsedRows: uint64(st.CollapsedRows), //nolint:gosec // sums of counts
-		})
+			HeldCells: uint64(st.HeldCells), //nolint:gosec // as above
+		}
+		if len(st.HeldColumns) > 0 {
+			if err := json.Unmarshal(st.HeldColumns, &ss.HeldColumns); err != nil {
+				return nil, fmt.Errorf("sync %s's held columns: %w", st.RunID, err)
+			}
+		}
+		byRun[st.RunID] = append(byRun[st.RunID], ss)
 		if st.LastCommitTime.After(lastCommit[st.RunID]) {
 			lastCommit[st.RunID] = st.LastCommitTime
 		}
