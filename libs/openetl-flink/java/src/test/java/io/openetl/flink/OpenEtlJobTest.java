@@ -166,11 +166,13 @@ class OpenEtlJobTest {
             JobID id = run(mc, job(fake, 2, 60_000, 0));
             until("2 checkpoints", 60_000, () -> fake.completed.size() >= 2);
             // A checkpoint in flight, which the stop aborts; a runner that's stopping lets it go.
+            // Every sink holds its barrier first, or a reader still short of it passes over it and
+            // its rows go into the stop's.
             fake.failOnAbort = false;
             fake.release = new CountDownLatch(1);
             long held = Collections.max(fake.started) + 1;
             fake.holdFrom = held;
-            until("a held barrier", 60_000, () -> fake.barriers.getOrDefault(held, 0) > 0);
+            until("held barriers", 60_000, () -> fake.barriers.getOrDefault(held, 0) == 4);
             CompletableFuture<String> stop =
                     mc.stopWithSavepoint(id, dir.resolve("savepoints").toUri().toString(), false, SavepointFormatType.CANONICAL);
             until("the abort", 60_000, () -> fake.aborted.contains(held));
