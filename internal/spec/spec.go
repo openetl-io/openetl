@@ -6,6 +6,7 @@ package spec
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -332,10 +333,51 @@ type streamYAML struct {
 	Timestamps string `yaml:"timestamps"`
 	Require    string `yaml:"require"`
 	Collapse   *bool  `yaml:"collapse"`
+	Quarantine string `yaml:"quarantine"`
+	heldYAML   `yaml:",inline"`
+	Groups     [][]string `yaml:"groups"`
 	Columns    map[string]struct {
-		Op   string `yaml:"op"`
-		Type string `yaml:"type"`
+		Op       string `yaml:"op"`
+		Type     string `yaml:"type"`
+		heldYAML `yaml:",inline"`
 	} `yaml:"columns"`
+}
+
+type heldYAML struct {
+	// A node, so held: null isn't read as no value.
+	Held      yaml.Node `yaml:"held"`
+	HeldValue any       `yaml:"heldValue"`
+}
+
+// parseHeld is what a held cell shows: a value given alone means value.
+func parseHeld(field string, y heldYAML) (*apiv1.Held, error) {
+	held := y.Held.Value
+	if y.Held.ShortTag() == "!!null" && y.Held.Kind != 0 {
+		held = "null"
+	}
+	mode, err := enum(apiv1.HeldMode_value, "HELD_MODE_", field+".held", held, apiv1.HeldMode_HELD_MODE_UNSPECIFIED)
+	if err != nil {
+		return nil, err
+	}
+	h := &apiv1.Held{Mode: mode}
+	if y.HeldValue != nil {
+		b, err := json.Marshal(y.HeldValue)
+		if err != nil {
+			return nil, fmt.Errorf("%s.heldValue: %w", field, err)
+		}
+		h.Value = string(b)
+	}
+	switch {
+	case mode == apiv1.HeldMode_HELD_MODE_UNSPECIFIED && h.Value != "":
+		h.Mode = apiv1.HeldMode_HELD_MODE_VALUE
+	case mode == apiv1.HeldMode_HELD_MODE_VALUE && h.Value == "":
+		return nil, fmt.Errorf("%s: held: value needs a heldValue", field)
+	case mode == apiv1.HeldMode_HELD_MODE_NULL && h.Value != "":
+		return nil, fmt.Errorf("%s: held: null takes no heldValue", field)
+	case h.Mode == apiv1.HeldMode_HELD_MODE_UNSPECIFIED:
+		return nil, nil
+	}
+	return h, nil
 }
 
 type deliveryYAML struct {
@@ -430,6 +472,20 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		if st.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", "require", s.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
 		}
+		at := fmt.Sprintf("source.streams[%d]", i)
+		if st.Quarantine, err = enum(apiv1.QuarantineScope_value, "QUARANTINE_SCOPE_", at+".quarantine", s.Quarantine, apiv1.QuarantineScope_QUARANTINE_SCOPE_UNSPECIFIED); err != nil {
+			return nil, err
+		}
+		if st.Held, err = parseHeld(at, s.heldYAML); err != nil {
+			return nil, err
+		}
+		for j, g := range s.Groups {
+			if len(g) < 2 || slices.Contains(g, "") {
+				return nil, fmt.Errorf("%s.groups[%d]: a group has two columns or more", at, j)
+			}
+			st.Groups = append(st.Groups, &apiv1.ColumnGroup{Columns: g})
+		}
+		holds := s.Quarantine != "" || st.Held != nil || len(st.Groups) > 0
 		for name, c := range s.Columns {
 			field := fmt.Sprintf("source.streams[%d].columns.%s", i, name)
 			if c.Op != "" {
@@ -439,13 +495,20 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			if col.Type, err = enum(apiv1.ColumnType_value, "COLUMN_TYPE_", field+".type", c.Type, apiv1.ColumnType_COLUMN_TYPE_UNSPECIFIED); err != nil {
 				return nil, err
 			}
-			if col.Type == apiv1.ColumnType_COLUMN_TYPE_UNSPECIFIED {
-				return nil, fmt.Errorf("%s: needs a type", field)
+			if col.Held, err = parseHeld(field, c.heldYAML); err != nil {
+				return nil, err
+			}
+			holds = holds || col.Held != nil
+			if col.Type == apiv1.ColumnType_COLUMN_TYPE_UNSPECIFIED && col.Held == nil {
+				return nil, fmt.Errorf("%s: needs a type or what its held cells show", field)
 			}
 			if st.Columns == nil {
 				st.Columns = map[string]*apiv1.PipelineColumn{}
 			}
 			st.Columns[name] = col
+		}
+		if holds && (spark || flink) {
+			return nil, fmt.Errorf("%s: a transform's inputs can't be held", at)
 		}
 		p.Source.Streams = append(p.Source.Streams, st)
 	}

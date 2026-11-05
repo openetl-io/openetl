@@ -330,3 +330,33 @@ func TestTransformOutputs(t *testing.T) {
 		t.Errorf("a keyed output of a cdc input is merged: %v", plans)
 	}
 }
+
+func TestHoldProblem(t *testing.T) {
+	takes := destination.Capabilities{Holds: destination.Holds{ByKey: true, ByID: true, Guarded: true}}
+	cell := &apiv1.PipelineStream{Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL}
+	last := &apiv1.PipelineStream{Columns: map[string]*apiv1.PipelineColumn{"c": {Held: &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_LAST}}}}
+	for name, c := range map[string]struct {
+		caps  destination.Capabilities
+		mode  destination.WriteMode
+		keyed bool
+		ps    *apiv1.PipelineStream
+		want  string
+	}{
+		"nothing asked":           {destination.Capabilities{}, destination.Append, false, &apiv1.PipelineStream{}, ""},
+		"cells":                   {takes, destination.Append, true, cell, ""},
+		"unkeyed":                 {takes, destination.Append, false, cell, "only a keyed stream"},
+		"no patches":              {destination.Capabilities{}, destination.Merge, true, cell, "doesn't patch merge streams"},
+		"last without merge":      {takes, destination.Append, true, last, "needs merge"},
+		"last without the caps":   {takes, destination.Merge, true, last, "needs merge"},
+		"last into a keeper":      {destination.Capabilities{Holds: destination.Holds{ByKey: true, Last: true, Guarded: true}}, destination.Merge, true, last, ""},
+		"overwrite isn't patched": {takes, destination.Overwrite, true, cell, "doesn't patch overwrite streams"},
+	} {
+		err := HoldProblem(c.caps, c.mode, c.keyed, "s", c.ps)
+		if (err == nil) != (c.want == "") || err != nil && !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
+		}
+	}
+	if !Holds(takes, destination.Merge, true) || Holds(takes, destination.Merge, false) || Holds(destination.Capabilities{}, destination.Merge, true) {
+		t.Error("Holds")
+	}
+}

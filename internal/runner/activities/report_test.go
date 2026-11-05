@@ -40,7 +40,7 @@ func TestMirroredCheckpoint(t *testing.T) {
 		},
 		Quarantine: []checkpoint.QuarantineFile{{Stream: "users", Rows: 2}, {Stream: "users", Rows: 1}},
 		Forced:     []string{"orders"},
-	}, map[string]uint64{"users": 5}, []source.Progress{{LagBytes: new(uint64(4096)), Lag: new(1500 * time.Millisecond)}})
+	}, map[string]uint64{"users": 5}, nil, []source.Progress{{LagBytes: new(uint64(4096)), Lag: new(1500 * time.Millisecond)}})
 	if req.GetPipelineId() != "p" || req.GetRunId() != "run" || req.GetEpoch() != 7 || req.GetGeneration() != 3 ||
 		req.GetPrevious().GetEpoch() != 6 || req.GetPrevious().GetGeneration() != 2 || !req.GetCreateTime().AsTime().Equal(created) {
 		t.Errorf("request %v", req)
@@ -59,5 +59,42 @@ func TestMirroredCheckpoint(t *testing.T) {
 	if p := req.GetProgress(); len(p) != 1 || p[0].GetStream() != "" || p[0].GetLagBytes() != 4096 || p[0].LagRecords != nil ||
 		p[0].GetLag().AsDuration() != 1500*time.Millisecond || p[0].RetentionLeft != nil {
 		t.Errorf("progress %v", p)
+	}
+}
+
+func TestMirroredHolds(t *testing.T) {
+	since := checkpoint.RecordRef{Generation: 1, Epoch: 2}
+	rec := func(cells uint64, replay bool) *checkpoint.Record {
+		h := &checkpoint.Holds{
+			Columns: []checkpoint.ColumnHold{{Column: "y", Reason: "new", Since: since, Discarded: true}},
+			Cells:   map[string]checkpoint.CellHold{"x": {Cells: cells, Reason: "nan", Since: since}},
+		}
+		if replay {
+			h.Replay = &checkpoint.Replay{Columns: []string{"x", "z"}}
+		}
+		return &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: h}, "t": {}}}
+	}
+	r := &reporter{}
+	if got := r.heldCells(rec(3, false)); got["s"] != 3 || got["t"] != 0 {
+		t.Errorf("held cells %v", got)
+	}
+	if got := r.heldCells(rec(5, true)); got["s"] != 2 {
+		t.Errorf("held cells %v, want the epoch's 2", got)
+	}
+	holds := mirroredHolds(rec(5, true).Streams["s"].Holds)
+	if len(holds) != 3 {
+		t.Fatalf("holds %v", holds)
+	}
+	y, x, z := holds[0], holds[1], holds[2]
+	switch {
+	case y.GetColumn() != "y" || !y.GetWhole() || !y.GetDiscarded() || y.GetSince().GetEpoch() != 2:
+		t.Errorf("y %v", y)
+	case x.GetColumn() != "x" || x.GetWhole() || x.GetCells() != 5 || !x.GetReleasing():
+		t.Errorf("x %v", x)
+	case z.GetColumn() != "z" || !z.GetWhole() || !z.GetReleasing():
+		t.Errorf("z %v: a released column held whole", z)
+	}
+	if mirroredHolds(nil) != nil {
+		t.Error("holds for a stream that holds nothing")
 	}
 }

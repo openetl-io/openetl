@@ -236,3 +236,48 @@ func TestSize(t *testing.T) {
 		}
 	}
 }
+
+func TestParseHolds(t *testing.T) {
+	head := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  destination: {ref: d}\n  source:\n    ref: s\n    streams:\n"
+	doc, err := Parse([]byte(head + `      - name: orders
+        quarantine: cell
+        heldValue: 0
+        groups: [[amount, currency]]
+        columns:
+          note: {held: last}
+          code: {held: last, heldValue: "n/a"}
+          amount: {type: string}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := doc.Pipeline.GetSource().GetStreams()[0]
+	switch {
+	case st.GetQuarantine() != apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL:
+		t.Errorf("quarantine = %v", st.GetQuarantine())
+	case st.GetHeld().GetMode() != apiv1.HeldMode_HELD_MODE_VALUE || st.GetHeld().GetValue() != "0":
+		t.Errorf("held = %v: a value alone means value", st.GetHeld())
+	case len(st.GetGroups()) != 1 || len(st.GetGroups()[0].GetColumns()) != 2:
+		t.Errorf("groups = %v", st.GetGroups())
+	case st.GetColumns()["note"].GetHeld().GetMode() != apiv1.HeldMode_HELD_MODE_LAST || st.GetColumns()["code"].GetHeld().GetValue() != `"n/a"`:
+		t.Errorf("columns = %v", st.GetColumns())
+	case st.GetColumns()["amount"].GetHeld() != nil:
+		t.Error("a column without held got one")
+	}
+
+	for name, streams := range map[string]string{
+		"value without a value": "      - {name: a, held: value}\n",
+		"null with a value":     "      - {name: a, held: null, heldValue: 1}\n",
+		"an unknown mode":       "      - {name: a, held: sometimes}\n",
+		"a one-column group":    "      - {name: a, groups: [[x]]}\n",
+		"an unknown scope":      "      - {name: a, quarantine: table}\n",
+	} {
+		if _, err := Parse([]byte(head + streams)); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+	flink := strings.Replace(head, "  schedule: {every: 1h}\n", "  mode: continuous\n  transform: {flink: {cluster: c, code: {jar: 's3://j/a.jar', sha256: "+strings.Repeat("cd", 32)+"}}}\n", 1)
+	if _, err := Parse([]byte(flink + "      - {name: a, quarantine: cell}\n")); err == nil || !strings.Contains(err.Error(), "transform") {
+		t.Errorf("a transform's input holds: %v", err)
+	}
+}

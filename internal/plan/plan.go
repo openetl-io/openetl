@@ -167,6 +167,50 @@ func SyncProblem(mode destination.WriteMode, stream string, read apiv1.SyncMode)
 	return nil
 }
 
+// Holds reports whether a stream holds columns instead of stopping on a
+// change, and cells if its spec asks (ADR-0025): a keyed stream, not a
+// transform's input, into a destination that patches its write mode.
+func Holds(caps destination.Capabilities, mode destination.WriteMode, keyed bool) bool {
+	return keyed && caps.Holds.Takes(mode)
+}
+
+// AsksHolds reports whether a stream's spec sets how it holds.
+func AsksHolds(ps *apiv1.PipelineStream) bool {
+	if ps.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL || ps.GetHeld() != nil || len(ps.GetGroups()) > 0 {
+		return true
+	}
+	for _, c := range ps.GetColumns() {
+		if c.GetHeld() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// HoldProblem fails a stream whose spec sets how it holds where it can't:
+// unkeyed, into a destination that doesn't patch its write mode, or showing
+// held cells' last values without merge.
+func HoldProblem(caps destination.Capabilities, mode destination.WriteMode, keyed bool, stream string, ps *apiv1.PipelineStream) error {
+	if !AsksHolds(ps) {
+		return nil
+	}
+	if !keyed {
+		return fmt.Errorf("stream %q sets how it holds cells or columns, and only a keyed stream holds them", stream)
+	}
+	if !caps.Holds.Takes(mode) {
+		name := strings.ToLower(strings.TrimPrefix(apiv1.WriteMode(mode).String(), "WRITE_MODE_")) //nolint:gosec // small
+		return fmt.Errorf("stream %q sets how it holds cells or columns, and the destination doesn't patch %s streams", stream, name)
+	}
+	last := ps.GetHeld().GetMode() == apiv1.HeldMode_HELD_MODE_LAST
+	for _, c := range ps.GetColumns() {
+		last = last || c.GetHeld().GetMode() == apiv1.HeldMode_HELD_MODE_LAST
+	}
+	if last && (mode != destination.Merge || !caps.Holds.Last) {
+		return fmt.Errorf("stream %q shows held cells' last values, which needs merge and a destination that keeps them", stream)
+	}
+	return nil
+}
+
 // Level is a spec's delivery level; 0 if it's unset.
 func Level(l apiv1.DeliveryLevel) delivery.Level {
 	for k, v := range levels {
@@ -281,6 +325,9 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		mode := StreamMode(spec, caps, read, len(s.cs.GetPrimaryKey()) > 0)
 		merges = merges || mode == destination.Merge
 		if err := SyncProblem(mode, name, read); err != nil {
+			problems = append(problems, err)
+		}
+		if err := HoldProblem(caps, mode, len(s.cs.GetPrimaryKey()) > 0, name, s.ps); err != nil {
 			problems = append(problems, err)
 		}
 		if err := ReadProblem(spec, name, read); err != nil {

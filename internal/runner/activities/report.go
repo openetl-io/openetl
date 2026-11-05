@@ -3,6 +3,7 @@ package activities
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"time"
 
@@ -36,6 +37,9 @@ type reporter struct {
 	digests  map[string]string // by Arrow schema; owned by run()
 	// What the read reports of its progress; nil if nothing.
 	progress *runner.Progress
+	// Each stream's held cells by column as last reported, for the cells an
+	// epoch held; owned by checkpoint's caller.
+	cells map[string]map[string]uint64
 }
 
 type report struct {
@@ -75,13 +79,36 @@ func (r *reporter) checkpoint(rec *checkpoint.Record, collapsed map[string]uint6
 	if r.progress != nil {
 		progress = r.progress.Latest()
 	}
+	held := r.heldCells(rec)
 	r.enqueue(report{what: "checkpoint mirror", epoch: rec.Epoch, send: func(ctx context.Context) error {
-		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(r.mirrored(rec, collapsed, progress)))
+		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(r.mirrored(rec, collapsed, held, progress)))
 		return err
 	}})
 }
 
-func (r *reporter) mirrored(rec *checkpoint.Record, collapsed map[string]uint64, progress []source.Progress) *dataplanev1.ReportCheckpointRequest {
+// heldCells are the cells each stream held in rec's epoch: what its cell
+// holds grew by since the last record.
+func (r *reporter) heldCells(rec *checkpoint.Record) map[string]uint64 {
+	if r.cells == nil {
+		r.cells = map[string]map[string]uint64{}
+	}
+	out := map[string]uint64{}
+	for name, st := range rec.Streams {
+		now := map[string]uint64{}
+		if st.Holds != nil {
+			for col, c := range st.Holds.Cells {
+				now[col] = c.Cells
+				if c.Cells > r.cells[name][col] {
+					out[name] += c.Cells - r.cells[name][col]
+				}
+			}
+		}
+		r.cells[name] = now
+	}
+	return out
+}
+
+func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]uint64, progress []source.Progress) *dataplanev1.ReportCheckpointRequest {
 	req := &dataplanev1.ReportCheckpointRequest{
 		PipelineId: r.pipeline, RunId: r.runID, Generation: rec.Generation, Epoch: rec.Epoch,
 		CreateTime: timestamppb.New(rec.CreatedAt),
@@ -109,6 +136,7 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed map[string]uint64,
 				cs.QuarantinedRows += q.Rows
 			}
 		}
+		cs.Holds, cs.HeldCells = mirroredHolds(st.Holds), held[name]
 		req.Streams = append(req.Streams, cs)
 	}
 	return req
@@ -160,4 +188,39 @@ func (r *reporter) close(grace time.Duration) {
 	case <-t.C:
 	}
 	r.cancel()
+}
+
+// mirroredHolds are a stream's open holds. A released column held whole
+// stays listed, as releasing, until its values are patched in.
+func mirroredHolds(h *checkpoint.Holds) []*dataplanev1.CheckpointHold {
+	if h == nil {
+		return nil
+	}
+	ref := func(r checkpoint.RecordRef) *dataplanev1.CheckpointRef {
+		return &dataplanev1.CheckpointRef{Generation: r.Generation, Epoch: r.Epoch}
+	}
+	var replay []string
+	if h.Replay != nil {
+		replay = h.Replay.Columns
+	}
+	var out []*dataplanev1.CheckpointHold
+	for _, c := range h.Columns {
+		out = append(out, &dataplanev1.CheckpointHold{
+			Column: c.Column, Whole: true, Reason: c.Reason, Since: ref(c.Since),
+			StartTime: timestamppb.New(c.Started), Discarded: c.Discarded,
+		})
+	}
+	for _, col := range slices.Sorted(maps.Keys(h.Cells)) {
+		c := h.Cells[col]
+		out = append(out, &dataplanev1.CheckpointHold{
+			Column: col, Reason: c.Reason, Since: ref(c.Since), StartTime: timestamppb.New(c.Started),
+			Cells: c.Cells, Releasing: slices.Contains(replay, col),
+		})
+	}
+	for _, col := range replay {
+		if _, ok := h.Cells[col]; !ok {
+			out = append(out, &dataplanev1.CheckpointHold{Column: col, Whole: true, Reason: "released", Releasing: true})
+		}
+	}
+	return out
 }

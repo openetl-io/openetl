@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/plan"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
@@ -33,7 +34,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	if err != nil {
 		return runner.Job{}, err
 	}
-	job := runner.Job{Source: src}
+	job := runner.Job{Source: src, Releases: releases(spec.GetReleases())}
 	dstCfg, err := protojson.Marshal(spec.GetDestination().GetConfig())
 	if err != nil {
 		return job, err
@@ -77,7 +78,12 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		} else {
 			mode = plan.StreamMode(p, caps, read, len(cs.PrimaryKey) > 0)
 		}
-		if err := errors.Join(plan.SyncProblem(mode, cs.Name, read), plan.ReadProblem(p, cs.Name, read)); err != nil {
+		keyed := len(cs.PrimaryKey) > 0
+		var holdProblem error
+		if !transformed {
+			holdProblem = plan.HoldProblem(caps, mode, keyed, cs.Name, ps)
+		}
+		if err := errors.Join(plan.SyncProblem(mode, cs.Name, read), plan.ReadProblem(p, cs.Name, read), holdProblem); err != nil {
 			return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
 		}
 		s := runner.Stream{
@@ -95,6 +101,9 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		}
 		if ps != nil {
 			s.Collapse = ps.Collapse
+		}
+		if !transformed && plan.Holds(caps, mode, keyed) {
+			s.Holds = streamHolds(ps)
 		}
 		for name, c := range ps.GetColumns() {
 			if t := columnTypes[c.GetType()]; t != nil {
@@ -173,4 +182,45 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 var columnTypes = map[apiv1.ColumnType]arrow.DataType{
 	apiv1.ColumnType_COLUMN_TYPE_STRING:  arrow.BinaryTypes.String,
 	apiv1.ColumnType_COLUMN_TYPE_FLOAT64: arrow.PrimitiveTypes.Float64,
+}
+
+// streamHolds is how a stream holds back columns and cells (ADR-0025).
+func streamHolds(ps *apiv1.PipelineStream) *runner.StreamHolds {
+	h := &runner.StreamHolds{
+		Cells: ps.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL,
+		Held:  held(ps.GetHeld()),
+	}
+	for name, c := range ps.GetColumns() {
+		if c.GetHeld() == nil {
+			continue
+		}
+		if h.Columns == nil {
+			h.Columns = map[string]runner.Held{}
+		}
+		h.Columns[name] = held(c.GetHeld())
+	}
+	for _, g := range ps.GetGroups() {
+		h.Groups = append(h.Groups, g.GetColumns())
+	}
+	return h
+}
+
+func held(h *apiv1.Held) runner.Held {
+	switch h.GetMode() {
+	case apiv1.HeldMode_HELD_MODE_VALUE:
+		return runner.Held{Mode: runner.HeldValue, Value: h.GetValue()}
+	case apiv1.HeldMode_HELD_MODE_LAST:
+		return runner.Held{Mode: runner.HeldLast, Value: h.GetValue()}
+	}
+	return runner.Held{}
+}
+
+// releases are the holds the user released or discarded.
+func releases(rs []*dataplanev1.HoldRelease) []runner.Release {
+	out := make([]runner.Release, len(rs))
+	for i, r := range rs {
+		since := checkpoint.RecordRef{Generation: r.GetSince().GetGeneration(), Epoch: r.GetSince().GetEpoch()}
+		out[i] = runner.Release{Stream: r.GetStream(), Column: r.GetColumn(), Since: since, Discard: r.GetDiscard()}
+	}
+	return out
 }

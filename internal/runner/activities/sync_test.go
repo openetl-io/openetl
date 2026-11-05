@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 )
 
@@ -24,9 +25,9 @@ func TestQuarantineURL(t *testing.T) {
 		"gs://b":                                "gs://b/o/p/_quarantine",
 		"azblob://c?account=a":                  "azblob://c/o/p/_quarantine?account=a",
 	} {
-		got, err := quarantineURL(storage, "o", "p")
+		got, err := pipelineURL(storage, "o", "p", checkpoint.QuarantineDir)
 		if err != nil || got != want {
-			t.Errorf("quarantineURL(%q) = %q, %v; want %q", storage, got, err, want)
+			t.Errorf("pipelineURL(%q) = %q, %v; want %q", storage, got, err, want)
 		}
 	}
 }

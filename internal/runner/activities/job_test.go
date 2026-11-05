@@ -1,6 +1,7 @@
 package activities
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -8,7 +9,9 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/runner"
 )
 
 func TestBuildJobTakesTypeSettings(t *testing.T) {
@@ -44,5 +47,33 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 	}
 	if !job.Streams[0].NanosecondTimestamps {
 		t.Error("timestamps aren't in nanoseconds")
+	}
+}
+
+func TestStreamHoldsFromTheSpec(t *testing.T) {
+	h := streamHolds(&apiv1.PipelineStream{
+		Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL,
+		Held:       &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_VALUE, Value: "0"},
+		Groups:     []*apiv1.ColumnGroup{{Columns: []string{"amount", "currency"}}},
+		Columns: map[string]*apiv1.PipelineColumn{
+			"note":  {Held: &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_LAST}},
+			"price": {Type: apiv1.ColumnType_COLUMN_TYPE_STRING},
+		},
+	})
+	want := &runner.StreamHolds{
+		Cells:   true,
+		Held:    runner.Held{Mode: runner.HeldValue, Value: "0"},
+		Columns: map[string]runner.Held{"note": {Mode: runner.HeldLast}},
+		Groups:  [][]string{{"amount", "currency"}},
+	}
+	if !reflect.DeepEqual(h, want) {
+		t.Errorf("holds %+v, want %+v", h, want)
+	}
+	if h := streamHolds(nil); h.Cells || h.Held != (runner.Held{}) {
+		t.Errorf("a stream without a spec holds %+v", h)
+	}
+	r := releases([]*dataplanev1.HoldRelease{{Stream: "s", Column: "c", Since: &dataplanev1.CheckpointRef{Generation: 2, Epoch: 5}, Discard: true}})
+	if len(r) != 1 || r[0] != (runner.Release{Stream: "s", Column: "c", Since: checkpoint.RecordRef{Generation: 2, Epoch: 5}, Discard: true}) {
+		t.Errorf("releases %+v", r)
 	}
 }

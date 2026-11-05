@@ -351,8 +351,12 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	job.Progress = runner.NewProgress(attribute.String("openetl.org", spec.GetOrgId()), attribute.String("openetl.pipeline", spec.GetPipelineId()))
 	job.Log = checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId())
 	if a.Storage != "" {
-		if job.QuarantineURL, err = quarantineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId()); err != nil {
+		if job.QuarantineURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.QuarantineDir); err != nil {
 			return out, errs.Wrap(errs.ConfigInvalid, err, "quarantine location")
+		}
+		// Next to the checkpoints, where the log finds them for a release.
+		if job.HeldURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.HeldDir); err != nil {
+			return out, errs.Wrap(errs.ConfigInvalid, err, "held values' location")
 		}
 	}
 	if job.Destination.Capabilities().Delivery == destination.DeliveryStaged {
@@ -463,8 +467,8 @@ func openStaging(ctx context.Context, storage string, job runner.Job, log *slog.
 
 // quarantineURL is where a pipeline's quarantined records go:
 // {org}/{pipeline}/_quarantine below the checkpoint store.
-func quarantineURL(storage, org, pipeline string) (string, error) {
-	rel := path.Join(org, pipeline, checkpoint.QuarantineDir)
+func pipelineURL(storage, org, pipeline, dir string) (string, error) {
+	rel := path.Join(org, pipeline, dir)
 	if !strings.Contains(storage, "://") {
 		abs, err := filepath.Abs(storage)
 		if err != nil {
