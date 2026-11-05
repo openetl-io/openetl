@@ -130,6 +130,27 @@ func TestAWidenedColumnIsHeldAndReleased(t *testing.T) {
 	if len(holds) != 1 || holds[0].GetColumn() != "v" || !holds[0].GetWhole() {
 		t.Fatalf("holds %v", holds)
 	}
+	c := holds[0].GetCause()
+	if c.GetKind() != apiv1.HoldCause_KIND_REFUSED || c.GetFrom() != "int32" || c.GetTo() != "int64" ||
+		c.GetFromType() != "integer" || c.GetToType() != "bigint" || !strings.Contains(c.GetFix(), `ALTER COLUMN "v" TYPE bigint`) {
+		t.Errorf("cause %v", c)
+	}
+	if r := holds[0].GetReason(); !strings.HasPrefix(r, "v changed from int32 to int64 (integer to bigint in the destination), and the destination refused it: ") {
+		t.Errorf("reason %q", r)
+	}
+
+	// Released before the ALTER, the destination refuses it again: the hold
+	// says so, and the release isn't tried again.
+	releaseHold(t, name, "items", "v")
+	for range 2 {
+		if status, stats := syncNow(t, name); status != "succeeded" {
+			t.Fatalf("a sync after a release the destination refuses %s: %s", status, stats)
+		}
+		holds = listHolds(t, name)
+		if len(holds) != 1 || holds[0].GetRefused() == nil || holds[0].GetPending() || len(holds[0].GetWaysOut()) != 3 {
+			t.Fatalf("holds after a refused release %v", holds)
+		}
+	}
 
 	run(t, "ALTER TABLE "+dst+" ALTER COLUMN v TYPE bigint")
 	releaseHold(t, name, "items", "v")
