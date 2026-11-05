@@ -24,10 +24,10 @@ import (
 
 // Holds (ADR-0025). The holds kind is the warehouse taking holds, as
 // Postgres does, with keyed streams that hold the cells whose values don't
-// fit, or their whole value column after a type change that a view in the
-// destination pins. holdFlow plays the engine's part. A retry may take a
-// release of what HEAD holds, as a run restarted for one does, with the
-// type overridden or the view dropped, or sometimes not, and so does the
+// fit, or their whole value column after a type change that the
+// destination doesn't make. holdFlow plays the engine's part. A retry may
+// take a release of what HEAD holds, as a run restarted for one does, with
+// the type overridden or the column altered, or sometimes not, and so does the
 // next sync, which reads the records added since.
 
 const heldValue = "HELD"
@@ -37,8 +37,9 @@ type holdCfg struct {
 	held  runner.Held
 	// The value column's type changes at this record; 0: never.
 	wideAt int
-	// A view in the destination depends on the value column.
-	view bool
+	// The destination doesn't change the value column's type, as Postgres
+	// doesn't; the user does.
+	fixedType bool
 }
 
 func (h *holdCfg) streamHolds() *runner.StreamHolds {
@@ -66,7 +67,7 @@ func randomHolds(rng *rand.Rand, mode destination.WriteMode, records int) *holdC
 	if rng.IntN(2) == 0 {
 		h.cells = true
 	} else {
-		h.wideAt, h.view = 1+rng.IntN(max(1, records-1)), rng.IntN(4) != 0
+		h.wideAt, h.fixedType = 1+rng.IntN(max(1, records-1)), rng.IntN(4) != 0
 	}
 	return h
 }
@@ -122,18 +123,18 @@ type heldTables struct {
 	created map[string]bool
 	// The value column has the type it changed to.
 	wide map[string]bool
-	// A view depends on the value column, so its type can't change.
-	view     map[string]bool
-	problems []string
-	patched  int
-	refused  int
+	// The value column's type doesn't change unless the user alters it.
+	fixedType map[string]bool
+	problems  []string
+	patched   int
+	refused   int
 }
 
 func newHeldTables(streams []streamCfg) *heldTables {
-	t := &heldTables{created: map[string]bool{}, wide: map[string]bool{}, view: map[string]bool{}}
+	t := &heldTables{created: map[string]bool{}, wide: map[string]bool{}, fixedType: map[string]bool{}}
 	for _, s := range streams {
-		if s.holds != nil && s.holds.view {
-			t.view[s.name] = true
+		if s.holds != nil && s.holds.fixedType {
+			t.fixedType[s.name] = true
 		}
 	}
 	return t
@@ -209,8 +210,8 @@ var (
 )
 
 // ApplySchema creates a table with the value column's type, and changes
-// the type, unless a view depends on the column, which it refuses and
-// reports as fixed.
+// the type, unless the table's types are fixed: then it refuses, and
+// reports the column as fixed.
 func (w *holdingWriter) ApplySchema(ctx context.Context, streams []destination.StreamSchema) (destination.SchemaApplied, error) {
 	var a destination.SchemaApplied
 	err := outcome(w.w.sched.point(ctx, w.attempt, "sink.schema"), func() error {
@@ -223,13 +224,13 @@ func (w *holdingWriter) ApplySchema(ctx context.Context, streams []destination.S
 			switch {
 			case !t.created[s.Name]:
 				t.created[s.Name], t.wide[s.Name] = true, wide
-			case wide && !t.wide[s.Name] && t.view[s.Name]:
-				a.Refused = append(a.Refused, destination.RefusedColumn{Stream: s.Name, Column: "value", Reason: "a view depends on it"})
+			case wide && !t.wide[s.Name] && t.fixedType[s.Name]:
+				a.Refused = append(a.Refused, destination.RefusedColumn{Stream: s.Name, Column: "value", Reason: "its type doesn't change"})
 				t.refused++
 			case wide:
 				t.wide[s.Name] = true
 			}
-			if t.view[s.Name] && !t.wide[s.Name] {
+			if t.fixedType[s.Name] {
 				a.Limits[s.Name] = destination.TableLimits{Fixed: []string{"value"}}
 			}
 		}
@@ -653,8 +654,8 @@ type releaseKey struct {
 }
 
 // release decides, as attempt starts, which of HEAD's holds the user
-// releases: each open hold once, with the type overridden and the view
-// dropped, unless the seed releases without fixing the cause. A cell hold
+// releases: each open hold once, with the type overridden and the column
+// altered, unless the seed releases without fixing the cause. A cell hold
 // is sometimes discarded instead.
 func (w *world) release(attempt int) {
 	rec := w.head()
@@ -690,7 +691,9 @@ func (w *world) release(attempt int) {
 		if !w.cfg.unfixed {
 			w.override = true
 			w.wh.mu.Lock()
-			w.wh.holds.view[s.name] = false
+			if w.wh.holds.fixedType[s.name] && w.wh.holds.created[s.name] {
+				w.wh.holds.wide[s.name] = true
+			}
 			w.wh.mu.Unlock()
 		}
 	}

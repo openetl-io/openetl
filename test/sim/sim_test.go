@@ -138,7 +138,7 @@ func (c config) String() string {
 			fmt.Fprintf(&b, ", collapse=%v", *s.collapse)
 		}
 		if h := s.holds; h != nil {
-			fmt.Fprintf(&b, ", cells=%v, held=%d %s, wideAt=%d, view=%v", h.cells, h.held.Mode, h.held.Value, h.wideAt, h.view)
+			fmt.Fprintf(&b, ", cells=%v, held=%d %s, wideAt=%d, fixedType=%v", h.cells, h.held.Mode, h.held.Value, h.wideAt, h.fixedType)
 		}
 		b.WriteString(") ")
 	}

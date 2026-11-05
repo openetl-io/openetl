@@ -18,6 +18,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
 	"github.com/unsuitable001/openetl/internal/engineclient"
+	"github.com/unsuitable001/openetl/internal/platform/errs"
 	runnerpkg "github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
@@ -202,9 +203,11 @@ func typesRoundTrip(t *testing.T, edit func(*runnerpkg.Job)) roundTrip {
 	return res
 }
 
-// A raw column that widens from int64 to float64 to string, within an epoch
-// and across attempts, widens in Postgres without losing a value.
-func TestWideningReachesPostgres(t *testing.T) {
+// A raw column that widens from int64 to float64 to string stops an unkeyed
+// stream: Postgres doesn't change a column's type, and nothing can hold it.
+// Once the user has altered the column, the sync lands every value, widened
+// within its epoch.
+func TestWideningIntoPostgresWaitsForTheUser(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	name := unique("widen")
@@ -217,8 +220,8 @@ func TestWideningReachesPostgres(t *testing.T) {
 		}
 	})
 	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", name)
-	for _, owner := range []string{"a1", "a2"} {
-		res, err := runnerpkg.RunAttempt(ctx, runnerpkg.Job{
+	attempt := func(owner string) (runnerpkg.Result, error) {
+		return runnerpkg.RunAttempt(ctx, runnerpkg.Job{
 			Owner:       owner,
 			Pipeline:    name,
 			Log:         log,
@@ -231,19 +234,31 @@ func TestWideningReachesPostgres(t *testing.T) {
 				Scope:   destination.ScopePipeline,
 			},
 		})
+	}
+	typ := func(table string) string {
+		got, err := query[string](t, "SELECT format_type(atttypid, atttypmod) || ' ' || (SELECT string_agg(x::text, ',' ORDER BY id) FROM "+
+			table+") FROM pg_attribute WHERE attrelid = $1::regclass AND attname = 'x'", table)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.Committed == 0 {
-			t.Fatalf("%s committed nothing", owner)
-		}
+		return got
 	}
-	got, err := query[string](t, "SELECT format_type(atttypid, atttypmod) || ' ' || (SELECT string_agg(x, ',' ORDER BY id) FROM "+
-		schema(name)+".s) FROM pg_attribute WHERE attrelid = $1::regclass AND attname = 'x'", schema(name)+".s")
-	if err != nil {
-		t.Fatal(err)
+	table := schema(name) + ".s"
+	if res, err := attempt("a1"); err != nil || res.Committed == 0 {
+		t.Fatalf("the first sync: %+v, %v", res, err)
 	}
-	if want := "text 1,2,2.5,a"; got != want {
+	_, err := attempt("a2")
+	if errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "alter it to text") {
+		t.Fatalf("a widening across syncs: %v", err)
+	}
+	if got, want := typ(table), "bigint 1"; got != want {
+		t.Errorf("after the refusal, x is %q, want %q", got, want)
+	}
+	run(t, "ALTER TABLE "+table+" ALTER COLUMN x TYPE text")
+	if res, err := attempt("a3"); err != nil || res.Committed == 0 {
+		t.Fatalf("after altering x: %+v, %v", res, err)
+	}
+	if got, want := typ(table), "text 1,2,2.5,a"; got != want {
 		t.Errorf("x is %q, want %q", got, want)
 	}
 }

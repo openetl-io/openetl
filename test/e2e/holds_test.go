@@ -99,20 +99,17 @@ func heldSetup(t *testing.T, prefix, columns, rows, streamSpec string) (name, sr
 	return name, src, dst
 }
 
-// A column whose type the destination can't change, because a view depends
-// on it, is held instead of failing the sync: the rest of each row lands,
-// and once the view is gone a release widens the column and patches its
-// values in.
-func TestAColumnAViewDependsOnIsHeldAndReleased(t *testing.T) {
+// A column whose type widened upstream is held, since Postgres doesn't
+// change a column's type: the rest of each row lands, and once the user has
+// altered the column a release patches its values in.
+func TestAWidenedColumnIsHeldAndReleased(t *testing.T) {
 	startRunner(t)
 	name, src, dst := heldSetup(t, "heldview", "v int NOT NULL", "(id, v) SELECT i, i FROM generate_series(1, 50) i",
 		`{"name": "items", "sync": "incremental", "cursor": "at"}`)
 	if status, stats := syncNow(t, name); status != "succeeded" {
 		t.Fatalf("first sync %s: %s", status, stats)
 	}
-	view := pgx.Identifier{schema(name) + "_dst", "items_v"}.Sanitize()
-	run(t, "CREATE VIEW "+view+" AS SELECT id, v FROM "+dst,
-		"ALTER TABLE "+src+" ALTER COLUMN v TYPE bigint",
+	run(t, "ALTER TABLE "+src+" ALTER COLUMN v TYPE bigint",
 		"UPDATE "+src+" SET v = 3000000000 + id, at = nextval('"+pgx.Identifier{schema(name), "items_at"}.Sanitize()+"') WHERE id <= 10")
 	if status, stats := syncNow(t, name); status != "succeeded" {
 		t.Fatalf("the sync after the change %s: %s", status, stats)
@@ -133,7 +130,7 @@ func TestAColumnAViewDependsOnIsHeldAndReleased(t *testing.T) {
 		t.Fatalf("holds %v", holds)
 	}
 
-	run(t, "DROP VIEW "+view)
+	run(t, "ALTER TABLE "+dst+" ALTER COLUMN v TYPE bigint")
 	releaseHold(t, name, "items", "v")
 	if status, stats := syncNow(t, name); status != "succeeded" {
 		t.Fatalf("the sync after the release %s: %s", status, stats)
@@ -160,7 +157,8 @@ func TestAColumnAViewDependsOnIsHeldAndReleased(t *testing.T) {
 
 // A value that doesn't fit its type holds its cell when the stream says
 // quarantine: cell, and the rest of its row lands. Once the column's type
-// is overridden to one that takes it, a release patches it in.
+// is overridden to one that takes it, and the user has altered the column
+// to match, a release patches it in.
 func TestAHeldCellIsPatchedInAfterAnOverride(t *testing.T) {
 	startRunner(t)
 	stream := `{"name": "items", "sync": "incremental", "cursor": "at", "quarantine": "cell"}`
@@ -187,6 +185,7 @@ func TestAHeldCellIsPatchedInAfterAnOverride(t *testing.T) {
 			"quarantine": "cell", "columns": {"p": {"type": "string"}}}]},
 		"destination": {"ref": %q, "namespace": %q, "write": "merge"}, "delivery": {"require": "effectively_once"}}}`,
 		name, name, name, in+"_dst"))
+	run(t, "ALTER TABLE "+dst+" ALTER COLUMN p TYPE text")
 	releaseHold(t, name, "items", "p")
 	if status, stats := syncNow(t, name); status != "succeeded" {
 		t.Fatalf("the sync after the release %s: %s", status, stats)
