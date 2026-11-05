@@ -191,6 +191,7 @@ var rules = map[string]rule{
 	dataplanev1connect.DataPlaneServiceReportSchemasProcedure:        runner,
 	dataplanev1connect.DataPlaneServiceReportCheckpointProcedure:     runner,
 	dataplanev1connect.DataPlaneServiceGetConnectorConfigProcedure:   runner,
+	dataplanev1connect.DataPlaneServiceGetFlinkTeardownProcedure:     runner,
 	dataplanev1connect.DataPlaneServiceReportCatalogProcedure:        runner,
 	dataplanev1connect.DataPlaneServiceGetArtifactProcedure:          runner,
 	dataplanev1connect.DataPlaneServiceReportAttemptFailureProcedure: runner,

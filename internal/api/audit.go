@@ -23,6 +23,7 @@ import (
 var readsSecrets = map[string]bool{
 	dataplanev1connect.DataPlaneServiceGetSyncSpecProcedure:        true,
 	dataplanev1connect.DataPlaneServiceGetConnectorConfigProcedure: true,
+	dataplanev1connect.DataPlaneServiceGetFlinkTeardownProcedure:   true,
 }
 
 // audited says whether a call goes into the audit log: every public call

@@ -12,6 +12,7 @@ import (
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/flink"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
@@ -29,6 +30,11 @@ type Ops struct {
 	Versions *connectorhost.Fetcher
 	// Nil: secrets in cloud secret stores can't be read.
 	Secrets *secretstore.Reader
+	// The data plane's object store, as Sync's; empty for none, and then a
+	// deleted pipeline's Flink jobs aren't cancelled.
+	Storage string
+	// How TeardownFlink reaches Flink clusters.
+	Flink flink.Options
 }
 
 // CheckConnector checks a source or destination. A failed check is a result,
@@ -174,6 +180,43 @@ func (a *Ops) teardown(ctx context.Context, in contract.ConnectorOpInput) (contr
 		return res, t.Teardown(ctx, in.PipelineID)
 	}
 	return res, nil
+}
+
+// TeardownFlink cancels a deleted pipeline's Flink jobs on the cluster its
+// last version pinned, and waits until they're gone.
+func (a *Ops) TeardownFlink(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+	return contract.ConnectorOpResult{}, temporalx.ApplicationError(a.teardownFlink(ctx, in))
+}
+
+func (a *Ops) teardownFlink(ctx context.Context, in contract.ConnectorOpInput) error {
+	if a.Storage == "" {
+		return errs.New(errs.ConfigInvalid, "cancelling a deleted pipeline's Flink jobs needs the data plane's object store, and this runner has none")
+	}
+	resp, err := a.API.GetFlinkTeardown(ctx, connect.NewRequest(&dataplanev1.GetFlinkTeardownRequest{OperationId: in.OpID}))
+	if err != nil {
+		code := errs.Transient
+		if c := connect.CodeOf(err); c == connect.CodeNotFound || c == connect.CodeInvalidArgument {
+			code = errs.ConfigInvalid
+		}
+		return errs.Wrap(code, err, "fetch the Flink cluster")
+	}
+	if resp.Msg.GetOrgId() != in.OrgID || resp.Msg.GetPipelineId() != in.PipelineID {
+		return errs.New(errs.ConfigInvalid, "the Flink teardown is another pipeline's")
+	}
+	pc := resp.Msg.GetCluster()
+	read := func(ctx context.Context, cfg *apiv1.ConnectorConfig, ext []*dataplanev1.ExternalSecret) error {
+		return readSecrets(ctx, a.Secrets, cfg, ext)
+	}
+	if err := flink.ResolveSecrets(ctx, pc, read); err != nil {
+		return err
+	}
+	s := flink.Settings{Org: in.OrgID, Pipeline: in.PipelineID, Store: a.Storage, Cluster: pc.GetSpec(), Transform: &apiv1.FlinkTransform{}}
+	c, err := flink.New(ctx, s, a.Flink)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+	return c.CancelAll(ctx)
 }
 
 func (a *Ops) config(ctx context.Context, in contract.ConnectorOpInput) (*dataplanev1.GetConnectorConfigResponse, error) {

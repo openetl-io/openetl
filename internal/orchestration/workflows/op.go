@@ -11,8 +11,9 @@ import (
 )
 
 // ConnectorOp runs Check, Discover or Teardown on a runner of the data
-// plane. A teardown retries until the operation times out, since the
-// pipeline it cleans up after is gone.
+// plane, or cancels a deleted pipeline's Flink jobs. A teardown retries
+// until the operation times out, since the pipeline it cleans up after is
+// gone.
 func (w Workflows) ConnectorOp(ctx workflow.Context, in contract.ConnectorOpInput) (*contract.ConnectorOpResult, error) {
 	opts := workflow.ActivityOptions{
 		TaskQueue:              contract.BatchQueue(in.DataPlane),
@@ -27,6 +28,11 @@ func (w Workflows) ConnectorOp(ctx workflow.Context, in contract.ConnectorOpInpu
 		opts.StartToCloseTimeout, opts.HeartbeatTimeout = 10*time.Minute, time.Minute
 	case contract.OpTeardown:
 		activity = contract.TeardownSource
+		opts.RetryPolicy = &temporal.RetryPolicy{MaximumInterval: time.Minute, NonRetryableErrorTypes: errs.NonRetryable()}
+	case contract.OpTeardownFlink:
+		// The jobs' runner may have died, and its replacement may take a
+		// while; the activity waits for the jobs' deployments to go.
+		activity, opts.ScheduleToStartTimeout, opts.StartToCloseTimeout = contract.TeardownFlink, 5*time.Minute, 10*time.Minute
 		opts.RetryPolicy = &temporal.RetryPolicy{MaximumInterval: time.Minute, NonRetryableErrorTypes: errs.NonRetryable()}
 	}
 	var res contract.ConnectorOpResult

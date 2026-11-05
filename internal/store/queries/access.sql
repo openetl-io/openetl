@@ -87,8 +87,9 @@ SELECT org_id, id, data_plane_id, last_used_time FROM runner_tokens WHERE hash =
 UPDATE runner_tokens SET last_used_time = now() WHERE org_id = @org_id AND id = @id;
 
 -- name: InsertConnectorOp :exec
-INSERT INTO connector_ops (org_id, id, data_plane_id, source_id, destination_id, expire_time)
-VALUES (@org_id, @id, @data_plane_id, sqlc.narg('source_id'), sqlc.narg('destination_id'), @expire_time);
+INSERT INTO connector_ops (org_id, id, data_plane_id, source_id, destination_id, pipeline_id, flink_cluster_id, flink_version, expire_time)
+VALUES (@org_id, @id, @data_plane_id, sqlc.narg('source_id'), sqlc.narg('destination_id'),
+    sqlc.narg('pipeline_id'), sqlc.narg('flink_cluster_id'), sqlc.narg('flink_version'), @expire_time);
 
 -- name: DeleteConnectorOp :exec
 DELETE FROM connector_ops WHERE org_id = @org_id AND id = @id;
@@ -99,6 +100,15 @@ DELETE FROM connector_ops WHERE org_id = @org_id AND expire_time < now();
 -- name: GetConnectorOp :one
 SELECT source_id, destination_id FROM connector_ops
 WHERE org_id = @org_id AND id = @id AND data_plane_id = @data_plane_id AND expire_time > now();
+
+-- A Flink teardown the API sent to the data plane: the deleted pipeline,
+-- and the version of the Flink cluster it pinned.
+-- name: GetFlinkTeardown :one
+SELECT o.pipeline_id, c.workspace_id, c.name, cv.version, cv.spec, cv.secrets
+FROM connector_ops o
+JOIN flink_clusters c ON c.org_id = o.org_id AND c.id = o.flink_cluster_id
+JOIN flink_cluster_versions cv ON cv.org_id = o.org_id AND cv.cluster_id = o.flink_cluster_id AND cv.version = o.flink_version
+WHERE o.org_id = @org_id AND o.id = @id AND o.data_plane_id = @data_plane_id AND o.expire_time > now();
 
 -- Whether the pipeline exists, and whether a version of it runs on the data
 -- plane.

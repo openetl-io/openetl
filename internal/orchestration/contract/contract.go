@@ -29,6 +29,7 @@ const (
 	CheckConnector       = "CheckConnector"
 	DiscoverSource       = "DiscoverSource"
 	TeardownSource       = "TeardownSource"
+	TeardownFlink        = "TeardownFlink"
 	DropMirrorPartitions = "DropMirrorPartitions"
 	AuditPartitions      = "AuditPartitions"
 	ReadLogs             = "ReadLogs"
@@ -65,6 +66,8 @@ const (
 	OpDiscover = "discover"
 	// Removes what a source keeps upstream for a deleted pipeline.
 	OpTeardown = "teardown"
+	// Cancels a deleted pipeline's Flink jobs.
+	OpTeardownFlink = "teardown-flink"
 )
 
 // Search attributes on workflows, for finding them in Temporal. openetld
@@ -326,9 +329,10 @@ type ConnectorOpInput struct {
 	DataPlane   string
 	// The connector's name, such as postgres.
 	Connector string
-	// OpCheck, or OpDiscover or OpTeardown, which only sources have.
+	// OpCheck, or OpDiscover or OpTeardown, which only sources have, or
+	// OpTeardownFlink, on no connector.
 	Op string
-	// The deleted pipeline, for OpTeardown.
+	// The deleted pipeline, for OpTeardown and OpTeardownFlink.
 	PipelineID string
 	// One of them.
 	SourceID      string

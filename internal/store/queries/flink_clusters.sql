@@ -42,7 +42,7 @@ ORDER BY p.name;
 
 -- The pinned versions of a pipeline version's Flink clusters.
 -- name: GetPinnedFlinkClusters :many
-SELECT c.name, cv.version, cv.spec, cv.secrets
+SELECT c.id, c.name, cv.version, cv.spec, cv.secrets
 FROM pipeline_versions v
 CROSS JOIN LATERAL jsonb_each_text(v.flink_clusters) AS k(name, version)
 JOIN pipelines p ON p.org_id = v.org_id AND p.id = v.pipeline_id

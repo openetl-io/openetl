@@ -37,6 +37,10 @@ service DataPlaneService {
   // What a runner is and can run, when it starts and every minute. The plan
   // checks connectors against the runners its data plane reported lately.
   rpc ReportRunner(ReportRunnerRequest) returns (ReportRunnerResponse);
+  // The Flink cluster a deleted pipeline's last version pinned, for the
+  // teardown the API sent to the runner's data plane, which cancels the
+  // pipeline's Flink jobs.
+  rpc GetFlinkTeardown(GetFlinkTeardownRequest) returns (GetFlinkTeardownResponse);
 }
 
 message GetSyncSpecRequest {
@@ -182,6 +186,16 @@ message GetConnectorConfigResponse {
   string connector = 4;
   // As GetSyncSpecResponse's source_secrets.
   repeated ExternalSecret secrets = 5;
+}
+
+message GetFlinkTeardownRequest {
+  string operation_id = 1;
+}
+
+message GetFlinkTeardownResponse {
+  string org_id = 1;
+  string pipeline_id = 2;
+  PinnedFlinkCluster cluster = 3;
 }
 
 message ReportCatalogRequest {

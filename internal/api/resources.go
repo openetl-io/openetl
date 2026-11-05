@@ -167,6 +167,11 @@ func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.
 	if err := s.Schedules.StopStream(ctx, p.ID.String()); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
+	// They go with the pipeline.
+	flinkPins, err := s.Store.GetPinnedFlinkClusters(ctx, db.GetPinnedFlinkClustersParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Version: p.Version})
+	if err != nil {
+		return nil, err
+	}
 	err = s.Store.Tx(ctx, func(q *db.Queries) error {
 		n, err := q.DeletePipeline(ctx, db.DeletePipelineParams{OrgID: s.Tenant.Org, ID: p.ID})
 		if err != nil || n == 0 {
@@ -178,6 +183,7 @@ func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.
 		return nil, err
 	}
 	s.teardown(ctx, p)
+	s.teardownFlink(ctx, p, flinkPins)
 	return connect.NewResponse(&apiv1.DeletePipelineResponse{}), nil
 }
 

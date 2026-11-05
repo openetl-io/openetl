@@ -60,12 +60,15 @@ type CheckpointMirror struct {
 }
 
 type ConnectorOp struct {
-	OrgID         uuid.UUID
-	ID            uuid.UUID
-	DataPlaneID   string
-	SourceID      *uuid.UUID
-	DestinationID *uuid.UUID
-	ExpireTime    time.Time
+	OrgID          uuid.UUID
+	ID             uuid.UUID
+	DataPlaneID    string
+	SourceID       *uuid.UUID
+	DestinationID  *uuid.UUID
+	ExpireTime     time.Time
+	PipelineID     *uuid.UUID
+	FlinkClusterID *uuid.UUID
+	FlinkVersion   *string
 }
 
 type ConnectorRole struct {

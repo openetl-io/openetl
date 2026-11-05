@@ -35,6 +35,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/connectorhost/external"
 	"github.com/unsuitable001/openetl/internal/engineclient"
+	"github.com/unsuitable001/openetl/internal/flink"
 	"github.com/unsuitable001/openetl/internal/netguard"
 	cpactivities "github.com/unsuitable001/openetl/internal/orchestration/activities"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
@@ -428,10 +429,14 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		log.Info("serving the bridge to Flink jobs", "listen", cfg.BridgeListen, "advertise", br.Address())
 	}
 	w.RegisterActivityWithOptions(sparkSteps.RunSpark, activity.RegisterOptions{Name: contract.RunSpark})
-	connectorOps := &dpactivities.Ops{API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores}
+	connectorOps := &dpactivities.Ops{
+		API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores, Storage: cfg.Checkpoints,
+		Flink: flink.Options{Logger: log.With("component", "flink"), HTTP: (&netguard.Policy{Allow: allow}).Client()},
+	}
 	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
 	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
 	w.RegisterActivityWithOptions(connectorOps.TeardownSource, activity.RegisterOptions{Name: contract.TeardownSource})
+	w.RegisterActivityWithOptions(connectorOps.TeardownFlink, activity.RegisterOptions{Name: contract.TeardownFlink})
 	// A continuous pipeline's job holds its slot for as long as it runs.
 	stream := worker.New(tc, contract.StreamQueue(cfg.DataPlane), worker.Options{
 		MaxConcurrentActivityExecutionSize: 8,

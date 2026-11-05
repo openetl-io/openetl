@@ -162,11 +162,7 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 // sendOp records the operation, so the data plane's runners may read the
 // connector's config for it.
 func (s *Server) sendOp(ctx context.Context, in *contract.ConnectorOpInput) error {
-	if err := s.Store.DeleteExpiredConnectorOps(ctx, s.Tenant.Org); err != nil {
-		return err
-	}
-	id := uuid.New()
-	op := db.InsertConnectorOpParams{OrgID: s.Tenant.Org, ID: id, DataPlaneID: in.DataPlane, ExpireTime: time.Now().Add(contract.OpTimeout + time.Minute)}
+	var op db.InsertConnectorOpParams
 	var err error
 	if in.SourceID != "" {
 		op.SourceID, err = parseUUID(in.SourceID)
@@ -176,7 +172,18 @@ func (s *Server) sendOp(ctx context.Context, in *contract.ConnectorOpInput) erro
 	if err != nil {
 		return err
 	}
-	in.OpID = id.String()
+	return s.insertOp(ctx, in, op)
+}
+
+// insertOp records op, which names what it's on, as sent to in's data
+// plane, and sets in's OpID.
+func (s *Server) insertOp(ctx context.Context, in *contract.ConnectorOpInput, op db.InsertConnectorOpParams) error {
+	if err := s.Store.DeleteExpiredConnectorOps(ctx, s.Tenant.Org); err != nil {
+		return err
+	}
+	op.OrgID, op.ID, op.DataPlaneID = s.Tenant.Org, uuid.New(), in.DataPlane
+	op.ExpireTime = time.Now().Add(contract.OpTimeout + time.Minute)
+	in.OpID = op.ID.String()
 	return s.Store.InsertConnectorOp(ctx, op)
 }
 

@@ -177,7 +177,8 @@ func (k *kube) killJobManager(t *testing.T, deployment string) {
 // a FlinkDeployment for each generation, with Flink's Kubernetes HA. Every
 // row lands once through a JobManager killed, an upgrade that rescales the
 // job from a savepoint into new code, a runner killed and another drained. A
-// pause stops the job with a savepoint and deletes its deployment.
+// pause stops the job with a savepoint and deletes its deployment, and so
+// does deleting the pipeline once its runner is dead.
 func TestFlinkOnKubernetes(t *testing.T) {
 	k := kubeEnv(t)
 	lib := flinkLib(t)
@@ -286,6 +287,22 @@ func TestFlinkOnKubernetes(t *testing.T) {
 		t.Errorf("runs %q", got)
 	}
 	landed(t, name)
+
+	// A pipeline deleted while its runner is dead has no attempt to stop its
+	// job; the deletion's teardown deletes the deployment, on the next
+	// runner to come up.
+	if _, err := pipelines().ResumePipeline(t.Context(), connect.NewRequest(&apiv1.ResumePipelineRequest{Name: pipelineName})); err != nil {
+		t.Fatal(err)
+	}
+	deployed("the resumed job", 2, "")
+	third.kill(t)
+	if _, err := pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: pipelineName})); err != nil {
+		t.Fatal(err)
+	}
+	flinkRunnerFor(t, store, k.host)
+	deleted := time.Now()
+	eventually(t, 5*time.Minute, "the deleted pipeline's deployment deleted", func() bool { return len(k.deployments(t, id)) == 0 })
+	t.Logf("the deleted pipeline's deployment went in %v", time.Since(deleted).Round(time.Second))
 }
 
 // pySparkOnKube makes dir below the share make kind-up mounts into Spark's

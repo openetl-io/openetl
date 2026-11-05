@@ -54,7 +54,7 @@ func (q *Queries) GetFlinkCluster(ctx context.Context, arg GetFlinkClusterParams
 }
 
 const getPinnedFlinkClusters = `-- name: GetPinnedFlinkClusters :many
-SELECT c.name, cv.version, cv.spec, cv.secrets
+SELECT c.id, c.name, cv.version, cv.spec, cv.secrets
 FROM pipeline_versions v
 CROSS JOIN LATERAL jsonb_each_text(v.flink_clusters) AS k(name, version)
 JOIN pipelines p ON p.org_id = v.org_id AND p.id = v.pipeline_id
@@ -71,6 +71,7 @@ type GetPinnedFlinkClustersParams struct {
 }
 
 type GetPinnedFlinkClustersRow struct {
+	ID      uuid.UUID
 	Name    string
 	Version string
 	Spec    []byte
@@ -88,6 +89,7 @@ func (q *Queries) GetPinnedFlinkClusters(ctx context.Context, arg GetPinnedFlink
 	for rows.Next() {
 		var i GetPinnedFlinkClustersRow
 		if err := rows.Scan(
+			&i.ID,
 			&i.Name,
 			&i.Version,
 			&i.Spec,

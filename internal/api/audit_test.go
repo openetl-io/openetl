@@ -16,7 +16,7 @@ func TestAudited(t *testing.T) {
 		name := proc[strings.LastIndex(proc, "/")+1:]
 		want := !strings.HasPrefix(name, "Get") && !strings.HasPrefix(name, "List") && !strings.HasPrefix(name, "Read")
 		if r.runner {
-			want = name == "GetSyncSpec" || name == "GetConnectorConfig"
+			want = name == "GetSyncSpec" || name == "GetConnectorConfig" || name == "GetFlinkTeardown"
 		}
 		// Sign-in's handlers write their own entries.
 		if r.public() {

@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/internal/store/db"
 )
@@ -238,29 +239,79 @@ func (s *Server) pinnedFlinkClusters(ctx context.Context, wsID, pipeline uuid.UU
 	}
 	out := make(map[string]*dataplanev1.PinnedFlinkCluster, len(rows))
 	for _, r := range rows {
-		p := &dataplanev1.PinnedFlinkCluster{Version: r.Version, Spec: &apiv1.FlinkClusterSpec{}}
-		if err := protojson.Unmarshal(r.Spec, p.Spec); err != nil {
+		if out[r.Name], err = s.pinFlinkCluster(ctx, wsID, r.Name, r.Version, r.Spec, r.Secrets); err != nil {
 			return nil, err
 		}
-		what := "Flink cluster " + r.Name
-		if conf := p.Spec.GetConf(); conf != nil {
-			if p.Secrets, err = s.resolveSecrets(ctx, what, wsID, &apiv1.ConnectorConfig{Config: conf}, r.Secrets); err != nil {
-				return nil, err
-			}
-		}
-		if field, v := flinkTarget(p.Spec); v != nil {
-			target := &apiv1.ConnectorConfig{Config: &structpb.Struct{Fields: map[string]*structpb.Value{field: v}}}
-			if p.TargetSecrets, err = s.resolveSecrets(ctx, what, wsID, target, r.Secrets); err != nil {
-				return nil, err
-			}
-			resolved := target.GetConfig().GetFields()[field]
-			if k := p.Spec.GetKubernetes(); k != nil {
-				k.Kubeconfig = resolved
-			} else {
-				p.Spec.GetRest().Auth = resolved
-			}
-		}
-		out[r.Name] = p
 	}
 	return out, nil
+}
+
+func (s *Server) pinFlinkCluster(ctx context.Context, wsID uuid.UUID, name, version string, spec []byte, secrets []string) (*dataplanev1.PinnedFlinkCluster, error) {
+	p := &dataplanev1.PinnedFlinkCluster{Version: version, Spec: &apiv1.FlinkClusterSpec{}}
+	if err := protojson.Unmarshal(spec, p.Spec); err != nil {
+		return nil, err
+	}
+	what := "Flink cluster " + name
+	var err error
+	if conf := p.Spec.GetConf(); conf != nil {
+		if p.Secrets, err = s.resolveSecrets(ctx, what, wsID, &apiv1.ConnectorConfig{Config: conf}, secrets); err != nil {
+			return nil, err
+		}
+	}
+	if field, v := flinkTarget(p.Spec); v != nil {
+		target := &apiv1.ConnectorConfig{Config: &structpb.Struct{Fields: map[string]*structpb.Value{field: v}}}
+		if p.TargetSecrets, err = s.resolveSecrets(ctx, what, wsID, target, secrets); err != nil {
+			return nil, err
+		}
+		resolved := target.GetConfig().GetFields()[field]
+		if k := p.Spec.GetKubernetes(); k != nil {
+			k.Kubeconfig = resolved
+		} else {
+			p.Spec.GetRest().Auth = resolved
+		}
+	}
+	return p, nil
+}
+
+// teardownFlink starts a teardown of the deleted pipeline p's Flink jobs on
+// the cluster its last version pinned, if any, without waiting for it: a
+// job whose runner died before the deletion is left running, with its
+// JobManager on Kubernetes, since no attempt follows to cancel it.
+func (s *Server) teardownFlink(ctx context.Context, p db.Pipeline, pins []db.GetPinnedFlinkClustersRow) {
+	ctx = context.WithoutCancel(ctx)
+	for _, pin := range pins {
+		in := contract.ConnectorOpInput{
+			Op: contract.OpTeardownFlink, PipelineID: p.ID.String(),
+			OrgID: s.Tenant.Org.String(), WorkspaceID: p.WorkspaceID.String(), DataPlane: p.DataPlaneID,
+		}
+		op := db.InsertConnectorOpParams{PipelineID: &p.ID, FlinkClusterID: &pin.ID, FlinkVersion: &pin.Version}
+		err := s.insertOp(ctx, &in, op)
+		if err == nil {
+			err = s.Ops.Start(ctx, in)
+		}
+		if err != nil {
+			s.log().Error("Flink teardown not started", "pipeline", p.ID, "cluster", pin.Name, "err", err)
+		}
+	}
+}
+
+func (s *Server) GetFlinkTeardown(ctx context.Context, req *connect.Request[dataplanev1.GetFlinkTeardownRequest]) (*connect.Response[dataplanev1.GetFlinkTeardownResponse], error) {
+	audit(ctx).set("operation", req.Msg.GetOperationId())
+	denied := connect.NewError(connect.CodePermissionDenied, fmt.Errorf("the API sent no Flink teardown %q to data plane %q", req.Msg.GetOperationId(), callerOf(ctx).dataPlane))
+	id, err := uuid.Parse(req.Msg.GetOperationId())
+	if err != nil {
+		return nil, denied
+	}
+	r, err := s.Store.GetFlinkTeardown(ctx, db.GetFlinkTeardownParams{OrgID: s.Tenant.Org, ID: id, DataPlaneID: callerOf(ctx).dataPlane})
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && r.PipelineID == nil {
+		return nil, denied
+	}
+	if err != nil {
+		return nil, err
+	}
+	pin, err := s.pinFlinkCluster(ctx, r.WorkspaceID, r.Name, r.Version, r.Spec, r.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&dataplanev1.GetFlinkTeardownResponse{OrgId: s.Tenant.Org.String(), PipelineId: r.PipelineID.String(), Cluster: pin}), nil
 }
