@@ -75,6 +75,19 @@ message GetSyncSpecResponse {
   // Fields of the pipeline's flink_access.keys that name secrets in cloud
   // secret stores.
   repeated ExternalSecret flink_access_secrets = 15;
+  // Holds released or discarded (ADR-0025), for the holds still open in the
+  // pipeline's last mirrored checkpoint. A release applies to the hold it
+  // names only while that hold is open, so sending it again does nothing.
+  repeated HoldRelease releases = 16;
+}
+
+message HoldRelease {
+  string stream = 1;
+  string column = 2;
+  // The epoch the hold started in.
+  CheckpointRef since = 3;
+  // Drop its values instead of patching them in.
+  bool discard = 4;
 }
 
 // PinnedFlinkCluster's secret references that this server holds are
@@ -162,6 +175,25 @@ message CheckpointStream {
   // Rows the apply didn't insert because a row with the same _openetl_id
   // was earlier in the epoch or already in the destination.
   uint64 collapsed_rows = 7;
+  // Its holds open at the checkpoint (ADR-0025).
+  repeated CheckpointHold holds = 8;
+  // Cells held in the epoch.
+  uint64 held_cells = 9;
+}
+
+message CheckpointHold {
+  string column = 1;
+  // The column is held whole; otherwise some of its cells are.
+  bool whole = 2;
+  string reason = 3;
+  CheckpointRef since = 4;
+  google.protobuf.Timestamp start_time = 5;
+  // A cell hold's held cells.
+  uint64 cells = 6;
+  // Its values are dropped, and the column stays as the destination has it.
+  bool discarded = 7;
+  // A release is being patched in.
+  bool releasing = 8;
 }
 
 message ReportCheckpointResponse {
