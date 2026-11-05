@@ -45,8 +45,9 @@ func sparkEnv(t *testing.T) (share, submit, lib, tests string) {
 	return share, submit, lib, tests
 }
 
-// codeInS3 puts a file in a new SeaweedFS bucket, and returns its s3:// URI,
-// which runners read with the bucket's endpoint, and its SHA-256.
+// codeInS3 puts a file in a new SeaweedFS bucket, as app with the file's
+// extension, which tells spark-submit a Python file, and returns its s3://
+// URI, which runners read with the bucket's endpoint, and its SHA-256.
 func codeInS3(t *testing.T, path string) (string, string) {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -68,11 +69,12 @@ func codeInS3(t *testing.T, path string) (string, string) {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	if err := st.WriteAll(t.Context(), "jobs/app.jar", b, nil); err != nil {
+	key := "jobs/app" + filepath.Ext(path)
+	if err := st.WriteAll(t.Context(), key, b, nil); err != nil {
 		t.Fatal(err)
 	}
 	h := sha256.Sum256(b)
-	return "s3://" + bucket + "/jobs/app.jar" + endpoint, hex.EncodeToString(h[:])
+	return "s3://" + bucket + "/" + key + endpoint, hex.EncodeToString(h[:])
 }
 
 // A sync runs its Spark step on the compose stack's standalone master after

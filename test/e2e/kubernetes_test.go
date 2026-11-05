@@ -3,11 +3,15 @@
 package e2e
 
 import (
+	"archive/zip"
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -15,6 +19,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sschema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -228,4 +233,135 @@ func TestFlinkOnKubernetes(t *testing.T) {
 		t.Errorf("runs %q", got)
 	}
 	landed(t, name)
+}
+
+// pySparkOnKube makes dir below the share make kind-up mounts into Spark's
+// pods, puts openetl_spark there, and returns a SparkCluster on kind's API
+// server named name, with the conf its PySpark code needs.
+func pySparkOnKube(t *testing.T, k *kube, name string) (dir, submit, cluster, pyFiles string) {
+	t.Helper()
+	share, submit := os.Getenv("OPENETL_SPARK_SHARE"), os.Getenv("OPENETL_E2E_KUBE_SPARK_SUBMIT")
+	if share == "" || submit == "" {
+		t.Skip("set OPENETL_SPARK_SHARE and OPENETL_E2E_KUBE_SPARK_SUBMIT to run Spark on Kubernetes (make e2e-kube does)")
+	}
+	dir = filepath.Join(share, name)
+	// Spark's pods, whose user isn't ours, write here.
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	zipped := filepath.Join(dir, "openetl_spark.zip")
+	zipDir(t, "../../libs/openetl-spark/python", "openetl_spark", zipped)
+	vol := func(pod string) string {
+		p := "spark.kubernetes." + pod + ".volumes.hostPath.share."
+		return fmt.Sprintf(`%q: %q, %q: %q`, p+"mount.path", share, p+"options.path", share)
+	}
+	cluster = fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "SparkCluster", "metadata": {"name": %q},
+		"spec": {"submit": {"master": "k8s://https://openetl-control-plane:6443",
+			"conf": {"spark.kubernetes.namespace": %q, "spark.kubernetes.container.image": "apache/spark:3.5.8-python3",
+				"spark.kubernetes.authenticate.driver.serviceAccountName": "spark", "spark.kubernetes.file.upload.path": %q,
+				"spark.driver.memory": "512m", "spark.executor.memory": "512m", "spark.executor.instances": "1",
+				"spark.kubernetes.driver.request.cores": "0.25", "spark.kubernetes.executor.request.cores": "0.25",
+				"spark.hadoop.fs.permissions.umask-mode": "000", %s, %s}}}}`,
+		name, k.namespace, "file://"+filepath.Join(dir, "uploads"), vol("driver"), vol("executor"))
+	return dir, submit, cluster, "local://" + zipped
+}
+
+// zipDir writes the package below root to out, as Python imports it.
+func zipDir(t *testing.T, root, pkg, out string) {
+	t.Helper()
+	f, err := os.Create(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	w := zip.NewWriter(f)
+	err = filepath.WalkDir(filepath.Join(root, pkg), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(p) != ".py" {
+			return err
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		e, err := w.Create(filepath.ToSlash(rel))
+		if err != nil {
+			return err
+		}
+		_, err = e.Write(b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// PySpark on Spark on Kubernetes: a post-sync step that reads its sync's
+// context, and a transform inside a sync that lands every row once.
+func TestPySparkOnKubernetes(t *testing.T) {
+	k := kubeEnv(t)
+	name := unique("pyspark")
+	dir, submit, cluster, pyFiles := pySparkOnKube(t, k, name)
+	startRunnerVia(t, env.temporal, env.apiURL, "--checkpoints", filepath.Join(dir, "store"), "--spark-submit", submit)
+	ctxCode, ctxDigest := codeInS3(t, "testdata/pyspark/context_check.py")
+	enrichCode, enrichDigest := codeInS3(t, "testdata/pyspark/enrich_check.py")
+
+	out := filepath.Join(dir, "out.json")
+	post := pipelineDocs(name, `{"seed": 9, "count": 25}`, `{}`)
+	post[2] = strings.Replace(post[2], `"delivery": {}`, fmt.Sprintf(`"delivery": {}, "postSync": [{"spark": {"cluster": %q,
+		"code": {"python": %q, "sha256": %q}, "args": [%q], "conf": {"spark.submit.pyFiles": %q}}}]`,
+		name, ctxCode, ctxDigest, "file://"+out, pyFiles), 1)
+	apply(t, append([]string{cluster}, post...)...)
+	status, stats := waitSync(t, name, 6*time.Minute)
+	if status != "succeeded" {
+		t.Fatalf("sync %s: %s %s", status, stats, lastSyncError(t, name))
+	}
+	sync := latestSync(t, name)
+	var got struct {
+		Sync    string
+		Rows    int
+		Counted int
+	}
+	b, err := os.ReadFile(out)
+	if err != nil || json.Unmarshal(b, &got) != nil {
+		t.Fatalf("the application wrote %q, %v", b, err)
+	}
+	want := 0
+	for _, st := range sync.GetStreams() {
+		want += int(st.GetRows())
+	}
+	if syncID := sync.GetName()[strings.LastIndex(sync.GetName(), "/")+1:]; got.Sync != syncID || want < 25 || got.Rows != want || got.Counted != want {
+		t.Errorf("the application read %+v; want sync %s with the %d rows its streams read", got, syncID, want)
+	}
+
+	transformed := name + "-t"
+	tr := pipelineDocs(transformed, `{"seed": 4, "count": 300, "batchSize": 50, "delay": "100ms"}`, `{"commit": {"maxBytes": "8KB"}}`)
+	tr[2] = strings.Replace(tr[2], `"delivery":`, fmt.Sprintf(`"transform": {"spark": {"cluster": %q,
+		"code": {"python": %q, "sha256": %q}, "conf": {"spark.submit.pyFiles": %q}}}, "delivery":`, name, enrichCode, enrichDigest, pyFiles), 1)
+	apply(t, tr...)
+	status, stats = waitSync(t, transformed, 8*time.Minute)
+	if status != "succeeded" {
+		t.Fatalf("sync %s: %s %s", status, stats, lastSyncError(t, transformed))
+	}
+	checkRows(t, schema(transformed), 300, "users", "purchases")
+	users, purchases := pgx.Identifier{schema(transformed), "users"}.Sanitize(), pgx.Identifier{schema(transformed), "purchases"}.Sanitize()
+	v, err := query[string](t, "SELECT count(*) FILTER (WHERE spark_epoch IS NULL OR spark_epoch < 1) || ' ' || count(DISTINCT spark_epoch) FROM (SELECT spark_epoch FROM "+
+		users+" UNION ALL SELECT spark_epoch FROM "+purchases+") r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missing, epochs int
+	if _, err := fmt.Sscan(v, &missing, &epochs); err != nil || missing != 0 || epochs < 2 {
+		t.Errorf("%d rows without spark_epoch, from %d epochs; want none, from more than one", missing, epochs)
+	}
 }

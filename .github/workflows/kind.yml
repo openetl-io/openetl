@@ -1,7 +1,8 @@
 name: kind
 
-# Flink on the Kubernetes operator, in kind: on demand
-# (gh workflow run kind.yml --ref <branch>), and nightly from full.
+# Flink on the Kubernetes operator and PySpark on Spark on Kubernetes, in
+# kind: on demand (gh workflow run kind.yml --ref <branch>), and nightly from
+# full.
 on:
   workflow_dispatch:
   workflow_call:
@@ -64,7 +65,7 @@ jobs:
           cat "$RUNNER_TEMP/deps.log"
           exit "$(cat "$RUNNER_TEMP/deps.status")"
       # Pods reach the host at the kind network's gateway.
-      - name: Flink on the operator, with JobManager and runner kills
+      - name: Flink on the operator, with JobManager and runner kills; PySpark after and inside a sync
         run: |
           host=$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' | tr ' ' '\n' | grep -m1 '\.')
           make e2e-kube CONNECTORS_SRC=openetl-connectors KIND_HOST="$host"
@@ -74,4 +75,5 @@ jobs:
           k() { kubectl --kubeconfig .openetl/kind/kubeconfig "$@"; }
           k -n flink-operator logs deploy/flink-kubernetes-operator --tail 300
           k -n openetl get flinkdeployments,pods -o wide
+          k -n openetl get events --sort-by=.lastTimestamp | tail -50
           for p in $(k -n openetl get pods -o name); do k -n openetl logs "$p" --tail 100; done

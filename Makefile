@@ -69,9 +69,10 @@ deps-down: ## Stop local dependencies
 # never touched.
 KIND_KUBECONFIG ?= $(CURDIR)/.openetl/kind/kubeconfig
 .PHONY: kind-up kind-down
-kind-up: ## Start a kind cluster with the Flink operator, for the e2e tests' Kubernetes targets
-	KIND_KUBECONFIG=$(KIND_KUBECONFIG) sh deploy/kind/up.sh
+kind-up: ## Start a kind cluster with the Flink operator and Spark's service account, for the e2e tests' Kubernetes targets
+	KIND_KUBECONFIG=$(KIND_KUBECONFIG) OPENETL_SPARK_SHARE=$(OPENETL_SPARK_SHARE) sh deploy/kind/up.sh
 kind-down: ## Delete the kind cluster
+	docker rm -f openetl-kind-spark-submit
 	kind delete cluster --name openetl --kubeconfig $(KIND_KUBECONFIG)
 
 # The official connectors, built from a checkout of openetl-connectors
@@ -169,11 +170,12 @@ e2e: connectors ## Full-stack scenarios against the compose deps
 # The Kubernetes targets' tests, on make kind-up's cluster and the compose
 # Postgres, Temporal and S3. KIND_HOST is how pods reach this host.
 .PHONY: e2e-kube
-e2e-kube: connectors ## Flink on the Kubernetes operator, in kind
+e2e-kube: connectors ## Flink on the Kubernetes operator and PySpark on Spark on Kubernetes, in kind
 	cargo build -p openetl-engine
 	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
 	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
 	OPENETL_E2E_KUBECONFIG=$(KIND_KUBECONFIG) OPENETL_E2E_KUBE_HOST=$(KIND_HOST) \
+	OPENETL_SPARK_SHARE=$(OPENETL_SPARK_SHARE) OPENETL_E2E_KUBE_SPARK_SUBMIT=$(CURDIR)/deploy/kind/spark-submit \
 	go test -tags e2e -count=1 -timeout 40m -run 'OnKubernetes' -v ./test/e2e
 
 # The chaos suite needs the compose Postgres, Temporal, S3, Kafka and Iceberg
