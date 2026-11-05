@@ -284,7 +284,7 @@ func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
 		p.Groups = append(p.Groups, &enginev1.ColumnGroup{Columns: g})
 	}
 	for _, c := range h.Holding {
-		p.Holding = append(p.Holding, &enginev1.ColumnHold{Column: c.Column, Delivered: c.Delivered, Reason: c.Reason})
+		p.Holding = append(p.Holding, columnHold(c))
 		if c.Discarded {
 			p.Discarded = append(p.Discarded, c.Column)
 		}
@@ -296,10 +296,40 @@ func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
 			Columns: r.Columns,
 		}
 		for _, c := range r.Versioned {
-			p.Replay.Versioned = append(p.Replay.Versioned, &enginev1.ColumnHold{Column: c.Column, Delivered: c.Delivered, Reason: c.Reason})
+			p.Replay.Versioned = append(p.Replay.Versioned, columnHold(c))
 		}
 	}
 	return p
+}
+
+var holdKinds = map[checkpoint.HoldKind]enginev1.HoldCause_Kind{
+	checkpoint.HoldPolicy:      enginev1.HoldCause_KIND_POLICY,
+	checkpoint.HoldRefused:     enginev1.HoldCause_KIND_REFUSED,
+	checkpoint.HoldFixed:       enginev1.HoldCause_KIND_FIXED,
+	checkpoint.HoldColumnLimit: enginev1.HoldCause_KIND_COLUMN_LIMIT,
+	checkpoint.HoldGroup:       enginev1.HoldCause_KIND_GROUP,
+}
+
+func columnHold(c checkpoint.ColumnHold) *enginev1.ColumnHold {
+	h := &enginev1.ColumnHold{Column: c.Column, Delivered: c.Delivered, Reason: c.Reason}
+	if c.Cause != nil {
+		h.Cause = &enginev1.HoldCause{Kind: holdKinds[c.Cause.Kind], Policy: c.Cause.Policy, With: c.Cause.With}
+	}
+	return h
+}
+
+// holdCause is the engine's cause; the destination's refusal isn't in it.
+func holdCause(c *enginev1.HoldCause) *checkpoint.HoldCause {
+	if c == nil {
+		return nil
+	}
+	out := &checkpoint.HoldCause{Policy: c.GetPolicy(), With: c.GetWith(), Source: c.GetSource(), From: c.GetFrom(), To: c.GetTo()}
+	for k, v := range holdKinds {
+		if v == c.GetKind() {
+			out.Kind = k
+		}
+	}
+	return out
 }
 
 func readyHolds(m map[string]*enginev1.StreamHolds) map[string]*runner.ReadyHolds {
@@ -310,7 +340,9 @@ func readyHolds(m map[string]*enginev1.StreamHolds) map[string]*runner.ReadyHold
 	for name, h := range m {
 		rh := &runner.ReadyHolds{}
 		for _, c := range h.GetHolding() {
-			rh.Holding = append(rh.Holding, checkpoint.ColumnHold{Column: c.GetColumn(), Delivered: c.GetDelivered(), Reason: c.GetReason()})
+			rh.Holding = append(rh.Holding, checkpoint.ColumnHold{
+				Column: c.GetColumn(), Delivered: c.GetDelivered(), Reason: c.GetReason(), Cause: holdCause(c.GetCause()),
+			})
 		}
 		for col, c := range h.GetCells() {
 			if rh.Cells == nil {

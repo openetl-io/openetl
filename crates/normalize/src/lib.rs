@@ -36,6 +36,37 @@ pub const JSON_EXTENSION: &str = "arrow.json";
 /// The canonical extension name of `uuid` columns, stored as 16 bytes.
 pub const UUID_EXTENSION: &str = "arrow.uuid";
 
+/// The field's logical type, as users see it: int64, string, decimal(10, 2),
+/// timestamp_tz.
+pub fn logical_type(f: &Field) -> String {
+    match f.metadata().get(EXTENSION_NAME_KEY).map(String::as_str) {
+        Some(JSON_EXTENSION) => return "json".into(),
+        Some(UUID_EXTENSION) => return "uuid".into(),
+        _ => {}
+    }
+    match f.data_type() {
+        DataType::Boolean => "boolean".into(),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "string".into(),
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => "binary".into(),
+        DataType::Decimal32(p, s)
+        | DataType::Decimal64(p, s)
+        | DataType::Decimal128(p, s)
+        | DataType::Decimal256(p, s) => format!("decimal({p}, {s})"),
+        DataType::Timestamp(_, Some(_)) => "timestamp_tz".into(),
+        DataType::Timestamp(_, None) => "timestamp".into(),
+        DataType::Date32 | DataType::Date64 => "date".into(),
+        DataType::Time32(_) | DataType::Time64(_) => "time".into(),
+        DataType::Interval(_) => "interval".into(),
+        DataType::List(f) | DataType::LargeList(f) | DataType::FixedSizeList(f, _) => {
+            format!("list<{}>", logical_type(f))
+        }
+        t => t.to_string().to_lowercase(),
+    }
+}
+
 /// How values map to logical types where a pipeline has a choice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TypeOptions {
@@ -509,6 +540,28 @@ mod tests {
 
     fn push(n: &mut Normalizer, rows: &[&str]) -> Normalized {
         n.push(rows.iter().map(|r| r.as_bytes())).unwrap()
+    }
+
+    #[test]
+    fn logical_types() {
+        let utc = DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()));
+        let json = Kind::Json.field("j");
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        let cases = [
+            (Field::new("a", DataType::Int64, true), "int64"),
+            (Field::new("a", DataType::Utf8, true), "string"),
+            (
+                Field::new("a", DataType::Decimal128(10, 2), true),
+                "decimal(10, 2)",
+            ),
+            (Field::new("a", utc, true), "timestamp_tz"),
+            (Field::new("a", DataType::Date32, true), "date"),
+            (Field::new("a", DataType::List(item), true), "list<int32>"),
+            (json, "json"),
+        ];
+        for (f, want) in cases {
+            assert_eq!(logical_type(&f), want, "{f:?}");
+        }
     }
 
     fn types(n: &Normalizer) -> Vec<(String, DataType)> {

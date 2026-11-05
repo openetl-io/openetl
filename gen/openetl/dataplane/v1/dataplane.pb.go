@@ -255,9 +255,11 @@ func (x *GetSyncSpecResponse) GetReleases() []*HoldRelease {
 }
 
 type HoldRelease struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Stream string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
-	Column string                 `protobuf:"bytes,2,opt,name=column,proto3" json:"column,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// A release that didn't clear its hold is recorded on the hold by this.
+	Id     string `protobuf:"bytes,6,opt,name=id,proto3" json:"id,omitempty"`
+	Stream string `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
+	Column string `protobuf:"bytes,2,opt,name=column,proto3" json:"column,omitempty"`
 	// The epoch the hold started in.
 	Since *CheckpointRef `protobuf:"bytes,3,opt,name=since,proto3" json:"since,omitempty"`
 	// Drop its values instead of patching them in.
@@ -297,6 +299,13 @@ func (x *HoldRelease) ProtoReflect() protoreflect.Message {
 // Deprecated: Use HoldRelease.ProtoReflect.Descriptor instead.
 func (*HoldRelease) Descriptor() ([]byte, []int) {
 	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *HoldRelease) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
 }
 
 func (x *HoldRelease) GetStream() string {
@@ -954,9 +963,14 @@ type CheckpointHold struct {
 	// Its values are dropped, and the column stays as the destination has it.
 	Discarded bool `protobuf:"varint,7,opt,name=discarded,proto3" json:"discarded,omitempty"`
 	// A release is being patched in.
-	Releasing     bool `protobuf:"varint,8,opt,name=releasing,proto3" json:"releasing,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Releasing bool `protobuf:"varint,8,opt,name=releasing,proto3" json:"releasing,omitempty"`
+	// Why the column is held whole; cell holds have only their reason.
+	Cause *v1.HoldCause `protobuf:"bytes,9,opt,name=cause,proto3" json:"cause,omitempty"`
+	// A release that didn't clear the hold, by its HoldRelease.id.
+	RefusedRelease string          `protobuf:"bytes,10,opt,name=refused_release,json=refusedRelease,proto3" json:"refused_release,omitempty"`
+	Refused        *v1.HoldRefusal `protobuf:"bytes,11,opt,name=refused,proto3" json:"refused,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CheckpointHold) Reset() {
@@ -1043,6 +1057,27 @@ func (x *CheckpointHold) GetReleasing() bool {
 		return x.Releasing
 	}
 	return false
+}
+
+func (x *CheckpointHold) GetCause() *v1.HoldCause {
+	if x != nil {
+		return x.Cause
+	}
+	return nil
+}
+
+func (x *CheckpointHold) GetRefusedRelease() string {
+	if x != nil {
+		return x.RefusedRelease
+	}
+	return ""
+}
+
+func (x *CheckpointHold) GetRefused() *v1.HoldRefusal {
+	if x != nil {
+		return x.Refused
+	}
+	return nil
 }
 
 type ReportCheckpointResponse struct {
@@ -1861,8 +1896,9 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedSparkClusterR\x05value:\x028\x01\x1aj\n" +
 	"\x12FlinkClustersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12>\n" +
-	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedFlinkClusterR\x05value:\x028\x01\"\xb3\x01\n" +
-	"\vHoldRelease\x12\x16\n" +
+	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedFlinkClusterR\x05value:\x028\x01\"\xc3\x01\n" +
+	"\vHoldRelease\x12\x0e\n" +
+	"\x02id\x18\x06 \x01(\tR\x02id\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
 	"\x06column\x18\x02 \x01(\tR\x06column\x129\n" +
 	"\x05since\x18\x03 \x01(\v2#.openetl.dataplane.v1.CheckpointRefR\x05since\x12\x18\n" +
@@ -1928,7 +1964,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x0ecollapsed_rows\x18\a \x01(\x04R\rcollapsedRows\x12:\n" +
 	"\x05holds\x18\b \x03(\v2$.openetl.dataplane.v1.CheckpointHoldR\x05holds\x12\x1d\n" +
 	"\n" +
-	"held_cells\x18\t \x01(\x04R\theldCells\"\x9e\x02\n" +
+	"held_cells\x18\t \x01(\x04R\theldCells\"\xaf\x03\n" +
 	"\x0eCheckpointHold\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12\x14\n" +
 	"\x05whole\x18\x02 \x01(\bR\x05whole\x12\x16\n" +
@@ -1938,7 +1974,11 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"start_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x12\x14\n" +
 	"\x05cells\x18\x06 \x01(\x04R\x05cells\x12\x1c\n" +
 	"\tdiscarded\x18\a \x01(\bR\tdiscarded\x12\x1c\n" +
-	"\treleasing\x18\b \x01(\bR\treleasing\"0\n" +
+	"\treleasing\x18\b \x01(\bR\treleasing\x12/\n" +
+	"\x05cause\x18\t \x01(\v2\x19.openetl.api.v1.HoldCauseR\x05cause\x12'\n" +
+	"\x0frefused_release\x18\n" +
+	" \x01(\tR\x0erefusedRelease\x125\n" +
+	"\arefused\x18\v \x01(\v2\x1b.openetl.api.v1.HoldRefusalR\arefused\"0\n" +
 	"\x18ReportCheckpointResponse\x12\x14\n" +
 	"\x05added\x18\x01 \x01(\bR\x05added\"\x93\x01\n" +
 	"\x19GetConnectorConfigRequest\x12\x1d\n" +
@@ -2049,7 +2089,9 @@ var file_openetl_dataplane_v1_dataplane_proto_goTypes = []any{
 	(*v1.SparkClusterSpec)(nil),          // 32: openetl.api.v1.SparkClusterSpec
 	(*timestamppb.Timestamp)(nil),        // 33: google.protobuf.Timestamp
 	(*v11.Progress)(nil),                 // 34: openetl.connector.v1.Progress
-	(*v1.Catalog)(nil),                   // 35: openetl.api.v1.Catalog
+	(*v1.HoldCause)(nil),                 // 35: openetl.api.v1.HoldCause
+	(*v1.HoldRefusal)(nil),               // 36: openetl.api.v1.HoldRefusal
+	(*v1.Catalog)(nil),                   // 37: openetl.api.v1.Catalog
 }
 var file_openetl_dataplane_v1_dataplane_proto_depIdxs = []int32{
 	29, // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
@@ -2077,36 +2119,38 @@ var file_openetl_dataplane_v1_dataplane_proto_depIdxs = []int32{
 	11, // 22: openetl.dataplane.v1.CheckpointStream.holds:type_name -> openetl.dataplane.v1.CheckpointHold
 	9,  // 23: openetl.dataplane.v1.CheckpointHold.since:type_name -> openetl.dataplane.v1.CheckpointRef
 	33, // 24: openetl.dataplane.v1.CheckpointHold.start_time:type_name -> google.protobuf.Timestamp
-	30, // 25: openetl.dataplane.v1.GetConnectorConfigResponse.config:type_name -> openetl.api.v1.ConnectorConfig
-	5,  // 26: openetl.dataplane.v1.GetConnectorConfigResponse.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
-	3,  // 27: openetl.dataplane.v1.GetFlinkTeardownResponse.cluster:type_name -> openetl.dataplane.v1.PinnedFlinkCluster
-	35, // 28: openetl.dataplane.v1.ReportCatalogRequest.catalog:type_name -> openetl.api.v1.Catalog
-	33, // 29: openetl.dataplane.v1.ReportAttemptFailureRequest.time:type_name -> google.protobuf.Timestamp
-	4,  // 30: openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedSparkCluster
-	3,  // 31: openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedFlinkCluster
-	0,  // 32: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
-	6,  // 33: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
-	8,  // 34: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
-	13, // 35: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:input_type -> openetl.dataplane.v1.GetConnectorConfigRequest
-	17, // 36: openetl.dataplane.v1.DataPlaneService.ReportCatalog:input_type -> openetl.dataplane.v1.ReportCatalogRequest
-	19, // 37: openetl.dataplane.v1.DataPlaneService.GetArtifact:input_type -> openetl.dataplane.v1.GetArtifactRequest
-	21, // 38: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:input_type -> openetl.dataplane.v1.ReportAttemptFailureRequest
-	23, // 39: openetl.dataplane.v1.DataPlaneService.ReportRunner:input_type -> openetl.dataplane.v1.ReportRunnerRequest
-	15, // 40: openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown:input_type -> openetl.dataplane.v1.GetFlinkTeardownRequest
-	1,  // 41: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
-	7,  // 42: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
-	12, // 43: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
-	14, // 44: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:output_type -> openetl.dataplane.v1.GetConnectorConfigResponse
-	18, // 45: openetl.dataplane.v1.DataPlaneService.ReportCatalog:output_type -> openetl.dataplane.v1.ReportCatalogResponse
-	20, // 46: openetl.dataplane.v1.DataPlaneService.GetArtifact:output_type -> openetl.dataplane.v1.GetArtifactResponse
-	22, // 47: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:output_type -> openetl.dataplane.v1.ReportAttemptFailureResponse
-	24, // 48: openetl.dataplane.v1.DataPlaneService.ReportRunner:output_type -> openetl.dataplane.v1.ReportRunnerResponse
-	16, // 49: openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown:output_type -> openetl.dataplane.v1.GetFlinkTeardownResponse
-	41, // [41:50] is the sub-list for method output_type
-	32, // [32:41] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	35, // 25: openetl.dataplane.v1.CheckpointHold.cause:type_name -> openetl.api.v1.HoldCause
+	36, // 26: openetl.dataplane.v1.CheckpointHold.refused:type_name -> openetl.api.v1.HoldRefusal
+	30, // 27: openetl.dataplane.v1.GetConnectorConfigResponse.config:type_name -> openetl.api.v1.ConnectorConfig
+	5,  // 28: openetl.dataplane.v1.GetConnectorConfigResponse.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
+	3,  // 29: openetl.dataplane.v1.GetFlinkTeardownResponse.cluster:type_name -> openetl.dataplane.v1.PinnedFlinkCluster
+	37, // 30: openetl.dataplane.v1.ReportCatalogRequest.catalog:type_name -> openetl.api.v1.Catalog
+	33, // 31: openetl.dataplane.v1.ReportAttemptFailureRequest.time:type_name -> google.protobuf.Timestamp
+	4,  // 32: openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedSparkCluster
+	3,  // 33: openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedFlinkCluster
+	0,  // 34: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
+	6,  // 35: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
+	8,  // 36: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
+	13, // 37: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:input_type -> openetl.dataplane.v1.GetConnectorConfigRequest
+	17, // 38: openetl.dataplane.v1.DataPlaneService.ReportCatalog:input_type -> openetl.dataplane.v1.ReportCatalogRequest
+	19, // 39: openetl.dataplane.v1.DataPlaneService.GetArtifact:input_type -> openetl.dataplane.v1.GetArtifactRequest
+	21, // 40: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:input_type -> openetl.dataplane.v1.ReportAttemptFailureRequest
+	23, // 41: openetl.dataplane.v1.DataPlaneService.ReportRunner:input_type -> openetl.dataplane.v1.ReportRunnerRequest
+	15, // 42: openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown:input_type -> openetl.dataplane.v1.GetFlinkTeardownRequest
+	1,  // 43: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
+	7,  // 44: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
+	12, // 45: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
+	14, // 46: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:output_type -> openetl.dataplane.v1.GetConnectorConfigResponse
+	18, // 47: openetl.dataplane.v1.DataPlaneService.ReportCatalog:output_type -> openetl.dataplane.v1.ReportCatalogResponse
+	20, // 48: openetl.dataplane.v1.DataPlaneService.GetArtifact:output_type -> openetl.dataplane.v1.GetArtifactResponse
+	22, // 49: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:output_type -> openetl.dataplane.v1.ReportAttemptFailureResponse
+	24, // 50: openetl.dataplane.v1.DataPlaneService.ReportRunner:output_type -> openetl.dataplane.v1.ReportRunnerResponse
+	16, // 51: openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown:output_type -> openetl.dataplane.v1.GetFlinkTeardownResponse
+	43, // [43:52] is the sub-list for method output_type
+	34, // [34:43] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_openetl_dataplane_v1_dataplane_proto_init() }

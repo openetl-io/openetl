@@ -3452,6 +3452,7 @@ components:
                     description: The column is held whole; otherwise some of its cells are.
                 reason:
                     type: string
+                    description: What's held and why, as a sentence.
                 sinceGeneration:
                     type: string
                     description: The epoch the hold started in.
@@ -3472,9 +3473,96 @@ components:
                 pending:
                     type: boolean
                     description: Released or discarded, and waiting for the pipeline's next run.
+                cause:
+                    $ref: '#/components/schemas/HoldCause'
+                refused:
+                    allOf:
+                        - $ref: '#/components/schemas/HoldRefusal'
+                    description: |-
+                        Set when the hold's last release didn't clear it: the destination
+                         refused the column again, or released cells still don't fit. The
+                         release isn't tried again until the hold is released again.
+                waysOut:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/HoldWayOut'
+                    description: The ways to clear the hold, the likeliest first.
             description: |-
                 Hold is a column, or some of a column's cells, held back while the rest
                  of each row is delivered.
+        HoldCause:
+            type: object
+            properties:
+                kind:
+                    enum:
+                        - KIND_UNSPECIFIED
+                        - KIND_POLICY
+                        - KIND_REFUSED
+                        - KIND_FIXED
+                        - KIND_COLUMN_LIMIT
+                        - KIND_GROUP
+                        - KIND_VALUE
+                    type: string
+                    format: enum
+                sourceColumn:
+                    type: string
+                    description: The column's name in the source.
+                from:
+                    type: string
+                    description: |-
+                        The change, in logical types. from is empty for a column the
+                         destination doesn't have.
+                to:
+                    type: string
+                policy:
+                    type: string
+                    description: KIND_POLICY's schema policy.
+                with:
+                    type: string
+                    description: KIND_GROUP's column.
+                refusal:
+                    type: string
+                    description: |-
+                        KIND_REFUSED's: what the destination can't do, the change in its type
+                         names, and a statement that makes it take the change, if it gave one.
+                fromType:
+                    type: string
+                toType:
+                    type: string
+                fix:
+                    type: string
+                value:
+                    type: string
+                    description: 'KIND_VALUE''s: why the first held value doesn''t fit.'
+            description: HoldCause is why a column, or its cells, are held.
+        HoldRefusal:
+            type: object
+            properties:
+                reason:
+                    type: string
+        HoldWayOut:
+            type: object
+            properties:
+                action:
+                    enum:
+                        - ACTION_UNSPECIFIED
+                        - ACTION_RELEASE
+                        - ACTION_RELEASE_NEW_VERSION
+                        - ACTION_DISCARD
+                    type: string
+                    format: enum
+                first:
+                    type: string
+                    description: What to do before the action, if anything, as a sentence.
+                statement:
+                    type: string
+                    description: |-
+                        A statement to run on the destination first, as the destination gave
+                         it.
+                effect:
+                    type: string
+                    description: What the action does, as a sentence.
+            description: HoldWayOut is one way to clear a hold.
         Incident:
             type: object
             properties:

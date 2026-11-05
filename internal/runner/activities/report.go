@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
@@ -190,6 +191,24 @@ func (r *reporter) close(grace time.Duration) {
 	r.cancel()
 }
 
+var holdKinds = map[checkpoint.HoldKind]apiv1.HoldCause_Kind{
+	checkpoint.HoldPolicy:      apiv1.HoldCause_KIND_POLICY,
+	checkpoint.HoldRefused:     apiv1.HoldCause_KIND_REFUSED,
+	checkpoint.HoldFixed:       apiv1.HoldCause_KIND_FIXED,
+	checkpoint.HoldColumnLimit: apiv1.HoldCause_KIND_COLUMN_LIMIT,
+	checkpoint.HoldGroup:       apiv1.HoldCause_KIND_GROUP,
+}
+
+func holdCause(c *checkpoint.HoldCause) *apiv1.HoldCause {
+	if c == nil {
+		return nil
+	}
+	return &apiv1.HoldCause{
+		Kind: holdKinds[c.Kind], SourceColumn: c.Source, From: c.From, To: c.To, Policy: c.Policy, With: c.With,
+		Refusal: c.Refusal, FromType: c.FromType, ToType: c.ToType, Fix: c.Fix,
+	}
+}
+
 // mirroredHolds are a stream's open holds. A released column held whole
 // stays listed, as releasing, until its values are patched in.
 func mirroredHolds(h *checkpoint.Holds) []*dataplanev1.CheckpointHold {
@@ -204,18 +223,27 @@ func mirroredHolds(h *checkpoint.Holds) []*dataplanev1.CheckpointHold {
 		replay = h.Replay.Columns
 	}
 	var out []*dataplanev1.CheckpointHold
+	refused := func(ch *dataplanev1.CheckpointHold, r *checkpoint.Refused) {
+		if r != nil {
+			ch.RefusedRelease, ch.Refused = r.Release, &apiv1.HoldRefusal{Reason: r.Reason}
+		}
+	}
 	for _, c := range h.Columns {
-		out = append(out, &dataplanev1.CheckpointHold{
+		ch := &dataplanev1.CheckpointHold{
 			Column: c.Column, Whole: true, Reason: c.Reason, Since: ref(c.Since),
-			StartTime: timestamppb.New(c.Started), Discarded: c.Discarded,
-		})
+			StartTime: timestamppb.New(c.Started), Discarded: c.Discarded, Cause: holdCause(c.Cause),
+		}
+		refused(ch, c.Refused)
+		out = append(out, ch)
 	}
 	for _, col := range slices.Sorted(maps.Keys(h.Cells)) {
 		c := h.Cells[col]
-		out = append(out, &dataplanev1.CheckpointHold{
+		ch := &dataplanev1.CheckpointHold{
 			Column: col, Reason: c.Reason, Since: ref(c.Since), StartTime: timestamppb.New(c.Started),
 			Cells: c.Cells, Releasing: slices.Contains(replay, col),
-		})
+		}
+		refused(ch, c.Refused)
+		out = append(out, ch)
 	}
 	for _, col := range replay {
 		if _, ok := h.Cells[col]; !ok {

@@ -16,7 +16,7 @@ use crate::control::Control;
 use crate::evolve::{Conformed, Evolver, HoldRules, Policy, VERSIONS_KEY};
 use crate::hold::{
     CELL, COLUMN, ColumnHold, FILLS_KEY, HELD_COLUMN, HELD_KEY, HOLD_KIND_KEY, HeldCell,
-    HoldConfig, Show,
+    HoldConfig, Show, Why,
 };
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
@@ -47,6 +47,7 @@ struct Holding {
     dest: String,
     delivered: Option<Field>,
     reason: String,
+    why: Why,
     /// Its values are dropped, not kept.
     discarded: bool,
 }
@@ -228,6 +229,7 @@ impl Shaper {
                             dest: c.column.clone(),
                             delivered: c.delivered.clone(),
                             reason: c.reason.clone(),
+                            why: c.why.clone(),
                             discarded,
                         },
                     );
@@ -264,11 +266,13 @@ impl Shaper {
             return Vec::new();
         };
         h.columns
-            .values()
-            .map(|c| ColumnHold {
+            .iter()
+            .map(|(src, c)| ColumnHold {
                 column: c.dest.clone(),
                 delivered: c.delivered.clone(),
                 reason: c.reason.clone(),
+                why: c.why.clone(),
+                source: src.clone(),
             })
             .collect()
     }
@@ -290,6 +294,7 @@ impl Shaper {
                         dest,
                         delivered: c.delivered,
                         reason: c.reason,
+                        why: c.why,
                         discarded: h.config.discarded.contains(&c.column),
                     },
                 );
@@ -557,7 +562,7 @@ impl Shaper {
 
     /// Records the column holds the evolver started, at the type the
     /// destination had. True if the stream gets `_openetl_held` now.
-    fn start_holds(&mut self, started: &[(String, String)], cells: &[HeldCell]) -> bool {
+    fn start_holds(&mut self, started: &[(String, String, Why)], cells: &[HeldCell]) -> bool {
         let Some(mut h) = self.holds.take() else {
             return false;
         };
@@ -572,14 +577,19 @@ impl Shaper {
                         .collect()
                 })
                 .unwrap_or_default();
-            for (src, why) in started {
+            for (src, reason, why) in started {
                 let dest = self.namer.name(src);
+                let why = match why {
+                    Why::Group(with) => Why::Group(self.namer.name(with)),
+                    why => why.clone(),
+                };
                 h.columns.insert(
                     src.clone(),
                     Holding {
                         delivered: prior.get(&dest).cloned(),
                         dest,
-                        reason: why.clone(),
+                        reason: reason.clone(),
+                        why,
                         discarded: false,
                     },
                 );
@@ -1876,6 +1886,8 @@ mod tests {
             ("y", true)
         );
         assert!(holding[0].reason.contains("block"), "{}", holding[0].reason);
+        assert_eq!(holding[0].why, Why::Policy("block".into()));
+        assert_eq!(holding[0].source, "y");
 
         let h = &n.held[0];
         assert_eq!(h.num_rows(), 2);
@@ -1985,10 +1997,13 @@ mod tests {
             &DataType::Int64
         );
         assert!(
-            s.holding()[0].reason.contains("can't change"),
+            s.holding()[0]
+                .reason
+                .contains("changed from int64 to float64, which the destination can't change"),
             "{:?}",
             s.holding()
         );
+        assert_eq!(s.holding()[0].why, Why::Fixed);
     }
 
     #[test]
@@ -2012,6 +2027,8 @@ mod tests {
             column: "x".into(),
             delivered: Some(Field::new("x", DataType::Int64, true)),
             reason: "fixed".into(),
+            why: Why::Fixed,
+            source: String::new(),
         };
         let released = HashSet::from(["x".to_owned()]);
         let restart = |restored: Option<SchemaRef>| {
@@ -2094,9 +2111,16 @@ mod tests {
                 ("currency", Arc::new(StringArray::from(vec!["USD"]))),
             ]))
             .unwrap();
-        let mut held: Vec<String> = s.holding().into_iter().map(|h| h.column).collect();
-        held.sort();
-        assert_eq!(held, ["amount", "currency"]);
+        let mut held: Vec<(String, Why)> =
+            s.holding().into_iter().map(|h| (h.column, h.why)).collect();
+        held.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            held,
+            [
+                ("amount".into(), Why::Policy("allow_columns".into())),
+                ("currency".into(), Why::Group("amount".into()))
+            ]
+        );
         assert_eq!(
             held_lists(&n.batch),
             [Some(vec!["amount".into(), "currency".into()])]
@@ -2152,6 +2176,8 @@ mod tests {
                 column: "doc".into(),
                 delivered: Some(Field::new("doc", DataType::Utf8, true)),
                 reason: "test".into(),
+                why: Why::Refused,
+                source: String::new(),
             }],
             ..Default::default()
         })

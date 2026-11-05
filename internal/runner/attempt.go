@@ -227,7 +227,7 @@ func RunAttempt(ctx context.Context, job Job) (Result, error) {
 				return res, errs.Wrap(errs.SchemaDrift, err, "runner: refused again after holding it")
 			}
 			if !slices.ContainsFunc(job.Streams, func(s Stream) bool { return s.Name == c.Stream && job.holdsOn(s) }) {
-				return res, errs.Wrap(errs.SchemaDrift, err, "runner: the stream holds nothing")
+				return res, errs.Wrap(errs.SchemaDrift, err, "runner: the stream doesn't hold columns")
 			}
 		}
 		job.refused = append(job.refused, re.Columns...)

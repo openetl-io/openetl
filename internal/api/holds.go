@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -32,22 +33,40 @@ func (s *Server) ListHolds(ctx context.Context, req *connect.Request[apiv1.ListH
 	}
 	out := make([]*apiv1.Hold, len(rows))
 	for i, r := range rows {
-		out[i] = hold(r)
+		if out[i], err = hold(r); err != nil {
+			return nil, err
+		}
 	}
 	return connect.NewResponse(&apiv1.ListHoldsResponse{Holds: out}), nil
 }
 
-func hold(r db.ListHoldsRow) *apiv1.Hold {
+func hold(r db.ListHoldsRow) (*apiv1.Hold, error) {
+	refused := refusedBy(r)
 	h := &apiv1.Hold{
 		Stream: r.Stream, Column: r.ColumnName, Whole: r.Whole, Reason: r.Reason,
 		SinceGeneration: uint64(r.SinceGeneration), SinceEpoch: uint64(r.SinceEpoch), //nolint:gosec // generations and epochs are positive
 		Cells: uint64(r.Cells), Discarded: r.Discarded, Releasing: r.Releasing, //nolint:gosec // counts are positive
-		Pending: r.ReleaseID != nil && !r.Discarded && !r.Releasing,
+		Pending: r.ReleaseID != nil && !r.Discarded && !r.Releasing && !refused,
+	}
+	if refused && !r.Discarded {
+		h.Refused = &apiv1.HoldRefusal{Reason: r.Refusal}
 	}
 	if r.StartTime != nil {
 		h.StartTime = timestamppb.New(*r.StartTime)
 	}
-	return h
+	if len(r.Cause) > 0 {
+		h.Cause = &apiv1.HoldCause{}
+		if err := protojson.Unmarshal(r.Cause, h.Cause); err != nil {
+			return nil, fmt.Errorf("hold on %s.%s: %w", r.Stream, r.ColumnName, err)
+		}
+	}
+	explain(h)
+	return h, nil
+}
+
+// refusedBy reports whether the hold's release is one it refused.
+func refusedBy(r db.ListHoldsRow) bool {
+	return r.ReleaseID != nil && r.RefusedRelease != nil && *r.ReleaseID == *r.RefusedRelease
 }
 
 func (s *Server) ReleaseHold(ctx context.Context, req *connect.Request[apiv1.ReleaseHoldRequest]) (*connect.Response[apiv1.ReleaseHoldResponse], error) {
@@ -94,8 +113,15 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 			return err
 		}
 		found, whole := false, false
-		for _, r := range rows {
+		for i, r := range rows {
 			whole = whole || r.Stream == stream && r.ColumnName == column && r.Whole && !r.Discarded && !r.Releasing
+			if r.Stream == stream && r.ColumnName == column && refusedBy(r) {
+				// A new release replaces the one the hold refused.
+				if err := q.DeleteHoldRelease(ctx, db.DeleteHoldReleaseParams{OrgID: s.Tenant.Org, ID: *r.ReleaseID}); err != nil {
+					return err
+				}
+				rows[i].ReleaseID, rows[i].ReleaseDiscards = nil, nil
+			}
 		}
 		if newVersion && !whole {
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s.%s isn't held whole, so it can't go to a new version", stream, column))
@@ -131,7 +157,9 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 			}
 			r.ReleaseID, r.ReleaseDiscards = &got.ID, &got.Discard
 			if out == nil {
-				out = hold(r)
+				if out, err = hold(r); err != nil {
+					return err
+				}
 			}
 		}
 		switch {
@@ -178,10 +206,19 @@ func (s *Server) recordHolds(ctx context.Context, pipeline uuid.UUID, m *datapla
 					OrgID: s.Tenant.Org, PipelineID: pipeline, Stream: st.GetName(), ColumnName: h.GetColumn(), Whole: h.GetWhole(),
 					Reason: h.GetReason(), SinceGeneration: int64(h.GetSince().GetGeneration()), SinceEpoch: int64(h.GetSince().GetEpoch()), //nolint:gosec // as above
 					Cells: int64(h.GetCells()), Discarded: h.GetDiscarded(), Releasing: h.GetReleasing(), //nolint:gosec // counts fit
+					Refusal: h.GetRefused().GetReason(),
 				}
 				if t := h.GetStartTime(); t.IsValid() {
 					at := t.AsTime()
 					arg.StartTime = &at
+				}
+				if c := h.GetCause(); c != nil {
+					if arg.Cause, err = protojson.Marshal(c); err != nil {
+						return err
+					}
+				}
+				if id, err := uuid.Parse(h.GetRefusedRelease()); err == nil {
+					arg.RefusedRelease = &id
 				}
 				if err := q.InsertHold(ctx, arg); err != nil {
 					return err
@@ -209,6 +246,7 @@ func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Syn
 	return s.Store.Tx(ctx, func(q *db.Queries) error {
 		for _, st := range m.GetStreams() {
 			var held []string
+			var holds []*apiv1.Hold
 			whole, cells := 0, uint64(0)
 			oldest := now
 			for _, h := range st.GetHolds() {
@@ -220,11 +258,16 @@ func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Syn
 				}
 				if h.GetWhole() {
 					whole++
-					held = append(held, fmt.Sprintf("column %s (%s)", h.GetColumn(), h.GetReason()))
 				} else {
 					cells += h.GetCells()
-					held = append(held, fmt.Sprintf("%d cells of %s (%s)", h.GetCells(), h.GetColumn(), h.GetReason()))
 				}
+				ah := &apiv1.Hold{
+					Stream: st.GetName(), Column: h.GetColumn(), Whole: h.GetWhole(), Reason: h.GetReason(), Cells: h.GetCells(),
+					Releasing: h.GetReleasing(), Cause: h.GetCause(), Refused: h.GetRefused(),
+				}
+				explain(ah)
+				holds = append(holds, ah)
+				held = append(held, ah.GetReason())
 			}
 			if len(held) == 0 {
 				if opened[st.GetName()] {
@@ -244,7 +287,8 @@ func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Syn
 			}
 			o := heal.Observation{
 				Pipeline: pipeline, Version: sync.Version, Stream: st.GetName(), Class: heal.Held, Severity: heal.Warning,
-				Message: "The stream holds back " + strings.Join(held, ", ") + ".",
+				Message: "The stream holds back " + strings.Join(parts, " and ") + ": " + strings.Join(held, " "),
+				Holds:   holds,
 				Details: map[string]string{
 					"held": strings.Join(parts, " and "), "columns": strconv.Itoa(whole), "cells": strconv.FormatUint(cells, 10),
 					"oldest": oldest.UTC().Format(time.RFC3339),
@@ -278,7 +322,7 @@ func (s *Server) pendingReleases(ctx context.Context, pipeline uuid.UUID) ([]*da
 	out := make([]*dataplanev1.HoldRelease, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, &dataplanev1.HoldRelease{
-			Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard, NewVersion: r.NewVersion,
+			Id: r.ID.String(), Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard, NewVersion: r.NewVersion,
 			Since: &dataplanev1.CheckpointRef{Generation: uint64(r.SinceGeneration), Epoch: uint64(r.SinceEpoch)}, //nolint:gosec // positive
 		})
 	}

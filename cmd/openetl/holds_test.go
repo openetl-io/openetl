@@ -27,8 +27,15 @@ func (f *fakeHolds) ListHolds(_ context.Context, req *connect.Request[apiv1.List
 	}
 	start := timestamppb.New(time.Now().Add(-90 * time.Minute))
 	return connect.NewResponse(&apiv1.ListHoldsResponse{Holds: []*apiv1.Hold{
-		{Stream: "orders", Column: "amount", Whole: true, Reason: "a view depends on it", SinceGeneration: 3, SinceEpoch: 41, StartTime: start, Pending: true},
-		{Stream: "orders", Column: "note", Cells: 7, Reason: "type: column \"note\" isn't json", SinceGeneration: 3, SinceEpoch: 40, StartTime: start},
+		{
+			Stream: "orders", Column: "amount", Whole: true, Reason: "amount changed from int32 to int64.", SinceGeneration: 3, SinceEpoch: 41, StartTime: start,
+			Refused: &apiv1.HoldRefusal{Reason: "it doesn't change a column's type"},
+			WaysOut: []*apiv1.HoldWayOut{
+				{Action: apiv1.HoldWayOut_ACTION_RELEASE, First: "Run this on the destination.", Statement: "ALTER TABLE orders"},
+				{Action: apiv1.HoldWayOut_ACTION_RELEASE_NEW_VERSION, Effect: "Sends its values to amount__v2."},
+			},
+		},
+		{Stream: "orders", Column: "note", Cells: 7, Reason: "7 values of note don't fit its type.", SinceGeneration: 3, SinceEpoch: 40, StartTime: start, Pending: true},
 	}}), nil
 }
 
@@ -59,10 +66,27 @@ func TestHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.Contains(lines[1], "amount  column  -") || !strings.Contains(lines[1], "3/41") ||
-		!strings.Contains(lines[1], "1h30m") || !strings.Contains(lines[1], "pending") || !strings.Contains(lines[2], "note    cells   7") ||
-		!strings.Contains(lines[2], " held ") || !strings.HasSuffix(lines[2], `type: column "note" isn't json`) {
+	if len(lines) < 3 || !strings.Contains(lines[1], "amount  column  -") || !strings.Contains(lines[1], "3/41") ||
+		!strings.Contains(lines[1], "1h30m") || !strings.HasSuffix(lines[1], "refused") || !strings.Contains(lines[2], "note    cells   7") ||
+		!strings.HasSuffix(lines[2], "pending") {
 		t.Errorf("printed\n%s", out.String())
+	}
+	want := `
+orders.amount
+  amount changed from int32 to int64.
+  Its last release didn't clear it: it doesn't change a column's type. Release it again once that's fixed.
+  To clear it:
+  - Run this on the destination.
+      ALTER TABLE orders
+    then: openetl holds release --workspace sales p orders amount
+  - openetl holds release --new-version --workspace sales p orders amount
+    Sends its values to amount__v2.
+
+orders.note (cells)
+  7 values of note don't fit its type.
+`
+	if !strings.HasSuffix(out.String(), want) {
+		t.Errorf("printed\n%s\nwant it to end\n%s", out.String(), want)
 	}
 
 	for _, args := range [][]string{

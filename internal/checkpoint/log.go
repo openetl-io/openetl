@@ -82,15 +82,59 @@ type ColumnHold struct {
 	Started   time.Time `json:"started,omitzero"`
 	// Its values are dropped, and the column stays as the destination has
 	// it.
-	Discarded bool `json:"discarded,omitempty"`
+	Discarded bool       `json:"discarded,omitempty"`
+	Cause     *HoldCause `json:"cause,omitempty"`
+	Refused   *Refused   `json:"refused,omitempty"`
 }
 
 // CellHold is a column's held cells.
 type CellHold struct {
-	Cells   uint64    `json:"cells"`
+	Cells uint64 `json:"cells"`
+	// The first cell's.
 	Reason  string    `json:"reason"`
 	Since   RecordRef `json:"since"`
 	Started time.Time `json:"started,omitzero"`
+	Refused *Refused  `json:"refused,omitempty"`
+}
+
+// HoldCause is why a column is held whole.
+type HoldCause struct {
+	Kind HoldKind `json:"kind,omitempty"`
+	// HoldPolicy's schema policy.
+	Policy string `json:"policy,omitempty"`
+	// HoldGroup's column.
+	With string `json:"with,omitempty"`
+	// The column's source name.
+	Source string `json:"source,omitempty"`
+	// The change, in logical types. From is empty for a column the
+	// destination doesn't have.
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
+	// From the destination's refusal: what it can't do, the change in its
+	// type names, and a statement that makes it take the change.
+	Refusal  string `json:"refusal,omitempty"`
+	FromType string `json:"from_type,omitempty"`
+	ToType   string `json:"to_type,omitempty"`
+	Fix      string `json:"fix,omitempty"`
+}
+
+type HoldKind string
+
+const (
+	HoldPolicy      HoldKind = "policy"
+	HoldRefused     HoldKind = "refused"
+	HoldFixed       HoldKind = "fixed"
+	HoldColumnLimit HoldKind = "column_limit"
+	HoldGroup       HoldKind = "group"
+)
+
+// Refused is a release that didn't clear its hold: the destination refused
+// the column again, or released cells still don't fit. The hold stays, and
+// the release isn't taken again.
+type Refused struct {
+	// The release's ID.
+	Release string `json:"release"`
+	Reason  string `json:"reason"`
 }
 
 // HeldEpochs are generation Generation's epochs From to To, inclusive.
@@ -115,6 +159,8 @@ type Replay struct {
 	// Released column holds whose values go to a new version of the
 	// column, col__v2; the column keeps its delivered type.
 	Versioned []ColumnHold `json:"versioned,omitempty"`
+	// The IDs of the releases of cell holds, by column.
+	CellReleases map[string]string `json:"cell_releases,omitempty"`
 }
 
 // HeldDir holds a pipeline's held values, next to its checkpoints:

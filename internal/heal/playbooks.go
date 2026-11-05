@@ -3,6 +3,8 @@ package heal
 import (
 	"fmt"
 	"strings"
+
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 )
 
 // pauses reports whether the class's playbook pauses the pipeline: its
@@ -35,9 +37,11 @@ func describe(o Observation, t target) (summary, next string) {
 		return fmt.Sprintf("%s's credentials were refused (%s)", name, o.Code),
 			fix + ", " + resume + ". The incident resolves once a sync succeeds."
 	case SchemaBlocked:
-		return fmt.Sprintf("A schema change in stream %s of %s is blocked by its schema policy", o.Stream, name),
-			"To take the change, apply the pipeline with a schemaPolicy that allows it (allow_columns takes new columns, allow_all " +
-				"also widens types), " + resume + ". The incident resolves once a sync succeeds."
+		return fmt.Sprintf("A schema change in stream %s of %s can't be taken", o.Stream, name),
+			"The error says what changed and what stopped it. If it's the schema policy, apply the pipeline with a schemaPolicy " +
+				"that takes the change (allow_columns takes new columns and widenings, allow_all every change). If the destination " +
+				"refused it, make the destination take it, with the statement the error gives if there is one. Then " +
+				strings.TrimPrefix(resume, "then ") + ". The incident resolves once a sync succeeds."
 	case PositionLost:
 		return fmt.Sprintf("%s's source no longer has the position its read resumes from", name),
 			"The read can't go on from where it was: a replication slot was lost, or the source discarded what the read hadn't " +
@@ -62,14 +66,56 @@ func describe(o Observation, t target) (summary, next string) {
 				"column's type can't hold, such as a new enum value or a date in another format. The incident resolves once " +
 				"the share falls under half the threshold."
 	case Held:
+		next := fmt.Sprintf("The rest of each row is delivered, and the held values are kept (openetl holds %s%s).", ws, t.pipeline)
+		for _, h := range o.Holds {
+			if steps := holdSteps(h, ws, t.pipeline); steps != "" {
+				next += " For " + h.GetColumn() + ": " + steps
+			}
+		}
+		if len(o.Holds) == 0 {
+			next += fmt.Sprintf(" Once the destination can take the change, release each one with openetl holds release %s%s %s COLUMN, "+
+				"which patches the held values in; or drop them with openetl holds discard.", ws, t.pipeline, o.Stream)
+		}
 		return fmt.Sprintf("Stream %s of %s holds back %s", o.Stream, name, o.Details["held"]),
-			fmt.Sprintf("The rest of each row is delivered, and the held values are kept. See them with openetl holds %s%s. Once "+
-				"the destination can take the change (a widened column, a dropped view, a type override), release each one "+
-				"with openetl holds release %s%s %s COLUMN, which patches the held values in; or drop them with openetl holds "+
-				"discard. The incident turns critical after a day, and resolves when the stream holds nothing.", ws, t.pipeline, ws, t.pipeline, o.Stream)
+			next + " The incident turns critical after a day, and resolves when the stream holds nothing."
 	}
 	if o.Code != "" {
 		return fmt.Sprintf("A sync of %s failed (%s)", name, o.Code), fmt.Sprintf("See the sync's log (%s). The incident resolves once a sync succeeds.", logs)
 	}
 	return fmt.Sprintf("A sync of %s failed", name), fmt.Sprintf("See the sync's log (%s). The incident resolves once a sync succeeds.", logs)
+}
+
+// holdSteps are h's ways out, as commands.
+func holdSteps(h *apiv1.Hold, ws, pipeline string) string {
+	var steps []string
+	for _, w := range h.GetWaysOut() {
+		var sub string
+		switch w.GetAction() {
+		case apiv1.HoldWayOut_ACTION_RELEASE:
+			sub = "release"
+		case apiv1.HoldWayOut_ACTION_RELEASE_NEW_VERSION:
+			sub = "release --new-version"
+		case apiv1.HoldWayOut_ACTION_DISCARD:
+			sub = "discard"
+		default:
+			continue
+		}
+		cmd := fmt.Sprintf("openetl holds %s %s%s %s %s", sub, ws, pipeline, h.GetStream(), h.GetColumn())
+		first := w.GetFirst()
+		if w.GetStatement() != "" {
+			first = strings.TrimSuffix(first, ".") + ": " + w.GetStatement() + "."
+		}
+		step := cmd + "."
+		if e := w.GetEffect(); e != "" {
+			step = cmd + ": " + strings.ToLower(e[:1]) + e[1:]
+		}
+		if first != "" {
+			step = first + " Then " + cmd + "."
+		}
+		if len(steps) > 0 {
+			step = "Or " + step
+		}
+		steps = append(steps, step)
+	}
+	return strings.Join(steps, " ")
 }

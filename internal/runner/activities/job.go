@@ -221,7 +221,7 @@ func releases(rs []*dataplanev1.HoldRelease) []runner.Release {
 	out := make([]runner.Release, len(rs))
 	for i, r := range rs {
 		since := checkpoint.RecordRef{Generation: r.GetSince().GetGeneration(), Epoch: r.GetSince().GetEpoch()}
-		out[i] = runner.Release{Stream: r.GetStream(), Column: r.GetColumn(), Since: since, Discard: r.GetDiscard(), NewVersion: r.GetNewVersion()}
+		out[i] = runner.Release{ID: r.GetId(), Stream: r.GetStream(), Column: r.GetColumn(), Since: since, Discard: r.GetDiscard(), NewVersion: r.GetNewVersion()}
 	}
 	return out
 }

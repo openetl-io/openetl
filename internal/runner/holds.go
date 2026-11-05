@@ -55,6 +55,7 @@ type HoldPlan struct {
 // Release is a hold the user released, or discarded. It applies to the hold
 // on Column that started at Since, if it's still open.
 type Release struct {
+	ID             string
 	Stream, Column string
 	Since          checkpoint.RecordRef
 	Discard        bool
@@ -79,9 +80,29 @@ type RefusedColumn struct {
 func (e *RefusedError) Error() string {
 	cols := make([]string, len(e.Columns))
 	for i, c := range e.Columns {
-		cols[i] = fmt.Sprintf("%s.%s (%s)", c.Stream, c.Column, c.Reason)
+		cols[i] = c.describe()
 	}
-	return "runner: the destination refused " + strings.Join(cols, ", ")
+	return strings.Join(cols, "; ")
+}
+
+// describe says what the destination refused, and how to make it take it.
+func (c RefusedColumn) describe() string {
+	s := fmt.Sprintf("stream %s: the destination refused column %s", c.Stream, c.Column)
+	switch {
+	case c.FromType != "" && c.ToType != "":
+		s += fmt.Sprintf(" (%s to %s)", c.FromType, c.ToType)
+	case c.ToType != "":
+		s += fmt.Sprintf(" (a new %s column)", c.ToType)
+	}
+	s += ": " + c.Reason
+	if c.Fix != "" {
+		s += "; to take the change, run this on the destination: " + c.Fix
+	}
+	return s
+}
+
+func (c RefusedColumn) cause() *checkpoint.HoldCause {
+	return &checkpoint.HoldCause{Kind: checkpoint.HoldRefused, Refusal: c.Reason, FromType: c.FromType, ToType: c.ToType, Fix: c.Fix}
 }
 
 // holdsOn reports whether stream s holds in this job.
@@ -117,7 +138,8 @@ func (j *Job) checkHolds() error {
 // startHolds are the holds each holding stream starts the attempt with:
 // restored's, with the job's releases applied and the refused columns
 // held; and the dataflow's plans. A released column the destination
-// refuses again keeps its hold, and isn't patched in.
+// refuses again keeps its hold, isn't patched in, and records the refused
+// release, as do its released cells.
 func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limits map[string]destination.TableLimits) (map[string]*checkpoint.Holds, map[string]*HoldPlan, error) {
 	holds := map[string]*checkpoint.Holds{}
 	plans := map[string]*HoldPlan{}
@@ -131,15 +153,18 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		}
 		var released []string
 		var taken, versioned []checkpoint.ColumnHold
+		// The releases' IDs, by column.
+		wholes, cells := map[string]string{}, map[string]string{}
 		for _, r := range j.Releases {
 			if r.Stream != s.Name || h.Replay != nil {
 				continue
 			}
+			again := func(f *checkpoint.Refused) bool { return f != nil && r.ID != "" && f.Release == r.ID && !r.Discard }
 			if i := slices.IndexFunc(h.Columns, func(c checkpoint.ColumnHold) bool {
-				return c.Column == r.Column && c.Since == r.Since && !c.Discarded
+				return c.Column == r.Column && c.Since == r.Since && !c.Discarded && !again(c.Refused)
 			}); i >= 0 {
 				if r.Discard {
-					h.Columns[i].Discarded = true
+					h.Columns[i].Discarded, h.Columns[i].Refused = true, nil
 				} else {
 					taken = append(taken, h.Columns[i])
 					if r.NewVersion && h.Columns[i].Delivered != nil {
@@ -147,13 +172,15 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 					}
 					h.Columns = slices.Delete(h.Columns, i, i+1)
 					released = append(released, r.Column)
+					wholes[r.Column] = r.ID
 				}
 			}
-			if c, ok := h.Cells[r.Column]; ok && c.Since == r.Since {
+			if c, ok := h.Cells[r.Column]; ok && c.Since == r.Since && !again(c.Refused) {
 				if r.Discard {
 					delete(h.Cells, r.Column)
 				} else {
 					released = append(released, r.Column)
+					cells[r.Column] = r.ID
 				}
 			}
 		}
@@ -169,13 +196,24 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 					h.Replay = nil
 				}
 			}
+			if id, ok := cells[r.Column]; ok {
+				c := h.Cells[r.Column]
+				c.Refused = &checkpoint.Refused{Release: id, Reason: "the destination refused the column: " + r.Reason}
+				h.Cells[r.Column] = c
+				delete(cells, r.Column)
+			}
 			if slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }) {
 				continue
 			}
 			if i := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }); i >= 0 {
-				h.Columns = append(h.Columns, taken[i])
+				c := taken[i]
+				c.Reason, c.Cause = "the destination refused it: "+r.Reason, r.cause()
+				c.Refused = &checkpoint.Refused{Release: wholes[r.Column], Reason: r.Reason}
+				h.Columns = append(h.Columns, c)
 			} else {
-				h.Columns = append(h.Columns, checkpoint.ColumnHold{Column: r.Column, Delivered: r.Delivered, Reason: r.Reason})
+				h.Columns = append(h.Columns, checkpoint.ColumnHold{
+					Column: r.Column, Delivered: r.Delivered, Reason: "the destination refused it: " + r.Reason, Cause: r.cause(),
+				})
 			}
 		}
 		if len(released) > 0 {
@@ -185,6 +223,9 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				return nil, nil, err
 			}
 			h.Replay = &checkpoint.Replay{Columns: slices.Compact(released), Files: files, Versioned: versioned}
+			if len(cells) > 0 {
+				h.Replay.CellReleases = cells
+			}
 		}
 		holds[s.Name] = h
 		plans[s.Name] = &HoldPlan{StreamHolds: *s.Holds, Holding: h.Columns, Limits: limits[s.Name], Replay: h.Replay}
@@ -205,10 +246,12 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 		for _, c := range r.Holding {
 			c.Since, c.Started = at, now
 			if i := slices.IndexFunc(h.Columns, func(p checkpoint.ColumnHold) bool { return p.Column == c.Column }); i >= 0 {
-				if p := h.Columns[i]; p.Since != (checkpoint.RecordRef{}) {
+				p := h.Columns[i]
+				if p.Since != (checkpoint.RecordRef{}) {
 					c.Since, c.Started = p.Since, p.Started
 				}
-				c.Discarded = h.Columns[i].Discarded
+				c.Discarded, c.Refused = p.Discarded, p.Refused
+				c.Cause = keepRefusal(p.Cause, c.Cause)
 			}
 			cols = append(cols, c)
 		}
@@ -241,13 +284,17 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 		if p := r.Replayed; p != nil && h.Replay != nil {
 			h.Replay.File, h.Replay.Row, h.Replay.StillHeld = p.File, p.Row, p.StillHeld
 			if p.Done {
-				if p.StillHeld == 0 {
-					for _, col := range h.Replay.Columns {
-						if c, ok := h.Replay.Held[col]; ok {
-							h.Cells[col] = c
-						} else {
-							delete(h.Cells, col)
-						}
+				for _, col := range h.Replay.Columns {
+					held, kept := h.Replay.Held[col]
+					c, ok := h.Cells[col]
+					switch {
+					case p.StillHeld == 0 && kept:
+						h.Cells[col] = held
+					case p.StillHeld == 0:
+						delete(h.Cells, col)
+					case ok && h.Replay.CellReleases[col] != "":
+						c.Refused = &checkpoint.Refused{Release: h.Replay.CellReleases[col], Reason: stillHeld(p.StillHeld)}
+						h.Cells[col] = c
 					}
 				}
 				h.Replay = nil
@@ -264,6 +311,32 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 	return h
 }
 
+func stillHeld(n uint64) string {
+	if n == 1 {
+		return "1 released value still doesn't fit"
+	}
+	return fmt.Sprintf("%d released values still don't fit", n)
+}
+
+// keepRefusal is the engine's cause for a column, with the destination's
+// refusal from was, which the engine doesn't carry.
+func keepRefusal(was, now *checkpoint.HoldCause) *checkpoint.HoldCause {
+	switch {
+	case now == nil:
+		return was
+	case was == nil:
+		return now
+	}
+	c := *now
+	if c.Kind == "" {
+		c.Kind, c.Policy, c.With = was.Kind, was.Policy, was.With
+	}
+	if c.Kind == checkpoint.HoldRefused {
+		c.Refusal, c.FromType, c.ToType, c.Fix = was.Refusal, was.FromType, was.ToType, was.Fix
+	}
+	return &c
+}
+
 func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 	out := &checkpoint.Holds{
 		Columns: slices.Clone(h.Columns),
@@ -273,6 +346,7 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 	if h.Replay != nil {
 		r := *h.Replay
 		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
+		r.Versioned, r.CellReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases)
 		out.Replay = &r
 	}
 	return out

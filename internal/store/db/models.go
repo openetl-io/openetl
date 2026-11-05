@@ -174,6 +174,9 @@ type Hold struct {
 	Cells           int64
 	Discarded       bool
 	Releasing       bool
+	Cause           []byte
+	RefusedRelease  *uuid.UUID
+	Refusal         string
 }
 
 type HoldCheckpoint struct {

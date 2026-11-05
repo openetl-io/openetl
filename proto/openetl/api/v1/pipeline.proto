@@ -741,6 +741,7 @@ message Hold {
   string column = 2;
   // The column is held whole; otherwise some of its cells are.
   bool whole = 3;
+  // What's held and why, as a sentence.
   string reason = 4;
   // The epoch the hold started in.
   uint64 since_generation = 5;
@@ -754,6 +755,76 @@ message Hold {
   bool releasing = 10;
   // Released or discarded, and waiting for the pipeline's next run.
   bool pending = 11;
+  HoldCause cause = 12;
+  // Set when the hold's last release didn't clear it: the destination
+  // refused the column again, or released cells still don't fit. The
+  // release isn't tried again until the hold is released again.
+  HoldRefusal refused = 13;
+  // The ways to clear the hold, the likeliest first.
+  repeated HoldWayOut ways_out = 14;
+}
+
+// HoldCause is why a column, or its cells, are held.
+message HoldCause {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // The schema policy doesn't take the change.
+    KIND_POLICY = 1;
+    // The destination refused the change.
+    KIND_REFUSED = 2;
+    // The destination can't change the column's type.
+    KIND_FIXED = 3;
+    // The destination takes no more columns.
+    KIND_COLUMN_LIMIT = 4;
+    // Held with another column.
+    KIND_GROUP = 5;
+    // Values that don't fit the column's type: a cell hold.
+    KIND_VALUE = 6;
+  }
+  Kind kind = 1;
+  // The column's name in the source.
+  string source_column = 2;
+  // The change, in logical types. from is empty for a column the
+  // destination doesn't have.
+  string from = 3;
+  string to = 4;
+  // KIND_POLICY's schema policy.
+  string policy = 5;
+  // KIND_GROUP's column.
+  string with = 6;
+  // KIND_REFUSED's: what the destination can't do, the change in its type
+  // names, and a statement that makes it take the change, if it gave one.
+  string refusal = 7;
+  string from_type = 8;
+  string to_type = 9;
+  string fix = 10;
+  // KIND_VALUE's: why the first held value doesn't fit.
+  string value = 11;
+}
+
+message HoldRefusal {
+  string reason = 1;
+}
+
+// HoldWayOut is one way to clear a hold.
+message HoldWayOut {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    // ReleaseHold: the held values are patched in.
+    ACTION_RELEASE = 1;
+    // ReleaseHold with new_version.
+    ACTION_RELEASE_NEW_VERSION = 2;
+    // DiscardHold.
+    ACTION_DISCARD = 3;
+  }
+  Action action = 1;
+  // What to do before the action, if anything, as a sentence.
+  string first = 2;
+  // A statement to run on the destination first, as the destination gave
+  // it.
+  string statement = 3;
+  // What the action does, as a sentence.
+  string effect = 4;
 }
 
 message ListHoldsRequest {

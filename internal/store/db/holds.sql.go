@@ -39,6 +39,20 @@ func (q *Queries) ClaimHoldCheckpoint(ctx context.Context, arg ClaimHoldCheckpoi
 	return result.RowsAffected(), nil
 }
 
+const deleteHoldRelease = `-- name: DeleteHoldRelease :exec
+DELETE FROM hold_releases WHERE org_id = $1 AND id = $2
+`
+
+type DeleteHoldReleaseParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+func (q *Queries) DeleteHoldRelease(ctx context.Context, arg DeleteHoldReleaseParams) error {
+	_, err := q.db.Exec(ctx, deleteHoldRelease, arg.OrgID, arg.ID)
+	return err
+}
+
 const deleteHolds = `-- name: DeleteHolds :exec
 DELETE FROM holds WHERE org_id = $1 AND pipeline_id = $2
 `
@@ -54,8 +68,10 @@ func (q *Queries) DeleteHolds(ctx context.Context, arg DeleteHoldsParams) error 
 }
 
 const insertHold = `-- name: InsertHold :exec
-INSERT INTO holds (org_id, pipeline_id, stream, column_name, whole, reason, since_generation, since_epoch, start_time, cells, discarded, releasing)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO holds (org_id, pipeline_id, stream, column_name, whole, reason, since_generation, since_epoch, start_time, cells, discarded, releasing,
+    cause, refused_release, refusal)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+    $13, $14, $15)
 ON CONFLICT DO NOTHING
 `
 
@@ -72,6 +88,9 @@ type InsertHoldParams struct {
 	Cells           int64
 	Discarded       bool
 	Releasing       bool
+	Cause           []byte
+	RefusedRelease  *uuid.UUID
+	Refusal         string
 }
 
 func (q *Queries) InsertHold(ctx context.Context, arg InsertHoldParams) error {
@@ -88,6 +107,9 @@ func (q *Queries) InsertHold(ctx context.Context, arg InsertHoldParams) error {
 		arg.Cells,
 		arg.Discarded,
 		arg.Releasing,
+		arg.Cause,
+		arg.RefusedRelease,
+		arg.Refusal,
 	)
 	return err
 }
@@ -140,7 +162,7 @@ func (q *Queries) InsertHoldRelease(ctx context.Context, arg InsertHoldReleasePa
 
 const listHolds = `-- name: ListHolds :many
 SELECT h.stream, h.column_name, h.whole, h.reason, h.since_generation, h.since_epoch, h.start_time, h.cells,
-    h.discarded, h.releasing, r.id AS release_id, r.discard AS release_discards
+    h.discarded, h.releasing, h.cause, h.refused_release, h.refusal, r.id AS release_id, r.discard AS release_discards
 FROM holds h
 LEFT JOIN hold_releases r ON r.org_id = h.org_id AND r.pipeline_id = h.pipeline_id AND r.stream = h.stream
     AND r.column_name = h.column_name AND r.whole = h.whole
@@ -165,11 +187,15 @@ type ListHoldsRow struct {
 	Cells           int64
 	Discarded       bool
 	Releasing       bool
+	Cause           []byte
+	RefusedRelease  *uuid.UUID
+	Refusal         string
 	ReleaseID       *uuid.UUID
 	ReleaseDiscards *bool
 }
 
-// With whether a release waits for the next run to take it.
+// With the hold's release, if any: one that waits for the next run, or the
+// one the hold refused.
 func (q *Queries) ListHolds(ctx context.Context, arg ListHoldsParams) ([]ListHoldsRow, error) {
 	rows, err := q.db.Query(ctx, listHolds, arg.OrgID, arg.PipelineID)
 	if err != nil {
@@ -190,6 +216,9 @@ func (q *Queries) ListHolds(ctx context.Context, arg ListHoldsParams) ([]ListHol
 			&i.Cells,
 			&i.Discarded,
 			&i.Releasing,
+			&i.Cause,
+			&i.RefusedRelease,
+			&i.Refusal,
 			&i.ReleaseID,
 			&i.ReleaseDiscards,
 		); err != nil {
@@ -220,12 +249,13 @@ func (q *Queries) NewestHoldRelease(ctx context.Context, arg NewestHoldReleasePa
 }
 
 const pendingHoldReleases = `-- name: PendingHoldReleases :many
-SELECT r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version
+SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version
 FROM hold_releases r
 JOIN holds h ON h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
     AND h.column_name = r.column_name AND h.whole = r.whole
     AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch
 WHERE r.org_id = $1 AND r.pipeline_id = $2 AND NOT h.discarded AND NOT h.releasing
+    AND r.id IS DISTINCT FROM h.refused_release
 ORDER BY r.create_time, r.id
 `
 
@@ -235,6 +265,7 @@ type PendingHoldReleasesParams struct {
 }
 
 type PendingHoldReleasesRow struct {
+	ID              uuid.UUID
 	Stream          string
 	ColumnName      string
 	SinceGeneration int64
@@ -243,8 +274,8 @@ type PendingHoldReleasesRow struct {
 	NewVersion      bool
 }
 
-// The releases of holds still open, not discarded and not being patched in,
-// for a run to take.
+// The releases of holds still open, not discarded, not being patched in,
+// and not refused, for a run to take.
 func (q *Queries) PendingHoldReleases(ctx context.Context, arg PendingHoldReleasesParams) ([]PendingHoldReleasesRow, error) {
 	rows, err := q.db.Query(ctx, pendingHoldReleases, arg.OrgID, arg.PipelineID)
 	if err != nil {
@@ -255,6 +286,7 @@ func (q *Queries) PendingHoldReleases(ctx context.Context, arg PendingHoldReleas
 	for rows.Next() {
 		var i PendingHoldReleasesRow
 		if err := rows.Scan(
+			&i.ID,
 			&i.Stream,
 			&i.ColumnName,
 			&i.SinceGeneration,

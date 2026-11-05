@@ -42,6 +42,24 @@ impl Show {
     }
 }
 
+/// Why a column is held whole.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Why {
+    /// Not recorded, as by an older record.
+    #[default]
+    Unknown,
+    /// The schema policy, by name, doesn't take the change.
+    Policy(String),
+    /// The destination refused the change.
+    Refused,
+    /// The destination can't change the column's type.
+    Fixed,
+    /// The destination takes no more columns.
+    Full,
+    /// Held with another column, by its destination name.
+    Group(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColumnHold {
     /// Its destination name.
@@ -49,6 +67,9 @@ pub struct ColumnHold {
     /// The field as the destination has it; None if it has none.
     pub delivered: Option<Field>,
     pub reason: String,
+    pub why: Why,
+    /// Its source name, where the engine reports it; empty otherwise.
+    pub source: String,
 }
 
 /// What a destination's table can't take, by destination name.

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use arrow_schema::SchemaRef;
-use openetl_normalize::hold::{ColumnHold, HoldConfig, Limits, Show};
+use openetl_normalize::hold::{ColumnHold, HoldConfig, Limits, Show, Why};
 use openetl_normalize::naming::{Namer, Naming, RESERVED_TABLES, TABLE_KEY};
 use openetl_normalize::{Identity, Infinity, Policy, TypeOptions};
 use openetl_proto::engine::v1::{
@@ -101,6 +101,8 @@ fn holds(s: &StreamPlan) -> Result<(Option<HoldConfig>, Option<ReplayPlan>), Job
                 column: c.column.clone(),
                 delivered,
                 reason: c.reason.clone(),
+                why: why(c.cause.as_ref()),
+                source: String::new(),
             });
         }
         Ok(out)
@@ -406,6 +408,19 @@ impl Plan {
             replays,
             held_url,
         })
+    }
+}
+
+fn why(c: Option<&openetl_proto::engine::v1::HoldCause>) -> Why {
+    use openetl_proto::engine::v1::hold_cause::Kind;
+    let Some(c) = c else { return Why::Unknown };
+    match c.kind() {
+        Kind::Policy => Why::Policy(c.policy.clone()),
+        Kind::Refused => Why::Refused,
+        Kind::Fixed => Why::Fixed,
+        Kind::ColumnLimit => Why::Full,
+        Kind::Group => Why::Group(c.with.clone()),
+        Kind::Unspecified => Why::Unknown,
     }
 }
 

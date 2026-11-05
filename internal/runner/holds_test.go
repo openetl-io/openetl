@@ -60,6 +60,17 @@ func TestMergeHoldsKeepsWhenEachHoldStarted(t *testing.T) {
 	if c := got.Cells["x"]; c.Cells != 1 || c.Since != at(3, 4) || got.Replay != nil || len(got.Epochs) != 2 {
 		t.Errorf("after a replay with a cell held during it: %+v", got)
 	}
+	// A replay that ends with cells that still don't fit leaves them held,
+	// and records the release that didn't clear them.
+	h = &checkpoint.Holds{
+		Cells:  map[string]checkpoint.CellHold{"x": {Cells: 2, Since: at(1, 3)}},
+		Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 3, To: 3}},
+		Replay: &checkpoint.Replay{Columns: []string{"x"}, CellReleases: map[string]string{"x": "r"}},
+	}
+	got = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 1, StillHeld: 2, Done: true}}, at(3, 5), now)
+	if c := got.Cells["x"]; c.Since != at(1, 3) || c.Refused == nil || *c.Refused != (checkpoint.Refused{Release: "r", Reason: "2 released values still don't fit"}) {
+		t.Errorf("after a replay with cells that still don't fit: %+v", c)
+	}
 	if mergeHolds(&checkpoint.Holds{}, &ReadyHolds{}, at(2, 9), now) != nil {
 		t.Error("nothing held, and still holds")
 	}
@@ -101,20 +112,58 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 		t.Error("the restored record changed")
 	}
 
-	// The destination refuses a released column again: it stays held as it
-	// was, and isn't patched in.
-	j.Releases = []Release{{Stream: "s", Column: "z", Since: since}, {Stream: "s", Column: "x", Since: since}}
-	j.refused = []RefusedColumn{{RefusedColumn: destination.RefusedColumn{Stream: "s", Column: "z", Reason: "view"}}}
+	// The destination refuses a released column again: it stays held from
+	// when it was, with the destination's cause, records the release it
+	// refused, and isn't patched in.
+	j.Releases = []Release{{ID: "r1", Stream: "s", Column: "z", Since: since}, {ID: "r2", Stream: "s", Column: "x", Since: since}}
+	refusal := destination.RefusedColumn{Stream: "s", Column: "z", Reason: "it doesn't widen", FromType: "integer", ToType: "bigint", Fix: "ALTER z"}
+	j.refused = []RefusedColumn{{RefusedColumn: refusal}}
 	holds, _, err = j.startHolds(t.Context(), restored, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h = holds["s"]
-	if i := slices.IndexFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == "z" }); i < 0 || h.Columns[i].Since != since {
-		t.Errorf("columns %+v", h.Columns)
+	i := slices.IndexFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == "z" })
+	if i < 0 || h.Columns[i].Since != since {
+		t.Fatalf("columns %+v", h.Columns)
 	}
-	if h.Replay == nil || !reflect.DeepEqual(h.Replay.Columns, []string{"x"}) {
+	z := h.Columns[i]
+	wantCause := &checkpoint.HoldCause{Kind: checkpoint.HoldRefused, Refusal: "it doesn't widen", FromType: "integer", ToType: "bigint", Fix: "ALTER z"}
+	if !reflect.DeepEqual(z.Cause, wantCause) || z.Refused == nil || *z.Refused != (checkpoint.Refused{Release: "r1", Reason: "it doesn't widen"}) {
+		t.Errorf("refused column %+v, cause %+v, refused %+v", z, z.Cause, z.Refused)
+	}
+	if h.Replay == nil || !reflect.DeepEqual(h.Replay.Columns, []string{"x"}) || h.Replay.CellReleases["x"] != "r2" {
 		t.Errorf("replay %+v", h.Replay)
+	}
+
+	// The engine's next report keeps the refusal, which it doesn't carry.
+	engine := z
+	engine.Since, engine.Refused = checkpoint.RecordRef{}, nil
+	engine.Cause = &checkpoint.HoldCause{Kind: checkpoint.HoldRefused, Source: "Z", From: "int32", To: "int64"}
+	merged := mergeHolds(h, &ReadyHolds{Holding: []checkpoint.ColumnHold{engine}}, checkpoint.RecordRef{Generation: 2, Epoch: 1}, time.Now())
+	got := merged.Columns[0]
+	if got.Since != since || got.Refused == nil || got.Refused.Release != "r1" || got.Cause.Fix != "ALTER z" || got.Cause.From != "int32" || got.Cause.Source != "Z" {
+		t.Errorf("merged %+v, cause %+v", got, got.Cause)
+	}
+
+	// A release already refused isn't taken again, unless it's a new one.
+	merged.Replay, merged.Cells = nil, nil
+	refused := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: merged}}}
+	j.Releases, j.refused = []Release{{ID: "r1", Stream: "s", Column: "z", Since: since}}, nil
+	holds, _, err = j.startHolds(t.Context(), refused, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := holds["s"]; len(h.Columns) != 1 || h.Replay != nil {
+		t.Errorf("a refused release was taken again: %+v", h)
+	}
+	j.Releases[0].ID = "r3"
+	holds, _, err = j.startHolds(t.Context(), refused, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := holds["s"]; len(h.Columns) != 0 || h.Replay == nil {
+		t.Errorf("a new release wasn't taken: %+v", h)
 	}
 
 	// Released to a new version, a column keeps the type the destination

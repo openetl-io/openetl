@@ -345,3 +345,77 @@ func TestHeldCellsBySyncAndCheckpoint(t *testing.T) {
 		t.Errorf("orders holds %d cells and %v, once patched in", st.GetHeldCells(), st.GetHeldColumns())
 	}
 }
+
+// A release the destination refused shows on its hold, with what to do, and
+// isn't sent again until the hold is released again.
+func TestARefusedReleaseIsntSentAgain(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	cause := &apiv1.HoldCause{
+		Kind: apiv1.HoldCause_KIND_REFUSED, SourceColumn: "Amount", From: "int32", To: "int64", FromType: "integer", ToType: "bigint",
+		Refusal: "it doesn't change a column's type", Fix: `ALTER TABLE "orders" ALTER COLUMN "amount" TYPE bigint`,
+	}
+	amount := &dataplanev1.CheckpointHold{
+		Column: "amount", Whole: true, Reason: "refused", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}, StartTime: timestamppb.Now(), Cause: cause,
+	}
+	e.report(t, 1, 2, amount)
+	h := e.holds(t)["amount"]
+	if want := "amount changed from int32 to int64 (integer to bigint in the destination), and the destination refused it: " +
+		"it doesn't change a column's type."; h.GetReason() != want {
+		t.Errorf("reason %q, want %q", h.GetReason(), want)
+	}
+	var ways []string
+	for _, w := range h.GetWaysOut() {
+		ways = append(ways, w.GetAction().String()+" "+w.GetStatement())
+	}
+	if fmt.Sprint(ways) != `[ACTION_RELEASE ALTER TABLE "orders" ALTER COLUMN "amount" TYPE bigint ACTION_RELEASE_NEW_VERSION  ACTION_DISCARD ]` {
+		t.Errorf("ways out %v", ways)
+	}
+	var next string
+	if err := e.conn.QueryRow(ctx, `SELECT next_steps FROM incidents WHERE class = 'held'`).Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(next, cause.GetFix()+". Then openetl holds release orders orders amount.") ||
+		!strings.Contains(next, "Or openetl holds release --new-version orders orders amount: sends its held values") {
+		t.Errorf("next steps %q", next)
+	}
+
+	released := func() []*dataplanev1.HoldRelease {
+		t.Helper()
+		spec, err := e.runner.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return spec.Msg.GetReleases()
+	}
+	if _, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"})); err != nil {
+		t.Fatal(err)
+	}
+	rs := released()
+	if len(rs) != 1 || rs[0].GetId() == "" {
+		t.Fatalf("releases %v", rs)
+	}
+
+	// The run refuses it again.
+	amount.RefusedRelease, amount.Refused = rs[0].GetId(), &apiv1.HoldRefusal{Reason: "it doesn't change a column's type"}
+	e.report(t, 1, 3, amount)
+	if h := e.holds(t)["amount"]; h.GetPending() || h.GetRefused().GetReason() != "it doesn't change a column's type" || len(h.GetWaysOut()) != 3 {
+		t.Errorf("refused hold %v", h)
+	}
+	if rs := released(); len(rs) != 0 {
+		t.Errorf("a refused release is sent again: %v", rs)
+	}
+
+	// Released again, it's pending again, as a new release.
+	res, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount", NewVersion: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := res.Msg.GetHold(); !h.GetPending() || h.GetRefused() != nil {
+		t.Errorf("released again %v", h)
+	}
+	again := released()
+	if len(again) != 1 || again[0].GetId() == rs[0].GetId() || !again[0].GetNewVersion() {
+		t.Errorf("releases %v, after %v", again, rs)
+	}
+}

@@ -166,6 +166,35 @@ message ColumnHold {
   // destination has it. Empty: the destination doesn't have it.
   bytes delivered = 2;
   string reason = 3;
+  HoldCause cause = 4;
+}
+
+// HoldCause is why a column is held whole.
+message HoldCause {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // The schema policy doesn't take the change.
+    KIND_POLICY = 1;
+    // The destination refused the change.
+    KIND_REFUSED = 2;
+    // The destination can't change the column's type.
+    KIND_FIXED = 3;
+    // The destination takes no more columns.
+    KIND_COLUMN_LIMIT = 4;
+    // Held with another column.
+    KIND_GROUP = 5;
+  }
+  Kind kind = 1;
+  // KIND_POLICY's schema policy.
+  string policy = 2;
+  // KIND_GROUP's column, by its destination name.
+  string with = 3;
+  // Set by the engine when it reports a hold: the column's source name, and
+  // its logical type as the destination has it and in the stream now. from
+  // is empty for a column the destination doesn't have.
+  string source = 4;
+  string from = 5;
+  string to = 6;
 }
 
 // Replay patches held values in: a chunk after each of the stream's

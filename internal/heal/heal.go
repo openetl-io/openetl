@@ -76,7 +76,9 @@ type Observation struct {
 	// The error, or what was measured.
 	Message string
 	Details map[string]string
-	Sync    *uuid.UUID
+	// Held's holds, each with its ways out.
+	Holds []*apiv1.Hold
+	Sync  *uuid.UUID
 	// What makes this occurrence, such as the sync's ID: seen again with the
 	// same key, it isn't another.
 	Key string

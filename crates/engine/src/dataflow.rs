@@ -13,11 +13,12 @@ use std::time::Duration;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use openetl_formats::ParquetStaging;
-use openetl_normalize::{Error as NormalizeError, Shaper};
+use openetl_normalize::{Error as NormalizeError, Shaper, logical_type};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
-    Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, Metrics, QuarantineFile,
-    Rows, SchemaChange, StagedStream, StreamHolds, StreamMetrics, events_response,
+    Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, Metrics,
+    QuarantineFile, Rows, SchemaChange, StagedStream, StreamHolds, StreamMetrics, events_response,
+    hold_cause,
 };
 use prost::Message;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -439,10 +440,12 @@ fn at(
                 }
                 None => Vec::new(),
             };
+            let cause = cause(&h, at.schema.as_ref());
             holding.push(ColumnHold {
                 column: h.column,
                 delivered,
                 reason: h.reason,
+                cause: Some(cause),
             });
         }
         at.holds = Some(StreamHolds {
@@ -453,6 +456,29 @@ fn at(
         });
     }
     Ok(at)
+}
+
+/// Why `h` is held, with its change in logical types.
+fn cause(h: &openetl_normalize::hold::ColumnHold, schema: Option<&SchemaRef>) -> HoldCause {
+    use hold_cause::Kind;
+    use openetl_normalize::hold::Why;
+    let (kind, policy, with) = match &h.why {
+        Why::Unknown => (Kind::Unspecified, "", ""),
+        Why::Policy(p) => (Kind::Policy, p.as_str(), ""),
+        Why::Refused => (Kind::Refused, "", ""),
+        Why::Fixed => (Kind::Fixed, "", ""),
+        Why::Full => (Kind::ColumnLimit, "", ""),
+        Why::Group(w) => (Kind::Group, "", w.as_str()),
+    };
+    let to = schema.and_then(|s| s.field_with_name(&h.column).ok());
+    HoldCause {
+        kind: kind as i32,
+        policy: policy.to_owned(),
+        with: with.to_owned(),
+        source: h.source.clone(),
+        from: h.delivered.as_ref().map(logical_type).unwrap_or_default(),
+        to: to.map(logical_type).unwrap_or_default(),
+    }
 }
 
 /// Sends the replay's next chunk of patches, which land in the next epoch.
@@ -1701,6 +1727,23 @@ mod tests {
         assert_eq!(holds.holding.len(), 1);
         assert_eq!(holds.holding[0].column, "y");
         assert!(holds.holding[0].delivered.is_empty());
+        let cause = holds.holding[0].cause.clone().unwrap();
+        assert_eq!(
+            (
+                cause.kind(),
+                cause.policy.as_str(),
+                cause.source.as_str(),
+                cause.from.as_str(),
+                cause.to.as_str()
+            ),
+            (
+                openetl_proto::engine::v1::hold_cause::Kind::Policy,
+                "block",
+                "y",
+                "",
+                "string"
+            )
+        );
         assert_eq!(holds.files.len(), 1);
     }
 

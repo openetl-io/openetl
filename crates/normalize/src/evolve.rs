@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::hold::HeldCell;
+use crate::hold::{HeldCell, Why};
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions, new_null_array};
@@ -13,7 +13,7 @@ use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{DataType, Field, Schema};
 
 use crate::coerce::{self, Failures, Infinity, Target};
-use crate::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, JSON_EXTENSION};
+use crate::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, JSON_EXTENSION, logical_type};
 
 /// Schema metadata: a JSON object from each source column whose type changed
 /// incompatibly to its current version, 2 or more. Version k's values are in
@@ -73,7 +73,7 @@ pub(crate) struct Conformed {
     /// Cells held instead of failing their rows, by row of `batch`.
     pub cells: Vec<HeldCell>,
     /// Columns this batch started holding, with why.
-    pub held: Vec<(String, String)>,
+    pub held: Vec<(String, String, Why)>,
 }
 
 /// When the evolver holds a column instead of stopping on its change, or
@@ -181,7 +181,14 @@ impl Evolver {
     }
 
     /// Holds `name` and the columns grouped with it, if each can be held.
-    fn hold(&mut self, name: &str, why: String, held: &mut Vec<(String, String)>) -> bool {
+    /// A grouped column's Why::Group names `name` by its source name.
+    fn hold(
+        &mut self,
+        name: &str,
+        reason: String,
+        why: Why,
+        held: &mut Vec<(String, String, Why)>,
+    ) -> bool {
         let Some(rules) = &self.rules else {
             return false;
         };
@@ -196,11 +203,11 @@ impl Evolver {
         }
         for c in group {
             if self.holding.insert(c.clone()) {
-                let why = match c == name {
-                    true => why.clone(),
-                    false => format!("held with {name:?}"),
+                let (reason, why) = match c == name {
+                    true => (reason.clone(), why.clone()),
+                    false => (format!("held with {name:?}"), Why::Group(name.to_owned())),
                 };
-                held.push((c, why));
+                held.push((c, reason, why));
             }
         }
         true
@@ -241,21 +248,32 @@ impl Evolver {
         Some(next)
     }
 
-    fn drift(&self, what: String) -> Error {
-        let policy = match self.policy {
+    fn policy_name(&self) -> &'static str {
+        match self.policy {
             Policy::AllowAll => "allow_all",
             Policy::AllowColumns => "allow_columns",
             Policy::Block => "block",
             Policy::IgnoreNew => "ignore_new",
-        };
-        Error::Drift(format!("{what}, which schema policy {policy} doesn't take"))
+        }
+    }
+
+    /// A change the policy doesn't take. In a stream that holds, the column
+    /// couldn't be held.
+    fn drift(&self, what: String) -> Error {
+        let mut msg = self.policy_reason(&what);
+        if self.rules.is_some() {
+            msg.push_str(
+                ", and the column can't be held: it's part of the key or cursor, the destination can't hold it, or it can't be null",
+            );
+        }
+        Error::Drift(msg)
     }
 
     fn policy_reason(&self, what: &str) -> String {
-        match self.drift(what.to_owned()) {
-            Error::Drift(why) => why,
-            e => e.to_string(),
-        }
+        format!(
+            "{what}, which schema policy {} doesn't take",
+            self.policy_name()
+        )
     }
 
     /// Conforms a batch, whose columns have source names, to the stream's
@@ -280,13 +298,17 @@ impl Evolver {
                     Policy::IgnoreNew if strict => continue,
                     Policy::Block if strict => {
                         let what = format!("column {:?} is new", f.name());
-                        if !self.hold(&name, self.policy_reason(&what), &mut held) {
+                        let why = Why::Policy(self.policy_name().to_owned());
+                        if !self.hold(&name, self.policy_reason(&what), why, &mut held) {
                             return Err(self.drift(what));
                         }
                     }
                     _ if full => {
-                        let why = "the destination takes no more columns".to_owned();
-                        self.hold(&name, why, &mut held);
+                        let reason = format!(
+                            "column {:?} is new, and the destination takes no more columns",
+                            f.name()
+                        );
+                        self.hold(&name, reason, Why::Full, &mut held);
                     }
                     _ => {}
                 }
@@ -322,8 +344,8 @@ impl Evolver {
             let what = format!(
                 "column {:?} changed from {} to {}",
                 f.name(),
-                cur.data_type(),
-                f.data_type()
+                logical_type(&cur),
+                logical_type(f)
             );
             let stops = match self.policy {
                 Policy::Block => strict,
@@ -332,11 +354,17 @@ impl Evolver {
             };
             let fixed = widening && self.rules.as_ref().is_some_and(|r| r.fixed.contains(&name));
             if stops || fixed {
-                let why = match stops {
-                    true => self.policy_reason(&what),
-                    false => format!("{what}, which the destination can't change"),
+                let (reason, why) = match stops {
+                    true => (
+                        self.policy_reason(&what),
+                        Why::Policy(self.policy_name().to_owned()),
+                    ),
+                    false => (
+                        format!("{what}, which the destination can't change"),
+                        Why::Fixed,
+                    ),
                 };
-                if self.hold(&name, why, &mut held) {
+                if self.hold(&name, reason, why, &mut held) {
                     self.fields[i] = match widening {
                         true => widened(&cur, f),
                         false => f.as_ref().clone().with_name(&name).with_nullable(true),
@@ -349,7 +377,7 @@ impl Evolver {
             match self.policy {
                 Policy::Block if strict => return Err(self.drift(what)),
                 Policy::AllowColumns if strict && !widening => {
-                    return Err(self.drift(format!("{what}, which isn't a widening")));
+                    return Err(self.drift(format!("{what} (not a widening)")));
                 }
                 Policy::IgnoreNew if strict => {
                     let (c, rows) = cast_down(col, &cur, f.name(), self.infinity);
@@ -388,8 +416,8 @@ impl Evolver {
                 versioned.push(format!(
                     "column {:?} changed from {} to {}, so its values now go to {name:?}",
                     f.name(),
-                    cur.data_type(),
-                    f.data_type()
+                    logical_type(&cur),
+                    logical_type(f)
                 ));
                 self.add(f.as_ref().clone().with_name(&name).with_nullable(true));
                 columns.insert(name, col.clone());
@@ -483,11 +511,11 @@ fn cast_down(col: &ArrayRef, to: &Field, source: &str, inf: Infinity) -> (ArrayR
         (new_null_array(to.data_type(), col.len()), failed)
     };
     let Some(t) = Target::of(to).filter(|t| *t != Target::TypedOnly) else {
-        return fail_all(&format!("isn't {}", to.data_type()));
+        return fail_all(&format!("isn't {}", logical_type(to)));
     };
     let col = &coerce::offset_zone(col);
     let Ok(fmt) = ArrayFormatter::try_new(col.as_ref(), &FormatOptions::new()) else {
-        return fail_all(&format!("isn't {}", to.data_type()));
+        return fail_all(&format!("isn't {}", logical_type(to)));
     };
     let strings: arrow_array::StringArray = (0..col.len())
         .map(|i| (!col.is_null(i)).then(|| fmt.value(i).to_string()))
@@ -495,7 +523,7 @@ fn cast_down(col: &ArrayRef, to: &Field, source: &str, inf: Infinity) -> (ArrayR
     let named = to.clone().with_name(source);
     match coerce::text_column(&named, t, &(Arc::new(strings) as ArrayRef), inf) {
         Some(out) => out,
-        None => fail_all(&format!("isn't {}", to.data_type())),
+        None => fail_all(&format!("isn't {}", logical_type(to))),
     }
 }
 

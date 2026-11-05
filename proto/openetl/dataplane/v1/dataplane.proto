@@ -82,6 +82,8 @@ message GetSyncSpecResponse {
 }
 
 message HoldRelease {
+  // A release that didn't clear its hold is recorded on the hold by this.
+  string id = 6;
   string stream = 1;
   string column = 2;
   // The epoch the hold started in.
@@ -197,6 +199,11 @@ message CheckpointHold {
   bool discarded = 7;
   // A release is being patched in.
   bool releasing = 8;
+  // Why the column is held whole; cell holds have only their reason.
+  openetl.api.v1.HoldCause cause = 9;
+  // A release that didn't clear the hold, by its HoldRelease.id.
+  string refused_release = 10;
+  openetl.api.v1.HoldRefusal refused = 11;
 }
 
 message ReportCheckpointResponse {
