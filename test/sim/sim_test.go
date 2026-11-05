@@ -249,7 +249,7 @@ type world struct {
 	positionLost bool
 	// Holds: the releases taken so far, and whether they fixed what held
 	// the values; the streams whose cell holds were discarded.
-	relRng    *rand.Rand
+	relRng *rand.Rand
 	// Each hold's latest release's ID.
 	released  map[releaseKey]string
 	releases  []runner.Release

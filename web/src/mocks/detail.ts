@@ -117,7 +117,7 @@ export function holds(name: string): Hold[] {
         refusal: "it doesn't change a column's type",
         fix,
       },
-      refused: { reason: "it doesn't change a column's type" },
+      refused: { reason: "the destination refused it again" },
       waysOut: [
         {
           action: HoldWayOut_Action.RELEASE,

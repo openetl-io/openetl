@@ -129,7 +129,7 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 	}
 	z := h.Columns[i]
 	wantCause := &checkpoint.HoldCause{Kind: checkpoint.HoldRefused, Refusal: "it doesn't widen", FromType: "integer", ToType: "bigint", Fix: "ALTER z"}
-	if !reflect.DeepEqual(z.Cause, wantCause) || z.Refused == nil || *z.Refused != (checkpoint.Refused{Release: "r1", Reason: "it doesn't widen"}) {
+	if !reflect.DeepEqual(z.Cause, wantCause) || z.Refused == nil || *z.Refused != (checkpoint.Refused{Release: "r1", Reason: "the destination refused it again"}) {
 		t.Errorf("refused column %+v, cause %+v, refused %+v", z, z.Cause, z.Refused)
 	}
 	if h.Replay == nil || !reflect.DeepEqual(h.Replay.Columns, []string{"x"}) || h.Replay.CellReleases["x"] != "r2" {

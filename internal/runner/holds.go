@@ -208,7 +208,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			if i := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }); i >= 0 {
 				c := taken[i]
 				c.Reason, c.Cause = "the destination refused it: "+r.Reason, r.cause()
-				c.Refused = &checkpoint.Refused{Release: wholes[r.Column], Reason: r.Reason}
+				c.Refused = &checkpoint.Refused{Release: wholes[r.Column], Reason: "the destination refused it again"}
 				h.Columns = append(h.Columns, c)
 			} else {
 				h.Columns = append(h.Columns, checkpoint.ColumnHold{
