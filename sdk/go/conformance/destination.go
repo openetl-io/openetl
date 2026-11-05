@@ -89,6 +89,8 @@ func (r *destinationRun) checks() []Check {
 		Check{"write/overwrite", r.checkOverwrite},
 		Check{"write/merge", r.checkMerge},
 		Check{"write/evolution", r.checkEvolution},
+		Check{"holds/patch", r.checkHoldsPatch},
+		Check{"holds/last", r.checkHoldsLast},
 	)
 }
 
@@ -633,6 +635,10 @@ func (r *destinationRun) checkFence(t T, s *session) {
 	}
 	s.expect("after the stale commit", e1)
 	s.close(w2)
+}
+
+func (r *destinationRun) supportsMode(mode protocolv1.WriteMode) bool {
+	return slices.Contains(r.spec.GetDestination().GetWriteModes(), mode)
 }
 
 func (r *destinationRun) supports(t T, mode protocolv1.WriteMode) {
