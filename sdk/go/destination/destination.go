@@ -328,7 +328,16 @@ type RefusedColumn struct {
 	Stream string
 	// Its destination name.
 	Column string
+	// What the destination can't do, as a clause: "it doesn't change a
+	// column's type, which can rewrite the table".
 	Reason string
+	// The column's type in the destination, and the type the change wants,
+	// in the destination's type names. FromType is empty for a column the
+	// destination doesn't have.
+	FromType, ToType string
+	// A statement the user can run on the destination to make it take the
+	// change, such as an ALTER TABLE; empty if there's none.
+	Fix string
 }
 
 // TableLimits name columns by their destination names.

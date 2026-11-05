@@ -363,7 +363,9 @@ func (w *schemaWriter) ApplySchema(ctx context.Context, streams []destination.St
 	}
 	var out destination.SchemaApplied
 	for _, r := range a.GetRefused() {
-		out.Refused = append(out.Refused, destination.RefusedColumn{Stream: r.GetStream(), Column: r.GetColumn(), Reason: r.GetReason()})
+		out.Refused = append(out.Refused, destination.RefusedColumn{
+			Stream: r.GetStream(), Column: r.GetColumn(), Reason: r.GetReason(), FromType: r.GetFromType(), ToType: r.GetToType(), Fix: r.GetFix(),
+		})
 	}
 	if len(a.GetLimits()) > 0 {
 		out.Limits = make(map[string]destination.TableLimits, len(a.GetLimits()))

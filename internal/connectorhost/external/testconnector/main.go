@@ -351,7 +351,9 @@ func (w *filesWriter) ApplySchema(_ context.Context, streams []destination.Strea
 	for _, s := range streams {
 		for _, f := range s.Schema.Fields() {
 			if f.Name == "refused" {
-				applied.Refused = append(applied.Refused, destination.RefusedColumn{Stream: s.Name, Column: f.Name, Reason: "refused by name"})
+				applied.Refused = append(applied.Refused, destination.RefusedColumn{
+					Stream: s.Name, Column: f.Name, Reason: "it refuses columns by name", ToType: "text", Fix: "RENAME refused",
+				})
 				continue
 			}
 			fields[s.Name] = append(fields[s.Name], f.Name+":"+f.Type.String())

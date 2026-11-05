@@ -198,7 +198,7 @@ func applySchema(ctx context.Context, sa destination.SchemaApplier, m *protocolv
 func schemaAppliedToProto(a destination.SchemaApplied) *protocolv1.WriteSchemaApplied {
 	p := &protocolv1.WriteSchemaApplied{}
 	for _, r := range a.Refused {
-		p.Refused = append(p.Refused, &protocolv1.RefusedColumn{Stream: r.Stream, Column: r.Column, Reason: r.Reason})
+		p.Refused = append(p.Refused, &protocolv1.RefusedColumn{Stream: r.Stream, Column: r.Column, Reason: r.Reason, FromType: r.FromType, ToType: r.ToType, Fix: r.Fix})
 	}
 	if len(a.Limits) > 0 {
 		p.Limits = make(map[string]*protocolv1.TableLimits, len(a.Limits))

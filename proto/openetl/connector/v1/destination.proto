@@ -287,7 +287,17 @@ message RefusedColumn {
   string stream = 1;
   // Its destination name.
   string column = 2;
+  // What the destination can't do, as a clause: "it doesn't change a
+  // column's type, which can rewrite the table".
   string reason = 3;
+  // The column's type in the destination, and the type the change wants,
+  // in the destination's type names. from_type is empty for a column the
+  // destination doesn't have.
+  string from_type = 4;
+  string to_type = 5;
+  // A statement the user can run on the destination to make it take the
+  // change, such as an ALTER TABLE; empty if there's none.
+  string fix = 6;
 }
 
 // TableLimits name columns by their destination names.

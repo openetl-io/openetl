@@ -386,7 +386,7 @@ func TestDestinationCommitProtocol(t *testing.T) {
 		t.Fatalf("schemas = %s", got)
 	}
 	want := destination.SchemaApplied{
-		Refused: []destination.RefusedColumn{{Stream: "s", Column: "refused", Reason: "refused by name"}},
+		Refused: []destination.RefusedColumn{{Stream: "s", Column: "refused", Reason: "it refuses columns by name", ToType: "text", Fix: "RENAME refused"}},
 		Limits:  map[string]destination.TableLimits{"s": {Columns: 1, MaxColumns: 1600}},
 	}
 	if !reflect.DeepEqual(applied, want) {

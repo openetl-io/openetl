@@ -1841,8 +1841,18 @@ type RefusedColumn struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Stream string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
 	// Its destination name.
-	Column        string `protobuf:"bytes,2,opt,name=column,proto3" json:"column,omitempty"`
-	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	Column string `protobuf:"bytes,2,opt,name=column,proto3" json:"column,omitempty"`
+	// What the destination can't do, as a clause: "it doesn't change a
+	// column's type, which can rewrite the table".
+	Reason string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	// The column's type in the destination, and the type the change wants,
+	// in the destination's type names. from_type is empty for a column the
+	// destination doesn't have.
+	FromType string `protobuf:"bytes,4,opt,name=from_type,json=fromType,proto3" json:"from_type,omitempty"`
+	ToType   string `protobuf:"bytes,5,opt,name=to_type,json=toType,proto3" json:"to_type,omitempty"`
+	// A statement the user can run on the destination to make it take the
+	// change, such as an ALTER TABLE; empty if there's none.
+	Fix           string `protobuf:"bytes,6,opt,name=fix,proto3" json:"fix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1894,6 +1904,27 @@ func (x *RefusedColumn) GetColumn() string {
 func (x *RefusedColumn) GetReason() string {
 	if x != nil {
 		return x.Reason
+	}
+	return ""
+}
+
+func (x *RefusedColumn) GetFromType() string {
+	if x != nil {
+		return x.FromType
+	}
+	return ""
+}
+
+func (x *RefusedColumn) GetToType() string {
+	if x != nil {
+		return x.ToType
+	}
+	return ""
+}
+
+func (x *RefusedColumn) GetFix() string {
+	if x != nil {
+		return x.Fix
 	}
 	return ""
 }
@@ -2254,11 +2285,14 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\x06limits\x18\x03 \x03(\v24.openetl.connector.v1.WriteSchemaApplied.LimitsEntryR\x06limits\x1a\\\n" +
 	"\vLimitsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x127\n" +
-	"\x05value\x18\x02 \x01(\v2!.openetl.connector.v1.TableLimitsR\x05value:\x028\x01\"W\n" +
+	"\x05value\x18\x02 \x01(\v2!.openetl.connector.v1.TableLimitsR\x05value:\x028\x01\"\x9f\x01\n" +
 	"\rRefusedColumn\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
 	"\x06column\x18\x02 \x01(\tR\x06column\x12\x16\n" +
-	"\x06reason\x18\x03 \x01(\tR\x06reason\"\x99\x01\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\x12\x1b\n" +
+	"\tfrom_type\x18\x04 \x01(\tR\bfromType\x12\x17\n" +
+	"\ato_type\x18\x05 \x01(\tR\x06toType\x12\x10\n" +
+	"\x03fix\x18\x06 \x01(\tR\x03fix\"\x99\x01\n" +
 	"\vTableLimits\x12\x19\n" +
 	"\bnot_null\x18\x01 \x03(\tR\anotNull\x12\x1e\n" +
 	"\n" +
