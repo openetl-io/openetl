@@ -30,8 +30,9 @@ type DestinationSuite struct {
 	// Read returns the records the destination has made visible for stream
 	// in namespace, as readers of the destination see them, each by field
 	// name; none for a stream it hasn't created. The checks compare the
-	// fields "id", an int64, and "v", a string, by their text, so any Go
-	// value that prints the same will do.
+	// fields "id", an int64, "v", a string, and a soft-deleted row's
+	// "_openetl_deleted", a bool, by their text, so any Go value that
+	// prints the same will do.
 	Read func(ctx context.Context, namespace, stream string) ([]map[string]any, error)
 	// Namespace returns a new namespace for one check. Nil: conformance_
 	// and random letters.
@@ -39,6 +40,9 @@ type DestinationSuite struct {
 	// Drop removes what the checks wrote in namespace, when the suite ends.
 	// Nil: nothing.
 	Drop func(ctx context.Context, namespace string) error
+	// NotNull makes column of stream's table in namespace refuse nulls, as
+	// a user's constraint would. Nil skips holds/not-null.
+	NotNull func(ctx context.Context, namespace, stream, column string) error
 	// How long after a commit the destination's readers can take to see it,
 	// as Kafka's consumers can. Zero: they see it at once.
 	Settle time.Duration
@@ -91,6 +95,8 @@ func (r *destinationRun) checks() []Check {
 		Check{"write/evolution", r.checkEvolution},
 		Check{"holds/patch", r.checkHoldsPatch},
 		Check{"holds/last", r.checkHoldsLast},
+		Check{"holds/soft-delete", r.checkHoldsSoftDelete},
+		Check{"holds/not-null", r.checkHoldsNotNull},
 	)
 }
 

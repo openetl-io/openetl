@@ -309,11 +309,13 @@ type store struct {
 	staging map[string]map[string][]map[string]any
 	// Rows an overwrite read has committed, until it ends.
 	reading map[string][]map[string]any
+	// By table, the columns that take no null.
+	notNull map[string]map[string]bool
 }
 
 func newStore() *store {
 	return &store{tables: map[string][]map[string]any{}, fences: map[string]uint64{}, markers: map[string]bool{},
-		staging: map[string]map[string][]map[string]any{}, reading: map[string][]map[string]any{}}
+		staging: map[string]map[string][]map[string]any{}, reading: map[string][]map[string]any{}, notNull: map[string]map[string]bool{}}
 }
 
 type memDestination struct {
@@ -326,6 +328,7 @@ var memCapabilities = destination.Capabilities{
 	Class:      destination.StageAndApply,
 	Scopes:     []destination.Scope{destination.ScopePipeline, destination.ScopeStream},
 	WriteModes: []destination.WriteMode{destination.Append, destination.Overwrite, destination.Merge},
+	Holds:      destination.Holds{ByKey: true, Guarded: true},
 }
 
 func (d *memDestination) Capabilities() destination.Capabilities { return memCapabilities }
@@ -353,6 +356,17 @@ func (w *memWriter) key(e destination.Epoch) string {
 }
 
 func (w *memWriter) Write(_ context.Context, e destination.Epoch, stream string, b arrow.RecordBatch) error {
+	return w.stage(e, stream, b, false)
+}
+
+func (w *memWriter) Patch(_ context.Context, e destination.Epoch, stream string, b arrow.RecordBatch) error {
+	return w.stage(e, stream, b, true)
+}
+
+// A staged row that's a patch.
+const patchKey = "_openetl_patch"
+
+func (w *memWriter) stage(e destination.Epoch, stream string, b arrow.RecordBatch, patch bool) error {
 	if err := w.d.c.check(); err != nil {
 		return err
 	}
@@ -365,14 +379,59 @@ func (w *memWriter) Write(_ context.Context, e destination.Epoch, stream string,
 	}
 	for i := range int(b.NumRows()) {
 		row := map[string]any{}
+		if patch {
+			row[patchKey] = true
+		}
 		for c, f := range b.Schema().Fields() {
-			if !strings.HasPrefix(f.Name, "_openetl") {
+			switch f.Name {
+			case destination.HeldColumn:
+				row[f.Name] = heldList(b.Column(c), i)
+			case "_openetl_id":
+				row[f.Name] = b.Column(c).ValueStr(i)
+			case "_openetl_op", "_openetl_deleted":
 				row[f.Name] = b.Column(c).GetOneForMarshal(i)
+			default:
+				if !strings.HasPrefix(f.Name, "_openetl") {
+					row[f.Name] = b.Column(c).GetOneForMarshal(i)
+				}
 			}
 		}
 		st.staging[k][stream] = append(st.staging[k][stream], row)
 	}
 	return nil
+}
+
+func heldList(a arrow.Array, i int) []string {
+	l := a.(*array.List)
+	if l.IsNull(i) {
+		return nil
+	}
+	vs := l.ListValues().(*array.String)
+	var out []string
+	start, end := l.ValueOffsets(i)
+	for j := start; j < end; j++ {
+		out = append(out, vs.Value(int(j)))
+	}
+	return out
+}
+
+// kept is a staged row as its table keeps it: its held columns by the
+// version they're held for.
+func kept(r map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range r {
+		if k != "_openetl_op" && k != "_openetl_id" && k != destination.HeldColumn {
+			out[k] = v
+		}
+	}
+	if held, _ := r[destination.HeldColumn].([]string); len(held) > 0 {
+		versions := map[string]any{}
+		for _, c := range held {
+			versions[c] = r["_openetl_id"]
+		}
+		out[destination.HeldColumn] = versions
+	}
+	return out
 }
 
 func (w *memWriter) PreCommit(_ context.Context, e destination.Epoch) (destination.Staged, error) {
@@ -421,26 +480,67 @@ func (w *memWriter) apply(e destination.Epoch, marked bool) {
 			continue
 		}
 		table := w.cfg.Namespace + "." + stream
+		var data, patches []map[string]any
+		for _, r := range rows {
+			if r[patchKey] == true {
+				patches = append(patches, r)
+			} else {
+				data = append(data, kept(r))
+			}
+		}
 		switch w.modes[stream] {
 		case destination.Overwrite:
-			st.reading[table] = append(st.reading[table], rows...)
+			st.reading[table] = append(st.reading[table], data...)
 			if slices.Contains(ended, stream) {
 				st.tables[table] = st.reading[table]
 				delete(st.reading, table)
 			}
 		case destination.Merge:
-			for _, r := range rows {
+			for _, r := range data {
 				i := slices.IndexFunc(st.tables[table], func(t map[string]any) bool { return t["id"] == r["id"] })
-				if i >= 0 {
-					st.tables[table][i] = r
-				} else {
+				switch {
+				case i < 0:
 					st.tables[table] = append(st.tables[table], r)
+				case r["_openetl_deleted"] == true:
+					// A soft delete keeps the row's other columns.
+					t := maps.Clone(st.tables[table][i])
+					t["_openetl_deleted"] = true
+					st.tables[table][i] = t
+				default:
+					st.tables[table][i] = r
 				}
 			}
+			w.patch(table, patches)
 		default:
-			st.tables[table] = append(st.tables[table], rows...)
+			st.tables[table] = append(st.tables[table], data...)
 		}
 		st.markers[marker] = true
+	}
+}
+
+// patch fills each patch's held columns in the row of its key, where the
+// row still holds them for the patch's version.
+func (w *memWriter) patch(table string, patches []map[string]any) {
+	st := w.d.st
+	for _, p := range patches {
+		i := slices.IndexFunc(st.tables[table], func(t map[string]any) bool { return t["id"] == p["id"] })
+		if i < 0 {
+			continue
+		}
+		t := maps.Clone(st.tables[table][i])
+		held, _ := t[destination.HeldColumn].(map[string]any)
+		held = maps.Clone(held)
+		for _, c := range p[destination.HeldColumn].([]string) {
+			if held[c] == p["_openetl_id"] || w.d.bug == "unguarded-patch" {
+				t[c] = p[c]
+				delete(held, c)
+			}
+		}
+		t[destination.HeldColumn] = held
+		if w.d.bug == "patch-undeletes" {
+			delete(t, "_openetl_deleted")
+		}
+		st.tables[table][i] = t
 	}
 }
 
@@ -479,8 +579,19 @@ func (w *memWriter) EndRead(_ context.Context, _ destination.Epoch, stream strin
 	return nil
 }
 
-func (w *memWriter) ApplySchema(context.Context, []destination.StreamSchema) (destination.SchemaApplied, error) {
-	return destination.SchemaApplied{}, nil
+func (w *memWriter) ApplySchema(_ context.Context, streams []destination.StreamSchema) (destination.SchemaApplied, error) {
+	st := w.d.st
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := destination.SchemaApplied{Limits: map[string]destination.TableLimits{}}
+	for _, s := range streams {
+		var l destination.TableLimits
+		if w.d.bug != "limits-without-not-null" {
+			l.NotNull = slices.Sorted(maps.Keys(st.notNull[w.cfg.Namespace+"."+s.Name]))
+		}
+		out.Limits[s.Name] = l
+	}
+	return out, nil
 }
 func (w *memWriter) Close(context.Context) error { return nil }
 
@@ -501,6 +612,16 @@ func destinationSuite(bug string) conformance.DestinationSuite {
 			defer st.mu.Unlock()
 			return slices.Clone(st.tables[namespace+"."+stream]), nil
 		},
+		NotNull: func(_ context.Context, namespace, stream, column string) error {
+			st.mu.Lock()
+			defer st.mu.Unlock()
+			t := namespace + "." + stream
+			if st.notNull[t] == nil {
+				st.notNull[t] = map[string]bool{}
+			}
+			st.notNull[t][column] = true
+			return nil
+		},
 	}
 }
 
@@ -510,10 +631,13 @@ func TestDestinationPasses(t *testing.T) {
 
 func TestDestinationBugsFail(t *testing.T) {
 	cases := map[string][]string{
-		"visible-at-precommit": {"write/commit", "write/crash-after-precommit", "write/crash-after-record"},
-		"double-apply":         {"write/commit"},
-		"recover-applied":      {"write/crash-after-record", "write/fence"},
-		"fenced-internal":      {"write/fence"},
+		"visible-at-precommit":    {"write/commit", "write/crash-after-precommit", "write/crash-after-record"},
+		"double-apply":            {"write/commit"},
+		"recover-applied":         {"write/crash-after-record", "write/fence"},
+		"fenced-internal":         {"write/fence"},
+		"unguarded-patch":         {"holds/patch", "holds/soft-delete"},
+		"patch-undeletes":         {"holds/soft-delete"},
+		"limits-without-not-null": {"holds/not-null"},
 	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {

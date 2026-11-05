@@ -125,18 +125,23 @@ func (w *writer) preCommit(e *protocolv1.Epoch) ([]byte, error) {
 }
 
 func (w *writer) applySchema(schemas []*protocolv1.StreamSchema) error {
+	_, err := w.schemaApplied(schemas)
+	return err
+}
+
+func (w *writer) schemaApplied(schemas []*protocolv1.StreamSchema) (*protocolv1.WriteSchemaApplied, error) {
 	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_ApplySchema{ApplySchema: &protocolv1.WriteApplySchema{Streams: schemas}}})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	a := resp.GetSchemaApplied()
 	if a == nil {
-		return fmt.Errorf("apply_schema was answered with %T, not schema_applied", resp.GetMsg())
+		return nil, fmt.Errorf("apply_schema was answered with %T, not schema_applied", resp.GetMsg())
 	}
 	if a.GetError() != nil {
-		return rpcerr.FromProto(a.GetError())
+		return nil, rpcerr.FromProto(a.GetError())
 	}
-	return nil
+	return a, nil
 }
 
 func (w *writer) commit(e *protocolv1.Epoch, staged []byte) error {
