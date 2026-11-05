@@ -4,6 +4,10 @@ package e2e
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +33,43 @@ func releaseHold(t *testing.T, pipeline, stream, column string) {
 	}))
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// dumpHolds logs what a pipeline's checkpoint log and held files say, for
+// a release that didn't land.
+func dumpHolds(t *testing.T, pipeline string) {
+	t.Helper()
+	id, err := query[string](t, "SELECT id::text FROM pipelines WHERE name = $1", pipeline)
+	if err != nil {
+		t.Logf("pipeline id: %v", err)
+		return
+	}
+	for _, q := range []string{
+		"SELECT string_agg(stream || '.' || column_name || ' ' || whole || ' ' || since_generation || '/' || since_epoch || ' releasing=' || releasing, '; ') FROM holds WHERE pipeline_id = $1::uuid",
+		"SELECT string_agg(stream || '.' || column_name || ' ' || whole || ' ' || since_generation || '/' || since_epoch || ' discard=' || discard, '; ') FROM hold_releases WHERE pipeline_id = $1::uuid",
+	} {
+		v, err := query[*string](t, q, id)
+		if err == nil && v != nil {
+			t.Logf("%s", *v)
+		} else {
+			t.Logf("%v", err)
+		}
+	}
+	root := filepath.Join(env.checkpoints)
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.Contains(p, id) && (strings.Contains(p, "_held") || strings.HasSuffix(p, "HEAD")) {
+			t.Logf("file %s", strings.TrimPrefix(p, root))
+		}
+		return nil
+	})
+	matches, _ := filepath.Glob(filepath.Join(root, "*", id, "_checkpoints", "*.json"))
+	if len(matches) > 0 {
+		b, _ := os.ReadFile(matches[len(matches)-1])
+		if i := strings.Index(string(b), `"holds"`); i >= 0 {
+			b = b[i:]
+		}
+		t.Logf("last record %s: %s", filepath.Base(matches[len(matches)-1]), b)
 	}
 }
 
@@ -75,9 +116,13 @@ func TestAColumnAViewDependsOnIsHeldAndReleased(t *testing.T) {
 	if status, stats := syncNow(t, name); status != "succeeded" {
 		t.Fatalf("the sync after the change %s: %s", status, stats)
 	}
-	held, err := query[int64](t, "SELECT count(*) FROM "+dst+" WHERE v IS NULL AND _openetl_held ? 'v'")
+	// The read takes the cursor's last row again, so row 50 is held too.
+	held, err := query[int64](t, "SELECT count(*) FROM "+dst+" WHERE v IS NULL AND _openetl_held ? 'v' AND id <= 10")
 	if err != nil || held != 10 {
-		t.Fatalf("%d rows hold v, want 10: %v", held, err)
+		t.Fatalf("%d of the changed rows hold v, want 10: %v", held, err)
+	}
+	if n, _ := query[int64](t, "SELECT count(*) FROM "+dst+" WHERE v IS NOT NULL"); n < 39 {
+		t.Errorf("only %d rows kept their v", n)
 	}
 	if typ, _ := query[string](t, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = '"+dst+"'::regclass AND attname = 'v'"); typ != "integer" {
 		t.Errorf("v became %s while held", typ)
@@ -92,11 +137,18 @@ func TestAColumnAViewDependsOnIsHeldAndReleased(t *testing.T) {
 	if status, stats := syncNow(t, name); status != "succeeded" {
 		t.Fatalf("the sync after the release %s: %s", status, stats)
 	}
-	eventually(t, 30*time.Second, "the held values to be patched in", func() bool {
+	patched := func() bool {
 		v, err := query[bool](t, `SELECT NOT EXISTS (SELECT 1 FROM `+src+` s JOIN `+dst+` d USING (id)
 			WHERE d.v IS DISTINCT FROM s.v OR d._openetl_held ? 'v')`)
 		return err == nil && v
-	})
+	}
+	for deadline := time.Now().Add(30 * time.Second); !patched(); time.Sleep(200 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			dumpHolds(t, name)
+			rows, _ := query[string](t, "SELECT string_agg(id || '=' || coalesce(v::text, 'null') || coalesce(_openetl_held::text, ''), ' ' ORDER BY id) FROM "+dst+" WHERE id <= 12")
+			t.Fatalf("the held values weren't patched in: %s", rows)
+		}
+	}
 	if typ, _ := query[string](t, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = '"+dst+"'::regclass AND attname = 'v'"); typ != "bigint" {
 		t.Errorf("v is %s after the release", typ)
 	}
@@ -112,7 +164,7 @@ func TestAHeldCellIsPatchedInAfterAnOverride(t *testing.T) {
 	startRunner(t)
 	stream := `{"name": "items", "sync": "incremental", "cursor": "at", "quarantine": "cell"}`
 	name, _, dst := heldSetup(t, "heldcell", "p numeric(10, 2), note text",
-		"(id, p, note) SELECT i, CASE WHEN i = 7 THEN 'NaN' ELSE i END, 'n' || i FROM generate_series(1, 20) i", stream)
+		"(id, p, note) SELECT i, CASE WHEN i = 7 THEN 'NaN'::numeric ELSE i END, 'n' || i FROM generate_series(1, 20) i", stream)
 	if status, stats := syncNow(t, name); status != "succeeded" {
 		t.Fatalf("first sync %s: %s", status, stats)
 	}

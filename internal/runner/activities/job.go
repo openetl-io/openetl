@@ -34,7 +34,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	if err != nil {
 		return runner.Job{}, err
 	}
-	job := runner.Job{Source: src, Releases: releases(spec.GetReleases())}
+	job := runner.Job{Source: src}
 	dstCfg, err := protojson.Marshal(spec.GetDestination().GetConfig())
 	if err != nil {
 		return job, err
@@ -176,6 +176,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		KeepSourceNames:    p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
 		SchemaPolicy:       policy,
 		QuarantineInfinity: p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_QUARANTINE,
+		Releases:           releases(spec.GetReleases()),
 	}, nil
 }
 

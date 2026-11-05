@@ -34,6 +34,7 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 			}}},
 			Types: &apiv1.Types{Infinity: apiv1.Infinity_INFINITY_QUARANTINE},
 		},
+		Releases: []*dataplanev1.HoldRelease{{Stream: "users", Column: "a", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}}},
 	}, connectorhost.Env{})
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +48,9 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 	}
 	if !job.Streams[0].NanosecondTimestamps {
 		t.Error("timestamps aren't in nanoseconds")
+	}
+	if len(job.Releases) != 1 || job.Releases[0].Column != "a" {
+		t.Errorf("releases %+v", job.Releases)
 	}
 }
 
