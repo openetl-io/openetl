@@ -2,6 +2,7 @@ package runner
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -47,6 +48,18 @@ func TestMergeHoldsKeepsWhenEachHoldStarted(t *testing.T) {
 	if len(got.Cells) != 0 || got.Replay != nil || got.Epochs != nil || len(got.Columns) != 1 {
 		t.Errorf("after the replay: %+v", got)
 	}
+	// Cells held while a replay runs aren't in its files, so they stay
+	// held once it ends, as a hold of their own.
+	h = &checkpoint.Holds{
+		Cells:  map[string]checkpoint.CellHold{"x": {Cells: 2, Since: at(1, 3)}},
+		Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 3, To: 3}},
+		Replay: &checkpoint.Replay{Columns: []string{"x"}, Files: []string{"1/3/s/part-00000.parquet"}},
+	}
+	h = mergeHolds(h, &ReadyHolds{Cells: map[string]checkpoint.CellHold{"x": {Cells: 1, Reason: "type"}}, Files: files, Replayed: &ReplayProgress{}}, at(3, 4), now)
+	got = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 1, Done: true}}, at(3, 5), now)
+	if c := got.Cells["x"]; c.Cells != 1 || c.Since != at(3, 4) || got.Replay != nil || len(got.Epochs) != 2 {
+		t.Errorf("after a replay with a cell held during it: %+v", got)
+	}
 	if mergeHolds(&checkpoint.Holds{}, &ReadyHolds{}, at(2, 9), now) != nil {
 		t.Error("nothing held, and still holds")
 	}
@@ -86,6 +99,22 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 	}
 	if restored.Streams["s"].Holds.Columns[0].Discarded {
 		t.Error("the restored record changed")
+	}
+
+	// The destination refuses a released column again: it stays held as it
+	// was, and isn't patched in.
+	j.Releases = []Release{{Stream: "s", Column: "z", Since: since}, {Stream: "s", Column: "x", Since: since}}
+	j.refused = []RefusedColumn{{RefusedColumn: destination.RefusedColumn{Stream: "s", Column: "z", Reason: "view"}}}
+	holds, _, err = j.startHolds(t.Context(), restored, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = holds["s"]
+	if i := slices.IndexFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == "z" }); i < 0 || h.Columns[i].Since != since {
+		t.Errorf("columns %+v", h.Columns)
+	}
+	if h.Replay == nil || !reflect.DeepEqual(h.Replay.Columns, []string{"x"}) {
+		t.Errorf("replay %+v", h.Replay)
 	}
 }
 

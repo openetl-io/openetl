@@ -109,6 +109,9 @@ type Replay struct {
 	Row     uint64   `json:"row,omitempty"`
 	// Cells read that still don't fit, which stay held.
 	StillHeld uint64 `json:"still_held,omitempty"`
+	// The released columns' cells held since the replay began, which aren't
+	// in Files and stay held once it ends.
+	Held map[string]CellHold `json:"held,omitempty"`
 }
 
 // HeldDir holds a pipeline's held values, next to its checkpoints:

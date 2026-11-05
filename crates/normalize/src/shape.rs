@@ -758,7 +758,8 @@ impl Shaper {
     /// Patches from a batch of held values, for the released columns: each
     /// row fills those of its held cells that fit their column's type now.
     /// Returns the patches, if any, and how many of the released columns'
-    /// cells still don't fit, which stay held.
+    /// cells still don't fit, which stay held. A column held whole again
+    /// gets none, since the destination doesn't have its type.
     pub fn patch(
         &self,
         held: &RecordBatch,
@@ -782,6 +783,16 @@ impl Shaper {
                 continue;
             };
             if !released.contains(f.name()) {
+                continue;
+            }
+            if self
+                .holds
+                .as_ref()
+                .is_some_and(|h| h.columns.values().any(|c| c.dest == *f.name()))
+            {
+                if k == CELL {
+                    still += (0..n).filter(|r| listed(*r, f.name())).count() as u64;
+                }
                 continue;
             }
             let source = self.namer.source_of(f.name()).unwrap_or(f.name());
@@ -1821,7 +1832,14 @@ mod tests {
             Some(COLUMN)
         );
 
-        // Released, its values become patches.
+        // Held whole, it gets no patches; released, its values become
+        // patches.
+        let (none, still) = s.patch(h, &HashSet::from(["y".to_owned()])).unwrap();
+        assert!(none.is_none());
+        assert_eq!(still, 0);
+        let s = keyed(Policy::Block, s.schema(), None)
+            .with_holds(HoldConfig::default())
+            .unwrap();
         let (p, still) = s.patch(h, &HashSet::from(["y".to_owned()])).unwrap();
         let p = p.unwrap();
         assert_eq!(still, 0);

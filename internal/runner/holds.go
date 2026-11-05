@@ -113,7 +113,8 @@ func (j *Job) checkHolds() error {
 
 // startHolds are the holds each holding stream starts the attempt with:
 // restored's, with the job's releases applied and the refused columns
-// held; and the dataflow's plans.
+// held; and the dataflow's plans. A released column the destination
+// refuses again keeps its hold, and isn't patched in.
 func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limits map[string]destination.TableLimits) (map[string]*checkpoint.Holds, map[string]*HoldPlan, error) {
 	holds := map[string]*checkpoint.Holds{}
 	plans := map[string]*HoldPlan{}
@@ -126,6 +127,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			h = cloneHolds(restored.Streams[s.Name].Holds)
 		}
 		var released []string
+		var taken []checkpoint.ColumnHold
 		for _, r := range j.Releases {
 			if r.Stream != s.Name || h.Replay != nil {
 				continue
@@ -136,6 +138,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				if r.Discard {
 					h.Columns[i].Discarded = true
 				} else {
+					taken = append(taken, h.Columns[i])
 					h.Columns = slices.Delete(h.Columns, i, i+1)
 					released = append(released, r.Column)
 				}
@@ -149,7 +152,22 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			}
 		}
 		for _, r := range j.refused {
-			if r.Stream == s.Name && !slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }) {
+			if r.Stream != s.Name {
+				continue
+			}
+			is := func(col string) bool { return col == r.Column }
+			released = slices.DeleteFunc(released, is)
+			if h.Replay != nil {
+				if h.Replay.Columns = slices.DeleteFunc(h.Replay.Columns, is); len(h.Replay.Columns) == 0 {
+					h.Replay = nil
+				}
+			}
+			if slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }) {
+				continue
+			}
+			if i := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }); i >= 0 {
+				h.Columns = append(h.Columns, taken[i])
+			} else {
 				h.Columns = append(h.Columns, checkpoint.ColumnHold{Column: r.Column, Delivered: r.Delivered, Reason: r.Reason})
 			}
 		}
@@ -188,16 +206,23 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 			cols = append(cols, c)
 		}
 		h.Columns = cols
-		for col, c := range r.Cells {
-			if h.Cells == nil {
-				h.Cells = map[string]checkpoint.CellHold{}
+		add := func(cells map[string]checkpoint.CellHold, col string, c checkpoint.CellHold) map[string]checkpoint.CellHold {
+			if cells == nil {
+				cells = map[string]checkpoint.CellHold{}
 			}
-			e := h.Cells[col]
+			e := cells[col]
 			if e.Cells == 0 {
 				e.Reason, e.Since, e.Started = c.Reason, at, now
 			}
 			e.Cells += c.Cells
-			h.Cells[col] = e
+			cells[col] = e
+			return cells
+		}
+		for col, c := range r.Cells {
+			h.Cells = add(h.Cells, col, c)
+			if h.Replay != nil && slices.Contains(h.Replay.Columns, col) {
+				h.Replay.Held = add(h.Replay.Held, col, c)
+			}
 		}
 		if len(r.Files) > 0 {
 			if n := len(h.Epochs); n > 0 && h.Epochs[n-1].Generation == at.Generation {
@@ -211,7 +236,11 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 			if p.Done {
 				if p.StillHeld == 0 {
 					for _, col := range h.Replay.Columns {
-						delete(h.Cells, col)
+						if c, ok := h.Replay.Held[col]; ok {
+							h.Cells[col] = c
+						} else {
+							delete(h.Cells, col)
+						}
 					}
 				}
 				h.Replay = nil
@@ -236,7 +265,7 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 	}
 	if h.Replay != nil {
 		r := *h.Replay
-		r.Columns, r.Files = slices.Clone(r.Columns), slices.Clone(r.Files)
+		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
 		out.Replay = &r
 	}
 	return out
