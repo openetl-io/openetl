@@ -250,8 +250,10 @@ type world struct {
 	// Holds: the releases taken so far, and whether they fixed what held
 	// the values; the streams whose cell holds were discarded.
 	relRng    *rand.Rand
-	released  map[releaseKey]bool
+	// Each hold's latest release's ID.
+	released  map[releaseKey]string
 	releases  []runner.Release
+	again     int
 	override  bool
 	discarded map[string]bool
 	// The sync being run: holds seeds run a second.
@@ -345,7 +347,7 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 	}
 	if cfg.holds {
 		w.wh.holds = newHeldTables(cfg.streams)
-		w.relRng, w.released, w.discarded = rand.New(rand.NewPCG(seed, 7)), map[releaseKey]bool{}, map[string]bool{}
+		w.relRng, w.released, w.discarded = rand.New(rand.NewPCG(seed, 7)), map[releaseKey]string{}, map[string]bool{}
 	}
 	for _, s := range cfg.streams {
 		u := newUpstream(rng, s.name, s.replay, !s.keyed)

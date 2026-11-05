@@ -656,7 +656,10 @@ type releaseKey struct {
 // release decides, as attempt starts, which of HEAD's holds the user
 // releases: each open hold once, with the type overridden and the column
 // altered, unless the seed releases without fixing the cause. A cell hold
-// is sometimes discarded instead.
+// is sometimes discarded instead. Every release is sent to every attempt
+// after, as the control plane would if it hadn't seen a refusal yet. A
+// hold whose latest release didn't clear it is sometimes released again,
+// with the cause fixed.
 func (w *world) release(attempt int) {
 	rec := w.head()
 	if rec == nil {
@@ -668,27 +671,40 @@ func (w *world) release(attempt int) {
 			continue
 		}
 		var rs []runner.Release
+		refused := map[releaseKey]*checkpoint.Refused{}
 		for _, c := range h.Columns {
 			if !c.Discarded {
 				rs = append(rs, runner.Release{Stream: s.name, Column: c.Column, Since: c.Since})
+				refused[releaseKey{s.name, c.Column, c.Since}] = c.Refused
 			}
 		}
-		for col, c := range h.Cells {
+		for _, col := range slices.Sorted(maps.Keys(h.Cells)) {
+			c := h.Cells[col]
 			rs = append(rs, runner.Release{Stream: s.name, Column: col, Since: c.Since, Discard: w.relRng.IntN(10) == 0})
+			refused[releaseKey{s.name, col, c.Since}] = c.Refused
 		}
+		fix := !w.cfg.unfixed
 		for _, r := range rs {
 			k := releaseKey{r.Stream, r.Column, r.Since}
-			if w.released[k] {
-				continue
+			last, again := w.released[k], false
+			if last != "" {
+				f := refused[k]
+				if again = f != nil && f.Release == last && w.relRng.IntN(2) == 0; !again {
+					continue
+				}
+				fix = true
+				w.again++
 			}
-			w.released[k] = true
+			r.ID = fmt.Sprintf("r%d", len(w.releases)+1)
+			w.released[k] = r.ID
 			w.releases = append(w.releases, r)
-			w.sched.tracef("a%d takes a release of %s.%s since %d-g%d (discard %v, fixed %v)", attempt, r.Stream, r.Column, r.Since.Epoch, r.Since.Generation, r.Discard, !w.cfg.unfixed)
+			w.sched.tracef("a%d takes release %s of %s.%s since %d-g%d (discard %v, fixed %v, again %v)",
+				attempt, r.ID, r.Stream, r.Column, r.Since.Epoch, r.Since.Generation, r.Discard, fix, again)
 			if r.Discard {
 				w.discarded[r.Stream] = true
 			}
 		}
-		if !w.cfg.unfixed {
+		if fix {
 			w.override = true
 			w.wh.mu.Lock()
 			if w.wh.holds.fixedType[s.name] && w.wh.holds.created[s.name] {
@@ -717,6 +733,13 @@ func (w *world) head() *checkpoint.Record {
 	return rec
 }
 
+func (w *world) headStreams(rec *checkpoint.Record) map[string]checkpoint.StreamState {
+	if rec == nil {
+		return nil
+	}
+	return rec.Streams
+}
+
 // ---- The oracle.
 
 // checkHolds returns "" if every cell shows its version's value, or is held
@@ -727,8 +750,24 @@ func (w *world) checkHolds(stats map[string]int) []string {
 	stats["patched cells"] += w.wh.holds.patched
 	stats["refused columns"] += w.wh.holds.refused
 	stats["releases"] += len(w.releases)
+	stats["released again"] += w.again
 	ctx := context.Background()
 	rec := w.head()
+	refused := func(r *checkpoint.Refused) {
+		if r != nil {
+			stats["refused releases at the end"]++
+		}
+	}
+	for _, st := range w.headStreams(rec) {
+		if h := st.Holds; h != nil {
+			for _, c := range h.Columns {
+				refused(c.Refused)
+			}
+			for _, c := range h.Cells {
+				refused(c.Refused)
+			}
+		}
+	}
 	log := checkpoint.NewLog(w.store, "org", "pipe")
 	for _, s := range w.cfg.streams {
 		if s.holds == nil {
