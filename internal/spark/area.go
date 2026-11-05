@@ -192,9 +192,13 @@ func (a *Area) S3AKeys(id, secret string) (map[string]string, error) {
 	}, nil
 }
 
-// CodeKey is where the checked copy of a file with digest sum is kept.
-func CodeKey(sum, uri string) string {
+// CodeKey is where the checked copy of a file with digest sum is kept. A
+// Python file's ends in .py, which is how spark-submit tells it from a jar.
+func CodeKey(sum, uri string, python bool) string {
 	name := path.Base(strings.SplitN(uri, "?", 2)[0])
+	if python && !strings.HasSuffix(name, ".py") {
+		name += ".py"
+	}
 	return "code/" + sum + "/" + name
 }
 
@@ -203,8 +207,8 @@ func CodeKey(sum, uri string) string {
 // what's in the area is what the pipeline version pins. client fetches
 // https:// URIs; s3:// URIs take the query the data plane's store does, such
 // as ?region=.
-func (a *Area) StageCode(ctx context.Context, uri, sum string, client *http.Client) (string, error) {
-	key := CodeKey(sum, uri)
+func (a *Area) StageCode(ctx context.Context, uri, sum string, python bool, client *http.Client) (string, error) {
+	key := CodeKey(sum, uri, python)
 	switch ok, err := a.bucket.Exists(ctx, key); {
 	case err != nil:
 		return "", errs.Wrap(errs.Transient, err, a.engine+": check the code's copy")

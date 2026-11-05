@@ -38,13 +38,13 @@ func TestStageCode(t *testing.T) {
 	}
 	defer func() { _ = a.Close() }()
 	uri := srv.URL + "/jobs/models-1.0.jar?token=x"
-	if _, err := a.StageCode(t.Context(), uri, strings.Repeat("0", 64), srv.Client()); errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), sum(jar)) || strings.Contains(err.Error(), "token") {
+	if _, err := a.StageCode(t.Context(), uri, strings.Repeat("0", 64), false, srv.Client()); errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), sum(jar)) || strings.Contains(err.Error(), "token") {
 		t.Fatalf("a wrong digest: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(store, "org/p/_spark", CodeKey(strings.Repeat("0", 64), uri))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(store, "org/p/_spark", CodeKey(strings.Repeat("0", 64), uri, false))); !os.IsNotExist(err) {
 		t.Errorf("a copy that didn't match was kept: %v", err)
 	}
-	key, err := a.StageCode(t.Context(), uri, sum(jar), srv.Client())
+	key, err := a.StageCode(t.Context(), uri, sum(jar), false, srv.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestStageCode(t *testing.T) {
 	if err != nil || string(got) != string(jar) {
 		t.Fatalf("the copy holds %q, %v", got, err)
 	}
-	if _, err := a.StageCode(t.Context(), uri, sum(jar), srv.Client()); err != nil || fetches != 2 {
+	if _, err := a.StageCode(t.Context(), uri, sum(jar), false, srv.Client()); err != nil || fetches != 2 {
 		t.Errorf("staging it again: %v, %d fetches", err, fetches)
 	}
 	if want := "file://" + filepath.ToSlash(store) + "/org/p/_spark/" + key; a.URI(key, false) != want {
@@ -81,8 +81,12 @@ func TestStageCode(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(store, "org/p/_spark", key)); err != nil {
 		t.Errorf("the pinned copy is gone: %v", err)
 	}
-	if _, err := a.StageCode(t.Context(), "hdfs:///jobs/a.jar", sum(jar), srv.Client()); errs.CodeOf(err) != errs.ConfigInvalid {
+	if _, err := a.StageCode(t.Context(), "hdfs:///jobs/a.jar", sum(jar), false, srv.Client()); errs.CodeOf(err) != errs.ConfigInvalid {
 		t.Errorf("hdfs: %v", err)
+	}
+	// spark-submit runs a .py file as Python, and anything else as a jar.
+	if py, err := a.StageCode(t.Context(), srv.URL+"/jobs/enrich?token=x", sum(jar), true, srv.Client()); err != nil || py != "code/"+sum(jar)+"/enrich.py" {
+		t.Errorf("a Python file's copy is %q, %v", py, err)
 	}
 }
 

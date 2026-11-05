@@ -163,7 +163,7 @@ func stepCode(step contract.SparkStep) *apiv1.SparkCode {
 // stageCode copies code into the pipeline's area, checked, and drops the
 // copies its version no longer pins. It returns the copy's key.
 func (a *Spark) stageCode(ctx context.Context, area *spark.Area, code *apiv1.SparkCode, p *apiv1.PipelineSpec, log *slog.Logger) (string, error) {
-	key, err := area.StageCode(ctx, code.GetJar()+code.GetPython(), code.GetSha256(), a.HTTP)
+	key, err := area.StageCode(ctx, code.GetJar()+code.GetPython(), code.GetSha256(), code.GetPython() != "", a.HTTP)
 	if err != nil {
 		return "", err
 	}
@@ -276,11 +276,11 @@ func (a *Spark) clusterConf(ctx context.Context, pc *dataplanev1.PinnedSparkClus
 func pinnedCode(p *apiv1.PipelineSpec) map[string]bool {
 	keep := map[string]bool{}
 	if c := p.GetTransform().GetSpark().GetCode(); c != nil {
-		keep[spark.CodeKey(c.GetSha256(), c.GetJar()+c.GetPython())] = true
+		keep[spark.CodeKey(c.GetSha256(), c.GetJar()+c.GetPython(), c.GetPython() != "")] = true
 	}
 	for _, s := range p.GetPostSync() {
 		if c := s.GetSpark().GetCode(); c != nil {
-			keep[spark.CodeKey(c.GetSha256(), c.GetJar()+c.GetPython())] = true
+			keep[spark.CodeKey(c.GetSha256(), c.GetJar()+c.GetPython(), c.GetPython() != "")] = true
 		}
 	}
 	return keep

@@ -309,7 +309,7 @@ func (c *Cluster) Prune(ctx context.Context, keep []string) error {
 
 func (c *Cluster) Deploy(ctx context.Context, d runner.FlinkDeploy) (runner.FlinkJob, error) {
 	t := c.s.Transform
-	key, err := c.area.StageCode(ctx, t.GetCode().GetJar(), t.GetCode().GetSha256(), c.http)
+	key, err := c.area.StageCode(ctx, t.GetCode().GetJar(), t.GetCode().GetSha256(), false, c.http)
 	if err != nil {
 		return nil, err
 	}
