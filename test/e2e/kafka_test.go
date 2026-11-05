@@ -5,11 +5,14 @@ package e2e
 import (
 	"cmp"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"syscall"
 	"testing"
@@ -17,8 +20,10 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+	"github.com/twmb/avro"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"google.golang.org/protobuf/encoding/protowire"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 )
@@ -58,6 +63,21 @@ func kafkaClient(t *testing.T, opts ...kgo.Opt) *kgo.Client {
 // topicValues reads every committed record of topic, as JSON objects.
 func topicValues(t *testing.T, topic string) []map[string]any {
 	t.Helper()
+	var out []map[string]any
+	for _, b := range topicRecords(t, topic) {
+		var v map[string]any
+		if err := json.Unmarshal(b, &v); err != nil {
+			t.Fatalf("%s: value %q: %v", topic, b, err)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// topicRecords reads every committed record's value of topic, in each
+// partition's order.
+func topicRecords(t *testing.T, topic string) [][]byte {
+	t.Helper()
 	ends, err := kadm.NewClient(kafkaClient(t)).ListCommittedOffsets(t.Context(), topic)
 	if err != nil {
 		// Not created yet.
@@ -75,7 +95,7 @@ func topicValues(t *testing.T, topic string) []map[string]any {
 	cl := kafkaClient(t, kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{topic: starts}), kgo.FetchIsolationLevel(kgo.ReadCommitted()), kgo.KeepControlRecords())
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	var out []map[string]any
+	var out [][]byte
 	for len(left) > 0 {
 		fs := cl.PollFetches(ctx)
 		if ctx.Err() != nil {
@@ -85,14 +105,9 @@ func topicValues(t *testing.T, topic string) []map[string]any {
 			if r.Offset+1 >= left[r.Partition] {
 				delete(left, r.Partition)
 			}
-			if r.Attrs.IsControl() {
-				continue
+			if !r.Attrs.IsControl() {
+				out = append(out, r.Value)
 			}
-			var v map[string]any
-			if err := json.Unmarshal(r.Value, &v); err != nil {
-				t.Fatalf("%s: value %q: %v", topic, r.Value, err)
-			}
-			out = append(out, v)
 		}
 	}
 	return out
@@ -277,4 +292,115 @@ func TestKafkaRunnerKilledMidSync(t *testing.T) {
 	status, stats := waitSync(t, name, 90*time.Second)
 	finishedLater(t, status, stats)
 	checkTopics(t, ns, 2000, "users", "purchases")
+}
+
+// The compose schema registry.
+func registryURL() string {
+	return cmp.Or(os.Getenv("OPENETL_TEST_SCHEMA_REGISTRY"), "http://127.0.0.1:8081")
+}
+
+func registryGet(t *testing.T, path string, v any) error {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, registryURL()+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: %s", path, resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// registryValues decodes each value of a topic written in Avro or Protobuf
+// with the schema it names, its fields as text; nulls and messages are
+// left out. read decodes a Protobuf value with another schema's numbers.
+type registryValues struct {
+	t       *testing.T
+	format  string
+	schemas map[uint32]string
+}
+
+func (r *registryValues) schema(id uint32) string {
+	r.t.Helper()
+	if s, ok := r.schemas[id]; ok {
+		return s
+	}
+	var v struct{ Schema string }
+	if err := registryGet(r.t, fmt.Sprintf("/schemas/ids/%d", id), &v); err != nil {
+		r.t.Fatal(err)
+	}
+	r.schemas[id] = v.Schema
+	return v.Schema
+}
+
+func (r *registryValues) decode(b []byte) map[string]string {
+	r.t.Helper()
+	if len(b) < 5 || b[0] != 0 {
+		r.t.Fatalf("value %q has no schema ID", b)
+	}
+	text := r.schema(binary.BigEndian.Uint32(b[1:5]))
+	if r.format == "protobuf" {
+		return r.read(text, b)
+	}
+	s, err := avro.Parse(text)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	var v map[string]any
+	if _, err := s.Decode(b[5:], &v); err != nil {
+		r.t.Fatalf("Avro value: %v", err)
+	}
+	out := map[string]string{}
+	for k, x := range v {
+		if x != nil {
+			out[k] = fmt.Sprint(x)
+		}
+	}
+	return out
+}
+
+// The top-level message's fields, which the destination indents by two.
+var protoField = regexp.MustCompile(`(?m)^  (?:optional |repeated )?[\w.]+ (\w+) = (\d+);$`)
+
+func (r *registryValues) read(text string, b []byte) map[string]string {
+	r.t.Helper()
+	names := map[protowire.Number]string{}
+	for _, m := range protoField.FindAllStringSubmatch(text, -1) {
+		n, _ := strconv.Atoi(m[2])
+		names[protowire.Number(n)] = m[1]
+	}
+	// The ID, then the message's index: a single 0 for the first.
+	b = b[6:]
+	out := map[string]string{}
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			r.t.Fatalf("Protobuf value: %v", protowire.ParseError(n))
+		}
+		b = b[n:]
+		var v string
+		switch typ {
+		case protowire.VarintType:
+			x, m := protowire.ConsumeVarint(b)
+			v, n = strconv.FormatInt(int64(x), 10), m
+		case protowire.BytesType:
+			x, m := protowire.ConsumeBytes(b)
+			v, n = string(x), m
+		default:
+			n = protowire.ConsumeFieldValue(num, typ, b)
+		}
+		if n < 0 {
+			r.t.Fatalf("Protobuf value: %v", protowire.ParseError(n))
+		}
+		b = b[n:]
+		if name, ok := names[num]; ok && v != "" {
+			out[name] = v
+		}
+	}
+	return out
 }

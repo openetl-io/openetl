@@ -191,3 +191,109 @@ func TestAdditiveSchemaChange(t *testing.T) {
 		t.Errorf("runs %q, want the first still running", got)
 	}
 }
+
+// Into Kafka with a schema registry, columns added to a CDC table register a
+// new version of the topic's value schema, which the registry's
+// compatibility (BACKWARD, compose's default) accepts, and the run goes on.
+// In Protobuf the fields keep their numbers, so a reader with the first
+// version still reads later records' fields.
+func TestAdditiveSchemaChangeToKafka(t *testing.T) {
+	startRunner(t)
+	for _, format := range []string{"avro", "protobuf"} {
+		t.Run(format, func(t *testing.T) {
+			name := unique("addcol-" + format)
+			in := schema(name)
+			kafkaDest(t, in)
+			src := pgx.Identifier{in, "users"}.Sanitize()
+			run(t, "CREATE SCHEMA "+pgx.Identifier{in}.Sanitize(),
+				"CREATE TABLE "+src+" (id bigint PRIMARY KEY, name text)",
+				"INSERT INTO "+src+" SELECT i, 'u' || i FROM generate_series(1, 100) i",
+				"CREATE PUBLICATION "+pgx.Identifier{in}.Sanitize()+" FOR TABLE "+src)
+			t.Cleanup(func() {
+				if conn, err := pgx.Connect(context.Background(), env.dbURL); err == nil {
+					_, _ = conn.Exec(context.Background(), "DROP PUBLICATION IF EXISTS "+pgx.Identifier{in}.Sanitize())
+					_ = conn.Close(context.Background())
+				}
+			})
+			apply(t,
+				fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q},
+					"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q, "publication": %q}}}`, name, in, in),
+				fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q},
+					"spec": {"connector": "kafka", "config": {"brokers": [%q], "namespace": %q, "format": %q, "schemaRegistryUrl": %q}}}`,
+					name, kafkaBrokers(), in, format, registryURL()),
+				fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
+					"spec": {"mode": "continuous", "source": {"ref": %q}, "destination": {"ref": %q}, "delivery": {"commit": {"interval": "1s"}}}}`, name, name, name))
+			t.Cleanup(func() {
+				_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+			})
+			topic := in + ".users"
+			vals := &registryValues{t: t, format: format, schemas: map[uint32]string{}}
+			// Each id's last record, and the source's rows: name, score and
+			// email.
+			latest := func() map[string][3]string {
+				out := map[string][3]string{}
+				for _, b := range topicRecords(t, topic) {
+					v := vals.decode(b)
+					out[v["id"]] = [3]string{v["name"], v["score"], v["email"]}
+				}
+				return out
+			}
+			want := func() map[string][3]string {
+				cols := "name, '', ''"
+				if mustQuery[bool](t, "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'users' AND column_name = 'score')", in) {
+					cols = "name, coalesce(score::text, ''), coalesce(email, '')"
+				}
+				conn, err := pgx.Connect(t.Context(), env.dbURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = conn.Close(context.Background()) }()
+				rows, err := conn.Query(t.Context(), "SELECT id::text, "+cols+" FROM "+src)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out := map[string][3]string{}
+				for rows.Next() {
+					var id string
+					var r [3]string
+					if err := rows.Scan(&id, &r[0], &r[1], &r[2]); err != nil {
+						t.Fatal(err)
+					}
+					out[id] = r
+				}
+				return out
+			}
+			eventually(t, 60*time.Second, "the snapshot", func() bool { return maps.Equal(latest(), want()) })
+
+			run(t, "ALTER TABLE "+src+" ADD COLUMN score int, ADD COLUMN email text",
+				"UPDATE "+src+" SET score = id WHERE id % 10 = 0",
+				"INSERT INTO "+src+" SELECT i, 'u' || i, i * 2, 'u' || i || '@example.com' FROM generate_series(101, 150) i")
+			eventually(t, 2*time.Minute, "the changes after the new columns", func() bool { return maps.Equal(latest(), want()) })
+
+			var versions []int
+			if err := registryGet(t, "/subjects/"+topic+"-value/versions", &versions); err != nil {
+				t.Fatal(err)
+			}
+			if len(versions) != 2 {
+				t.Errorf("%s-value has versions %v, want 2", topic, versions)
+			}
+			if format == "protobuf" && len(versions) > 0 {
+				var first struct{ Schema string }
+				if err := registryGet(t, fmt.Sprintf("/subjects/%s-value/versions/%d", topic, versions[0]), &first); err != nil {
+					t.Fatal(err)
+				}
+				for _, b := range topicRecords(t, topic) {
+					own, old := vals.decode(b), vals.read(first.Schema, b)
+					for _, f := range []string{"id", "name", "_openetl_id", "_openetl_op"} {
+						if old[f] != own[f] {
+							t.Fatalf("with the first version, %s reads %q, want %q", f, old[f], own[f])
+						}
+					}
+				}
+			}
+			if got := statuses(runs(t, name)); got != "running" {
+				t.Errorf("runs %q, want the first still running", got)
+			}
+		})
+	}
+}
