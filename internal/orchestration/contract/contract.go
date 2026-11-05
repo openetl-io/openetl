@@ -285,8 +285,13 @@ type StreamRun struct {
 	State  StreamState
 	SyncID string
 	RunKey string
-	// Attempts before the current one, which drained.
+	// Attempts before the current one, which drained or failed.
 	Earlier int32
+	// The wait before the job's last retry; zero once a job has run long
+	// enough to be healthy.
+	Backoff time.Duration `json:",omitempty"`
+	// The next job is a retry, and waits Backoff first.
+	Retry bool `json:",omitempty"`
 }
 
 type StartRunInput struct {
@@ -308,7 +313,7 @@ type StreamJobInput struct {
 	Version    string
 	SyncID     string
 	RunKey     string
-	// Attempts the run ran before this activity, which drained.
+	// Attempts the run ran before this activity, which drained or failed.
 	Earlier int32
 }
 

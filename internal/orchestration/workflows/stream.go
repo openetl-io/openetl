@@ -18,9 +18,10 @@ const (
 	// chance: between runs, or after a job drains.
 	maxStreamHistory = 2000
 	// The first wait before a stream job's retry, unless AttemptRetry is set,
-	// and the longest.
+	// and the longest. A job that lasted healthyJob waits the first again.
 	streamRetry    = 5 * time.Second
 	maxStreamRetry = 5 * time.Minute
+	healthyJob     = 10 * time.Minute
 )
 
 type runEnd int
@@ -33,7 +34,7 @@ const (
 
 // StreamSupervisor runs a continuous pipeline: a run of its current version
 // at a time, each one long-running job on its data plane's stream queue,
-// which Temporal retries after failures without limit. A refresh signal makes
+// which it retries after failures without limit. A refresh signal makes
 // it look at the pipeline again, and stop the run at a checkpoint if the
 // pipeline has a new version, is paused, became scheduled or is gone. A run
 // that fails with a code that isn't retried waits for the next refresh. It
@@ -111,31 +112,56 @@ func (w Workflows) StreamSupervisor(ctx workflow.Context, in contract.StreamInpu
 }
 
 // runJobs runs in.Run's job until it stops when asked to, fails with a code
-// that isn't retried, or drains when the supervisor should continue as new.
-// A drained job starts again at once, on another runner.
+// that isn't retried, or drains or fails when the supervisor should continue
+// as new. A drained job starts again at once, on another runner. A failed
+// one starts again after a wait that doubles from AttemptRetry to
+// maxStreamRetry, and starts over once a job has lasted healthyJob.
 func (w Workflows) runJobs(ctx workflow.Context, in *contract.StreamInput, refresh workflow.ReceiveChannel) (runEnd, error) {
 	run := in.Run
 	cp := workflow.WithActivityOptions(ctx, cpOptions)
+	// Before, Temporal retried a job, and its backoff never started over.
+	retries := workflow.GetVersion(ctx, "stream-job-retries", workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	policy := &temporal.RetryPolicy{MaximumAttempts: 1}
+	if !retries {
+		policy = &temporal.RetryPolicy{
+			InitialInterval:        cmp.Or(w.AttemptRetry, streamRetry),
+			BackoffCoefficient:     2,
+			MaximumInterval:        maxStreamRetry,
+			NonRetryableErrorTypes: streamNonRetryable(),
+		}
+	}
 	for {
 		jobCtx, cancel := workflow.WithCancel(ctx)
 		dp := workflow.WithActivityOptions(jobCtx, workflow.ActivityOptions{
 			TaskQueue: contract.StreamQueue(run.State.DataPlane),
-			// A job runs until it's stopped; Temporal retries one that times out.
+			// A job runs until it's stopped.
 			StartToCloseTimeout: 365 * 24 * time.Hour,
 			HeartbeatTimeout:    cmp.Or(w.StreamHeartbeat, 90*time.Second),
 			// Cancelling stops the job at a checkpoint; wait for it.
 			WaitForCancellation: true,
-			RetryPolicy: &temporal.RetryPolicy{
-				InitialInterval:        cmp.Or(w.AttemptRetry, streamRetry),
-				BackoffCoefficient:     2,
-				MaximumInterval:        maxStreamRetry,
-				NonRetryableErrorTypes: streamNonRetryable(),
-			},
+			RetryPolicy:         policy,
 		})
-		job := workflow.ExecuteActivity(dp, contract.RunStreamJob, contract.StreamJobInput{
+		jobIn := contract.StreamJobInput{
 			OrgID: in.OrgID, PipelineID: in.PipelineID, Version: run.State.Version,
 			SyncID: run.SyncID, RunKey: run.RunKey, Earlier: run.Earlier,
-		})
+		}
+		start := workflow.Now(ctx)
+		var job workflow.Future
+		if run.Retry {
+			run.Retry = false
+			f, settle := workflow.NewFuture(jobCtx)
+			workflow.Go(jobCtx, func(c workflow.Context) {
+				if err := workflow.Sleep(c, run.Backoff); err != nil {
+					settle.SetError(err)
+					return
+				}
+				start = workflow.Now(c)
+				settle.Chain(workflow.ExecuteActivity(dp, contract.RunStreamJob, jobIn))
+			})
+			job = f
+		} else {
+			job = workflow.ExecuteActivity(dp, contract.RunStreamJob, jobIn)
+		}
 		stopping := false
 		var jobErr error
 		for done := false; !done; {
@@ -168,6 +194,9 @@ func (w Workflows) runJobs(ctx workflow.Context, in *contract.StreamInput, refre
 		if stopping || ctx.Err() != nil {
 			return runStopped, jobErr
 		}
+		if workflow.Now(ctx).Sub(start) >= healthyJob {
+			run.Backoff = 0
+		}
 		if attempt, ok := drained(jobErr); ok {
 			run.Earlier += attempt
 			// A refresh waiting would be lost.
@@ -177,10 +206,41 @@ func (w Workflows) runJobs(ctx workflow.Context, in *contract.StreamInput, refre
 			continue
 		}
 		if jobErr == nil {
-			jobErr = errors.New("the job ended")
+			return runFailed, errors.New("the job ended")
 		}
-		return runFailed, jobErr
+		if !retries || !retryable(jobErr) {
+			return runFailed, jobErr
+		}
+		run.Earlier++
+		run.Backoff = w.backoff(run.Backoff)
+		run.Retry = true
+		workflow.GetLogger(ctx).Warn("the job failed; retrying", "in", run.Backoff, "err", jobErr)
+		if refresh.Len() == 0 && continueAsNew(ctx) {
+			return runContinued, nil
+		}
 	}
+}
+
+// backoff is the wait before a job's retry, after a wait of last before the
+// retry before it, or none since a job was healthy.
+func (w Workflows) backoff(last time.Duration) time.Duration {
+	if last == 0 {
+		return cmp.Or(w.AttemptRetry, streamRetry)
+	}
+	return min(2*last, maxStreamRetry)
+}
+
+// retryable is whether a job that failed with err is retried, as Temporal's
+// retry policy did: unless it was cancelled or failed with a code that fails
+// the run.
+func retryable(err error) bool {
+	if temporal.IsCanceledError(err) {
+		return false
+	}
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+		return !app.NonRetryable() && !slices.Contains(streamNonRetryable(), app.Type())
+	}
+	return true
 }
 
 // streamNonRetryable is the codes that fail a run. DRAINING comes back to

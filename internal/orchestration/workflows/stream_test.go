@@ -1,6 +1,7 @@
 package workflows_test
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
@@ -26,10 +28,12 @@ const forever = 1000 * time.Hour
 
 // streamEnv runs StreamSupervisor against a pipeline the test changes.
 type streamEnv struct {
-	t        *testing.T
-	env      *testsuite.TestWorkflowEnvironment
-	state    contract.StreamState
-	jobs     []contract.StreamJobInput
+	t     *testing.T
+	env   *testsuite.TestWorkflowEnvironment
+	state contract.StreamState
+	jobs  []contract.StreamJobInput
+	// When each job started, on the workflow's clock.
+	starts   []time.Time
 	finished []contract.FinishSyncInput
 }
 
@@ -69,6 +73,7 @@ func newStreamEnv(t *testing.T, w workflows.Workflows, answer job) *streamEnv {
 			return
 		}
 		e.jobs = append(e.jobs, in)
+		e.starts = append(e.starts, e.env.Now())
 		var err error
 		wait, err = answer(len(e.jobs), *info, in)
 		answers = append(answers, err)
@@ -133,7 +138,7 @@ func gone(s *contract.StreamState) { s.Continuous = false }
 // version; deleting the pipeline stops that one and ends the supervisor.
 func TestStreamUpgradesAndEnds(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
-	e.at(time.Minute, func(s *contract.StreamState) { s.Version = "v2" })
+	e.at(10*time.Second, func(s *contract.StreamState) { s.Version = "v2" })
 	e.at(2*time.Minute, gone)
 	if err := e.run(input); err != nil {
 		t.Fatal(err)
@@ -226,6 +231,93 @@ func TestStreamRestartsWithinTheRun(t *testing.T) {
 	}
 	if got := e.ends(); !slices.Equal(got, []string{"r1 stopped"}) {
 		t.Errorf("runs ended %v", got)
+	}
+}
+
+// A failed job waits before its retry, from AttemptRetry and doubling to 5
+// minutes, a dead runner's heartbeat timeout included. A job that lasted 10
+// minutes waits the first again.
+func TestStreamRetriesBackOffAndStartOver(t *testing.T) {
+	ran := map[int]time.Duration{12: 11 * time.Minute, 13: 2 * time.Minute, 14: forever}
+	e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, info activity.Info, in contract.StreamJobInput) (time.Duration, error) {
+		if got := int(in.Earlier + info.Attempt); got != n {
+			t.Errorf("call %d is the run's attempt %d", n, got)
+		}
+		switch {
+		case n == 14:
+			return forever, temporal.NewCanceledError()
+		case n == 3:
+			return time.Second, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, nil)
+		case ran[n] > 0:
+			return ran[n], fail(errs.Transient)
+		}
+		return time.Second, fail(errs.Transient)
+	})
+	e.at(10*time.Hour, gone)
+	if err := e.run(input); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.jobs) != 14 {
+		t.Fatalf("%d jobs, want 14", len(e.jobs))
+	}
+	want := []time.Duration{1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 1, 2}
+	for i, w := range want {
+		took := cmp.Or(ran[i+1], time.Second)
+		if got := e.starts[i+1].Sub(e.starts[i]) - took; got != w*time.Second {
+			t.Errorf("job %d started %s after job %d failed, want %ds", i+2, got, i+1, w)
+		}
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r1 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// Past its history limit, a supervisor continues as new after a failure too,
+// carrying the wait. A refresh during the wait stops the run.
+func TestStreamContinuesAsNewAfterAFailure(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, func(int, activity.Info, contract.StreamJobInput) (time.Duration, error) {
+		return time.Minute, fail(errs.Transient)
+	})
+	e.env.SetCurrentHistoryLength(2001)
+	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7", Earlier: 2, Backoff: 20 * time.Second}
+	err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run})
+	var can *workflow.ContinueAsNewError
+	if !errors.As(err, &can) {
+		t.Fatalf("got %v, want to continue as new", err)
+	}
+	var next contract.StreamInput
+	if err := converter.GetDefaultDataConverter().FromPayloads(can.Input, &next); err != nil {
+		t.Fatal(err)
+	}
+	if r := next.Run; r == nil || r.SyncID != "r7" || r.Earlier != 3 || r.Backoff != 40*time.Second || !r.Retry {
+		t.Errorf("continued with %+v", r)
+	}
+
+	e = newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.at(10*time.Second, func(s *contract.StreamState) { s.Version = "v2" })
+	e.at(time.Hour, gone)
+	if err := e.run(next); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.versions(); !slices.Equal(got, []string{"r1/v2"}) {
+		t.Errorf("jobs %v", got)
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r7 stopped", "r1 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// A run continued as new during a wait waits it out first.
+func TestStreamContinuedRetryWaits(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.at(time.Hour, gone)
+	start := e.env.Now()
+	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7", Earlier: 3, Backoff: 4 * time.Minute, Retry: true}
+	if err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run}); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.starts) != 1 || e.starts[0].Sub(start) != 4*time.Minute || e.jobs[0].Earlier != 3 {
+		t.Errorf("jobs %+v at %v, from %v", e.jobs, e.starts, start)
 	}
 }
 
