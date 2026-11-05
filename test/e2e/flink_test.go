@@ -93,6 +93,18 @@ const flinkREST = "http://127.0.0.1:8091"
 // answers.
 func flinkEnv(t *testing.T) string {
 	t.Helper()
+	jar := flinkLib(t)
+	res, err := http.Get(flinkREST + "/overview")
+	if err != nil {
+		t.Skipf("compose's Flink isn't up: %v", err)
+	}
+	_ = res.Body.Close()
+	return jar
+}
+
+// flinkLib is openetl-flink's jar.
+func flinkLib(t *testing.T) string {
+	t.Helper()
 	dir := os.Getenv("OPENETL_FLINK_LIB")
 	if dir == "" {
 		t.Skip("set OPENETL_FLINK_LIB to run Flink transforms (make e2e does, with the compose stack's Flink)")
@@ -101,17 +113,18 @@ func flinkEnv(t *testing.T) string {
 	if len(jars) != 1 {
 		t.Skipf("no openetl-flink jar in %s: make flink-lib builds it", dir)
 	}
-	res, err := http.Get(flinkREST + "/overview")
-	if err != nil {
-		t.Skipf("compose's Flink isn't up: %v", err)
-	}
-	_ = res.Body.Close()
 	return jars[0]
 }
 
 // flinkRunner starts a runner whose store is bucket, which Flink reaches
 // too, and whose bridge the compose stack's containers reach.
 func flinkRunner(t *testing.T, store string) *runner {
+	t.Helper()
+	return flinkRunnerFor(t, store, "host.docker.internal")
+}
+
+// flinkRunnerFor starts a flinkRunner whose bridge Flink reaches at host.
+func flinkRunnerFor(t *testing.T, store, host string) *runner {
 	t.Helper()
 	var lc net.ListenConfig
 	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -120,9 +133,9 @@ func flinkRunner(t *testing.T, store string) *runner {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
-	host := cmp.Or(os.Getenv("OPENETL_TEST_BRIDGE_HOST"), "0.0.0.0")
+	listen := cmp.Or(os.Getenv("OPENETL_TEST_BRIDGE_HOST"), "0.0.0.0")
 	return startRunnerVia(t, env.temporal, env.apiURL, "--checkpoints", store,
-		"--bridge-listen", fmt.Sprintf("%s:%d", host, port), "--bridge-advertise", fmt.Sprintf("host.docker.internal:%d", port))
+		"--bridge-listen", fmt.Sprintf("%s:%d", listen, port), "--bridge-advertise", fmt.Sprintf("%s:%d", host, port))
 }
 
 // flinkJobs counts the session cluster's jobs by state.

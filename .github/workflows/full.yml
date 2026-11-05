@@ -78,8 +78,14 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     secrets: inherit
 
+  kind:
+    needs: changed
+    if: needs.changed.outputs.run == 'true'
+    uses: ./.github/workflows/kind.yml
+    secrets: inherit
+
   full:
-    needs: [changed, go, rust, deny, web, spark-lib, flink-lib, integration, e2e]
+    needs: [changed, go, rust, deny, web, spark-lib, flink-lib, integration, e2e, kind]
     if: always()
     runs-on: ubuntu-latest
     steps:

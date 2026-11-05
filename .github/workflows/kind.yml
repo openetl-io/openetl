@@ -1,0 +1,77 @@
+name: kind
+
+# Flink on the Kubernetes operator, in kind: on demand
+# (gh workflow run kind.yml --ref <branch>), and nightly from full.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-kind-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost > /dev/null 2>&1 &
+          echo $! > "$RUNNER_TEMP/free-disk.pid"
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: unsuitable001/openetl-connectors
+          ref: move-postgres
+          path: openetl-connectors
+          ssh-key: ${{ secrets.CONNECTORS_DEPLOY_KEY }}
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ github.job }}-
+      - uses: actions/cache@v6
+        with:
+          path: ~/.m2
+          key: maven-${{ github.job }}-${{ hashFiles('libs/**/pom.xml') }}
+          restore-keys: maven-${{ github.job }}-
+      - name: Start Postgres, Temporal, S3 and kind
+        run: |
+          tail --pid="$(cat "$RUNNER_TEMP/free-disk.pid")" -f /dev/null
+          curl -fsSLo "$RUNNER_TEMP/kind" https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          sudo install "$RUNNER_TEMP/kind" /usr/local/bin/kind
+          (set +e; make deps-up DEPS="postgres temporal s3" && make kind-up; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
+      - name: Build the engine, the connectors and openetl-flink
+        run: |
+          make connectors CONNECTORS_SRC=openetl-connectors
+          make flink-lib MAVEN_FLAGS=-DskipTests
+          cargo build -p openetl-engine
+      - name: Wait for the services
+        timeout-minutes: 15
+        run: |
+          until [ -f "$RUNNER_TEMP/deps.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/deps.log"
+          exit "$(cat "$RUNNER_TEMP/deps.status")"
+      # Pods reach the host at the kind network's gateway.
+      - name: Flink on the operator, with JobManager and runner kills
+        run: |
+          host=$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' | tr ' ' '\n' | grep -m1 '\.')
+          make e2e-kube CONNECTORS_SRC=openetl-connectors KIND_HOST="$host"
+      - name: The operator's and Flink's logs
+        if: failure()
+        run: |
+          k() { kubectl --kubeconfig .openetl/kind/kubeconfig "$@"; }
+          k -n flink-operator logs deploy/flink-kubernetes-operator --tail 300
+          k -n openetl get flinkdeployments,pods -o wide
+          for p in $(k -n openetl get pods -o name); do k -n openetl logs "$p" --tail 100; done
