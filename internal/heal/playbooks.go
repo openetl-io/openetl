@@ -61,6 +61,12 @@ func describe(o Observation, t target) (summary, next string) {
 			"The rows are under _quarantine in the data plane's storage, each with the reason it was refused: a value its " +
 				"column's type can't hold, such as a new enum value or a date in another format. The incident resolves once " +
 				"the share falls under half the threshold."
+	case Held:
+		return fmt.Sprintf("Stream %s of %s holds back %s", o.Stream, name, o.Details["held"]),
+			fmt.Sprintf("The rest of each row is delivered, and the held values are kept. See them with openetl holds %s%s. Once "+
+				"the destination can take the change (a widened column, a dropped view, a type override), release each one "+
+				"with openetl holds release %s%s %s COLUMN, which patches the held values in; or drop them with openetl holds "+
+				"discard. The incident turns critical after a day, and resolves when the stream holds nothing.", ws, t.pipeline, ws, t.pipeline, o.Stream)
 	}
 	if o.Code != "" {
 		return fmt.Sprintf("A sync of %s failed (%s)", name, o.Code), fmt.Sprintf("See the sync's log (%s). The incident resolves once a sync succeeds.", logs)

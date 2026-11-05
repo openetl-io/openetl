@@ -280,6 +280,9 @@ type StreamState struct {
 	WorkspaceID string
 	// Of the source and the destination.
 	Connectors []string
+	// The newest hold release or discard (ADR-0025), which a run takes when
+	// it starts; empty for none.
+	Releases string
 }
 
 // StreamRun is one run of a continuous pipeline: a version running from when

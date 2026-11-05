@@ -161,6 +161,42 @@ type FlinkClusterVersion struct {
 	CreateTime time.Time
 }
 
+type Hold struct {
+	OrgID           uuid.UUID
+	PipelineID      uuid.UUID
+	Stream          string
+	ColumnName      string
+	Whole           bool
+	Reason          string
+	SinceGeneration int64
+	SinceEpoch      int64
+	StartTime       *time.Time
+	Cells           int64
+	Discarded       bool
+	Releasing       bool
+}
+
+type HoldCheckpoint struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Generation int64
+	Epoch      int64
+}
+
+type HoldRelease struct {
+	OrgID           uuid.UUID
+	ID              uuid.UUID
+	PipelineID      uuid.UUID
+	Stream          string
+	ColumnName      string
+	Whole           bool
+	SinceGeneration int64
+	SinceEpoch      int64
+	Discard         bool
+	Principal       string
+	CreateTime      time.Time
+}
+
 type Incident struct {
 	OrgID         uuid.UUID
 	ID            uuid.UUID

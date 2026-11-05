@@ -283,10 +283,14 @@ func (a *Activities) streamState(ctx context.Context, in contract.StreamInput) (
 	if err != nil {
 		return st, err
 	}
+	releases, err := a.Store.NewestHoldRelease(ctx, db.NewestHoldReleaseParams{OrgID: org, PipelineID: pipeline})
+	if err != nil {
+		return st, err
+	}
 	return contract.StreamState{
 		Continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
 		Paused:     p.Paused, Version: p.Version, DataPlane: p.DataPlaneID,
-		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors,
+		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, Releases: releases,
 	}, nil
 }
 

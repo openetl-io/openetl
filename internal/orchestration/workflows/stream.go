@@ -36,7 +36,8 @@ const (
 // at a time, each one long-running job on its data plane's stream queue,
 // which it retries after failures without limit. A refresh signal makes
 // it look at the pipeline again, and stop the run at a checkpoint if the
-// pipeline has a new version, is paused, became scheduled or is gone. A run
+// pipeline has a new version or a hold released, is paused, became
+// scheduled or is gone. A run
 // that fails with a code that isn't retried waits for the next refresh. It
 // ends when the pipeline is gone or scheduled.
 func (w Workflows) StreamSupervisor(ctx workflow.Context, in contract.StreamInput) error {
@@ -184,7 +185,7 @@ func (w Workflows) runJobs(ctx workflow.Context, in *contract.StreamInput, refre
 				workflow.GetLogger(ctx).Warn("reading the pipeline failed; the run carries on", "err", err)
 				continue
 			}
-			if st.Continuous && !st.Paused && st.Version == run.State.Version && st.DataPlane == run.State.DataPlane {
+			if st.Continuous && !st.Paused && st.Version == run.State.Version && st.DataPlane == run.State.DataPlane && st.Releases == run.State.Releases {
 				continue
 			}
 			stopping = true

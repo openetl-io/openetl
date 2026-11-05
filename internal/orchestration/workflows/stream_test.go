@@ -151,6 +151,23 @@ func TestStreamUpgradesAndEnds(t *testing.T) {
 	}
 }
 
+// A released hold stops the run at a checkpoint and starts another of the
+// same version, which takes the release.
+func TestStreamRestartsForARelease(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.at(10*time.Second, func(s *contract.StreamState) { s.Releases = "rel1" })
+	e.at(2*time.Minute, gone)
+	if err := e.run(input); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.versions(); !slices.Equal(got, []string{"r1/v1", "r2/v1"}) {
+		t.Errorf("jobs %v", got)
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r1 stopped", "r2 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
 // A refresh that changes nothing the run depends on leaves its job alone.
 func TestStreamRefreshWithoutChange(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, runsForever)

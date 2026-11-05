@@ -58,6 +58,9 @@ Commands:
                   manage the webhooks platform events go to
   incident list|get|resolve
                   see what's wrong with pipelines, and what heal did
+  holds NAME      list the columns and cells a pipeline holds back
+  holds release|discard NAME STREAM COLUMN
+                  patch a hold's values in, or drop them
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file
 (.openetl/admin.key by default, where openetld writes the owner's key).
@@ -108,6 +111,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runWebhook(ctx, args[1:], out)
 	case "incident":
 		return runIncident(ctx, args[1:], out)
+	case "holds":
+		return runHolds(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "syncs":

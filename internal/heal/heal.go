@@ -34,6 +34,7 @@ const (
 	Lagging         Class = "lagging"
 	RetentionAtRisk Class = "retention_at_risk"
 	Quarantine      Class = "quarantine"
+	Held            Class = "held"
 )
 
 // ResolvedByProgress are the classes a pipeline making progress again

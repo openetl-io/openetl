@@ -120,6 +120,9 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err != nil {
 		return nil, err
 	}
+	if err := s.recordHolds(ctx, id, m); err != nil {
+		return nil, err
+	}
 	if err := s.afterCheckpoint(ctx, id, m); err != nil {
 		return nil, err
 	}
@@ -128,8 +131,8 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 
 // afterCheckpoint is what a running sync's commit tells heal. A continuous
 // run's commit resolves the incidents progress resolves, and ends a crash
-// loop's count; the read's lag and retention, and the streams' quarantined
-// rows, open or resolve theirs.
+// loop's count; the read's lag and retention, the streams' holds and their
+// quarantined rows open or resolve theirs.
 func (s *Server) afterCheckpoint(ctx context.Context, pipeline uuid.UUID, m *dataplanev1.ReportCheckpointRequest) error {
 	sync, err := s.Store.GetSyncByRun(ctx, db.GetSyncByRunParams{OrgID: s.Tenant.Org, PipelineID: pipeline, RunID: m.GetRunId()})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -154,6 +157,9 @@ func (s *Server) afterCheckpoint(ctx context.Context, pipeline uuid.UUID, m *dat
 		}
 	}
 	if err := s.checkRetention(ctx, pipeline, sync, m); err != nil {
+		return err
+	}
+	if err := s.checkHolds(ctx, pipeline, sync, m); err != nil {
 		return err
 	}
 	return s.checkQuarantine(ctx, pipeline, sync, m)
