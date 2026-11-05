@@ -50,21 +50,25 @@ const (
 	IncidentClass_INCIDENT_CLASS_RETENTION_AT_RISK IncidentClass = 8
 	// A stream is quarantining a large share of its rows.
 	IncidentClass_INCIDENT_CLASS_QUARANTINE IncidentClass = 9
+	// A stream holds a column or cells back (ADR-0025) until they're released
+	// or discarded.
+	IncidentClass_INCIDENT_CLASS_HELD IncidentClass = 10
 )
 
 // Enum value maps for IncidentClass.
 var (
 	IncidentClass_name = map[int32]string{
-		0: "INCIDENT_CLASS_UNSPECIFIED",
-		1: "INCIDENT_CLASS_SYNC_FAILED",
-		2: "INCIDENT_CLASS_AUTH",
-		3: "INCIDENT_CLASS_SCHEMA_BLOCKED",
-		4: "INCIDENT_CLASS_RATE_LIMITED",
-		5: "INCIDENT_CLASS_POSITION_LOST",
-		6: "INCIDENT_CLASS_CRASH_LOOP",
-		7: "INCIDENT_CLASS_LAGGING",
-		8: "INCIDENT_CLASS_RETENTION_AT_RISK",
-		9: "INCIDENT_CLASS_QUARANTINE",
+		0:  "INCIDENT_CLASS_UNSPECIFIED",
+		1:  "INCIDENT_CLASS_SYNC_FAILED",
+		2:  "INCIDENT_CLASS_AUTH",
+		3:  "INCIDENT_CLASS_SCHEMA_BLOCKED",
+		4:  "INCIDENT_CLASS_RATE_LIMITED",
+		5:  "INCIDENT_CLASS_POSITION_LOST",
+		6:  "INCIDENT_CLASS_CRASH_LOOP",
+		7:  "INCIDENT_CLASS_LAGGING",
+		8:  "INCIDENT_CLASS_RETENTION_AT_RISK",
+		9:  "INCIDENT_CLASS_QUARANTINE",
+		10: "INCIDENT_CLASS_HELD",
 	}
 	IncidentClass_value = map[string]int32{
 		"INCIDENT_CLASS_UNSPECIFIED":       0,
@@ -77,6 +81,7 @@ var (
 		"INCIDENT_CLASS_LAGGING":           7,
 		"INCIDENT_CLASS_RETENTION_AT_RISK": 8,
 		"INCIDENT_CLASS_QUARANTINE":        9,
+		"INCIDENT_CLASS_HELD":              10,
 	}
 )
 
@@ -927,7 +932,7 @@ const file_openetl_api_v1_incident_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\acomment\x18\x02 \x01(\tR\acomment\"O\n" +
 	"\x17ResolveIncidentResponse\x124\n" +
-	"\bincident\x18\x01 \x01(\v2\x18.openetl.api.v1.IncidentR\bincident*\xce\x02\n" +
+	"\bincident\x18\x01 \x01(\v2\x18.openetl.api.v1.IncidentR\bincident*\xe7\x02\n" +
 	"\rIncidentClass\x12\x1e\n" +
 	"\x1aINCIDENT_CLASS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aINCIDENT_CLASS_SYNC_FAILED\x10\x01\x12\x17\n" +
@@ -938,7 +943,9 @@ const file_openetl_api_v1_incident_proto_rawDesc = "" +
 	"\x19INCIDENT_CLASS_CRASH_LOOP\x10\x06\x12\x1a\n" +
 	"\x16INCIDENT_CLASS_LAGGING\x10\a\x12$\n" +
 	" INCIDENT_CLASS_RETENTION_AT_RISK\x10\b\x12\x1d\n" +
-	"\x19INCIDENT_CLASS_QUARANTINE\x10\t*e\n" +
+	"\x19INCIDENT_CLASS_QUARANTINE\x10\t\x12\x17\n" +
+	"\x13INCIDENT_CLASS_HELD\x10\n" +
+	"*e\n" +
 	"\rIncidentState\x12\x1e\n" +
 	"\x1aINCIDENT_STATE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13INCIDENT_STATE_OPEN\x10\x01\x12\x1b\n" +

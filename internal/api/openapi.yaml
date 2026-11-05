@@ -3483,6 +3483,7 @@ components:
                         - INCIDENT_CLASS_LAGGING
                         - INCIDENT_CLASS_RETENTION_AT_RISK
                         - INCIDENT_CLASS_QUARANTINE
+                        - INCIDENT_CLASS_HELD
                     type: string
                     format: enum
                 code:

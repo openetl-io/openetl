@@ -311,6 +311,37 @@ impl Shaper {
         self.current.clone()
     }
 
+    /// Takes the declared types of the stream's columns into its schema
+    /// before any row arrives, as a batch of them would, so a replay's
+    /// patches have them. True if the schema changed.
+    pub fn declare(&mut self) -> Result<bool, Error> {
+        let (Some(declared), Some(current)) = (self.declared.clone(), self.current.clone()) else {
+            return Ok(false);
+        };
+        let live = self.evolver.live();
+        let known: Vec<Field> = declared
+            .fields()
+            .iter()
+            .filter(|f| live.field_with_name(f.name()).is_ok())
+            .map(|f| f.as_ref().clone())
+            .collect();
+        if known.is_empty() {
+            return Ok(false);
+        }
+        let empty = RecordBatch::new_empty(Arc::new(Schema::new(known)));
+        let (typed, _) = coerce::conform_cells(&empty, Some(&declared), self.types)?;
+        let c = self.evolver.conform(&typed)?;
+        if !c.changed {
+            return Ok(false);
+        }
+        let seq = current
+            .field_with_name("_openetl_seq")
+            .ok()
+            .map(|f| f.data_type().clone());
+        self.shape(&c.batch, seq.as_ref());
+        Ok(true)
+    }
+
     /// Called at each barrier: from now on, the schema policy applies.
     pub fn seal(&mut self) {
         self.evolver.establish();
@@ -1699,6 +1730,35 @@ mod tests {
     }
 
     #[test]
+    fn declared_types_reach_the_schema_before_any_row() {
+        let mut first = price_shaper(HoldConfig::default());
+        first.batch(&prices()).unwrap();
+        let wider = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("price", DataType::Utf8, true),
+        ]));
+        let mut s = keyed(Policy::AllowAll, first.schema(), Some(wider));
+        assert!(s.declare().unwrap());
+        let schema = s.schema().unwrap();
+        assert_eq!(
+            schema.field_with_name("price").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        assert_eq!(
+            schema.field_with_name("_openetl_seq").unwrap().data_type(),
+            first
+                .schema()
+                .unwrap()
+                .field_with_name("_openetl_seq")
+                .unwrap()
+                .data_type()
+        );
+        assert!(!s.declare().unwrap(), "nothing left to take");
+        let mut fresh = keyed(Policy::AllowAll, None, None);
+        assert!(!fresh.declare().unwrap());
+    }
+
+    #[test]
     fn a_key_never_holds_a_cell() {
         let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
         let mut s = keyed(Policy::AllowAll, None, Some(declared))
@@ -1778,7 +1838,10 @@ mod tests {
         );
         assert_eq!(p.num_rows(), 2);
         assert_eq!(held_lists(&p)[0], Some(vec!["y".into()]));
-        assert_eq!(p.schema().metadata().get(TABLE_KEY).map(String::as_str), Some("t"));
+        assert_eq!(
+            p.schema().metadata().get(TABLE_KEY).map(String::as_str),
+            Some("t")
+        );
         assert_eq!(
             p.column(5).as_string::<i32>().iter().next(),
             Some(Some("a"))

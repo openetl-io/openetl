@@ -54,6 +54,9 @@ enum IncidentClass {
   INCIDENT_CLASS_RETENTION_AT_RISK = 8;
   // A stream is quarantining a large share of its rows.
   INCIDENT_CLASS_QUARANTINE = 9;
+  // A stream holds a column or cells back (ADR-0025) until they're released
+  // or discarded.
+  INCIDENT_CLASS_HELD = 10;
 }
 
 enum IncidentState {

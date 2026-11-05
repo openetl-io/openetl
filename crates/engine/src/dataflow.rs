@@ -201,9 +201,15 @@ where
         shape.push(sh);
     }
     let mut replays = Vec::with_capacity(streams.len());
-    for &s in streams {
+    for (local, &s) in streams.iter().enumerate() {
         replays.push(match (&plan.replays[s], &plan.held_url) {
-            (Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
+            (Some(r), Some(url)) => {
+                // Patches go out at the types the destination will have.
+                shape[local]
+                    .declare()
+                    .map_err(|e| shape_error(&plan.streams[s], e))?;
+                Some(Replayer::open(url, r.clone())?)
+            }
             _ => None,
         });
     }
