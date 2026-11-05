@@ -841,7 +841,8 @@ impl Shaper {
             fields.push(f.with_nullable(true));
         }
         let opts = RecordBatchOptions::new().with_row_count(Some(n));
-        let all = RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &opts)?;
+        let schema = Schema::new_with_metadata(fields, current.metadata().clone());
+        let all = RecordBatch::try_new_with_options(Arc::new(schema), arrays, &opts)?;
         let out = arrow_select::filter::filter_record_batch(&all, &BooleanArray::from(keep))?;
         Ok((Some(out), still))
     }
@@ -1777,6 +1778,7 @@ mod tests {
         );
         assert_eq!(p.num_rows(), 2);
         assert_eq!(held_lists(&p)[0], Some(vec!["y".into()]));
+        assert_eq!(p.schema().metadata().get(TABLE_KEY).map(String::as_str), Some("t"));
         assert_eq!(
             p.column(5).as_string::<i32>().iter().next(),
             Some(Some("a"))

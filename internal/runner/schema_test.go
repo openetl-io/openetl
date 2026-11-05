@@ -51,7 +51,7 @@ func TestApplySchemasOnlyWhenTheyChange(t *testing.T) {
 		{"a": encode(t, arrow.NewSchema([]arrow.Field{x, {Name: "y", Type: arrow.BinaryTypes.String}}, &md))},
 	}
 	for _, s := range steps {
-		if err := applySchemas(t.Context(), a, applied, s); err != nil {
+		if _, err := applySchemas(t.Context(), a, applied, s); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -1119,3 +1119,200 @@ func TestEmptyFramesReportTheirSchema(t *testing.T) {
 		t.Errorf("stream a's schema: %v", a)
 	}
 }
+
+// holdDest takes holds on append streams, and keeps the patches' prices.
+type holdDest struct {
+	*memDest
+	patched []string
+}
+
+func (d *holdDest) Capabilities() destination.Capabilities {
+	c := d.memDest.Capabilities()
+	c.Holds = destination.Holds{ByID: true, Guarded: true}
+	return c
+}
+
+func (d *holdDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	return d, nil
+}
+
+func (d *holdDest) Patch(_ context.Context, _ destination.Epoch, _ string, batch arrow.RecordBatch) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	col := batch.Column(batch.Schema().FieldIndices("price")[0])
+	for i := range int(batch.NumRows()) {
+		d.patched = append(d.patched, col.DataType().String()+" "+col.ValueStr(i))
+	}
+	return nil
+}
+
+func TestRunAttemptHoldsACellAndPatchesItOnRelease(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+
+	dest := &holdDest{memDest: newMemDest()}
+	root := t.TempDir()
+	store, err := checkpoint.NewFSStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := checkpoint.NewLog(store, "org", "pipe")
+	declared := func(precision int32) *arrow.Schema {
+		return arrow.NewSchema([]arrow.Field{
+			{Name: "id", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+			{Name: "name", Type: arrow.BinaryTypes.String, Nullable: true},
+			{Name: "price", Type: &arrow.Decimal128Type{Precision: precision, Scale: 2}, Nullable: true},
+		}, nil)
+	}
+	job := func(precision int32, pages [][]string) runner.Job {
+		return runner.Job{
+			Owner:       fmt.Sprintf("a%d", precision),
+			Pipeline:    "pipe",
+			Log:         log,
+			Source:      &pagedSource{pages: map[string][][]string{"users": pages}, afterPage: dest.waitCommits},
+			Destination: dest,
+			Dataflow:    &Dataflow{Options: opts},
+			HeldURL:     "file://" + filepath.Join(root, "org", "pipe", checkpoint.HeldDir),
+			Streams: []runner.Stream{{
+				Name: "users", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"},
+				Schema: declared(precision), Holds: &runner.StreamHolds{Cells: true},
+			}},
+			Settings: delivery.Settings{Require: delivery.AtLeastOnce, Scope: destination.ScopePipeline, CommitMaxBytes: 1},
+		}
+	}
+	first := job(10, [][]string{{`{"id": 1, "name": "a", "price": "1.5"}`, `{"id": 2, "name": "b", "price": "12345678901.5"}`}})
+	if _, err := runner.RunAttempt(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if got := dest.applied["users"]; !slices.Equal(got, []int64{1, 2}) {
+		t.Fatalf("applied %v: the row with a held cell is delivered", got)
+	}
+	head, err := log.Latest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := head.Streams["users"].Holds
+	if h == nil || h.Cells["price"].Cells != 1 || len(h.Epochs) != 1 {
+		t.Fatalf("holds = %+v", h)
+	}
+
+	// Released after the column was widened, the held value is patched in.
+	second := job(20, nil)
+	second.Releases = []runner.Release{{Stream: "users", Column: "price", Since: h.Cells["price"].Since}}
+	if _, err := runner.RunAttempt(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(dest.patched, []string{"decimal(20, 2) 12345678901.5"}) {
+		t.Fatalf("patched %v", dest.patched)
+	}
+	head, err = log.Latest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := head.Streams["users"].Holds; h != nil {
+		t.Fatalf("the hold didn't end: %+v", h)
+	}
+}
+
+// refuseDest refuses the column "extra", as a destination does a column a
+// view depends on, and drops what earlier generations staged on Recover.
+type refuseDest struct {
+	*holdDest
+	extra     map[uint64]bool
+	committed bool
+}
+
+func (d *refuseDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	return d, nil
+}
+
+func (d *refuseDest) ApplySchema(_ context.Context, streams []destination.StreamSchema) (destination.SchemaApplied, error) {
+	var a destination.SchemaApplied
+	for _, s := range streams {
+		if len(s.Schema.FieldIndices("extra")) > 0 {
+			a.Refused = append(a.Refused, destination.RefusedColumn{Stream: s.Name, Column: "extra", Reason: "a view depends on it"})
+		}
+	}
+	return a, nil
+}
+
+func (d *refuseDest) Write(ctx context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
+	if len(batch.Schema().FieldIndices("extra")) > 0 {
+		d.mu.Lock()
+		d.extra[e.N] = true
+		d.mu.Unlock()
+	}
+	return d.memDest.Write(ctx, e, stream, batch)
+}
+
+func (d *refuseDest) Commit(ctx context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
+	d.mu.Lock()
+	d.committed = d.committed || d.extra[e.N]
+	d.mu.Unlock()
+	return d.memDest.Commit(ctx, e, s)
+}
+
+func (d *refuseDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+	d.mu.Lock()
+	clear(d.pending)
+	clear(d.extra)
+	d.mu.Unlock()
+	return destination.Applied, nil
+}
+
+func TestRunAttemptHoldsAColumnTheDestinationRefuses(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+
+	dest := &refuseDest{holdDest: &holdDest{memDest: newMemDest()}, extra: map[uint64]bool{}}
+	root := t.TempDir()
+	store, err := checkpoint.NewFSStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := checkpoint.NewLog(store, "org", "pipe")
+	res, err := runner.RunAttempt(ctx, runner.Job{
+		Owner:    "a1",
+		Pipeline: "pipe",
+		Log:      log,
+		Source: &pagedSource{pages: map[string][][]string{"users": {
+			{`{"id": 1, "name": "a"}`},
+			{`{"id": 2, "name": "b", "extra": true}`},
+		}}, afterPage: dest.waitCommits},
+		Destination: dest,
+		Dataflow:    &Dataflow{Options: opts},
+		HeldURL:     "file://" + filepath.Join(root, "org", "pipe", checkpoint.HeldDir),
+		Streams: []runner.Stream{{
+			Name: "users", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"},
+			Holds: &runner.StreamHolds{},
+		}},
+		Settings: delivery.Settings{Require: delivery.AtLeastOnce, Scope: destination.ScopePipeline, CommitMaxBytes: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Generation != 2 {
+		t.Errorf("generation %d: the refusal should take one more attempt", res.Generation)
+	}
+	if dest.committed {
+		t.Error("an epoch with the refused column committed")
+	}
+	if got := dest.applied["users"]; len(got) == 0 || got[len(got)-1] != 2 {
+		t.Errorf("applied %v", got)
+	}
+	head, err := log.Latest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := head.Streams["users"].Holds
+	if h == nil || len(h.Columns) != 1 || h.Columns[0].Column != "extra" || h.Columns[0].Delivered != nil || h.Columns[0].Reason != "a view depends on it" {
+		t.Fatalf("holds = %+v", h)
+	}
+	if len(h.Epochs) == 0 {
+		t.Error("the held values' epochs aren't recorded")
+	}
+}

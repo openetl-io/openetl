@@ -102,6 +102,8 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		for _, q := range r.GetQuarantine() {
 			ready.Quarantine = append(ready.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), URL: q.GetUrl(), Rows: q.GetRows()})
 		}
+		ready.Delivered = r.GetDelivered()
+		ready.Holds = readyHolds(r.GetHolds())
 		f := runner.Frame{Kind: runner.FrameReady, Epoch: r.GetEpoch().GetN(), Ready: ready}
 		select {
 		case out <- f:
@@ -211,6 +213,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		QuarantineUrl:      plan.QuarantineURL,
 		SchemaPolicy:       schemaPolicies[plan.Policy],
 		QuarantineInfinity: plan.QuarantineInfinity,
+		HeldUrl:            plan.HeldURL,
 	}
 	for i, s := range plan.Streams {
 		names[i] = s.Name
@@ -229,6 +232,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 			NanosecondTimestamps: s.NanosecondTimestamps,
 			SoftDeletes:          s.Mode == destination.Merge && s.Deletes != destination.HardDelete,
 			Changelog:            s.Read == source.CDC,
+			Holds:                holdPlan(plan.Holds[s.Name]),
 		})
 	}
 	for _, s := range plan.Snapshots {
@@ -248,6 +252,78 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names})
 	}
 	return req, names, index, nil
+}
+
+var heldModes = map[runner.HeldMode]enginev1.HeldMode{
+	runner.HeldNull:  enginev1.HeldMode_HELD_MODE_NULL,
+	runner.HeldValue: enginev1.HeldMode_HELD_MODE_VALUE,
+	runner.HeldLast:  enginev1.HeldMode_HELD_MODE_LAST,
+}
+
+func held(h runner.Held) *enginev1.Held {
+	return &enginev1.Held{Mode: heldModes[h.Mode], Value: h.Value}
+}
+
+func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
+	if h == nil {
+		return nil
+	}
+	p := &enginev1.HoldPlan{
+		Cells:   h.Cells,
+		Held:    held(h.Held),
+		Columns: make(map[string]*enginev1.Held, len(h.Columns)),
+		Limits: &protocolv1.TableLimits{
+			NotNull: h.Limits.NotNull, Unholdable: h.Limits.Unholdable, Fixed: h.Limits.Fixed,
+			Columns: uint32(h.Limits.Columns), MaxColumns: uint32(h.Limits.MaxColumns), //nolint:gosec // small
+		},
+	}
+	for c, v := range h.Columns {
+		p.Columns[c] = held(v)
+	}
+	for _, g := range h.Groups {
+		p.Groups = append(p.Groups, &enginev1.ColumnGroup{Columns: g})
+	}
+	for _, c := range h.Holding {
+		p.Holding = append(p.Holding, &enginev1.ColumnHold{Column: c.Column, Delivered: c.Delivered, Reason: c.Reason})
+		if c.Discarded {
+			p.Discarded = append(p.Discarded, c.Column)
+		}
+	}
+	if r := h.Replay; r != nil {
+		p.Replay = &enginev1.Replay{
+			Files:   r.Files,
+			From:    &enginev1.ReplayProgress{File: uint32(r.File), Row: r.Row, StillHeld: r.StillHeld}, //nolint:gosec // small
+			Columns: r.Columns,
+		}
+	}
+	return p
+}
+
+func readyHolds(m map[string]*enginev1.StreamHolds) map[string]*runner.ReadyHolds {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]*runner.ReadyHolds, len(m))
+	for name, h := range m {
+		rh := &runner.ReadyHolds{}
+		for _, c := range h.GetHolding() {
+			rh.Holding = append(rh.Holding, checkpoint.ColumnHold{Column: c.GetColumn(), Delivered: c.GetDelivered(), Reason: c.GetReason()})
+		}
+		for col, c := range h.GetCells() {
+			if rh.Cells == nil {
+				rh.Cells = map[string]checkpoint.CellHold{}
+			}
+			rh.Cells[col] = checkpoint.CellHold{Cells: c.GetCells(), Reason: c.GetReason()}
+		}
+		for _, f := range h.GetFiles() {
+			rh.Files = append(rh.Files, destination.StagedFile{Path: f.GetPath(), Rows: f.GetRows(), Bytes: f.GetBytes()})
+		}
+		if p := h.GetReplayed(); p != nil {
+			rh.Replayed = &runner.ReplayProgress{File: int(p.GetFile()), Row: p.GetRow(), StillHeld: p.GetStillHeld(), Done: p.GetDone()}
+		}
+		out[name] = rh
+	}
+	return out
 }
 
 var schemaPolicies = map[runner.SchemaPolicy]enginev1.SchemaPolicy{
@@ -417,6 +493,11 @@ func readEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []strin
 				return fmt.Errorf("engineclient: decode %s batch: %w", f.Stream, err)
 			}
 			f.Kind = runner.FrameBatch
+		case enginev1.FrameKind_FRAME_KIND_PATCH:
+			if f.Batch, err = decodeBatch(payload, alloc); err != nil {
+				return fmt.Errorf("engineclient: decode %s patches: %w", f.Stream, err)
+			}
+			f.Kind = runner.FramePatch
 		case enginev1.FrameKind_FRAME_KIND_BARRIER:
 			var b enginev1.Barrier
 			if err := proto.Unmarshal(payload, &b); err != nil {

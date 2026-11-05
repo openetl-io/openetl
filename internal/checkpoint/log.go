@@ -51,7 +51,70 @@ type StreamState struct {
 	Complete bool `json:"complete,omitempty"`
 	// Rows the source emitted in the epoch, quarantined ones included.
 	Rows uint64 `json:"rows,omitempty"`
+	// The schema the destination has, where columns are held whole; nil
+	// where it's Schema.
+	Delivered []byte `json:"delivered,omitempty"`
+	// Columns and cells held back (ADR-0025).
+	Holds *Holds `json:"holds,omitempty"`
 }
+
+// Holds are a stream's held columns and cells, where their values are, and
+// how far a release has got.
+type Holds struct {
+	Columns []ColumnHold `json:"columns,omitempty"`
+	// By column.
+	Cells map[string]CellHold `json:"cells,omitempty"`
+	// The epochs with held files, by generation. Records are pruned, so a
+	// release finds the files by these, and a file outside them is an
+	// orphan.
+	Epochs []HeldEpochs `json:"epochs,omitempty"`
+	Replay *Replay      `json:"replay,omitempty"`
+}
+
+// ColumnHold is a column held whole.
+type ColumnHold struct {
+	Column string `json:"column"`
+	// The field the destination has, as an Arrow IPC stream holding a
+	// schema with only it; nil if it has none.
+	Delivered []byte    `json:"delivered,omitempty"`
+	Reason    string    `json:"reason"`
+	Since     RecordRef `json:"since"`
+	Started   time.Time `json:"started,omitzero"`
+	// Its values are dropped, and the column stays as the destination has
+	// it.
+	Discarded bool `json:"discarded,omitempty"`
+}
+
+// CellHold is a column's held cells.
+type CellHold struct {
+	Cells   uint64    `json:"cells"`
+	Reason  string    `json:"reason"`
+	Since   RecordRef `json:"since"`
+	Started time.Time `json:"started,omitzero"`
+}
+
+// HeldEpochs are generation Generation's epochs From to To, inclusive.
+type HeldEpochs struct {
+	Generation uint64 `json:"generation"`
+	From       uint64 `json:"from"`
+	To         uint64 `json:"to"`
+}
+
+// Replay is a release being patched in: the released columns, the held
+// files read in order, and where the replay has got.
+type Replay struct {
+	Columns []string `json:"columns"`
+	Files   []string `json:"files"`
+	File    int      `json:"file,omitempty"`
+	Row     uint64   `json:"row,omitempty"`
+	// Cells read that still don't fit, which stay held.
+	StillHeld uint64 `json:"still_held,omitempty"`
+}
+
+// HeldDir holds a pipeline's held values, next to its checkpoints:
+// {org}/{pipeline}/_held/{g}/{N}/{stream}/part-{k}.parquet, with the
+// stream's name percent-encoded.
+const HeldDir = "_held"
 
 // OutputState is one of a transform's outputs at a checkpoint.
 type OutputState struct {

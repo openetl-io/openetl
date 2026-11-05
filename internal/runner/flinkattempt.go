@@ -403,7 +403,7 @@ func (a *flinkAttempt) recover(ctx context.Context, head, prev *checkpoint.Recor
 	var staged destination.Staged
 	if head != nil {
 		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, head.Staged
-		if err := applySchemas(ctx, a.w, map[string]*arrow.Schema{}, outputSchemas(head)); err != nil {
+		if _, err := applySchemas(ctx, a.w, map[string]*arrow.Schema{}, outputSchemas(head)); err != nil {
 			return nil, err
 		}
 		if hand && a.job.staged() {
@@ -584,7 +584,7 @@ func (a *flinkAttempt) start(ctx context.Context, restored *checkpoint.Record, l
 		a.res.Restored = restored.Epoch
 	}
 	a.res.Last = epochOf(restored)
-	prune(ctx, a.sess, restored, a.job.keep(), a.job.Staging, a.log)
+	prune(ctx, a.sess, restored, a.job.keep(), a.job.Staging, false, a.log)
 	a.pruneFlink(ctx, restored)
 	a.segments++
 	seg := newFlinkSegment(a, restored, learn)

@@ -181,3 +181,48 @@ func TestPruneKeepsAtLeastTwo(t *testing.T) {
 		t.Fatal("Prune kept 1 record")
 	}
 }
+
+func held(t *testing.T, s checkpoint.Store, g, n uint64, stream string) string {
+	t.Helper()
+	key := fmt.Sprintf("org/pipe/%s/%d/%d/%s/part-00000.parquet", checkpoint.HeldDir, g, n, stream)
+	if _, err := s.Create(t.Context(), key, []byte("PAR1")); err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func TestHeldFilesAreFoundByEpochsAndPrunedOutsideThem(t *testing.T) {
+	ctx := t.Context()
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	a := claim(t, l, "a")
+	inRange := held(t, store, 1, 2, "users")
+	held(t, store, 1, 3, "users")
+	other := held(t, store, 1, 2, "a%2Fb")
+	orphan := held(t, store, 1, 5, "users")
+	rec := &checkpoint.Record{Epoch: 3, Streams: map[string]checkpoint.StreamState{
+		"users": {Holds: &checkpoint.Holds{Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 2, To: 3}}}},
+		"a/b":   {},
+	}}
+	if err := a.Commit(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	files, err := l.HeldFiles(ctx, "users", rec.Streams["users"].Holds.Epochs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"1/2/users/part-00000.parquet", "1/3/users/part-00000.parquet"}; !slices.Equal(files, want) {
+		t.Fatalf("files = %v, want %v", files, want)
+	}
+
+	b := claim(t, l, "b")
+	ownGen := held(t, store, b.Generation(), 9, "users")
+	if _, err := b.PruneHeld(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]bool{inRange: true, other: false, orphan: false, ownGen: true} {
+		if exists(t, store, key) != want {
+			t.Errorf("%s kept = %v, want %v", key, !want, want)
+		}
+	}
+}

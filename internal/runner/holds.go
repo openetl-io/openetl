@@ -1,0 +1,263 @@
+package runner
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/apache/arrow-go/v18/arrow"
+
+	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/sdk/go/destination"
+)
+
+// HeldMode is what a held cell shows (ADR-0025).
+type HeldMode int
+
+const (
+	HeldNull HeldMode = iota
+	HeldValue
+	// The target keeps its value; rows it doesn't have get Value, or null.
+	HeldLast
+)
+
+type Held struct {
+	Mode HeldMode
+	// JSON of the column's delivered type; empty for null.
+	Value string
+}
+
+// StreamHolds is how a stream holds back a column, or a row's cell, and
+// delivers the rest of the row (ADR-0025).
+type StreamHolds struct {
+	// A value that doesn't fit holds its cell instead of quarantining its
+	// row.
+	Cells bool
+	Held  Held
+	// By source column.
+	Columns map[string]Held
+	// Columns held together, by source name.
+	Groups [][]string
+}
+
+// HoldPlan is a stream's holds for the dataflow.
+type HoldPlan struct {
+	StreamHolds
+	// Column holds in force; discarded ones' values are dropped.
+	Holding []checkpoint.ColumnHold
+	Limits  destination.TableLimits
+	Replay  *checkpoint.Replay
+}
+
+// Release is a hold the user released, or discarded. It applies to the hold
+// on Column that started at Since, if it's still open.
+type Release struct {
+	Stream, Column string
+	Since          checkpoint.RecordRef
+	Discard        bool
+}
+
+// RefusedError: the destination refused columns of an epoch's schemas
+// before the epoch was recorded. RunAttempt starts another attempt that
+// holds them.
+type RefusedError struct {
+	Columns []RefusedColumn
+}
+
+type RefusedColumn struct {
+	destination.RefusedColumn
+	// The field the destination has, as ColumnHold.Delivered.
+	Delivered []byte
+}
+
+func (e *RefusedError) Error() string {
+	cols := make([]string, len(e.Columns))
+	for i, c := range e.Columns {
+		cols[i] = fmt.Sprintf("%s.%s (%s)", c.Stream, c.Column, c.Reason)
+	}
+	return "runner: the destination refused " + strings.Join(cols, ", ")
+}
+
+// holdsOn reports whether stream s holds in this job.
+func (j *Job) holdsOn(s Stream) bool {
+	return s.Holds != nil && j.HeldURL != "" && len(s.PrimaryKey) > 0 && !j.transformed() &&
+		j.Destination.Capabilities().Holds.Takes(s.Mode)
+}
+
+func (j *Job) checkHolds() error {
+	caps := j.Destination.Capabilities().Holds
+	for _, s := range j.Streams {
+		if s.Holds == nil {
+			continue
+		}
+		last := s.Holds.Held.Mode == HeldLast
+		for _, h := range s.Holds.Columns {
+			last = last || h.Mode == HeldLast
+		}
+		switch {
+		case len(s.PrimaryKey) == 0:
+			return fmt.Errorf("stream %q holds columns, and only a keyed stream can", s.Name)
+		case j.transformed():
+			return fmt.Errorf("stream %q holds columns, and a transform's inputs can't be held", s.Name)
+		case !caps.Takes(s.Mode):
+			return fmt.Errorf("stream %q holds columns, and the destination doesn't patch its write mode", s.Name)
+		case last && (s.Mode != destination.Merge || !caps.Last):
+			return fmt.Errorf("stream %q shows held cells' last values, which needs merge and a destination that keeps them", s.Name)
+		}
+	}
+	return nil
+}
+
+// startHolds are the holds each holding stream starts the attempt with:
+// restored's, with the job's releases applied and the refused columns
+// held; and the dataflow's plans.
+func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limits map[string]destination.TableLimits) (map[string]*checkpoint.Holds, map[string]*HoldPlan, error) {
+	holds := map[string]*checkpoint.Holds{}
+	plans := map[string]*HoldPlan{}
+	for _, s := range j.Streams {
+		if !j.holdsOn(s) {
+			continue
+		}
+		h := &checkpoint.Holds{}
+		if restored != nil && restored.Streams[s.Name].Holds != nil {
+			h = cloneHolds(restored.Streams[s.Name].Holds)
+		}
+		var released []string
+		for _, r := range j.Releases {
+			if r.Stream != s.Name || h.Replay != nil {
+				continue
+			}
+			if i := slices.IndexFunc(h.Columns, func(c checkpoint.ColumnHold) bool {
+				return c.Column == r.Column && c.Since == r.Since && !c.Discarded
+			}); i >= 0 {
+				if r.Discard {
+					h.Columns[i].Discarded = true
+				} else {
+					h.Columns = slices.Delete(h.Columns, i, i+1)
+					released = append(released, r.Column)
+				}
+			}
+			if c, ok := h.Cells[r.Column]; ok && c.Since == r.Since {
+				if r.Discard {
+					delete(h.Cells, r.Column)
+				} else {
+					released = append(released, r.Column)
+				}
+			}
+		}
+		for _, r := range j.refused {
+			if r.Stream == s.Name && !slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }) {
+				h.Columns = append(h.Columns, checkpoint.ColumnHold{Column: r.Column, Delivered: r.Delivered, Reason: r.Reason})
+			}
+		}
+		if len(released) > 0 {
+			slices.Sort(released)
+			files, err := j.Log.HeldFiles(ctx, s.Name, h.Epochs)
+			if err != nil {
+				return nil, nil, err
+			}
+			h.Replay = &checkpoint.Replay{Columns: slices.Compact(released), Files: files}
+		}
+		holds[s.Name] = h
+		plans[s.Name] = &HoldPlan{StreamHolds: *s.Holds, Holding: h.Columns, Limits: limits[s.Name], Replay: h.Replay}
+	}
+	return holds, plans, nil
+}
+
+// mergeHolds is a stream's holds once epoch at is recorded: base's, with
+// what the dataflow reported at the stream's barrier. Nil once nothing is
+// held.
+func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, now time.Time) *checkpoint.Holds {
+	h := &checkpoint.Holds{}
+	if base != nil {
+		h = cloneHolds(base)
+	}
+	if r != nil {
+		cols := make([]checkpoint.ColumnHold, 0, len(r.Holding))
+		for _, c := range r.Holding {
+			c.Since, c.Started = at, now
+			if i := slices.IndexFunc(h.Columns, func(p checkpoint.ColumnHold) bool { return p.Column == c.Column }); i >= 0 {
+				if p := h.Columns[i]; p.Since != (checkpoint.RecordRef{}) {
+					c.Since, c.Started = p.Since, p.Started
+				}
+				c.Discarded = h.Columns[i].Discarded
+			}
+			cols = append(cols, c)
+		}
+		h.Columns = cols
+		for col, c := range r.Cells {
+			if h.Cells == nil {
+				h.Cells = map[string]checkpoint.CellHold{}
+			}
+			e := h.Cells[col]
+			if e.Cells == 0 {
+				e.Reason, e.Since, e.Started = c.Reason, at, now
+			}
+			e.Cells += c.Cells
+			h.Cells[col] = e
+		}
+		if len(r.Files) > 0 {
+			if n := len(h.Epochs); n > 0 && h.Epochs[n-1].Generation == at.Generation {
+				h.Epochs[n-1].To = at.Epoch
+			} else {
+				h.Epochs = append(h.Epochs, checkpoint.HeldEpochs{Generation: at.Generation, From: at.Epoch, To: at.Epoch})
+			}
+		}
+		if p := r.Replayed; p != nil && h.Replay != nil {
+			h.Replay.File, h.Replay.Row, h.Replay.StillHeld = p.File, p.Row, p.StillHeld
+			if p.Done {
+				if p.StillHeld == 0 {
+					for _, col := range h.Replay.Columns {
+						delete(h.Cells, col)
+					}
+				}
+				h.Replay = nil
+			}
+		}
+	}
+	values := len(h.Cells) > 0 || h.Replay != nil || slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return !c.Discarded })
+	if !values {
+		h.Epochs = nil
+	}
+	if len(h.Columns) == 0 && !values {
+		return nil
+	}
+	return h
+}
+
+func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
+	out := &checkpoint.Holds{
+		Columns: slices.Clone(h.Columns),
+		Cells:   maps.Clone(h.Cells),
+		Epochs:  slices.Clone(h.Epochs),
+	}
+	if h.Replay != nil {
+		r := *h.Replay
+		r.Columns, r.Files = slices.Clone(r.Columns), slices.Clone(r.Files)
+		out.Replay = &r
+	}
+	return out
+}
+
+// refusedColumns are the columns a SchemaApplied refused, each with the
+// field the destination last took, from applied.
+func refusedColumns(a destination.SchemaApplied, applied map[string]*arrow.Schema) ([]RefusedColumn, error) {
+	var out []RefusedColumn
+	for _, r := range a.Refused {
+		rc := RefusedColumn{RefusedColumn: r}
+		if s := applied[r.Stream]; s != nil {
+			if fs, ok := s.FieldsByName(r.Column); ok && len(fs) == 1 {
+				b, err := encodeSchema(arrow.NewSchema(fs, nil))
+				if err != nil {
+					return nil, err
+				}
+				rc.Delivered = b
+			}
+		}
+		out = append(out, rc)
+	}
+	return out, nil
+}

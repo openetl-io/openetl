@@ -28,6 +28,9 @@ const (
 	// Out of the dataflow only, with Plan.ReportSchemas: Stream's schema is
 	// Schema from its next batch on, and from now if it had none.
 	FrameSchema
+	// Out of the dataflow only: Batch holds patches of held cells
+	// (ADR-0025), for the destination's Patcher.
+	FramePatch
 )
 
 // Frame is one unit on a job's data path. Barriers travel in band, ordered
@@ -61,6 +64,29 @@ type Ready struct {
 	// output had.
 	OutputSchemas map[string][]byte
 	OutputRows    map[string]uint64
+	// Where columns are held whole: each stream's schema as the destination
+	// gets it, as Schemas.
+	Delivered map[string][]byte
+	// The streams that hold, at their barriers.
+	Holds map[string]*ReadyHolds
+}
+
+// ReadyHolds are a stream's holds at its barrier.
+type ReadyHolds struct {
+	// Every column held whole, without Since.
+	Holding []checkpoint.ColumnHold
+	// The epoch's held cells by column, without Since.
+	Cells map[string]checkpoint.CellHold
+	// Below Plan.HeldURL.
+	Files []destination.StagedFile
+	// Nil without a replay.
+	Replayed *ReplayProgress
+}
+
+type ReplayProgress struct {
+	File           int
+	Row, StillHeld uint64
+	Done           bool
 }
 
 // Plan is what a dataflow needs to know about one attempt.
@@ -88,6 +114,10 @@ type Plan struct {
 	// out carries FrameSchema frames. An empty batch establishes its
 	// stream's schema without rows.
 	ReportSchemas bool
+	// Where held values go; empty: nothing is held.
+	HeldURL string
+	// How streams hold; those that hold nothing are missing.
+	Holds map[string]*HoldPlan
 }
 
 // SchemaPolicy is how the dataflow takes changes to a stream's established

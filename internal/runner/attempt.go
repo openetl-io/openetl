@@ -55,6 +55,8 @@ type Stream struct {
 	// One of a transform's outputs, whose Replay is exact when every input's
 	// is. Its Read is CDC when it's a changelog: merged, from a changelog.
 	Transformed bool
+	// Nil: the stream holds nothing back (ADR-0025).
+	Holds *StreamHolds
 }
 
 func (s Stream) delivery() delivery.Stream {
@@ -153,6 +155,12 @@ type Job struct {
 	// How long the job may run without a reader on every stream and a sink
 	// on every output, from its enumerator's hello. Zero: a minute.
 	FlinkConnectTimeout time.Duration
+	// Where the dataflow keeps held values; empty: nothing is held.
+	HeldURL string
+	// Holds released or discarded since they started.
+	Releases []Release
+	// Columns the destination refused in an earlier attempt of this call.
+	refused []RefusedColumn
 }
 
 // transformed: the user's code runs between the source and the destination.
@@ -204,8 +212,32 @@ const defaultKeepRecords = 10
 const commitAttempts = 4
 
 // RunAttempt runs one attempt of a bounded sync: claim, recover HEAD's epoch,
-// then read until every stream is complete, committing along the way.
-func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
+// then read until every stream is complete, committing along the way. If
+// the destination refuses columns before an epoch is recorded, it runs
+// another attempt at once that holds them; one it refuses again fails it.
+func RunAttempt(ctx context.Context, job Job) (Result, error) {
+	for {
+		res, err := runAttempt(ctx, job)
+		var re *RefusedError
+		if !errors.As(err, &re) {
+			return res, err
+		}
+		for _, c := range re.Columns {
+			if slices.ContainsFunc(job.refused, func(r RefusedColumn) bool { return r.Stream == c.Stream && r.Column == c.Column }) {
+				return res, errs.Wrap(errs.SchemaDrift, err, "runner: refused again after holding it")
+			}
+			if !slices.ContainsFunc(job.Streams, func(s Stream) bool { return s.Name == c.Stream && job.holdsOn(s) }) {
+				return res, errs.Wrap(errs.SchemaDrift, err, "runner: the stream holds nothing")
+			}
+		}
+		job.refused = append(job.refused, re.Columns...)
+		if job.Logger != nil {
+			job.Logger.Info("holding refused columns; starting another attempt", "err", re)
+		}
+	}
+}
+
+func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if err := job.validate(); err != nil {
 		return res, err
 	}
@@ -278,19 +310,28 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 	var e destination.Epoch
 	var staged destination.Staged
 	applied := map[string]*arrow.Schema{}
+	var limits map[string]destination.TableLimits
 	if head != nil {
 		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, head.Staged
 		schemas := make(map[string][]byte, len(head.Streams))
 		for name, st := range head.Streams {
 			schemas[name] = st.Schema
+			if st.Delivered != nil {
+				schemas[name] = st.Delivered
+			}
 		}
 		if job.Transform != nil {
 			schemas = outputSchemas(head)
 		}
-		// A redone epoch needs its schemas in place.
-		if err := applySchemas(rctx, w, applied, schemas); err != nil {
+		// A redone epoch needs its schemas in place, and can't change.
+		a, err := applySchemas(rctx, w, applied, schemas)
+		if err == nil && len(a.Refused) > 0 {
+			err = errs.Wrap(errs.SchemaDrift, &RefusedError{Columns: []RefusedColumn{{RefusedColumn: a.Refused[0]}}}, "runner: recovering a recorded epoch")
+		}
+		if err != nil {
 			return res, err
 		}
+		limits = a.Limits
 	}
 	if job.staged() && head != nil {
 		if err := handOver(rctx, job.Staging, w, e, stagedFiles(head.Files)); err != nil {
@@ -321,12 +362,20 @@ func RunAttempt(ctx context.Context, job Job) (res Result, err error) {
 		res.Restored = restored.Epoch
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
-	prune(rctx, sess, restored, job.keep(), job.Staging, log)
+	prune(rctx, sess, restored, job.keep(), job.Staging, job.HeldURL != "", log)
+	holds, holdPlans, err := job.startHolds(rctx, restored, limits)
+	if err != nil {
+		return res, err
+	}
 	span.SetAttributes(attribute.Int64("openetl.generation", int64(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", int64(res.Restored))) //nolint:gosec // epochs fit
 	span.End()
 
 	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied,
-		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}}
+		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{},
+		holds: holds, holdPlans: holdPlans}
+	for _, p := range holdPlans {
+		c.replaying = c.replaying || p.Replay != nil
+	}
 	if restored != nil && len(restored.Files) > 0 {
 		c.lastStaged = destination.Epoch{Generation: restored.Generation, N: restored.Epoch}
 	}
@@ -404,11 +453,18 @@ func (j *Job) staged() bool {
 // prune is best effort: a later prune deletes what it leaves. Only
 // restored's epoch can be recovered again, so it's the one whose staging is
 // kept, with whatever this attempt stages after it.
-func prune(ctx context.Context, sess *checkpoint.Session, restored *checkpoint.Record, keep int, staging Staging, log *slog.Logger) {
+func prune(ctx context.Context, sess *checkpoint.Session, restored *checkpoint.Record, keep int, staging Staging, held bool, log *slog.Logger) {
 	if n, err := sess.Prune(ctx, restored, keep); err != nil {
 		log.Warn("pruning the checkpoint log failed", "deleted", n, "err", err)
 	} else if n > 0 {
 		log.Debug("pruned the checkpoint log", "deleted", n)
+	}
+	if held {
+		if n, err := sess.PruneHeld(ctx, restored); err != nil {
+			log.Warn("pruning held values failed", "deleted", n, "err", err)
+		} else if n > 0 {
+			log.Debug("pruned held values", "deleted", n)
+		}
 	}
 	if staging == nil {
 		return
@@ -519,6 +575,9 @@ func (j *Job) validate() error {
 			return errs.New(errs.ConfigInvalid, "runner: stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", s.Name)
 		}
 	}
+	if err := j.checkHolds(); err != nil {
+		return errs.Wrap(errs.ConfigInvalid, err, "runner")
+	}
 	clear(seen)
 	for _, o := range j.Outputs {
 		if seen[o.Name] || !o.Transformed {
@@ -617,6 +676,12 @@ type coordinator struct {
 	measures      map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
 	// Called on the committer's goroutine after it pruned the log.
 	afterPrune func(ctx context.Context, head *checkpoint.Record)
+	// Owned by the committer: each holding stream's holds as last recorded,
+	// or as the attempt started them.
+	holds     map[string]*checkpoint.Holds
+	holdPlans map[string]*HoldPlan
+	// A release is being patched in, so barriers go on after the read ends.
+	replaying bool
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
@@ -682,6 +747,9 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		QuarantineInfinity: c.job.QuarantineInfinity,
 		ReadStarts:         c.readStarts,
 		Schemas:            schemas,
+	}
+	if len(c.holdPlans) > 0 {
+		plan.HeldURL, plan.Holds = c.job.HeldURL, c.holdPlans
 	}
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots
@@ -800,8 +868,9 @@ func (c *coordinator) loop(ctx context.Context) error {
 				return err
 			}
 		case <-tick:
-			// An idle source's epoch would hold nothing.
-			c.want = c.want || c.pump.emitted.Load() != c.seen
+			// An idle source's epoch would hold nothing, unless it carries
+			// patches.
+			c.want = c.want || c.pump.emitted.Load() != c.seen || c.replaying
 		case <-drain:
 			drain = nil
 			c.draining, c.want = true, true
@@ -824,13 +893,13 @@ func (c *coordinator) shouldRequest() bool {
 		return false
 	}
 	if c.readDone {
-		return c.active
+		return c.active || c.replaying
 	}
 	return c.want && c.drainEpoch == 0
 }
 
 func (c *coordinator) finished() bool {
-	return c.readDone && !c.active && c.settled()
+	return c.readDone && !c.active && !c.replaying && c.settled()
 }
 
 func (c *coordinator) drained() bool {
@@ -871,6 +940,12 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 			return fmt.Errorf("runner: unexpected readiness of epoch %d", ev.epoch)
 		}
 		st.ready, st.flow = true, ev.ready
+		if len(c.holdPlans) > 0 {
+			c.replaying = false
+			for _, h := range ev.ready.Holds {
+				c.replaying = c.replaying || h.Replayed != nil && !h.Replayed.Done
+			}
+		}
 	case evCommitted:
 		if !c.committing || ev.epoch != c.committed+1 {
 			return fmt.Errorf("runner: unexpected commit of epoch %d", ev.epoch)
@@ -913,6 +988,11 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	start := time.Now()
 	ctx, span := tracer.Start(ctx, "commit", trace.WithAttributes(attribute.String("openetl.pipeline", c.job.Pipeline), attribute.Int64("openetl.epoch", int64(n)))) //nolint:gosec // epochs fit
 	defer func() { endSpan(span, err) }()
+	// Before the record: a refused column can then be held, with the epoch
+	// read again.
+	if err := c.applySchemas(ctx, n, st); err != nil {
+		return err
+	}
 	rec, err := c.record(ctx, n, st)
 	if err != nil {
 		return err
@@ -950,6 +1030,11 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		}
 		rec.SyncStart, rec.SyncRows = c.syncStart, maps.Clone(c.syncRows)
 	}
+	at := checkpoint.RecordRef{Epoch: n, Generation: c.sess.Generation()}
+	holds := make(map[string]*checkpoint.Holds, len(c.holds))
+	for name, h := range c.holds {
+		holds[name] = mergeHolds(h, st.flow.Holds[name], at, rec.CreatedAt)
+	}
 	for name, state := range st.states {
 		rec.Streams[name] = checkpoint.StreamState{
 			State:     state,
@@ -957,6 +1042,8 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 			ReadStart: c.readStarts[name],
 			Complete:  st.complete[name],
 			Rows:      st.rows[name],
+			Delivered: st.flow.Delivered[name],
+			Holds:     holds[name],
 		}
 	}
 	if c.job.transformed() {
@@ -969,6 +1056,9 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	if err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced); err != nil {
 		return nil, fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}
+	for name := range c.holds {
+		c.holds[name] = holds[name]
+	}
 	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	c.dropStaged(ctx, e, len(rec.Files) > 0)
 	if c.job.Transform != nil {
@@ -979,17 +1069,37 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	return rec, nil
 }
 
-// apply makes recorded epoch n visible, and reports it. start is when its
-// commit began.
-func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *checkpoint.Record, start time.Time) error {
-	sinkSchemas := st.flow.Schemas
+// applySchemas applies epoch n's schemas, as the destination gets them,
+// before n is recorded. A refusal is a RefusedError.
+func (c *coordinator) applySchemas(ctx context.Context, n uint64, st *epochState) error {
+	sinkSchemas := maps.Clone(st.flow.Schemas)
+	maps.Copy(sinkSchemas, st.flow.Delivered)
 	if c.job.transformed() {
 		sinkSchemas = st.flow.OutputSchemas
 	}
-	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
-	if err := retry(ctx, func() error { return applySchemas(ctx, c.w, c.applied, sinkSchemas) }, nil); err != nil {
+	before := maps.Clone(c.applied)
+	var a destination.SchemaApplied
+	err := retry(ctx, func() (err error) {
+		a, err = applySchemas(ctx, c.w, c.applied, sinkSchemas)
+		return err
+	}, nil)
+	if err != nil {
 		return fmt.Errorf("runner: epoch %d: %w", n, err)
 	}
+	if len(a.Refused) == 0 {
+		return nil
+	}
+	cols, err := refusedColumns(a, before)
+	if err != nil {
+		return fmt.Errorf("runner: epoch %d: %w", n, err)
+	}
+	return &RefusedError{Columns: cols}
+}
+
+// apply makes recorded epoch n visible, and reports it. start is when its
+// commit began.
+func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *checkpoint.Record, start time.Time) error {
+	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	collapsed := map[string]uint64{}
 	err := retry(ctx, func() error {
 		done, err := c.w.Commit(ctx, e, st.desc)
@@ -1005,7 +1115,7 @@ func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *
 		flush(ctx, c.job.Staging, e, c.log)
 	}
 	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
-	c.measure(ctx, rec, collapsed, time.Since(start), time.Since(st.requested))
+	c.measure(ctx, rec, st.flow, collapsed, time.Since(start), time.Since(st.requested))
 	if c.job.OnSchemas != nil {
 		inputs, err := changedRaw(c.reported, st.flow.Schemas)
 		if err != nil {
@@ -1039,7 +1149,7 @@ func (c *coordinator) acknowledge(ctx context.Context, st *epochState, rec *chec
 	// A long job prunes as it goes, not only when it starts.
 	if c.sincePrune++; c.sincePrune >= c.job.keep() {
 		c.sincePrune = 0
-		prune(ctx, c.sess, rec, c.job.keep(), c.job.Staging, c.log)
+		prune(ctx, c.sess, rec, c.job.keep(), c.job.Staging, c.job.HeldURL != "", c.log)
 		if c.afterPrune != nil {
 			c.afterPrune(ctx, rec)
 		}
@@ -1061,7 +1171,7 @@ func (c *coordinator) dropStaged(ctx context.Context, e destination.Epoch, stage
 	}
 }
 
-func (c *coordinator) measure(ctx context.Context, rec *checkpoint.Record, collapsed map[string]uint64, commit, epoch time.Duration) {
+func (c *coordinator) measure(ctx context.Context, rec *checkpoint.Record, ready *Ready, collapsed map[string]uint64, commit, epoch time.Duration) {
 	job := c.attrs("")
 	epochs.Add(ctx, 1, job)
 	commitLength.Record(ctx, commit.Seconds(), job)
@@ -1078,6 +1188,39 @@ func (c *coordinator) measure(ctx context.Context, rec *checkpoint.Record, colla
 		}
 		if n := collapsed[name]; n > 0 {
 			rowsCollapsed.Add(ctx, int64(n), attrs) //nolint:gosec // row counts fit
+		}
+		c.measureHolds(ctx, name, st.Holds, ready.Holds[name], rec.CreatedAt)
+	}
+}
+
+func (c *coordinator) measureHolds(ctx context.Context, stream string, h *checkpoint.Holds, r *ReadyHolds, now time.Time) {
+	column := func(col string) metric.MeasurementOption {
+		return metric.WithAttributes(attribute.String("openetl.org", c.job.Org), attribute.String("openetl.pipeline", c.job.Pipeline),
+			attribute.String("openetl.stream", stream), attribute.String("openetl.column", col))
+	}
+	if r != nil {
+		for col, cell := range r.Cells {
+			cellsHeld.Add(ctx, int64(cell.Cells), column(col)) //nolint:gosec // cell counts fit
+		}
+		var bytes uint64
+		for _, f := range r.Files {
+			bytes += f.Bytes
+		}
+		if bytes > 0 {
+			heldBytes.Add(ctx, int64(bytes), c.attrs(stream))
+		}
+	}
+	if h == nil {
+		return
+	}
+	for _, col := range h.Columns {
+		if !col.Discarded && !col.Started.IsZero() {
+			holdAge.Record(ctx, now.Sub(col.Started).Seconds(), column(col.Column))
+		}
+	}
+	for name, cell := range h.Cells {
+		if !cell.Started.IsZero() {
+			holdAge.Record(ctx, now.Sub(cell.Started).Seconds(), column(name))
 		}
 	}
 }
@@ -1134,23 +1277,26 @@ func changedRaw(known map[string]*arrow.Schema, schemas map[string][]byte) (map[
 }
 
 // applySchemas applies the schemas that differ from those in applied, if the
-// writer has a schema, and records them there.
-func applySchemas(ctx context.Context, w destination.Writer, applied map[string]*arrow.Schema, schemas map[string][]byte) error {
+// writer has a schema, and records them there; refused ones aren't.
+func applySchemas(ctx context.Context, w destination.Writer, applied map[string]*arrow.Schema, schemas map[string][]byte) (destination.SchemaApplied, error) {
 	sa, ok := w.(destination.SchemaApplier)
 	if !ok {
-		return nil
+		return destination.SchemaApplied{}, nil
 	}
 	changed, err := changedSchemas(applied, schemas)
 	if err != nil || len(changed) == 0 {
-		return err
+		return destination.SchemaApplied{}, err
 	}
-	if _, err := sa.ApplySchema(ctx, changed); err != nil {
-		return fmt.Errorf("apply schemas: %w", err)
+	a, err := sa.ApplySchema(ctx, changed)
+	if err != nil {
+		return a, fmt.Errorf("apply schemas: %w", err)
 	}
 	for _, s := range changed {
-		applied[s.Name] = s.Schema
+		if !slices.ContainsFunc(a.Refused, func(r destination.RefusedColumn) bool { return r.Stream == s.Name }) {
+			applied[s.Name] = s.Schema
+		}
 	}
-	return nil
+	return a, nil
 }
 
 // changedSchemas decodes the schemas that differ from those in known, sorted

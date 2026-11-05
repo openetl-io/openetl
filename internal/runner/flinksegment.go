@@ -259,7 +259,7 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 		events: make(chan event, 64)}
 	c.afterPrune = func(ctx context.Context, head *checkpoint.Record) { a.pruneFlink(ctx, head) }
 	if s.restored != nil {
-		_ = applySchemas(ctx, c.w, c.applied, outputSchemas(s.restored))
+		_, _ = applySchemas(ctx, c.w, c.applied, outputSchemas(s.restored))
 		if len(s.restored.Files) > 0 {
 			c.lastStaged = destination.Epoch{Generation: s.restored.Generation, N: s.restored.Epoch}
 		}

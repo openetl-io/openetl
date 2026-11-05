@@ -89,6 +89,17 @@ func (s *sinkPump) run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("runner: write %s in epoch %d: %w", f.Stream, n, err)
 			}
+		case FramePatch:
+			pw, ok := s.w.(destination.Patcher)
+			if !ok {
+				release(f)
+				return fmt.Errorf("runner: patches for %s, and the destination's writer takes none", f.Stream)
+			}
+			err := pw.Patch(ctx, destination.Epoch{Generation: s.gen, N: n}, f.Stream, f.Batch)
+			f.Batch.Release()
+			if err != nil {
+				return fmt.Errorf("runner: patch %s in epoch %d: %w", f.Stream, n, err)
+			}
 		case FrameBarrier:
 			if f.Epoch != n {
 				return fmt.Errorf("runner: stream %s crossed barrier %d while in epoch %d", f.Stream, f.Epoch, n)

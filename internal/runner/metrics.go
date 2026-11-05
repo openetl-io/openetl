@@ -29,6 +29,9 @@ var (
 	lagTime, _         = meter.Float64ObservableGauge("openetl.job.lag", metric.WithUnit("s"), metric.WithDescription("How far behind its source in time the read is, as the source last reported"))
 	retentionBytes, _  = meter.Int64ObservableGauge("openetl.job.retention_left.bytes", metric.WithUnit("By"), metric.WithDescription("How much more the source can take before it discards what the read hasn't acknowledged"))
 	retentionTime, _   = meter.Float64ObservableGauge("openetl.job.retention_left", metric.WithUnit("s"), metric.WithDescription("How long the source waits before it discards what the read hasn't acknowledged"))
+	cellsHeld, _       = meter.Int64Counter("openetl.job.cells.held", metric.WithUnit("{cell}"), metric.WithDescription("Cells held back in committed epochs, by stream and column, and a held column's values"))
+	heldBytes, _       = meter.Int64Counter("openetl.job.held.bytes", metric.WithUnit("By"), metric.WithDescription("Held values written in committed epochs"))
+	holdAge, _         = meter.Float64Gauge("openetl.job.hold.age", metric.WithUnit("s"), metric.WithDescription("How long each open hold has been held, by stream and column, at each commit"))
 )
 
 func endSpan(span trace.Span, err error) {

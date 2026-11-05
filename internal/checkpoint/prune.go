@@ -1,9 +1,13 @@
 package checkpoint
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -128,4 +132,92 @@ func parseRecordKey(name string) (RecordRef, bool) {
 	epoch, err1 := strconv.ParseUint(e, 10, 64)
 	gen, err2 := strconv.ParseUint(g, 10, 64)
 	return RecordRef{Epoch: epoch, Generation: gen}, err1 == nil && err2 == nil
+}
+
+// heldFile is one held file's place: its key and its path below the held
+// prefix, its generation and epoch, and its stream.
+type heldFile struct {
+	key, rel string
+	g, n     uint64
+	stream   string
+}
+
+func (l *Log) heldFiles(ctx context.Context, prefix string) ([]heldFile, error) {
+	keys, err := l.store.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	root := l.root + HeldDir + "/"
+	var out []heldFile
+	for _, k := range keys {
+		rel := strings.TrimPrefix(k, root)
+		parts := strings.Split(rel, "/")
+		if len(parts) != 4 {
+			continue
+		}
+		g, err1 := strconv.ParseUint(parts[0], 10, 64)
+		n, err2 := strconv.ParseUint(parts[1], 10, 64)
+		stream, err3 := url.PathUnescape(parts[2])
+		if err1 != nil || err2 != nil || err3 != nil {
+			continue
+		}
+		out = append(out, heldFile{key: k, rel: rel, g: g, n: n, stream: stream})
+	}
+	return out, nil
+}
+
+func (h HeldEpochs) holds(g, n uint64) bool { return h.Generation == g && n >= h.From && n <= h.To }
+
+// HeldFiles lists a stream's held files in epochs, by their paths below the
+// held prefix, in epoch order.
+func (l *Log) HeldFiles(ctx context.Context, stream string, epochs []HeldEpochs) ([]string, error) {
+	gens := map[uint64]bool{}
+	for _, e := range epochs {
+		gens[e.Generation] = true
+	}
+	var files []heldFile
+	for _, g := range slices.Sorted(maps.Keys(gens)) {
+		fs, err := l.heldFiles(ctx, fmt.Sprintf("%s%s/%d/", l.root, HeldDir, g))
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint: list held files: %w", err)
+		}
+		for _, f := range fs {
+			if f.stream == stream && slices.ContainsFunc(epochs, func(e HeldEpochs) bool { return e.holds(f.g, f.n) }) {
+				files = append(files, f)
+			}
+		}
+	}
+	slices.SortStableFunc(files, func(a, b heldFile) int {
+		return cmp.Or(cmp.Compare(a.g, b.g), cmp.Compare(a.n, b.n), strings.Compare(a.rel, b.rel))
+	})
+	out := make([]string, len(files))
+	for i, f := range files {
+		out[i] = f.rel
+	}
+	return out, nil
+}
+
+// PruneHeld deletes the held files of earlier generations that no hold in
+// restored names: those of epochs that never committed, and those of holds
+// that ended. Like Prune, it stops at the first error.
+func (s *Session) PruneHeld(ctx context.Context, restored *Record) (deleted int, err error) {
+	files, err := s.log.heldFiles(ctx, s.log.root+HeldDir+"/")
+	if err != nil {
+		return 0, fmt.Errorf("checkpoint: prune held files: %w", err)
+	}
+	for _, f := range files {
+		if f.g >= s.head.Generation {
+			continue
+		}
+		if restored != nil {
+			if h := restored.Streams[f.stream].Holds; h != nil && slices.ContainsFunc(h.Epochs, func(e HeldEpochs) bool { return e.holds(f.g, f.n) }) {
+				continue
+			}
+		}
+		if err := s.log.store.Delete(ctx, f.key); err != nil {
+			return deleted, fmt.Errorf("checkpoint: prune %s: %w", f.key, err)
+		}
+		deleted++
+	}
+	return deleted, nil
 }
