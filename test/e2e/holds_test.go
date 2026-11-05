@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -197,4 +198,82 @@ func TestAHeldCellIsPatchedInAfterAnOverride(t *testing.T) {
 	if holds := listHolds(t, name); len(holds) != 0 {
 		t.Errorf("holds after the release: %v", holds)
 	}
+}
+
+// Under block, a CDC stream's new column is held instead of stopping the
+// run, which goes on delivering the rest of each row. A release restarts the
+// run, adds the column and patches its held values in.
+func TestAContinuousRunHoldsANewColumnUnderBlock(t *testing.T) {
+	startRunner(t)
+	name := unique("heldcdc")
+	in := schema(name)
+	src := pgx.Identifier{in, "users"}.Sanitize()
+	dst := pgx.Identifier{in + "_dst", "users"}.Sanitize()
+	run(t, "CREATE SCHEMA "+pgx.Identifier{in}.Sanitize(),
+		"CREATE TABLE "+src+" (id bigint PRIMARY KEY, name text)",
+		"INSERT INTO "+src+" SELECT i, 'u' || i FROM generate_series(1, 20) i",
+		"CREATE PUBLICATION "+pgx.Identifier{in}.Sanitize()+" FOR TABLE "+src)
+	t.Cleanup(func() {
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+		if conn, err := pgx.Connect(context.Background(), env.dbURL); err == nil {
+			_, _ = conn.Exec(context.Background(), "DROP PUBLICATION IF EXISTS "+pgx.Identifier{in}.Sanitize())
+			_ = conn.Close(context.Background())
+		}
+	})
+	apply(t,
+		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q},
+			"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q, "publication": %q}}}`, name, in, in),
+		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q},
+			"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}}`, name),
+		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
+			"spec": {"mode": "continuous", "schemaPolicy": "block", "source": {"ref": %q}, "destination": {"ref": %q, "namespace": %q},
+			"delivery": {"commit": {"interval": "1s"}}}}`, name, name, name, in+"_dst"))
+	eventually(t, 90*time.Second, "the snapshot", func() bool {
+		n, err := query[int64](t, "SELECT count(*) FROM "+dst)
+		return err == nil && n == 20
+	})
+
+	run(t, "ALTER TABLE "+src+" ADD COLUMN email text",
+		"UPDATE "+src+" SET email = 'e' || id, name = name || '!' WHERE id <= 5",
+		"INSERT INTO "+src+" VALUES (21, 'u21!', 'e21')")
+	changed := func() bool {
+		n, err := query[int64](t, "SELECT count(*) FROM "+dst+" WHERE name LIKE '%!' AND _openetl_held ? 'email'")
+		return err == nil && n == 6
+	}
+	for deadline := time.Now().Add(90 * time.Second); !changed(); time.Sleep(200 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			rows, err := query[*string](t, "SELECT string_agg(id || ' ' || name, '; ' ORDER BY id) FROM "+dst+" WHERE id <= 5 OR id = 21")
+			syncs, _ := query[*string](t, "SELECT string_agg(s.status || ' ' || coalesce(s.error, ''), '; ') FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id WHERE p.name = $1", name)
+			t.Fatalf("the changed rows: %v %v; runs: %v", deref(rows), err, deref(syncs))
+		}
+	}
+	if has, _ := query[bool](t, "SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = '"+dst+"'::regclass AND attname = 'email')"); has {
+		t.Error("the held column was added")
+	}
+	holds := listHolds(t, name)
+	if len(holds) != 1 || holds[0].GetColumn() != "email" || !holds[0].GetWhole() {
+		t.Fatalf("holds %v", holds)
+	}
+
+	releaseHold(t, name, "users", "email")
+	eventually(t, 120*time.Second, "the held values to be patched in", func() bool {
+		v, err := query[bool](t, `SELECT count(*) = 21 AND bool_and(d.email IS NOT DISTINCT FROM s.email AND NOT coalesce(d._openetl_held ? 'email', false))
+			FROM `+src+` s JOIN `+dst+` d USING (id)`)
+		return err == nil && v
+	})
+	run(t, "UPDATE "+src+" SET email = 'again' WHERE id = 1")
+	eventually(t, 60*time.Second, "the column delivered again", func() bool {
+		v, err := query[string](t, "SELECT email FROM "+dst+" WHERE id = 1")
+		return err == nil && v == "again"
+	})
+	if holds := listHolds(t, name); len(holds) != 0 {
+		t.Errorf("holds after the release: %v", holds)
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
 }
