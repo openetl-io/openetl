@@ -27,7 +27,6 @@ Roles:
   runner        the Temporal worker for a data plane's sync attempts
   dev           server, orchestrator and runner in one process
   gateway       webhook ingress (not built yet)
-  agent         LLM-backed activities (not built yet)
 
 Commands:
   bootstrap-key  give the admin service account a new owner key, in
@@ -66,7 +65,7 @@ func run(ctx context.Context, args []string) error {
 		defaults["log-format"] = "text"
 		defaults["auth"] = "none"
 	case "bootstrap-key":
-	case "gateway", "agent":
+	case "gateway":
 		return fmt.Errorf("the %s role isn't built yet", role)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(os.Stderr, usage)
