@@ -308,9 +308,20 @@ func pySparkOnKube(t *testing.T, k *kube, name string) (dir, submit, cluster, py
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	zipped := filepath.Join(dir, "openetl_spark.zip")
 	zipDir(t, "../../libs/openetl-spark/python", "openetl_spark", zipped)
+	// The pods run as this user, who owns what the runner keeps in the share:
+	// its store's directories aren't open to others. The image's entrypoint
+	// would switch root to its own user, and only that user writes its
+	// working directory.
+	template := filepath.Join(dir, "pod.yaml")
+	pod := fmt.Sprintf("apiVersion: v1\nkind: Pod\nspec:\n  serviceAccountName: spark\n  securityContext:\n    runAsUser: %d\n    runAsGroup: %d\n"+
+		"  containers:\n  - name: spark\n    workingDir: /tmp\n", os.Getuid(), os.Getgid())
+	if err := os.WriteFile(template, []byte(pod), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	vol := func(pod string) string {
-		p := "spark.kubernetes." + pod + ".volumes.hostPath.share."
-		return fmt.Sprintf(`%q: %q, %q: %q`, p+"mount.path", share, p+"options.path", share)
+		p := "spark.kubernetes." + pod + "."
+		return fmt.Sprintf(`%q: %q, %q: %q, %q: %q`, p+"volumes.hostPath.share.mount.path", share, p+"volumes.hostPath.share.options.path", share,
+			p+"podTemplateFile", template)
 	}
 	cluster = fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "SparkCluster", "metadata": {"name": %q},
 		"spec": {"submit": {"master": "k8s://https://openetl-control-plane:6443",
@@ -318,6 +329,7 @@ func pySparkOnKube(t *testing.T, k *kube, name string) (dir, submit, cluster, py
 				"spark.kubernetes.authenticate.driver.serviceAccountName": "spark", "spark.kubernetes.file.upload.path": %q,
 				"spark.driver.memory": "512m", "spark.executor.memory": "512m", "spark.executor.instances": "1",
 				"spark.kubernetes.driver.request.cores": "0.25", "spark.kubernetes.executor.request.cores": "0.25",
+				"spark.kubernetes.driverEnv.HADOOP_USER_NAME": "openetl", "spark.executorEnv.HADOOP_USER_NAME": "openetl", "spark.jars.ivy": "/tmp/ivy",
 				"spark.hadoop.fs.permissions.umask-mode": "000", %s, %s}}}}`,
 		name, k.namespace, "file://"+filepath.Join(dir, "uploads"), vol("driver"), vol("executor"))
 	return dir, submit, cluster, "local://" + zipped
