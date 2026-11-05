@@ -1316,3 +1316,97 @@ func TestRunAttemptHoldsAColumnTheDestinationRefuses(t *testing.T) {
 		t.Error("the held values' epochs aren't recorded")
 	}
 }
+
+// failingCommit fails every pre-commit of the generation that first stages
+// patches, so the attempt ends before it records them.
+type failingCommit struct {
+	*holdDest
+	patches map[uint64]bool
+	failGen uint64
+}
+
+func (d *failingCommit) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	return d, nil
+}
+
+func (d *failingCommit) Patch(ctx context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
+	d.mu.Lock()
+	d.patches[e.N] = true
+	d.mu.Unlock()
+	return d.holdDest.Patch(ctx, e, stream, batch)
+}
+
+func (d *failingCommit) PreCommit(ctx context.Context, e destination.Epoch) (destination.Staged, error) {
+	d.mu.Lock()
+	if d.patches[e.N] && d.failGen == 0 {
+		d.failGen = e.Generation
+	}
+	fail := e.Generation == d.failGen
+	if fail {
+		d.patched, d.patches = nil, map[uint64]bool{}
+		delete(d.pending, e.N)
+	}
+	d.mu.Unlock()
+	if fail {
+		return nil, errors.New("the destination went away")
+	}
+	return d.memDest.PreCommit(ctx, e)
+}
+
+func TestAReleaseResumesAfterACrash(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	opts := options(t, mem)
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+
+	dest := &failingCommit{holdDest: &holdDest{memDest: newMemDest()}, patches: map[uint64]bool{}}
+	root := t.TempDir()
+	store, err := checkpoint.NewFSStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := checkpoint.NewLog(store, "org", "pipe")
+	job := func(owner string, precision int32, pages [][]string) runner.Job {
+		return runner.Job{
+			Owner: owner, Pipeline: "pipe", Log: log, Destination: dest, Dataflow: &Dataflow{Options: opts},
+			Source:  &pagedSource{pages: map[string][][]string{"users": pages}, afterPage: dest.waitCommits},
+			HeldURL: "file://" + filepath.Join(root, "org", "pipe", checkpoint.HeldDir),
+			Streams: []runner.Stream{{
+				Name: "users", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"},
+				Schema: arrow.NewSchema([]arrow.Field{
+					{Name: "id", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+					{Name: "name", Type: arrow.BinaryTypes.String, Nullable: true},
+					{Name: "price", Type: &arrow.Decimal128Type{Precision: precision, Scale: 2}, Nullable: true},
+				}, nil),
+				Holds: &runner.StreamHolds{Cells: true},
+			}},
+			Settings: delivery.Settings{Require: delivery.AtLeastOnce, Scope: destination.ScopePipeline, CommitMaxBytes: 1},
+		}
+	}
+	if _, err := runner.RunAttempt(ctx, job("a1", 10, [][]string{{`{"id": 1, "name": "a", "price": "12345678901.5"}`}})); err != nil {
+		t.Fatal(err)
+	}
+	head, err := log.Latest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	since := head.Streams["users"].Holds.Cells["price"].Since
+	release := job("a2", 20, nil)
+	release.Releases = []runner.Release{{Stream: "users", Column: "price", Since: since}}
+	if _, err := runner.RunAttempt(ctx, release); err == nil {
+		t.Fatal("the attempt whose patches failed to stage succeeded")
+	}
+	if len(dest.patched) != 0 {
+		t.Fatalf("patched %v before a commit", dest.patched)
+	}
+	release.Owner = "a3"
+	if _, err := runner.RunAttempt(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(dest.patched, []string{"decimal(20, 2) 12345678901.5"}) {
+		t.Fatalf("patched %v after the crash", dest.patched)
+	}
+	if head, err = log.Latest(ctx); err != nil || head.Streams["users"].Holds != nil {
+		t.Fatalf("holds %+v, %v", head.Streams["users"].Holds, err)
+	}
+}
