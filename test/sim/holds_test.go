@@ -211,7 +211,7 @@ var (
 
 // ApplySchema creates a table with the value column's type, and changes
 // the type, unless the table's types are fixed: then it refuses, and
-// reports the column as fixed.
+// reports the column as fixed until the user has altered it.
 func (w *holdingWriter) ApplySchema(ctx context.Context, streams []destination.StreamSchema) (destination.SchemaApplied, error) {
 	var a destination.SchemaApplied
 	err := outcome(w.w.sched.point(ctx, w.attempt, "sink.schema"), func() error {
@@ -230,7 +230,7 @@ func (w *holdingWriter) ApplySchema(ctx context.Context, streams []destination.S
 			case wide:
 				t.wide[s.Name] = true
 			}
-			if t.fixedType[s.Name] {
+			if t.fixedType[s.Name] && !t.wide[s.Name] {
 				a.Limits[s.Name] = destination.TableLimits{Fixed: []string{"value"}}
 			}
 		}
