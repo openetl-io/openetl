@@ -120,7 +120,7 @@ public final class OpenEtl {
         } catch (StatusRuntimeException e) {
             throw new IllegalStateException(BridgeClient.failure("asking the runner for the pipeline", e).getMessage(), e);
         } finally {
-            ch.shutdownNow();
+            BridgeClient.close(ch);
         }
     }
 

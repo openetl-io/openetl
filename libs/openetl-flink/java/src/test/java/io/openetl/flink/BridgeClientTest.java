@@ -1,11 +1,20 @@
 package io.openetl.flink;
 
+import io.grpc.ManagedChannel;
+import io.grpc.stub.StreamObserver;
+import io.openetl.bridge.v1.BridgeServiceGrpc;
+import io.openetl.bridge.v1.DescribeRequest;
+import io.openetl.bridge.v1.DescribeResponse;
 import io.openetl.flink.examples.Passthrough;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -75,6 +84,52 @@ class BridgeClientTest {
                             IllegalArgumentException.class,
                             () -> OpenEtl.fromArgs(StreamExecutionEnvironment.getExecutionEnvironment(), new String[] {"--mine"}));
             assertTrue(e.getMessage().contains(OpenEtl.BRIDGE), e.getMessage());
+        }
+    }
+
+    /** A call's callbacks run on the channel's own threads, which stop before close returns, even when the closing thread is interrupted, as Flink's cancels do. */
+    @Test
+    void aClosedChannelLeavesNoThreads() throws Exception {
+        try (FakeRunner fake = new FakeRunner(Collections.singletonList("a"), Collections.emptySet())) {
+            for (boolean interrupt : new boolean[] {false, true}) {
+                ManagedChannel ch = BridgeClient.open(fake.config());
+                CompletableFuture<String> ran = new CompletableFuture<>();
+                BridgeServiceGrpc.newStub(ch)
+                        .describe(
+                                DescribeRequest.getDefaultInstance(),
+                                new StreamObserver<DescribeResponse>() {
+                                    @Override
+                                    public void onNext(DescribeResponse r) {
+                                        ran.complete(Thread.currentThread().getName());
+                                    }
+
+                                    @Override
+                                    public void onError(Throwable t) {
+                                        ran.completeExceptionally(t);
+                                    }
+
+                                    @Override
+                                    public void onCompleted() {}
+                                });
+                String name = ran.get(30, TimeUnit.SECONDS);
+                assertTrue(name.startsWith(BridgeClient.THREADS), name);
+                if (interrupt) {
+                    Thread.currentThread().interrupt();
+                }
+                BridgeClient.close(ch);
+                assertEquals(interrupt, Thread.interrupted());
+                List<String> left = new ArrayList<>();
+                for (Thread t : Thread.getAllStackTraces().keySet()) {
+                    if (t.getName().startsWith(BridgeClient.THREADS)) {
+                        t.join(1_000);
+                        if (t.isAlive()) {
+                            left.add(t.getName());
+                        }
+                    }
+                }
+                assertTrue(left.isEmpty(), "still running: " + left);
+                assertTrue(ch.isTerminated());
+            }
         }
     }
 }
