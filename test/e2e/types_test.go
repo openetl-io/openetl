@@ -248,7 +248,7 @@ func TestWideningIntoPostgresWaitsForTheUser(t *testing.T) {
 		t.Fatalf("the first sync: %+v, %v", res, err)
 	}
 	_, err := attempt("a2")
-	if errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "alter it to text") {
+	if errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "doesn't change a column's type") {
 		t.Fatalf("a widening across syncs: %v", err)
 	}
 	if got, want := typ(table), "bigint 1"; got != want {
