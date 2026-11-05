@@ -206,7 +206,8 @@ where
             (Some(r), Some(url)) => {
                 // Patches go out at the types the destination will have.
                 shape[local]
-                    .declare()
+                    .version(&r.versioned)
+                    .and_then(|_| shape[local].declare())
                     .map_err(|e| shape_error(&plan.streams[s], e))?;
                 Some(Replayer::open(url, r.clone())?)
             }

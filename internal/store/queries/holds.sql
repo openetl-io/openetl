@@ -24,15 +24,15 @@ WHERE h.org_id = @org_id AND h.pipeline_id = @pipeline_id
 ORDER BY h.stream, h.column_name, h.whole DESC;
 
 -- name: InsertHoldRelease :one
-INSERT INTO hold_releases (org_id, id, pipeline_id, stream, column_name, whole, since_generation, since_epoch, discard, principal)
-VALUES (@org_id, @id, @pipeline_id, @stream, @column_name, @whole, @since_generation, @since_epoch, @discard, @principal)
+INSERT INTO hold_releases (org_id, id, pipeline_id, stream, column_name, whole, since_generation, since_epoch, discard, new_version, principal)
+VALUES (@org_id, @id, @pipeline_id, @stream, @column_name, @whole, @since_generation, @since_epoch, @discard, @new_version, @principal)
 ON CONFLICT (org_id, pipeline_id, stream, column_name, whole, since_generation, since_epoch) DO UPDATE SET id = hold_releases.id
-RETURNING id, discard;
+RETURNING id, discard, new_version;
 
 -- name: PendingHoldReleases :many
 -- The releases of holds still open, not discarded and not being patched in,
 -- for a run to take.
-SELECT r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard
+SELECT r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version
 FROM hold_releases r
 JOIN holds h ON h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
     AND h.column_name = r.column_name AND h.whole = r.whole

@@ -17,6 +17,9 @@ pub const HELD_KEY: &str = "openetl.held";
 pub const HOLD_KIND_KEY: &str = "openetl.hold";
 pub const CELL: &str = "cell";
 pub const COLUMN: &str = "column";
+/// Field metadata on a patch's column that fills another held column than
+/// its own: col__v2 fills col.
+pub const FILLS_KEY: &str = "openetl.fills";
 
 /// What a held cell shows. Values are JSON text of the column's delivered
 /// type.

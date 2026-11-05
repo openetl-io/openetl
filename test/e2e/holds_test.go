@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,10 +28,10 @@ func listHolds(t *testing.T, pipeline string) []*apiv1.Hold {
 	return resp.Msg.GetHolds()
 }
 
-func releaseHold(t *testing.T, pipeline, stream, column string) {
+func releaseHold(t *testing.T, pipeline, stream, column string, newVersion ...bool) {
 	t.Helper()
 	_, err := pipelines().ReleaseHold(t.Context(), connect.NewRequest(&apiv1.ReleaseHoldRequest{
-		Parent: "workspaces/default/pipelines/" + pipeline, Stream: stream, Column: column,
+		Parent: "workspaces/default/pipelines/" + pipeline, Stream: stream, Column: column, NewVersion: slices.Contains(newVersion, true),
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -149,6 +150,53 @@ func TestAWidenedColumnIsHeldAndReleased(t *testing.T) {
 	}
 	if typ, _ := query[string](t, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = '"+dst+"'::regclass AND attname = 'v'"); typ != "bigint" {
 		t.Errorf("v is %s after the release", typ)
+	}
+	if holds := listHolds(t, name); len(holds) != 0 {
+		t.Errorf("holds after the release: %v", holds)
+	}
+}
+
+// A widened column released to a new version needs no ALTER: the column
+// keeps its type, v__v2 is added with the new one, and the held values,
+// and every value from then on, land in it.
+func TestAWidenedColumnIsReleasedToANewVersion(t *testing.T) {
+	startRunner(t)
+	name, src, dst := heldSetup(t, "heldv2", "v int NOT NULL", "(id, v) SELECT i, i FROM generate_series(1, 50) i",
+		`{"name": "items", "sync": "incremental", "cursor": "at"}`)
+	if status, stats := syncNow(t, name); status != "succeeded" {
+		t.Fatalf("first sync %s: %s", status, stats)
+	}
+	next := "nextval('" + pgx.Identifier{schema(name), "items_at"}.Sanitize() + "')"
+	run(t, "ALTER TABLE "+src+" ALTER COLUMN v TYPE bigint",
+		"UPDATE "+src+" SET v = 3000000000 + id, at = "+next+" WHERE id <= 10")
+	if status, stats := syncNow(t, name); status != "succeeded" {
+		t.Fatalf("the sync after the change %s: %s", status, stats)
+	}
+	if holds := listHolds(t, name); len(holds) != 1 || holds[0].GetColumn() != "v" || !holds[0].GetWhole() {
+		t.Fatalf("holds %v", holds)
+	}
+
+	releaseHold(t, name, "items", "v", true)
+	run(t, "UPDATE "+src+" SET v = 4000000000 + id, at = "+next+" WHERE id IN (20, 21)")
+	if status, stats := syncNow(t, name); status != "succeeded" {
+		t.Fatalf("the sync after the release %s: %s", status, stats)
+	}
+	landed := func() string {
+		v, err := query[string](t, `SELECT string_agg(id || '=' || coalesce(v::text, '-') || '/' || coalesce(v__v2::text, '-') || coalesce(_openetl_held::text, ''), ' ' ORDER BY id)
+			FROM `+dst+` WHERE id IN (1, 10, 11, 20, 21)`)
+		if err != nil {
+			return err.Error()
+		}
+		return v
+	}
+	want := "1=-/3000000001 10=-/3000000010 11=11/- 20=-/4000000020 21=-/4000000021"
+	eventually(t, 30*time.Second, "the held values to land in v__v2", func() bool { return landed() == want })
+	typ := func(c string) string {
+		v, _ := query[string](t, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = '"+dst+"'::regclass AND attname = '"+c+"'")
+		return v
+	}
+	if typ("v") != "integer" || typ("v__v2") != "bigint" {
+		t.Errorf("v is %s and v__v2 is %s", typ("v"), typ("v__v2"))
 	}
 	if holds := listHolds(t, name); len(holds) != 0 {
 		t.Errorf("holds after the release: %v", holds)

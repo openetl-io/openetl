@@ -112,6 +112,9 @@ type Replay struct {
 	// The released columns' cells held since the replay began, which aren't
 	// in Files and stay held once it ends.
 	Held map[string]CellHold `json:"held,omitempty"`
+	// Released column holds whose values go to a new version of the
+	// column, col__v2; the column keeps its delivered type.
+	Versioned []ColumnHold `json:"versioned,omitempty"`
 }
 
 // HeldDir holds a pipeline's held values, next to its checkpoints:

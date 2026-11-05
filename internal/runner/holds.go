@@ -58,6 +58,9 @@ type Release struct {
 	Stream, Column string
 	Since          checkpoint.RecordRef
 	Discard        bool
+	// A column hold's values go to a new version of the column, col__v2,
+	// and the column keeps the type the destination has.
+	NewVersion bool
 }
 
 // RefusedError: the destination refused columns of an epoch's schemas
@@ -127,7 +130,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			h = cloneHolds(restored.Streams[s.Name].Holds)
 		}
 		var released []string
-		var taken []checkpoint.ColumnHold
+		var taken, versioned []checkpoint.ColumnHold
 		for _, r := range j.Releases {
 			if r.Stream != s.Name || h.Replay != nil {
 				continue
@@ -139,6 +142,9 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 					h.Columns[i].Discarded = true
 				} else {
 					taken = append(taken, h.Columns[i])
+					if r.NewVersion && h.Columns[i].Delivered != nil {
+						versioned = append(versioned, h.Columns[i])
+					}
 					h.Columns = slices.Delete(h.Columns, i, i+1)
 					released = append(released, r.Column)
 				}
@@ -157,6 +163,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			}
 			is := func(col string) bool { return col == r.Column }
 			released = slices.DeleteFunc(released, is)
+			versioned = slices.DeleteFunc(versioned, func(c checkpoint.ColumnHold) bool { return is(c.Column) })
 			if h.Replay != nil {
 				if h.Replay.Columns = slices.DeleteFunc(h.Replay.Columns, is); len(h.Replay.Columns) == 0 {
 					h.Replay = nil
@@ -177,7 +184,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			if err != nil {
 				return nil, nil, err
 			}
-			h.Replay = &checkpoint.Replay{Columns: slices.Compact(released), Files: files}
+			h.Replay = &checkpoint.Replay{Columns: slices.Compact(released), Files: files, Versioned: versioned}
 		}
 		holds[s.Name] = h
 		plans[s.Name] = &HoldPlan{StreamHolds: *s.Holds, Holding: h.Columns, Limits: limits[s.Name], Replay: h.Replay}

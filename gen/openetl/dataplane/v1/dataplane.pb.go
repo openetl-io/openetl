@@ -261,7 +261,10 @@ type HoldRelease struct {
 	// The epoch the hold started in.
 	Since *CheckpointRef `protobuf:"bytes,3,opt,name=since,proto3" json:"since,omitempty"`
 	// Drop its values instead of patching them in.
-	Discard       bool `protobuf:"varint,4,opt,name=discard,proto3" json:"discard,omitempty"`
+	Discard bool `protobuf:"varint,4,opt,name=discard,proto3" json:"discard,omitempty"`
+	// A column hold's values go to a new version of the column, col__v2, as
+	// allow_all's do, and the column keeps the type the destination has.
+	NewVersion    bool `protobuf:"varint,5,opt,name=new_version,json=newVersion,proto3" json:"new_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -320,6 +323,13 @@ func (x *HoldRelease) GetSince() *CheckpointRef {
 func (x *HoldRelease) GetDiscard() bool {
 	if x != nil {
 		return x.Discard
+	}
+	return false
+}
+
+func (x *HoldRelease) GetNewVersion() bool {
+	if x != nil {
+		return x.NewVersion
 	}
 	return false
 }
@@ -1851,12 +1861,14 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedSparkClusterR\x05value:\x028\x01\x1aj\n" +
 	"\x12FlinkClustersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12>\n" +
-	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedFlinkClusterR\x05value:\x028\x01\"\x92\x01\n" +
+	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedFlinkClusterR\x05value:\x028\x01\"\xb3\x01\n" +
 	"\vHoldRelease\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
 	"\x06column\x18\x02 \x01(\tR\x06column\x129\n" +
 	"\x05since\x18\x03 \x01(\v2#.openetl.dataplane.v1.CheckpointRefR\x05since\x12\x18\n" +
-	"\adiscard\x18\x04 \x01(\bR\adiscard\"\xf1\x01\n" +
+	"\adiscard\x18\x04 \x01(\bR\adiscard\x12\x1f\n" +
+	"\vnew_version\x18\x05 \x01(\bR\n" +
+	"newVersion\"\xf1\x01\n" +
 	"\x12PinnedFlinkCluster\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x124\n" +
 	"\x04spec\x18\x02 \x01(\v2 .openetl.api.v1.FlinkClusterSpecR\x04spec\x12>\n" +

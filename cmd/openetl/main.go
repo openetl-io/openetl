@@ -60,7 +60,8 @@ Commands:
                   see what's wrong with pipelines, and what heal did
   holds NAME      list the columns and cells a pipeline holds back
   holds release|discard NAME STREAM COLUMN
-                  patch a hold's values in, or drop them
+                  patch a hold's values in, or drop them; release
+                  --new-version patches them into COLUMN__v2
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file
 (.openetl/admin.key by default, where openetld writes the owner's key).

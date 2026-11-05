@@ -15,7 +15,8 @@ use crate::coerce::Target;
 use crate::control::Control;
 use crate::evolve::{Conformed, Evolver, HoldRules, Policy, VERSIONS_KEY};
 use crate::hold::{
-    CELL, COLUMN, ColumnHold, HELD_COLUMN, HELD_KEY, HOLD_KIND_KEY, HeldCell, HoldConfig, Show,
+    CELL, COLUMN, ColumnHold, FILLS_KEY, HELD_COLUMN, HELD_KEY, HOLD_KIND_KEY, HeldCell,
+    HoldConfig, Show,
 };
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
@@ -62,6 +63,9 @@ struct Holds {
     values: HashMap<String, ArrayRef>,
     /// The stream has `_openetl_held`.
     started: bool,
+    /// Released columns whose values go to a new version: from the held
+    /// column's destination name to the version's source name.
+    versioned: HashMap<String, String>,
 }
 
 /// One stream's schema as the destination sees it: columns under their
@@ -340,6 +344,40 @@ impl Shaper {
             .map(|f| f.data_type().clone());
         self.shape(&c.batch, seq.as_ref());
         Ok(true)
+    }
+
+    /// Sends each released column hold's values to a new version of its
+    /// column, as [`Evolver::version`] does, so a replay's patches fill
+    /// that version. True if the schema changed.
+    pub fn version(&mut self, columns: &[ColumnHold]) -> Result<bool, Error> {
+        let Some(current) = self.current.clone() else {
+            return Ok(false);
+        };
+        let mut changed = false;
+        for c in columns {
+            let (Some(kept), Some(src)) = (&c.delivered, self.namer.source_of(&c.column)) else {
+                continue;
+            };
+            let src = src.to_owned();
+            let before = self.evolver.versions().clone();
+            let Some(next) = self.evolver.version(&src, kept) else {
+                continue;
+            };
+            changed |= *self.evolver.versions() != before;
+            if let Some(h) = self.holds.as_mut() {
+                h.columns.remove(&src);
+                h.versioned.insert(c.column.clone(), next);
+            }
+        }
+        if changed {
+            let seq = current
+                .field_with_name("_openetl_seq")
+                .ok()
+                .map(|f| f.data_type().clone());
+            let empty = RecordBatch::new_empty(Arc::new(self.evolver.schema()));
+            self.shape(&empty, seq.as_ref());
+        }
+        Ok(changed)
     }
 
     /// Called at each barrier: from now on, the schema policy applies.
@@ -785,11 +823,18 @@ impl Shaper {
             if !released.contains(f.name()) {
                 continue;
             }
-            if self
+            // A column whose values go to a new version fills it instead.
+            let version = self
                 .holds
                 .as_ref()
-                .is_some_and(|h| h.columns.values().any(|c| c.dest == *f.name()))
-            {
+                .and_then(|h| h.versioned.get(f.name()))
+                .and_then(|v| self.namer.get(v));
+            let into = version.unwrap_or(f.name());
+            if self.holds.as_ref().is_some_and(|h| {
+                h.columns
+                    .values()
+                    .any(|c| c.dest == *f.name() || c.dest == into)
+            }) {
                 if k == CELL {
                     still += (0..n).filter(|r| listed(*r, f.name())).count() as u64;
                 }
@@ -799,13 +844,14 @@ impl Shaper {
             let declared = self
                 .declared
                 .as_ref()
+                .filter(|_| version.is_none())
                 .and_then(|d| d.field_with_name(source).ok());
-            let Some(target) = declared.or_else(|| current.field_with_name(f.name()).ok()) else {
+            let Some(target) = declared.or_else(|| current.field_with_name(into).ok()) else {
                 continue;
             };
             let target = target
                 .clone()
-                .with_name(f.name())
+                .with_name(into)
                 .with_nullable(true)
                 .with_metadata(HashMap::new());
             let (arr, failed): (ArrayRef, HashSet<usize>) = if k == CELL {
@@ -836,6 +882,12 @@ impl Shaper {
             still += (0..n)
                 .filter(|&r| listed(r, f.name()) && failed.contains(&r))
                 .count() as u64;
+            let target = match version {
+                Some(_) => {
+                    target.with_metadata(HashMap::from([(FILLS_KEY.to_owned(), f.name().clone())]))
+                }
+                None => target,
+            };
             filled.push((target, arr, mask));
         }
         let keep: Vec<bool> = (0..n)
@@ -870,7 +922,8 @@ impl Shaper {
         for (row, k) in keep.iter().enumerate() {
             for (f, _, m) in &filled {
                 if m[row] {
-                    b.values().append_value(f.name());
+                    b.values()
+                        .append_value(f.metadata().get(FILLS_KEY).unwrap_or(f.name()));
                 }
             }
             b.append(*k);
@@ -1936,6 +1989,83 @@ mod tests {
             "{:?}",
             s.holding()
         );
+    }
+
+    #[test]
+    fn a_release_to_a_new_version_patches_it() {
+        let fixed = || HoldConfig {
+            limits: crate::hold::Limits {
+                fixed: HashSet::from(["x".to_owned()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut s = established(Policy::AllowAll, fixed());
+        let n = s
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                ("x", Arc::new(arrow_array::Float64Array::from(vec![1.5]))),
+            ]))
+            .unwrap();
+        let held = n.held[0].clone();
+        let kept = ColumnHold {
+            column: "x".into(),
+            delivered: Some(Field::new("x", DataType::Int64, true)),
+            reason: "fixed".into(),
+        };
+        let released = HashSet::from(["x".to_owned()]);
+        let restart = |restored: Option<SchemaRef>| {
+            let mut s = keyed(Policy::AllowAll, restored, None)
+                .with_holds(fixed())
+                .unwrap();
+            let changed = s.version(std::slice::from_ref(&kept)).unwrap();
+            (s, changed)
+        };
+        let (mut s, changed) = restart(s.schema());
+        assert!(changed);
+        let schema = s.schema().unwrap();
+        assert_eq!(data_names(&schema), ["id", "x", "x__v2"]);
+        assert_eq!(
+            schema.field_with_name("x").unwrap().data_type(),
+            &DataType::Int64
+        );
+        assert_eq!(
+            schema.field_with_name("x__v2").unwrap().data_type(),
+            &DataType::Float64
+        );
+
+        let check = |s: &Shaper| {
+            let (p, still) = s.patch(&held, &released).unwrap();
+            let p = p.unwrap();
+            assert_eq!(still, 0);
+            let f = p.schema().field_with_name("x__v2").unwrap().clone();
+            assert_eq!(f.metadata().get(FILLS_KEY).map(String::as_str), Some("x"));
+            assert!(p.schema().field_with_name("x").is_err());
+            let v = p
+                .column_by_name("x__v2")
+                .unwrap()
+                .as_primitive::<arrow_array::types::Float64Type>();
+            assert_eq!(v.iter().collect::<Vec<_>>(), [Some(1.5)]);
+            let lists = string_lists(p.column_by_name(HELD_COLUMN).unwrap());
+            assert_eq!(lists[0].as_deref(), Some(&["x".to_owned()][..]));
+        };
+        check(&s);
+
+        let n = s
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![2])) as ArrayRef),
+                ("x", Arc::new(arrow_array::Float64Array::from(vec![2.5]))),
+            ]))
+            .unwrap();
+        assert!(n.held.is_empty() && s.holding().is_empty());
+        assert!(n.batch.column_by_name("x").unwrap().is_null(0));
+        assert!(!n.batch.column_by_name("x__v2").unwrap().is_null(0));
+
+        // The next attempt restores the version, and adds no other.
+        let (s, changed) = restart(s.schema());
+        assert!(!changed);
+        assert_eq!(data_names(&s.schema().unwrap()), ["id", "x", "x__v2"]);
+        check(&s);
     }
 
     #[test]

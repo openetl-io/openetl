@@ -195,6 +195,7 @@ type HoldRelease struct {
 	Discard         bool
 	Principal       string
 	CreateTime      time.Time
+	NewVersion      bool
 }
 
 type Incident struct {

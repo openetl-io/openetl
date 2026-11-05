@@ -295,6 +295,9 @@ func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
 			From:    &enginev1.ReplayProgress{File: uint32(r.File), Row: r.Row, StillHeld: r.StillHeld}, //nolint:gosec // small
 			Columns: r.Columns,
 		}
+		for _, c := range r.Versioned {
+			p.Replay.Versioned = append(p.Replay.Versioned, &enginev1.ColumnHold{Column: c.Column, Delivered: c.Delivered, Reason: c.Reason})
+		}
 	}
 	return p
 }

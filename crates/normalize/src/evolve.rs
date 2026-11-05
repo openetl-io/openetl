@@ -206,6 +206,41 @@ impl Evolver {
         true
     }
 
+    /// Sends the values of `name`, a column held whole, to a new version
+    /// of its source column, as an incompatible change does; `name` takes
+    /// `kept`'s type, the one the destination has. Once `name` isn't its
+    /// source column's current version, does nothing. The version's name,
+    /// or None if the stream has no `name`.
+    pub fn version(&mut self, name: &str, kept: &Field) -> Option<String> {
+        let i = *self.index.get(name)?;
+        let base = self
+            .versions
+            .keys()
+            .find(|s| {
+                *s == name
+                    || name
+                        .strip_prefix(s.as_str())
+                        .and_then(|v| v.strip_prefix("__v"))
+                        .is_some_and(|k| k.parse::<u32>().is_ok())
+            })
+            .cloned()
+            .unwrap_or_else(|| name.to_owned());
+        if self.current(&base) != name {
+            return Some(self.current(&base));
+        }
+        if let Some(left) = self.rules.as_mut().and_then(|r| r.columns_left.as_mut()) {
+            *left = left.saturating_sub(1);
+        }
+        let k = self.versions.get(&base).map_or(2, |k| k + 1);
+        self.versions.insert(base.clone(), k);
+        let next = self.current(&base);
+        let f = self.fields[i].clone().with_name(&next).with_nullable(true);
+        self.fields[i] = kept.clone().with_name(name).with_nullable(true);
+        self.holding.remove(name);
+        self.add(f);
+        Some(next)
+    }
+
     fn drift(&self, what: String) -> Error {
         let policy = match self.policy {
             Policy::AllowAll => "allow_all",

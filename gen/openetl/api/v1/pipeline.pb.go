@@ -4885,9 +4885,14 @@ func (x *ListHoldsResponse) GetHolds() []*Hold {
 type ReleaseHoldRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workspaces/{workspace}/pipelines/{pipeline}
-	Parent        string `protobuf:"bytes,1,opt,name=parent,proto3" json:"parent,omitempty"`
-	Stream        string `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
-	Column        string `protobuf:"bytes,3,opt,name=column,proto3" json:"column,omitempty"`
+	Parent string `protobuf:"bytes,1,opt,name=parent,proto3" json:"parent,omitempty"`
+	Stream string `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
+	Column string `protobuf:"bytes,3,opt,name=column,proto3" json:"column,omitempty"`
+	// The column held whole sends its values, from the hold's start and from
+	// now on, to a new version of it, col__v2, as allow_all does after an
+	// incompatible change. The column keeps the type the destination has, so
+	// the destination needn't change it.
+	NewVersion    bool `protobuf:"varint,4,opt,name=new_version,json=newVersion,proto3" json:"new_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4941,6 +4946,13 @@ func (x *ReleaseHoldRequest) GetColumn() string {
 		return x.Column
 	}
 	return ""
+}
+
+func (x *ReleaseHoldRequest) GetNewVersion() bool {
+	if x != nil {
+		return x.NewVersion
+	}
+	return false
 }
 
 type ReleaseHoldResponse struct {
@@ -5420,11 +5432,13 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x10ListHoldsRequest\x12\x16\n" +
 	"\x06parent\x18\x01 \x01(\tR\x06parent\"?\n" +
 	"\x11ListHoldsResponse\x12*\n" +
-	"\x05holds\x18\x01 \x03(\v2\x14.openetl.api.v1.HoldR\x05holds\"\\\n" +
+	"\x05holds\x18\x01 \x03(\v2\x14.openetl.api.v1.HoldR\x05holds\"}\n" +
 	"\x12ReleaseHoldRequest\x12\x16\n" +
 	"\x06parent\x18\x01 \x01(\tR\x06parent\x12\x16\n" +
 	"\x06stream\x18\x02 \x01(\tR\x06stream\x12\x16\n" +
-	"\x06column\x18\x03 \x01(\tR\x06column\"?\n" +
+	"\x06column\x18\x03 \x01(\tR\x06column\x12\x1f\n" +
+	"\vnew_version\x18\x04 \x01(\bR\n" +
+	"newVersion\"?\n" +
 	"\x13ReleaseHoldResponse\x12(\n" +
 	"\x04hold\x18\x01 \x01(\v2\x14.openetl.api.v1.HoldR\x04hold\"\\\n" +
 	"\x12DiscardHoldRequest\x12\x16\n" +

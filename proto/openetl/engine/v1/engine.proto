@@ -181,6 +181,11 @@ message Replay {
   repeated string columns = 3;
   // Zero: a default.
   uint64 chunk_rows = 4;
+  // Released column holds, of those columns, whose values go to a new
+  // version of the column, col__v2, as allow_all's do: from the hold's
+  // start, and from now on. The column keeps the type the destination has.
+  // Once the stream's schema has that version, it is the one.
+  repeated ColumnHold versioned = 5;
 }
 
 message ReplayProgress {

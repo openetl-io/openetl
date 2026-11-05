@@ -88,6 +88,9 @@ message HoldRelease {
   CheckpointRef since = 3;
   // Drop its values instead of patching them in.
   bool discard = 4;
+  // A column hold's values go to a new version of the column, col__v2, as
+  // allow_all's do, and the column keeps the type the destination has.
+  bool new_version = 5;
 }
 
 // PinnedFlinkCluster's secret references that this server holds are

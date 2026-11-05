@@ -93,10 +93,10 @@ func (q *Queries) InsertHold(ctx context.Context, arg InsertHoldParams) error {
 }
 
 const insertHoldRelease = `-- name: InsertHoldRelease :one
-INSERT INTO hold_releases (org_id, id, pipeline_id, stream, column_name, whole, since_generation, since_epoch, discard, principal)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO hold_releases (org_id, id, pipeline_id, stream, column_name, whole, since_generation, since_epoch, discard, new_version, principal)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (org_id, pipeline_id, stream, column_name, whole, since_generation, since_epoch) DO UPDATE SET id = hold_releases.id
-RETURNING id, discard
+RETURNING id, discard, new_version
 `
 
 type InsertHoldReleaseParams struct {
@@ -109,12 +109,14 @@ type InsertHoldReleaseParams struct {
 	SinceGeneration int64
 	SinceEpoch      int64
 	Discard         bool
+	NewVersion      bool
 	Principal       string
 }
 
 type InsertHoldReleaseRow struct {
-	ID      uuid.UUID
-	Discard bool
+	ID         uuid.UUID
+	Discard    bool
+	NewVersion bool
 }
 
 func (q *Queries) InsertHoldRelease(ctx context.Context, arg InsertHoldReleaseParams) (InsertHoldReleaseRow, error) {
@@ -128,10 +130,11 @@ func (q *Queries) InsertHoldRelease(ctx context.Context, arg InsertHoldReleasePa
 		arg.SinceGeneration,
 		arg.SinceEpoch,
 		arg.Discard,
+		arg.NewVersion,
 		arg.Principal,
 	)
 	var i InsertHoldReleaseRow
-	err := row.Scan(&i.ID, &i.Discard)
+	err := row.Scan(&i.ID, &i.Discard, &i.NewVersion)
 	return i, err
 }
 
@@ -217,7 +220,7 @@ func (q *Queries) NewestHoldRelease(ctx context.Context, arg NewestHoldReleasePa
 }
 
 const pendingHoldReleases = `-- name: PendingHoldReleases :many
-SELECT r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard
+SELECT r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version
 FROM hold_releases r
 JOIN holds h ON h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
     AND h.column_name = r.column_name AND h.whole = r.whole
@@ -237,6 +240,7 @@ type PendingHoldReleasesRow struct {
 	SinceGeneration int64
 	SinceEpoch      int64
 	Discard         bool
+	NewVersion      bool
 }
 
 // The releases of holds still open, not discarded and not being patched in,
@@ -256,6 +260,7 @@ func (q *Queries) PendingHoldReleases(ctx context.Context, arg PendingHoldReleas
 			&i.SinceGeneration,
 			&i.SinceEpoch,
 			&i.Discard,
+			&i.NewVersion,
 		); err != nil {
 			return nil, err
 		}

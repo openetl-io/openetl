@@ -770,6 +770,11 @@ message ReleaseHoldRequest {
   string parent = 1;
   string stream = 2;
   string column = 3;
+  // The column held whole sends its values, from the hold's start and from
+  // now on, to a new version of it, col__v2, as allow_all does after an
+  // incompatible change. The column keeps the type the destination has, so
+  // the destination needn't change it.
+  bool new_version = 4;
 }
 
 message ReleaseHoldResponse {

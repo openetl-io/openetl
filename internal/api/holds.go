@@ -51,7 +51,7 @@ func hold(r db.ListHoldsRow) *apiv1.Hold {
 }
 
 func (s *Server) ReleaseHold(ctx context.Context, req *connect.Request[apiv1.ReleaseHoldRequest]) (*connect.Response[apiv1.ReleaseHoldResponse], error) {
-	h, err := s.release(ctx, req.Msg.GetParent(), req.Msg.GetStream(), req.Msg.GetColumn(), false)
+	h, err := s.release(ctx, req.Msg.GetParent(), req.Msg.GetStream(), req.Msg.GetColumn(), false, req.Msg.GetNewVersion())
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (s *Server) ReleaseHold(ctx context.Context, req *connect.Request[apiv1.Rel
 }
 
 func (s *Server) DiscardHold(ctx context.Context, req *connect.Request[apiv1.DiscardHoldRequest]) (*connect.Response[apiv1.DiscardHoldResponse], error) {
-	h, err := s.release(ctx, req.Msg.GetParent(), req.Msg.GetStream(), req.Msg.GetColumn(), true)
+	h, err := s.release(ctx, req.Msg.GetParent(), req.Msg.GetStream(), req.Msg.GetColumn(), true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -67,11 +67,15 @@ func (s *Server) DiscardHold(ctx context.Context, req *connect.Request[apiv1.Dis
 }
 
 // release records a release, or a discard, of the stream's open holds on
-// column: the column held whole, its held cells, or both. A continuous
-// pipeline's run restarts to take it.
-func (s *Server) release(ctx context.Context, parent, stream, column string, discard bool) (*apiv1.Hold, error) {
+// column: the column held whole, its held cells, or both. With newVersion,
+// the column held whole goes to a new version of it, and its cells with
+// it. A continuous pipeline's run restarts to take it.
+func (s *Server) release(ctx context.Context, parent, stream, column string, discard, newVersion bool) (*apiv1.Hold, error) {
 	audit(ctx).set("stream", stream)
 	audit(ctx).set("column", column)
+	if newVersion {
+		audit(ctx).set("new_version", "true")
+	}
 	ws, p, err := s.getPipeline(ctx, parent)
 	if err != nil {
 		return nil, err
@@ -89,7 +93,13 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 		if err != nil {
 			return err
 		}
-		found := false
+		found, whole := false, false
+		for _, r := range rows {
+			whole = whole || r.Stream == stream && r.ColumnName == column && r.Whole && !r.Discarded && !r.Releasing
+		}
+		if newVersion && !whole {
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s.%s isn't held whole, so it can't go to a new version", stream, column))
+		}
 		for _, r := range rows {
 			if r.Stream != stream || r.ColumnName != column {
 				continue
@@ -104,15 +114,18 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 			}
 			got, err := q.InsertHoldRelease(ctx, db.InsertHoldReleaseParams{
 				OrgID: s.Tenant.Org, ID: id, PipelineID: p.ID, Stream: stream, ColumnName: column, Whole: r.Whole,
-				SinceGeneration: r.SinceGeneration, SinceEpoch: r.SinceEpoch, Discard: discard, Principal: callerOf(ctx).principal,
+				SinceGeneration: r.SinceGeneration, SinceEpoch: r.SinceEpoch, Discard: discard, NewVersion: newVersion, Principal: callerOf(ctx).principal,
 			})
 			if err != nil {
 				return err
 			}
-			if got.Discard != discard {
+			if got.Discard != discard || got.NewVersion != newVersion {
 				was := "release"
-				if got.Discard {
+				switch {
+				case got.Discard:
 					was = "discard"
+				case got.NewVersion:
+					was = "release to a new version"
 				}
 				return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("a %s of the hold on %s.%s waits for the pipeline's next run", was, stream, column))
 			}
@@ -265,7 +278,7 @@ func (s *Server) pendingReleases(ctx context.Context, pipeline uuid.UUID) ([]*da
 	out := make([]*dataplanev1.HoldRelease, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, &dataplanev1.HoldRelease{
-			Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard,
+			Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard, NewVersion: r.NewVersion,
 			Since: &dataplanev1.CheckpointRef{Generation: uint64(r.SinceGeneration), Epoch: uint64(r.SinceEpoch)}, //nolint:gosec // positive
 		})
 	}

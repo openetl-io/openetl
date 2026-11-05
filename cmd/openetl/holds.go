@@ -22,7 +22,13 @@ func runHolds(ctx context.Context, args []string, out io.Writer) error {
 		sub, args = args[0], args[1:]
 	}
 	var workspace *string
-	flags := func(fs *flag.FlagSet) { workspace = fs.String("workspace", "default", "the pipeline's workspace") }
+	var newVersion *bool
+	flags := func(fs *flag.FlagSet) {
+		workspace = fs.String("workspace", "default", "the pipeline's workspace")
+		if sub == "release" {
+			newVersion = fs.Bool("new-version", false, "send a column held whole to a new version of it, COLUMN__v2, instead of the column, which keeps its type")
+		}
+	}
 	if sub == "list" {
 		conn, rest, err := subcommand("holds", args, 1, "PIPELINE", flags)
 		if err != nil {
@@ -41,12 +47,16 @@ func runHolds(ctx context.Context, args []string, out io.Writer) error {
 	parent := "workspaces/" + *workspace + "/pipelines/" + rest[0]
 	var h *apiv1.Hold
 	if sub == "release" {
-		res, err := c.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: parent, Stream: rest[1], Column: rest[2]}))
+		res, err := c.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: parent, Stream: rest[1], Column: rest[2], NewVersion: *newVersion}))
 		if err != nil {
 			return err
 		}
 		h = res.Msg.GetHold()
-		fmt.Fprintf(out, "released %s.%s of %s; the pipeline's next run patches its held values in\n", h.GetStream(), h.GetColumn(), parent)
+		into := ""
+		if *newVersion {
+			into = " into a new version of the column"
+		}
+		fmt.Fprintf(out, "released %s.%s of %s; the pipeline's next run patches its held values in%s\n", h.GetStream(), h.GetColumn(), parent, into)
 		return nil
 	}
 	res, err := c.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: parent, Stream: rest[1], Column: rest[2]}))

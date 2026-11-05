@@ -68,7 +68,7 @@ func TestMergeHoldsKeepsWhenEachHoldStarted(t *testing.T) {
 func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 	since := checkpoint.RecordRef{Generation: 1, Epoch: 2}
 	restored := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{
-		Columns: []checkpoint.ColumnHold{{Column: "y", Since: since}, {Column: "z", Since: since}},
+		Columns: []checkpoint.ColumnHold{{Column: "y", Since: since}, {Column: "z", Delivered: []byte("z int"), Since: since}},
 		Cells:   map[string]checkpoint.CellHold{"x": {Cells: 1, Since: since}},
 	}}}}
 	j := &Job{
@@ -115,6 +115,22 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 	}
 	if h.Replay == nil || !reflect.DeepEqual(h.Replay.Columns, []string{"x"}) {
 		t.Errorf("replay %+v", h.Replay)
+	}
+
+	// Released to a new version, a column keeps the type the destination
+	// has; one the destination doesn't have is released as it is.
+	j.Releases = []Release{{Stream: "s", Column: "z", Since: since, NewVersion: true}, {Stream: "s", Column: "y", Since: since, NewVersion: true}}
+	j.refused = nil
+	holds, _, err = j.startHolds(t.Context(), restored, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := holds["s"].Replay
+	if r == nil || !reflect.DeepEqual(r.Columns, []string{"y", "z"}) || len(r.Versioned) != 1 || r.Versioned[0].Column != "z" || string(r.Versioned[0].Delivered) != "z int" {
+		t.Errorf("replay %+v", r)
+	}
+	if len(holds["s"].Columns) != 0 {
+		t.Errorf("columns %+v", holds["s"].Columns)
 	}
 }
 

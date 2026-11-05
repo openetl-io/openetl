@@ -33,7 +33,11 @@ func (f *fakeHolds) ListHolds(_ context.Context, req *connect.Request[apiv1.List
 }
 
 func (f *fakeHolds) ReleaseHold(_ context.Context, req *connect.Request[apiv1.ReleaseHoldRequest]) (*connect.Response[apiv1.ReleaseHoldResponse], error) {
-	f.released = append(f.released, req.Msg.GetParent()+" "+req.Msg.GetStream()+"."+req.Msg.GetColumn())
+	r := req.Msg.GetParent() + " " + req.Msg.GetStream() + "." + req.Msg.GetColumn()
+	if req.Msg.GetNewVersion() {
+		r += " (new version)"
+	}
+	f.released = append(f.released, r)
 	return connect.NewResponse(&apiv1.ReleaseHoldResponse{Hold: &apiv1.Hold{Stream: req.Msg.GetStream(), Column: req.Msg.GetColumn()}}), nil
 }
 
@@ -63,6 +67,7 @@ func TestHolds(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"holds", "release", "--api-url", srv.URL, "p", "orders", "amount"},
+		{"holds", "release", "--api-url", srv.URL, "--new-version", "p", "orders", "amount"},
 		{"holds", "discard", "--api-url", srv.URL, "p", "orders", "note"},
 	} {
 		out.Reset()
@@ -73,11 +78,15 @@ func TestHolds(t *testing.T) {
 			t.Errorf("%v printed %q", args, out.String())
 		}
 	}
-	if len(f.released) != 1 || f.released[0] != "workspaces/default/pipelines/p orders.amount" ||
+	if len(f.released) != 2 || f.released[0] != "workspaces/default/pipelines/p orders.amount" ||
+		f.released[1] != "workspaces/default/pipelines/p orders.amount (new version)" ||
 		len(f.discarded) != 1 || f.discarded[0] != "workspaces/default/pipelines/p orders.note" {
 		t.Errorf("released %v, discarded %v", f.released, f.discarded)
 	}
 	if err := run(t.Context(), []string{"holds", "release", "--api-url", srv.URL, "p", "orders"}, &out); err == nil {
 		t.Error("release without a column worked")
+	}
+	if err := run(t.Context(), []string{"holds", "discard", "--api-url", srv.URL, "--new-version", "p", "orders", "note"}, &out); err == nil {
+		t.Error("discard took --new-version")
 	}
 }

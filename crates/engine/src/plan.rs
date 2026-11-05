@@ -58,6 +58,8 @@ pub struct ReplayPlan {
     /// Destination names.
     pub columns: HashSet<String>,
     pub chunk_rows: u64,
+    /// Released column holds whose values go to a new version.
+    pub versioned: Vec<ColumnHold>,
 }
 
 /// Patch rows per chunk, by default.
@@ -81,25 +83,29 @@ fn holds(s: &StreamPlan) -> Result<(Option<HoldConfig>, Option<ReplayPlan>), Job
     if s.primary_key.is_empty() {
         return Err(bad("only a keyed stream holds columns".into()));
     }
-    let mut holding = Vec::with_capacity(h.holding.len());
-    for c in &h.holding {
-        let delivered = match c.delivered.is_empty() {
-            true => None,
-            false => {
-                let schema = ipc::decode_schema(&c.delivered)
-                    .map_err(|e| bad(format!("column {}: {e}", c.column)))?;
-                let [f] = schema.fields().iter().collect::<Vec<_>>()[..] else {
-                    return Err(bad(format!("column {}: not one field", c.column)));
-                };
-                Some(f.as_ref().clone())
-            }
-        };
-        holding.push(ColumnHold {
-            column: c.column.clone(),
-            delivered,
-            reason: c.reason.clone(),
-        });
-    }
+    let column_holds = |cs: &[openetl_proto::engine::v1::ColumnHold]| {
+        let mut out = Vec::with_capacity(cs.len());
+        for c in cs {
+            let delivered = match c.delivered.is_empty() {
+                true => None,
+                false => {
+                    let schema = ipc::decode_schema(&c.delivered)
+                        .map_err(|e| bad(format!("column {}: {e}", c.column)))?;
+                    let [f] = schema.fields().iter().collect::<Vec<_>>()[..] else {
+                        return Err(bad(format!("column {}: not one field", c.column)));
+                    };
+                    Some(f.as_ref().clone())
+                }
+            };
+            out.push(ColumnHold {
+                column: c.column.clone(),
+                delivered,
+                reason: c.reason.clone(),
+            });
+        }
+        Ok(out)
+    };
+    let holding = column_holds(&h.holding)?;
     let limits = h.limits.as_ref().map_or_else(Limits::default, |l| Limits {
         not_null: l.not_null.iter().cloned().collect(),
         unholdable: l.unholdable.iter().cloned().collect(),
@@ -120,7 +126,11 @@ fn holds(s: &StreamPlan) -> Result<(Option<HoldConfig>, Option<ReplayPlan>), Job
         discarded: h.discarded.iter().cloned().collect(),
         limits,
     };
-    let replay = h.replay.as_ref().map(|r| {
+    let replay = match &h.replay {
+        Some(r) => Some((r, column_holds(&r.versioned)?)),
+        None => None,
+    };
+    let replay = replay.map(|(r, versioned)| {
         let from = r.from.unwrap_or_default();
         ReplayPlan {
             files: r.files.clone(),
@@ -132,6 +142,7 @@ fn holds(s: &StreamPlan) -> Result<(Option<HoldConfig>, Option<ReplayPlan>), Job
                 0 => CHUNK_ROWS,
                 n => n,
             },
+            versioned,
         }
     });
     Ok((Some(config), replay))
