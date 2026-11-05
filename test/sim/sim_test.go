@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -42,8 +43,9 @@ var (
 // parquet is stage-and-apply like warehouse, but can't dedupe or commit
 // across tables. spark is one of the others with a Spark transform before
 // it, whose outputs take their inputs' names and settings; flink is the
-// same with a Flink job, in a continuous pipeline.
-var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark", "flink"}
+// same with a Flink job, in a continuous pipeline. holds is the warehouse
+// taking holds, as Postgres does.
+var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark", "flink", "holds"}
 
 // The sinks a transform goes before.
 var transformedKinds = sinkKinds[:5]
@@ -84,6 +86,8 @@ type streamCfg struct {
 	// The output of its name, which is exact when every input is.
 	transformed bool
 	outReplay   source.Replay
+	// Nil: holds nothing.
+	holds *holdCfg
 }
 
 // delivery is what the destination gets: the stream, or the transform's
@@ -99,6 +103,7 @@ type config struct {
 	kind     string
 	spark    bool
 	flink    bool
+	holds    bool
 	streams  []streamCfg
 	mode     destination.WriteMode
 	settings delivery.Settings
@@ -106,6 +111,11 @@ type config struct {
 	zombies  int
 	// Checkpoint records each attempt keeps.
 	keep int
+	// Holds: held values a replay reads at a time, how likely a retry takes
+	// a release of each stream's holds, and whether releases come without
+	// fixing what held them.
+	chunk, releasePct int
+	unfixed           bool
 }
 
 func (c config) String() string {
@@ -127,18 +137,33 @@ func (c config) String() string {
 		if s.collapse != nil {
 			fmt.Fprintf(&b, ", collapse=%v", *s.collapse)
 		}
+		if h := s.holds; h != nil {
+			fmt.Fprintf(&b, ", cells=%v, held=%d %s, wideAt=%d, view=%v", h.cells, h.held.Mode, h.held.Value, h.wideAt, h.view)
+		}
 		b.WriteString(") ")
+	}
+	if c.holds {
+		fmt.Fprintf(&b, "chunk=%d release=%d%% unfixed=%v", c.chunk, c.releasePct, c.unfixed)
 	}
 	return b.String()
 }
 
 func randomConfig(rng *rand.Rand, kind string) config {
-	spark, flink := kind == "spark", kind == "flink"
+	spark, flink, holds := kind == "spark", kind == "flink", kind == "holds"
 	if spark || flink {
 		kind = transformedKinds[rng.IntN(len(transformedKinds))]
 	}
-	c := config{kind: kind, spark: spark, flink: flink, mode: destination.Append, faults: rng.IntN(9), zombies: rng.IntN(3)}
+	if holds {
+		kind = "warehouse"
+	}
+	c := config{kind: kind, spark: spark, flink: flink, holds: holds, mode: destination.Append, faults: rng.IntN(9), zombies: rng.IntN(3)}
 	switch {
+	case holds:
+		// Postgres patches append streams by _openetl_id and merge streams
+		// by key. Retries take releases, so more of them.
+		c.mode = []destination.WriteMode{destination.Append, destination.Merge}[rng.IntN(2)]
+		c.faults += 2 + rng.IntN(8)
+		c.chunk, c.releasePct, c.unfixed = 1+rng.IntN(6), 40+rng.IntN(61), rng.IntN(6) == 0
 	case kind == "warehouse" && flink:
 		// A continuous read never ends, so never replaces a table.
 		c.mode = []destination.WriteMode{destination.Append, destination.Merge}[rng.IntN(2)]
@@ -159,6 +184,9 @@ func randomConfig(rng *rand.Rand, kind string) config {
 		// outputs never do.
 		if kind == "warehouse" && !spark && !flink && c.mode != destination.Merge && rng.IntN(2) == 0 {
 			s.collapse = new(rng.IntN(2) == 0)
+		}
+		if holds && s.keyed {
+			s.holds = randomHolds(rng, c.mode, 40)
 		}
 		c.streams = append(c.streams, s)
 	}
@@ -219,6 +247,15 @@ type world struct {
 	// The Flink job restored where the pipeline's records can't follow,
 	// which ends the seed: only a new snapshot recovers.
 	positionLost bool
+	// Holds: the releases taken so far, and whether they fixed what held
+	// the values; the streams whose cell holds were discarded.
+	relRng    *rand.Rand
+	released  map[releaseKey]bool
+	releases  []runner.Release
+	override  bool
+	discarded map[string]bool
+	// The sync being run: holds seeds run a second.
+	sync int
 }
 
 func (w *world) markLost(err error) {
@@ -243,8 +280,8 @@ func (w *world) destination(attempt int) destination.Destination {
 func (w *world) job(attempt int) runner.Job {
 	src := &simSource{w: w, attempt: attempt, continuous: w.cfg.flink}
 	j := runner.Job{
-		Owner:       fmt.Sprintf("a%d", attempt),
-		Sync:        "sync",
+		Owner:       fmt.Sprintf("%c%d", 'a'+w.sync, attempt),
+		Sync:        fmt.Sprintf("sync-%d", w.sync),
 		Pipeline:    "pipe",
 		Log:         checkpoint.NewLog(&simStore{w: w, attempt: attempt}, "org", "pipe"),
 		Source:      src,
@@ -253,13 +290,18 @@ func (w *world) job(attempt int) runner.Job {
 		Settings:    w.cfg.settings,
 		KeepRecords: w.cfg.keep,
 	}
+	if w.cfg.holds {
+		j.HeldURL = "sim://held"
+		j.Dataflow = &holdFlow{w: w, attempt: attempt, override: w.override, chunk: w.cfg.chunk}
+		j.Releases = slices.Clone(w.releases)
+	}
 	if d, ok := j.Destination.(*stagedAPIDest); ok {
 		st := newSimStaging(w, attempt)
 		d.st, j.Staging = st, st
 		j.Dataflow = runner.Passthrough{Convert: toArrow, Stage: st.stage}
 	}
 	for _, s := range w.cfg.streams {
-		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, Require: s.require, Collapse: s.collapse}
+		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, Require: s.require, Collapse: s.collapse, Holds: s.holds.streamHolds()}
 		if s.keyed {
 			st.PrimaryKey = []string{"key"}
 		}
@@ -301,8 +343,16 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 		spark:     newSparkCluster(),
 		forced:    map[string]bool{},
 	}
+	if cfg.holds {
+		w.wh.holds = newHeldTables(cfg.streams)
+		w.relRng, w.released, w.discarded = rand.New(rand.NewPCG(seed, 7)), map[releaseKey]bool{}, map[string]bool{}
+	}
 	for _, s := range cfg.streams {
 		u := newUpstream(rng, s.name, s.replay, !s.keyed)
+		if s.holds != nil {
+			markHolds(rng, u, s.holds, 0)
+		}
+		u.cdc = cfg.holds
 		if cfg.mode == destination.Overwrite {
 			w.wh.tables[s.name] = []row{{ID: "stale-" + s.name, Key: "stale", Value: "an earlier read"}}
 			if rng.IntN(5) == 0 {
@@ -333,8 +383,11 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 	res.stats = map[string]int{"write:" + []string{"", "append", "overwrite", "merge"}[cfg.mode]: 1}
 
 	attempts := 0
-	err := w.sched.run(func(attempt int) error {
+	start := func(attempt int) error {
 		attempts = max(attempts, attempt)
+		if cfg.holds && (attempt > 1 || w.sync > 0) {
+			w.release(attempt)
+		}
 		j := w.job(attempt)
 		j.OnCheckpoint = func(_ *checkpoint.Record, collapsed map[string]uint64) {
 			for _, n := range collapsed {
@@ -360,14 +413,29 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 			res.stats["recovery:"+r.Recovery.String()]++
 		}
 		return err
-	})
+	}
+	err := w.sched.run(start)
+	zombies := cfg.zombies - w.sched.zombies
+	if cfg.holds && err == nil && w.lost == nil {
+		// The next sync, with the records added since, takes the releases.
+		for _, s := range w.cfg.streams {
+			extendUpstream(rng, w.upstreams[s.name], s.holds)
+		}
+		first, firstAttempts, z := w.sched, attempts, rng.IntN(3)
+		w.sync, attempts = 1, 0
+		w.sched = newScheduler(rng, rng.IntN(9), z)
+		err = w.sched.run(start)
+		w.sched.trace, w.sched.steps = append(first.trace, w.sched.trace...), append(first.steps, w.sched.steps...)
+		attempts += firstAttempts
+		zombies += z - w.sched.zombies
+	}
 	if cfg.flink {
 		w.endFlink(res.stats)
 	}
 	res.trace = strings.Join(lastN(w.sched.trace, 400), "\n")
 	res.steps = w.sched.steps
 	res.stats["attempts"] += attempts
-	res.stats["zombies"] += cfg.zombies - w.sched.zombies
+	res.stats["zombies"] += zombies
 	if cfg.spark {
 		res.stats["spark generations ended by a newer one"] += len(w.spark.dropped)
 	}
@@ -440,6 +508,9 @@ func (w *world) check(caps destination.Capabilities, stats map[string]int) strin
 			}
 			problems = append(problems, checkAppend(s.name, w.visible(s.name), expected, copies, lo, hi)...)
 		}
+	}
+	if w.cfg.holds {
+		problems = append(problems, w.checkHolds(stats)...)
 	}
 	if len(problems) > 8 {
 		problems = append(problems[:8], fmt.Sprintf("… and %d more", len(problems)-8))
@@ -525,7 +596,8 @@ func (w *world) checkMerge(stream string, u *upstream, expected map[string]recor
 	}
 	got := w.wh.merged[stream]
 	for k, r := range latest {
-		if g, ok := got[k]; !ok || g.Seq != r.Seq || g.Value != r.Value {
+		// checkHolds checks held cells.
+		if g, ok := got[k]; !ok || g.Seq != r.Seq || g.HeldBy == "" && g.Value != r.Value {
 			problems = append(problems, fmt.Sprintf("%s: key %s is %+v, want %s@%d", stream, k, g, r.Key, r.Seq))
 		}
 	}

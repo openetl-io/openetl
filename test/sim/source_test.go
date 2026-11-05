@@ -15,6 +15,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
 
@@ -22,6 +23,11 @@ type record struct {
 	Key   string `json:"k"`
 	Seq   int64  `json:"s"`
 	Value string `json:"v"`
+	// Its value doesn't fit the column's type: 1 until a type override, 2
+	// even after one. Its cell is held, with quarantine: cell.
+	Bad int `json:"b,omitempty"`
+	// Its value has the type the column changed to.
+	Wide bool `json:"w,omitempty"`
 }
 
 // recordID is the fake engine's _openetl_id.
@@ -39,6 +45,9 @@ type upstream struct {
 	resumeAt []bool
 	// Superset: how far below the cursor floor a read starts.
 	lookback int64
+	// Exact: the next sync goes on from where this one ended, as CDC does,
+	// instead of reading it all again.
+	cdc bool
 
 	mu      sync.Mutex
 	trimmed int // exact: offsets below this were discarded after an ack
@@ -134,10 +143,10 @@ func (u *upstream) stateAfter(pos int) []byte {
 
 // next is where a sync after this one starts: from the beginning for exact
 // streams, as a full refresh, so an attempt that reads a stream its sync
-// completed reads below what was acknowledged; from the cursor for superset
-// ones.
+// completed reads below what was acknowledged, unless they're CDC; from the
+// cursor for superset ones.
 func (u *upstream) next() []byte {
-	if u.replay == source.Exact || len(u.records) == 0 {
+	if u.replay == source.Exact && !u.cdc || len(u.records) == 0 {
 		return nil
 	}
 	return u.stateAfter(len(u.records))
@@ -358,16 +367,44 @@ type row struct {
 	Seq   int64
 	Key   string
 	Value string
+	// With holds: the value is null; it has the type the column changed to;
+	// the batch lists it as held; its field keeps the target's value.
+	Null, Wide, Held, Last bool
+	// In a target, the version whose value the cell holds back; in staging,
+	// a patch.
+	HeldBy string
+	Patch  bool
 }
 
 func rowsOf(batch arrow.RecordBatch) []row {
-	ids := batch.Column(0).(*array.String)
-	seqs := batch.Column(1).(*array.Int64)
-	keys := batch.Column(2).(*array.String)
-	vals := batch.Column(3).(*array.String)
+	schema := batch.Schema()
+	col := func(name string) arrow.Array {
+		if i := schema.FieldIndices(name); len(i) > 0 {
+			return batch.Column(i[0])
+		}
+		return nil
+	}
+	ids := col("_openetl_id").(*array.String)
+	seqs := col("_openetl_seq").(*array.Int64)
+	keys := col("key").(*array.String)
+	vals := col("value").(interface {
+		arrow.Array
+		Value(int) string
+	})
+	field := schema.Field(schema.FieldIndices("value")[0])
+	wide := field.Type.ID() == arrow.LARGE_STRING
+	last := false
+	if i := field.Metadata.FindKey(destination.HeldKey); i >= 0 {
+		last = field.Metadata.Values()[i] == "last"
+	}
+	held, _ := col(destination.HeldColumn).(*array.List)
 	out := make([]row, batch.NumRows())
 	for i := range out {
-		out[i] = row{ID: ids.Value(i), Seq: seqs.Value(i), Key: keys.Value(i), Value: vals.Value(i)}
+		out[i] = row{ID: ids.Value(i), Seq: seqs.Value(i), Key: keys.Value(i), Value: vals.Value(i), Null: vals.IsNull(i), Wide: wide, Last: last}
+		if held != nil && held.IsValid(i) {
+			start, end := held.ValueOffsets(i)
+			out[i].Held = end > start
+		}
 	}
 	return out
 }

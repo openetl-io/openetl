@@ -45,6 +45,7 @@ type warehouse struct {
 	reads   map[readKey][]row         // overwrite: each read's rows, until it ends
 	merged  map[string]map[string]row // merge targets, by key
 	applies map[string]int            // how often each record version was applied
+	holds   *heldTables               // nil: takes no holds
 }
 
 func newWarehouse(dedupeCapable bool) *warehouse {
@@ -99,8 +100,13 @@ func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []st
 	}
 	for _, s := range todo {
 		k := stagingKey{st.Gen, st.N, s.Name}
-		if n := wh.apply(s, wh.staging[k]); n > 0 {
+		rows, patches := splitPatches(wh.staging[k])
+		if n := wh.apply(s, rows); n > 0 {
 			collapsed[s.Name] += n
+		}
+		// After the epoch's rows, as on Postgres.
+		for _, p := range patches {
+			wh.patch(s, p)
 		}
 		wh.loads[marker{s.Name, st.Gen, st.N}] = true
 		delete(wh.staging, k)
@@ -119,7 +125,7 @@ func (wh *warehouse) apply(s stagedStream, rows []row) (collapsed uint64) {
 		}
 		for _, r := range rows {
 			if cur, ok := m[r.Key]; !ok || r.Seq >= cur.Seq { // the _openetl_seq guard
-				m[r.Key] = r
+				m[r.Key] = wh.held(s.Name, r, cur, ok)
 				wh.applies[r.ID]++
 			}
 		}
@@ -165,7 +171,7 @@ func (wh *warehouse) insert(target []row, s stagedStream, rows []row) ([]row, ui
 			}
 			have[r.ID] = true
 		}
-		target = append(target, r)
+		target = append(target, wh.held(s.Name, r, row{}, false))
 		wh.applies[r.ID]++
 	}
 	return target, collapsed
@@ -216,6 +222,9 @@ func (d *warehouseDest) Capabilities() destination.Capabilities {
 		c.Scopes = append(c.Scopes, destination.ScopePipeline)
 		c.WriteModes = []destination.WriteMode{destination.Append, destination.Overwrite, destination.Merge}
 	}
+	if d.wh.holds != nil {
+		c.Holds = destination.Holds{ByKey: true, ByID: true, Last: true, Guarded: true}
+	}
 	return c
 }
 
@@ -223,7 +232,11 @@ func (d *warehouseDest) Open(ctx context.Context, cfg destination.OpenConfig) (d
 	if err := outcome(d.w.sched.point(ctx, d.attempt, "sink.open"), nop); err != nil {
 		return nil, err
 	}
-	return &warehouseWriter{warehouseDest: d, cfg: cfg, buf: map[uint64]map[string][]row{}, ended: map[uint64][]string{}}, nil
+	ww := &warehouseWriter{warehouseDest: d, cfg: cfg, buf: map[uint64]map[string][]row{}, ended: map[uint64][]string{}}
+	if d.wh.holds != nil {
+		return &holdingWriter{ww}, nil
+	}
+	return ww, nil
 }
 
 type warehouseWriter struct {
