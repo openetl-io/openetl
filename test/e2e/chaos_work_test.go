@@ -41,10 +41,11 @@ type workload interface {
 	drop(t *testing.T)
 }
 
-// What plant does.
+// What plant does. A held plant leaves a row holding its added column.
 const (
 	plantLoss  = "loss"
 	plantExtra = "extra"
+	plantHeld  = "held"
 )
 
 // The rows each table or topic holds before the pipeline starts.
@@ -61,6 +62,9 @@ type pgWork struct {
 	deletes, incr  bool
 	notDeleted     string
 	gate           *pgGate
+	// With holds: the source's tables have w, which each change since
+	// sets to v.
+	added bool
 }
 
 func newPGWork(t *testing.T, c chaosConfig, name string, gate *pgGate) *pgWork {
@@ -75,7 +79,7 @@ func newPGWork(t *testing.T, c chaosConfig, name string, gate *pgGate) *pgWork {
 	qs := []string{
 		"CREATE SCHEMA " + in, "CREATE SCHEMA " + truth,
 		"CREATE SEQUENCE " + in + ".seq",
-		"CREATE TABLE " + truth + ".changes (tbl text NOT NULL, id bigint NOT NULL, v bigint NOT NULL, op text NOT NULL)",
+		"CREATE TABLE " + truth + ".changes (tbl text NOT NULL, id bigint NOT NULL, v bigint NOT NULL, op text NOT NULL, w bigint)",
 	}
 	for _, tbl := range chaosTables {
 		ident := pgx.Identifier{w.in, tbl}.Sanitize()
@@ -146,6 +150,10 @@ func (w *pgWork) write(ctx context.Context, rng *rand.Rand) error {
 			_ = conn.Close(bg)
 		}
 	}()
+	var addAt time.Time
+	if deadline, ok := ctx.Deadline(); ok && w.c.holds {
+		addAt = time.Now().Add(upTo(rng, time.Until(deadline)/2+1))
+	}
 	since := -1
 	for ctx.Err() == nil {
 		var err error
@@ -160,6 +168,10 @@ func (w *pgWork) write(ctx context.Context, rng *rand.Rand) error {
 				}
 				since = w.gate.restarts
 			}
+			if w.c.holds && !w.added && time.Now().After(addAt) {
+				err = w.addColumn(bg, conn)
+				return
+			}
 			err = w.change(bg, conn, rng)
 		})
 		if err != nil {
@@ -167,6 +179,26 @@ func (w *pgWork) write(ctx context.Context, rng *rand.Rand) error {
 		}
 		pause(ctx, 5*time.Millisecond+upTo(rng, 35*time.Millisecond))
 	}
+	return nil
+}
+
+// addColumn adds w to the source's tables, which block holds until it's
+// released.
+func (w *pgWork) addColumn(bg context.Context, conn *pgx.Conn) error {
+	tx, err := conn.Begin(bg)
+	if err != nil {
+		return err
+	}
+	for _, tbl := range chaosTables {
+		if _, err := tx.Exec(bg, "ALTER TABLE "+pgx.Identifier{w.in, tbl}.Sanitize()+" ADD COLUMN w bigint"); err != nil {
+			_ = tx.Rollback(bg)
+			return err
+		}
+	}
+	if err := tx.Commit(bg); err != nil {
+		return err
+	}
+	w.added = true
 	return nil
 }
 
@@ -190,27 +222,37 @@ func (w *pgWork) change(bg context.Context, conn *pgx.Conn, rng *rand.Rand) erro
 			op = "update"
 		}
 		var id, v int64
+		var wv *int64
+		set, returning, into := "v = v + 1", "v", []any{&v}
+		if w.added {
+			set, returning, into = "v = v + 1, w = v + 1", "v, w", []any{&v, &wv}
+		}
 		switch op {
 		case "insert":
 			id, v = w.next[tbl], 1
 			w.next[tbl]++
-			_, err = tx.Exec(bg, "INSERT INTO "+ident+" (id, v, pad) VALUES ($1, 1, md5($2))", id, strconv.FormatInt(id, 10))
+			if w.added {
+				wv = &v
+				_, err = tx.Exec(bg, "INSERT INTO "+ident+" (id, v, pad, w) VALUES ($1, 1, md5($2), 1)", id, strconv.FormatInt(id, 10))
+			} else {
+				_, err = tx.Exec(bg, "INSERT INTO "+ident+" (id, v, pad) VALUES ($1, 1, md5($2))", id, strconv.FormatInt(id, 10))
+			}
 			live.add(id)
 		case "update":
 			id = live.pick(rng)
-			err = tx.QueryRow(bg, "UPDATE "+ident+" SET v = v + 1, seq = nextval('"+w.in+".seq'), pad = md5(random()::text) WHERE id = $1 RETURNING v", id).Scan(&v)
+			err = tx.QueryRow(bg, "UPDATE "+ident+" SET "+set+", seq = nextval('"+w.in+".seq'), pad = md5(random()::text) WHERE id = $1 RETURNING "+returning, id).Scan(into...)
 		case "delete":
 			id = live.pick(rng)
-			err = tx.QueryRow(bg, "DELETE FROM "+ident+" WHERE id = $1 RETURNING v", id).Scan(&v)
+			err = tx.QueryRow(bg, "DELETE FROM "+ident+" WHERE id = $1 RETURNING "+returning, id).Scan(into...)
 			live.remove(id)
 		}
 		if err != nil {
 			_ = tx.Rollback(bg)
 			return fmt.Errorf("%s %s %d: %w", op, tbl, id, err)
 		}
-		rows = append(rows, []any{tbl, id, v, op})
+		rows = append(rows, []any{tbl, id, v, op, wv})
 	}
-	if _, err := tx.CopyFrom(bg, pgx.Identifier{w.truth, "changes"}, []string{"tbl", "id", "v", "op"}, pgx.CopyFromRows(rows)); err != nil {
+	if _, err := tx.CopyFrom(bg, pgx.Identifier{w.truth, "changes"}, []string{"tbl", "id", "v", "op", "w"}, pgx.CopyFromRows(rows)); err != nil {
 		_ = tx.Rollback(bg)
 		return err
 	}
@@ -233,26 +275,40 @@ func (w *pgWork) check(t *testing.T) (missing, extra int, detail string) {
 	for _, tbl := range chaosTables {
 		in, out := pgx.Identifier{w.in, tbl}.Sanitize(), pgx.Identifier{w.out, tbl}.Sanitize()
 		truth := pgx.Identifier{w.truth, "changes"}.Sanitize() + " WHERE tbl = " + quote(tbl)
+		// With holds, w too, once the source has it: a row that still
+		// holds it is missing, and isn't extra.
+		cols, outCols, notHeld, held := "id, v", "id, v", "true", "0"
+		if w.c.holds && hasColumn(t, in, "w") {
+			cols, outCols = "id, v, w", "id, v, NULL::bigint AS w"
+			if hasColumn(t, out, "w") {
+				outCols = cols
+			}
+			if hasColumn(t, out, "_openetl_held") {
+				notHeld = "NOT coalesce(_openetl_held ? 'w', false)"
+				held = "(SELECT count(*) FROM " + out + " WHERE _openetl_held ? 'w')"
+			}
+		}
 		var q string
 		switch {
 		case w.c.write == "merge":
 			// Rows that differ either way, which a later commit can still
 			// fix, and keys twice, which it can't.
 			q = `SELECT
-				(SELECT count(*) FROM (SELECT id, v FROM ` + in + ` EXCEPT SELECT id, v FROM ` + out + ` WHERE ` + w.notDeleted + `) x)
-					+ (SELECT count(*) FROM (SELECT id, v FROM ` + out + ` WHERE ` + w.notDeleted + ` EXCEPT SELECT id, v FROM ` + in + `) x),
+				(SELECT count(*) FROM (SELECT ` + cols + ` FROM ` + in + ` EXCEPT SELECT ` + outCols + ` FROM ` + out + ` WHERE ` + w.notDeleted + `) x)
+					+ (SELECT count(*) FROM (SELECT ` + outCols + ` FROM ` + out + ` WHERE ` + w.notDeleted + ` EXCEPT SELECT ` + cols + ` FROM ` + in + `) x)
+					+ ` + held + `,
 				(SELECT count(*) - count(DISTINCT id) FROM ` + out + `)`
 		case w.incr:
 			// Each version once, and every row's last.
 			q = `SELECT
-				(SELECT count(*) FROM (SELECT id, v FROM ` + in + ` EXCEPT SELECT id, v FROM ` + out + `) x),
+				(SELECT count(*) FROM (SELECT ` + cols + ` FROM ` + in + ` EXCEPT SELECT ` + outCols + ` FROM ` + out + `) x) + ` + held + `,
 				(SELECT count(*) FROM (SELECT id, v FROM ` + out + ` GROUP BY id, v HAVING count(*) > 1) x)
-					+ (SELECT count(*) FROM (SELECT id, v FROM ` + out + ` EXCEPT SELECT id, v FROM ` + truth + `) x)`
+					+ (SELECT count(*) FROM (SELECT ` + outCols + ` FROM ` + out + ` WHERE ` + notHeld + ` EXCEPT SELECT ` + cols + ` FROM ` + truth + `) x)`
 		default:
 			// Each change once.
 			q = `SELECT
-				(SELECT count(*) FROM (SELECT id, v, op FROM ` + truth + ` EXCEPT ALL SELECT id, v, _openetl_op FROM ` + out + `) x),
-				(SELECT count(*) FROM (SELECT id, v, _openetl_op FROM ` + out + ` EXCEPT ALL SELECT id, v, op FROM ` + truth + `) x)`
+				(SELECT count(*) FROM (SELECT ` + cols + `, op FROM ` + truth + ` EXCEPT ALL SELECT ` + outCols + `, _openetl_op FROM ` + out + `) x) + ` + held + `,
+				(SELECT count(*) FROM (SELECT ` + outCols + `, _openetl_op FROM ` + out + ` WHERE ` + notHeld + ` EXCEPT ALL SELECT ` + cols + `, op FROM ` + truth + `) x)`
 		}
 		m, e, err := counts(t, q)
 		if err != nil {
@@ -268,10 +324,19 @@ func (w *pgWork) check(t *testing.T) (missing, extra int, detail string) {
 	return missing, extra, strings.Join(details, "; ")
 }
 
+// hasColumn reports whether table has column, as a sanitized identifier.
+func hasColumn(t *testing.T, table, column string) bool {
+	t.Helper()
+	ok, err := query[bool](t, "SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped)", table, column)
+	return err == nil && ok
+}
+
 func (w *pgWork) plant(t *testing.T, what string) {
 	t.Helper()
 	out, in := pgx.Identifier{w.out, chaosTables[0]}.Sanitize(), pgx.Identifier{w.in, chaosTables[0]}.Sanitize()
 	switch {
+	case what == plantHeld:
+		w.dest.exec(t, "UPDATE "+out+" SET w = NULL, _openetl_held = jsonb_build_object('w', _openetl_id) WHERE ctid = (SELECT ctid FROM "+out+" WHERE w IS NOT NULL LIMIT 1)")
 	case what == plantLoss && w.incr:
 		w.dest.exec(t, "DELETE FROM "+out+" WHERE (id, v) IN (SELECT id, v FROM "+in+" LIMIT 1)")
 	case what == plantLoss:

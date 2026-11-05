@@ -6,7 +6,8 @@ package e2e
 // runners, engines and connectors die, runners are partitioned from
 // Temporal and the API, and the object store fails, then checks that every
 // row landed once. Runners die at the commit protocol's crash points too,
-// injected by their object-store proxies.
+// injected by their object-store proxies. Some runs into Postgres add a
+// column mid-run, which block holds, and release it at random times.
 //
 //	make chaos CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'
 //	go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/0042-' -chaos.seed=7   # one run again
@@ -72,6 +73,9 @@ type chaosConfig struct {
 	// Unset: -chaos.write.
 	writeFor time.Duration
 	plant    string
+	// A column added to the source mid-run is held under block, and
+	// released.
+	holds bool
 }
 
 // The faults a run can draw besides crash points.
@@ -152,6 +156,8 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	if c.noise = []float64{0, 0, 0.01, 0.03}[rng.IntN(4)]; c.transform == "spark" {
 		c.noise = 0
 	}
+	// Postgres takes holds, on streams no transform reads.
+	c.holds = c.source != "kafka" && c.dest == "postgres" && c.transform == "" && rng.IntN(3) == 0
 	return c
 }
 
@@ -163,6 +169,9 @@ func (c chaosConfig) name() string {
 	name := fmt.Sprintf("%s-%s-%s-%s-%s", c.source, mode, c.write, c.scope, c.dest)
 	if c.transform != "" {
 		name += "-" + c.transform
+	}
+	if c.holds {
+		name += "-holds"
 	}
 	return name
 }
@@ -205,6 +214,9 @@ func (c chaosConfig) pipelineDoc(name, pipeSource, pipeDest string, transform ma
 		require = "effectively_once"
 	}
 	spec := map[string]any{"source": src, "destination": dst, "delivery": map[string]any{"require": require, "commit": commit}}
+	if c.holds {
+		spec["schemaPolicy"] = "block"
+	}
 	if c.continuous {
 		spec["mode"] = "continuous"
 	} else {
@@ -314,8 +326,16 @@ func TestChaosChecks(t *testing.T) {
 		{source: "incremental", write: "merge", dest: "iceberg"},
 		{source: "kafka", write: "append", dest: "iceberg"},
 	}
+	// Runs that hold a column added mid-run, and release it.
+	kinds = append(kinds,
+		chaosConfig{source: "cdc", continuous: true, write: "append", dest: "postgres", holds: true},
+		chaosConfig{source: "incremental", write: "merge", dest: "postgres", holds: true})
 	for i, c := range kinds {
-		for _, plant := range []string{plantLoss, plantExtra} {
+		plants := []string{plantLoss, plantExtra}
+		if c.holds {
+			plants = append(plants, plantHeld)
+		}
+		for _, plant := range plants {
 			c := c
 			c.i, c.seed, c.plant, c.scope, c.interval, c.writeFor = i, 1, plant, "stream", "1s", 5*time.Second
 			if c.dest == "kafka" {
@@ -433,6 +453,13 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	defer stopWrite()
 	var faults sync.WaitGroup
 	faults.Go(func() { s.inject(writeCtx, t.Context(), c, rng, pipeline) })
+	if c.holds {
+		releaseCtx, stopReleases := context.WithCancel(t.Context())
+		var releases sync.WaitGroup
+		releases.Go(func() { releaseHolds(releaseCtx, t, name, rand.New(rand.NewPCG(c.seed, uint64(c.i)<<32|0x401d5))) })
+		defer releases.Wait()
+		defer stopReleases()
+	}
 	for {
 		var loaded bool
 		s.pg.do(func() { loaded = w.loaded(t) })
@@ -480,7 +507,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 			w.plant(t, c.plant)
 			missing, extra, detail = w.check(t)
 		})
-		if (c.plant == plantLoss || c.write == "merge") && missing == 0 || c.plant == plantExtra && c.write != "merge" && extra == 0 {
+		if (c.plant == plantLoss || c.plant == plantHeld || c.write == "merge") && missing == 0 || c.plant == plantExtra && c.write != "merge" && extra == 0 {
 			t.Errorf("the check missed a planted %s: %d missing, %d extra", c.plant, missing, extra)
 		}
 		t.Logf("planted %s: %s", c.plant, detail)
@@ -496,6 +523,29 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	}
 	if res.failed != "" {
 		t.Errorf("%s\nconfig: %s\nrerun: go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/%04d-' -chaos.seed=%d", res.failed, c, c.i, c.seed)
+	}
+}
+
+// releaseHolds releases the pipeline's holds as they show up, each at a
+// random time, until ctx ends. The API may be down while Postgres
+// restarts, and the next try does.
+func releaseHolds(ctx context.Context, t *testing.T, pipeline string, rng *rand.Rand) {
+	parent := "workspaces/default/pipelines/" + pipeline
+	for ctx.Err() == nil {
+		pause(ctx, time.Second+upTo(rng, 2*time.Second))
+		resp, err := pipelines().ListHolds(ctx, connect.NewRequest(&apiv1.ListHoldsRequest{Parent: parent}))
+		if err != nil {
+			continue
+		}
+		for _, h := range resp.Msg.GetHolds() {
+			if h.GetPending() || h.GetReleasing() || h.GetDiscarded() || rng.IntN(3) != 0 {
+				continue
+			}
+			_, err := pipelines().ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: parent, Stream: h.GetStream(), Column: h.GetColumn()}))
+			if err == nil {
+				t.Logf("released %s.%s, held since %d-g%d", h.GetStream(), h.GetColumn(), h.GetSinceEpoch(), h.GetSinceGeneration())
+			}
+		}
 	}
 }
 
