@@ -410,8 +410,10 @@ type DestinationCapabilities struct {
 	// Unset: no maximum.
 	MaxCommitInterval *durationpb.Duration `protobuf:"bytes,9,opt,name=max_commit_interval,json=maxCommitInterval,proto3" json:"max_commit_interval,omitempty"`
 	Delivery          Delivery             `protobuf:"varint,10,opt,name=delivery,proto3,enum=openetl.connector.v1.Delivery" json:"delivery,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Unset: the destination takes no holds.
+	Holds         *HoldCapabilities `protobuf:"bytes,11,opt,name=holds,proto3" json:"holds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DestinationCapabilities) Reset() {
@@ -514,6 +516,91 @@ func (x *DestinationCapabilities) GetDelivery() Delivery {
 	return Delivery_DELIVERY_UNSPECIFIED
 }
 
+func (x *DestinationCapabilities) GetHolds() *HoldCapabilities {
+	if x != nil {
+		return x.Holds
+	}
+	return nil
+}
+
+// HoldCapabilities is what a destination does with columns and cells the
+// platform holds back (ADR-0025). A held cell arrives as null, or as the
+// pipeline's held value, and the row's _openetl_held lists its column. A
+// patch fills it in later.
+type HoldCapabilities struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Patches a merge stream's rows by their key.
+	ByKey bool `protobuf:"varint,1,opt,name=by_key,json=byKey,proto3" json:"by_key,omitempty"`
+	// Patches an append stream's rows by their _openetl_id.
+	ById bool `protobuf:"varint,2,opt,name=by_id,json=byId,proto3" json:"by_id,omitempty"`
+	// A held cell of a merge stream's column whose field carries the
+	// openetl.held metadata "last" keeps the target's value.
+	Last bool `protobuf:"varint,3,opt,name=last,proto3" json:"last,omitempty"`
+	// A patch fills a cell only where the target still holds the version the
+	// patch comes from, so patches can land in any order.
+	Guarded       bool `protobuf:"varint,4,opt,name=guarded,proto3" json:"guarded,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HoldCapabilities) Reset() {
+	*x = HoldCapabilities{}
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HoldCapabilities) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HoldCapabilities) ProtoMessage() {}
+
+func (x *HoldCapabilities) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HoldCapabilities.ProtoReflect.Descriptor instead.
+func (*HoldCapabilities) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *HoldCapabilities) GetByKey() bool {
+	if x != nil {
+		return x.ByKey
+	}
+	return false
+}
+
+func (x *HoldCapabilities) GetById() bool {
+	if x != nil {
+		return x.ById
+	}
+	return false
+}
+
+func (x *HoldCapabilities) GetLast() bool {
+	if x != nil {
+		return x.Last
+	}
+	return false
+}
+
+func (x *HoldCapabilities) GetGuarded() bool {
+	if x != nil {
+		return x.Guarded
+	}
+	return false
+}
+
 // Epoch is checkpoint N within the generation that wrote it. N is 0 when
 // there is no checkpoint yet.
 type Epoch struct {
@@ -526,7 +613,7 @@ type Epoch struct {
 
 func (x *Epoch) Reset() {
 	*x = Epoch{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[1]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -538,7 +625,7 @@ func (x *Epoch) String() string {
 func (*Epoch) ProtoMessage() {}
 
 func (x *Epoch) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[1]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -551,7 +638,7 @@ func (x *Epoch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Epoch.ProtoReflect.Descriptor instead.
 func (*Epoch) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{1}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Epoch) GetGeneration() uint64 {
@@ -588,7 +675,7 @@ type WriteRequest struct {
 
 func (x *WriteRequest) Reset() {
 	*x = WriteRequest{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[2]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -600,7 +687,7 @@ func (x *WriteRequest) String() string {
 func (*WriteRequest) ProtoMessage() {}
 
 func (x *WriteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[2]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -613,7 +700,7 @@ func (x *WriteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteRequest.ProtoReflect.Descriptor instead.
 func (*WriteRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{2}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *WriteRequest) GetMsg() isWriteRequest_Msg {
@@ -780,7 +867,7 @@ type WriteOpen struct {
 
 func (x *WriteOpen) Reset() {
 	*x = WriteOpen{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[3]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -792,7 +879,7 @@ func (x *WriteOpen) String() string {
 func (*WriteOpen) ProtoMessage() {}
 
 func (x *WriteOpen) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[3]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -805,7 +892,7 @@ func (x *WriteOpen) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteOpen.ProtoReflect.Descriptor instead.
 func (*WriteOpen) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{3}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *WriteOpen) GetConfig() []byte {
@@ -872,7 +959,7 @@ type WriteStream struct {
 
 func (x *WriteStream) Reset() {
 	*x = WriteStream{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[4]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -884,7 +971,7 @@ func (x *WriteStream) String() string {
 func (*WriteStream) ProtoMessage() {}
 
 func (x *WriteStream) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[4]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -897,7 +984,7 @@ func (x *WriteStream) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteStream.ProtoReflect.Descriptor instead.
 func (*WriteStream) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{4}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *WriteStream) GetName() string {
@@ -949,7 +1036,7 @@ type WriteRecover struct {
 
 func (x *WriteRecover) Reset() {
 	*x = WriteRecover{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[5]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -961,7 +1048,7 @@ func (x *WriteRecover) String() string {
 func (*WriteRecover) ProtoMessage() {}
 
 func (x *WriteRecover) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[5]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -974,7 +1061,7 @@ func (x *WriteRecover) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteRecover.ProtoReflect.Descriptor instead.
 func (*WriteRecover) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{5}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *WriteRecover) GetEpoch() *Epoch {
@@ -996,14 +1083,21 @@ type WriteBatch struct {
 	Epoch  *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	Stream string                 `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
 	// An Arrow IPC stream: the schema, any dictionaries, one record batch.
-	Arrow         []byte `protobuf:"bytes,3,opt,name=arrow,proto3" json:"arrow,omitempty"`
+	Arrow []byte `protobuf:"bytes,3,opt,name=arrow,proto3" json:"arrow,omitempty"`
+	// The rows are patches, for destinations that take holds: each fills the
+	// cells its _openetl_held lists, in the target row its key (merge) or its
+	// _openetl_id (append) names. Its other columns are the stream's key,
+	// _openetl_id, _openetl_seq, _openetl_synced_at and the columns it fills.
+	// A column fills the held column of its name, or the one its field's
+	// openetl.fills metadata names, as col__v2 fills col's.
+	Patch         bool `protobuf:"varint,4,opt,name=patch,proto3" json:"patch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WriteBatch) Reset() {
 	*x = WriteBatch{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[6]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1015,7 +1109,7 @@ func (x *WriteBatch) String() string {
 func (*WriteBatch) ProtoMessage() {}
 
 func (x *WriteBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[6]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1028,7 +1122,7 @@ func (x *WriteBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteBatch.ProtoReflect.Descriptor instead.
 func (*WriteBatch) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{6}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *WriteBatch) GetEpoch() *Epoch {
@@ -1052,6 +1146,13 @@ func (x *WriteBatch) GetArrow() []byte {
 	return nil
 }
 
+func (x *WriteBatch) GetPatch() bool {
+	if x != nil {
+		return x.Patch
+	}
+	return false
+}
+
 // WriteStartReads comes after recover and before the first batch, with when
 // each stream the attempt reads started its read. A read an earlier attempt
 // began keeps its start, so a stream whose start changed began a new read.
@@ -1065,7 +1166,7 @@ type WriteStartReads struct {
 
 func (x *WriteStartReads) Reset() {
 	*x = WriteStartReads{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[7]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1077,7 +1178,7 @@ func (x *WriteStartReads) String() string {
 func (*WriteStartReads) ProtoMessage() {}
 
 func (x *WriteStartReads) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[7]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1090,7 +1191,7 @@ func (x *WriteStartReads) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteStartReads.ProtoReflect.Descriptor instead.
 func (*WriteStartReads) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{7}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *WriteStartReads) GetStarts() map[string]*timestamppb.Timestamp {
@@ -1113,7 +1214,7 @@ type WriteEndRead struct {
 
 func (x *WriteEndRead) Reset() {
 	*x = WriteEndRead{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[8]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1125,7 +1226,7 @@ func (x *WriteEndRead) String() string {
 func (*WriteEndRead) ProtoMessage() {}
 
 func (x *WriteEndRead) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[8]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1138,7 +1239,7 @@ func (x *WriteEndRead) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteEndRead.ProtoReflect.Descriptor instead.
 func (*WriteEndRead) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{8}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *WriteEndRead) GetEpoch() *Epoch {
@@ -1160,17 +1261,19 @@ func (x *WriteEndRead) GetStream() string {
 // open and before recover. Streams without rows in the epoch get none.
 // Unanswered, like batches.
 type WriteStagedFiles struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Stream        string                 `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
-	Files         []*StagedFile          `protobuf:"bytes,3,rep,name=files,proto3" json:"files,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Epoch  *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Stream string                 `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
+	Files  []*StagedFile          `protobuf:"bytes,3,rep,name=files,proto3" json:"files,omitempty"`
+	// The files hold patches, as WriteBatch.patch's.
+	Patch         bool `protobuf:"varint,4,opt,name=patch,proto3" json:"patch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WriteStagedFiles) Reset() {
 	*x = WriteStagedFiles{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[9]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1182,7 +1285,7 @@ func (x *WriteStagedFiles) String() string {
 func (*WriteStagedFiles) ProtoMessage() {}
 
 func (x *WriteStagedFiles) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[9]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1195,7 +1298,7 @@ func (x *WriteStagedFiles) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteStagedFiles.ProtoReflect.Descriptor instead.
 func (*WriteStagedFiles) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{9}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *WriteStagedFiles) GetEpoch() *Epoch {
@@ -1219,6 +1322,13 @@ func (x *WriteStagedFiles) GetFiles() []*StagedFile {
 	return nil
 }
 
+func (x *WriteStagedFiles) GetPatch() bool {
+	if x != nil {
+		return x.Patch
+	}
+	return false
+}
+
 // StagedFile is one Parquet file of a staged epoch, read through host
 // services' StagedFileURL.
 type StagedFile struct {
@@ -1233,7 +1343,7 @@ type StagedFile struct {
 
 func (x *StagedFile) Reset() {
 	*x = StagedFile{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[10]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1245,7 +1355,7 @@ func (x *StagedFile) String() string {
 func (*StagedFile) ProtoMessage() {}
 
 func (x *StagedFile) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[10]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1258,7 +1368,7 @@ func (x *StagedFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StagedFile.ProtoReflect.Descriptor instead.
 func (*StagedFile) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{10}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *StagedFile) GetPath() string {
@@ -1293,7 +1403,7 @@ type WritePreCommit struct {
 
 func (x *WritePreCommit) Reset() {
 	*x = WritePreCommit{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[11]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1305,7 +1415,7 @@ func (x *WritePreCommit) String() string {
 func (*WritePreCommit) ProtoMessage() {}
 
 func (x *WritePreCommit) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[11]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1318,7 +1428,7 @@ func (x *WritePreCommit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WritePreCommit.ProtoReflect.Descriptor instead.
 func (*WritePreCommit) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{11}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *WritePreCommit) GetEpoch() *Epoch {
@@ -1340,7 +1450,7 @@ type WriteCommit struct {
 
 func (x *WriteCommit) Reset() {
 	*x = WriteCommit{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[12]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1352,7 +1462,7 @@ func (x *WriteCommit) String() string {
 func (*WriteCommit) ProtoMessage() {}
 
 func (x *WriteCommit) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[12]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1365,7 +1475,7 @@ func (x *WriteCommit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteCommit.ProtoReflect.Descriptor instead.
 func (*WriteCommit) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{12}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *WriteCommit) GetEpoch() *Epoch {
@@ -1394,7 +1504,7 @@ type WriteApplySchema struct {
 
 func (x *WriteApplySchema) Reset() {
 	*x = WriteApplySchema{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[13]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1406,7 +1516,7 @@ func (x *WriteApplySchema) String() string {
 func (*WriteApplySchema) ProtoMessage() {}
 
 func (x *WriteApplySchema) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[13]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1419,7 +1529,7 @@ func (x *WriteApplySchema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteApplySchema.ProtoReflect.Descriptor instead.
 func (*WriteApplySchema) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{13}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *WriteApplySchema) GetStreams() []*StreamSchema {
@@ -1432,7 +1542,10 @@ func (x *WriteApplySchema) GetStreams() []*StreamSchema {
 type StreamSchema struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// An Arrow IPC stream with no batches, metadata columns included.
+	// An Arrow IPC stream with no batches, metadata columns included. A
+	// stream that holds anything has _openetl_held, a list of strings: each
+	// row's held columns. A held column stays at the type the destination
+	// last took, and one it never took is left out.
 	ArrowSchema   []byte `protobuf:"bytes,2,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1440,7 +1553,7 @@ type StreamSchema struct {
 
 func (x *StreamSchema) Reset() {
 	*x = StreamSchema{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[14]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1452,7 +1565,7 @@ func (x *StreamSchema) String() string {
 func (*StreamSchema) ProtoMessage() {}
 
 func (x *StreamSchema) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[14]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1465,7 +1578,7 @@ func (x *StreamSchema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamSchema.ProtoReflect.Descriptor instead.
 func (*StreamSchema) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{14}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *StreamSchema) GetName() string {
@@ -1498,7 +1611,7 @@ type WriteResponse struct {
 
 func (x *WriteResponse) Reset() {
 	*x = WriteResponse{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[15]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1510,7 +1623,7 @@ func (x *WriteResponse) String() string {
 func (*WriteResponse) ProtoMessage() {}
 
 func (x *WriteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[15]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1523,7 +1636,7 @@ func (x *WriteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteResponse.ProtoReflect.Descriptor instead.
 func (*WriteResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{15}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *WriteResponse) GetMsg() isWriteResponse_Msg {
@@ -1622,7 +1735,7 @@ type WriteOpened struct {
 
 func (x *WriteOpened) Reset() {
 	*x = WriteOpened{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[16]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1634,7 +1747,7 @@ func (x *WriteOpened) String() string {
 func (*WriteOpened) ProtoMessage() {}
 
 func (x *WriteOpened) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[16]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1647,7 +1760,7 @@ func (x *WriteOpened) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteOpened.ProtoReflect.Descriptor instead.
 func (*WriteOpened) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{16}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *WriteOpened) GetAppliesSchema() bool {
@@ -1661,14 +1774,21 @@ type WriteSchemaApplied struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Set if applying failed. The stream stays open, and the schemas can be
 	// sent again.
-	Error         *Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	Error *Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	// From destinations that take holds: columns it didn't add or change,
+	// having applied the rest. The platform holds them.
+	Refused []*RefusedColumn `protobuf:"bytes,2,rep,name=refused,proto3" json:"refused,omitempty"`
+	// From destinations that take holds: by stream, what its table can't
+	// take as it stands, so the platform holds such a change instead of
+	// sending it.
+	Limits        map[string]*TableLimits `protobuf:"bytes,3,rep,name=limits,proto3" json:"limits,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WriteSchemaApplied) Reset() {
 	*x = WriteSchemaApplied{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[17]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1680,7 +1800,7 @@ func (x *WriteSchemaApplied) String() string {
 func (*WriteSchemaApplied) ProtoMessage() {}
 
 func (x *WriteSchemaApplied) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[17]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1693,7 +1813,7 @@ func (x *WriteSchemaApplied) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteSchemaApplied.ProtoReflect.Descriptor instead.
 func (*WriteSchemaApplied) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{17}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *WriteSchemaApplied) GetError() *Error {
@@ -1701,6 +1821,164 @@ func (x *WriteSchemaApplied) GetError() *Error {
 		return x.Error
 	}
 	return nil
+}
+
+func (x *WriteSchemaApplied) GetRefused() []*RefusedColumn {
+	if x != nil {
+		return x.Refused
+	}
+	return nil
+}
+
+func (x *WriteSchemaApplied) GetLimits() map[string]*TableLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+type RefusedColumn struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Stream string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
+	// Its destination name.
+	Column        string `protobuf:"bytes,2,opt,name=column,proto3" json:"column,omitempty"`
+	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefusedColumn) Reset() {
+	*x = RefusedColumn{}
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefusedColumn) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefusedColumn) ProtoMessage() {}
+
+func (x *RefusedColumn) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefusedColumn.ProtoReflect.Descriptor instead.
+func (*RefusedColumn) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *RefusedColumn) GetStream() string {
+	if x != nil {
+		return x.Stream
+	}
+	return ""
+}
+
+func (x *RefusedColumn) GetColumn() string {
+	if x != nil {
+		return x.Column
+	}
+	return ""
+}
+
+func (x *RefusedColumn) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// TableLimits name columns by their destination names.
+type TableLimits struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Columns that can't take a null, which a held cell is unless the
+	// pipeline gives a held value.
+	NotNull []string `protobuf:"bytes,1,rep,name=not_null,json=notNull,proto3" json:"not_null,omitempty"`
+	// Columns that can't be held, such as partition columns.
+	Unholdable []string `protobuf:"bytes,2,rep,name=unholdable,proto3" json:"unholdable,omitempty"`
+	// Columns whose type can't change, such as those a view depends on.
+	Fixed []string `protobuf:"bytes,3,rep,name=fixed,proto3" json:"fixed,omitempty"`
+	// The columns the table has, as its limit counts them, and that limit;
+	// 0 for none.
+	Columns       uint32 `protobuf:"varint,4,opt,name=columns,proto3" json:"columns,omitempty"`
+	MaxColumns    uint32 `protobuf:"varint,5,opt,name=max_columns,json=maxColumns,proto3" json:"max_columns,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TableLimits) Reset() {
+	*x = TableLimits{}
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TableLimits) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TableLimits) ProtoMessage() {}
+
+func (x *TableLimits) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TableLimits.ProtoReflect.Descriptor instead.
+func (*TableLimits) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *TableLimits) GetNotNull() []string {
+	if x != nil {
+		return x.NotNull
+	}
+	return nil
+}
+
+func (x *TableLimits) GetUnholdable() []string {
+	if x != nil {
+		return x.Unholdable
+	}
+	return nil
+}
+
+func (x *TableLimits) GetFixed() []string {
+	if x != nil {
+		return x.Fixed
+	}
+	return nil
+}
+
+func (x *TableLimits) GetColumns() uint32 {
+	if x != nil {
+		return x.Columns
+	}
+	return 0
+}
+
+func (x *TableLimits) GetMaxColumns() uint32 {
+	if x != nil {
+		return x.MaxColumns
+	}
+	return 0
 }
 
 type WriteRecovered struct {
@@ -1712,7 +1990,7 @@ type WriteRecovered struct {
 
 func (x *WriteRecovered) Reset() {
 	*x = WriteRecovered{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[18]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1724,7 +2002,7 @@ func (x *WriteRecovered) String() string {
 func (*WriteRecovered) ProtoMessage() {}
 
 func (x *WriteRecovered) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[18]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1737,7 +2015,7 @@ func (x *WriteRecovered) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteRecovered.ProtoReflect.Descriptor instead.
 func (*WriteRecovered) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{18}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *WriteRecovered) GetRecovery() Recovery {
@@ -1759,7 +2037,7 @@ type WriteStaged struct {
 
 func (x *WriteStaged) Reset() {
 	*x = WriteStaged{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[19]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1771,7 +2049,7 @@ func (x *WriteStaged) String() string {
 func (*WriteStaged) ProtoMessage() {}
 
 func (x *WriteStaged) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[19]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1784,7 +2062,7 @@ func (x *WriteStaged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteStaged.ProtoReflect.Descriptor instead.
 func (*WriteStaged) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{19}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *WriteStaged) GetEpoch() *Epoch {
@@ -1815,7 +2093,7 @@ type WriteCommitted struct {
 
 func (x *WriteCommitted) Reset() {
 	*x = WriteCommitted{}
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[20]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1827,7 +2105,7 @@ func (x *WriteCommitted) String() string {
 func (*WriteCommitted) ProtoMessage() {}
 
 func (x *WriteCommitted) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_destination_proto_msgTypes[20]
+	mi := &file_openetl_connector_v1_destination_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1840,7 +2118,7 @@ func (x *WriteCommitted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteCommitted.ProtoReflect.Descriptor instead.
 func (*WriteCommitted) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{20}
+	return file_openetl_connector_v1_destination_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *WriteCommitted) GetEpoch() *Epoch {
@@ -1868,7 +2146,7 @@ var File_openetl_connector_v1_destination_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\n" +
-	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\x8c\x05\n" +
+	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\xca\x05\n" +
 	"\x17DestinationCapabilities\x12>\n" +
 	"\n" +
 	"sink_class\x18\x01 \x01(\x0e2\x1f.openetl.connector.v1.SinkClassR\tsinkClass\x129\n" +
@@ -1882,7 +2160,13 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"writeModes\x12I\n" +
 	"\x13max_commit_interval\x18\t \x01(\v2\x19.google.protobuf.DurationR\x11maxCommitInterval\x12:\n" +
 	"\bdelivery\x18\n" +
-	" \x01(\x0e2\x1e.openetl.connector.v1.DeliveryR\bdelivery\"5\n" +
+	" \x01(\x0e2\x1e.openetl.connector.v1.DeliveryR\bdelivery\x12<\n" +
+	"\x05holds\x18\v \x01(\v2&.openetl.connector.v1.HoldCapabilitiesR\x05holds\"l\n" +
+	"\x10HoldCapabilities\x12\x15\n" +
+	"\x06by_key\x18\x01 \x01(\bR\x05byKey\x12\x13\n" +
+	"\x05by_id\x18\x02 \x01(\bR\x04byId\x12\x12\n" +
+	"\x04last\x18\x03 \x01(\bR\x04last\x12\x18\n" +
+	"\aguarded\x18\x04 \x01(\bR\aguarded\"5\n" +
 	"\x05Epoch\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x01 \x01(\x04R\n" +
@@ -1920,12 +2204,13 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\adeletes\x18\x05 \x01(\x0e2 .openetl.connector.v1.DeleteModeR\adeletes\"Y\n" +
 	"\fWriteRecover\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
-	"\x06staged\x18\x02 \x01(\fR\x06staged\"m\n" +
+	"\x06staged\x18\x02 \x01(\fR\x06staged\"\x83\x01\n" +
 	"\n" +
 	"WriteBatch\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
 	"\x06stream\x18\x02 \x01(\tR\x06stream\x12\x14\n" +
-	"\x05arrow\x18\x03 \x01(\fR\x05arrow\"\xb3\x01\n" +
+	"\x05arrow\x18\x03 \x01(\fR\x05arrow\x12\x14\n" +
+	"\x05patch\x18\x04 \x01(\bR\x05patch\"\xb3\x01\n" +
 	"\x0fWriteStartReads\x12I\n" +
 	"\x06starts\x18\x01 \x03(\v21.openetl.connector.v1.WriteStartReads.StartsEntryR\x06starts\x1aU\n" +
 	"\vStartsEntry\x12\x10\n" +
@@ -1933,11 +2218,12 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x05value:\x028\x01\"Y\n" +
 	"\fWriteEndRead\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
-	"\x06stream\x18\x02 \x01(\tR\x06stream\"\x95\x01\n" +
+	"\x06stream\x18\x02 \x01(\tR\x06stream\"\xab\x01\n" +
 	"\x10WriteStagedFiles\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
 	"\x06stream\x18\x02 \x01(\tR\x06stream\x126\n" +
-	"\x05files\x18\x03 \x03(\v2 .openetl.connector.v1.StagedFileR\x05files\"J\n" +
+	"\x05files\x18\x03 \x03(\v2 .openetl.connector.v1.StagedFileR\x05files\x12\x14\n" +
+	"\x05patch\x18\x04 \x01(\bR\x05patch\"J\n" +
 	"\n" +
 	"StagedFile\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
@@ -1961,9 +2247,27 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\x0eschema_applied\x18\x05 \x01(\v2(.openetl.connector.v1.WriteSchemaAppliedH\x00R\rschemaAppliedB\x05\n" +
 	"\x03msg\"4\n" +
 	"\vWriteOpened\x12%\n" +
-	"\x0eapplies_schema\x18\x01 \x01(\bR\rappliesSchema\"G\n" +
+	"\x0eapplies_schema\x18\x01 \x01(\bR\rappliesSchema\"\xb2\x02\n" +
 	"\x12WriteSchemaApplied\x121\n" +
-	"\x05error\x18\x01 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\"L\n" +
+	"\x05error\x18\x01 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\x12=\n" +
+	"\arefused\x18\x02 \x03(\v2#.openetl.connector.v1.RefusedColumnR\arefused\x12L\n" +
+	"\x06limits\x18\x03 \x03(\v24.openetl.connector.v1.WriteSchemaApplied.LimitsEntryR\x06limits\x1a\\\n" +
+	"\vLimitsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x127\n" +
+	"\x05value\x18\x02 \x01(\v2!.openetl.connector.v1.TableLimitsR\x05value:\x028\x01\"W\n" +
+	"\rRefusedColumn\x12\x16\n" +
+	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
+	"\x06column\x18\x02 \x01(\tR\x06column\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\x99\x01\n" +
+	"\vTableLimits\x12\x19\n" +
+	"\bnot_null\x18\x01 \x03(\tR\anotNull\x12\x1e\n" +
+	"\n" +
+	"unholdable\x18\x02 \x03(\tR\n" +
+	"unholdable\x12\x14\n" +
+	"\x05fixed\x18\x03 \x03(\tR\x05fixed\x12\x18\n" +
+	"\acolumns\x18\x04 \x01(\rR\acolumns\x12\x1f\n" +
+	"\vmax_columns\x18\x05 \x01(\rR\n" +
+	"maxColumns\"L\n" +
 	"\x0eWriteRecovered\x12:\n" +
 	"\brecovery\x18\x01 \x01(\x0e2\x1e.openetl.connector.v1.RecoveryR\brecovery\"X\n" +
 	"\vWriteStaged\x121\n" +
@@ -2024,7 +2328,7 @@ func file_openetl_connector_v1_destination_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_connector_v1_destination_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_openetl_connector_v1_destination_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_openetl_connector_v1_destination_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_openetl_connector_v1_destination_proto_goTypes = []any{
 	(Delivery)(0),                   // 0: openetl.connector.v1.Delivery
 	(SinkClass)(0),                  // 1: openetl.connector.v1.SinkClass
@@ -2034,83 +2338,91 @@ var file_openetl_connector_v1_destination_proto_goTypes = []any{
 	(DeleteMode)(0),                 // 5: openetl.connector.v1.DeleteMode
 	(Dedupe)(0),                     // 6: openetl.connector.v1.Dedupe
 	(*DestinationCapabilities)(nil), // 7: openetl.connector.v1.DestinationCapabilities
-	(*Epoch)(nil),                   // 8: openetl.connector.v1.Epoch
-	(*WriteRequest)(nil),            // 9: openetl.connector.v1.WriteRequest
-	(*WriteOpen)(nil),               // 10: openetl.connector.v1.WriteOpen
-	(*WriteStream)(nil),             // 11: openetl.connector.v1.WriteStream
-	(*WriteRecover)(nil),            // 12: openetl.connector.v1.WriteRecover
-	(*WriteBatch)(nil),              // 13: openetl.connector.v1.WriteBatch
-	(*WriteStartReads)(nil),         // 14: openetl.connector.v1.WriteStartReads
-	(*WriteEndRead)(nil),            // 15: openetl.connector.v1.WriteEndRead
-	(*WriteStagedFiles)(nil),        // 16: openetl.connector.v1.WriteStagedFiles
-	(*StagedFile)(nil),              // 17: openetl.connector.v1.StagedFile
-	(*WritePreCommit)(nil),          // 18: openetl.connector.v1.WritePreCommit
-	(*WriteCommit)(nil),             // 19: openetl.connector.v1.WriteCommit
-	(*WriteApplySchema)(nil),        // 20: openetl.connector.v1.WriteApplySchema
-	(*StreamSchema)(nil),            // 21: openetl.connector.v1.StreamSchema
-	(*WriteResponse)(nil),           // 22: openetl.connector.v1.WriteResponse
-	(*WriteOpened)(nil),             // 23: openetl.connector.v1.WriteOpened
-	(*WriteSchemaApplied)(nil),      // 24: openetl.connector.v1.WriteSchemaApplied
-	(*WriteRecovered)(nil),          // 25: openetl.connector.v1.WriteRecovered
-	(*WriteStaged)(nil),             // 26: openetl.connector.v1.WriteStaged
-	(*WriteCommitted)(nil),          // 27: openetl.connector.v1.WriteCommitted
-	nil,                             // 28: openetl.connector.v1.WriteStartReads.StartsEntry
-	nil,                             // 29: openetl.connector.v1.WriteCommitted.CollapsedRowsEntry
-	(*durationpb.Duration)(nil),     // 30: google.protobuf.Duration
-	(*Error)(nil),                   // 31: openetl.connector.v1.Error
-	(*timestamppb.Timestamp)(nil),   // 32: google.protobuf.Timestamp
+	(*HoldCapabilities)(nil),        // 8: openetl.connector.v1.HoldCapabilities
+	(*Epoch)(nil),                   // 9: openetl.connector.v1.Epoch
+	(*WriteRequest)(nil),            // 10: openetl.connector.v1.WriteRequest
+	(*WriteOpen)(nil),               // 11: openetl.connector.v1.WriteOpen
+	(*WriteStream)(nil),             // 12: openetl.connector.v1.WriteStream
+	(*WriteRecover)(nil),            // 13: openetl.connector.v1.WriteRecover
+	(*WriteBatch)(nil),              // 14: openetl.connector.v1.WriteBatch
+	(*WriteStartReads)(nil),         // 15: openetl.connector.v1.WriteStartReads
+	(*WriteEndRead)(nil),            // 16: openetl.connector.v1.WriteEndRead
+	(*WriteStagedFiles)(nil),        // 17: openetl.connector.v1.WriteStagedFiles
+	(*StagedFile)(nil),              // 18: openetl.connector.v1.StagedFile
+	(*WritePreCommit)(nil),          // 19: openetl.connector.v1.WritePreCommit
+	(*WriteCommit)(nil),             // 20: openetl.connector.v1.WriteCommit
+	(*WriteApplySchema)(nil),        // 21: openetl.connector.v1.WriteApplySchema
+	(*StreamSchema)(nil),            // 22: openetl.connector.v1.StreamSchema
+	(*WriteResponse)(nil),           // 23: openetl.connector.v1.WriteResponse
+	(*WriteOpened)(nil),             // 24: openetl.connector.v1.WriteOpened
+	(*WriteSchemaApplied)(nil),      // 25: openetl.connector.v1.WriteSchemaApplied
+	(*RefusedColumn)(nil),           // 26: openetl.connector.v1.RefusedColumn
+	(*TableLimits)(nil),             // 27: openetl.connector.v1.TableLimits
+	(*WriteRecovered)(nil),          // 28: openetl.connector.v1.WriteRecovered
+	(*WriteStaged)(nil),             // 29: openetl.connector.v1.WriteStaged
+	(*WriteCommitted)(nil),          // 30: openetl.connector.v1.WriteCommitted
+	nil,                             // 31: openetl.connector.v1.WriteStartReads.StartsEntry
+	nil,                             // 32: openetl.connector.v1.WriteSchemaApplied.LimitsEntry
+	nil,                             // 33: openetl.connector.v1.WriteCommitted.CollapsedRowsEntry
+	(*durationpb.Duration)(nil),     // 34: google.protobuf.Duration
+	(*Error)(nil),                   // 35: openetl.connector.v1.Error
+	(*timestamppb.Timestamp)(nil),   // 36: google.protobuf.Timestamp
 }
 var file_openetl_connector_v1_destination_proto_depIdxs = []int32{
 	1,  // 0: openetl.connector.v1.DestinationCapabilities.sink_class:type_name -> openetl.connector.v1.SinkClass
 	2,  // 1: openetl.connector.v1.DestinationCapabilities.scopes:type_name -> openetl.connector.v1.CommitScope
-	30, // 2: openetl.connector.v1.DestinationCapabilities.default_commit_interval:type_name -> google.protobuf.Duration
-	30, // 3: openetl.connector.v1.DestinationCapabilities.min_commit_interval:type_name -> google.protobuf.Duration
+	34, // 2: openetl.connector.v1.DestinationCapabilities.default_commit_interval:type_name -> google.protobuf.Duration
+	34, // 3: openetl.connector.v1.DestinationCapabilities.min_commit_interval:type_name -> google.protobuf.Duration
 	3,  // 4: openetl.connector.v1.DestinationCapabilities.write_modes:type_name -> openetl.connector.v1.WriteMode
-	30, // 5: openetl.connector.v1.DestinationCapabilities.max_commit_interval:type_name -> google.protobuf.Duration
+	34, // 5: openetl.connector.v1.DestinationCapabilities.max_commit_interval:type_name -> google.protobuf.Duration
 	0,  // 6: openetl.connector.v1.DestinationCapabilities.delivery:type_name -> openetl.connector.v1.Delivery
-	10, // 7: openetl.connector.v1.WriteRequest.open:type_name -> openetl.connector.v1.WriteOpen
-	12, // 8: openetl.connector.v1.WriteRequest.recover:type_name -> openetl.connector.v1.WriteRecover
-	13, // 9: openetl.connector.v1.WriteRequest.batch:type_name -> openetl.connector.v1.WriteBatch
-	18, // 10: openetl.connector.v1.WriteRequest.pre_commit:type_name -> openetl.connector.v1.WritePreCommit
-	19, // 11: openetl.connector.v1.WriteRequest.commit:type_name -> openetl.connector.v1.WriteCommit
-	20, // 12: openetl.connector.v1.WriteRequest.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
-	14, // 13: openetl.connector.v1.WriteRequest.start_reads:type_name -> openetl.connector.v1.WriteStartReads
-	15, // 14: openetl.connector.v1.WriteRequest.end_read:type_name -> openetl.connector.v1.WriteEndRead
-	16, // 15: openetl.connector.v1.WriteRequest.staged_files:type_name -> openetl.connector.v1.WriteStagedFiles
-	2,  // 16: openetl.connector.v1.WriteOpen.scope:type_name -> openetl.connector.v1.CommitScope
-	11, // 17: openetl.connector.v1.WriteOpen.streams:type_name -> openetl.connector.v1.WriteStream
-	30, // 18: openetl.connector.v1.WriteOpen.commit_interval:type_name -> google.protobuf.Duration
-	3,  // 19: openetl.connector.v1.WriteStream.mode:type_name -> openetl.connector.v1.WriteMode
-	6,  // 20: openetl.connector.v1.WriteStream.dedupe:type_name -> openetl.connector.v1.Dedupe
-	5,  // 21: openetl.connector.v1.WriteStream.deletes:type_name -> openetl.connector.v1.DeleteMode
-	8,  // 22: openetl.connector.v1.WriteRecover.epoch:type_name -> openetl.connector.v1.Epoch
-	8,  // 23: openetl.connector.v1.WriteBatch.epoch:type_name -> openetl.connector.v1.Epoch
-	28, // 24: openetl.connector.v1.WriteStartReads.starts:type_name -> openetl.connector.v1.WriteStartReads.StartsEntry
-	8,  // 25: openetl.connector.v1.WriteEndRead.epoch:type_name -> openetl.connector.v1.Epoch
-	8,  // 26: openetl.connector.v1.WriteStagedFiles.epoch:type_name -> openetl.connector.v1.Epoch
-	17, // 27: openetl.connector.v1.WriteStagedFiles.files:type_name -> openetl.connector.v1.StagedFile
-	8,  // 28: openetl.connector.v1.WritePreCommit.epoch:type_name -> openetl.connector.v1.Epoch
-	8,  // 29: openetl.connector.v1.WriteCommit.epoch:type_name -> openetl.connector.v1.Epoch
-	21, // 30: openetl.connector.v1.WriteApplySchema.streams:type_name -> openetl.connector.v1.StreamSchema
-	25, // 31: openetl.connector.v1.WriteResponse.recovered:type_name -> openetl.connector.v1.WriteRecovered
-	26, // 32: openetl.connector.v1.WriteResponse.staged:type_name -> openetl.connector.v1.WriteStaged
-	27, // 33: openetl.connector.v1.WriteResponse.committed:type_name -> openetl.connector.v1.WriteCommitted
-	23, // 34: openetl.connector.v1.WriteResponse.opened:type_name -> openetl.connector.v1.WriteOpened
-	24, // 35: openetl.connector.v1.WriteResponse.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
-	31, // 36: openetl.connector.v1.WriteSchemaApplied.error:type_name -> openetl.connector.v1.Error
-	4,  // 37: openetl.connector.v1.WriteRecovered.recovery:type_name -> openetl.connector.v1.Recovery
-	8,  // 38: openetl.connector.v1.WriteStaged.epoch:type_name -> openetl.connector.v1.Epoch
-	8,  // 39: openetl.connector.v1.WriteCommitted.epoch:type_name -> openetl.connector.v1.Epoch
-	31, // 40: openetl.connector.v1.WriteCommitted.error:type_name -> openetl.connector.v1.Error
-	29, // 41: openetl.connector.v1.WriteCommitted.collapsed_rows:type_name -> openetl.connector.v1.WriteCommitted.CollapsedRowsEntry
-	32, // 42: openetl.connector.v1.WriteStartReads.StartsEntry.value:type_name -> google.protobuf.Timestamp
-	9,  // 43: openetl.connector.v1.DestinationService.Write:input_type -> openetl.connector.v1.WriteRequest
-	22, // 44: openetl.connector.v1.DestinationService.Write:output_type -> openetl.connector.v1.WriteResponse
-	44, // [44:45] is the sub-list for method output_type
-	43, // [43:44] is the sub-list for method input_type
-	43, // [43:43] is the sub-list for extension type_name
-	43, // [43:43] is the sub-list for extension extendee
-	0,  // [0:43] is the sub-list for field type_name
+	8,  // 7: openetl.connector.v1.DestinationCapabilities.holds:type_name -> openetl.connector.v1.HoldCapabilities
+	11, // 8: openetl.connector.v1.WriteRequest.open:type_name -> openetl.connector.v1.WriteOpen
+	13, // 9: openetl.connector.v1.WriteRequest.recover:type_name -> openetl.connector.v1.WriteRecover
+	14, // 10: openetl.connector.v1.WriteRequest.batch:type_name -> openetl.connector.v1.WriteBatch
+	19, // 11: openetl.connector.v1.WriteRequest.pre_commit:type_name -> openetl.connector.v1.WritePreCommit
+	20, // 12: openetl.connector.v1.WriteRequest.commit:type_name -> openetl.connector.v1.WriteCommit
+	21, // 13: openetl.connector.v1.WriteRequest.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
+	15, // 14: openetl.connector.v1.WriteRequest.start_reads:type_name -> openetl.connector.v1.WriteStartReads
+	16, // 15: openetl.connector.v1.WriteRequest.end_read:type_name -> openetl.connector.v1.WriteEndRead
+	17, // 16: openetl.connector.v1.WriteRequest.staged_files:type_name -> openetl.connector.v1.WriteStagedFiles
+	2,  // 17: openetl.connector.v1.WriteOpen.scope:type_name -> openetl.connector.v1.CommitScope
+	12, // 18: openetl.connector.v1.WriteOpen.streams:type_name -> openetl.connector.v1.WriteStream
+	34, // 19: openetl.connector.v1.WriteOpen.commit_interval:type_name -> google.protobuf.Duration
+	3,  // 20: openetl.connector.v1.WriteStream.mode:type_name -> openetl.connector.v1.WriteMode
+	6,  // 21: openetl.connector.v1.WriteStream.dedupe:type_name -> openetl.connector.v1.Dedupe
+	5,  // 22: openetl.connector.v1.WriteStream.deletes:type_name -> openetl.connector.v1.DeleteMode
+	9,  // 23: openetl.connector.v1.WriteRecover.epoch:type_name -> openetl.connector.v1.Epoch
+	9,  // 24: openetl.connector.v1.WriteBatch.epoch:type_name -> openetl.connector.v1.Epoch
+	31, // 25: openetl.connector.v1.WriteStartReads.starts:type_name -> openetl.connector.v1.WriteStartReads.StartsEntry
+	9,  // 26: openetl.connector.v1.WriteEndRead.epoch:type_name -> openetl.connector.v1.Epoch
+	9,  // 27: openetl.connector.v1.WriteStagedFiles.epoch:type_name -> openetl.connector.v1.Epoch
+	18, // 28: openetl.connector.v1.WriteStagedFiles.files:type_name -> openetl.connector.v1.StagedFile
+	9,  // 29: openetl.connector.v1.WritePreCommit.epoch:type_name -> openetl.connector.v1.Epoch
+	9,  // 30: openetl.connector.v1.WriteCommit.epoch:type_name -> openetl.connector.v1.Epoch
+	22, // 31: openetl.connector.v1.WriteApplySchema.streams:type_name -> openetl.connector.v1.StreamSchema
+	28, // 32: openetl.connector.v1.WriteResponse.recovered:type_name -> openetl.connector.v1.WriteRecovered
+	29, // 33: openetl.connector.v1.WriteResponse.staged:type_name -> openetl.connector.v1.WriteStaged
+	30, // 34: openetl.connector.v1.WriteResponse.committed:type_name -> openetl.connector.v1.WriteCommitted
+	24, // 35: openetl.connector.v1.WriteResponse.opened:type_name -> openetl.connector.v1.WriteOpened
+	25, // 36: openetl.connector.v1.WriteResponse.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
+	35, // 37: openetl.connector.v1.WriteSchemaApplied.error:type_name -> openetl.connector.v1.Error
+	26, // 38: openetl.connector.v1.WriteSchemaApplied.refused:type_name -> openetl.connector.v1.RefusedColumn
+	32, // 39: openetl.connector.v1.WriteSchemaApplied.limits:type_name -> openetl.connector.v1.WriteSchemaApplied.LimitsEntry
+	4,  // 40: openetl.connector.v1.WriteRecovered.recovery:type_name -> openetl.connector.v1.Recovery
+	9,  // 41: openetl.connector.v1.WriteStaged.epoch:type_name -> openetl.connector.v1.Epoch
+	9,  // 42: openetl.connector.v1.WriteCommitted.epoch:type_name -> openetl.connector.v1.Epoch
+	35, // 43: openetl.connector.v1.WriteCommitted.error:type_name -> openetl.connector.v1.Error
+	33, // 44: openetl.connector.v1.WriteCommitted.collapsed_rows:type_name -> openetl.connector.v1.WriteCommitted.CollapsedRowsEntry
+	36, // 45: openetl.connector.v1.WriteStartReads.StartsEntry.value:type_name -> google.protobuf.Timestamp
+	27, // 46: openetl.connector.v1.WriteSchemaApplied.LimitsEntry.value:type_name -> openetl.connector.v1.TableLimits
+	10, // 47: openetl.connector.v1.DestinationService.Write:input_type -> openetl.connector.v1.WriteRequest
+	23, // 48: openetl.connector.v1.DestinationService.Write:output_type -> openetl.connector.v1.WriteResponse
+	48, // [48:49] is the sub-list for method output_type
+	47, // [47:48] is the sub-list for method input_type
+	47, // [47:47] is the sub-list for extension type_name
+	47, // [47:47] is the sub-list for extension extendee
+	0,  // [0:47] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_destination_proto_init() }
@@ -2119,7 +2431,7 @@ func file_openetl_connector_v1_destination_proto_init() {
 		return
 	}
 	file_openetl_connector_v1_errors_proto_init()
-	file_openetl_connector_v1_destination_proto_msgTypes[2].OneofWrappers = []any{
+	file_openetl_connector_v1_destination_proto_msgTypes[3].OneofWrappers = []any{
 		(*WriteRequest_Open)(nil),
 		(*WriteRequest_Recover)(nil),
 		(*WriteRequest_Batch)(nil),
@@ -2130,7 +2442,7 @@ func file_openetl_connector_v1_destination_proto_init() {
 		(*WriteRequest_EndRead)(nil),
 		(*WriteRequest_StagedFiles)(nil),
 	}
-	file_openetl_connector_v1_destination_proto_msgTypes[15].OneofWrappers = []any{
+	file_openetl_connector_v1_destination_proto_msgTypes[16].OneofWrappers = []any{
 		(*WriteResponse_Recovered)(nil),
 		(*WriteResponse_Staged)(nil),
 		(*WriteResponse_Committed)(nil),
@@ -2143,7 +2455,7 @@ func file_openetl_connector_v1_destination_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_connector_v1_destination_proto_rawDesc), len(file_openetl_connector_v1_destination_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   23,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

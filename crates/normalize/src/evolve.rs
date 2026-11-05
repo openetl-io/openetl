@@ -4,6 +4,8 @@
 //! which changes to an established schema are taken.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+use crate::hold::HeldCell;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions, new_null_array};
@@ -68,6 +70,25 @@ pub(crate) struct Conformed {
     pub changed: bool,
     /// What changed incompatibly, and where its values go now.
     pub versioned: Vec<String>,
+    /// Cells held instead of failing their rows, by row of `batch`.
+    pub cells: Vec<HeldCell>,
+    /// Columns this batch started holding, with why.
+    pub held: Vec<(String, String)>,
+}
+
+/// When the evolver holds a column instead of stopping on its change, or
+/// sending one the destination can't take. Columns are named by their
+/// source names.
+#[derive(Debug, Default)]
+pub(crate) struct HoldRules {
+    pub unholdable: HashSet<String>,
+    /// Columns whose type the destination can't change.
+    pub fixed: HashSet<String>,
+    pub groups: Vec<Vec<String>>,
+    /// New columns the destination still takes; None for no limit.
+    pub columns_left: Option<usize>,
+    /// A value ignore_new can't coerce holds its cell.
+    pub cells: bool,
 }
 
 #[derive(Debug)]
@@ -80,6 +101,10 @@ pub(crate) struct Evolver {
     established: bool,
     /// For values coerced to an established date or timestamp.
     pub infinity: Infinity,
+    pub rules: Option<HoldRules>,
+    /// Columns held whole, by their names in the schema: their values pass
+    /// through, and their type follows them.
+    pub holding: HashSet<String>,
 }
 
 impl Evolver {
@@ -93,6 +118,8 @@ impl Evolver {
             versions,
             established: false,
             infinity: Infinity::default(),
+            rules: None,
+            holding: HashSet::new(),
         };
         for f in restored.map(|r| r.fields().iter()).into_iter().flatten() {
             e.add(f.as_ref().clone());
@@ -153,6 +180,32 @@ impl Evolver {
         Schema::new(self.fields.clone())
     }
 
+    /// Holds `name` and the columns grouped with it, if each can be held.
+    fn hold(&mut self, name: &str, why: String, held: &mut Vec<(String, String)>) -> bool {
+        let Some(rules) = &self.rules else {
+            return false;
+        };
+        let group = rules
+            .groups
+            .iter()
+            .find(|g| g.iter().any(|c| c == name))
+            .cloned()
+            .unwrap_or_else(|| vec![name.to_owned()]);
+        if group.iter().any(|c| rules.unholdable.contains(c)) {
+            return false;
+        }
+        for c in group {
+            if self.holding.insert(c.clone()) {
+                let why = match c == name {
+                    true => why.clone(),
+                    false => format!("held with {name:?}"),
+                };
+                held.push((c, why));
+            }
+        }
+        true
+    }
+
     fn drift(&self, what: String) -> Error {
         let policy = match self.policy {
             Policy::AllowAll => "allow_all",
@@ -163,6 +216,13 @@ impl Evolver {
         Error::Drift(format!("{what}, which schema policy {policy} doesn't take"))
     }
 
+    fn policy_reason(&self, what: &str) -> String {
+        match self.drift(what.to_owned()) {
+            Error::Drift(why) => why,
+            e => e.to_string(),
+        }
+    }
+
     /// Conforms a batch, whose columns have source names, to the stream's
     /// schema, taking the changes the policy allows.
     pub fn conform(&mut self, batch: &RecordBatch) -> Result<Conformed, Error> {
@@ -170,17 +230,35 @@ impl Evolver {
         let mut changed = false;
         let mut columns: HashMap<String, ArrayRef> = HashMap::new();
         let mut failed: HashMap<usize, String> = HashMap::new();
+        let mut cells = Vec::new();
+        let mut held = Vec::new();
         let mut versioned = Vec::new();
         let schema = batch.schema();
         for (f, col) in schema.fields().iter().zip(batch.columns()) {
             let name = self.current(f.name());
             let Some(&i) = self.index.get(&name) else {
+                let full = self
+                    .rules
+                    .as_ref()
+                    .is_some_and(|r| r.columns_left == Some(0));
                 match self.policy {
                     Policy::IgnoreNew if strict => continue,
                     Policy::Block if strict => {
-                        return Err(self.drift(format!("column {:?} is new", f.name())));
+                        let what = format!("column {:?} is new", f.name());
+                        if !self.hold(&name, self.policy_reason(&what), &mut held) {
+                            return Err(self.drift(what));
+                        }
+                    }
+                    _ if full => {
+                        let why = "the destination takes no more columns".to_owned();
+                        self.hold(&name, why, &mut held);
                     }
                     _ => {}
+                }
+                if !self.holding.contains(&name)
+                    && let Some(left) = self.rules.as_mut().and_then(|r| r.columns_left.as_mut())
+                {
+                    *left = left.saturating_sub(1);
                 }
                 self.add(f.as_ref().clone().with_name(&name).with_nullable(true));
                 columns.insert(name, col.clone());
@@ -197,27 +275,65 @@ impl Evolver {
                 continue;
             }
             let widening = widens(&cur, f);
-            match self.policy {
-                Policy::Block if strict => {
-                    return Err(self.drift(format!(
-                        "column {:?} changed from {} to {}",
-                        f.name(),
-                        cur.data_type(),
-                        f.data_type()
-                    )));
+            if self.holding.contains(&name) {
+                self.fields[i] = match widening {
+                    true => widened(&cur, f),
+                    false => f.as_ref().clone().with_name(&name).with_nullable(true),
+                };
+                columns.insert(name, col.clone());
+                changed = true;
+                continue;
+            }
+            let what = format!(
+                "column {:?} changed from {} to {}",
+                f.name(),
+                cur.data_type(),
+                f.data_type()
+            );
+            let stops = match self.policy {
+                Policy::Block => strict,
+                Policy::AllowColumns => strict && !widening,
+                _ => false,
+            };
+            let fixed = widening && self.rules.as_ref().is_some_and(|r| r.fixed.contains(&name));
+            if stops || fixed {
+                let why = match stops {
+                    true => self.policy_reason(&what),
+                    false => format!("{what}, which the destination can't change"),
+                };
+                if self.hold(&name, why, &mut held) {
+                    self.fields[i] = match widening {
+                        true => widened(&cur, f),
+                        false => f.as_ref().clone().with_name(&name).with_nullable(true),
+                    };
+                    columns.insert(name, col.clone());
+                    changed = true;
+                    continue;
                 }
+            }
+            match self.policy {
+                Policy::Block if strict => return Err(self.drift(what)),
                 Policy::AllowColumns if strict && !widening => {
-                    return Err(self.drift(format!(
-                        "column {:?} changed from {} to {}, which isn't a widening",
-                        f.name(),
-                        cur.data_type(),
-                        f.data_type()
-                    )));
+                    return Err(self.drift(format!("{what}, which isn't a widening")));
                 }
                 Policy::IgnoreNew if strict => {
                     let (c, rows) = cast_down(col, &cur, f.name(), self.infinity);
+                    let hold_cells = self
+                        .rules
+                        .as_ref()
+                        .is_some_and(|r| r.cells && !r.unholdable.contains(&name));
                     for (row, reason) in rows {
-                        failed.entry(row).or_insert(reason);
+                        match hold_cells {
+                            true => cells.push(HeldCell {
+                                row,
+                                column: name.clone(),
+                                reason,
+                                raw: coerce::cell_text(col, row).unwrap_or_default(),
+                            }),
+                            false => {
+                                failed.entry(row).or_insert(reason);
+                            }
+                        }
                     }
                     columns.insert(name, c);
                     continue;
@@ -228,6 +344,9 @@ impl Evolver {
                 self.fields[i] = widened(&cur, f);
                 columns.insert(name, col.clone());
             } else {
+                if let Some(left) = self.rules.as_mut().and_then(|r| r.columns_left.as_mut()) {
+                    *left = left.saturating_sub(1);
+                }
                 let k = self.versions.get(f.name()).map_or(2, |k| k + 1);
                 self.versions.insert(f.name().clone(), k);
                 let name = self.current(f.name());
@@ -258,6 +377,21 @@ impl Evolver {
         if !failed.is_empty() {
             let keep = BooleanArray::from_iter((0..n).map(|r| Some(!failed.contains_key(&r))));
             out = arrow_select::filter::filter_record_batch(&out, &keep)?;
+            let mut row_of = vec![None; n];
+            let mut k = 0;
+            for (r, slot) in row_of.iter_mut().enumerate() {
+                if !failed.contains_key(&r) {
+                    *slot = Some(k);
+                    k += 1;
+                }
+            }
+            cells.retain_mut(|c| match row_of[c.row] {
+                Some(r) => {
+                    c.row = r;
+                    true
+                }
+                None => false,
+            });
         }
         let mut failed: Failures = failed.into_iter().collect();
         failed.sort_by_key(|(r, _)| *r);
@@ -266,6 +400,8 @@ impl Evolver {
             failed,
             changed,
             versioned,
+            cells,
+            held,
         })
     }
 }
@@ -285,7 +421,7 @@ fn widened(cur: &Field, to: &Field) -> Field {
 }
 
 /// Casts a column to a type that widens it.
-fn cast_up(col: &ArrayRef, to: &Field) -> Result<ArrayRef, Error> {
+pub(crate) fn cast_up(col: &ArrayRef, to: &Field) -> Result<ArrayRef, Error> {
     if col.data_type() == to.data_type() {
         return Ok(col.clone());
     }

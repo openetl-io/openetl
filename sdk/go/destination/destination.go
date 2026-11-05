@@ -127,7 +127,44 @@ type Capabilities struct {
 	// Nil: append only.
 	WriteModes []WriteMode
 	Delivery   Delivery
+	// Zero: the destination takes no holds.
+	Holds Holds
 }
+
+// Holds is what a destination does with columns and cells the platform
+// holds back (ADR-0025). A held cell arrives as null, or as the pipeline's
+// held value, and HeldColumn lists its column in the row. A Patcher fills
+// it in later.
+type Holds struct {
+	// Patches a merge stream's rows by their key.
+	ByKey bool
+	// Patches an append stream's rows by their _openetl_id.
+	ByID bool
+	// A held cell of a merge stream's column whose field has HeldKey "last"
+	// in its metadata keeps the target's value.
+	Last bool
+	// A patch fills a cell only where the target still holds the version
+	// the patch comes from.
+	Guarded bool
+}
+
+// Takes reports whether the destination takes holds on a stream written
+// with m.
+func (h Holds) Takes(m WriteMode) bool {
+	return h.Guarded && (m == Merge && h.ByKey || m == Append && h.ByID)
+}
+
+const (
+	// HeldColumn lists a row's held columns, by destination name, as a list
+	// of strings. In a patch, the columns the row fills.
+	HeldColumn = "_openetl_held"
+	// HeldKey is field metadata: "last" on a column whose held cells keep
+	// the target's value.
+	HeldKey = "openetl.held"
+	// FillsKey is field metadata on a patch's column that fills another
+	// held column than its own: col__v2 fills col.
+	FillsKey = "openetl.fills"
+)
 
 func (c Capabilities) SupportsScope(s Scope) bool {
 	return slices.Contains(c.Scopes, s)
@@ -270,10 +307,55 @@ type Checker interface {
 // schema: it creates tables, adds columns and widens types, and never drops
 // or narrows them. It is idempotent, and isn't fenced.
 //
-// It runs before Recover with the restored epoch's schemas, and before
-// Commit for each epoch whose schemas changed.
+// It runs before Recover with the restored epoch's schemas, and before each
+// epoch whose schemas changed is recorded.
+//
+// A destination that takes holds answers with the columns it didn't add or
+// change, having applied the rest, instead of failing, and with what each
+// stream's table can't take as it stands. The platform holds those columns.
+// Others return the zero SchemaApplied.
 type SchemaApplier interface {
-	ApplySchema(ctx context.Context, streams []StreamSchema) error
+	ApplySchema(ctx context.Context, streams []StreamSchema) (SchemaApplied, error)
+}
+
+type SchemaApplied struct {
+	Refused []RefusedColumn
+	// By stream.
+	Limits map[string]TableLimits
+}
+
+type RefusedColumn struct {
+	Stream string
+	// Its destination name.
+	Column string
+	Reason string
+}
+
+// TableLimits name columns by their destination names.
+type TableLimits struct {
+	// Columns that can't take a null, which a held cell is unless the
+	// pipeline gives a held value.
+	NotNull []string
+	// Columns that can't be held, such as partition columns.
+	Unholdable []string
+	// Columns whose type can't change, such as those a view depends on.
+	Fixed []string
+	// The columns the table has, as its limit counts them, and that limit;
+	// 0 for none.
+	Columns, MaxColumns int
+}
+
+// Patcher is implemented by the writers of destinations that take holds.
+// Patch adds a batch of patches to epoch e: each row fills the cells its
+// HeldColumn lists, in the target row its key (Merge) or its _openetl_id
+// (Append) names, where the target still holds the version the row's
+// _openetl_id names. Its other columns are the stream's key, _openetl_id,
+// _openetl_seq, _openetl_synced_at and the columns it fills, each filling
+// the held column of its name or the one its FillsKey metadata names. It is
+// called from the goroutine that calls Write, and the batch is released
+// after it returns.
+type Patcher interface {
+	Patch(ctx context.Context, e Epoch, stream string, batch arrow.RecordBatch) error
 }
 
 // ErrFenced is returned when a newer generation owns the pipeline.

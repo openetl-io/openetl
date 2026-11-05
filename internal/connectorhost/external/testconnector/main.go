@@ -36,6 +36,7 @@ var filesConnector = sdk.Connector{
 	Capabilities: destination.Capabilities{
 		Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopePipeline}, MaxIdentifierLength: 63,
 		WriteModes: []destination.WriteMode{destination.Append, destination.Overwrite},
+		Holds:      destination.Holds{ByID: true, Guarded: true},
 	},
 }
 
@@ -342,18 +343,31 @@ func (w *filesWriter) Recover(_ context.Context, gen uint64, e destination.Epoch
 	return destination.Redone, w.apply(string(s))
 }
 
-func (w *filesWriter) ApplySchema(_ context.Context, streams []destination.StreamSchema) error {
+// ApplySchema refuses columns named "refused", and limits each table to
+// 1,600 columns.
+func (w *filesWriter) ApplySchema(_ context.Context, streams []destination.StreamSchema) (destination.SchemaApplied, error) {
 	fields := map[string][]string{}
+	applied := destination.SchemaApplied{Limits: map[string]destination.TableLimits{}}
 	for _, s := range streams {
 		for _, f := range s.Schema.Fields() {
+			if f.Name == "refused" {
+				applied.Refused = append(applied.Refused, destination.RefusedColumn{Stream: s.Name, Column: f.Name, Reason: "refused by name"})
+				continue
+			}
 			fields[s.Name] = append(fields[s.Name], f.Name+":"+f.Type.String())
 		}
+		applied.Limits[s.Name] = destination.TableLimits{Columns: len(fields[s.Name]), MaxColumns: 1600}
 	}
 	b, err := json.Marshal(fields)
 	if err != nil {
-		return err
+		return destination.SchemaApplied{}, err
 	}
-	return os.WriteFile(w.path("schemas.json"), b, 0o600)
+	return applied, os.WriteFile(w.path("schemas.json"), b, 0o600)
+}
+
+// Patch counts each stream's patched rows.
+func (w *filesWriter) Patch(_ context.Context, _ destination.Epoch, stream string, batch arrow.RecordBatch) error {
+	return w.logRead(fmt.Sprintf("patch %s %d", stream, batch.NumRows()))
 }
 
 func (w *filesWriter) Close(context.Context) error { return nil }

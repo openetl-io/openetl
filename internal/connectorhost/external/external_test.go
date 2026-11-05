@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -366,7 +367,7 @@ func rows(t *testing.T, dir string) int64 {
 func TestDestinationCommitProtocol(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
-	_, w := open(t, dir, 1)
+	d, w := open(t, dir, 1)
 	if r, err := w.Recover(ctx, 1, destination.Epoch{}, nil); err != nil || r != destination.Applied {
 		t.Fatalf("recover = %v, %v", r, err)
 	}
@@ -376,11 +377,23 @@ func TestDestinationCommitProtocol(t *testing.T) {
 	}
 	b := batch(5)
 	defer b.Release()
-	if err := sa.ApplySchema(ctx, []destination.StreamSchema{{Name: "s", Schema: b.Schema()}}); err != nil {
+	withRefused := arrow.NewSchema(append(b.Schema().Fields(), arrow.Field{Name: "refused", Type: arrow.BinaryTypes.String, Nullable: true}), nil)
+	applied, err := sa.ApplySchema(ctx, []destination.StreamSchema{{Name: "s", Schema: withRefused}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "schemas.json")); string(got) != `{"s":["n:int64"]}` {
 		t.Fatalf("schemas = %s", got)
+	}
+	want := destination.SchemaApplied{
+		Refused: []destination.RefusedColumn{{Stream: "s", Column: "refused", Reason: "refused by name"}},
+		Limits:  map[string]destination.TableLimits{"s": {Columns: 1, MaxColumns: 1600}},
+	}
+	if !reflect.DeepEqual(applied, want) {
+		t.Fatalf("applied = %+v, want %+v", applied, want)
+	}
+	if h := d.Capabilities().Holds; h != (destination.Holds{ByID: true, Guarded: true}) {
+		t.Fatalf("holds = %+v", h)
 	}
 
 	rt, ok := w.(destination.ReadTracker)
@@ -405,6 +418,9 @@ func TestDestinationCommitProtocol(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(dir, "reads.log")); string(got) != "start s 42\nend s 1-1\n" {
 		t.Fatalf("reads.log = %q", got)
 	}
+	if err := w.(destination.Patcher).Patch(ctx, destination.Epoch{Generation: 1, N: 2}, "s", b); err != nil {
+		t.Fatal(err)
+	}
 	// Epoch 2's batches arrive while epoch 1 commits.
 	e2 := destination.Epoch{Generation: 1, N: 2}
 	var wg sync.WaitGroup
@@ -422,6 +438,9 @@ func TestDestinationCommitProtocol(t *testing.T) {
 	st2, err := w.PreCommit(ctx, e2)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "reads.log")); !strings.HasSuffix(string(got), "patch s 5\n") {
+		t.Fatalf("reads.log = %q, without the patch", got)
 	}
 	if got := rows(t, dir); got != 5 {
 		t.Fatalf("rows after epoch 1 = %d", got)

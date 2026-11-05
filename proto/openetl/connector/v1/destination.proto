@@ -39,6 +39,25 @@ message DestinationCapabilities {
   // Unset: no maximum.
   google.protobuf.Duration max_commit_interval = 9;
   Delivery delivery = 10;
+  // Unset: the destination takes no holds.
+  HoldCapabilities holds = 11;
+}
+
+// HoldCapabilities is what a destination does with columns and cells the
+// platform holds back (ADR-0025). A held cell arrives as null, or as the
+// pipeline's held value, and the row's _openetl_held lists its column. A
+// patch fills it in later.
+message HoldCapabilities {
+  // Patches a merge stream's rows by their key.
+  bool by_key = 1;
+  // Patches an append stream's rows by their _openetl_id.
+  bool by_id = 2;
+  // A held cell of a merge stream's column whose field carries the
+  // openetl.held metadata "last" keeps the target's value.
+  bool last = 3;
+  // A patch fills a cell only where the target still holds the version the
+  // patch comes from, so patches can land in any order.
+  bool guarded = 4;
 }
 
 // Delivery is how a destination receives each epoch's rows.
@@ -161,6 +180,13 @@ message WriteBatch {
   string stream = 2;
   // An Arrow IPC stream: the schema, any dictionaries, one record batch.
   bytes arrow = 3;
+  // The rows are patches, for destinations that take holds: each fills the
+  // cells its _openetl_held lists, in the target row its key (merge) or its
+  // _openetl_id (append) names. Its other columns are the stream's key,
+  // _openetl_id, _openetl_seq, _openetl_synced_at and the columns it fills.
+  // A column fills the held column of its name, or the one its field's
+  // openetl.fills metadata names, as col__v2 fills col's.
+  bool patch = 4;
 }
 
 // WriteStartReads comes after recover and before the first batch, with when
@@ -187,6 +213,8 @@ message WriteStagedFiles {
   Epoch epoch = 1;
   string stream = 2;
   repeated StagedFile files = 3;
+  // The files hold patches, as WriteBatch.patch's.
+  bool patch = 4;
 }
 
 // StagedFile is one Parquet file of a staged epoch, read through host
@@ -220,7 +248,10 @@ message WriteApplySchema {
 
 message StreamSchema {
   string name = 1;
-  // An Arrow IPC stream with no batches, metadata columns included.
+  // An Arrow IPC stream with no batches, metadata columns included. A
+  // stream that holds anything has _openetl_held, a list of strings: each
+  // row's held columns. A held column stays at the type the destination
+  // last took, and one it never took is left out.
   bytes arrow_schema = 2;
 }
 
@@ -243,6 +274,35 @@ message WriteSchemaApplied {
   // Set if applying failed. The stream stays open, and the schemas can be
   // sent again.
   Error error = 1;
+  // From destinations that take holds: columns it didn't add or change,
+  // having applied the rest. The platform holds them.
+  repeated RefusedColumn refused = 2;
+  // From destinations that take holds: by stream, what its table can't
+  // take as it stands, so the platform holds such a change instead of
+  // sending it.
+  map<string, TableLimits> limits = 3;
+}
+
+message RefusedColumn {
+  string stream = 1;
+  // Its destination name.
+  string column = 2;
+  string reason = 3;
+}
+
+// TableLimits name columns by their destination names.
+message TableLimits {
+  // Columns that can't take a null, which a held cell is unless the
+  // pipeline gives a held value.
+  repeated string not_null = 1;
+  // Columns that can't be held, such as partition columns.
+  repeated string unholdable = 2;
+  // Columns whose type can't change, such as those a view depends on.
+  repeated string fixed = 3;
+  // The columns the table has, as its limit counts them, and that limit;
+  // 0 for none.
+  uint32 columns = 4;
+  uint32 max_columns = 5;
 }
 
 message WriteRecovered {

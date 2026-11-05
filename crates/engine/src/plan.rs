@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use arrow_schema::SchemaRef;
+use openetl_normalize::hold::{ColumnHold, HoldConfig, Limits, Show};
 use openetl_normalize::naming::{Namer, Naming, RESERVED_TABLES, TABLE_KEY};
 use openetl_normalize::{Identity, Infinity, Policy, TypeOptions};
-use openetl_proto::engine::v1::{EdgeDirection, SchemaPolicy, StartJobRequest, sink_plan};
+use openetl_proto::engine::v1::{
+    EdgeDirection, Held, HeldMode, SchemaPolicy, StartJobRequest, StreamPlan, sink_plan,
+};
 
 use crate::error::JobError;
 use crate::ipc;
@@ -35,6 +38,103 @@ pub struct Plan {
     pub passthrough: bool,
     pub inbound: Vec<EdgePlan>,
     pub sink: Sink,
+    /// Each stream's holds (ADR-0025); None where it holds nothing.
+    pub holds: Vec<Option<HoldConfig>>,
+    /// Each stream's replay of released holds.
+    pub replays: Vec<Option<ReplayPlan>>,
+    /// Where held values go; set if any stream holds.
+    pub held_url: Option<String>,
+}
+
+/// Held values to patch in, a chunk after each of the stream's barriers.
+#[derive(Debug, Clone, Default)]
+pub struct ReplayPlan {
+    /// Below the held URL.
+    pub files: Vec<String>,
+    /// Where to start: a file's index in files, and its row.
+    pub file: usize,
+    pub row: u64,
+    pub still_held: u64,
+    /// Destination names.
+    pub columns: HashSet<String>,
+    pub chunk_rows: u64,
+}
+
+/// Patch rows per chunk, by default.
+const CHUNK_ROWS: u64 = 50_000;
+
+fn show(h: Option<&Held>) -> Show {
+    let Some(h) = h else { return Show::Null };
+    let value = Some(h.value.clone()).filter(|v| !v.is_empty());
+    match h.mode() {
+        HeldMode::Unspecified | HeldMode::Null => Show::Null,
+        HeldMode::Value => value.map_or(Show::Null, Show::Value),
+        HeldMode::Last => Show::Last(value),
+    }
+}
+
+fn holds(s: &StreamPlan) -> Result<(Option<HoldConfig>, Option<ReplayPlan>), JobError> {
+    let Some(h) = &s.holds else {
+        return Ok((None, None));
+    };
+    let bad = |what: String| JobError::config(format!("stream {}: holds: {what}", s.name));
+    if s.primary_key.is_empty() {
+        return Err(bad("only a keyed stream holds columns".into()));
+    }
+    let mut holding = Vec::with_capacity(h.holding.len());
+    for c in &h.holding {
+        let delivered = match c.delivered.is_empty() {
+            true => None,
+            false => {
+                let schema = ipc::decode_schema(&c.delivered)
+                    .map_err(|e| bad(format!("column {}: {e}", c.column)))?;
+                let [f] = schema.fields().iter().collect::<Vec<_>>()[..] else {
+                    return Err(bad(format!("column {}: not one field", c.column)));
+                };
+                Some(f.as_ref().clone())
+            }
+        };
+        holding.push(ColumnHold {
+            column: c.column.clone(),
+            delivered,
+            reason: c.reason.clone(),
+        });
+    }
+    let limits = h.limits.as_ref().map_or_else(Limits::default, |l| Limits {
+        not_null: l.not_null.iter().cloned().collect(),
+        unholdable: l.unholdable.iter().cloned().collect(),
+        fixed: l.fixed.iter().cloned().collect(),
+        columns: l.columns as usize,
+        max_columns: l.max_columns as usize,
+    });
+    let config = HoldConfig {
+        cells: h.cells,
+        show: show(h.held.as_ref()),
+        columns: h
+            .columns
+            .iter()
+            .map(|(c, held)| (c.clone(), show(Some(held))))
+            .collect(),
+        groups: h.groups.iter().map(|g| g.columns.clone()).collect(),
+        holding,
+        discarded: h.discarded.iter().cloned().collect(),
+        limits,
+    };
+    let replay = h.replay.as_ref().map(|r| {
+        let from = r.from.unwrap_or_default();
+        ReplayPlan {
+            files: r.files.clone(),
+            file: from.file as usize,
+            row: from.row,
+            still_held: from.still_held,
+            columns: r.columns.iter().cloned().collect(),
+            chunk_rows: match r.chunk_rows {
+                0 => CHUNK_ROWS,
+                n => n,
+            },
+        }
+    });
+    Ok((Some(config), replay))
 }
 
 #[derive(Debug)]
@@ -255,6 +355,25 @@ impl Plan {
             sink_plan::Sink::Discard(_) => Sink::Discard,
         };
 
+        let mut holds_ = Vec::with_capacity(req.streams.len());
+        let mut replays = Vec::with_capacity(req.streams.len());
+        for st in &req.streams {
+            let (h, r) = holds(st)?;
+            holds_.push(h);
+            replays.push(r);
+        }
+        let held_url = Some(req.held_url.clone()).filter(|u| !u.is_empty());
+        if holds_.iter().any(Option::is_some) {
+            if held_url.is_none() {
+                return Err(JobError::config(
+                    "streams hold columns, and the job has no held_url",
+                ));
+            }
+            if !matches!(sink, Sink::Runner { .. }) {
+                return Err(JobError::config("only a runner sink takes holds"));
+            }
+        }
+
         Ok(Plan {
             generation: req.generation,
             first_epoch: req.first_epoch,
@@ -272,6 +391,9 @@ impl Plan {
             passthrough: req.passthrough,
             inbound,
             sink,
+            holds: holds_,
+            replays,
+            held_url,
         })
     }
 }
@@ -323,6 +445,7 @@ pub(crate) mod tests {
             schema_policy: 0,
             quarantine_infinity: false,
             passthrough: false,
+            held_url: String::new(),
         }
     }
 
@@ -333,6 +456,51 @@ pub(crate) mod tests {
             sink: Some(sink_plan::Sink::Parquet(ParquetSink { url: url.into() })),
         });
         req
+    }
+
+    #[test]
+    fn holds_need_a_key_a_held_url_and_a_runner_sink() {
+        let holding = |req: &mut StartJobRequest| {
+            req.streams[0].primary_key = vec!["id".into()];
+            req.streams[0].holds = Some(openetl_proto::engine::v1::HoldPlan {
+                cells: true,
+                ..Default::default()
+            });
+            req.held_url = "file:///tmp/held".into();
+        };
+        let mut req = request(&["a", "b"]);
+        holding(&mut req);
+        let p = Plan::from_request(req).unwrap();
+        assert!(p.holds[0].as_ref().is_some_and(|h| h.cells) && p.holds[1].is_none());
+
+        let mut req = request(&["a"]);
+        holding(&mut req);
+        req.held_url.clear();
+        assert!(
+            Plan::from_request(req)
+                .unwrap_err()
+                .message
+                .contains("held_url")
+        );
+
+        let mut req = request(&["a"]);
+        holding(&mut req);
+        req.streams[0].primary_key.clear();
+        assert!(
+            Plan::from_request(req)
+                .unwrap_err()
+                .message
+                .contains("keyed")
+        );
+
+        let mut req = parquet_request(&["a"], "file:///tmp/p");
+        holding(&mut req);
+        assert!(
+            Plan::from_request(req)
+                .unwrap_err()
+                .message
+                .contains("runner sink")
+        );
     }
 
     #[test]

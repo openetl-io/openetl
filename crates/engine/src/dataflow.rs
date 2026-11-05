@@ -16,8 +16,8 @@ use openetl_formats::ParquetStaging;
 use openetl_normalize::{Error as NormalizeError, Shaper};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
-    Barrier, EpochReady, EventsResponse, FrameKind, Metrics, QuarantineFile, Rows, SchemaChange,
-    StagedStream, StreamMetrics, events_response,
+    Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, Metrics, QuarantineFile,
+    Rows, SchemaChange, StagedStream, StreamHolds, StreamMetrics, events_response,
 };
 use prost::Message;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -31,6 +31,7 @@ use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
 use crate::plan::{Plan, Sink};
+use crate::replay::Replayer;
 use crate::staging::Staging;
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
@@ -47,6 +48,7 @@ struct Counters {
     rows_out: AtomicU64,
     bytes_out: AtomicU64,
     rows_quarantined: AtomicU64,
+    cells_held: AtomicU64,
 }
 
 /// What an inbound edge hands to the outbound one. Streams are indexes into
@@ -55,10 +57,23 @@ enum Out {
     Batch(usize, RecordBatch),
     /// An encoded SchemaChange message.
     SchemaChange(usize, Vec<u8>),
-    /// With the stream's schema at the barrier, and what it quarantined in
+    /// Held values of the stream's current epoch.
+    Held(usize, RecordBatch),
+    Patch(usize, RecordBatch),
+    /// With the stream's state at the barrier, and what it quarantined in
     /// the epoch.
-    Barrier(usize, Epoch, Option<SchemaRef>, Option<QuarantineFile>),
-    End(usize, Option<SchemaRef>),
+    Barrier(usize, Epoch, At, Option<QuarantineFile>),
+    End(usize, At),
+}
+
+/// A stream's state at a barrier or its end.
+#[derive(Clone, Default)]
+struct At {
+    schema: Option<SchemaRef>,
+    /// Where columns are held whole.
+    delivered: Option<SchemaRef>,
+    /// Streams that hold: without files, which the sink's writer seals.
+    holds: Option<StreamHolds>,
 }
 
 type Writer = Pin<Box<dyn Future<Output = Result<bool, JobError>> + Send>>;
@@ -177,12 +192,27 @@ where
         .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?
         .with_soft_deletes(plan.soft_deletes[s])
         .with_changelog(plan.changelog[s]);
+        let sh = match &plan.holds[s] {
+            Some(h) => sh
+                .with_holds(h.clone())
+                .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?,
+            None => sh,
+        };
         shape.push(sh);
+    }
+    let mut replays = Vec::with_capacity(streams.len());
+    for &s in streams {
+        replays.push(match (&plan.replays[s], &plan.held_url) {
+            (Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
+            _ => None,
+        });
     }
     let mut next_epoch = vec![plan.first_epoch; streams.len()];
     let mut ended = vec![false; streams.len()];
     // Each stream's quarantined lines since its last barrier, and how many.
-    let mut held: Vec<(Vec<u8>, u64)> = vec![(Vec::new(), 0); streams.len()];
+    let mut quarantined: Vec<(Vec<u8>, u64)> = vec![(Vec::new(), 0); streams.len()];
+    // Each stream's held cells since its last barrier, by column.
+    let mut cells: Vec<BTreeMap<String, CellHolds>> = vec![BTreeMap::new(); streams.len()];
     let protocol = |msg: String| JobError::internal(format!("edge {id}: {msg}"));
 
     loop {
@@ -227,17 +257,18 @@ where
                     .in_scope(|| shape[local].rows(rows.rows.iter().map(Vec::as_slice)))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| String::from_utf8_lossy(&rows.rows[row]).into_owned();
-                hold(&plan, stream, &n.rejected, record, &mut held[local], c)?;
-                for v in &n.versioned {
-                    tracing::warn!(stream = %plan.streams[stream], "{v}");
+                hold(
+                    &plan,
+                    stream,
+                    &n.rejected,
+                    record,
+                    &mut quarantined[local],
+                    c,
+                )?;
+                match shaped(&tx, stream, n, &plan, &mut cells[local], c).await? {
+                    Some(out) => out,
+                    None => continue,
                 }
-                if n.schema_changed {
-                    send(&tx, schema_change(stream, &n.batch)?).await?;
-                }
-                if n.batch.num_rows() == 0 {
-                    continue;
-                }
-                Out::Batch(stream, n.batch)
             }
             FrameKind::Batch => {
                 let batch = ipc::decode_batch(f.payload).map_err(|e| protocol(e.to_string()))?;
@@ -251,17 +282,18 @@ where
                     .in_scope(|| shape[local].batch(&batch))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| openetl_normalize::render_row(&batch, row);
-                hold(&plan, stream, &n.rejected, record, &mut held[local], c)?;
-                for v in &n.versioned {
-                    tracing::warn!(stream = %plan.streams[stream], "{v}");
+                hold(
+                    &plan,
+                    stream,
+                    &n.rejected,
+                    record,
+                    &mut quarantined[local],
+                    c,
+                )?;
+                match shaped(&tx, stream, n, &plan, &mut cells[local], c).await? {
+                    Some(out) => out,
+                    None => continue,
                 }
-                if n.schema_changed {
-                    send(&tx, schema_change(stream, &n.batch)?).await?;
-                }
-                if n.batch.num_rows() == 0 {
-                    continue;
-                }
-                Out::Batch(stream, n.batch)
             }
             FrameKind::Barrier => {
                 let epoch = Barrier::decode(f.payload.as_slice())
@@ -279,8 +311,8 @@ where
                     )));
                 }
                 next_epoch[local] += 1;
-                let (lines, rows) = std::mem::take(&mut held[local]);
-                let quarantined = match &plan.quarantine {
+                let (lines, rows) = std::mem::take(&mut quarantined[local]);
+                let q = match &plan.quarantine {
                     Some(q) if rows > 0 => Some(QuarantineFile {
                         stream: plan.streams[stream].clone(),
                         url: q
@@ -291,14 +323,22 @@ where
                     _ => None,
                 };
                 shape[local].seal();
-                Out::Barrier(stream, epoch, shape[local].schema(), quarantined)
+                let mut at = at(&plan, stream, &shape[local], replays[local].as_ref())?;
+                if let Some(h) = &mut at.holds {
+                    h.cells = std::mem::take(&mut cells[local]).into_iter().collect();
+                }
+                send(&tx, Out::Barrier(stream, epoch, at, q)).await?;
+                if let Some(r) = &mut replays[local] {
+                    replay(&tx, stream, r, &shape[local]).await?;
+                }
+                continue;
             }
             FrameKind::SchemaChange => Out::SchemaChange(stream, f.payload),
             FrameKind::EndOfStream => {
                 ended[local] = true;
-                Out::End(stream, shape[local].schema())
+                Out::End(stream, at(&plan, stream, &shape[local], None)?)
             }
-            k @ (FrameKind::Hello | FrameKind::Unspecified) => {
+            k @ (FrameKind::Hello | FrameKind::Unspecified | FrameKind::Patch) => {
                 return Err(protocol(format!("unexpected {} frame", k.as_str_name())));
             }
         };
@@ -341,6 +381,92 @@ fn hold(
     Ok(())
 }
 
+/// Sends a shaped batch's schema change and held values; returns the batch
+/// to send, if it has rows.
+async fn shaped(
+    tx: &mpsc::Sender<Out>,
+    stream: usize,
+    n: openetl_normalize::Shaped,
+    plan: &Plan,
+    cells: &mut BTreeMap<String, CellHolds>,
+    c: &Counters,
+) -> Result<Option<Out>, JobError> {
+    for v in &n.versioned {
+        tracing::warn!(stream = %plan.streams[stream], "{v}");
+    }
+    if n.schema_changed {
+        send(tx, schema_change(stream, &n.batch)?).await?;
+    }
+    for (column, reason) in n.cells {
+        let e = cells
+            .entry(column)
+            .or_insert_with(|| CellHolds { cells: 0, reason });
+        e.cells += 1;
+        c.cells_held.fetch_add(1, Ordering::Relaxed);
+    }
+    for b in n.held {
+        send(tx, Out::Held(stream, b)).await?;
+    }
+    Ok((n.batch.num_rows() > 0).then_some(Out::Batch(stream, n.batch)))
+}
+
+/// A stream's state, with its holds if it holds.
+fn at(
+    plan: &Plan,
+    stream: usize,
+    shaper: &Shaper,
+    replay: Option<&Replayer>,
+) -> Result<At, JobError> {
+    let mut at = At {
+        schema: shaper.schema(),
+        delivered: shaper.delivered(),
+        holds: None,
+    };
+    if plan.holds[stream].is_some() {
+        let mut holding = Vec::new();
+        for h in shaper.holding() {
+            let delivered = match &h.delivered {
+                Some(f) => {
+                    ipc::encode_schema(&Arc::new(arrow_schema::Schema::new(vec![f.clone()])))
+                        .map_err(|e| JobError::internal(e.to_string()))?
+                }
+                None => Vec::new(),
+            };
+            holding.push(ColumnHold {
+                column: h.column,
+                delivered,
+                reason: h.reason,
+            });
+        }
+        at.holds = Some(StreamHolds {
+            holding,
+            cells: HashMap::new(),
+            files: Vec::new(),
+            replayed: replay.map(Replayer::progress),
+        });
+    }
+    Ok(at)
+}
+
+/// Sends the replay's next chunk of patches, which land in the next epoch.
+async fn replay(
+    tx: &mpsc::Sender<Out>,
+    stream: usize,
+    r: &mut Replayer,
+    shaper: &Shaper,
+) -> Result<(), JobError> {
+    for b in r.chunk().await? {
+        let (patch, still) = shaper
+            .patch(&b, r.columns())
+            .map_err(|e| JobError::internal(format!("patches: {e}")))?;
+        r.still_held(still);
+        if let Some(p) = patch {
+            send(tx, Out::Patch(stream, p)).await?;
+        }
+    }
+    Ok(())
+}
+
 fn schema_change(stream: usize, batch: &RecordBatch) -> Result<Out, JobError> {
     let encoded =
         ipc::encode_schema(&batch.schema()).map_err(|e| JobError::internal(e.to_string()))?;
@@ -380,9 +506,9 @@ struct Alignment {
     ended: Vec<bool>,
     ready: u64,
     highest: u64,
-    /// Schemas at barriers whose epoch isn't ready yet.
-    at_barrier: Vec<VecDeque<(u64, Option<SchemaRef>)>>,
-    at_end: Vec<Option<SchemaRef>>,
+    /// States at barriers whose epoch isn't ready yet.
+    at_barrier: Vec<VecDeque<(u64, At)>>,
+    at_end: Vec<At>,
     quarantined: BTreeMap<u64, Vec<QuarantineFile>>,
     /// The job's span, and the span of the next epoch to become ready,
     /// which opened when the one before it was ready.
@@ -401,43 +527,35 @@ impl Alignment {
             ready: first_epoch - 1,
             highest: first_epoch - 1,
             at_barrier: vec![VecDeque::new(); streams],
-            at_end: vec![None; streams],
+            at_end: vec![At::default(); streams],
             quarantined: BTreeMap::new(),
         }
     }
 
-    fn cross(
-        &mut self,
-        stream: usize,
-        n: u64,
-        schema: Option<SchemaRef>,
-        quarantined: Option<QuarantineFile>,
-    ) {
+    fn cross(&mut self, stream: usize, n: u64, at: At, quarantined: Option<QuarantineFile>) {
         self.crossed[stream] = n;
         self.highest = self.highest.max(n);
-        self.at_barrier[stream].push_back((n, schema));
+        self.at_barrier[stream].push_back((n, at));
         if let Some(q) = quarantined {
             self.quarantined.entry(n).or_default().push(q);
         }
     }
 
-    fn end(&mut self, stream: usize, schema: Option<SchemaRef>) {
+    fn end(&mut self, stream: usize, at: At) {
         self.ended[stream] = true;
-        self.at_end[stream] = schema;
+        self.at_end[stream] = at;
     }
 
-    /// Each stream's schema in ready epoch n. Call for each ready epoch, in
+    /// Each stream's state in ready epoch n. Call for each ready epoch, in
     /// order.
-    fn schemas(&mut self, n: u64) -> Vec<(usize, SchemaRef)> {
+    fn states(&mut self, n: u64) -> Vec<(usize, At)> {
         let mut out = Vec::new();
         for (s, queue) in self.at_barrier.iter_mut().enumerate() {
-            let mut schema = None;
+            let mut at = None;
             while queue.front().is_some_and(|(m, _)| *m <= n) {
-                schema = queue.pop_front().map(|(_, sc)| sc);
+                at = queue.pop_front().map(|(_, a)| a);
             }
-            if let Some(sc) = schema.unwrap_or_else(|| self.at_end[s].clone()) {
-                out.push((s, sc));
-            }
+            out.push((s, at.unwrap_or_else(|| self.at_end[s].clone())));
         }
         out
     }
@@ -466,17 +584,32 @@ fn epoch_ready(
     n: u64,
     staged: Vec<u8>,
     files: Vec<StagedStream>,
+    held: Vec<StagedStream>,
 ) -> Result<EventsResponse, JobError> {
     align.epoch = if align.done() && n >= align.highest {
         Span::none()
     } else {
         info_span!(parent: &align.job, "epoch", openetl.epoch = n + 1)
     };
+    let encode = |schema: &SchemaRef| {
+        ipc::encode_schema(schema).map_err(|e| JobError::internal(format!("encode a schema: {e}")))
+    };
+    let mut held: HashMap<String, Vec<_>> = held.into_iter().map(|s| (s.stream, s.files)).collect();
     let mut schemas = HashMap::new();
-    for (s, schema) in align.schemas(n) {
-        let encoded = ipc::encode_schema(&schema)
-            .map_err(|e| JobError::internal(format!("encode a schema: {e}")))?;
-        schemas.insert(plan.streams[s].clone(), encoded);
+    let mut delivered = HashMap::new();
+    let mut holds = HashMap::new();
+    for (s, at) in align.states(n) {
+        let name = &plan.streams[s];
+        if let Some(sc) = &at.schema {
+            schemas.insert(name.clone(), encode(sc)?);
+        }
+        if let Some(d) = &at.delivered {
+            delivered.insert(name.clone(), encode(d)?);
+        }
+        if let Some(mut h) = at.holds {
+            h.files = held.remove(name).unwrap_or_default();
+            holds.insert(name.clone(), h);
+        }
     }
     Ok(EventsResponse {
         event: Some(events_response::Event::EpochReady(EpochReady {
@@ -489,6 +622,8 @@ fn epoch_ready(
             schemas,
             quarantine: align.quarantined.remove(&n).unwrap_or_default(),
             files,
+            holds,
+            delivered,
         })),
     })
 }
@@ -511,6 +646,16 @@ where
     let gone = |e: std::io::Error| JobError::runner_gone(format!("edge {id}: {e}"));
     let mut w = BufWriter::with_capacity(1 << 16, w);
     let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
+    let mut held = match &plan.held_url {
+        Some(url) => Some(Staging::open(
+            url,
+            "",
+            plan.generation,
+            plan.first_epoch,
+            &plan.streams,
+        )?),
+        None => None,
+    };
 
     while !align.done() {
         let item = match rx.try_recv() {
@@ -538,16 +683,37 @@ where
                 (FrameKind::Batch, s, payload)
             }
             Out::SchemaChange(s, payload) => (FrameKind::SchemaChange, s, payload),
-            Out::Barrier(s, epoch, schema, quarantined) => {
-                align.cross(s, epoch.n, schema, quarantined);
+            Out::Held(s, batch) => {
+                let Some(h) = &mut held else {
+                    return Err(JobError::internal("held values without a held URL"));
+                };
+                h.write(s, &batch).await?;
+                continue;
+            }
+            Out::Patch(s, batch) => {
+                let payload =
+                    ipc::encode_batch(&batch).map_err(|e| JobError::internal(e.to_string()))?;
+                counters[s]
+                    .bytes_out
+                    .fetch_add(payload.len() as u64, Ordering::Relaxed);
+                (FrameKind::Patch, s, payload)
+            }
+            Out::Barrier(s, epoch, at, quarantined) => {
+                if let Some(h) = &mut held {
+                    h.seal(s).await?;
+                }
+                align.cross(s, epoch.n, at, quarantined);
                 (
                     FrameKind::Barrier,
                     s,
                     Barrier { epoch: Some(epoch) }.encode_to_vec(),
                 )
             }
-            Out::End(s, schema) => {
-                align.end(s, schema);
+            Out::End(s, at) => {
+                if let Some(h) = &mut held {
+                    h.end(s).await?;
+                }
+                align.end(s, at);
                 (FrameKind::EndOfStream, s, Vec::new())
             }
         };
@@ -559,8 +725,9 @@ where
         if !ready.is_empty() {
             w.flush().await.map_err(gone)?;
             for n in ready {
+                let held = held.as_mut().map(|h| h.take(n)).unwrap_or_default();
                 // The runner records every EpochReady, so this waits.
-                let ev = epoch_ready(&plan, &mut align, n, Vec::new(), Vec::new())?;
+                let ev = epoch_ready(&plan, &mut align, n, Vec::new(), Vec::new(), held)?;
                 let _ = events.send(Ok(ev)).await;
             }
             let _ = events.try_send(Ok(metrics(&plan, &counters)));
@@ -605,14 +772,15 @@ fn write_parquet(
             }
             // Each batch carries its schema.
             Out::SchemaChange(..) => {}
-            Out::Barrier(s, epoch, schema, quarantined) => {
+            Out::Held(..) | Out::Patch(..) => return Err(no_holds()),
+            Out::Barrier(s, epoch, at, quarantined) => {
                 let bytes = staging.seal(s).map_err(sink_error)?;
                 counters[s].bytes_out.fetch_add(bytes, Ordering::Relaxed);
-                align.cross(s, epoch.n, schema, quarantined);
+                align.cross(s, epoch.n, at, quarantined);
             }
-            Out::End(s, schema) => {
+            Out::End(s, at) => {
                 staging.end(s).map_err(sink_error)?;
-                align.end(s, schema);
+                align.end(s, at);
             }
         }
         let ready = align.advance();
@@ -622,7 +790,7 @@ fn write_parquet(
         for n in ready {
             let staged = serde_json::to_vec(&staging.take(n))
                 .map_err(|e| JobError::internal(format!("encode the staged descriptor: {e}")))?;
-            let ev = epoch_ready(plan, &mut align, n, staged, Vec::new())?;
+            let ev = epoch_ready(plan, &mut align, n, staged, Vec::new(), Vec::new())?;
             let _ = events.blocking_send(Ok(ev));
         }
         let _ = events.try_send(Ok(metrics(plan, counters)));
@@ -657,14 +825,15 @@ async fn write_staged(
             }
             // Each file carries its schema.
             Out::SchemaChange(..) => {}
-            Out::Barrier(s, epoch, schema, quarantined) => {
+            Out::Held(..) | Out::Patch(..) => return Err(no_holds()),
+            Out::Barrier(s, epoch, at, quarantined) => {
                 let bytes = staging.seal(s).await?;
                 counters[s].bytes_out.fetch_add(bytes, Ordering::Relaxed);
-                align.cross(s, epoch.n, schema, quarantined);
+                align.cross(s, epoch.n, at, quarantined);
             }
-            Out::End(s, schema) => {
+            Out::End(s, at) => {
                 staging.end(s).await?;
-                align.end(s, schema);
+                align.end(s, at);
             }
         }
         let ready = align.advance();
@@ -672,7 +841,14 @@ async fn write_staged(
             continue;
         }
         for n in ready {
-            let ev = epoch_ready(&plan, &mut align, n, Vec::new(), staging.take(n))?;
+            let ev = epoch_ready(
+                &plan,
+                &mut align,
+                n,
+                Vec::new(),
+                staging.take(n),
+                Vec::new(),
+            )?;
             let _ = events.send(Ok(ev)).await;
         }
         let _ = events.try_send(Ok(metrics(&plan, &counters)));
@@ -701,23 +877,26 @@ async fn write_discard(
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
             }
             Out::SchemaChange(..) => {}
-            Out::Barrier(s, epoch, schema, quarantined) => {
-                align.cross(s, epoch.n, schema, quarantined)
-            }
-            Out::End(s, schema) => align.end(s, schema),
+            Out::Held(..) | Out::Patch(..) => return Err(no_holds()),
+            Out::Barrier(s, epoch, at, quarantined) => align.cross(s, epoch.n, at, quarantined),
+            Out::End(s, at) => align.end(s, at),
         }
         let ready = align.advance();
         if ready.is_empty() {
             continue;
         }
         for n in ready {
-            let ev = epoch_ready(&plan, &mut align, n, Vec::new(), Vec::new())?;
+            let ev = epoch_ready(&plan, &mut align, n, Vec::new(), Vec::new(), Vec::new())?;
             let _ = events.send(Ok(ev)).await;
         }
         let _ = events.try_send(Ok(metrics(&plan, &counters)));
     }
     let _ = events.try_send(Ok(metrics(&plan, &counters)));
     Ok(true)
+}
+
+fn no_holds() -> JobError {
+    JobError::internal("only a runner sink takes holds")
 }
 
 fn sink_error(e: openetl_formats::Error) -> JobError {
@@ -747,6 +926,7 @@ fn metrics(plan: &Plan, counters: &[Counters]) -> EventsResponse {
             rows_out: c.rows_out.load(Ordering::Relaxed),
             bytes_out: c.bytes_out.load(Ordering::Relaxed),
             rows_quarantined: c.rows_quarantined.load(Ordering::Relaxed),
+            cells_held: c.cells_held.load(Ordering::Relaxed),
         })
         .collect();
     EventsResponse {
@@ -761,6 +941,7 @@ fn metrics(plan: &Plan, counters: &[Counters]) -> EventsResponse {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use arrow_array::cast::AsArray;
     use arrow_schema::DataType;
     use openetl_normalize::{Normalizer, naming};
     use tokio::io::{BufReader, DuplexStream, duplex};
@@ -1363,6 +1544,157 @@ mod tests {
             }
         }
         assert_eq!(ready, vec![1, 2]);
+    }
+
+    fn holding(dir: &std::path::Path, precision: u8) -> openetl_proto::engine::v1::StartJobRequest {
+        use arrow_schema::{Field, Schema};
+        let mut req = request(&["a", "b"]);
+        req.held_url = format!("file://{}/held", dir.display());
+        let declared = Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("price", DataType::Decimal128(precision, 2), true),
+        ]);
+        req.streams[0].arrow_schema = ipc::encode_schema(&Arc::new(declared)).unwrap();
+        req.streams[0].primary_key = vec!["id".into()];
+        req.streams[0].holds = Some(openetl_proto::engine::v1::HoldPlan {
+            cells: true,
+            ..Default::default()
+        });
+        req
+    }
+
+    fn priced(prices: &[&str]) -> Vec<u8> {
+        use arrow_array::{Int64Array, StringArray};
+        let ids: Vec<i64> = (1..=prices.len() as i64).collect();
+        let b = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int64Array::from(ids)) as arrow_array::ArrayRef,
+            ),
+            ("price", Arc::new(StringArray::from(prices.to_vec()))),
+        ])
+        .unwrap();
+        ipc::encode_batch(&b).unwrap()
+    }
+
+    #[tokio::test]
+    async fn held_cells_are_kept_per_epoch_and_patched_once_they_fit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = start_with(holding(dir.path(), 10));
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Batch, 0, priced(&["1.5", "12345678901.5"])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+
+        let batch = frames.iter().find(|f| f.kind == FrameKind::Batch).unwrap();
+        let b = ipc::decode_batch(batch.payload.clone()).unwrap();
+        assert_eq!(b.num_rows(), 2, "the row with a held cell is delivered");
+        assert!(b.schema().index_of("_openetl_held").is_ok());
+        let first = ready(&mut h.events).await;
+        let held = &first[0].holds["a"];
+        assert_eq!(held.cells["price"].cells, 1);
+        assert!(held.cells["price"].reason.starts_with("precision:"));
+        assert_eq!(held.files.len(), 1);
+        let file = held.files[0].path.clone();
+        assert_eq!(file, "1/1/a/part-00000.parquet");
+        assert!(dir.path().join("held").join(&file).is_file());
+        assert!(!first[0].holds.contains_key("b"), "b holds nothing");
+
+        // A wider declared type takes the value, so a release patches it in.
+        let mut req = holding(dir.path(), 20);
+        req.generation = 2;
+        req.first_epoch = 2;
+        req.streams[0].restored_schema = first[0].schemas["a"].clone();
+        req.streams[0].holds.as_mut().unwrap().replay = Some(openetl_proto::engine::v1::Replay {
+            files: vec![file],
+            columns: vec!["price".into()],
+            ..Default::default()
+        });
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        let barrier2 = |n| {
+            Barrier {
+                epoch: Some(Epoch { generation: 2, n }),
+            }
+            .encode_to_vec()
+        };
+        for n in [2, 3] {
+            put(w, FrameKind::Barrier, 0, barrier2(n)).await;
+            put(w, FrameKind::Barrier, 1, barrier2(n)).await;
+        }
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+
+        let a: Vec<FrameKind> = frames
+            .iter()
+            .filter(|f| f.stream == 1)
+            .map(|f| f.kind)
+            .collect();
+        use FrameKind as K;
+        assert_eq!(a, [K::Barrier, K::Patch, K::Barrier, K::EndOfStream]);
+        let p = frames.iter().find(|f| f.kind == K::Patch).unwrap();
+        let p = ipc::decode_batch(p.payload.clone()).unwrap();
+        assert_eq!(p.num_rows(), 1);
+        let price = p.column(p.schema().index_of("price").unwrap());
+        let price = price.as_primitive::<arrow_array::types::Decimal128Type>();
+        assert_eq!(price.iter().next(), Some(Some(1_234_567_890_150)));
+
+        let second = ready(&mut h.events).await;
+        let at = |i: usize| second[i].holds["a"].replayed.unwrap();
+        assert!(!at(0).done, "epoch 2 ends before the chunk");
+        assert!(at(1).done && at(1).still_held == 0, "{:?}", at(1));
+    }
+
+    #[tokio::test]
+    async fn block_holds_a_new_column_and_reports_what_the_destination_gets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = request(&["a", "b"]);
+        req.schema_policy = openetl_proto::engine::v1::SchemaPolicy::Block as i32;
+        req.held_url = format!("file://{}/held", dir.path().display());
+        req.streams[0].primary_key = vec!["id".into()];
+        req.streams[0].holds = Some(Default::default());
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Rows, 0, rows(&[r#"{"id": 1, "x": 1}"#])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(
+            w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"id": 2, "x": 2, "y": "new"}"#]),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(w, FrameKind::Barrier, 1, barrier(2)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+
+        let last = frames.iter().rfind(|f| f.kind == FrameKind::Batch).unwrap();
+        let b = ipc::decode_batch(last.payload.clone()).unwrap();
+        assert!(b.schema().index_of("y").is_err(), "y isn't delivered");
+        let ready = ready(&mut h.events).await;
+        assert!(ready[0].delivered.is_empty());
+        let delivered = ipc::decode_schema(&ready[1].delivered["a"]).unwrap();
+        assert_eq!(delivered.fields(), b.schema().fields());
+        let stream = ipc::decode_schema(&ready[1].schemas["a"]).unwrap();
+        assert!(stream.index_of("y").is_ok(), "the stream's schema has it");
+        let holds = &ready[1].holds["a"];
+        assert_eq!(holds.holding.len(), 1);
+        assert_eq!(holds.holding[0].column, "y");
+        assert!(holds.holding[0].delivered.is_empty());
+        assert_eq!(holds.files.len(), 1);
     }
 
     #[tokio::test]

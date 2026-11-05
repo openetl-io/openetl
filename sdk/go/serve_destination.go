@@ -61,6 +61,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 	sa, applies := w.(destination.SchemaApplier)
 	rt, _ := w.(destination.ReadTracker)
 	sw, _ := w.(destination.StagedWriter)
+	pw, _ := w.(destination.Patcher)
 
 	var sendMu sync.Mutex
 	send := func(m *protocolv1.WriteResponse) error {
@@ -82,8 +83,10 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 				c, err := w.Commit(ctx, e, x.Commit.GetStaged())
 				resp = &protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_Committed{Committed: &protocolv1.WriteCommitted{Epoch: x.Commit.GetEpoch(), Error: protoError(err), CollapsedRows: c.Collapsed}}}
 			case *protocolv1.WriteRequest_ApplySchema:
-				err := applySchema(ctx, sa, x.ApplySchema)
-				resp = &protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_SchemaApplied{SchemaApplied: &protocolv1.WriteSchemaApplied{Error: protoError(err)}}}
+				applied, err := applySchema(ctx, sa, x.ApplySchema)
+				done := schemaAppliedToProto(applied)
+				done.Error = protoError(err)
+				resp = &protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_SchemaApplied{SchemaApplied: done}}
 			}
 			if err := send(resp); err != nil {
 				laneErr <- err
@@ -109,7 +112,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 				fail = send(&protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_Recovered{Recovered: &protocolv1.WriteRecovered{Recovery: protocolv1.Recovery(r)}}}) //nolint:gosec // small
 			}
 		case *protocolv1.WriteRequest_Batch:
-			fail = write(ctx, w, x.Batch)
+			fail = write(ctx, w, pw, x.Batch)
 		case *protocolv1.WriteRequest_StartReads:
 			if rt != nil {
 				starts := make(map[string]time.Time, len(x.StartReads.GetStarts()))
@@ -123,7 +126,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 				fail = rt.EndRead(ctx, epoch(x.EndRead.GetEpoch()), x.EndRead.GetStream())
 			}
 		case *protocolv1.WriteRequest_StagedFiles:
-			if sw == nil {
+			if sw == nil || x.StagedFiles.GetPatch() {
 				fail = errors.New("write: staged files sent to a destination that doesn't take them")
 				break
 			}
@@ -165,25 +168,48 @@ func cmpErr(a, b error) error {
 	return b
 }
 
-func write(ctx context.Context, w destination.Writer, b *protocolv1.WriteBatch) error {
+func write(ctx context.Context, w destination.Writer, pw destination.Patcher, b *protocolv1.WriteBatch) error {
+	if b.GetPatch() && pw == nil {
+		return fmt.Errorf("write: patches for %s sent to a destination that doesn't take them", b.GetStream())
+	}
 	rec, err := arrowipc.DecodeBatch(b.GetArrow(), memory.DefaultAllocator)
 	if err != nil {
 		return fmt.Errorf("write: batch for %s: %w", b.GetStream(), err)
 	}
 	defer rec.Release()
+	if b.GetPatch() {
+		return pw.Patch(ctx, epoch(b.GetEpoch()), b.GetStream(), rec)
+	}
 	return w.Write(ctx, epoch(b.GetEpoch()), b.GetStream(), rec)
 }
 
-func applySchema(ctx context.Context, sa destination.SchemaApplier, m *protocolv1.WriteApplySchema) error {
+func applySchema(ctx context.Context, sa destination.SchemaApplier, m *protocolv1.WriteApplySchema) (destination.SchemaApplied, error) {
 	streams := make([]destination.StreamSchema, 0, len(m.GetStreams()))
 	for _, s := range m.GetStreams() {
 		schema, err := arrowipc.DecodeSchema(s.GetArrowSchema())
 		if err != nil || schema == nil {
-			return fmt.Errorf("schema for %s: %w", s.GetName(), cmpErr(err, errors.New("empty")))
+			return destination.SchemaApplied{}, fmt.Errorf("schema for %s: %w", s.GetName(), cmpErr(err, errors.New("empty")))
 		}
 		streams = append(streams, destination.StreamSchema{Name: s.GetName(), Schema: schema})
 	}
 	return sa.ApplySchema(ctx, streams)
+}
+
+func schemaAppliedToProto(a destination.SchemaApplied) *protocolv1.WriteSchemaApplied {
+	p := &protocolv1.WriteSchemaApplied{}
+	for _, r := range a.Refused {
+		p.Refused = append(p.Refused, &protocolv1.RefusedColumn{Stream: r.Stream, Column: r.Column, Reason: r.Reason})
+	}
+	if len(a.Limits) > 0 {
+		p.Limits = make(map[string]*protocolv1.TableLimits, len(a.Limits))
+		for name, l := range a.Limits {
+			p.Limits[name] = &protocolv1.TableLimits{
+				NotNull: l.NotNull, Unholdable: l.Unholdable, Fixed: l.Fixed,
+				Columns: uint32(l.Columns), MaxColumns: uint32(l.MaxColumns), //nolint:gosec // small
+			}
+		}
+	}
+	return p
 }
 
 func stagedFiles(fs []*protocolv1.StagedFile) []destination.StagedFile {
@@ -205,6 +231,9 @@ func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapa
 		NanosecondTimestamps: c.NanosecondTimestamps,
 		MaxIdentifierLength:  uint32(c.MaxIdentifierLength),   //nolint:gosec // small
 		Delivery:             protocolv1.Delivery(c.Delivery), //nolint:gosec // small
+	}
+	if h := c.Holds; h != (destination.Holds{}) {
+		p.Holds = &protocolv1.HoldCapabilities{ByKey: h.ByKey, ById: h.ByID, Last: h.Last, Guarded: h.Guarded}
 	}
 	for _, s := range c.Scopes {
 		p.Scopes = append(p.Scopes, protocolv1.CommitScope(s)) //nolint:gosec // small

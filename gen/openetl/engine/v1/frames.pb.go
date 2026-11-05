@@ -41,6 +41,9 @@ const (
 	FrameKind_FRAME_KIND_BARRIER       FrameKind = 4
 	FrameKind_FRAME_KIND_SCHEMA_CHANGE FrameKind = 5
 	FrameKind_FRAME_KIND_END_OF_STREAM FrameKind = 7
+	// From the engine only: a BATCH of patches (ADR-0025), as
+	// openetl.connector.v1.WriteBatch.patch describes.
+	FrameKind_FRAME_KIND_PATCH FrameKind = 8
 )
 
 // Enum value maps for FrameKind.
@@ -53,6 +56,7 @@ var (
 		4: "FRAME_KIND_BARRIER",
 		5: "FRAME_KIND_SCHEMA_CHANGE",
 		7: "FRAME_KIND_END_OF_STREAM",
+		8: "FRAME_KIND_PATCH",
 	}
 	FrameKind_value = map[string]int32{
 		"FRAME_KIND_UNSPECIFIED":   0,
@@ -62,6 +66,7 @@ var (
 		"FRAME_KIND_BARRIER":       4,
 		"FRAME_KIND_SCHEMA_CHANGE": 5,
 		"FRAME_KIND_END_OF_STREAM": 7,
+		"FRAME_KIND_PATCH":         8,
 	}
 )
 
@@ -321,7 +326,7 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\"1\n" +
 	"\fSchemaChange\x12!\n" +
 	"\farrow_schema\x18\x01 \x01(\fR\varrowSchema\"\r\n" +
-	"\vEndOfStream*\xdb\x01\n" +
+	"\vEndOfStream*\xf1\x01\n" +
 	"\tFrameKind\x12\x1a\n" +
 	"\x16FRAME_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10FRAME_KIND_HELLO\x10\x01\x12\x14\n" +
@@ -329,7 +334,8 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x0fFRAME_KIND_ROWS\x10\x03\x12\x16\n" +
 	"\x12FRAME_KIND_BARRIER\x10\x04\x12\x1c\n" +
 	"\x18FRAME_KIND_SCHEMA_CHANGE\x10\x05\x12\x1c\n" +
-	"\x18FRAME_KIND_END_OF_STREAM\x10\a\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESBAZ?github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
+	"\x18FRAME_KIND_END_OF_STREAM\x10\a\x12\x14\n" +
+	"\x10FRAME_KIND_PATCH\x10\b\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESBAZ?github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_openetl_engine_v1_frames_proto_rawDescOnce sync.Once

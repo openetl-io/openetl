@@ -479,8 +479,10 @@ func (w *memWriter) EndRead(_ context.Context, _ destination.Epoch, stream strin
 	return nil
 }
 
-func (w *memWriter) ApplySchema(context.Context, []destination.StreamSchema) error { return nil }
-func (w *memWriter) Close(context.Context) error                                   { return nil }
+func (w *memWriter) ApplySchema(context.Context, []destination.StreamSchema) (destination.SchemaApplied, error) {
+	return destination.SchemaApplied{}, nil
+}
+func (w *memWriter) Close(context.Context) error { return nil }
 
 func destinationSuite(bug string) conformance.DestinationSuite {
 	st := newStore()

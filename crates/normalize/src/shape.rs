@@ -6,12 +6,17 @@ use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions,
-    StringArray, TimestampMicrosecondArray,
+    StringArray, TimestampMicrosecondArray, new_null_array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use serde_json::Value;
 
+use crate::coerce::Target;
 use crate::control::Control;
-use crate::evolve::{Conformed, Evolver, Policy, VERSIONS_KEY};
+use crate::evolve::{Conformed, Evolver, HoldRules, Policy, VERSIONS_KEY};
+use crate::hold::{
+    CELL, COLUMN, ColumnHold, HELD_COLUMN, HELD_KEY, HOLD_KIND_KEY, HeldCell, HoldConfig, Show,
+};
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
 use crate::{
@@ -28,6 +33,35 @@ pub struct Shaped {
     pub schema_changed: bool,
     /// Columns whose type changed incompatibly, and where their values go.
     pub versioned: Vec<String>,
+    /// The held values: a batch of held cells, as text, and one of held
+    /// columns' values, each with the rows' keys and metadata columns.
+    pub held: Vec<RecordBatch>,
+    /// Each held cell's column and why.
+    pub cells: Vec<(String, String)>,
+}
+
+/// A column held whole, by its stream name.
+#[derive(Debug, Clone)]
+struct Holding {
+    dest: String,
+    delivered: Option<Field>,
+    reason: String,
+    /// Its values are dropped, not kept.
+    discarded: bool,
+}
+
+#[derive(Debug, Default)]
+struct Holds {
+    config: HoldConfig,
+    columns: BTreeMap<String, Holding>,
+    /// Held columns not seen yet, by destination name.
+    pending: HashMap<String, ColumnHold>,
+    /// Source columns whose cells can't be held.
+    unholdable: HashSet<String>,
+    /// Each held value, as a one-row array, by source name.
+    values: HashMap<String, ArrayRef>,
+    /// The stream has `_openetl_held`.
+    started: bool,
 }
 
 /// One stream's schema as the destination sees it: columns under their
@@ -52,6 +86,7 @@ pub struct Shaper {
     /// Typed batches carry op and seq control columns; adds
     /// `_openetl_unchanged`.
     changelog: bool,
+    holds: Option<Holds>,
 }
 
 impl Shaper {
@@ -107,7 +142,155 @@ impl Shaper {
             fresh: false,
             soft_deletes: false,
             changelog: false,
+            holds: None,
         })
+    }
+
+    /// Holds columns and cells back instead of stopping or rejecting rows
+    /// (ADR-0025). The stream must be keyed.
+    pub fn with_holds(mut self, config: HoldConfig) -> Result<Self, Error> {
+        if self.identity.key.is_empty() {
+            return Err(Error::Declared("only a keyed stream holds columns".into()));
+        }
+        let restored = self.current.clone();
+        let started = restored
+            .as_ref()
+            .is_some_and(|s| s.field_with_name(HELD_COLUMN).is_ok());
+        let source = |namer: &Namer, dest: &str| namer.source_of(dest).map(str::to_owned);
+        let mut h = Holds {
+            started,
+            ..Default::default()
+        };
+        h.unholdable.extend(self.identity.key.iter().cloned());
+        h.unholdable.extend(self.identity.cursor.iter().cloned());
+        for d in &config.limits.unholdable {
+            h.unholdable.extend(source(&self.namer, d));
+        }
+        let fields: Vec<Field> = self
+            .declared
+            .iter()
+            .flat_map(|d| d.fields().iter().map(|f| f.as_ref().clone()))
+            .chain(
+                self.evolver
+                    .live()
+                    .fields()
+                    .iter()
+                    .map(|f| f.as_ref().clone()),
+            )
+            .collect();
+        for f in &fields {
+            let show = config.show(f.name());
+            if let Some(v) = show.value() {
+                match held_value(f, v) {
+                    Some(a) => {
+                        h.values.insert(f.name().clone(), a);
+                    }
+                    None => {
+                        h.unholdable.insert(f.name().clone());
+                    }
+                }
+            }
+        }
+        for d in &config.limits.not_null {
+            if let Some(src) = source(&self.namer, d)
+                && config.show(&src).value().is_none()
+            {
+                h.unholdable.insert(src);
+            }
+        }
+        let mut rules = HoldRules {
+            unholdable: h.unholdable.clone(),
+            groups: config.groups.clone(),
+            cells: config.cells,
+            columns_left: (config.limits.max_columns > 0).then(|| {
+                config
+                    .limits
+                    .max_columns
+                    .saturating_sub(config.limits.columns)
+            }),
+            ..Default::default()
+        };
+        for d in &config.limits.fixed {
+            rules.fixed.extend(source(&self.namer, d));
+        }
+        for c in &config.holding {
+            let discarded = config.discarded.contains(&c.column);
+            match source(&self.namer, &c.column) {
+                Some(src) => {
+                    self.evolver.holding.insert(src.clone());
+                    h.columns.insert(
+                        src,
+                        Holding {
+                            dest: c.column.clone(),
+                            delivered: c.delivered.clone(),
+                            reason: c.reason.clone(),
+                            discarded,
+                        },
+                    );
+                }
+                None => {
+                    h.pending.insert(c.column.clone(), c.clone());
+                }
+            }
+        }
+        if config.cells {
+            rules.cells = true;
+        }
+        self.evolver.rules = Some(rules);
+        h.config = config;
+        self.holds = Some(h);
+        self.fresh = false;
+        Ok(self)
+    }
+
+    /// The schema the destination gets, where columns are held whole; None
+    /// where it's the stream's.
+    pub fn delivered(&self) -> Option<SchemaRef> {
+        let h = self.holds.as_ref()?;
+        let current = self.current.as_ref()?;
+        if h.columns.is_empty() {
+            return None;
+        }
+        Some(Arc::new(deliver_schema(current, &h.columns)))
+    }
+
+    /// The columns held whole, discarded ones included.
+    pub fn holding(&self) -> Vec<ColumnHold> {
+        let Some(h) = &self.holds else {
+            return Vec::new();
+        };
+        h.columns
+            .values()
+            .map(|c| ColumnHold {
+                column: c.dest.clone(),
+                delivered: c.delivered.clone(),
+                reason: c.reason.clone(),
+            })
+            .collect()
+    }
+
+    /// Before a batch reaches the evolver: held columns it hasn't seen
+    /// yet, named by their destination names, become held.
+    fn claim_pending(&mut self, schema: &Schema) {
+        let Some(h) = &mut self.holds else { return };
+        if h.pending.is_empty() {
+            return;
+        }
+        for f in schema.fields() {
+            let dest = self.namer.name(f.name());
+            if let Some(c) = h.pending.remove(&dest) {
+                self.evolver.holding.insert(f.name().clone());
+                h.columns.insert(
+                    f.name().clone(),
+                    Holding {
+                        dest,
+                        delivered: c.delivered,
+                        reason: c.reason,
+                        discarded: h.config.discarded.contains(&c.column),
+                    },
+                );
+            }
+        }
     }
 
     /// Adds `_openetl_deleted`, true where `_openetl_op` is `delete`, for
@@ -153,6 +336,9 @@ impl Shaper {
             };
             n.identify(self.identity.clone());
             n.infinity(self.types.infinity);
+            if let Some(h) = self.holds.as_ref().filter(|h| h.config.cells) {
+                n.hold_cells(h.unholdable.clone());
+            }
             if self.policy == Policy::IgnoreNew && self.evolver.established() {
                 n.freeze();
             }
@@ -164,13 +350,14 @@ impl Shaper {
         let n = norm.push(rows)?;
         let ids = n.ids.ok_or_else(|| Error::Restored(String::new()))?;
         let mut rejected = n.rejected;
+        self.claim_pending(&n.batch.schema());
         let c = self.evolver.conform(&n.batch)?;
         rejected.extend(c.failed.iter().map(|(i, reason)| Rejected {
             row: n.rows[*i],
             reason: reason.clone(),
         }));
         rejected.sort_by_key(|r| r.row);
-        self.finish(c, ids, Control::default(), rejected)
+        self.finish(c, ids, Control::default(), rejected, n.cells)
     }
 
     /// Gives a typed batch its logical and declared types, conforms it to the
@@ -185,10 +372,41 @@ impl Shaper {
                 "a changelog stream's batch has no op or seq control column".into(),
             ));
         }
-        let (typed, failed) = coerce::conform(batch, self.declared.as_deref(), self.types)?;
-        let control =
-            control.without(batch.num_rows(), &failed.iter().map(|(r, _)| *r).collect())?;
+        let (typed, all) = coerce::conform_cells(batch, self.declared.as_deref(), self.types)?;
+        let schema = batch.schema();
+        let hold = self.holds.as_ref().filter(|h| h.config.cells);
+        let mut first: HashMap<usize, String> = HashMap::new();
+        let mut cells = Vec::new();
+        for (row, col, reason) in all {
+            let name = schema.field(col).name();
+            match hold {
+                Some(h) if !h.unholdable.contains(name) => cells.push(HeldCell {
+                    row,
+                    column: name.clone(),
+                    reason,
+                    raw: coerce::cell_text(batch.column(col), row).unwrap_or_default(),
+                }),
+                _ => {
+                    first.entry(row).or_insert(reason);
+                }
+            }
+        }
+        let mut failed: Vec<(usize, String)> = first.into_iter().collect();
+        failed.sort_by_key(|(r, _)| *r);
+        let gone: HashSet<usize> = failed.iter().map(|(r, _)| *r).collect();
+        let typed = match gone.is_empty() {
+            true => typed,
+            false => {
+                let keep = BooleanArray::from_iter(
+                    (0..batch.num_rows()).map(|r| Some(!gone.contains(&r))),
+                );
+                arrow_select::filter::filter_record_batch(&typed, &keep)?
+            }
+        };
+        let cells = remap(cells, batch.num_rows(), &gone);
+        let control = control.without(batch.num_rows(), &gone)?;
         let ids = self.identity.typed(&typed, control.seq.as_ref())?;
+        self.claim_pending(&typed.schema());
         let c = self.evolver.conform(&typed)?;
         let mut rejected: Vec<Rejected> = failed
             .iter()
@@ -208,7 +426,7 @@ impl Shaper {
             }));
             rejected.sort_by_key(|r| r.row);
         }
-        self.finish(c, ids, control, rejected)
+        self.finish(c, ids, control, rejected, cells)
     }
 
     fn finish(
@@ -217,20 +435,25 @@ impl Shaper {
         ids: FixedSizeBinaryArray,
         control: Control,
         rejected: Vec<Rejected>,
+        cells: Vec<HeldCell>,
     ) -> Result<Shaped, Error> {
+        let gone: HashSet<usize> = c.failed.iter().map(|(r, _)| *r).collect();
+        let mut cells = remap(cells, ids.len(), &gone);
+        cells.extend(c.cells.iter().cloned());
         let (ids, control) = if c.failed.is_empty() {
             (ids, control)
         } else {
-            let gone: HashSet<usize> = c.failed.iter().map(|(r, _)| *r).collect();
             let keep = BooleanArray::from_iter((0..ids.len()).map(|i| Some(!gone.contains(&i))));
             let kept = arrow_select::filter::filter(&ids, &keep)?;
             (kept.as_fixed_size_binary().clone(), control.filter(&keep)?)
         };
+        let started = self.start_holds(&c.held, &cells);
         let seq = control.seq.as_ref().map(|a| a.data_type());
         let schema = match &self.current {
             Some(s)
                 if self.fresh
                     && !c.changed
+                    && !started
                     && seq.is_none_or(|t| {
                         s.field_with_name("_openetl_seq")
                             .is_ok_and(|f| f.data_type() == t)
@@ -241,12 +464,386 @@ impl Shaper {
             _ => self.shape(&c.batch, seq),
         };
         let unchanged = self.unchanged(&c.batch, &control)?;
+        let lists = self.held_lists(c.batch.num_rows(), unchanged.as_ref(), &cells);
+        let batch = self.assemble(schema, &c.batch, ids, &control, unchanged, lists)?;
+        let (batch, held) = self.hold_back(batch, &cells)?;
+        let cells = cells
+            .iter()
+            .map(|h| {
+                (
+                    self.namer.get(&h.column).unwrap_or(&h.column).to_owned(),
+                    h.reason.clone(),
+                )
+            })
+            .collect();
         Ok(Shaped {
-            batch: self.assemble(schema, &c.batch, ids, &control, unchanged)?,
+            batch,
             rejected,
-            schema_changed: c.changed,
+            schema_changed: c.changed || started,
             versioned: c.versioned,
+            held,
+            cells,
         })
+    }
+
+    /// Records the column holds the evolver started, at the type the
+    /// destination had. True if the stream gets `_openetl_held` now.
+    fn start_holds(&mut self, started: &[(String, String)], cells: &[HeldCell]) -> bool {
+        let Some(mut h) = self.holds.take() else {
+            return false;
+        };
+        if !started.is_empty() {
+            let prior: HashMap<String, Field> = self
+                .delivered()
+                .or_else(|| self.current.clone())
+                .map(|s| {
+                    s.fields()
+                        .iter()
+                        .map(|f| (f.name().clone(), f.as_ref().clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (src, why) in started {
+                let dest = self.namer.name(src);
+                h.columns.insert(
+                    src.clone(),
+                    Holding {
+                        delivered: prior.get(&dest).cloned(),
+                        dest,
+                        reason: why.clone(),
+                        discarded: false,
+                    },
+                );
+            }
+        }
+        let now = !h.started && (!cells.is_empty() || h.columns.values().any(|c| !c.discarded));
+        h.started |= now;
+        self.holds = Some(h);
+        now
+    }
+
+    /// Each row's held columns, null where none; None until the stream
+    /// holds anything. A column held whole isn't held in a row whose update
+    /// didn't send it.
+    fn held_lists(
+        &self,
+        n: usize,
+        unchanged: Option<&ArrayRef>,
+        cells: &[HeldCell],
+    ) -> Option<ArrayRef> {
+        let h = self.holds.as_ref().filter(|h| h.started)?;
+        let whole: Vec<&str> = h
+            .columns
+            .values()
+            .filter(|c| !c.discarded)
+            .map(|c| c.dest.as_str())
+            .collect();
+        let mut by_row: Vec<Vec<String>> = vec![Vec::new(); n];
+        if !whole.is_empty() {
+            let unchanged = unchanged.map(string_lists).unwrap_or_else(|| vec![None; n]);
+            for (list, skip) in by_row.iter_mut().zip(unchanged) {
+                let skip = skip.unwrap_or_default();
+                list.extend(
+                    whole
+                        .iter()
+                        .filter(|d| !skip.iter().any(|s| s == **d))
+                        .map(|d| (*d).to_owned()),
+                );
+            }
+        }
+        for c in cells {
+            let dest = self.namer.get(&c.column).unwrap_or(&c.column);
+            by_row[c.row].push(dest.to_owned());
+        }
+        let mut b = ListBuilder::new(StringBuilder::new());
+        for list in by_row {
+            if list.is_empty() {
+                b.append_null();
+                continue;
+            }
+            for d in list {
+                b.values().append_value(d);
+            }
+            b.append(true);
+        }
+        Some(Arc::new(b.finish()))
+    }
+
+    /// Splits the held values off a shaped batch: held columns go to the
+    /// type the destination has, or out, and held cells show what the
+    /// pipeline chose.
+    fn hold_back(
+        &self,
+        batch: RecordBatch,
+        cells: &[HeldCell],
+    ) -> Result<(RecordBatch, Vec<RecordBatch>), Error> {
+        let Some(h) = self.holds.as_ref().filter(|h| h.started) else {
+            return Ok((batch, Vec::new()));
+        };
+        let n = batch.num_rows();
+        let schema = batch.schema();
+        let lists = batch.column(schema.index_of(HELD_COLUMN)?).clone();
+        let mut held = Vec::new();
+        let whole: Vec<(&String, &Holding)> =
+            h.columns.iter().filter(|(_, c)| !c.discarded).collect();
+        if !whole.is_empty() && n > 0 {
+            let cols = whole.iter().map(|(_, c)| {
+                let a = batch.column(schema.index_of(&c.dest)?).clone();
+                let f = schema.field_with_name(&c.dest)?.clone();
+                Ok((f.with_metadata(kind(COLUMN)), a))
+            });
+            let names: HashSet<&str> = whole.iter().map(|(_, c)| c.dest.as_str()).collect();
+            if let Some(b) =
+                self.held_batch(&batch, &lists, &names, cols.collect::<Result<_, Error>>()?)?
+            {
+                held.push(b);
+            }
+        }
+        if !cells.is_empty() {
+            let mut by_col: BTreeMap<String, Vec<Option<String>>> = BTreeMap::new();
+            for c in cells {
+                let dest = self.namer.get(&c.column).unwrap_or(&c.column).to_owned();
+                by_col.entry(dest).or_insert_with(|| vec![None; n])[c.row] = Some(c.raw.clone());
+            }
+            let names: HashSet<&str> = by_col.keys().map(String::as_str).collect();
+            let cols = by_col
+                .iter()
+                .map(|(d, v)| {
+                    let f = Field::new(d, DataType::Utf8, true).with_metadata(kind(CELL));
+                    (f, Arc::new(StringArray::from(v.clone())) as ArrayRef)
+                })
+                .collect();
+            if let Some(b) = self.held_batch(&batch, &lists, &names, cols)? {
+                held.push(b);
+            }
+        }
+
+        let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+        let mut shown: BTreeMap<usize, Vec<bool>> = BTreeMap::new();
+        for c in cells {
+            let dest = self.namer.get(&c.column).unwrap_or(&c.column);
+            if let Ok(i) = schema.index_of(dest) {
+                shown.entry(i).or_insert_with(|| vec![false; n])[c.row] = true;
+            }
+        }
+        for (i, mask) in shown {
+            let src = self
+                .namer
+                .source_of(schema.field(i).name())
+                .unwrap_or(schema.field(i).name());
+            if let Some(v) = h
+                .values
+                .get(src)
+                .filter(|v| v.data_type() == columns[i].data_type())
+            {
+                let mask = BooleanArray::from(mask);
+                columns[i] = arrow_select::zip::zip(&mask, &broadcast(v, n)?, &columns[i])?;
+            }
+        }
+        let delivered = Arc::new(deliver_schema(&schema, &h.columns));
+        let by_dest: HashMap<&str, (&String, &Holding)> = h
+            .columns
+            .iter()
+            .map(|(s, c)| (c.dest.as_str(), (s, c)))
+            .collect();
+        let mut out = Vec::with_capacity(delivered.fields().len());
+        for f in delivered.fields() {
+            let a = &columns[schema.index_of(f.name())?];
+            out.push(match by_dest.get(f.name().as_str()) {
+                None => a.clone(),
+                Some((src, _)) => match h
+                    .values
+                    .get(src.as_str())
+                    .filter(|v| v.data_type() == f.data_type())
+                {
+                    Some(v) => broadcast(v, n)?,
+                    None => new_null_array(f.data_type(), n),
+                },
+            });
+        }
+        let opts = RecordBatchOptions::new().with_row_count(Some(n));
+        Ok((
+            RecordBatch::try_new_with_options(delivered, out, &opts)?,
+            held,
+        ))
+    }
+
+    /// The rows of `batch` that hold any of `names`, with their keys, their
+    /// metadata columns, their held columns among `names`, and `cols`.
+    fn held_batch(
+        &self,
+        batch: &RecordBatch,
+        lists: &ArrayRef,
+        names: &HashSet<&str>,
+        cols: Vec<(Field, ArrayRef)>,
+    ) -> Result<Option<RecordBatch>, Error> {
+        let n = batch.num_rows();
+        let mut keep = Vec::with_capacity(n);
+        let mut b = ListBuilder::new(StringBuilder::new());
+        for list in string_lists(lists) {
+            let mut any = false;
+            for d in list.iter().flatten() {
+                if names.contains(d.as_str()) {
+                    b.values().append_value(d);
+                    any = true;
+                }
+            }
+            b.append(any);
+            keep.push(any);
+        }
+        if !keep.iter().any(|k| *k) {
+            return Ok(None);
+        }
+        let schema = batch.schema();
+        let mut fields = Vec::new();
+        let mut arrays: Vec<ArrayRef> = Vec::new();
+        let mut take = |name: &str| -> Result<(), Error> {
+            if let Ok(i) = schema.index_of(name) {
+                fields.push(schema.field(i).clone());
+                arrays.push(batch.column(i).clone());
+            }
+            Ok(())
+        };
+        for k in &self.identity.key {
+            take(self.namer.get(k).unwrap_or(k))?;
+        }
+        for m in ["_openetl_id", "_openetl_seq", "_openetl_op"] {
+            take(m)?;
+        }
+        fields.push(Field::new(HELD_COLUMN, held_type(), true));
+        arrays.push(Arc::new(b.finish()));
+        for (f, a) in cols {
+            fields.push(f);
+            arrays.push(a);
+        }
+        let opts = RecordBatchOptions::new().with_row_count(Some(n));
+        let all = RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &opts)?;
+        let keep = BooleanArray::from(keep);
+        Ok(Some(arrow_select::filter::filter_record_batch(
+            &all, &keep,
+        )?))
+    }
+
+    /// Patches from a batch of held values, for the released columns: each
+    /// row fills those of its held cells that fit their column's type now.
+    /// Returns the patches, if any, and how many of the released columns'
+    /// cells still don't fit, which stay held.
+    pub fn patch(
+        &self,
+        held: &RecordBatch,
+        released: &HashSet<String>,
+    ) -> Result<(Option<RecordBatch>, u64), Error> {
+        let Some(current) = &self.current else {
+            return Ok((None, 0));
+        };
+        let n = held.num_rows();
+        let schema = held.schema();
+        let lists = string_lists(held.column(schema.index_of(HELD_COLUMN)?));
+        let listed = |row: usize, name: &str| {
+            lists[row]
+                .as_ref()
+                .is_some_and(|l| l.iter().any(|d| d == name))
+        };
+        let mut still = 0u64;
+        let mut filled: Vec<(Field, ArrayRef, Vec<bool>)> = Vec::new();
+        for (f, col) in schema.fields().iter().zip(held.columns()) {
+            let Some(k) = f.metadata().get(HOLD_KIND_KEY) else {
+                continue;
+            };
+            if !released.contains(f.name()) {
+                continue;
+            }
+            let source = self.namer.source_of(f.name()).unwrap_or(f.name());
+            let declared = self
+                .declared
+                .as_ref()
+                .and_then(|d| d.field_with_name(source).ok());
+            let Some(target) = declared.or_else(|| current.field_with_name(f.name()).ok()) else {
+                continue;
+            };
+            let target = target
+                .clone()
+                .with_name(f.name())
+                .with_nullable(true)
+                .with_metadata(HashMap::new());
+            let (arr, failed): (ArrayRef, HashSet<usize>) = if k == CELL {
+                let Some(t) = Target::of(&target).filter(|t| *t != Target::TypedOnly) else {
+                    still += (0..n).filter(|r| listed(*r, f.name())).count() as u64;
+                    continue;
+                };
+                match coerce::text_column(&target, t, col, Default::default()) {
+                    Some((a, rows)) => (a, rows.into_iter().map(|(r, _)| r).collect()),
+                    None => (new_null_array(target.data_type(), n), (0..n).collect()),
+                }
+            } else if col.data_type() == target.data_type() {
+                (col.clone(), HashSet::new())
+            } else {
+                let a = match crate::widens(f, &target) {
+                    true => crate::evolve::cast_up(col, &target)?,
+                    false => arrow_cast::cast(col, target.data_type())
+                        .unwrap_or_else(|_| new_null_array(target.data_type(), n)),
+                };
+                let failed = (0..n)
+                    .filter(|&r| !col.is_null(r) && a.is_null(r))
+                    .collect();
+                (a, failed)
+            };
+            let mask: Vec<bool> = (0..n)
+                .map(|r| listed(r, f.name()) && !failed.contains(&r))
+                .collect();
+            still += (0..n)
+                .filter(|&r| listed(r, f.name()) && failed.contains(&r))
+                .count() as u64;
+            filled.push((target, arr, mask));
+        }
+        let keep: Vec<bool> = (0..n)
+            .map(|r| filled.iter().any(|(_, _, m)| m[r]))
+            .collect();
+        if !keep.iter().any(|k| *k) {
+            return Ok((None, still));
+        }
+        let mut fields = Vec::new();
+        let mut arrays: Vec<ArrayRef> = Vec::new();
+        for k in &self.identity.key {
+            let name = self.namer.get(k).unwrap_or(k);
+            let i = schema.index_of(name)?;
+            fields.push(schema.field(i).clone());
+            arrays.push(held.column(i).clone());
+        }
+        for m in ["_openetl_id", "_openetl_seq"] {
+            if let Ok(i) = schema.index_of(m) {
+                fields.push(schema.field(i).clone());
+                arrays.push(held.column(i).clone());
+            }
+        }
+        fields.push(Field::new(
+            "_openetl_synced_at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            false,
+        ));
+        arrays.push(Arc::new(
+            TimestampMicrosecondArray::from_value(now_micros(), n).with_timezone("UTC"),
+        ));
+        let mut b = ListBuilder::new(StringBuilder::new());
+        for (row, k) in keep.iter().enumerate() {
+            for (f, _, m) in &filled {
+                if m[row] {
+                    b.values().append_value(f.name());
+                }
+            }
+            b.append(*k);
+        }
+        fields.push(Field::new(HELD_COLUMN, held_type(), true));
+        arrays.push(Arc::new(b.finish()));
+        for (f, a, m) in filled {
+            let nulls = new_null_array(f.data_type(), n);
+            arrays.push(arrow_select::zip::zip(&BooleanArray::from(m), &a, &nulls)?);
+            fields.push(f.with_nullable(true));
+        }
+        let opts = RecordBatchOptions::new().with_row_count(Some(n));
+        let all = RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &opts)?;
+        let out = arrow_select::filter::filter_record_batch(&all, &BooleanArray::from(keep))?;
+        Ok((Some(out), still))
     }
 
     /// The destination schema for a batch under source names. `seq` is the
@@ -254,10 +851,23 @@ impl Shaper {
     fn shape(&mut self, batch: &RecordBatch, seq: Option<&DataType>) -> SchemaRef {
         let source = batch.schema();
         let renamed = self.namer.rename(&source);
+        let last = |src: &str| {
+            self.holds
+                .as_ref()
+                .is_some_and(|h| matches!(h.config.show(src), Show::Last(_)))
+        };
         let mut fields: Vec<Field> = renamed
             .fields()
             .iter()
-            .map(|f| f.as_ref().clone())
+            .zip(source.fields())
+            .map(|(f, sf)| match last(sf.name()) {
+                true => {
+                    let mut md = f.metadata().clone();
+                    md.insert(HELD_KEY.to_owned(), "last".to_owned());
+                    f.as_ref().clone().with_metadata(md)
+                }
+                false => f.as_ref().clone(),
+            })
             .collect();
         let data = !fields.is_empty();
         fields.push(
@@ -295,6 +905,9 @@ impl Shaper {
                 DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true))),
                 true,
             ));
+        }
+        if self.holds.as_ref().is_some_and(|h| h.started) {
+            fields.push(Field::new(HELD_COLUMN, held_type(), true));
         }
         let mut md = renamed.metadata().clone();
         md.insert(TABLE_KEY.to_owned(), self.table.clone());
@@ -361,6 +974,7 @@ impl Shaper {
         ids: FixedSizeBinaryArray,
         control: &Control,
         unchanged: Option<ArrayRef>,
+        held: Option<ArrayRef>,
     ) -> Result<RecordBatch, Error> {
         let n = batch.num_rows();
         let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
@@ -385,11 +999,8 @@ impl Shaper {
                 ),
             });
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_micros() as i64);
         columns.push(Arc::new(
-            TimestampMicrosecondArray::from_value(now, n).with_timezone("UTC"),
+            TimestampMicrosecondArray::from_value(now_micros(), n).with_timezone("UTC"),
         ));
         if let Some(d) = deleted {
             columns.push(Arc::new(d));
@@ -397,15 +1008,110 @@ impl Shaper {
         if let Some(u) = unchanged {
             columns.push(u);
         }
+        if schema.index_of(HELD_COLUMN).is_ok() {
+            columns.push(held.unwrap_or_else(|| new_null_array(&held_type(), n)));
+        }
         let opts = RecordBatchOptions::new().with_row_count(Some(n));
         Ok(RecordBatch::try_new_with_options(schema, columns, &opts)?)
     }
+}
+
+fn now_micros() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_micros() as i64)
+}
+
+/// A list-of-strings column's rows.
+fn string_lists(a: &ArrayRef) -> Vec<Option<Vec<String>>> {
+    a.as_list::<i32>()
+        .iter()
+        .map(|l| {
+            l.map(|v| {
+                v.as_string::<i32>()
+                    .iter()
+                    .flatten()
+                    .map(str::to_owned)
+                    .collect()
+            })
+        })
+        .collect()
+}
+
+fn held_type() -> DataType {
+    DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true)))
+}
+
+fn kind(k: &str) -> HashMap<String, String> {
+    HashMap::from([(HOLD_KIND_KEY.to_owned(), k.to_owned())])
+}
+
+/// Cells by their rows among `n`, renumbered once the rows in `gone` are
+/// left out, and dropped with them.
+fn remap(cells: Vec<HeldCell>, n: usize, gone: &HashSet<usize>) -> Vec<HeldCell> {
+    if gone.is_empty() {
+        return cells;
+    }
+    let mut row_of = vec![None; n];
+    let mut k = 0;
+    for (r, slot) in row_of.iter_mut().enumerate() {
+        if !gone.contains(&r) {
+            *slot = Some(k);
+            k += 1;
+        }
+    }
+    cells
+        .into_iter()
+        .filter_map(|mut c| {
+            c.row = row_of[c.row]?;
+            Some(c)
+        })
+        .collect()
+}
+
+/// A held value, JSON text, as a one-row array of the field's type; None if
+/// it isn't one.
+fn held_value(f: &Field, text: &str) -> Option<ArrayRef> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let t = Target::of(f).filter(|t| *t != Target::TypedOnly)?;
+    let (a, failed) = coerce::json(f, t, std::iter::once(Some(&v)), Default::default()).ok()?;
+    (failed.is_empty() && !a.is_null(0)).then_some(a)
+}
+
+fn broadcast(v: &ArrayRef, n: usize) -> Result<ArrayRef, Error> {
+    let zeros = arrow_array::UInt32Array::from(vec![0u32; n]);
+    Ok(arrow_select::take::take(v.as_ref(), &zeros, None)?)
+}
+
+/// The stream's schema as the destination gets it: each column held whole
+/// at the type the destination has, or left out.
+fn deliver_schema(current: &Schema, columns: &BTreeMap<String, Holding>) -> Schema {
+    let by_dest: HashMap<&str, &Holding> = columns.values().map(|c| (c.dest.as_str(), c)).collect();
+    let fields: Vec<Field> = current
+        .fields()
+        .iter()
+        .filter_map(|f| match by_dest.get(f.name().as_str()) {
+            None => Some(f.as_ref().clone()),
+            Some(h) => h.delivered.as_ref().map(|d| {
+                let mut md = d.metadata().clone();
+                if let Some(v) = f.metadata().get(HELD_KEY) {
+                    md.insert(HELD_KEY.to_owned(), v.clone());
+                }
+                d.clone()
+                    .with_name(f.name())
+                    .with_nullable(true)
+                    .with_metadata(md)
+            }),
+        })
+        .collect();
+    Schema::new_with_metadata(fields, current.metadata().clone())
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::hold::{CELL, COLUMN};
     use arrow_array::Int64Array;
     use arrow_array::cast::AsArray;
 
@@ -870,5 +1576,381 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::Restored(_)), "{err}");
+    }
+
+    fn keyed(policy: Policy, restored: Option<SchemaRef>, declared: Option<SchemaRef>) -> Shaper {
+        Shaper::new(
+            Naming::default(),
+            "t".into(),
+            Identity {
+                stream: "t".into(),
+                key: vec!["id".into()],
+                ..Default::default()
+            },
+            policy,
+            restored,
+            declared,
+            TypeOptions::default(),
+        )
+        .unwrap()
+    }
+
+    fn held_lists(b: &RecordBatch) -> Vec<Option<Vec<String>>> {
+        b.column(b.schema().index_of(HELD_COLUMN).unwrap())
+            .as_list::<i32>()
+            .iter()
+            .map(|l| {
+                l.map(|l| {
+                    l.as_string::<i32>()
+                        .iter()
+                        .map(|v| v.unwrap().to_owned())
+                        .collect()
+                })
+            })
+            .collect()
+    }
+
+    fn typed(cols: Vec<(&str, ArrayRef)>) -> RecordBatch {
+        RecordBatch::try_from_iter(cols).unwrap()
+    }
+
+    fn price_shaper(config: HoldConfig) -> Shaper {
+        let declared = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("price", DataType::Decimal128(10, 2), true),
+        ]));
+        keyed(Policy::AllowAll, None, Some(declared))
+            .with_holds(config)
+            .unwrap()
+    }
+
+    fn prices() -> RecordBatch {
+        typed(vec![
+            ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+            ("price", Arc::new(StringArray::from(vec!["1.5", "NaN"]))),
+        ])
+    }
+
+    #[test]
+    fn a_value_that_doesnt_fit_holds_its_cell() {
+        let mut plain = price_shaper(HoldConfig::default());
+        let without = plain.batch(&prices()).unwrap();
+        assert_eq!(without.rejected.len(), 1);
+
+        let mut s = price_shaper(HoldConfig {
+            cells: true,
+            ..Default::default()
+        });
+        let n = s.batch(&prices()).unwrap();
+        assert!(n.rejected.is_empty());
+        assert!(n.schema_changed);
+        assert_eq!(n.batch.num_rows(), 2);
+        let price = n.batch.column(n.batch.schema().index_of("price").unwrap());
+        assert!(price.is_null(1));
+        assert_eq!(held_lists(&n.batch), [None, Some(vec!["price".into()])]);
+        assert_eq!(
+            ids(&n.batch)[0],
+            ids(&without.batch)[0],
+            "a hold changes no ID"
+        );
+        assert_eq!(n.cells.len(), 1);
+        assert!(n.cells[0].1.starts_with("nan:"), "{:?}", n.cells);
+
+        assert_eq!(n.held.len(), 1);
+        let h = &n.held[0];
+        assert_eq!(h.num_rows(), 1);
+        assert_eq!(
+            names(&h.schema()),
+            [
+                "id",
+                "_openetl_id",
+                "_openetl_seq",
+                "_openetl_op",
+                HELD_COLUMN,
+                "price"
+            ]
+        );
+        let f = h.schema().field_with_name("price").unwrap().clone();
+        assert_eq!(
+            f.metadata().get(HOLD_KIND_KEY).map(String::as_str),
+            Some(CELL)
+        );
+        assert_eq!(
+            h.column(5).as_string::<i32>().iter().next(),
+            Some(Some("NaN"))
+        );
+        assert!(s.schema().unwrap().field_with_name(HELD_COLUMN).is_ok());
+        assert!(s.delivered().is_none(), "cells don't change the schema");
+    }
+
+    #[test]
+    fn a_held_cell_can_show_a_value() {
+        let mut s = price_shaper(HoldConfig {
+            cells: true,
+            columns: HashMap::from([("price".into(), Show::Value("0".into()))]),
+            ..Default::default()
+        });
+        let n = s.batch(&prices()).unwrap();
+        let price = n.batch.column(n.batch.schema().index_of("price").unwrap());
+        let price = price.as_primitive::<arrow_array::types::Decimal128Type>();
+        assert_eq!(price.iter().nth(1), Some(Some(0)));
+        assert_eq!(held_lists(&n.batch)[1], Some(vec!["price".into()]));
+    }
+
+    #[test]
+    fn a_key_never_holds_a_cell() {
+        let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let mut s = keyed(Policy::AllowAll, None, Some(declared))
+            .with_holds(HoldConfig {
+                cells: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let b = typed(vec![(
+            "id",
+            Arc::new(StringArray::from(vec!["1", "x"])) as ArrayRef,
+        )]);
+        let n = s.batch(&b).unwrap();
+        assert_eq!(n.rejected.len(), 1);
+        assert!(n.held.is_empty());
+    }
+
+    fn established(policy: Policy, config: HoldConfig) -> Shaper {
+        let mut first = keyed(Policy::AllowAll, None, None);
+        first
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                ("x", Arc::new(Int64Array::from(vec![10]))),
+            ]))
+            .unwrap();
+        keyed(policy, first.schema(), None)
+            .with_holds(config)
+            .unwrap()
+    }
+
+    #[test]
+    fn block_holds_a_new_column() {
+        let mut s = established(Policy::Block, HoldConfig::default());
+        let b = typed(vec![
+            ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+            ("x", Arc::new(Int64Array::from(vec![11, 12]))),
+            ("y", Arc::new(StringArray::from(vec![Some("a"), None]))),
+        ]);
+        let n = s.batch(&b).unwrap();
+        assert_eq!(data_names(&n.batch.schema()), ["id", "x"]);
+        assert_eq!(
+            held_lists(&n.batch),
+            [Some(vec!["y".into()]), Some(vec!["y".into()])]
+        );
+        assert_eq!(data_names(&s.schema().unwrap()), ["id", "x", "y"]);
+        assert_eq!(s.delivered().unwrap().fields(), n.batch.schema().fields());
+        let holding = s.holding();
+        assert_eq!(holding.len(), 1);
+        assert_eq!(
+            (holding[0].column.as_str(), holding[0].delivered.is_none()),
+            ("y", true)
+        );
+        assert!(holding[0].reason.contains("block"), "{}", holding[0].reason);
+
+        let h = &n.held[0];
+        assert_eq!(h.num_rows(), 2);
+        let y = h.schema().field_with_name("y").unwrap().clone();
+        assert_eq!(
+            y.metadata().get(HOLD_KIND_KEY).map(String::as_str),
+            Some(COLUMN)
+        );
+
+        // Released, its values become patches.
+        let (p, still) = s.patch(h, &HashSet::from(["y".to_owned()])).unwrap();
+        let p = p.unwrap();
+        assert_eq!(still, 0);
+        assert_eq!(
+            names(&p.schema()),
+            [
+                "id",
+                "_openetl_id",
+                "_openetl_seq",
+                "_openetl_synced_at",
+                HELD_COLUMN,
+                "y"
+            ]
+        );
+        assert_eq!(p.num_rows(), 2);
+        assert_eq!(held_lists(&p)[0], Some(vec!["y".into()]));
+        assert_eq!(
+            p.column(5).as_string::<i32>().iter().next(),
+            Some(Some("a"))
+        );
+        assert!(p.column(5).is_null(1), "a held null is patched as null");
+        let (none, _) = s.patch(h, &HashSet::from(["z".to_owned()])).unwrap();
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn allow_columns_holds_a_change_that_isnt_a_widening() {
+        let mut s = established(Policy::AllowColumns, HoldConfig::default());
+        let b = typed(vec![
+            ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+            ("x", Arc::new(arrow_array::BooleanArray::from(vec![true]))),
+        ]);
+        let n = s.batch(&b).unwrap();
+        let x = n.batch.schema().field_with_name("x").unwrap().clone();
+        assert_eq!(x.data_type(), &DataType::Int64, "the destination's type");
+        assert!(
+            n.batch
+                .column(n.batch.schema().index_of("x").unwrap())
+                .is_null(0)
+        );
+        assert_eq!(
+            s.schema()
+                .unwrap()
+                .field_with_name("x")
+                .unwrap()
+                .data_type(),
+            &DataType::Boolean
+        );
+        assert_eq!(
+            n.held[0].schema().field_with_name("x").unwrap().data_type(),
+            &DataType::Boolean
+        );
+
+        // A restored hold goes on holding, with nothing to decide.
+        let mut r = keyed(Policy::AllowColumns, s.schema(), None)
+            .with_holds(HoldConfig {
+                holding: s.holding(),
+                ..Default::default()
+            })
+            .unwrap();
+        let n = r.batch(&b).unwrap();
+        assert_eq!(
+            n.batch.schema().field_with_name("x").unwrap().data_type(),
+            &DataType::Int64
+        );
+        assert_eq!(held_lists(&n.batch), [Some(vec!["x".into()])]);
+    }
+
+    #[test]
+    fn a_fixed_column_holds_a_widening() {
+        let config = HoldConfig {
+            limits: crate::hold::Limits {
+                fixed: HashSet::from(["x".to_owned()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut s = established(Policy::AllowAll, config);
+        let b = typed(vec![
+            ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+            ("x", Arc::new(arrow_array::Float64Array::from(vec![1.5]))),
+        ]);
+        let n = s.batch(&b).unwrap();
+        assert_eq!(
+            n.batch.schema().field_with_name("x").unwrap().data_type(),
+            &DataType::Int64
+        );
+        assert!(
+            s.holding()[0].reason.contains("can't change"),
+            "{:?}",
+            s.holding()
+        );
+    }
+
+    #[test]
+    fn grouped_columns_are_held_together() {
+        let mut first = keyed(Policy::AllowAll, None, None);
+        first
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                ("amount", Arc::new(Int64Array::from(vec![10]))),
+                ("currency", Arc::new(StringArray::from(vec!["EUR"]))),
+            ]))
+            .unwrap();
+        let mut s = keyed(Policy::AllowColumns, first.schema(), None)
+            .with_holds(HoldConfig {
+                groups: vec![vec!["amount".into(), "currency".into()]],
+                ..Default::default()
+            })
+            .unwrap();
+        let n = s
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                (
+                    "amount",
+                    Arc::new(arrow_array::BooleanArray::from(vec![true])),
+                ),
+                ("currency", Arc::new(StringArray::from(vec!["USD"]))),
+            ]))
+            .unwrap();
+        let mut held: Vec<String> = s.holding().into_iter().map(|h| h.column).collect();
+        held.sort();
+        assert_eq!(held, ["amount", "currency"]);
+        assert_eq!(
+            held_lists(&n.batch),
+            [Some(vec!["amount".into(), "currency".into()])]
+        );
+        assert!(
+            n.batch
+                .column(n.batch.schema().index_of("currency").unwrap())
+                .is_null(0)
+        );
+    }
+
+    #[test]
+    fn a_column_that_cant_be_held_still_stops() {
+        let config = HoldConfig {
+            limits: crate::hold::Limits {
+                not_null: HashSet::from(["x".to_owned()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut s = established(Policy::AllowColumns, config);
+        let b = typed(vec![
+            ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+            ("x", Arc::new(arrow_array::BooleanArray::from(vec![true]))),
+        ]);
+        assert!(matches!(s.batch(&b), Err(Error::Drift(_))));
+    }
+
+    #[test]
+    fn a_column_an_update_didnt_send_isnt_held_in_its_row() {
+        let mut first = changelog_shaper(None);
+        first
+            .batch(&change_batch(&[None], &[1], vec![Some("a")]))
+            .unwrap();
+        let mut s = Shaper::new(
+            Naming::default(),
+            "t".into(),
+            Identity {
+                stream: "t".into(),
+                key: vec!["id".into()],
+                ..Default::default()
+            },
+            Policy::AllowColumns,
+            first.schema(),
+            None,
+            TypeOptions::default(),
+        )
+        .unwrap()
+        .with_soft_deletes(true)
+        .with_changelog(true)
+        .with_holds(HoldConfig {
+            holding: vec![ColumnHold {
+                column: "doc".into(),
+                delivered: Some(Field::new("doc", DataType::Utf8, true)),
+                reason: "test".into(),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        let n = s
+            .batch(&change_batch(
+                &[None, Some("update")],
+                &[2, 3],
+                vec![Some("b"), None],
+            ))
+            .unwrap();
+        assert_eq!(held_lists(&n.batch), [Some(vec!["doc".into()]), None]);
+        assert_eq!(n.held[0].num_rows(), 1);
     }
 }

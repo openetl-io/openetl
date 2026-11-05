@@ -7,6 +7,7 @@ pub mod connector {
 }
 
 pub mod engine {
+    #[allow(clippy::large_enum_variant)]
     pub mod v1 {
         tonic::include_proto!("openetl.engine.v1");
     }

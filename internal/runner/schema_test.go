@@ -20,13 +20,13 @@ type applier struct {
 	calls [][]string
 }
 
-func (a *applier) ApplySchema(_ context.Context, streams []destination.StreamSchema) error {
+func (a *applier) ApplySchema(_ context.Context, streams []destination.StreamSchema) (destination.SchemaApplied, error) {
 	var names []string
 	for _, s := range streams {
 		names = append(names, s.Name)
 	}
 	a.calls = append(a.calls, names)
-	return nil
+	return destination.SchemaApplied{}, nil
 }
 
 func encode(t *testing.T, s *arrow.Schema) []byte {

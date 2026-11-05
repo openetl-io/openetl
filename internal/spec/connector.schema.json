@@ -177,7 +177,18 @@
             "maxCommitInterval": { "$ref": "#/$defs/duration" },
             "nanosecondTimestamps": { "type": "boolean" },
             "maxIdentifierLength": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
-            "writeModes": { "description": "None: append only.", "type": "array", "items": { "enum": ["append", "overwrite", "merge"] } }
+            "writeModes": { "description": "None: append only.", "type": "array", "items": { "enum": ["append", "overwrite", "merge"] } },
+            "holds": {
+              "description": "What the destination does with held columns and cells (ADR-0025). None: it takes no holds.",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "byKey": { "description": "Patches a merge stream's rows by their key.", "type": "boolean" },
+                "byId": { "description": "Patches an append stream's rows by their _openetl_id.", "type": "boolean" },
+                "last": { "description": "A held cell can keep the target's value, in a merge stream.", "type": "boolean" },
+                "guarded": { "description": "A patch fills a cell only where the target still holds the version it comes from.", "type": "boolean" }
+              }
+            }
           }
         },
         "config": { "description": "The config's JSON Schema, as Spec returns it.", "type": "object" }

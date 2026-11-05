@@ -18,6 +18,7 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
+bytes.workspace = true
 object_store.workspace = true
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true

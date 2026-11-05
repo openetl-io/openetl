@@ -1458,6 +1458,7 @@ dependencies = [
  "arrow-buffer",
  "arrow-ipc",
  "arrow-schema",
+ "bytes",
  "object_store",
  "openetl-formats",
  "openetl-normalize",

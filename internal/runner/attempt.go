@@ -1144,7 +1144,7 @@ func applySchemas(ctx context.Context, w destination.Writer, applied map[string]
 	if err != nil || len(changed) == 0 {
 		return err
 	}
-	if err := sa.ApplySchema(ctx, changed); err != nil {
+	if _, err := sa.ApplySchema(ctx, changed); err != nil {
 		return fmt.Errorf("apply schemas: %w", err)
 	}
 	for _, s := range changed {

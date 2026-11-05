@@ -12,6 +12,7 @@ mod frame;
 mod ipc;
 mod plan;
 mod quarantine;
+mod replay;
 mod service;
 mod staging;
 mod store;

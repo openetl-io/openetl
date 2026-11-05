@@ -269,7 +269,15 @@ type capabilitiesYAML struct {
 	NanosecondTimestamps  bool     `yaml:"nanosecondTimestamps,omitempty" json:"nanosecondTimestamps,omitempty"`
 	MaxIdentifierLength   uint32   `yaml:"maxIdentifierLength,omitempty" json:"maxIdentifierLength,omitempty"`
 	// Empty: append only.
-	WriteModes []string `yaml:"writeModes,omitempty" json:"writeModes,omitempty"`
+	WriteModes []string   `yaml:"writeModes,omitempty" json:"writeModes,omitempty"`
+	Holds      *holdsYAML `yaml:"holds,omitempty" json:"holds,omitempty"`
+}
+
+type holdsYAML struct {
+	ByKey   bool `yaml:"byKey,omitempty" json:"byKey,omitempty"`
+	ByID    bool `yaml:"byId,omitempty" json:"byId,omitempty"`
+	Last    bool `yaml:"last,omitempty" json:"last,omitempty"`
+	Guarded bool `yaml:"guarded,omitempty" json:"guarded,omitempty"`
 }
 
 func parseDescriptor(b []byte) (*Descriptor, error) {
@@ -501,6 +509,9 @@ func parseCapabilities(y *capabilitiesYAML) (*protocolv1.DestinationCapabilities
 		}
 		c.WriteModes = append(c.WriteModes, m)
 	}
+	if h := y.Holds; h != nil {
+		c.Holds = &protocolv1.HoldCapabilities{ByKey: h.ByKey, ById: h.ByID, Last: h.Last, Guarded: h.Guarded}
+	}
 	for field, d := range map[string]struct {
 		v   string
 		dst **durationpb.Duration
@@ -568,6 +579,9 @@ func specToYAML(s *protocolv1.SpecResponse) (specYAML, error) {
 		}
 		for _, m := range c.GetWriteModes() {
 			y.Capabilities.WriteModes = append(y.Capabilities.WriteModes, lower(m.String(), "WRITE_MODE_"))
+		}
+		if h := c.GetHolds(); h != nil {
+			y.Capabilities.Holds = &holdsYAML{ByKey: h.GetByKey(), ByID: h.GetById(), Last: h.GetLast(), Guarded: h.GetGuarded()}
 		}
 		if c.GetDefaultCommitInterval() != nil {
 			y.Capabilities.DefaultCommitInterval = c.GetDefaultCommitInterval().AsDuration().String()

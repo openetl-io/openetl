@@ -83,6 +83,9 @@ func Capabilities(spec *protocolv1.SpecResponse) destination.Capabilities {
 		NanosecondTimestamps:  pc.GetNanosecondTimestamps(),
 		Delivery:              destination.Delivery(pc.GetDelivery()),
 	}
+	if h := pc.GetHolds(); h != nil {
+		c.Holds = destination.Holds{ByKey: h.GetByKey(), ByID: h.GetById(), Last: h.GetLast(), Guarded: h.GetGuarded()}
+	}
 	for _, s := range pc.GetScopes() {
 		c.Scopes = append(c.Scopes, destination.Scope(s))
 	}
@@ -252,6 +255,15 @@ func (w *writer) Write(_ context.Context, e destination.Epoch, stream string, ba
 	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Batch{Batch: &protocolv1.WriteBatch{Epoch: epochProto(e), Stream: stream, Arrow: b}}})
 }
 
+// Patch is for destinations whose capabilities take holds.
+func (w *writer) Patch(_ context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
+	b, err := arrowipc.EncodeBatch(batch)
+	if err != nil {
+		return errs.Wrap(errs.Internal, err, "connector: encode patches for "+stream)
+	}
+	return w.send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Batch{Batch: &protocolv1.WriteBatch{Epoch: epochProto(e), Stream: stream, Arrow: b, Patch: true}}})
+}
+
 // StartReads and EndRead go unanswered, like batches; a connector without a
 // ReadTracker ignores them.
 func (w *writer) StartReads(_ context.Context, starts map[string]time.Time) error {
@@ -333,18 +345,31 @@ type schemaWriter struct{ *writer }
 
 var _ destination.SchemaApplier = (*schemaWriter)(nil)
 
-func (w *schemaWriter) ApplySchema(ctx context.Context, streams []destination.StreamSchema) error {
+func (w *schemaWriter) ApplySchema(ctx context.Context, streams []destination.StreamSchema) (destination.SchemaApplied, error) {
 	m := &protocolv1.WriteApplySchema{}
 	for _, s := range streams {
 		b, err := arrowipc.EncodeSchema(s.Schema)
 		if err != nil {
-			return errs.Wrap(errs.Internal, err, "connector: encode the schema of "+s.Name)
+			return destination.SchemaApplied{}, errs.Wrap(errs.Internal, err, "connector: encode the schema of "+s.Name)
 		}
 		m.Streams = append(m.Streams, &protocolv1.StreamSchema{Name: s.Name, ArrowSchema: b})
 	}
 	a, err := call(ctx, w.writer, &protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_ApplySchema{ApplySchema: m}}, w.applied)
 	if err != nil {
-		return err
+		return destination.SchemaApplied{}, err
 	}
-	return errs.FromProto(a.GetError())
+	if err := errs.FromProto(a.GetError()); err != nil {
+		return destination.SchemaApplied{}, err
+	}
+	var out destination.SchemaApplied
+	for _, r := range a.GetRefused() {
+		out.Refused = append(out.Refused, destination.RefusedColumn{Stream: r.GetStream(), Column: r.GetColumn(), Reason: r.GetReason()})
+	}
+	if len(a.GetLimits()) > 0 {
+		out.Limits = make(map[string]destination.TableLimits, len(a.GetLimits()))
+		for name, l := range a.GetLimits() {
+			out.Limits[name] = destination.TableLimits{NotNull: l.GetNotNull(), Unholdable: l.GetUnholdable(), Fixed: l.GetFixed(), Columns: int(l.GetColumns()), MaxColumns: int(l.GetMaxColumns())}
+		}
+	}
+	return out, nil
 }

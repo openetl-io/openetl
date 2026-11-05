@@ -6,6 +6,7 @@
 mod coerce;
 mod control;
 mod evolve;
+pub mod hold;
 mod ids;
 pub mod naming;
 mod shape;
@@ -18,8 +19,10 @@ pub use shape::{Shaped, Shaper};
 
 use coerce::Target;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+use hold::HeldCell;
 
 use arrow_array::builder::{BooleanBuilder, Float64Builder, Int64Builder, StringBuilder};
 use arrow_array::{ArrayRef, BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions};
@@ -151,6 +154,8 @@ pub struct Normalized {
     pub schema_changed: bool,
     /// Each row's `_openetl_id`, if the normalizer has an identity.
     pub ids: Option<FixedSizeBinaryArray>,
+    /// Cells held instead of rejecting their rows, by batch row.
+    pub cells: Vec<HeldCell>,
 }
 
 /// A column's type: inferred from values, or declared.
@@ -184,6 +189,9 @@ pub struct Normalizer {
     schema: SchemaRef,
     identity: Option<Identity>,
     infinity: Infinity,
+    /// Some: a declared value that doesn't fit holds its cell, except in
+    /// these columns, by source name.
+    hold_cells: Option<HashSet<String>>,
 }
 
 impl Default for Normalizer {
@@ -196,6 +204,7 @@ impl Default for Normalizer {
             schema: Arc::new(Schema::empty()),
             identity: None,
             infinity: Infinity::default(),
+            hold_cells: None,
         }
     }
 }
@@ -285,6 +294,12 @@ impl Normalizer {
         self.infinity = inf;
     }
 
+    /// A declared value that doesn't fit holds its cell instead of
+    /// rejecting its row, except in the `unholdable` columns.
+    pub fn hold_cells(&mut self, unholdable: HashSet<String>) {
+        self.hold_cells = Some(unholdable);
+    }
+
     /// Converts rows, one JSON object each, to a batch. Rows that aren't JSON
     /// objects, or whose declared columns don't fit, are left out and listed.
     /// On error, the schema is unchanged.
@@ -316,6 +331,8 @@ impl Normalizer {
         // Declared columns first, so rows that don't fit infer nothing.
         let mut coerced: HashMap<&str, ArrayRef> = HashMap::new();
         let mut failed: Vec<Option<String>> = vec![None; objects.len()];
+        // By object.
+        let mut held: Vec<(usize, &str, String)> = Vec::new();
         for (name, ty) in &self.declared {
             let Ty::Declared(f, t) = ty else { continue };
             let present = objects
@@ -328,7 +345,12 @@ impl Normalizer {
             let values = objects.iter().map(|o| o.get(name));
             let (array, failures) = coerce::json(f, *t, values, self.infinity)?;
             for (i, reason) in failures {
-                failed[i].get_or_insert(reason);
+                match &self.hold_cells {
+                    Some(unholdable) if !unholdable.contains(name) => held.push((i, name, reason)),
+                    _ => {
+                        failed[i].get_or_insert(reason);
+                    }
+                }
             }
             coerced.insert(name, array);
         }
@@ -409,6 +431,29 @@ impl Normalizer {
             .filter(|(_, f)| f.is_none())
             .map(|(r, _)| *r)
             .collect();
+        let mut row_of = vec![None; objects.len()];
+        let mut n = 0;
+        for (i, f) in failed.iter().enumerate() {
+            if f.is_none() {
+                row_of[i] = Some(n);
+                n += 1;
+            }
+        }
+        let cells = held
+            .into_iter()
+            .filter_map(|(i, name, reason)| {
+                let raw = match objects[i].get(name)? {
+                    Value::String(s) => s.clone(),
+                    v => v.to_string(),
+                };
+                Some(HeldCell {
+                    row: row_of[i]?,
+                    column: name.to_owned(),
+                    reason,
+                    raw,
+                })
+            })
+            .collect();
         self.columns = columns;
         self.index = index;
         self.schema = schema;
@@ -418,6 +463,7 @@ impl Normalizer {
             rejected,
             schema_changed: changed,
             ids,
+            cells,
         })
     }
 }

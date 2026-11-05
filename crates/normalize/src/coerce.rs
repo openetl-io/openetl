@@ -3,7 +3,6 @@
 //! reason that starts with a stable code: `type`, `range`, `precision` or
 //! `nan`. Reasons never contain the value.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::builder::{
@@ -18,9 +17,7 @@ use arrow_array::types::{
     Time64NanosecondType, TimestampMicrosecondType, TimestampMillisecondType,
     TimestampNanosecondType, TimestampSecondType,
 };
-use arrow_array::{
-    Array, ArrayRef, BooleanArray, Int64Array, PrimitiveArray, RecordBatch, make_array,
-};
+use arrow_array::{Array, ArrayRef, Int64Array, PrimitiveArray, RecordBatch, make_array};
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use base64::Engine;
@@ -403,24 +400,50 @@ pub(crate) fn raw_unsupported(f: &Field) -> Error {
 /// infinite dates and timestamps clamped or rejected; then text columns
 /// parsed to their declared types. Returns the batch without the rows that
 /// failed, and those rows' indexes in `batch` with reasons.
+#[cfg(test)]
 pub(crate) fn conform(
     batch: &RecordBatch,
     declared: Option<&Schema>,
     opts: TypeOptions,
 ) -> Result<(RecordBatch, Failures), Error> {
+    use std::collections::HashMap;
+
+    use arrow_array::BooleanArray;
+    let (out, cells) = conform_cells(batch, declared, opts)?;
+    if cells.is_empty() {
+        return Ok((out, Vec::new()));
+    }
+    let mut failed: HashMap<usize, String> = HashMap::new();
+    for (row, _, reason) in cells {
+        failed.entry(row).or_insert(reason);
+    }
+    let keep =
+        BooleanArray::from_iter((0..batch.num_rows()).map(|r| Some(!failed.contains_key(&r))));
+    let out = arrow_select::filter::filter_record_batch(&out, &keep)?;
+    let mut rows: Failures = failed.into_iter().collect();
+    rows.sort_by_key(|(r, _)| *r);
+    Ok((out, rows))
+}
+
+/// The cells that don't fit their column's type: each one's row, its
+/// column's index, and why.
+pub(crate) type Cells = Vec<(usize, usize, String)>;
+
+/// As conform, but keeps every row: a cell that doesn't fit is null, and
+/// listed in column order.
+pub(crate) fn conform_cells(
+    batch: &RecordBatch,
+    declared: Option<&Schema>,
+    opts: TypeOptions,
+) -> Result<(RecordBatch, Cells), Error> {
     let schema = batch.schema();
     let mut fields = Vec::with_capacity(schema.fields().len());
     let mut columns = Vec::with_capacity(batch.num_columns());
-    let mut failed: HashMap<usize, String> = HashMap::new();
-    let mut fail = |rows: Failures| {
-        for (row, reason) in rows {
-            failed.entry(row).or_insert(reason);
-        }
-    };
-    for (f, a) in schema.fields().iter().zip(batch.columns()) {
+    let mut cells = Cells::new();
+    for (i, (f, a)) in schema.fields().iter().zip(batch.columns()).enumerate() {
         let (mut field, mut col) = (f.as_ref().clone(), a.clone());
         if let Some((dt, c, rows)) = temporal(f, a, opts) {
-            fail(rows);
+            cells.extend(rows.into_iter().map(|(r, why)| (r, i, why)));
             field = field.with_data_type(dt).with_nullable(true);
             col = c;
         }
@@ -439,7 +462,7 @@ pub(crate) fn conform(
                         to: d.data_type().clone(),
                     })?,
                 };
-                fail(rows);
+                cells.extend(rows.into_iter().map(|(r, why)| (r, i, why)));
                 col = c;
             }
             field = d.clone().with_nullable(true);
@@ -452,15 +475,7 @@ pub(crate) fn conform(
         columns,
         &arrow_array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
     )?;
-    if failed.is_empty() {
-        return Ok((out, Vec::new()));
-    }
-    let keep =
-        BooleanArray::from_iter((0..batch.num_rows()).map(|r| Some(!failed.contains_key(&r))));
-    let out = arrow_select::filter::filter_record_batch(&out, &keep)?;
-    let mut rows: Failures = failed.into_iter().collect();
-    rows.sort_by_key(|(r, _)| *r);
-    Ok((out, rows))
+    Ok((out, cells))
 }
 
 /// Parses a text column to `t`. None if `a` isn't text or `t` has no parser.
@@ -620,6 +635,21 @@ where
         })
         .collect();
     (out, failed)
+}
+
+/// A typed cell as text: what a held cell keeps (ADR-0025). Strings are
+/// kept as they are, other values in their display form.
+pub(crate) fn cell_text(a: &ArrayRef, row: usize) -> Option<String> {
+    if a.is_null(row) {
+        return None;
+    }
+    if let Some(inf) = infinity_text(a, row) {
+        return Some(inf.to_owned());
+    }
+    let a = offset_zone(&a.slice(row, 1));
+    ArrayFormatter::try_new(a.as_ref(), &FormatOptions::new())
+        .ok()
+        .map(|fmt| fmt.value(0).to_string())
 }
 
 /// Row `row` of a typed batch as a JSON object, for quarantine.
@@ -956,6 +986,7 @@ fn uuid(s: &str) -> Option<[u8; 16]> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use arrow_array::BooleanArray;
     use arrow_array::StringArray;
     use arrow_array::types::{Decimal128Type, Int16Type};
 

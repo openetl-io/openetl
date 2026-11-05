@@ -41,6 +41,7 @@ spec:
     maxCommitInterval: 7m
     maxIdentifierLength: 63
     writeModes: [append, overwrite, merge]
+    holds: {byKey: true, byId: true, last: true, guarded: true}
   config:
     type: object
     required: [dsn]
@@ -80,6 +81,7 @@ func TestParseDescriptor(t *testing.T) {
 			MaxCommitInterval:     durationpb.New(7 * time.Minute),
 			MaxIdentifierLength:   63,
 			WriteModes:            []protocolv1.WriteMode{protocolv1.WriteMode_WRITE_MODE_APPEND, protocolv1.WriteMode_WRITE_MODE_OVERWRITE, protocolv1.WriteMode_WRITE_MODE_MERGE},
+			Holds:                 &protocolv1.HoldCapabilities{ByKey: true, ById: true, Last: true, Guarded: true},
 		},
 	}
 	if !proto.Equal(role.Spec, want) {
