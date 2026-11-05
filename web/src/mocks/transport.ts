@@ -9,7 +9,7 @@ import { WebhookService } from "@/gen/openetl/api/v1/webhook_pb";
 import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { destinations, pipelines, sources, syncs } from "./fixtures";
-import { checkpoints, log, plan, schemas, versions } from "./detail";
+import { checkpoints, holds, log, plan, schemas, versions } from "./detail";
 import { auditEntries, dataPlanes, dbtProjects, deliveries, incidents, keys, principals as others, runnerTokens, secrets, webhooks } from "./workspace";
 import { accessSession, requireSession, user } from "./session";
 import { resolve, sendTest, setDisabled, setPaused, startSync } from "./actions";
@@ -34,6 +34,7 @@ export const mockTransport = createRouterTransport(({ service }) => {
     getPipelinePlan: async ({ name }) => (await latency(), { plan: plan(name) }),
     listStreamSchemas: async ({ parent }) => (await latency(), { streamSchemas: schemas(parent) }),
     listCheckpoints: async ({ parent }) => (await latency(), { checkpoints: checkpoints(parent) }),
+    listHolds: async ({ parent }) => (await latency(), { holds: holds(parent) }),
     listPipelineVersions: async ({ parent }) => (await latency(), { pipelineVersions: versions(find(pipelines, parent)) }),
     pausePipeline: async ({ name }) => (await latency(), setPaused(find(pipelines, name), true)),
     resumePipeline: async ({ name }) => (await latency(), setPaused(find(pipelines, name), false)),

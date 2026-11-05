@@ -9,6 +9,7 @@ import { connectorLabel } from "@/components/connector";
 import { DataTable } from "@/components/data-table/data-table";
 import { useDataTable } from "@/components/data-table/use-data-table";
 import { ErrorNote } from "@/components/empty";
+import { Holds } from "@/components/holds";
 import { Incidents } from "@/components/incidents";
 import { IncidentService, IncidentState } from "@/gen/openetl/api/v1/incident_pb";
 import {
@@ -209,6 +210,8 @@ export function Overview({
           }
         />
       </section>
+
+      <Holds workspace={workspace} pipeline={pipeline.name} live={live} />
     </div>
   );
 }
@@ -320,9 +323,13 @@ function StreamsTable({
         header: "Held",
         cell: ({ row }) =>
           row.original.held?.length ? (
-            <span className="text-degraded" title="Columns held at the last sync's latest commit, until they're released or discarded">
+            <a
+              href="#holds"
+              className="text-degraded underline-offset-4 hover:underline"
+              title="Columns held at the last sync's latest commit, until they're released or discarded"
+            >
               {row.original.held.join(", ")}
-            </span>
+            </a>
           ) : (
             <span className="text-muted-foreground">—</span>
           ),

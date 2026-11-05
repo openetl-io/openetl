@@ -3,11 +3,15 @@ import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import {
   CheckpointSchema,
   DeliveryLevel,
+  HoldCause_Kind,
+  HoldSchema,
+  HoldWayOut_Action,
   PipelinePlanSchema,
   PipelineVersionSchema,
   StreamSchemaSchema,
   WriteMode,
   type Checkpoint,
+  type Hold,
   type Pipeline,
   type PipelinePlan,
   type PipelineVersion,
@@ -88,6 +92,58 @@ export function checkpoints(name: string): Checkpoint[] {
       streams: s.streams.map((st, j) => ({ name: st.name, rows: st.rows, quarantinedRows: st.quarantinedRows, schemaVersion: j === 0 ? 2 : 1, complete: !s.continuous })),
     }),
   );
+}
+
+export function holds(name: string): Hold[] {
+  if (!name.endsWith("/pipelines/events-to-lake")) return [];
+  const fix = "ALTER TABLE lake.orders_v1 ALTER COLUMN amount TYPE bigint";
+  return [
+    create(HoldSchema, {
+      stream: "orders.v1",
+      column: "amount",
+      whole: true,
+      reason:
+        "amount changed from int32 to int64 (int to long in the destination), and the destination refused it: it doesn't change a column's type.",
+      sinceGeneration: 1n,
+      sinceEpoch: 812n,
+      startTime: ts(Date.now() - 29 * 3_600_000),
+      cause: {
+        kind: HoldCause_Kind.REFUSED,
+        sourceColumn: "amount",
+        from: "int32",
+        to: "int64",
+        fromType: "int",
+        toType: "long",
+        refusal: "it doesn't change a column's type",
+        fix,
+      },
+      refused: { reason: "it doesn't change a column's type" },
+      waysOut: [
+        {
+          action: HoldWayOut_Action.RELEASE,
+          first: "Run this on the destination, so it takes the change.",
+          statement: fix,
+          effect: "Patches its held values in, and delivers the column again from the next run.",
+        },
+        {
+          action: HoldWayOut_Action.RELEASE_NEW_VERSION,
+          effect: "Sends its held values, and those after, to a new column, amount__v2, and leaves amount as the destination has it.",
+        },
+        { action: HoldWayOut_Action.DISCARD, effect: "Drops its held values; the column stays as the destination has it." },
+      ],
+    }),
+    create(HoldSchema, {
+      stream: "payments.v1",
+      column: "fee",
+      cells: 7n,
+      reason: `7 values of fee don't fit its type (range: column "fee" is out of range for int16).`,
+      sinceGeneration: 1n,
+      sinceEpoch: 840n,
+      startTime: ts(Date.now() - 3 * 3_600_000),
+      cause: { kind: HoldCause_Kind.VALUE, value: `range: column "fee" is out of range for int16` },
+      pending: true,
+    }),
+  ];
 }
 
 export function versions(p: Pipeline): PipelineVersion[] {
