@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -251,6 +252,8 @@ func (k *kubernetes) gone(ctx context.Context, name string) error {
 type kubeJob struct {
 	k        *kubernetes
 	id, name string
+	// A stop finished the job, and deletes its deployment.
+	finished atomic.Bool
 }
 
 func (j *kubeJob) ID() string { return j.id }
@@ -291,6 +294,8 @@ func (j *kubeJob) Wait(ctx context.Context) error {
 		switch {
 		case err != nil:
 			return err
+		case gone && j.finished.Load():
+			return nil
 		case gone:
 			return errs.New(errs.Transient, "flink: FlinkDeployment %s was deleted", j.name)
 		case state == "FINISHED":
@@ -330,6 +335,11 @@ func (j *kubeJob) Stop(ctx context.Context, dir string) error {
 		switch {
 		case err != nil:
 			return err
+		case state == "FINISHED":
+			// Its JobManager outlives the application, and the next
+			// generation starts from the savepoint.
+			j.finished.Store(true)
+			return j.Cancel(ctx)
 		case gone || terminal(state):
 			return nil
 		}

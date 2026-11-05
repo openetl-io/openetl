@@ -173,23 +173,27 @@ func TestKubernetesStopAndCancel(t *testing.T) {
 	if err := j.Stop(t.Context(), c.SavepointDir("s")); err != nil {
 		t.Fatal(err)
 	}
+	// Its JobManager would stay up.
+	if want := []string{name}; !slices.Equal(k.deleted, want) || len(k.objs) != 0 {
+		t.Errorf("deleted = %v, left %d", k.deleted, len(k.objs))
+	}
 	if err := j.Wait(t.Context()); err != nil {
 		t.Errorf("a stopped job's wait: %v", err)
 	}
 
 	// Another pipeline's deployment is left.
 	_ = k.Create(t.Context(), map[string]any{"metadata": map[string]any{"name": "other", "labels": map[string]any{labelPipeline: "payroll"}}})
-	if _, err := c.Deploy(t.Context(), runner.FlinkDeploy{Generation: 2}); err != nil {
+	j2, err := c.Deploy(t.Context(), runner.FlinkDeploy{Generation: 2})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := c.CancelAll(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	slices.Sort(k.deleted)
-	if want := []string{deploymentName(JobID("pay", 1)), deploymentName(JobID("pay", 2))}; !slices.Equal(k.deleted, slices.Sorted(slices.Values(want))) || len(k.objs) != 1 {
+	if want := []string{name, deploymentName(JobID("pay", 2))}; !slices.Equal(k.deleted, want) || len(k.objs) != 1 {
 		t.Errorf("deleted = %v, left %d", k.deleted, len(k.objs))
 	}
-	if err := j.Wait(t.Context()); errs.CodeOf(err) != errs.Transient {
+	if err := j2.Wait(t.Context()); errs.CodeOf(err) != errs.Transient {
 		t.Errorf("a deleted deployment's wait: %v", err)
 	}
 }
