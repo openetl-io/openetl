@@ -15,6 +15,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"maps"
@@ -30,6 +31,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/internal/platform/objectstore"
@@ -45,6 +47,7 @@ var (
 	chaosOnly     = flag.String("chaos.only", "", "run only configs whose name contains one of these, comma-separated, such as cdc-continuous,kafka")
 	chaosLogs     = flag.String("chaos.logs", "", "a directory to keep every runner's output in")
 	chaosTemporal = flag.Duration("chaos.temporal-restart", 0, "restart compose's Temporal about this often; 0: never")
+	chaosPostgres = flag.Duration("chaos.postgres-restart", 0, "restart or kill compose's Postgres about this often; 0: never")
 )
 
 type chaosConfig struct {
@@ -228,9 +231,28 @@ type chaosSuite struct {
 	// Held while a Flink container is down.
 	cluster sync.Mutex
 
+	pg pgGate
+
 	mu       sync.Mutex
 	results  []runResult
 	restarts int
+}
+
+// pgGate keeps Postgres restarts out of the suite's own statements, so
+// they cut off only the platform's: a run holds it for reading around its
+// setup, each transaction it writes and each check, and a restart holds it
+// for writing until Postgres takes connections again.
+type pgGate struct {
+	mu sync.RWMutex
+	// Restarts so far, and how many were kills; a writer whose connection
+	// is from before the last one connects again.
+	restarts, kills int
+}
+
+func (g *pgGate) do(f func()) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	f()
 }
 
 type runResult struct {
@@ -253,6 +275,9 @@ func TestChaos(t *testing.T) {
 	defer cancel()
 	if *chaosTemporal > 0 {
 		go s.restartTemporal(ctx, t, seed)
+	}
+	if *chaosPostgres > 0 {
+		go s.restartPostgres(ctx, t, seed)
 	}
 	sem := make(chan struct{}, *chaosParallel)
 	t.Run("runs", func(t *testing.T) {
@@ -366,18 +391,21 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		defer func() { <-s.flinkRuns }()
 	}
 	var w workload
-	if c.source == "kafka" {
-		w = newKafkaWork(t, c, name)
-	} else {
-		w = newPGWork(t, c, name)
-	}
-	src, dst, pipeSource, pipeDest := w.docs()
-	transform, dataPlane := s.transformSpec(c)
-	apply(t,
-		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
-		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
-		c.pipelineDoc(name, pipeSource, pipeDest, transform, dataPlane))
-	pipeline := mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
+	var pipeline string
+	s.pg.do(func() {
+		if c.source == "kafka" {
+			w = newKafkaWork(t, c, name, &s.pg)
+		} else {
+			w = newPGWork(t, c, name, &s.pg)
+		}
+		src, dst, pipeSource, pipeDest := w.docs()
+		transform, dataPlane := s.transformSpec(c)
+		apply(t,
+			fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
+			fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
+			c.pipelineDoc(name, pipeSource, pipeDest, transform, dataPlane))
+		pipeline = mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
+	})
 	s.book.add(pipeline, c.noise)
 	res := runResult{c: c}
 	defer func() {
@@ -391,19 +419,26 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		s.mu.Unlock()
 	}()
 	t.Cleanup(func() {
-		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
-		if !t.Failed() {
-			w.drop(t)
-		} else {
-			t.Logf("kept the run's schemas and topics: %s", name)
-		}
+		s.pg.do(func() {
+			_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+			if !t.Failed() {
+				w.drop(t)
+			} else {
+				t.Logf("kept the run's schemas and topics: %s", name)
+			}
+		})
 	})
 
 	writeCtx, stopWrite := context.WithTimeout(t.Context(), c.writing())
 	defer stopWrite()
 	var faults sync.WaitGroup
 	faults.Go(func() { s.inject(writeCtx, t.Context(), c, rng, pipeline) })
-	for !w.loaded(t) {
+	for {
+		var loaded bool
+		s.pg.do(func() { loaded = w.loaded(t) })
+		if loaded {
+			break
+		}
 		if writeCtx.Err() != nil {
 			// The faults went on without changes to the source; its
 			// preloaded rows are still checked.
@@ -418,26 +453,33 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	<-writeCtx.Done()
 	faults.Wait()
 	s.book.quiet(pipeline)
-	stopped := mustQuery[time.Time](t, "SELECT now()")
+	var stopped time.Time
+	s.pg.do(func() { stopped = mustQuery[time.Time](t, "SELECT now()") })
 
 	start := time.Now()
 	var missing, extra int
 	var detail string
 	for {
-		synced := c.continuous || syncedSince(t, name, stopped)
-		missing, extra, detail = w.check(t)
+		var synced bool
+		s.pg.do(func() {
+			synced = c.continuous || syncedSince(t, name, stopped)
+			missing, extra, detail = w.check(t)
+		})
 		if extra > 0 || (missing == 0 && synced) || time.Since(start) > *chaosSettle {
 			break
 		}
 		time.Sleep(2 * time.Second)
 	}
-	res.settle, res.changes = time.Since(start), w.changes(t)
+	res.settle = time.Since(start)
+	s.pg.do(func() { res.changes = w.changes(t) })
 	if c.plant != "" {
 		if extra > 0 || missing > 0 {
 			t.Fatalf("before the plant: %d missing, %d extra: %s", missing, extra, detail)
 		}
-		w.plant(t, c.plant)
-		missing, extra, detail = w.check(t)
+		s.pg.do(func() {
+			w.plant(t, c.plant)
+			missing, extra, detail = w.check(t)
+		})
 		if (c.plant == plantLoss || c.write == "merge") && missing == 0 || c.plant == plantExtra && c.write != "merge" && extra == 0 {
 			t.Errorf("the check missed a planted %s: %d missing, %d extra", c.plant, missing, extra)
 		}
@@ -448,7 +490,9 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	case extra > 0:
 		res.failed = "duplicates or phantom rows: " + detail
 	case missing > 0:
-		res.failed = fmt.Sprintf("rows missing after %v: %s (last sync: %s)", *chaosSettle, detail, lastSyncError(t, name))
+		var last string
+		s.pg.do(func() { last = lastSyncError(t, name) })
+		res.failed = fmt.Sprintf("rows missing after %v: %s (last sync: %s)", *chaosSettle, detail, last)
 	}
 	if res.failed != "" {
 		t.Errorf("%s\nconfig: %s\nrerun: go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/%04d-' -chaos.seed=%d", res.failed, c, c.i, c.seed)
@@ -581,12 +625,12 @@ func (s *chaosSuite) restartTemporal(ctx context.Context, t *testing.T, seed uin
 		if ctx.Err() != nil {
 			return
 		}
-		id, err := exec.Command("docker", "ps", "-q", "--filter", "publish=7233").Output()
-		if err != nil || len(strings.TrimSpace(string(id))) == 0 {
+		id, err := publishing("7233")
+		if err != nil {
 			t.Logf("chaos: no Temporal container to restart: %v", err)
 			return
 		}
-		if out, err := exec.Command("docker", "restart", strings.TrimSpace(string(id))).CombinedOutput(); err != nil {
+		if out, err := exec.Command("docker", "restart", id).CombinedOutput(); err != nil {
 			t.Logf("chaos: restart Temporal: %v\n%s", err, out)
 			continue
 		}
@@ -596,11 +640,79 @@ func (s *chaosSuite) restartTemporal(ctx context.Context, t *testing.T, seed uin
 	}
 }
 
+// restartPostgres restarts compose's Postgres now and then, with jitter,
+// between the suite's own statements: cleanly, or killed, so it recovers
+// from its WAL. The control plane's store goes with it, and every source and
+// destination.
+func (s *chaosSuite) restartPostgres(ctx context.Context, t *testing.T, seed uint64) {
+	rng := rand.New(rand.NewPCG(seed, 0x9e5))
+	for {
+		pause(ctx, *chaosPostgres/2+upTo(rng, *chaosPostgres))
+		if ctx.Err() != nil {
+			return
+		}
+		id, err := publishing("5432")
+		if err != nil {
+			t.Logf("chaos: no Postgres container to restart: %v", err)
+			return
+		}
+		kill := rng.IntN(2) == 0
+		s.pg.mu.Lock()
+		err = restartPostgres(ctx, id, kill)
+		s.pg.restarts++
+		if kill {
+			s.pg.kills++
+		}
+		s.pg.mu.Unlock()
+		if err != nil {
+			t.Logf("chaos: restart Postgres: %v", err)
+		}
+	}
+}
+
+// restartPostgres restarts or kills and starts container id, and waits
+// until Postgres takes connections.
+func restartPostgres(ctx context.Context, id string, kill bool) error {
+	cmds := [][]string{{"docker", "restart", id}}
+	if kill {
+		cmds = [][]string{{"docker", "kill", id}, {"docker", "start", id}}
+	}
+	for _, c := range cmds {
+		if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
+			return fmt.Errorf("%s: %w\n%s", strings.Join(c, " "), err, out)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		conn, err := pgx.Connect(ctx, env.dbURL)
+		if err == nil {
+			err = conn.Ping(ctx)
+			_ = conn.Close(context.Background())
+		}
+		if err == nil || time.Now().After(deadline) || ctx.Err() != nil {
+			return err
+		}
+		pause(ctx, 500*time.Millisecond)
+	}
+}
+
+// publishing is the compose container publishing port.
+func publishing(port string) (string, error) {
+	out, err := exec.Command("docker", "ps", "-q", "--filter", "publish="+port).Output()
+	id := strings.TrimSpace(string(out))
+	if err == nil && id == "" {
+		err = errors.New("none publishes " + port)
+	}
+	return id, err
+}
+
 func (s *chaosSuite) report(t *testing.T, seed uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var b strings.Builder
-	fmt.Fprintf(&b, "chaos seed %d: %d runs, %d Temporal restarts\n", seed, len(s.results), s.restarts)
+	s.pg.mu.RLock()
+	fmt.Fprintf(&b, "chaos seed %d: %d runs, %d Temporal restarts, %d Postgres restarts (%d killed)\n", seed, len(s.results), s.restarts, s.pg.restarts, s.pg.kills)
+	s.pg.mu.RUnlock()
 	byName := map[string][2]int{}
 	faults := map[string]int{}
 	var resumes, settles []time.Duration

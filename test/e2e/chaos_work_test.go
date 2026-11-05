@@ -60,11 +60,12 @@ type pgWork struct {
 	live           map[string]*idSet
 	deletes, incr  bool
 	notDeleted     string
+	gate           *pgGate
 }
 
-func newPGWork(t *testing.T, c chaosConfig, name string) *pgWork {
+func newPGWork(t *testing.T, c chaosConfig, name string, gate *pgGate) *pgWork {
 	t.Helper()
-	w := &pgWork{c: c, in: schema(name), next: map[string]int64{}, live: map[string]*idSet{}, deletes: c.source == "cdc", incr: c.source == "incremental"}
+	w := &pgWork{c: c, gate: gate, in: schema(name), next: map[string]int64{}, live: map[string]*idSet{}, deletes: c.source == "cdc", incr: c.source == "incremental"}
 	w.out, w.truth = w.in+"_out", w.in+"_truth"
 	w.notDeleted = "true"
 	if w.deletes && c.write == "merge" {
@@ -138,61 +139,82 @@ func (w *pgWork) loaded(t *testing.T) bool {
 }
 
 func (w *pgWork) write(ctx context.Context, rng *rand.Rand) error {
-	conn, err := pgx.Connect(context.Background(), env.dbURL)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close(context.Background()) }()
 	bg := context.Background()
+	var conn *pgx.Conn
+	defer func() {
+		if conn != nil {
+			_ = conn.Close(bg)
+		}
+	}()
+	since := -1
 	for ctx.Err() == nil {
-		tx, err := conn.Begin(bg)
+		var err error
+		w.gate.do(func() {
+			if conn == nil || since != w.gate.restarts {
+				if conn != nil {
+					_ = conn.Close(bg)
+				}
+				if conn, err = pgx.Connect(bg, env.dbURL); err != nil {
+					conn = nil
+					return
+				}
+				since = w.gate.restarts
+			}
+			err = w.change(bg, conn, rng)
+		})
 		if err != nil {
-			return err
-		}
-		var rows [][]any
-		for range 1 + rng.IntN(5) {
-			tbl := chaosTables[rng.IntN(len(chaosTables))]
-			ident := pgx.Identifier{w.in, tbl}.Sanitize()
-			live := w.live[tbl]
-			op := "insert"
-			switch r := rng.Float64(); {
-			case live.len() < 20:
-			case w.deletes && r < 0.15:
-				op = "delete"
-			case r < 0.6:
-				op = "update"
-			}
-			var id, v int64
-			switch op {
-			case "insert":
-				id, v = w.next[tbl], 1
-				w.next[tbl]++
-				_, err = tx.Exec(bg, "INSERT INTO "+ident+" (id, v, pad) VALUES ($1, 1, md5($2))", id, strconv.FormatInt(id, 10))
-				live.add(id)
-			case "update":
-				id = live.pick(rng)
-				err = tx.QueryRow(bg, "UPDATE "+ident+" SET v = v + 1, seq = nextval('"+w.in+".seq'), pad = md5(random()::text) WHERE id = $1 RETURNING v", id).Scan(&v)
-			case "delete":
-				id = live.pick(rng)
-				err = tx.QueryRow(bg, "DELETE FROM "+ident+" WHERE id = $1 RETURNING v", id).Scan(&v)
-				live.remove(id)
-			}
-			if err != nil {
-				_ = tx.Rollback(bg)
-				return fmt.Errorf("%s %s %d: %w", op, tbl, id, err)
-			}
-			rows = append(rows, []any{tbl, id, v, op})
-		}
-		if _, err := tx.CopyFrom(bg, pgx.Identifier{w.truth, "changes"}, []string{"tbl", "id", "v", "op"}, pgx.CopyFromRows(rows)); err != nil {
-			_ = tx.Rollback(bg)
-			return err
-		}
-		if err := tx.Commit(bg); err != nil {
 			return err
 		}
 		pause(ctx, 5*time.Millisecond+upTo(rng, 35*time.Millisecond))
 	}
 	return nil
+}
+
+// change makes a transaction of a few changes, with their truth.
+func (w *pgWork) change(bg context.Context, conn *pgx.Conn, rng *rand.Rand) error {
+	tx, err := conn.Begin(bg)
+	if err != nil {
+		return err
+	}
+	var rows [][]any
+	for range 1 + rng.IntN(5) {
+		tbl := chaosTables[rng.IntN(len(chaosTables))]
+		ident := pgx.Identifier{w.in, tbl}.Sanitize()
+		live := w.live[tbl]
+		op := "insert"
+		switch r := rng.Float64(); {
+		case live.len() < 20:
+		case w.deletes && r < 0.15:
+			op = "delete"
+		case r < 0.6:
+			op = "update"
+		}
+		var id, v int64
+		switch op {
+		case "insert":
+			id, v = w.next[tbl], 1
+			w.next[tbl]++
+			_, err = tx.Exec(bg, "INSERT INTO "+ident+" (id, v, pad) VALUES ($1, 1, md5($2))", id, strconv.FormatInt(id, 10))
+			live.add(id)
+		case "update":
+			id = live.pick(rng)
+			err = tx.QueryRow(bg, "UPDATE "+ident+" SET v = v + 1, seq = nextval('"+w.in+".seq'), pad = md5(random()::text) WHERE id = $1 RETURNING v", id).Scan(&v)
+		case "delete":
+			id = live.pick(rng)
+			err = tx.QueryRow(bg, "DELETE FROM "+ident+" WHERE id = $1 RETURNING v", id).Scan(&v)
+			live.remove(id)
+		}
+		if err != nil {
+			_ = tx.Rollback(bg)
+			return fmt.Errorf("%s %s %d: %w", op, tbl, id, err)
+		}
+		rows = append(rows, []any{tbl, id, v, op})
+	}
+	if _, err := tx.CopyFrom(bg, pgx.Identifier{w.truth, "changes"}, []string{"tbl", "id", "v", "op"}, pgx.CopyFromRows(rows)); err != nil {
+		_ = tx.Rollback(bg)
+		return err
+	}
+	return tx.Commit(bg)
 }
 
 func pause(ctx context.Context, d time.Duration) {
@@ -301,12 +323,13 @@ type kafkaWork struct {
 	versions   map[string]map[int64]int64
 	next       map[string]int64
 	cl         *kgo.Client
+	gate       *pgGate
 }
 
-func newKafkaWork(t *testing.T, c chaosConfig, name string) *kafkaWork {
+func newKafkaWork(t *testing.T, c chaosConfig, name string, gate *pgGate) *kafkaWork {
 	t.Helper()
 	sch := schema(name)
-	w := &kafkaWork{out: sch + "_out", truth: sch + "_truth", versions: map[string]map[int64]int64{}, next: map[string]int64{}}
+	w := &kafkaWork{out: sch + "_out", truth: sch + "_truth", versions: map[string]map[int64]int64{}, next: map[string]int64{}, gate: gate}
 	for _, tbl := range chaosTables {
 		w.topics = append(w.topics, sch+"_"+tbl)
 	}
@@ -382,7 +405,9 @@ func (w *kafkaWork) write(ctx context.Context, rng *rand.Rand) error {
 			recs = append(recs, w.record(topic, id, v))
 			rows = append(rows, []any{topic, id, v, "insert"})
 		}
-		if err := w.produce(context.Background(), recs, rows); err != nil {
+		var err error
+		w.gate.do(func() { err = w.produce(context.Background(), recs, rows) })
+		if err != nil {
 			return err
 		}
 		pause(ctx, 5*time.Millisecond+upTo(rng, 35*time.Millisecond))
