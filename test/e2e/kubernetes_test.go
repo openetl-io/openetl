@@ -109,6 +109,55 @@ func (k *kube) running(t *testing.T, pipelineID string) (name string, parallelis
 	return all[0].GetName(), p
 }
 
+// jar is the deployment's jarURI.
+func (k *kube) jar(t *testing.T, deployment string) string {
+	t.Helper()
+	d, err := k.dyn.Resource(flinkDeployments).Namespace(k.namespace).Get(t.Context(), deployment, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar, _, _ := unstructured.NestedString(d.Object, "spec", "job", "jarURI")
+	return jar
+}
+
+// withEntry copies the jar with one more entry, so it has another digest
+// and the same classes.
+func withEntry(t *testing.T, jar string) string {
+	t.Helper()
+	r, err := zip.OpenReader(jar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	out := filepath.Join(t.TempDir(), filepath.Base(jar))
+	f, err := os.Create(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	w := zip.NewWriter(f)
+	for _, e := range r.File {
+		// A jar needs no directory entries, and Copy refuses ones with a body.
+		if strings.HasSuffix(e.Name, "/") {
+			continue
+		}
+		if err := w.Copy(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e, err := w.Create("openetl-e2e-upgrade.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Write([]byte("v2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // killJobManager deletes the deployment's JobManager pods.
 func (k *kube) killJobManager(t *testing.T, deployment string) {
 	t.Helper()
@@ -127,8 +176,8 @@ func (k *kube) killJobManager(t *testing.T, deployment string) {
 // A continuous pipeline's rows go through Flink on the Kubernetes operator,
 // a FlinkDeployment for each generation, with Flink's Kubernetes HA. Every
 // row lands once through a JobManager killed, an upgrade that rescales the
-// job from a savepoint, a runner killed and another drained. A pause stops
-// the job with a savepoint and deletes its deployment.
+// job from a savepoint into new code, a runner killed and another drained. A
+// pause stops the job with a savepoint and deletes its deployment.
 func TestFlinkOnKubernetes(t *testing.T) {
 	k := kubeEnv(t)
 	lib := flinkLib(t)
@@ -154,14 +203,14 @@ func TestFlinkOnKubernetes(t *testing.T) {
 		"spec": {"kubernetes": {"namespace": %q, "image": "flink:1.20.5", "kubeconfig": {"secret": %q},
 			"jobManager": {"cpu": 0.5, "memory": "1024m"}, "taskManager": {"cpu": 0.5, "memory": "1536m"}},
 			"conf": {%s}}}`, name, k.namespace, setSecret(t, string(k.config)), s3conf)
-	pipeline := func(parallelism int) []string {
+	pipeline := func(code, digest string, parallelism int) []string {
 		docs := continuousDocs(name, endlessFaker)
 		docs[2] = strings.Replace(docs[2], `"delivery": {"commit": {"interval": "1s"}}`, fmt.Sprintf(`"delivery": {"commit": {"interval": "2s"}},
 			"transform": {"flink": {"cluster": %q, "code": {"jar": %q, "sha256": %q, "class": "io.openetl.flink.examples.Passthrough"},
 				"parallelism": %d}}`, name, code, digest, parallelism), 1)
 		return docs
 	}
-	apply(t, append([]string{cluster}, pipeline(1)...)...)
+	apply(t, append([]string{cluster}, pipeline(code, digest, 1)...)...)
 	pipelineName := "workspaces/default/pipelines/" + name
 	t.Cleanup(func() {
 		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: pipelineName}))
@@ -195,10 +244,14 @@ func TestFlinkOnKubernetes(t *testing.T) {
 		t.Errorf("running %s after the JobManager's restart, want %s", got, d)
 	}
 
-	// A new version stops the job with a savepoint, and the next generation
+	// New code stops the job with a savepoint, and the next generation
 	// starts from it, rescaled.
-	apply(t, pipeline(2)...)
+	code2, digest2 := codeInS3(t, withEntry(t, lib))
+	apply(t, pipeline(code2, digest2, 2)...)
 	d = deployed("the upgraded job", 2, d)
+	if jar := k.jar(t, d); !strings.Contains(jar, digest2) {
+		t.Errorf("the upgraded job runs %s, not the code of digest %s", jar, digest2)
+	}
 	more("rows after the upgrade")
 
 	// Another runner takes over when the first dies, and a third when the
