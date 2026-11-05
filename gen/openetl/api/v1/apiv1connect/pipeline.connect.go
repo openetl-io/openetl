@@ -66,6 +66,15 @@ const (
 	// PipelineServiceListCheckpointsProcedure is the fully-qualified name of the PipelineService's
 	// ListCheckpoints RPC.
 	PipelineServiceListCheckpointsProcedure = "/openetl.api.v1.PipelineService/ListCheckpoints"
+	// PipelineServiceListHoldsProcedure is the fully-qualified name of the PipelineService's ListHolds
+	// RPC.
+	PipelineServiceListHoldsProcedure = "/openetl.api.v1.PipelineService/ListHolds"
+	// PipelineServiceReleaseHoldProcedure is the fully-qualified name of the PipelineService's
+	// ReleaseHold RPC.
+	PipelineServiceReleaseHoldProcedure = "/openetl.api.v1.PipelineService/ReleaseHold"
+	// PipelineServiceDiscardHoldProcedure is the fully-qualified name of the PipelineService's
+	// DiscardHold RPC.
+	PipelineServiceDiscardHoldProcedure = "/openetl.api.v1.PipelineService/DiscardHold"
 )
 
 // PipelineServiceClient is a client for the openetl.api.v1.PipelineService service.
@@ -90,6 +99,16 @@ type PipelineServiceClient interface {
 	// The checkpoints the pipeline's syncs committed, newest first. The
 	// control plane keeps 30 days of them.
 	ListCheckpoints(context.Context, *connect.Request[v1.ListCheckpointsRequest]) (*connect.Response[v1.ListCheckpointsResponse], error)
+	// The columns and cells the pipeline holds back (ADR-0025), as its last
+	// checkpoint left them.
+	ListHolds(context.Context, *connect.Request[v1.ListHoldsRequest]) (*connect.Response[v1.ListHoldsResponse], error)
+	// Releases a hold: its held values are patched in, and a column held
+	// whole is delivered again from the next run. A continuous pipeline's run
+	// restarts at a checkpoint to take it.
+	ReleaseHold(context.Context, *connect.Request[v1.ReleaseHoldRequest]) (*connect.Response[v1.ReleaseHoldResponse], error)
+	// Discards a hold: its held values are dropped, and a column held whole
+	// stays as the destination has it.
+	DiscardHold(context.Context, *connect.Request[v1.DiscardHoldRequest]) (*connect.Response[v1.DiscardHoldResponse], error)
 }
 
 // NewPipelineServiceClient constructs a client for the openetl.api.v1.PipelineService service. By
@@ -169,6 +188,24 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(pipelineServiceMethods.ByName("ListCheckpoints")),
 			connect.WithClientOptions(opts...),
 		),
+		listHolds: connect.NewClient[v1.ListHoldsRequest, v1.ListHoldsResponse](
+			httpClient,
+			baseURL+PipelineServiceListHoldsProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("ListHolds")),
+			connect.WithClientOptions(opts...),
+		),
+		releaseHold: connect.NewClient[v1.ReleaseHoldRequest, v1.ReleaseHoldResponse](
+			httpClient,
+			baseURL+PipelineServiceReleaseHoldProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("ReleaseHold")),
+			connect.WithClientOptions(opts...),
+		),
+		discardHold: connect.NewClient[v1.DiscardHoldRequest, v1.DiscardHoldResponse](
+			httpClient,
+			baseURL+PipelineServiceDiscardHoldProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("DiscardHold")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -185,6 +222,9 @@ type pipelineServiceClient struct {
 	getPipelinePlan      *connect.Client[v1.GetPipelinePlanRequest, v1.GetPipelinePlanResponse]
 	listStreamSchemas    *connect.Client[v1.ListStreamSchemasRequest, v1.ListStreamSchemasResponse]
 	listCheckpoints      *connect.Client[v1.ListCheckpointsRequest, v1.ListCheckpointsResponse]
+	listHolds            *connect.Client[v1.ListHoldsRequest, v1.ListHoldsResponse]
+	releaseHold          *connect.Client[v1.ReleaseHoldRequest, v1.ReleaseHoldResponse]
+	discardHold          *connect.Client[v1.DiscardHoldRequest, v1.DiscardHoldResponse]
 }
 
 // GetPipeline calls openetl.api.v1.PipelineService.GetPipeline.
@@ -242,6 +282,21 @@ func (c *pipelineServiceClient) ListCheckpoints(ctx context.Context, req *connec
 	return c.listCheckpoints.CallUnary(ctx, req)
 }
 
+// ListHolds calls openetl.api.v1.PipelineService.ListHolds.
+func (c *pipelineServiceClient) ListHolds(ctx context.Context, req *connect.Request[v1.ListHoldsRequest]) (*connect.Response[v1.ListHoldsResponse], error) {
+	return c.listHolds.CallUnary(ctx, req)
+}
+
+// ReleaseHold calls openetl.api.v1.PipelineService.ReleaseHold.
+func (c *pipelineServiceClient) ReleaseHold(ctx context.Context, req *connect.Request[v1.ReleaseHoldRequest]) (*connect.Response[v1.ReleaseHoldResponse], error) {
+	return c.releaseHold.CallUnary(ctx, req)
+}
+
+// DiscardHold calls openetl.api.v1.PipelineService.DiscardHold.
+func (c *pipelineServiceClient) DiscardHold(ctx context.Context, req *connect.Request[v1.DiscardHoldRequest]) (*connect.Response[v1.DiscardHoldResponse], error) {
+	return c.discardHold.CallUnary(ctx, req)
+}
+
 // PipelineServiceHandler is an implementation of the openetl.api.v1.PipelineService service.
 type PipelineServiceHandler interface {
 	GetPipeline(context.Context, *connect.Request[v1.GetPipelineRequest]) (*connect.Response[v1.GetPipelineResponse], error)
@@ -264,6 +319,16 @@ type PipelineServiceHandler interface {
 	// The checkpoints the pipeline's syncs committed, newest first. The
 	// control plane keeps 30 days of them.
 	ListCheckpoints(context.Context, *connect.Request[v1.ListCheckpointsRequest]) (*connect.Response[v1.ListCheckpointsResponse], error)
+	// The columns and cells the pipeline holds back (ADR-0025), as its last
+	// checkpoint left them.
+	ListHolds(context.Context, *connect.Request[v1.ListHoldsRequest]) (*connect.Response[v1.ListHoldsResponse], error)
+	// Releases a hold: its held values are patched in, and a column held
+	// whole is delivered again from the next run. A continuous pipeline's run
+	// restarts at a checkpoint to take it.
+	ReleaseHold(context.Context, *connect.Request[v1.ReleaseHoldRequest]) (*connect.Response[v1.ReleaseHoldResponse], error)
+	// Discards a hold: its held values are dropped, and a column held whole
+	// stays as the destination has it.
+	DiscardHold(context.Context, *connect.Request[v1.DiscardHoldRequest]) (*connect.Response[v1.DiscardHoldResponse], error)
 }
 
 // NewPipelineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -339,6 +404,24 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 		connect.WithSchema(pipelineServiceMethods.ByName("ListCheckpoints")),
 		connect.WithHandlerOptions(opts...),
 	)
+	pipelineServiceListHoldsHandler := connect.NewUnaryHandler(
+		PipelineServiceListHoldsProcedure,
+		svc.ListHolds,
+		connect.WithSchema(pipelineServiceMethods.ByName("ListHolds")),
+		connect.WithHandlerOptions(opts...),
+	)
+	pipelineServiceReleaseHoldHandler := connect.NewUnaryHandler(
+		PipelineServiceReleaseHoldProcedure,
+		svc.ReleaseHold,
+		connect.WithSchema(pipelineServiceMethods.ByName("ReleaseHold")),
+		connect.WithHandlerOptions(opts...),
+	)
+	pipelineServiceDiscardHoldHandler := connect.NewUnaryHandler(
+		PipelineServiceDiscardHoldProcedure,
+		svc.DiscardHold,
+		connect.WithSchema(pipelineServiceMethods.ByName("DiscardHold")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.api.v1.PipelineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PipelineServiceGetPipelineProcedure:
@@ -363,6 +446,12 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 			pipelineServiceListStreamSchemasHandler.ServeHTTP(w, r)
 		case PipelineServiceListCheckpointsProcedure:
 			pipelineServiceListCheckpointsHandler.ServeHTTP(w, r)
+		case PipelineServiceListHoldsProcedure:
+			pipelineServiceListHoldsHandler.ServeHTTP(w, r)
+		case PipelineServiceReleaseHoldProcedure:
+			pipelineServiceReleaseHoldHandler.ServeHTTP(w, r)
+		case PipelineServiceDiscardHoldProcedure:
+			pipelineServiceDiscardHoldHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -414,4 +503,16 @@ func (UnimplementedPipelineServiceHandler) ListStreamSchemas(context.Context, *c
 
 func (UnimplementedPipelineServiceHandler) ListCheckpoints(context.Context, *connect.Request[v1.ListCheckpointsRequest]) (*connect.Response[v1.ListCheckpointsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ListCheckpoints is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) ListHolds(context.Context, *connect.Request[v1.ListHoldsRequest]) (*connect.Response[v1.ListHoldsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ListHolds is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) ReleaseHold(context.Context, *connect.Request[v1.ReleaseHoldRequest]) (*connect.Response[v1.ReleaseHoldResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ReleaseHold is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) DiscardHold(context.Context, *connect.Request[v1.DiscardHoldRequest]) (*connect.Response[v1.DiscardHoldResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.DiscardHold is not implemented"))
 }

@@ -1104,6 +1104,121 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/holds:
+        get:
+            tags:
+                - PipelineService
+            description: |-
+                The columns and cells the pipeline holds back (ADR-0025), as its last
+                 checkpoint left them.
+            operationId: PipelineService_ListHolds
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListHoldsResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/holds:discard:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Discards a hold: its held values are dropped, and a column held whole
+                 stays as the destination has it.
+            operationId: PipelineService_DiscardHold
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/DiscardHoldRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DiscardHoldResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/holds:release:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Releases a hold: its held values are patched in, and a column held
+                 whole is delivered again from the next run. A continuous pipeline's run
+                 restarts at a checkpoint to take it.
+            operationId: PipelineService_ReleaseHold
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ReleaseHoldRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ReleaseHoldResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines/{pipeline}/incidents:
         get:
             tags:
@@ -2646,6 +2761,13 @@ components:
                     description: |-
                         Rows the apply didn't insert because a row with the same _openetl_id
                          was earlier in the epoch or already in the destination.
+        ColumnGroup:
+            type: object
+            properties:
+                columns:
+                    type: array
+                    items:
+                        type: string
         Commit:
             type: object
             properties:
@@ -2916,6 +3038,21 @@ components:
             properties:
                 webhook:
                     $ref: '#/components/schemas/Webhook'
+        DiscardHoldRequest:
+            type: object
+            properties:
+                parent:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}
+                stream:
+                    type: string
+                column:
+                    type: string
+        DiscardHoldResponse:
+            type: object
+            properties:
+                hold:
+                    $ref: '#/components/schemas/Hold'
         DiscoverSourceRequest:
             type: object
             properties:
@@ -3277,6 +3414,57 @@ components:
                     type: string
                     format: date-time
             description: HealAction is what a playbook did about an incident, or proposes.
+        Held:
+            type: object
+            properties:
+                mode:
+                    enum:
+                        - HELD_MODE_UNSPECIFIED
+                        - HELD_MODE_NULL
+                        - HELD_MODE_VALUE
+                        - HELD_MODE_LAST
+                    type: string
+                    format: enum
+                value:
+                    type: string
+                    description: |-
+                        For value, and for last's rows the destination doesn't have: a value
+                         of the column's delivered type, as JSON. Empty: null.
+        Hold:
+            type: object
+            properties:
+                stream:
+                    type: string
+                column:
+                    type: string
+                whole:
+                    type: boolean
+                    description: The column is held whole; otherwise some of its cells are.
+                reason:
+                    type: string
+                sinceGeneration:
+                    type: string
+                    description: The epoch the hold started in.
+                sinceEpoch:
+                    type: string
+                startTime:
+                    type: string
+                    format: date-time
+                cells:
+                    type: string
+                    description: A cell hold's held cells.
+                discarded:
+                    type: boolean
+                    description: Its values are dropped, and the column stays as the destination has it.
+                releasing:
+                    type: boolean
+                    description: Released, and being patched in.
+                pending:
+                    type: boolean
+                    description: Released or discarded, and waiting for the pipeline's next run.
+            description: |-
+                Hold is a column, or some of a column's cells, held back while the rest
+                 of each row is delivered.
         Incident:
             type: object
             properties:
@@ -3432,6 +3620,13 @@ components:
                         $ref: '#/components/schemas/FlinkCluster'
                 nextPageToken:
                     type: string
+        ListHoldsResponse:
+            type: object
+            properties:
+                holds:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Hold'
         ListIncidentsResponse:
             type: object
             properties:
@@ -3644,6 +3839,10 @@ components:
                     type: string
                     description: Only for columns the source declares as decimals.
                     format: enum
+                held:
+                    allOf:
+                        - $ref: '#/components/schemas/Held'
+                    description: 'What the column''s held cells show; unset: the stream''s held.'
         PipelineDestination:
             type: object
             properties:
@@ -3839,6 +4038,26 @@ components:
                         Rows with the same content become one row. Only for streams without a
                          primary key. Unset: true for a superset stream whose require is above
                          at least once, otherwise false.
+                quarantine:
+                    enum:
+                        - QUARANTINE_SCOPE_UNSPECIFIED
+                        - QUARANTINE_SCOPE_ROW
+                        - QUARANTINE_SCOPE_CELL
+                    type: string
+                    description: |-
+                        What a value that doesn't fit its type holds back (ADR-0025): its row,
+                         the default, or only its cell, for a keyed stream into a destination
+                         that patches.
+                    format: enum
+                held:
+                    allOf:
+                        - $ref: '#/components/schemas/Held'
+                    description: What a held cell shows, for columns the columns map doesn't say.
+                groups:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ColumnGroup'
+                    description: 'Columns held together, by source name: holding one holds the rest.'
         PipelineVersion:
             type: object
             properties:
@@ -3983,6 +4202,21 @@ components:
                     description: |-
                         Where the next page starts. Unset once the sync has ended and every
                          entry is read; while it runs, more may follow, so read again with it.
+        ReleaseHoldRequest:
+            type: object
+            properties:
+                parent:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}
+                stream:
+                    type: string
+                column:
+                    type: string
+        ReleaseHoldResponse:
+            type: object
+            properties:
+                hold:
+                    $ref: '#/components/schemas/Hold'
         ResolveIncidentRequest:
             type: object
             properties:

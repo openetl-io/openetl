@@ -22,10 +22,12 @@ import (
 
 // permissions are what each role may do, by the least role that may.
 var permissions = map[string]auth.Role{
-	"pipelines.get":        auth.Viewer,
-	"pipelines.pause":      auth.Operator,
-	"pipelines.sync":       auth.Operator,
-	"pipelines.delete":     auth.Editor,
+	"pipelines.get":    auth.Viewer,
+	"pipelines.pause":  auth.Operator,
+	"pipelines.sync":   auth.Operator,
+	"pipelines.delete": auth.Editor,
+	// Releasing a hold approves its change.
+	"pipelines.holds":      auth.Editor,
 	"syncs.get":            auth.Viewer,
 	"logs.get":             auth.Viewer,
 	"sources.get":          auth.Viewer,
@@ -116,6 +118,9 @@ var rules = map[string]rule{
 	apiv1connect.PipelineServiceGetPipelinePlanProcedure:      {"pipelines.get", inName, false},
 	apiv1connect.PipelineServiceListStreamSchemasProcedure:    {"pipelines.get", inParent, false},
 	apiv1connect.PipelineServiceListCheckpointsProcedure:      {"pipelines.get", inParent, false},
+	apiv1connect.PipelineServiceListHoldsProcedure:            {"pipelines.get", inParent, false},
+	apiv1connect.PipelineServiceReleaseHoldProcedure:          {"pipelines.holds", inParent, false},
+	apiv1connect.PipelineServiceDiscardHoldProcedure:          {"pipelines.holds", inParent, false},
 
 	apiv1connect.SyncServiceListSyncsProcedure:   {"syncs.get", inParent, false},
 	apiv1connect.SyncServiceGetSyncProcedure:     {"syncs.get", inName, false},

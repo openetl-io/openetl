@@ -65,6 +65,28 @@ service PipelineService {
   rpc ListCheckpoints(ListCheckpointsRequest) returns (ListCheckpointsResponse) {
     option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/checkpoints"};
   }
+  // The columns and cells the pipeline holds back (ADR-0025), as its last
+  // checkpoint left them.
+  rpc ListHolds(ListHoldsRequest) returns (ListHoldsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/holds"};
+  }
+  // Releases a hold: its held values are patched in, and a column held
+  // whole is delivered again from the next run. A continuous pipeline's run
+  // restarts at a checkpoint to take it.
+  rpc ReleaseHold(ReleaseHoldRequest) returns (ReleaseHoldResponse) {
+    option (google.api.http) = {
+      post: "/v1/{parent=workspaces/*/pipelines/*}/holds:release"
+      body: "*"
+    };
+  }
+  // Discards a hold: its held values are dropped, and a column held whole
+  // stays as the destination has it.
+  rpc DiscardHold(DiscardHoldRequest) returns (DiscardHoldResponse) {
+    option (google.api.http) = {
+      post: "/v1/{parent=workspaces/*/pipelines/*}/holds:discard"
+      body: "*"
+    };
+  }
 }
 
 // PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
@@ -350,6 +372,40 @@ message PipelineStream {
   // primary key. Unset: true for a superset stream whose require is above
   // at least once, otherwise false.
   optional bool collapse = 7;
+  // What a value that doesn't fit its type holds back (ADR-0025): its row,
+  // the default, or only its cell, for a keyed stream into a destination
+  // that patches.
+  QuarantineScope quarantine = 8;
+  // What a held cell shows, for columns the columns map doesn't say.
+  Held held = 9;
+  // Columns held together, by source name: holding one holds the rest.
+  repeated ColumnGroup groups = 10;
+}
+
+enum QuarantineScope {
+  QUARANTINE_SCOPE_UNSPECIFIED = 0;
+  QUARANTINE_SCOPE_ROW = 1;
+  QUARANTINE_SCOPE_CELL = 2;
+}
+
+message Held {
+  HeldMode mode = 1;
+  // For value, and for last's rows the destination doesn't have: a value
+  // of the column's delivered type, as JSON. Empty: null.
+  string value = 2;
+}
+
+enum HeldMode {
+  // null, or value if a value is given.
+  HELD_MODE_UNSPECIFIED = 0;
+  HELD_MODE_NULL = 1;
+  HELD_MODE_VALUE = 2;
+  // The destination keeps its value. Merge only.
+  HELD_MODE_LAST = 3;
+}
+
+message ColumnGroup {
+  repeated string columns = 1;
 }
 
 // The unit timestamps arrive in. Nanoseconds need a destination that
@@ -365,6 +421,8 @@ message PipelineColumn {
   ColumnOpKind op = 1;
   // Only for columns the source declares as decimals.
   ColumnType type = 2;
+  // What the column's held cells show; unset: the stream's held.
+  Held held = 3;
 }
 
 // A type a decimal column can arrive as instead.
@@ -669,4 +727,57 @@ message ListCheckpointsRequest {
 message ListCheckpointsResponse {
   repeated Checkpoint checkpoints = 1;
   string next_page_token = 2;
+}
+
+// Hold is a column, or some of a column's cells, held back while the rest
+// of each row is delivered.
+message Hold {
+  string stream = 1;
+  string column = 2;
+  // The column is held whole; otherwise some of its cells are.
+  bool whole = 3;
+  string reason = 4;
+  // The epoch the hold started in.
+  uint64 since_generation = 5;
+  uint64 since_epoch = 6;
+  google.protobuf.Timestamp start_time = 7;
+  // A cell hold's held cells.
+  uint64 cells = 8;
+  // Its values are dropped, and the column stays as the destination has it.
+  bool discarded = 9;
+  // Released, and being patched in.
+  bool releasing = 10;
+  // Released or discarded, and waiting for the pipeline's next run.
+  bool pending = 11;
+}
+
+message ListHoldsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+}
+
+message ListHoldsResponse {
+  repeated Hold holds = 1;
+}
+
+message ReleaseHoldRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  string stream = 2;
+  string column = 3;
+}
+
+message ReleaseHoldResponse {
+  Hold hold = 1;
+}
+
+message DiscardHoldRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  string stream = 2;
+  string column = 3;
+}
+
+message DiscardHoldResponse {
+  Hold hold = 1;
 }
