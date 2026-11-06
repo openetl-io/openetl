@@ -256,6 +256,11 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 	var pipeline uuid.UUID
 	err = a.Store.Tx(ctx, func(q *db.Queries) error {
 		row, err := q.FinishSync(ctx, params)
+		// Already ended, by whatever took over from a workflow thought lost, or
+		// gone with its pipeline.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

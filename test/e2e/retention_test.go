@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"go.temporal.io/sdk/client"
 
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 )
@@ -42,8 +41,7 @@ func TestRetentionDropsOldMirrorDays(t *testing.T) {
 	}
 	old, recent := partition(40), partition(2)
 
-	h := temporalClient(t).ScheduleClient().GetHandle(ctx, contract.RetentionScheduleID)
-	if err := h.Trigger(ctx, client.ScheduleTriggerOptions{}); err != nil {
+	if err := testBackend(t).TriggerSchedule(ctx, contract.RetentionScheduleID); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 30*time.Second, "the old day to be dropped", func() bool { return !exists(old) })

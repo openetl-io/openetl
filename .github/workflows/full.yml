@@ -78,6 +78,15 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     secrets: inherit
 
+  # DBOS is the default, so Temporal runs here, nightly, and not on demand.
+  e2e-temporal:
+    needs: changed
+    if: needs.changed.outputs.run == 'true'
+    uses: ./.github/workflows/e2e.yml
+    secrets: inherit
+    with:
+      orchestrator: temporal
+
   kind:
     needs: changed
     if: needs.changed.outputs.run == 'true'
@@ -85,7 +94,7 @@ jobs:
     secrets: inherit
 
   full:
-    needs: [changed, go, rust, deny, web, spark-lib, flink-lib, integration, e2e, kind]
+    needs: [changed, go, rust, deny, web, spark-lib, flink-lib, integration, e2e, e2e-temporal, kind]
     if: always()
     runs-on: ubuntu-latest
     steps:

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,7 +15,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
@@ -22,6 +22,7 @@ import (
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/orchestration/dbosbackend"
 	"github.com/openetl-io/openetl/internal/orchestration/schedules"
 	"github.com/openetl-io/openetl/internal/orchestration/temporalbackend"
 	"github.com/openetl-io/openetl/internal/platform/temporalx"
@@ -146,11 +147,15 @@ func schedulePaused(t *testing.T, pipeline string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	desc, err := temporalClient(t).ScheduleClient().GetHandle(t.Context(), contract.ScheduleID(id)).Describe(t.Context())
+	list, err := testBackend(t).ListSchedules(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return desc.Schedule.State.Paused
+	i := slices.IndexFunc(list, func(s orchestration.ScheduleState) bool { return s.ID == contract.ScheduleID(id) })
+	if i < 0 {
+		t.Fatalf("no schedule for %s", pipeline)
+	}
+	return list[i].Paused
 }
 
 // Pausing pauses the schedule, applying again leaves it paused, and a paused
@@ -318,6 +323,30 @@ func TestSearchAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if env.orchestrator != "temporal" {
+		system, err := dbosbackend.SystemDatabaseURL(env.dbURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := pgx.Connect(t.Context(), system)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close(context.Background()) }()
+		for workflow, attrs := range map[string]string{
+			contract.SyncWorkflow:        fmt.Sprintf(`{"pipeline": %q, "connectors": ["faker", "postgres"], "dataPlane": "default", "workspace": %q}`, id, ws),
+			contract.ConnectorOpWorkflow: fmt.Sprintf(`{"connectors": ["faker"], "workspace": %q}`, ws),
+		} {
+			eventually(t, 30*time.Second, workflow+"s matching "+attrs, func() bool {
+				var n int
+				if err := conn.QueryRow(t.Context(), `SELECT count(*) FROM dbos.workflow_status WHERE name = $1 AND attributes @> $2::jsonb`, workflow, attrs).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				return n > 0
+			})
+		}
+		return
+	}
 	tc := temporalClient(t)
 	for _, q := range []string{
 		fmt.Sprintf(`WorkflowType = 'SyncWorkflow' AND PipelineID = '%s' AND ConnectorDef = 'faker' AND ConnectorDef = 'postgres' AND DataPlaneID = 'default' AND WorkspaceID = '%s'`, id, ws),
@@ -347,12 +376,49 @@ func reconcile(t *testing.T) {
 
 func testBackend(t *testing.T) orchestration.Backend {
 	t.Helper()
-	backend, err := temporalbackend.Open(t.Context(), temporalx.Options{Address: env.temporal, Namespace: env.ns})
+	var (
+		backend orchestration.Backend
+		err     error
+	)
+	if env.orchestrator == "temporal" {
+		backend, err = temporalbackend.Open(t.Context(), temporalx.Options{Address: env.temporal, Namespace: env.ns})
+	} else {
+		var system string
+		if system, err = dbosbackend.SystemDatabaseURL(env.dbURL); err == nil {
+			backend, err = dbosbackend.Open(t.Context(), dbosbackend.Options{DatabaseURL: system, ExecutorID: "e2e-test"})
+		}
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(backend.Close)
 	return backend
+}
+
+// lose makes a workflow disappear, as a workflow can, with nothing it could
+// do about it. It reaches the orchestrator's own workflows on its next step.
+func lose(t *testing.T, workflowID string) {
+	t.Helper()
+	switch b := testBackend(t).(type) {
+	case *dbosbackend.Backend:
+		if err := b.Terminate(t.Context(), workflowID); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		if err := temporalClient(t).TerminateWorkflow(t.Context(), workflowID, "", "the test lost it"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// running reports whether a workflow of that name is listed under that ID.
+func running(t *testing.T, workflow, id string) bool {
+	t.Helper()
+	list, err := testBackend(t).ListRunning(t.Context(), workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.ContainsFunc(list, func(w orchestration.RunningWorkflow) bool { return w.ID == id })
 }
 
 func pipelineID(t *testing.T, name string) string {
@@ -384,15 +450,12 @@ func TestSupervisorIsLostAndTakesOver(t *testing.T) {
 	if n := jobs(); n != 1 {
 		t.Fatalf("%d jobs before", n)
 	}
-	if err := temporalClient(t).TerminateWorkflow(t.Context(), wf, "", "the test lost it"); err != nil {
-		t.Fatal(err)
-	}
+	lose(t, wf)
 	before := committedEpochs(t, schema(name))
 	// Listing lags, so the first reconcile may still see the old one running.
 	eventually(t, 30*time.Second, "a supervisor to run again", func() bool {
 		reconcile(t)
-		desc, err := temporalClient(t).DescribeWorkflowExecution(t.Context(), wf, "")
-		return err == nil && desc.GetWorkflowExecutionInfo().GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING
+		return running(t, contract.StreamSupervisorWorkflow, wf)
 	})
 	eventually(t, 30*time.Second, "the job to carry on", func() bool { return committedEpochs(t, schema(name)) > before+2 })
 	if got := statuses(runs(t, name)); got != "running" {
@@ -421,9 +484,7 @@ func TestSyncIsLostAndTheNextTakesOver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := temporalClient(t).TerminateWorkflow(t.Context(), wf, "", "the test lost it"); err != nil {
-		t.Fatal(err)
-	}
+	lose(t, wf)
 	status, stats := syncNow(t, name)
 	if status != "succeeded" {
 		t.Fatalf("sync %s: %s", status, stats)

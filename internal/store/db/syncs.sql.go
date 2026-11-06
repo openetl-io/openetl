@@ -14,7 +14,7 @@ import (
 
 const finishSync = `-- name: FinishSync :one
 UPDATE syncs SET status = $1, error = $2, stats = $3, end_time = now()
-WHERE org_id = $4 AND id = $5
+WHERE org_id = $4 AND id = $5 AND status = 'running'
 RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous, failed_attempts, last_failed_attempt, failures_since_commit, last_attempt_error, last_attempt_code, last_attempt_time
 `
 

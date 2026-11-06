@@ -47,12 +47,12 @@ jobs:
           path: ~/.m2
           key: maven-${{ github.job }}-${{ hashFiles('libs/**/pom.xml') }}
           restore-keys: maven-${{ github.job }}-
-      - name: Start Postgres, Temporal, S3 and kind
+      - name: Start Postgres, S3 and kind
         run: |
           tail --pid="$(cat "$RUNNER_TEMP/free-disk.pid")" -f /dev/null
           curl -fsSLo "$RUNNER_TEMP/kind" https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
           sudo install "$RUNNER_TEMP/kind" /usr/local/bin/kind
-          (set +e; make deps-up DEPS="postgres temporal s3" && make kind-up; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
+          (set +e; make deps-up DEPS="postgres s3" && make kind-up; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
       - name: Build the engine, the connectors and openetl-flink
         run: |
           make connectors CONNECTORS_SRC=openetl-connectors

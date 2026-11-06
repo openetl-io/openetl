@@ -6,7 +6,7 @@ RETURNING *;
 
 -- name: FinishSync :one
 UPDATE syncs SET status = @status, error = @error, stats = @stats, end_time = now()
-WHERE org_id = @org_id AND id = @id
+WHERE org_id = @org_id AND id = @id AND status = 'running'
 RETURNING *;
 
 -- name: GetSyncByRun :one

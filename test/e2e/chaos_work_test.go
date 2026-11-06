@@ -152,7 +152,7 @@ func (w *pgWork) write(ctx context.Context, rng *rand.Rand) error {
 	}()
 	var addAt time.Time
 	if deadline, ok := ctx.Deadline(); ok && w.c.holds {
-		addAt = time.Now().Add(upTo(rng, time.Until(deadline)/2+1))
+		addAt = time.Now().Add(upTo(rng, max(time.Until(deadline)/2, 0)+1))
 	}
 	since := -1
 	for ctx.Err() == nil {

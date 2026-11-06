@@ -18,6 +18,11 @@ on:
       flags:
         description: More of the suite's flags, such as -chaos.only=cdc
         default: ""
+      orchestrator:
+        description: What runs workflows
+        type: choice
+        options: [dbos, temporal]
+        default: dbos
 
 permissions:
   contents: read
@@ -66,10 +71,12 @@ jobs:
           path: ~/.m2
           key: maven-${{ github.job }}-${{ hashFiles('libs/**/pom.xml') }}
           restore-keys: maven-${{ github.job }}-
-      - name: Start Postgres, Temporal, S3, Kafka, Iceberg's catalog, Spark and Flink
+      - name: Start Postgres, S3, Kafka, Iceberg's catalog, Spark and Flink, and Temporal if it's what's tested
+        env:
+          TEMPORAL: ${{ inputs.orchestrator == 'temporal' && '1' || '' }}
         run: |
           tail --pid="$(cat "$RUNNER_TEMP/free-disk.pid")" -f /dev/null
-          (set +e; make deps-up DEPS="postgres temporal s3 kafka iceberg spark-master spark-worker flink-jobmanager flink-taskmanager"; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
+          (set +e; make deps-up DEPS="postgres s3 kafka iceberg spark-master spark-worker flink-jobmanager flink-taskmanager"; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
       - name: Build the engine, the connectors, openetl-spark and openetl-flink
         run: |
           make connectors CONNECTORS_SRC=openetl-connectors
@@ -85,6 +92,7 @@ jobs:
       - name: Randomized pipelines under faults
         env:
           OPENETL_CHAOS_REPORT: ${{ runner.temp }}/chaos-report.txt
+          OPENETL_TEST_ORCHESTRATOR: ${{ inputs.orchestrator }}
         run: |
           mkdir -p "$RUNNER_TEMP/chaos-logs"
           make chaos CONNECTORS_SRC=openetl-connectors CHAOS_TIMEOUT=290m \

@@ -48,6 +48,7 @@ var (
 	chaosLogs     = flag.String("chaos.logs", "", "a directory to keep every runner's output in")
 	chaosTemporal = flag.Duration("chaos.temporal-restart", 0, "restart compose's Temporal about this often; 0: never")
 	chaosPostgres = flag.Duration("chaos.postgres-restart", 0, "restart or kill compose's Postgres about this often; 0: never")
+	chaosKills    = flag.Duration("chaos.orchestrator-kill", 0, "on DBOS, run two more orchestrators, and kill one about this often, which starts again; 0: neither")
 )
 
 type chaosConfig struct {
@@ -251,6 +252,8 @@ type chaosSuite struct {
 	mu       sync.Mutex
 	results  []runResult
 	restarts int
+	// Orchestrators killed.
+	orchestratorKills int
 }
 
 // pgGate keeps Postgres restarts out of the suite's own statements, so
@@ -293,6 +296,9 @@ func TestChaos(t *testing.T) {
 	}
 	if *chaosPostgres > 0 {
 		go s.restartPostgres(ctx, t, seed)
+	}
+	if *chaosKills > 0 && env.orchestrator == "dbos" {
+		go s.killOrchestrators(ctx, t, seed)
 	}
 	sem := make(chan struct{}, *chaosParallel)
 	t.Run("runs", func(t *testing.T) {
@@ -346,6 +352,11 @@ func TestChaosChecks(t *testing.T) {
 			}
 			if !c.continuous {
 				c.every = "5s"
+			}
+			// Its plant needs the column, and writes wait for the first sync,
+			// which can take this long on a machine this busy.
+			if plant == plantHeld {
+				c.writeFor = 15 * time.Second
 			}
 			if *chaosOnly != "" && !slices.ContainsFunc(strings.Split(*chaosOnly, ","), func(s string) bool { return strings.Contains(c.name(), s) }) {
 				continue
@@ -672,6 +683,38 @@ func (s *chaosSuite) locate(ctx context.Context, pool *chaosPool, pipeline strin
 	return nil, 0
 }
 
+// killOrchestrators kills an orchestrator now and then, with jitter. Half the
+// time it starts again under its own name, and recovers its own workflows when
+// it launches; otherwise under another, as a Deployment's pod does, and another
+// recovers them when its reports lapse.
+func (s *chaosSuite) killOrchestrators(ctx context.Context, t *testing.T, seed uint64) {
+	rng := rand.New(rand.NewPCG(seed, 0x0c5))
+	start := func(id string) *runner {
+		return startOpenetld(t, nil, "orchestrator", "--database-url", env.dbURL, "--executor-id", id, "--bootstrap-key-file", env.keyFile)
+	}
+	names := []string{"chaos-0", "chaos-1"}
+	replicas := []*runner{start(names[0]), start(names[1])}
+	for n := 2; ; n++ {
+		pause(ctx, *chaosKills/2+upTo(rng, *chaosKills))
+		if ctx.Err() != nil {
+			return
+		}
+		i := rng.IntN(len(replicas))
+		replicas[i].kill(t)
+		s.mu.Lock()
+		s.orchestratorKills++
+		s.mu.Unlock()
+		pause(ctx, upTo(rng, 5*time.Second))
+		if ctx.Err() != nil {
+			return
+		}
+		if rng.IntN(2) == 0 {
+			names[i] = fmt.Sprintf("chaos-%d", n)
+		}
+		replicas[i] = start(names[i])
+	}
+}
+
 // restartTemporal restarts compose's Temporal now and then, with jitter.
 func (s *chaosSuite) restartTemporal(ctx context.Context, t *testing.T, seed uint64) {
 	rng := rand.New(rand.NewPCG(seed, 0x7e3))
@@ -766,7 +809,7 @@ func (s *chaosSuite) report(t *testing.T, seed uint64) {
 	defer s.mu.Unlock()
 	var b strings.Builder
 	s.pg.mu.RLock()
-	fmt.Fprintf(&b, "chaos seed %d: %d runs, %d Temporal restarts, %d Postgres restarts (%d killed)\n", seed, len(s.results), s.restarts, s.pg.restarts, s.pg.kills)
+	fmt.Fprintf(&b, "chaos seed %d: %d runs on %s, %d Temporal restarts, %d orchestrator kills, %d Postgres restarts (%d killed)\n", seed, len(s.results), env.orchestrator, s.restarts, s.orchestratorKills, s.pg.restarts, s.pg.kills)
 	s.pg.mu.RUnlock()
 	byName := map[string][2]int{}
 	faults := map[string]int{}

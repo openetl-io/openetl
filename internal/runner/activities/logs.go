@@ -54,7 +54,7 @@ type Logs struct {
 	Store checkpoint.Store
 }
 
-// The most a read returns, well below Temporal's payload limit.
+// The most a read returns, well below what a workflow's input or result may be.
 const maxLogRead = 256 << 10
 
 func (a *Logs) ReadLogs(ctx context.Context, in contract.ReadLogsInput) (contract.ReadLogsResult, error) {
