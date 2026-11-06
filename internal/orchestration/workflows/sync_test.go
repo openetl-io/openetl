@@ -7,11 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/workflow"
-
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -20,7 +16,7 @@ import (
 
 // syncEnv runs SyncWorkflow with attempt answering each RunSyncAttempt.
 type syncEnv struct {
-	env      *testsuite.TestWorkflowEnvironment
+	env      harness
 	plane    *plane
 	finished contract.FinishSyncInput
 	calls    int
@@ -29,16 +25,15 @@ type syncEnv struct {
 
 func newSyncEnv(t *testing.T, attempt func(n int, in contract.AttemptInput) contract.WorkOutcome) *syncEnv {
 	t.Helper()
-	var s testsuite.WorkflowTestSuite
-	e := &syncEnv{env: s.NewTestWorkflowEnvironment(), started: contract.StartSyncResult{SyncID: "s1", Version: "v1", DataPlane: "default"}}
-	e.env.RegisterWorkflowWithOptions(workflows.Workflows{}.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
-	e.env.RegisterActivityWithOptions(func(context.Context, contract.SyncInput) (contract.StartSyncResult, error) {
+	e := &syncEnv{env: newHarness(t), started: contract.StartSyncResult{SyncID: "s1", Version: "v1", DataPlane: "default"}}
+	e.env.RegisterWorkflows(workflows.Workflows{})
+	e.env.RegisterStep(orchestration.NewStep(contract.StartSync, func(context.Context, contract.SyncInput) (contract.StartSyncResult, error) {
 		return e.started, nil
-	}, activity.RegisterOptions{Name: contract.StartSync})
-	e.env.RegisterActivityWithOptions(func(_ context.Context, in contract.FinishSyncInput) error {
+	}))
+	e.env.RegisterStep(orchestration.NewAction(contract.FinishSync, func(_ context.Context, in contract.FinishSyncInput) error {
 		e.finished = in
 		return nil
-	}, activity.RegisterOptions{Name: contract.FinishSync})
+	}))
 	e.plane = newPlane(e.env, func(in contract.WorkInput) (time.Duration, contract.WorkOutcome) {
 		e.calls++
 		return time.Second, attempt(e.calls, input[contract.AttemptInput](t, in))
@@ -118,8 +113,7 @@ func TestDrainingDoesNotCount(t *testing.T) {
 	if calls != 6 || err == nil {
 		t.Fatalf("%d calls and error %v, want 6 and an error", calls, err)
 	}
-	var app *temporal.ApplicationError
-	if !errors.As(err, &app) || app.Type() != errs.Transient.String() {
+	if orchestration.CodeOf(err) != errs.Transient.String() {
 		t.Fatalf("got %v, want the last TRANSIENT", err)
 	}
 }
@@ -184,7 +178,7 @@ func TestCancellingASyncCancelsItsAttempt(t *testing.T) {
 	e := newSyncEnv(t, func(int, contract.AttemptInput) contract.WorkOutcome { return result(t, contract.AttemptResult{}) })
 	e.plane.run = func(contract.WorkInput) (time.Duration, contract.WorkOutcome) { return forever, contract.WorkOutcome{} }
 	e.env.RegisterDelayedCallback(e.env.CancelWorkflow, time.Minute)
-	if err := e.run(t); !temporal.IsCanceledError(err) {
+	if err := e.run(t); !errors.Is(err, orchestration.ErrStopped) {
 		t.Fatalf("got %v, want cancelled", err)
 	}
 	if len(e.plane.cancelled) != 1 || e.plane.cancelled[0] != e.plane.sent[0].ID {
@@ -204,9 +198,8 @@ func TestPausedPipelineDoesNotSync(t *testing.T) {
 // while for a runner.
 func TestConnectorOpRunsOnTheDataPlane(t *testing.T) {
 	for op, kind := range map[string]string{contract.OpCheck: contract.CheckConnector, contract.OpDiscover: contract.DiscoverSource} {
-		var s testsuite.WorkflowTestSuite
-		env := s.NewTestWorkflowEnvironment()
-		env.RegisterWorkflowWithOptions(workflows.Workflows{}.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
+		env := newHarness(t)
+		env.RegisterWorkflows(workflows.Workflows{})
 		p := newPlane(env, func(in contract.WorkInput) (time.Duration, contract.WorkOutcome) {
 			return time.Second, result(t, contract.ConnectorOpResult{Version: "v1", Catalog: input[contract.ConnectorOpInput](t, in).Op})
 		})
@@ -225,15 +218,13 @@ func TestConnectorOpRunsOnTheDataPlane(t *testing.T) {
 // No runner taking an operation fails it, without a retry, in a way the API
 // can tell.
 func TestConnectorOpNoRunner(t *testing.T) {
-	var s testsuite.WorkflowTestSuite
-	env := s.NewTestWorkflowEnvironment()
-	env.RegisterWorkflowWithOptions(workflows.Workflows{}.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
+	env := newHarness(t)
+	env.RegisterWorkflows(workflows.Workflows{})
 	p := newPlane(env, func(contract.WorkInput) (time.Duration, contract.WorkOutcome) {
 		return contract.OpPickup, contract.WorkOutcome{Code: contract.NoRunner, Message: "no runner took it in time", NonRetryable: true}
 	})
 	env.ExecuteWorkflow(contract.ConnectorOpWorkflow, contract.ConnectorOpInput{OrgID: "o", DataPlane: "dp1", Op: contract.OpCheck, SourceID: "s"})
-	var app *temporal.ApplicationError
-	if err := env.GetWorkflowError(); !errors.As(err, &app) || app.Type() != contract.NoRunner {
+	if err := env.GetWorkflowError(); orchestration.CodeOf(err) != contract.NoRunner {
 		t.Fatalf("got %v", env.GetWorkflowError())
 	}
 	if len(p.sent) != 1 {
@@ -242,9 +233,8 @@ func TestConnectorOpNoRunner(t *testing.T) {
 }
 
 func TestConnectorOpRetriesThreeTimes(t *testing.T) {
-	var s testsuite.WorkflowTestSuite
-	env := s.NewTestWorkflowEnvironment()
-	env.RegisterWorkflowWithOptions(workflows.Workflows{}.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
+	env := newHarness(t)
+	env.RegisterWorkflows(workflows.Workflows{})
 	p := newPlane(env, func(contract.WorkInput) (time.Duration, contract.WorkOutcome) {
 		return time.Second, fail(errs.Transient)
 	})
@@ -258,9 +248,8 @@ func TestConnectorOpRetriesThreeTimes(t *testing.T) {
 }
 
 func TestReadLogsIsALightOperation(t *testing.T) {
-	var s testsuite.WorkflowTestSuite
-	env := s.NewTestWorkflowEnvironment()
-	env.RegisterWorkflowWithOptions(workflows.Workflows{}.ReadLogs, workflow.RegisterOptions{Name: contract.ReadLogsWorkflow})
+	env := newHarness(t)
+	env.RegisterWorkflows(workflows.Workflows{})
 	p := newPlane(env, func(in contract.WorkInput) (time.Duration, contract.WorkOutcome) {
 		return time.Second, result(t, contract.ReadLogsResult{Lines: []contract.LogLine{{Task: "attempt-001", Text: "{}"}}, Next: contract.LogCursor{Key: input[contract.ReadLogsInput](t, in).SyncID, Lines: 1}})
 	})

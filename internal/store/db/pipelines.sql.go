@@ -522,6 +522,53 @@ func (q *Queries) ListPipelines(ctx context.Context, arg ListPipelinesParams) ([
 	return items, nil
 }
 
+const listPipelinesToRun = `-- name: ListPipelinesToRun :many
+SELECT p.org_id, p.id, p.paused, v.spec,
+    EXISTS (
+        SELECT 1 FROM syncs s
+        WHERE s.org_id = p.org_id AND s.pipeline_id = p.id AND s.continuous AND s.status = 'running'
+    )::boolean AS running_run
+FROM pipelines p
+JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
+ORDER BY p.org_id, p.id
+`
+
+type ListPipelinesToRunRow struct {
+	OrgID      uuid.UUID
+	ID         uuid.UUID
+	Paused     bool
+	Spec       []byte
+	RunningRun bool
+}
+
+// Every pipeline of every org, with its current version's spec, for what runs
+// them.
+func (q *Queries) ListPipelinesToRun(ctx context.Context) ([]ListPipelinesToRunRow, error) {
+	rows, err := q.db.Query(ctx, listPipelinesToRun)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPipelinesToRunRow
+	for rows.Next() {
+		var i ListPipelinesToRunRow
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.Paused,
+			&i.Spec,
+			&i.RunningRun,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPipelinesUsing = `-- name: ListPipelinesUsing :many
 SELECT p.id, p.name, p.version, p.workspace_id, p.source_id, p.destination_id, w.name AS workspace, v.spec, v.dbt, v.spark_clusters, v.flink_clusters
 FROM pipelines p

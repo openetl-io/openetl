@@ -6,10 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/workflow"
-
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -28,16 +25,15 @@ func steps(projects ...string) []contract.PostSyncStep {
 // RunDbt was called for, in order, and what FinishSync recorded.
 func runPostSync(t *testing.T, s []contract.PostSyncStep, attemptErr contract.WorkOutcome, dbt func(contract.DbtInput) contract.WorkOutcome) (ran []string, finished contract.FinishSyncInput, err error) {
 	t.Helper()
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	env.RegisterWorkflowWithOptions(workflows.Workflows{}.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
-	env.RegisterActivityWithOptions(func(context.Context, contract.SyncInput) (contract.StartSyncResult, error) {
+	env := newHarness(t)
+	env.RegisterWorkflows(workflows.Workflows{})
+	env.RegisterStep(orchestration.NewStep(contract.StartSync, func(context.Context, contract.SyncInput) (contract.StartSyncResult, error) {
 		return contract.StartSyncResult{SyncID: "s1", Version: "v1", DataPlane: "dp1", PostSync: s}, nil
-	}, activity.RegisterOptions{Name: contract.StartSync})
-	env.RegisterActivityWithOptions(func(_ context.Context, in contract.FinishSyncInput) error {
+	}))
+	env.RegisterStep(orchestration.NewAction(contract.FinishSync, func(_ context.Context, in contract.FinishSyncInput) error {
 		finished = in
 		return nil
-	}, activity.RegisterOptions{Name: contract.FinishSync})
+	}))
 	newPlane(env, func(w contract.WorkInput) (time.Duration, contract.WorkOutcome) {
 		if w.Kind == contract.RunSyncAttempt {
 			if attemptErr.Code != "" {
@@ -128,19 +124,18 @@ func TestNoPostSyncAfterAFailedSync(t *testing.T) {
 // sync without a retry.
 func TestSparkStep(t *testing.T) {
 	for _, failed := range []bool{false, true} {
-		var suite testsuite.WorkflowTestSuite
-		env := suite.NewTestWorkflowEnvironment()
-		env.RegisterWorkflowWithOptions(workflows.Workflows{}.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
+		env := newHarness(t)
+		env.RegisterWorkflows(workflows.Workflows{})
 		s := append(steps("a"), contract.PostSyncStep{Spark: &contract.SparkStep{Cluster: "lab", ClusterVersion: "cv1", Jar: "s3://j/a.jar"}})
 		s = append(s, steps("b")...)
-		env.RegisterActivityWithOptions(func(context.Context, contract.SyncInput) (contract.StartSyncResult, error) {
+		env.RegisterStep(orchestration.NewStep(contract.StartSync, func(context.Context, contract.SyncInput) (contract.StartSyncResult, error) {
 			return contract.StartSyncResult{SyncID: "s1", Version: "v1", DataPlane: "dp1", PostSync: s}, nil
-		}, activity.RegisterOptions{Name: contract.StartSync})
+		}))
 		var finished contract.FinishSyncInput
-		env.RegisterActivityWithOptions(func(_ context.Context, in contract.FinishSyncInput) error {
+		env.RegisterStep(orchestration.NewAction(contract.FinishSync, func(_ context.Context, in contract.FinishSyncInput) error {
 			finished = in
 			return nil
-		}, activity.RegisterOptions{Name: contract.FinishSync})
+		}))
 		var ran []string
 		sparks := 0
 		newPlane(env, func(w contract.WorkInput) (time.Duration, contract.WorkOutcome) {

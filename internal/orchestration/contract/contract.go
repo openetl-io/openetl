@@ -11,8 +11,6 @@ import (
 )
 
 const (
-	OrchestratorQueue = "cp.orchestrator"
-
 	SyncWorkflow             = "SyncWorkflow"
 	StreamSupervisorWorkflow = "StreamSupervisorWorkflow"
 	ConnectorOpWorkflow      = "ConnectorOpWorkflow"
@@ -56,9 +54,9 @@ const (
 	PriorityBackfill
 )
 
-// WakeSignal tells a workflow that work it sent finished. It carries the
+// WakeMessage tells a workflow that work it sent finished. It carries the
 // work's ID.
-const WakeSignal = "work-finished"
+const WakeMessage = "work-finished"
 
 // WorkInput is work a workflow sends to a data plane.
 type WorkInput struct {
@@ -186,10 +184,10 @@ func ScheduleID(pipelineID string) string { return "schedule/" + pipelineID }
 
 func StreamWorkflowID(pipelineID string) string { return "stream/" + pipelineID }
 
-// RefreshSignal asks a continuous pipeline's supervisor to look at the
+// RefreshMessage asks a continuous pipeline's supervisor to look at the
 // pipeline again: a new version, a pause or resume, a change of mode, or
 // its deletion. It carries nothing.
-const RefreshSignal = "refresh"
+const RefreshMessage = "refresh"
 
 func OpWorkflowID(id string) string { return "op/" + id }
 
@@ -371,6 +369,24 @@ type StreamState struct {
 	Releases string
 	// The pool its jobs go to; empty for the default.
 	Pool string `json:",omitempty"`
+	// A run still running, which an earlier supervisor left behind if this
+	// one didn't start it.
+	Left *LeftRun `json:",omitempty"`
+}
+
+// LeftRun is a run the database shows running, and its latest job.
+type LeftRun struct {
+	SyncID    string
+	RunKey    string
+	Version   string
+	DataPlane string
+	// The newest hold release when its job started.
+	Releases string
+	// Empty if it never got one. It may have ended since.
+	Job      string `json:",omitempty"`
+	JobStart time.Time
+	// Attempts before Job.
+	Earlier int32
 }
 
 // StreamRun is one run of a continuous pipeline: a version running from when

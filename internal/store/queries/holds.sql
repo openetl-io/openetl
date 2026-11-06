@@ -49,3 +49,7 @@ DELETE FROM hold_releases WHERE org_id = @org_id AND id = @id;
 
 -- name: NewestHoldRelease :one
 SELECT coalesce(max(id::text), '')::text FROM hold_releases WHERE org_id = @org_id AND pipeline_id = @pipeline_id;
+
+-- name: NewestHoldReleaseAt :one
+SELECT coalesce(max(id::text), '')::text FROM hold_releases
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND create_time <= @at;

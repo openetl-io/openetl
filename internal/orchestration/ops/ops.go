@@ -5,21 +5,17 @@ package ops
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/temporal"
 
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
-	"github.com/openetl-io/openetl/internal/platform/temporalx"
 )
 
 type Ops struct {
-	Client client.Client
+	Backend orchestration.Backend
 }
 
 // Run starts the operation and waits for its result.
@@ -38,18 +34,16 @@ func (o *Ops) Start(ctx context.Context, in contract.ConnectorOpInput) error {
 	return err
 }
 
-func (o *Ops) start(ctx context.Context, in contract.ConnectorOpInput) (client.WorkflowRun, error) {
-	run, err := o.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:                       contract.OpWorkflowID(cmp.Or(in.OpID, uuid.NewString())),
-		TaskQueue:                contract.OrchestratorQueue,
-		WorkflowExecutionTimeout: contract.OpTimeout,
-		TypedSearchAttributes: temporal.NewSearchAttributes(
-			temporalx.OrgIDAttr.ValueSet(in.OrgID),
-			temporalx.WorkspaceIDAttr.ValueSet(in.WorkspaceID),
-			temporalx.DataPlaneIDAttr.ValueSet(in.DataPlane),
-			temporalx.ConnectorDefAttr.ValueSet([]string{in.Connector}),
-		),
-	}, contract.ConnectorOpWorkflow, in)
+func (o *Ops) start(ctx context.Context, in contract.ConnectorOpInput) (orchestration.Run, error) {
+	run, err := o.Backend.Start(ctx, orchestration.StartOptions{
+		ID:       contract.OpWorkflowID(cmp.Or(in.OpID, uuid.NewString())),
+		Workflow: contract.ConnectorOpWorkflow,
+		Input:    in,
+		Timeout:  contract.OpTimeout,
+		Attributes: orchestration.Attributes{
+			Org: in.OrgID, Workspace: in.WorkspaceID, DataPlane: in.DataPlane, Connectors: []string{in.Connector},
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("ops: start %s: %w", in.Op, err)
 	}
@@ -59,16 +53,13 @@ func (o *Ops) start(ctx context.Context, in contract.ConnectorOpInput) (client.W
 // ReadLogs reads a page of a sync's log on its data plane, and waits for it.
 func (o *Ops) ReadLogs(ctx context.Context, in contract.ReadLogsInput) (contract.ReadLogsResult, error) {
 	var res contract.ReadLogsResult
-	run, err := o.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:                       contract.LogsWorkflowID(uuid.NewString()),
-		TaskQueue:                contract.OrchestratorQueue,
-		WorkflowExecutionTimeout: 2 * time.Minute,
-		TypedSearchAttributes: temporal.NewSearchAttributes(
-			temporalx.OrgIDAttr.ValueSet(in.OrgID),
-			temporalx.PipelineIDAttr.ValueSet(in.PipelineID),
-			temporalx.DataPlaneIDAttr.ValueSet(in.DataPlane),
-		),
-	}, contract.ReadLogsWorkflow, in)
+	run, err := o.Backend.Start(ctx, orchestration.StartOptions{
+		ID:         contract.LogsWorkflowID(uuid.NewString()),
+		Workflow:   contract.ReadLogsWorkflow,
+		Input:      in,
+		Timeout:    2 * time.Minute,
+		Attributes: orchestration.Attributes{Org: in.OrgID, Pipeline: in.PipelineID, DataPlane: in.DataPlane},
+	})
 	if err != nil {
 		return res, fmt.Errorf("ops: read a log: %w", err)
 	}
@@ -77,14 +68,10 @@ func (o *Ops) ReadLogs(ctx context.Context, in contract.ReadLogsInput) (contract
 
 // Waker wakes workflows waiting for work they sent to a data plane.
 type Waker struct {
-	Client client.Client
+	Backend orchestration.Backend
 }
 
-// Wake signals the workflow's current run, if it still has one.
+// Wake tells the workflow, if it's still running.
 func (w *Waker) Wake(ctx context.Context, workflowID, workID string) error {
-	err := w.Client.SignalWorkflow(ctx, workflowID, "", contract.WakeSignal, workID)
-	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
-		return nil
-	}
-	return err
+	return w.Backend.Send(ctx, workflowID, orchestration.Message{Kind: contract.WakeMessage, Work: workID})
 }

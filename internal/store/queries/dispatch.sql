@@ -233,3 +233,14 @@ SELECT workflow_id FROM dispatches WHERE org_id = @org_id AND id = @id;
 -- for placement until it reports again.
 UPDATE runners SET report_time = LEAST(report_time, now() - (sqlc.arg(lapse_ms)::bigint * interval '1 millisecond'))
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id;
+
+-- name: LatestAttempt :one
+SELECT id, attempt, create_time FROM attempts
+WHERE org_id = @org_id AND sync_id = @sync_id
+ORDER BY attempt DESC, create_time DESC
+LIMIT 1;
+
+-- name: UnfinishedWorkOfSyncs :many
+-- What the syncs have running or waiting, their post-sync steps included.
+SELECT id FROM dispatches
+WHERE org_id = @org_id AND state <> 'finished' AND input->>'SyncID' = ANY(@sync_ids::text[]);

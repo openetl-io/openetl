@@ -12,13 +12,13 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/store/db"
@@ -138,18 +138,18 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 	if err == nil {
 		return res, nil
 	}
-	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-		if app.Type() == contract.NoRunner {
+	if f, ok := errors.AsType[*orchestration.Failure](err); ok {
+		if f.Code == contract.NoRunner {
 			return res, connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner of data plane %q took the %s within %s", dp, in.Op, contract.OpPickup))
 		}
 		code := connect.CodeFailedPrecondition
-		switch app.Type() {
+		switch f.Code {
 		case errs.ConfigInvalid.String():
 			code = connect.CodeInvalidArgument
 		case errs.Transient.String(), errs.RateLimited.String(), errs.DestinationUnavailable.String(), errs.Internal.String():
 			code = connect.CodeUnavailable
 		}
-		return res, connect.NewError(code, fmt.Errorf("%s: %s", app.Type(), app.Message()))
+		return res, connect.NewError(code, fmt.Errorf("%s: %s", f.Code, f.Message))
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return res, err

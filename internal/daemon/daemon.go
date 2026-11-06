@@ -19,10 +19,6 @@ import (
 	"connectrpc.com/otelconnect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/worker"
-	"go.temporal.io/sdk/workflow"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
@@ -36,11 +32,13 @@ import (
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/flink"
 	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/orchestration"
 	cpactivities "github.com/openetl-io/openetl/internal/orchestration/activities"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
 	"github.com/openetl-io/openetl/internal/orchestration/ops"
 	"github.com/openetl-io/openetl/internal/orchestration/schedules"
+	"github.com/openetl-io/openetl/internal/orchestration/temporalbackend"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 	"github.com/openetl-io/openetl/internal/platform/config"
 	"github.com/openetl-io/openetl/internal/platform/resources"
@@ -82,21 +80,18 @@ func Run(ctx context.Context, o Options) error {
 	}
 	cfg := o.Config
 	var (
-		tc   client.Client
-		st   *store.Store
-		work *dispatch.Dispatcher
-		err  error
+		backend orchestration.Backend
+		st      *store.Store
+		work    *dispatch.Dispatcher
+		err     error
 	)
 	// A runner reaches only the API (ADR-0028).
 	if o.Roles.Server || o.Roles.Orchestrator {
-		tc, err = temporalx.Dial(ctx, temporalx.Options{Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, Logger: log})
+		backend, err = temporalbackend.Open(ctx, temporalx.Options{Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, Logger: log})
 		if err != nil {
 			return err
 		}
-		defer tc.Close()
-		if err := temporalx.EnsureSearchAttributes(ctx, tc, cfg.TemporalNamespace, temporalx.SearchAttributes); err != nil {
-			return err
-		}
+		defer backend.Close()
 		if st, err = store.Open(ctx, cfg.DatabaseURL); err != nil {
 			return err
 		}
@@ -104,7 +99,7 @@ func Run(ctx context.Context, o Options) error {
 		if err := st.Migrate(ctx); err != nil {
 			return err
 		}
-		work = &dispatch.Dispatcher{Store: st, Waker: &ops.Waker{Client: tc}, Options: o.Dispatch, Logger: log.With("component", "dispatch")}
+		work = &dispatch.Dispatcher{Store: st, Waker: &ops.Waker{Backend: backend}, Options: o.Dispatch, Logger: log.With("component", "dispatch")}
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -176,7 +171,7 @@ func Run(ctx context.Context, o Options) error {
 			return fmt.Errorf("daemon: --lagging-after %q isn't a positive duration", cfg.LaggingAfter)
 		}
 		srv := &api.Server{
-			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc}, Logs: &ops.Ops{Client: tc}, Dispatch: work,
+			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Backend: backend}, Ops: &ops.Ops{Backend: backend}, Logs: &ops.Ops{Backend: backend}, Dispatch: work,
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
 			Downloads:    (&netguard.Policy{Allow: allow}).Client(),
 			Secrets:      keyring,
@@ -221,7 +216,7 @@ func Run(ctx context.Context, o Options) error {
 			return err
 		}
 		defer func() { _ = reg.Unregister() }()
-		g.Go(func() error { return orchestrate(cpctx, cfg, tc, st, work, o.Workflows) })
+		g.Go(func() error { return orchestrate(cpctx, cfg, backend, st, work, o.Workflows, log) })
 		g.Go(func() error { return work.Run(cpctx) })
 	}
 	return g.Wait()
@@ -358,8 +353,8 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, ready func(stri
 	return nil
 }
 
-func orchestrate(ctx context.Context, cfg config.Config, tc client.Client, st *store.Store, work *dispatch.Dispatcher, wf workflows.Workflows) error {
-	sched := &schedules.Schedules{Client: tc}
+func orchestrate(ctx context.Context, cfg config.Config, backend orchestration.Backend, st *store.Store, work *dispatch.Dispatcher, wf workflows.Workflows, log *slog.Logger) error {
+	sched := &schedules.Schedules{Backend: backend}
 	retention := contract.RetentionInput{
 		CheckpointHistory: contract.DefaultCheckpointHistory,
 		AuditHistory:      time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour,
@@ -367,23 +362,10 @@ func orchestrate(ctx context.Context, cfg config.Config, tc client.Client, st *s
 	if err := sched.EnsureRetention(ctx, retention); err != nil {
 		return err
 	}
-	w := worker.New(tc, contract.OrchestratorQueue, worker.Options{})
-	w.RegisterWorkflowWithOptions(wf.Sync, workflow.RegisterOptions{Name: contract.SyncWorkflow})
-	w.RegisterWorkflowWithOptions(wf.StreamSupervisor, workflow.RegisterOptions{Name: contract.StreamSupervisorWorkflow})
-	w.RegisterWorkflowWithOptions(wf.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
-	w.RegisterWorkflowWithOptions(wf.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
-	w.RegisterWorkflowWithOptions(wf.ReadLogs, workflow.RegisterOptions{Name: contract.ReadLogsWorkflow})
-	acts := &cpactivities.Activities{Store: st, Schedules: sched, Dispatch: work}
-	w.RegisterActivityWithOptions(acts.StartSync, activity.RegisterOptions{Name: contract.StartSync})
-	w.RegisterActivityWithOptions(acts.FinishSync, activity.RegisterOptions{Name: contract.FinishSync})
-	w.RegisterActivityWithOptions(acts.GetStreamState, activity.RegisterOptions{Name: contract.GetStreamState})
-	w.RegisterActivityWithOptions(acts.StartRun, activity.RegisterOptions{Name: contract.StartRun})
-	w.RegisterActivityWithOptions(acts.EnqueueWork, activity.RegisterOptions{Name: contract.EnqueueWork})
-	w.RegisterActivityWithOptions(acts.GetWork, activity.RegisterOptions{Name: contract.GetWork})
-	w.RegisterActivityWithOptions(acts.CancelWork, activity.RegisterOptions{Name: contract.CancelWork})
-	w.RegisterActivityWithOptions(acts.DropMirrorPartitions, activity.RegisterOptions{Name: contract.DropMirrorPartitions})
-	w.RegisterActivityWithOptions(acts.AuditPartitions, activity.RegisterOptions{Name: contract.AuditPartitions})
-	return runWorker(ctx, w)
+	reconciler := &schedules.Reconciler{Store: st, Schedules: sched, Backend: backend, Logger: log.With("component", "reconcile")}
+	go reconciler.Run(ctx)
+	acts := &cpactivities.Activities{Store: st, Schedules: sched, Dispatch: work, Logger: log.With("component", "steps")}
+	return backend.Run(ctx, wf.All(), acts.Steps())
 }
 
 func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
@@ -531,13 +513,4 @@ func connectorsDir(cfg config.Config) string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(exe), "connectors")
-}
-
-func runWorker(ctx context.Context, w worker.Worker) error {
-	if err := w.Start(); err != nil {
-		return err
-	}
-	<-ctx.Done()
-	w.Stop()
-	return nil
 }
