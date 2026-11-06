@@ -51,6 +51,11 @@ linters:
           deny:
             - pkg: go.temporal.io
               desc: workflows are written against internal/orchestration, and runners reach only the API (ADR-0028)
+        only-the-dbos-backend-imports-dbos:
+          files: ["$all", "!**/internal/orchestration/dbosbackend/**", "!**/test/e2e/**", "!**/internal/orchestration/workflows/*_test.go"]
+          deny:
+            - pkg: github.com/dbos-inc/dbos-transact-golang
+              desc: workflows are written against internal/orchestration, and runners reach only the API (ADR-0028)
         workflows-are-deterministic:
           files: ["**/internal/orchestration/workflows/**", "!**/*_test.go"]
           deny:
