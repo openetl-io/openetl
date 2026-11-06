@@ -720,6 +720,12 @@ message CheckpointStream {
   // The columns it held at the checkpoint, whole or some of their cells;
   // discarded ones are left out.
   repeated string held_columns = 9;
+  // Set where the epoch got less than the stream's planned level: the level
+  // its rows got, and the one planned. It read them again after a restore
+  // from a forced barrier, before its next resume point, and they may
+  // repeat rows an earlier epoch committed (ADR-0016).
+  DeliveryLevel level = 10;
+  DeliveryLevel planned_level = 11;
 }
 
 message ListCheckpointsRequest {

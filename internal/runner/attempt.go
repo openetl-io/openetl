@@ -430,6 +430,38 @@ func (j *Job) canForce() map[string]bool {
 	return canForce
 }
 
+// Lowered is the level of the rows a stream reads again after a restore from
+// a forced barrier, and the one planned for it.
+type Lowered struct{ Level, Planned delivery.Level }
+
+// Lowered says, by stream, the level of the rows it reads again after a
+// restore from a forced barrier, where that's below its planned level.
+func (j *Job) Lowered() map[string]Lowered {
+	caps, require := j.Destination.Capabilities(), j.Settings.Require
+	lowered := func(of []Stream) (Lowered, bool) {
+		l, ok := Lowered{delivery.ExactlyOnce, delivery.ExactlyOnce}, false
+		for _, s := range of {
+			planned := delivery.PlanStream(caps, s.delivery(), require).Level
+			if got := delivery.PlanStream(caps, s.delivery().Forced(require), require).Level; got < planned {
+				l, ok = Lowered{min(l.Level, got), min(l.Planned, planned)}, true
+			}
+		}
+		return l, ok
+	}
+	out := map[string]Lowered{}
+	for _, s := range j.Streams {
+		of := []Stream{s}
+		if j.transformed() {
+			// An input read again makes every output superset.
+			of = j.Outputs
+		}
+		if l, ok := lowered(of); ok {
+			out[s.Name] = l
+		}
+	}
+	return out
+}
+
 // outputSchemas are a record's outputs' schemas; nil without a record.
 func outputSchemas(r *checkpoint.Record) map[string][]byte {
 	if r == nil {
@@ -612,6 +644,7 @@ type event struct {
 	epoch    uint64
 	states   map[string][]byte
 	forced   []string
+	reread   []string
 	complete map[string]bool
 	rows     map[string]uint64
 	staged   destination.Staged
@@ -624,6 +657,7 @@ type epochState struct {
 	placed, staged, ready bool
 	states                map[string][]byte
 	forced                []string
+	reread                []string
 	complete              map[string]bool
 	rows                  map[string]uint64
 	desc                  destination.Staged
@@ -926,7 +960,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 		if st == nil || st.placed {
 			return fmt.Errorf("runner: unexpected placement of epoch %d", ev.epoch)
 		}
-		st.placed, st.states, st.forced, st.complete, st.rows = true, ev.states, ev.forced, ev.complete, ev.rows
+		st.placed, st.states, st.forced, st.reread, st.complete, st.rows = true, ev.states, ev.forced, ev.reread, ev.complete, ev.rows
 		c.outstanding = false
 	case evStaged:
 		st := c.pending[ev.epoch]
@@ -1020,6 +1054,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		Snapshots:  st.flow.Snapshots,
 		Quarantine: st.flow.Quarantine,
 		Forced:     st.forced,
+		Reread:     st.reread,
 		Sync:       c.job.Sync,
 		Flink:      st.flink,
 		CreatedAt:  time.Now().UTC(),
@@ -1053,6 +1088,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		}
 	}
 	slices.Sort(rec.Forced)
+	slices.Sort(rec.Reread)
 	if err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced); err != nil {
 		return nil, fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}

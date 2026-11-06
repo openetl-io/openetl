@@ -10,9 +10,9 @@ import { DataTable } from "@/components/data-table/data-table";
 import { useDataTable } from "@/components/data-table/use-data-table";
 import { Empty, ErrorNote } from "@/components/empty";
 import { RelativeTime } from "@/components/relative-time";
-import { PipelineService, type ListCheckpointsResponse } from "@/gen/openetl/api/v1/pipeline_pb";
+import { DeliveryLevel, PipelineService, type ListCheckpointsResponse } from "@/gen/openetl/api/v1/pipeline_pb";
 import { errorMessage } from "@/lib/api";
-import { compact, dateOf, full } from "@/lib/format";
+import { compact, dateOf, enumLabel, full } from "@/lib/format";
 import { lastSegment, pipelineName } from "@/lib/names";
 
 type Checkpoint = ListCheckpointsResponse["checkpoints"][number];
@@ -26,6 +26,15 @@ function StreamChip({ s }: { s: Checkpoint["streams"][number] }) {
       {s.heldCells > 0n && <span className="text-degraded tabular-nums">{compact(s.heldCells)} cells held</span>}
       {s.heldColumns.length > 0 && <span className="text-degraded">{s.heldColumns.join(", ")} held</span>}
       {s.collapsedRows > 0n && <span className="text-muted-foreground tabular-nums">{compact(s.collapsedRows)} collapsed</span>}
+      {s.level !== DeliveryLevel.UNSPECIFIED && (
+        <Tooltip>
+          <TooltipTrigger className="text-degraded">{enumLabel(DeliveryLevel[s.level]).toLowerCase()}</TooltipTrigger>
+          <TooltipContent>
+            Below the planned {enumLabel(DeliveryLevel[s.plannedLevel]).toLowerCase()}: read again after a restore from a forced barrier, so
+            its rows may repeat rows an earlier epoch committed
+          </TooltipContent>
+        </Tooltip>
+      )}
       {s.schemaVersion > 0 && <span className="font-mono text-muted-foreground">v{s.schemaVersion}</span>}
       {s.forced && (
         <Tooltip>
@@ -125,8 +134,9 @@ export function CheckpointsTab({ workspace, pipeline, running }: { workspace: st
   return (
     <div className="grid gap-3">
       <p className="text-muted-foreground">
-        Each epoch a sync committed, newest first. A forced barrier was placed without a resume point; a complete stream finished
-        its read in that epoch.
+        Each epoch a sync committed, newest first. A forced barrier was placed without a resume point. A stream read again after a
+        restore from one shows the delivery level it got in that epoch, below the planned one, since its rows may repeat rows an
+        earlier epoch committed. A complete stream finished its read in that epoch.
       </p>
       <DataTable table={table} loading={cps.isPending} />
       {cps.hasNextPage && (

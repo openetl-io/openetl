@@ -2771,6 +2771,27 @@ components:
                     description: |-
                         The columns it held at the checkpoint, whole or some of their cells;
                          discarded ones are left out.
+                level:
+                    enum:
+                        - DELIVERY_LEVEL_UNSPECIFIED
+                        - DELIVERY_LEVEL_AT_LEAST_ONCE
+                        - DELIVERY_LEVEL_EFFECTIVELY_ONCE
+                        - DELIVERY_LEVEL_EXACTLY_ONCE
+                    type: string
+                    description: |-
+                        Set where the epoch got less than the stream's planned level: the level
+                         its rows got, and the one planned. It read them again after a restore
+                         from a forced barrier, before its next resume point, and they may
+                         repeat rows an earlier epoch committed (ADR-0016).
+                    format: enum
+                plannedLevel:
+                    enum:
+                        - DELIVERY_LEVEL_UNSPECIFIED
+                        - DELIVERY_LEVEL_AT_LEAST_ONCE
+                        - DELIVERY_LEVEL_EFFECTIVELY_ONCE
+                        - DELIVERY_LEVEL_EXACTLY_ONCE
+                    type: string
+                    format: enum
         ColumnGroup:
             type: object
             properties:

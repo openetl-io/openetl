@@ -214,6 +214,10 @@ type Record struct {
 	// Streams whose barrier was placed without a resume point. Restoring from
 	// this record re-reads rows that may already be applied.
 	Forced []string `json:"forced,omitempty"`
+	// Streams that read rows again in this epoch: after a restore from a
+	// forced barrier, before their next resume point. Those rows may repeat
+	// rows an earlier epoch committed.
+	Reread []string `json:"reread,omitempty"`
 	// The sync that wrote it. A later attempt of the same sync doesn't read
 	// the streams it completed.
 	Sync string `json:"sync,omitempty"`

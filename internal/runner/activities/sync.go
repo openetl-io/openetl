@@ -397,7 +397,7 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	job.Drain = p.drain
 	job.OnCommit = p.last.Store
 	reports := newReporter(ctx, a.API, spec.GetPipelineId(), p.sync, log)
-	reports.progress = job.Progress
+	reports.progress, reports.lowered = job.Progress, job.Lowered()
 	job.OnSchemas, job.OnCheckpoint = reports.schemas, reports.checkpoint
 	r, err := runner.RunAttempt(ctx, job)
 	reports.close(5 * time.Second)

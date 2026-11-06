@@ -15,6 +15,7 @@ import (
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/internal/plan"
 	"github.com/unsuitable001/openetl/internal/runner"
 	"github.com/unsuitable001/openetl/internal/streamschema"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
@@ -41,6 +42,8 @@ type reporter struct {
 	// Each stream's held cells by column as last reported, for the cells an
 	// epoch held; owned by checkpoint's caller.
 	cells map[string]map[string]uint64
+	// As Job.Lowered says.
+	lowered map[string]runner.Lowered
 }
 
 type report struct {
@@ -138,6 +141,9 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 			}
 		}
 		cs.Holds, cs.HeldCells = mirroredHolds(st.Holds), held[name]
+		if l, ok := r.lowered[name]; ok && slices.Contains(rec.Reread, name) {
+			cs.Level, cs.PlannedLevel = plan.APILevel(l.Level), plan.APILevel(l.Planned)
+		}
 		req.Streams = append(req.Streams, cs)
 	}
 	return req

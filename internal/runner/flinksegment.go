@@ -135,6 +135,7 @@ type flinkCut struct {
 	placed   bool
 	states   map[string][]byte
 	forced   []string
+	reread   []string
 	complete map[string]bool
 	rows     map[string]uint64
 	ready    *Ready
@@ -942,7 +943,7 @@ func (s *flinkSegment) pumped(ev event) error {
 		if cut == nil || cut.placed {
 			return fmt.Errorf("runner: unexpected placement of barrier %d", ev.epoch)
 		}
-		cut.placed, cut.states, cut.forced, cut.complete, cut.rows = true, ev.states, ev.forced, ev.complete, ev.rows
+		cut.placed, cut.states, cut.forced, cut.reread, cut.complete, cut.rows = true, ev.states, ev.forced, ev.reread, ev.complete, ev.rows
 		s.placing = false
 	case evStaged:
 		ep := s.epochs[ev.epoch]
@@ -1283,7 +1284,7 @@ func (s *flinkSegment) epochState(ep *flinkEpoch) *epochState {
 	second := ep.second
 	flow := &Ready{Staged: second.Staged, Files: second.Files, Snapshots: second.Snapshots, Schemas: map[string][]byte{},
 		OutputSchemas: second.Schemas, OutputRows: ep.outRows}
-	forced := map[string]bool{}
+	forced, reread := map[string]bool{}, map[string]bool{}
 	for _, cut := range ep.inputs {
 		maps.Copy(st.states, cut.states)
 		maps.Copy(st.complete, cut.complete)
@@ -1293,6 +1294,9 @@ func (s *flinkSegment) epochState(ep *flinkEpoch) *epochState {
 		for _, f := range cut.forced {
 			forced[f] = true
 		}
+		for _, r := range cut.reread {
+			reread[r] = true
+		}
 		maps.Copy(flow.Schemas, cut.ready.Schemas)
 		flow.Quarantine = append(flow.Quarantine, cut.ready.Quarantine...)
 	}
@@ -1300,7 +1304,7 @@ func (s *flinkSegment) epochState(ep *flinkEpoch) *epochState {
 		q.Output = true
 		flow.Quarantine = append(flow.Quarantine, q)
 	}
-	st.forced = slices.Sorted(maps.Keys(forced))
+	st.forced, st.reread = slices.Sorted(maps.Keys(forced)), slices.Sorted(maps.Keys(reread))
 	st.flow = flow
 	st.flink = &checkpoint.FlinkCheckpoint{Job: s.jobID, Checkpoint: ep.c, From: s.a.from}
 	if ep.typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT {

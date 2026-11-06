@@ -184,6 +184,12 @@ message CheckpointStream {
   repeated CheckpointHold holds = 8;
   // Cells held in the epoch.
   uint64 held_cells = 9;
+  // Set where the epoch got less than the stream's planned level: the level
+  // its rows got, and the one planned. It read them again after a restore
+  // from a forced barrier, so they may repeat rows an earlier epoch
+  // committed.
+  openetl.api.v1.DeliveryLevel level = 10;
+  openetl.api.v1.DeliveryLevel planned_level = 11;
 }
 
 message CheckpointHold {

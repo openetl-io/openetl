@@ -221,6 +221,9 @@ func Level(l apiv1.DeliveryLevel) delivery.Level {
 	return 0
 }
 
+// APILevel is l as the API has it.
+func APILevel(l delivery.Level) apiv1.DeliveryLevel { return levels[l] }
+
 // deliveryStream is what sets a stream's level: the catalog's, and the
 // spec's settings for it, if it names the stream.
 func deliveryStream(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream, read apiv1.SyncMode, mode destination.WriteMode) delivery.Stream {

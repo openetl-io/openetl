@@ -45,6 +45,11 @@ type streamPos struct {
 	// resume came from a forced barrier. Every checkpoint recording it must
 	// list the stream as forced until the next real resume point.
 	forced bool
+	// resume came from a restore of a forced barrier, and the stream hasn't
+	// reached a resume point since, so what it emits is read again.
+	rereading bool
+	// It emitted while rereading since the last barrier.
+	reread bool
 	// A forced barrier keeps the stream at or above require.
 	canForce bool
 	// The barrier that ends the read is placed.
@@ -119,6 +124,7 @@ type sourcePump struct {
 	unplaced      int
 	states        map[string][]byte
 	forced        []string
+	reread        []string
 	complete      map[string]bool
 	rows          map[string]uint64
 	bytes         int64
@@ -157,7 +163,10 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored
 	}
 	for _, s := range job.Streams {
 		p.order = append(p.order, s.Name)
-		p.streams[s.Name] = &streamPos{resume: restored[s.Name], forced: restoredForced[s.Name], canForce: canForce[s.Name], complete: done[s.Name], ended: done[s.Name]}
+		p.streams[s.Name] = &streamPos{
+			resume: restored[s.Name], forced: restoredForced[s.Name], rereading: restoredForced[s.Name],
+			canForce: canForce[s.Name], complete: done[s.Name], ended: done[s.Name],
+		}
 		p.known[s.Name] = true
 	}
 	return p
@@ -281,6 +290,7 @@ func (p *sourcePump) handle(e emit) error {
 			p.bytes += int64(len(r))
 		}
 		st.dirty, st.active = true, true
+		st.reread = st.reread || st.rereading
 		if err := p.forward(f); err != nil {
 			return err
 		}
@@ -289,13 +299,13 @@ func (p *sourcePump) handle(e emit) error {
 			return p.notify(event{kind: evThreshold})
 		}
 	case emitResume:
-		st.resume, st.dirty, st.active, st.forced = e.state, false, true, false
+		st.resume, st.dirty, st.active, st.forced, st.rereading = e.state, false, true, false, false
 		if p.pending != 0 && !st.placed {
 			return p.place(e.stream, false)
 		}
 	case emitComplete:
 		// A resume point that a record must also show as complete.
-		st.resume, st.dirty, st.complete, st.active, st.forced = e.state, false, true, true, false
+		st.resume, st.dirty, st.complete, st.active, st.forced, st.rereading = e.state, false, true, true, false, false
 		if p.pending != 0 && !st.placed {
 			return p.place(e.stream, false)
 		}
@@ -324,7 +334,7 @@ func (p *sourcePump) request(n uint64) error {
 	}
 	p.requested, p.pending, p.unplaced = n, n, len(p.order)
 	p.states = make(map[string][]byte, len(p.order))
-	p.forced = nil
+	p.forced, p.reread = nil, nil
 	p.complete = make(map[string]bool)
 	p.rows = make(map[string]uint64, len(p.order))
 	p.bytes, p.thresholdSent = 0, false
@@ -407,11 +417,15 @@ func (p *sourcePump) place(name string, forced bool) error {
 	} else if st.complete {
 		p.complete[name] = true
 	}
+	if st.reread {
+		p.reread = append(p.reread, name)
+	}
+	st.reread = false
 	p.unplaced--
 	if p.unplaced > 0 {
 		return nil
 	}
-	ev := event{kind: evPlaced, epoch: p.pending, states: p.states, forced: p.forced, complete: p.complete, rows: p.rows}
+	ev := event{kind: evPlaced, epoch: p.pending, states: p.states, forced: p.forced, reread: p.reread, complete: p.complete, rows: p.rows}
 	p.pending = 0
 	if p.forceTimer != nil {
 		p.forceTimer.Stop()

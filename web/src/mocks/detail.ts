@@ -81,15 +81,31 @@ export function schemas(name: string): StreamSchema[] {
 
 export function checkpoints(name: string): Checkpoint[] {
   const committed = (syncs.get(name) ?? []).filter((s) => s.state === SyncState.SUCCEEDED || s.lastCommitTime);
+  // audit-log-archive's barrier was forced at epoch 894, and the next attempt restored from it.
+  const restored = name.endsWith("/pipelines/audit-log-archive");
+  const gen = (i: number) => (restored && i <= 5 ? 2n : 1n);
   return committed.slice(0, 30).map((s, i) =>
     create(CheckpointSchema, {
-      generation: 1n,
+      generation: gen(i),
       epoch: BigInt(900 - i),
-      previousGeneration: 1n,
+      previousGeneration: gen(i + 1),
       previousEpoch: BigInt(899 - i),
       sync: s.name,
       commitTime: s.lastCommitTime ?? s.endTime,
-      streams: s.streams.map((st, j) => ({ name: st.name, rows: st.rows, quarantinedRows: st.quarantinedRows, schemaVersion: j === 0 ? 2 : 1, complete: !s.continuous })),
+      streams: s.streams.map((st, j) => {
+        const reread = restored && j === 0 && (i === 4 || i === 5);
+        const forced = restored && j === 0 && (i === 5 || i === 6);
+        return {
+          name: st.name,
+          rows: st.rows,
+          quarantinedRows: st.quarantinedRows,
+          schemaVersion: j === 0 ? 2 : 1,
+          complete: !s.continuous && !forced,
+          forced,
+          level: reread ? DeliveryLevel.AT_LEAST_ONCE : DeliveryLevel.UNSPECIFIED,
+          plannedLevel: reread ? DeliveryLevel.EXACTLY_ONCE : DeliveryLevel.UNSPECIFIED,
+        };
+      }),
     }),
   );
 }
