@@ -413,7 +413,7 @@ func TestStreamRunsHaveTheirOwnWorkIDs(t *testing.T) {
 	if len(e.plane.sent) != 2 || e.plane.sent[0].ID == e.plane.sent[1].ID {
 		t.Fatalf("sent %+v", e.plane.sent)
 	}
-	if w := e.plane.sent[0]; w.Kind != contract.RunStreamJob || w.Light != "" || w.PipelineID != "p" || w.Version != "v1" || w.Heartbeat != 90*time.Second || w.Size.CPU == 0 {
+	if w := e.plane.sent[0]; w.Kind != contract.RunStreamJob || w.Light != "" || w.PipelineID != "p" || w.Version != "v1" || w.Heartbeat != 90*time.Second || w.SyncID == "" || w.Attempt != 1 {
 		t.Errorf("sent %+v", w)
 	}
 }

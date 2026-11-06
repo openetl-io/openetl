@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/orchestration/sizing"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/store"
@@ -47,10 +48,11 @@ func (w *fakeWaker) has(id string) bool {
 }
 
 type fixture struct {
-	t     *testing.T
-	d     *Dispatcher
-	waker *fakeWaker
-	org   uuid.UUID
+	t         *testing.T
+	d         *Dispatcher
+	waker     *fakeWaker
+	org       uuid.UUID
+	workspace uuid.UUID
 }
 
 func setup(t *testing.T, o Options) *fixture {
@@ -69,7 +71,7 @@ func setup(t *testing.T, o Options) *fixture {
 		t.Fatal(err)
 	}
 	waker := &fakeWaker{}
-	return &fixture{t: t, d: &Dispatcher{Store: s, Waker: waker, Options: o}, waker: waker, org: tenant.Org}
+	return &fixture{t: t, d: &Dispatcher{Store: s, Waker: waker, Options: o}, waker: waker, org: tenant.Org, workspace: tenant.Workspace}
 }
 
 // report has a runner report what it runs, and returns what to stop.
@@ -167,7 +169,7 @@ func TestAttemptPlacedPolledReportedFinished(t *testing.T) {
 		t.Fatalf("stop %v", stop)
 	}
 	out := contract.WorkOutcome{Result: []byte(`{"Committed":1}`)}
-	ok, err := f.d.Result(ctx, f.org, "default", "small", "a", out, false)
+	ok, err := f.d.Result(ctx, f.org, "default", "small", "a", out, false, nil)
 	if err != nil || !ok {
 		t.Fatalf("result: %v, %v", ok, err)
 	}
@@ -180,10 +182,10 @@ func TestAttemptPlacedPolledReportedFinished(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 	// A result sent again is fine; another runner's isn't.
-	if ok, err := f.d.Result(ctx, f.org, "default", "small", "a", out, false); err != nil || !ok {
+	if ok, err := f.d.Result(ctx, f.org, "default", "small", "a", out, false, nil); err != nil || !ok {
 		t.Errorf("sent again: %v, %v", ok, err)
 	}
-	if ok, err := f.d.Result(ctx, f.org, "default", "big", "a", out, false); err != nil || ok {
+	if ok, err := f.d.Result(ctx, f.org, "default", "big", "a", out, false, nil); err != nil || ok {
 		t.Errorf("another runner's: %v, %v", ok, err)
 	}
 }
@@ -229,21 +231,21 @@ func TestLeaseEnds(t *testing.T) {
 	f.report("r", resources.M)
 	if err := f.d.Enqueue(ctx, contract.WorkInput{
 		OrgID: f.org.String(), DataPlane: "default", ID: "a", WorkflowID: "wf", Kind: contract.RunSyncAttempt, Input: map[string]string{},
-		Size: resources.S, Heartbeat: 150 * time.Millisecond, Timeout: time.Hour,
+		Size: resources.S, Heartbeat: time.Second, Timeout: time.Hour,
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	f.poll("r", 0, 0)
 	// A report keeps it past its first deadline.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	f.report("r", resources.M, "a")
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	f.tick()
 	if st := f.status("a"); st.Done {
 		t.Fatalf("the report didn't extend the lease: %+v", st)
 	}
 	// Without another, it ends.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(time.Second)
 	f.tick()
 	st := f.status("a")
 	if !st.Done || st.Outcome.Code != errs.Transient.String() || st.Outcome.NonRetryable {
@@ -252,7 +254,7 @@ func TestLeaseEnds(t *testing.T) {
 	if !f.waker.has("a") {
 		t.Error("the workflow wasn't woken")
 	}
-	if ok, err := f.d.Result(ctx, f.org, "default", "r", "a", contract.WorkOutcome{}, false); err != nil || !ok {
+	if ok, err := f.d.Result(ctx, f.org, "default", "r", "a", contract.WorkOutcome{}, false, nil); err != nil || !ok {
 		// It was this runner's, and it's finished, so a late result is taken
 		// as already in, and changes nothing.
 		t.Errorf("late result: %v, %v", ok, err)
@@ -318,7 +320,7 @@ func TestRoomIsNeverOverplaced(t *testing.T) {
 		t.Fatalf("a got %v, b got %v, want two each", a, b)
 	}
 	// The rest wait, and get room as it frees up.
-	if ok, err := f.d.Result(t.Context(), f.org, "default", "a", a[0], contract.WorkOutcome{}, false); err != nil || !ok {
+	if ok, err := f.d.Result(t.Context(), f.org, "default", "a", a[0], contract.WorkOutcome{}, false, nil); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	f.report("a", resources.M, a[1])
@@ -371,7 +373,7 @@ func TestNoCapacityPlacesAgain(t *testing.T) {
 	if got := f.poll("stale", 0, 0); !slices.Equal(got, []string{"a"}) {
 		t.Fatalf("got %v", got)
 	}
-	if ok, err := f.d.Result(t.Context(), f.org, "default", "stale", "a", contract.WorkOutcome{}, true); err != nil || !ok {
+	if ok, err := f.d.Result(t.Context(), f.org, "default", "stale", "a", contract.WorkOutcome{}, true, nil); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	if st := f.status("a"); st.Done {
@@ -444,7 +446,7 @@ func TestCancel(t *testing.T) {
 	if stop := f.report("r", resources.M, "running"); !slices.Equal(stop, []string{"running"}) {
 		t.Errorf("stop %v", stop)
 	}
-	if ok, err := f.d.Result(ctx, f.org, "default", "r", "running", contract.WorkOutcome{Cancelled: true}, false); err != nil || !ok {
+	if ok, err := f.d.Result(ctx, f.org, "default", "r", "running", contract.WorkOutcome{Cancelled: true}, false, nil); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	if st := f.status("running"); !st.Outcome.Cancelled {
@@ -482,7 +484,7 @@ func TestLightOperations(t *testing.T) {
 	if got := f.poll("b", 4, 4); !slices.Equal(got, []string{"o3"}) {
 		t.Fatalf("b: %v", got)
 	}
-	if ok, err := f.d.Result(t.Context(), f.org, "default", "b", "o3", contract.WorkOutcome{Result: []byte(`{}`)}, false); err != nil || !ok {
+	if ok, err := f.d.Result(t.Context(), f.org, "default", "b", "o3", contract.WorkOutcome{Result: []byte(`{}`)}, false, nil); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	if st := f.status("o3"); !st.Done {
@@ -548,7 +550,7 @@ func TestWakesAreRetried(t *testing.T) {
 	f.attempt("a")
 	f.poll("r", 0, 0)
 	f.waker.err = fmt.Errorf("temporal is down")
-	ok, err := f.d.Result(t.Context(), f.org, "default", "r", "a", contract.WorkOutcome{Result: []byte(`{}`)}, false)
+	ok, err := f.d.Result(t.Context(), f.org, "default", "r", "a", contract.WorkOutcome{Result: []byte(`{}`)}, false, nil)
 	if err != nil || !ok {
 		t.Fatalf("the result should stand: %v, %v", ok, err)
 	}
@@ -582,12 +584,12 @@ func TestFinishedWorkGoes(t *testing.T) {
 		if id == "a" {
 			f.poll("r", 0, 0)
 		}
-		if ok, err := f.d.Result(ctx, f.org, "default", "r", id, contract.WorkOutcome{Result: []byte(`{}`)}, false); err != nil || !ok {
+		if ok, err := f.d.Result(ctx, f.org, "default", "r", id, contract.WorkOutcome{Result: []byte(`{}`)}, false, nil); err != nil || !ok {
 			t.Fatal(id, ok, err)
 		}
 	}
 	f.waker.err = fmt.Errorf("temporal is down")
-	if ok, err := f.d.Result(ctx, f.org, "default", "r", "unwoken", contract.WorkOutcome{Result: []byte(`{}`)}, false); err != nil || !ok {
+	if ok, err := f.d.Result(ctx, f.org, "default", "r", "unwoken", contract.WorkOutcome{Result: []byte(`{}`)}, false, nil); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	time.Sleep(5 * time.Millisecond)
@@ -736,4 +738,131 @@ func TestManualSyncMark(t *testing.T) {
 	if manual, err := take(); err != nil || manual {
 		t.Fatalf("an old mark: %v, %v", manual, err)
 	}
+}
+
+// An attempt keeps its size, why it was given it, and what its runner says it
+// used, from its reports and its result, which sizing reads back newest first.
+func TestAttemptUsage(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	pipeline, sync := f.pipelineAndSync()
+	f.report("r", resources.L)
+	for n, id := range []string{"first", "second"} {
+		err := f.d.Enqueue(ctx, contract.WorkInput{
+			OrgID: f.org.String(), DataPlane: "default", ID: id, WorkflowID: "wf", Kind: contract.RunSyncAttempt, Input: map[string]string{"a": id},
+			Size: resources.M, SizeReason: "history", Heartbeat: time.Minute, Timeout: time.Hour, Priority: contract.PriorityScheduled,
+			PipelineID: pipeline.String(), Version: "v", SyncID: sync.String(), Attempt: int32(n + 1),
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Enqueuing again changes nothing.
+		err = f.d.Enqueue(ctx, contract.WorkInput{
+			OrgID: f.org.String(), DataPlane: "default", ID: id, WorkflowID: "wf", Kind: contract.RunSyncAttempt, Input: map[string]string{"a": id},
+			Size: resources.XL, SizeReason: "spec", Heartbeat: time.Minute, Timeout: time.Hour, Priority: contract.PriorityScheduled,
+			PipelineID: pipeline.String(), Version: "v", SyncID: sync.String(), Attempt: int32(n + 1),
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if work, err := f.d.Poll(ctx, f.org, "default", "r", 0, 0); err != nil || len(work) != 1 || work[0].ID != id {
+			t.Fatalf("poll: %v, %v", work, err)
+		}
+		used := &AttemptUsage{Usage: resources.Usage{CPU: 10, Memory: 100, RunnerCPU: 1, RunnerMemory: 10, Seconds: 60}, Rows: 5, Bytes: 500}
+		report := Report{Org: f.org, DataPlane: "default", Runner: db.ReportRunnerParams{
+			ID: "r", Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64",
+			Pool: "default", CapacityCpu: resources.L.CPU, CapacityMemory: resources.L.Memory,
+		}, Running: []RunningWork{{ID: id, Epoch: 1, Size: resources.M, Usage: used}}}
+		if _, err := f.d.Report(ctx, report); err != nil {
+			t.Fatal(err)
+		}
+		// A report from a runner it isn't on says nothing about it.
+		stale := report
+		stale.Runner.ID, stale.Runner.Draining = "other", true
+		stale.Running = []RunningWork{{ID: id, Epoch: 1, Size: resources.M, Usage: &AttemptUsage{Usage: resources.Usage{Memory: 1 << 40}}}}
+		if _, err := f.d.Report(ctx, stale); err != nil {
+			t.Fatal(err)
+		}
+		more := &AttemptUsage{Usage: resources.Usage{CPU: 20, Memory: 90, RunnerCPU: 2, RunnerMemory: 5, Seconds: 120}, Rows: 7, Bytes: 700}
+		code := ""
+		if n == 1 {
+			code = errs.ResourceExhausted.String()
+		}
+		if ok, err := f.d.Result(ctx, f.org, "default", "r", id, contract.WorkOutcome{Code: code}, false, more); err != nil || !ok {
+			t.Fatalf("result: %v, %v", ok, err)
+		}
+	}
+	got, err := sizing.History(ctx, f.d.Store.Queries, f.org, pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sizing.Attempt{Size: resources.M, CPU: 22, Memory: 110, Seconds: 120}
+	if len(got) != 2 {
+		t.Fatalf("history %+v", got)
+	}
+	if got[1] != want {
+		t.Errorf("first attempt %+v, want %+v", got[1], want)
+	}
+	want.Code = errs.ResourceExhausted.String()
+	if got[0] != want {
+		t.Errorf("second attempt %+v, want %+v", got[0], want)
+	}
+	rows, err := f.d.Store.SyncAttempts(ctx, db.SyncAttemptsParams{OrgID: f.org, SyncIds: []uuid.UUID{sync}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].ID != "first" || rows[0].SizeReason != "history" || rows[0].Attempt != 1 || rows[0].Rows != 7 || rows[0].Bytes != 700 {
+		t.Errorf("attempts %+v", rows)
+	}
+}
+
+// A job goes only to runners of its pool.
+func TestPools(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	f.report("general", resources.L)
+	r := Report{Org: f.org, DataPlane: "default", Runner: db.ReportRunnerParams{
+		ID: "batch", Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64",
+		Pool: "batch", CapacityCpu: resources.L.CPU, CapacityMemory: resources.L.Memory,
+	}}
+	if _, err := f.d.Report(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	err := f.d.Enqueue(ctx, contract.WorkInput{
+		OrgID: f.org.String(), DataPlane: "default", ID: "a", WorkflowID: "wf", Kind: contract.RunSyncAttempt, Input: map[string]string{"a": "a"},
+		Size: resources.S, Pool: "batch", Heartbeat: time.Minute, Timeout: time.Hour, Priority: contract.PriorityScheduled,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := f.d.Poll(ctx, f.org, "default", "batch", 0, 0)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("the batch runner got %v, %v", work, err)
+	}
+	if got, err := f.d.Capacities(ctx, f.org, "default", "batch"); err != nil || len(got) != 1 || got[0] != resources.L {
+		t.Errorf("capacities %v, %v", got, err)
+	}
+	if got, err := f.d.Capacities(ctx, f.org, "default", "none"); err != nil || len(got) != 0 {
+		t.Errorf("capacities of a pool with no runners %v, %v", got, err)
+	}
+}
+
+// pipelineAndSync makes the rows an attempt's usage hangs off.
+func (f *fixture) pipelineAndSync() (pipeline, sync uuid.UUID) {
+	f.t.Helper()
+	ctx, q := f.t.Context(), f.d.Store.Queries
+	src, dst := uuid.New(), uuid.New()
+	pipeline, sync = uuid.New(), uuid.New()
+	err := errors.Join(
+		q.InsertSource(ctx, db.InsertSourceParams{OrgID: f.org, WorkspaceID: f.workspace, ID: src, Name: "s", Spec: []byte("{}"), Version: "v", Secrets: []string{}}),
+		q.InsertDestination(ctx, db.InsertDestinationParams{OrgID: f.org, WorkspaceID: f.workspace, ID: dst, Name: "d", Spec: []byte("{}"), Version: "v", Secrets: []string{}}),
+		q.InsertPipeline(ctx, db.InsertPipelineParams{OrgID: f.org, WorkspaceID: f.workspace, ID: pipeline, Name: "p", SourceID: src, DestinationID: dst, DataPlaneID: "default", Version: "v"}),
+	)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if _, err := q.StartSync(ctx, db.StartSyncParams{OrgID: f.org, ID: sync, PipelineID: pipeline, Version: "v", WorkflowID: "wf", RunID: "run"}); err != nil {
+		f.t.Fatal(err)
+	}
+	return pipeline, sync
 }

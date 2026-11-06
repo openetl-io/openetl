@@ -29,6 +29,26 @@ type Artifact struct {
 	CreateTime time.Time
 }
 
+type Attempt struct {
+	OrgID            uuid.UUID
+	ID               string
+	PipelineID       uuid.UUID
+	SyncID           uuid.UUID
+	Attempt          int32
+	SizeCpu          int64
+	SizeMemory       int64
+	SizeReason       string
+	CpuSeconds       float64
+	PeakMemory       int64
+	RunnerCpuSeconds float64
+	RunnerMemory     int64
+	Seconds          float64
+	Rows             int64
+	Bytes            int64
+	Code             string
+	CreateTime       time.Time
+}
+
 type AuditLog struct {
 	OrgID      uuid.UUID
 	ID         uuid.UUID
@@ -57,6 +77,7 @@ type CheckpointMirror struct {
 	Streams            []byte
 	CreateTime         time.Time
 	Progress           []byte
+	Usage              []byte
 }
 
 type ConnectorOp struct {

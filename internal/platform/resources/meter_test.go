@@ -1,0 +1,107 @@
+package resources
+
+import (
+	"os/exec"
+	"runtime"
+	"testing"
+	"time"
+)
+
+func TestMeterCountsAProcess(t *testing.T) {
+	m := NewMeter()
+	// Burns some CPU, in a shell any machine has, then waits to be told to end.
+	cmd := exec.Command("sh", "-c", "i=0; while [ $i -lt 200000 ]; do i=$((i+1)); done; read x; exit 0")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := m.Track(cmd.Process.Pid)
+	if runtime.GOOS == "linux" {
+		// A running process can be read there, which an attempt's reports rely on.
+		deadline := time.Now().Add(30 * time.Second)
+		for u := m.Usage(); u.CPU <= 0 || u.Memory <= 0; u = m.Usage() {
+			if time.Now().After(deadline) {
+				t.Fatalf("usage of a running process: %+v", u)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	m.Sample()
+	_ = stdin.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	done(cmd.ProcessState)
+	u := m.Usage()
+	if u.CPU <= 0 || u.Memory <= 0 && runtime.GOOS != "linux" {
+		t.Errorf("usage %+v, want some CPU and memory", u)
+	}
+	if u.Seconds <= 0 {
+		t.Errorf("Seconds = %v", u.Seconds)
+	}
+	if again := m.Usage(); again.CPU != u.CPU || again.Memory != u.Memory {
+		t.Errorf("usage changed with nothing running: %+v, then %+v", u, again)
+	}
+}
+
+func TestParseStat(t *testing.T) {
+	line := "1234 (a) (b c) S 1 1234 1234 0 -1 4194304 100 0 0 0 250 50 0 0 20 0 1 0 100 1000 200"
+	if cpu, ok := parseStat(line); !ok || cpu != 3 {
+		t.Errorf("parseStat = %v, %v, want 3 s", cpu, ok)
+	}
+	if _, ok := parseStat("1234 (a) S 1"); ok {
+		t.Error("parsed a line cut short")
+	}
+}
+
+func TestMeterSharesAddUp(t *testing.T) {
+	m := NewMeter()
+	m.Share(1.5, 100)
+	m.Share(0.5, 50)
+	u := m.Usage()
+	if u.RunnerCPU != 2 || u.RunnerMemory != 100 {
+		t.Fatalf("usage = %+v, want 2 s of CPU and the larger memory", u)
+	}
+}
+
+func TestNilMeter(t *testing.T) {
+	var m *Meter
+	m.Track(1)(nil)
+	m.Sample()
+	m.Share(1, 1)
+	m.Moved(1, 1)
+	if u := m.Usage(); u != (Usage{}) {
+		t.Fatalf("usage = %+v", u)
+	}
+	if r, b := m.Progress(); r != 0 || b != 0 {
+		t.Fatalf("progress = %d, %d", r, b)
+	}
+}
+
+func TestSelf(t *testing.T) {
+	cpu, heap := Self()
+	if cpu <= 0 || heap <= 0 {
+		t.Fatalf("Self = %v, %d", cpu, heap)
+	}
+}
+
+func TestSizes(t *testing.T) {
+	if got := S.Up(); got != M {
+		t.Errorf("S.Up = %v", got)
+	}
+	if got := (Size{CPU: 6000, Memory: 12 * GiB}).Up(); got != XL {
+		t.Errorf("up from amounts = %v", got)
+	}
+	if got := XL.Up(); got != (Size{CPU: 16000, Memory: 32 * GiB}) {
+		t.Errorf("XL.Up = %v", got)
+	}
+	if got := (Size{CPU: 100, Memory: 3 * GiB}).Smallest(); got != M {
+		t.Errorf("Smallest = %v", got)
+	}
+	if got := (Size{CPU: 9000, Memory: GiB}).Smallest(); got != (Size{CPU: 9000, Memory: GiB}) {
+		t.Errorf("Smallest above the largest = %v", got)
+	}
+}

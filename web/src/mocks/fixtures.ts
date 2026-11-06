@@ -2,7 +2,7 @@ import { create } from "@bufbuild/protobuf";
 import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import { DestinationSchema, SourceSchema, SyncMode, type Destination, type Source } from "@/gen/openetl/api/v1/connection_pb";
 import { PipelineMode, PipelineSchema, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
-import { SyncSchema, SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
+import { JobSizeReason, SyncAttemptSchema, SyncSchema, SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 
 // A workspace with a pipeline in every state the UI shows, for working on the
 // UI without an API (pnpm dev:mock).
@@ -114,6 +114,19 @@ const failure =
 
 const pipelineVersion = "sha256:4e1a9c27b8d03f6e5a2c1b9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f";
 
+const presets: Record<string, [bigint, bigint]> = { s: [1000n, 2n << 30n], m: [2000n, 4n << 30n] };
+
+function attempt(n: number, preset: string, why: JobSizeReason, seconds: number, gib: number, code = "") {
+  const [cpuMillis, memoryBytes] = presets[preset]!;
+  return create(SyncAttemptSchema, {
+    attempt: n,
+    size: { preset, cpuMillis, memoryBytes },
+    sizeReason: why,
+    usage: { cpuSeconds: seconds * 0.6, peakMemoryBytes: BigInt(Math.round(gib * 2 ** 30)), runnerCpuSeconds: seconds * 0.05, runnerMemoryBytes: 80n << 20n, seconds },
+    code,
+  });
+}
+
 function history(d: Def): Sync[] {
   const parent = `${workspace}/pipelines/${d.name}`;
   const rnd = random(d.name);
@@ -132,6 +145,7 @@ function history(d: Def): Sync[] {
       streams: split(d.rows, d.streams),
       progress: [{ lag: { seconds: 2n } }],
       dataPlane: "default",
+      attempts: [attempt(1, "m", JobSizeReason.HISTORY, 2 * 24 * 3600, 2.6)],
     });
     const earlier = [1, 2, 3].map((i) =>
       create(SyncSchema, {
@@ -172,6 +186,10 @@ function history(d: Def): Sync[] {
       lastCommitTime: state === SyncState.SUCCEEDED ? ts(start + took) : undefined,
       streams: split(rows, d.streams, quarantined),
       dataPlane: "default",
+      attempts:
+        i === 0 && d.outcome === "retrying"
+          ? [attempt(1, "s", JobSizeReason.HISTORY, 40, 1.9, "RESOURCE_EXHAUSTED"), attempt(2, "m", JobSizeReason.OUT_OF_MEMORY, 30, 2.1)]
+          : [attempt(1, "s", JobSizeReason.HISTORY, took / 1000, 0.6 + rnd())],
     });
   });
 }

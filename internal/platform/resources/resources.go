@@ -31,10 +31,54 @@ var (
 // Default is the size of a job nothing says more about.
 var Default = S
 
+// Presets are the sizes with names, smallest first.
+var Presets = []Size{XS, S, M, L, XL}
+
+// Preset is the size named xs, s, m, l or xl.
+func Preset(name string) (Size, bool) {
+	for _, p := range Presets {
+		if p.Name() == name {
+			return p, true
+		}
+	}
+	return Size{}, false
+}
+
 // Fits reports whether s fits in room.
 func (s Size) Fits(room Size) bool { return s.CPU <= room.CPU && s.Memory <= room.Memory }
 
 func (s Size) Add(o Size) Size { return Size{CPU: s.CPU + o.CPU, Memory: s.Memory + o.Memory} }
+
+// Below is the most of s and limit in each of CPU and memory.
+func (s Size) Below(limit Size) Size {
+	return Size{CPU: min(s.CPU, limit.CPU), Memory: min(s.Memory, limit.Memory)}
+}
+
+// Above is the most of s and floor in each of CPU and memory.
+func (s Size) Above(floor Size) Size {
+	return Size{CPU: max(s.CPU, floor.CPU), Memory: max(s.Memory, floor.Memory)}
+}
+
+// Up is the next size after s: the smallest preset s fits and isn't, or twice
+// s above the largest preset.
+func (s Size) Up() Size {
+	for _, p := range Presets {
+		if s.Fits(p) && s != p {
+			return p
+		}
+	}
+	return Size{CPU: 2 * s.CPU, Memory: 2 * s.Memory}
+}
+
+// Smallest is the smallest preset s fits, or s itself above the largest.
+func (s Size) Smallest() Size {
+	for _, p := range Presets {
+		if s.Fits(p) {
+			return p
+		}
+	}
+	return s
+}
 
 // Sub is what's left of s after o, which is never negative.
 func (s Size) Sub(o Size) Size {
@@ -82,14 +126,15 @@ func Parse(v string) (Size, error) {
 	if err != nil || cpu < 0 {
 		return Size{}, fmt.Errorf("%q's CPU isn't a number of vCPUs", v)
 	}
-	mem, err := parseMemory(strings.TrimSpace(m))
+	mem, err := ParseMemory(strings.TrimSpace(m))
 	if err != nil {
 		return Size{}, fmt.Errorf("%q's memory: %w", v, err)
 	}
 	return Size{CPU: int64(cpu * 1000), Memory: mem}, nil
 }
 
-func parseMemory(v string) (int64, error) {
+// ParseMemory reads an amount of memory, such as 512Mi or 4Gi.
+func ParseMemory(v string) (int64, error) {
 	unit := int64(1)
 	for suffix, u := range map[string]int64{"Ki": 1 << 10, "Mi": MiB, "Gi": GiB, "Ti": 1 << 40} {
 		if strings.HasSuffix(v, suffix) {

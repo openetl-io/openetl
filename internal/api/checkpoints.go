@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -125,8 +126,14 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 			return nil, err
 		}
 	}
+	var usage []byte
+	if u := m.GetUsage(); u != nil {
+		if usage, err = protojson.Marshal(u); err != nil {
+			return nil, err
+		}
+	}
 	arg := db.InsertMirroredCheckpointParams{
-		OrgID: s.Tenant.Org, PipelineID: id, RunID: m.GetRunId(), CommitTime: created, Streams: raw, Progress: progress,
+		OrgID: s.Tenant.Org, PipelineID: id, RunID: m.GetRunId(), CommitTime: created, Streams: raw, Progress: progress, Usage: usage,
 		Epoch: int64(m.GetEpoch()), Generation: int64(m.GetGeneration()), //nolint:gosec // generations and epochs are small
 	}
 	if p := m.GetPrevious(); p != nil {
@@ -436,6 +443,12 @@ func (s *Server) ListCheckpoints(ctx context.Context, req *connect.Request[apiv1
 		}
 		if r.SyncID != nil {
 			c.Sync = req.Msg.GetParent() + "/syncs/" + r.SyncID.String()
+		}
+		if len(r.Usage) > 0 {
+			c.Usage = &apiv1.Usage{}
+			if err := protojson.Unmarshal(r.Usage, c.Usage); err != nil {
+				return nil, err
+			}
 		}
 		for _, st := range streams {
 			c.Streams = append(c.Streams, &apiv1.CheckpointStream{

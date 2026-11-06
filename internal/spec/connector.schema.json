@@ -133,13 +133,14 @@
           }
         },
         "resources": {
-          "description": "A container launcher's requests and limits.",
+          "description": "A container launcher's requests and limits, and the job size the role wants.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "cpu": { "type": "string", "pattern": "^([0-9]+m|[0-9]+(\\.[0-9]{1,3})?)$" },
             "memory": { "$ref": "#/$defs/bytes" },
-            "disk": { "description": "The size of TMPDIR.", "$ref": "#/$defs/bytes" }
+            "disk": { "description": "The size of TMPDIR.", "$ref": "#/$defs/bytes" },
+            "hint": { "description": "The job size a pipeline of this role starts at when it's sized automatically.", "enum": ["xs", "s", "m", "l", "xl"] }
           }
         },
         "state": {

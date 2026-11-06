@@ -58,6 +58,62 @@ message Sync {
   int32 failed_attempts = 12;
   string last_attempt_error = 13;
   google.protobuf.Timestamp last_attempt_time = 14;
+  // Its attempts in order, with what each was sized at and used.
+  repeated SyncAttempt attempts = 15;
+}
+
+// SyncAttempt is one attempt of a sync, or one job of a continuous run.
+message SyncAttempt {
+  int32 attempt = 1;
+  JobSize size = 2;
+  JobSizeReason size_reason = 3;
+  // What it has used, as its runner last reported. Unset until it does.
+  Usage usage = 4;
+  // What its source has emitted.
+  uint64 rows = 5;
+  uint64 bytes = 6;
+  // The taxonomy code it failed with, as its runner reported it.
+  string code = 7;
+}
+
+// JobSize is the CPU and memory a job gets (ADR-0027 §3).
+message JobSize {
+  // xs, s, m, l or xl. In a spec, the amounts are then unset.
+  string preset = 1;
+  int64 cpu_millis = 2;
+  int64 memory_bytes = 3;
+}
+
+// JobSizeReason is what set a job's size.
+enum JobSizeReason {
+  JOB_SIZE_REASON_UNSPECIFIED = 0;
+  // resources.size, or resources.min or max holding it to a bound.
+  JOB_SIZE_REASON_SPEC = 1;
+  // The largest hint among its connectors' descriptors.
+  JOB_SIZE_REASON_HINT = 2;
+  // Nothing says more.
+  JOB_SIZE_REASON_DEFAULT = 3;
+  // Its recent attempts' peaks.
+  JOB_SIZE_REASON_HISTORY = 4;
+  // A recent attempt was killed for running out of memory.
+  JOB_SIZE_REASON_OUT_OF_MEMORY = 5;
+  // It would have taken more, but that's the most a runner of its pool can
+  // take now.
+  JOB_SIZE_REASON_LARGEST_RUNNER = 6;
+}
+
+// Usage is what an attempt has used so far.
+message Usage {
+  // CPU seconds of its engine and connector processes.
+  double cpu_seconds = 1;
+  // The most those processes held at once, in resident memory.
+  int64 peak_memory_bytes = 2;
+  // Its estimated share of the runner's own work, such as the coordinator
+  // and built-in connectors.
+  double runner_cpu_seconds = 3;
+  int64 runner_memory_bytes = 4;
+  // How long it has been running.
+  double seconds = 5;
 }
 
 // ReadProgress is what a source reported of how far behind it a read is.

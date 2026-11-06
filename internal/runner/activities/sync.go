@@ -203,6 +203,8 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 		return out, err
 	}
 	env.Logger = log.With("component", "connector")
+	meter := worker.From(ctx).Meter
+	env.Meter = meter
 	job, err := buildJob(ctx, spec, env)
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
@@ -256,12 +258,14 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	}
 	engine := a.Engine
 	engine.Logger = log.With("component", "engine")
+	engine.Meter = meter
+	job.Meter = meter
 	job.Dataflow = &engineclient.Dataflow{Options: engine}
 	job.Logger = log
 	job.Drain = p.drain
 	job.OnCommit = p.onCommit
 	reports := newReporter(ctx, a.API, spec.GetPipelineId(), p.sync, log)
-	reports.progress, reports.lowered = job.Progress, job.Lowered()
+	reports.progress, reports.lowered, reports.meter = job.Progress, job.Lowered(), meter
 	job.OnSchemas, job.OnCheckpoint = reports.schemas, reports.checkpoint
 	r, err := runner.RunAttempt(ctx, job)
 	reports.close(5 * time.Second)

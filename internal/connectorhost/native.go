@@ -22,6 +22,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/enginesink"
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
@@ -57,6 +58,8 @@ type Env struct {
 	Connectors string
 	// Nil: slog's default.
 	Logger *slog.Logger
+	// Counts what the external connectors it starts use. Nil: nothing does.
+	Meter *resources.Meter
 }
 
 // NewSource binds a source connector to its config, a JSON object. It does
@@ -127,7 +130,7 @@ func ExecutablePath(role, name string) string {
 }
 
 func (e Env) external(spec *protocolv1.SpecResponse) external.Options {
-	return external.Options{Egress: e.Egress, Logger: e.Logger, Spec: spec}
+	return external.Options{Egress: e.Egress, Logger: e.Logger, Spec: spec, Meter: e.Meter}
 }
 
 // externals lists the external connectors of a kind, by name.

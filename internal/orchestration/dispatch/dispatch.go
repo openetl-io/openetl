@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/orchestration/sizing"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/store"
@@ -117,11 +118,28 @@ func (d *Dispatcher) Enqueue(ctx context.Context, in contract.WorkInput, needs [
 	err = d.Store.Tx(ctx, func(q *db.Queries) error {
 		_, err := q.EnqueueDispatch(ctx, db.EnqueueDispatchParams{
 			OrgID: org, ID: in.ID, DataPlaneID: in.DataPlane, WorkflowID: in.WorkflowID, Kind: in.Kind, Input: input,
-			Light: in.Light, Pool: defaultPool, SizeCpu: in.Size.CPU, SizeMemory: in.Size.Memory, Priority: int16(in.Priority), //nolint:gosec // a few priorities
+			Light: in.Light, Pool: cmp.Or(in.Pool, defaultPool), SizeCpu: in.Size.CPU, SizeMemory: in.Size.Memory, Priority: int16(in.Priority), //nolint:gosec // a few priorities
 			Needs: needed, Trace: trace, HeartbeatMs: in.Heartbeat.Milliseconds(), StartTimeoutMs: start.Milliseconds(), TimeoutMs: in.Timeout.Milliseconds(),
 		})
 		if err != nil {
 			return err
+		}
+		if in.SyncID != "" {
+			pipeline, err := uuid.Parse(in.PipelineID)
+			if err != nil {
+				return err
+			}
+			sync, err := uuid.Parse(in.SyncID)
+			if err != nil {
+				return err
+			}
+			err = q.InsertAttempt(ctx, db.InsertAttemptParams{
+				OrgID: org, ID: in.ID, PipelineID: pipeline, SyncID: sync, Attempt: in.Attempt,
+				SizeCpu: in.Size.CPU, SizeMemory: in.Size.Memory, SizeReason: in.SizeReason,
+			})
+			if err != nil {
+				return err
+			}
 		}
 		if in.Light != "" {
 			return q.NotifyDispatch(ctx, planeKey(org, in.DataPlane))
@@ -137,8 +155,23 @@ func (d *Dispatcher) Enqueue(ctx context.Context, in contract.WorkInput, needs [
 	return d.pass(ctx, org, in.DataPlane)
 }
 
-// defaultPool is the pool of every job until pipelines can name theirs.
-const defaultPool = "default"
+const defaultPool = sizing.DefaultPool
+
+// Capacities are the capacities of the pool's runners reporting now, that
+// aren't stopping.
+func (d *Dispatcher) Capacities(ctx context.Context, org uuid.UUID, dataPlane, pool string) ([]resources.Size, error) {
+	rows, err := d.Store.PlacementRunners(ctx, db.PlacementRunnersParams{OrgID: org, DataPlaneID: dataPlane, LapseMs: d.lapse().Milliseconds()})
+	if err != nil {
+		return nil, err
+	}
+	var out []resources.Size
+	for _, r := range rows {
+		if r.Pool == pool && !r.Draining {
+			out = append(out, resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory})
+		}
+	}
+	return out, nil
+}
 
 // Status reports whether the work finished, and how. Work that's gone counts
 // as lost, so the workflow moves on.
@@ -197,6 +230,38 @@ type RunningWork struct {
 	ID    string
 	Epoch int64
 	Size  resources.Size
+	// Nil for a light operation.
+	Usage *AttemptUsage
+}
+
+// AttemptUsage is what an attempt has used so far, and what its source has
+// emitted.
+type AttemptUsage struct {
+	resources.Usage
+	Rows, Bytes int64
+}
+
+// recordUsage records what attempts have used, of those its caller has checked
+// are its runner's.
+func recordUsage(ctx context.Context, q *db.Queries, org uuid.UUID, works []RunningWork) error {
+	var p db.RecordAttemptUsageParams
+	for _, w := range works {
+		if u := w.Usage; u != nil {
+			p.Ids = append(p.Ids, w.ID)
+			p.CpuSeconds = append(p.CpuSeconds, u.CPU)
+			p.PeakMemory = append(p.PeakMemory, u.Memory)
+			p.RunnerCpuSeconds = append(p.RunnerCpuSeconds, u.RunnerCPU)
+			p.RunnerMemory = append(p.RunnerMemory, u.RunnerMemory)
+			p.Seconds = append(p.Seconds, u.Seconds)
+			p.Rows = append(p.Rows, u.Rows)
+			p.Bytes = append(p.Bytes, u.Bytes)
+		}
+	}
+	if len(p.Ids) == 0 {
+		return nil
+	}
+	p.OrgID = org
+	return q.RecordAttemptUsage(ctx, p)
 }
 
 // Report records a runner's report and extends the leases of what it runs.
@@ -221,12 +286,18 @@ func (d *Dispatcher) Report(ctx context.Context, r Report) (stop []string, err e
 		}
 		params := r.Runner
 		params.OrgID, params.DataPlaneID = r.Org, r.DataPlane
+		var own []RunningWork
 		for _, w := range r.Running {
-			if !keep[w.ID] {
-				stop = append(stop, w.ID)
-				params.OrphanCpu += w.Size.CPU
-				params.OrphanMemory += w.Size.Memory
+			if keep[w.ID] {
+				own = append(own, w)
+				continue
 			}
+			stop = append(stop, w.ID)
+			params.OrphanCpu += w.Size.CPU
+			params.OrphanMemory += w.Size.Memory
+		}
+		if err := recordUsage(ctx, q, r.Org, own); err != nil {
+			return err
 		}
 		if params.Draining {
 			if err := q.ReturnPlaced(ctx, db.ReturnPlacedParams{OrgID: r.Org, DataPlaneID: r.DataPlane, Runner: &id}); err != nil {
@@ -315,13 +386,24 @@ func (d *Dispatcher) claim(ctx context.Context, org uuid.UUID, dataPlane, runner
 
 // Result records what a runner says of its work, and wakes the workflow
 // waiting for it. It returns false if the work isn't the runner's any more.
-func (d *Dispatcher) Result(ctx context.Context, org uuid.UUID, dataPlane, runner, id string, out contract.WorkOutcome, noCapacity bool) (bool, error) {
+func (d *Dispatcher) Result(ctx context.Context, org uuid.UUID, dataPlane, runner, id string, out contract.WorkOutcome, noCapacity bool, usage *AttemptUsage) (bool, error) {
 	who := &runner
 	if noCapacity {
 		n, err := d.Store.ReplaceRunning(ctx, db.ReplaceRunningParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
 		return n > 0, err
 	}
-	n, err := d.Store.FinishRunning(ctx, db.FinishRunningParams{Outcome: marshalOutcome(out), OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
+	var n int64
+	err := d.Store.Tx(ctx, func(q *db.Queries) error {
+		var err error
+		n, err = q.FinishRunning(ctx, db.FinishRunningParams{Outcome: marshalOutcome(out), OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
+		if err != nil || n == 0 {
+			return err
+		}
+		if err := recordUsage(ctx, q, org, []RunningWork{{ID: id, Usage: usage}}); err != nil {
+			return err
+		}
+		return q.SetAttemptCode(ctx, db.SetAttemptCodeParams{OrgID: org, ID: id, Code: out.Code})
+	})
 	if err != nil {
 		return false, err
 	}

@@ -16,7 +16,9 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/plan"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/runner"
+	"github.com/unsuitable001/openetl/internal/runner/worker"
 	"github.com/unsuitable001/openetl/internal/streamschema"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
@@ -39,6 +41,8 @@ type reporter struct {
 	digests  map[string]string // by Arrow schema; owned by run()
 	// What the read reports of its progress; nil if nothing.
 	progress *runner.Progress
+	// What the attempt uses; nil if nothing counts it.
+	meter *resources.Meter
 	// Each stream's held cells by column as last reported, for the cells an
 	// epoch held; owned by checkpoint's caller.
 	cells map[string]map[string]uint64
@@ -84,8 +88,14 @@ func (r *reporter) checkpoint(rec *checkpoint.Record, collapsed map[string]uint6
 		progress = r.progress.Latest()
 	}
 	held := r.heldCells(rec)
+	var usage *apiv1.Usage
+	if r.meter != nil {
+		usage = worker.APIUsage(r.meter.Usage())
+	}
 	r.enqueue(report{what: "checkpoint mirror", epoch: rec.Epoch, send: func(ctx context.Context) error {
-		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(r.mirrored(rec, collapsed, held, progress)))
+		req := r.mirrored(rec, collapsed, held, progress)
+		req.Usage = usage
+		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(req))
 		return err
 	}})
 }

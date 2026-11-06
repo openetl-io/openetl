@@ -24,6 +24,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
@@ -125,6 +126,8 @@ type Job struct {
 	// Called on the coordinator's goroutine after each epoch commits. It
 	// must not block.
 	OnCommit func(epoch uint64)
+	// Counts what its source emits. Nil: nothing does.
+	Meter *resources.Meter
 	// Called after an epoch commits with the schemas that changed since the
 	// last call, the source's streams' and a transform's outputs' apart, the
 	// attempt's first holding every one. Each is an Arrow IPC stream holding

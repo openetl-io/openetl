@@ -17,6 +17,7 @@ import (
 	"golang.org/x/mod/semver"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
 )
 
@@ -137,6 +138,8 @@ type Resources struct {
 	CPU, Memory string
 	// The size of TMPDIR.
 	Disk string
+	// The job size it wants, xs to xl, which auto starts from (ADR-0027 §3).
+	Hint string
 }
 
 // State is the version of the checkpoint state a role writes, and the
@@ -229,6 +232,7 @@ type resourcesYAML struct {
 	CPU    string `yaml:"cpu,omitempty" json:"cpu,omitempty"`
 	Memory string `yaml:"memory,omitempty" json:"memory,omitempty"`
 	Disk   string `yaml:"disk,omitempty" json:"disk,omitempty"`
+	Hint   string `yaml:"hint,omitempty" json:"hint,omitempty"`
 }
 
 type stateYAML struct {
@@ -383,7 +387,7 @@ func parseRole(role string, y *roleYAML) (*Role, error) {
 		r.Image = &Image{Ref: im.Ref, Digest: im.Digest, Platforms: im.Platforms, Command: im.Command, Attestation: im.Attestation}
 	}
 	if y.Resources != nil {
-		r.Resources = Resources{CPU: y.Resources.CPU, Memory: y.Resources.Memory, Disk: y.Resources.Disk}
+		r.Resources = Resources{CPU: y.Resources.CPU, Memory: y.Resources.Memory, Disk: y.Resources.Disk, Hint: y.Resources.Hint}
 		if err := r.Resources.check(); err != nil {
 			return nil, err
 		}
@@ -430,6 +434,14 @@ func (r Resources) check() error {
 		return fmt.Errorf("resources.memory %q isn't a size, such as 512Mi", r.Memory)
 	case r.Disk != "" && !bytesPattern.MatchString(r.Disk):
 		return fmt.Errorf("resources.disk %q isn't a size, such as 1Gi", r.Disk)
+	}
+	return CheckHint(r.Hint)
+}
+
+// CheckHint checks a connector's resources.hint.
+func CheckHint(hint string) error {
+	if _, ok := resources.Preset(hint); hint != "" && !ok {
+		return fmt.Errorf("resources.hint %q isn't a job size: xs, s, m, l or xl", hint)
 	}
 	return nil
 }
@@ -626,7 +638,7 @@ func roleToYAML(r *Role) (*roleYAML, error) {
 		y.Runtime.Manifest = m
 	}
 	if r.Resources != (Resources{}) {
-		y.Resources = &resourcesYAML{CPU: r.Resources.CPU, Memory: r.Resources.Memory, Disk: r.Resources.Disk}
+		y.Resources = &resourcesYAML{CPU: r.Resources.CPU, Memory: r.Resources.Memory, Disk: r.Resources.Disk, Hint: r.Resources.Hint}
 	}
 	if r.State != nil {
 		y.State = &stateYAML{Version: r.State.Version, Reads: r.State.Reads}

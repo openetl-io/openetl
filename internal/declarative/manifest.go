@@ -67,8 +67,12 @@ type manifest struct {
 	} `json:"metadata"`
 	Spec struct {
 		Config json.RawMessage `json:"config"`
-		HTTP   httpSpec        `json:"http"`
-		Check  *struct {
+		// The job size it wants (ADR-0027 §3).
+		Resources *struct {
+			Hint string `json:"hint"`
+		} `json:"resources"`
+		HTTP  httpSpec `json:"http"`
+		Check *struct {
 			Stream string `json:"stream"`
 		} `json:"check"`
 		Streams []streamSpec `json:"streams"`
@@ -193,6 +197,7 @@ type ruleSpec struct {
 // Connector is a loaded manifest.
 type Connector struct {
 	name, version string
+	hint          string
 	config        *jsonschema.Schema
 	// Config properties: true for secrets.
 	props    map[string]bool
@@ -347,8 +352,14 @@ func Load(src []byte) (*Connector, error) {
 func (c *Connector) Name() string    { return c.name }
 func (c *Connector) Version() string { return c.version }
 
+// Hint is the job size it wants; empty if it doesn't say.
+func (c *Connector) Hint() string { return c.hint }
+
 func (m *manifest) compile() (*Connector, error) {
 	c := &Connector{name: m.Metadata.Name, version: m.Metadata.Version, defaults: map[string]any{}}
+	if m.Spec.Resources != nil {
+		c.hint = m.Spec.Resources.Hint
+	}
 	if err := c.compileConfig(m.Spec.Config); err != nil {
 		return nil, err
 	}

@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 )
 
 const APIVersion = "openetl.io/v1alpha1"
@@ -305,8 +306,9 @@ type pipelineYAML struct {
 		Spark *sparkTransformYAML `yaml:"spark"`
 		Flink *flinkTransformYAML `yaml:"flink"`
 	} `yaml:"transform"`
-	SparkAccess *sparkAccessYAML `yaml:"sparkAccess"`
-	FlinkAccess *sparkAccessYAML `yaml:"flinkAccess"`
+	Resources   *jobResourcesYAML `yaml:"resources"`
+	SparkAccess *sparkAccessYAML  `yaml:"sparkAccess"`
+	FlinkAccess *sparkAccessYAML  `yaml:"flinkAccess"`
 }
 
 type postSyncYAML struct {
@@ -388,6 +390,107 @@ type deliveryYAML struct {
 		Scope    string `yaml:"scope"`
 	} `yaml:"commit"`
 	ResumePointTimeout string `yaml:"resumePointTimeout"`
+}
+
+// jobResourcesYAML is spec.resources (ADR-0027 §3). A size is auto, a preset
+// or {cpu, memory}.
+type jobResourcesYAML struct {
+	Size         yaml.Node `yaml:"size"`
+	Min          yaml.Node `yaml:"min"`
+	Max          yaml.Node `yaml:"max"`
+	FinishWithin string    `yaml:"finishWithin"`
+	Pool         string    `yaml:"pool"`
+}
+
+var poolPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+func parseJobResources(y *jobResourcesYAML, continuous bool) (*apiv1.JobResources, error) {
+	r := &apiv1.JobResources{Pool: y.Pool}
+	if y.Pool != "" && !poolPattern.MatchString(y.Pool) {
+		return nil, fmt.Errorf("resources.pool: %q isn't a pool's name: at most 64 letters, digits, dots, hyphens and underscores", y.Pool)
+	}
+	var err error
+	if r.Size, err = jobSize("resources.size", &y.Size, true); err != nil {
+		return nil, err
+	}
+	if r.Min, err = jobSize("resources.min", &y.Min, false); err != nil {
+		return nil, err
+	}
+	if r.Max, err = jobSize("resources.max", &y.Max, false); err != nil {
+		return nil, err
+	}
+	size, lo, hi := amounts(r.Size), amounts(r.Min), amounts(r.Max)
+	switch {
+	case r.Min != nil && r.Max != nil && !lo.Fits(hi):
+		return nil, fmt.Errorf("resources.min, %s, is larger than resources.max, %s", lo, hi)
+	case r.Size != nil && r.Min != nil && !lo.Fits(size):
+		return nil, fmt.Errorf("resources.min, %s, is larger than resources.size, %s", lo, size)
+	case r.Size != nil && r.Max != nil && !size.Fits(hi):
+		return nil, fmt.Errorf("resources.size, %s, is larger than resources.max, %s", size, hi)
+	}
+	if y.FinishWithin != "" {
+		if continuous {
+			return nil, errors.New("resources.finishWithin: a continuous pipeline runs all the time, so it has nothing to finish")
+		}
+		if r.FinishWithin, err = duration("resources.finishWithin", y.FinishWithin); err != nil {
+			return nil, err
+		}
+		if r.FinishWithin.AsDuration() <= 0 {
+			return nil, errors.New("resources.finishWithin must be positive")
+		}
+	}
+	return r, nil
+}
+
+func amounts(s *apiv1.JobSize) resources.Size {
+	if p, ok := resources.Preset(s.GetPreset()); ok {
+		return p
+	}
+	return resources.Size{CPU: s.GetCpuMillis(), Memory: s.GetMemoryBytes()}
+}
+
+// jobSize reads a size; nil if it's unset or auto, which only resources.size
+// may be.
+func jobSize(field string, n *yaml.Node, auto bool) (*apiv1.JobSize, error) {
+	switch n.Kind {
+	case 0:
+		return nil, nil
+	case yaml.ScalarNode:
+		if n.Value == "auto" && auto {
+			return nil, nil
+		}
+		if _, ok := resources.Preset(n.Value); !ok {
+			if auto {
+				return nil, fmt.Errorf("%s: %q isn't auto, xs, s, m, l, xl or {cpu, memory}", field, n.Value)
+			}
+			return nil, fmt.Errorf("%s: %q isn't xs, s, m, l, xl or {cpu, memory}", field, n.Value)
+		}
+		return &apiv1.JobSize{Preset: n.Value}, nil
+	case yaml.MappingNode:
+		var y struct {
+			CPU    float64 `yaml:"cpu"`
+			Memory string  `yaml:"memory"`
+		}
+		b, err := yaml.Marshal(n)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", field, err)
+		}
+		if err := strict(b, &y); err != nil {
+			return nil, fmt.Errorf("%s: %w", field, err)
+		}
+		if y.CPU <= 0 {
+			return nil, fmt.Errorf("%s: cpu must be a positive number of vCPUs", field)
+		}
+		mem, err := resources.ParseMemory(y.Memory)
+		if err != nil {
+			return nil, fmt.Errorf("%s: memory: %w", field, err)
+		}
+		if mem <= 0 {
+			return nil, fmt.Errorf("%s: memory must be positive", field)
+		}
+		return &apiv1.JobSize{CpuMillis: int64(y.CPU * 1000), MemoryBytes: mem}, nil
+	}
+	return nil, fmt.Errorf("%s: isn't auto, xs, s, m, l, xl or {cpu, memory}", field)
 }
 
 func parseSchedule(y *scheduleYAML) (*apiv1.Schedule, error) {
@@ -527,6 +630,11 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	}
 	if y.Delivery != nil {
 		if p.Delivery, err = parseDelivery(y.Delivery); err != nil {
+			return nil, err
+		}
+	}
+	if y.Resources != nil {
+		if p.Resources, err = parseJobResources(y.Resources, continuous); err != nil {
 			return nil, err
 		}
 	}

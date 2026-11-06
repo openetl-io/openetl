@@ -10,7 +10,6 @@ import (
 
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 )
 
@@ -140,9 +139,9 @@ func (w Workflows) runJobs(ctx workflow.Context, in *contract.StreamInput, refre
 			run.JobStart = workflow.Now(ctx)
 			err := sendWork(ctx, contract.WorkInput{
 				OrgID: in.OrgID, DataPlane: run.State.DataPlane, ID: run.Job, Kind: contract.RunStreamJob,
-				Priority: contract.PriorityScheduled, Size: resources.Default,
+				Priority: contract.PriorityScheduled, Pool: run.State.Pool,
 				Heartbeat: cmp.Or(w.StreamHeartbeat, 90*time.Second), Timeout: 365 * 24 * time.Hour,
-				PipelineID: in.PipelineID, Version: run.State.Version,
+				PipelineID: in.PipelineID, Version: run.State.Version, SyncID: run.SyncID, Attempt: attempt,
 				Input: contract.StreamJobInput{
 					OrgID: in.OrgID, PipelineID: in.PipelineID, Version: run.State.Version,
 					SyncID: run.SyncID, RunKey: run.RunKey, Attempt: attempt,

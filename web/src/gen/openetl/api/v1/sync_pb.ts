@@ -13,7 +13,7 @@ import type { JsonObject, Message } from "@bufbuild/protobuf";
  * Describes the file openetl/api/v1/sync.proto.
  */
 export const file_openetl_api_v1_sync: GenFile = /*@__PURE__*/
-  fileDesc("ChlvcGVuZXRsL2FwaS92MS9zeW5jLnByb3RvEg5vcGVuZXRsLmFwaS52MSLjAwoEU3luYxIMCgRuYW1lGAEgASgJEg8KB3ZlcnNpb24YAiABKAkSKAoFc3RhdGUYAyABKA4yGS5vcGVuZXRsLmFwaS52MS5TeW5jU3RhdGUSDQoFZXJyb3IYBCABKAkSLgoKc3RhcnRfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLAoIZW5kX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmRhdGFfcGxhbmUYByABKAkSKwoHc3RyZWFtcxgIIAMoCzIaLm9wZW5ldGwuYXBpLnYxLlN5bmNTdHJlYW0SEgoKY29udGludW91cxgJIAEoCBI0ChBsYXN0X2NvbW1pdF90aW1lGAogASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCghwcm9ncmVzcxgLIAMoCzIcLm9wZW5ldGwuYXBpLnYxLlJlYWRQcm9ncmVzcxIXCg9mYWlsZWRfYXR0ZW1wdHMYDCABKAUSGgoSbGFzdF9hdHRlbXB0X2Vycm9yGA0gASgJEjUKEWxhc3RfYXR0ZW1wdF90aW1lGA4gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKvAgoMUmVhZFByb2dyZXNzEg4KBnN0cmVhbRgBIAEoCRIWCglsYWdfYnl0ZXMYAiABKARIAIgBARIYCgtsYWdfcmVjb3JkcxgDIAEoBEgBiAEBEiYKA2xhZxgEIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbhIhChRyZXRlbnRpb25fbGVmdF9ieXRlcxgFIAEoBEgCiAEBEjEKDnJldGVudGlvbl9sZWZ0GAYgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEigKBHRpbWUYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wQgwKCl9sYWdfYnl0ZXNCDgoMX2xhZ19yZWNvcmRzQhcKFV9yZXRlbnRpb25fbGVmdF9ieXRlcyKEAQoKU3luY1N0cmVhbRIMCgRuYW1lGAEgASgJEgwKBHJvd3MYAiABKAQSGAoQcXVhcmFudGluZWRfcm93cxgDIAEoBBIWCg5jb2xsYXBzZWRfcm93cxgEIAEoBBISCgpoZWxkX2NlbGxzGAUgASgEEhQKDGhlbGRfY29sdW1ucxgGIAMoCSJJChBMaXN0U3luY3NSZXF1ZXN0Eg4KBnBhcmVudBgBIAEoCRIRCglwYWdlX3NpemUYAiABKAUSEgoKcGFnZV90b2tlbhgDIAEoCSJRChFMaXN0U3luY3NSZXNwb25zZRIjCgVzeW5jcxgBIAMoCzIULm9wZW5ldGwuYXBpLnYxLlN5bmMSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJIh4KDkdldFN5bmNSZXF1ZXN0EgwKBG5hbWUYASABKAkiNQoPR2V0U3luY1Jlc3BvbnNlEiIKBHN5bmMYASABKAsyFC5vcGVuZXRsLmFwaS52MS5TeW5jIjYKElJlYWRTeW5jTG9nUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCnBhZ2VfdG9rZW4YAiABKAkiWQoTUmVhZFN5bmNMb2dSZXNwb25zZRIpCgdlbnRyaWVzGAEgAygLMhgub3BlbmV0bC5hcGkudjEuTG9nRW50cnkSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJIqUBCghMb2dFbnRyeRIoCgR0aW1lGAEgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBINCgVsZXZlbBgCIAEoCRIPCgdtZXNzYWdlGAMgASgJEg8KB2F0dGVtcHQYBCABKAUSFgoOcG9zdF9zeW5jX3N0ZXAYBSABKAUSJgoFYXR0cnMYBiABKAsyFy5nb29nbGUucHJvdG9idWYuU3RydWN0KogBCglTeW5jU3RhdGUSGgoWU1lOQ19TVEFURV9VTlNQRUNJRklFRBAAEhYKElNZTkNfU1RBVEVfUlVOTklORxABEhgKFFNZTkNfU1RBVEVfU1VDQ0VFREVEEAISFQoRU1lOQ19TVEFURV9GQUlMRUQQAxIWChJTWU5DX1NUQVRFX1NUT1BQRUQQBDKsAwoLU3luY1NlcnZpY2UShQEKCUxpc3RTeW5jcxIgLm9wZW5ldGwuYXBpLnYxLkxpc3RTeW5jc1JlcXVlc3QaIS5vcGVuZXRsLmFwaS52MS5MaXN0U3luY3NSZXNwb25zZSIzgtPkkwItEisvdjEve3BhcmVudD13b3Jrc3BhY2VzLyovcGlwZWxpbmVzLyp9L3N5bmNzEn8KB0dldFN5bmMSHi5vcGVuZXRsLmFwaS52MS5HZXRTeW5jUmVxdWVzdBofLm9wZW5ldGwuYXBpLnYxLkdldFN5bmNSZXNwb25zZSIzgtPkkwItEisvdjEve25hbWU9d29ya3NwYWNlcy8qL3BpcGVsaW5lcy8qL3N5bmNzLyp9EpMBCgtSZWFkU3luY0xvZxIiLm9wZW5ldGwuYXBpLnYxLlJlYWRTeW5jTG9nUmVxdWVzdBojLm9wZW5ldGwuYXBpLnYxLlJlYWRTeW5jTG9nUmVzcG9uc2UiO4LT5JMCNRIzL3YxL3tuYW1lPXdvcmtzcGFjZXMvKi9waXBlbGluZXMvKi9zeW5jcy8qfTpyZWFkTG9nQjtaOWdpdGh1Yi5jb20vdW5zdWl0YWJsZTAwMS9vcGVuZXRsL2dlbi9vcGVuZXRsL2FwaS92MTthcGl2MWIGcHJvdG8z", [file_google_api_annotations, file_google_protobuf_duration, file_google_protobuf_struct, file_google_protobuf_timestamp]);
+  fileDesc("ChlvcGVuZXRsL2FwaS92MS9zeW5jLnByb3RvEg5vcGVuZXRsLmFwaS52MSKSBAoEU3luYxIMCgRuYW1lGAEgASgJEg8KB3ZlcnNpb24YAiABKAkSKAoFc3RhdGUYAyABKA4yGS5vcGVuZXRsLmFwaS52MS5TeW5jU3RhdGUSDQoFZXJyb3IYBCABKAkSLgoKc3RhcnRfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLAoIZW5kX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmRhdGFfcGxhbmUYByABKAkSKwoHc3RyZWFtcxgIIAMoCzIaLm9wZW5ldGwuYXBpLnYxLlN5bmNTdHJlYW0SEgoKY29udGludW91cxgJIAEoCBI0ChBsYXN0X2NvbW1pdF90aW1lGAogASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCghwcm9ncmVzcxgLIAMoCzIcLm9wZW5ldGwuYXBpLnYxLlJlYWRQcm9ncmVzcxIXCg9mYWlsZWRfYXR0ZW1wdHMYDCABKAUSGgoSbGFzdF9hdHRlbXB0X2Vycm9yGA0gASgJEjUKEWxhc3RfYXR0ZW1wdF90aW1lGA4gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBItCghhdHRlbXB0cxgPIAMoCzIbLm9wZW5ldGwuYXBpLnYxLlN5bmNBdHRlbXB0IsoBCgtTeW5jQXR0ZW1wdBIPCgdhdHRlbXB0GAEgASgFEiUKBHNpemUYAiABKAsyFy5vcGVuZXRsLmFwaS52MS5Kb2JTaXplEjIKC3NpemVfcmVhc29uGAMgASgOMh0ub3BlbmV0bC5hcGkudjEuSm9iU2l6ZVJlYXNvbhIkCgV1c2FnZRgEIAEoCzIVLm9wZW5ldGwuYXBpLnYxLlVzYWdlEgwKBHJvd3MYBSABKAQSDQoFYnl0ZXMYBiABKAQSDAoEY29kZRgHIAEoCSJDCgdKb2JTaXplEg4KBnByZXNldBgBIAEoCRISCgpjcHVfbWlsbGlzGAIgASgDEhQKDG1lbW9yeV9ieXRlcxgDIAEoAyKBAQoFVXNhZ2USEwoLY3B1X3NlY29uZHMYASABKAESGQoRcGVha19tZW1vcnlfYnl0ZXMYAiABKAMSGgoScnVubmVyX2NwdV9zZWNvbmRzGAMgASgBEhsKE3J1bm5lcl9tZW1vcnlfYnl0ZXMYBCABKAMSDwoHc2Vjb25kcxgFIAEoASKvAgoMUmVhZFByb2dyZXNzEg4KBnN0cmVhbRgBIAEoCRIWCglsYWdfYnl0ZXMYAiABKARIAIgBARIYCgtsYWdfcmVjb3JkcxgDIAEoBEgBiAEBEiYKA2xhZxgEIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbhIhChRyZXRlbnRpb25fbGVmdF9ieXRlcxgFIAEoBEgCiAEBEjEKDnJldGVudGlvbl9sZWZ0GAYgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEigKBHRpbWUYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wQgwKCl9sYWdfYnl0ZXNCDgoMX2xhZ19yZWNvcmRzQhcKFV9yZXRlbnRpb25fbGVmdF9ieXRlcyKEAQoKU3luY1N0cmVhbRIMCgRuYW1lGAEgASgJEgwKBHJvd3MYAiABKAQSGAoQcXVhcmFudGluZWRfcm93cxgDIAEoBBIWCg5jb2xsYXBzZWRfcm93cxgEIAEoBBISCgpoZWxkX2NlbGxzGAUgASgEEhQKDGhlbGRfY29sdW1ucxgGIAMoCSJJChBMaXN0U3luY3NSZXF1ZXN0Eg4KBnBhcmVudBgBIAEoCRIRCglwYWdlX3NpemUYAiABKAUSEgoKcGFnZV90b2tlbhgDIAEoCSJRChFMaXN0U3luY3NSZXNwb25zZRIjCgVzeW5jcxgBIAMoCzIULm9wZW5ldGwuYXBpLnYxLlN5bmMSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJIh4KDkdldFN5bmNSZXF1ZXN0EgwKBG5hbWUYASABKAkiNQoPR2V0U3luY1Jlc3BvbnNlEiIKBHN5bmMYASABKAsyFC5vcGVuZXRsLmFwaS52MS5TeW5jIjYKElJlYWRTeW5jTG9nUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCnBhZ2VfdG9rZW4YAiABKAkiWQoTUmVhZFN5bmNMb2dSZXNwb25zZRIpCgdlbnRyaWVzGAEgAygLMhgub3BlbmV0bC5hcGkudjEuTG9nRW50cnkSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJIqUBCghMb2dFbnRyeRIoCgR0aW1lGAEgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBINCgVsZXZlbBgCIAEoCRIPCgdtZXNzYWdlGAMgASgJEg8KB2F0dGVtcHQYBCABKAUSFgoOcG9zdF9zeW5jX3N0ZXAYBSABKAUSJgoFYXR0cnMYBiABKAsyFy5nb29nbGUucHJvdG9idWYuU3RydWN0KuUBCg1Kb2JTaXplUmVhc29uEh8KG0pPQl9TSVpFX1JFQVNPTl9VTlNQRUNJRklFRBAAEhgKFEpPQl9TSVpFX1JFQVNPTl9TUEVDEAESGAoUSk9CX1NJWkVfUkVBU09OX0hJTlQQAhIbChdKT0JfU0laRV9SRUFTT05fREVGQVVMVBADEhsKF0pPQl9TSVpFX1JFQVNPTl9ISVNUT1JZEAQSIQodSk9CX1NJWkVfUkVBU09OX09VVF9PRl9NRU1PUlkQBRIiCh5KT0JfU0laRV9SRUFTT05fTEFSR0VTVF9SVU5ORVIQBiqIAQoJU3luY1N0YXRlEhoKFlNZTkNfU1RBVEVfVU5TUEVDSUZJRUQQABIWChJTWU5DX1NUQVRFX1JVTk5JTkcQARIYChRTWU5DX1NUQVRFX1NVQ0NFRURFRBACEhUKEVNZTkNfU1RBVEVfRkFJTEVEEAMSFgoSU1lOQ19TVEFURV9TVE9QUEVEEAQyrAMKC1N5bmNTZXJ2aWNlEoUBCglMaXN0U3luY3MSIC5vcGVuZXRsLmFwaS52MS5MaXN0U3luY3NSZXF1ZXN0GiEub3BlbmV0bC5hcGkudjEuTGlzdFN5bmNzUmVzcG9uc2UiM4LT5JMCLRIrL3YxL3twYXJlbnQ9d29ya3NwYWNlcy8qL3BpcGVsaW5lcy8qfS9zeW5jcxJ/CgdHZXRTeW5jEh4ub3BlbmV0bC5hcGkudjEuR2V0U3luY1JlcXVlc3QaHy5vcGVuZXRsLmFwaS52MS5HZXRTeW5jUmVzcG9uc2UiM4LT5JMCLRIrL3YxL3tuYW1lPXdvcmtzcGFjZXMvKi9waXBlbGluZXMvKi9zeW5jcy8qfRKTAQoLUmVhZFN5bmNMb2cSIi5vcGVuZXRsLmFwaS52MS5SZWFkU3luY0xvZ1JlcXVlc3QaIy5vcGVuZXRsLmFwaS52MS5SZWFkU3luY0xvZ1Jlc3BvbnNlIjuC0+STAjUSMy92MS97bmFtZT13b3Jrc3BhY2VzLyovcGlwZWxpbmVzLyovc3luY3MvKn06cmVhZExvZ0I7WjlnaXRodWIuY29tL3Vuc3VpdGFibGUwMDEvb3BlbmV0bC9nZW4vb3BlbmV0bC9hcGkvdjE7YXBpdjFiBnByb3RvMw", [file_google_api_annotations, file_google_protobuf_duration, file_google_protobuf_struct, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message openetl.api.v1.Sync
@@ -112,6 +112,13 @@ export type Sync = Message<"openetl.api.v1.Sync"> & {
    * @generated from field: google.protobuf.Timestamp last_attempt_time = 14;
    */
   lastAttemptTime?: Timestamp | undefined;
+
+  /**
+   * Its attempts in order, with what each was sized at and used.
+   *
+   * @generated from field: repeated openetl.api.v1.SyncAttempt attempts = 15;
+   */
+  attempts: SyncAttempt[];
 };
 
 /**
@@ -120,6 +127,140 @@ export type Sync = Message<"openetl.api.v1.Sync"> & {
  */
 export const SyncSchema: GenMessage<Sync> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_sync, 0);
+
+/**
+ * SyncAttempt is one attempt of a sync, or one job of a continuous run.
+ *
+ * @generated from message openetl.api.v1.SyncAttempt
+ */
+export type SyncAttempt = Message<"openetl.api.v1.SyncAttempt"> & {
+  /**
+   * @generated from field: int32 attempt = 1;
+   */
+  attempt: number;
+
+  /**
+   * @generated from field: openetl.api.v1.JobSize size = 2;
+   */
+  size?: JobSize | undefined;
+
+  /**
+   * @generated from field: openetl.api.v1.JobSizeReason size_reason = 3;
+   */
+  sizeReason: JobSizeReason;
+
+  /**
+   * What it has used, as its runner last reported. Unset until it does.
+   *
+   * @generated from field: openetl.api.v1.Usage usage = 4;
+   */
+  usage?: Usage | undefined;
+
+  /**
+   * What its source has emitted.
+   *
+   * @generated from field: uint64 rows = 5;
+   */
+  rows: bigint;
+
+  /**
+   * @generated from field: uint64 bytes = 6;
+   */
+  bytes: bigint;
+
+  /**
+   * The taxonomy code it failed with, as its runner reported it.
+   *
+   * @generated from field: string code = 7;
+   */
+  code: string;
+};
+
+/**
+ * Describes the message openetl.api.v1.SyncAttempt.
+ * Use `create(SyncAttemptSchema)` to create a new message.
+ */
+export const SyncAttemptSchema: GenMessage<SyncAttempt> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_sync, 1);
+
+/**
+ * JobSize is the CPU and memory a job gets (ADR-0027 §3).
+ *
+ * @generated from message openetl.api.v1.JobSize
+ */
+export type JobSize = Message<"openetl.api.v1.JobSize"> & {
+  /**
+   * xs, s, m, l or xl. In a spec, the amounts are then unset.
+   *
+   * @generated from field: string preset = 1;
+   */
+  preset: string;
+
+  /**
+   * @generated from field: int64 cpu_millis = 2;
+   */
+  cpuMillis: bigint;
+
+  /**
+   * @generated from field: int64 memory_bytes = 3;
+   */
+  memoryBytes: bigint;
+};
+
+/**
+ * Describes the message openetl.api.v1.JobSize.
+ * Use `create(JobSizeSchema)` to create a new message.
+ */
+export const JobSizeSchema: GenMessage<JobSize> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_sync, 2);
+
+/**
+ * Usage is what an attempt has used so far.
+ *
+ * @generated from message openetl.api.v1.Usage
+ */
+export type Usage = Message<"openetl.api.v1.Usage"> & {
+  /**
+   * CPU seconds of its engine and connector processes.
+   *
+   * @generated from field: double cpu_seconds = 1;
+   */
+  cpuSeconds: number;
+
+  /**
+   * The most those processes held at once, in resident memory.
+   *
+   * @generated from field: int64 peak_memory_bytes = 2;
+   */
+  peakMemoryBytes: bigint;
+
+  /**
+   * Its estimated share of the runner's own work, such as the coordinator
+   * and built-in connectors.
+   *
+   * @generated from field: double runner_cpu_seconds = 3;
+   */
+  runnerCpuSeconds: number;
+
+  /**
+   * @generated from field: int64 runner_memory_bytes = 4;
+   */
+  runnerMemoryBytes: bigint;
+
+  /**
+   * How long it has been running.
+   *
+   * @generated from field: double seconds = 5;
+   */
+  seconds: number;
+};
+
+/**
+ * Describes the message openetl.api.v1.Usage.
+ * Use `create(UsageSchema)` to create a new message.
+ */
+export const UsageSchema: GenMessage<Usage> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_sync, 3);
 
 /**
  * ReadProgress is what a source reported of how far behind it a read is.
@@ -180,7 +321,7 @@ export type ReadProgress = Message<"openetl.api.v1.ReadProgress"> & {
  * Use `create(ReadProgressSchema)` to create a new message.
  */
 export const ReadProgressSchema: GenMessage<ReadProgress> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 1);
+  messageDesc(file_openetl_api_v1_sync, 4);
 
 /**
  * @generated from message openetl.api.v1.SyncStream
@@ -232,7 +373,7 @@ export type SyncStream = Message<"openetl.api.v1.SyncStream"> & {
  * Use `create(SyncStreamSchema)` to create a new message.
  */
 export const SyncStreamSchema: GenMessage<SyncStream> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 2);
+  messageDesc(file_openetl_api_v1_sync, 5);
 
 /**
  * @generated from message openetl.api.v1.ListSyncsRequest
@@ -261,7 +402,7 @@ export type ListSyncsRequest = Message<"openetl.api.v1.ListSyncsRequest"> & {
  * Use `create(ListSyncsRequestSchema)` to create a new message.
  */
 export const ListSyncsRequestSchema: GenMessage<ListSyncsRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 3);
+  messageDesc(file_openetl_api_v1_sync, 6);
 
 /**
  * @generated from message openetl.api.v1.ListSyncsResponse
@@ -283,7 +424,7 @@ export type ListSyncsResponse = Message<"openetl.api.v1.ListSyncsResponse"> & {
  * Use `create(ListSyncsResponseSchema)` to create a new message.
  */
 export const ListSyncsResponseSchema: GenMessage<ListSyncsResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 4);
+  messageDesc(file_openetl_api_v1_sync, 7);
 
 /**
  * @generated from message openetl.api.v1.GetSyncRequest
@@ -300,7 +441,7 @@ export type GetSyncRequest = Message<"openetl.api.v1.GetSyncRequest"> & {
  * Use `create(GetSyncRequestSchema)` to create a new message.
  */
 export const GetSyncRequestSchema: GenMessage<GetSyncRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 5);
+  messageDesc(file_openetl_api_v1_sync, 8);
 
 /**
  * @generated from message openetl.api.v1.GetSyncResponse
@@ -317,7 +458,7 @@ export type GetSyncResponse = Message<"openetl.api.v1.GetSyncResponse"> & {
  * Use `create(GetSyncResponseSchema)` to create a new message.
  */
 export const GetSyncResponseSchema: GenMessage<GetSyncResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 6);
+  messageDesc(file_openetl_api_v1_sync, 9);
 
 /**
  * @generated from message openetl.api.v1.ReadSyncLogRequest
@@ -341,7 +482,7 @@ export type ReadSyncLogRequest = Message<"openetl.api.v1.ReadSyncLogRequest"> & 
  * Use `create(ReadSyncLogRequestSchema)` to create a new message.
  */
 export const ReadSyncLogRequestSchema: GenMessage<ReadSyncLogRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 7);
+  messageDesc(file_openetl_api_v1_sync, 10);
 
 /**
  * @generated from message openetl.api.v1.ReadSyncLogResponse
@@ -366,7 +507,7 @@ export type ReadSyncLogResponse = Message<"openetl.api.v1.ReadSyncLogResponse"> 
  * Use `create(ReadSyncLogResponseSchema)` to create a new message.
  */
 export const ReadSyncLogResponseSchema: GenMessage<ReadSyncLogResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 8);
+  messageDesc(file_openetl_api_v1_sync, 11);
 
 /**
  * A line of a sync's log, from the runner, the engine, the connectors or
@@ -420,7 +561,68 @@ export type LogEntry = Message<"openetl.api.v1.LogEntry"> & {
  * Use `create(LogEntrySchema)` to create a new message.
  */
 export const LogEntrySchema: GenMessage<LogEntry> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 9);
+  messageDesc(file_openetl_api_v1_sync, 12);
+
+/**
+ * JobSizeReason is what set a job's size.
+ *
+ * @generated from enum openetl.api.v1.JobSizeReason
+ */
+export enum JobSizeReason {
+  /**
+   * @generated from enum value: JOB_SIZE_REASON_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * resources.size, or resources.min or max holding it to a bound.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_SPEC = 1;
+   */
+  SPEC = 1,
+
+  /**
+   * The largest hint among its connectors' descriptors.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_HINT = 2;
+   */
+  HINT = 2,
+
+  /**
+   * Nothing says more.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_DEFAULT = 3;
+   */
+  DEFAULT = 3,
+
+  /**
+   * Its recent attempts' peaks.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_HISTORY = 4;
+   */
+  HISTORY = 4,
+
+  /**
+   * A recent attempt was killed for running out of memory.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_OUT_OF_MEMORY = 5;
+   */
+  OUT_OF_MEMORY = 5,
+
+  /**
+   * It would have taken more, but that's the most a runner of its pool can
+   * take now.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_LARGEST_RUNNER = 6;
+   */
+  LARGEST_RUNNER = 6,
+}
+
+/**
+ * Describes the enum openetl.api.v1.JobSizeReason.
+ */
+export const JobSizeReasonSchema: GenEnum<JobSizeReason> = /*@__PURE__*/
+  enumDesc(file_openetl_api_v1_sync, 0);
 
 /**
  * @generated from enum openetl.api.v1.SyncState
@@ -459,7 +661,7 @@ export enum SyncState {
  * Describes the enum openetl.api.v1.SyncState.
  */
 export const SyncStateSchema: GenEnum<SyncState> = /*@__PURE__*/
-  enumDesc(file_openetl_api_v1_sync, 0);
+  enumDesc(file_openetl_api_v1_sync, 1);
 
 /**
  * SyncService reads pipelines' syncs and their logs. A continuous

@@ -9,6 +9,43 @@ INSERT INTO dispatches (
     now() + (sqlc.arg(start_timeout_ms)::bigint * interval '1 millisecond')
 ) ON CONFLICT (org_id, id) DO NOTHING;
 
+-- A workflow's retry of the same work inserts nothing new.
+-- name: InsertAttempt :exec
+INSERT INTO attempts (org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason)
+VALUES (@org_id, @id, @pipeline_id, @sync_id, @attempt, @size_cpu, @size_memory, @size_reason)
+ON CONFLICT (org_id, id) DO NOTHING;
+
+-- name: RecordAttemptUsage :exec
+-- What runners' reports say of what they run. Reports may arrive out of order
+-- across a result, so usage only grows.
+UPDATE attempts a SET
+    cpu_seconds = GREATEST(a.cpu_seconds, (@cpu_seconds::double precision[])[array_position(@ids::text[], a.id)]),
+    peak_memory = GREATEST(a.peak_memory, (@peak_memory::bigint[])[array_position(@ids::text[], a.id)]),
+    runner_cpu_seconds = GREATEST(a.runner_cpu_seconds, (@runner_cpu_seconds::double precision[])[array_position(@ids::text[], a.id)]),
+    runner_memory = GREATEST(a.runner_memory, (@runner_memory::bigint[])[array_position(@ids::text[], a.id)]),
+    seconds = GREATEST(a.seconds, (@seconds::double precision[])[array_position(@ids::text[], a.id)]),
+    rows = GREATEST(a.rows, (@rows::bigint[])[array_position(@ids::text[], a.id)]),
+    bytes = GREATEST(a.bytes, (@bytes::bigint[])[array_position(@ids::text[], a.id)])
+WHERE a.org_id = @org_id AND a.id = ANY(@ids::text[]);
+
+-- name: SetAttemptCode :exec
+UPDATE attempts SET code = @code WHERE org_id = @org_id AND id = @id;
+
+-- name: RecentAttempts :many
+-- The pipeline's latest attempts that say anything about its size: they ran,
+-- or they failed. Newest first.
+SELECT size_cpu, size_memory, cpu_seconds, peak_memory, runner_cpu_seconds, runner_memory, seconds, code
+FROM attempts
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND (peak_memory > 0 OR cpu_seconds > 0 OR code <> '')
+ORDER BY create_time DESC
+LIMIT @max_rows;
+
+-- name: SyncAttempts :many
+-- The syncs' attempts, in order.
+SELECT * FROM attempts
+WHERE org_id = @org_id AND sync_id = ANY(@sync_ids::uuid[])
+ORDER BY sync_id, attempt, create_time;
+
 -- name: GetDispatchOutcome :one
 SELECT state, outcome FROM dispatches WHERE org_id = @org_id AND id = @id;
 

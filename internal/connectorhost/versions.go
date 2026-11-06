@@ -89,7 +89,7 @@ func ParseVersion(content []byte) (*Version, error) {
 		if err := json.Unmarshal(doc.Manifest, &whole); err != nil {
 			return nil, err
 		}
-		v.Roles[spec.RoleSource] = &Role{Role: &spec.Role{Manifest: whole.Spec}, Manifest: m}
+		v.Roles[spec.RoleSource] = &Role{Role: &spec.Role{Manifest: whole.Spec, Resources: spec.Resources{Hint: m.Hint()}}, Manifest: m}
 		v.OneRole = true
 	case spec.KindConnector:
 		if p := doc.Descriptor.Unpinned(); len(p) > 0 {

@@ -13,8 +13,8 @@ import (
 )
 
 const insertMirroredCheckpoint = `-- name: InsertMirroredCheckpoint :execrows
-INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress, usage)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT DO NOTHING
 `
 
@@ -29,6 +29,7 @@ type InsertMirroredCheckpointParams struct {
 	CommitTime         time.Time
 	Streams            []byte
 	Progress           []byte
+	Usage              []byte
 }
 
 func (q *Queries) InsertMirroredCheckpoint(ctx context.Context, arg InsertMirroredCheckpointParams) (int64, error) {
@@ -43,6 +44,7 @@ func (q *Queries) InsertMirroredCheckpoint(ctx context.Context, arg InsertMirror
 		arg.CommitTime,
 		arg.Streams,
 		arg.Progress,
+		arg.Usage,
 	)
 	if err != nil {
 		return 0, err
@@ -91,7 +93,7 @@ func (q *Queries) LastCommits(ctx context.Context, orgID uuid.UUID) ([]LastCommi
 }
 
 const listCheckpoints = `-- name: ListCheckpoints :many
-SELECT c.epoch, c.generation, c.previous_epoch, c.previous_generation, c.commit_time, c.streams,
+SELECT c.epoch, c.generation, c.previous_epoch, c.previous_generation, c.commit_time, c.streams, c.usage,
     s.id AS sync_id
 FROM checkpoint_mirror c
 LEFT JOIN syncs s ON s.org_id = c.org_id AND s.run_id = c.run_id AND s.pipeline_id = c.pipeline_id
@@ -116,6 +118,7 @@ type ListCheckpointsRow struct {
 	PreviousGeneration *int64
 	CommitTime         time.Time
 	Streams            []byte
+	Usage              []byte
 	SyncID             *uuid.UUID
 }
 
@@ -143,6 +146,7 @@ func (q *Queries) ListCheckpoints(ctx context.Context, arg ListCheckpointsParams
 			&i.PreviousGeneration,
 			&i.CommitTime,
 			&i.Streams,
+			&i.Usage,
 			&i.SyncID,
 		); err != nil {
 			return nil, err

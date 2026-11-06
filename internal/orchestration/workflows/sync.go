@@ -82,8 +82,8 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 	err = runWork(ctx, retryPolicy{wait: retry, maxWait: 30 * time.Minute, attempts: attemptLimit}, &res, func(n int32) contract.WorkInput {
 		return contract.WorkInput{
 			OrgID: in.OrgID, DataPlane: started.DataPlane, ID: workID(ctx, "attempt", n), Kind: contract.RunSyncAttempt,
-			Priority: priority, Size: resources.Default, Heartbeat: heartbeat, Timeout: attemptTimeout,
-			PipelineID: in.PipelineID, Version: started.Version,
+			Priority: priority, Pool: started.Pool, Heartbeat: heartbeat, Timeout: attemptTimeout,
+			PipelineID: in.PipelineID, Version: started.Version, SyncID: started.SyncID, Attempt: n,
 			Input: contract.AttemptInput{
 				OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version,
 				SyncID: started.SyncID, RunKey: runKey, Attempt: n,
@@ -118,7 +118,7 @@ func postSync(ctx workflow.Context, in contract.SyncInput, started contract.Star
 	step := func(i int, n int32, kind string, input any) contract.WorkInput {
 		return contract.WorkInput{
 			OrgID: in.OrgID, DataPlane: started.DataPlane, ID: workID(ctx, fmt.Sprintf("step-%d", i+1), n), Kind: kind,
-			Priority: priority, Size: resources.Default, Heartbeat: heartbeat, Timeout: attemptTimeout, Input: input,
+			Priority: priority, Pool: started.Pool, Size: resources.Default, Heartbeat: heartbeat, Timeout: attemptTimeout, Input: input,
 		}
 	}
 	var results []contract.PostSyncResult

@@ -2733,6 +2733,10 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/CheckpointStream'
+                usage:
+                    allOf:
+                        - $ref: '#/components/schemas/Usage'
+                    description: What the attempt that committed it had used by then.
             description: |-
                 Checkpoint is a record of the pipeline's checkpoint log: an epoch a sync
                  committed.
@@ -3667,6 +3671,60 @@ components:
                 resolution:
                     type: string
                     description: 'How it was resolved: by progress, or by whom.'
+        JobPlan:
+            type: object
+            properties:
+                size:
+                    $ref: '#/components/schemas/JobSize'
+                reason:
+                    enum:
+                        - JOB_SIZE_REASON_UNSPECIFIED
+                        - JOB_SIZE_REASON_SPEC
+                        - JOB_SIZE_REASON_HINT
+                        - JOB_SIZE_REASON_DEFAULT
+                        - JOB_SIZE_REASON_HISTORY
+                        - JOB_SIZE_REASON_OUT_OF_MEMORY
+                        - JOB_SIZE_REASON_LARGEST_RUNNER
+                    type: string
+                    format: enum
+                pool:
+                    type: string
+        JobResources:
+            type: object
+            properties:
+                size:
+                    allOf:
+                        - $ref: '#/components/schemas/JobSize'
+                    description: 'Unset: auto, from the connectors'' hints and then the job''s measured peaks.'
+                min:
+                    allOf:
+                        - $ref: '#/components/schemas/JobSize'
+                    description: What auto stays at or above.
+                max:
+                    allOf:
+                        - $ref: '#/components/schemas/JobSize'
+                    description: |-
+                        What a job may grow to: auto's choice, and a retry after running out of
+                         memory. Unset: xl for auto, and size itself otherwise.
+                finishWithin:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: 'Scheduled only: lanes from the expected bytes, from P1.35.'
+                pool:
+                    type: string
+                    description: 'The runners that run its jobs. Unset: default.'
+            description: JobResources sizes the pipeline's jobs (ADR-0027 §3).
+        JobSize:
+            type: object
+            properties:
+                preset:
+                    type: string
+                    description: xs, s, m, l or xl. In a spec, the amounts are then unset.
+                cpuMillis:
+                    type: string
+                memoryBytes:
+                    type: string
+            description: JobSize is the CPU and memory a job gets (ADR-0027 §3).
         Key:
             type: object
             properties:
@@ -4032,6 +4090,10 @@ components:
                     items:
                         $ref: '#/components/schemas/PlanWarning'
                     description: What a sync will do that may not be wanted, such as collapsing rows.
+                job:
+                    allOf:
+                        - $ref: '#/components/schemas/JobPlan'
+                    description: What its next attempt would be sized at.
             description: |-
                 PipelinePlan is how a pipeline version would sync, as far as the control
                  plane can tell from the source's latest catalog and the destination's
@@ -4096,6 +4158,10 @@ components:
                     $ref: '#/components/schemas/SparkAccess'
                 flinkAccess:
                     $ref: '#/components/schemas/FlinkAccess'
+                resources:
+                    allOf:
+                        - $ref: '#/components/schemas/JobResources'
+                    description: 'Unset: sized automatically, in the default pool.'
             description: |-
                 PipelineSpec is the spec of a Pipeline document. Unset fields take their
                  defaults.
@@ -4799,6 +4865,43 @@ components:
                 lastAttemptTime:
                     type: string
                     format: date-time
+                attempts:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SyncAttempt'
+                    description: Its attempts in order, with what each was sized at and used.
+        SyncAttempt:
+            type: object
+            properties:
+                attempt:
+                    type: integer
+                    format: int32
+                size:
+                    $ref: '#/components/schemas/JobSize'
+                sizeReason:
+                    enum:
+                        - JOB_SIZE_REASON_UNSPECIFIED
+                        - JOB_SIZE_REASON_SPEC
+                        - JOB_SIZE_REASON_HINT
+                        - JOB_SIZE_REASON_DEFAULT
+                        - JOB_SIZE_REASON_HISTORY
+                        - JOB_SIZE_REASON_OUT_OF_MEMORY
+                        - JOB_SIZE_REASON_LARGEST_RUNNER
+                    type: string
+                    format: enum
+                usage:
+                    allOf:
+                        - $ref: '#/components/schemas/Usage'
+                    description: What it has used, as its runner last reported. Unset until it does.
+                rows:
+                    type: string
+                    description: What its source has emitted.
+                bytes:
+                    type: string
+                code:
+                    type: string
+                    description: The taxonomy code it failed with, as its runner reported it.
+            description: SyncAttempt is one attempt of a sync, or one job of a continuous run.
         SyncPipelineRequest:
             type: object
             properties:
@@ -4897,6 +5000,29 @@ components:
                 created:
                     type: boolean
                     description: The secret didn't exist.
+        Usage:
+            type: object
+            properties:
+                cpuSeconds:
+                    type: number
+                    description: CPU seconds of its engine and connector processes.
+                    format: double
+                peakMemoryBytes:
+                    type: string
+                    description: The most those processes held at once, in resident memory.
+                runnerCpuSeconds:
+                    type: number
+                    description: |-
+                        Its estimated share of the runner's own work, such as the coordinator
+                         and built-in connectors.
+                    format: double
+                runnerMemoryBytes:
+                    type: string
+                seconds:
+                    type: number
+                    description: How long it has been running.
+                    format: double
+            description: Usage is what an attempt has used so far.
         Webhook:
             type: object
             properties:

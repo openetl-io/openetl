@@ -116,6 +116,7 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	return contract.StartSyncResult{
 		SyncID: id.String(), Version: p.Version, DataPlane: p.DataPlaneID,
 		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, PostSync: steps, Manual: manual,
+		Pool: spec.GetResources().GetPool(),
 	}, nil
 }
 
@@ -301,6 +302,7 @@ func (a *Activities) streamState(ctx context.Context, in contract.StreamInput) (
 		Continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
 		Paused:     p.Paused, Version: p.Version, DataPlane: p.DataPlaneID,
 		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, Releases: releases,
+		Pool: spec.GetResources().GetPool(),
 	}, nil
 }
 

@@ -75,8 +75,13 @@ type WorkInput struct {
 	// The kind's input.
 	Input    any
 	Priority int
-	// What an attempt is placed for.
+	// What an attempt is placed for. Zero for a pipeline's sync attempt or stream
+	// job: EnqueueWork works it out.
 	Size resources.Size `json:",omitzero"`
+	// What set the size.
+	SizeReason string `json:",omitempty"`
+	// The runners that may take an attempt. Empty: the default pool.
+	Pool string `json:",omitempty"`
 	// How long it may go unreported.
 	Heartbeat time.Duration
 	// How long a light operation may wait for a runner. An attempt waits for
@@ -88,6 +93,10 @@ type WorkInput struct {
 	// run; empty for other work.
 	PipelineID string `json:",omitempty"`
 	Version    string `json:",omitempty"`
+	// A sync attempt's or stream job's sync, and which of its attempts it is,
+	// which keeps its usage. Empty for other work.
+	SyncID  string `json:",omitempty"`
+	Attempt int32  `json:",omitempty"`
 }
 
 // WorkRef names work a workflow sent.
@@ -206,6 +215,8 @@ type StartSyncResult struct {
 	PostSync []PostSyncStep
 	// The API started it by hand.
 	Manual bool `json:",omitempty"`
+	// The pool the pipeline's work goes to; empty for the default.
+	Pool string `json:",omitempty"`
 }
 
 // PostSyncStep is one of a pipeline's post-sync steps: Dbt or Spark.
@@ -358,6 +369,8 @@ type StreamState struct {
 	// The newest hold release or discard (ADR-0025), which a run takes when
 	// it starts; empty for none.
 	Releases string
+	// The pool its jobs go to; empty for the default.
+	Pool string `json:",omitempty"`
 }
 
 // StreamRun is one run of a continuous pipeline: a version running from when

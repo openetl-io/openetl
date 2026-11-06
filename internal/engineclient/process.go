@@ -14,9 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +29,7 @@ import (
 
 	enginev1 "github.com/unsuitable001/openetl/gen/openetl/engine/v1"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 )
 
 type Options struct {
@@ -43,6 +42,8 @@ type Options struct {
 	// PeakMemory, if set, gets each engine's peak resident memory in bytes
 	// once it has stopped, when that can be read.
 	PeakMemory func(bytes int64)
+	// Counts what each engine uses. Nil: nothing does.
+	Meter *resources.Meter
 	// Batches reach the sink as they came, without the engine's coercion,
 	// naming or metadata columns, and rows fail the job. For measuring the
 	// boundary.
@@ -83,6 +84,7 @@ type process struct {
 	client enginev1.EngineServiceClient
 	log    *slog.Logger
 	peak   func(int64)
+	meter  *resources.Meter
 	// Closed once the process has exited and its output is drained.
 	exited chan struct{}
 	killed atomic.Bool
@@ -98,7 +100,7 @@ func start(ctx context.Context, opts Options) (*process, error) {
 		return nil, errs.Wrap(errs.Internal, err, "engineclient: make the socket directory")
 	}
 	control := filepath.Join(dir, "control.sock")
-	p := &process{dir: dir, data: filepath.Join(dir, "data.sock"), peak: opts.PeakMemory, exited: make(chan struct{})}
+	p := &process{dir: dir, data: filepath.Join(dir, "data.sock"), peak: opts.PeakMemory, meter: opts.Meter, exited: make(chan struct{})}
 	if len(control) > maxSocketPath {
 		_ = os.RemoveAll(dir)
 		return nil, errs.New(errs.ConfigInvalid, "engineclient: socket path %s is too long; set a shorter TMPDIR", control)
@@ -123,6 +125,7 @@ func start(ctx context.Context, opts Options) (*process, error) {
 		return nil, errs.Wrap(errs.Internal, err, "engineclient: start "+bin)
 	}
 	p.log = log.With("component", "engine", "pid", p.cmd.Process.Pid)
+	metered := p.meter.Track(p.cmd.Process.Pid)
 	engines.Add(ctx, 1)
 
 	// Wait closes the pipes, so it runs once both are drained.
@@ -139,6 +142,7 @@ func start(ctx context.Context, opts Options) (*process, error) {
 	go func() {
 		drained.Wait()
 		_ = p.cmd.Wait()
+		metered(p.cmd.ProcessState)
 		ctx := context.WithoutCancel(ctx)
 		engines.Add(ctx, -1)
 		if st := p.cmd.ProcessState; st != nil {
@@ -200,7 +204,8 @@ func (p *process) dialEdge(ctx context.Context, id string) (*net.UnixConn, error
 // close stops the engine and waits for it to exit. It is safe to call after
 // the engine has died.
 func (p *process) close() {
-	hwm := p.highWater()
+	p.meter.Sample()
+	hwm := resources.HighWater(p.cmd.Process.Pid)
 	if p.client != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 		_, _ = p.client.Stop(ctx, &enginev1.StopRequest{})
@@ -220,51 +225,12 @@ func (p *process) close() {
 	}
 	t.Stop()
 	_ = os.RemoveAll(p.dir)
-	if n := p.peakMemory(hwm); n > 0 {
+	if n := resources.ExitPeak(p.cmd.ProcessState, hwm); n > 0 {
 		enginePeak.Record(context.Background(), n)
 		if p.peak != nil {
 			p.peak(n)
 		}
 	}
-}
-
-// highWater reads the running engine's peak resident memory on Linux. Its
-// rusage won't do there: Go starts processes with CLONE_VM, so execve carries
-// the runner's own peak into the engine's maxrss.
-func (p *process) highWater() int64 {
-	if runtime.GOOS != "linux" {
-		return 0
-	}
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(p.cmd.Process.Pid) + "/status")
-	if err != nil {
-		return 0
-	}
-	for line := range strings.Lines(string(b)) {
-		if v, ok := strings.CutPrefix(line, "VmHWM:"); ok {
-			kb, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimSpace(v), " kB"), 10, 64)
-			if err != nil {
-				return 0
-			}
-			return kb << 10
-		}
-	}
-	return 0
-}
-
-// peakMemory is the exited engine's peak resident memory in bytes, given
-// what highWater read before it stopped; 0 if unknown.
-func (p *process) peakMemory(hwm int64) int64 {
-	if runtime.GOOS == "linux" {
-		return hwm
-	}
-	ru, ok := p.cmd.ProcessState.SysUsage().(*syscall.Rusage)
-	if !ok {
-		return 0
-	}
-	if runtime.GOOS == "darwin" {
-		return ru.Maxrss
-	}
-	return ru.Maxrss << 10
 }
 
 func (p *process) kill() {

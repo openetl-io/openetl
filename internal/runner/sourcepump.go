@@ -14,6 +14,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/util"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
@@ -190,6 +191,7 @@ type sourcePump struct {
 	known   map[string]bool // read by Emitter methods on the connector's goroutine
 
 	maxBytes      int64
+	meter         *resources.Meter
 	forceAfter    time.Duration
 	requested     uint64 // the last barrier requested
 	pending       uint64 // epoch being placed; 0 if none
@@ -230,6 +232,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, splits m
 		streams:    make(map[string]*streamPos, len(job.Streams)),
 		known:      make(map[string]bool, len(job.Streams)),
 		maxBytes:   job.Settings.CommitMaxBytes,
+		meter:      job.Meter,
 		forceAfter: job.Settings.ResumePointTimeout,
 		progress:   job.Progress,
 	}
@@ -409,20 +412,23 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 	switch e.kind {
 	case emitRows, emitBatch:
 		f := Frame{Kind: FrameRows, Lane: sp.lane, Stream: name, Rows: e.rows}
-		sp.rows += uint64(len(e.rows))
+		rows, bytes := int64(len(e.rows)), int64(0)
 		switch {
 		case e.batch != nil:
 			f = Frame{Kind: FrameBatch, Lane: sp.lane, Stream: name, Batch: e.batch}
-			p.bytes += util.TotalRecordSize(e.batch)
-			sp.rows += uint64(e.batch.NumRows()) //nolint:gosec // never negative
+			rows += e.batch.NumRows()
+			bytes += util.TotalRecordSize(e.batch)
 		case e.kind == emitBatch:
 			f = Frame{Kind: FrameBatch, Lane: sp.lane, Stream: name, IPC: e.encoded.Bytes}
-			p.bytes += e.encoded.Size
-			sp.rows += uint64(e.encoded.Rows) //nolint:gosec // never negative
+			rows += e.encoded.Rows
+			bytes += e.encoded.Size
 		}
 		for _, r := range e.rows {
-			p.bytes += int64(len(r))
+			bytes += int64(len(r))
 		}
+		sp.rows += uint64(rows)
+		p.bytes += bytes
+		p.meter.Moved(rows, bytes)
 		sp.dirty, sp.active = true, true
 		sp.reread = sp.reread || sp.rereading
 		if err := p.forward(f); err != nil {

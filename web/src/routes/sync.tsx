@@ -5,6 +5,7 @@ import { Link, getRouteApi } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownToLine, Search } from "lucide-react";
 import type { JsonObject } from "@bufbuild/protobuf";
+import { Attempts } from "@/components/attempts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -17,6 +18,7 @@ import { SyncService, SyncState, type LogEntry } from "@/gen/openetl/api/v1/sync
 import { errorMessage } from "@/lib/api";
 import { clock, compact, dateOf, duration, full } from "@/lib/format";
 import { shortDigest, syncName } from "@/lib/names";
+import { bytes, cpuTime, sizeAmounts, sizeLabel, sizeReasonLabel, syncUse } from "@/lib/sizes";
 import { heldLabel, rows, syncStatus } from "@/lib/status";
 
 const route = getRouteApi("/_app/workspaces/$workspace/pipelines/$pipeline/syncs/$sync");
@@ -186,6 +188,8 @@ export function SyncPage() {
   const start = dateOf(it?.startTime);
   const end = dateOf(it?.endTime);
   const r = it ? rows(it) : undefined;
+  const lastAttempt = it?.attempts.at(-1);
+  const use = syncUse(it?.attempts ?? []);
 
   return (
     <div className="grid gap-6">
@@ -218,6 +222,20 @@ export function SyncPage() {
                   </Link>
                 </DescriptionItem>
                 <DescriptionItem label="Data plane">{it.dataPlane}</DescriptionItem>
+                {lastAttempt && (
+                  <DescriptionItem label="Size">
+                    <span title={sizeAmounts(lastAttempt.size)}>
+                      {sizeLabel(lastAttempt.size)}, {sizeReasonLabel[lastAttempt.sizeReason]}
+                    </span>
+                  </DescriptionItem>
+                )}
+                {lastAttempt?.usage && (
+                  <DescriptionItem label="Used">
+                    <span className="tabular-nums">
+                      {cpuTime(use.cpu)} of CPU, peak {bytes(use.memory)}
+                    </span>
+                  </DescriptionItem>
+                )}
               </>
             )}
           </DetailHeader>
@@ -237,6 +255,7 @@ export function SyncPage() {
           {it?.error && <ErrorNote title="Why it failed" message={it.error} />}
         </div>
       )}
+      {it && it.attempts.length > 1 && <Attempts attempts={it.attempts} />}
       <section className="grid gap-2" aria-labelledby="log-h">
         <h2 id="log-h" className="text-base font-semibold">
           Log

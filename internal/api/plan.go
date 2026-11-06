@@ -143,6 +143,9 @@ func (s *Server) plan(ctx context.Context, q *db.Queries, p *planned) (*apiv1.Pi
 		return nil, err
 	}
 	out.Problems, out.Notes = unrunnable, notes
+	if err := s.planJob(ctx, q, p, out); err != nil {
+		return nil, err
+	}
 	for _, c := range []struct {
 		kind, ref, digest string
 		spec              []byte

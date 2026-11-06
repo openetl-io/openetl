@@ -73,6 +73,7 @@ type Role struct {
 		CPU    string `yaml:"cpu"`
 		Memory string `yaml:"memory"`
 		Disk   string `yaml:"disk"`
+		Hint   string `yaml:"hint"`
 	} `yaml:"resources"`
 	State *struct {
 		Version uint32 `yaml:"version"`
@@ -193,8 +194,12 @@ func (r *Role) check(role string, platforms int) error {
 		return errors.New("manifest: only a source runs from a manifest")
 	case r.Manifest != "" && (r.Build != nil || r.Image != ""):
 		return errors.New("manifest is the role's whole runtime, with no build or image")
-	case r.Manifest != "" && (r.Resources != nil || len(r.Command) > 0):
-		return errors.New("a manifest runs in the platform, so it takes no resources or command")
+	case r.Manifest != "" && r.Resources != nil && r.Resources.CPU+r.Resources.Memory+r.Resources.Disk != "":
+		return errors.New("a manifest runs in the platform, so of resources it takes only a hint")
+	case r.Manifest != "" && len(r.Command) > 0:
+		return errors.New("a manifest runs in the platform, so it takes no command")
+	case r.Resources != nil && spec.CheckHint(r.Resources.Hint) != nil:
+		return spec.CheckHint(r.Resources.Hint)
 	case len(r.Command) > 0 && r.Image == "":
 		return errors.New("command is an image's argv, and the role has no image")
 	case r.State != nil && r.State.Reads > r.State.Version:

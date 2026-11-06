@@ -55,6 +55,13 @@
       "required": ["config", "http", "streams"],
       "additionalProperties": false,
       "properties": {
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hint": { "description": "The job size a pipeline of this source starts at when it's sized automatically.", "enum": ["xs", "s", "m", "l", "xl"] }
+          }
+        },
         "config": {
           "description": "The JSON Schema of the connector's config: an object. Top-level string properties with x-secret: true are secrets, which only auth and sign can reference, by name. Expressions see the other properties as config.<name>.",
           "type": "object",

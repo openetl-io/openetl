@@ -1,12 +1,12 @@
 -- name: InsertMirroredCheckpoint :execrows
-INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress)
-VALUES (@org_id, @pipeline_id, @epoch, @generation, @previous_epoch, @previous_generation, @run_id, @commit_time, @streams, @progress)
+INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress, usage)
+VALUES (@org_id, @pipeline_id, @epoch, @generation, @previous_epoch, @previous_generation, @run_id, @commit_time, @streams, @progress, @usage)
 ON CONFLICT DO NOTHING;
 
 -- name: ListCheckpoints :many
 -- Newest first, after (before_epoch, before_generation) if given, with the
 -- sync that committed each.
-SELECT c.epoch, c.generation, c.previous_epoch, c.previous_generation, c.commit_time, c.streams,
+SELECT c.epoch, c.generation, c.previous_epoch, c.previous_generation, c.commit_time, c.streams, c.usage,
     s.id AS sync_id
 FROM checkpoint_mirror c
 LEFT JOIN syncs s ON s.org_id = c.org_id AND s.run_id = c.run_id AND s.pipeline_id = c.pipeline_id

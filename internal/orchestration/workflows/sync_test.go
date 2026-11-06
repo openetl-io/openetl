@@ -15,6 +15,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 )
 
 // syncEnv runs SyncWorkflow with attempt answering each RunSyncAttempt.
@@ -148,13 +149,19 @@ func TestAttemptsSayHowToPlaceThem(t *testing.T) {
 		return result(t, contract.AttemptResult{})
 	})
 	e.started.Manual = true
+	e.started.Pool = "batch"
 	if err := e.run(t); err != nil {
 		t.Fatal(err)
 	}
 	first, second := e.plane.sent[0], e.plane.sent[1]
-	if first.ID == second.ID || first.Priority != contract.PriorityManual || first.Size.CPU == 0 || first.Light != "" ||
+	if first.ID == second.ID || first.Priority != contract.PriorityManual || first.Light != "" ||
+		first.Pool != "batch" || first.SyncID != e.started.SyncID || first.Attempt != 1 || second.Attempt != 2 ||
 		first.PipelineID != "p" || first.Version != "v1" || first.Kind != contract.RunSyncAttempt || first.WorkflowID == "" || first.Heartbeat != 2*time.Minute {
 		t.Errorf("sent %+v, then %+v", first, second)
+	}
+	// EnqueueWork sizes it, so a size doesn't go in the workflow's history.
+	if first.Size != (resources.Size{}) {
+		t.Errorf("the workflow sized an attempt: %+v", first.Size)
 	}
 }
 

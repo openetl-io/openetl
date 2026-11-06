@@ -118,6 +118,37 @@ func TestParseContinuousPipeline(t *testing.T) {
 	}
 }
 
+func TestParseResources(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1m}\n  source: {ref: s}\n  destination: {ref: d}\n"
+	doc, err := Parse([]byte(header + "  resources: {size: m, min: s, max: {cpu: 6, memory: 12Gi}, finishWithin: 1h, pool: batch}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := doc.Pipeline.GetResources()
+	switch {
+	case r.GetSize().GetPreset() != "m" || r.GetMin().GetPreset() != "s":
+		t.Errorf("size %v, min %v", r.GetSize(), r.GetMin())
+	case r.GetMax().GetCpuMillis() != 6000 || r.GetMax().GetMemoryBytes() != 12<<30:
+		t.Errorf("max %v", r.GetMax())
+	case r.GetFinishWithin().AsDuration() != time.Hour || r.GetPool() != "batch":
+		t.Errorf("finishWithin %v, pool %q", r.GetFinishWithin(), r.GetPool())
+	}
+	doc, err = Parse([]byte(header + "  resources: {size: auto, min: xs}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := doc.Pipeline.GetResources(); r.GetSize() != nil || r.GetMin().GetPreset() != "xs" {
+		t.Errorf("auto is an unset size: %v", r)
+	}
+	doc, err = Parse([]byte(header))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Pipeline.Resources != nil {
+		t.Errorf("resources %v with none in the document", doc.Pipeline.Resources)
+	}
+}
+
 func TestParseDbtProject(t *testing.T) {
 	doc, err := Parse([]byte("apiVersion: openetl.io/v1alpha1\nkind: DbtProject\nmetadata: {name: analytics}\nspec: {bundle: aGVsbG8=}\n"))
 	if err != nil {
@@ -217,6 +248,20 @@ func TestParseErrors(t *testing.T) {
 		"empty step":                 header + base + "  postSync: [{}]\n",
 		"dbt command":                header + base + "  postSync: [{dbt: {project: a, command: seed}}]\n",
 		"dbt project":                header + base + "  postSync: [{dbt: {project: A_1}}]\n",
+		"preset":                     header + base + "  resources: {size: huge}\n",
+		"min auto":                   header + base + "  resources: {min: auto}\n",
+		"max auto":                   header + base + "  resources: {max: auto}\n",
+		"size field":                 header + base + "  resources: {size: {cpu: 1, memory: 1Gi, disk: 1Gi}}\n",
+		"no cpu":                     header + base + "  resources: {size: {memory: 1Gi}}\n",
+		"no memory":                  header + base + "  resources: {size: {cpu: 1}}\n",
+		"memory unit":                header + base + "  resources: {size: {cpu: 1, memory: 1GB}}\n",
+		"min over max":               header + base + "  resources: {min: l, max: m}\n",
+		"size under min":             header + base + "  resources: {size: s, min: m}\n",
+		"size over max":              header + base + "  resources: {size: l, max: m}\n",
+		"finishWithin":               header + base + "  resources: {finishWithin: soon}\n",
+		"zero finishWithin":          header + base + "  resources: {finishWithin: 0s}\n",
+		"continuous finishWithin":    header + "spec:\n  mode: continuous\n  source: {ref: s}\n  destination: {ref: d}\n  resources: {finishWithin: 1h}\n",
+		"pool":                       header + base + "  resources: {pool: 'a pool'}\n",
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: parsed", name)

@@ -20,7 +20,9 @@ import (
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/internal/attemptlog"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/orchestration/sizing"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/store/db"
 )
 
@@ -137,16 +139,42 @@ func (s *Server) syncsOut(ctx context.Context, pipeline string, rows []db.GetSyn
 			})
 		}
 	}
+	ids := make([]uuid.UUID, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID
+	}
+	attempts, err := s.Store.SyncAttempts(ctx, db.SyncAttemptsParams{OrgID: s.Tenant.Org, SyncIds: ids})
+	if err != nil {
+		return nil, err
+	}
+	attemptsOf := map[uuid.UUID][]*apiv1.SyncAttempt{}
+	for _, a := range attempts {
+		attemptsOf[a.SyncID] = append(attemptsOf[a.SyncID], attemptOut(a))
+	}
 	out := make([]*apiv1.Sync, len(rows))
 	for i, r := range rows {
 		out[i] = syncOut(pipeline, r)
 		out[i].Streams = byRun[r.RunID]
 		out[i].Progress = progressByRun[r.RunID]
+		out[i].Attempts = attemptsOf[r.ID]
 		if t, ok := lastCommit[r.RunID]; ok {
 			out[i].LastCommitTime = timestamppb.New(t)
 		}
 	}
 	return out, nil
+}
+
+func attemptOut(a db.Attempt) *apiv1.SyncAttempt {
+	out := &apiv1.SyncAttempt{
+		Attempt: a.Attempt, Size: sizing.Out(resources.Size{CPU: a.SizeCpu, Memory: a.SizeMemory}), SizeReason: sizing.Reason(a.SizeReason).API(),
+		Rows: uint64(max(0, a.Rows)), Bytes: uint64(max(0, a.Bytes)), Code: a.Code,
+	}
+	if a.Seconds > 0 {
+		out.Usage = &apiv1.Usage{
+			CpuSeconds: a.CpuSeconds, PeakMemoryBytes: a.PeakMemory, RunnerCpuSeconds: a.RunnerCpuSeconds, RunnerMemoryBytes: a.RunnerMemory, Seconds: a.Seconds,
+		}
+	}
+	return out
 }
 
 func fromMillis(ms *int64) *durationpb.Duration {

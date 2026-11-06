@@ -22,6 +22,7 @@ import { errorCode, errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
 import { destinationName, pipelineName, shortDigest, sourceName } from "@/lib/names";
 import { lag } from "@/lib/pipeline";
+import { sizeAmounts, sizeLabel, sizeReasonLabel } from "@/lib/sizes";
 import { pipelineStatus } from "@/lib/status";
 import { connectorName } from "@/lib/connectors";
 import { Overview } from "./pipeline-overview";
@@ -73,6 +74,7 @@ export function PipelinePage() {
   const continuous = spec?.mode === PipelineMode.CONTINUOUS;
   const behind = continuous ? lag(pl?.status?.lastSync) : undefined;
   const latest = syncs.data?.syncs[0];
+  const sized = latest?.attempts.at(-1);
 
   return (
     <div className="grid gap-6">
@@ -101,6 +103,13 @@ export function PipelinePage() {
               <Freshness pipeline={pl} />
             </DescriptionItem>
             {behind && <DescriptionItem label="Behind source">{behind}</DescriptionItem>}
+            {sized && (
+              <DescriptionItem label="Size">
+                <span title={sizeAmounts(sized.size)}>
+                  {sizeLabel(sized.size)}, {sizeReasonLabel[sized.sizeReason]}
+                </span>
+              </DescriptionItem>
+            )}
             <DescriptionItem label="Version">
               <Tooltip>
                 <TooltipTrigger asChild>

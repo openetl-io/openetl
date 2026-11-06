@@ -46,6 +46,7 @@ func (fakeApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyReques
 			Problems: []string{`delivery.require: stream "events" gets at_least_once`},
 			Notes:    []string{"a note"},
 			Warnings: []*apiv1.PlanWarning{{Stream: "logs", Message: "it has no primary key"}},
+			Job:      &apiv1.JobPlan{Size: &apiv1.JobSize{Preset: "m", CpuMillis: 2000, MemoryBytes: 4 << 30}, Reason: apiv1.JobSizeReason_JOB_SIZE_REASON_HISTORY, Pool: "batch"},
 		}},
 	}), nil
 }
@@ -87,6 +88,7 @@ workspaces/default/pipelines/shop-to-dw (version fedcba987654)
   changes:
     source.version: "01" -> "02"
     delivery.require: (unset) -> "DELIVERY_LEVEL_AT_LEAST_ONCE"
+  job size: m (2 vCPU, 4 GiB), from its recent peaks, in pool batch
   streams:
     orders  overwrite  exactly_once   exact replay
     events  append     at_least_once  superset replay, no primary key, and not collapsed

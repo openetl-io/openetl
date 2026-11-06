@@ -4,26 +4,33 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/orchestration/dispatch"
+	"github.com/unsuitable001/openetl/internal/orchestration/sizing"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
+	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/internal/store/db"
 )
 
 // EnqueueWork sends a workflow's work to its data plane, and places it if
-// it's an attempt with room waiting.
+// it's an attempt with room waiting. A pipeline's attempt is sized here, not in
+// its workflow, so a size adds nothing to the workflow's history.
 func (a *Activities) EnqueueWork(ctx context.Context, in contract.WorkInput) error {
-	needs, err := a.needs(ctx, in)
+	needs, err := a.prepare(ctx, &in)
 	if err != nil {
 		return temporalx.ApplicationError(err)
 	}
 	return temporalx.ApplicationError(a.Dispatch.Enqueue(ctx, in, needs))
 }
 
-// needs is what a runner must have to run an attempt's connector versions.
-func (a *Activities) needs(ctx context.Context, in contract.WorkInput) ([]dispatch.Need, error) {
+// prepare sizes a pipeline's attempt, and returns what a runner must have to
+// run its connector versions.
+func (a *Activities) prepare(ctx context.Context, in *contract.WorkInput) ([]dispatch.Need, error) {
 	if in.PipelineID == "" {
 		return nil, nil
 	}
@@ -36,22 +43,42 @@ func (a *Activities) needs(ctx context.Context, in contract.WorkInput) ([]dispat
 		return nil, err
 	}
 	var needs []dispatch.Need
+	var hints []string
 	for _, r := range []struct{ role, digest string }{{"source", v.SourceConnector}, {"destination", v.DestinationConnector}} {
 		if r.digest == "" {
 			continue
 		}
-		need, err := a.need(ctx, org, r.digest, r.role)
+		role, err := a.role(ctx, org, r.digest, r.role)
 		if err != nil {
 			return nil, err
 		}
-		if need != nil {
-			needs = append(needs, *need)
+		if role != nil {
+			needs = append(needs, dispatch.NeedOf(role))
+			hints = append(hints, role.Resources.Hint)
 		}
 	}
+	if in.Size != (resources.Size{}) {
+		return needs, nil
+	}
+	var pipelineSpec apiv1.PipelineSpec
+	if err := protojson.Unmarshal(v.PipelineSpec, &pipelineSpec); err != nil {
+		return nil, err
+	}
+	sp := sizing.SpecOf(pipelineSpec.GetResources())
+	history, err := sizing.History(ctx, a.Store.Queries, org, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	runners, err := a.Dispatch.Capacities(ctx, org, v.DataPlaneID, sp.Pool)
+	if err != nil {
+		return nil, err
+	}
+	c := sizing.Choose(sizing.Input{Spec: sp, Hint: sizing.LargestHint(hints...), History: history, Runners: runners})
+	in.Size, in.SizeReason, in.Pool = c.Size, string(c.Reason), sp.Pool
 	return needs, nil
 }
 
-func (a *Activities) need(ctx context.Context, org uuid.UUID, digest, role string) (*dispatch.Need, error) {
+func (a *Activities) role(ctx context.Context, org uuid.UUID, digest, role string) (*spec.Role, error) {
 	artifact, err := a.Store.GetArtifact(ctx, db.GetArtifactParams{OrgID: org, Digest: digest})
 	if err != nil {
 		return nil, err
@@ -64,8 +91,7 @@ func (a *Activities) need(ctx context.Context, org uuid.UUID, digest, role strin
 	if r == nil {
 		return nil, nil
 	}
-	n := dispatch.NeedOf(r.Role)
-	return &n, nil
+	return r.Role, nil
 }
 
 // GetWork reports whether work finished, and how.

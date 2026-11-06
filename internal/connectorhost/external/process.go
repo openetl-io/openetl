@@ -29,6 +29,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
 	"github.com/unsuitable001/openetl/internal/netguard"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	connspec "github.com/unsuitable001/openetl/internal/spec"
 	sdk "github.com/unsuitable001/openetl/sdk/go"
 	"github.com/unsuitable001/openetl/sdk/go/host"
@@ -60,6 +61,8 @@ type Options struct {
 	// The spec the connector must return: its descriptor's. Nil: any spec of
 	// the right kind.
 	Spec *protocolv1.SpecResponse
+	// Counts what the process uses. Nil: nothing does.
+	Meter *resources.Meter
 	// Serves a staged destination's files and cursors (SetStaging).
 	Staging hostservices.Staging
 }
@@ -74,9 +77,10 @@ type process struct {
 	// The config, with secret names in place of the secrets.
 	config []byte
 	// Set once the spec is read; logs relayed before then aren't scrubbed.
-	hs   atomic.Pointer[hostservices.Services]
-	host *grpc.Server
-	log  *slog.Logger
+	hs    atomic.Pointer[hostservices.Services]
+	host  *grpc.Server
+	log   *slog.Logger
+	meter *resources.Meter
 	// Closed once the process has exited and its output is drained.
 	exited chan struct{}
 	killed atomic.Bool
@@ -98,7 +102,7 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 	if log == nil {
 		log = slog.Default()
 	}
-	p := &process{dir: dir, exited: make(chan struct{}), log: log.With("connector", filepath.Base(exe))}
+	p := &process{dir: dir, exited: make(chan struct{}), log: log.With("connector", filepath.Base(exe)), meter: opts.Meter}
 	var lc net.ListenConfig
 	hostLn, err := lc.Listen(ctx, "unix", hostSocket)
 	if err != nil {
@@ -197,6 +201,7 @@ func (p *process) run(ctx context.Context, exe string, kind protocolv1.Connector
 		return errs.Wrap(errs.ConfigInvalid, err, "connector: start "+exe)
 	}
 	p.log = p.log.With("pid", p.cmd.Process.Pid)
+	metered := p.meter.Track(p.cmd.Process.Pid)
 
 	ready := make(chan struct{})
 	var drained sync.WaitGroup
@@ -211,6 +216,7 @@ func (p *process) run(ctx context.Context, exe string, kind protocolv1.Connector
 	go func() {
 		drained.Wait()
 		_ = p.cmd.Wait()
+		metered(p.cmd.ProcessState)
 		close(p.exited)
 	}()
 
@@ -259,6 +265,7 @@ func dialSized(ctx context.Context, addr string) (net.Conn, error) {
 // close stops the connector and waits for it to exit. It's safe to call
 // after the connector has died.
 func (p *process) close() {
+	p.meter.Sample()
 	if p.conn != nil {
 		_ = p.conn.Close()
 	}

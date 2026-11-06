@@ -12,13 +12,16 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/orchestration/dispatch"
+	"github.com/unsuitable001/openetl/internal/orchestration/sizing"
 	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/spec"
 	"github.com/unsuitable001/openetl/internal/store/db"
@@ -47,7 +50,10 @@ func (s *Server) ReportRunner(ctx context.Context, req *connect.Request[dataplan
 	dp := callerOf(ctx).dataPlane
 	running := make([]dispatch.RunningWork, len(m.GetRunning()))
 	for i, w := range m.GetRunning() {
-		running[i] = dispatch.RunningWork{ID: w.GetId(), Epoch: int64(min(w.GetEpoch(), math.MaxInt64)), Size: sizeOf(w.GetSize())}
+		running[i] = dispatch.RunningWork{
+			ID: w.GetId(), Epoch: int64(min(w.GetEpoch(), math.MaxInt64)), Size: sizeOf(w.GetSize()),
+			Usage: usageOf(w.GetUsage(), w.GetRows(), w.GetBytes()),
+		}
 	}
 	capacity, reserved := sizeOf(m.GetCapacity()), sizeOf(m.GetReserved())
 	stop, err := s.Dispatch.Report(ctx, dispatch.Report{
@@ -73,6 +79,28 @@ const maxRunnerWork = 10000
 
 func sizeOf(r *dataplanev1.Resources) resources.Size {
 	return resources.Size{CPU: r.GetCpuMillis(), Memory: r.GetMemoryBytes()}
+}
+
+func usageOf(u *apiv1.Usage, rows, bytes uint64) *dispatch.AttemptUsage {
+	if u == nil {
+		return nil
+	}
+	return &dispatch.AttemptUsage{
+		Usage: resources.Usage{
+			CPU: seconds(u.GetCpuSeconds()), Memory: u.GetPeakMemoryBytes(), RunnerCPU: seconds(u.GetRunnerCpuSeconds()),
+			RunnerMemory: u.GetRunnerMemoryBytes(), Seconds: seconds(u.GetSeconds()),
+		},
+		Rows: int64(min(rows, math.MaxInt64)), Bytes: int64(min(bytes, math.MaxInt64)),
+	}
+}
+
+// seconds is 0 for what a runner can't have measured: sizing takes the largest
+// figure it hears, and NaN is larger than any.
+func seconds(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0
+	}
+	return v
 }
 
 // PollWork waits for work for the runner, and hands it over.
@@ -116,11 +144,83 @@ func (s *Server) ReportResult(ctx context.Context, req *connect.Request[dataplan
 	if len(out.Result) > 0 && !json.Valid(out.Result) {
 		return nil, invalid("the result isn't JSON")
 	}
-	accepted, err := s.Dispatch.Result(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), out, m.GetNoCapacity())
+	accepted, err := s.Dispatch.Result(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), out, m.GetNoCapacity(), usageOf(m.GetUsage(), m.GetRows(), m.GetBytes()))
 	if err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&dataplanev1.ReportResultResponse{Accepted: accepted}), nil
+}
+
+// planJob is what the pipeline's next attempt would be sized at, and checks
+// that a runner of its pool can take the size. That's a problem when the pool's
+// runners reported lately and none can, and a note when none reported. A pod
+// launcher can take any size, from P1.36.
+func (s *Server) planJob(ctx context.Context, q *db.Queries, p *planned, out *apiv1.PipelinePlan) error {
+	sp := sizing.SpecOf(p.v.spec.GetResources())
+	rows, err := q.RecentRunners(ctx, db.RecentRunnersParams{OrgID: s.Tenant.Org, DataPlaneID: p.v.dataPlane, Since: time.Now().Add(-runnerReach)})
+	if err != nil {
+		return err
+	}
+	var capacities []resources.Size
+	for _, r := range rows {
+		if r.Pool == sp.Pool && r.CapacityCpu > 0 {
+			capacities = append(capacities, resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory})
+		}
+	}
+	in := sizing.Input{Spec: sp, Runners: capacities}
+	if in.Hint, err = s.planHint(ctx, q, p.v); err != nil {
+		return err
+	}
+	if p.id != uuid.Nil {
+		if in.History, err = sizing.History(ctx, q, s.Tenant.Org, p.id); err != nil {
+			return err
+		}
+	}
+	c := sizing.Choose(in)
+	out.Job = &apiv1.JobPlan{Size: sizing.Out(c.Size), Reason: c.Reason.API(), Pool: sp.Pool}
+	if len(capacities) == 0 {
+		out.Notes = append(out.Notes, fmt.Sprintf("no runner of data plane %q and pool %q has reported in the last ten minutes, so the plan can't check that one can take the job's size", p.v.dataPlane, sp.Pool))
+		return nil
+	}
+	if !sizing.FitsAny(c.Size, capacities) {
+		out.Problems = append(out.Problems, fmt.Sprintf("the job's size, %s, is larger than any runner of data plane %q and pool %q can take: %s",
+			c.Size.Name(), p.v.dataPlane, sp.Pool, largestCapacities(capacities)))
+	}
+	if sp.Max != (resources.Size{}) && !sizing.FitsAny(sp.Max, capacities) {
+		out.Warnings = append(out.Warnings, &apiv1.PlanWarning{Message: fmt.Sprintf(
+			"resources.max, %s, is larger than any runner of pool %q can take, so the job stops growing below it: %s", sp.Max.Name(), sp.Pool, largestCapacities(capacities))})
+	}
+	return nil
+}
+
+// planHint is the largest hint of the version's connectors.
+func (s *Server) planHint(ctx context.Context, q *db.Queries, v *pinned) (resources.Size, error) {
+	var hints []string
+	for _, r := range []struct{ role, digest string }{{"source", v.src.ConnectorDigest}, {"destination", v.dst.ConnectorDigest}} {
+		if r.digest == "" {
+			continue
+		}
+		a, err := q.GetArtifact(ctx, db.GetArtifactParams{OrgID: s.Tenant.Org, Digest: r.digest})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return resources.Size{}, err
+		}
+		ver, err := connectorhost.ParseVersion(a.Content)
+		if err != nil {
+			return resources.Size{}, err
+		}
+		if role := ver.Roles[r.role]; role != nil {
+			hints = append(hints, role.Resources.Hint)
+		}
+	}
+	return sizing.LargestHint(hints...), nil
+}
+
+func largestCapacities(capacities []resources.Size) string {
+	largest := slices.MaxFunc(capacities, func(a, b resources.Size) int { return cmp.Compare(a.Weight(), b.Weight()) })
+	return "the largest has " + largest.String()
 }
 
 // checkRunners checks that a runner of the pipeline's data plane can run its

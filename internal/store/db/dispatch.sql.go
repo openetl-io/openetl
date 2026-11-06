@@ -433,6 +433,38 @@ func (q *Queries) GetDispatchWorkflow(ctx context.Context, arg GetDispatchWorkfl
 	return workflow_id, err
 }
 
+const insertAttempt = `-- name: InsertAttempt :exec
+INSERT INTO attempts (org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (org_id, id) DO NOTHING
+`
+
+type InsertAttemptParams struct {
+	OrgID      uuid.UUID
+	ID         string
+	PipelineID uuid.UUID
+	SyncID     uuid.UUID
+	Attempt    int32
+	SizeCpu    int64
+	SizeMemory int64
+	SizeReason string
+}
+
+// A workflow's retry of the same work inserts nothing new.
+func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) error {
+	_, err := q.db.Exec(ctx, insertAttempt,
+		arg.OrgID,
+		arg.ID,
+		arg.PipelineID,
+		arg.SyncID,
+		arg.Attempt,
+		arg.SizeCpu,
+		arg.SizeMemory,
+		arg.SizeReason,
+	)
+	return err
+}
+
 const isFinishedByRunner = `-- name: IsFinishedByRunner :one
 SELECT EXISTS (
     SELECT 1 FROM dispatches
@@ -785,6 +817,103 @@ func (q *Queries) PlacementRunners(ctx context.Context, arg PlacementRunnersPara
 	return items, nil
 }
 
+const recentAttempts = `-- name: RecentAttempts :many
+SELECT size_cpu, size_memory, cpu_seconds, peak_memory, runner_cpu_seconds, runner_memory, seconds, code
+FROM attempts
+WHERE org_id = $1 AND pipeline_id = $2 AND (peak_memory > 0 OR cpu_seconds > 0 OR code <> '')
+ORDER BY create_time DESC
+LIMIT $3
+`
+
+type RecentAttemptsParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	MaxRows    int32
+}
+
+type RecentAttemptsRow struct {
+	SizeCpu          int64
+	SizeMemory       int64
+	CpuSeconds       float64
+	PeakMemory       int64
+	RunnerCpuSeconds float64
+	RunnerMemory     int64
+	Seconds          float64
+	Code             string
+}
+
+// The pipeline's latest attempts that say anything about its size: they ran,
+// or they failed. Newest first.
+func (q *Queries) RecentAttempts(ctx context.Context, arg RecentAttemptsParams) ([]RecentAttemptsRow, error) {
+	rows, err := q.db.Query(ctx, recentAttempts, arg.OrgID, arg.PipelineID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecentAttemptsRow
+	for rows.Next() {
+		var i RecentAttemptsRow
+		if err := rows.Scan(
+			&i.SizeCpu,
+			&i.SizeMemory,
+			&i.CpuSeconds,
+			&i.PeakMemory,
+			&i.RunnerCpuSeconds,
+			&i.RunnerMemory,
+			&i.Seconds,
+			&i.Code,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordAttemptUsage = `-- name: RecordAttemptUsage :exec
+UPDATE attempts a SET
+    cpu_seconds = GREATEST(a.cpu_seconds, ($1::double precision[])[array_position($2::text[], a.id)]),
+    peak_memory = GREATEST(a.peak_memory, ($3::bigint[])[array_position($2::text[], a.id)]),
+    runner_cpu_seconds = GREATEST(a.runner_cpu_seconds, ($4::double precision[])[array_position($2::text[], a.id)]),
+    runner_memory = GREATEST(a.runner_memory, ($5::bigint[])[array_position($2::text[], a.id)]),
+    seconds = GREATEST(a.seconds, ($6::double precision[])[array_position($2::text[], a.id)]),
+    rows = GREATEST(a.rows, ($7::bigint[])[array_position($2::text[], a.id)]),
+    bytes = GREATEST(a.bytes, ($8::bigint[])[array_position($2::text[], a.id)])
+WHERE a.org_id = $9 AND a.id = ANY($2::text[])
+`
+
+type RecordAttemptUsageParams struct {
+	CpuSeconds       []float64
+	Ids              []string
+	PeakMemory       []int64
+	RunnerCpuSeconds []float64
+	RunnerMemory     []int64
+	Seconds          []float64
+	Rows             []int64
+	Bytes            []int64
+	OrgID            uuid.UUID
+}
+
+// What runners' reports say of what they run. Reports may arrive out of order
+// across a result, so usage only grows.
+func (q *Queries) RecordAttemptUsage(ctx context.Context, arg RecordAttemptUsageParams) error {
+	_, err := q.db.Exec(ctx, recordAttemptUsage,
+		arg.CpuSeconds,
+		arg.Ids,
+		arg.PeakMemory,
+		arg.RunnerCpuSeconds,
+		arg.RunnerMemory,
+		arg.Seconds,
+		arg.Rows,
+		arg.Bytes,
+		arg.OrgID,
+	)
+	return err
+}
+
 const replaceRunning = `-- name: ReplaceRunning :execrows
 UPDATE dispatches SET state = 'pending', runner = NULL, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
 WHERE org_id = $1 AND data_plane_id = $2 AND id = $3 AND runner = $4 AND state = 'running' AND light = ''
@@ -865,6 +994,71 @@ func (q *Queries) RunnerDisconnected(ctx context.Context, arg RunnerDisconnected
 		arg.ID,
 	)
 	return err
+}
+
+const setAttemptCode = `-- name: SetAttemptCode :exec
+UPDATE attempts SET code = $1 WHERE org_id = $2 AND id = $3
+`
+
+type SetAttemptCodeParams struct {
+	Code  string
+	OrgID uuid.UUID
+	ID    string
+}
+
+func (q *Queries) SetAttemptCode(ctx context.Context, arg SetAttemptCodeParams) error {
+	_, err := q.db.Exec(ctx, setAttemptCode, arg.Code, arg.OrgID, arg.ID)
+	return err
+}
+
+const syncAttempts = `-- name: SyncAttempts :many
+SELECT org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, cpu_seconds, peak_memory, runner_cpu_seconds, runner_memory, seconds, rows, bytes, code, create_time FROM attempts
+WHERE org_id = $1 AND sync_id = ANY($2::uuid[])
+ORDER BY sync_id, attempt, create_time
+`
+
+type SyncAttemptsParams struct {
+	OrgID   uuid.UUID
+	SyncIds []uuid.UUID
+}
+
+// The syncs' attempts, in order.
+func (q *Queries) SyncAttempts(ctx context.Context, arg SyncAttemptsParams) ([]Attempt, error) {
+	rows, err := q.db.Query(ctx, syncAttempts, arg.OrgID, arg.SyncIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Attempt
+	for rows.Next() {
+		var i Attempt
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.PipelineID,
+			&i.SyncID,
+			&i.Attempt,
+			&i.SizeCpu,
+			&i.SizeMemory,
+			&i.SizeReason,
+			&i.CpuSeconds,
+			&i.PeakMemory,
+			&i.RunnerCpuSeconds,
+			&i.RunnerMemory,
+			&i.Seconds,
+			&i.Rows,
+			&i.Bytes,
+			&i.Code,
+			&i.CreateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const takeManualSync = `-- name: TakeManualSync :one

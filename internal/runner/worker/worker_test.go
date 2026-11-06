@@ -216,6 +216,73 @@ func TestReportsListWhatRuns(t *testing.T) {
 	}
 }
 
+// An attempt has its use and what it moved in reports and its result, and its
+// share of the runner goes by what it moved. A light operation has none.
+func TestUsage(t *testing.T) {
+	release := make(chan struct{})
+	moved := make(chan struct{}, 2)
+	api, _, _ := start(t, map[string]Kind{
+		"attempt": {Handler: Handle(func(ctx context.Context, n int64) (struct{}, error) {
+			From(ctx).Meter.Moved(n, 1000*n)
+			moved <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return struct{}{}, nil
+		})},
+		"light": {Handler: Handle(func(ctx context.Context, _ int64) (struct{}, error) {
+			if From(ctx).Meter != nil {
+				t.Error("a light operation has a meter")
+			}
+			return struct{}{}, nil
+		})},
+	}, resources.L)
+	api.give(work("big", "attempt", small, int64(9)), work("little", "attempt", small, int64(1)), work("op", "light", nil, int64(0)))
+	<-moved
+	<-moved
+	eventually(t, "a report of both", func() bool {
+		r := api.lastReport()
+		if r == nil || len(r.GetRunning()) != 2 {
+			return false
+		}
+		for _, w := range r.GetRunning() {
+			if w.GetUsage() == nil || w.GetBytes() == 0 {
+				return false
+			}
+		}
+		return true
+	})
+	for _, w := range api.lastReport().GetRunning() {
+		want := uint64(1)
+		if w.GetId() == "big" {
+			want = 9
+		}
+		if w.GetRows() != want || w.GetBytes() != 1000*want {
+			t.Errorf("%s moved %d rows, %d bytes, want %d rows", w.GetId(), w.GetRows(), w.GetBytes(), want)
+		}
+		if w.GetUsage().GetSeconds() <= 0 {
+			t.Errorf("%s: usage %v", w.GetId(), w.GetUsage())
+		}
+	}
+	close(release)
+	eventually(t, "the results", func() bool { return api.result("big") != nil && api.result("little") != nil && api.result("op") != nil })
+	big, little := api.result("big"), api.result("little")
+	if big.GetRows() != 9 || big.GetUsage().GetSeconds() <= 0 || little.GetRows() != 1 {
+		t.Errorf("results %v and %v", big, little)
+	}
+	if b, l := big.GetUsage().GetRunnerMemoryBytes(), little.GetUsage().GetRunnerMemoryBytes(); b <= 0 || l <= 0 {
+		t.Errorf("shares of the runner's memory are %d and %d, want some of each", b, l)
+	}
+	// What the process used before these attempts isn't theirs.
+	if self, _ := resources.Self(); big.GetUsage().GetRunnerCpuSeconds() >= self {
+		t.Errorf("an attempt has %v s of the runner's CPU, of %v s it has used in all", big.GetUsage().GetRunnerCpuSeconds(), self)
+	}
+	if op := api.result("op"); op.GetUsage() != nil {
+		t.Errorf("a light operation's result has usage: %v", op.GetUsage())
+	}
+}
+
 // Attempts stop themselves at a checkpoint, and report themselves cancelled;
 // other work has its context cancelled.
 func TestStopFromAReport(t *testing.T) {

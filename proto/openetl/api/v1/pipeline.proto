@@ -170,6 +170,23 @@ message PipelineSpec {
   Transform transform = 11;
   SparkAccess spark_access = 12;
   FlinkAccess flink_access = 13;
+  // Unset: sized automatically, in the default pool.
+  JobResources resources = 14;
+}
+
+// JobResources sizes the pipeline's jobs (ADR-0027 §3).
+message JobResources {
+  // Unset: auto, from the connectors' hints and then the job's measured peaks.
+  JobSize size = 1;
+  // What auto stays at or above.
+  JobSize min = 2;
+  // What a job may grow to: auto's choice, and a retry after running out of
+  // memory. Unset: xl for auto, and size itself otherwise.
+  JobSize max = 3;
+  // Scheduled only: lanes from the expected bytes, from P1.35.
+  google.protobuf.Duration finish_within = 4;
+  // The runners that run its jobs. Unset: default.
+  string pool = 5;
 }
 
 // SparkAccess is how the pipeline's Spark applications reach its _spark/
@@ -610,6 +627,14 @@ message PipelinePlan {
   repeated string notes = 6;
   // What a sync will do that may not be wanted, such as collapsing rows.
   repeated PlanWarning warnings = 7;
+  // What its next attempt would be sized at.
+  JobPlan job = 8;
+}
+
+message JobPlan {
+  JobSize size = 1;
+  JobSizeReason reason = 2;
+  string pool = 3;
 }
 
 message PlanWarning {
@@ -699,6 +724,8 @@ message Checkpoint {
   // When the data plane recorded it.
   google.protobuf.Timestamp commit_time = 6;
   repeated CheckpointStream streams = 7;
+  // What the attempt that committed it had used by then.
+  Usage usage = 8;
 }
 
 message CheckpointStream {

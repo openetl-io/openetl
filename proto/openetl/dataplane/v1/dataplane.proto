@@ -8,6 +8,7 @@ import "openetl/api/v1/connection.proto";
 import "openetl/api/v1/flink.proto";
 import "openetl/api/v1/pipeline.proto";
 import "openetl/api/v1/spark.proto";
+import "openetl/api/v1/sync.proto";
 import "openetl/connector/v1/source.proto";
 
 option go_package = "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1";
@@ -171,6 +172,8 @@ message ReportCheckpointRequest {
   // What the read last reported of its progress, by stream ("" for the
   // whole read), if it reports any.
   repeated openetl.connector.v1.Progress progress = 8;
+  // What the attempt had used by then.
+  openetl.api.v1.Usage usage = 9;
 }
 
 message CheckpointRef {
@@ -336,6 +339,11 @@ message RunningWork {
   // The last epoch it committed; 0 if none, or if it has no epochs.
   uint64 epoch = 2;
   Resources size = 3;
+  // An attempt's use so far, and what its source has emitted; unset for a
+  // light operation.
+  openetl.api.v1.Usage usage = 4;
+  uint64 rows = 5;
+  uint64 bytes = 6;
 }
 
 message ReportRunnerResponse {
@@ -394,6 +402,11 @@ message ReportResultRequest {
   // A placement a stale report overfilled: the runner has no room. The work
   // is placed again, and this doesn't count as an attempt.
   bool no_capacity = 9;
+  // An attempt's use in all, and what its source emitted; unset for a light
+  // operation.
+  openetl.api.v1.Usage usage = 10;
+  uint64 rows = 11;
+  uint64 bytes = 12;
 }
 
 message ReportResultResponse {

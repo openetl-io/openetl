@@ -23,6 +23,7 @@ import (
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/unsuitable001/openetl/internal/auth"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 )
 
 const usage = `usage: openetl <command> [flags]
@@ -274,6 +275,32 @@ func changedPipelines(res *apiv1.ApplyResponse) map[string]bool {
 	return changed
 }
 
+// sizeText is a job's size, by its preset's name if it has one.
+func sizeText(s *apiv1.JobSize) string {
+	amounts := resources.Size{CPU: s.GetCpuMillis(), Memory: s.GetMemoryBytes()}.String()
+	if s.GetPreset() != "" {
+		return s.GetPreset() + " (" + amounts + ")"
+	}
+	return amounts
+}
+
+// reasonText says what set a job's size.
+func reasonText(r apiv1.JobSizeReason) string {
+	switch r {
+	case apiv1.JobSizeReason_JOB_SIZE_REASON_SPEC:
+		return "from spec.resources"
+	case apiv1.JobSizeReason_JOB_SIZE_REASON_HINT:
+		return "from its connectors' hints"
+	case apiv1.JobSizeReason_JOB_SIZE_REASON_HISTORY:
+		return "from its recent peaks"
+	case apiv1.JobSizeReason_JOB_SIZE_REASON_OUT_OF_MEMORY:
+		return "after an attempt ran out of memory"
+	case apiv1.JobSizeReason_JOB_SIZE_REASON_LARGEST_RUNNER:
+		return "the most a runner can take"
+	}
+	return "the default"
+}
+
 // printPlans prints each pipeline's plan, and fails if one the apply would
 // create or change has problems.
 func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
@@ -286,6 +313,9 @@ func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
 			for _, c := range p.GetChanges() {
 				fmt.Fprintf(out, "    %s: %s -> %s\n", c.GetField(), cmp.Or(c.GetBefore(), "(unset)"), cmp.Or(c.GetAfter(), "(unset)"))
 			}
+		}
+		if j := p.GetJob(); j != nil {
+			fmt.Fprintf(out, "  job size: %s, %s, in pool %s\n", sizeText(j.GetSize()), reasonText(j.GetReason()), j.GetPool())
 		}
 		if len(p.GetStreams()) > 0 {
 			fmt.Fprintln(out, "  streams:")

@@ -113,7 +113,7 @@ func Package(ctx context.Context, f *File, o Options) (*Result, error) {
 			pr.Platform = r.Requires.Platform
 		}
 		if r.Resources != nil {
-			pr.Resources = spec.Resources{CPU: r.Resources.CPU, Memory: r.Resources.Memory, Disk: r.Resources.Disk}
+			pr.Resources = spec.Resources{CPU: r.Resources.CPU, Memory: r.Resources.Memory, Disk: r.Resources.Disk, Hint: r.Resources.Hint}
 		}
 		if r.State != nil {
 			pr.State = &spec.State{Version: r.State.Version, Reads: r.State.Reads}

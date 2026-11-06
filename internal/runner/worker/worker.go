@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
@@ -88,9 +91,11 @@ type Worker struct {
 	reserved resources.Size
 	ops      int
 	logReads int
-	drain    chan struct{}
-	handlers sync.WaitGroup
-	results  sync.WaitGroup
+	// What the runner had used when its work last got its share.
+	sharedCPU float64
+	drain     chan struct{}
+	handlers  sync.WaitGroup
+	results   sync.WaitGroup
 }
 
 func (w *Worker) log() *slog.Logger {
@@ -106,6 +111,7 @@ func (w *Worker) log() *slog.Logger {
 func (w *Worker) Run(ctx context.Context) error {
 	w.running = map[string]*Work{}
 	w.drain = make(chan struct{})
+	w.sharedCPU, _ = resources.Self()
 	base := context.WithoutCancel(ctx)
 	reportCtx, stopReports := context.WithCancel(base)
 	defer stopReports()
@@ -187,10 +193,14 @@ func (w *Worker) report(ctx context.Context) error {
 		Runner: w.ID, Release: w.Release, Protocol: w.Protocol, Features: w.Features, Launchers: w.Launchers, Platform: w.Platform,
 		Pool: w.Pool, Capacity: protoSize(w.Capacity), Reserved: protoSize(w.reserved), Draining: w.draining(),
 	}
-	for _, wk := range w.running {
-		req.Running = append(req.Running, &dataplanev1.RunningWork{Id: wk.ID, Epoch: wk.epoch.Load(), Size: protoSize(wk.Size)})
-	}
+	w.share()
+	running := slices.Collect(maps.Values(w.running))
 	w.mu.Unlock()
+	for _, wk := range running {
+		r := &dataplanev1.RunningWork{Id: wk.ID, Epoch: wk.epoch.Load(), Size: protoSize(wk.Size)}
+		r.Usage, r.Rows, r.Bytes = wk.usage()
+		req.Running = append(req.Running, r)
+	}
 	// A slow answer still counts, but one lost in a partition mustn't hold up
 	// the reports after it, which keep leases alive once the partition heals.
 	ctx, cancel := context.WithTimeout(ctx, 2*w.reportEvery())
@@ -207,6 +217,33 @@ func (w *Worker) report(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// share gives the attempts running their share of what the runner has used
+// since the last time: in proportion to what each moved since then, and evenly
+// if none moved anything. Call it with mu held.
+func (w *Worker) share() {
+	cpu, heap := resources.Self()
+	used := max(0, cpu-w.sharedCPU)
+	w.sharedCPU = cpu
+	var attempts []*Work
+	var moved int64
+	for _, wk := range w.running {
+		if wk.Meter != nil {
+			attempts = append(attempts, wk)
+			_, b := wk.Meter.Progress()
+			moved += b - wk.sharedBytes
+		}
+	}
+	for _, wk := range attempts {
+		_, b := wk.Meter.Progress()
+		part := 1 / float64(len(attempts))
+		if moved > 0 {
+			part = float64(b-wk.sharedBytes) / float64(moved)
+		}
+		wk.sharedBytes = b
+		wk.Meter.Share(used*part, int64(float64(heap)*part))
+	}
 }
 
 func (w *Worker) draining() bool {
@@ -303,6 +340,7 @@ func (w *Worker) start(base, results context.Context, m *dataplanev1.Work) {
 			err = errs.New(errs.Internal, "this runner doesn't run %s", wk.Kind)
 		}
 		w.mu.Lock()
+		w.share()
 		delete(w.running, wk.ID)
 		w.reserved = w.reserved.Sub(wk.Size)
 		switch {
@@ -357,6 +395,7 @@ func (w *Worker) cutOff(wk *Work, kind Kind, cancel context.CancelFunc, finished
 // outcome is the result report of work that returned res and err.
 func outcome(runner string, wk *Work, res any, err error) *dataplanev1.ReportResultRequest {
 	out := &dataplanev1.ReportResultRequest{Runner: runner, Id: wk.ID}
+	out.Usage, out.Rows, out.Bytes = wk.usage()
 	var failure *contract.Failure
 	switch {
 	case err == nil:
@@ -425,20 +464,46 @@ type Spec struct {
 // Work is one piece of work on this runner.
 type Work struct {
 	Spec
+	// What an attempt uses. Nil for a light operation.
+	Meter *resources.Meter
 
-	epoch    atomic.Uint64
-	stop     chan struct{}
-	stopOnce sync.Once
-	drain    <-chan struct{}
-	stopping func() <-chan struct{}
+	// How much of what it moved has had its share of the runner's work, under
+	// the worker's lock.
+	sharedBytes int64
+	epoch       atomic.Uint64
+	stop        chan struct{}
+	stopOnce    sync.Once
+	drain       <-chan struct{}
+	stopping    func() <-chan struct{}
 }
 
 func newWork(m *dataplanev1.Work, drain <-chan struct{}) *Work {
-	return NewWork(Spec{
+	wk := NewWork(Spec{
 		ID: m.GetId(), Kind: m.GetKind(), HeartbeatTimeout: m.GetHeartbeatTimeout().AsDuration(), Timeout: m.GetTimeout().AsDuration(),
 		Size:     resources.Size{CPU: m.GetSize().GetCpuMillis(), Memory: m.GetSize().GetMemoryBytes()},
 		Received: time.Now().Round(0),
 	}, drain)
+	if m.GetSize() != nil {
+		wk.Meter = resources.NewMeter()
+	}
+	return wk
+}
+
+// usage is what an attempt has used and moved, for a report; nil for a light
+// operation.
+func (wk *Work) usage() (*apiv1.Usage, uint64, uint64) {
+	if wk.Meter == nil {
+		return nil, 0, 0
+	}
+	rows, bytes := wk.Meter.Progress()
+	return APIUsage(wk.Meter.Usage()), uint64(max(0, rows)), uint64(max(0, bytes))
+}
+
+// APIUsage is u as the API says it.
+func APIUsage(u resources.Usage) *apiv1.Usage {
+	return &apiv1.Usage{
+		CpuSeconds: u.CPU, PeakMemoryBytes: u.Memory, RunnerCpuSeconds: u.RunnerCPU, RunnerMemoryBytes: u.RunnerMemory, Seconds: u.Seconds,
+	}
 }
 
 // NewWork is work ready to run, on a runner that stops when drain closes.
