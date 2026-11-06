@@ -41,6 +41,26 @@ func (e countingEmitter) Forward(stream string, b arrowipc.Encoded) error {
 	return e.Emitter.(source.Forwarder).Forward(stream, b)
 }
 
+func (e countingEmitter) Split(stream, id string) source.SplitEmitter {
+	return countingSplit{e.Emitter.Split(stream, id), e.n}
+}
+
+type countingSplit struct {
+	source.SplitEmitter
+	n *atomic.Int64
+}
+
+func (s countingSplit) Records(b arrow.RecordBatch) error {
+	s.n.Add(util.TotalRecordSize(b))
+	return s.SplitEmitter.Records(b)
+}
+
+// Forward needs the runner's emitter, which forwards.
+func (s countingSplit) Forward(b arrowipc.Encoded) error {
+	s.n.Add(b.Size)
+	return s.SplitEmitter.(source.SplitForwarder).Forward(b)
+}
+
 // discardEmitter drops what a source emits.
 type discardEmitter struct{ bytes int64 }
 
