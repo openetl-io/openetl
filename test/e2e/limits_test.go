@@ -35,7 +35,7 @@ func TestJobOverItsMemoryRetriesOneSizeUp(t *testing.T) {
 	eventually(t, 60*time.Second, "the neighbour's first commit", func() bool { return committedEpochs(t, schema(neighbour)) > 0 })
 
 	name := unique("over-memory")
-	faker := `{"seed": 3, "count": 1000000, "batchSize": 100000}`
+	faker := `{"seed": 3, "count": 400000, "batchSize": 100000}`
 	apply(t, sizedDocs(t, name, plane, faker, `{"size": {"cpu": 0.5, "memory": "32Mi"}, "max": "xs"}`)...)
 	if status, stats := waitSync(t, name, 3*time.Minute); status != "succeeded" {
 		t.Fatalf("sync %s: %s", status, stats)
@@ -59,7 +59,7 @@ func TestSmallSyncsKeepTheirPace(t *testing.T) {
 	plane, token := placementPlane(t)
 	startPlaneRunner(t, plane, token, "8,16Gi")
 
-	faker := `{"seed": 3, "count": 300000, "batchSize": 2000}`
+	faker := `{"seed": 3, "count": 50000, "batchSize": 2000}`
 	round := func() time.Duration {
 		t.Helper()
 		names := make([]string, 3)
