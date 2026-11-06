@@ -22,6 +22,8 @@ const (
 	SourceService_Discover_FullMethodName  = "/openetl.connector.v1.SourceService/Discover"
 	SourceService_Read_FullMethodName      = "/openetl.connector.v1.SourceService/Read"
 	SourceService_Committed_FullMethodName = "/openetl.connector.v1.SourceService/Committed"
+	SourceService_Splits_FullMethodName    = "/openetl.connector.v1.SourceService/Splits"
+	SourceService_Resplit_FullMethodName   = "/openetl.connector.v1.SourceService/Resplit"
 )
 
 // SourceServiceClient is the client API for SourceService service.
@@ -30,6 +32,11 @@ const (
 //
 // SourceService is served by source connectors. The platform commits only at
 // the resume points a source emits.
+//
+// A stream's read is a set of splits (ADR-0027): resumable slices, such as
+// key ranges, partitions or shards, which a source may read concurrently.
+// The whole stream is the split with the empty ID, and a stream is read as
+// that one split unless the platform asks Splits for others.
 type SourceServiceClient interface {
 	Discover(ctx context.Context, in *DiscoverRequest, opts ...grpc.CallOption) (*DiscoverResponse, error)
 	// For a bounded read, the response stream ends once every stream is
@@ -38,6 +45,13 @@ type SourceServiceClient interface {
 	// Runs concurrently with Read. Called only when
 	// SourceCapabilities.acknowledges is set.
 	Committed(ctx context.Context, in *CommittedRequest, opts ...grpc.CallOption) (*CommittedResponse, error)
+	// A stream's splits for a read that starts. Called only when
+	// SourceCapabilities.splits is set.
+	Splits(ctx context.Context, in *SplitsRequest, opts ...grpc.CallOption) (*SplitsResponse, error)
+	// Asks for a split being read to have its remainder split in two. Runs
+	// concurrently with Read. Called only when SourceCapabilities.resplit is
+	// set.
+	Resplit(ctx context.Context, in *ResplitRequest, opts ...grpc.CallOption) (*ResplitResponse, error)
 }
 
 type sourceServiceClient struct {
@@ -87,12 +101,37 @@ func (c *sourceServiceClient) Committed(ctx context.Context, in *CommittedReques
 	return out, nil
 }
 
+func (c *sourceServiceClient) Splits(ctx context.Context, in *SplitsRequest, opts ...grpc.CallOption) (*SplitsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SplitsResponse)
+	err := c.cc.Invoke(ctx, SourceService_Splits_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sourceServiceClient) Resplit(ctx context.Context, in *ResplitRequest, opts ...grpc.CallOption) (*ResplitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResplitResponse)
+	err := c.cc.Invoke(ctx, SourceService_Resplit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SourceServiceServer is the server API for SourceService service.
 // All implementations must embed UnimplementedSourceServiceServer
 // for forward compatibility.
 //
 // SourceService is served by source connectors. The platform commits only at
 // the resume points a source emits.
+//
+// A stream's read is a set of splits (ADR-0027): resumable slices, such as
+// key ranges, partitions or shards, which a source may read concurrently.
+// The whole stream is the split with the empty ID, and a stream is read as
+// that one split unless the platform asks Splits for others.
 type SourceServiceServer interface {
 	Discover(context.Context, *DiscoverRequest) (*DiscoverResponse, error)
 	// For a bounded read, the response stream ends once every stream is
@@ -101,6 +140,13 @@ type SourceServiceServer interface {
 	// Runs concurrently with Read. Called only when
 	// SourceCapabilities.acknowledges is set.
 	Committed(context.Context, *CommittedRequest) (*CommittedResponse, error)
+	// A stream's splits for a read that starts. Called only when
+	// SourceCapabilities.splits is set.
+	Splits(context.Context, *SplitsRequest) (*SplitsResponse, error)
+	// Asks for a split being read to have its remainder split in two. Runs
+	// concurrently with Read. Called only when SourceCapabilities.resplit is
+	// set.
+	Resplit(context.Context, *ResplitRequest) (*ResplitResponse, error)
 	mustEmbedUnimplementedSourceServiceServer()
 }
 
@@ -119,6 +165,12 @@ func (UnimplementedSourceServiceServer) Read(*ReadRequest, grpc.ServerStreamingS
 }
 func (UnimplementedSourceServiceServer) Committed(context.Context, *CommittedRequest) (*CommittedResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Committed not implemented")
+}
+func (UnimplementedSourceServiceServer) Splits(context.Context, *SplitsRequest) (*SplitsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Splits not implemented")
+}
+func (UnimplementedSourceServiceServer) Resplit(context.Context, *ResplitRequest) (*ResplitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Resplit not implemented")
 }
 func (UnimplementedSourceServiceServer) mustEmbedUnimplementedSourceServiceServer() {}
 func (UnimplementedSourceServiceServer) testEmbeddedByValue()                       {}
@@ -188,6 +240,42 @@ func _SourceService_Committed_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SourceService_Splits_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SplitsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SourceServiceServer).Splits(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SourceService_Splits_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SourceServiceServer).Splits(ctx, req.(*SplitsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SourceService_Resplit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResplitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SourceServiceServer).Resplit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SourceService_Resplit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SourceServiceServer).Resplit(ctx, req.(*ResplitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SourceService_ServiceDesc is the grpc.ServiceDesc for SourceService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -202,6 +290,14 @@ var SourceService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Committed",
 			Handler:    _SourceService_Committed_Handler,
+		},
+		{
+			MethodName: "Splits",
+			Handler:    _SourceService_Splits_Handler,
+		},
+		{
+			MethodName: "Resplit",
+			Handler:    _SourceService_Resplit_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

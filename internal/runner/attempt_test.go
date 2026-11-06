@@ -466,7 +466,7 @@ func (s ackSource) Read(ctx context.Context, req source.ReadRequest, out source.
 	return out.Complete("s", strconv.AppendInt(nil, int64(s.pages), 10))
 }
 
-func (s ackSource) Committed(_ context.Context, states map[string][]byte) error {
+func (s ackSource) Committed(_ context.Context, states map[string][]byte, _ map[string][]source.Split) error {
 	*s.acks = append(*s.acks, string(states["s"]))
 	return nil
 }

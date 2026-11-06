@@ -58,7 +58,11 @@ func (d *discardEmitter) Forward(_ string, b arrowipc.Encoded) error {
 }
 
 func (d *discardEmitter) ResumePoint(string, []byte) error { return nil }
-func (d *discardEmitter) Complete(string, []byte) error    { return nil }
+
+func (d *discardEmitter) Split(stream, id string) source.SplitEmitter {
+	return source.WholeSplit(d, stream, id)
+}
+func (d *discardEmitter) Complete(string, []byte) error { return nil }
 
 // emitted is a batch, or a resume point if batch is nil.
 type emitted struct {
@@ -92,6 +96,10 @@ func (r *recorder) ResumePoint(_ string, state []byte) error {
 		return errEnough
 	}
 	return nil
+}
+
+func (r *recorder) Split(stream, id string) source.SplitEmitter {
+	return source.WholeSplit(r, stream, id)
 }
 
 func (r *recorder) Complete(string, []byte) error { return nil }

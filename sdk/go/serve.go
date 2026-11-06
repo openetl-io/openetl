@@ -64,6 +64,11 @@ type Connector struct {
 	// Committed is called on the source, which implements
 	// source.Acknowledger.
 	Acknowledges bool
+	// The source implements source.Splitter, and divides streams into
+	// splits (ADR-0027).
+	Splits bool
+	// The source implements source.Resplitter.
+	Resplit bool
 
 	Destination  func(config []byte, h host.Host) (destination.Destination, error)
 	Capabilities destination.Capabilities
@@ -246,7 +251,7 @@ func (b *base) Spec(_ context.Context, req *protocolv1.SpecRequest) (*protocolv1
 	}
 	if b.c.Source != nil {
 		resp.Kind = protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE
-		resp.Source = &protocolv1.SourceCapabilities{Acknowledges: b.c.Acknowledges}
+		resp.Source = &protocolv1.SourceCapabilities{Acknowledges: b.c.Acknowledges, Splits: b.c.Splits, Resplit: b.c.Resplit}
 	} else {
 		resp.Kind = protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION
 		resp.Destination = capabilitiesToProto(b.c.Capabilities)

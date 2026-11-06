@@ -5,6 +5,7 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -58,7 +59,24 @@ type ConfiguredStream struct {
 	// The field an incremental read orders by: the pipeline's choice, or
 	// the catalog's default.
 	Cursor string
-	// Nil: start from the beginning.
+	// The whole stream's state, where Splits is nil. Nil: start from the
+	// beginning.
+	State []byte
+	// The splits to read; nil: the whole stream, from State.
+	Splits []Split
+}
+
+// WholeStream is the ID of the split that is the whole stream.
+const WholeStream = ""
+
+// Split is one of a stream's splits (ADR-0027): a resumable slice of its
+// read, such as a key range, a partition or a shard, which a source may read
+// concurrently with the others. IDs are the source's, unique within the
+// stream for as long as its read lasts. A stream is read as one split, the
+// whole stream, unless the platform asks a Splitter for others.
+type Split struct {
+	ID string
+	// Nil: from its beginning.
 	State []byte
 }
 
@@ -134,6 +152,8 @@ func SplitDeclared(s *arrow.Schema) (*arrow.Schema, arrow.DataType) {
 
 // Emitter receives what a source reads. Its methods block under
 // backpressure, and fail once the read is cancelled; Read returns that error.
+// Those that take a stream emit on the whole stream, as Split(stream,
+// WholeStream)'s do.
 type Emitter interface {
 	// Rows sends JSON objects on the raw lane.
 	Rows(stream string, rows []json.RawMessage) error
@@ -146,13 +166,103 @@ type Emitter interface {
 	// doesn't read the stream again. next is where its next sync starts: nil
 	// for the beginning, as a full refresh does, or a cursor floor.
 	Complete(stream string, next []byte) error
+	// Split returns the emitter of one of stream's splits. Different
+	// splits' emitters may be called concurrently, each from one goroutine
+	// at a time.
+	Split(stream, id string) SplitEmitter
+}
+
+// SplitEmitter receives what a source reads of one split, as Emitter does
+// of a stream.
+type SplitEmitter interface {
+	Rows(rows []json.RawMessage) error
+	Records(batch arrow.RecordBatch) error
+	// ResumePoint says the split can restart from state after everything
+	// emitted for it so far. The stream gains the added splits from here on:
+	// a re-split's remainder, which state no longer covers, or a shard whose
+	// parents are read.
+	ResumePoint(state []byte, added ...Split) error
+	// Complete ends the split, as Emitter.Complete ends a stream read whole,
+	// and the stream once every split has. added as ResumePoint's.
+	Complete(next []byte, added ...Split) error
 }
 
 // Forwarder is an Emitter that also takes batches as the protocol carries
-// them, and passes them on without decoding them.
+// them, and passes them on without decoding them. Its splits' emitters are
+// SplitForwarders.
 type Forwarder interface {
 	Emitter
 	Forward(stream string, batch arrowipc.Encoded) error
+}
+
+// SplitForwarder is a SplitEmitter that also takes batches as the protocol
+// carries them.
+type SplitForwarder interface {
+	SplitEmitter
+	Forward(batch arrowipc.Encoded) error
+}
+
+// WholeSplit is an Emitter's whole stream as a SplitEmitter, for Emitters
+// that know only whole streams. It fails other splits' emits, and any
+// that add splits.
+func WholeSplit(out Emitter, stream, id string) SplitEmitter {
+	w := whole{out, stream, id}
+	if f, ok := out.(Forwarder); ok {
+		return wholeForwarder{w, f}
+	}
+	return w
+}
+
+type wholeForwarder struct {
+	whole
+	f Forwarder
+}
+
+func (w wholeForwarder) Forward(batch arrowipc.Encoded) error {
+	if err := w.check(nil); err != nil {
+		return err
+	}
+	return w.f.Forward(w.stream, batch)
+}
+
+type whole struct {
+	out        Emitter
+	stream, id string
+}
+
+func (w whole) check(added []Split) error {
+	if w.id != WholeStream || len(added) > 0 {
+		return fmt.Errorf("source: stream %q is read whole, not in splits", w.stream)
+	}
+	return nil
+}
+
+func (w whole) Rows(rows []json.RawMessage) error {
+	if err := w.check(nil); err != nil {
+		return err
+	}
+	return w.out.Rows(w.stream, rows)
+}
+
+func (w whole) Records(batch arrow.RecordBatch) error {
+	if err := w.check(nil); err != nil {
+		return err
+	}
+	return w.out.Records(w.stream, batch)
+}
+
+func (w whole) ResumePoint(state []byte, added ...Split) error {
+	if err := w.check(added); err != nil {
+		return err
+	}
+	return w.out.ResumePoint(w.stream, state)
+}
+
+func (w whole) Complete(next []byte, added ...Split) error {
+	if err := w.check(added); err != nil {
+		return err
+	}
+	return w.out.Complete(w.stream, next)
 }
 
 // Progress says how far a read is behind its source, and how much longer
@@ -190,6 +300,9 @@ type Reader interface {
 type CatalogStream struct {
 	Name       string
 	PrimaryKey []string
+	// Where the source splits the stream, every record of a key is in one
+	// split.
+	SplitsByKey bool
 	// The field whose value orders a record's versions; empty for none.
 	CursorField string
 	Replay      Replay
@@ -217,10 +330,41 @@ type Source interface {
 
 // Acknowledger is implemented by sources that acknowledge upstream (Kafka
 // offsets, a replication slot's LSN). Committed gets one checkpoint's
-// per-stream states, once everything before them can be discarded. It runs
+// states, once everything before them can be discarded: by stream for the
+// streams read whole, and their splits' for those read in splits. It runs
 // concurrently with Read.
 type Acknowledger interface {
-	Committed(ctx context.Context, states map[string][]byte) error
+	Committed(ctx context.Context, states map[string][]byte, splits map[string][]Split) error
+}
+
+// Splitter is implemented by sources that divide streams into splits.
+// Splits returns a stream's splits for a read that starts, given where its
+// last read's splits ended, their next states; ended is nil for a stream
+// never read. The whole stream alone means it isn't split.
+type Splitter interface {
+	Splits(ctx context.Context, stream ConfiguredStream, ended []Split) ([]Split, error)
+}
+
+// Whole is a stream's one split, the whole stream, for a read that starts
+// where its last read ended: a Splitter's answer for a stream it doesn't
+// split. It fails if that read had other splits.
+func Whole(ended []Split) ([]Split, error) {
+	switch {
+	case len(ended) == 0:
+		return []Split{{ID: WholeStream}}, nil
+	case len(ended) == 1 && ended[0].ID == WholeStream:
+		return []Split{{ID: WholeStream, State: ended[0].State}}, nil
+	}
+	return nil, fmt.Errorf("source: the stream's last read had %d splits, and it's read whole", len(ended))
+}
+
+// Resplitter is implemented by sources that split a running split's
+// remainder, so a lane that has finished its splits can take half of a
+// straggler's. Resplit says whether the source will: it then adds the new
+// split at the split's next resume point, whose state no longer covers it.
+// It runs concurrently with Read.
+type Resplitter interface {
+	Resplit(ctx context.Context, stream, split string) (bool, error)
 }
 
 // Teardowner is implemented by sources that keep something upstream for a

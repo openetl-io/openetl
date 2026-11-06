@@ -40,7 +40,11 @@ type rows struct{ n int }
 func (r *rows) Rows(_ string, rs []json.RawMessage) error { r.n += len(rs); return nil }
 func (r *rows) Records(string, arrow.RecordBatch) error   { return nil }
 func (r *rows) ResumePoint(string, []byte) error          { return nil }
-func (r *rows) Complete(string, []byte) error             { return nil }
+
+func (r *rows) Split(stream, id string) source.SplitEmitter {
+	return source.WholeSplit(r, stream, id)
+}
+func (r *rows) Complete(string, []byte) error { return nil }
 
 // Each declarative instance gets host services with its own secrets, and
 // reaches only what the runner's egress policy allows.

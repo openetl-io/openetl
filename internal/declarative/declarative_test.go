@@ -62,6 +62,10 @@ func (r *recorder) ResumePoint(stream string, state []byte) error {
 	return nil
 }
 
+func (r *recorder) Split(stream, id string) source.SplitEmitter {
+	return source.WholeSplit(r, stream, id)
+}
+
 func (r *recorder) Complete(stream string, next []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

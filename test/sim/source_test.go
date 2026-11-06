@@ -225,7 +225,7 @@ func (s *simSource) Read(ctx context.Context, req source.ReadRequest, emitter so
 
 // Committed discards what exact streams acknowledged. Reading below it later
 // is data loss.
-func (s *simSource) Committed(ctx context.Context, states map[string][]byte) error {
+func (s *simSource) Committed(ctx context.Context, states map[string][]byte, _ map[string][]source.Split) error {
 	return outcome(s.w.sched.point(ctx, s.attempt, "src.ack"), func() error {
 		for name, state := range states {
 			u := s.w.upstreams[name]

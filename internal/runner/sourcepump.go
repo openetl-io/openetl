@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/util"
 
+	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
 	"github.com/unsuitable001/openetl/sdk/go/source"
 )
@@ -29,44 +31,81 @@ const (
 type emit struct {
 	kind    emitKind
 	stream  string
+	split   string
 	rows    []json.RawMessage
 	batch   arrow.RecordBatch
 	encoded arrowipc.Encoded // an emitBatch without batch
 	state   []byte
+	added   []source.Split
 }
 
-type streamPos struct {
-	resume   []byte // state at the last resume point, or restored
-	rows     uint64 // emitted since the last barrier
+// splitPos is where one of a stream's splits is in the read.
+type splitPos struct {
+	id   string
+	lane int
+	// state at the last resume point, or restored
+	resume   []byte
+	rows     uint64 // emitted since it last placed a barrier
+	active   bool   // emitted since it last placed a barrier
 	dirty    bool   // emitted since the last resume point
-	active   bool   // emitted since the last barrier
 	complete bool
 	placed   bool // the pending barrier is placed
+	// It joined the stream after placing the pending barrier would have:
+	// it isn't in that epoch.
+	later bool
 	// resume came from a forced barrier. Every checkpoint recording it must
-	// list the stream as forced until the next real resume point.
+	// list it as forced until its next real resume point.
 	forced bool
-	// resume came from a restore of a forced barrier, and the stream hasn't
+	// resume came from a restore of a forced barrier, and the split hasn't
 	// reached a resume point since, so what it emits is read again.
 	rereading bool
 	// It emitted while rereading since the last barrier.
 	reread bool
+}
+
+type streamPos struct {
+	splits []*splitPos // in the order they joined
+	byID   map[string]*splitPos
 	// A forced barrier keeps the stream at or above require.
 	canForce bool
 	// The barrier that ends the read is placed.
 	ended bool
+	// By lane: the pending barrier is on it, and what the stream's splits on
+	// it emitted after placing the barrier before it was.
+	lanes []laneHold
 }
 
-// readEnds records the barrier that ends each stream's read, for the sink
-// pump, which sees it come out of the dataflow. The source pump records it
-// before forwarding the barrier.
+type laneHold struct {
+	placed bool
+	held   []emit
+}
+
+// readEnds records the barrier that ends each stream's read, and the last
+// barrier placed on every split, for the sink pumps: a writer lane can pass
+// a stream's barrier before the source has placed it on every lane, so they
+// wait for the whole epoch to be placed before they end reads in it.
 type readEnds struct {
-	mu sync.Mutex
-	at map[string]uint64
+	mu     sync.Mutex
+	at     map[string]uint64
+	placed uint64
+	wake   chan struct{}
+}
+
+func newReadEnds() *readEnds {
+	return &readEnds{at: map[string]uint64{}, wake: make(chan struct{})}
 }
 
 func (r *readEnds) set(stream string, epoch uint64) {
 	r.mu.Lock()
 	r.at[stream] = epoch
+	r.mu.Unlock()
+}
+
+func (r *readEnds) setPlaced(epoch uint64) {
+	r.mu.Lock()
+	r.placed = epoch
+	close(r.wake)
+	r.wake = make(chan struct{})
 	r.mu.Unlock()
 }
 
@@ -76,8 +115,26 @@ func (r *readEnds) endsAt(stream string, epoch uint64) bool {
 	return r.at[stream] == epoch
 }
 
+func (r *readEnds) waitPlaced(ctx context.Context, epoch uint64) error {
+	for {
+		r.mu.Lock()
+		placed, wake := r.placed, r.wake
+		r.mu.Unlock()
+		if placed >= epoch {
+			return nil
+		}
+		select {
+		case <-wake:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 type readEnder interface {
 	endsAt(stream string, epoch uint64) bool
+	// waitPlaced returns once barrier epoch is placed on every split.
+	waitPlaced(ctx context.Context, epoch uint64) error
 }
 
 // lastEnd ends a transform's outputs' reads in the epoch where the last of
@@ -101,9 +158,20 @@ func (l lastEnd) endsAt(_ string, epoch uint64) bool {
 	return len(l.inputs) > 0 && last == epoch
 }
 
+// Without inputs, as a Flink job's outputs, no read ends, and the sink's
+// epochs aren't the source's barriers.
+func (l lastEnd) waitPlaced(ctx context.Context, epoch uint64) error {
+	if len(l.inputs) == 0 {
+		return nil
+	}
+	return l.ends.waitPlaced(ctx, epoch)
+}
+
 // sourcePump is the connector's Emitter. It places each requested barrier on
-// every stream right after that stream's next resume point. Only run touches
-// its state.
+// every split right after that split's next resume point, and forwards a
+// stream's barrier on a lane once every split of the stream on the lane has
+// placed it. What a split emits after placing it waits until then. Only run
+// touches its state.
 type sourcePump struct {
 	ctx      context.Context
 	in       chan emit
@@ -112,6 +180,7 @@ type sourcePump struct {
 	out      chan<- Frame
 	events   chan<- event
 	ends     *readEnds
+	lanes    int
 
 	order   []string // stream names, in configuration order
 	streams map[string]*streamPos
@@ -121,11 +190,8 @@ type sourcePump struct {
 	forceAfter    time.Duration
 	requested     uint64 // the last barrier requested
 	pending       uint64 // epoch being placed; 0 if none
-	unplaced      int
-	states        map[string][]byte
-	forced        []string
-	reread        []string
-	complete      map[string]bool
+	unplaced      int    // splits that haven't placed the pending barrier
+	splits        map[string][]checkpoint.SplitState
 	rows          map[string]uint64
 	bytes         int64
 	thresholdSent bool
@@ -144,8 +210,10 @@ var (
 	_ source.Progresser = (*sourcePump)(nil)
 )
 
-// Streams in done completed earlier in the sync, and aren't read.
-func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored map[string][]byte, restoredForced, canForce, done map[string]bool, ends *readEnds, out chan<- Frame, events chan<- event) *sourcePump {
+// splits are each stream's at the start of the read, its restored ones if it
+// continues one; done are the streams that completed earlier in the sync,
+// which aren't read.
+func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, splits map[string][]checkpoint.SplitState, canForce, done map[string]bool, ends *readEnds, out chan<- Frame, events chan<- event) *sourcePump {
 	p := &sourcePump{
 		ctx:        ctx,
 		requested:  restoredEpoch,
@@ -155,6 +223,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored
 		out:        out,
 		events:     events,
 		ends:       ends,
+		lanes:      job.lanes(),
 		streams:    make(map[string]*streamPos, len(job.Streams)),
 		known:      make(map[string]bool, len(job.Streams)),
 		maxBytes:   job.Settings.CommitMaxBytes,
@@ -163,10 +232,13 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, restored
 	}
 	for _, s := range job.Streams {
 		p.order = append(p.order, s.Name)
-		p.streams[s.Name] = &streamPos{
-			resume: restored[s.Name], forced: restoredForced[s.Name], rereading: restoredForced[s.Name],
-			canForce: canForce[s.Name], complete: done[s.Name], ended: done[s.Name],
+		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes)}
+		for i, sp := range splits[s.Name] {
+			pos := &splitPos{id: sp.ID, lane: i % p.lanes, resume: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced}
+			st.splits = append(st.splits, pos)
+			st.byID[sp.ID] = pos
 		}
+		p.streams[s.Name] = st
 		p.known[s.Name] = true
 	}
 	return p
@@ -190,6 +262,38 @@ func (p *sourcePump) ResumePoint(stream string, state []byte) error {
 
 func (p *sourcePump) Complete(stream string, next []byte) error {
 	return p.send(emit{kind: emitComplete, stream: stream, state: next})
+}
+
+func (p *sourcePump) Split(stream, id string) source.SplitEmitter {
+	return pumpSplit{p: p, stream: stream, id: id}
+}
+
+// pumpSplit emits on one split.
+type pumpSplit struct {
+	p          *sourcePump
+	stream, id string
+}
+
+var _ source.SplitForwarder = pumpSplit{}
+
+func (s pumpSplit) Rows(rows []json.RawMessage) error {
+	return s.p.send(emit{kind: emitRows, stream: s.stream, split: s.id, rows: rows})
+}
+
+func (s pumpSplit) Records(batch arrow.RecordBatch) error {
+	return s.p.send(emit{kind: emitBatch, stream: s.stream, split: s.id, batch: batch})
+}
+
+func (s pumpSplit) Forward(batch arrowipc.Encoded) error {
+	return s.p.send(emit{kind: emitBatch, stream: s.stream, split: s.id, encoded: batch})
+}
+
+func (s pumpSplit) ResumePoint(state []byte, added ...source.Split) error {
+	return s.p.send(emit{kind: emitResume, stream: s.stream, split: s.id, state: state, added: added})
+}
+
+func (s pumpSplit) Complete(next []byte, added ...source.Split) error {
+	return s.p.send(emit{kind: emitComplete, stream: s.stream, split: s.id, state: next, added: added})
 }
 
 // Progress doesn't go through the pump: it's for metrics, not ordered with
@@ -268,29 +372,41 @@ func (p *sourcePump) handle(e emit) error {
 		return p.finish()
 	}
 	st := p.streams[e.stream]
-	if st.complete {
-		return fmt.Errorf("runner: source emitted on stream %q after completing it", e.stream)
+	sp := st.byID[e.split]
+	if sp == nil {
+		return fmt.Errorf("runner: source emitted on split %q of stream %q, which it doesn't have", e.split, e.stream)
 	}
 	p.emitted.Add(1)
+	if l := &st.lanes[sp.lane]; p.pending != 0 && sp.placed && !l.placed {
+		l.held = append(l.held, e)
+		return nil
+	}
+	return p.apply(e.stream, st, sp, e)
+}
+
+func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) error {
+	if sp.complete {
+		return fmt.Errorf("runner: source emitted on %s after completing it", splitName(name, sp.id))
+	}
 	switch e.kind {
 	case emitRows, emitBatch:
-		f := Frame{Kind: FrameRows, Stream: e.stream, Rows: e.rows}
-		st.rows += uint64(len(e.rows))
+		f := Frame{Kind: FrameRows, Lane: sp.lane, Stream: name, Rows: e.rows}
+		sp.rows += uint64(len(e.rows))
 		switch {
 		case e.batch != nil:
-			f = Frame{Kind: FrameBatch, Stream: e.stream, Batch: e.batch}
+			f = Frame{Kind: FrameBatch, Lane: sp.lane, Stream: name, Batch: e.batch}
 			p.bytes += util.TotalRecordSize(e.batch)
-			st.rows += uint64(e.batch.NumRows()) //nolint:gosec // never negative
+			sp.rows += uint64(e.batch.NumRows()) //nolint:gosec // never negative
 		case e.kind == emitBatch:
-			f = Frame{Kind: FrameBatch, Stream: e.stream, IPC: e.encoded.Bytes}
+			f = Frame{Kind: FrameBatch, Lane: sp.lane, Stream: name, IPC: e.encoded.Bytes}
 			p.bytes += e.encoded.Size
-			st.rows += uint64(e.encoded.Rows) //nolint:gosec // never negative
+			sp.rows += uint64(e.encoded.Rows) //nolint:gosec // never negative
 		}
 		for _, r := range e.rows {
 			p.bytes += int64(len(r))
 		}
-		st.dirty, st.active = true, true
-		st.reread = st.reread || st.rereading
+		sp.dirty, sp.active = true, true
+		sp.reread = sp.reread || sp.rereading
 		if err := p.forward(f); err != nil {
 			return err
 		}
@@ -298,22 +414,69 @@ func (p *sourcePump) handle(e emit) error {
 			p.thresholdSent = true
 			return p.notify(event{kind: evThreshold})
 		}
-	case emitResume:
-		st.resume, st.dirty, st.active, st.forced, st.rereading = e.state, false, true, false, false
-		if p.pending != 0 && !st.placed {
-			return p.place(e.stream, false)
-		}
+		return nil
 	case emitComplete:
-		// A resume point that a record must also show as complete.
-		st.resume, st.dirty, st.complete, st.active, st.forced, st.rereading = e.state, false, true, true, false, false
-		if p.pending != 0 && !st.placed {
-			return p.place(e.stream, false)
+		sp.complete = true
+	}
+	// A resume point, which completion also is.
+	before := sp.placed
+	sp.resume, sp.dirty, sp.forced, sp.rereading, sp.active = e.state, false, false, false, true
+	added, err := p.add(name, st, e.added, p.pending != 0 && before)
+	if err != nil {
+		return err
+	}
+	if p.pending == 0 {
+		return nil
+	}
+	if !sp.placed {
+		if err := p.place(name, sp, false); err != nil {
+			return err
+		}
+	}
+	// Splits it adds with the barrier start at it, so they place it at once.
+	for _, a := range added {
+		if !a.placed && p.pending != 0 {
+			if err := p.place(name, a, false); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// finish runs when Read has returned: every waiting stream is placed now.
+// add adds splits to a stream, each to the lane with the fewest of the
+// stream's open splits. later: they join after the pending barrier.
+func (p *sourcePump) add(name string, st *streamPos, splits []source.Split, later bool) ([]*splitPos, error) {
+	var out []*splitPos
+	for _, s := range splits {
+		if st.byID[s.ID] != nil {
+			return nil, fmt.Errorf("runner: source added %s, which the stream already has", splitName(name, s.ID))
+		}
+		open := make([]int, p.lanes)
+		for _, sp := range st.splits {
+			if !sp.complete {
+				open[sp.lane]++
+			}
+		}
+		pos := &splitPos{id: s.ID, lane: slices.Index(open, slices.Min(open)), resume: s.State, placed: later, later: later}
+		st.splits = append(st.splits, pos)
+		st.byID[s.ID] = pos
+		if p.pending != 0 && !later {
+			p.unplaced++
+		}
+		out = append(out, pos)
+	}
+	return out, nil
+}
+
+func splitName(stream, split string) string {
+	if split == source.WholeStream {
+		return fmt.Sprintf("stream %q", stream)
+	}
+	return fmt.Sprintf("split %q of stream %q", split, stream)
+}
+
+// finish runs when Read has returned: every waiting split is placed now.
 func (p *sourcePump) finish() error {
 	p.done = true
 	if p.pending != 0 {
@@ -323,7 +486,7 @@ func (p *sourcePump) finish() error {
 	}
 	active := false
 	for _, st := range p.streams {
-		active = active || st.active
+		active = active || slices.ContainsFunc(st.splits, func(sp *splitPos) bool { return sp.active })
 	}
 	return p.notify(event{kind: evReadDone, active: active, epoch: p.requested})
 }
@@ -332,23 +495,39 @@ func (p *sourcePump) request(n uint64) error {
 	if p.pending != 0 {
 		return fmt.Errorf("runner: barrier %d requested while %d is being placed", n, p.pending)
 	}
-	p.requested, p.pending, p.unplaced = n, n, len(p.order)
-	p.states = make(map[string][]byte, len(p.order))
-	p.forced, p.reread = nil, nil
-	p.complete = make(map[string]bool)
+	p.requested, p.pending, p.unplaced = n, n, 0
+	p.splits = make(map[string][]checkpoint.SplitState, len(p.order))
 	p.rows = make(map[string]uint64, len(p.order))
 	p.bytes, p.thresholdSent = 0, false
 	for _, st := range p.streams {
-		st.placed = false
+		for _, sp := range st.splits {
+			sp.placed, sp.later = false, false
+			p.unplaced++
+		}
+		for l := range st.lanes {
+			st.lanes[l].placed = false
+		}
+	}
+	// Lanes without splits of a stream are at its barrier.
+	for _, name := range p.order {
+		for l := range p.lanes {
+			if !slices.ContainsFunc(p.streams[name].splits, func(sp *splitPos) bool { return sp.lane == l }) {
+				if err := p.placeLane(name, l); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	if p.done {
 		return p.placeRemaining()
 	}
 	// Nothing emitted since its last resume point: it's at one.
 	for _, name := range p.order {
-		if !p.streams[name].dirty {
-			if err := p.place(name, false); err != nil {
-				return err
+		for _, sp := range slices.Clone(p.streams[name].splits) {
+			if !sp.dirty && !sp.placed && p.pending != 0 {
+				if err := p.place(name, sp, false); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -362,76 +541,114 @@ func (p *sourcePump) request(n uint64) error {
 func (p *sourcePump) placeRemaining() error {
 	for _, name := range p.order {
 		st := p.streams[name]
-		if p.pending == 0 || st.placed {
-			continue
-		}
-		if !st.dirty {
-			if err := p.place(name, false); err != nil {
+		for _, sp := range slices.Clone(st.splits) {
+			if p.pending == 0 || sp.placed {
+				continue
+			}
+			if !sp.dirty {
+				if err := p.place(name, sp, false); err != nil {
+					return err
+				}
+				continue
+			}
+			if !st.canForce {
+				return fmt.Errorf("runner: %s ended without a final resume point, and placing its barrier without one would lower it below the pipeline's required delivery level", splitName(name, sp.id))
+			}
+			if err := p.place(name, sp, true); err != nil {
 				return err
 			}
-			continue
-		}
-		if !st.canForce {
-			return fmt.Errorf("runner: stream %q ended without a final resume point, and placing its barrier without one would lower it below the pipeline's required delivery level", name)
-		}
-		if err := p.place(name, true); err != nil {
-			return err
 		}
 	}
 	return nil
 }
 
 // forceWaiting runs at resumePointTimeout and forces the barrier on every
-// waiting stream that can take it.
+// waiting split that can take it.
 func (p *sourcePump) forceWaiting() error {
 	p.forceC = nil
 	for _, name := range p.order {
 		st := p.streams[name]
-		if p.pending != 0 && !st.placed && st.dirty && st.canForce {
-			if err := p.place(name, true); err != nil {
-				return err
+		for _, sp := range slices.Clone(st.splits) {
+			if p.pending != 0 && !sp.placed && sp.dirty && st.canForce {
+				if err := p.place(name, sp, true); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return nil
 }
 
-func (p *sourcePump) place(name string, forced bool) error {
+func (p *sourcePump) place(name string, sp *splitPos, forced bool) error {
 	if p.pending == 0 {
 		return errors.New("runner: placing a barrier with none pending")
 	}
 	st := p.streams[name]
-	if st.complete && !st.forced && !forced && !st.ended {
-		st.ended = true
-		p.ends.set(name, p.pending)
-	}
-	if err := p.forward(Frame{Kind: FrameBarrier, Stream: name, Epoch: p.pending}); err != nil {
-		return err
-	}
-	st.placed, st.active = true, false
-	st.forced = st.forced || forced
-	p.states[name] = st.resume
-	p.rows[name], st.rows = st.rows, 0
-	if st.forced {
-		p.forced = append(p.forced, name)
-	} else if st.complete {
-		p.complete[name] = true
-	}
-	if st.reread {
-		p.reread = append(p.reread, name)
-	}
-	st.reread = false
+	sp.placed, sp.active = true, false
+	sp.forced = sp.forced || forced
+	p.splits[name] = append(p.splits[name], checkpoint.SplitState{ID: sp.id, State: sp.resume, Complete: sp.complete && !sp.forced, Forced: sp.forced, Reread: sp.reread})
+	p.rows[name] += sp.rows
+	sp.rows, sp.reread = 0, false
 	p.unplaced--
-	if p.unplaced > 0 {
+	n := p.pending
+	if p.unplaced == 0 {
+		// Before the last lane's barrier goes out, so a sink that sees it
+		// knows which reads end in the epoch.
+		for _, s := range p.order {
+			at := p.splits[s]
+			if st := p.streams[s]; !st.ended && !slices.ContainsFunc(at, func(sp checkpoint.SplitState) bool { return !sp.Complete }) {
+				st.ended = true
+				p.ends.set(s, n)
+			}
+		}
+		p.ends.setPlaced(n)
+	}
+	if !slices.ContainsFunc(st.splits, func(o *splitPos) bool { return o.lane == sp.lane && !o.placed }) {
+		if err := p.placeLane(name, sp.lane); err != nil {
+			return err
+		}
+	}
+	if p.unplaced > 0 || p.pending != n {
 		return nil
 	}
-	ev := event{kind: evPlaced, epoch: p.pending, states: p.states, forced: p.forced, reread: p.reread, complete: p.complete, rows: p.rows}
+	splits := p.splits
+	for name, ss := range splits {
+		slices.SortStableFunc(ss, func(a, b checkpoint.SplitState) int { return p.joined(name, a.ID) - p.joined(name, b.ID) })
+	}
+	ev := event{kind: evPlaced, epoch: n, splits: splits, rows: p.rows}
 	p.pending = 0
 	if p.forceTimer != nil {
 		p.forceTimer.Stop()
 		p.forceTimer, p.forceC = nil, nil
 	}
 	return p.notify(ev)
+}
+
+// joined is the order a split joined its stream in.
+func (p *sourcePump) joined(stream, id string) int {
+	return slices.IndexFunc(p.streams[stream].splits, func(sp *splitPos) bool { return sp.id == id })
+}
+
+// placeLane forwards the stream's pending barrier on the lane, then what
+// its splits there emitted after placing it.
+func (p *sourcePump) placeLane(name string, lane int) error {
+	st := p.streams[name]
+	l := &st.lanes[lane]
+	if l.placed {
+		return nil
+	}
+	l.placed = true
+	if err := p.forward(Frame{Kind: FrameBarrier, Lane: lane, Stream: name, Epoch: p.pending}); err != nil {
+		return err
+	}
+	held := l.held
+	l.held = nil
+	for _, e := range held {
+		if err := p.apply(name, st, st.byID[e.split], e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *sourcePump) forward(f Frame) error {

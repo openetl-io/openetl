@@ -133,10 +133,7 @@ type flinkCut struct {
 	c        int64
 	k        uint64
 	placed   bool
-	states   map[string][]byte
-	forced   []string
-	reread   []string
-	complete map[string]bool
+	splits   map[string][]checkpoint.SplitState
 	rows     map[string]uint64
 	ready    *Ready
 	barriers int
@@ -277,9 +274,7 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 	})
 
 	restored := s.restored
-	states := map[string][]byte{}
 	schemas := map[string][]byte{}
-	restoredForced := map[string]bool{}
 	now := time.Now().UnixMicro()
 	c.readStarts = make(map[string]int64, len(job.Streams))
 	for _, st := range job.Streams {
@@ -292,16 +287,17 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 	}
 	if restored != nil {
 		c.committed = restored.Epoch
+		c.ackStates = map[string][]checkpoint.SplitState{}
 		for name, st := range restored.Streams {
-			states[name] = st.State
+			c.ackStates[name] = restored.Splits(name)
 			if st.Schema != nil {
 				schemas[name] = st.Schema
 			}
 		}
-		for _, name := range restored.Forced {
-			restoredForced[name] = true
-		}
-		c.ackStates = states
+	}
+	splits, err := job.readSplits(ctx, restored, nil)
+	if err != nil {
+		return err
 	}
 	first := c.committed + 1
 	s.nextK, s.nextN, s.lastN, s.committedN = first, first, c.committed, c.committed
@@ -310,8 +306,8 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 	in1 := make(chan Frame, 16)
 	out1 := make(chan Frame, 16)
 	fromSecond := make(chan Frame, 16)
-	ends := &readEnds{at: map[string]uint64{}}
-	c.pump = newSourcePump(gctx, job, c.committed, states, restoredForced, job.canForce(), map[string]bool{}, ends, toFlow, c.events)
+	ends := newReadEnds()
+	c.pump = newSourcePump(gctx, job, c.committed, splits, job.canForce(), map[string]bool{}, ends, toFlow, c.events)
 	plan := Plan{
 		Org: job.Org, Pipeline: job.Pipeline, Owner: job.Owner, Generation: a.sess.Generation(), FirstEpoch: first,
 		Streams: job.Streams,
@@ -349,10 +345,7 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 	}
 	sink := newSinkPump(c.w, 0, a.sess.Generation(), first, second.Sink != SinkPlan{}, staging, job.Outputs, starts, lastEnd{ends: ends}, fromSecond, c.events)
 
-	req := source.ReadRequest{Pipeline: job.Pipeline, Continuous: true}
-	for _, st := range job.Streams {
-		req.Streams = append(req.Streams, source.ConfiguredStream{Name: st.Name, SyncMode: st.Read, Cursor: st.CursorField, State: states[st.Name]})
-	}
+	req := job.readRequest(splits, nil)
 	g.Go(func() error {
 		if err := job.Source.Read(gctx, req, c.pump); err != nil {
 			return fmt.Errorf("runner: read: %w", err)
@@ -943,7 +936,7 @@ func (s *flinkSegment) pumped(ev event) error {
 		if cut == nil || cut.placed {
 			return fmt.Errorf("runner: unexpected placement of barrier %d", ev.epoch)
 		}
-		cut.placed, cut.states, cut.forced, cut.reread, cut.complete, cut.rows = true, ev.states, ev.forced, ev.reread, ev.complete, ev.rows
+		cut.placed, cut.splits, cut.rows = true, ev.splits, ev.rows
 		s.placing = false
 	case evStaged:
 		ep := s.epochs[ev.epoch]
@@ -1265,7 +1258,7 @@ func (s *flinkSegment) idle(inputs []*flinkCut, outRows map[string]uint64) bool 
 				return false
 			}
 		}
-		if len(cut.ready.Quarantine) > 0 || len(cut.forced) > 0 || len(cut.complete) > 0 {
+		if len(cut.ready.Quarantine) > 0 || anySplit(cut.splits, func(sp checkpoint.SplitState) bool { return sp.Forced || sp.Complete }) {
 			return false
 		}
 		changed, err := changedSchemas(last, cut.ready.Schemas)
@@ -1280,22 +1273,16 @@ func (s *flinkSegment) idle(inputs []*flinkCut, outRows map[string]uint64) bool 
 // every cut's rows and quarantine, and the second dataflow's report.
 func (s *flinkSegment) epochState(ep *flinkEpoch) *epochState {
 	st := &epochState{requested: ep.requested, placed: true, ready: true, descs: []destination.Staged{ep.desc}, stagedOn: []bool{true}, staged: 1,
-		states: map[string][]byte{}, complete: map[string]bool{}, rows: map[string]uint64{}}
+		splits: map[string][]checkpoint.SplitState{}, rows: map[string]uint64{}}
 	second := ep.second
 	flow := &Ready{Lanes: second.Lanes, Snapshots: second.Snapshots, Schemas: map[string][]byte{},
 		OutputSchemas: second.Schemas, OutputRows: ep.outRows}
-	forced, reread := map[string]bool{}, map[string]bool{}
 	for _, cut := range ep.inputs {
-		maps.Copy(st.states, cut.states)
-		maps.Copy(st.complete, cut.complete)
+		for name, ss := range cut.splits {
+			st.splits[name] = keepMarks(st.splits[name], ss)
+		}
 		for name, rows := range cut.rows {
 			st.rows[name] += rows
-		}
-		for _, f := range cut.forced {
-			forced[f] = true
-		}
-		for _, r := range cut.reread {
-			reread[r] = true
 		}
 		maps.Copy(flow.Schemas, cut.ready.Schemas)
 		flow.Quarantine = append(flow.Quarantine, cut.ready.Quarantine...)
@@ -1304,13 +1291,34 @@ func (s *flinkSegment) epochState(ep *flinkEpoch) *epochState {
 		q.Output = true
 		flow.Quarantine = append(flow.Quarantine, q)
 	}
-	st.forced, st.reread = slices.Sorted(maps.Keys(forced)), slices.Sorted(maps.Keys(reread))
 	st.flow = flow
 	st.flink = &checkpoint.FlinkCheckpoint{Job: s.jobID, Checkpoint: ep.c, From: s.a.from}
 	if ep.typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT {
 		st.flink.Savepoint = s.a.stopDir
 	}
 	return st
+}
+
+// keepMarks is a stream's splits at a later cut, still marked forced or
+// read again where they were at an earlier one of the epoch.
+func keepMarks(earlier, later []checkpoint.SplitState) []checkpoint.SplitState {
+	out := slices.Clone(later)
+	for i, sp := range out {
+		if j := slices.IndexFunc(earlier, func(e checkpoint.SplitState) bool { return e.ID == sp.ID }); j >= 0 {
+			out[i].Forced = sp.Forced || earlier[j].Forced
+			out[i].Reread = sp.Reread || earlier[j].Reread
+		}
+	}
+	return out
+}
+
+func anySplit(splits map[string][]checkpoint.SplitState, f func(checkpoint.SplitState) bool) bool {
+	for _, ss := range splits {
+		if slices.ContainsFunc(ss, f) {
+			return true
+		}
+	}
+	return false
 }
 
 // commitHead commits HEAD's epoch, if the segment recorded it and didn't

@@ -568,6 +568,97 @@ func flush(ctx context.Context, staging Staging, e destination.Epoch, log *slog.
 	}
 }
 
+// readSplits are each stream's splits as the attempt starts: a read it
+// continues, or one that completed earlier in the sync (done), keeps its
+// restored splits, and a read that starts gets the source's, from where the
+// last one's ended.
+func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done map[string]bool) (map[string][]checkpoint.SplitState, error) {
+	out := make(map[string][]checkpoint.SplitState, len(j.Streams))
+	splitter, _ := j.Source.(source.Splitter)
+	for _, s := range j.Streams {
+		var prev []checkpoint.SplitState
+		if restored != nil {
+			prev = restored.Splits(s.Name)
+		}
+		if done[s.Name] || prev != nil && !restored.Streams[s.Name].Complete {
+			out[s.Name] = prev
+			continue
+		}
+		ended := make([]source.Split, 0, len(prev))
+		for _, sp := range prev {
+			ended = append(ended, source.Split{ID: sp.ID, State: sp.State})
+		}
+		if prev == nil {
+			ended = nil
+		}
+		var splits []source.Split
+		var err error
+		if splitter != nil && !j.transformed() {
+			splits, err = splitter.Splits(ctx, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField}, ended)
+		} else {
+			splits, err = source.Whole(ended)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("runner: the splits of stream %q: %w", s.Name, err)
+		}
+		if len(splits) == 0 {
+			return nil, errs.New(errs.Internal, "runner: the source gave stream %q no splits", s.Name)
+		}
+		seen := map[string]bool{}
+		for _, sp := range splits {
+			if seen[sp.ID] {
+				return nil, errs.New(errs.Internal, "runner: the source gave stream %q split %q twice", s.Name, sp.ID)
+			}
+			seen[sp.ID] = true
+			out[s.Name] = append(out[s.Name], checkpoint.SplitState{ID: sp.ID, State: sp.State})
+		}
+	}
+	return out, nil
+}
+
+// readRequest reads the splits of every stream not done that haven't
+// completed, and streams read whole from their states.
+func (j *Job) readRequest(splits map[string][]checkpoint.SplitState, done map[string]bool) source.ReadRequest {
+	req := source.ReadRequest{Pipeline: j.Pipeline, Continuous: j.Continuous}
+	for _, s := range j.Streams {
+		if done[s.Name] {
+			continue
+		}
+		cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField}
+		if ss := splits[s.Name]; len(ss) == 1 && ss[0].ID == checkpoint.WholeStream {
+			cs.State = ss[0].State
+		} else {
+			for _, sp := range ss {
+				if !sp.Complete {
+					cs.Splits = append(cs.Splits, source.Split{ID: sp.ID, State: sp.State})
+				}
+			}
+		}
+		req.Streams = append(req.Streams, cs)
+	}
+	return req
+}
+
+// acknowledged are an epoch's splits as an Acknowledger takes them: the
+// states of streams read whole, and the splits of those that aren't.
+func acknowledged(splits map[string][]checkpoint.SplitState) (map[string][]byte, map[string][]source.Split) {
+	states := map[string][]byte{}
+	var split map[string][]source.Split
+	for name, ss := range splits {
+		if len(ss) == 1 && ss[0].ID == checkpoint.WholeStream {
+			states[name] = ss[0].State
+			continue
+		}
+		if split == nil {
+			split = map[string][]source.Split{}
+		}
+		for _, sp := range ss {
+			split[name] = append(split[name], source.Split{ID: sp.ID, State: sp.State})
+		}
+	}
+	return states, split
+}
+
 // committables are a record's, as the destination takes them.
 func committables(r *checkpoint.Record) []destination.Staged {
 	out := make([]destination.Staged, len(r.Committables))
@@ -683,17 +774,15 @@ const (
 )
 
 type event struct {
-	kind     eventKind
-	epoch    uint64
-	lane     int // evStaged's writer lane
-	states   map[string][]byte
-	forced   []string
-	reread   []string
-	complete map[string]bool
-	rows     map[string]uint64
-	staged   destination.Staged
-	ready    *Ready
-	active   bool
+	kind  eventKind
+	epoch uint64
+	lane  int // evStaged's writer lane
+	// evPlaced's: each stream's splits at the barrier.
+	splits map[string][]checkpoint.SplitState
+	rows   map[string]uint64
+	staged destination.Staged
+	ready  *Ready
+	active bool
 }
 
 type epochState struct {
@@ -703,10 +792,7 @@ type epochState struct {
 	descs    []destination.Staged
 	stagedOn []bool
 	staged   int
-	states   map[string][]byte
-	forced   []string
-	reread   []string
-	complete map[string]bool
+	splits   map[string][]checkpoint.SplitState
 	rows     map[string]uint64
 	flow     *Ready
 	// In a Flink pipeline, the Flink checkpoint the epoch ends at.
@@ -742,10 +828,10 @@ type coordinator struct {
 	draining    bool
 	drainEpoch  uint64 // the barrier requested after draining began; 0 until then
 	pending     map[uint64]*epochState
-	committed   uint64                   // the last epoch committed or restored
-	ackStates   map[string][]byte        // owned by the committer: states of the committed epoch, acked after the next commit
-	applied     map[string]*arrow.Schema // owned by the committer: each sink stream's schema last applied
-	reported    map[string]*arrow.Schema // owned by the committer: each stream's schema last passed to OnSchemas
+	committed   uint64                             // the last epoch committed or restored
+	ackStates   map[string][]checkpoint.SplitState // owned by the committer: splits of the committed epoch, acked after the next commit
+	applied     map[string]*arrow.Schema           // owned by the committer: each sink stream's schema last applied
+	reported    map[string]*arrow.Schema           // owned by the committer: each stream's schema last passed to OnSchemas
 	// Owned by the committer: each output's schema last passed to OnSchemas.
 	reportedOutputs map[string]*arrow.Schema
 	// The restored record's outputs' schemas.
@@ -768,9 +854,7 @@ type coordinator struct {
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
-	states := map[string][]byte{}
 	schemas := map[string][]byte{}
-	restoredForced := map[string]bool{}
 	now := time.Now().UnixMicro()
 	c.readStarts = make(map[string]int64, len(c.job.Streams))
 	for _, s := range c.job.Streams {
@@ -784,16 +868,13 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	}
 	if restored != nil {
 		c.committed = restored.Epoch
+		c.ackStates = map[string][]checkpoint.SplitState{}
 		for name, st := range restored.Streams {
-			states[name] = st.State
+			c.ackStates[name] = restored.Splits(name)
 			if st.Schema != nil {
 				schemas[name] = st.Schema
 			}
 		}
-		for _, name := range restored.Forced {
-			restoredForced[name] = true
-		}
-		c.ackStates = states
 	}
 	c.next = c.committed + 1
 	c.res.Last = c.committed
@@ -812,8 +893,12 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 			done[name] = st.Complete
 		}
 	}
-	ends := &readEnds{at: map[string]uint64{}}
-	c.pump = newSourcePump(gctx, c.job, c.committed, states, restoredForced, canForce, done, ends, toFlow, c.events)
+	splits, err := c.job.readSplits(ctx, restored, done)
+	if err != nil {
+		return err
+	}
+	ends := newReadEnds()
+	c.pump = newSourcePump(gctx, c.job, c.committed, splits, canForce, done, ends, toFlow, c.events)
 	plan := Plan{
 		Org:        c.job.Org,
 		Pipeline:   c.job.Pipeline,
@@ -880,12 +965,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		sinks[i] = newSinkPump(w, i, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, staging, c.job.sinkStreams(), starts, sinkEnds, lanes[i], c.events)
 	}
 
-	req := source.ReadRequest{Pipeline: c.job.Pipeline, Continuous: c.job.Continuous}
-	for _, s := range c.job.Streams {
-		if !done[s.Name] {
-			req.Streams = append(req.Streams, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, State: states[s.Name]})
-		}
-	}
+	req := c.job.readRequest(splits, done)
 	g.Go(func() error {
 		if len(req.Streams) > 0 {
 			if err := c.job.Source.Read(gctx, req, c.pump); err != nil {
@@ -1017,7 +1097,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 		if st == nil || st.placed {
 			return fmt.Errorf("runner: unexpected placement of epoch %d", ev.epoch)
 		}
-		st.placed, st.states, st.forced, st.reread, st.complete, st.rows = true, ev.states, ev.forced, ev.reread, ev.complete, ev.rows
+		st.placed, st.splits, st.rows = true, ev.splits, ev.rows
 		c.outstanding = false
 	case evStaged:
 		st := c.pending[ev.epoch]
@@ -1109,14 +1189,12 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*checkpoint.Record, error) {
 	rec := &checkpoint.Record{
 		Epoch:        n,
-		Streams:      make(map[string]checkpoint.StreamState, len(st.states)),
+		Streams:      make(map[string]checkpoint.StreamState, len(st.splits)),
 		KeyGroups:    c.job.keyGroups(),
 		Committables: make([][]byte, len(st.descs)),
 		Files:        recordFiles(st.flow.Files()),
 		Snapshots:    st.flow.Snapshots,
 		Quarantine:   st.flow.Quarantine,
-		Forced:       st.forced,
-		Reread:       st.reread,
 		Sync:         c.job.Sync,
 		Flink:        st.flink,
 		CreatedAt:    time.Now().UTC(),
@@ -1132,16 +1210,15 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	for name, h := range c.holds {
 		holds[name] = mergeHolds(h, st.flow.Holds[name], at, rec.CreatedAt)
 	}
-	for name, state := range st.states {
+	for _, name := range slices.Sorted(maps.Keys(st.splits)) {
 		rec.Streams[name] = checkpoint.StreamState{
-			State:     state,
 			Schema:    st.flow.Schemas[name],
 			ReadStart: c.readStarts[name],
-			Complete:  st.complete[name],
 			Rows:      st.rows[name],
 			Delivered: st.flow.Delivered[name],
 			Holds:     holds[name],
 		}
+		rec.SetSplits(name, st.splits[name])
 	}
 	if c.job.transformed() {
 		rec.Outputs = make(map[string]checkpoint.OutputState, len(c.job.Outputs))
@@ -1152,8 +1229,6 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	for i, d := range st.descs {
 		rec.Committables[i] = d
 	}
-	slices.Sort(rec.Forced)
-	slices.Sort(rec.Reread)
 	if err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced); err != nil {
 		return nil, fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}
@@ -1215,7 +1290,7 @@ func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *
 	if len(rec.Files) > 0 {
 		flush(ctx, c.job.Staging, e, c.log)
 	}
-	c.log.Debug("epoch committed", "epoch", n, "forced", st.forced)
+	c.log.Debug("epoch committed", "epoch", n, "forced", rec.Forced)
 	c.measure(ctx, rec, st.flow, collapsed, time.Since(start), time.Since(st.requested))
 	if c.job.OnSchemas != nil {
 		inputs, err := changedRaw(c.reported, st.flow.Schemas)
@@ -1241,11 +1316,12 @@ func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *
 func (c *coordinator) acknowledge(ctx context.Context, st *epochState, rec *checkpoint.Record) {
 	// Trail by one checkpoint, so recovery can fall back one record.
 	if ack, ok := c.job.Source.(source.Acknowledger); ok && c.ackStates != nil {
-		if err := ack.Committed(ctx, c.ackStates); err != nil {
+		states, splits := acknowledged(c.ackStates)
+		if err := ack.Committed(ctx, states, splits); err != nil {
 			c.log.Warn("upstream acknowledgement failed; the next commit retries it", "epoch", rec.Epoch-1, "err", err)
 		}
 	}
-	c.ackStates = st.states
+	c.ackStates = st.splits
 
 	// A long job prunes as it goes, not only when it starts.
 	if c.sincePrune++; c.sincePrune >= c.job.keep() {

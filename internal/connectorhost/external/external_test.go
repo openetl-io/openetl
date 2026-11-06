@@ -84,6 +84,10 @@ func (c *collect) ResumePoint(stream string, state []byte) error {
 	return nil
 }
 
+func (c *collect) Split(stream, id string) source.SplitEmitter {
+	return source.WholeSplit(c, stream, id)
+}
+
 func (c *collect) Complete(stream string, _ []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -113,7 +117,7 @@ func TestSourceRawRows(t *testing.T) {
 		t.Fatalf("rows %d, resume points %v, complete %v", out.rows, out.resumes, out.complete)
 	}
 	// Faker doesn't acknowledge, so this is a no-op.
-	if err := src.Committed(t.Context(), map[string][]byte{"users": []byte("1")}); err != nil {
+	if err := src.Committed(t.Context(), map[string][]byte{"users": []byte("1")}, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -156,6 +160,10 @@ func (f *forward) Forward(_ string, b arrowipc.Encoded) error {
 	defer f.mu.Unlock()
 	f.encoded = append(f.encoded, b)
 	return nil
+}
+
+func (f *forward) Split(stream, id string) source.SplitEmitter {
+	return source.WholeSplit(f, stream, id)
 }
 
 func TestSourceForwardsArrow(t *testing.T) {
@@ -211,6 +219,10 @@ type killer struct {
 func (k *killer) ResumePoint(string, []byte) error {
 	k.once.Do(k.kill)
 	return nil
+}
+
+func (k *killer) Split(stream, id string) source.SplitEmitter {
+	return source.WholeSplit(k, stream, id)
 }
 
 // The runner's environment holds its own credentials.

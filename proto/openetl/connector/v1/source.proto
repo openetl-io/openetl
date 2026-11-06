@@ -8,6 +8,11 @@ option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protoco
 
 // SourceService is served by source connectors. The platform commits only at
 // the resume points a source emits.
+//
+// A stream's read is a set of splits (ADR-0027): resumable slices, such as
+// key ranges, partitions or shards, which a source may read concurrently.
+// The whole stream is the split with the empty ID, and a stream is read as
+// that one split unless the platform asks Splits for others.
 service SourceService {
   rpc Discover(DiscoverRequest) returns (DiscoverResponse);
   // For a bounded read, the response stream ends once every stream is
@@ -16,10 +21,21 @@ service SourceService {
   // Runs concurrently with Read. Called only when
   // SourceCapabilities.acknowledges is set.
   rpc Committed(CommittedRequest) returns (CommittedResponse);
+  // A stream's splits for a read that starts. Called only when
+  // SourceCapabilities.splits is set.
+  rpc Splits(SplitsRequest) returns (SplitsResponse);
+  // Asks for a split being read to have its remainder split in two. Runs
+  // concurrently with Read. Called only when SourceCapabilities.resplit is
+  // set.
+  rpc Resplit(ResplitRequest) returns (ResplitResponse);
 }
 
 message SourceCapabilities {
   bool acknowledges = 1;
+  // The source divides streams into splits, through Splits.
+  bool splits = 2;
+  // The source splits a running split's remainder, through Resplit.
+  bool resplit = 3;
 }
 
 message DiscoverRequest {
@@ -52,6 +68,9 @@ message CatalogStream {
   string default_cursor = 6;
   bool source_defined_cursor = 7;
   Replay replay = 8;
+  // Where the stream is split, every record of a key is in one split, so
+  // its splits partition it by its primary key.
+  bool splits_by_key = 9;
 }
 
 enum SyncMode {
@@ -87,8 +106,21 @@ message ConfiguredStream {
   string name = 1;
   SyncMode sync_mode = 2;
   string cursor = 3;
-  // Unset: start from the beginning.
+  // The whole stream's state, without splits. Unset: start from the
+  // beginning.
   optional bytes state = 4;
+  // The splits to read, with their states; empty: the whole stream, from
+  // state.
+  repeated Split splits = 5;
+}
+
+// Split is one of a stream's splits. The whole stream has the empty ID. IDs
+// are the source's, and must stay unique within the stream for as long as
+// its read lasts.
+message Split {
+  string id = 1;
+  // Unset: from its beginning.
+  optional bytes state = 2;
 }
 
 message ReadResponse {
@@ -118,6 +150,8 @@ message RecordBatch {
     bytes arrow = 2;
     JSONRows rows = 3;
   }
+  // The split read; empty for the whole stream.
+  string split = 4;
 }
 
 message JSONRows {
@@ -125,21 +159,29 @@ message JSONRows {
   repeated bytes rows = 1;
 }
 
-// ResumePoint says the stream can restart from state after everything
+// ResumePoint says the split can restart from state after everything
 // emitted for it so far.
 message ResumePoint {
   string stream = 1;
   bytes state = 2;
+  string split = 3;
+  // Splits the stream gains from here on, with their states: a re-split's
+  // remainder, which state no longer covers, or a shard whose parents are
+  // read.
+  repeated Split added = 4;
 }
 
-// StreamComplete ends a bounded stream. Like a resume point, it covers
-// everything emitted for the stream. A retry within the same sync doesn't
-// read the stream again.
+// StreamComplete ends a split of a bounded stream, and the stream once
+// every split has ended. Like a resume point, it covers everything emitted
+// for the split. A retry within the same sync doesn't read the split again.
 message StreamComplete {
   string stream = 1;
-  // Where the stream's next sync starts. Unset: from the beginning, as a
+  // Where the split's next sync starts. Unset: from the beginning, as a
   // full refresh does.
   optional bytes next = 2;
+  string split = 3;
+  // As ResumePoint.added.
+  repeated Split added = 4;
 }
 
 // Progress says how far a read is behind its source, and how much longer the
@@ -162,11 +204,43 @@ message Progress {
 }
 
 message CommittedRequest {
-  // Per-stream states of one checkpoint. Everything before them can be
-  // discarded upstream.
+  // Per-stream states of one checkpoint, for streams read whole. Everything
+  // before them can be discarded upstream.
   map<string, bytes> states = 1;
   // The read's config, for when no read is running.
   bytes config = 2;
+  // As states, by stream, for streams read in splits.
+  map<string, Splits> splits = 3;
+}
+
+message Splits {
+  repeated Split splits = 1;
 }
 
 message CommittedResponse {}
+
+message SplitsRequest {
+  bytes config = 1;
+  // The stream as Read gets it, without its state.
+  ConfiguredStream stream = 2;
+  // Where each of its last read's splits ended, as StreamComplete.next;
+  // empty for a stream never read. The new read's splits start from them.
+  repeated Split ended = 3;
+}
+
+message SplitsResponse {
+  // At least one. The whole stream alone: it isn't split.
+  repeated Split splits = 1;
+}
+
+message ResplitRequest {
+  bytes config = 1;
+  string stream = 2;
+  string split = 3;
+}
+
+message ResplitResponse {
+  // The source splits the split's remainder at its next resume point, which
+  // adds the new split. False: too little of it is left.
+  bool accepted = 1;
+}

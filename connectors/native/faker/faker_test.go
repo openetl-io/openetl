@@ -37,6 +37,10 @@ func (r *recorder) ResumePoint(stream string, state []byte) error {
 	return nil
 }
 
+func (r *recorder) Split(stream, id string) source.SplitEmitter {
+	return source.WholeSplit(r, stream, id)
+}
+
 func (r *recorder) Complete(stream string, next []byte) error {
 	if next != nil {
 		return fmt.Errorf("%s: a full refresh completed with next state %s", stream, next)
