@@ -4,7 +4,7 @@ package openetl.connector.v1;
 
 import "google/protobuf/duration.proto";
 
-option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
+option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
 
 // SourceService is served by source connectors. The platform commits only at
 // the resume points a source emits.

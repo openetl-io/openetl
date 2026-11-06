@@ -18,9 +18,9 @@ import (
 	"strings"
 	"sync"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/runner"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/runner"
 )
 
 // client calls Flink's REST API at base: a session cluster's, or a

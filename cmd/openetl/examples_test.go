@@ -6,8 +6,8 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/spec"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/spec"
 )
 
 // Every example parses, with its dbt projects bundled, and its built-in

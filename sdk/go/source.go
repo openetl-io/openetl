@@ -10,9 +10,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/unsuitable001/openetl/sdk/go/host"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/sdk/go/host"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // Source declares a source connector with config C.

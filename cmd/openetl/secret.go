@@ -16,8 +16,8 @@ import (
 	"connectrpc.com/connect"
 	"golang.org/x/term"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
 //nolint:gosec // usage text, not a credential

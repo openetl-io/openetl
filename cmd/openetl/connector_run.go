@@ -23,17 +23,17 @@ import (
 	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc"
 
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/connectorhost/external"
-	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
-	"github.com/unsuitable001/openetl/internal/netguard"
-	"github.com/unsuitable001/openetl/internal/spec"
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
-	"github.com/unsuitable001/openetl/sdk/go/conformance"
-	"github.com/unsuitable001/openetl/sdk/go/host"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/connectorhost/external"
+	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
+	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/spec"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/conformance"
+	"github.com/openetl-io/openetl/sdk/go/host"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 const runUsage = `

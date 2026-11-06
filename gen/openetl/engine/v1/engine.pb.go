@@ -7,7 +7,7 @@
 package enginev1
 
 import (
-	v1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	v1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -2982,7 +2982,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\aRecover\x12!.openetl.engine.v1.RecoverRequest\x1a\".openetl.engine.v1.RecoverResponse\x12O\n" +
 	"\x06Events\x12 .openetl.engine.v1.EventsRequest\x1a!.openetl.engine.v1.EventsResponse0\x01\x12M\n" +
 	"\x06Commit\x12 .openetl.engine.v1.CommitRequest\x1a!.openetl.engine.v1.CommitResponse\x12G\n" +
-	"\x04Stop\x12\x1e.openetl.engine.v1.StopRequest\x1a\x1f.openetl.engine.v1.StopResponseBAZ?github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
+	"\x04Stop\x12\x1e.openetl.engine.v1.StopRequest\x1a\x1f.openetl.engine.v1.StopResponseB>Z<github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_openetl_engine_v1_engine_proto_rawDescOnce sync.Once

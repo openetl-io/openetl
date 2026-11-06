@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/unsuitable001/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
 const (

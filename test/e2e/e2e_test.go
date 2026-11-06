@@ -44,20 +44,20 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
-	"github.com/unsuitable001/openetl/internal/auth"
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/daemon"
-	"github.com/unsuitable001/openetl/internal/orchestration/dispatch"
-	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
-	"github.com/unsuitable001/openetl/internal/platform/config"
-	"github.com/unsuitable001/openetl/internal/platform/telemetry"
-	"github.com/unsuitable001/openetl/internal/platform/telemetry/telemetrytest"
-	"github.com/unsuitable001/openetl/internal/spec"
-	"github.com/unsuitable001/openetl/internal/store/storetest"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/internal/auth"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/daemon"
+	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
+	"github.com/openetl-io/openetl/internal/orchestration/workflows"
+	"github.com/openetl-io/openetl/internal/platform/config"
+	"github.com/openetl-io/openetl/internal/platform/telemetry"
+	"github.com/openetl-io/openetl/internal/platform/telemetry/telemetrytest"
+	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/internal/store/storetest"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 var env struct {
@@ -125,7 +125,7 @@ func setup(m *testing.M) (int, error) {
 		return 0, err
 	}
 	env.openetld = filepath.Join(dir, "openetld")
-	if out, err := exec.CommandContext(ctx, "go", "build", "-o", env.openetld, "github.com/unsuitable001/openetl/cmd/openetld").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, "go", "build", "-o", env.openetld, "github.com/openetl-io/openetl/cmd/openetld").CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("build openetld: %v\n%s", err, out)
 	}
 
@@ -240,7 +240,7 @@ func setup(m *testing.M) (int, error) {
 }
 
 // officialRepository is the official connectors'.
-const officialRepository = "https://github.com/unsuitable001/openetl-connectors"
+const officialRepository = "https://github.com/openetl-io/openetl-connectors"
 
 // applyOfficialConnectors packages the official connectors into the test
 // file server's descriptors, for this platform, and applies them.

@@ -18,13 +18,13 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/events"
-	"github.com/unsuitable001/openetl/internal/plan"
-	"github.com/unsuitable001/openetl/internal/spec"
-	"github.com/unsuitable001/openetl/internal/store"
-	"github.com/unsuitable001/openetl/internal/store/db"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/events"
+	"github.com/openetl-io/openetl/internal/plan"
+	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/internal/store"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 var errValidateOnly = errors.New("validate only")

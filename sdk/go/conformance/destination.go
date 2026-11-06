@@ -11,8 +11,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 // DestinationSuite checks a destination connector by writing through it as

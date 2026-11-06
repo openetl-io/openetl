@@ -13,10 +13,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/util"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/platform/resources"
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 type emitKind uint8

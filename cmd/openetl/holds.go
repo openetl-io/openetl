@@ -11,8 +11,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
 // runHolds lists a pipeline's holds (ADR-0025), or releases or discards one.

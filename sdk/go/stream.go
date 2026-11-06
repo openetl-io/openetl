@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"iter"
 
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 type streamKind uint8

@@ -19,8 +19,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	bridgev1 "github.com/unsuitable001/openetl/gen/openetl/bridge/v1"
-	"github.com/unsuitable001/openetl/internal/runner"
+	bridgev1 "github.com/openetl-io/openetl/gen/openetl/bridge/v1"
+	"github.com/openetl-io/openetl/internal/runner"
 )
 
 // Bridge is an in-process runner.Bridge.

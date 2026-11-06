@@ -12,10 +12,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 )
 
 // A pipeline version pins its source's config: changing the source gives the

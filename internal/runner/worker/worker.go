@@ -22,12 +22,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/resources"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
 // A runner takes this many light operations at a time, of each kind.
@@ -36,7 +36,7 @@ const (
 	maxLogReads = 8
 )
 
-var tracer = otel.Tracer("github.com/unsuitable001/openetl/internal/runner/worker")
+var tracer = otel.Tracer("github.com/openetl-io/openetl/internal/runner/worker")
 
 // ErrCancelled is what work returns when it stopped because it was asked to.
 var ErrCancelled = errors.New("worker: stopped when asked to")

@@ -9,15 +9,15 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/plan"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/plan"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // buildJob binds and starts the connectors, and settles the settings. The

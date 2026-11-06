@@ -18,10 +18,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 // sparkEnv is the compose stack's Spark cluster, and openetl-spark's jars.

@@ -1,6 +1,6 @@
 package sdk
 
-import protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+import protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 
 // WithCode classifies err with a code of the error taxonomy, which decides
 // whether the platform retries it. Unclassified errors count as INTERNAL. It

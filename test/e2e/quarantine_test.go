@@ -21,14 +21,14 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/checkpoint/openstore"
-	"github.com/unsuitable001/openetl/internal/delivery"
-	"github.com/unsuitable001/openetl/internal/engineclient"
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
-	runnerpkg "github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint/openstore"
+	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/engineclient"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
+	runnerpkg "github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // The engine quarantines a malformed row into each provider's object

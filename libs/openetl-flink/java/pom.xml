@@ -9,11 +9,11 @@
   <version>0.1.0-SNAPSHOT</version>
   <name>openetl-flink</name>
   <description>Flink jobs' side of openetl: a source over a continuous pipeline's streams and a sink per output, connected to the runner's bridge.</description>
-  <url>https://github.com/unsuitable001/openetl</url>
+  <url>https://github.com/openetl-io/openetl</url>
 
   <licenses>
     <license>
-      <name>MIT</name>
+      <name>Apache-2.0</name>
     </license>
   </licenses>
 

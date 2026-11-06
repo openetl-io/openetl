@@ -4,7 +4,7 @@ package openetl.connector.v1;
 
 import "google/protobuf/duration.proto";
 
-option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
+option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
 
 // ErrorCode is the error taxonomy. internal/platform/errs and the
 // openetl-proto crate mirror it.

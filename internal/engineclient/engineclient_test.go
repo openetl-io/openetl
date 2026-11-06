@@ -28,15 +28,15 @@ import (
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 
-	enginev1 "github.com/unsuitable001/openetl/gen/openetl/engine/v1"
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/delivery"
-	"github.com/unsuitable001/openetl/internal/enginesink"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/enginesink"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // The engine's frame tests check the same bytes.

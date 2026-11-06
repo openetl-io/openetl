@@ -13,10 +13,10 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/internal/spec"
-	"github.com/unsuitable001/openetl/internal/store/db"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 // applySparkCluster stores a Spark cluster's settings as a new version, as

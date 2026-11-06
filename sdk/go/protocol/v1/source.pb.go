@@ -1644,7 +1644,7 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\x04Read\x12!.openetl.connector.v1.ReadRequest\x1a\".openetl.connector.v1.ReadResponse0\x01\x12\\\n" +
 	"\tCommitted\x12&.openetl.connector.v1.CommittedRequest\x1a'.openetl.connector.v1.CommittedResponse\x12S\n" +
 	"\x06Splits\x12#.openetl.connector.v1.SplitsRequest\x1a$.openetl.connector.v1.SplitsResponse\x12V\n" +
-	"\aResplit\x12$.openetl.connector.v1.ResplitRequest\x1a%.openetl.connector.v1.ResplitResponseB@Z>github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\aResplit\x12$.openetl.connector.v1.ResplitRequest\x1a%.openetl.connector.v1.ResplitResponseB=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_source_proto_rawDescOnce sync.Once

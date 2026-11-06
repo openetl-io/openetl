@@ -6,7 +6,7 @@ import "openetl/connector/v1/destination.proto";
 import "openetl/connector/v1/errors.proto";
 import "openetl/connector/v1/source.proto";
 
-option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
+option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
 
 // ConnectorService is served by every connector, next to SourceService or
 // DestinationService. Configs are JSON objects matching the config schema;

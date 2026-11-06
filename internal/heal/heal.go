@@ -16,10 +16,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/events"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/store/db"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/events"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 type Class string

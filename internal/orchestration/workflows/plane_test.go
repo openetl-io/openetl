@@ -10,8 +10,8 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
 
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // forever is longer than any test runs on the workflow's clock.

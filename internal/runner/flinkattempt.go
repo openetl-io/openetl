@@ -18,11 +18,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	bridgev1 "github.com/unsuitable001/openetl/gen/openetl/bridge/v1"
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	bridgev1 "github.com/openetl-io/openetl/gen/openetl/bridge/v1"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // Bridge serves openetl.bridge.v1 to the Flink jobs a runner deploys

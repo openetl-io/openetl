@@ -23,7 +23,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // Reader reads references with the runner's cloud identity: the AWS SDK's

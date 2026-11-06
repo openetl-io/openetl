@@ -15,10 +15,10 @@ import (
 
 	"connectrpc.com/connect"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
-	"github.com/unsuitable001/openetl/internal/daemon"
-	"github.com/unsuitable001/openetl/internal/platform/config"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/internal/daemon"
+	"github.com/openetl-io/openetl/internal/platform/config"
 )
 
 type headers map[string]string

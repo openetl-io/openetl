@@ -16,9 +16,9 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/option"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/checkpoint/checkpointtest"
-	"github.com/unsuitable001/openetl/internal/checkpoint/gcsstore"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint/checkpointtest"
+	"github.com/openetl-io/openetl/internal/checkpoint/gcsstore"
 )
 
 // Runs against the compose fake-gcs-server (make deps-up), or the emulator

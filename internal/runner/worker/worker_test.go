@@ -14,11 +14,11 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/resources"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
 // fakeAPI hands out work, and answers reports with what stop says.

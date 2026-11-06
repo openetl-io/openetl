@@ -1,6 +1,6 @@
 // Developer tools, kept out of the platform module's dependency graph.
 // Run them with: GOWORK=off go tool -modfile=tools/go.mod <name>
-module github.com/unsuitable001/openetl/tools
+module github.com/openetl-io/openetl/tools
 
 go 1.26.7
 

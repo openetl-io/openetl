@@ -18,15 +18,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
-	"github.com/unsuitable001/openetl/internal/api"
-	"github.com/unsuitable001/openetl/internal/auth"
-	"github.com/unsuitable001/openetl/internal/store"
-	"github.com/unsuitable001/openetl/internal/store/db"
-	"github.com/unsuitable001/openetl/internal/store/storetest"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/api"
+	"github.com/openetl-io/openetl/internal/auth"
+	"github.com/openetl-io/openetl/internal/store"
+	"github.com/openetl-io/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/store/storetest"
 )
 
 // refreshes counts Refresh calls; the rest do nothing.

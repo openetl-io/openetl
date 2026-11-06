@@ -7,10 +7,10 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/configschema"
+	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/configschema"
 )
 
 // splitSecrets moves the config's secrets, the properties the schema marks

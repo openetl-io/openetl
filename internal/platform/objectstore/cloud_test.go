@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 // Runs against the compose fake-gcs-server, or STORAGE_EMULATOR_HOST.

@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/unsuitable001/openetl/internal/secrets"
-	"github.com/unsuitable001/openetl/internal/store"
-	"github.com/unsuitable001/openetl/internal/store/storetest"
+	"github.com/openetl-io/openetl/internal/secrets"
+	"github.com/openetl-io/openetl/internal/store"
+	"github.com/openetl-io/openetl/internal/store/storetest"
 )
 
 // Servers sealing their org's first secrets at once agree on one data key.

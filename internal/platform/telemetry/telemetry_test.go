@@ -9,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/unsuitable001/openetl/internal/platform/telemetry/telemetrytest"
+	"github.com/openetl-io/openetl/internal/platform/telemetry/telemetrytest"
 )
 
 func TestConfigured(t *testing.T) {

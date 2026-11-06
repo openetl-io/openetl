@@ -212,7 +212,7 @@ const file_openetl_connector_v1_errors_proto_rawDesc = "" +
 	"\x13ERROR_CODE_INTERNAL\x10\r\x12\x15\n" +
 	"\x11ERROR_CODE_FENCED\x10\x0e\x12\x17\n" +
 	"\x13ERROR_CODE_DRAINING\x10\x0f\x12\x1c\n" +
-	"\x18ERROR_CODE_POSITION_LOST\x10\x10B@Z>github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\x18ERROR_CODE_POSITION_LOST\x10\x10B=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_errors_proto_rawDescOnce sync.Once

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strconv"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 // explain sets h's reason and ways out from its cause. A column hold

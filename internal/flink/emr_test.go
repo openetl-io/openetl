@@ -14,10 +14,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/emr"
 	"github.com/aws/aws-sdk-go-v2/service/emr/types"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/internal/spark"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/internal/spark"
 )
 
 // fakeEMR keeps steps in memory. Steps it adds run until their state is

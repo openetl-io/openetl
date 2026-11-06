@@ -10,12 +10,12 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/secretstore"
-	"github.com/unsuitable001/openetl/internal/secretstore/secretstoretest"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/secretstore"
+	"github.com/openetl-io/openetl/internal/secretstore/secretstoretest"
 )
 
 type specAPI struct {

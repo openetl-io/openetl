@@ -27,7 +27,7 @@ import (
 	_ "gocloud.dev/secrets/gcpkms"
 	"gocloud.dev/secrets/localsecrets"
 
-	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 // Keys stores each org's wrapped data key; store.Store implements it.

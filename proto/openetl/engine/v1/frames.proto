@@ -4,7 +4,7 @@ package openetl.engine.v1;
 
 import "openetl/connector/v1/destination.proto";
 
-option go_package = "github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1";
+option go_package = "github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1";
 
 // Each Edge is one connection to the engine's data socket. A frame is a
 // 12-byte header and a payload. The header is the kind (1 byte), 3 zero

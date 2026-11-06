@@ -8,9 +8,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // An attempt's lines reach the runner's log, with its attributes, and the

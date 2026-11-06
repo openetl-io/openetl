@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/spec"
-	"github.com/unsuitable001/openetl/internal/store/db"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/internal/store/db"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 func TestCanRun(t *testing.T) {

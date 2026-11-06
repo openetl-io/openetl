@@ -25,13 +25,17 @@ import (
 	"github.com/apache/iceberg-go/table"
 	"github.com/jackc/pgx/v5"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 // The compose Iceberg REST catalog, which keeps its tables in the S3 store's
 // iceberg bucket.
-func icebergURI() string { return cmp.Or(os.Getenv("OPENETL_TEST_ICEBERG_URI"), "http://127.0.0.1:8181") }
-func s3Endpoint() string { return cmp.Or(os.Getenv("OPENETL_TEST_S3_ENDPOINT"), "http://127.0.0.1:8333") }
+func icebergURI() string {
+	return cmp.Or(os.Getenv("OPENETL_TEST_ICEBERG_URI"), "http://127.0.0.1:8181")
+}
+func s3Endpoint() string {
+	return cmp.Or(os.Getenv("OPENETL_TEST_S3_ENDPOINT"), "http://127.0.0.1:8333")
+}
 
 // icebergDest returns a destination spec writing into namespace, once the
 // catalog's bucket exists. It skips the test without destination-iceberg.

@@ -16,10 +16,10 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/unsuitable001/openetl/internal/netguard"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/host"
+	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/host"
 )
 
 var start = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)

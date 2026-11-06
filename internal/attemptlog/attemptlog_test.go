@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 const syncID = "019a4b2e-0000-7000-8000-000000000001"

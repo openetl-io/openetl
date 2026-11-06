@@ -6,7 +6,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
 )
 
 // ConnectorOp runs Check, Discover or Teardown on a runner of the data

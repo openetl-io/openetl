@@ -2,7 +2,7 @@
 
 OpenETL moves data from where it is produced to where it is used: databases, SaaS APIs, event streams and webhooks into warehouses, lakes, streams and HTTP endpoints. The same pipeline runs as a scheduled batch or continuously as a stream, with exactly-once delivery wherever the destination allows it.
 
-OpenETL is MIT-licensed and built to be self-hosted.
+OpenETL is licensed under Apache 2.0 and built to be self-hosted.
 
 **Status: pre-alpha.** Nothing here is usable yet. The first release, 0.1 alpha, will run scheduled batch syncs from Postgres and a few SaaS APIs into Postgres, a warehouse and Parquet on S3.
 
@@ -41,8 +41,8 @@ make web-dev       # the UI's dev server, proxying the API on localhost:8080
 
 The UI signs in with an API key. `openetld` writes the owner's key to `.openetl/admin.key` when it creates the org, and `openetl key create` makes more. `openetld --web DIR` serves a built UI (`make web` builds `web/dist`) next to the API, on the same origin.
 
-The official connectors, Postgres's included, live in [openetl-connectors](https://github.com/unsuitable001/openetl-connectors). Clone it next to this repo, or set `CONNECTORS_SRC`.
+The official connectors, Postgres's included, live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Clone it next to this repo, or set `CONNECTORS_SRC`.
 
 ## License
 
-[MIT](LICENSE)
+[Apache 2.0](LICENSE)

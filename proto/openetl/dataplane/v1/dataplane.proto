@@ -11,7 +11,7 @@ import "openetl/api/v1/spark.proto";
 import "openetl/api/v1/sync.proto";
 import "openetl/connector/v1/source.proto";
 
-option go_package = "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1";
+option go_package = "github.com/openetl-io/openetl/gen/openetl/dataplane/v1;dataplanev1";
 
 // DataPlaneService is what runners call on the control plane, with their data
 // plane's runner token. It serves a token only that data plane's work.

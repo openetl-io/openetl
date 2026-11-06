@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unsuitable001/openetl/internal/netguard"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // classify maps a failed status to the taxonomy. A manifest's error mapping

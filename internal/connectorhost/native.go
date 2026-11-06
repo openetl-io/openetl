@@ -14,19 +14,19 @@ import (
 
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/unsuitable001/openetl/connectors/native/faker"
-	"github.com/unsuitable001/openetl/connectors/native/stdout"
-	"github.com/unsuitable001/openetl/internal/connectorhost/external"
-	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
-	"github.com/unsuitable001/openetl/internal/declarative"
-	"github.com/unsuitable001/openetl/internal/enginesink"
-	"github.com/unsuitable001/openetl/internal/netguard"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/resources"
-	"github.com/unsuitable001/openetl/internal/spec"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/connectors/native/faker"
+	"github.com/openetl-io/openetl/connectors/native/stdout"
+	"github.com/openetl-io/openetl/internal/connectorhost/external"
+	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
+	"github.com/openetl-io/openetl/internal/declarative"
+	"github.com/openetl-io/openetl/internal/enginesink"
+	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // Constructors only parse config; they must not do I/O, so the API can use

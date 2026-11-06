@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	sdk "github.com/unsuitable001/openetl/sdk/go"
+	sdk "github.com/openetl-io/openetl/sdk/go"
 )
 
 type secretConfig struct {

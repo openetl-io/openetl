@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package openetl.bridge.v1;
 
-option go_package = "github.com/unsuitable001/openetl/gen/openetl/bridge/v1;bridgev1";
+option go_package = "github.com/openetl-io/openetl/gen/openetl/bridge/v1;bridgev1";
 option java_multiple_files = true;
 option java_package = "io.openetl.bridge.v1";
 

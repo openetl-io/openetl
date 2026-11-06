@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 func TestPickVersion(t *testing.T) {

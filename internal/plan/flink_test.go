@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 func TestFlinkTransformInputs(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.temporal.io/sdk/client"
 
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
 )
 
 // The retention schedule drops the checkpoint mirror's days older than the

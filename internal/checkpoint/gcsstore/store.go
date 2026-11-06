@@ -16,7 +16,7 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 type Store struct {

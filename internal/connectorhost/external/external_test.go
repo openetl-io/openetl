@@ -21,11 +21,11 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/util"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 var connectors string

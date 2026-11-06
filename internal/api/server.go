@@ -17,14 +17,14 @@ import (
 	"connectrpc.com/vanguard"
 	"github.com/jackc/pgx/v5"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
-	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/orchestration/dispatch"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/secrets"
-	"github.com/unsuitable001/openetl/internal/store"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/secrets"
+	"github.com/openetl-io/openetl/internal/store"
 )
 
 // Scheduler is implemented by schedules.Schedules.

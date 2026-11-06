@@ -11,7 +11,7 @@ import (
 
 	"gocloud.dev/blob"
 
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 func TestOpen(t *testing.T) {

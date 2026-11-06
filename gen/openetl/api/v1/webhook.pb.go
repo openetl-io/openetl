@@ -1218,7 +1218,7 @@ const file_openetl_api_v1_webhook_proto_rawDesc = "" +
 	"\x0eDisableWebhook\x12%.openetl.api.v1.DisableWebhookRequest\x1a&.openetl.api.v1.DisableWebhookResponse\"5\x82\xd3\xe4\x93\x02/:\x01*\"*/v1/{name=workspaces/*/webhooks/*}:disable\x12\x92\x01\n" +
 	"\rEnableWebhook\x12$.openetl.api.v1.EnableWebhookRequest\x1a%.openetl.api.v1.EnableWebhookResponse\"4\x82\xd3\xe4\x93\x02.:\x01*\")/v1/{name=workspaces/*/webhooks/*}:enable\x12\x8a\x01\n" +
 	"\vTestWebhook\x12\".openetl.api.v1.TestWebhookRequest\x1a#.openetl.api.v1.TestWebhookResponse\"2\x82\xd3\xe4\x93\x02,:\x01*\"'/v1/{name=workspaces/*/webhooks/*}:test\x12\xad\x01\n" +
-	"\x15ListWebhookDeliveries\x12,.openetl.api.v1.ListWebhookDeliveriesRequest\x1a-.openetl.api.v1.ListWebhookDeliveriesResponse\"7\x82\xd3\xe4\x93\x021\x12//v1/{parent=workspaces/*/webhooks/*}/deliveriesB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x15ListWebhookDeliveries\x12,.openetl.api.v1.ListWebhookDeliveriesRequest\x1a-.openetl.api.v1.ListWebhookDeliveriesResponse\"7\x82\xd3\xe4\x93\x021\x12//v1/{parent=workspaces/*/webhooks/*}/deliveriesB8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_webhook_proto_rawDescOnce sync.Once

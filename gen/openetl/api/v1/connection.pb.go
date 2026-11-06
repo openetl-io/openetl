@@ -1812,7 +1812,7 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\x0eGetDestination\x12%.openetl.api.v1.GetDestinationRequest\x1a&.openetl.api.v1.GetDestinationResponse\".\x82\xd3\xe4\x93\x02(\x12&/v1/{name=workspaces/*/destinations/*}\x12\x95\x01\n" +
 	"\x10ListDestinations\x12'.openetl.api.v1.ListDestinationsRequest\x1a(.openetl.api.v1.ListDestinationsResponse\".\x82\xd3\xe4\x93\x02(\x12&/v1/{parent=workspaces/*}/destinations\x12\x98\x01\n" +
 	"\x11DeleteDestination\x12(.openetl.api.v1.DeleteDestinationRequest\x1a).openetl.api.v1.DeleteDestinationResponse\".\x82\xd3\xe4\x93\x02(*&/v1/{name=workspaces/*/destinations/*}\x12\x9e\x01\n" +
-	"\x10CheckDestination\x12'.openetl.api.v1.CheckDestinationRequest\x1a(.openetl.api.v1.CheckDestinationResponse\"7\x82\xd3\xe4\x93\x021:\x01*\",/v1/{name=workspaces/*/destinations/*}:checkB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x10CheckDestination\x12'.openetl.api.v1.CheckDestinationRequest\x1a(.openetl.api.v1.CheckDestinationResponse\"7\x82\xd3\xe4\x93\x021:\x01*\",/v1/{name=workspaces/*/destinations/*}:checkB8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_connection_proto_rawDescOnce sync.Once

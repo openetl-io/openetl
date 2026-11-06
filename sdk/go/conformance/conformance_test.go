@@ -16,12 +16,12 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/conformance"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/host"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/conformance"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/host"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 var configSchema = []byte(`{"type": "object", "properties": {

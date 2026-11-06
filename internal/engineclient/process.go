@@ -27,9 +27,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
-	enginev1 "github.com/unsuitable001/openetl/gen/openetl/engine/v1"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/resources"
+	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
 type Options struct {

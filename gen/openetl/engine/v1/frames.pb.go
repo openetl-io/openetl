@@ -7,7 +7,7 @@
 package enginev1
 
 import (
-	v1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	v1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -335,7 +335,7 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x12FRAME_KIND_BARRIER\x10\x04\x12\x1c\n" +
 	"\x18FRAME_KIND_SCHEMA_CHANGE\x10\x05\x12\x1c\n" +
 	"\x18FRAME_KIND_END_OF_STREAM\x10\a\x12\x14\n" +
-	"\x10FRAME_KIND_PATCH\x10\b\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESBAZ?github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
+	"\x10FRAME_KIND_PATCH\x10\b\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESB>Z<github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_openetl_engine_v1_frames_proto_rawDescOnce sync.Once

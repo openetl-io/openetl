@@ -2085,7 +2085,7 @@ const file_openetl_connector_v1_host_proto_rawDesc = "" +
 	"\x03Now\x12 .openetl.connector.v1.NowRequest\x1a!.openetl.connector.v1.NowResponse\x12h\n" +
 	"\rStagedFileURL\x12*.openetl.connector.v1.StagedFileURLRequest\x1a+.openetl.connector.v1.StagedFileURLResponse\x12t\n" +
 	"\x11PutDeliveryCursor\x12..openetl.connector.v1.PutDeliveryCursorRequest\x1a/.openetl.connector.v1.PutDeliveryCursorResponse\x12t\n" +
-	"\x11GetDeliveryCursor\x12..openetl.connector.v1.GetDeliveryCursorRequest\x1a/.openetl.connector.v1.GetDeliveryCursorResponseB@Z>github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\x11GetDeliveryCursor\x12..openetl.connector.v1.GetDeliveryCursorRequest\x1a/.openetl.connector.v1.GetDeliveryCursorResponseB=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_host_proto_rawDescOnce sync.Once

@@ -848,7 +848,7 @@ const file_openetl_api_v1_flink_proto_rawDesc = "" +
 	"\x13FlinkClusterService\x12\x93\x01\n" +
 	"\x0fGetFlinkCluster\x12&.openetl.api.v1.GetFlinkClusterRequest\x1a'.openetl.api.v1.GetFlinkClusterResponse\"/\x82\xd3\xe4\x93\x02)\x12'/v1/{name=workspaces/*/flinkClusters/*}\x12\x99\x01\n" +
 	"\x11ListFlinkClusters\x12(.openetl.api.v1.ListFlinkClustersRequest\x1a).openetl.api.v1.ListFlinkClustersResponse\"/\x82\xd3\xe4\x93\x02)\x12'/v1/{parent=workspaces/*}/flinkClusters\x12\x9c\x01\n" +
-	"\x12DeleteFlinkCluster\x12).openetl.api.v1.DeleteFlinkClusterRequest\x1a*.openetl.api.v1.DeleteFlinkClusterResponse\"/\x82\xd3\xe4\x93\x02)*'/v1/{name=workspaces/*/flinkClusters/*}B;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x12DeleteFlinkCluster\x12).openetl.api.v1.DeleteFlinkClusterRequest\x1a*.openetl.api.v1.DeleteFlinkClusterResponse\"/\x82\xd3\xe4\x93\x02)*'/v1/{name=workspaces/*/flinkClusters/*}B8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_flink_proto_rawDescOnce sync.Once

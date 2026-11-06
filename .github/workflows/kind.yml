@@ -25,8 +25,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/checkout@v5
         with:
-          repository: unsuitable001/openetl-connectors
-          ref: move-postgres
+          repository: openetl-io/openetl-connectors
+          ref: main
           path: openetl-connectors
           ssh-key: ${{ secrets.CONNECTORS_DEPLOY_KEY }}
       - run: rustup show active-toolchain || rustup toolchain install

@@ -10,10 +10,10 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/unsuitable001/openetl/internal/declarative"
-	"github.com/unsuitable001/openetl/internal/netguard"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/declarative"
+	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 const acme = `

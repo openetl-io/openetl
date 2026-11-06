@@ -9,11 +9,11 @@
   <version>0.1.0-SNAPSHOT</version>
   <name>openetl-spark</name>
   <description>Spark applications' side of openetl: the sync's context for post-sync steps, and the driver of a pipeline's transform (ADR-0022).</description>
-  <url>https://github.com/unsuitable001/openetl</url>
+  <url>https://github.com/openetl-io/openetl</url>
 
   <licenses>
     <license>
-      <name>MIT</name>
+      <name>Apache-2.0</name>
     </license>
   </licenses>
 

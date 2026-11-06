@@ -23,8 +23,8 @@ import (
 	"gocloud.dev/blob"
 	"gocloud.dev/gcerrors"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 // Dir holds what a pipeline's Spark clusters read, next to its checkpoints.

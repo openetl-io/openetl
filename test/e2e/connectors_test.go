@@ -15,11 +15,11 @@ import (
 
 	"connectrpc.com/connect"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/spec"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/spec"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 func manifest(name, version, path string) string {

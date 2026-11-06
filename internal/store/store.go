@@ -18,7 +18,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
 
-	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 //go:embed migrations/*.sql

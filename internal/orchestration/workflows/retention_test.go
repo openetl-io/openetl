@@ -10,8 +10,8 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
-	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 )
 
 func TestRetentionDropsTheMirrorsOldDays(t *testing.T) {

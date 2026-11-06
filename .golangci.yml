@@ -28,23 +28,23 @@ linters:
         connectors-use-only-the-sdk:
           files: ["**/connectors/**"]
           deny:
-            - pkg: github.com/unsuitable001/openetl/internal
+            - pkg: github.com/openetl-io/openetl/internal
               desc: connectors may import only sdk/go and third-party packages
-            - pkg: github.com/unsuitable001/openetl/gen
+            - pkg: github.com/openetl-io/openetl/gen
               desc: connectors may import only sdk/go and third-party packages
         sdk-is-standalone:
           files: ["**/sdk/go/**"]
           deny:
-            - pkg: github.com/unsuitable001/openetl/internal
+            - pkg: github.com/openetl-io/openetl/internal
               desc: the SDK must not depend on the platform
-            - pkg: github.com/unsuitable001/openetl/gen
+            - pkg: github.com/openetl-io/openetl/gen
               desc: the SDK must not depend on the platform
         data-path-has-no-control-plane:
           files: ["**/internal/runner/**", "**/internal/connectorhost/**"]
           deny:
-            - pkg: github.com/unsuitable001/openetl/internal/orchestration/workflows
+            - pkg: github.com/openetl-io/openetl/internal/orchestration/workflows
               desc: the data path must not depend on workflow code
-            - pkg: github.com/unsuitable001/openetl/internal/api
+            - pkg: github.com/openetl-io/openetl/internal/api
               desc: the data path must not depend on the API server
         runners-reach-only-the-api:
           files: ["**/internal/runner/**", "**/internal/orchestration/contract/**", "**/internal/orchestration/dispatch/**"]
@@ -63,7 +63,7 @@ linters:
         only-engineclient-talks-to-the-engine:
           files: ["$all", "!**/internal/engineclient/**"]
           deny:
-            - pkg: github.com/unsuitable001/openetl/gen/openetl/engine
+            - pkg: github.com/openetl-io/openetl/gen/openetl/engine
               desc: only internal/engineclient may use the engine protocol
         only-llm-imports-llm-sdks:
           files: ["$all", "!**/internal/llm/**"]
@@ -99,4 +99,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/unsuitable001/openetl
+        - github.com/openetl-io/openetl

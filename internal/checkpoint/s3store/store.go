@@ -15,7 +15,7 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 type Store struct {

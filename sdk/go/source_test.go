@@ -11,8 +11,8 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // recorder writes each call as one line: rows ids, resume state, complete

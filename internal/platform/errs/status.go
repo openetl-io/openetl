@@ -7,7 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 // Status returns err as a gRPC status error that carries its classification

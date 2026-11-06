@@ -16,9 +16,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/checkpoint/checkpointtest"
-	"github.com/unsuitable001/openetl/internal/checkpoint/s3store"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint/checkpointtest"
+	"github.com/openetl-io/openetl/internal/checkpoint/s3store"
 )
 
 // Runs against the compose SeaweedFS (make deps-up) or

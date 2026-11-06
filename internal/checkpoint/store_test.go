@@ -3,8 +3,8 @@ package checkpoint_test
 import (
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/checkpoint/checkpointtest"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint/checkpointtest"
 )
 
 func TestMemStore(t *testing.T) {

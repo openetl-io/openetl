@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 // pauses reports whether the class's playbook pauses the pipeline: its

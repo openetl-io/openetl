@@ -7,7 +7,7 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
 
 // SyncService reads pipelines' syncs and their logs. A continuous
 // pipeline's syncs are its runs: each runs one version until it is stopped

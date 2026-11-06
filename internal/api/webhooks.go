@@ -13,10 +13,10 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/events"
-	"github.com/unsuitable001/openetl/internal/spec"
-	"github.com/unsuitable001/openetl/internal/store/db"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/events"
+	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 func (s *Server) applyWebhook(ctx context.Context, q *db.Queries, doc *spec.Document, wsID uuid.UUID) (*apiv1.AppliedResource, error) {

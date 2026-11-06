@@ -14,9 +14,9 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
-	"github.com/unsuitable001/openetl/internal/secretstore/secretstoretest"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/internal/secretstore/secretstoretest"
 )
 
 // Configs name secrets, which the API keeps sealed and gives only to

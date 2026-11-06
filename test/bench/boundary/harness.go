@@ -9,10 +9,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/util"
 
-	"github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // counted counts the Arrow bytes its source emits.

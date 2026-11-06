@@ -26,8 +26,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 // kube is the kind cluster make kind-up starts: its kubeconfig, its

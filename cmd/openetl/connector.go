@@ -14,12 +14,12 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/unsuitable001/openetl/internal/connectorhost/external"
-	"github.com/unsuitable001/openetl/internal/connectorpkg"
-	"github.com/unsuitable001/openetl/internal/declarative"
-	"github.com/unsuitable001/openetl/internal/spec"
-	"github.com/unsuitable001/openetl/sdk/go/conformance"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/internal/connectorhost/external"
+	"github.com/openetl-io/openetl/internal/connectorpkg"
+	"github.com/openetl-io/openetl/internal/declarative"
+	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/sdk/go/conformance"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 const connectorUsage = `usage: openetl connector <command> [flags]

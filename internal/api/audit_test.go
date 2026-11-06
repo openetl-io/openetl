@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 // Reads aren't audited, everything else on the public API is, and so are

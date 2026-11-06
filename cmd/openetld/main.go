@@ -13,10 +13,10 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/unsuitable001/openetl/internal/daemon"
-	"github.com/unsuitable001/openetl/internal/platform/config"
-	"github.com/unsuitable001/openetl/internal/platform/logging"
-	"github.com/unsuitable001/openetl/internal/platform/telemetry"
+	"github.com/openetl-io/openetl/internal/daemon"
+	"github.com/openetl-io/openetl/internal/platform/config"
+	"github.com/openetl-io/openetl/internal/platform/logging"
+	"github.com/openetl-io/openetl/internal/platform/telemetry"
 )
 
 const usage = `usage: openetld <role> [flags]

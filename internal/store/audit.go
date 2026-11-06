@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 // WriteAuditEntry adds an entry to the audit log. It creates the partition

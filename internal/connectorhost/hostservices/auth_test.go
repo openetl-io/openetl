@@ -27,9 +27,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/host"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/host"
 )
 
 // rotating keeps what the host rotates.

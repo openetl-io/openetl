@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // Level is a delivery guarantee. Higher is stronger.

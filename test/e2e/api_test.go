@@ -15,8 +15,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
 // A dbt project can't be deleted while a pipeline's current version runs

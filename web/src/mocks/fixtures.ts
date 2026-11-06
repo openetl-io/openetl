@@ -22,7 +22,7 @@ function connector(name: string, logoSlug?: string) {
     author: "OpenETL",
     logo: logoSlug ? logo(logoSlug) : "",
     releaseTag: `${name}/v0.1.0`,
-    repository: "https://github.com/unsuitable001/openetl-connectors",
+    repository: "https://github.com/openetl-io/openetl-connectors",
   };
 }
 

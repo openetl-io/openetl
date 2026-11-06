@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/netguard"
 )
 
 func TestCheck(t *testing.T) {

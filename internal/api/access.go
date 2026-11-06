@@ -14,10 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/auth"
-	"github.com/unsuitable001/openetl/internal/store"
-	"github.com/unsuitable001/openetl/internal/store/db"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/auth"
+	"github.com/openetl-io/openetl/internal/store"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 var principalID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)

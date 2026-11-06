@@ -23,12 +23,12 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/events"
-	"github.com/unsuitable001/openetl/internal/netguard"
-	"github.com/unsuitable001/openetl/internal/secrets"
-	"github.com/unsuitable001/openetl/internal/store"
-	"github.com/unsuitable001/openetl/internal/store/db"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/events"
+	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/secrets"
+	"github.com/openetl-io/openetl/internal/store"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 // DefaultRetries is the wait before each retry of a delivery that failed
@@ -46,7 +46,7 @@ const (
 )
 
 var (
-	meter       = otel.Meter("github.com/unsuitable001/openetl/internal/webhooks")
+	meter       = otel.Meter("github.com/openetl-io/openetl/internal/webhooks")
 	attempts, _ = meter.Int64Counter("openetl.webhook.attempts", metric.WithUnit("{attempt}"),
 		metric.WithDescription("Delivery attempts to webhooks, by outcome: succeeded, retried or failed"))
 	latency, _ = meter.Float64Histogram("openetl.webhook.latency", metric.WithUnit("s"),

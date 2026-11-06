@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/host"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/host"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 func TestCoversProtocol(t *testing.T) {

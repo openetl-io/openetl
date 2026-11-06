@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	meter          = otel.Meter("github.com/unsuitable001/openetl/internal/checkpoint")
+	meter          = otel.Meter("github.com/openetl-io/openetl/internal/checkpoint")
 	headWrites, _  = meter.Int64Counter("openetl.checkpoint.writes", metric.WithUnit("{write}"), metric.WithDescription("Claims, commits and rewinds of checkpoint logs' HEADs, by outcome"))
 	conflicts, _   = meter.Int64Counter("openetl.checkpoint.conflicts", metric.WithUnit("{conflict}"), metric.WithDescription("Compare-and-swaps on HEAD that another writer won"))
 	writeLength, _ = meter.Float64Histogram("openetl.checkpoint.write.duration", metric.WithUnit("s"), metric.WithDescription("How long a claim, commit or rewind of HEAD took"))

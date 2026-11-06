@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 type fixture struct {

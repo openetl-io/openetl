@@ -2381,7 +2381,7 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\rDEDUPE_TARGET\x10\x01\x12\x10\n" +
 	"\fDEDUPE_EPOCH\x10\x022j\n" +
 	"\x12DestinationService\x12T\n" +
-	"\x05Write\x12\".openetl.connector.v1.WriteRequest\x1a#.openetl.connector.v1.WriteResponse(\x010\x01B@Z>github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\x05Write\x12\".openetl.connector.v1.WriteRequest\x1a#.openetl.connector.v1.WriteResponse(\x010\x01B=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_destination_proto_rawDescOnce sync.Once

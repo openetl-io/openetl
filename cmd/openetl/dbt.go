@@ -7,9 +7,9 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/dbt"
-	"github.com/unsuitable001/openetl/internal/spec"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/dbt"
+	"github.com/openetl-io/openetl/internal/spec"
 )
 
 // bundleDbtProject replaces a DbtProject's spec.path, a directory relative

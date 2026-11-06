@@ -82,7 +82,7 @@ CONNECTORS_SRC ?= ../openetl-connectors
 connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connectors
 	@test -f $(CONNECTORS_SRC)/go.mod || { echo "clone openetl-connectors into $(CONNECTORS_SRC), or set CONNECTORS_SRC"; exit 1; }
 	@mkdir -p $(BIN)/connectors
-	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/unsuitable001/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
+	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/openetl-io/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
 	cd $(CONNECTORS_SRC) && GOWORK=$(BIN)/connectors.work go build -o $(BIN)/connectors/ ./cmd/...
 
 # openetl-spark and openetl-flink (ADR-0022): the jars, built and tested in a

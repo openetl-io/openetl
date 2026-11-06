@@ -84,12 +84,12 @@ jobs:
       - name: Breaking proto changes
         continue-on-error: true
         run: |
-          git fetch --no-tags --depth=1 origin master
+          git fetch --no-tags --depth=1 origin main
           # buf doesn't resolve FETCH_HEAD.
           if git cat-file -e FETCH_HEAD:buf.yaml 2>/dev/null; then
             bin/buf breaking --against ".git#ref=$(git rev-parse FETCH_HEAD)"
           else
-            echo "master has no protos yet."
+            echo "main has no protos yet."
           fi
       # The simulation runs below, without the race detector, which made it
       # the slowest package.

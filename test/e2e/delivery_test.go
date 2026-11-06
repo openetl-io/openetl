@@ -13,8 +13,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
 // The retry re-reads 150 rows per stream that are already applied. The

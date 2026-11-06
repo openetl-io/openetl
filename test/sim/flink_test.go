@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/internal/runner/flinktest"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/internal/runner/flinktest"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 // The flink kind runs a continuous pipeline with a Flink job (ADR-0022 §3)

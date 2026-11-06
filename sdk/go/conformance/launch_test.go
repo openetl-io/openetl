@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unsuitable001/openetl/sdk/go/conformance"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/conformance"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 // readLaunch reads the both connector's one record.

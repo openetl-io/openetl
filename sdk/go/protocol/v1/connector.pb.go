@@ -703,7 +703,7 @@ const file_openetl_connector_v1_connector_proto_rawDesc = "" +
 	"\x04Spec\x12!.openetl.connector.v1.SpecRequest\x1a\".openetl.connector.v1.SpecResponse\x12P\n" +
 	"\x05Check\x12\".openetl.connector.v1.CheckRequest\x1a#.openetl.connector.v1.CheckResponse\x12P\n" +
 	"\x05Setup\x12\".openetl.connector.v1.SetupRequest\x1a#.openetl.connector.v1.SetupResponse\x12Y\n" +
-	"\bTeardown\x12%.openetl.connector.v1.TeardownRequest\x1a&.openetl.connector.v1.TeardownResponseB@Z>github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\bTeardown\x12%.openetl.connector.v1.TeardownRequest\x1a&.openetl.connector.v1.TeardownResponseB=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_connector_proto_rawDescOnce sync.Once

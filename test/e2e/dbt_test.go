@@ -13,9 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/dbt"
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/dbt"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
 )
 
 // dbtProject is a DbtProject document with a project of models, which read

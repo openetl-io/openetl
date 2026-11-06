@@ -3,8 +3,8 @@ package sizing
 import (
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
 func TestChoose(t *testing.T) {

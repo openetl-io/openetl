@@ -6,7 +6,7 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "openetl/connector/v1/errors.proto";
 
-option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
+option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
 
 // DestinationService is served by destination connectors.
 service DestinationService {

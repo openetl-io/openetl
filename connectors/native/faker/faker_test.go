@@ -10,7 +10,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 type recorder struct {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	enginev1 "github.com/unsuitable001/openetl/gen/openetl/engine/v1"
+	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 )
 
 const (

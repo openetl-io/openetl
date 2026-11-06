@@ -8,11 +8,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/runner"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/runner"
 )
 
-var attempts, _ = otel.Meter("github.com/unsuitable001/openetl/internal/runner/activities").Int64Counter("openetl.job.attempts",
+var attempts, _ = otel.Meter("github.com/openetl-io/openetl/internal/runner/activities").Int64Counter("openetl.job.attempts",
 	metric.WithUnit("{attempt}"), metric.WithDescription("Sync attempts and stream jobs that ended, by outcome; retries are those after a sync's or run's first"))
 
 // countAttempt counts an attempt that ended with err: kind is sync or

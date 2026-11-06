@@ -8,11 +8,11 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/checkpoint/azstore"
-	"github.com/unsuitable001/openetl/internal/checkpoint/gcsstore"
-	"github.com/unsuitable001/openetl/internal/checkpoint/s3store"
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint/azstore"
+	"github.com/openetl-io/openetl/internal/checkpoint/gcsstore"
+	"github.com/openetl-io/openetl/internal/checkpoint/s3store"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 // Open takes a directory, or an s3://, gs:// or azblob:// URL as

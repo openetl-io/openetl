@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 func records(t *testing.T, s checkpoint.Store) []string {

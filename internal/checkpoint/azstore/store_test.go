@@ -18,10 +18,10 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/checkpoint/azstore"
-	"github.com/unsuitable001/openetl/internal/checkpoint/checkpointtest"
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint/azstore"
+	"github.com/openetl-io/openetl/internal/checkpoint/checkpointtest"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 // Azurite's well-known development account.

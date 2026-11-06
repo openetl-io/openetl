@@ -8,9 +8,9 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/delivery"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 var (

@@ -12,12 +12,12 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 var (
-	meter              = otel.Meter("github.com/unsuitable001/openetl/internal/runner")
-	tracer             = otel.Tracer("github.com/unsuitable001/openetl/internal/runner")
+	meter              = otel.Meter("github.com/openetl-io/openetl/internal/runner")
+	tracer             = otel.Tracer("github.com/openetl-io/openetl/internal/runner")
 	rowsCommitted, _   = meter.Int64Counter("openetl.job.rows.committed", metric.WithUnit("{row}"), metric.WithDescription("Rows in committed epochs, quarantined ones included"))
 	rowsQuarantined, _ = meter.Int64Counter("openetl.job.rows.quarantined", metric.WithUnit("{row}"), metric.WithDescription("Rows quarantined in committed epochs"))
 	rowsCollapsed, _   = meter.Int64Counter("openetl.job.rows.collapsed", metric.WithUnit("{row}"), metric.WithDescription("Rows the destination's apply didn't insert because of dedupe"))

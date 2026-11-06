@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/internal/flink"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/flink"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // flinkCluster prepares a continuous attempt's Flink job: the cluster the

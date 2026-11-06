@@ -23,14 +23,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/unsuitable001/openetl/connectors/native/faker"
-	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/delivery"
-	"github.com/unsuitable001/openetl/internal/engineclient"
-	runnerpkg "github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/connectors/native/faker"
+	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/engineclient"
+	runnerpkg "github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // A zombie attempt that reaches Commit(2) after its replacement has raised

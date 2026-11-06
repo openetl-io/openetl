@@ -1263,7 +1263,7 @@ const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\vSyncService\x12\x85\x01\n" +
 	"\tListSyncs\x12 .openetl.api.v1.ListSyncsRequest\x1a!.openetl.api.v1.ListSyncsResponse\"3\x82\xd3\xe4\x93\x02-\x12+/v1/{parent=workspaces/*/pipelines/*}/syncs\x12\x7f\n" +
 	"\aGetSync\x12\x1e.openetl.api.v1.GetSyncRequest\x1a\x1f.openetl.api.v1.GetSyncResponse\"3\x82\xd3\xe4\x93\x02-\x12+/v1/{name=workspaces/*/pipelines/*/syncs/*}\x12\x93\x01\n" +
-	"\vReadSyncLog\x12\".openetl.api.v1.ReadSyncLogRequest\x1a#.openetl.api.v1.ReadSyncLogResponse\";\x82\xd3\xe4\x93\x025\x123/v1/{name=workspaces/*/pipelines/*/syncs/*}:readLogB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\vReadSyncLog\x12\".openetl.api.v1.ReadSyncLogRequest\x1a#.openetl.api.v1.ReadSyncLogResponse\";\x82\xd3\xe4\x93\x025\x123/v1/{name=workspaces/*/pipelines/*/syncs/*}:readLogB8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_sync_proto_rawDescOnce sync.Once

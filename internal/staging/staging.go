@@ -26,9 +26,9 @@ import (
 	"gocloud.dev/blob"
 	"gocloud.dev/gcerrors"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 // Dir holds a pipeline's staged epochs, next to its checkpoints.

@@ -14,10 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/unsuitable001/openetl/internal/auth"
-	"github.com/unsuitable001/openetl/internal/store"
-	"github.com/unsuitable001/openetl/internal/store/db"
-	"github.com/unsuitable001/openetl/internal/store/storetest"
+	"github.com/openetl-io/openetl/internal/auth"
+	"github.com/openetl-io/openetl/internal/store"
+	"github.com/openetl-io/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/store/storetest"
 )
 
 func TestMigrateAndBootstrapAreIdempotent(t *testing.T) {

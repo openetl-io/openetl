@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unsuitable001/openetl/internal/api"
-	"github.com/unsuitable001/openetl/internal/platform/config"
+	"github.com/openetl-io/openetl/internal/api"
+	"github.com/openetl-io/openetl/internal/platform/config"
 )
 
 func TestConfigureSignIn(t *testing.T) {

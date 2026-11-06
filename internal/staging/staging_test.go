@@ -7,8 +7,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/staging"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/internal/staging"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 func open(t *testing.T, dir string) *staging.Area {

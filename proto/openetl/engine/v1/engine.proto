@@ -4,7 +4,7 @@ package openetl.engine.v1;
 
 import "openetl/connector/v1/destination.proto";
 
-option go_package = "github.com/unsuitable001/openetl/gen/openetl/engine/v1;enginev1";
+option go_package = "github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1";
 
 // EngineService is the engine's control channel, served on a Unix socket. One
 // engine process runs one job. The runner calls StartJob, then connects the

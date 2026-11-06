@@ -6,7 +6,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
 )
 
 // ReadLogs reads a page of a sync's log on a runner of the data plane that

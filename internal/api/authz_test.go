@@ -9,9 +9,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	_ "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
-	"github.com/unsuitable001/openetl/internal/auth"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	_ "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/auth"
 )
 
 // TestEveryRPCHasARule fails on an RPC the interceptor would refuse, and on a

@@ -435,7 +435,7 @@ const file_openetl_api_v1_dbt_proto_rawDesc = "" +
 	"\x11DbtProjectService\x12\x8b\x01\n" +
 	"\rGetDbtProject\x12$.openetl.api.v1.GetDbtProjectRequest\x1a%.openetl.api.v1.GetDbtProjectResponse\"-\x82\xd3\xe4\x93\x02'\x12%/v1/{name=workspaces/*/dbtProjects/*}\x12\x91\x01\n" +
 	"\x0fListDbtProjects\x12&.openetl.api.v1.ListDbtProjectsRequest\x1a'.openetl.api.v1.ListDbtProjectsResponse\"-\x82\xd3\xe4\x93\x02'\x12%/v1/{parent=workspaces/*}/dbtProjects\x12\x94\x01\n" +
-	"\x10DeleteDbtProject\x12'.openetl.api.v1.DeleteDbtProjectRequest\x1a(.openetl.api.v1.DeleteDbtProjectResponse\"-\x82\xd3\xe4\x93\x02'*%/v1/{name=workspaces/*/dbtProjects/*}B;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x10DeleteDbtProject\x12'.openetl.api.v1.DeleteDbtProjectRequest\x1a(.openetl.api.v1.DeleteDbtProjectResponse\"-\x82\xd3\xe4\x93\x02'*%/v1/{name=workspaces/*/dbtProjects/*}B8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_dbt_proto_rawDescOnce sync.Once

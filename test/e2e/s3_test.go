@@ -25,7 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"gocloud.dev/blob"
 
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 // dropBucket empties an S3 bucket and deletes it, for a test's cleanup.

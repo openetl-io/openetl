@@ -5,8 +5,8 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // A changelog stream's declared control columns survive the wire, and come

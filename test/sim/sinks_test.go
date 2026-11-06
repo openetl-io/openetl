@@ -13,7 +13,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 // ---- Stage and apply: a warehouse or Postgres, or Parquet on object storage.

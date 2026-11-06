@@ -354,7 +354,7 @@ const file_openetl_api_v1_audit_proto_rawDesc = "" +
 	"\aentries\x18\x01 \x03(\v2\x1a.openetl.api.v1.AuditEntryR\aentries\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken2\x8f\x01\n" +
 	"\fAuditService\x12\x7f\n" +
-	"\x10ListAuditEntries\x12'.openetl.api.v1.ListAuditEntriesRequest\x1a(.openetl.api.v1.ListAuditEntriesResponse\"\x18\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/auditEntriesB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x10ListAuditEntries\x12'.openetl.api.v1.ListAuditEntriesRequest\x1a(.openetl.api.v1.ListAuditEntriesResponse\"\x18\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/auditEntriesB8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_audit_proto_rawDescOnce sync.Once

@@ -17,7 +17,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 type Store struct {

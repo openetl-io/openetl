@@ -17,8 +17,8 @@ import (
 	"golang.org/x/mod/semver"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/unsuitable001/openetl/internal/platform/resources"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/internal/platform/resources"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 //go:embed connector.schema.json

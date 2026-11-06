@@ -11,8 +11,8 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	sdk "github.com/unsuitable001/openetl/sdk/go"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	sdk "github.com/openetl-io/openetl/sdk/go"
 )
 
 // Rotator is Secrets that keeps the secrets the host rotates, such as a

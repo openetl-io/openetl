@@ -7,8 +7,8 @@
 package dataplanev1
 
 import (
-	v1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	v11 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	v1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	v11 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
@@ -2730,7 +2730,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\fReportRunner\x12).openetl.dataplane.v1.ReportRunnerRequest\x1a*.openetl.dataplane.v1.ReportRunnerResponse\x12Y\n" +
 	"\bPollWork\x12%.openetl.dataplane.v1.PollWorkRequest\x1a&.openetl.dataplane.v1.PollWorkResponse\x12e\n" +
 	"\fReportResult\x12).openetl.dataplane.v1.ReportResultRequest\x1a*.openetl.dataplane.v1.ReportResultResponse\x12q\n" +
-	"\x10GetFlinkTeardown\x12-.openetl.dataplane.v1.GetFlinkTeardownRequest\x1a..openetl.dataplane.v1.GetFlinkTeardownResponseBGZEgithub.com/unsuitable001/openetl/gen/openetl/dataplane/v1;dataplanev1b\x06proto3"
+	"\x10GetFlinkTeardown\x12-.openetl.dataplane.v1.GetFlinkTeardownRequest\x1a..openetl.dataplane.v1.GetFlinkTeardownResponseBDZBgithub.com/openetl-io/openetl/gen/openetl/dataplane/v1;dataplanev1b\x06proto3"
 
 var (
 	file_openetl_dataplane_v1_dataplane_proto_rawDescOnce sync.Once

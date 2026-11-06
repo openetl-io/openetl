@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/delivery"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // Rows read again after a restore from a forced barrier get less than

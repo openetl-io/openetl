@@ -10,7 +10,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 )
 
 // Replay is whether a stream can carry the same record version more than

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 // MirrorCheckpoint adds a checkpoint to the mirror, and reports whether it

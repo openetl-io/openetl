@@ -25,7 +25,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/encoding/protowire"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 // The compose broker.

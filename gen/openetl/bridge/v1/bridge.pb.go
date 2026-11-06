@@ -1119,8 +1119,8 @@ const file_openetl_bridge_v1_bridge_proto_rawDesc = "" +
 	"\n" +
 	"Coordinate\x12$.openetl.bridge.v1.CoordinateRequest\x1a%.openetl.bridge.v1.CoordinateResponse(\x010\x01\x12I\n" +
 	"\x04Read\x12\x1e.openetl.bridge.v1.ReadRequest\x1a\x1f.openetl.bridge.v1.ReadResponse0\x01\x12N\n" +
-	"\x05Write\x12\x1f.openetl.bridge.v1.WriteRequest\x1a .openetl.bridge.v1.WriteResponse(\x010\x01BY\n" +
-	"\x14io.openetl.bridge.v1P\x01Z?github.com/unsuitable001/openetl/gen/openetl/bridge/v1;bridgev1b\x06proto3"
+	"\x05Write\x12\x1f.openetl.bridge.v1.WriteRequest\x1a .openetl.bridge.v1.WriteResponse(\x010\x01BV\n" +
+	"\x14io.openetl.bridge.v1P\x01Z<github.com/openetl-io/openetl/gen/openetl/bridge/v1;bridgev1b\x06proto3"
 
 var (
 	file_openetl_bridge_v1_bridge_proto_rawDescOnce sync.Once

@@ -16,7 +16,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 func listHolds(t *testing.T, pipeline string) []*apiv1.Hold {

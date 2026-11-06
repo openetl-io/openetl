@@ -9,11 +9,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 var (
-	meter       = otel.Meter("github.com/unsuitable001/openetl/internal/checkpoint/openstore")
+	meter       = otel.Meter("github.com/openetl-io/openetl/internal/checkpoint/openstore")
 	calls, _    = meter.Int64Counter("openetl.objectstore.calls", metric.WithUnit("{call}"), metric.WithDescription("Object-store calls for checkpoints and logs, by operation and outcome"))
 	duration, _ = meter.Float64Histogram("openetl.objectstore.call.duration", metric.WithUnit("s"), metric.WithDescription("How long an object-store call took"))
 )

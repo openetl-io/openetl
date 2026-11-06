@@ -5,7 +5,7 @@ package openetl.api.v1;
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
 
 // DbtProjectService reads and deletes dbt projects. ApplyService creates and
 // changes them.

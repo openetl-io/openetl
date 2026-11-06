@@ -19,10 +19,10 @@ import (
 	"connectrpc.com/connect"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
 // A Flink cluster is pinned by the continuous pipelines whose transforms

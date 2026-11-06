@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/dbt"
-	"github.com/unsuitable001/openetl/internal/spec"
+	"github.com/openetl-io/openetl/internal/dbt"
+	"github.com/openetl-io/openetl/internal/spec"
 )
 
 // openetl apply sends a DbtProject's files, from a directory relative to

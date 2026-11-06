@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/checkpoint/checkpointtest"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint/checkpointtest"
 )
 
 func TestPrefixed(t *testing.T) {

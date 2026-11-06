@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 func newLog(s checkpoint.Store) *checkpoint.Log { return checkpoint.NewLog(s, "org", "pipe") }

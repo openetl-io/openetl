@@ -1,4 +1,4 @@
-module github.com/unsuitable001/openetl/sdk/go
+module github.com/openetl-io/openetl/sdk/go
 
 go 1.26.0
 

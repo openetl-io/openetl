@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/host"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/host"
 )
 
 func TestTracesAreRedacted(t *testing.T) {

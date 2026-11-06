@@ -12,8 +12,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 // Supports reports whether h's platform has feature, an addition to the

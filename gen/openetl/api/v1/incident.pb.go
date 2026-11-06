@@ -964,7 +964,7 @@ const file_openetl_api_v1_incident_proto_rawDesc = "" +
 	"\x0fIncidentService\x12\x8f\x01\n" +
 	"\vGetIncident\x12\".openetl.api.v1.GetIncidentRequest\x1a#.openetl.api.v1.GetIncidentResponse\"7\x82\xd3\xe4\x93\x021\x12//v1/{name=workspaces/*/pipelines/*/incidents/*}\x12\x95\x01\n" +
 	"\rListIncidents\x12$.openetl.api.v1.ListIncidentsRequest\x1a%.openetl.api.v1.ListIncidentsResponse\"7\x82\xd3\xe4\x93\x021\x12//v1/{parent=workspaces/*/pipelines/*}/incidents\x12\xa6\x01\n" +
-	"\x0fResolveIncident\x12&.openetl.api.v1.ResolveIncidentRequest\x1a'.openetl.api.v1.ResolveIncidentResponse\"B\x82\xd3\xe4\x93\x02<:\x01*\"7/v1/{name=workspaces/*/pipelines/*/incidents/*}:resolveB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x0fResolveIncident\x12&.openetl.api.v1.ResolveIncidentRequest\x1a'.openetl.api.v1.ResolveIncidentResponse\"B\x82\xd3\xe4\x93\x02<:\x01*\"7/v1/{name=workspaces/*/pipelines/*/incidents/*}:resolveB8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_incident_proto_rawDescOnce sync.Once

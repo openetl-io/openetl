@@ -17,9 +17,9 @@ import (
 	"encoding/pem"
 	"hash"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/host"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/host"
 )
 
 func (s *Services) Sign(ctx context.Context, keySecret string, m host.SignMethod) ([]byte, error) {

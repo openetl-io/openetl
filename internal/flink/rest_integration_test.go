@@ -23,10 +23,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"gocloud.dev/blob"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
-	"github.com/unsuitable001/openetl/internal/runner"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/runner"
 )
 
 // Runs against the compose Flink session cluster and SeaweedFS (make

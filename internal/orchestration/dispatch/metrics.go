@@ -9,8 +9,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/unsuitable001/openetl/internal/platform/resources"
-	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 // metricsEvery is how often the placer's gauges read the store, however often
@@ -21,7 +21,7 @@ const metricsEvery = 10 * time.Second
 // demand by size, which autoscalers scale on (ADR-0027 §7). Unregister it when
 // the orchestrator stops.
 func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
-	meter := otel.Meter("github.com/unsuitable001/openetl/internal/orchestration/dispatch")
+	meter := otel.Meter("github.com/openetl-io/openetl/internal/orchestration/dispatch")
 	gauge := func(name, unit, description string) (metric.Float64ObservableGauge, error) {
 		return meter.Float64ObservableGauge(name, metric.WithUnit(unit), metric.WithDescription(description))
 	}

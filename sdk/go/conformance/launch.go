@@ -24,11 +24,11 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	sdk "github.com/unsuitable001/openetl/sdk/go"
-	"github.com/unsuitable001/openetl/sdk/go/configschema"
-	"github.com/unsuitable001/openetl/sdk/go/internal/launch"
-	"github.com/unsuitable001/openetl/sdk/go/internal/rpcerr"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/configschema"
+	"github.com/openetl-io/openetl/sdk/go/internal/launch"
+	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 const (

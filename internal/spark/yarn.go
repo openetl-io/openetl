@@ -16,7 +16,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // yarn submits with spark-submit, then finds, watches and kills through the

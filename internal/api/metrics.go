@@ -9,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/unsuitable001/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 // freshnessEvery is how often the freshness gauge reads the store, however
@@ -20,7 +20,7 @@ const freshnessEvery = 15 * time.Second
 // time since each pipeline's latest commit that the checkpoint mirror holds.
 // Unregister it when the server stops.
 func (s *Server) RegisterMetrics() (metric.Registration, error) {
-	meter := otel.Meter("github.com/unsuitable001/openetl/internal/api")
+	meter := otel.Meter("github.com/openetl-io/openetl/internal/api")
 	fresh, err := meter.Float64ObservableGauge("openetl.pipeline.freshness", metric.WithUnit("s"),
 		metric.WithDescription("Time since the pipeline's latest commit; pipelines without one in the last 30 days are left out"))
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 // TestStore runs the suite against empty stores from newStore, under prefix.

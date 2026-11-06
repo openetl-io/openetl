@@ -13,7 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/unsuitable001/openetl/internal/platform/objectstore"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
 // Stages in the compose SeaweedFS (make deps-up) or OPENETL_TEST_S3_ENDPOINT,

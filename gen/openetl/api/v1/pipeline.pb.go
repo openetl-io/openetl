@@ -6179,7 +6179,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x0fListCheckpoints\x12&.openetl.api.v1.ListCheckpointsRequest\x1a'.openetl.api.v1.ListCheckpointsResponse\"9\x82\xd3\xe4\x93\x023\x121/v1/{parent=workspaces/*/pipelines/*}/checkpoints\x12\x85\x01\n" +
 	"\tListHolds\x12 .openetl.api.v1.ListHoldsRequest\x1a!.openetl.api.v1.ListHoldsResponse\"3\x82\xd3\xe4\x93\x02-\x12+/v1/{parent=workspaces/*/pipelines/*}/holds\x12\x96\x01\n" +
 	"\vReleaseHold\x12\".openetl.api.v1.ReleaseHoldRequest\x1a#.openetl.api.v1.ReleaseHoldResponse\">\x82\xd3\xe4\x93\x028:\x01*\"3/v1/{parent=workspaces/*/pipelines/*}/holds:release\x12\x96\x01\n" +
-	"\vDiscardHold\x12\".openetl.api.v1.DiscardHoldRequest\x1a#.openetl.api.v1.DiscardHoldResponse\">\x82\xd3\xe4\x93\x028:\x01*\"3/v1/{parent=workspaces/*/pipelines/*}/holds:discardB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\vDiscardHold\x12\".openetl.api.v1.DiscardHoldRequest\x1a#.openetl.api.v1.DiscardHoldResponse\">\x82\xd3\xe4\x93\x028:\x01*\"3/v1/{parent=workspaces/*/pipelines/*}/holds:discardB8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_pipeline_proto_rawDescOnce sync.Once

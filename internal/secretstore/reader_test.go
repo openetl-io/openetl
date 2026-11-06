@@ -22,8 +22,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/secretstore/secretstoretest"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/secretstore/secretstoretest"
 )
 
 const hunter2 = `{"user": "shop", "password": "hunter2", "port": 5432, "none": null}`

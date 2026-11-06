@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // submit runs spark-submit. Spark 3.5's lines are what it parses, which is

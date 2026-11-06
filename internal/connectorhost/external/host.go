@@ -6,10 +6,10 @@ import (
 
 	"golang.org/x/mod/module"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/telemetry"
-	connspec "github.com/unsuitable001/openetl/internal/spec"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/telemetry"
+	connspec "github.com/openetl-io/openetl/internal/spec"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 // Protocol is the connector protocol this platform speaks.

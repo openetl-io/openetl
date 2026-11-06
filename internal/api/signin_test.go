@@ -7,7 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
 // Only sign-in's calls take no credential, and only the UI makes them.

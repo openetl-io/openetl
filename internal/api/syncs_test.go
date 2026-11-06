@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
 )
 
 func TestLogEntry(t *testing.T) {

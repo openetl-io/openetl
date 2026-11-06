@@ -17,10 +17,10 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/declarative"
-	"github.com/unsuitable001/openetl/internal/spec"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/declarative"
+	"github.com/openetl-io/openetl/internal/spec"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 // Options are what a release adds to the file.

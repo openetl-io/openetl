@@ -28,7 +28,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	bridgev1 "github.com/unsuitable001/openetl/gen/openetl/bridge/v1"
+	bridgev1 "github.com/openetl-io/openetl/gen/openetl/bridge/v1"
 )
 
 // Protocol is the bridge protocol this runner speaks. A library sends its

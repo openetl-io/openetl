@@ -17,7 +17,7 @@ import (
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 
-	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // Search attributes on workflows, for finding them in Temporal. openetld adds

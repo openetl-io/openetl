@@ -564,7 +564,7 @@ const file_openetl_api_v1_secret_proto_rawDesc = "" +
 	"\tGetSecret\x12 .openetl.api.v1.GetSecretRequest\x1a!.openetl.api.v1.GetSecretResponse\")\x82\xd3\xe4\x93\x02#\x12!/v1/{name=workspaces/*/secrets/*}\x12\x81\x01\n" +
 	"\vListSecrets\x12\".openetl.api.v1.ListSecretsRequest\x1a#.openetl.api.v1.ListSecretsResponse\")\x82\xd3\xe4\x93\x02#\x12!/v1/{parent=workspaces/*}/secrets\x12\x93\x01\n" +
 	"\fUpdateSecret\x12#.openetl.api.v1.UpdateSecretRequest\x1a$.openetl.api.v1.UpdateSecretResponse\"8\x82\xd3\xe4\x93\x022:\x06secret2(/v1/{secret.name=workspaces/*/secrets/*}\x12\x84\x01\n" +
-	"\fDeleteSecret\x12#.openetl.api.v1.DeleteSecretRequest\x1a$.openetl.api.v1.DeleteSecretResponse\")\x82\xd3\xe4\x93\x02#*!/v1/{name=workspaces/*/secrets/*}B;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\fDeleteSecret\x12#.openetl.api.v1.DeleteSecretRequest\x1a$.openetl.api.v1.DeleteSecretResponse\")\x82\xd3\xe4\x93\x02#*!/v1/{name=workspaces/*/secrets/*}B8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_secret_proto_rawDescOnce sync.Once

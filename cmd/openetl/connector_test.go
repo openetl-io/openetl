@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/connectorpkg"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/connectorpkg"
 )
 
 func TestConnectorSchemas(t *testing.T) {

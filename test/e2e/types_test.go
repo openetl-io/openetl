@@ -15,13 +15,13 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/delivery"
-	"github.com/unsuitable001/openetl/internal/engineclient"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
-	runnerpkg "github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/engineclient"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	runnerpkg "github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // Postgres to Postgres through the engine: declared numerics arrive as

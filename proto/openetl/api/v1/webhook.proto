@@ -6,7 +6,7 @@ import "google/api/annotations.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
 
 // WebhookService reads, deletes, disables and enables webhooks, sends them
 // test events and lists their deliveries. ApplyService creates and changes

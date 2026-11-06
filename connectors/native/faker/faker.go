@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/unsuitable001/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 type Config struct {

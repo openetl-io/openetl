@@ -7,7 +7,7 @@ import "google/protobuf/timestamp.proto";
 import "openetl/connector/v1/destination.proto";
 import "openetl/connector/v1/errors.proto";
 
-option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protocolv1";
+option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
 
 // HostService is how connectors reach the outside world. Fields ending in
 // _secret hold secret names; the host injects the values.

@@ -12,15 +12,15 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/connectorhost/hostservices"
-	"github.com/unsuitable001/openetl/internal/delivery"
-	"github.com/unsuitable001/openetl/internal/runner"
-	"github.com/unsuitable001/openetl/internal/staging"
-	"github.com/unsuitable001/openetl/sdk/go/destination"
-	"github.com/unsuitable001/openetl/sdk/go/host"
-	"github.com/unsuitable001/openetl/sdk/go/source"
-	sdkstaging "github.com/unsuitable001/openetl/sdk/go/staging"
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
+	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/internal/staging"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/host"
+	"github.com/openetl-io/openetl/sdk/go/source"
+	sdkstaging "github.com/openetl-io/openetl/sdk/go/staging"
 )
 
 // stagedDest reads each epoch's staged files back in Commit, as an API

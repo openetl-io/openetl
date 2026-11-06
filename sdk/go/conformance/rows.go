@@ -17,9 +17,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"google.golang.org/grpc"
 
-	"github.com/unsuitable001/openetl/sdk/go/arrowipc"
-	"github.com/unsuitable001/openetl/sdk/go/internal/rpcerr"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 // row is one record: each field's value as JSON, and the record as a JSON

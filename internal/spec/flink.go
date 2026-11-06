@@ -11,7 +11,7 @@ import (
 	"go.yaml.in/yaml/v3"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 type flinkResourcesYAML struct {

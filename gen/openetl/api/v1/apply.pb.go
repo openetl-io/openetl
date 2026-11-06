@@ -376,7 +376,7 @@ const file_openetl_api_v1_apply_proto_rawDesc = "" +
 	"\x14APPLY_ACTION_UPDATED\x10\x02\x12\x1a\n" +
 	"\x16APPLY_ACTION_UNCHANGED\x10\x032\x83\x01\n" +
 	"\fApplyService\x12s\n" +
-	"\x05Apply\x12\x1c.openetl.api.v1.ApplyRequest\x1a\x1d.openetl.api.v1.ApplyResponse\"-\x82\xd3\xe4\x93\x02':\x01*\"\"/v1/{workspace=workspaces/*}:applyB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x05Apply\x12\x1c.openetl.api.v1.ApplyRequest\x1a\x1d.openetl.api.v1.ApplyResponse\"-\x82\xd3\xe4\x93\x02':\x01*\"\"/v1/{workspace=workspaces/*}:applyB8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_apply_proto_rawDescOnce sync.Once

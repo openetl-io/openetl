@@ -5,7 +5,7 @@ package openetl.api.v1;
 import "google/api/annotations.proto";
 import "openetl/api/v1/pipeline.proto";
 
-option go_package = "github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1";
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
 
 service ApplyService {
   // Stores each definition as an immutable version; unchanged definitions

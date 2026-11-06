@@ -7,11 +7,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	enginev1 "github.com/unsuitable001/openetl/gen/openetl/engine/v1"
+	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 )
 
 var (
-	meter           = otel.Meter("github.com/unsuitable001/openetl/internal/engineclient")
+	meter           = otel.Meter("github.com/openetl-io/openetl/internal/engineclient")
 	engines, _      = meter.Int64UpDownCounter("openetl.engine.processes", metric.WithUnit("{process}"), metric.WithDescription("Engine processes running"))
 	engineCPU, _    = meter.Float64Counter("openetl.engine.cpu.time", metric.WithUnit("s"), metric.WithDescription("CPU time of engines that exited, by mode"))
 	enginePeak, _   = meter.Int64Histogram("openetl.engine.memory.peak", metric.WithUnit("By"), metric.WithDescription("Peak resident memory of engines that exited, where it can be read"))

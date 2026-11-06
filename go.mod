@@ -1,4 +1,4 @@
-module github.com/unsuitable001/openetl
+module github.com/openetl-io/openetl
 
 go 1.26.0
 
@@ -12,13 +12,13 @@ require (
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	golang.org/x/exp v0.0.0-20261011100332-faecfb24eb49 // indirect
 	golang.org/x/sync v0.24.0
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.49.0
 	google.golang.org/protobuf v1.36.12
 )
 
 // sdk/go is developed in this repo. go.work covers builds, but `go mod tidy`
 // ignores workspaces, so the replace keeps tidy and GOWORK=off builds working.
-replace github.com/unsuitable001/openetl/sdk/go => ./sdk/go
+replace github.com/openetl-io/openetl/sdk/go => ./sdk/go
 
 require (
 	cel.dev/cel-go v0.32.0
@@ -43,13 +43,12 @@ require (
 	github.com/aws/smithy-go v1.28.7
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/openetl-io/openetl/sdk/go v0.0.0-00010101000000-000000000000
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
-	github.com/stretchr/testify v1.12.1
 	github.com/twmb/avro v1.8.0
 	github.com/twmb/franz-go v1.22.2
 	github.com/twmb/franz-go/pkg/kadm v1.19.0
-	github.com/unsuitable001/openetl/sdk/go v0.0.0-00010101000000-000000000000
 	go.opentelemetry.io/contrib/exporters/autoexport v0.72.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.72.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0
@@ -169,6 +168,7 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
+	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/substrait-io/substrait v0.87.0 // indirect
 	github.com/substrait-io/substrait-go/v8 v8.1.1 // indirect
 	github.com/substrait-io/substrait-protobuf/go v0.85.0 // indirect

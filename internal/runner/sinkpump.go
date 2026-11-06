@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/unsuitable001/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 // sinkPump feeds one writer lane's part of the dataflow's output to its

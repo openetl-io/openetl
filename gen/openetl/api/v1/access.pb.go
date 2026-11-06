@@ -2798,7 +2798,7 @@ const file_openetl_api_v1_access_proto_rawDesc = "" +
 	"\x0eRevokeSessions\x12%.openetl.api.v1.RevokeSessionsRequest\x1a&.openetl.api.v1.RevokeSessionsResponse\"1\x82\xd3\xe4\x93\x02+:\x01*\"&/v1/{name=principals/*}:revokeSessions\x12\x9c\x01\n" +
 	"\x12CreatePasswordLink\x12).openetl.api.v1.CreatePasswordLinkRequest\x1a*.openetl.api.v1.CreatePasswordLinkResponse\"/\x82\xd3\xe4\x93\x02):\x01*\"$/v1/{name=principals/*}:passwordLink\x12X\n" +
 	"\vSetPassword\x12\".openetl.api.v1.SetPasswordRequest\x1a#.openetl.api.v1.SetPasswordResponse\"\x00\x12\x85\x01\n" +
-	"\x0eChangePassword\x12%.openetl.api.v1.ChangePasswordRequest\x1a&.openetl.api.v1.ChangePasswordResponse\"$\x82\xd3\xe4\x93\x02\x1e:\x01*\"\x19/v1/caller:changePasswordB;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x0eChangePassword\x12%.openetl.api.v1.ChangePasswordRequest\x1a&.openetl.api.v1.ChangePasswordResponse\"$\x82\xd3\xe4\x93\x02\x1e:\x01*\"\x19/v1/caller:changePasswordB8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_access_proto_rawDescOnce sync.Once

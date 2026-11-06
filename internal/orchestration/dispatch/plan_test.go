@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unsuitable001/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
 func runner(id string, capacity, used resources.Size) Runner {

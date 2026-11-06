@@ -16,7 +16,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/unsuitable001/openetl/internal/spec"
+	"github.com/openetl-io/openetl/internal/spec"
 )
 
 // FileName is the authored file, at the root of a package's directory.

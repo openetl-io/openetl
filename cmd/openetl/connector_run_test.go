@@ -16,10 +16,10 @@ import (
 
 	"github.com/apache/arrow-go/v18/parquet/file"
 
-	"github.com/unsuitable001/openetl/internal/connectorhost"
-	"github.com/unsuitable001/openetl/internal/spec"
-	"github.com/unsuitable001/openetl/sdk/go/conformance"
-	protocolv1 "github.com/unsuitable001/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/sdk/go/conformance"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
 // testConnectors builds the external package's test connector under each

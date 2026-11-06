@@ -670,7 +670,7 @@ const file_openetl_api_v1_spark_proto_rawDesc = "" +
 	"\x13SparkClusterService\x12\x93\x01\n" +
 	"\x0fGetSparkCluster\x12&.openetl.api.v1.GetSparkClusterRequest\x1a'.openetl.api.v1.GetSparkClusterResponse\"/\x82\xd3\xe4\x93\x02)\x12'/v1/{name=workspaces/*/sparkClusters/*}\x12\x99\x01\n" +
 	"\x11ListSparkClusters\x12(.openetl.api.v1.ListSparkClustersRequest\x1a).openetl.api.v1.ListSparkClustersResponse\"/\x82\xd3\xe4\x93\x02)\x12'/v1/{parent=workspaces/*}/sparkClusters\x12\x9c\x01\n" +
-	"\x12DeleteSparkCluster\x12).openetl.api.v1.DeleteSparkClusterRequest\x1a*.openetl.api.v1.DeleteSparkClusterResponse\"/\x82\xd3\xe4\x93\x02)*'/v1/{name=workspaces/*/sparkClusters/*}B;Z9github.com/unsuitable001/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
+	"\x12DeleteSparkCluster\x12).openetl.api.v1.DeleteSparkClusterRequest\x1a*.openetl.api.v1.DeleteSparkClusterResponse\"/\x82\xd3\xe4\x93\x02)*'/v1/{name=workspaces/*/sparkClusters/*}B8Z6github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1b\x06proto3"
 
 var (
 	file_openetl_api_v1_spark_proto_rawDescOnce sync.Once
