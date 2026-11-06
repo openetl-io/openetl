@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -244,6 +245,34 @@ func TestConnectorsDontInheritTheEnvironment(t *testing.T) {
 	}
 	if slices.Contains(names, "AWS_SECRET_ACCESS_KEY") || !slices.Contains(names, "OPENETL_CONNECTOR_ADDR") || !slices.Contains(names, "OPENETL_CONNECTOR_ROLE") {
 		t.Fatalf("the connector's environment: %v", names)
+	}
+}
+
+func TestSizeSetsAGoConnectorsLimits(t *testing.T) {
+	envOf := func(opts Options) map[string]bool {
+		src := NewSource(exe("source-env"), nil, opts)
+		defer func() { _ = src.Close() }()
+		var out collect
+		if err := src.Read(t.Context(), source.ReadRequest{Streams: []source.ConfiguredStream{{Name: "env"}}}, &out); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, r := range out.raw {
+			var v struct{ Name, Value string }
+			if err := json.Unmarshal(r, &v); err != nil {
+				t.Fatal(err)
+			}
+			got[v.Name+"="+v.Value] = true
+		}
+		return got
+	}
+	if got := envOf(Options{Size: resources.M}); !got["GOMAXPROCS=2"] || !got["GOMEMLIMIT=2147483648"] {
+		t.Errorf("a job's connector's environment: %v", got)
+	}
+	for kv := range envOf(Options{}) {
+		if strings.HasPrefix(kv, "GOM") {
+			t.Errorf("a connector outside a job got %s", kv)
+		}
 	}
 }
 

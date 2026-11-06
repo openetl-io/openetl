@@ -15,7 +15,7 @@ var (
 	engines, _      = meter.Int64UpDownCounter("openetl.engine.processes", metric.WithUnit("{process}"), metric.WithDescription("Engine processes running"))
 	engineCPU, _    = meter.Float64Counter("openetl.engine.cpu.time", metric.WithUnit("s"), metric.WithDescription("CPU time of engines that exited, by mode"))
 	enginePeak, _   = meter.Int64Histogram("openetl.engine.memory.peak", metric.WithUnit("By"), metric.WithDescription("Peak resident memory of engines that exited, where it can be read"))
-	engineMemory, _ = meter.Int64Gauge("openetl.engine.memory", metric.WithUnit("By"), metric.WithDescription("A running engine's resident memory, as it last reported"))
+	engineMemory, _ = meter.Int64Gauge("openetl.engine.memory", metric.WithUnit("By"), metric.WithDescription("What a running engine's allocations hold, as it last reported"))
 	edgeBytes, _    = meter.Int64Counter("openetl.engine.edge.bytes", metric.WithUnit("By"), metric.WithDescription("Frames' bytes across the runner/engine boundary, by direction"))
 	rowsIn, _       = meter.Int64Counter("openetl.job.rows.in", metric.WithUnit("{row}"), metric.WithDescription("Rows the engine received from the source"))
 	bytesIn, _      = meter.Int64Counter("openetl.job.bytes.in", metric.WithUnit("By"), metric.WithDescription("Bytes of batches the engine received from the source"))

@@ -972,7 +972,7 @@ fn metrics(plan: &Plan, counters: &[Counters]) -> EventsResponse {
     EventsResponse {
         event: Some(events_response::Event::Metrics(Metrics {
             streams,
-            memory_bytes: 0,
+            memory_bytes: crate::memory::held(),
         })),
     }
 }

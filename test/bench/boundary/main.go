@@ -40,6 +40,7 @@ import (
 	"github.com/openetl-io/openetl/internal/delivery"
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/enginesink"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -52,6 +53,9 @@ var (
 	rowsFlag   = flag.Int("rows", 5_000_000, "rows in the dataset")
 	runsFlag   = flag.Int("runs", 3, "runs of each phase; the report shows medians")
 	replayFlag = flag.Int("replay-mb", 512, "MB of batches held in memory for the replay phases")
+	sizeFlag   = flag.String("size", "", "a job's size, xs to xl: every phase's engines and connectors run with the limits a runner gives it; empty: none")
+	neighbours = flag.Int("neighbours", 0, "instead of the phases, measure what a large snapshot does to this many small syncs on the machine")
+	unlimited  = flag.Bool("neighbours-unlimited", false, "with -neighbours, run them without their sizes' limits, to compare")
 	profile    = flag.String("cpuprofile", "", "write the runner's CPU profile to this file")
 )
 
@@ -113,13 +117,23 @@ func run(ctx context.Context) error {
 	if err := prepare(ctx, conn, *rowsFlag); err != nil {
 		return fmt.Errorf("dataset: %w", err)
 	}
+	if *neighbours > 0 {
+		return measureNeighbours(ctx, conn, bin, *neighbours)
+	}
 	idle, err := idleRSS(ctx, bin)
 	if err != nil {
 		return fmt.Errorf("idle engine: %w", err)
 	}
 
+	var size resources.Size
+	if *sizeFlag != "" {
+		var ok bool
+		if size, ok = resources.Preset(*sizeFlag); !ok {
+			return fmt.Errorf("-size %q isn't xs, s, m, l or xl", *sizeFlag)
+		}
+	}
 	srcConfig := fmt.Sprintf(`{"dsn": %q, "schema": %q, "tables": [%q]}`, *dsnFlag, schema, table)
-	connectors := connectorhost.Env{Connectors: *connFlag}
+	connectors := connectorhost.Env{Connectors: *connFlag, Size: size}
 	// Closing a connector waits for its process, so its CPU is counted.
 	newSource := func(ctx context.Context) (source.Source, func(), error) {
 		s, err := connectorhost.NewSource("postgres", []byte(srcConfig), connectors)
@@ -147,7 +161,7 @@ func run(ctx context.Context) error {
 	}
 	readAll := source.ReadRequest{Streams: []source.ConfiguredStream{{Name: table}}}
 	b := &bench{runs: *runsFlag}
-	engine := engineclient.Dataflow{Options: engineclient.Options{Binary: bin, PeakMemory: b.enginePeak}}
+	engine := engineclient.Dataflow{Options: engineclient.Options{Binary: bin, PeakMemory: b.enginePeak, Size: size}}
 	if _, err := b.add(ctx, "postgres wire, no Arrow", step{run: func(ctx context.Context) (int64, error) { return wire(ctx, conn) }}); err != nil {
 		return err
 	}

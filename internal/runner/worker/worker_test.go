@@ -6,6 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -116,6 +122,12 @@ func eventually(t *testing.T, what string, ok func() bool) {
 // start runs a worker against a fake API until the returned stop is called.
 func start(t *testing.T, kinds map[string]Kind, capacity resources.Size) (api *fakeAPI, w *Worker, stop func()) {
 	t.Helper()
+	return startWith(t, kinds, capacity, nil)
+}
+
+// startWith is start with these cgroups.
+func startWith(t *testing.T, kinds map[string]Kind, capacity resources.Size, cgroups *resources.Cgroups) (api *fakeAPI, w *Worker, stop func()) {
+	t.Helper()
 	api = &fakeAPI{}
 	mux := http.NewServeMux()
 	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
@@ -123,7 +135,7 @@ func start(t *testing.T, kinds map[string]Kind, capacity resources.Size) (api *f
 	t.Cleanup(srv.Close)
 	w = &Worker{
 		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), ID: "r1", Release: "dev", Protocol: "v1", Platform: "linux/amd64",
-		Pool: "default", Capacity: capacity, ReportEvery: 5 * time.Millisecond, Kinds: kinds,
+		Pool: "default", Capacity: capacity, Cgroups: cgroups, ReportEvery: 5 * time.Millisecond, Kinds: kinds,
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -280,6 +292,111 @@ func TestUsage(t *testing.T) {
 	}
 	if op := api.result("op"); op.GetUsage() != nil {
 		t.Errorf("a light operation's result has usage: %v", op.GetUsage())
+	}
+}
+
+// balloonEnv has this test binary hold that many MiB until it's killed.
+const balloonEnv = "OPENETL_TEST_BALLOON_MIB"
+
+func TestMain(m *testing.M) {
+	if v := os.Getenv(balloonEnv); v != "" {
+		n, _ := strconv.Atoi(v)
+		held := make([]byte, n<<20)
+		for i := 0; i < len(held); i += 4096 {
+			held[i] = 1
+		}
+		time.Sleep(time.Minute)
+		_ = held[0]
+		return
+	}
+	os.Exit(m.Run())
+}
+
+// An attempt runs a process holding the MiB it's given, and waits for its
+// context to end.
+func balloonKind(t *testing.T) Kind {
+	return Kind{Checkpoints: true, Handler: Handle(func(ctx context.Context, mib int) (struct{}, error) {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = append(os.Environ(), balloonEnv+"="+strconv.Itoa(mib))
+		meter := From(ctx).Meter
+		meter.Confine(cmd)
+		if err := cmd.Start(); err != nil {
+			t.Error(err)
+			return struct{}{}, err
+		}
+		done := meter.Track(cmd.Process)
+		exited := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(exited) }()
+		select {
+		case <-exited:
+			done(cmd.ProcessState)
+			return struct{}{}, errs.New(errs.Internal, "the process exited: %v", cmd.ProcessState)
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			<-exited
+			done(cmd.ProcessState)
+			return struct{}{}, ctx.Err()
+		case <-From(ctx).Stopping():
+			_ = cmd.Process.Kill()
+			<-exited
+			done(cmd.ProcessState)
+			return struct{}{}, ErrCancelled
+		}
+	})}
+}
+
+func TestWatchdogStopsAJobOverItsSize(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reading a process's memory needs /proc")
+	}
+	api, _, _ := start(t, map[string]Kind{"attempt": balloonKind(t)}, resources.L)
+	tiny := &dataplanev1.Resources{CpuMillis: 1000, MemoryBytes: 32 * resources.MiB}
+	api.give(work("over", "attempt", tiny, 128), work("within", "attempt", small, 8))
+
+	var res *dataplanev1.ReportResultRequest
+	eventually(t, "the job over its size to stop", func() bool { res = api.result("over"); return res != nil })
+	if res.GetCode() != errs.ResourceExhausted.String() || res.GetNonRetryable() {
+		t.Errorf("result %v, want a retryable RESOURCE_EXHAUSTED", res)
+	}
+	if res.GetUsage().GetPeakMemoryBytes() < 32*resources.MiB {
+		t.Errorf("usage %v", res.GetUsage())
+	}
+	// Its neighbour runs on.
+	time.Sleep(2 * memoryWatchEvery)
+	if got := api.result("within"); got != nil {
+		t.Errorf("the job within its size stopped: %v", got)
+	}
+}
+
+// With OPENETL_TEST_CGROUP_ROOT, as in resources' TestCgroupForReal: the kernel
+// kills the job's processes, whatever the attempt makes of that.
+func TestCgroupStopsAJobOverItsSize(t *testing.T) {
+	root := os.Getenv("OPENETL_TEST_CGROUP_ROOT")
+	if root == "" {
+		t.Skip("set OPENETL_TEST_CGROUP_ROOT to a delegated cgroup v2 directory")
+	}
+	cgroups, err := resources.OpenCgroups(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, _, stop := startWith(t, map[string]Kind{"attempt": balloonKind(t)}, resources.L, cgroups)
+	tiny := &dataplanev1.Resources{CpuMillis: 1000, MemoryBytes: 32 * resources.MiB}
+	api.give(work("over", "attempt", tiny, 128), work("within", "attempt", small, 8))
+
+	var res *dataplanev1.ReportResultRequest
+	eventually(t, "the job over its size to stop", func() bool { res = api.result("over"); return res != nil })
+	if res.GetCode() != errs.ResourceExhausted.String() || !strings.Contains(res.GetMessage(), "cgroup") {
+		t.Errorf("result %v, want RESOURCE_EXHAUSTED from its cgroup", res)
+	}
+	if _, err := os.Stat(filepath.Join(root, "job-over")); !os.IsNotExist(err) {
+		t.Errorf("its cgroup is still there: %v", err)
+	}
+	if got := api.result("within"); got != nil {
+		t.Errorf("the job within its size stopped: %v", got)
+	}
+	stop()
+	if _, err := os.Stat(filepath.Join(root, "job-within")); !os.IsNotExist(err) {
+		t.Errorf("its cgroup is still there: %v", err)
 	}
 }
 

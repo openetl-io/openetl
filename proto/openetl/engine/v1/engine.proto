@@ -311,7 +311,8 @@ message StagedSink {
 message DiscardSink {}
 
 message Limits {
-  // Zero: no limit.
+  // What the engine's allocations may hold. Reaching it ends the engine with
+  // exit code 75. Zero: no limit.
   uint64 memory_bytes = 1;
 }
 
@@ -410,6 +411,7 @@ message KeyGroupRange {
 // Metrics are cumulative since the job started.
 message Metrics {
   repeated StreamMetrics streams = 1;
+  // What the engine's allocations hold now.
   uint64 memory_bytes = 2;
 }
 

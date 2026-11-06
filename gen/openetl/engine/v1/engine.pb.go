@@ -1672,7 +1672,8 @@ func (*DiscardSink) Descriptor() ([]byte, []int) {
 
 type Limits struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Zero: no limit.
+	// What the engine's allocations may hold. Reaching it ends the engine with
+	// exit code 75. Zero: no limit.
 	MemoryBytes   uint64 `protobuf:"varint,1,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2445,9 +2446,10 @@ func (x *KeyGroupRange) GetLast() uint32 {
 
 // Metrics are cumulative since the job started.
 type Metrics struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Streams       []*StreamMetrics       `protobuf:"bytes,1,rep,name=streams,proto3" json:"streams,omitempty"`
-	MemoryBytes   uint64                 `protobuf:"varint,2,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Streams []*StreamMetrics       `protobuf:"bytes,1,rep,name=streams,proto3" json:"streams,omitempty"`
+	// What the engine's allocations hold now.
+	MemoryBytes   uint64 `protobuf:"varint,2,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
