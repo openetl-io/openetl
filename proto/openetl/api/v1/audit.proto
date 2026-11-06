@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// AuditService reads the audit log: every call that changes something or
+// reads secrets' values, who made it, and how it ended.
+service AuditService {
+  // Newest first.
+  rpc ListAuditEntries(ListAuditEntriesRequest) returns (ListAuditEntriesResponse) {
+    option (google.api.http) = {get: "/v1/auditEntries"};
+  }
+}
+
+message AuditEntry {
+  // auditEntries/{id}
+  string name = 1;
+  // When the call started.
+  google.protobuf.Timestamp time = 2;
+  // principals/{p} or dataPlanes/{dp}, or openetld for its own changes.
+  string actor = 3;
+  // principals/{p}/keys/{k} or dataPlanes/{dp}/tokens/{t}.
+  string credential = 4;
+  // The RPC's procedure, such as /openetl.api.v1.PipelineService/SyncPipeline.
+  string method = 5;
+  // The resources the call named or touched, including the secrets whose
+  // values it read.
+  repeated string resources = 6;
+  // What the method records, such as each applied document's version.
+  // Never a secret's value.
+  google.protobuf.Struct details = 7;
+  // The caller's address.
+  string peer = 8;
+  string user_agent = 9;
+  // A Connect code, such as ok or permission_denied. Empty if the call
+  // hasn't ended, or the server stopped before it did.
+  string code = 10;
+  string error = 11;
+  google.protobuf.Timestamp end_time = 12;
+}
+
+message ListAuditEntriesRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  // Only this actor's entries.
+  string actor = 3;
+  // Only entries that name this resource.
+  string resource = 4;
+  // Only this method's entries: its procedure, its service and name
+  // (PipelineService/SyncPipeline), or its name (SyncPipeline).
+  string method = 5;
+  // Only calls that started at or after start_time, and before end_time.
+  google.protobuf.Timestamp start_time = 6;
+  google.protobuf.Timestamp end_time = 7;
+}
+
+message ListAuditEntriesResponse {
+  repeated AuditEntry entries = 1;
+  string next_page_token = 2;
+}

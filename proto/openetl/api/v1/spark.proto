@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// SparkClusterService reads and deletes Spark clusters. ApplyService creates
+// and changes them.
+service SparkClusterService {
+  rpc GetSparkCluster(GetSparkClusterRequest) returns (GetSparkClusterResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/sparkClusters/*}"};
+  }
+  rpc ListSparkClusters(ListSparkClustersRequest) returns (ListSparkClustersResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/sparkClusters"};
+  }
+  // Fails with FAILED_PRECONDITION while a pipeline's current version uses
+  // it. Older versions keep the settings they pin.
+  rpc DeleteSparkCluster(DeleteSparkClusterRequest) returns (DeleteSparkClusterResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/sparkClusters/*}"};
+  }
+}
+
+// SparkCluster is where a pipeline's Spark applications run. Runners submit
+// them; drivers run on the cluster.
+message SparkCluster {
+  // workspaces/{workspace}/sparkClusters/{cluster}
+  string name = 1;
+  SparkClusterSpec spec = 2;
+  // The settings' version, which new pipeline versions pin.
+  string version = 3;
+  string etag = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+  // The pipelines whose current versions use it.
+  repeated string used_by = 7;
+}
+
+message SparkClusterSpec {
+  oneof target {
+    SparkSubmit submit = 1;
+    SparkEmr emr = 2;
+  }
+}
+
+// SparkSubmit submits with spark-submit, in cluster deploy mode.
+message SparkSubmit {
+  // spark://host:port, yarn, or k8s://https://host:port.
+  string master = 1;
+  // Spark properties for every application. A value can be a secret
+  // reference, {"secret": NAME}.
+  google.protobuf.Struct conf = 2;
+  // A standalone master's web UI, through which the runner watches and kills
+  // drivers: spark-submit's --status and --kill need the master's REST
+  // server, which is off by default. Unset: port 8080 on the master's host.
+  string ui = 3;
+}
+
+// SparkEmr adds steps to a cluster of EMR on EC2.
+message SparkEmr {
+  // One of cluster_id and cluster_name. A name finds the one active cluster
+  // of that name at each submission, for clusters that are replaced.
+  string cluster_id = 1;
+  string cluster_name = 2;
+  string region = 3;
+}
+
+message GetSparkClusterRequest {
+  string name = 1;
+}
+
+message GetSparkClusterResponse {
+  SparkCluster spark_cluster = 1;
+}
+
+message ListSparkClustersRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListSparkClustersResponse {
+  repeated SparkCluster spark_clusters = 1;
+  string next_page_token = 2;
+}
+
+message DeleteSparkClusterRequest {
+  string name = 1;
+  // If set, it must match.
+  string etag = 2;
+}
+
+message DeleteSparkClusterResponse {}

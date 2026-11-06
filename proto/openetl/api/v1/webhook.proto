@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// WebhookService reads, deletes, disables and enables webhooks, sends them
+// test events and lists their deliveries. ApplyService creates and changes
+// them.
+service WebhookService {
+  rpc GetWebhook(GetWebhookRequest) returns (GetWebhookResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/webhooks/*}"};
+  }
+  rpc ListWebhooks(ListWebhooksRequest) returns (ListWebhooksResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/webhooks"};
+  }
+  // Deletes its deliveries too.
+  rpc DeleteWebhook(DeleteWebhookRequest) returns (DeleteWebhookResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/webhooks/*}"};
+  }
+  // Its pending deliveries fail, and events until it's enabled again aren't
+  // delivered to it.
+  rpc DisableWebhook(DisableWebhookRequest) returns (DisableWebhookResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/webhooks/*}:disable"
+      body: "*"
+    };
+  }
+  // Delivers events from now on, to a webhook disabled by a call or by
+  // failing.
+  rpc EnableWebhook(EnableWebhookRequest) returns (EnableWebhookResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/webhooks/*}:enable"
+      body: "*"
+    };
+  }
+  // Records a webhook.test event for this webhook alone, whatever its
+  // filters.
+  rpc TestWebhook(TestWebhookRequest) returns (TestWebhookResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/webhooks/*}:test"
+      body: "*"
+    };
+  }
+  // Newest first. Deliveries are kept for 7 days.
+  rpc ListWebhookDeliveries(ListWebhookDeliveriesRequest) returns (ListWebhookDeliveriesResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/webhooks/*}/deliveries"};
+  }
+}
+
+// WebhookSpec is a Webhook document's spec: where the workspace's platform
+// events go, and which.
+message WebhookSpec {
+  // An http or https URL.
+  string url = 1;
+  // Event types, or globs such as sync.* or *.
+  repeated string events = 2;
+  // Only these pipelines' events, by name; empty: every pipeline's, and the
+  // workspace's own.
+  repeated string pipelines = 3;
+  // The secrets that sign each delivery, by name in the workspace, each
+  // holding a Standard Webhooks key (whsec_ and base64). Each signs it, so a
+  // new key can be added before the old one is removed.
+  repeated string secrets = 4;
+}
+
+enum WebhookState {
+  WEBHOOK_STATE_UNSPECIFIED = 0;
+  WEBHOOK_STATE_ENABLED = 1;
+  WEBHOOK_STATE_DISABLED = 2;
+}
+
+message Webhook {
+  // workspaces/{workspace}/webhooks/{webhook}
+  string name = 1;
+  WebhookSpec spec = 2;
+  // A digest of the spec.
+  string version = 3;
+  string etag = 4;
+  WebhookState state = 5;
+  // Why it's disabled: a call, an endpoint that answered 410 Gone, or one
+  // that failed for too long.
+  string disabled_reason = 6;
+  // When its endpoint started failing; unset once a delivery succeeds.
+  google.protobuf.Timestamp failing_since = 7;
+  google.protobuf.Timestamp create_time = 8;
+  google.protobuf.Timestamp update_time = 9;
+}
+
+message GetWebhookRequest {
+  string name = 1;
+}
+
+message GetWebhookResponse {
+  Webhook webhook = 1;
+}
+
+message ListWebhooksRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListWebhooksResponse {
+  repeated Webhook webhooks = 1;
+  string next_page_token = 2;
+}
+
+message DeleteWebhookRequest {
+  string name = 1;
+  // If set, it must match.
+  string etag = 2;
+}
+
+message DeleteWebhookResponse {}
+
+message DisableWebhookRequest {
+  string name = 1;
+}
+
+message DisableWebhookResponse {
+  Webhook webhook = 1;
+}
+
+message EnableWebhookRequest {
+  string name = 1;
+}
+
+message EnableWebhookResponse {
+  Webhook webhook = 1;
+}
+
+message TestWebhookRequest {
+  string name = 1;
+}
+
+message TestWebhookResponse {
+  // The test event's delivery, pending.
+  string delivery = 1;
+}
+
+enum DeliveryState {
+  DELIVERY_STATE_UNSPECIFIED = 0;
+  // Waiting for its next attempt.
+  DELIVERY_STATE_PENDING = 1;
+  DELIVERY_STATE_SUCCEEDED = 2;
+  // Out of attempts, refused by the endpoint, or its webhook was disabled.
+  DELIVERY_STATE_FAILED = 3;
+}
+
+// WebhookDelivery is one event's delivery to one webhook, and how its
+// latest attempt went.
+message WebhookDelivery {
+  // workspaces/{workspace}/webhooks/{webhook}/deliveries/{delivery}
+  string name = 1;
+  // The event's ID, sent as webhook-id, and its type.
+  string event_id = 2;
+  string event_type = 3;
+  DeliveryState state = 4;
+  int32 attempts = 5;
+  // When it's tried next, while pending.
+  google.protobuf.Timestamp next_attempt_time = 6;
+  google.protobuf.Timestamp last_attempt_time = 7;
+  // The latest attempt's HTTP status; zero if it got no response.
+  int32 response_status = 8;
+  // The start of the latest response's body.
+  string response_body = 9;
+  // Why the latest attempt failed.
+  string error = 10;
+  google.protobuf.Duration latency = 11;
+  google.protobuf.Timestamp create_time = 12;
+}
+
+message ListWebhookDeliveriesRequest {
+  // workspaces/{workspace}/webhooks/{webhook}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListWebhookDeliveriesResponse {
+  repeated WebhookDelivery deliveries = 1;
+  string next_page_token = 2;
+}

@@ -1,0 +1,22 @@
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: module=github.com/openetl-io/openetl
+  - local: protoc-gen-connect-go
+    out: .
+    opt: module=github.com/openetl-io/openetl
+  # The REST API, from the google.api.http rules; the server serves it.
+  - local: protoc-gen-openapi
+    out: internal/api
+    strategy: all
+    opt:
+      - title=openetl API
+      - version=v1
+      - enum_type=string
+      - default_response=true
+inputs:
+  - directory: proto
+    paths:
+      - proto/openetl/api
+      - proto/openetl/dataplane

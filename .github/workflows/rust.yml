@@ -1,0 +1,49 @@
+name: rust
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "crates/**"
+      - "proto/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "clippy.toml"
+      # The runner/engine contract tests.
+      - "internal/engineclient/**"
+      - ".github/workflows/rust.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ github.job }}-
+      - name: Runner/engine contract tests
+        run: |
+          cargo build -p openetl-engine
+          OPENETL_ENGINE="$PWD/target/debug/openetl-engine" go test -race -count=1 ./internal/engineclient/...

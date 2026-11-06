@@ -1,0 +1,436 @@
+syntax = "proto3";
+
+package openetl.engine.v1;
+
+import "openetl/connector/v1/destination.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1";
+
+// EngineService is the engine's control channel, served on a Unix socket. One
+// engine process runs one job. The runner calls StartJob, then connects the
+// data edges (frames.proto).
+service EngineService {
+  rpc StartJob(StartJobRequest) returns (StartJobResponse);
+  // For engine sinks that apply in the engine. The runner commits and
+  // recovers a Parquet sink from its staged descriptor.
+  rpc Recover(RecoverRequest) returns (RecoverResponse);
+  // A failed job ends the stream with an openetl.connector.v1.Error in the
+  // status details.
+  rpc Events(EventsRequest) returns (stream EventsResponse);
+  // The epoch's checkpoint is recorded, so an engine sink that applies in the
+  // engine makes it visible. Idempotent.
+  rpc Commit(CommitRequest) returns (CommitResponse);
+  // Ends the job without draining, and the process exits.
+  rpc Stop(StopRequest) returns (StopResponse);
+}
+
+message StartJobRequest {
+  string pipeline = 1;
+  // The attempt.
+  string job = 2;
+  uint64 generation = 3;
+  // One past the restored epoch.
+  uint64 first_epoch = 4;
+  repeated StreamPlan streams = 5;
+  repeated Edge edges = 6;
+  SinkPlan sink = 7;
+  Limits limits = 8;
+  // Operator state in the restored checkpoint, as EpochReady reported it.
+  repeated StateSnapshot restored_snapshots = 9;
+  Naming naming = 10;
+  // Where records the engine can't take are kept: file:// and an absolute
+  // path, or s3://bucket/prefix with region and endpoint as query
+  // parameters. Empty: such a record fails the job.
+  string quarantine_url = 11;
+  // How changes to a stream's established schema are taken. A stream's
+  // schema is established once restored, or once it crosses a barrier.
+  SchemaPolicy schema_policy = 12;
+  // Infinite dates and timestamps are quarantined instead of clamped to the
+  // logical type's limits. In typed batches, the largest and smallest values
+  // of Date32 and of timestamps in any unit are infinite.
+  bool quarantine_infinity = 13;
+  // Batches reach the sink as they came: not coerced, renamed or given
+  // metadata columns. Rows fail the job. For measuring the boundary.
+  bool passthrough = 14;
+  // Where held values are kept (ADR-0025), as quarantine_url: Parquet files
+  // at {g}/{N}/{stream}/part-{k}.parquet below it, with the stream's name
+  // percent-encoded. Empty: nothing is held.
+  string held_url = 15;
+  // The attempt's lanes (ADR-0027): parallel copies of its path, each with an
+  // inbound edge. Zero: one.
+  uint32 lanes = 16;
+  // Its writer lanes, at most lanes: a writer of the destination each, or a
+  // part of an engine sink's files. Lane i goes to writer lane i mod
+  // writer_lanes where it runs straight. Zero: one.
+  uint32 writer_lanes = 17;
+  // The pipeline's key groups, a power of two. Writer lane w owns the w-th
+  // of writer_lanes contiguous ranges of them. Zero: 256.
+  uint32 key_groups = 18;
+}
+
+// Routing is how a stream's rows reach writer lanes.
+enum Routing {
+  // Straight.
+  ROUTING_UNSPECIFIED = 0;
+  // From each lane to its writer lane.
+  ROUTING_STRAIGHT = 1;
+  // To the writer lane owning the key group of each row's primary key
+  // (openetl.kg.v1), so a key's rows meet: a keyed stream whose splits don't
+  // partition it by key.
+  ROUTING_KEY_GROUP = 2;
+}
+
+enum SchemaPolicy {
+  // allow_all.
+  SCHEMA_POLICY_UNSPECIFIED = 0;
+  // Add columns and widen types. A type that isn't a widening goes to a new
+  // column, col__v2.
+  SCHEMA_POLICY_ALLOW_ALL = 1;
+  // As allow_all, but a type that isn't a widening fails the job with
+  // SCHEMA_DRIFT.
+  SCHEMA_POLICY_ALLOW_COLUMNS = 2;
+  // Any change fails the job with SCHEMA_DRIFT.
+  SCHEMA_POLICY_BLOCK = 3;
+  // New columns are dropped in flight. Values are coerced to the
+  // established types, and records whose values don't fit are quarantined.
+  SCHEMA_POLICY_IGNORE_NEW = 4;
+}
+
+// Naming gives tables and columns their destination names. Names already in
+// a restored schema are kept.
+message Naming {
+  // Keep source names as they are, for destinations that quote identifiers.
+  bool keep_source_names = 1;
+  // The destination's identifier limit in bytes. Zero: none.
+  uint32 max_length = 2;
+}
+
+message StreamPlan {
+  string name = 1;
+  Lane lane = 2;
+  repeated string primary_key = 3;
+  // An Arrow IPC stream holding only the schema, if known. Empty: inferred
+  // from the rows.
+  bytes arrow_schema = 4;
+  // The stream's schema in the restored checkpoint, as EpochReady reported
+  // it. Inference continues from it.
+  bytes restored_schema = 5;
+  // The column whose value orders a record's versions, and becomes its
+  // _openetl_seq. Empty: read_start_micros is.
+  string cursor_field = 6;
+  // When the stream's current read started, in microseconds since the Unix
+  // epoch.
+  int64 read_start_micros = 7;
+  // Timestamps keep nanoseconds instead of being truncated to microseconds,
+  // declared ones included. Outside 1677-09-21 to 2262-04-11 they are
+  // quarantined, and infinities clamp to those limits.
+  bool nanosecond_timestamps = 8;
+  // Adds _openetl_deleted, true where _openetl_op is delete: for merge
+  // writes that keep deleted rows.
+  bool soft_deletes = 9;
+  // A changelog stream (CDC): its typed batches carry op and seq control
+  // columns (openetl.connector.v1.RecordBatch), and it gets
+  // _openetl_unchanged.
+  bool changelog = 10;
+  // Unset: the stream holds nothing.
+  HoldPlan holds = 11;
+  Routing routing = 12;
+}
+
+// HoldPlan is how a keyed stream holds back a column, or a row's cell, and
+// delivers the rest of the row (ADR-0025). A column is held when the schema
+// policy would stop on its change (allow_columns, block), when the
+// destination's limits say it can't take the change, or when the
+// destination refused it. Columns are named by their destination names,
+// except where the field says source names.
+message HoldPlan {
+  // A value that doesn't fit its type holds its cell, instead of
+  // quarantining its row.
+  bool cells = 1;
+  // What a held cell shows, and per column by source name.
+  Held held = 2;
+  map<string, Held> columns = 3;
+  // Columns held together, by source name.
+  repeated ColumnGroup groups = 4;
+  // Column holds in force: the restored record's, and the destination's
+  // refusals.
+  repeated ColumnHold holding = 5;
+  // Columns whose holds were discarded, left out from now on.
+  repeated string discarded = 6;
+  // What the destination's table can't take, from its last ApplySchema.
+  openetl.connector.v1.TableLimits limits = 7;
+  // Held values to patch in; unset for none.
+  Replay replay = 8;
+}
+
+message Held {
+  HeldMode mode = 1;
+  // For value, and for last's rows the target doesn't have: a JSON value of
+  // the column's delivered type. Empty: null.
+  string value = 2;
+}
+
+enum HeldMode {
+  // null.
+  HELD_MODE_UNSPECIFIED = 0;
+  HELD_MODE_NULL = 1;
+  HELD_MODE_VALUE = 2;
+  // The target keeps its value. Merge only.
+  HELD_MODE_LAST = 3;
+}
+
+message ColumnGroup {
+  repeated string columns = 1;
+}
+
+message ColumnHold {
+  string column = 1;
+  // An Arrow IPC stream holding only a schema with the column's field as the
+  // destination has it. Empty: the destination doesn't have it.
+  bytes delivered = 2;
+  string reason = 3;
+  HoldCause cause = 4;
+}
+
+// HoldCause is why a column is held whole.
+message HoldCause {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // The schema policy doesn't take the change.
+    KIND_POLICY = 1;
+    // The destination refused the change.
+    KIND_REFUSED = 2;
+    // The destination can't change the column's type.
+    KIND_FIXED = 3;
+    // The destination takes no more columns.
+    KIND_COLUMN_LIMIT = 4;
+    // Held with another column.
+    KIND_GROUP = 5;
+  }
+  Kind kind = 1;
+  // KIND_POLICY's schema policy.
+  string policy = 2;
+  // KIND_GROUP's column, by its destination name.
+  string with = 3;
+  // Set by the engine when it reports a hold: the column's source name, and
+  // its logical type as the destination has it and in the stream now. from
+  // is empty for a column the destination doesn't have.
+  string source = 4;
+  string from = 5;
+  string to = 6;
+}
+
+// Replay patches held values in: a chunk after each of the stream's
+// barriers, so each lands in the next epoch.
+message Replay {
+  // The held files to read, below held_url, in order.
+  repeated string files = 1;
+  // Where an earlier attempt's replay got.
+  ReplayProgress from = 2;
+  // The columns whose held values are delivered: cells that fit their
+  // column's type now, and column holds' values at its type now. Others'
+  // values are skipped.
+  repeated string columns = 3;
+  // Zero: a default.
+  uint64 chunk_rows = 4;
+  // Released column holds, of those columns, whose values go to a new
+  // version of the column, col__v2, as allow_all's do: from the hold's
+  // start, and from now on. The column keeps the type the destination has.
+  // Once the stream's schema has that version, it is the one.
+  repeated ColumnHold versioned = 5;
+}
+
+message ReplayProgress {
+  // The next row to read: its file's index in Replay.files, and its row.
+  uint32 file = 1;
+  uint64 row = 2;
+  // Every file is read.
+  bool done = 3;
+  // Cells read that still don't fit, which stay held; cumulative.
+  uint64 still_held = 4;
+}
+
+enum Lane {
+  LANE_UNSPECIFIED = 0;
+  LANE_ROWS = 1;
+  LANE_ARROW = 2;
+}
+
+message Edge {
+  string id = 1;
+  EdgeDirection direction = 2;
+  // A frame's stream index points into this list.
+  repeated string streams = 3;
+  // Inbound, its lane; outbound, its writer lane. Every lane passes every
+  // stream's barriers.
+  uint32 lane = 4;
+}
+
+enum EdgeDirection {
+  EDGE_DIRECTION_UNSPECIFIED = 0;
+  EDGE_DIRECTION_TO_ENGINE = 1;
+  EDGE_DIRECTION_FROM_ENGINE = 2;
+}
+
+message SinkPlan {
+  oneof sink {
+    RunnerSink runner = 1;
+    ParquetSink parquet = 2;
+    DiscardSink discard = 3;
+    StagedSink staged = 4;
+  }
+}
+
+// RunnerSink is a Go sink in the runner, fed by a FROM_ENGINE edge.
+message RunnerSink {
+  string edge = 1;
+}
+
+// ParquetSink stages each epoch as Parquet files under url, and reports them
+// in EpochReady.staged.
+message ParquetSink {
+  // file:// and an absolute path.
+  string url = 1;
+}
+
+// StagedSink stages each epoch as Parquet files below url, for a destination
+// connector that loads them (DELIVERY_STAGED), at
+// {g}/{N}/{stream}/part-{k}.parquet with the stream's name percent-encoded,
+// or {g}/{N}/{dir}/{stream}/part-{k}.parquet with a dir. A writer lane's
+// n-th file of a stream in an epoch is k = n * writer_lanes + lane, so one
+// lane's are 0, 1, 2 and so on. EpochReady.files lists them.
+message StagedSink {
+  // As quarantine_url.
+  string url = 1;
+  // One path segment; empty for none.
+  string dir = 2;
+}
+
+// DiscardSink drops every batch and reports each epoch ready with nothing
+// staged. For benchmarks and tests.
+message DiscardSink {}
+
+message Limits {
+  // Zero: no limit.
+  uint64 memory_bytes = 1;
+}
+
+message StartJobResponse {}
+
+message RecoverRequest {
+  openetl.connector.v1.Epoch epoch = 1;
+  // As openetl.connector.v1.WriteRecover's.
+  repeated bytes staged = 2;
+}
+
+message RecoverResponse {
+  openetl.connector.v1.Recovery recovery = 1;
+}
+
+message EventsRequest {}
+
+message EventsResponse {
+  oneof event {
+    EpochReady epoch_ready = 1;
+    Metrics metrics = 2;
+  }
+}
+
+// EpochReady says the engine's part of the epoch is durable.
+message EpochReady {
+  openetl.connector.v1.Epoch epoch = 1;
+  // An engine sink's committables, one per writer lane; empty with a runner
+  // sink.
+  repeated bytes staged = 2;
+  repeated StateSnapshot snapshots = 3;
+  // Each stream's schema at its barrier, as an Arrow IPC stream holding only
+  // the schema. Streams without one yet are missing.
+  map<string, bytes> schemas = 4;
+  // Records quarantined in the epoch, one file per stream that had any.
+  repeated QuarantineFile quarantine = 5;
+  // A staged sink's files, by stream and writer lane, with paths below its
+  // URL. Streams without rows in the epoch are missing.
+  repeated StagedStream files = 6;
+  // By stream, for streams with a HoldPlan that hold anything or replay.
+  map<string, StreamHolds> holds = 7;
+  // The schema the destination gets, for streams where it isn't the
+  // stream's because columns are held: those stay at the type the
+  // destination took, or are left out if it took none.
+  map<string, bytes> delivered = 8;
+}
+
+// StreamHolds is a stream's holds at its barrier.
+message StreamHolds {
+  // Column holds in force.
+  repeated ColumnHold holding = 1;
+  // Cells held in the epoch, by column.
+  map<string, CellHolds> cells = 2;
+  // The held values written in the epoch, with paths below held_url.
+  repeated openetl.connector.v1.StagedFile files = 3;
+  // How far the replay got by the barrier; unset without one.
+  ReplayProgress replayed = 4;
+}
+
+message CellHolds {
+  uint64 cells = 1;
+  // The first cell's.
+  string reason = 2;
+}
+
+message StagedStream {
+  string stream = 1;
+  repeated openetl.connector.v1.StagedFile files = 2;
+  // The writer lane that staged them.
+  uint32 lane = 3;
+}
+
+// QuarantineFile holds JSON lines, one per record: the stream, the reason
+// and the record as received.
+message QuarantineFile {
+  string stream = 1;
+  string url = 2;
+  uint64 rows = 3;
+}
+
+// StateSnapshot is an operator's state for a range of key groups, which
+// names it, never the lane that wrote it.
+message StateSnapshot {
+  string operator = 1;
+  string url = 2;
+  // Unset: all of them.
+  KeyGroupRange key_groups = 3;
+}
+
+// KeyGroupRange is key groups first to last, inclusive.
+message KeyGroupRange {
+  uint32 first = 1;
+  uint32 last = 2;
+}
+
+// Metrics are cumulative since the job started.
+message Metrics {
+  repeated StreamMetrics streams = 1;
+  uint64 memory_bytes = 2;
+}
+
+message StreamMetrics {
+  string stream = 1;
+  uint64 rows_in = 2;
+  uint64 bytes_in = 3;
+  uint64 rows_out = 4;
+  uint64 bytes_out = 5;
+  uint64 rows_quarantined = 6;
+  uint64 cells_held = 7;
+}
+
+message CommitRequest {
+  openetl.connector.v1.Epoch epoch = 1;
+  // Every writer lane's committable, by lane.
+  repeated bytes staged = 2;
+}
+
+message CommitResponse {}
+
+message StopRequest {}
+
+message StopResponse {}

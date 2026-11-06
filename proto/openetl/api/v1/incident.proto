@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// IncidentService reads incidents and resolves them by hand. The control
+// plane opens them, and resolves most once their pipeline makes progress
+// again.
+service IncidentService {
+  rpc GetIncident(GetIncidentRequest) returns (GetIncidentResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*/incidents/*}"};
+  }
+  // Newest first. The parent workspaces/{workspace}/pipelines/- lists every
+  // pipeline's.
+  rpc ListIncidents(ListIncidentsRequest) returns (ListIncidentsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/incidents"};
+  }
+  // Resolves an open incident, such as one fixed in a way the control plane
+  // can't see. If it happens again, a new one opens.
+  rpc ResolveIncident(ResolveIncidentRequest) returns (ResolveIncidentResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*/incidents/*}:resolve"
+      body: "*"
+    };
+  }
+}
+
+// IncidentClass is what kind of incident it is, which picks its playbook.
+enum IncidentClass {
+  INCIDENT_CLASS_UNSPECIFIED = 0;
+  // A sync or run failed with an error no other class covers.
+  INCIDENT_CLASS_SYNC_FAILED = 1;
+  // A source or destination refused its credentials (AUTH_INVALID), or they
+  // expired and couldn't be refreshed (AUTH_EXPIRED).
+  INCIDENT_CLASS_AUTH = 2;
+  // A stream's schema changed in a way its schema policy doesn't take
+  // (SCHEMA_DRIFT).
+  INCIDENT_CLASS_SCHEMA_BLOCKED = 3;
+  // A sync ran out of retries while the source kept limiting its rate.
+  INCIDENT_CLASS_RATE_LIMITED = 4;
+  // The source no longer has the position the read resumes from: a lost
+  // replication slot, or Kafka offsets past retention (POSITION_LOST).
+  INCIDENT_CLASS_POSITION_LOST = 5;
+  // A continuous pipeline's job keeps failing without committing.
+  INCIDENT_CLASS_CRASH_LOOP = 6;
+  // A continuous pipeline's read is further behind its source than the
+  // server allows.
+  INCIDENT_CLASS_LAGGING = 7;
+  // A read has used half or more of what its source keeps for it.
+  INCIDENT_CLASS_RETENTION_AT_RISK = 8;
+  // A stream is quarantining a large share of its rows.
+  INCIDENT_CLASS_QUARANTINE = 9;
+  // A stream holds a column or cells back (ADR-0025) until they're released
+  // or discarded.
+  INCIDENT_CLASS_HELD = 10;
+}
+
+enum IncidentState {
+  INCIDENT_STATE_UNSPECIFIED = 0;
+  INCIDENT_STATE_OPEN = 1;
+  INCIDENT_STATE_RESOLVED = 2;
+}
+
+enum IncidentSeverity {
+  INCIDENT_SEVERITY_UNSPECIFIED = 0;
+  // Data still flows, or will soon stop if nothing changes.
+  INCIDENT_SEVERITY_WARNING = 1;
+  // Data has stopped flowing, or will be lost.
+  INCIDENT_SEVERITY_CRITICAL = 2;
+}
+
+message Incident {
+  // workspaces/{workspace}/pipelines/{pipeline}/incidents/{incident}
+  string name = 1;
+  IncidentClass class = 2;
+  // The taxonomy code of the error it came from, such as AUTH_INVALID.
+  string code = 3;
+  // Empty: the whole pipeline.
+  string stream = 4;
+  IncidentState state = 5;
+  IncidentSeverity severity = 6;
+  string summary = 7;
+  // The latest error, or what was measured.
+  string message = 8;
+  string next_steps = 9;
+  // A digest of the class, the code, the error without its specifics, and
+  // the connector versions; the same on every pipeline the same fault hits.
+  string fingerprint = 10;
+  // The syncs or runs it happened in, or the times a condition was seen
+  // again.
+  int32 occurrences = 11;
+  repeated HealAction actions = 12;
+  // What it was seen with last, such as lag_seconds.
+  map<string, string> details = 13;
+  // The sync or run it was seen in last.
+  string sync = 14;
+  google.protobuf.Timestamp first_seen_time = 15;
+  google.protobuf.Timestamp last_seen_time = 16;
+  google.protobuf.Timestamp resolve_time = 17;
+  // How it was resolved: by progress, or by whom.
+  string resolution = 18;
+}
+
+enum HealActionKind {
+  HEAL_ACTION_KIND_UNSPECIFIED = 0;
+  // Pause the pipeline, so its schedule stops starting syncs that would
+  // fail the same way.
+  HEAL_ACTION_KIND_PAUSE = 1;
+}
+
+enum HealActionState {
+  HEAL_ACTION_STATE_UNSPECIFIED = 0;
+  HEAL_ACTION_STATE_APPLIED = 1;
+  // The pipeline's heal mode doesn't apply it.
+  HEAL_ACTION_STATE_PROPOSED = 2;
+}
+
+// HealAction is what a playbook did about an incident, or proposes.
+message HealAction {
+  HealActionKind kind = 1;
+  HealActionState state = 2;
+  string description = 3;
+  google.protobuf.Timestamp time = 4;
+}
+
+message GetIncidentRequest {
+  string name = 1;
+}
+
+message GetIncidentResponse {
+  Incident incident = 1;
+}
+
+message ListIncidentsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}, or
+  // workspaces/{workspace}/pipelines/- for the workspace's.
+  string parent = 1;
+  // Unset: every state.
+  IncidentState state = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListIncidentsResponse {
+  repeated Incident incidents = 1;
+  string next_page_token = 2;
+}
+
+message ResolveIncidentRequest {
+  string name = 1;
+  // Recorded in the resolution.
+  string comment = 2;
+}
+
+message ResolveIncidentResponse {
+  Incident incident = 1;
+}

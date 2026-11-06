@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+openetl-formats = { path = "crates/formats" }
+openetl-normalize = { path = "crates/normalize" }
+openetl-proto = { path = "crates/proto" }
+arrow-array = "60.1.0"
+arrow-buffer = "60.1.0"
+arrow-cast = { version = "60.1.0", default-features = false }
+arrow-ipc = "60.1.0"
+arrow-schema = "60.1.0"
+arrow-select = "60.1.0"
+base64 = "0.22.1"
+bytes = "1.12.1"
+opentelemetry = { version = "0.33.0", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+object_store = { version = "0.14.2", default-features = false, features = ["aws", "azure", "fs", "gcp"] }
+parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap", "object_store"] }
+prost = "0.14.4"
+prost-types = "0.14.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "arbitrary_precision"] }
+socket2 = "0.6.5"
+tempfile = "3.27.0"
+thiserror = "2"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time"] }
+tokio-stream = { version = "0.1.19", features = ["net"] }
+tokio-util = "0.7.20"
+tonic = "0.14.9"
+tracing = "0.1.44"
+tracing-opentelemetry = { version = "0.34.0", default-features = false }
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+url = "2.5.8"
+twox-hash = { version = "2.1.5", default-features = false, features = ["std", "xxhash3_64", "xxhash3_128"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

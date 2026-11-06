@@ -1,0 +1,8 @@
+name: faker
+version: "1.0"
+config-version: 2
+# The runner writes a profile by this name for the pipeline's destination.
+profile: faker
+models:
+  faker:
+    +materialized: table

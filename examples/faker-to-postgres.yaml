@@ -1,0 +1,36 @@
+# Generated rows into the compose Postgres, every hour. With `make deps-up`
+# and `make dev` running, store the database's DSN as a secret, then apply:
+#
+#   echo postgres://openetl:openetl@localhost:5432/openetl |
+#     go run ./cmd/openetl secret set local-postgres-dsn
+#   go run ./cmd/openetl apply -f examples/faker-to-postgres.yaml
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: faker
+spec:
+  connector: faker
+  config:
+    seed: 42
+    count: 1000
+    batchSize: 100
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: local-postgres
+spec:
+  connector: postgres
+  config:
+    dsn: { secret: local-postgres-dsn }
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: faker-to-postgres
+spec:
+  schedule: { every: 1h }
+  source: { ref: faker }
+  destination:
+    ref: local-postgres
+    namespace: faker

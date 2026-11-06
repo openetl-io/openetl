@@ -1,0 +1,6 @@
+name: example/acme
+repository: https://git.example.com/acme
+roles:
+  source:
+    manifest: acme.yaml
+    requires: { platform: 0.1.0 }

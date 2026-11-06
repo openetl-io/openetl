@@ -1,0 +1,102 @@
+version: "2"
+
+run:
+  build-tags: [integration]
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - depguard
+    - errorlint
+    - forbidigo
+    - gosec
+    - misspell
+    - noctx
+    - nolintlint
+    - revive
+  settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^http\.(DefaultClient|DefaultTransport|Transport|Get|Head|Post|PostForm)$
+          pkg: ^net/http$
+          msg: outbound HTTP goes through internal/netguard, the SSRF guard
+    # Package boundary rules. Each one is explained in the repo layout docs.
+    depguard:
+      rules:
+        connectors-use-only-the-sdk:
+          files: ["**/connectors/**"]
+          deny:
+            - pkg: github.com/openetl-io/openetl/internal
+              desc: connectors may import only sdk/go and third-party packages
+            - pkg: github.com/openetl-io/openetl/gen
+              desc: connectors may import only sdk/go and third-party packages
+        sdk-is-standalone:
+          files: ["**/sdk/go/**"]
+          deny:
+            - pkg: github.com/openetl-io/openetl/internal
+              desc: the SDK must not depend on the platform
+            - pkg: github.com/openetl-io/openetl/gen
+              desc: the SDK must not depend on the platform
+        data-path-has-no-control-plane:
+          files: ["**/internal/runner/**", "**/internal/connectorhost/**"]
+          deny:
+            - pkg: github.com/openetl-io/openetl/internal/orchestration/workflows
+              desc: the data path must not depend on workflow code
+            - pkg: github.com/openetl-io/openetl/internal/api
+              desc: the data path must not depend on the API server
+        runners-reach-only-the-api:
+          files: ["**/internal/runner/**", "**/internal/orchestration/contract/**", "**/internal/orchestration/dispatch/**"]
+          deny:
+            - pkg: go.temporal.io
+              desc: runners reach only the API (ADR-0028); workflows' backend stays behind the API and the orchestrator
+        workflows-are-deterministic:
+          files: ["**/internal/orchestration/workflows/**"]
+          deny:
+            - pkg: net/http
+              desc: workflow code must not do I/O; use an activity
+            - pkg: database/sql
+              desc: workflow code must not do I/O; use an activity
+            - pkg: os
+              desc: workflow code must not do I/O; use an activity
+        only-engineclient-talks-to-the-engine:
+          files: ["$all", "!**/internal/engineclient/**"]
+          deny:
+            - pkg: github.com/openetl-io/openetl/gen/openetl/engine
+              desc: only internal/engineclient may use the engine protocol
+        only-llm-imports-llm-sdks:
+          files: ["$all", "!**/internal/llm/**"]
+          deny:
+            - pkg: github.com/anthropics/anthropic-sdk-go
+              desc: LLM access goes through internal/llm
+        only-gitsync-imports-go-git:
+          files: ["$all", "!**/internal/gitsync/**"]
+          deny:
+            - pkg: github.com/go-git/go-git
+              desc: git access goes through internal/gitsync
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, noctx, forbidigo]
+      - path: internal/netguard/
+        linters: [forbidigo]
+      # The CLI talks to openetld's API, whose address the user gives.
+      - path: cmd/openetl/
+        linters: [forbidigo]
+      # Staged files come from URLs the runner signed for one object each,
+      # which connectors fetch themselves on every egress tier (ADR-0021).
+      - path: sdk/go/staging/
+        linters: [forbidigo]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/openetl-io/openetl

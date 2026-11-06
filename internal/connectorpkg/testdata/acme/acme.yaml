@@ -1,0 +1,16 @@
+apiVersion: openetl.io/v1alpha1
+kind: DeclarativeSource
+metadata: { name: acme, version: 0.0.0 }
+spec:
+  config:
+    type: object
+    required: [base_url, api_key]
+    properties:
+      base_url: { type: string }
+      api_key: { type: string, x-secret: true }
+  http:
+    base_url: "{config.base_url}"
+    auth: { type: bearer, token: { secret: api_key } }
+  streams:
+    - name: contacts
+      request: { path: /contacts }

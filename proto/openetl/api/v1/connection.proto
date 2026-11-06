@@ -1,0 +1,263 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// SourceService reads and deletes sources. ApplyService creates and changes
+// them.
+service SourceService {
+  rpc GetSource(GetSourceRequest) returns (GetSourceResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/sources/*}"};
+  }
+  rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/sources"};
+  }
+  rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/sources/*}"};
+  }
+  // Runs the source's Check on a runner of the data plane, and waits for it.
+  rpc CheckSource(CheckSourceRequest) returns (CheckSourceResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/sources/*}:check"
+      body: "*"
+    };
+  }
+  // Runs the source's Discover on a runner of the data plane, and waits for
+  // the catalog.
+  rpc DiscoverSource(DiscoverSourceRequest) returns (DiscoverSourceResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/sources/*}:discover"
+      body: "*"
+    };
+  }
+}
+
+// DestinationService reads and deletes destinations. ApplyService creates and
+// changes them.
+service DestinationService {
+  rpc GetDestination(GetDestinationRequest) returns (GetDestinationResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/destinations/*}"};
+  }
+  rpc ListDestinations(ListDestinationsRequest) returns (ListDestinationsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/destinations"};
+  }
+  rpc DeleteDestination(DeleteDestinationRequest) returns (DeleteDestinationResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/destinations/*}"};
+  }
+  // Runs the destination's Check on a runner of the data plane, and waits
+  // for it.
+  rpc CheckDestination(CheckDestinationRequest) returns (CheckDestinationResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/destinations/*}:check"
+      body: "*"
+    };
+  }
+}
+
+message Source {
+  // workspaces/{workspace}/sources/{source}
+  string name = 1;
+  ConnectorConfig spec = 2;
+  string version = 3;
+  string etag = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+  // The applied connector version it runs. Unset for built-in connectors
+  // and ones from a runner's connectors directory.
+  ConnectorVersion connector = 7;
+}
+
+message Destination {
+  // workspaces/{workspace}/destinations/{destination}
+  string name = 1;
+  ConnectorConfig spec = 2;
+  string version = 3;
+  string etag = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+  // The applied connector version it runs. Unset for built-in connectors
+  // and ones from a runner's connectors directory.
+  ConnectorVersion connector = 7;
+}
+
+// ConnectorVersion is an applied connector version, with what its metadata
+// says about it.
+message ConnectorVersion {
+  // connectors/{owner}/{name}/versions/{version}
+  string name = 1;
+  string version = 2;
+  // sha256:{hex}
+  string digest = 3;
+  string author = 4;
+  // An https URL of an image.
+  string logo = 5;
+  // The git tag the version was released from.
+  string release_tag = 6;
+  // An https URL, such as the release's page.
+  string release_url = 7;
+  string description = 8;
+  // An SPDX expression.
+  string license = 9;
+  // An https URL of the package's source repository.
+  string repository = 10;
+  // An https URL.
+  string docs = 11;
+  repeated string tags = 12;
+}
+
+// ConnectorConfig is the spec of a Source or Destination document.
+message ConnectorConfig {
+  // "postgres", "postgres@1.2.0" or "postgres@sha256:…".
+  string connector = 1;
+  // Secret fields hold secret references, never values.
+  google.protobuf.Struct config = 2;
+}
+
+message GetSourceRequest {
+  string name = 1;
+}
+
+message GetSourceResponse {
+  Source source = 1;
+}
+
+message ListSourcesRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListSourcesResponse {
+  repeated Source sources = 1;
+  string next_page_token = 2;
+}
+
+message DeleteSourceRequest {
+  string name = 1;
+  // If set, it must match.
+  string etag = 2;
+}
+
+message DeleteSourceResponse {}
+
+message GetDestinationRequest {
+  string name = 1;
+}
+
+message GetDestinationResponse {
+  Destination destination = 1;
+}
+
+message ListDestinationsRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListDestinationsResponse {
+  repeated Destination destinations = 1;
+  string next_page_token = 2;
+}
+
+message DeleteDestinationRequest {
+  string name = 1;
+  // If set, it must match.
+  string etag = 2;
+}
+
+message DeleteDestinationResponse {}
+
+message CheckSourceRequest {
+  string name = 1;
+  // The data plane whose runner checks it. Unset: the default.
+  string data_plane = 2;
+}
+
+message CheckSourceResponse {
+  CheckResult result = 1;
+}
+
+message CheckDestinationRequest {
+  string name = 1;
+  // The data plane whose runner checks it. Unset: the default.
+  string data_plane = 2;
+}
+
+message CheckDestinationResponse {
+  CheckResult result = 1;
+}
+
+// CheckResult is a connector's answer to Check. A connector without a check
+// of its own only validates its config.
+message CheckResult {
+  bool ok = 1;
+  // When not ok: a code of the error taxonomy, such as AUTH_INVALID.
+  string code = 2;
+  string message = 3;
+  // The source or destination version checked.
+  string version = 4;
+}
+
+message DiscoverSourceRequest {
+  string name = 1;
+  // The data plane whose runner discovers it. Unset: the default.
+  string data_plane = 2;
+}
+
+message DiscoverSourceResponse {
+  Catalog catalog = 1;
+}
+
+// Catalog is what a source's Discover found.
+message Catalog {
+  repeated CatalogStream streams = 1;
+  // The source version discovered.
+  string version = 2;
+  google.protobuf.Timestamp discover_time = 3;
+}
+
+message CatalogStream {
+  string name = 1;
+  repeated string primary_key = 2;
+  // The field whose value orders a record's versions; empty for none.
+  string cursor_field = 3;
+  Replay replay = 4;
+  // The columns the source declares; empty when the engine infers them from
+  // the records.
+  repeated CatalogColumn columns = 5;
+  // How the source can read the stream, the way it reads it first; empty if
+  // it doesn't say.
+  repeated SyncMode sync_modes = 6;
+}
+
+enum SyncMode {
+  SYNC_MODE_UNSPECIFIED = 0;
+  SYNC_MODE_FULL_REFRESH = 1;
+  SYNC_MODE_INCREMENTAL = 2;
+  SYNC_MODE_CDC = 3;
+  SYNC_MODE_STREAM = 4;
+}
+
+// Replay is how a source replays a stream from a resume point.
+enum Replay {
+  REPLAY_UNSPECIFIED = 0;
+  // The same records, in the same order.
+  REPLAY_EXACT = 1;
+  // Possibly records already read, such as a cursor floor's ties.
+  REPLAY_SUPERSET = 2;
+}
+
+message CatalogColumn {
+  string name = 1;
+  // The Arrow type, such as int64, decimal(10, 2) or
+  // timestamp[us, tz=UTC].
+  string type = 2;
+  bool nullable = 3;
+}

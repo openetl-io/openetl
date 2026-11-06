@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package openetl.connector.v1;
+
+import "openetl/connector/v1/destination.proto";
+import "openetl/connector/v1/errors.proto";
+import "openetl/connector/v1/source.proto";
+
+option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
+
+// ConnectorService is served by every connector, next to SourceService or
+// DestinationService. Configs are JSON objects matching the config schema;
+// secret fields hold secret names, not values.
+service ConnectorService {
+  rpc Spec(SpecRequest) returns (SpecResponse);
+  // A failed check is reported in CheckResponse, not as an RPC error.
+  rpc Check(CheckRequest) returns (CheckResponse);
+  // Setup and Teardown must be idempotent. They're called only when
+  // SpecResponse.setup is set.
+  rpc Setup(SetupRequest) returns (SetupResponse);
+  rpc Teardown(TeardownRequest) returns (TeardownResponse);
+}
+
+message SpecRequest {
+  // The platform calling; unset from a platform before the alpha.
+  Host host = 1;
+}
+
+// Host is the runner, or the tool, that started the connector.
+message Host {
+  // Its release, such as 0.1.0; "dev" for a build from source.
+  string version = 1;
+  // "v1".
+  string protocol = 2;
+  // Additions to v1 after the alpha that it has. Everything in v1 at the
+  // alpha is the baseline, with no name.
+  repeated string features = 3;
+}
+
+message SpecResponse {
+  // "v1".
+  string protocol_version = 1;
+  ConnectorKind kind = 2;
+  // A JSON Schema. Fields marked "x-secret": true hold secret names.
+  bytes config_schema = 3;
+  Egress egress = 4;
+  bool setup = 5;
+  SourceCapabilities source = 6;
+  DestinationCapabilities destination = 7;
+  // Features the connector can't run without; a host without one refuses
+  // it.
+  repeated string required_features = 8;
+}
+
+enum ConnectorKind {
+  CONNECTOR_KIND_UNSPECIFIED = 0;
+  CONNECTOR_KIND_SOURCE = 1;
+  CONNECTOR_KIND_DESTINATION = 2;
+}
+
+message Egress {
+  EgressTier tier = 1;
+  // Hosts for the proxy tier, host:port pairs for the raw tier.
+  repeated string allow = 2;
+}
+
+enum EgressTier {
+  EGRESS_TIER_UNSPECIFIED = 0;
+  EGRESS_TIER_HOST = 1;
+  EGRESS_TIER_PROXY = 2;
+  EGRESS_TIER_RAW = 3;
+}
+
+message CheckRequest {
+  bytes config = 1;
+}
+
+message CheckResponse {
+  // Unset when the check passed.
+  Error error = 1;
+}
+
+message SetupRequest {
+  bytes config = 1;
+  string pipeline = 2;
+}
+
+message SetupResponse {}
+
+message TeardownRequest {
+  bytes config = 1;
+  string pipeline = 2;
+}
+
+message TeardownResponse {}

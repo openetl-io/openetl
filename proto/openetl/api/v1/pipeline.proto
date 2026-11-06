@@ -1,0 +1,897 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "openetl/api/v1/connection.proto";
+import "openetl/api/v1/sync.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// PipelineService reads and deletes pipelines. ApplyService creates and
+// changes them.
+service PipelineService {
+  rpc GetPipeline(GetPipelineRequest) returns (GetPipelineResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*}"};
+  }
+  rpc ListPipelines(ListPipelinesRequest) returns (ListPipelinesResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*}/pipelines"};
+  }
+  rpc DeletePipeline(DeletePipelineRequest) returns (DeletePipelineResponse) {
+    option (google.api.http) = {delete: "/v1/{name=workspaces/*/pipelines/*}"};
+  }
+  // Stops scheduled syncs. A sync that is running carries on.
+  rpc PausePipeline(PausePipelineRequest) returns (PausePipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:pause"
+      body: "*"
+    };
+  }
+  rpc ResumePipeline(ResumePipelineRequest) returns (ResumePipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:resume"
+      body: "*"
+    };
+  }
+  // Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
+  // paused or a sync is running.
+  rpc SyncPipeline(SyncPipelineRequest) returns (SyncPipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:sync"
+      body: "*"
+    };
+  }
+  // Newest first.
+  rpc ListPipelineVersions(ListPipelineVersionsRequest) returns (ListPipelineVersionsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/versions"};
+  }
+  rpc GetPipelineVersion(GetPipelineVersionRequest) returns (GetPipelineVersionResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*/versions/*}"};
+  }
+  // How the current version syncs, from the source's latest catalog: each
+  // stream's delivery level and what sets it. The plan has no changes.
+  rpc GetPipelinePlan(GetPipelinePlanRequest) returns (GetPipelinePlanResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*}/plan"};
+  }
+  // Each stream's schema history, by stream, then version.
+  rpc ListStreamSchemas(ListStreamSchemasRequest) returns (ListStreamSchemasResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/streamSchemas"};
+  }
+  // The checkpoints the pipeline's syncs committed, newest first. The
+  // control plane keeps 30 days of them.
+  rpc ListCheckpoints(ListCheckpointsRequest) returns (ListCheckpointsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/checkpoints"};
+  }
+  // The columns and cells the pipeline holds back (ADR-0025), as its last
+  // checkpoint left them.
+  rpc ListHolds(ListHoldsRequest) returns (ListHoldsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/holds"};
+  }
+  // Releases a hold: its held values are patched in, and a column held
+  // whole is delivered again from the next run. A continuous pipeline's run
+  // restarts at a checkpoint to take it.
+  rpc ReleaseHold(ReleaseHoldRequest) returns (ReleaseHoldResponse) {
+    option (google.api.http) = {
+      post: "/v1/{parent=workspaces/*/pipelines/*}/holds:release"
+      body: "*"
+    };
+  }
+  // Discards a hold: its held values are dropped, and a column held whole
+  // stays as the destination has it.
+  rpc DiscardHold(DiscardHoldRequest) returns (DiscardHoldResponse) {
+    option (google.api.http) = {
+      post: "/v1/{parent=workspaces/*/pipelines/*}/holds:discard"
+      body: "*"
+    };
+  }
+}
+
+// PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
+// that. Versions are content-addressed, so going back to an earlier spec
+// makes its version current again.
+message PipelineVersion {
+  // workspaces/{workspace}/pipelines/{pipeline}/versions/{version}
+  string name = 1;
+  PipelineSpec spec = 2;
+  PinnedConfig source = 3;
+  PinnedConfig destination = 4;
+  // Each dbt project's bundle digest, by project name.
+  map<string, string> dbt = 5;
+  // Each Spark cluster's version, by cluster name.
+  map<string, string> spark_clusters = 10;
+  // Each Flink cluster's version, by cluster name.
+  map<string, string> flink_clusters = 11;
+  string data_plane = 6;
+  // Where it came from, such as cli:shop.yaml#3.
+  string provenance = 7;
+  // When it was first made.
+  google.protobuf.Timestamp create_time = 8;
+  // It's the pipeline's current version.
+  bool current = 9;
+}
+
+// PinnedConfig is a version of a source's or destination's config.
+message PinnedConfig {
+  // workspaces/{workspace}/sources/{source} or …/destinations/{destination};
+  // empty if it has been deleted since.
+  string name = 1;
+  // The source's or destination's version.
+  string version = 2;
+  // Unset if it has been deleted since.
+  ConnectorConfig spec = 3;
+  // The connector version's digest; empty for a built-in connector, or if
+  // it has been deleted since.
+  string connector = 4;
+}
+
+message Pipeline {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string name = 1;
+  PipelineSpec spec = 2;
+  string version = 3;
+  string etag = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+  // Set by PausePipeline and ResumePipeline, not by the spec.
+  bool paused = 7;
+  PipelineStatus status = 8;
+}
+
+// PipelineStatus is what the pipeline's syncs did.
+message PipelineStatus {
+  // The latest sync; unset if none has run.
+  Sync last_sync = 1;
+  // When the latest sync that succeeded ended; unset if none has.
+  google.protobuf.Timestamp last_success_time = 2;
+  // Incidents open on it.
+  int32 open_incidents = 3;
+}
+
+// PipelineSpec is the spec of a Pipeline document. Unset fields take their
+// defaults.
+message PipelineSpec {
+  PipelineMode mode = 1;
+  Schedule schedule = 2;
+  string data_plane = 3;
+  PipelineSource source = 4;
+  PipelineDestination destination = 5;
+  SchemaPolicy schema_policy = 6;
+  Delivery delivery = 7;
+  Types types = 8;
+  // Run in order after a sync's data is committed. A step that fails fails
+  // the sync, and the steps after it don't run.
+  repeated PostSyncStep post_sync = 9;
+  Heal heal = 10;
+  // The user's code between the source and the destination: Spark in a
+  // scheduled pipeline, Flink in a continuous one.
+  Transform transform = 11;
+  SparkAccess spark_access = 12;
+  FlinkAccess flink_access = 13;
+  // Unset: sized automatically, in the default pool.
+  JobResources resources = 14;
+}
+
+// JobResources sizes the pipeline's jobs (ADR-0027 §3).
+message JobResources {
+  // Unset: auto, from the connectors' hints and then the job's measured peaks.
+  JobSize size = 1;
+  // What auto stays at or above.
+  JobSize min = 2;
+  // What a job may grow to: auto's choice, and a retry after running out of
+  // memory. Unset: xl for auto, and size itself otherwise.
+  JobSize max = 3;
+  // Scheduled only: lanes from the expected bytes, from P1.35.
+  google.protobuf.Duration finish_within = 4;
+  // The runners that run its jobs. Unset: default.
+  string pool = 5;
+}
+
+// SparkAccess is how the pipeline's Spark applications reach its _spark/
+// prefix of the data plane's store. Unset: with the cluster's own identity,
+// which reaches every pipeline's.
+message SparkAccess {
+  // On EMR: the runtime role each step runs as (ExecutionRoleArn, EMR 6.7
+  // and later). It's all the step's AWS access, the user's own data's too.
+  string emr_role = 1;
+  // Elsewhere: S3A keys for the data plane's bucket alone: accessKeyId, a
+  // value or a secret reference, {"secret": NAME}, and secretAccessKey, a
+  // secret reference.
+  google.protobuf.Struct keys = 2;
+}
+
+// FlinkAccess is how the pipeline's Flink job reaches its _flink/ prefix of
+// the data plane's store, where its code, checkpoints and savepoints are.
+// Unset: with the cluster's own identity.
+message FlinkAccess {
+  // On EMR: the runtime role each step runs as (ExecutionRoleArn).
+  string emr_role = 1;
+  // Elsewhere: S3 keys for the data plane's bucket alone, for Flink's
+  // Hadoop S3 filesystem: accessKeyId, a value or a secret reference,
+  // {"secret": NAME}, and secretAccessKey, a secret reference. A session
+  // cluster reads its filesystems' settings at start, so it can't take them.
+  google.protobuf.Struct keys = 2;
+}
+
+message Transform {
+  oneof engine {
+    SparkTransform spark = 1;
+    FlinkTransform flink = 2;
+  }
+}
+
+// SparkTransform runs the user's openetl-spark Transform on each epoch of a
+// sync, on a Spark cluster. Its outputs are the destination's streams.
+message SparkTransform {
+  // A SparkCluster in the same workspace.
+  string cluster = 1;
+  // A jar's class is the Transform's; a Python file calls openetl_spark.run.
+  SparkCode code = 2;
+  // Spark properties for the application, over the cluster's.
+  map<string, string> conf = 3;
+  // Unset: each input stream, under its name and with its settings.
+  repeated TransformOutput outputs = 4;
+}
+
+// FlinkTransform runs the user's Flink job, built with openetl-flink, between
+// a continuous pipeline's source and destination, on a Flink cluster. Its
+// checkpoints are the pipeline's.
+message FlinkTransform {
+  // A FlinkCluster in the same workspace.
+  string cluster = 1;
+  FlinkCode code = 2;
+  // The job's parallelism. Unset: the cluster's default.
+  int32 parallelism = 3;
+  // Flink configuration for the job, over the cluster's.
+  map<string, string> conf = 4;
+  // Unset: each input stream, under its name and with its settings.
+  repeated TransformOutput outputs = 5;
+}
+
+// FlinkCode is a jar, pinned by its digest. The runner checks it and gives
+// the cluster its own copy.
+message FlinkCode {
+  // An s3:// or https:// URI the runner can read.
+  string jar = 1;
+  // The file's SHA-256, in hex.
+  string sha256 = 2;
+  // The job's main class. Unset: the jar's manifest names it.
+  string main_class = 3;
+}
+
+// TransformOutput is one of a transform's outputs. Unset settings take those
+// of the input stream with its name, if there is one.
+message TransformOutput {
+  string name = 1;
+  repeated string primary_key = 2;
+  WriteMode write = 3;
+  DeliveryLevel require = 4;
+}
+
+// What heal's playbooks may do about the pipeline's incidents.
+message Heal {
+  HealMode mode = 1;
+}
+
+enum HealMode {
+  HEAL_MODE_UNSPECIFIED = 0;
+  // Open incidents and notify; take no action.
+  HEAL_MODE_OFF = 1;
+  // Apply only actions that can't hold data back (none yet), and propose
+  // the rest.
+  HEAL_MODE_SUGGEST = 2;
+  // Apply every playbook's actions. The default.
+  HEAL_MODE_AUTO_SAFE = 3;
+  // As auto_safe, until agentic repair exists.
+  HEAL_MODE_AUTO = 4;
+}
+
+message PostSyncStep {
+  oneof step {
+    DbtStep dbt = 1;
+    SparkStep spark = 2;
+  }
+}
+
+// DbtStep runs a dbt project against the pipeline's destination.
+message DbtStep {
+  // A DbtProject in the same workspace. A sync runs the bundle that was
+  // current when it started.
+  string project = 1;
+  DbtCommand command = 2;
+  // dbt's --select and --exclude.
+  string select = 3;
+  string exclude = 4;
+  // The target schema. Unset: the schema the pipeline writes to.
+  string schema = 5;
+}
+
+// SparkStep runs the user's own Spark application on a Spark cluster.
+message SparkStep {
+  // A SparkCluster in the same workspace. A sync runs the settings that were
+  // current when it started.
+  string cluster = 1;
+  SparkCode code = 2;
+  // The application's arguments.
+  repeated string args = 3;
+  // Spark properties for this application, over the cluster's.
+  map<string, string> conf = 4;
+}
+
+// SparkCode is a jar or a Python file, pinned by its digest. The runner checks
+// it and gives the cluster its own copy.
+message SparkCode {
+  // An s3:// or https:// URI the runner can read.
+  oneof file {
+    string jar = 1;
+    string python = 2;
+  }
+  // The file's SHA-256, in hex.
+  string sha256 = 3;
+  // A jar's main class. Unset: the jar's manifest names it.
+  string main_class = 4;
+}
+
+enum DbtCommand {
+  DBT_COMMAND_UNSPECIFIED = 0;
+  // The default.
+  DBT_COMMAND_BUILD = 1;
+  DBT_COMMAND_RUN = 2;
+  DBT_COMMAND_TEST = 3;
+}
+
+// How values map to logical types where a pipeline has a choice.
+message Types {
+  Infinity infinity = 1;
+}
+
+// What becomes of infinite dates and timestamps.
+enum Infinity {
+  INFINITY_UNSPECIFIED = 0;
+  // To the type's largest or smallest value. The default.
+  INFINITY_CLAMP = 1;
+  INFINITY_QUARANTINE = 2;
+}
+
+enum PipelineMode {
+  PIPELINE_MODE_UNSPECIFIED = 0;
+  PIPELINE_MODE_SCHEDULED = 1;
+  PIPELINE_MODE_CONTINUOUS = 2;
+}
+
+message Schedule {
+  oneof trigger {
+    google.protobuf.Duration every = 1;
+    string cron = 2;
+  }
+  // A random start delay of up to this much.
+  google.protobuf.Duration jitter = 3;
+}
+
+message PipelineSource {
+  // A Source ID in the same workspace.
+  string ref = 1;
+  repeated PipelineStream streams = 2;
+}
+
+message PipelineStream {
+  string name = 1;
+  SyncMode sync = 2;
+  string cursor = 3;
+  // By source column name.
+  map<string, PipelineColumn> columns = 4;
+  TimestampUnit timestamps = 5;
+  // Overrides delivery.require for this stream.
+  DeliveryLevel require = 6;
+  // Rows with the same content become one row. Only for streams without a
+  // primary key. Unset: true for a superset stream whose require is above
+  // at least once, otherwise false.
+  optional bool collapse = 7;
+  // What a value that doesn't fit its type holds back (ADR-0025): its row,
+  // the default, or only its cell, for a keyed stream into a destination
+  // that patches.
+  QuarantineScope quarantine = 8;
+  // What a held cell shows, for columns the columns map doesn't say.
+  Held held = 9;
+  // Columns held together, by source name: holding one holds the rest.
+  repeated ColumnGroup groups = 10;
+}
+
+enum QuarantineScope {
+  QUARANTINE_SCOPE_UNSPECIFIED = 0;
+  QUARANTINE_SCOPE_ROW = 1;
+  QUARANTINE_SCOPE_CELL = 2;
+}
+
+message Held {
+  HeldMode mode = 1;
+  // For value, and for last's rows the destination doesn't have: a value
+  // of the column's delivered type, as JSON. Empty: null.
+  string value = 2;
+}
+
+enum HeldMode {
+  // null, or value if a value is given.
+  HELD_MODE_UNSPECIFIED = 0;
+  HELD_MODE_NULL = 1;
+  HELD_MODE_VALUE = 2;
+  // The destination keeps its value. Merge only.
+  HELD_MODE_LAST = 3;
+}
+
+message ColumnGroup {
+  repeated string columns = 1;
+}
+
+// The unit timestamps arrive in. Nanoseconds need a destination that
+// keeps them, and hold only 1677-09-21 to 2262-04-11.
+enum TimestampUnit {
+  TIMESTAMP_UNIT_UNSPECIFIED = 0;
+  // The default. Finer values are truncated.
+  TIMESTAMP_UNIT_MICROSECOND = 1;
+  TIMESTAMP_UNIT_NANOSECOND = 2;
+}
+
+message PipelineColumn {
+  ColumnOpKind op = 1;
+  // Only for columns the source declares as decimals.
+  ColumnType type = 2;
+  // What the column's held cells show; unset: the stream's held.
+  Held held = 3;
+}
+
+// A type a decimal column can arrive as instead.
+enum ColumnType {
+  COLUMN_TYPE_UNSPECIFIED = 0;
+  // The source's text for the value, NaN included.
+  COLUMN_TYPE_STRING = 1;
+  // A double, so digits can be lost. NaN and infinities are kept.
+  COLUMN_TYPE_FLOAT64 = 2;
+}
+
+enum ColumnOpKind {
+  COLUMN_OP_KIND_UNSPECIFIED = 0;
+  COLUMN_OP_KIND_HASH = 1;
+  COLUMN_OP_KIND_BLOCK = 2;
+}
+
+message PipelineDestination {
+  // A Destination ID in the same workspace.
+  string ref = 1;
+  WriteMode write = 2;
+  // A schema or dataset.
+  string namespace = 3;
+  Naming naming = 4;
+  // How merge applies deletes. Unset: soft.
+  DeleteMode deletes = 5;
+}
+
+enum DeleteMode {
+  DELETE_MODE_UNSPECIFIED = 0;
+  // Keep the row, with _openetl_deleted true and its other columns as they
+  // were.
+  DELETE_MODE_SOFT = 1;
+  DELETE_MODE_HARD = 2;
+}
+
+enum Naming {
+  NAMING_UNSPECIFIED = 0;
+  // Lowercase, with anything outside [a-z0-9_] replaced. The default.
+  NAMING_NORMALIZED = 1;
+  // Source names as they are, quoted.
+  NAMING_SOURCE = 2;
+}
+
+enum WriteMode {
+  WRITE_MODE_UNSPECIFIED = 0;
+  WRITE_MODE_APPEND = 1;
+  WRITE_MODE_OVERWRITE = 2;
+  WRITE_MODE_MERGE = 3;
+}
+
+enum SchemaPolicy {
+  SCHEMA_POLICY_UNSPECIFIED = 0;
+  SCHEMA_POLICY_ALLOW_ALL = 1;
+  SCHEMA_POLICY_ALLOW_COLUMNS = 2;
+  SCHEMA_POLICY_BLOCK = 3;
+  SCHEMA_POLICY_IGNORE_NEW = 4;
+}
+
+message Delivery {
+  reserved 4;
+  reserved "dedupe";
+
+  // The plan fails if any stream's guarantee is lower. Unset: exactly once.
+  DeliveryLevel require = 1;
+  Commit commit = 2;
+  // Unset: the default. Zero: wait forever.
+  google.protobuf.Duration resume_point_timeout = 3;
+}
+
+enum DeliveryLevel {
+  DELIVERY_LEVEL_UNSPECIFIED = 0;
+  DELIVERY_LEVEL_AT_LEAST_ONCE = 1;
+  DELIVERY_LEVEL_EFFECTIVELY_ONCE = 2;
+  DELIVERY_LEVEL_EXACTLY_ONCE = 3;
+}
+
+message Commit {
+  google.protobuf.Duration interval = 1;
+  int64 max_bytes = 2;
+  CommitScope scope = 3;
+}
+
+enum CommitScope {
+  COMMIT_SCOPE_UNSPECIFIED = 0;
+  COMMIT_SCOPE_PIPELINE = 1;
+  COMMIT_SCOPE_STREAM = 2;
+}
+
+message GetPipelineRequest {
+  string name = 1;
+}
+
+message GetPipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message ListPipelinesRequest {
+  // workspaces/{workspace}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPipelinesResponse {
+  repeated Pipeline pipelines = 1;
+  string next_page_token = 2;
+}
+
+message DeletePipelineRequest {
+  string name = 1;
+  // If set, it must match.
+  string etag = 2;
+}
+
+message DeletePipelineResponse {}
+
+message PausePipelineRequest {
+  string name = 1;
+}
+
+message PausePipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message ResumePipelineRequest {
+  string name = 1;
+}
+
+message ResumePipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message SyncPipelineRequest {
+  string name = 1;
+}
+
+message SyncPipelineResponse {}
+
+message ListPipelineVersionsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPipelineVersionsResponse {
+  repeated PipelineVersion pipeline_versions = 1;
+  string next_page_token = 2;
+}
+
+message GetPipelineVersionRequest {
+  string name = 1;
+}
+
+message GetPipelineVersionResponse {
+  PipelineVersion pipeline_version = 1;
+}
+
+message GetPipelinePlanRequest {
+  // The pipeline's name.
+  string name = 1;
+}
+
+message GetPipelinePlanResponse {
+  PipelinePlan plan = 1;
+}
+
+// PipelinePlan is how a pipeline version would sync, as far as the control
+// plane can tell from the source's latest catalog and the destination's
+// capabilities.
+message PipelinePlan {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string pipeline = 1;
+  // Empty when only the apply can know it, as AppliedResource.version says.
+  string version = 2;
+  // What differs from the version that was current; empty for a new
+  // pipeline.
+  repeated PlanChange changes = 3;
+  repeated StreamPlan streams = 4;
+  // What a sync would fail on. Apply refuses to create or change a pipeline
+  // whose plan has any.
+  repeated string problems = 5;
+  // What the plan couldn't check, and why.
+  repeated string notes = 6;
+  // What a sync will do that may not be wanted, such as collapsing rows.
+  repeated PlanWarning warnings = 7;
+  // What its next attempt would be sized at.
+  JobPlan job = 8;
+}
+
+message JobPlan {
+  JobSize size = 1;
+  JobSizeReason reason = 2;
+  string pool = 3;
+}
+
+message PlanWarning {
+  // Empty if it's about the whole pipeline.
+  string stream = 1;
+  string message = 2;
+}
+
+message PlanChange {
+  // A spec field, such as delivery.require or source.streams[orders].cursor,
+  // or what the version pins: source.version, destination.version,
+  // source.connector, destination.connector or dbt.{project}.
+  string field = 1;
+  // As JSON; empty where the field is unset.
+  string before = 2;
+  string after = 3;
+}
+
+message StreamPlan {
+  string name = 1;
+  DeliveryLevel level = 2;
+  // Deduped on _openetl_id at apply.
+  bool dedupe = 3;
+  // What sets the level.
+  string reason = 4;
+  // Rows with the same content become one row: within each epoch, and
+  // against the target too when the level is exactly once.
+  bool collapse = 5;
+  // destination.write, or with none, overwrite for a full refresh into a
+  // destination that has it, and append otherwise.
+  WriteMode write = 6;
+}
+
+// StreamSchema is a version of a stream's schema, as the destination has it.
+message StreamSchema {
+  string stream = 1;
+  // 1, 2, ... per stream.
+  int32 version = 2;
+  // The destination table.
+  string table = 3;
+  repeated SchemaColumn columns = 4;
+  // Of the table and columns.
+  string digest = 5;
+  // The first checkpoint that carried it.
+  uint64 generation = 6;
+  uint64 epoch = 7;
+  google.protobuf.Timestamp create_time = 8;
+  // One of a transform's outputs, which are the destination's tables. The
+  // rest are the source's streams as the transform reads them.
+  bool output = 9;
+}
+
+message SchemaColumn {
+  string name = 1;
+  // An Arrow type, such as int64, utf8 or timestamp[us, tz=UTC].
+  string type = 2;
+  bool nullable = 3;
+  // The source's name for it, where the destination's differs.
+  string source = 4;
+}
+
+message ListStreamSchemasRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  // Only this stream's; empty for every stream's.
+  string stream = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListStreamSchemasResponse {
+  repeated StreamSchema stream_schemas = 1;
+  string next_page_token = 2;
+}
+
+// Checkpoint is a record of the pipeline's checkpoint log: an epoch a sync
+// committed.
+message Checkpoint {
+  uint64 generation = 1;
+  uint64 epoch = 2;
+  // The record before it in the log; 0 and 0 for the first.
+  uint64 previous_generation = 3;
+  uint64 previous_epoch = 4;
+  // The sync that committed it; empty if the control plane has no record
+  // of the sync.
+  string sync = 5;
+  // When the data plane recorded it.
+  google.protobuf.Timestamp commit_time = 6;
+  repeated CheckpointStream streams = 7;
+  // What the attempt that committed it had used by then.
+  Usage usage = 8;
+}
+
+message CheckpointStream {
+  string name = 1;
+  // Rows the source emitted in the epoch, quarantined ones included.
+  uint64 rows = 2;
+  uint64 quarantined_rows = 3;
+  // The barrier was placed without a resume point.
+  bool forced = 4;
+  // The stream's read ended in this epoch.
+  bool complete = 5;
+  // The StreamSchema version it carried; 0 if it had none yet.
+  int32 schema_version = 6;
+  // Rows the apply didn't insert because a row with the same _openetl_id
+  // was earlier in the epoch or already in the destination.
+  uint64 collapsed_rows = 7;
+  // Cells held in the epoch (ADR-0025).
+  uint64 held_cells = 8;
+  // The columns it held at the checkpoint, whole or some of their cells;
+  // discarded ones are left out.
+  repeated string held_columns = 9;
+  // Set where the epoch got less than the stream's planned level: the level
+  // its rows got, and the one planned. It read them again after a restore
+  // from a forced barrier, before its next resume point, and they may
+  // repeat rows an earlier epoch committed (ADR-0016).
+  DeliveryLevel level = 10;
+  DeliveryLevel planned_level = 11;
+}
+
+message ListCheckpointsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListCheckpointsResponse {
+  repeated Checkpoint checkpoints = 1;
+  string next_page_token = 2;
+}
+
+// Hold is a column, or some of a column's cells, held back while the rest
+// of each row is delivered.
+message Hold {
+  string stream = 1;
+  string column = 2;
+  // The column is held whole; otherwise some of its cells are.
+  bool whole = 3;
+  // What's held and why, as a sentence.
+  string reason = 4;
+  // The epoch the hold started in.
+  uint64 since_generation = 5;
+  uint64 since_epoch = 6;
+  google.protobuf.Timestamp start_time = 7;
+  // A cell hold's held cells.
+  uint64 cells = 8;
+  // Its values are dropped, and the column stays as the destination has it.
+  bool discarded = 9;
+  // Released, and being patched in.
+  bool releasing = 10;
+  // Released or discarded, and waiting for the pipeline's next run.
+  bool pending = 11;
+  HoldCause cause = 12;
+  // Set when the hold's last release didn't clear it: the destination
+  // refused the column again, or released cells still don't fit. The
+  // release isn't tried again until the hold is released again.
+  HoldRefusal refused = 13;
+  // The ways to clear the hold, the likeliest first.
+  repeated HoldWayOut ways_out = 14;
+}
+
+// HoldCause is why a column, or its cells, are held.
+message HoldCause {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // The schema policy doesn't take the change.
+    KIND_POLICY = 1;
+    // The destination refused the change.
+    KIND_REFUSED = 2;
+    // The destination can't change the column's type.
+    KIND_FIXED = 3;
+    // The destination takes no more columns.
+    KIND_COLUMN_LIMIT = 4;
+    // Held with another column.
+    KIND_GROUP = 5;
+    // Values that don't fit the column's type: a cell hold.
+    KIND_VALUE = 6;
+  }
+  Kind kind = 1;
+  // The column's name in the source.
+  string source_column = 2;
+  // The change, in logical types. from is empty for a column the
+  // destination doesn't have.
+  string from = 3;
+  string to = 4;
+  // KIND_POLICY's schema policy.
+  string policy = 5;
+  // KIND_GROUP's column.
+  string with = 6;
+  // KIND_REFUSED's: what the destination can't do, the change in its type
+  // names, and a statement that makes it take the change, if it gave one.
+  string refusal = 7;
+  string from_type = 8;
+  string to_type = 9;
+  string fix = 10;
+  // KIND_VALUE's: why the first held value doesn't fit.
+  string value = 11;
+}
+
+message HoldRefusal {
+  string reason = 1;
+}
+
+// HoldWayOut is one way to clear a hold.
+message HoldWayOut {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    // ReleaseHold: the held values are patched in.
+    ACTION_RELEASE = 1;
+    // ReleaseHold with new_version.
+    ACTION_RELEASE_NEW_VERSION = 2;
+    // DiscardHold.
+    ACTION_DISCARD = 3;
+  }
+  Action action = 1;
+  // What to do before the action, if anything, as a sentence.
+  string first = 2;
+  // A statement to run on the destination first, as the destination gave
+  // it.
+  string statement = 3;
+  // What the action does, as a sentence.
+  string effect = 4;
+}
+
+message ListHoldsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+}
+
+message ListHoldsResponse {
+  repeated Hold holds = 1;
+}
+
+message ReleaseHoldRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  string stream = 2;
+  string column = 3;
+  // The column held whole sends its values, from the hold's start and from
+  // now on, to a new version of it, col__v2, as allow_all does after an
+  // incompatible change. The column keeps the type the destination has, so
+  // the destination needn't change it.
+  bool new_version = 4;
+}
+
+message ReleaseHoldResponse {
+  Hold hold = 1;
+}
+
+message DiscardHoldRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  string stream = 2;
+  string column = 3;
+}
+
+message DiscardHoldResponse {
+  Hold hold = 1;
+}

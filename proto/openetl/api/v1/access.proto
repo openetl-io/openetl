@@ -1,0 +1,419 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// AccessService manages who may call the API: principals, their keys and
+// roles. It also makes data planes' runner tokens, which only
+// DataPlaneService takes.
+service AccessService {
+  rpc CreatePrincipal(CreatePrincipalRequest) returns (CreatePrincipalResponse) {
+    option (google.api.http) = {
+      post: "/v1/principals"
+      body: "principal"
+    };
+  }
+  rpc GetPrincipal(GetPrincipalRequest) returns (GetPrincipalResponse) {
+    option (google.api.http) = {get: "/v1/{name=principals/*}"};
+  }
+  rpc ListPrincipals(ListPrincipalsRequest) returns (ListPrincipalsResponse) {
+    option (google.api.http) = {get: "/v1/principals"};
+  }
+  // Deletes its keys and role bindings with it. Fails with
+  // FAILED_PRECONDITION for the org's last owner.
+  rpc DeletePrincipal(DeletePrincipalRequest) returns (DeletePrincipalResponse) {
+    option (google.api.http) = {delete: "/v1/{name=principals/*}"};
+  }
+  // Its keys stop working until it's enabled again. Fails with
+  // FAILED_PRECONDITION for the org's last owner.
+  rpc DisablePrincipal(DisablePrincipalRequest) returns (DisablePrincipalResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=principals/*}:disable"
+      body: "*"
+    };
+  }
+  rpc EnablePrincipal(EnablePrincipalRequest) returns (EnablePrincipalResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=principals/*}:enable"
+      body: "*"
+    };
+  }
+  // Granting a role the principal holds already changes nothing.
+  rpc GrantRole(GrantRoleRequest) returns (GrantRoleResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=principals/*}:grantRole"
+      body: "*"
+    };
+  }
+  // Fails with FAILED_PRECONDITION for the org's last owner.
+  rpc RevokeRole(RevokeRoleRequest) returns (RevokeRoleResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=principals/*}:revokeRole"
+      body: "*"
+    };
+  }
+  // The response has the key itself, which the API never returns again.
+  rpc CreateKey(CreateKeyRequest) returns (CreateKeyResponse) {
+    option (google.api.http) = {
+      post: "/v1/{parent=principals/*}/keys"
+      body: "*"
+    };
+  }
+  rpc ListKeys(ListKeysRequest) returns (ListKeysResponse) {
+    option (google.api.http) = {get: "/v1/{parent=principals/*}/keys"};
+  }
+  // The key stops working at once.
+  rpc DeleteKey(DeleteKeyRequest) returns (DeleteKeyResponse) {
+    option (google.api.http) = {delete: "/v1/{name=principals/*/keys/*}"};
+  }
+  rpc ListDataPlanes(ListDataPlanesRequest) returns (ListDataPlanesResponse) {
+    option (google.api.http) = {get: "/v1/dataPlanes"};
+  }
+  // The response has the token itself, which the API never returns again.
+  rpc CreateRunnerToken(CreateRunnerTokenRequest) returns (CreateRunnerTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/{parent=dataPlanes/*}/tokens"
+      body: "*"
+    };
+  }
+  rpc ListRunnerTokens(ListRunnerTokensRequest) returns (ListRunnerTokensResponse) {
+    option (google.api.http) = {get: "/v1/{parent=dataPlanes/*}/tokens"};
+  }
+  // The token stops working at once.
+  rpc DeleteRunnerToken(DeleteRunnerTokenRequest) returns (DeleteRunnerTokenResponse) {
+    option (google.api.http) = {delete: "/v1/{name=dataPlanes/*/tokens/*}"};
+  }
+  // Who is calling, and what they may do. Any credential may ask.
+  rpc GetCaller(GetCallerRequest) returns (GetCallerResponse) {
+    option (google.api.http) = {get: "/v1/caller"};
+  }
+  // Signs a user in with their email and password, and sets the session's
+  // cookie. It takes no credential, and only browsers' Connect calls from the
+  // server's own origin. A wrong email or password and a locked account all
+  // fail with UNAUTHENTICATED.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse) {}
+  // Ends the caller's session, if it has one, and clears its cookie. Like
+  // CreateSession, only browsers' Connect calls from the server's origin.
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse) {}
+  // Ends every session of a user.
+  rpc RevokeSessions(RevokeSessionsRequest) returns (RevokeSessionsResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=principals/*}:revokeSessions"
+      body: "*"
+    };
+  }
+  // A one-use link for a user to set their password, which replaces the
+  // user's previous link. The user needs an email to sign in with.
+  rpc CreatePasswordLink(CreatePasswordLinkRequest) returns (CreatePasswordLinkResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=principals/*}:passwordLink"
+      body: "*"
+    };
+  }
+  // Sets a user's password from a link's token, ends their sessions, and
+  // signs them in. Like CreateSession, it takes no credential.
+  rpc SetPassword(SetPasswordRequest) returns (SetPasswordResponse) {}
+  // Changes the caller's own password, and ends their other sessions.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse) {
+    option (google.api.http) = {
+      post: "/v1/caller:changePassword"
+      body: "*"
+    };
+  }
+}
+
+// A user or a service account, which calls the API with its keys.
+message Principal {
+  // principals/{principal}
+  string name = 1;
+  PrincipalType type = 2;
+  string display_name = 3;
+  // Users only.
+  string email = 4;
+  // Output only: DisablePrincipal and EnablePrincipal set it.
+  bool disabled = 5;
+  // Output only: GrantRole and RevokeRole change them.
+  repeated RoleBinding role_bindings = 6;
+  google.protobuf.Timestamp create_time = 7;
+}
+
+enum PrincipalType {
+  PRINCIPAL_TYPE_UNSPECIFIED = 0;
+  PRINCIPAL_TYPE_USER = 1;
+  PRINCIPAL_TYPE_SERVICE_ACCOUNT = 2;
+}
+
+// Each role includes the ones before it.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // Reads every resource. No role reads secrets' values.
+  ROLE_VIEWER = 1;
+  // Pauses, resumes and syncs pipelines; checks and discovers sources and
+  // destinations.
+  ROLE_OPERATOR = 2;
+  // Applies and deletes sources, destinations, pipelines and dbt projects;
+  // sets and deletes secrets.
+  ROLE_EDITOR = 3;
+  // Applies connector versions; manages principals, keys, roles below owner,
+  // and runner tokens. Only on the org.
+  ROLE_ADMIN = 4;
+  // Manages owners. Only on the org.
+  ROLE_OWNER = 5;
+}
+
+message RoleBinding {
+  Role role = 1;
+  // workspaces/{workspace}, or empty for the org, which covers every
+  // workspace.
+  string workspace = 2;
+}
+
+message CreatePrincipalRequest {
+  Principal principal = 1;
+  // The last part of its name: a lowercase letter, then lowercase letters,
+  // digits and hyphens, at most 63 in all.
+  string principal_id = 2;
+}
+
+message CreatePrincipalResponse {
+  Principal principal = 1;
+}
+
+message GetPrincipalRequest {
+  string name = 1;
+}
+
+message GetPrincipalResponse {
+  Principal principal = 1;
+}
+
+message ListPrincipalsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListPrincipalsResponse {
+  repeated Principal principals = 1;
+  string next_page_token = 2;
+}
+
+message DeletePrincipalRequest {
+  string name = 1;
+}
+
+message DeletePrincipalResponse {}
+
+message DisablePrincipalRequest {
+  string name = 1;
+}
+
+message DisablePrincipalResponse {
+  Principal principal = 1;
+}
+
+message EnablePrincipalRequest {
+  string name = 1;
+}
+
+message EnablePrincipalResponse {
+  Principal principal = 1;
+}
+
+message GrantRoleRequest {
+  // The principal's name.
+  string name = 1;
+  RoleBinding binding = 2;
+}
+
+message GrantRoleResponse {
+  Principal principal = 1;
+}
+
+message RevokeRoleRequest {
+  // The principal's name.
+  string name = 1;
+  RoleBinding binding = 2;
+}
+
+message RevokeRoleResponse {
+  Principal principal = 1;
+}
+
+// An API key. Calls send it as Authorization: Bearer KEY.
+message Key {
+  // principals/{principal}/keys/{key}
+  string name = 1;
+  // The key's first characters, to tell keys apart.
+  string prefix = 2;
+  // Unset if it doesn't expire.
+  google.protobuf.Timestamp expire_time = 3;
+  google.protobuf.Timestamp create_time = 4;
+  // Updated at most once a minute.
+  google.protobuf.Timestamp last_used_time = 5;
+}
+
+message CreateKeyRequest {
+  // principals/{principal}
+  string parent = 1;
+  // Unset: the key doesn't expire.
+  google.protobuf.Timestamp expire_time = 2;
+}
+
+message CreateKeyResponse {
+  Key key = 1;
+  string secret = 2;
+}
+
+message ListKeysRequest {
+  // principals/{principal}
+  string parent = 1;
+}
+
+message ListKeysResponse {
+  repeated Key keys = 1;
+}
+
+message DeleteKeyRequest {
+  string name = 1;
+}
+
+message DeleteKeyResponse {}
+
+message DataPlane {
+  // dataPlanes/{data_plane}
+  string name = 1;
+  google.protobuf.Timestamp create_time = 2;
+}
+
+message ListDataPlanesRequest {}
+
+message ListDataPlanesResponse {
+  repeated DataPlane data_planes = 1;
+}
+
+// A data plane's runners call DataPlaneService with it, as
+// Authorization: Bearer TOKEN. It serves only that data plane's work.
+message RunnerToken {
+  // dataPlanes/{data_plane}/tokens/{token}
+  string name = 1;
+  // The token's first characters, to tell tokens apart.
+  string prefix = 2;
+  google.protobuf.Timestamp create_time = 3;
+  // Updated at most once a minute.
+  google.protobuf.Timestamp last_used_time = 4;
+}
+
+message CreateRunnerTokenRequest {
+  // dataPlanes/{data_plane}
+  string parent = 1;
+}
+
+message CreateRunnerTokenResponse {
+  RunnerToken token = 1;
+  string secret = 2;
+}
+
+message ListRunnerTokensRequest {
+  // dataPlanes/{data_plane}
+  string parent = 1;
+}
+
+message ListRunnerTokensResponse {
+  repeated RunnerToken tokens = 1;
+}
+
+message DeleteRunnerTokenRequest {
+  string name = 1;
+}
+
+message DeleteRunnerTokenResponse {}
+
+message GetCallerRequest {
+  // workspaces/{workspace}, for the permissions held there. Empty: those on
+  // the org.
+  string workspace = 1;
+}
+
+message GetCallerResponse {
+  Principal principal = 1;
+  // principals/{principal}/keys/{key} or principals/{principal}/sessions/{session}.
+  // Empty when sign-in is off and the call had no credential.
+  string credential = 2;
+  // When the credential stops working unless it's used, for a session;
+  // unset for a key that doesn't expire.
+  google.protobuf.Timestamp expire_time = 3;
+  // What the caller may do in the workspace, or on the org: permissions
+  // such as pipelines.sync.
+  repeated string permissions = 4;
+  // Sign-in is off (openetld --auth none), so calls without a credential
+  // act as principals/local, an owner.
+  bool authless = 5;
+}
+
+// A user's sign-in in a browser, which holds it as a cookie.
+message Session {
+  // principals/{principal}/sessions/{session}
+  string name = 1;
+  google.protobuf.Timestamp create_time = 2;
+  // When it ends unless it's used again: its idle timeout from its last
+  // use, at most its maximum age from its creation.
+  google.protobuf.Timestamp expire_time = 3;
+}
+
+message CreateSessionRequest {
+  string email = 1;
+  string password = 2;
+  // Keep the cookie when the browser closes, until the session ends.
+  bool remember = 3;
+}
+
+message CreateSessionResponse {
+  Session session = 1;
+}
+
+message DeleteSessionRequest {}
+
+message DeleteSessionResponse {}
+
+message RevokeSessionsRequest {
+  // principals/{principal}
+  string name = 1;
+}
+
+message RevokeSessionsResponse {}
+
+message CreatePasswordLinkRequest {
+  // principals/{principal}
+  string name = 1;
+  // Unset: in 24 hours. At most 7 days ahead.
+  google.protobuf.Timestamp expire_time = 2;
+}
+
+message CreatePasswordLinkResponse {
+  // {public URL}/set-password#{token}. The API never returns it again.
+  string url = 1;
+  google.protobuf.Timestamp expire_time = 2;
+}
+
+message SetPasswordRequest {
+  // The part of the link after #.
+  string token = 1;
+  string password = 2;
+  // As in CreateSessionRequest.
+  bool remember = 3;
+}
+
+message SetPasswordResponse {
+  Session session = 1;
+}
+
+message ChangePasswordRequest {
+  string current_password = 1;
+  string new_password = 2;
+}
+
+message ChangePasswordResponse {}

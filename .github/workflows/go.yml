@@ -1,0 +1,102 @@
+name: go
+
+# On pushes rather than pull requests: a pull request's path filters see its
+# whole diff, so on a long-lived branch they would always match.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "cmd/**"
+      - "connectors/**"
+      - "examples/**"
+      - "gen/**"
+      - "internal/**"
+      - "proto/**"
+      - "sdk/go/**"
+      - "test/**"
+      - "tools/**"
+      - "go.mod"
+      - "go.sum"
+      - "go.work"
+      - "go.work.sum"
+      - "buf.*"
+      - ".golangci.yml"
+      - "Makefile"
+      # protoc-gen-es, for the UI's clients.
+      - "web/package.json"
+      - "web/pnpm-lock.yaml"
+      - ".github/workflows/go.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Called from full, github.workflow is full's name, so the group isn't full's.
+concurrency:
+  group: ${{ github.workflow }}-go-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      # A cache per job, which a changed go.sum restores from: setup-go's is
+      # keyed by go.sum alone, so jobs that build less overwrote the others.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ github.job }}-
+      # protoc-gen-es, for the UI's clients.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: make tools
+      - name: Generated code is up to date
+        run: |
+          make generate
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::make generate changed files; run it and commit the result"
+            exit 1
+          fi
+      - name: Lint
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          buf lint
+          buf format --diff --exit-code
+          for m in . sdk/go; do (cd "$m" && golangci-lint run ./...); done
+          workflowcheck ./internal/orchestration/...
+      # Informational until v0.1.0-alpha.
+      - name: Breaking proto changes
+        continue-on-error: true
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          # buf doesn't resolve FETCH_HEAD.
+          if git cat-file -e FETCH_HEAD:buf.yaml 2>/dev/null; then
+            bin/buf breaking --against ".git#ref=$(git rev-parse FETCH_HEAD)"
+          else
+            echo "main has no protos yet."
+          fi
+      # The simulation runs below, without the race detector, which made it
+      # the slowest package.
+      - name: Unit tests
+        run: go test -race $(go list ./... ./sdk/go/... | grep -v '/test/sim$')
+      - name: SDK builds without the workspace
+        working-directory: sdk/go
+        run: GOWORK=off go build ./...
+      - name: Commit-protocol simulation (fixed seeds)
+        run: go test -count=1 ./test/sim -seeds=200

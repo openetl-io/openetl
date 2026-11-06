@@ -1,0 +1,349 @@
+syntax = "proto3";
+
+package openetl.connector.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "openetl/connector/v1/errors.proto";
+
+option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
+
+// DestinationService is served by destination connectors.
+service DestinationService {
+  // One stream per writer lane of an attempt (ADR-0027). On lane 0's, the
+  // platform sends open, then recover, then start_reads, batches, end_reads,
+  // pre-commits, schemas and commits, and closes its side to close the
+  // writer. Other lanes' streams open once lane 0 has recovered, and get no
+  // recover, schemas or commits: lane 0 commits and recovers every lane's
+  // committables. The connector answers open, recover, each pre-commit, each
+  // schema and each commit.
+  //
+  // Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
+  // run concurrently with later batches and pre-commits, but never with each
+  // other. A failed schema or commit is answered with its error; any other
+  // failure ends the stream.
+  rpc Write(stream WriteRequest) returns (stream WriteResponse);
+}
+
+message DestinationCapabilities {
+  SinkClass sink_class = 1;
+  repeated CommitScope scopes = 2;
+  // The sink can skip append and overwrite rows whose _openetl_id is already
+  // in the target.
+  bool dedupe_at_apply = 3;
+  google.protobuf.Duration default_commit_interval = 4;
+  google.protobuf.Duration min_commit_interval = 5;
+  // Timestamps keep nanoseconds; otherwise only microseconds.
+  bool nanosecond_timestamps = 6;
+  // The longest table or column name, in bytes; 0 for no limit.
+  uint32 max_identifier_length = 7;
+  // Empty: append only.
+  repeated WriteMode write_modes = 8;
+  // Unset: no maximum.
+  google.protobuf.Duration max_commit_interval = 9;
+  Delivery delivery = 10;
+  // Unset: the destination takes no holds.
+  HoldCapabilities holds = 11;
+  // The most writer lanes an attempt may open, whose writes run
+  // concurrently. Zero: one. A destination that can't commit every lane's
+  // committables together takes one.
+  uint32 max_writer_lanes = 12;
+}
+
+// HoldCapabilities is what a destination does with columns and cells the
+// platform holds back (ADR-0025). A held cell arrives as null, or as the
+// pipeline's held value, and the row's _openetl_held lists its column. A
+// patch fills it in later.
+message HoldCapabilities {
+  // Patches a merge stream's rows by their key.
+  bool by_key = 1;
+  // Patches an append stream's rows by their _openetl_id.
+  bool by_id = 2;
+  // A held cell of a merge stream's column whose field carries the
+  // openetl.held metadata "last" keeps the target's value.
+  bool last = 3;
+  // A patch fills a cell only where the target still holds the version the
+  // patch comes from, so patches can land in any order.
+  bool guarded = 4;
+}
+
+// Delivery is how a destination receives each epoch's rows.
+enum Delivery {
+  // Streamed.
+  DELIVERY_UNSPECIFIED = 0;
+  // As batches while the epoch is read. The destination stages them its own
+  // way, if at all.
+  DELIVERY_STREAMED = 1;
+  // As Parquet files the platform staged, handed over with
+  // WriteStagedFiles. The platform keeps them while the epoch can be
+  // recovered, so a deliver-and-acknowledge sink can deliver in commit.
+  DELIVERY_STAGED = 2;
+}
+
+enum SinkClass {
+  SINK_CLASS_UNSPECIFIED = 0;
+  SINK_CLASS_STAGE_AND_APPLY = 1;
+  SINK_CLASS_TRANSACTIONAL_STREAM = 2;
+  SINK_CLASS_DELIVER_AND_ACK = 3;
+}
+
+enum CommitScope {
+  COMMIT_SCOPE_UNSPECIFIED = 0;
+  COMMIT_SCOPE_PIPELINE = 1;
+  COMMIT_SCOPE_STREAM = 2;
+}
+
+enum WriteMode {
+  WRITE_MODE_UNSPECIFIED = 0;
+  WRITE_MODE_APPEND = 1;
+  WRITE_MODE_OVERWRITE = 2;
+  // Upsert on the primary key.
+  WRITE_MODE_MERGE = 3;
+}
+
+enum Recovery {
+  RECOVERY_UNSPECIFIED = 0;
+  RECOVERY_APPLIED = 1;
+  RECOVERY_REDONE = 2;
+  RECOVERY_LOST = 3;
+}
+
+// Epoch is checkpoint N within the generation that wrote it. N is 0 when
+// there is no checkpoint yet.
+message Epoch {
+  uint64 generation = 1;
+  uint64 n = 2;
+}
+
+message WriteRequest {
+  oneof msg {
+    WriteOpen open = 1;
+    WriteRecover recover = 2;
+    WriteBatch batch = 3;
+    WritePreCommit pre_commit = 4;
+    WriteCommit commit = 5;
+    WriteApplySchema apply_schema = 6;
+    WriteStartReads start_reads = 7;
+    WriteEndRead end_read = 8;
+    WriteStagedFiles staged_files = 9;
+  }
+}
+
+message WriteOpen {
+  // Secret fields hold secret names.
+  bytes config = 1;
+  string pipeline = 2;
+  string namespace = 3;
+  uint64 generation = 4;
+  CommitScope scope = 5;
+  repeated WriteStream streams = 6;
+  // How often the platform commits, for sinks whose transactions must outlast
+  // an epoch.
+  google.protobuf.Duration commit_interval = 7;
+  // The writer's lane, of lanes. Zero lanes: one.
+  uint32 lane = 8;
+  uint32 lanes = 9;
+}
+
+message WriteStream {
+  string name = 1;
+  WriteMode mode = 2;
+  repeated string primary_key = 3;
+  // Only for sinks with dedupe_at_apply.
+  Dedupe dedupe = 4;
+  // Merge only.
+  DeleteMode deletes = 5;
+}
+
+// DeleteMode is how merge applies a record whose _openetl_op is delete.
+enum DeleteMode {
+  // Soft.
+  DELETE_MODE_UNSPECIFIED = 0;
+  // Keep the row, with _openetl_deleted true and its other columns as they
+  // were.
+  DELETE_MODE_SOFT = 1;
+  // Delete the row.
+  DELETE_MODE_HARD = 2;
+}
+
+// Dedupe is which append and overwrite rows an apply skips by _openetl_id.
+enum Dedupe {
+  // None: every staged row is inserted.
+  DEDUPE_UNSPECIFIED = 0;
+  // One row per ID in the epoch, and only IDs the target doesn't have yet.
+  DEDUPE_TARGET = 1;
+  // One row per ID in the epoch.
+  DEDUPE_EPOCH = 2;
+}
+
+// WriteRecover raises the destination fence to the writer's generation, then
+// recovers epoch. With no epoch, it only raises the fence and reports
+// applied. Otherwise it may then drop whatever earlier generations staged,
+// since none of it can be applied any more.
+message WriteRecover {
+  Epoch epoch = 1;
+  // The epoch's committables, one per writer lane of the attempt that
+  // staged it, whose lanes may have been others.
+  repeated bytes staged = 2;
+}
+
+message WriteBatch {
+  Epoch epoch = 1;
+  string stream = 2;
+  // An Arrow IPC stream: the schema, any dictionaries, one record batch.
+  bytes arrow = 3;
+  // The rows are patches, for destinations that take holds: each fills the
+  // cells its _openetl_held lists, in the target row its key (merge) or its
+  // _openetl_id (append) names. Its other columns are the stream's key,
+  // _openetl_id, _openetl_seq, _openetl_synced_at and the columns it fills.
+  // A column fills the held column of its name, or the one its field's
+  // openetl.fills metadata names, as col__v2 fills col's.
+  bool patch = 4;
+}
+
+// WriteStartReads comes after recover and before the first batch, with when
+// each stream the attempt reads started its read. A read an earlier attempt
+// began keeps its start, so a stream whose start changed began a new read.
+// Unanswered, like batches.
+message WriteStartReads {
+  map<string, google.protobuf.Timestamp> starts = 1;
+}
+
+// WriteEndRead says the stream's read ended in epoch: its last batch came
+// before this. Overwrite writes replace the table with what the read wrote
+// when the epoch commits. Unanswered, like batches.
+message WriteEndRead {
+  Epoch epoch = 1;
+  string stream = 2;
+}
+
+// WriteStagedFiles hands over a stream's files in a staged epoch, in place
+// of its batches: the lane's, before pre-commit, and on lane 0, every lane's
+// of the epoch being recovered, after open and before recover. Streams
+// without rows in the epoch get none. Unanswered, like batches.
+message WriteStagedFiles {
+  Epoch epoch = 1;
+  string stream = 2;
+  repeated StagedFile files = 3;
+  // The files hold patches, as WriteBatch.patch's.
+  bool patch = 4;
+}
+
+// StagedFile is one Parquet file of a staged epoch, read through host
+// services' StagedFileURL.
+message StagedFile {
+  // Below the pipeline's staging prefix.
+  string path = 1;
+  uint64 rows = 2;
+  uint64 bytes = 3;
+}
+
+// WritePreCommit stages the lane's part of the epoch durably but invisibly:
+// its committable. A staged epoch is durable already, in its files.
+message WritePreCommit {
+  Epoch epoch = 1;
+}
+
+// WriteCommit makes the epoch visible, with a marker per stream, behind the
+// fence. Idempotent.
+message WriteCommit {
+  Epoch epoch = 1;
+  // Every writer lane's committable, by lane.
+  repeated bytes staged = 2;
+}
+
+// WriteApplySchema makes each stream's table hold its schema: it creates
+// tables, adds columns and widens types, and never drops or narrows them.
+// Idempotent, and not fenced. Only sent to destinations that have a schema.
+message WriteApplySchema {
+  repeated StreamSchema streams = 1;
+}
+
+message StreamSchema {
+  string name = 1;
+  // An Arrow IPC stream with no batches, metadata columns included. A
+  // stream that holds anything has _openetl_held, a list of strings: each
+  // row's held columns. A held column stays at the type the destination
+  // last took, and one it never took is left out.
+  bytes arrow_schema = 2;
+}
+
+message WriteResponse {
+  oneof msg {
+    WriteRecovered recovered = 1;
+    WriteStaged staged = 2;
+    WriteCommitted committed = 3;
+    WriteOpened opened = 4;
+    WriteSchemaApplied schema_applied = 5;
+  }
+}
+
+message WriteOpened {
+  // The writer changes schemas, so the platform sends apply_schema.
+  bool applies_schema = 1;
+}
+
+message WriteSchemaApplied {
+  // Set if applying failed. The stream stays open, and the schemas can be
+  // sent again.
+  Error error = 1;
+  // From destinations that take holds: columns it didn't add or change,
+  // having applied the rest. The platform holds them.
+  repeated RefusedColumn refused = 2;
+  // From destinations that take holds: by stream, what its table can't
+  // take as it stands, so the platform holds such a change instead of
+  // sending it.
+  map<string, TableLimits> limits = 3;
+}
+
+message RefusedColumn {
+  string stream = 1;
+  // Its destination name.
+  string column = 2;
+  // What the destination can't do, as a clause: "it doesn't change a
+  // column's type, which can rewrite the table".
+  string reason = 3;
+  // The column's type in the destination, and the type the change wants,
+  // in the destination's type names. from_type is empty for a column the
+  // destination doesn't have.
+  string from_type = 4;
+  string to_type = 5;
+  // A statement the user can run on the destination to make it take the
+  // change, such as an ALTER TABLE; empty if there's none.
+  string fix = 6;
+}
+
+// TableLimits name columns by their destination names.
+message TableLimits {
+  // Columns that can't take a null, which a held cell is unless the
+  // pipeline gives a held value.
+  repeated string not_null = 1;
+  // Columns that can't be held, such as partition columns.
+  repeated string unholdable = 2;
+  // Columns whose type can't change, such as those a view depends on.
+  repeated string fixed = 3;
+  // The columns the table has, as its limit counts them, and that limit;
+  // 0 for none.
+  uint32 columns = 4;
+  uint32 max_columns = 5;
+}
+
+message WriteRecovered {
+  Recovery recovery = 1;
+}
+
+message WriteStaged {
+  Epoch epoch = 1;
+  // The lane's committable, stored in the epoch's checkpoint record and
+  // passed back to commit and recover. Keep it to a few KB.
+  bytes staged = 2;
+}
+
+message WriteCommitted {
+  Epoch epoch = 1;
+  // Set if the commit failed. The stream stays open, and the commit can be
+  // sent again.
+  Error error = 2;
+  // By stream: staged rows the apply didn't insert, because of dedupe.
+  map<string, uint64> collapsed_rows = 3;
+}

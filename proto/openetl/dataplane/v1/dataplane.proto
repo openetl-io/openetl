@@ -1,0 +1,415 @@
+syntax = "proto3";
+
+package openetl.dataplane.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "openetl/api/v1/connection.proto";
+import "openetl/api/v1/flink.proto";
+import "openetl/api/v1/pipeline.proto";
+import "openetl/api/v1/spark.proto";
+import "openetl/api/v1/sync.proto";
+import "openetl/connector/v1/source.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/dataplane/v1;dataplanev1";
+
+// DataPlaneService is what runners call on the control plane, with their data
+// plane's runner token. It serves a token only that data plane's work.
+service DataPlaneService {
+  // The pipeline version, and its source and destination, for one sync
+  // attempt.
+  rpc GetSyncSpec(GetSyncSpecRequest) returns (GetSyncSpecResponse);
+  // Adds a committed checkpoint's stream schemas to the pipeline's schema
+  // history. A schema already in a stream's history is skipped.
+  rpc ReportSchemas(ReportSchemasRequest) returns (ReportSchemasResponse);
+  // Mirrors a committed checkpoint into the control plane. A checkpoint
+  // already mirrored is skipped.
+  rpc ReportCheckpoint(ReportCheckpointRequest) returns (ReportCheckpointResponse);
+  // The current config of a source or destination, for Check and Discover.
+  rpc GetConnectorConfig(GetConnectorConfigRequest) returns (GetConnectorConfigResponse);
+  // Keeps a source's discovered catalog, and returns its digest.
+  rpc ReportCatalog(ReportCatalogRequest) returns (ReportCatalogResponse);
+  // An artifact by digest, such as a connector version's descriptor or
+  // manifest. Its content never changes, so runners cache it.
+  rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse);
+  // Records an attempt of a sync or a stream job that failed, so the
+  // control plane sees retries Temporal hides, such as a crash loop. An
+  // attempt already reported is skipped.
+  rpc ReportAttemptFailure(ReportAttemptFailureRequest) returns (ReportAttemptFailureResponse);
+  // What a runner is, can run and is running, when it starts and every 10 s.
+  // It's every running attempt's heartbeat (ADR-0028). The plan checks
+  // connectors against the runners its data plane reported lately, and the
+  // placer places attempts on those reporting now.
+  rpc ReportRunner(ReportRunnerRequest) returns (ReportRunnerResponse);
+  // Waits a while for work placed on the runner, or for light operations of
+  // its data plane, up to what it has room for. Work it returns is the
+  // runner's: it starts it, and reports it until its result is in.
+  rpc PollWork(PollWorkRequest) returns (PollWorkResponse);
+  // The result of work PollWork returned. The API wakes the workflow waiting
+  // for it. Sending a result again is harmless.
+  rpc ReportResult(ReportResultRequest) returns (ReportResultResponse);
+  // The Flink cluster a deleted pipeline's last version pinned, for the
+  // teardown the API sent to the runner's data plane, which cancels the
+  // pipeline's Flink jobs.
+  rpc GetFlinkTeardown(GetFlinkTeardownRequest) returns (GetFlinkTeardownResponse);
+}
+
+message GetSyncSpecRequest {
+  string pipeline_id = 1;
+  string version = 2;
+}
+
+message GetSyncSpecResponse {
+  string org_id = 1;
+  string pipeline_id = 2;
+  string version = 3;
+  string data_plane = 4;
+  openetl.api.v1.PipelineSpec pipeline = 5;
+  openetl.api.v1.ConnectorConfig source = 6;
+  openetl.api.v1.ConnectorConfig destination = 7;
+  // The digests of the connector versions the source and destination
+  // resolved to. Empty for a built-in connector, or one in the runner's
+  // connectors directory.
+  string source_connector = 8;
+  string destination_connector = 9;
+  // The config fields that name secrets in cloud secret stores, which the
+  // runner reads and sets.
+  repeated ExternalSecret source_secrets = 10;
+  repeated ExternalSecret destination_secrets = 11;
+  // The Spark clusters the version pins, by name.
+  map<string, PinnedSparkCluster> spark_clusters = 12;
+  // Fields of the pipeline's spark_access.keys that name secrets in cloud
+  // secret stores.
+  repeated ExternalSecret spark_access_secrets = 13;
+  // The Flink clusters the version pins, by name.
+  map<string, PinnedFlinkCluster> flink_clusters = 14;
+  // Fields of the pipeline's flink_access.keys that name secrets in cloud
+  // secret stores.
+  repeated ExternalSecret flink_access_secrets = 15;
+  // Holds released or discarded (ADR-0025), for the holds still open in the
+  // pipeline's last mirrored checkpoint. A release applies to the hold it
+  // names only while that hold is open, so sending it again does nothing.
+  repeated HoldRelease releases = 16;
+  // The pipeline's key groups (ADR-0027), fixed when it was created. A
+  // restore from a record with another count fails.
+  uint32 key_groups = 17;
+}
+
+message HoldRelease {
+  // A release that didn't clear its hold is recorded on the hold by this.
+  string id = 6;
+  string stream = 1;
+  string column = 2;
+  // The epoch the hold started in.
+  CheckpointRef since = 3;
+  // Drop its values instead of patching them in.
+  bool discard = 4;
+  // A column hold's values go to a new version of the column, col__v2, as
+  // allow_all's do, and the column keeps the type the destination has.
+  bool new_version = 5;
+}
+
+// PinnedFlinkCluster's secret references that this server holds are
+// replaced by their values; the rest are listed by where they are.
+message PinnedFlinkCluster {
+  string version = 1;
+  openetl.api.v1.FlinkClusterSpec spec = 2;
+  // Fields of conf that name secrets in cloud secret stores.
+  repeated ExternalSecret secrets = 3;
+  // rest.auth's or kubernetes.kubeconfig's secret, if it's in a cloud
+  // secret store; its field is "auth" or "kubeconfig".
+  repeated ExternalSecret target_secrets = 4;
+}
+
+message PinnedSparkCluster {
+  string version = 1;
+  openetl.api.v1.SparkClusterSpec spec = 2;
+  // Fields of submit.conf that name secrets in cloud secret stores.
+  repeated ExternalSecret secrets = 3;
+}
+
+// A config field that names a secret held in a cloud secret store. The field
+// keeps its {"secret": NAME} until the runner reads the store.
+message ExternalSecret {
+  // The config field, as a dotted path such as auth.client_secret.
+  string field = 1;
+  // workspaces/{workspace}/secrets/{secret}
+  string secret = 2;
+  // As openetl.api.v1.Secret's ref.
+  string ref = 3;
+}
+
+message ReportSchemasRequest {
+  string pipeline_id = 1;
+  // The checkpoint that carried the schemas.
+  uint64 generation = 2;
+  uint64 epoch = 3;
+  // By stream; each an Arrow IPC stream holding only the schema.
+  map<string, bytes> schemas = 4;
+  // A transform's outputs', by output, kept apart from its input streams'.
+  map<string, bytes> output_schemas = 5;
+}
+
+message ReportSchemasResponse {
+  // The streams whose history got a new version.
+  repeated string added = 1;
+  // The outputs whose history got a new version.
+  repeated string added_outputs = 2;
+}
+
+message ReportCheckpointRequest {
+  string pipeline_id = 1;
+  // The sync's Temporal run.
+  string run_id = 2;
+  uint64 generation = 3;
+  uint64 epoch = 4;
+  // What HEAD pointed to before; unset for the pipeline's first checkpoint.
+  CheckpointRef previous = 5;
+  // When the data plane recorded it. It must be within a day of the
+  // control plane's clock.
+  google.protobuf.Timestamp create_time = 6;
+  repeated CheckpointStream streams = 7;
+  // What the read last reported of its progress, by stream ("" for the
+  // whole read), if it reports any.
+  repeated openetl.connector.v1.Progress progress = 8;
+  // What the attempt had used by then.
+  openetl.api.v1.Usage usage = 9;
+}
+
+message CheckpointRef {
+  uint64 generation = 1;
+  uint64 epoch = 2;
+}
+
+message CheckpointStream {
+  string name = 1;
+  // Rows the source emitted in the epoch, quarantined ones included.
+  uint64 rows = 2;
+  uint64 quarantined_rows = 3;
+  // The barrier was placed without a resume point.
+  bool forced = 4;
+  // The stream's read ended in this epoch.
+  bool complete = 5;
+  // The stream's schema, as its schema history keys it; empty if it has
+  // none yet.
+  string schema_digest = 6;
+  // Rows the apply didn't insert because a row with the same _openetl_id
+  // was earlier in the epoch or already in the destination.
+  uint64 collapsed_rows = 7;
+  // Its holds open at the checkpoint (ADR-0025).
+  repeated CheckpointHold holds = 8;
+  // Cells held in the epoch.
+  uint64 held_cells = 9;
+  // Set where the epoch got less than the stream's planned level: the level
+  // its rows got, and the one planned. It read them again after a restore
+  // from a forced barrier, so they may repeat rows an earlier epoch
+  // committed.
+  openetl.api.v1.DeliveryLevel level = 10;
+  openetl.api.v1.DeliveryLevel planned_level = 11;
+}
+
+message CheckpointHold {
+  string column = 1;
+  // The column is held whole; otherwise some of its cells are.
+  bool whole = 2;
+  string reason = 3;
+  CheckpointRef since = 4;
+  google.protobuf.Timestamp start_time = 5;
+  // A cell hold's held cells.
+  uint64 cells = 6;
+  // Its values are dropped, and the column stays as the destination has it.
+  bool discarded = 7;
+  // A release is being patched in.
+  bool releasing = 8;
+  // Why the column is held whole; cell holds have only their reason.
+  openetl.api.v1.HoldCause cause = 9;
+  // A release that didn't clear the hold, by its HoldRelease.id.
+  string refused_release = 10;
+  openetl.api.v1.HoldRefusal refused = 11;
+}
+
+message ReportCheckpointResponse {
+  // False if the checkpoint was already mirrored.
+  bool added = 1;
+}
+
+message GetConnectorConfigRequest {
+  oneof connector {
+    string source_id = 1;
+    string destination_id = 2;
+  }
+  // The check or discover the API sent to the runner's data plane.
+  string operation_id = 3;
+}
+
+message GetConnectorConfigResponse {
+  string org_id = 1;
+  string version = 2;
+  openetl.api.v1.ConnectorConfig config = 3;
+  // As GetSyncSpecResponse's source_connector.
+  string connector = 4;
+  // As GetSyncSpecResponse's source_secrets.
+  repeated ExternalSecret secrets = 5;
+}
+
+message GetFlinkTeardownRequest {
+  string operation_id = 1;
+}
+
+message GetFlinkTeardownResponse {
+  string org_id = 1;
+  string pipeline_id = 2;
+  PinnedFlinkCluster cluster = 3;
+}
+
+message ReportCatalogRequest {
+  string source_id = 1;
+  // The source version discovered.
+  string version = 2;
+  // Streams only; the API sets the rest.
+  openetl.api.v1.Catalog catalog = 3;
+  // As GetConnectorConfigRequest's.
+  string operation_id = 4;
+}
+
+message ReportCatalogResponse {
+  // Of the catalog's streams. The same streams always have the same digest.
+  string digest = 1;
+}
+
+message GetArtifactRequest {
+  // sha256:{hex}
+  string digest = 1;
+}
+
+message GetArtifactResponse {
+  string media_type = 1;
+  bytes content = 2;
+}
+
+message ReportAttemptFailureRequest {
+  string pipeline_id = 1;
+  // The sync's Temporal run, or the stream job's run key.
+  string run_id = 2;
+  // Counting attempts that drained.
+  int32 attempt = 3;
+  // The error's taxonomy code, such as INTERNAL.
+  string code = 4;
+  string message = 5;
+  // When it failed, on the data plane's clock.
+  google.protobuf.Timestamp time = 6;
+}
+
+message ReportAttemptFailureResponse {}
+
+message ReportRunnerRequest {
+  // Unique to the runner process, such as host:pid.
+  string runner = 1;
+  // Its release, such as 0.1.0; "dev" for a build from source.
+  string release = 2;
+  // The connector protocol, "v1".
+  string protocol = 3;
+  // Additions to the protocol after its baseline that it has.
+  repeated string features = 4;
+  // How it starts connectors: "subprocess" for binaries; container
+  // launchers, such as "docker", from 0.2.
+  repeated string launchers = 5;
+  // os/arch.
+  string platform = 6;
+  // The pool it serves; the placer places a job only in the job's pool.
+  string pool = 7;
+  // What it can place on itself: its cgroup's or host's CPU and memory, less
+  // what it keeps for itself.
+  Resources capacity = 8;
+  // What's running on it now.
+  Resources reserved = 9;
+  // It's stopping, so nothing more is placed on it.
+  bool draining = 10;
+  // Each running attempt or operation, whose lease this report extends.
+  repeated RunningWork running = 11;
+}
+
+message Resources {
+  int64 cpu_millis = 1;
+  int64 memory_bytes = 2;
+}
+
+message RunningWork {
+  string id = 1;
+  // The last epoch it committed; 0 if none, or if it has no epochs.
+  uint64 epoch = 2;
+  Resources size = 3;
+  // An attempt's use so far, and what its source has emitted; unset for a
+  // light operation.
+  openetl.api.v1.Usage usage = 4;
+  uint64 rows = 5;
+  uint64 bytes = 6;
+}
+
+message ReportRunnerResponse {
+  // Running work to stop, at its next checkpoint if it has them: it was
+  // cancelled, or its lease ended and something else may have replaced it.
+  repeated string stop = 1;
+}
+
+message PollWorkRequest {
+  string runner = 1;
+  // How many light operations it can take now.
+  uint32 free_operations = 2;
+  // How many log reads it can take now, which are apart from operations so
+  // busy runners still answer them.
+  uint32 free_log_reads = 3;
+}
+
+message PollWorkResponse {
+  // Empty when the wait ended with nothing to do; poll again.
+  repeated Work work = 1;
+}
+
+// Work is an attempt or a light operation, handed to one runner.
+message Work {
+  // Unique across retries and placements' attempts.
+  string id = 1;
+  // What to run, such as RunSyncAttempt.
+  string kind = 2;
+  // Its input, as JSON.
+  bytes input = 3;
+  // How long it may go unreported before it's replaced, which also bounds
+  // how late it may start.
+  google.protobuf.Duration heartbeat_timeout = 4;
+  // How long it may run in all.
+  google.protobuf.Duration timeout = 5;
+  // What it's placed for; unset for a light operation.
+  Resources size = 6;
+  // The trace it's part of, as W3C headers.
+  map<string, string> trace = 7;
+}
+
+message ReportResultRequest {
+  string runner = 1;
+  string id = 2;
+  // On success, its result as JSON.
+  bytes result = 3;
+  // On failure, its taxonomy code or a step's own, such as DBT_FAILED.
+  string code = 4;
+  string message = 5;
+  // Retries won't help.
+  bool non_retryable = 6;
+  // How long to wait before a retry, if it says.
+  google.protobuf.Duration retry_after = 7;
+  // It stopped because it was asked to.
+  bool cancelled = 8;
+  // A placement a stale report overfilled: the runner has no room. The work
+  // is placed again, and this doesn't count as an attempt.
+  bool no_capacity = 9;
+  // An attempt's use in all, and what its source emitted; unset for a light
+  // operation.
+  openetl.api.v1.Usage usage = 10;
+  uint64 rows = 11;
+  uint64 bytes = 12;
+}
+
+message ReportResultResponse {
+  // False if the work isn't this runner's to report any more.
+  bool accepted = 1;
+}

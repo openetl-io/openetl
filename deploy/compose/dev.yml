@@ -1,0 +1,218 @@
+# Local dependencies for `make dev` and the integration tests.
+#
+#   docker compose -f deploy/compose/dev.yml up -d
+#
+# `openetld dev` uses the local filesystem as its object store by default.
+# SeaweedFS (S3), fake-gcs-server (GCS) and Azurite (Azure Blob) all enforce
+# conditional writes, for the checkpoint log's per-provider tests. An Iceberg
+# REST catalog keeps its tables in the S3 store, for destination-iceberg.
+# Kafka and a schema registry are for source-kafka and destination-kafka,
+# kinesis-mock for source-kinesis and destination-kinesis, a Spark
+# standalone cluster for Spark steps, and a Flink session cluster for Flink
+# transforms.
+
+name: openetl-dev
+
+services:
+  postgres:
+    image: postgres:18
+    # Logical replication, for the Postgres source's CDC.
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      POSTGRES_USER: openetl
+      POSTGRES_PASSWORD: openetl
+      POSTGRES_DB: openetl
+    ports: ["5432:5432"]
+    volumes: ["postgres:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "openetl"]
+      interval: 2s
+      retries: 30
+
+  temporal:
+    image: temporalio/temporal:1.9.1
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-ip", "0.0.0.0", "--db-filename", "/home/temporal/temporal.db"]
+    ports:
+      - "7233:7233" # frontend
+      - "8233:8233" # web UI
+    # The image runs as uid 1000. Mounting over its home directory gives the
+    # volume that directory's owner; a new path would be owned by root.
+    volumes: ["temporal:/home/temporal"]
+
+  s3:
+    image: chrislusf/seaweedfs:4.51
+    # Anonymous access: development only. Every bucket gets its own volumes,
+    # and the volume count is capped at free disk / volume size, so tests
+    # that create buckets need small volumes, one per new bucket.
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-master.volumeSizeLimitMB=64"]
+    environment:
+      WEED_MASTER_VOLUME_GROWTH_COPY_1: "1"
+    ports: ["8333:8333"]
+    volumes: ["s3:/data"]
+
+  # In memory. Its warehouse is the S3 store's `iceberg` bucket, which tests
+  # create; clients reach the files at 127.0.0.1:8333.
+  iceberg:
+    image: apache/iceberg-rest-fixture:1.10.1
+    environment:
+      CATALOG_WAREHOUSE: s3://iceberg/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://s3:8333
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: openetl
+      AWS_SECRET_ACCESS_KEY: openetl
+    ports: ["8181:8181"]
+    depends_on: [s3]
+
+  gcs:
+    image: fsouza/fake-gcs-server:1.56.1
+    # In memory, unauthenticated. Clients find it through
+    # STORAGE_EMULATOR_HOST=127.0.0.1:4443.
+    command: ["-scheme", "http", "-port", "4443", "-public-host", "127.0.0.1:4443", "-backend", "memory"]
+    ports: ["4443:4443"]
+
+  azure:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    # The well-known devstoreaccount1 account and key, in memory.
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--inMemoryPersistence", "--skipApiVersionCheck"]
+    ports: ["10000:10000"]
+
+  # One KRaft node, in memory between restarts. Clients on the host reach
+  # it at 127.0.0.1:9092, containers at kafka:29092.
+  kafka:
+    image: apache/kafka:4.3.2
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_NUM_PARTITIONS: "3"
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    ports: ["9092:9092"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null"]
+      interval: 5s
+      retries: 30
+
+  # Karapace, a Confluent-compatible schema registry, keeping its schemas
+  # in the broker's _schemas topic.
+  registry:
+    image: ghcr.io/aiven-open/karapace:6.2.4
+    entrypoint: ["python3", "-m", "karapace"]
+    environment:
+      KARAPACE_KARAPACE_REGISTRY: "true"
+      KARAPACE_BOOTSTRAP_URI: kafka:29092
+      KARAPACE_HOST: 0.0.0.0
+      KARAPACE_PORT: "8081"
+      KARAPACE_ADVERTISED_HOSTNAME: registry
+      KARAPACE_GROUP_ID: karapace
+      KARAPACE_MASTER_ELIGIBILITY: "true"
+      KARAPACE_TOPIC_NAME: _schemas
+      KARAPACE_COMPATIBILITY: BACKWARD
+    ports: ["8081:8081"]
+    healthcheck:
+      test: ["CMD", "python3", "healthcheck.py", "http://localhost:8081/_health"]
+      interval: 2s
+      retries: 30
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # kinesis-mock (MIT), in memory, on plain HTTP. moto's Kinesis can't
+  # reshard: it keeps routing records to a split shard.
+  kinesis:
+    image: ghcr.io/etspaceman/kinesis-mock:0.6.2
+    environment:
+      KINESIS_MOCK_PLAIN_PORT: "4568"
+      CREATE_STREAM_DURATION: 100ms
+      SPLIT_SHARD_DURATION: 100ms
+      MERGE_SHARDS_DURATION: 100ms
+      SHARD_LIMIT: "100000"
+      ON_DEMAND_STREAM_COUNT_LIMIT: "10000"
+      LOG_LEVEL: WARN
+    ports: ["4568:4568"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:4568/healthcheck"]
+      interval: 2s
+      retries: 30
+
+  # A Spark 3.5 standalone master and worker, for pipelines' Spark steps
+  # (ADR-0022). Clusters name the master spark://spark-master:7077, and
+  # runners on the host submit through deploy/compose/spark-submit, which runs
+  # spark-submit in this container. OPENETL_SPARK_SHARE is mounted at the same
+  # path in both, so a runner whose store is below it hands Spark file:// URIs
+  # it can read, without S3A. They run as root: a directory store's
+  # directories are the runner's user's alone (0750).
+  spark-master:
+    image: apache/spark:3.5.8
+    user: root
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master"]
+    # The UI, through which runners watch and kill drivers.
+    ports: ["8090:8080"]
+    volumes: ["${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}:${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}"]
+    healthcheck:
+      # The master binds 7077 to spark-master's address, and its UI to all.
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8080"]
+      interval: 2s
+      retries: 30
+
+  spark-worker:
+    image: apache/spark:3.5.8
+    user: root
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    environment:
+      SPARK_WORKER_CORES: "2"
+      SPARK_WORKER_MEMORY: 2g
+    volumes: ["${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}:${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}"]
+    depends_on:
+      spark-master:
+        condition: service_healthy
+
+  # A Flink session cluster for Flink transforms, through its REST API on
+  # 8091. Checkpoints and savepoints go to the S3 store through Hadoop's S3
+  # filesystem, and jobs reach a runner on the host, for its bridge, at
+  # host.docker.internal. Failover and retained checkpoints are the cluster's
+  # own settings, which runners need as set here.
+  flink-jobmanager:
+    image: flink:1.20.5
+    command: jobmanager
+    ports: ["8091:8081"]
+    environment: &flink-env
+      ENABLE_BUILT_IN_PLUGINS: flink-s3-fs-hadoop-1.20.5.jar
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.execution.failover-strategy: full
+        execution.checkpointing.num-retained: 2
+        taskmanager.numberOfTaskSlots: 4
+        s3.endpoint: http://s3:8333
+        s3.path.style.access: true
+        s3.access-key: any
+        s3.secret-key: any
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/overview"]
+      interval: 2s
+      retries: 60
+
+  flink-taskmanager:
+    image: flink:1.20.5
+    command: taskmanager
+    environment: *flink-env
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+
+volumes:
+  postgres:
+  temporal:
+  s3:

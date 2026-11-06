@@ -1,0 +1,8 @@
+#!/bin/sh
+# spark-submit on the kind network, for a runner on the host:
+#
+#   openetld runner --spark-submit deploy/kind/spark-submit
+#
+# Clusters name the master k8s://https://openetl-control-plane:6443, and read
+# the runner's store where OPENETL_SPARK_SHARE mounts it (make kind-up).
+exec docker exec -i "${OPENETL_KIND_SPARK_CONTAINER:-openetl-kind-spark-submit}" /opt/spark/bin/spark-submit "$@"

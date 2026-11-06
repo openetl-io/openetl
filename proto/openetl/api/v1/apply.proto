@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "openetl/api/v1/pipeline.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+service ApplyService {
+  // Stores each definition as an immutable version; unchanged definitions
+  // keep theirs. A pipeline's version pins the versions of its source and
+  // destination and its dbt projects' bundles. Either every document applies
+  // or none does.
+  rpc Apply(ApplyRequest) returns (ApplyResponse) {
+    option (google.api.http) = {
+      post: "/v1/{workspace=workspaces/*}:apply"
+      body: "*"
+    };
+  }
+}
+
+message ApplyRequest {
+  // workspaces/{workspace}, for documents that don't name one.
+  string workspace = 1;
+  repeated Document documents = 2;
+  bool validate_only = 3;
+  // What's applying, such as "cli", for connector versions' provenance.
+  // Empty: "api".
+  string client = 4;
+  // Connector packages, by name, whose versions may come from another
+  // repository than their earlier versions.
+  repeated string transfer = 5;
+}
+
+// Document is a YAML or JSON definition with apiVersion, kind, metadata and
+// spec.
+message Document {
+  // Such as a file name, for error messages.
+  string origin = 1;
+  bytes content = 2;
+}
+
+message ApplyResponse {
+  // One per document, in order.
+  repeated AppliedResource resources = 1;
+  // Pipelines the documents don't define, which have a new version because
+  // a source, destination or dbt project they use changed.
+  repeated AppliedResource dependents = 2;
+  // One per pipeline in resources, then one per dependent.
+  repeated PipelinePlan plans = 3;
+}
+
+message AppliedResource {
+  string kind = 1;
+  string name = 2;
+  ApplyAction action = 3;
+  // Empty for a pipeline in a validate_only apply that also creates its
+  // source or destination: the version hashes their IDs, which only the
+  // apply assigns.
+  string version = 4;
+}
+
+enum ApplyAction {
+  APPLY_ACTION_UNSPECIFIED = 0;
+  APPLY_ACTION_CREATED = 1;
+  APPLY_ACTION_UPDATED = 2;
+  APPLY_ACTION_UNCHANGED = 3;
+}

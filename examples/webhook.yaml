@@ -1,0 +1,16 @@
+# Sends faker-to-postgres's failures, schema changes and lag to an endpoint,
+# signed as Standard Webhooks says with the key in the secret ops-alerts-key:
+#
+#   echo "whsec_$(openssl rand -base64 32)" |
+#     go run ./cmd/openetl secret set ops-alerts-key
+#   go run ./cmd/openetl apply -f examples/webhook.yaml
+#   go run ./cmd/openetl webhook test ops-alerts
+apiVersion: openetl.io/v1alpha1
+kind: Webhook
+metadata:
+  name: ops-alerts
+spec:
+  url: https://hooks.example.com/openetl
+  events: ["sync.failed", "schema.*", "pipeline.lagging", "pipeline.recovered"]
+  pipelines: [faker-to-postgres]
+  secrets: [ops-alerts-key]

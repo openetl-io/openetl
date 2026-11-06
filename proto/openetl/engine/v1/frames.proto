@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package openetl.engine.v1;
+
+import "openetl/connector/v1/destination.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1";
+
+// Each Edge is one connection to the engine's data socket. A frame is a
+// 12-byte header and a payload. The header is the kind (1 byte), 3 zero
+// bytes, the stream (uint32 LE, an index into Edge.streams), and the payload
+// length (uint32 LE).
+//
+// A BATCH payload is an Arrow IPC stream: the schema, any dictionaries, one
+// record batch. Every other payload is the message named after its kind.
+enum FrameKind {
+  FRAME_KIND_UNSPECIFIED = 0;
+  // The first frame on every connection, from the runner.
+  FRAME_KIND_HELLO = 1;
+  FRAME_KIND_BATCH = 2;
+  // To the engine only.
+  FRAME_KIND_ROWS = 3;
+  FRAME_KIND_BARRIER = 4;
+  FRAME_KIND_SCHEMA_CHANGE = 5;
+  reserved 6;
+  reserved "FRAME_KIND_STAGED_FILES";
+  FRAME_KIND_END_OF_STREAM = 7;
+  // From the engine only: a BATCH of patches (ADR-0025), as
+  // openetl.connector.v1.WriteBatch.patch describes.
+  FRAME_KIND_PATCH = 8;
+}
+
+message Hello {
+  string edge = 1;
+}
+
+message Rows {
+  // One JSON object each.
+  repeated bytes rows = 1;
+}
+
+// Barrier ends the epoch on one stream.
+message Barrier {
+  openetl.connector.v1.Epoch epoch = 1;
+}
+
+// SchemaChange comes before the first batch with the new schema.
+message SchemaChange {
+  // An Arrow IPC stream holding only the schema.
+  bytes arrow_schema = 1;
+}
+
+message EndOfStream {}

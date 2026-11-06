@@ -1,0 +1,209 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// SyncService reads pipelines' syncs and their logs. A continuous
+// pipeline's syncs are its runs: each runs one version until it is stopped
+// or fails.
+service SyncService {
+  // Newest first.
+  rpc ListSyncs(ListSyncsRequest) returns (ListSyncsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/syncs"};
+  }
+  rpc GetSync(GetSyncRequest) returns (GetSyncResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*/syncs/*}"};
+  }
+  // A page of the sync's log, oldest first: each attempt's, then each
+  // post-sync step's. The log is in the data plane that ran the sync, so a
+  // runner of that data plane reads it; UNAVAILABLE if none does in time.
+  // Data planes keep logs for 30 days.
+  rpc ReadSyncLog(ReadSyncLogRequest) returns (ReadSyncLogResponse) {
+    option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*/syncs/*}:readLog"};
+  }
+}
+
+message Sync {
+  // workspaces/{workspace}/pipelines/{pipeline}/syncs/{sync}
+  string name = 1;
+  // The pipeline version it ran.
+  string version = 2;
+  SyncState state = 3;
+  // Why it failed.
+  string error = 4;
+  google.protobuf.Timestamp start_time = 5;
+  // Unset while it runs.
+  google.protobuf.Timestamp end_time = 6;
+  // The data plane it ran on, which holds its log.
+  string data_plane = 7;
+  // What its committed epochs carried, by stream, from the checkpoints the
+  // control plane keeps (30 days).
+  repeated SyncStream streams = 8;
+  // A continuous pipeline's run.
+  bool continuous = 9;
+  // When its latest epoch was committed; unset if none was, or the
+  // control plane no longer keeps it.
+  google.protobuf.Timestamp last_commit_time = 10;
+  // How far behind its source the read was at its latest commit, for
+  // sources that report it (CDC, Kafka, Kinesis).
+  repeated ReadProgress progress = 11;
+  // Its attempts that failed, as runners reported them, and the latest
+  // one's error. A sync still running may be retrying.
+  int32 failed_attempts = 12;
+  string last_attempt_error = 13;
+  google.protobuf.Timestamp last_attempt_time = 14;
+  // Its attempts in order, with what each was sized at and used.
+  repeated SyncAttempt attempts = 15;
+}
+
+// SyncAttempt is one attempt of a sync, or one job of a continuous run.
+message SyncAttempt {
+  int32 attempt = 1;
+  JobSize size = 2;
+  JobSizeReason size_reason = 3;
+  // What it has used, as its runner last reported. Unset until it does.
+  Usage usage = 4;
+  // What its source has emitted.
+  uint64 rows = 5;
+  uint64 bytes = 6;
+  // The taxonomy code it failed with, as its runner reported it.
+  string code = 7;
+}
+
+// JobSize is the CPU and memory a job gets (ADR-0027 §3).
+message JobSize {
+  // xs, s, m, l or xl. In a spec, the amounts are then unset.
+  string preset = 1;
+  int64 cpu_millis = 2;
+  int64 memory_bytes = 3;
+}
+
+// JobSizeReason is what set a job's size.
+enum JobSizeReason {
+  JOB_SIZE_REASON_UNSPECIFIED = 0;
+  // resources.size, or resources.min or max holding it to a bound.
+  JOB_SIZE_REASON_SPEC = 1;
+  // The largest hint among its connectors' descriptors.
+  JOB_SIZE_REASON_HINT = 2;
+  // Nothing says more.
+  JOB_SIZE_REASON_DEFAULT = 3;
+  // Its recent attempts' peaks.
+  JOB_SIZE_REASON_HISTORY = 4;
+  // A recent attempt was killed for running out of memory.
+  JOB_SIZE_REASON_OUT_OF_MEMORY = 5;
+  // It would have taken more, but that's the most a runner of its pool can
+  // take now.
+  JOB_SIZE_REASON_LARGEST_RUNNER = 6;
+}
+
+// Usage is what an attempt has used so far.
+message Usage {
+  // CPU seconds of its engine and connector processes.
+  double cpu_seconds = 1;
+  // The most those processes held at once, in resident memory.
+  int64 peak_memory_bytes = 2;
+  // Its estimated share of the runner's own work, such as the coordinator
+  // and built-in connectors.
+  double runner_cpu_seconds = 3;
+  int64 runner_memory_bytes = 4;
+  // How long it has been running.
+  double seconds = 5;
+}
+
+// ReadProgress is what a source reported of how far behind it a read is.
+// Unset fields are unknown.
+message ReadProgress {
+  // Empty: the whole read, such as a replication slot's.
+  string stream = 1;
+  // What the source holds that the read hasn't acknowledged.
+  optional uint64 lag_bytes = 2;
+  optional uint64 lag_records = 3;
+  // How far behind in time; zero once the read has caught up.
+  google.protobuf.Duration lag = 4;
+  // How much more the source can take, or how long it waits, before it
+  // discards what the read hasn't acknowledged.
+  optional uint64 retention_left_bytes = 5;
+  google.protobuf.Duration retention_left = 6;
+  // When the checkpoint that carried it was recorded.
+  google.protobuf.Timestamp time = 7;
+}
+
+message SyncStream {
+  string name = 1;
+  // Quarantined rows included.
+  uint64 rows = 2;
+  uint64 quarantined_rows = 3;
+  // Rows the destination didn't insert because a row with the same
+  // _openetl_id was earlier in the epoch or already there.
+  uint64 collapsed_rows = 4;
+  // Cells held in its committed epochs (ADR-0025).
+  uint64 held_cells = 5;
+  // The columns it held at its latest commit, whole or some of their
+  // cells; discarded ones are left out.
+  repeated string held_columns = 6;
+}
+
+enum SyncState {
+  SYNC_STATE_UNSPECIFIED = 0;
+  SYNC_STATE_RUNNING = 1;
+  SYNC_STATE_SUCCEEDED = 2;
+  SYNC_STATE_FAILED = 3;
+  // A continuous pipeline's run that stopped when asked to: for a new
+  // version, a pause, or a change of mode.
+  SYNC_STATE_STOPPED = 4;
+}
+
+message ListSyncsRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListSyncsResponse {
+  repeated Sync syncs = 1;
+  string next_page_token = 2;
+}
+
+message GetSyncRequest {
+  string name = 1;
+}
+
+message GetSyncResponse {
+  Sync sync = 1;
+}
+
+message ReadSyncLogRequest {
+  string name = 1;
+  // From the last page; unset for the start.
+  string page_token = 2;
+}
+
+message ReadSyncLogResponse {
+  repeated LogEntry entries = 1;
+  // Where the next page starts. Unset once the sync has ended and every
+  // entry is read; while it runs, more may follow, so read again with it.
+  string next_page_token = 2;
+}
+
+// A line of a sync's log, from the runner, the engine, the connectors or
+// dbt.
+message LogEntry {
+  google.protobuf.Timestamp time = 1;
+  // DEBUG, INFO, WARN or ERROR.
+  string level = 2;
+  string message = 3;
+  // The attempt that logged it, from 1: the sync's, or its post-sync
+  // step's.
+  int32 attempt = 4;
+  // The post-sync step that logged it, from 1; 0 for the sync's attempts.
+  int32 post_sync_step = 5;
+  // The line's other fields, such as component: connector, engine or dbt.
+  google.protobuf.Struct attrs = 6;
+}
