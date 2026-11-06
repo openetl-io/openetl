@@ -24,10 +24,10 @@ import (
 	"time"
 )
 
-// chaosPool keeps a runner going in each slot. Each slot reaches Temporal
-// and the API through proxies of its own, which partition it, and an S3
-// store through a third, which injects the faults runs arm. A runner that
-// dies is started again after a pause.
+// chaosPool keeps a runner going in each slot. Each slot reaches the API
+// through a proxy of its own, which partitions it, and a filter that drops its
+// results, and an S3 store through another, which injects the faults runs arm.
+// A runner that dies is started again after a pause.
 type chaosPool struct {
 	cfg   poolConfig
 	store string
@@ -51,10 +51,12 @@ type poolConfig struct {
 }
 
 type slot struct {
-	i             int
-	pool          *chaosPool
-	s3            *s3Proxy
-	temporal, api *proxy
+	i    int
+	pool *chaosPool
+	s3   *s3Proxy
+	api  *proxy
+	// Drops its results, between the two.
+	results *apiFilter
 	// The port the runner's bridge listens on, or 0.
 	bridge  int
 	mu      sync.Mutex
@@ -70,7 +72,8 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 		t.Fatal(err)
 	}
 	for i := range cfg.runners {
-		s := &slot{i: cfg.first + i, pool: p, temporal: startProxy(t, env.temporal), api: startProxy(t, strings.TrimPrefix(env.apiURL, "http://"))}
+		s := &slot{i: cfg.first + i, pool: p, results: startAPIFilter(t, env.apiURL)}
+		s.api = startProxy(t, strings.TrimPrefix(s.results.url(), "http://"))
 		if cfg.bucket != "" {
 			s.s3 = startS3Proxy(t, s, target)
 		}
@@ -132,7 +135,7 @@ func (s *slot) start() (*runner, error) {
 		store = s.pool.store + url.QueryEscape("http://"+s.s3.addr())
 	}
 	args := []string{"runner",
-		"--api-url", "http://" + s.api.addr(), "--temporal-address", s.temporal.addr(), "--temporal-namespace", env.ns,
+		"--api-url", "http://" + s.api.addr(), "--report-interval", reportInterval(), "--capacity", runnerCapacity,
 		"--data-plane", cfg.dataPlane, "--checkpoints", store,
 		"--engine", env.engine, "--cache", env.cache, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--log-format", "text"}
 	if s.bridge > 0 {
@@ -232,15 +235,13 @@ func (s *slot) children(prefix string) []int {
 	return pids
 }
 
-// partition cuts the slot off from Temporal and the API for d.
+// partition cuts the slot off from the API for d.
 func (s *slot) partition(ctx context.Context, d time.Duration) {
-	s.temporal.cut(true)
 	s.api.cut(true)
 	select {
 	case <-ctx.Done():
 	case <-time.After(d):
 	}
-	s.temporal.cut(false)
 	s.api.cut(false)
 }
 

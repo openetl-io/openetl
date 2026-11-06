@@ -46,11 +46,20 @@ JOIN connector_roles r USING (org_id, name, version)
 WHERE v.org_id = @org_id AND r.digest = ANY(@digests::text[]);
 
 -- name: ReportRunner :exec
-INSERT INTO runners (org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time)
-VALUES (@org_id, @data_plane_id, @id, @release, @protocol, @features, @launchers, @platform, now())
+INSERT INTO runners (
+    org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time,
+    pool, capacity_cpu, capacity_memory, reserved_cpu, reserved_memory, orphan_cpu, orphan_memory, draining
+)
+VALUES (
+    @org_id, @data_plane_id, @id, @release, @protocol, @features, @launchers, @platform, now(),
+    @pool, @capacity_cpu, @capacity_memory, @reserved_cpu, @reserved_memory, @orphan_cpu, @orphan_memory, @draining
+)
 ON CONFLICT (org_id, data_plane_id, id) DO UPDATE SET
     release = EXCLUDED.release, protocol = EXCLUDED.protocol, features = EXCLUDED.features,
-    launchers = EXCLUDED.launchers, platform = EXCLUDED.platform, report_time = now();
+    launchers = EXCLUDED.launchers, platform = EXCLUDED.platform, report_time = now(),
+    pool = EXCLUDED.pool, capacity_cpu = EXCLUDED.capacity_cpu, capacity_memory = EXCLUDED.capacity_memory,
+    reserved_cpu = EXCLUDED.reserved_cpu, reserved_memory = EXCLUDED.reserved_memory,
+    orphan_cpu = EXCLUDED.orphan_cpu, orphan_memory = EXCLUDED.orphan_memory, draining = EXCLUDED.draining;
 
 -- name: RecentRunners :many
 -- A data plane's runners that reported since @since; old reports go.

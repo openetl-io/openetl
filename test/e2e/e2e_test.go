@@ -49,6 +49,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/auth"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/daemon"
+	"github.com/unsuitable001/openetl/internal/orchestration/dispatch"
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
 	"github.com/unsuitable001/openetl/internal/platform/telemetry"
@@ -180,8 +181,9 @@ func setup(m *testing.M) (int, error) {
 	// Short timeouts, so tests don't wait out production's, unless
 	// OPENETL_E2E_TIMEOUTS=production measures with them.
 	wf := workflows.Workflows{AttemptRetry: time.Second, AttemptHeartbeat: 4 * time.Second, StreamHeartbeat: 4 * time.Second}
+	placement := dispatch.Options{ReportLapse: 3 * time.Second, StartTimeout: 3 * time.Second, ReserveAfter: 5 * time.Second}
 	if os.Getenv("OPENETL_E2E_TIMEOUTS") == "production" {
-		wf = workflows.Workflows{}
+		wf, placement = workflows.Workflows{}, dispatch.Options{}
 	}
 	go func() {
 		done <- daemon.Run(ctx, daemon.Options{
@@ -194,6 +196,7 @@ func setup(m *testing.M) (int, error) {
 			Listener:  ln,
 			Ready:     func(string) { close(ready) },
 			Workflows: wf,
+			Dispatch:  placement,
 		})
 	}()
 	select {
@@ -385,24 +388,43 @@ type runner struct {
 	done chan struct{}
 }
 
-func startRunner(t *testing.T) *runner {
-	t.Helper()
-	return startRunnerVia(t, env.temporal, env.apiURL)
+// runnerCapacity is more than a test's runner needs: they take up streams
+// earlier tests left running, which would otherwise crowd out their own.
+const runnerCapacity = "64,128Gi"
+
+// reportInterval goes with e2e's heartbeat timeouts.
+func reportInterval() string {
+	if os.Getenv("OPENETL_E2E_TIMEOUTS") == "production" {
+		return "10s"
+	}
+	return "1s"
 }
 
-// startRunnerVia starts a runner that reaches Temporal and the API at these
-// addresses. extra flags override the usual ones.
-func startRunnerVia(t *testing.T, temporal, apiURL string, extra ...string) *runner {
+func startRunner(t *testing.T) *runner {
+	t.Helper()
+	return startRunnerVia(t, env.apiURL)
+}
+
+// startRunnerVia starts a runner that reaches the API at this address. extra
+// flags override the usual ones.
+func startRunnerVia(t *testing.T, apiURL string, extra ...string) *runner {
+	t.Helper()
+	return startRunnerWith(t, env.runnerToken, apiURL, extra...)
+}
+
+// startRunnerWith is startRunnerVia with a token of the runner's own, for a
+// data plane other than the default.
+func startRunnerWith(t *testing.T, token, apiURL string, extra ...string) *runner {
 	t.Helper()
 	args := []string{"runner",
-		"--api-url", apiURL, "--temporal-address", temporal, "--temporal-namespace", env.ns,
+		"--api-url", apiURL, "--report-interval", reportInterval(), "--capacity", runnerCapacity,
 		"--checkpoints", env.checkpoints, "--engine", env.engine, "--cache", env.cache, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--log-format", "text"}
 	if env.dbt != "" {
 		args = append(args, "--dbt", env.dbt)
 	}
 	args = append(args, extra...)
 	cmd := exec.Command(env.openetld, args...)
-	cmd.Env = append(os.Environ(), "OPENETL_RUNNER_TOKEN="+env.runnerToken)
+	cmd.Env = append(os.Environ(), "OPENETL_RUNNER_TOKEN="+token)
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
 	if err := cmd.Start(); err != nil {

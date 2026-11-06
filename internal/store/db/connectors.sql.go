@@ -377,7 +377,7 @@ func (q *Queries) ListVersionRoles(ctx context.Context, arg ListVersionRolesPara
 }
 
 const recentRunners = `-- name: RecentRunners :many
-SELECT org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time FROM runners
+SELECT org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time, pool, capacity_cpu, capacity_memory, reserved_cpu, reserved_memory, orphan_cpu, orphan_memory, draining FROM runners
 WHERE org_id = $1 AND data_plane_id = $2 AND report_time >= $3
 ORDER BY id
 `
@@ -408,6 +408,14 @@ func (q *Queries) RecentRunners(ctx context.Context, arg RecentRunnersParams) ([
 			&i.Launchers,
 			&i.Platform,
 			&i.ReportTime,
+			&i.Pool,
+			&i.CapacityCpu,
+			&i.CapacityMemory,
+			&i.ReservedCpu,
+			&i.ReservedMemory,
+			&i.OrphanCpu,
+			&i.OrphanMemory,
+			&i.Draining,
 		); err != nil {
 			return nil, err
 		}
@@ -420,22 +428,39 @@ func (q *Queries) RecentRunners(ctx context.Context, arg RecentRunnersParams) ([
 }
 
 const reportRunner = `-- name: ReportRunner :exec
-INSERT INTO runners (org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+INSERT INTO runners (
+    org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time,
+    pool, capacity_cpu, capacity_memory, reserved_cpu, reserved_memory, orphan_cpu, orphan_memory, draining
+)
+VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, now(),
+    $9, $10, $11, $12, $13, $14, $15, $16
+)
 ON CONFLICT (org_id, data_plane_id, id) DO UPDATE SET
     release = EXCLUDED.release, protocol = EXCLUDED.protocol, features = EXCLUDED.features,
-    launchers = EXCLUDED.launchers, platform = EXCLUDED.platform, report_time = now()
+    launchers = EXCLUDED.launchers, platform = EXCLUDED.platform, report_time = now(),
+    pool = EXCLUDED.pool, capacity_cpu = EXCLUDED.capacity_cpu, capacity_memory = EXCLUDED.capacity_memory,
+    reserved_cpu = EXCLUDED.reserved_cpu, reserved_memory = EXCLUDED.reserved_memory,
+    orphan_cpu = EXCLUDED.orphan_cpu, orphan_memory = EXCLUDED.orphan_memory, draining = EXCLUDED.draining
 `
 
 type ReportRunnerParams struct {
-	OrgID       uuid.UUID
-	DataPlaneID string
-	ID          string
-	Release     string
-	Protocol    string
-	Features    []string
-	Launchers   []string
-	Platform    string
+	OrgID          uuid.UUID
+	DataPlaneID    string
+	ID             string
+	Release        string
+	Protocol       string
+	Features       []string
+	Launchers      []string
+	Platform       string
+	Pool           string
+	CapacityCpu    int64
+	CapacityMemory int64
+	ReservedCpu    int64
+	ReservedMemory int64
+	OrphanCpu      int64
+	OrphanMemory   int64
+	Draining       bool
 }
 
 func (q *Queries) ReportRunner(ctx context.Context, arg ReportRunnerParams) error {
@@ -448,6 +473,14 @@ func (q *Queries) ReportRunner(ctx context.Context, arg ReportRunnerParams) erro
 		arg.Features,
 		arg.Launchers,
 		arg.Platform,
+		arg.Pool,
+		arg.CapacityCpu,
+		arg.CapacityMemory,
+		arg.ReservedCpu,
+		arg.ReservedMemory,
+		arg.OrphanCpu,
+		arg.OrphanMemory,
+		arg.Draining,
 	)
 	return err
 }

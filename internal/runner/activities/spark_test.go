@@ -17,9 +17,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -28,6 +25,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/runner/worker"
 	"github.com/unsuitable001/openetl/internal/spark"
 )
 
@@ -116,9 +114,8 @@ func TestRunSpark(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Records name the sync by its workflow's run, as the activity
-		// environment has it.
-		if err := sess.Commit(t.Context(), &checkpoint.Record{Epoch: 1, Sync: "default-test-run-id", SyncStart: &checkpoint.RecordRef{}, SyncRows: map[string]uint64{"orders": 3}}); err != nil {
+		// Records name the sync by its workflow's run.
+		if err := sess.Commit(t.Context(), &checkpoint.Record{Epoch: 1, Sync: "run1", SyncStart: &checkpoint.RecordRef{}, SyncRows: map[string]uint64{"orders": 3}}); err != nil {
 			t.Fatal(err)
 		}
 		bin, dir, ui := fakeStandalone(t, states...)
@@ -128,22 +125,13 @@ func TestRunSpark(t *testing.T) {
 			HTTP: code.Client(), SparkSubmit: bin, Logs: store, Poll: 10 * time.Millisecond,
 		}, storage, dir
 	}
-	in := contract.SparkInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s1", StepNumber: 2,
+	in := contract.SparkInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s1", RunKey: "run1", StepNumber: 2, Attempt: 1,
 		Step: contract.SparkStep{Cluster: "lab", ClusterVersion: "cv1", Jar: code.URL + "/models.jar", SHA256: sum(jar), MainClass: "com.acme.Models"}}
-	run := func(a *Spark, env *testsuite.TestActivityEnvironment) (contract.SparkResult, error) {
-		env.RegisterActivity(a.RunSpark)
-		v, err := env.ExecuteActivity(a.RunSpark, in)
-		var res contract.SparkResult
-		if err == nil {
-			err = v.Get(&res)
-		}
-		return res, err
-	}
-	var suite testsuite.WorkflowTestSuite
+	run := func(ctx context.Context, a *Spark) (contract.SparkResult, error) { return a.RunSpark(ctx, in) }
 
 	t.Run("finished", func(t *testing.T) {
 		a, storage, dir := setup(t, "SUBMITTED", "RUNNING", "FINISHED")
-		res, err := run(a, suite.NewTestActivityEnvironment())
+		res, err := run(t.Context(), a)
 		if err != nil || res.Submission != "driver-1" || res.State != "FINISHED" {
 			t.Fatalf("got %+v, %v", res, err)
 		}
@@ -169,9 +157,9 @@ func TestRunSpark(t *testing.T) {
 			t.Errorf("submission %s, %v", got, err)
 		}
 
-		// A retried activity watches the application it finds, and
-		// submits nothing.
-		res, err = run(a, suite.NewTestActivityEnvironment())
+		// A retried step watches the application it finds, and submits
+		// nothing.
+		res, err = run(t.Context(), a)
 		if err != nil || res.Submission != "driver-1" || submits(t, dir) != 1 {
 			t.Errorf("retried: %+v, %v, %d submissions", res, err, submits(t, dir))
 		}
@@ -179,20 +167,18 @@ func TestRunSpark(t *testing.T) {
 
 	t.Run("failed", func(t *testing.T) {
 		a, _, _ := setup(t, "RUNNING", "FAILED")
-		_, err := run(a, suite.NewTestActivityEnvironment())
-		var app *temporal.ApplicationError
-		if !asApplicationError(err, &app) || app.Type() != contract.SparkFailed || !app.NonRetryable() || !strings.Contains(app.Message(), "driver driver-1 ended FAILED") {
+		_, err := run(t.Context(), a)
+		var f *contract.Failure
+		if !errors.As(err, &f) || f.Code != contract.SparkFailed || !strings.Contains(f.Message, "driver driver-1 ended FAILED") {
 			t.Errorf("got %v", err)
 		}
 	})
 
 	t.Run("out of time", func(t *testing.T) {
 		a, _, dir := setup(t, "RUNNING")
-		env := suite.NewTestActivityEnvironment()
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
-		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
-		if _, err := run(a, env); err == nil {
+		if _, err := run(ctx, a); err == nil {
 			t.Fatal("it finished")
 		}
 		if b, err := os.ReadFile(filepath.Join(dir, "killed")); err != nil || string(b) != "driver-1" {
@@ -202,17 +188,12 @@ func TestRunSpark(t *testing.T) {
 
 	t.Run("the runner stops", func(t *testing.T) {
 		a, _, dir := setup(t, "RUNNING")
-		env := suite.NewTestActivityEnvironment()
 		stop := make(chan struct{})
 		close(stop)
-		env.SetWorkerStopChannel(stop)
-		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		ctx, cancel := context.WithTimeout(worker.NewContext(t.Context(), worker.NewWork(worker.Spec{ID: "w"}, stop)), time.Second)
 		defer cancel()
-		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
-		// The test environment reports its own timeout in place of the
-		// activity's TRANSIENT.
-		if _, err := run(a, env); err == nil {
-			t.Fatal("it finished")
+		if _, err := run(ctx, a); errs.CodeOf(err) != errs.Transient {
+			t.Fatalf("got %v, want TRANSIENT", err)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "killed")); !os.IsNotExist(err) {
 			t.Errorf("a stopping runner killed the application: %v", err)
@@ -223,10 +204,6 @@ func TestRunSpark(t *testing.T) {
 func sum(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
-}
-
-func asApplicationError(err error, target **temporal.ApplicationError) bool {
-	return errors.As(err, target)
 }
 
 func TestGrant(t *testing.T) {

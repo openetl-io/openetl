@@ -1,5 +1,5 @@
-// Package activities holds the data plane's activities, which run on a
-// runner.
+// Package activities holds the work a runner runs, which workflows send
+// through the API.
 package activities
 
 import (
@@ -13,15 +13,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/attribute"
-	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -34,8 +29,8 @@ import (
 	"github.com/unsuitable001/openetl/internal/engineclient"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	"github.com/unsuitable001/openetl/internal/runner"
+	"github.com/unsuitable001/openetl/internal/runner/worker"
 	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/spark"
 	"github.com/unsuitable001/openetl/internal/staging"
@@ -61,8 +56,6 @@ type Sync struct {
 	Logs checkpoint.Store
 	// How long syncs' logs are kept. Zero: contract.DefaultLogHistory.
 	LogHistory time.Duration
-	// Stream jobs heartbeat through it.
-	Temporal Heartbeater
 	// Runs pipelines' Spark transforms. Nil: they fail.
 	Spark *Spark
 	// Serves pipelines' Flink jobs. Nil: they fail.
@@ -72,231 +65,103 @@ type Sync struct {
 	HTTP *http.Client
 }
 
-// Heartbeater records a heartbeat for the activity a task token names, and
-// returns Temporal's answer. client.Client is one.
-type Heartbeater interface {
-	RecordActivityHeartbeat(ctx context.Context, taskToken []byte, details ...any) error
-}
-
-// RunSyncAttempt runs one attempt of a sync. Heartbeats carry the last
-// committed epoch, as a progress hint only. When the worker stops, the
-// attempt stops at its next checkpoint and fails with DRAINING, whose
-// details are the attempt number.
+// RunSyncAttempt runs one attempt of a sync. When it's asked to stop, or the
+// runner is stopping, the attempt stops at its next checkpoint, and fails
+// with DRAINING if it wasn't asked to.
 func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (contract.AttemptResult, error) {
 	log := a.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	info := activity.GetInfo(ctx)
-	attempt := int(in.Earlier + info.Attempt)
+	work := worker.From(ctx)
+	attempt := int(in.Attempt)
 	log, done := attemptLog(ctx, a.Logs, log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", attempt), in.OrgID, in.PipelineID, in.SyncID, 0, attempt)
 	defer done()
-	if err := lateStart(info); err != nil {
+	if err := work.LateStart(); err != nil {
 		log.Warn("sync attempt not started", "err", err)
-		return contract.AttemptResult{}, temporalx.ApplicationError(err)
+		return contract.AttemptResult{}, err
 	}
 	if attempt == 1 {
 		defer pruneLogs(ctx, a.Logs, a.LogHistory, in.OrgID, in.PipelineID, log)()
 	}
-	var last atomic.Uint64
-	stop := heartbeats(ctx, func() any { return last.Load() })
 	res, err := a.run(ctx, attemptParams{
 		org: in.OrgID, pipeline: in.PipelineID, version: in.Version,
-		sync: info.WorkflowExecution.RunID, drain: activity.GetWorkerStopChannel(ctx), last: &last,
+		sync: in.RunKey, drain: work.Stopping(), onCommit: work.SetEpoch,
 	}, log)
-	stop()
-	countAttempt(ctx, in.OrgID, in.PipelineID, "sync", attempt, false, err)
+	countAttempt(ctx, in.OrgID, in.PipelineID, "sync", attempt, work.Cancelled(), err)
 	var failed *spark.Failed
 	switch {
 	case errors.As(err, &failed):
 		log.Warn("sync attempt failed: the Spark transform failed", "err", err)
-		a.reportFailure(ctx, in.PipelineID, info.WorkflowExecution.RunID, attempt, err, log)
-		return res, temporal.NewNonRetryableApplicationError(err.Error(), contract.SparkFailed, nil)
+		a.reportFailure(ctx, in.PipelineID, in.RunKey, attempt, err, log)
+		return res, &contract.Failure{Code: contract.SparkFailed, Message: err.Error()}
+	case errors.Is(err, runner.ErrDrained) && work.Cancelled():
+		log.Info("sync attempt stopped", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
+		return res, worker.ErrCancelled
 	case errors.Is(err, runner.ErrDrained):
 		log.Info("sync attempt drained", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
-		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Draining.String(), temporal.ApplicationErrorOptions{Details: []any{info.Attempt}})
+		return res, errs.Wrap(errs.Draining, err, "")
 	case err != nil:
 		log.Warn("sync attempt failed", "code", errs.CodeOf(err).String(), "err", err)
-		a.reportFailure(ctx, in.PipelineID, info.WorkflowExecution.RunID, attempt, err, log)
+		a.reportFailure(ctx, in.PipelineID, in.RunKey, attempt, err, log)
 	default:
 		log.Info("sync attempt finished", "generation", res.Generation, "recovery", res.Recovery, "restored", res.Restored, "committed", res.Committed)
 	}
-	return res, temporalx.ApplicationError(err)
+	return res, err
 }
 
-// streamDrain is how long a stream job has to stop at a checkpoint once
-// it's asked to, as long as the worker's stop timeout.
-const streamDrain = 10 * time.Minute
-
-// RunStreamJob runs a continuous pipeline's job until it is asked to stop.
-// Heartbeats carry the last committed epoch. A job doesn't stop when
-// heartbeats fail, since a Temporal outage would then stop every job, and
-// fencing makes a job Temporal replaced harmless (streamHeartbeats). When
-// the activity is cancelled, or Temporal says it no longer exists, the job
-// stops at its next checkpoint and the activity reports itself cancelled.
-// When the worker stops, it fails with DRAINING instead, whose details are
-// the attempt number.
+// RunStreamJob runs a continuous pipeline's job until it is asked to stop. A
+// job doesn't stop when reports fail, since an API outage would then stop
+// every job, and fencing makes a job that's been replaced harmless. When a
+// report's answer says to stop, the job stops at its next checkpoint and
+// reports itself cancelled. When the runner stops, it fails with DRAINING
+// instead.
 func (a *Sync) RunStreamJob(ctx context.Context, in contract.StreamJobInput) (contract.AttemptResult, error) {
 	log := a.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	info := activity.GetInfo(ctx)
-	attempt := int(in.Earlier + info.Attempt)
+	work := worker.From(ctx)
+	attempt := int(in.Attempt)
 	log, done := attemptLog(ctx, a.Logs, log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", attempt), in.OrgID, in.PipelineID, in.SyncID, 0, attempt)
 	defer done()
-	if err := lateStart(info); err != nil {
+	if err := work.LateStart(); err != nil {
 		log.Warn("stream job not started", "err", err)
-		return contract.AttemptResult{}, temporalx.ApplicationError(err)
+		return contract.AttemptResult{}, err
 	}
 	if attempt == 1 {
 		defer pruneLogs(ctx, a.Logs, a.LogHistory, in.OrgID, in.PipelineID, log)()
 	}
-
-	var last atomic.Uint64
-	gone, stopHeartbeats := a.streamHeartbeats(ctx, func() any { return last.Load() }, log)
-	defer stopHeartbeats()
-	cancelled := func() bool {
-		select {
-		case <-gone:
-			return true
-		default:
-			return ctx.Err() != nil
-		}
-	}
-	// The job outlives the activity's context by up to streamDrain.
-	jobCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancel()
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-gone:
-		case <-activity.GetWorkerStopChannel(ctx):
-		case <-jobCtx.Done():
-			return
-		}
-		close(stop)
-		t := time.NewTimer(streamDrain)
-		defer t.Stop()
-		select {
-		case <-t.C:
-			log.Warn("the job didn't stop at a checkpoint in time")
-			cancel()
-		case <-jobCtx.Done():
-		}
-	}()
 	log.Info("stream job starting")
-	res, err := a.run(jobCtx, attemptParams{
+	res, err := a.run(ctx, attemptParams{
 		org: in.OrgID, pipeline: in.PipelineID, version: in.Version,
-		sync: in.RunKey, drain: stop, last: &last,
+		sync: in.RunKey, drain: work.Stopping(), onCommit: work.SetEpoch,
 	}, log)
-	stopHeartbeats()
-	countAttempt(ctx, in.OrgID, in.PipelineID, "stream", attempt, cancelled(), err)
+	cancelled := work.Cancelled()
+	countAttempt(ctx, in.OrgID, in.PipelineID, "stream", attempt, cancelled, err)
 	switch {
-	case errors.Is(err, runner.ErrDrained) && cancelled():
+	case errors.Is(err, runner.ErrDrained) && cancelled:
 		log.Info("stream job stopped", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
-		return res, temporal.NewCanceledError()
+		return res, worker.ErrCancelled
 	case errors.Is(err, runner.ErrDrained):
 		log.Info("stream job drained", "generation", res.Generation, "committed", res.Committed, "last", res.Last)
-		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Draining.String(), temporal.ApplicationErrorOptions{Details: []any{info.Attempt}})
+		return res, errs.Wrap(errs.Draining, err, "")
 	case err == nil:
 		err = errs.New(errs.ContractChanged, "the source ended every stream, and a continuous pipeline's streams don't end")
-	case cancelled():
+	case cancelled:
 		log.Info("stream job stopped", "err", err)
-		return res, temporal.NewCanceledError()
+		return res, worker.ErrCancelled
 	}
 	log.Warn("stream job failed", "code", errs.CodeOf(err).String(), "err", err)
 	a.reportFailure(ctx, in.PipelineID, in.RunKey, attempt, err, log)
 	if failed := (*runner.FlinkFailed)(nil); errors.As(err, &failed) {
-		return res, temporal.NewNonRetryableApplicationError(err.Error(), contract.FlinkFailed, nil)
+		return res, &contract.Failure{Code: contract.FlinkFailed, Message: err.Error()}
 	}
-	if errs.CodeOf(err) == errs.Fenced {
-		// Retried, unlike a sync's: see the supervisor.
-		return res, temporal.NewApplicationErrorWithOptions(err.Error(), errs.Fenced.String(), temporal.ApplicationErrorOptions{Cause: err})
-	}
-	return res, temporalx.ApplicationError(err)
+	return res, err
 }
 
-// streamHeartbeats records a stream job's heartbeats with progress() every
-// 10 s, or a quarter of the heartbeat timeout if that's shorter, until stop
-// is called. It closes gone once Temporal answers that the job was
-// cancelled or no longer exists. The SDK's heartbeats cancel the activity
-// when one doesn't reach Temporal, which would stop every job in an outage;
-// these leave the job running, and fencing stops it if Temporal replaces it.
-func (a *Sync) streamHeartbeats(ctx context.Context, progress func() any, log *slog.Logger) (gone <-chan struct{}, stop func()) {
-	info := activity.GetInfo(ctx)
-	every := 10 * time.Second
-	if t := info.HeartbeatTimeout / 4; t > 0 && t < every {
-		every = t
-	}
-	// A slow answer still counts.
-	timeout := max(every, info.HeartbeatTimeout/2)
-	g := make(chan struct{})
-	done := make(chan struct{})
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		t := time.NewTicker(every)
-		defer t.Stop()
-		// Since when heartbeats haven't reached Temporal, and when that was
-		// last logged.
-		var failing, warned time.Time
-		for {
-			select {
-			case <-t.C:
-			case <-done:
-				return
-			}
-			hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
-			err := a.Temporal.RecordActivityHeartbeat(hctx, info.TaskToken, progress())
-			cancel()
-			switch {
-			case err == nil:
-				if !failing.IsZero() {
-					log.Info("heartbeats reach Temporal again", "after", time.Since(failing).Round(time.Second))
-					failing = time.Time{}
-				}
-			case replaced(err):
-				log.Info("Temporal says the job was cancelled or replaced; stopping it at a checkpoint", "err", err)
-				// The SDK reports an activity cancelled only if a heartbeat of
-				// its own got the answer.
-				activity.RecordHeartbeat(ctx, progress())
-				close(g)
-				return
-			default:
-				if failing.IsZero() {
-					failing = time.Now()
-				}
-				if time.Since(warned) >= time.Minute {
-					log.Warn("heartbeat failed; the job carries on, and is fenced if Temporal replaces it", "failing", time.Since(failing).Round(time.Second), "err", err)
-					warned = time.Now()
-				}
-			}
-		}
-	}()
-	return g, sync.OnceFunc(func() {
-		close(done)
-		<-finished
-	})
-}
-
-// replaced reports whether Temporal answered a heartbeat by saying the
-// activity was cancelled, paused or reset, or no longer exists, as when it
-// timed out and another attempt took its place.
-func replaced(err error) bool {
-	var (
-		cancelled  *temporal.CanceledError
-		notFound   *serviceerror.NotFound
-		nsNotFound *serviceerror.NamespaceNotFound
-		nsInactive *serviceerror.NamespaceNotActive
-	)
-	return errors.As(err, &cancelled) || errors.As(err, &notFound) || errors.As(err, &nsNotFound) || errors.As(err, &nsInactive) ||
-		errors.Is(err, activity.ErrActivityPaused) || errors.Is(err, activity.ErrActivityReset)
-}
-
-// reportFailure tells the control plane an attempt failed, which Temporal
-// shows only once retries run out. It's best effort.
+// reportFailure tells the control plane an attempt failed, which it otherwise
+// sees only once retries run out. It's best effort.
 func (a *Sync) reportFailure(ctx context.Context, pipeline, run string, attempt int, err error, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -316,14 +181,13 @@ type attemptParams struct {
 	sync string
 	// Closing it stops the attempt at its next checkpoint.
 	drain <-chan struct{}
-	// Set to each epoch the attempt commits, for heartbeats.
-	last *atomic.Uint64
+	// Told each epoch the attempt commits, for reports.
+	onCommit func(uint64)
 }
 
-// run runs an attempt on ctx, which carries the activity's info.
+// run runs an attempt on ctx, which carries the work.
 func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (contract.AttemptResult, error) {
 	var out contract.AttemptResult
-	info := activity.GetInfo(ctx)
 	spec, err := syncSpec(ctx, a.API, p.org, p.pipeline, p.version)
 	if err != nil {
 		return out, err
@@ -345,7 +209,7 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	if err != nil {
 		return out, err
 	}
-	job.Owner = fmt.Sprintf("%s/%s/%d/%s", info.WorkflowExecution.RunID, info.ActivityID, info.Attempt, rand.Text()[:8])
+	job.Owner = fmt.Sprintf("%s/%s", worker.From(ctx).ID, rand.Text()[:8])
 	job.Sync = p.sync
 	job.Org = spec.GetOrgId()
 	job.Progress = runner.NewProgress(attribute.String("openetl.org", spec.GetOrgId()), attribute.String("openetl.pipeline", spec.GetPipelineId()))
@@ -395,7 +259,7 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	job.Dataflow = &engineclient.Dataflow{Options: engine}
 	job.Logger = log
 	job.Drain = p.drain
-	job.OnCommit = p.last.Store
+	job.OnCommit = p.onCommit
 	reports := newReporter(ctx, a.API, spec.GetPipelineId(), p.sync, log)
 	reports.progress, reports.lowered = job.Progress, job.Lowered()
 	job.OnSchemas, job.OnCheckpoint = reports.schemas, reports.checkpoint

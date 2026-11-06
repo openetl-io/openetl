@@ -1,0 +1,420 @@
+package worker
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/durationpb"
+
+	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
+	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
+)
+
+// fakeAPI hands out work, and answers reports with what stop says.
+type fakeAPI struct {
+	dataplanev1connect.UnimplementedDataPlaneServiceHandler
+
+	mu      sync.Mutex
+	work    []*dataplanev1.Work
+	polls   []*dataplanev1.PollWorkRequest
+	reports []*dataplanev1.ReportRunnerRequest
+	results []*dataplanev1.ReportResultRequest
+	stop    []string
+	// Results fail until this many have been tried.
+	failResults int
+	refused     bool
+}
+
+func (f *fakeAPI) ReportRunner(_ context.Context, req *connect.Request[dataplanev1.ReportRunnerRequest]) (*connect.Response[dataplanev1.ReportRunnerResponse], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports = append(f.reports, req.Msg)
+	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{Stop: f.stop}), nil
+}
+
+func (f *fakeAPI) PollWork(ctx context.Context, req *connect.Request[dataplanev1.PollWorkRequest]) (*connect.Response[dataplanev1.PollWorkResponse], error) {
+	f.mu.Lock()
+	f.polls = append(f.polls, req.Msg)
+	work := f.work
+	f.work = nil
+	f.mu.Unlock()
+	if len(work) == 0 {
+		select {
+		case <-time.After(5 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return connect.NewResponse(&dataplanev1.PollWorkResponse{Work: work}), nil
+}
+
+func (f *fakeAPI) ReportResult(_ context.Context, req *connect.Request[dataplanev1.ReportResultRequest]) (*connect.Response[dataplanev1.ReportResultResponse], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failResults > 0 {
+		f.failResults--
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("down"))
+	}
+	f.results = append(f.results, req.Msg)
+	return connect.NewResponse(&dataplanev1.ReportResultResponse{Accepted: !f.refused}), nil
+}
+
+func (f *fakeAPI) give(w ...*dataplanev1.Work) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.work = append(f.work, w...)
+}
+
+func (f *fakeAPI) tell(stop ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stop = stop
+}
+
+func (f *fakeAPI) result(id string) *dataplanev1.ReportResultRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.results {
+		if r.GetId() == id {
+			return r
+		}
+	}
+	return nil
+}
+
+func (f *fakeAPI) lastReport() *dataplanev1.ReportRunnerRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.reports) == 0 {
+		return nil
+	}
+	return f.reports[len(f.reports)-1]
+}
+
+func eventually(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("waited too long for %s", what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// start runs a worker against a fake API until the returned stop is called.
+func start(t *testing.T, kinds map[string]Kind, capacity resources.Size) (api *fakeAPI, w *Worker, stop func()) {
+	t.Helper()
+	api = &fakeAPI{}
+	mux := http.NewServeMux()
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	w = &Worker{
+		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), ID: "r1", Release: "dev", Protocol: "v1", Platform: "linux/amd64",
+		Pool: "default", Capacity: capacity, ReportEvery: 5 * time.Millisecond, Kinds: kinds,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Error("the worker didn't stop")
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return api, w, stop
+}
+
+func work(id, kind string, size *dataplanev1.Resources, input any) *dataplanev1.Work {
+	b, _ := json.Marshal(input)
+	return &dataplanev1.Work{Id: id, Kind: kind, Input: b, Size: size, HeartbeatTimeout: durationpb.New(time.Minute), Timeout: durationpb.New(time.Hour)}
+}
+
+var small = &dataplanev1.Resources{CpuMillis: 1000, MemoryBytes: 1 << 30}
+
+func TestResultsReachTheAPI(t *testing.T) {
+	type in struct{ N int }
+	type out struct{ Doubled int }
+	api, _, _ := start(t, map[string]Kind{
+		"double": {Handler: Handle(func(_ context.Context, i in) (out, error) { return out{i.N * 2}, nil })},
+		"fail":   {Handler: Handle(func(context.Context, in) (out, error) { return out{}, errs.New(errs.ConfigInvalid, "bad") })},
+		"retry": {Handler: Handle(func(context.Context, in) (out, error) {
+			return out{}, &errs.Error{Code: errs.RateLimited, Msg: "slow down", RetryAfter: time.Minute}
+		})},
+		"own": {Handler: Handle(func(context.Context, in) (out, error) {
+			return out{}, &contract.Failure{Code: "DBT_FAILED", Message: "boom"}
+		})},
+		"panic": {Handler: Handle(func(context.Context, in) (out, error) { panic("oh no") })},
+	}, resources.XL)
+	api.give(work("a", "double", small, in{21}), work("b", "fail", small, in{}), work("c", "retry", small, in{}), work("d", "own", small, in{}), work("e", "panic", small, in{}), work("f", "unknown", small, in{}))
+	eventually(t, "results", func() bool {
+		return api.result("f") != nil && api.result("e") != nil && api.result("d") != nil && api.result("c") != nil && api.result("b") != nil && api.result("a") != nil
+	})
+	if r := api.result("a"); string(r.GetResult()) != `{"Doubled":42}` || r.GetCode() != "" {
+		t.Errorf("a: %v", r)
+	}
+	if r := api.result("b"); r.GetCode() != "CONFIG_INVALID" || !r.GetNonRetryable() || r.GetMessage() != "CONFIG_INVALID: bad" {
+		t.Errorf("b: %v", r)
+	}
+	if r := api.result("c"); r.GetCode() != "RATE_LIMITED" || r.GetNonRetryable() || r.GetRetryAfter().AsDuration() != time.Minute {
+		t.Errorf("c: %v", r)
+	}
+	if r := api.result("d"); r.GetCode() != "DBT_FAILED" || !r.GetNonRetryable() || r.GetMessage() != "boom" {
+		t.Errorf("d: %v", r)
+	}
+	if r := api.result("e"); r.GetCode() != "INTERNAL" || r.GetNonRetryable() {
+		t.Errorf("e: %v", r)
+	}
+	if r := api.result("f"); r.GetCode() != "INTERNAL" {
+		t.Errorf("f: %v", r)
+	}
+}
+
+func TestReportsListWhatRuns(t *testing.T) {
+	release := make(chan struct{})
+	api, w, _ := start(t, map[string]Kind{"wait": {Handler: Handle(func(ctx context.Context, _ struct{}) (struct{}, error) {
+		From(ctx).SetEpoch(7)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return struct{}{}, nil
+	})}}, resources.L)
+	defer close(release)
+	api.give(work("a", "wait", small, struct{}{}))
+	eventually(t, "a report of it", func() bool {
+		r := api.lastReport()
+		return r != nil && len(r.GetRunning()) == 1 && r.GetRunning()[0].GetEpoch() == 7
+	})
+	r := api.lastReport()
+	if r.GetRunner() != "r1" || r.GetPool() != "default" || r.GetCapacity().GetCpuMillis() != w.Capacity.CPU || r.GetReserved().GetCpuMillis() != small.GetCpuMillis() || r.GetDraining() {
+		t.Errorf("report %v", r)
+	}
+	if got := r.GetRunning()[0]; got.GetId() != "a" || got.GetSize().GetMemoryBytes() != small.GetMemoryBytes() {
+		t.Errorf("running %v", got)
+	}
+}
+
+// Attempts stop themselves at a checkpoint, and report themselves cancelled;
+// other work has its context cancelled.
+func TestStopFromAReport(t *testing.T) {
+	api, _, _ := start(t, map[string]Kind{
+		"checkpoints": {Checkpoints: true, Handler: Handle(func(ctx context.Context, _ struct{}) (struct{}, error) {
+			select {
+			case <-From(ctx).Stopping():
+				if ctx.Err() != nil {
+					t.Error("its context ended before it stopped")
+				}
+				return struct{}{}, ErrCancelled
+			case <-ctx.Done():
+				return struct{}{}, ctx.Err()
+			}
+		})},
+		"plain": {Handler: Handle(func(ctx context.Context, _ struct{}) (struct{}, error) {
+			<-ctx.Done()
+			return struct{}{}, ctx.Err()
+		})},
+	}, resources.L)
+	api.give(work("a", "checkpoints", small, struct{}{}), work("b", "plain", nil, struct{}{}))
+	eventually(t, "both running", func() bool { r := api.lastReport(); return r != nil && len(r.GetRunning()) == 2 })
+	api.tell("a", "b")
+	eventually(t, "both results", func() bool { return api.result("a") != nil && api.result("b") != nil })
+	for _, id := range []string{"a", "b"} {
+		if r := api.result(id); !r.GetCancelled() || r.GetCode() != "" {
+			t.Errorf("%s: %v", id, r)
+		}
+	}
+}
+
+// When the runner stops, it stops polling, says it's draining, and work drains
+// instead of being cancelled.
+func TestDraining(t *testing.T) {
+	api, _, stop := start(t, map[string]Kind{"attempt": {Checkpoints: true, StopTimeout: time.Minute, Handler: Handle(func(ctx context.Context, _ struct{}) (struct{}, error) {
+		<-From(ctx).Stopping()
+		if From(ctx).Cancelled() {
+			t.Error("it thinks it was cancelled")
+		}
+		return struct{}{}, errs.New(errs.Draining, "drained")
+	})}}, resources.L)
+	api.give(work("a", "attempt", small, struct{}{}))
+	eventually(t, "it running", func() bool { r := api.lastReport(); return r != nil && len(r.GetRunning()) == 1 })
+	stop()
+	if r := api.result("a"); r == nil || r.GetCode() != "DRAINING" {
+		t.Fatalf("result %v", r)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	draining := false
+	for _, r := range api.reports {
+		draining = draining || r.GetDraining()
+	}
+	if !draining {
+		t.Error("no report said it was draining")
+	}
+}
+
+// Work that ignores a stop has its context ended after its stop timeout.
+func TestWorkThatDoesntStopIsCutOff(t *testing.T) {
+	cut := make(chan struct{})
+	api, _, stop := start(t, map[string]Kind{"stuck": {Checkpoints: true, StopTimeout: 10 * time.Millisecond, Handler: Handle(func(ctx context.Context, _ struct{}) (struct{}, error) {
+		<-ctx.Done()
+		close(cut)
+		return struct{}{}, ctx.Err()
+	})}}, resources.L)
+	api.give(work("a", "stuck", small, struct{}{}))
+	eventually(t, "it running", func() bool { r := api.lastReport(); return r != nil && len(r.GetRunning()) == 1 })
+	stop()
+	<-cut
+	if r := api.result("a"); r == nil || r.GetCode() != "DRAINING" {
+		t.Errorf("a context cut off by a drain is a drain: %v", r)
+	}
+}
+
+// What doesn't fit, because a report was stale, goes back at once.
+func TestNoCapacity(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	var ran sync.Map
+	api, _, _ := start(t, map[string]Kind{"wait": {Handler: Handle(func(ctx context.Context, in struct{ ID string }) (struct{}, error) {
+		ran.Store(in.ID, true)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return struct{}{}, nil
+	})}}, resources.Size{CPU: 1500, Memory: 2 << 30})
+	api.give(work("a", "wait", small, struct{ ID string }{"a"}))
+	eventually(t, "a running", func() bool { _, ok := ran.Load("a"); return ok })
+	api.give(work("b", "wait", small, struct{ ID string }{"b"}))
+	eventually(t, "b's answer", func() bool { return api.result("b") != nil })
+	if !api.result("b").GetNoCapacity() {
+		t.Errorf("b: %v", api.result("b"))
+	}
+	if _, ok := ran.Load("b"); ok {
+		t.Error("b ran")
+	}
+}
+
+// Light operations have no size, and take a fixed number of slots, which
+// polls say are free.
+func TestLightOperationsTakeSlots(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	wait := Kind{Handler: Handle(func(ctx context.Context, _ struct{}) (struct{}, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return struct{}{}, nil
+	})}
+	api, _, _ := start(t, map[string]Kind{"op": wait, contract.ReadLogs: wait}, resources.Size{})
+	api.give(work("op", "op", nil, struct{}{}), work("logs", contract.ReadLogs, nil, struct{}{}))
+	eventually(t, "a poll that says so", func() bool {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		if len(api.polls) == 0 {
+			return false
+		}
+		last := api.polls[len(api.polls)-1]
+		return last.GetFreeOperations() == maxOps-1 && last.GetFreeLogReads() == maxLogReads-1
+	})
+}
+
+// A report lost in a partition doesn't hold up the ones after it, which keep
+// leases alive once the partition heals.
+func TestALostReportDoesntHoldUpTheNext(t *testing.T) {
+	first := make(chan struct{})
+	var once sync.Once
+	var reports atomic.Int32
+	api := &hangingAPI{report: func(ctx context.Context) {
+		reports.Add(1)
+		hang := false
+		once.Do(func() { hang = true })
+		if hang {
+			close(first)
+			<-ctx.Done()
+		}
+	}}
+	mux := http.NewServeMux()
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	w := &Worker{API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), ID: "r1", ReportEvery: 10 * time.Millisecond}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	w.running = map[string]*Work{}
+	w.drain = make(chan struct{})
+	go w.reports(ctx)
+	<-first
+	eventually(t, "the reports after the lost one", func() bool { return reports.Load() >= 3 })
+}
+
+type hangingAPI struct {
+	dataplanev1connect.UnimplementedDataPlaneServiceHandler
+	report func(context.Context)
+}
+
+func (h *hangingAPI) ReportRunner(ctx context.Context, _ *connect.Request[dataplanev1.ReportRunnerRequest]) (*connect.Response[dataplanev1.ReportRunnerResponse], error) {
+	h.report(ctx)
+	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{}), nil
+}
+
+// A result that can't get through is sent again.
+func TestResultsAreRetried(t *testing.T) {
+	api, _, _ := start(t, map[string]Kind{"ok": {Handler: Handle(func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil })}}, resources.L)
+	api.mu.Lock()
+	api.failResults = 2
+	api.mu.Unlock()
+	api.give(work("a", "ok", small, struct{}{}))
+	eventually(t, "the result", func() bool { return api.result("a") != nil })
+}
+
+func TestLateStart(t *testing.T) {
+	wk := NewWork(Spec{HeartbeatTimeout: time.Minute, Received: time.Now().Add(-30 * time.Second)}, nil)
+	if err := wk.LateStart(); err != nil {
+		t.Errorf("30 s late: %v", err)
+	}
+	wk = NewWork(Spec{HeartbeatTimeout: time.Minute, Received: time.Now().Add(-2 * time.Minute)}, nil)
+	if err := wk.LateStart(); errs.CodeOf(err) != errs.Transient {
+		t.Errorf("2 min late: %v, want TRANSIENT", err)
+	}
+	wk = NewWork(Spec{Received: time.Now().Add(-2 * time.Minute)}, nil)
+	if err := wk.LateStart(); err != nil {
+		t.Errorf("no heartbeat timeout: %v", err)
+	}
+}
+
+func TestWorkWithoutAWorkerNeverStops(t *testing.T) {
+	wk := From(t.Context())
+	select {
+	case <-wk.Stopping():
+		t.Error("it's stopping")
+	case <-wk.Draining():
+		t.Error("it's draining")
+	case <-time.After(5 * time.Millisecond):
+	}
+	if wk.Cancelled() {
+		t.Error("it's cancelled")
+	}
+}

@@ -30,7 +30,7 @@ func (q *Queries) DeletePipeline(ctx context.Context, arg DeletePipelineParams) 
 }
 
 const getPipeline = `-- name: GetPipeline :one
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since, key_groups FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since, key_groups, manual_sync_time FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `
 
 type GetPipelineParams struct {
@@ -57,12 +57,13 @@ func (q *Queries) GetPipeline(ctx context.Context, arg GetPipelineParams) (Pipel
 		&i.Paused,
 		&i.LaggingSince,
 		&i.KeyGroups,
+		&i.ManualSyncTime,
 	)
 	return i, err
 }
 
 const getPipelineByID = `-- name: GetPipelineByID :one
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since, key_groups FROM pipelines WHERE org_id = $1 AND id = $2
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since, key_groups, manual_sync_time FROM pipelines WHERE org_id = $1 AND id = $2
 `
 
 type GetPipelineByIDParams struct {
@@ -88,6 +89,7 @@ func (q *Queries) GetPipelineByID(ctx context.Context, arg GetPipelineByIDParams
 		&i.Paused,
 		&i.LaggingSince,
 		&i.KeyGroups,
+		&i.ManualSyncTime,
 	)
 	return i, err
 }
@@ -467,7 +469,7 @@ func (q *Queries) ListPipelineVersions(ctx context.Context, arg ListPipelineVers
 }
 
 const listPipelines = `-- name: ListPipelines :many
-SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since, key_groups FROM pipelines
+SELECT org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision, create_time, update_time, paused, lagging_since, key_groups, manual_sync_time FROM pipelines
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3
 ORDER BY name LIMIT $4
 `
@@ -508,6 +510,7 @@ func (q *Queries) ListPipelines(ctx context.Context, arg ListPipelinesParams) ([
 			&i.Paused,
 			&i.LaggingSince,
 			&i.KeyGroups,
+			&i.ManualSyncTime,
 		); err != nil {
 			return nil, err
 		}

@@ -54,6 +54,15 @@ type Config struct {
 	// A directory holding the built UI, which the API server serves at /.
 	// Empty: no UI.
 	Web string
+	// The pool a runner serves.
+	Pool string
+	// What a runner places on itself as CPU,MEMORY. Empty: its cgroup's or
+	// host's, less Reserve.
+	Capacity string
+	// What a runner keeps for itself, as CPU,MEMORY.
+	Reserve string
+	// How often a runner reports, as a Go duration.
+	ReportInterval string
 	// A file holding the runner's token. Empty: OPENETL_RUNNER_TOKEN.
 	TokenFile string
 	// From OPENETL_RUNNER_TOKEN only, so it isn't in a process listing.
@@ -100,6 +109,10 @@ var options = []option{
 	{"spark-submit", "OPENETL_SPARK_SUBMIT", "", "Spark 3.5's spark-submit, for pipelines' Spark steps on self-managed clusters (default: spark-submit on PATH)", func(c *Config) *string { return &c.SparkSubmit }},
 	{"bridge-listen", "OPENETL_BRIDGE_LISTEN", "", "where the runner serves the bridge to pipelines' Flink jobs, such as :7710; empty: the runner doesn't run Flink pipelines", func(c *Config) *string { return &c.BridgeListen }},
 	{"bridge-advertise", "OPENETL_BRIDGE_ADVERTISE", "", "the host:port Flink jobs reach this runner's bridge at, which must reach this runner and not a load balancer (default: the listen address)", func(c *Config) *string { return &c.BridgeAdvertise }},
+	{"pool", "OPENETL_POOL", "default", "the pool this runner serves", func(c *Config) *string { return &c.Pool }},
+	{"capacity", "OPENETL_CAPACITY", "", "what this runner places on itself, as CPU,MEMORY such as 4,8Gi (default: its cgroup's or host's, less --reserve)", func(c *Config) *string { return &c.Capacity }},
+	{"reserve", "OPENETL_RESERVE", "0.5,512Mi", "what this runner keeps for itself, as CPU,MEMORY", func(c *Config) *string { return &c.Reserve }},
+	{"report-interval", "OPENETL_REPORT_INTERVAL", "10s", "how often this runner reports what it runs to the API, as a Go duration; keep it well under its work's heartbeat timeouts", func(c *Config) *string { return &c.ReportInterval }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
 	{"lagging-after", "OPENETL_LAGGING_AFTER", "5m", "how far behind its source a continuous pipeline's read gets before the server sends pipeline.lagging to webhooks", func(c *Config) *string { return &c.LaggingAfter }},

@@ -43,6 +43,26 @@ func Open(ctx context.Context, url string) (*Store, error) {
 
 func (s *Store) Close() { s.pool.Close() }
 
+// Listen calls notify with the payload of each notification on channel, on a
+// connection of its own, until ctx ends or the connection fails.
+func (s *Store) Listen(ctx context.Context, channel string, notify func(payload string)) error {
+	conn, err := pgx.ConnectConfig(ctx, s.pool.Config().ConnConfig)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{channel}.Sanitize()); err != nil {
+		return err
+	}
+	for {
+		n, err := conn.WaitForNotification(ctx)
+		if err != nil {
+			return err
+		}
+		notify(n.Payload)
+	}
+}
+
 // Migrate applies pending migrations, and creates the audit log's
 // partitions for this month and the next. Concurrent callers wait on a
 // session lock.

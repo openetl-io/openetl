@@ -1,18 +1,10 @@
 package activities
 
 import (
-	"context"
-	"fmt"
 	"path/filepath"
 	"testing"
-	"time"
-
-	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/temporal"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
 )
 
 func TestQuarantineURL(t *testing.T) {
@@ -29,41 +21,5 @@ func TestQuarantineURL(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("pipelineURL(%q) = %q, %v; want %q", storage, got, err, want)
 		}
-	}
-}
-
-func TestReplaced(t *testing.T) {
-	for _, err := range []error{
-		temporal.NewCanceledError(),
-		serviceerror.NewNotFound("invalid activityID or activity already timed out or invoking workflow is completed"),
-		serviceerror.NewNamespaceNotFound("ns"),
-		fmt.Errorf("heartbeat: %w", activity.ErrActivityReset),
-	} {
-		if !replaced(err) {
-			t.Errorf("replaced(%v) = false", err)
-		}
-	}
-	for _, err := range []error{
-		serviceerror.NewUnavailable("connection refused"),
-		context.DeadlineExceeded,
-		serviceerror.NewResourceExhausted(0, "busy"),
-	} {
-		if replaced(err) {
-			t.Errorf("replaced(%v) = true: the job would stop when Temporal can't be reached", err)
-		}
-	}
-}
-
-func TestLateStart(t *testing.T) {
-	info := activity.Info{HeartbeatTimeout: time.Minute, StartedTime: time.Now().Add(-30 * time.Second)}
-	if err := lateStart(info); err != nil {
-		t.Errorf("30 s late: %v", err)
-	}
-	info.StartedTime = time.Now().Add(-2 * time.Minute)
-	if err := lateStart(info); errs.CodeOf(err) != errs.Transient {
-		t.Errorf("2 min late: %v, want TRANSIENT", err)
-	}
-	if err := lateStart(activity.Info{StartedTime: info.StartedTime}); err != nil {
-		t.Errorf("no heartbeat timeout: %v", err)
 	}
 }

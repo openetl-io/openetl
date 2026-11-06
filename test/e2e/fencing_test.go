@@ -9,16 +9,22 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/unsuitable001/openetl/connectors/native/faker"
+	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/delivery"
 	"github.com/unsuitable001/openetl/internal/engineclient"
@@ -88,21 +94,20 @@ func TestZombieCommitIsFenced(t *testing.T) {
 	}
 }
 
-// A runner cut off from Temporal and the API keeps committing its job, since
-// it still reaches the checkpoint log and the destination. Once Temporal has
-// timed the job out, the runner that takes it over fences it: the cut-off
-// job can't commit again, and stops. When the partition heals, the job stays
-// with its new runner. No row lands twice.
+// A runner cut off from the API keeps committing its job, since it still
+// reaches the checkpoint log and the destination. Once the job's lease has
+// ended, the runner that takes it over fences it: the cut-off job can't commit
+// again, and stops. When the partition heals, the job stays with its new
+// runner. No row lands twice.
 func TestPartitionedRunnerIsFenced(t *testing.T) {
-	temporal, api := startProxy(t, env.temporal), startProxy(t, strings.TrimPrefix(env.apiURL, "http://"))
-	a := startRunnerVia(t, temporal.addr(), "http://"+api.addr())
+	api := startProxy(t, strings.TrimPrefix(env.apiURL, "http://"))
+	a := startRunnerVia(t, "http://"+api.addr())
 	name := unique("partitioned")
 	startContinuous(t, name)
 	waitRows(t, name, 100)
 	host(t, a)
 	gen := generation(t, name)
 
-	temporal.cut(true)
 	api.cut(true)
 	// Three of e2e's heartbeat timeouts.
 	time.Sleep(12 * time.Second)
@@ -113,8 +118,8 @@ func TestPartitionedRunnerIsFenced(t *testing.T) {
 	if g := generation(t, name); g != gen {
 		t.Fatalf("generation %d, want %d: the job moved while no other runner ran", g, gen)
 	}
-	if !strings.Contains(a.out.String(), "heartbeat failed") {
-		t.Errorf("the cut-off runner's heartbeats didn't fail:\n%s", a.out.String())
+	if !strings.Contains(a.out.String(), "reporting to the API failed") {
+		t.Errorf("the cut-off runner's reports didn't fail:\n%s", a.out.String())
 	}
 
 	b := startRunner(t)
@@ -127,7 +132,6 @@ func TestPartitionedRunnerIsFenced(t *testing.T) {
 	}
 	waitRows(t, name, 100)
 
-	temporal.cut(false)
 	api.cut(false)
 	time.Sleep(8 * time.Second)
 	waitRows(t, name, 100)
@@ -137,6 +141,131 @@ func TestPartitionedRunnerIsFenced(t *testing.T) {
 	if got := statuses(runs(t, name)); got != "running" {
 		t.Errorf("runs %q, want one running", got)
 	}
+}
+
+// apiFilter forwards a runner's calls to the API. For a while it answers its
+// result reports with an error, as a network that loses them would, and it can
+// hold its polls, so the API sees it reporting but never asking for work.
+type apiFilter struct {
+	srv       *httptest.Server
+	until     atomic.Int64
+	holdPolls atomic.Bool
+}
+
+func startAPIFilter(t *testing.T, target string) *apiFilter {
+	t.Helper()
+	u, err := url.Parse(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &apiFilter{}
+	pass := httputil.NewSingleHostReverseProxy(u)
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == dataplanev1connect.DataPlaneServiceReportResultProcedure && time.Now().UnixNano() < f.until.Load() {
+			http.Error(w, "dropped", http.StatusServiceUnavailable)
+			return
+		}
+		if r.URL.Path == dataplanev1connect.DataPlaneServicePollWorkProcedure && f.holdPolls.Load() {
+			// Only once it has the body does the server notice the client go.
+			_, _ = io.Copy(io.Discard, r.Body)
+			<-r.Context().Done()
+			return
+		}
+		pass.ServeHTTP(w, r)
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *apiFilter) url() string { return f.srv.URL }
+
+func (f *apiFilter) dropFor(d time.Duration) { f.until.Store(time.Now().Add(d).UnixNano()) }
+
+// A result that never arrives costs the attempt its lease: it's placed again,
+// and starts from the checkpoint log, so its rows land once.
+func TestLostResultRunsAgain(t *testing.T) {
+	filter := startAPIFilter(t, env.apiURL)
+	filter.dropFor(time.Hour)
+	startRunnerVia(t, filter.url())
+	name := unique("lostresult")
+	apply(t, pipelineDocs(name, `{"seed": 11, "count": 300}`, `{}`)...)
+	id := mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
+	eventually(t, 60*time.Second, "the first attempt's lease to end", func() bool {
+		n, err := query[int](t, `SELECT count(*) FROM dispatches WHERE kind = 'RunSyncAttempt' AND input->>'PipelineID' = $1 AND state = 'finished' AND outcome->>'Code' = 'TRANSIENT'`, id)
+		return err == nil && n > 0
+	})
+	filter.dropFor(0)
+	status, stats := waitSync(t, name, 90*time.Second)
+	if status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	checkRows(t, schema(name), 300, "users", "purchases")
+	if got := attemptCodes(t, name); len(got) < 2 || got[0] != "TRANSIENT" {
+		t.Errorf("attempts ended %q, want the first to have lost its lease", got)
+	}
+}
+
+// A runner that's placed an attempt and dies before starting it costs the
+// attempt nothing but the start timeout: it's placed on another, as the same
+// attempt.
+func TestRunnerDiesBetweenPlacementAndStart(t *testing.T) {
+	plane, token := placementPlane(t)
+	filter := startAPIFilter(t, env.apiURL)
+	filter.holdPolls.Store(true)
+	first := startRunnerWith(t, token, filter.url(), "--data-plane", plane)
+	eventually(t, 30*time.Second, "the runner to report", func() bool {
+		n, err := query[int](t, "SELECT count(*) FROM runners WHERE data_plane_id = $1 AND capacity_cpu > 0", plane)
+		return err == nil && n == 1
+	})
+	name := unique("placed")
+	ds := pipelineDocs(name, `{"seed": 12, "count": 300}`, `{}`)
+	ds[2] = strings.Replace(ds[2], `"source":`, fmt.Sprintf(`"dataPlane": %q, "source":`, plane), 1)
+	apply(t, ds...)
+	id := mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
+	work := func(column string) string {
+		v, err := query[string](t, `SELECT coalesce(`+column+`, '') FROM dispatches WHERE kind = 'RunSyncAttempt' AND input->>'PipelineID' = $1 ORDER BY enqueue_time LIMIT 1`, id)
+		if err != nil {
+			return ""
+		}
+		return v
+	}
+	eventually(t, 30*time.Second, "the attempt to be placed on it", func() bool { return work("state") == "placed" })
+	placedOn := work("runner")
+	if !strings.HasSuffix(placedOn, fmt.Sprintf(":%d", first.cmd.Process.Pid)) {
+		t.Fatalf("placed on %q", placedOn)
+	}
+	first.kill(t)
+	startRunnerWith(t, token, env.apiURL, "--data-plane", plane)
+	status, stats := waitSync(t, name, 90*time.Second)
+	if status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	if got := work("runner"); got == placedOn {
+		t.Errorf("it ran on %q, the runner that died", got)
+	}
+	if got := attemptCodes(t, name); len(got) != 1 || got[0] != "" {
+		t.Errorf("attempts ended %q, want one, which succeeded", got)
+	}
+	checkRows(t, schema(name), 300, "users", "purchases")
+}
+
+// A runner that dies with its poll open loses the placements after it at once,
+// instead of holding them for a start timeout.
+func TestDeadRunnerTakesNoPlacements(t *testing.T) {
+	plane, token := placementPlane(t)
+	first := startRunnerWith(t, token, env.apiURL, "--data-plane", plane)
+	eventually(t, 30*time.Second, "the runner to report", func() bool {
+		n, err := query[int](t, "SELECT count(*) FROM runners WHERE data_plane_id = $1 AND capacity_cpu > 0", plane)
+		return err == nil && n == 1
+	})
+	// Long enough for its first poll to be open.
+	time.Sleep(500 * time.Millisecond)
+	first.kill(t)
+	// Sooner than its report would lapse.
+	eventually(t, 2*time.Second, "the API to take it out of placement", func() bool {
+		n, err := query[int](t, "SELECT count(*) FROM runners WHERE data_plane_id = $1 AND report_time > now() - interval '3 seconds'", plane)
+		return err == nil && n == 0
+	})
 }
 
 // generation is the pipeline's generation in its checkpoint log's HEAD.

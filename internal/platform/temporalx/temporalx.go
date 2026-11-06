@@ -20,6 +20,19 @@ import (
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 )
 
+// Search attributes on workflows, for finding them in Temporal. openetld adds
+// them to the namespace when it starts.
+var (
+	OrgIDAttr       = temporal.NewSearchAttributeKeyKeyword("OrgID")
+	WorkspaceIDAttr = temporal.NewSearchAttributeKeyKeyword("WorkspaceID")
+	PipelineIDAttr  = temporal.NewSearchAttributeKeyKeyword("PipelineID")
+	DataPlaneIDAttr = temporal.NewSearchAttributeKeyKeyword("DataPlaneID")
+	// The connectors the workflow runs, such as postgres.
+	ConnectorDefAttr = temporal.NewSearchAttributeKeyKeywordList("ConnectorDef")
+
+	SearchAttributes = []temporal.SearchAttributeKey{OrgIDAttr, WorkspaceIDAttr, PipelineIDAttr, DataPlaneIDAttr, ConnectorDefAttr}
+)
+
 type Options struct {
 	// host:port of the frontend.
 	Address   string

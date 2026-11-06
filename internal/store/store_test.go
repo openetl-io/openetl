@@ -14,7 +14,7 @@ var (
 )
 
 // Looking up a credential comes before its org is known.
-var unscoped = map[string]bool{"AuthenticateAPIKey": true, "AuthenticateRunnerToken": true, "AuthenticateSession": true}
+var unscoped = map[string]bool{"AuthenticateAPIKey": true, "AuthenticateRunnerToken": true, "AuthenticateSession": true, "LockPlacement": true, "NotifyDispatch": true}
 
 func TestQueriesAreOrgScoped(t *testing.T) {
 	files, err := filepath.Glob("queries/*.sql")

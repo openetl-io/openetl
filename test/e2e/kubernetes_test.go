@@ -394,7 +394,7 @@ func TestPySparkOnKubernetes(t *testing.T) {
 	k := kubeEnv(t)
 	name := unique("pyspark")
 	dir, submit, cluster, pyFiles := pySparkOnKube(t, k, name)
-	startRunnerVia(t, env.temporal, env.apiURL, "--checkpoints", filepath.Join(dir, "store"), "--spark-submit", submit)
+	startRunnerVia(t, env.apiURL, "--checkpoints", filepath.Join(dir, "store"), "--spark-submit", submit)
 	ctxCode, ctxDigest := codeInS3(t, "testdata/pyspark/context_check.py")
 	enrichCode, enrichDigest := codeInS3(t, "testdata/pyspark/enrich_check.py")
 

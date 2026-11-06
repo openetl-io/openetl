@@ -2,10 +2,8 @@ package activities
 
 import (
 	"context"
-	"time"
 
 	"connectrpc.com/connect"
-	"go.temporal.io/sdk/activity"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -15,7 +13,6 @@ import (
 	"github.com/unsuitable001/openetl/internal/flink"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/streamschema"
 	"github.com/unsuitable001/openetl/sdk/go/destination"
@@ -42,7 +39,7 @@ type Ops struct {
 func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	cfg, err := a.config(ctx, in)
 	if err != nil {
-		return contract.ConnectorOpResult{}, temporalx.ApplicationError(err)
+		return contract.ConnectorOpResult{}, err
 	}
 	res := contract.ConnectorOpResult{Version: cfg.GetVersion()}
 	sd, dd := opDigests(in, cfg.GetConnector())
@@ -99,13 +96,6 @@ func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.Connect
 // DiscoverSource discovers a source's catalog and reports it to the API,
 // returning its digest.
 func (a *Ops) DiscoverSource(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
-	stop := heartbeats(ctx, func() any { return nil })
-	defer stop()
-	res, err := a.discover(ctx, in)
-	return res, temporalx.ApplicationError(err)
-}
-
-func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	var res contract.ConnectorOpResult
 	cfg, err := a.config(ctx, in)
 	if err != nil {
@@ -147,11 +137,6 @@ func (a *Ops) discover(ctx context.Context, in contract.ConnectorOpInput) (contr
 // TeardownSource removes what a source keeps upstream for a deleted
 // pipeline.
 func (a *Ops) TeardownSource(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
-	res, err := a.teardown(ctx, in)
-	return res, temporalx.ApplicationError(err)
-}
-
-func (a *Ops) teardown(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	var res contract.ConnectorOpResult
 	cfg, err := a.config(ctx, in)
 	if err != nil {
@@ -185,7 +170,7 @@ func (a *Ops) teardown(ctx context.Context, in contract.ConnectorOpInput) (contr
 // TeardownFlink cancels a deleted pipeline's Flink jobs on the cluster its
 // last version pinned, and waits until they're gone.
 func (a *Ops) TeardownFlink(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
-	return contract.ConnectorOpResult{}, temporalx.ApplicationError(a.teardownFlink(ctx, in))
+	return contract.ConnectorOpResult{}, a.teardownFlink(ctx, in)
 }
 
 func (a *Ops) teardownFlink(ctx context.Context, in contract.ConnectorOpInput) error {
@@ -257,45 +242,6 @@ func catalogProto(cat source.Catalog) *apiv1.Catalog {
 		out.Streams = append(out.Streams, s)
 	}
 	return out
-}
-
-// lateStart reports whether the attempt starts long after Temporal handed it
-// to this runner, as when the runner was frozen. Temporal has timed it out
-// since, and the attempt that replaced it may be running: claiming the
-// pipeline would fence that one.
-func lateStart(info activity.Info) error {
-	if late := time.Since(info.StartedTime); info.HeartbeatTimeout > 0 && late > info.HeartbeatTimeout {
-		return errs.New(errs.Transient, "the attempt starts %s after it was handed out, past its heartbeat timeout, so another may have replaced it", late.Round(time.Second))
-	}
-	return nil
-}
-
-// heartbeats records a heartbeat with progress() every 30 s, or a quarter
-// of the heartbeat timeout if that's shorter, until stop is called.
-func heartbeats(ctx context.Context, progress func() any) (stop func()) {
-	every := 30 * time.Second
-	if t := activity.GetInfo(ctx).HeartbeatTimeout / 4; t > 0 && t < every {
-		every = t
-	}
-	done := make(chan struct{})
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		t := time.NewTicker(every)
-		defer t.Stop()
-		for {
-			select {
-			case <-t.C:
-				activity.RecordHeartbeat(ctx, progress())
-			case <-done:
-				return
-			}
-		}
-	}()
-	return func() {
-		close(done)
-		<-finished
-	}
 }
 
 // connectorEnv is env with the source's and the destination's connector

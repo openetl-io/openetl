@@ -12,8 +12,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
-	enumspb "go.temporal.io/api/enums/v1"
-	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
@@ -30,27 +28,6 @@ func temporalClient(t *testing.T) client.Client {
 	}
 	t.Cleanup(tc.Close)
 	return tc
-}
-
-// history returns the events of the pipeline's latest sync.
-func history(t *testing.T, pipeline string) []*historypb.HistoryEvent {
-	t.Helper()
-	run, err := query[string](t, `SELECT s.workflow_id || ' ' || s.run_id FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id
-		WHERE p.name = $1 ORDER BY s.start_time DESC LIMIT 1`, pipeline)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wid, rid, _ := strings.Cut(run, " ")
-	it := temporalClient(t).GetWorkflowHistory(t.Context(), wid, rid, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
-	var events []*historypb.HistoryEvent
-	for it.HasNext() {
-		ev, err := it.Next()
-		if err != nil {
-			t.Fatal(err)
-		}
-		events = append(events, ev)
-	}
-	return events
 }
 
 // A runner told to stop drains its attempt to a checkpoint and exits; another
@@ -81,28 +58,42 @@ func TestRunnerDrains(t *testing.T) {
 		t.Errorf("stats %s: want the second attempt to have finished", stats)
 	}
 	checkRows(t, schema(name), 2000, "users", "purchases")
-	// The restarted activity's attempt is the sync's second.
+	// The restarted attempt is the sync's second.
 	log := wholeLog(t, latestSync(t, name).GetName())
 	if logged(log, 0, 1, "sync attempt drained") != 1 || logged(log, 0, 2, "sync attempt finished") != 1 {
 		t.Errorf("the log has no drained first attempt and finished second: %v", log)
 	}
 
-	var scheduled int
-	var drained bool
-	for _, ev := range history(t, name) {
-		if a := ev.GetActivityTaskScheduledEventAttributes(); a != nil && a.GetActivityType().GetName() == contract.RunSyncAttempt {
-			scheduled++
-			if p := a.GetRetryPolicy(); scheduled == 2 && p.GetMaximumAttempts() != 5 {
-				t.Errorf("the restarted attempt may run %d times, want 5", p.GetMaximumAttempts())
-			}
-		}
-		if f := ev.GetActivityTaskFailedEventAttributes(); f != nil && f.GetFailure().GetApplicationFailureInfo().GetType() == "DRAINING" {
-			drained = true
-		}
+	got := attemptCodes(t, name)
+	if len(got) != 2 || got[0] != "DRAINING" || got[1] != "" {
+		t.Errorf("attempts ended %q, want a drain, then a success", got)
 	}
-	if scheduled != 2 || !drained {
-		t.Errorf("RunSyncAttempt scheduled %d times, drained: %v; want 2 and a drain", scheduled, drained)
+}
+
+// attemptCodes is how each attempt of the pipeline's latest sync ended, in
+// order: its code, or nothing if it succeeded.
+func attemptCodes(t *testing.T, pipeline string) []string {
+	t.Helper()
+	run, err := query[string](t, `SELECT s.run_id FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id
+		WHERE p.name = $1 ORDER BY s.start_time DESC LIMIT 1`, pipeline)
+	if err != nil {
+		t.Fatal(err)
 	}
+	conn, err := pgx.Connect(t.Context(), env.dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(t.Context())) }()
+	rows, err := conn.Query(t.Context(), `SELECT COALESCE(outcome->>'Code', '') FROM dispatches
+		WHERE kind = $1 AND input->>'RunKey' = $2 ORDER BY (input->>'Attempt')::int`, contract.RunSyncAttempt, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return codes
 }
 
 func pipelines() apiv1connect.PipelineServiceClient {
@@ -269,20 +260,8 @@ func TestBlockedSchemaChangeIsNotRetried(t *testing.T) {
 	if status != "failed" || !strings.Contains(stats, "SCHEMA_DRIFT") {
 		t.Fatalf("sync %s: %s; want it failed with SCHEMA_DRIFT", status, stats)
 	}
-	var failed int
-	for _, ev := range history(t, name) {
-		if f := ev.GetActivityTaskFailedEventAttributes(); f != nil {
-			failed++
-			if f.GetRetryState() != enumspb.RETRY_STATE_NON_RETRYABLE_FAILURE {
-				t.Errorf("retry state %v", f.GetRetryState())
-			}
-		}
-		if a := ev.GetActivityTaskStartedEventAttributes(); a != nil && a.GetAttempt() != 1 {
-			t.Errorf("an activity ran attempt %d", a.GetAttempt())
-		}
-	}
-	if failed != 1 {
-		t.Errorf("%d failed activities, want 1", failed)
+	if got := attemptCodes(t, name); len(got) != 1 || got[0] != "SCHEMA_DRIFT" {
+		t.Errorf("attempts ended %q, want one SCHEMA_DRIFT", got)
 	}
 }
 

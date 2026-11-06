@@ -134,7 +134,7 @@ func flinkRunnerFor(t *testing.T, store, host string) *runner {
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
 	listen := cmp.Or(os.Getenv("OPENETL_TEST_BRIDGE_HOST"), "0.0.0.0")
-	return startRunnerVia(t, env.temporal, env.apiURL, "--checkpoints", store,
+	return startRunnerVia(t, env.apiURL, "--checkpoints", store,
 		"--bridge-listen", fmt.Sprintf("%s:%d", listen, port), "--bridge-advertise", fmt.Sprintf("%s:%d", host, port))
 }
 

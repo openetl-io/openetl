@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"os"
 
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
@@ -16,7 +14,6 @@ import (
 	"github.com/unsuitable001/openetl/internal/dbt"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	"github.com/unsuitable001/openetl/internal/secretstore"
 )
 
@@ -43,24 +40,22 @@ func (a *Dbt) RunDbt(ctx context.Context, in contract.DbtInput) (contract.DbtRes
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	attempt := int(activity.GetInfo(ctx).Attempt)
+	attempt := int(in.Attempt)
 	log = log.With("pipeline", in.PipelineID, "sync", in.SyncID, "step", in.StepNumber, "project", in.Step.Project, "digest", in.Step.Digest, "attempt", attempt)
 	log, done := attemptLog(ctx, a.Logs, log, in.OrgID, in.PipelineID, in.SyncID, in.StepNumber, attempt)
 	defer done()
-	stop := heartbeats(ctx, func() any { return nil })
 	res, err := a.run(ctx, in, log)
-	stop()
 	var f *dbt.Failure
 	switch {
 	case errors.As(err, &f):
 		log.Warn("dbt failed", "err", f)
-		return res, temporal.NewNonRetryableApplicationError(f.Error(), contract.DbtFailed, nil)
+		return res, &contract.Failure{Code: contract.DbtFailed, Message: f.Error()}
 	case err != nil:
 		log.Warn("dbt step failed", "code", errs.CodeOf(err).String(), "err", err)
 	default:
 		log.Info("dbt finished", "nodes", res.Nodes, "seconds", res.Seconds)
 	}
-	return res, temporalx.ApplicationError(err)
+	return res, err
 }
 
 func (a *Dbt) run(ctx context.Context, in contract.DbtInput, log *slog.Logger) (contract.DbtResult, error) {

@@ -95,7 +95,7 @@ func TestSparkPostSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	startRunnerVia(t, env.temporal, env.apiURL, "--checkpoints", filepath.Join(dir, "store"), "--spark-submit", submit)
+	startRunnerVia(t, env.apiURL, "--checkpoints", filepath.Join(dir, "store"), "--spark-submit", submit)
 	libCopy := filepath.Join(dir, "openetl-spark.jar")
 	b, err := os.ReadFile(lib)
 	if err != nil {
@@ -238,7 +238,7 @@ func TestSparkTransform(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	store := filepath.Join(dir, "store")
-	startRunnerVia(t, env.temporal, env.apiURL, "--checkpoints", store, "--spark-submit", submit)
+	startRunnerVia(t, env.apiURL, "--checkpoints", store, "--spark-submit", submit)
 	libCopy := filepath.Join(dir, "openetl-spark.jar")
 	b, err := os.ReadFile(lib)
 	if err != nil {

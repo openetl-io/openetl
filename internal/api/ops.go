@@ -12,7 +12,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -140,6 +139,9 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 		return res, nil
 	}
 	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+		if app.Type() == contract.NoRunner {
+			return res, connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner of data plane %q took the %s within %s", dp, in.Op, contract.OpPickup))
+		}
 		code := connect.CodeFailedPrecondition
 		switch app.Type() {
 		case errs.ConfigInvalid.String():
@@ -148,9 +150,6 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 			code = connect.CodeUnavailable
 		}
 		return res, connect.NewError(code, fmt.Errorf("%s: %s", app.Type(), app.Message()))
-	}
-	if t, ok := errors.AsType[*temporal.TimeoutError](err); ok && t.TimeoutType() == enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START {
-		return res, connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner of data plane %q took the %s within %s", dp, in.Op, contract.OpPickup))
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return res, err

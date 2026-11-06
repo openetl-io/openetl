@@ -138,6 +138,36 @@ type DestinationVersion struct {
 	CreateTime      time.Time
 }
 
+type Dispatch struct {
+	OrgID          uuid.UUID
+	ID             string
+	DataPlaneID    string
+	WorkflowID     string
+	Kind           string
+	Input          []byte
+	Light          string
+	Pool           string
+	SizeCpu        int64
+	SizeMemory     int64
+	Priority       int16
+	Needs          []byte
+	Trace          []byte
+	State          string
+	Runner         *string
+	HeartbeatMs    int64
+	StartTimeoutMs int64
+	TimeoutMs      int64
+	EnqueueTime    time.Time
+	StartDeadline  *time.Time
+	RunDeadline    *time.Time
+	LeaseDeadline  *time.Time
+	Cancel         bool
+	Epoch          int64
+	Outcome        []byte
+	FinishTime     *time.Time
+	Woken          bool
+}
+
 type FlinkCluster struct {
 	OrgID       uuid.UUID
 	WorkspaceID uuid.UUID
@@ -269,20 +299,21 @@ type PasswordLink struct {
 }
 
 type Pipeline struct {
-	OrgID         uuid.UUID
-	WorkspaceID   uuid.UUID
-	ID            uuid.UUID
-	Name          string
-	SourceID      uuid.UUID
-	DestinationID uuid.UUID
-	DataPlaneID   string
-	Version       string
-	Revision      int64
-	CreateTime    time.Time
-	UpdateTime    time.Time
-	Paused        bool
-	LaggingSince  *time.Time
-	KeyGroups     int32
+	OrgID          uuid.UUID
+	WorkspaceID    uuid.UUID
+	ID             uuid.UUID
+	Name           string
+	SourceID       uuid.UUID
+	DestinationID  uuid.UUID
+	DataPlaneID    string
+	Version        string
+	Revision       int64
+	CreateTime     time.Time
+	UpdateTime     time.Time
+	Paused         bool
+	LaggingSince   *time.Time
+	KeyGroups      int32
+	ManualSyncTime *time.Time
 }
 
 type PipelineVersion struct {
@@ -324,15 +355,23 @@ type RoleBinding struct {
 }
 
 type Runner struct {
-	OrgID       uuid.UUID
-	DataPlaneID string
-	ID          string
-	Release     string
-	Protocol    string
-	Features    []string
-	Launchers   []string
-	Platform    string
-	ReportTime  time.Time
+	OrgID          uuid.UUID
+	DataPlaneID    string
+	ID             string
+	Release        string
+	Protocol       string
+	Features       []string
+	Launchers      []string
+	Platform       string
+	ReportTime     time.Time
+	Pool           string
+	CapacityCpu    int64
+	CapacityMemory int64
+	ReservedCpu    int64
+	ReservedMemory int64
+	OrphanCpu      int64
+	OrphanMemory   int64
+	Draining       bool
 }
 
 type RunnerToken struct {

@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"time"
 
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	apiv1 "github.com/unsuitable001/openetl/gen/openetl/api/v1"
@@ -22,7 +20,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/connectorhost"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/temporalx"
+	"github.com/unsuitable001/openetl/internal/runner/worker"
 	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/spark"
 )
@@ -57,24 +55,22 @@ func (a *Spark) RunSpark(ctx context.Context, in contract.SparkInput) (contract.
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	attempt := int(activity.GetInfo(ctx).Attempt)
+	attempt := int(in.Attempt)
 	log = log.With("pipeline", in.PipelineID, "sync", in.SyncID, "step", in.StepNumber, "cluster", in.Step.Cluster, "attempt", attempt)
 	log, done := attemptLog(ctx, a.Logs, log, in.OrgID, in.PipelineID, in.SyncID, in.StepNumber, attempt)
 	defer done()
-	stop := heartbeats(ctx, func() any { return nil })
 	res, err := a.run(ctx, in, log)
-	stop()
 	var f *spark.Failed
 	switch {
 	case errors.As(err, &f):
 		log.Warn("the Spark application failed", "err", f)
-		return res, temporal.NewNonRetryableApplicationError(f.Error(), contract.SparkFailed, nil)
+		return res, &contract.Failure{Code: contract.SparkFailed, Message: f.Error()}
 	case err != nil:
 		log.Warn("Spark step failed", "code", errs.CodeOf(err).String(), "err", err)
 	default:
 		log.Info("the Spark application finished", "submission", res.Submission, "seconds", res.Seconds)
 	}
-	return res, temporalx.ApplicationError(err)
+	return res, err
 }
 
 func (a *Spark) run(ctx context.Context, in contract.SparkInput, log *slog.Logger) (contract.SparkResult, error) {
@@ -106,9 +102,7 @@ func (a *Spark) run(ctx context.Context, in contract.SparkInput, log *slog.Logge
 	}
 	dst := spec.GetDestination()
 	name, _ := connectorhost.SplitRef(dst.GetConnector())
-	// The step runs in the sync's workflow, whose run its records name.
-	run := activity.GetInfo(ctx).WorkflowExecution.RunID
-	c, err := spark.BuildContext(ctx, checkpoint.NewLog(a.Checkpoints, in.OrgID, in.PipelineID), in.PipelineID, in.SyncID, run,
+	c, err := spark.BuildContext(ctx, checkpoint.NewLog(a.Checkpoints, in.OrgID, in.PipelineID), in.PipelineID, in.SyncID, in.RunKey,
 		spark.Destination{Connector: name, Namespace: spec.GetPipeline().GetDestination().GetNamespace()})
 	if err != nil {
 		return res, errs.Wrap(errs.Transient, err, "spark: read the checkpoint log")
@@ -372,7 +366,7 @@ func (a *Spark) watch(ctx context.Context, sub spark.Submitter, id string, log *
 
 func (a *Spark) cancelled(ctx context.Context, sub spark.Submitter, id string, log *slog.Logger) error {
 	select {
-	case <-activity.GetWorkerStopChannel(ctx):
+	case <-worker.From(ctx).Draining():
 		return errs.New(errs.Transient, "the runner is stopping; the next attempt watches application %s", id)
 	default:
 	}

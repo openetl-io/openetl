@@ -3,9 +3,8 @@
 package workflows
 
 import (
-	"errors"
+	"cmp"
 	"fmt"
-	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -13,12 +12,16 @@ import (
 
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
+	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 )
 
 const (
 	attemptLimit = 5
 	// Restarts after DRAINING, which don't count against attemptLimit.
 	maxDrains = 20
+	// How long a sync's attempt or a post-sync step may run.
+	attemptTimeout = 24 * time.Hour
 )
 
 // Workflows holds settings shared by every run. They must not change while
@@ -59,60 +62,39 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 		return nil, nil
 	}
 	err := workflow.UpsertTypedSearchAttributes(ctx,
-		contract.OrgIDAttr.ValueSet(in.OrgID),
-		contract.WorkspaceIDAttr.ValueSet(started.WorkspaceID),
-		contract.PipelineIDAttr.ValueSet(in.PipelineID),
-		contract.DataPlaneIDAttr.ValueSet(started.DataPlane),
-		contract.ConnectorDefAttr.ValueSet(started.Connectors),
+		temporalx.OrgIDAttr.ValueSet(in.OrgID),
+		temporalx.WorkspaceIDAttr.ValueSet(started.WorkspaceID),
+		temporalx.PipelineIDAttr.ValueSet(in.PipelineID),
+		temporalx.DataPlaneIDAttr.ValueSet(started.DataPlane),
+		temporalx.ConnectorDefAttr.ValueSet(started.Connectors),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	retry, heartbeat := w.AttemptRetry, w.AttemptHeartbeat
-	if retry == 0 {
-		retry = 30 * time.Second
+	priority := contract.PriorityScheduled
+	if started.Manual {
+		priority = contract.PriorityManual
 	}
-	if heartbeat == 0 {
-		heartbeat = 2 * time.Minute
-	}
-	attempts := int32(attemptLimit)
-	var earlier int32
+	retry, heartbeat := cmp.Or(w.AttemptRetry, 30*time.Second), cmp.Or(w.AttemptHeartbeat, 2*time.Minute)
+	runKey := workflow.GetInfo(ctx).WorkflowExecution.RunID
 	var res contract.AttemptResult
-	for drains := 0; ; drains++ {
-		dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			TaskQueue:           contract.BatchQueue(started.DataPlane),
-			StartToCloseTimeout: 24 * time.Hour,
-			HeartbeatTimeout:    heartbeat,
-			RetryPolicy: &temporal.RetryPolicy{
-				InitialInterval:    retry,
-				BackoffCoefficient: 2,
-				MaximumInterval:    30 * time.Minute,
-				MaximumAttempts:    attempts,
-				// DRAINING comes back here, to restart without counting.
-				NonRetryableErrorTypes: append(errs.NonRetryable(), errs.Draining.String()),
+	err = runWork(ctx, retryPolicy{wait: retry, maxWait: 30 * time.Minute, attempts: attemptLimit}, &res, func(n int32) contract.WorkInput {
+		return contract.WorkInput{
+			OrgID: in.OrgID, DataPlane: started.DataPlane, ID: workID(ctx, "attempt", n), Kind: contract.RunSyncAttempt,
+			Priority: priority, Size: resources.Default, Heartbeat: heartbeat, Timeout: attemptTimeout,
+			PipelineID: in.PipelineID, Version: started.Version,
+			Input: contract.AttemptInput{
+				OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version,
+				SyncID: started.SyncID, RunKey: runKey, Attempt: n,
 			},
-		})
-		err = workflow.ExecuteActivity(dp, contract.RunSyncAttempt, contract.AttemptInput{
-			OrgID:      in.OrgID,
-			PipelineID: in.PipelineID,
-			Version:    started.Version,
-			SyncID:     started.SyncID,
-			Earlier:    earlier,
-		}).Get(ctx, &res)
-		attempt, ok := drained(err)
-		if !ok || drains == maxDrains {
-			break
 		}
-		// The attempts that failed before the drained one still count.
-		attempts -= attempt - 1
-		earlier += attempt
-	}
+	})
 
 	finish := contract.FinishSyncInput{OrgID: in.OrgID, SyncID: started.SyncID}
 	if err == nil {
 		finish.Result = &res
-		finish.PostSync, err = postSync(ctx, in, started, retry, heartbeat)
+		finish.PostSync, err = postSync(ctx, in, started, priority, retry, heartbeat)
 	}
 	if err != nil {
 		finish.Error, finish.Code = message(err), code(err)
@@ -130,26 +112,25 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 
 // postSync runs the post-sync steps in order, until one fails. A dbt
 // command or Spark application that fails isn't retried.
-func postSync(ctx workflow.Context, in contract.SyncInput, started contract.StartSyncResult, retry, heartbeat time.Duration) ([]contract.PostSyncResult, error) {
-	dp := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		TaskQueue:           contract.BatchQueue(started.DataPlane),
-		StartToCloseTimeout: 24 * time.Hour,
-		HeartbeatTimeout:    heartbeat,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:        retry,
-			BackoffCoefficient:     2,
-			MaximumAttempts:        3,
-			NonRetryableErrorTypes: errs.NonRetryable(),
-		},
-	})
+func postSync(ctx workflow.Context, in contract.SyncInput, started contract.StartSyncResult, priority int, retry, heartbeat time.Duration) ([]contract.PostSyncResult, error) {
+	policy := retryPolicy{wait: retry, maxWait: 100 * retry, attempts: 3}
+	runKey := workflow.GetInfo(ctx).WorkflowExecution.RunID
+	step := func(i int, n int32, kind string, input any) contract.WorkInput {
+		return contract.WorkInput{
+			OrgID: in.OrgID, DataPlane: started.DataPlane, ID: workID(ctx, fmt.Sprintf("step-%d", i+1), n), Kind: kind,
+			Priority: priority, Size: resources.Default, Heartbeat: heartbeat, Timeout: attemptTimeout, Input: input,
+		}
+	}
 	var results []contract.PostSyncResult
-	for i, step := range started.PostSync {
-		if sp := step.Spark; sp != nil {
+	for i, s := range started.PostSync {
+		if sp := s.Spark; sp != nil {
 			var r contract.SparkResult
-			err := workflow.ExecuteActivity(dp, contract.RunSpark, contract.SparkInput{
-				OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *sp,
-				SyncID: started.SyncID, StepNumber: i + 1,
-			}).Get(ctx, &r)
+			err := runWork(ctx, policy, &r, func(n int32) contract.WorkInput {
+				return step(i, n, contract.RunSpark, contract.SparkInput{
+					OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *sp,
+					SyncID: started.SyncID, RunKey: runKey, StepNumber: i + 1, Attempt: n,
+				})
+			})
 			if err != nil {
 				return results, fmt.Errorf("post-sync step %d, Spark cluster %s: %w", i+1, sp.Cluster, err)
 			}
@@ -157,56 +138,16 @@ func postSync(ctx workflow.Context, in contract.SyncInput, started contract.Star
 			continue
 		}
 		var r contract.DbtResult
-		err := workflow.ExecuteActivity(dp, contract.RunDbt, contract.DbtInput{
-			OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *step.Dbt,
-			SyncID: started.SyncID, StepNumber: i + 1,
-		}).Get(ctx, &r)
+		err := runWork(ctx, policy, &r, func(n int32) contract.WorkInput {
+			return step(i, n, contract.RunDbt, contract.DbtInput{
+				OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *s.Dbt,
+				SyncID: started.SyncID, StepNumber: i + 1, Attempt: n,
+			})
+		})
 		if err != nil {
-			return results, fmt.Errorf("post-sync step %d, dbt project %s: %w", i+1, step.Dbt.Project, err)
+			return results, fmt.Errorf("post-sync step %d, dbt project %s: %w", i+1, s.Dbt.Project, err)
 		}
 		results = append(results, contract.PostSyncResult{Dbt: &r})
 	}
 	return results, nil
-}
-
-// message is what err says without Temporal's wrapping: the activity's own
-// message, after its code, in place of the activity error.
-func message(err error) string {
-	act, ok := errors.AsType[*temporal.ActivityError](err)
-	if !ok {
-		return err.Error()
-	}
-	inner := act.Unwrap()
-	if inner == nil {
-		return err.Error()
-	}
-	cause := inner.Error()
-	if app, ok := errors.AsType[*temporal.ApplicationError](inner); ok {
-		cause = app.Message()
-		if t := app.Type(); t != "" && !strings.HasPrefix(cause, t+": ") {
-			cause = t + ": " + cause
-		}
-	}
-	return strings.Replace(err.Error(), act.Error(), cause, 1)
-}
-
-// code is the taxonomy code an activity failed with, if any.
-func code(err error) string {
-	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-		return app.Type()
-	}
-	return ""
-}
-
-// drained returns the attempt number of an attempt that failed with DRAINING.
-func drained(err error) (int32, bool) {
-	app, ok := errors.AsType[*temporal.ApplicationError](err)
-	if !ok || app.Type() != errs.Draining.String() {
-		return 0, false
-	}
-	attempt := int32(1)
-	if app.HasDetails() {
-		_ = app.Details(&attempt)
-	}
-	return attempt, true
 }

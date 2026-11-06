@@ -57,6 +57,12 @@ const (
 	// DataPlaneServiceReportRunnerProcedure is the fully-qualified name of the DataPlaneService's
 	// ReportRunner RPC.
 	DataPlaneServiceReportRunnerProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportRunner"
+	// DataPlaneServicePollWorkProcedure is the fully-qualified name of the DataPlaneService's PollWork
+	// RPC.
+	DataPlaneServicePollWorkProcedure = "/openetl.dataplane.v1.DataPlaneService/PollWork"
+	// DataPlaneServiceReportResultProcedure is the fully-qualified name of the DataPlaneService's
+	// ReportResult RPC.
+	DataPlaneServiceReportResultProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportResult"
 	// DataPlaneServiceGetFlinkTeardownProcedure is the fully-qualified name of the DataPlaneService's
 	// GetFlinkTeardown RPC.
 	DataPlaneServiceGetFlinkTeardownProcedure = "/openetl.dataplane.v1.DataPlaneService/GetFlinkTeardown"
@@ -84,9 +90,18 @@ type DataPlaneServiceClient interface {
 	// control plane sees retries Temporal hides, such as a crash loop. An
 	// attempt already reported is skipped.
 	ReportAttemptFailure(context.Context, *connect.Request[v1.ReportAttemptFailureRequest]) (*connect.Response[v1.ReportAttemptFailureResponse], error)
-	// What a runner is and can run, when it starts and every minute. The plan
-	// checks connectors against the runners its data plane reported lately.
+	// What a runner is, can run and is running, when it starts and every 10 s.
+	// It's every running attempt's heartbeat (ADR-0028). The plan checks
+	// connectors against the runners its data plane reported lately, and the
+	// placer places attempts on those reporting now.
 	ReportRunner(context.Context, *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error)
+	// Waits a while for work placed on the runner, or for light operations of
+	// its data plane, up to what it has room for. Work it returns is the
+	// runner's: it starts it, and reports it until its result is in.
+	PollWork(context.Context, *connect.Request[v1.PollWorkRequest]) (*connect.Response[v1.PollWorkResponse], error)
+	// The result of work PollWork returned. The API wakes the workflow waiting
+	// for it. Sending a result again is harmless.
+	ReportResult(context.Context, *connect.Request[v1.ReportResultRequest]) (*connect.Response[v1.ReportResultResponse], error)
 	// The Flink cluster a deleted pipeline's last version pinned, for the
 	// teardown the API sent to the runner's data plane, which cancels the
 	// pipeline's Flink jobs.
@@ -152,6 +167,18 @@ func NewDataPlaneServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportRunner")),
 			connect.WithClientOptions(opts...),
 		),
+		pollWork: connect.NewClient[v1.PollWorkRequest, v1.PollWorkResponse](
+			httpClient,
+			baseURL+DataPlaneServicePollWorkProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("PollWork")),
+			connect.WithClientOptions(opts...),
+		),
+		reportResult: connect.NewClient[v1.ReportResultRequest, v1.ReportResultResponse](
+			httpClient,
+			baseURL+DataPlaneServiceReportResultProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportResult")),
+			connect.WithClientOptions(opts...),
+		),
 		getFlinkTeardown: connect.NewClient[v1.GetFlinkTeardownRequest, v1.GetFlinkTeardownResponse](
 			httpClient,
 			baseURL+DataPlaneServiceGetFlinkTeardownProcedure,
@@ -171,6 +198,8 @@ type dataPlaneServiceClient struct {
 	getArtifact          *connect.Client[v1.GetArtifactRequest, v1.GetArtifactResponse]
 	reportAttemptFailure *connect.Client[v1.ReportAttemptFailureRequest, v1.ReportAttemptFailureResponse]
 	reportRunner         *connect.Client[v1.ReportRunnerRequest, v1.ReportRunnerResponse]
+	pollWork             *connect.Client[v1.PollWorkRequest, v1.PollWorkResponse]
+	reportResult         *connect.Client[v1.ReportResultRequest, v1.ReportResultResponse]
 	getFlinkTeardown     *connect.Client[v1.GetFlinkTeardownRequest, v1.GetFlinkTeardownResponse]
 }
 
@@ -214,6 +243,16 @@ func (c *dataPlaneServiceClient) ReportRunner(ctx context.Context, req *connect.
 	return c.reportRunner.CallUnary(ctx, req)
 }
 
+// PollWork calls openetl.dataplane.v1.DataPlaneService.PollWork.
+func (c *dataPlaneServiceClient) PollWork(ctx context.Context, req *connect.Request[v1.PollWorkRequest]) (*connect.Response[v1.PollWorkResponse], error) {
+	return c.pollWork.CallUnary(ctx, req)
+}
+
+// ReportResult calls openetl.dataplane.v1.DataPlaneService.ReportResult.
+func (c *dataPlaneServiceClient) ReportResult(ctx context.Context, req *connect.Request[v1.ReportResultRequest]) (*connect.Response[v1.ReportResultResponse], error) {
+	return c.reportResult.CallUnary(ctx, req)
+}
+
 // GetFlinkTeardown calls openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown.
 func (c *dataPlaneServiceClient) GetFlinkTeardown(ctx context.Context, req *connect.Request[v1.GetFlinkTeardownRequest]) (*connect.Response[v1.GetFlinkTeardownResponse], error) {
 	return c.getFlinkTeardown.CallUnary(ctx, req)
@@ -242,9 +281,18 @@ type DataPlaneServiceHandler interface {
 	// control plane sees retries Temporal hides, such as a crash loop. An
 	// attempt already reported is skipped.
 	ReportAttemptFailure(context.Context, *connect.Request[v1.ReportAttemptFailureRequest]) (*connect.Response[v1.ReportAttemptFailureResponse], error)
-	// What a runner is and can run, when it starts and every minute. The plan
-	// checks connectors against the runners its data plane reported lately.
+	// What a runner is, can run and is running, when it starts and every 10 s.
+	// It's every running attempt's heartbeat (ADR-0028). The plan checks
+	// connectors against the runners its data plane reported lately, and the
+	// placer places attempts on those reporting now.
 	ReportRunner(context.Context, *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error)
+	// Waits a while for work placed on the runner, or for light operations of
+	// its data plane, up to what it has room for. Work it returns is the
+	// runner's: it starts it, and reports it until its result is in.
+	PollWork(context.Context, *connect.Request[v1.PollWorkRequest]) (*connect.Response[v1.PollWorkResponse], error)
+	// The result of work PollWork returned. The API wakes the workflow waiting
+	// for it. Sending a result again is harmless.
+	ReportResult(context.Context, *connect.Request[v1.ReportResultRequest]) (*connect.Response[v1.ReportResultResponse], error)
 	// The Flink cluster a deleted pipeline's last version pinned, for the
 	// teardown the API sent to the runner's data plane, which cancels the
 	// pipeline's Flink jobs.
@@ -306,6 +354,18 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportRunner")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dataPlaneServicePollWorkHandler := connect.NewUnaryHandler(
+		DataPlaneServicePollWorkProcedure,
+		svc.PollWork,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("PollWork")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dataPlaneServiceReportResultHandler := connect.NewUnaryHandler(
+		DataPlaneServiceReportResultProcedure,
+		svc.ReportResult,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportResult")),
+		connect.WithHandlerOptions(opts...),
+	)
 	dataPlaneServiceGetFlinkTeardownHandler := connect.NewUnaryHandler(
 		DataPlaneServiceGetFlinkTeardownProcedure,
 		svc.GetFlinkTeardown,
@@ -330,6 +390,10 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 			dataPlaneServiceReportAttemptFailureHandler.ServeHTTP(w, r)
 		case DataPlaneServiceReportRunnerProcedure:
 			dataPlaneServiceReportRunnerHandler.ServeHTTP(w, r)
+		case DataPlaneServicePollWorkProcedure:
+			dataPlaneServicePollWorkHandler.ServeHTTP(w, r)
+		case DataPlaneServiceReportResultProcedure:
+			dataPlaneServiceReportResultHandler.ServeHTTP(w, r)
 		case DataPlaneServiceGetFlinkTeardownProcedure:
 			dataPlaneServiceGetFlinkTeardownHandler.ServeHTTP(w, r)
 		default:
@@ -371,6 +435,14 @@ func (UnimplementedDataPlaneServiceHandler) ReportAttemptFailure(context.Context
 
 func (UnimplementedDataPlaneServiceHandler) ReportRunner(context.Context, *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportRunner is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) PollWork(context.Context, *connect.Request[v1.PollWorkRequest]) (*connect.Response[v1.PollWorkResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.PollWork is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) ReportResult(context.Context, *connect.Request[v1.ReportResultRequest]) (*connect.Response[v1.ReportResultResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportResult is not implemented"))
 }
 
 func (UnimplementedDataPlaneServiceHandler) GetFlinkTeardown(context.Context, *connect.Request[v1.GetFlinkTeardownRequest]) (*connect.Response[v1.GetFlinkTeardownResponse], error) {

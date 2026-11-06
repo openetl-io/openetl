@@ -46,6 +46,11 @@ linters:
               desc: the data path must not depend on workflow code
             - pkg: github.com/unsuitable001/openetl/internal/api
               desc: the data path must not depend on the API server
+        runners-reach-only-the-api:
+          files: ["**/internal/runner/**", "**/internal/orchestration/contract/**", "**/internal/orchestration/dispatch/**"]
+          deny:
+            - pkg: go.temporal.io
+              desc: runners reach only the API (ADR-0028); workflows' backend stays behind the API and the orchestrator
         workflows-are-deterministic:
           files: ["**/internal/orchestration/workflows/**"]
           deny:

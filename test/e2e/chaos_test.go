@@ -3,9 +3,8 @@
 package e2e
 
 // The chaos suite runs randomized pipelines through the whole stack while
-// runners, engines and connectors die, runners are partitioned from
-// Temporal and the API, and the object store fails, then checks that every
-// row landed once. Runners die at the commit protocol's crash points too,
+// runners, engines and connectors die, runners are partitioned from the API,
+// and the object store fails, then checks that every row landed once. Runners die at the commit protocol's crash points too,
 // injected by their object-store proxies. Some runs into Postgres add a
 // column mid-run, which block holds, and release it at random times.
 //
@@ -86,6 +85,7 @@ const (
 	faultSource      = "kill source"
 	faultDestination = "kill destination"
 	faultPartition   = "partition runner"
+	faultResults     = "drop results"
 	faultDriver      = "kill Spark driver"
 	faultTaskManager = "kill Flink TaskManager"
 	faultJobManager  = "kill Flink JobManager"
@@ -152,6 +152,9 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	}
 	if rng.IntN(4) == 0 {
 		c.faults = append(c.faults, faultPartition)
+	}
+	if rng.IntN(4) == 0 {
+		c.faults = append(c.faults, faultResults)
 	}
 	if c.noise = []float64{0, 0, 0.01, 0.03}[rng.IntN(4)]; c.transform == "spark" {
 		c.noise = 0
@@ -612,6 +615,8 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 		case faultPartition:
 			d := 5*time.Second + upTo(rng, 15*time.Second)
 			partitions.Go(func() { sl.partition(base, d) })
+		case faultResults:
+			sl.results.dropFor(5*time.Second + upTo(rng, 15*time.Second))
 		}
 		if done {
 			s.book.count(pipeline, e.fault)

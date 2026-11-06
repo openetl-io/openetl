@@ -19,6 +19,7 @@ import (
 	"github.com/unsuitable001/openetl/internal/events"
 	"github.com/unsuitable001/openetl/internal/heal"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/orchestration/dispatch"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	"github.com/unsuitable001/openetl/internal/store"
@@ -27,6 +28,8 @@ import (
 
 type Activities struct {
 	Store *store.Store
+	// Sends workflows' work to data planes.
+	Dispatch *dispatch.Dispatcher
 	// Pauses the schedules of pipelines a playbook paused. Nil: only the
 	// pipeline is, which stops its syncs all the same.
 	Schedules interface {
@@ -85,7 +88,14 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 		return res, err
 	}
 	var id uuid.UUID
+	manual := false
 	err = a.Store.Tx(ctx, func(q *db.Queries) error {
+		m, err := q.TakeManualSync(ctx, db.TakeManualSyncParams{OrgID: org, ID: pipeline})
+		if err == nil {
+			manual = m
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		row, err := q.StartSync(ctx, db.StartSyncParams{
 			OrgID:      org,
 			ID:         sync,
@@ -105,7 +115,7 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	}
 	return contract.StartSyncResult{
 		SyncID: id.String(), Version: p.Version, DataPlane: p.DataPlaneID,
-		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, PostSync: steps,
+		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, PostSync: steps, Manual: manual,
 	}, nil
 }
 

@@ -1,13 +1,12 @@
 package workflows
 
 import (
+	"cmp"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
-	"github.com/unsuitable001/openetl/internal/platform/errs"
 )
 
 // ConnectorOp runs Check, Discover or Teardown on a runner of the data
@@ -15,28 +14,29 @@ import (
 // until the operation times out, since the pipeline it cleans up after is
 // gone.
 func (w Workflows) ConnectorOp(ctx workflow.Context, in contract.ConnectorOpInput) (*contract.ConnectorOpResult, error) {
-	opts := workflow.ActivityOptions{
-		TaskQueue:              contract.BatchQueue(in.DataPlane),
-		ScheduleToStartTimeout: contract.OpPickup,
-		StartToCloseTimeout:    2 * time.Minute,
-		RetryPolicy:            &temporal.RetryPolicy{MaximumAttempts: 3, NonRetryableErrorTypes: errs.NonRetryable()},
+	work := contract.WorkInput{
+		OrgID: in.OrgID, DataPlane: in.DataPlane, Light: contract.LightOps, Kind: contract.CheckConnector, Input: in,
+		Heartbeat: cmp.Or(w.AttemptHeartbeat, time.Minute), Pickup: contract.OpPickup, Timeout: 2 * time.Minute,
 	}
-	activity := contract.CheckConnector
+	policy := retryPolicy{wait: time.Second, maxWait: 100 * time.Second, attempts: 3}
 	switch in.Op {
 	case contract.OpDiscover:
-		activity = contract.DiscoverSource
-		opts.StartToCloseTimeout, opts.HeartbeatTimeout = 10*time.Minute, time.Minute
+		work.Kind, work.Timeout = contract.DiscoverSource, 10*time.Minute
 	case contract.OpTeardown:
-		activity = contract.TeardownSource
-		opts.RetryPolicy = &temporal.RetryPolicy{MaximumInterval: time.Minute, NonRetryableErrorTypes: errs.NonRetryable()}
+		work.Kind = contract.TeardownSource
+		policy = retryPolicy{wait: time.Second, maxWait: time.Minute}
 	case contract.OpTeardownFlink:
 		// The jobs' runner may have died, and its replacement may take a
-		// while; the activity waits for the jobs' deployments to go.
-		activity, opts.ScheduleToStartTimeout, opts.StartToCloseTimeout = contract.TeardownFlink, 5*time.Minute, 10*time.Minute
-		opts.RetryPolicy = &temporal.RetryPolicy{MaximumInterval: time.Minute, NonRetryableErrorTypes: errs.NonRetryable()}
+		// while; the operation waits for the jobs' deployments to go.
+		work.Kind, work.Pickup, work.Timeout = contract.TeardownFlink, 5*time.Minute, 10*time.Minute
+		policy = retryPolicy{wait: time.Second, maxWait: time.Minute}
 	}
 	var res contract.ConnectorOpResult
-	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, opts), activity, in).Get(ctx, &res); err != nil {
+	if err := runWork(ctx, policy, &res, func(n int32) contract.WorkInput {
+		w := work
+		w.ID = workID(ctx, in.Op, n)
+		return w
+	}); err != nil {
 		return nil, err
 	}
 	return &res, nil

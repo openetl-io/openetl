@@ -25,7 +25,6 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"golang.org/x/sync/errgroup"
 
-	dataplanev1 "github.com/unsuitable001/openetl/gen/openetl/dataplane/v1"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/api"
 	"github.com/unsuitable001/openetl/internal/auth"
@@ -39,12 +38,15 @@ import (
 	"github.com/unsuitable001/openetl/internal/netguard"
 	cpactivities "github.com/unsuitable001/openetl/internal/orchestration/activities"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
+	"github.com/unsuitable001/openetl/internal/orchestration/dispatch"
 	"github.com/unsuitable001/openetl/internal/orchestration/ops"
 	"github.com/unsuitable001/openetl/internal/orchestration/schedules"
 	"github.com/unsuitable001/openetl/internal/orchestration/workflows"
 	"github.com/unsuitable001/openetl/internal/platform/config"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 	dpactivities "github.com/unsuitable001/openetl/internal/runner/activities"
+	dpworker "github.com/unsuitable001/openetl/internal/runner/worker"
 	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/secretstore"
 	"github.com/unsuitable001/openetl/internal/store"
@@ -66,6 +68,8 @@ type Options struct {
 	// Called with the API's address once it is serving.
 	Ready     func(addr string)
 	Workflows workflows.Workflows
+	// The dispatcher's timings; zero means production's.
+	Dispatch dispatch.Options
 	// Changes the server's notifier before it starts, for tests.
 	Webhooks func(*webhooks.Notifier)
 }
@@ -77,15 +81,20 @@ func Run(ctx context.Context, o Options) error {
 		log = slog.New(slog.DiscardHandler)
 	}
 	cfg := o.Config
-	tc, err := temporalx.Dial(ctx, temporalx.Options{Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, Logger: log})
-	if err != nil {
-		return err
-	}
-	defer tc.Close()
-
-	var st *store.Store
+	var (
+		tc   client.Client
+		st   *store.Store
+		work *dispatch.Dispatcher
+		err  error
+	)
+	// A runner reaches only the API (ADR-0028).
 	if o.Roles.Server || o.Roles.Orchestrator {
-		if err := temporalx.EnsureSearchAttributes(ctx, tc, cfg.TemporalNamespace, contract.SearchAttributes); err != nil {
+		tc, err = temporalx.Dial(ctx, temporalx.Options{Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, Logger: log})
+		if err != nil {
+			return err
+		}
+		defer tc.Close()
+		if err := temporalx.EnsureSearchAttributes(ctx, tc, cfg.TemporalNamespace, temporalx.SearchAttributes); err != nil {
 			return err
 		}
 		if st, err = store.Open(ctx, cfg.DatabaseURL); err != nil {
@@ -95,9 +104,23 @@ func Run(ctx context.Context, o Options) error {
 		if err := st.Migrate(ctx); err != nil {
 			return err
 		}
+		work = &dispatch.Dispatcher{Store: st, Waker: &ops.Waker{Client: tc}, Options: o.Dispatch, Logger: log.With("component", "dispatch")}
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
+	// A runner in this process drains through the API, so it stops first.
+	cpctx := gctx
+	if o.Roles.Runner && (o.Roles.Server || o.Roles.Orchestrator) {
+		var stop context.CancelFunc
+		cpctx, stop = context.WithCancel(context.WithoutCancel(gctx))
+		defer stop()
+		g.Go(func() error {
+			defer stop()
+			return runRunner(gctx, cfg, log.With("role", "runner"))
+		})
+	} else if o.Roles.Runner {
+		g.Go(func() error { return runRunner(gctx, cfg, log.With("role", "runner")) })
+	}
 	if o.Roles.Server {
 		ln := o.Listener
 		if ln == nil {
@@ -153,7 +176,7 @@ func Run(ctx context.Context, o Options) error {
 			return fmt.Errorf("daemon: --lagging-after %q isn't a positive duration", cfg.LaggingAfter)
 		}
 		srv := &api.Server{
-			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc}, Logs: &ops.Ops{Client: tc},
+			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Client: tc}, Ops: &ops.Ops{Client: tc}, Logs: &ops.Ops{Client: tc}, Dispatch: work,
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
 			Downloads:    (&netguard.Policy{Allow: allow}).Client(),
 			Secrets:      keyring,
@@ -181,7 +204,8 @@ func Run(ctx context.Context, o Options) error {
 				return err
 			}
 		}
-		g.Go(func() error { return serve(gctx, ln, h, o.Ready, log) })
+		g.Go(func() error { return work.Listen(cpctx) })
+		g.Go(func() error { return serve(cpctx, ln, h, o.Ready, log) })
 		notifier := &webhooks.Notifier{
 			Store: st, Org: tenant.Org, Secrets: keyring, Client: webhooks.Client(netguard.Policy{Allow: allow}),
 			Logger: log.With("role", "server", "component", "webhooks"),
@@ -189,13 +213,16 @@ func Run(ctx context.Context, o Options) error {
 		if o.Webhooks != nil {
 			o.Webhooks(notifier)
 		}
-		g.Go(func() error { return notifier.Run(gctx) })
+		g.Go(func() error { return notifier.Run(cpctx) })
 	}
 	if o.Roles.Orchestrator {
-		g.Go(func() error { return orchestrate(gctx, cfg, tc, st, o.Workflows) })
-	}
-	if o.Roles.Runner {
-		g.Go(func() error { return runRunner(gctx, cfg, tc, log.With("role", "runner")) })
+		reg, err := work.RegisterMetrics()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = reg.Unregister() }()
+		g.Go(func() error { return orchestrate(cpctx, cfg, tc, st, work, o.Workflows) })
+		g.Go(func() error { return work.Run(cpctx) })
 	}
 	return g.Wait()
 }
@@ -331,7 +358,7 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, ready func(stri
 	return nil
 }
 
-func orchestrate(ctx context.Context, cfg config.Config, tc client.Client, st *store.Store, wf workflows.Workflows) error {
+func orchestrate(ctx context.Context, cfg config.Config, tc client.Client, st *store.Store, work *dispatch.Dispatcher, wf workflows.Workflows) error {
 	sched := &schedules.Schedules{Client: tc}
 	retention := contract.RetentionInput{
 		CheckpointHistory: contract.DefaultCheckpointHistory,
@@ -346,17 +373,20 @@ func orchestrate(ctx context.Context, cfg config.Config, tc client.Client, st *s
 	w.RegisterWorkflowWithOptions(wf.ConnectorOp, workflow.RegisterOptions{Name: contract.ConnectorOpWorkflow})
 	w.RegisterWorkflowWithOptions(wf.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
 	w.RegisterWorkflowWithOptions(wf.ReadLogs, workflow.RegisterOptions{Name: contract.ReadLogsWorkflow})
-	acts := &cpactivities.Activities{Store: st, Schedules: sched}
+	acts := &cpactivities.Activities{Store: st, Schedules: sched, Dispatch: work}
 	w.RegisterActivityWithOptions(acts.StartSync, activity.RegisterOptions{Name: contract.StartSync})
 	w.RegisterActivityWithOptions(acts.FinishSync, activity.RegisterOptions{Name: contract.FinishSync})
 	w.RegisterActivityWithOptions(acts.GetStreamState, activity.RegisterOptions{Name: contract.GetStreamState})
 	w.RegisterActivityWithOptions(acts.StartRun, activity.RegisterOptions{Name: contract.StartRun})
+	w.RegisterActivityWithOptions(acts.EnqueueWork, activity.RegisterOptions{Name: contract.EnqueueWork})
+	w.RegisterActivityWithOptions(acts.GetWork, activity.RegisterOptions{Name: contract.GetWork})
+	w.RegisterActivityWithOptions(acts.CancelWork, activity.RegisterOptions{Name: contract.CancelWork})
 	w.RegisterActivityWithOptions(acts.DropMirrorPartitions, activity.RegisterOptions{Name: contract.DropMirrorPartitions})
 	w.RegisterActivityWithOptions(acts.AuditPartitions, activity.RegisterOptions{Name: contract.AuditPartitions})
 	return runWorker(ctx, w)
 }
 
-func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *slog.Logger) error {
+func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	cps, err := openstore.Open(ctx, cfg.Checkpoints)
 	if err != nil {
 		return err
@@ -381,6 +411,10 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 	if !auth.IsRunnerToken(token) {
 		return errors.New("daemon: the runner's token isn't a runner token; openetl dataplane token create makes one")
 	}
+	capacity, err := runnerCapacity(cfg, log)
+	if err != nil {
+		return err
+	}
 	otel, err := otelconnect.NewInterceptor()
 	if err != nil {
 		return err
@@ -403,17 +437,9 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		Versions:    versions,
 		Secrets:     stores,
 		Logs:        cps,
-		Temporal:    tc,
 		HTTP:        (&netguard.Policy{Allow: allow}).Client(),
 	}
-	w := worker.New(tc, contract.BatchQueue(cfg.DataPlane), worker.Options{
-		MaxConcurrentActivityExecutionSize: 4,
-		// Attempts drain to a checkpoint for up to this long.
-		WorkerStopTimeout: 2 * time.Minute,
-	})
-	w.RegisterActivityWithOptions(sync.RunSyncAttempt, activity.RegisterOptions{Name: contract.RunSyncAttempt})
 	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Secrets: stores, Executable: cfg.Dbt, Logger: log, Logs: cps}
-	w.RegisterActivityWithOptions(dbt.RunDbt, activity.RegisterOptions{Name: contract.RunDbt})
 	sparkSteps := &dpactivities.Spark{
 		API: apiClient, Secrets: stores, Checkpoints: cps, Storage: cfg.Checkpoints,
 		HTTP: (&netguard.Policy{Allow: allow}).Client(), SparkSubmit: cfg.SparkSubmit, Logger: log, Logs: cps,
@@ -428,57 +454,64 @@ func runRunner(ctx context.Context, cfg config.Config, tc client.Client, log *sl
 		sync.Bridge = br
 		log.Info("serving the bridge to Flink jobs", "listen", cfg.BridgeListen, "advertise", br.Address())
 	}
-	w.RegisterActivityWithOptions(sparkSteps.RunSpark, activity.RegisterOptions{Name: contract.RunSpark})
 	connectorOps := &dpactivities.Ops{
 		API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores, Storage: cfg.Checkpoints,
 		Flink: flink.Options{Logger: log.With("component", "flink"), HTTP: (&netguard.Policy{Allow: allow}).Client()},
 	}
-	w.RegisterActivityWithOptions(connectorOps.CheckConnector, activity.RegisterOptions{Name: contract.CheckConnector})
-	w.RegisterActivityWithOptions(connectorOps.DiscoverSource, activity.RegisterOptions{Name: contract.DiscoverSource})
-	w.RegisterActivityWithOptions(connectorOps.TeardownSource, activity.RegisterOptions{Name: contract.TeardownSource})
-	w.RegisterActivityWithOptions(connectorOps.TeardownFlink, activity.RegisterOptions{Name: contract.TeardownFlink})
-	// A continuous pipeline's job holds its slot for as long as it runs.
-	stream := worker.New(tc, contract.StreamQueue(cfg.DataPlane), worker.Options{
-		MaxConcurrentActivityExecutionSize: 8,
-		// Jobs drain to a checkpoint for up to this long; a Flink job's
-		// drain takes a savepoint, which takes longer with large state.
-		WorkerStopTimeout: 10 * time.Minute,
-	})
-	stream.RegisterActivityWithOptions(sync.RunStreamJob, activity.RegisterOptions{Name: contract.RunStreamJob})
-	logs := worker.New(tc, contract.LogsQueue(cfg.DataPlane), worker.Options{MaxConcurrentActivityExecutionSize: 8})
-	logs.RegisterActivityWithOptions((&dpactivities.Logs{Store: cps}).ReadLogs, activity.RegisterOptions{Name: contract.ReadLogs})
-	log.Info("runner polling", "queues", []string{contract.BatchQueue(cfg.DataPlane), contract.StreamQueue(cfg.DataPlane), contract.LogsQueue(cfg.DataPlane)}, "checkpoints", cfg.Checkpoints)
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return runWorker(gctx, w) })
-	g.Go(func() error { return runWorker(gctx, stream) })
-	g.Go(func() error { return runWorker(gctx, logs) })
-	g.Go(func() error {
-		reportRunner(gctx, apiClient, log)
-		return nil
-	})
-	return g.Wait()
+	every, err := time.ParseDuration(cfg.ReportInterval)
+	if cfg.ReportInterval != "" && (err != nil || every <= 0) {
+		return fmt.Errorf("daemon: --report-interval %q isn't a positive duration", cfg.ReportInterval)
+	}
+	host, _ := os.Hostname()
+	w := &dpworker.Worker{
+		API: apiClient, ID: fmt.Sprintf("%s:%d", host, os.Getpid()), Release: external.Release(), Protocol: external.Protocol,
+		Features: external.Features, Launchers: []string{dispatch.LauncherSubprocess}, Platform: connectorhost.Platform(),
+		Pool: cfg.Pool, Capacity: capacity, ReportEvery: every, Logger: log,
+		Kinds: map[string]dpworker.Kind{
+			// Attempts drain to a checkpoint for up to this long.
+			contract.RunSyncAttempt: {Handler: dpworker.Handle(sync.RunSyncAttempt), Checkpoints: true, StopTimeout: 2 * time.Minute},
+			// A Flink job's drain takes a savepoint, which takes longer with
+			// large state.
+			contract.RunStreamJob:   {Handler: dpworker.Handle(sync.RunStreamJob), Checkpoints: true, StopTimeout: 10 * time.Minute},
+			contract.RunDbt:         {Handler: dpworker.Handle(dbt.RunDbt)},
+			contract.RunSpark:       {Handler: dpworker.Handle(sparkSteps.RunSpark)},
+			contract.CheckConnector: {Handler: dpworker.Handle(connectorOps.CheckConnector)},
+			contract.DiscoverSource: {Handler: dpworker.Handle(connectorOps.DiscoverSource)},
+			contract.TeardownSource: {Handler: dpworker.Handle(connectorOps.TeardownSource)},
+			contract.TeardownFlink:  {Handler: dpworker.Handle(connectorOps.TeardownFlink)},
+			contract.ReadLogs:       {Handler: dpworker.Handle((&dpactivities.Logs{Store: cps}).ReadLogs)},
+		},
+	}
+	log.Info("runner polling", "id", w.ID, "data_plane", cfg.DataPlane, "pool", cfg.Pool, "capacity", capacity.String(), "checkpoints", cfg.Checkpoints)
+	return w.Run(ctx)
 }
 
-// reportRunner tells the API what this runner is and can run, now and every
-// minute, for the plan's checks. A failed report is logged, not fatal.
-func reportRunner(ctx context.Context, api dataplanev1connect.DataPlaneServiceClient, log *slog.Logger) {
-	host, _ := os.Hostname()
-	req := &dataplanev1.ReportRunnerRequest{
-		Runner: fmt.Sprintf("%s:%d", host, os.Getpid()), Release: external.Release(), Protocol: external.Protocol,
-		Features: external.Features, Launchers: []string{"subprocess"}, Platform: connectorhost.Platform(),
-	}
-	t := time.NewTicker(time.Minute)
-	defer t.Stop()
-	for {
-		if _, err := api.ReportRunner(ctx, connect.NewRequest(req)); err != nil && ctx.Err() == nil {
-			log.Warn("reporting the runner to the API failed", "err", err)
+// runnerCapacity is what the runner places on itself: what --capacity says,
+// or what its cgroup or host has, less --reserve.
+func runnerCapacity(cfg config.Config, log *slog.Logger) (resources.Size, error) {
+	if cfg.Capacity != "" {
+		c, err := resources.Parse(cfg.Capacity)
+		if err != nil {
+			return c, fmt.Errorf("daemon: --capacity: %w", err)
 		}
-		select {
-		case <-t.C:
-		case <-ctx.Done():
-			return
-		}
+		return c, nil
 	}
+	reserve, err := resources.Parse(cfg.Reserve)
+	if cfg.Reserve == "" {
+		reserve, err = resources.Size{}, nil
+	}
+	if err != nil {
+		return reserve, fmt.Errorf("daemon: --reserve: %w", err)
+	}
+	host, err := resources.Detect()
+	if err != nil {
+		return host, fmt.Errorf("daemon: %w", err)
+	}
+	c := host.Sub(reserve)
+	if !resources.Default.Fits(c) {
+		log.Warn("this runner is smaller than a job's default size, so it can't take one", "capacity", c.String(), "size", resources.Default.String())
+	}
+	return c, nil
 }
 
 // connectorsDir is where external connectors are: connectors/ next to

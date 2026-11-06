@@ -3,7 +3,6 @@ package workflows
 import (
 	"cmp"
 	"errors"
-	"slices"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
+	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 )
 
 const (
@@ -33,7 +34,7 @@ const (
 )
 
 // StreamSupervisor runs a continuous pipeline: a run of its current version
-// at a time, each one long-running job on its data plane's stream queue,
+// at a time, each one long-running job on a runner of its data plane,
 // which it retries after failures without limit. A refresh signal makes
 // it look at the pipeline again, and stop the run at a checkpoint if the
 // pipeline has a new version or a hold released, is paused, became
@@ -74,11 +75,11 @@ func (w Workflows) StreamSupervisor(ctx workflow.Context, in contract.StreamInpu
 			in.Run = &contract.StreamRun{State: st, SyncID: started.SyncID, RunKey: started.RunKey}
 		}
 		err := workflow.UpsertTypedSearchAttributes(ctx,
-			contract.OrgIDAttr.ValueSet(in.OrgID),
-			contract.WorkspaceIDAttr.ValueSet(in.Run.State.WorkspaceID),
-			contract.PipelineIDAttr.ValueSet(in.PipelineID),
-			contract.DataPlaneIDAttr.ValueSet(in.Run.State.DataPlane),
-			contract.ConnectorDefAttr.ValueSet(in.Run.State.Connectors),
+			temporalx.OrgIDAttr.ValueSet(in.OrgID),
+			temporalx.WorkspaceIDAttr.ValueSet(in.Run.State.WorkspaceID),
+			temporalx.PipelineIDAttr.ValueSet(in.PipelineID),
+			temporalx.DataPlaneIDAttr.ValueSet(in.Run.State.DataPlane),
+			temporalx.ConnectorDefAttr.ValueSet(in.Run.State.Connectors),
 		)
 		if err != nil {
 			return err
@@ -113,93 +114,68 @@ func (w Workflows) StreamSupervisor(ctx workflow.Context, in contract.StreamInpu
 }
 
 // runJobs runs in.Run's job until it stops when asked to, fails with a code
-// that isn't retried, or drains or fails when the supervisor should continue
-// as new. A drained job starts again at once, on another runner. A failed
-// one starts again after a wait that doubles from AttemptRetry to
-// maxStreamRetry, and starts over once a job has lasted healthyJob.
+// that isn't retried, or the supervisor should continue as new. A drained job
+// starts again at once, on another runner. A failed one starts again after a
+// wait that doubles from AttemptRetry to maxStreamRetry, and starts over once
+// a job has lasted healthyJob. A job outlives its workflow run, so continuing
+// as new leaves it running, and the next workflow run waits for it.
 func (w Workflows) runJobs(ctx workflow.Context, in *contract.StreamInput, refresh workflow.ReceiveChannel) (runEnd, error) {
 	run := in.Run
-	cp := workflow.WithActivityOptions(ctx, cpOptions)
-	// Before, Temporal retried a job, and its backoff never started over.
-	retries := workflow.GetVersion(ctx, "stream-job-retries", workflow.DefaultVersion, 1) != workflow.DefaultVersion
-	policy := &temporal.RetryPolicy{MaximumAttempts: 1}
-	if !retries {
-		policy = &temporal.RetryPolicy{
-			InitialInterval:        cmp.Or(w.AttemptRetry, streamRetry),
-			BackoffCoefficient:     2,
-			MaximumInterval:        maxStreamRetry,
-			NonRetryableErrorTypes: streamNonRetryable(),
-		}
-	}
 	for {
-		jobCtx, cancel := workflow.WithCancel(ctx)
-		dp := workflow.WithActivityOptions(jobCtx, workflow.ActivityOptions{
-			TaskQueue: contract.StreamQueue(run.State.DataPlane),
-			// A job runs until it's stopped.
-			StartToCloseTimeout: 365 * 24 * time.Hour,
-			HeartbeatTimeout:    cmp.Or(w.StreamHeartbeat, 90*time.Second),
-			// Cancelling stops the job at a checkpoint; wait for it.
-			WaitForCancellation: true,
-			RetryPolicy:         policy,
-		})
-		jobIn := contract.StreamJobInput{
-			OrgID: in.OrgID, PipelineID: in.PipelineID, Version: run.State.Version,
-			SyncID: run.SyncID, RunKey: run.RunKey, Earlier: run.Earlier,
+		adopted := run.Job != ""
+		if !adopted && run.Retry {
+			stop, err := w.waitBackoff(ctx, in, refresh)
+			if err != nil {
+				return runStopped, err
+			}
+			if stop {
+				run.Retry = false
+				return runStopped, nil
+			}
 		}
-		start := workflow.Now(ctx)
-		var job workflow.Future
-		if run.Retry {
-			run.Retry = false
-			f, settle := workflow.NewFuture(jobCtx)
-			workflow.Go(jobCtx, func(c workflow.Context) {
-				if err := workflow.Sleep(c, run.Backoff); err != nil {
-					settle.SetError(err)
-					return
-				}
-				start = workflow.Now(c)
-				settle.Chain(workflow.ExecuteActivity(dp, contract.RunStreamJob, jobIn))
+		run.Retry = false
+		if !adopted {
+			attempt := run.Earlier + 1
+			run.Job = workID(ctx, "job-"+run.SyncID, attempt)
+			run.JobStart = workflow.Now(ctx)
+			err := sendWork(ctx, contract.WorkInput{
+				OrgID: in.OrgID, DataPlane: run.State.DataPlane, ID: run.Job, Kind: contract.RunStreamJob,
+				Priority: contract.PriorityScheduled, Size: resources.Default,
+				Heartbeat: cmp.Or(w.StreamHeartbeat, 90*time.Second), Timeout: 365 * 24 * time.Hour,
+				PipelineID: in.PipelineID, Version: run.State.Version,
+				Input: contract.StreamJobInput{
+					OrgID: in.OrgID, PipelineID: in.PipelineID, Version: run.State.Version,
+					SyncID: run.SyncID, RunKey: run.RunKey, Attempt: attempt,
+				},
 			})
-			job = f
-		} else {
-			job = workflow.ExecuteActivity(dp, contract.RunStreamJob, jobIn)
+			if err != nil {
+				// It may have got through; a retry has another ID, and the
+				// checkpoint log fences this one.
+				workflow.GetLogger(ctx).Warn("sending the job failed", "err", err)
+				run.Job = ""
+				if ctx.Err() != nil {
+					return runStopped, err
+				}
+				run.Earlier++
+				run.Backoff = w.backoff(run.Backoff)
+				run.Retry = true
+				continue
+			}
 		}
-		stopping := false
-		var jobErr error
-		for done := false; !done; {
-			refreshed := false
-			sel := workflow.NewSelector(ctx)
-			sel.AddFuture(job, func(f workflow.Future) { jobErr, done = f.Get(ctx, nil), true })
-			if !stopping {
-				sel.AddReceive(refresh, func(c workflow.ReceiveChannel, _ bool) {
-					for c.ReceiveAsync(nil) {
-					}
-					refreshed = true
-				})
-			}
-			sel.Select(ctx)
-			if !refreshed {
-				continue
-			}
-			var st contract.StreamState
-			if err := workflow.ExecuteActivity(cp, contract.GetStreamState, contract.StreamInput{OrgID: in.OrgID, PipelineID: in.PipelineID}).Get(ctx, &st); err != nil {
-				workflow.GetLogger(ctx).Warn("reading the pipeline failed; the run carries on", "err", err)
-				continue
-			}
-			if st.Continuous && !st.Paused && st.Version == run.State.Version && st.DataPlane == run.State.DataPlane && st.Releases == run.State.Releases {
-				continue
-			}
-			stopping = true
-			cancel()
+		end, stopped, jobErr := w.awaitJob(ctx, in, refresh, adopted)
+		if end == runContinued {
+			return runContinued, nil
 		}
-		cancel()
-		if stopping || ctx.Err() != nil {
+		if stopped {
+			run.Job = ""
 			return runStopped, jobErr
 		}
-		if workflow.Now(ctx).Sub(start) >= healthyJob {
+		if workflow.Now(ctx).Sub(run.JobStart) >= healthyJob {
 			run.Backoff = 0
 		}
-		if attempt, ok := drained(jobErr); ok {
-			run.Earlier += attempt
+		run.Job = ""
+		run.Earlier++
+		if drained(jobErr) {
 			// A refresh waiting would be lost.
 			if refresh.Len() == 0 && continueAsNew(ctx) {
 				return runContinued, nil
@@ -209,15 +185,127 @@ func (w Workflows) runJobs(ctx workflow.Context, in *contract.StreamInput, refre
 		if jobErr == nil {
 			return runFailed, errors.New("the job ended")
 		}
-		if !retries || !retryable(jobErr) {
+		if !retryable(jobErr) {
 			return runFailed, jobErr
 		}
-		run.Earlier++
 		run.Backoff = w.backoff(run.Backoff)
 		run.Retry = true
 		workflow.GetLogger(ctx).Warn("the job failed; retrying", "in", run.Backoff, "err", jobErr)
 		if refresh.Len() == 0 && continueAsNew(ctx) {
 			return runContinued, nil
+		}
+	}
+}
+
+// waitBackoff waits before a job's retry. A refresh that should stop the run
+// ends the wait, and so does cancelling the workflow.
+func (w Workflows) waitBackoff(ctx workflow.Context, in *contract.StreamInput, refresh workflow.ReceiveChannel) (stop bool, err error) {
+	timerCtx, stopTimer := workflow.WithCancel(ctx)
+	defer stopTimer()
+	timer := workflow.NewTimer(timerCtx, in.Run.Backoff)
+	for {
+		elapsed := false
+		sel := workflow.NewSelector(ctx)
+		sel.AddFuture(timer, func(workflow.Future) { elapsed = true })
+		sel.AddReceive(refresh, func(c workflow.ReceiveChannel, _ bool) {
+			for c.ReceiveAsync(nil) {
+			}
+		})
+		sel.Select(ctx)
+		if ctx.Err() != nil {
+			return true, ctx.Err()
+		}
+		if elapsed {
+			return false, nil
+		}
+		if w.outdated(ctx, in) {
+			return true, nil
+		}
+	}
+}
+
+// outdated looks at the pipeline again, and reports whether the run should
+// stop. If it can't look, the run carries on.
+func (w Workflows) outdated(ctx workflow.Context, in *contract.StreamInput) bool {
+	run := in.Run
+	var st contract.StreamState
+	cp := workflow.WithActivityOptions(ctx, cpOptions)
+	if err := workflow.ExecuteActivity(cp, contract.GetStreamState, contract.StreamInput{OrgID: in.OrgID, PipelineID: in.PipelineID}).Get(ctx, &st); err != nil {
+		workflow.GetLogger(ctx).Warn("reading the pipeline failed; the run carries on", "err", err)
+		return false
+	}
+	return !st.Continuous || st.Paused || st.Version != run.State.Version || st.DataPlane != run.State.DataPlane || st.Releases != run.State.Releases
+}
+
+// awaitJob waits for the run's job to end, stopping it at a checkpoint if a
+// refresh or cancelling the workflow says to. adopted says it was running
+// before this workflow run, which may have missed its wake. It returns
+// runContinued if the supervisor should continue as new while the job runs,
+// and otherwise whether it was stopped, and the error it ended with.
+func (w Workflows) awaitJob(ctx workflow.Context, in *contract.StreamInput, refresh workflow.ReceiveChannel, adopted bool) (end runEnd, stopped bool, jobErr error) {
+	run := in.Run
+	ref := contract.WorkRef{OrgID: in.OrgID, ID: run.Job}
+	wake := workflow.GetSignalChannel(ctx, contract.WakeSignal)
+	// Stopping waits for the job, on a context cancelling doesn't reach.
+	wctx, _ := workflow.NewDisconnectedContext(ctx)
+	look := adopted
+	stopping, stopSent := false, false
+	var timer workflow.Future
+	stopTimer := func() {}
+	defer func() { stopTimer() }()
+	for {
+		if look {
+			look = false
+			st, err := workStatus(wctx, ref)
+			switch {
+			case err != nil:
+				workflow.GetLogger(ctx).Warn("looking at the job failed; waiting", "err", err)
+			case st.Done:
+				return 0, stopping || ctx.Err() != nil, outcomeError(st.Outcome)
+			}
+		}
+		if stopping && !stopSent {
+			if err := cancelWork(wctx, ref); err != nil {
+				workflow.GetLogger(ctx).Warn("stopping the job failed; trying again", "err", err)
+				_ = workflow.Sleep(wctx, workCheckRetry)
+			} else {
+				stopSent = true
+			}
+			// It may have ended, or never started.
+			look = true
+			continue
+		}
+		if timer == nil {
+			var timerCtx workflow.Context
+			timerCtx, stopTimer = workflow.WithCancel(wctx)
+			timer = workflow.NewTimer(timerCtx, workCheckEvery)
+		}
+		ticked, refreshed := false, false
+		sel := workflow.NewSelector(wctx)
+		sel.AddReceive(wake, func(c workflow.ReceiveChannel, _ bool) {
+			var id string
+			c.Receive(wctx, &id)
+			look = id == ref.ID
+		})
+		sel.AddFuture(timer, func(workflow.Future) { ticked, look = true, true })
+		if !stopping {
+			sel.AddReceive(refresh, func(c workflow.ReceiveChannel, _ bool) {
+				for c.ReceiveAsync(nil) {
+				}
+				refreshed = true
+			})
+			sel.AddReceive(ctx.Done(), func(workflow.ReceiveChannel, bool) { stopping = true })
+		}
+		sel.Select(wctx)
+		if ticked {
+			timer = nil
+			// A refresh waiting would be lost.
+			if !stopping && refresh.Len() == 0 && continueAsNew(ctx) {
+				return runContinued, false, nil
+			}
+		}
+		if refreshed && w.outdated(ctx, in) {
+			stopping = true
 		}
 	}
 }
@@ -231,26 +319,18 @@ func (w Workflows) backoff(last time.Duration) time.Duration {
 	return min(2*last, maxStreamRetry)
 }
 
-// retryable is whether a job that failed with err is retried, as Temporal's
-// retry policy did: unless it was cancelled or failed with a code that fails
-// the run.
+// retryable is whether a job that failed with err is retried: unless it was
+// cancelled or failed with a code that fails the run. FENCED is retried: only
+// another attempt of the same job claims a continuous pipeline, one that
+// started late, and the job carries on by claiming it back.
 func retryable(err error) bool {
 	if temporal.IsCanceledError(err) {
 		return false
 	}
 	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-		return !app.NonRetryable() && !slices.Contains(streamNonRetryable(), app.Type())
+		return app.Type() == errs.Fenced.String() || !app.NonRetryable()
 	}
 	return true
-}
-
-// streamNonRetryable is the codes that fail a run. DRAINING comes back to
-// the supervisor, to restart at once. FENCED is retried: only another
-// attempt of the same job claims a continuous pipeline, one Temporal timed
-// out that started late, and the job carries on by claiming it back.
-func streamNonRetryable() []string {
-	codes := slices.DeleteFunc(errs.NonRetryable(), func(c string) bool { return c == errs.Fenced.String() })
-	return append(codes, errs.Draining.String())
 }
 
 func continueAsNew(ctx workflow.Context) bool {

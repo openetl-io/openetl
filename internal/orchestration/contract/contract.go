@@ -1,12 +1,13 @@
-// Package contract names the workflows, activities and task queues, and
-// defines their payloads, so workflows and data-plane activities can share
-// them without importing each other.
+// Package contract names the workflows, the steps they take and the work they
+// send to data planes, and defines their payloads, so workflows and runners
+// can share them without importing each other.
 package contract
 
 import (
+	"encoding/json"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
+	"github.com/unsuitable001/openetl/internal/platform/resources"
 )
 
 const (
@@ -18,22 +19,112 @@ const (
 	RetentionWorkflow        = "RetentionWorkflow"
 	ReadLogsWorkflow         = "ReadLogsWorkflow"
 
+	// Steps on the control plane.
 	StartSync            = "StartSync"
 	FinishSync           = "FinishSync"
-	RunSyncAttempt       = "RunSyncAttempt"
 	GetStreamState       = "GetStreamState"
 	StartRun             = "StartRun"
-	RunStreamJob         = "RunStreamJob"
-	RunDbt               = "RunDbt"
-	RunSpark             = "RunSpark"
-	CheckConnector       = "CheckConnector"
-	DiscoverSource       = "DiscoverSource"
-	TeardownSource       = "TeardownSource"
-	TeardownFlink        = "TeardownFlink"
+	EnqueueWork          = "EnqueueWork"
+	GetWork              = "GetWork"
+	CancelWork           = "CancelWork"
 	DropMirrorPartitions = "DropMirrorPartitions"
 	AuditPartitions      = "AuditPartitions"
-	ReadLogs             = "ReadLogs"
+
+	// Work on a runner.
+	RunSyncAttempt = "RunSyncAttempt"
+	RunStreamJob   = "RunStreamJob"
+	RunDbt         = "RunDbt"
+	RunSpark       = "RunSpark"
+	CheckConnector = "CheckConnector"
+	DiscoverSource = "DiscoverSource"
+	TeardownSource = "TeardownSource"
+	TeardownFlink  = "TeardownFlink"
+	ReadLogs       = "ReadLogs"
 )
+
+// Kinds of light operation, which runners take a fixed number of at a time,
+// each kind apart so busy runners still answer log reads.
+const (
+	LightOps  = "ops"
+	LightLogs = "logs"
+)
+
+// Priorities of attempts waiting for room; lower goes first.
+const (
+	PriorityManual = iota
+	PriorityScheduled
+	PriorityBackfill
+)
+
+// WakeSignal tells a workflow that work it sent finished. It carries the
+// work's ID.
+const WakeSignal = "work-finished"
+
+// WorkInput is work a workflow sends to a data plane.
+type WorkInput struct {
+	OrgID     string
+	DataPlane string
+	// Unique across retries; the same ID enqueues once.
+	ID         string
+	WorkflowID string
+	// What runs it, such as RunSyncAttempt.
+	Kind string
+	// Empty for an attempt, which is placed on a runner; otherwise LightOps
+	// or LightLogs, which any runner of the data plane takes.
+	Light string
+	// The kind's input.
+	Input    any
+	Priority int
+	// What an attempt is placed for.
+	Size resources.Size `json:",omitzero"`
+	// How long it may go unreported.
+	Heartbeat time.Duration
+	// How long a light operation may wait for a runner. An attempt waits for
+	// room as long as it takes.
+	Pickup time.Duration `json:",omitempty"`
+	// How long it may run.
+	Timeout time.Duration
+	// An attempt's pipeline version, whose connectors a runner must be able to
+	// run; empty for other work.
+	PipelineID string `json:",omitempty"`
+	Version    string `json:",omitempty"`
+}
+
+// WorkRef names work a workflow sent.
+type WorkRef struct {
+	OrgID string
+	ID    string
+}
+
+// WorkStatus is whether work has finished, and how.
+type WorkStatus struct {
+	Done    bool
+	Outcome WorkOutcome `json:",omitzero"`
+}
+
+// WorkOutcome is how work ended. It failed if it has a code, and stopped when
+// asked to if it's Cancelled.
+type WorkOutcome struct {
+	Result       json.RawMessage `json:",omitempty"`
+	Code         string          `json:",omitempty"`
+	Message      string          `json:",omitempty"`
+	NonRetryable bool            `json:",omitempty"`
+	// How long to wait before a retry, if the failure says.
+	RetryAfter time.Duration `json:",omitempty"`
+	Cancelled  bool          `json:",omitempty"`
+}
+
+// NoRunner is the code of a light operation no runner took in time.
+const NoRunner = "NO_RUNNER"
+
+// Failure is an error with a code of its own, outside the taxonomy, which
+// isn't retried.
+type Failure struct {
+	Code    string
+	Message string
+}
+
+func (f *Failure) Error() string { return f.Message }
 
 // DbtFailed is the error type of a dbt command that ran and failed. It isn't
 // retried; the next sync runs the step again.
@@ -70,35 +161,12 @@ const (
 	OpTeardownFlink = "teardown-flink"
 )
 
-// Search attributes on workflows, for finding them in Temporal. openetld
-// adds them to the namespace when it starts.
-var (
-	OrgIDAttr       = temporal.NewSearchAttributeKeyKeyword("OrgID")
-	WorkspaceIDAttr = temporal.NewSearchAttributeKeyKeyword("WorkspaceID")
-	PipelineIDAttr  = temporal.NewSearchAttributeKeyKeyword("PipelineID")
-	DataPlaneIDAttr = temporal.NewSearchAttributeKeyKeyword("DataPlaneID")
-	// The connectors the workflow runs, such as postgres.
-	ConnectorDefAttr = temporal.NewSearchAttributeKeyKeywordList("ConnectorDef")
-
-	SearchAttributes = []temporal.SearchAttributeKey{OrgIDAttr, WorkspaceIDAttr, PipelineIDAttr, DataPlaneIDAttr, ConnectorDefAttr}
-)
-
 // OpPickup is how long a connector operation waits for a runner of its data
 // plane to take it.
 const OpPickup = time.Minute
 
 // OpTimeout is how long a connector operation may take in all.
 const OpTimeout = 15 * time.Minute
-
-func BatchQueue(dataPlane string) string { return "dp." + dataPlane + ".batch" }
-
-// StreamQueue serves continuous pipelines' jobs, which hold a runner's slot
-// for as long as they run.
-func StreamQueue(dataPlane string) string { return "dp." + dataPlane + ".stream" }
-
-// LogsQueue serves reads of a data plane's logs, apart from the batch
-// queue, so busy runners still answer them.
-func LogsQueue(dataPlane string) string { return "dp." + dataPlane + ".logs" }
 
 // LogsPickup is how long a log read waits for a runner of its data plane.
 const LogsPickup = 15 * time.Second
@@ -136,6 +204,8 @@ type StartSyncResult struct {
 	Connectors []string
 	// The pipeline version's post-sync steps, with the bundles it pins.
 	PostSync []PostSyncStep
+	// The API started it by hand.
+	Manual bool `json:",omitempty"`
 }
 
 // PostSyncStep is one of a pipeline's post-sync steps: Dbt or Spark.
@@ -174,8 +244,12 @@ type SparkInput struct {
 	Version    string
 	Step       SparkStep
 	SyncID     string
+	// The sync's run, which its checkpoint records name.
+	RunKey string
 	// The step's place in the pipeline's post-sync steps, from 1.
 	StepNumber int
+	// The step's attempt, from 1.
+	Attempt int32
 }
 
 type SparkResult struct {
@@ -196,10 +270,11 @@ type DbtInput struct {
 	// The pipeline version the sync ran, for its destination.
 	Version string
 	Step    DbtStep
-	// Empty for workflows from before logs: the step keeps no log.
-	SyncID string
+	SyncID  string
 	// The step's place in the pipeline's post-sync steps, from 1.
 	StepNumber int
+	// The step's attempt, from 1.
+	Attempt int32
 }
 
 type DbtResult struct {
@@ -222,11 +297,11 @@ type AttemptInput struct {
 	OrgID      string
 	PipelineID string
 	Version    string
-	// Empty for workflows from before logs: the attempt keeps no log.
-	SyncID string
-	// Attempts the sync ran before this activity, which drained. The
-	// activity's attempt n is the sync's attempt Earlier+n.
-	Earlier int32
+	SyncID     string
+	// The sync's run, which its checkpoint records name.
+	RunKey string
+	// The sync's attempt, from 1, counting attempts that drained.
+	Attempt int32
 }
 
 type AttemptResult struct {
@@ -298,6 +373,10 @@ type StreamRun struct {
 	Backoff time.Duration `json:",omitempty"`
 	// The next job is a retry, and waits Backoff first.
 	Retry bool `json:",omitempty"`
+	// The job running when a workflow run continued as new, which the next
+	// workflow run waits for, and when it started.
+	Job      string    `json:",omitempty"`
+	JobStart time.Time `json:",omitzero"`
 }
 
 type StartRunInput struct {
@@ -319,8 +398,8 @@ type StreamJobInput struct {
 	Version    string
 	SyncID     string
 	RunKey     string
-	// Attempts the run ran before this activity, which drained or failed.
-	Earlier int32
+	// The run's attempt, from 1, counting attempts that drained or failed.
+	Attempt int32
 }
 
 type ConnectorOpInput struct {

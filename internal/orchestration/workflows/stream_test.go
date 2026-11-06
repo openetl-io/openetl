@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/mock"
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
@@ -23,13 +21,11 @@ import (
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 )
 
-// forever is longer than any test runs on the workflow's clock.
-const forever = 1000 * time.Hour
-
 // streamEnv runs StreamSupervisor against a pipeline the test changes.
 type streamEnv struct {
 	t     *testing.T
 	env   *testsuite.TestWorkflowEnvironment
+	plane *plane
 	state contract.StreamState
 	jobs  []contract.StreamJobInput
 	// When each job started, on the workflow's clock.
@@ -37,8 +33,9 @@ type streamEnv struct {
 	finished []contract.FinishSyncInput
 }
 
-// job answers the nth RunStreamJob after a wait on the workflow's clock.
-type job func(n int, info activity.Info, in contract.StreamJobInput) (time.Duration, error)
+// job answers the nth RunStreamJob with how long it runs on the workflow's
+// clock, and how it ends.
+type job func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOutcome)
 
 func newStreamEnv(t *testing.T, w workflows.Workflows, answer job) *streamEnv {
 	t.Helper()
@@ -60,29 +57,12 @@ func newStreamEnv(t *testing.T, w workflows.Workflows, answer job) *streamEnv {
 		e.finished = append(e.finished, in)
 		return nil
 	}, activity.RegisterOptions{Name: contract.FinishSync})
-	e.env.RegisterActivityWithOptions(func(context.Context, contract.StreamJobInput) (contract.AttemptResult, error) {
-		panic("mocked")
-	}, activity.RegisterOptions{Name: contract.RunStreamJob})
-	// The listener runs just before each call, so the mock knows how long
-	// to wait on the workflow's clock and what to answer.
-	var wait time.Duration
-	var answers []error
-	e.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
-		var in contract.StreamJobInput
-		if info.ActivityType.Name != contract.RunStreamJob || args.Get(&in) != nil {
-			return
-		}
-		e.jobs = append(e.jobs, in)
+	e.plane = newPlane(e.env, func(in contract.WorkInput) (time.Duration, contract.WorkOutcome) {
+		j := input[contract.StreamJobInput](t, in)
+		e.jobs = append(e.jobs, j)
 		e.starts = append(e.starts, e.env.Now())
-		var err error
-		wait, err = answer(len(e.jobs), *info, in)
-		answers = append(answers, err)
+		return answer(len(e.jobs), j)
 	})
-	e.env.OnActivity(contract.RunStreamJob, mock.Anything, mock.Anything).
-		AfterFn(func() time.Duration { return wait }).
-		Return(func(context.Context, contract.StreamJobInput) (contract.AttemptResult, error) {
-			return contract.AttemptResult{}, answers[len(answers)-1]
-		})
 	return e
 }
 
@@ -126,11 +106,11 @@ func (e *streamEnv) ends() []string {
 	return out
 }
 
-func runsForever(int, activity.Info, contract.StreamJobInput) (time.Duration, error) {
-	return forever, temporal.NewCanceledError()
+func runsForever(int, contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+	return forever, contract.WorkOutcome{Cancelled: true}
 }
 
-var input = contract.StreamInput{OrgID: "o", PipelineID: "p"}
+var stream = contract.StreamInput{OrgID: "o", PipelineID: "p"}
 
 func gone(s *contract.StreamState) { s.Continuous = false }
 
@@ -140,7 +120,7 @@ func TestStreamUpgradesAndEnds(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
 	e.at(10*time.Second, func(s *contract.StreamState) { s.Version = "v2" })
 	e.at(2*time.Minute, gone)
-	if err := e.run(input); err != nil {
+	if err := e.run(stream); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.versions(); !slices.Equal(got, []string{"r1/v1", "r2/v2"}) {
@@ -157,7 +137,7 @@ func TestStreamRestartsForARelease(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
 	e.at(10*time.Second, func(s *contract.StreamState) { s.Releases = "rel1" })
 	e.at(2*time.Minute, gone)
-	if err := e.run(input); err != nil {
+	if err := e.run(stream); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.versions(); !slices.Equal(got, []string{"r1/v1", "r2/v1"}) {
@@ -174,7 +154,7 @@ func TestStreamRefreshWithoutChange(t *testing.T) {
 	e.at(time.Minute, func(*contract.StreamState) {})
 	e.at(2*time.Minute, func(s *contract.StreamState) { s.Connectors = []string{"postgres"} })
 	e.at(3*time.Minute, gone)
-	if err := e.run(input); err != nil {
+	if err := e.run(stream); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.versions(); !slices.Equal(got, []string{"r1/v1"}) {
@@ -187,7 +167,7 @@ func TestStreamPausesAndResumes(t *testing.T) {
 	e.at(time.Minute, func(s *contract.StreamState) { s.Paused = true })
 	e.at(time.Hour, func(s *contract.StreamState) { s.Paused = false })
 	e.at(2*time.Hour, gone)
-	if err := e.run(input); err != nil {
+	if err := e.run(stream); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.versions(); !slices.Equal(got, []string{"r1/v1", "r2/v1"}) {
@@ -201,15 +181,15 @@ func TestStreamPausesAndResumes(t *testing.T) {
 // A run that fails with a code that isn't retried waits for a refresh, which
 // starts a new run.
 func TestStreamFailureWaitsForARefresh(t *testing.T) {
-	e := newStreamEnv(t, workflows.Workflows{}, func(n int, _ activity.Info, _ contract.StreamJobInput) (time.Duration, error) {
+	e := newStreamEnv(t, workflows.Workflows{}, func(n int, _ contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
 		if n == 1 {
 			return time.Second, fail(errs.ConfigInvalid)
 		}
-		return forever, temporal.NewCanceledError()
+		return runsForever(n, contract.StreamJobInput{})
 	})
 	e.at(time.Hour, func(*contract.StreamState) {})
 	e.at(2*time.Hour, gone)
-	if err := e.run(input); err != nil {
+	if err := e.run(stream); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.versions(); !slices.Equal(got, []string{"r1/v1", "r2/v1"}) {
@@ -224,23 +204,23 @@ func TestStreamFailureWaitsForARefresh(t *testing.T) {
 // the run. A drain restarts it at once, and the next attempt knows its
 // number in the run.
 func TestStreamRestartsWithinTheRun(t *testing.T) {
-	e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, info activity.Info, in contract.StreamJobInput) (time.Duration, error) {
-		if got := int(in.Earlier + info.Attempt); got != n {
-			t.Errorf("call %d is the run's attempt %d", n, got)
+	e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+		if int(in.Attempt) != n {
+			t.Errorf("call %d is the run's attempt %d", n, in.Attempt)
 		}
 		switch n {
 		case 1:
 			return time.Minute, fail(errs.Transient)
 		case 2:
 			// Fenced by an attempt that started late.
-			return time.Minute, temporal.NewApplicationError("fenced", errs.Fenced.String())
+			return time.Minute, fail(errs.Fenced)
 		case 3:
-			return time.Minute, drain(info)
+			return time.Minute, fail(errs.Draining)
 		}
-		return forever, temporal.NewCanceledError()
+		return runsForever(n, in)
 	})
 	e.at(time.Hour, gone)
-	if err := e.run(input); err != nil {
+	if err := e.run(stream); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.versions(); !slices.Equal(got, []string{"r1/v1", "r1/v1", "r1/v1", "r1/v1"}) {
@@ -256,22 +236,20 @@ func TestStreamRestartsWithinTheRun(t *testing.T) {
 // minutes waits the first again.
 func TestStreamRetriesBackOffAndStartOver(t *testing.T) {
 	ran := map[int]time.Duration{12: 11 * time.Minute, 13: 2 * time.Minute, 14: forever}
-	e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, info activity.Info, in contract.StreamJobInput) (time.Duration, error) {
-		if got := int(in.Earlier + info.Attempt); got != n {
-			t.Errorf("call %d is the run's attempt %d", n, got)
+	e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+		if int(in.Attempt) != n {
+			t.Errorf("call %d is the run's attempt %d", n, in.Attempt)
 		}
 		switch {
 		case n == 14:
-			return forever, temporal.NewCanceledError()
-		case n == 3:
-			return time.Second, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, nil)
+			return runsForever(n, in)
 		case ran[n] > 0:
 			return ran[n], fail(errs.Transient)
 		}
 		return time.Second, fail(errs.Transient)
 	})
 	e.at(10*time.Hour, gone)
-	if err := e.run(input); err != nil {
+	if err := e.run(stream); err != nil {
 		t.Fatal(err)
 	}
 	if len(e.jobs) != 14 {
@@ -292,7 +270,7 @@ func TestStreamRetriesBackOffAndStartOver(t *testing.T) {
 // Past its history limit, a supervisor continues as new after a failure too,
 // carrying the wait. A refresh during the wait stops the run.
 func TestStreamContinuesAsNewAfterAFailure(t *testing.T) {
-	e := newStreamEnv(t, workflows.Workflows{}, func(int, activity.Info, contract.StreamJobInput) (time.Duration, error) {
+	e := newStreamEnv(t, workflows.Workflows{}, func(int, contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
 		return time.Minute, fail(errs.Transient)
 	})
 	e.env.SetCurrentHistoryLength(2001)
@@ -333,7 +311,7 @@ func TestStreamContinuedRetryWaits(t *testing.T) {
 	if err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run}); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.starts) != 1 || e.starts[0].Sub(start) != 4*time.Minute || e.jobs[0].Earlier != 3 {
+	if len(e.starts) != 1 || e.starts[0].Sub(start) != 4*time.Minute || e.jobs[0].Attempt != 4 {
 		t.Errorf("jobs %+v at %v, from %v", e.jobs, e.starts, start)
 	}
 }
@@ -341,11 +319,11 @@ func TestStreamContinuedRetryWaits(t *testing.T) {
 // Past its history limit, a supervisor continues as new after a drain,
 // carrying the run.
 func TestStreamContinuesAsNewAfterADrain(t *testing.T) {
-	e := newStreamEnv(t, workflows.Workflows{}, func(n int, info activity.Info, _ contract.StreamJobInput) (time.Duration, error) {
+	e := newStreamEnv(t, workflows.Workflows{}, func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
 		if n > 1 {
-			return forever, temporal.NewCanceledError()
+			return runsForever(n, in)
 		}
-		return time.Minute, drain(info)
+		return time.Minute, fail(errs.Draining)
 	})
 	e.env.SetCurrentHistoryLength(2001)
 	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7", Earlier: 2}
@@ -361,7 +339,7 @@ func TestStreamContinuesAsNewAfterADrain(t *testing.T) {
 	if r := next.Run; r == nil || r.SyncID != "r7" || r.RunKey != "k7" || r.Earlier != 3 {
 		t.Errorf("continued with %+v", r)
 	}
-	if got := e.versions(); !slices.Equal(got, []string{"r7/v1"}) || e.jobs[0].Earlier != 2 {
+	if got := e.versions(); !slices.Equal(got, []string{"r7/v1"}) || e.jobs[0].Attempt != 3 {
 		t.Errorf("jobs %+v", e.jobs)
 	}
 	if len(e.finished) != 0 {
@@ -369,11 +347,82 @@ func TestStreamContinuesAsNewAfterADrain(t *testing.T) {
 	}
 }
 
+// A job outlives its workflow run. Past its history limit, a supervisor
+// continues as new while the job runs, and the next workflow run waits for
+// that job instead of starting another.
+func TestStreamContinuesAsNewWhileAJobRuns(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.env.SetCurrentHistoryLength(2001)
+	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7"}
+	err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run})
+	var can *workflow.ContinueAsNewError
+	if !errors.As(err, &can) {
+		t.Fatalf("got %v, want to continue as new", err)
+	}
+	var next contract.StreamInput
+	if err := converter.GetDefaultDataConverter().FromPayloads(can.Input, &next); err != nil {
+		t.Fatal(err)
+	}
+	if r := next.Run; r == nil || r.Job == "" || r.Job != e.plane.sent[0].ID || r.JobStart.IsZero() {
+		t.Fatalf("continued with %+v", r)
+	}
+	if len(e.plane.cancelled) != 0 || len(e.finished) != 0 {
+		t.Errorf("cancelled %v, runs ended %v", e.plane.cancelled, e.ends())
+	}
+
+	// The job ended while nothing was listening, so its wake went nowhere.
+	e = newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.plane.done[next.Run.Job] = fail(errs.ConfigInvalid)
+	e.at(time.Hour, gone)
+	if err := e.run(next); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.jobs) != 0 {
+		t.Errorf("it started %d jobs", len(e.jobs))
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r7 failed"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// Stopping an adopted job stops that job.
+func TestStreamStopsAnAdoptedJob(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.at(time.Minute, gone)
+	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7", Job: "j1", JobStart: e.env.Now()}
+	if err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(e.plane.cancelled, []string{"j1"}) || len(e.jobs) != 0 {
+		t.Errorf("cancelled %v, %d jobs started", e.plane.cancelled, len(e.jobs))
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r7 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// Runs of one workflow run don't share work IDs, which would make the second
+// find the first's outcome.
+func TestStreamRunsHaveTheirOwnWorkIDs(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.at(time.Minute, func(s *contract.StreamState) { s.Version = "v2" })
+	e.at(2*time.Minute, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.plane.sent) != 2 || e.plane.sent[0].ID == e.plane.sent[1].ID {
+		t.Fatalf("sent %+v", e.plane.sent)
+	}
+	if w := e.plane.sent[0]; w.Kind != contract.RunStreamJob || w.Light != "" || w.PipelineID != "p" || w.Version != "v1" || w.Heartbeat != 90*time.Second || w.Size.CPU == 0 {
+		t.Errorf("sent %+v", w)
+	}
+}
+
 // Cancelling the supervisor stops the run.
 func TestStreamCancelled(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
 	e.env.RegisterDelayedCallback(e.env.CancelWorkflow, time.Minute)
-	if err := e.run(input); !temporal.IsCanceledError(err) {
+	if err := e.run(stream); !temporal.IsCanceledError(err) {
 		t.Fatalf("got %v, want cancelled", err)
 	}
 	if got := e.ends(); !slices.Equal(got, []string{"r1 stopped"}) {
@@ -385,7 +434,7 @@ func TestStreamStartsPausedAndEnds(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
 	e.state.Paused = true
 	e.at(time.Hour, gone)
-	if err := e.run(input); err != nil {
+	if err := e.run(stream); err != nil {
 		t.Fatal(err)
 	}
 	if len(e.jobs) != 0 || len(e.finished) != 0 {

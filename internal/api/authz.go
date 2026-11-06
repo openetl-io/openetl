@@ -201,6 +201,8 @@ var rules = map[string]rule{
 	dataplanev1connect.DataPlaneServiceGetArtifactProcedure:          runner,
 	dataplanev1connect.DataPlaneServiceReportAttemptFailureProcedure: runner,
 	dataplanev1connect.DataPlaneServiceReportRunnerProcedure:         runner,
+	dataplanev1connect.DataPlaneServicePollWorkProcedure:             runner,
+	dataplanev1connect.DataPlaneServiceReportResultProcedure:         runner,
 }
 
 // workspaceOf is the workspace in a name or parent, workspaces/{w}/….

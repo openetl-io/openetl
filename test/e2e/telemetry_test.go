@@ -17,7 +17,7 @@ import (
 )
 
 // With only OTEL_* variables set, a collector gets a trace from the API
-// through Temporal to the runner, one from a sync's workflow through the
+// through the workflow and dispatch to the runner, one from a sync's workflow through the
 // runner's attempt to the engine's job and the destination's calls, and the
 // platform's and the job's metrics.
 func TestTelemetry(t *testing.T) {
@@ -34,7 +34,7 @@ func TestTelemetry(t *testing.T) {
 
 	sync := []string{
 		"server RunWorkflow:" + contract.SyncWorkflow,
-		"runner RunActivity:" + contract.RunSyncAttempt,
+		"runner RunWork:" + contract.RunSyncAttempt,
 		"runner recover",
 		"runner commit",
 		"runner openetl.engine.v1.EngineService/StartJob",
@@ -73,7 +73,7 @@ func TestTelemetry(t *testing.T) {
 	discover := []string{
 		"server openetl.api.v1.SourceService/DiscoverSource",
 		"server RunWorkflow:" + contract.ConnectorOpWorkflow,
-		"runner RunActivity:" + contract.DiscoverSource,
+		"runner RunWork:" + contract.DiscoverSource,
 	}
 	eventually(t, 30*time.Second, "the discover's spans in one trace", func() bool {
 		got = traceOf(env.collector.Spans(), func(s telemetrytest.Span) bool { return isDiscover(s) && !earlier[s.TraceID] })
@@ -97,7 +97,9 @@ func TestTelemetry(t *testing.T) {
 		{"runner", "openetl.objectstore.calls", map[string]string{"openetl.objectstore.op": "create", "openetl.outcome": "ok"}, func(v float64) bool { return v >= 1 }},
 		{"runner", "openetl.engine.cpu.time", map[string]string{"openetl.cpu.mode": "user"}, func(v float64) bool { return v > 0 }},
 		{"runner", "openetl.engine.edge.bytes", map[string]string{"openetl.edge.direction": "to_engine"}, func(v float64) bool { return v > 0 }},
-		{"runner", "temporal_request", nil, func(v float64) bool { return v > 0 }},
+		{"server", "temporal_request", nil, func(v float64) bool { return v > 0 }},
+		{"server", "openetl.placement.cpu.capacity", map[string]string{"data_plane": "default", "pool": "default"}, func(v float64) bool { return v > 0 }},
+		{"server", "openetl.placement.cpu.pending", nil, func(v float64) bool { return v >= 0 }},
 		{"runner", "go.memory.used", nil, func(v float64) bool { return v > 0 }},
 		{"server", "rpc.server.call.duration", map[string]string{"rpc.method": "openetl.api.v1.SourceService/DiscoverSource"}, func(v float64) bool { return v >= 1 }},
 		{"server", "openetl.pipeline.freshness", job, func(v float64) bool { return v >= 0 }},

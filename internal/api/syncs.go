@@ -12,7 +12,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -248,11 +247,13 @@ func (s *Server) ReadSyncLog(ctx context.Context, req *connect.Request[apiv1.Rea
 }
 
 func logsError(err error, dp string) error {
-	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok && app.Type() == errs.ConfigInvalid.String() {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New(app.Message()))
-	}
-	if t, ok := errors.AsType[*temporal.TimeoutError](err); ok && t.TimeoutType() == enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START {
-		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner of data plane %q read the log within %s", dp, contract.LogsPickup))
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
+		switch app.Type() {
+		case errs.ConfigInvalid.String():
+			return connect.NewError(connect.CodeInvalidArgument, errors.New(app.Message()))
+		case contract.NoRunner:
+			return connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner of data plane %q read the log within %s", dp, contract.LogsPickup))
+		}
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err

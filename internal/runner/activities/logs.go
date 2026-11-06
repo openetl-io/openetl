@@ -13,7 +13,6 @@ import (
 	"github.com/unsuitable001/openetl/internal/checkpoint"
 	"github.com/unsuitable001/openetl/internal/orchestration/contract"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
-	"github.com/unsuitable001/openetl/internal/platform/temporalx"
 )
 
 // attemptLog also writes log to the attempt's log in store, if there is a
@@ -60,7 +59,7 @@ const maxLogRead = 256 << 10
 
 func (a *Logs) ReadLogs(ctx context.Context, in contract.ReadLogsInput) (contract.ReadLogsResult, error) {
 	res, err := a.read(ctx, in)
-	return res, temporalx.ApplicationError(err)
+	return res, err
 }
 
 func (a *Logs) read(ctx context.Context, in contract.ReadLogsInput) (contract.ReadLogsResult, error) {

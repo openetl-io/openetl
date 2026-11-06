@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package openetl.dataplane.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "openetl/api/v1/connection.proto";
 import "openetl/api/v1/flink.proto";
@@ -34,9 +35,18 @@ service DataPlaneService {
   // control plane sees retries Temporal hides, such as a crash loop. An
   // attempt already reported is skipped.
   rpc ReportAttemptFailure(ReportAttemptFailureRequest) returns (ReportAttemptFailureResponse);
-  // What a runner is and can run, when it starts and every minute. The plan
-  // checks connectors against the runners its data plane reported lately.
+  // What a runner is, can run and is running, when it starts and every 10 s.
+  // It's every running attempt's heartbeat (ADR-0028). The plan checks
+  // connectors against the runners its data plane reported lately, and the
+  // placer places attempts on those reporting now.
   rpc ReportRunner(ReportRunnerRequest) returns (ReportRunnerResponse);
+  // Waits a while for work placed on the runner, or for light operations of
+  // its data plane, up to what it has room for. Work it returns is the
+  // runner's: it starts it, and reports it until its result is in.
+  rpc PollWork(PollWorkRequest) returns (PollWorkResponse);
+  // The result of work PollWork returned. The API wakes the workflow waiting
+  // for it. Sending a result again is harmless.
+  rpc ReportResult(ReportResultRequest) returns (ReportResultResponse);
   // The Flink cluster a deleted pipeline's last version pinned, for the
   // teardown the API sent to the runner's data plane, which cancels the
   // pipeline's Flink jobs.
@@ -303,6 +313,90 @@ message ReportRunnerRequest {
   repeated string launchers = 5;
   // os/arch.
   string platform = 6;
+  // The pool it serves; the placer places a job only in the job's pool.
+  string pool = 7;
+  // What it can place on itself: its cgroup's or host's CPU and memory, less
+  // what it keeps for itself.
+  Resources capacity = 8;
+  // What's running on it now.
+  Resources reserved = 9;
+  // It's stopping, so nothing more is placed on it.
+  bool draining = 10;
+  // Each running attempt or operation, whose lease this report extends.
+  repeated RunningWork running = 11;
 }
 
-message ReportRunnerResponse {}
+message Resources {
+  int64 cpu_millis = 1;
+  int64 memory_bytes = 2;
+}
+
+message RunningWork {
+  string id = 1;
+  // The last epoch it committed; 0 if none, or if it has no epochs.
+  uint64 epoch = 2;
+  Resources size = 3;
+}
+
+message ReportRunnerResponse {
+  // Running work to stop, at its next checkpoint if it has them: it was
+  // cancelled, or its lease ended and something else may have replaced it.
+  repeated string stop = 1;
+}
+
+message PollWorkRequest {
+  string runner = 1;
+  // How many light operations it can take now.
+  uint32 free_operations = 2;
+  // How many log reads it can take now, which are apart from operations so
+  // busy runners still answer them.
+  uint32 free_log_reads = 3;
+}
+
+message PollWorkResponse {
+  // Empty when the wait ended with nothing to do; poll again.
+  repeated Work work = 1;
+}
+
+// Work is an attempt or a light operation, handed to one runner.
+message Work {
+  // Unique across retries and placements' attempts.
+  string id = 1;
+  // What to run, such as RunSyncAttempt.
+  string kind = 2;
+  // Its input, as JSON.
+  bytes input = 3;
+  // How long it may go unreported before it's replaced, which also bounds
+  // how late it may start.
+  google.protobuf.Duration heartbeat_timeout = 4;
+  // How long it may run in all.
+  google.protobuf.Duration timeout = 5;
+  // What it's placed for; unset for a light operation.
+  Resources size = 6;
+  // The trace it's part of, as W3C headers.
+  map<string, string> trace = 7;
+}
+
+message ReportResultRequest {
+  string runner = 1;
+  string id = 2;
+  // On success, its result as JSON.
+  bytes result = 3;
+  // On failure, its taxonomy code or a step's own, such as DBT_FAILED.
+  string code = 4;
+  string message = 5;
+  // Retries won't help.
+  bool non_retryable = 6;
+  // How long to wait before a retry, if it says.
+  google.protobuf.Duration retry_after = 7;
+  // It stopped because it was asked to.
+  bool cancelled = 8;
+  // A placement a stale report overfilled: the runner has no room. The work
+  // is placed again, and this doesn't count as an attempt.
+  bool no_capacity = 9;
+}
+
+message ReportResultResponse {
+  // False if the work isn't this runner's to report any more.
+  bool accepted = 1;
+}

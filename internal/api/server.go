@@ -21,6 +21,7 @@ import (
 	"github.com/unsuitable001/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/unsuitable001/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/unsuitable001/openetl/internal/connectorhost"
+	"github.com/unsuitable001/openetl/internal/orchestration/dispatch"
 	"github.com/unsuitable001/openetl/internal/platform/errs"
 	"github.com/unsuitable001/openetl/internal/secrets"
 	"github.com/unsuitable001/openetl/internal/store"
@@ -47,6 +48,8 @@ type Server struct {
 	Ops       OpRunner
 	// Reads syncs' logs on their data planes. Nil: they can't be read.
 	Logs LogReader
+	// Hands workflows' work to runners, and takes their reports and results.
+	Dispatch *dispatch.Dispatcher
 	// For pipelines and connector operations that name none.
 	DefaultDataPlane string
 	// Which connectors exist, to validate configs; only names, manifests

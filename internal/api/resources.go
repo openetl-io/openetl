@@ -271,6 +271,10 @@ func (s *Server) SyncPipeline(ctx context.Context, req *connect.Request[apiv1.Sy
 	if plan.Continuous(&spec) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s is continuous, so it has no syncs to start", req.Msg.GetName()))
 	}
+	// The sync goes ahead of scheduled ones for room on runners.
+	if err := s.Store.MarkManualSync(ctx, db.MarkManualSyncParams{OrgID: s.Tenant.Org, ID: p.ID}); err != nil {
+		return nil, err
+	}
 	err = s.Schedules.Trigger(ctx, p.ID.String())
 	switch {
 	case errors.Is(err, schedules.ErrSyncRunning):
