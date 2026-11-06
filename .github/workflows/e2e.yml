@@ -38,13 +38,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # A branch reads only its own caches and main's, and e2e doesn't run on
+      # main, so a new branch starts from go's. A cache restores only for the
+      # same paths, so these are go's, though e2e doesn't lint.
       - uses: actions/cache@v6
         with:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
+            ~/.cache/golangci-lint
           key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-${{ github.job }}-
+          restore-keys: |
+            go-${{ github.job }}-
+            go-go-
       - uses: actions/cache@v6
         with:
           path: ~/.m2
