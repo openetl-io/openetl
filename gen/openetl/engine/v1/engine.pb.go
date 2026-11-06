@@ -1647,9 +1647,10 @@ func (*StartJobResponse) Descriptor() ([]byte, []int) {
 }
 
 type RecoverRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Epoch         *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Staged        []byte                 `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Epoch *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// As openetl.connector.v1.WriteRecover's.
+	Staged        [][]byte `protobuf:"bytes,2,rep,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1691,7 +1692,7 @@ func (x *RecoverRequest) GetEpoch() *v1.Epoch {
 	return nil
 }
 
-func (x *RecoverRequest) GetStaged() []byte {
+func (x *RecoverRequest) GetStaged() [][]byte {
 	if x != nil {
 		return x.Staged
 	}
@@ -1864,8 +1865,9 @@ func (*EventsResponse_Metrics) isEventsResponse_Event() {}
 type EpochReady struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Epoch *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	// Empty with a runner sink.
-	Staged    []byte           `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
+	// An engine sink's committables, one per writer lane; empty with a runner
+	// sink.
+	Staged    [][]byte         `protobuf:"bytes,2,rep,name=staged,proto3" json:"staged,omitempty"`
 	Snapshots []*StateSnapshot `protobuf:"bytes,3,rep,name=snapshots,proto3" json:"snapshots,omitempty"`
 	// Each stream's schema at its barrier, as an Arrow IPC stream holding only
 	// the schema. Streams without one yet are missing.
@@ -1922,7 +1924,7 @@ func (x *EpochReady) GetEpoch() *v1.Epoch {
 	return nil
 }
 
-func (x *EpochReady) GetStaged() []byte {
+func (x *EpochReady) GetStaged() [][]byte {
 	if x != nil {
 		return x.Staged
 	}
@@ -2409,9 +2411,10 @@ func (x *StreamMetrics) GetCellsHeld() uint64 {
 }
 
 type CommitRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Epoch         *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Staged        []byte                 `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Epoch *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// Every writer lane's committable, by lane.
+	Staged        [][]byte `protobuf:"bytes,2,rep,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2453,7 +2456,7 @@ func (x *CommitRequest) GetEpoch() *v1.Epoch {
 	return nil
 }
 
-func (x *CommitRequest) GetStaged() []byte {
+func (x *CommitRequest) GetStaged() [][]byte {
 	if x != nil {
 		return x.Staged
 	}
@@ -2689,7 +2692,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x10StartJobResponse\"[\n" +
 	"\x0eRecoverRequest\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
-	"\x06staged\x18\x02 \x01(\fR\x06staged\"M\n" +
+	"\x06staged\x18\x02 \x03(\fR\x06staged\"M\n" +
 	"\x0fRecoverResponse\x12:\n" +
 	"\brecovery\x18\x01 \x01(\x0e2\x1e.openetl.connector.v1.RecoveryR\brecovery\"\x0f\n" +
 	"\rEventsRequest\"\x93\x01\n" +
@@ -2701,7 +2704,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"EpochReady\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
-	"\x06staged\x18\x02 \x01(\fR\x06staged\x12>\n" +
+	"\x06staged\x18\x02 \x03(\fR\x06staged\x12>\n" +
 	"\tsnapshots\x18\x03 \x03(\v2 .openetl.engine.v1.StateSnapshotR\tsnapshots\x12D\n" +
 	"\aschemas\x18\x04 \x03(\v2*.openetl.engine.v1.EpochReady.SchemasEntryR\aschemas\x12A\n" +
 	"\n" +
@@ -2756,7 +2759,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"cells_held\x18\a \x01(\x04R\tcellsHeld\"Z\n" +
 	"\rCommitRequest\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
-	"\x06staged\x18\x02 \x01(\fR\x06staged\"\x10\n" +
+	"\x06staged\x18\x02 \x03(\fR\x06staged\"\x10\n" +
 	"\x0eCommitResponse\"\r\n" +
 	"\vStopRequest\"\x0e\n" +
 	"\fStopResponse*\xa2\x01\n" +

@@ -286,7 +286,11 @@ type zombieWriter struct {
 	d *zombieDest
 }
 
-func (w *zombieWriter) Commit(ctx context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
+func (w *zombieWriter) Commit(ctx context.Context, e destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	if e.N == 2 {
 		w.d.once.Do(func() { close(w.d.committing) })
 		select {
@@ -316,7 +320,11 @@ type replacementWriter struct {
 	d *replacementDest
 }
 
-func (w *replacementWriter) Recover(ctx context.Context, gen uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
+func (w *replacementWriter) Recover(ctx context.Context, gen uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return 0, err
+	}
 	if _, err := w.Writer.Recover(ctx, gen, destination.Epoch{}, nil); err != nil {
 		return 0, err
 	}

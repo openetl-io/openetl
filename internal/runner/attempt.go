@@ -159,9 +159,23 @@ type Job struct {
 	HeldURL string
 	// Holds released or discarded since they started.
 	Releases []Release
+	// How many lanes the attempt runs (ADR-0027); 0: one. It has as many
+	// writer lanes, up to what the destination takes.
+	Lanes int
+	// The pipeline's key groups; 0: checkpoint.KeyGroups. A restore from a
+	// record with another count fails.
+	KeyGroups int
 	// Columns the destination refused in an earlier attempt of this call.
 	refused []RefusedColumn
 }
+
+func (j *Job) lanes() int { return max(j.Lanes, 1) }
+
+func (j *Job) writerLanes() int {
+	return min(j.lanes(), j.Destination.Capabilities().Lanes())
+}
+
+func (j *Job) keyGroups() int { return cmp.Or(j.KeyGroups, checkpoint.KeyGroups) }
 
 // transformed: the user's code runs between the source and the destination.
 func (j *Job) transformed() bool { return j.Transform != nil || j.Flink != nil }
@@ -279,6 +293,9 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if err != nil {
 		return res, err
 	}
+	if head != nil && head.KeyGroupCount() != job.keyGroups() {
+		return res, errs.New(errs.ConfigInvalid, "runner: the pipeline has %d key groups, and its checkpoint %d-g%d has %d", job.keyGroups(), head.Epoch, head.Generation, head.KeyGroupCount())
+	}
 	// The previous record is needed if the sink reports HEAD's epoch lost.
 	var prev *checkpoint.Record
 	if head != nil && head.Previous != nil {
@@ -297,22 +314,26 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 	}
 	canForce := job.canForce()
-	w, err := job.Destination.Open(rctx, job.openConfig(res.Generation, forced))
+	ws := make([]destination.Writer, 0, job.writerLanes())
+	defer func() {
+		for i, w := range ws {
+			if cerr := w.Close(context.WithoutCancel(ctx)); err == nil && cerr != nil {
+				err = fmt.Errorf("runner: close destination lane %d: %w", i, cerr)
+			}
+		}
+	}()
+	w, err := job.Destination.Open(rctx, job.openConfig(res.Generation, forced, 0))
 	if err != nil {
 		return res, fmt.Errorf("runner: open destination: %w", err)
 	}
-	defer func() {
-		if cerr := w.Close(context.WithoutCancel(ctx)); err == nil && cerr != nil {
-			err = fmt.Errorf("runner: close destination: %w", cerr)
-		}
-	}()
+	ws = append(ws, w)
 
 	var e destination.Epoch
-	var staged destination.Staged
+	var staged []destination.Staged
 	applied := map[string]*arrow.Schema{}
 	var limits map[string]destination.TableLimits
 	if head != nil {
-		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, head.Staged
+		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, committables(head)
 		schemas := make(map[string][]byte, len(head.Streams))
 		for name, st := range head.Streams {
 			schemas[name] = st.Schema
@@ -362,6 +383,14 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		res.Restored = restored.Epoch
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
+	// The other lanes open behind the fence lane 0 raised.
+	for lane := 1; lane < job.writerLanes(); lane++ {
+		lw, err := job.Destination.Open(rctx, job.openConfig(res.Generation, forced, lane))
+		if err != nil {
+			return res, fmt.Errorf("runner: open destination lane %d: %w", lane, err)
+		}
+		ws = append(ws, lw)
+	}
 	prune(rctx, sess, restored, job.keep(), job.Staging, job.HeldURL != "", log)
 	holds, holdPlans, err := job.startHolds(rctx, restored, limits)
 	if err != nil {
@@ -370,7 +399,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	span.SetAttributes(attribute.Int64("openetl.generation", int64(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", int64(res.Restored))) //nolint:gosec // epochs fit
 	span.End()
 
-	c := &coordinator{job: &job, sess: sess, w: w, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied,
+	c := &coordinator{job: &job, sess: sess, w: w, ws: ws, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied,
 		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{},
 		holds: holds, holdPlans: holdPlans}
 	for _, p := range holdPlans {
@@ -395,11 +424,12 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	return res, c.run(ctx, restored, canForce)
 }
 
-// openConfig is the destination's for generation gen. forced are the
-// streams a record that may be restored was forced on.
-func (j *Job) openConfig(gen uint64, forced map[string]bool) destination.OpenConfig {
+// openConfig is the destination's for writer lane lane of generation gen.
+// forced are the streams a record that may be restored was forced on.
+func (j *Job) openConfig(gen uint64, forced map[string]bool, lane int) destination.OpenConfig {
 	caps := j.Destination.Capabilities()
-	cfg := destination.OpenConfig{Pipeline: j.Pipeline, Generation: gen, Scope: j.Settings.Scope, Namespace: j.Namespace, CommitInterval: j.Settings.CommitInterval}
+	cfg := destination.OpenConfig{Pipeline: j.Pipeline, Generation: gen, Scope: j.Settings.Scope, Namespace: j.Namespace, CommitInterval: j.Settings.CommitInterval,
+		Lane: lane, Lanes: j.writerLanes()}
 	for _, s := range j.sinkStreams() {
 		cfg.Streams = append(cfg.Streams, destination.Stream{
 			Name:       s.Name,
@@ -538,6 +568,15 @@ func flush(ctx context.Context, staging Staging, e destination.Epoch, log *slog.
 	}
 }
 
+// committables are a record's, as the destination takes them.
+func committables(r *checkpoint.Record) []destination.Staged {
+	out := make([]destination.Staged, len(r.Committables))
+	for i, c := range r.Committables {
+		out[i] = c
+	}
+	return out
+}
+
 func stagedFiles(m map[string][]checkpoint.StagedFile) map[string][]destination.StagedFile {
 	if len(m) == 0 {
 		return nil
@@ -588,6 +627,10 @@ func (j *Job) validate() error {
 		return errs.New(errs.ConfigInvalid, "runner: a Flink job runs in a continuous pipeline, with a bridge and outputs, and without a Spark transform")
 	case j.Flink == nil && j.Transform == nil && len(j.Outputs) > 0:
 		return errors.New("runner: outputs without a transform")
+	case j.lanes() > 1 && j.transformed():
+		return errs.New(errs.ConfigInvalid, "runner: a transform runs on one lane")
+	case j.KeyGroups < 0 || j.KeyGroups&(j.KeyGroups-1) != 0:
+		return errs.New(errs.ConfigInvalid, "runner: %d key groups, not a power of two", j.KeyGroups)
 	}
 	seen := make(map[string]bool)
 	for _, s := range j.Streams {
@@ -642,6 +685,7 @@ const (
 type event struct {
 	kind     eventKind
 	epoch    uint64
+	lane     int // evStaged's writer lane
 	states   map[string][]byte
 	forced   []string
 	reread   []string
@@ -653,15 +697,18 @@ type event struct {
 }
 
 type epochState struct {
-	requested             time.Time
-	placed, staged, ready bool
-	states                map[string][]byte
-	forced                []string
-	reread                []string
-	complete              map[string]bool
-	rows                  map[string]uint64
-	desc                  destination.Staged
-	flow                  *Ready
+	requested     time.Time
+	placed, ready bool
+	// Each writer lane's committable, which lanes have staged, and how many.
+	descs    []destination.Staged
+	stagedOn []bool
+	staged   int
+	states   map[string][]byte
+	forced   []string
+	reread   []string
+	complete map[string]bool
+	rows     map[string]uint64
+	flow     *Ready
 	// In a Flink pipeline, the Flink checkpoint the epoch ends at.
 	flink *checkpoint.FlinkCheckpoint
 }
@@ -677,9 +724,11 @@ type commitReq struct {
 type coordinator struct {
 	job  *Job
 	sess *checkpoint.Session
-	w    destination.Writer
-	log  *slog.Logger
-	res  *Result
+	// Lane 0's writer, which applies schemas and commits, and every lane's.
+	w   destination.Writer
+	ws  []destination.Writer
+	log *slog.Logger
+	res *Result
 
 	events      chan event
 	commits     chan commitReq
@@ -824,7 +873,12 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		}
 		sinkEnds = lastEnd{ends: ends, inputs: reading}
 	}
-	sink := newSinkPump(c.w, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, staging, c.job.sinkStreams(), starts, sinkEnds, fromFlow, c.events)
+	lanes := make([]chan Frame, len(c.ws))
+	sinks := make([]*sinkPump, len(c.ws))
+	for i, w := range c.ws {
+		lanes[i] = make(chan Frame, 16)
+		sinks[i] = newSinkPump(w, i, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, staging, c.job.sinkStreams(), starts, sinkEnds, lanes[i], c.events)
+	}
 
 	req := source.ReadRequest{Pipeline: c.job.Pipeline, Continuous: c.job.Continuous}
 	for _, s := range c.job.Streams {
@@ -846,7 +900,10 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	} else {
 		g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
 	}
-	g.Go(func() error { return sink.run(gctx) })
+	g.Go(func() error { return demux(gctx, fromFlow, lanes) })
+	for _, sink := range sinks {
+		g.Go(func() error { return sink.run(gctx) })
+	}
 	g.Go(func() error { return c.committer(gctx) })
 	g.Go(func() error {
 		defer close(c.commits)
@@ -964,10 +1021,14 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 		c.outstanding = false
 	case evStaged:
 		st := c.pending[ev.epoch]
-		if st == nil || st.staged {
-			return fmt.Errorf("runner: unexpected staging of epoch %d", ev.epoch)
+		if st != nil && st.descs == nil {
+			st.descs, st.stagedOn = make([]destination.Staged, len(c.ws)), make([]bool, len(c.ws))
 		}
-		st.staged, st.desc = true, ev.staged
+		if st == nil || ev.lane >= len(c.ws) || st.stagedOn[ev.lane] {
+			return fmt.Errorf("runner: unexpected staging of epoch %d on lane %d", ev.epoch, ev.lane)
+		}
+		st.descs[ev.lane], st.stagedOn[ev.lane] = ev.staged, true
+		st.staged++
 	case evReady:
 		st := c.pending[ev.epoch]
 		if st == nil || st.ready {
@@ -995,7 +1056,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 	}
 	n := c.committed + 1
 	st := c.pending[n]
-	if c.committing || st == nil || !st.placed || !st.staged || !st.ready {
+	if c.committing || st == nil || !st.placed || st.staged < len(c.ws) || !st.ready {
 		return nil
 	}
 	c.committing = true
@@ -1047,17 +1108,18 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 // before it staged.
 func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*checkpoint.Record, error) {
 	rec := &checkpoint.Record{
-		Epoch:      n,
-		Streams:    make(map[string]checkpoint.StreamState, len(st.states)),
-		Staged:     st.desc,
-		Files:      recordFiles(st.flow.Files),
-		Snapshots:  st.flow.Snapshots,
-		Quarantine: st.flow.Quarantine,
-		Forced:     st.forced,
-		Reread:     st.reread,
-		Sync:       c.job.Sync,
-		Flink:      st.flink,
-		CreatedAt:  time.Now().UTC(),
+		Epoch:        n,
+		Streams:      make(map[string]checkpoint.StreamState, len(st.states)),
+		KeyGroups:    c.job.keyGroups(),
+		Committables: make([][]byte, len(st.descs)),
+		Files:        recordFiles(st.flow.Files()),
+		Snapshots:    st.flow.Snapshots,
+		Quarantine:   st.flow.Quarantine,
+		Forced:       st.forced,
+		Reread:       st.reread,
+		Sync:         c.job.Sync,
+		Flink:        st.flink,
+		CreatedAt:    time.Now().UTC(),
 	}
 	if c.syncRows != nil {
 		for name, rows := range st.rows {
@@ -1086,6 +1148,9 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		for _, o := range c.job.Outputs {
 			rec.Outputs[o.Name] = checkpoint.OutputState{Schema: st.flow.OutputSchemas[o.Name], Rows: st.flow.OutputRows[o.Name]}
 		}
+	}
+	for i, d := range st.descs {
+		rec.Committables[i] = d
 	}
 	slices.Sort(rec.Forced)
 	slices.Sort(rec.Reread)
@@ -1138,7 +1203,7 @@ func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *
 	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	collapsed := map[string]uint64{}
 	err := retry(ctx, func() error {
-		done, err := c.w.Commit(ctx, e, st.desc)
+		done, err := c.w.Commit(ctx, e, st.descs)
 		for name, rows := range done.Collapsed {
 			collapsed[name] += rows
 		}

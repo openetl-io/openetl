@@ -167,11 +167,11 @@ func (discardWriter) PreCommit(context.Context, destination.Epoch) (destination.
 	return nil, nil
 }
 
-func (discardWriter) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+func (discardWriter) Commit(context.Context, destination.Epoch, []destination.Staged) (destination.Committed, error) {
 	return destination.Committed{}, nil
 }
 
-func (discardWriter) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (discardWriter) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 

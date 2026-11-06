@@ -2,7 +2,10 @@ package checkpoint_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/unsuitable001/openetl/internal/checkpoint"
@@ -212,4 +215,49 @@ type ignoresConditions struct{ *checkpoint.MemStore }
 func (s ignoresConditions) Create(ctx context.Context, key string, data []byte) (checkpoint.Version, error) {
 	_ = s.Delete(ctx, key)
 	return s.MemStore.Create(ctx, key, data)
+}
+
+func TestRecordsFromBeforeSplitsReadAsOneSplitAndOneCommittable(t *testing.T) {
+	old := `{"epoch":3,"generation":1,"streams":{"a":{"state":"YQ==","complete":true},"b":{"state":"Yg=="}},"staged":"c3Q=","forced":["b"],"created_at":"2026-11-01T00:00:00Z"}`
+	var rec checkpoint.Record
+	if err := json.Unmarshal([]byte(old), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Committables) != 1 || string(rec.Committables[0]) != "st" || rec.KeyGroupCount() != checkpoint.KeyGroups {
+		t.Fatalf("committables %q, key groups %d", rec.Committables, rec.KeyGroupCount())
+	}
+	want := map[string][]checkpoint.SplitState{
+		"a": {{ID: checkpoint.WholeStream, State: []byte("a"), Complete: true}},
+		"b": {{ID: checkpoint.WholeStream, State: []byte("b"), Forced: true}},
+	}
+	for name, w := range want {
+		if got := rec.Splits(name); !reflect.DeepEqual(got, w) {
+			t.Fatalf("%s's splits = %+v, want %+v", name, got, w)
+		}
+	}
+	// Without staged, as a sink that stages nothing wrote them.
+	if err := json.Unmarshal([]byte(`{"epoch":1,"generation":1,"streams":{}}`), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Committables) != 1 || rec.Committables[0] != nil {
+		t.Fatalf("committables %q, want one, empty", rec.Committables)
+	}
+}
+
+func TestSetSplitsKeepsTheWholeStreamInState(t *testing.T) {
+	rec := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Rows: 4}}}
+	rec.SetSplits("s", []checkpoint.SplitState{{ID: checkpoint.WholeStream, State: []byte("x"), Complete: true, Reread: true}})
+	if st := rec.Streams["s"]; string(st.State) != "x" || st.Splits != nil || !st.Complete || st.Rows != 4 || !slices.Equal(rec.Reread, []string{"s"}) || len(rec.Forced) != 0 {
+		t.Fatalf("stream %+v, forced %v, reread %v", st, rec.Forced, rec.Reread)
+	}
+	splits := []checkpoint.SplitState{{ID: "0", State: []byte("x"), Complete: true}, {ID: "1", Forced: true}}
+	rec.SetSplits("s", splits)
+	st := rec.Streams["s"]
+	if st.State != nil || st.Complete || !reflect.DeepEqual(rec.Splits("s"), splits) || !slices.Equal(rec.Forced, []string{"s"}) || len(rec.Reread) != 0 {
+		t.Fatalf("stream %+v, forced %v, reread %v", st, rec.Forced, rec.Reread)
+	}
+	rec.SetSplits("s", []checkpoint.SplitState{{ID: "0", Complete: true}, {ID: "1", Complete: true}})
+	if !rec.Streams["s"].Complete || len(rec.Forced) != 0 {
+		t.Fatalf("stream %+v, forced %v", rec.Streams["s"], rec.Forced)
+	}
 }

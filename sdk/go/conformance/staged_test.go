@@ -84,7 +84,7 @@ func (w *stagedAPIWriter) PreCommit(_ context.Context, e destination.Epoch) (des
 	return destination.Staged(fmt.Sprintf("%d/%d", e.Generation, e.N)), nil
 }
 
-func (w *stagedAPIWriter) Commit(ctx context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
+func (w *stagedAPIWriter) Commit(ctx context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
 	from, err := w.cursor(ctx, e)
 	if err != nil || from.Done {
 		return destination.Committed{}, err
@@ -92,7 +92,7 @@ func (w *stagedAPIWriter) Commit(ctx context.Context, e destination.Epoch, _ des
 	return destination.Committed{}, w.deliver(ctx, e, from)
 }
 
-func (w *stagedAPIWriter) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ destination.Staged) (destination.Recovery, error) {
+func (w *stagedAPIWriter) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ []destination.Staged) (destination.Recovery, error) {
 	if e.IsZero() {
 		return destination.Applied, nil
 	}

@@ -615,7 +615,7 @@ fn epoch_ready(
     plan: &Plan,
     align: &mut Alignment,
     n: u64,
-    staged: Vec<u8>,
+    staged: Vec<Vec<u8>>,
     files: Vec<StagedStream>,
     held: Vec<StagedStream>,
 ) -> Result<EventsResponse, JobError> {
@@ -823,7 +823,7 @@ fn write_parquet(
         for n in ready {
             let staged = serde_json::to_vec(&staging.take(n))
                 .map_err(|e| JobError::internal(format!("encode the staged descriptor: {e}")))?;
-            let ev = epoch_ready(plan, &mut align, n, staged, Vec::new(), Vec::new())?;
+            let ev = epoch_ready(plan, &mut align, n, vec![staged], Vec::new(), Vec::new())?;
             let _ = events.blocking_send(Ok(ev));
         }
         let _ = events.try_send(Ok(metrics(plan, counters)));
@@ -919,7 +919,14 @@ async fn write_discard(
             continue;
         }
         for n in ready {
-            let ev = epoch_ready(&plan, &mut align, n, Vec::new(), Vec::new(), Vec::new())?;
+            let ev = epoch_ready(
+                &plan,
+                &mut align,
+                n,
+                vec![Vec::new()],
+                Vec::new(),
+                Vec::new(),
+            )?;
             let _ = events.send(Ok(ev)).await;
         }
         let _ = events.try_send(Ok(metrics(&plan, &counters)));
@@ -1460,7 +1467,7 @@ mod tests {
         let mut ready = Vec::new();
         while let Some(Ok(ev)) = events.recv().await {
             if let Some(events_response::Event::EpochReady(r)) = ev.event {
-                let d: Descriptor = serde_json::from_slice(&r.staged).unwrap();
+                let d: Descriptor = serde_json::from_slice(&r.staged[0]).unwrap();
                 assert_eq!(d.epoch, r.epoch.unwrap().n);
                 ready.push(d);
             }
@@ -1572,7 +1579,7 @@ mod tests {
         let mut ready = Vec::new();
         while let Some(Ok(ev)) = events.recv().await {
             if let Some(events_response::Event::EpochReady(r)) = ev.event {
-                assert!(r.staged.is_empty());
+                assert_eq!(r.staged, vec![Vec::<u8>::new()]);
                 ready.push(r.epoch.unwrap().n);
             }
         }

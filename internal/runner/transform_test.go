@@ -192,11 +192,11 @@ func (d *transformDest) PreCommit(context.Context, destination.Epoch) (destinati
 	return nil, nil
 }
 
-func (d *transformDest) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+func (d *transformDest) Commit(context.Context, destination.Epoch, []destination.Staged) (destination.Committed, error) {
 	return destination.Committed{}, nil
 }
 
-func (d *transformDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *transformDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Redone, nil
 }
 

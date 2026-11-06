@@ -4,6 +4,7 @@ package destination
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -20,9 +21,9 @@ type Epoch struct {
 // IsZero reports whether e means "no checkpoint yet".
 func (e Epoch) IsZero() bool { return e.N == 0 }
 
-// Staged describes what PreCommit staged. The platform stores it in the
-// epoch's checkpoint record and passes it back to Commit and Recover. Keep it
-// to a few KB.
+// Staged describes what one writer lane's PreCommit staged: its
+// committable. The platform stores every lane's in the epoch's checkpoint
+// record and passes them back to Commit and Recover. Keep it to a few KB.
 type Staged []byte
 
 // Recovery is what Recover found for the epoch the checkpoint log points to.
@@ -129,7 +130,14 @@ type Capabilities struct {
 	Delivery   Delivery
 	// Zero: the destination takes no holds.
 	Holds Holds
+	// The most writer lanes an attempt may open (ADR-0027): a Writer each,
+	// whose writes run concurrently. 0: one. A destination that can't commit
+	// every lane's committables together takes one.
+	WriterLanes int
 }
+
+// Lanes is how many writer lanes the destination takes.
+func (c Capabilities) Lanes() int { return max(c.WriterLanes, 1) }
 
 // Holds is what a destination does with columns and cells the platform
 // holds back (ADR-0025). A held cell arrives as null, or as the pipeline's
@@ -211,6 +219,10 @@ type OpenConfig struct {
 	// How often epochs are committed, for sinks whose transactions must
 	// outlast one; 0 if the platform doesn't say.
 	CommitInterval time.Duration
+	// The writer's lane, of Lanes; 0 Lanes is one. Lane 0's writer also
+	// applies schemas, recovers and commits, for every lane, and the others'
+	// open once it has recovered.
+	Lane, Lanes int
 }
 
 type Destination interface {
@@ -218,32 +230,48 @@ type Destination interface {
 	Open(ctx context.Context, cfg OpenConfig) (Writer, error)
 }
 
-// Writer is one attempt's connection to the destination.
+// Writer is one writer lane of an attempt's connection to the destination.
 //
-// Recover is called first. Write and PreCommit are called from one goroutine
-// in epoch order, but Writes for epoch N+1 can arrive before PreCommit(N).
-// Commit runs on another goroutine, concurrently with later Writes and
-// PreCommits but never with another Commit.
+// Lane 0's Recover is called first. A lane's Write and PreCommit are called
+// from one goroutine in epoch order, but Writes for epoch N+1 can arrive
+// before PreCommit(N). Lanes write concurrently. Commit runs on lane 0's
+// writer, on another goroutine, concurrently with later Writes and PreCommits
+// but never with another Commit. Other lanes' Commit and Recover are never
+// called.
 type Writer interface {
-	// Write adds a batch to epoch e. The batch is released after Write
-	// returns; retain it to keep it longer.
+	// Write adds a batch to the lane's part of epoch e. The batch is released
+	// after Write returns; retain it to keep it longer.
 	Write(ctx context.Context, e Epoch, stream string, batch arrow.RecordBatch) error
-	// PreCommit makes epoch e durable but not visible. A staged epoch is
-	// durable already.
+	// PreCommit makes the lane's part of epoch e durable but not visible, and
+	// returns its committable. A staged epoch is durable already.
 	PreCommit(ctx context.Context, e Epoch) (Staged, error)
-	// Commit runs after e's checkpoint record is in the log. It makes the
-	// epoch visible with an (e.Generation, e.N) marker per stream, behind the
-	// fence: in one transaction, or one per stream with ScopeStream.
-	// Idempotent.
-	Commit(ctx context.Context, e Epoch, s Staged) (Committed, error)
+	// Commit runs after e's checkpoint record is in the log, with every
+	// lane's committable, by lane. It makes the epoch visible with an
+	// (e.Generation, e.N) marker per stream, behind the fence: in one
+	// transaction, or one per stream with ScopeStream. Idempotent.
+	Commit(ctx context.Context, e Epoch, staged []Staged) (Committed, error)
 	// Recover raises the fence to gen, then reports Applied, applies the
 	// streams whose marker is missing and reports Redone, or reports Lost.
-	// With a zero e it only raises the fence and reports Applied. Otherwise it
-	// may then drop whatever earlier generations staged, since none of it can
-	// be applied any more, and, unless e is lost, the markers of epochs before
-	// e.N, which no recovery checks again.
-	Recover(ctx context.Context, gen uint64, e Epoch, s Staged) (Recovery, error)
+	// staged is every committable of e, from the attempt that staged it,
+	// whose lanes may have been others. With a zero e it only raises the
+	// fence and reports Applied. Otherwise it may then drop whatever earlier
+	// generations staged, since none of it can be applied any more, and,
+	// unless e is lost, the markers of epochs before e.N, which no recovery
+	// checks again.
+	Recover(ctx context.Context, gen uint64, e Epoch, staged []Staged) (Recovery, error)
 	Close(ctx context.Context) error
+}
+
+// One returns the only committable of a destination with one writer lane;
+// nil for none, as a zero epoch has.
+func One(staged []Staged) (Staged, error) {
+	switch len(staged) {
+	case 0:
+		return nil, nil
+	case 1:
+		return staged[0], nil
+	}
+	return nil, fmt.Errorf("destination: %d committables for one writer lane", len(staged))
 }
 
 // ReadTracker is implemented by writers that need to know where each
@@ -263,9 +291,10 @@ type ReadTracker interface {
 
 // StagedWriter is implemented by the writers of destinations with
 // DeliveryStaged, whose Write is never called. WriteStaged gets each
-// stream's files of epoch e before PreCommit(e), and the files of the epoch
-// being recovered before Recover. Streams without rows in the epoch get no
-// call. Its calls come from the goroutine that calls PreCommit.
+// stream's files of the lane's part of epoch e before PreCommit(e), and on
+// lane 0, every lane's files of the epoch being recovered before Recover.
+// Streams without rows in the epoch get no call. Its calls come from the
+// goroutine that calls PreCommit.
 type StagedWriter interface {
 	WriteStaged(ctx context.Context, e Epoch, stream string, files []StagedFile) error
 }
@@ -307,8 +336,8 @@ type Checker interface {
 // schema: it creates tables, adds columns and widens types, and never drops
 // or narrows them. It is idempotent, and isn't fenced.
 //
-// It runs before Recover with the restored epoch's schemas, and before each
-// epoch whose schemas changed is recorded.
+// It runs on lane 0's writer, before Recover with the restored epoch's
+// schemas, and before each epoch whose schemas changed is recorded.
 //
 // A destination that takes holds answers with the columns it didn't add or
 // change, having applied the rest, instead of failing, and with what each

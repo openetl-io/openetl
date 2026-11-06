@@ -58,7 +58,7 @@ func (d *stagedDest) PreCommit(context.Context, destination.Epoch) (destination.
 	return nil, nil
 }
 
-func (d *stagedDest) Commit(ctx context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
+func (d *stagedDest) Commit(ctx context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
 	d.mu.Lock()
 	files := d.files[e]
 	d.mu.Unlock()
@@ -79,7 +79,7 @@ func (d *stagedDest) Commit(ctx context.Context, e destination.Epoch, _ destinat
 	return destination.Committed{}, d.h.PutDeliveryCursor(ctx, e, []byte("done"))
 }
 
-func (d *stagedDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *stagedDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 

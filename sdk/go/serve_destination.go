@@ -47,6 +47,8 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 		Namespace:  open.GetNamespace(),
 		// Unset is zero.
 		CommitInterval: open.GetCommitInterval().AsDuration(),
+		Lane:           int(open.GetLane()),
+		Lanes:          max(int(open.GetLanes()), 1),
 	}
 	for _, s := range open.GetStreams() {
 		cfg.Streams = append(cfg.Streams, destination.Stream{
@@ -80,7 +82,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 			switch x := m.GetMsg().(type) {
 			case *protocolv1.WriteRequest_Commit:
 				e := epoch(x.Commit.GetEpoch())
-				c, err := w.Commit(ctx, e, x.Commit.GetStaged())
+				c, err := w.Commit(ctx, e, staged(x.Commit.GetStaged()))
 				resp = &protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_Committed{Committed: &protocolv1.WriteCommitted{Epoch: x.Commit.GetEpoch(), Error: protoError(err), CollapsedRows: c.Collapsed}}}
 			case *protocolv1.WriteRequest_ApplySchema:
 				applied, err := applySchema(ctx, sa, x.ApplySchema)
@@ -108,7 +110,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 		switch x := m.GetMsg().(type) {
 		case *protocolv1.WriteRequest_Recover:
 			var r destination.Recovery
-			if r, fail = w.Recover(ctx, gen, epoch(x.Recover.GetEpoch()), x.Recover.GetStaged()); fail == nil {
+			if r, fail = w.Recover(ctx, gen, epoch(x.Recover.GetEpoch()), staged(x.Recover.GetStaged())); fail == nil {
 				fail = send(&protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_Recovered{Recovered: &protocolv1.WriteRecovered{Recovery: protocolv1.Recovery(r)}}}) //nolint:gosec // small
 			}
 		case *protocolv1.WriteRequest_Batch:
@@ -224,6 +226,14 @@ func epoch(e *protocolv1.Epoch) destination.Epoch {
 	return destination.Epoch{Generation: e.GetGeneration(), N: e.GetN()}
 }
 
+func staged(b [][]byte) []destination.Staged {
+	out := make([]destination.Staged, len(b))
+	for i, s := range b {
+		out[i] = s
+	}
+	return out
+}
+
 func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapabilities {
 	p := &protocolv1.DestinationCapabilities{
 		SinkClass:            protocolv1.SinkClass(c.Class), //nolint:gosec // small
@@ -231,6 +241,7 @@ func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapa
 		NanosecondTimestamps: c.NanosecondTimestamps,
 		MaxIdentifierLength:  uint32(c.MaxIdentifierLength),   //nolint:gosec // small
 		Delivery:             protocolv1.Delivery(c.Delivery), //nolint:gosec // small
+		MaxWriterLanes:       uint32(c.WriterLanes),           //nolint:gosec // small
 	}
 	if h := c.Holds; h != (destination.Holds{}) {
 		p.Holds = &protocolv1.HoldCapabilities{ByKey: h.ByKey, ById: h.ByID, Last: h.Last, Guarded: h.Guarded}

@@ -322,7 +322,11 @@ func (w *warehouseWriter) applyScoped(ctx context.Context, st warehouseStaged, s
 	return nil
 }
 
-func (w *warehouseWriter) Commit(ctx context.Context, _ destination.Epoch, s destination.Staged) (destination.Committed, error) {
+func (w *warehouseWriter) Commit(ctx context.Context, _ destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	var st warehouseStaged
 	if err := json.Unmarshal(s, &st); err != nil {
 		return destination.Committed{}, err
@@ -331,8 +335,12 @@ func (w *warehouseWriter) Commit(ctx context.Context, _ destination.Epoch, s des
 	return c, w.applyScoped(ctx, st, st.Streams, c.Collapsed)
 }
 
-func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
-	err := outcome(w.w.sched.point(ctx, w.attempt, "sink.recover"), func() error {
+func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return 0, err
+	}
+	err = outcome(w.w.sched.point(ctx, w.attempt, "sink.recover"), func() error {
 		w.wh.mu.Lock()
 		defer w.wh.mu.Unlock()
 		if w.wh.fence > gen {
@@ -351,17 +359,17 @@ func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination
 	if err := json.Unmarshal(s, &st); err != nil {
 		return 0, err
 	}
-	missing, needs, staged := w.wh.missing(st)
+	missing, needs, have := w.wh.missing(st)
 	var r destination.Recovery
 	switch {
 	case len(missing) == 0:
 		r = destination.Applied
-	case staged == needs:
+	case have == needs:
 		if err := w.applyScoped(ctx, st, missing, map[string]uint64{}); err != nil {
 			return 0, err
 		}
 		r = destination.Redone
-	case staged == 0 && len(missing) == len(st.Streams):
+	case have == 0 && len(missing) == len(st.Streams):
 		// Streams that staged nothing are lost with the rest.
 		return destination.Lost, nil
 	default:
@@ -500,7 +508,11 @@ func (w *kafkaWriter) PreCommit(ctx context.Context, e destination.Epoch) (desti
 	return json.Marshal(kafkaStaged{Slot: slot, Epoch: w.epochs[slot], Gen: e.Generation, N: e.N})
 }
 
-func (w *kafkaWriter) Commit(ctx context.Context, _ destination.Epoch, s destination.Staged) (destination.Committed, error) {
+func (w *kafkaWriter) Commit(ctx context.Context, _ destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	var st kafkaStaged
 	if err := json.Unmarshal(s, &st); err != nil {
 		return destination.Committed{}, err
@@ -530,7 +542,7 @@ func (w *kafkaWriter) Commit(ctx context.Context, _ destination.Epoch, s destina
 	})
 }
 
-func (w *kafkaWriter) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ destination.Staged) (destination.Recovery, error) {
+func (w *kafkaWriter) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ []destination.Staged) (destination.Recovery, error) {
 	if e.IsZero() {
 		return destination.Applied, nil
 	}
@@ -596,11 +608,11 @@ func (d *webhookDest) PreCommit(ctx context.Context, _ destination.Epoch) (desti
 	return destination.Staged("{}"), nil
 }
 
-func (d *webhookDest) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+func (d *webhookDest) Commit(context.Context, destination.Epoch, []destination.Staged) (destination.Committed, error) {
 	return destination.Committed{}, nil
 }
 
-func (d *webhookDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *webhookDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 
@@ -825,12 +837,12 @@ func (d *stagedAPIDest) PreCommit(ctx context.Context, _ destination.Epoch) (des
 	return destination.Staged("{}"), nil
 }
 
-func (d *stagedAPIDest) Commit(ctx context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
+func (d *stagedAPIDest) Commit(ctx context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
 	_, err := d.deliver(ctx, e)
 	return destination.Committed{}, err
 }
 
-func (d *stagedAPIDest) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ destination.Staged) (destination.Recovery, error) {
+func (d *stagedAPIDest) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ []destination.Staged) (destination.Recovery, error) {
 	if e.IsZero() {
 		return destination.Applied, nil
 	}

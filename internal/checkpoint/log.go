@@ -2,10 +2,12 @@ package checkpoint
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -40,14 +42,19 @@ func (h Head) equal(o Head) bool {
 }
 
 type StreamState struct {
+	// The state of the stream's one split, the whole stream; nil with
+	// Splits.
 	State []byte `json:"state,omitempty"`
+	// The stream's splits (ADR-0027), where it has any but the whole stream.
+	Splits []SplitState `json:"splits,omitempty"`
 	// The engine's schema for the stream at this checkpoint: an Arrow IPC
 	// stream holding only the schema.
 	Schema []byte `json:"schema,omitempty"`
 	// When the stream's current read started, in microseconds since the Unix
 	// epoch. Rows read without a cursor carry it as their sequence.
 	ReadStart int64 `json:"read_start,omitempty"`
-	// The stream completed, and State is where its next sync starts.
+	// The stream completed: every split did, and their states are where its
+	// next sync starts.
 	Complete bool `json:"complete,omitempty"`
 	// Rows the source emitted in the epoch, quarantined ones included.
 	Rows uint64 `json:"rows,omitempty"`
@@ -56,6 +63,24 @@ type StreamState struct {
 	Delivered []byte `json:"delivered,omitempty"`
 	// Columns and cells held back (ADR-0025).
 	Holds *Holds `json:"holds,omitempty"`
+}
+
+// WholeStream is the ID of the split that is the whole stream. A stream
+// with only it keeps its state in StreamState.State, as records from before
+// splits do.
+const WholeStream = ""
+
+// SplitState is one of a stream's splits: a resumable slice of its read,
+// such as a key range or a partition.
+type SplitState struct {
+	ID    string `json:"id"`
+	State []byte `json:"state,omitempty"`
+	// The split completed, and State is where its part of the next sync
+	// starts.
+	Complete bool `json:"complete,omitempty"`
+	// As Record.Forced and Record.Reread, for the split.
+	Forced bool `json:"forced,omitempty"`
+	Reread bool `json:"reread,omitempty"`
 }
 
 // Holds are a stream's held columns and cells, where their values are, and
@@ -186,10 +211,23 @@ type QuarantineFile struct {
 	Rows   uint64 `json:"rows"`
 }
 
-// Snapshot is one operator's state at a checkpoint.
+// Snapshot is one operator's state at a checkpoint, for the key groups it
+// covers.
 type Snapshot struct {
 	Operator string `json:"operator"`
 	URL      string `json:"url"`
+	// Nil: all of them.
+	KeyGroups *KeyGroupRange `json:"key_groups,omitempty"`
+}
+
+// KeyGroups is how many key groups a pipeline has, unless its record says
+// otherwise: records from before them have this many.
+const KeyGroups = 256
+
+// KeyGroupRange is key groups First to Last, inclusive.
+type KeyGroupRange struct {
+	First int `json:"first"`
+	Last  int `json:"last"`
 }
 
 // Record is one checkpoint. Records are immutable once written.
@@ -204,19 +242,25 @@ type Record struct {
 	// A transform's outputs, which are the destination's streams. Nil
 	// without a transform.
 	Outputs map[string]OutputState `json:"outputs,omitempty"`
-	Staged  []byte                 `json:"staged,omitempty"`
+	// The pipeline's key groups; 0 in records from before them, which have
+	// KeyGroups.
+	KeyGroups int `json:"key_groups,omitempty"`
+	// What the destination's writer lanes staged for the epoch, one each,
+	// which commit and recovery get. Records from before them hold one.
+	Committables [][]byte `json:"committables"`
 	// The files the dataflow staged for a destination that loads them, by
 	// the destination's stream.
 	Files     map[string][]StagedFile `json:"files,omitempty"`
 	Snapshots []Snapshot              `json:"snapshots,omitempty"`
 	// Records quarantined in this epoch. Files no record lists are orphans.
 	Quarantine []QuarantineFile `json:"quarantine,omitempty"`
-	// Streams whose barrier was placed without a resume point. Restoring from
-	// this record re-reads rows that may already be applied.
+	// Streams whose barrier was placed without a resume point, on any of
+	// their splits. Restoring from this record re-reads rows that may already
+	// be applied.
 	Forced []string `json:"forced,omitempty"`
-	// Streams that read rows again in this epoch: after a restore from a
-	// forced barrier, before their next resume point. Those rows may repeat
-	// rows an earlier epoch committed.
+	// Streams that read rows again in this epoch, on any of their splits:
+	// after a restore from a forced barrier, before their next resume point.
+	// Those rows may repeat rows an earlier epoch committed.
 	Reread []string `json:"reread,omitempty"`
 	// The sync that wrote it. A later attempt of the same sync doesn't read
 	// the streams it completed.
@@ -253,6 +297,69 @@ type StagedFile struct {
 }
 
 func (r *Record) Ref() RecordRef { return RecordRef{Epoch: r.Epoch, Generation: r.Generation} }
+
+// UnmarshalJSON reads a record from before committables as holding one.
+func (r *Record) UnmarshalJSON(data []byte) error {
+	type record Record
+	var v struct {
+		record
+		Staged []byte `json:"staged"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*r = Record(v.record)
+	if len(r.Committables) == 0 {
+		r.Committables = [][]byte{v.Staged}
+	}
+	return nil
+}
+
+// KeyGroupCount is the pipeline's key groups as the record has them.
+func (r *Record) KeyGroupCount() int { return cmp.Or(r.KeyGroups, KeyGroups) }
+
+// Splits returns a stream's splits: its one split, the whole stream, where
+// it has no others. Nil if the record doesn't have the stream.
+func (r *Record) Splits(stream string) []SplitState {
+	st, ok := r.Streams[stream]
+	switch {
+	case !ok:
+		return nil
+	case len(st.Splits) > 0:
+		return st.Splits
+	}
+	return []SplitState{{ID: WholeStream, State: st.State, Complete: st.Complete,
+		Forced: slices.Contains(r.Forced, stream), Reread: slices.Contains(r.Reread, stream)}}
+}
+
+// SetSplits sets a stream's splits, and the record's marks for it, keeping
+// its other fields. A stream with only the whole stream keeps its state in
+// State.
+func (r *Record) SetSplits(stream string, splits []SplitState) {
+	st := r.Streams[stream]
+	st.State, st.Splits, st.Complete = nil, nil, len(splits) > 0
+	forced, reread := false, false
+	for _, sp := range splits {
+		st.Complete = st.Complete && sp.Complete
+		forced, reread = forced || sp.Forced, reread || sp.Reread
+	}
+	if len(splits) == 1 && splits[0].ID == WholeStream {
+		st.State = splits[0].State
+	} else {
+		st.Splits = splits
+	}
+	r.Streams[stream] = st
+	r.Forced = slices.DeleteFunc(r.Forced, func(s string) bool { return s == stream })
+	r.Reread = slices.DeleteFunc(r.Reread, func(s string) bool { return s == stream })
+	if forced {
+		r.Forced = append(r.Forced, stream)
+		slices.Sort(r.Forced)
+	}
+	if reread {
+		r.Reread = append(r.Reread, stream)
+		slices.Sort(r.Reread)
+	}
+}
 
 // Log is one pipeline's checkpoint log, under {org}/{pipeline}/_checkpoints/.
 type Log struct {

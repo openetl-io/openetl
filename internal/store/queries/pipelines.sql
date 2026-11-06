@@ -24,16 +24,17 @@ DELETE FROM pipelines WHERE org_id = @org_id AND id = @id;
 
 -- name: InsertPipelineVersion :exec
 INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id,
-    source_version, destination_version, dbt, spark_clusters, flink_clusters, provenance, secrets)
+    source_version, destination_version, dbt, spark_clusters, flink_clusters, provenance, secrets, key_groups)
 VALUES (@org_id, @pipeline_id, @version, @spec, @source_id, @destination_id, @data_plane_id,
-    @source_version, @destination_version, @dbt, @spark_clusters, @flink_clusters, @provenance, @secrets)
+    @source_version, @destination_version, @dbt, @spark_clusters, @flink_clusters, @provenance, @secrets,
+    (SELECT key_groups FROM pipelines WHERE org_id = @org_id AND id = @pipeline_id))
 ON CONFLICT (org_id, pipeline_id, version) DO NOTHING;
 
 -- name: GetPipelineVersion :one
 SELECT * FROM pipeline_versions WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND version = @version;
 
 -- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.dbt, v.spark_clusters, v.flink_clusters, v.source_version, v.destination_version,
+SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.key_groups, v.dbt, v.spark_clusters, v.flink_clusters, v.source_version, v.destination_version,
     sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
     sv.secrets AS source_secrets, dv.secrets AS destination_secrets, v.secrets AS access_secrets,

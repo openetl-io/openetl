@@ -113,8 +113,9 @@ func (c *coordinator) transformEpochs(ctx context.Context, gen uint64, staged <-
 			return fmt.Errorf("runner: the transform's first dataflow sent a frame of kind %d", f.Kind)
 		}
 		inputs := make([]TransformInput, len(c.job.Streams))
+		files := f.Ready.Files()
 		for i, s := range c.job.Streams {
-			inputs[i] = TransformInput{Stream: s.Name, Files: f.Ready.Files[s.Name], Schema: f.Ready.Schemas[s.Name]}
+			inputs[i] = TransformInput{Stream: s.Name, Files: files[s.Name], Schema: f.Ready.Schemas[s.Name]}
 		}
 		rows := map[string]uint64{}
 		emit := func(output string, b arrow.RecordBatch) error {
@@ -137,7 +138,7 @@ func (c *coordinator) transformEpochs(ctx context.Context, gen uint64, staged <-
 		}
 		r := *f.Ready
 		// The inputs' files are the transform's, not the destination's.
-		r.Files, r.OutputRows = nil, rows
+		r.Lanes, r.OutputRows = nil, rows
 		select {
 		case reports <- &r:
 		case <-ctx.Done():
@@ -178,7 +179,7 @@ func mergeReports(ctx context.Context, from <-chan Frame, reports <-chan *Ready,
 				return ctx.Err()
 			}
 			merged := *first
-			merged.Staged, merged.Files, merged.Snapshots = f.Ready.Staged, f.Ready.Files, f.Ready.Snapshots
+			merged.Lanes, merged.Snapshots = f.Ready.Lanes, f.Ready.Snapshots
 			merged.OutputSchemas = f.Ready.Schemas
 			merged.Quarantine = slices.Clone(first.Quarantine)
 			for _, q := range f.Ready.Quarantine {

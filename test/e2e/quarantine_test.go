@@ -225,11 +225,11 @@ func (d *rowCounter) PreCommit(context.Context, destination.Epoch) (destination.
 	return nil, nil
 }
 
-func (d *rowCounter) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+func (d *rowCounter) Commit(context.Context, destination.Epoch, []destination.Staged) (destination.Committed, error) {
 	return destination.Committed{}, nil
 }
 
-func (d *rowCounter) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *rowCounter) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 

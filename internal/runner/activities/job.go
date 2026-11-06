@@ -177,6 +177,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		SchemaPolicy:       policy,
 		QuarantineInfinity: p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_QUARANTINE,
 		Releases:           releases(spec.GetReleases()),
+		KeyGroups:          int(spec.GetKeyGroups()),
 	}, nil
 }
 

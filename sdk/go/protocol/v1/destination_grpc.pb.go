@@ -28,10 +28,13 @@ const (
 //
 // DestinationService is served by destination connectors.
 type DestinationServiceClient interface {
-	// One stream per attempt's writer. The platform sends open, then recover,
-	// then start_reads, batches, end_reads, pre-commits, schemas and commits,
-	// and closes its side to close the writer. The connector answers open,
-	// recover, each pre-commit, each schema and each commit.
+	// One stream per writer lane of an attempt (ADR-0027). On lane 0's, the
+	// platform sends open, then recover, then start_reads, batches, end_reads,
+	// pre-commits, schemas and commits, and closes its side to close the
+	// writer. Other lanes' streams open once lane 0 has recovered, and get no
+	// recover, schemas or commits: lane 0 commits and recovers every lane's
+	// committables. The connector answers open, recover, each pre-commit, each
+	// schema and each commit.
 	//
 	// Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
 	// run concurrently with later batches and pre-commits, but never with each
@@ -67,10 +70,13 @@ type DestinationService_WriteClient = grpc.BidiStreamingClient[WriteRequest, Wri
 //
 // DestinationService is served by destination connectors.
 type DestinationServiceServer interface {
-	// One stream per attempt's writer. The platform sends open, then recover,
-	// then start_reads, batches, end_reads, pre-commits, schemas and commits,
-	// and closes its side to close the writer. The connector answers open,
-	// recover, each pre-commit, each schema and each commit.
+	// One stream per writer lane of an attempt (ADR-0027). On lane 0's, the
+	// platform sends open, then recover, then start_reads, batches, end_reads,
+	// pre-commits, schemas and commits, and closes its side to close the
+	// writer. Other lanes' streams open once lane 0 has recovered, and get no
+	// recover, schemas or commits: lane 0 commits and recovers every lane's
+	// committables. The connector answers open, recover, each pre-commit, each
+	// schema and each commit.
 	//
 	// Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
 	// run concurrently with later batches and pre-commits, but never with each

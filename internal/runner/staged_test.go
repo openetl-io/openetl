@@ -93,7 +93,11 @@ func (d *stagedDest) PreCommit(_ context.Context, e destination.Epoch) (destinat
 	return []byte("mine"), nil
 }
 
-func (d *stagedDest) Commit(_ context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
+func (d *stagedDest) Commit(_ context.Context, e destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	if e.N == d.failAt {
 		return destination.Committed{}, destination.ErrFenced
 	}
@@ -101,7 +105,11 @@ func (d *stagedDest) Commit(_ context.Context, e destination.Epoch, s destinatio
 	return destination.Committed{}, nil
 }
 
-func (d *stagedDest) Recover(_ context.Context, gen uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
+func (d *stagedDest) Recover(_ context.Context, gen uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return 0, err
+	}
 	d.c.add("recover %d/%d %s in %d", e.Generation, e.N, s, gen)
 	return destination.Redone, nil
 }
@@ -151,8 +159,8 @@ func TestStagedEpochs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := map[string][]checkpoint.StagedFile{"s": {{Path: "1/2/s/part-00000.parquet", Rows: 1}}}; rec.Epoch != 2 || !equalFiles(rec.Files, want) || string(rec.Staged) != "mine" {
-			t.Fatalf("HEAD's record: epoch %d, files %v, staged %q", rec.Epoch, rec.Files, rec.Staged)
+		if want := map[string][]checkpoint.StagedFile{"s": {{Path: "1/2/s/part-00000.parquet", Rows: 1}}}; rec.Epoch != 2 || !equalFiles(rec.Files, want) || len(rec.Committables) != 1 || string(rec.Committables[0]) != "mine" {
+			t.Fatalf("HEAD's record: epoch %d, files %v, committables %q", rec.Epoch, rec.Files, rec.Committables)
 		}
 		want := []string{
 			"recover 0/0  in 1", "sweep 0/0 in 1",

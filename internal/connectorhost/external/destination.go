@@ -82,6 +82,7 @@ func Capabilities(spec *protocolv1.SpecResponse) destination.Capabilities {
 		MaxIdentifierLength:   int(pc.GetMaxIdentifierLength()),
 		NanosecondTimestamps:  pc.GetNanosecondTimestamps(),
 		Delivery:              destination.Delivery(pc.GetDelivery()),
+		WriterLanes:           int(pc.GetMaxWriterLanes()),
 	}
 	if h := pc.GetHolds(); h != nil {
 		c.Holds = destination.Holds{ByKey: h.GetByKey(), ByID: h.GetById(), Last: h.GetLast(), Guarded: h.GetGuarded()}
@@ -106,6 +107,8 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		Namespace:  cfg.Namespace,
 		Generation: cfg.Generation,
 		Scope:      protocolv1.CommitScope(cfg.Scope), //nolint:gosec // small
+		Lane:       uint32(cfg.Lane),                  //nolint:gosec // small
+		Lanes:      uint32(cfg.Lanes),                 //nolint:gosec // small
 	}
 	if cfg.CommitInterval > 0 {
 		open.CommitInterval = durationpb.New(cfg.CommitInterval)
@@ -239,8 +242,16 @@ func epochProto(e destination.Epoch) *protocolv1.Epoch {
 	return &protocolv1.Epoch{Generation: e.Generation, N: e.N}
 }
 
-func (w *writer) Recover(ctx context.Context, _ uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
-	r, err := call(ctx, w, &protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Recover{Recover: &protocolv1.WriteRecover{Epoch: epochProto(e), Staged: s}}}, w.recovered)
+func committables(staged []destination.Staged) [][]byte {
+	out := make([][]byte, len(staged))
+	for i, s := range staged {
+		out[i] = s
+	}
+	return out
+}
+
+func (w *writer) Recover(ctx context.Context, _ uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
+	r, err := call(ctx, w, &protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Recover{Recover: &protocolv1.WriteRecover{Epoch: epochProto(e), Staged: committables(staged)}}}, w.recovered)
 	if err != nil {
 		return 0, fenced(err)
 	}
@@ -295,8 +306,8 @@ func (w *writer) PreCommit(ctx context.Context, e destination.Epoch) (destinatio
 	return st.GetStaged(), nil
 }
 
-func (w *writer) Commit(ctx context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
-	c, err := call(ctx, w, &protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: epochProto(e), Staged: s}}}, w.committed)
+func (w *writer) Commit(ctx context.Context, e destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	c, err := call(ctx, w, &protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: epochProto(e), Staged: committables(staged)}}}, w.committed)
 	if err != nil {
 		return destination.Committed{}, err
 	}

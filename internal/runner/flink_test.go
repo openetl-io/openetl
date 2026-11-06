@@ -141,7 +141,7 @@ func (d *exactDest) PreCommit(_ context.Context, e destination.Epoch) (destinati
 	return []byte("staged"), nil
 }
 
-func (d *exactDest) Commit(_ context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
+func (d *exactDest) Commit(_ context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if e.Generation < d.fence {
@@ -162,7 +162,7 @@ func (d *exactDest) apply(e destination.Epoch) {
 	delete(d.staged, e)
 }
 
-func (d *exactDest) Recover(_ context.Context, gen uint64, e destination.Epoch, _ destination.Staged) (destination.Recovery, error) {
+func (d *exactDest) Recover(_ context.Context, gen uint64, e destination.Epoch, _ []destination.Staged) (destination.Recovery, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.fence = gen

@@ -425,7 +425,7 @@ func TestDestinationCommitProtocol(t *testing.T) {
 	e2 := destination.Epoch{Generation: 1, N: 2}
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		if _, err := w.Commit(ctx, e1, st1); err != nil {
+		if _, err := w.Commit(ctx, e1, []destination.Staged{st1}); err != nil {
 			t.Error(err)
 		}
 	})
@@ -449,17 +449,17 @@ func TestDestinationCommitProtocol(t *testing.T) {
 	// A newer generation recovers epoch 2, staged but not applied, and
 	// fences the old writer.
 	_, w2 := open(t, dir, 2)
-	if r, err := w2.Recover(ctx, 2, e2, st2); err != nil || r != destination.Redone {
+	if r, err := w2.Recover(ctx, 2, e2, []destination.Staged{st2}); err != nil || r != destination.Redone {
 		t.Fatalf("recover epoch 2 = %v, %v", r, err)
 	}
 	if got := rows(t, dir); got != 20 {
 		t.Fatalf("rows after redoing epoch 2 = %d", got)
 	}
-	_, err = w.Commit(ctx, e2, st2)
+	_, err = w.Commit(ctx, e2, []destination.Staged{st2})
 	if !errors.Is(err, destination.ErrFenced) || errs.CodeOf(err) != errs.Fenced {
 		t.Fatalf("the fenced writer's commit = %v", err)
 	}
-	if r, err := w2.Recover(ctx, 2, destination.Epoch{Generation: 1, N: 3}, destination.Staged("1-3")); err != nil || r != destination.Lost {
+	if r, err := w2.Recover(ctx, 2, destination.Epoch{Generation: 1, N: 3}, []destination.Staged{destination.Staged("1-3")}); err != nil || r != destination.Lost {
 		t.Fatalf("recover an epoch never staged = %v, %v", r, err)
 	}
 	if err := w.Close(ctx); err != nil {
@@ -475,7 +475,7 @@ func TestDestinationStreamFailure(t *testing.T) {
 	}
 	// Staged for an epoch nobody pre-committed: the commit fails and the
 	// stream stays open.
-	if _, err := w.Commit(t.Context(), destination.Epoch{Generation: 3, N: 9}, destination.Staged("3-9")); err == nil {
+	if _, err := w.Commit(t.Context(), destination.Epoch{Generation: 3, N: 9}, []destination.Staged{destination.Staged("3-9")}); err == nil {
 		t.Fatal("committing an epoch that wasn't staged succeeded")
 	}
 	b := batch(1)

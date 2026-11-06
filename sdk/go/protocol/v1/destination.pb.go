@@ -411,9 +411,13 @@ type DestinationCapabilities struct {
 	MaxCommitInterval *durationpb.Duration `protobuf:"bytes,9,opt,name=max_commit_interval,json=maxCommitInterval,proto3" json:"max_commit_interval,omitempty"`
 	Delivery          Delivery             `protobuf:"varint,10,opt,name=delivery,proto3,enum=openetl.connector.v1.Delivery" json:"delivery,omitempty"`
 	// Unset: the destination takes no holds.
-	Holds         *HoldCapabilities `protobuf:"bytes,11,opt,name=holds,proto3" json:"holds,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Holds *HoldCapabilities `protobuf:"bytes,11,opt,name=holds,proto3" json:"holds,omitempty"`
+	// The most writer lanes an attempt may open, whose writes run
+	// concurrently. Zero: one. A destination that can't commit every lane's
+	// committables together takes one.
+	MaxWriterLanes uint32 `protobuf:"varint,12,opt,name=max_writer_lanes,json=maxWriterLanes,proto3" json:"max_writer_lanes,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DestinationCapabilities) Reset() {
@@ -521,6 +525,13 @@ func (x *DestinationCapabilities) GetHolds() *HoldCapabilities {
 		return x.Holds
 	}
 	return nil
+}
+
+func (x *DestinationCapabilities) GetMaxWriterLanes() uint32 {
+	if x != nil {
+		return x.MaxWriterLanes
+	}
+	return 0
 }
 
 // HoldCapabilities is what a destination does with columns and cells the
@@ -861,8 +872,11 @@ type WriteOpen struct {
 	// How often the platform commits, for sinks whose transactions must outlast
 	// an epoch.
 	CommitInterval *durationpb.Duration `protobuf:"bytes,7,opt,name=commit_interval,json=commitInterval,proto3" json:"commit_interval,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The writer's lane, of lanes. Zero lanes: one.
+	Lane          uint32 `protobuf:"varint,8,opt,name=lane,proto3" json:"lane,omitempty"`
+	Lanes         uint32 `protobuf:"varint,9,opt,name=lanes,proto3" json:"lanes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WriteOpen) Reset() {
@@ -942,6 +956,20 @@ func (x *WriteOpen) GetCommitInterval() *durationpb.Duration {
 		return x.CommitInterval
 	}
 	return nil
+}
+
+func (x *WriteOpen) GetLane() uint32 {
+	if x != nil {
+		return x.Lane
+	}
+	return 0
+}
+
+func (x *WriteOpen) GetLanes() uint32 {
+	if x != nil {
+		return x.Lanes
+	}
+	return 0
 }
 
 type WriteStream struct {
@@ -1027,9 +1055,11 @@ func (x *WriteStream) GetDeletes() DeleteMode {
 // applied. Otherwise it may then drop whatever earlier generations staged,
 // since none of it can be applied any more.
 type WriteRecover struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Staged        []byte                 `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// The epoch's committables, one per writer lane of the attempt that
+	// staged it, whose lanes may have been others.
+	Staged        [][]byte `protobuf:"bytes,2,rep,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1071,7 +1101,7 @@ func (x *WriteRecover) GetEpoch() *Epoch {
 	return nil
 }
 
-func (x *WriteRecover) GetStaged() []byte {
+func (x *WriteRecover) GetStaged() [][]byte {
 	if x != nil {
 		return x.Staged
 	}
@@ -1257,9 +1287,9 @@ func (x *WriteEndRead) GetStream() string {
 }
 
 // WriteStagedFiles hands over a stream's files in a staged epoch, in place
-// of its batches: before pre-commit, and for the epoch being recovered after
-// open and before recover. Streams without rows in the epoch get none.
-// Unanswered, like batches.
+// of its batches: the lane's, before pre-commit, and on lane 0, every lane's
+// of the epoch being recovered, after open and before recover. Streams
+// without rows in the epoch get none. Unanswered, like batches.
 type WriteStagedFiles struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Epoch  *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
@@ -1392,8 +1422,8 @@ func (x *StagedFile) GetBytes() uint64 {
 	return 0
 }
 
-// WritePreCommit stages the epoch durably but invisibly. A staged epoch is
-// durable already, in its files.
+// WritePreCommit stages the lane's part of the epoch durably but invisibly:
+// its committable. A staged epoch is durable already, in its files.
 type WritePreCommit struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
@@ -1441,9 +1471,10 @@ func (x *WritePreCommit) GetEpoch() *Epoch {
 // WriteCommit makes the epoch visible, with a marker per stream, behind the
 // fence. Idempotent.
 type WriteCommit struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Epoch         *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Staged        []byte                 `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// Every writer lane's committable, by lane.
+	Staged        [][]byte `protobuf:"bytes,2,rep,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1485,7 +1516,7 @@ func (x *WriteCommit) GetEpoch() *Epoch {
 	return nil
 }
 
-func (x *WriteCommit) GetStaged() []byte {
+func (x *WriteCommit) GetStaged() [][]byte {
 	if x != nil {
 		return x.Staged
 	}
@@ -2059,8 +2090,8 @@ func (x *WriteRecovered) GetRecovery() Recovery {
 type WriteStaged struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	// Stored in the epoch's checkpoint record and passed back to commit and
-	// recover. Keep it to a few KB.
+	// The lane's committable, stored in the epoch's checkpoint record and
+	// passed back to commit and recover. Keep it to a few KB.
 	Staged        []byte `protobuf:"bytes,2,opt,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2177,7 +2208,7 @@ var File_openetl_connector_v1_destination_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\n" +
-	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\xca\x05\n" +
+	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\xf4\x05\n" +
 	"\x17DestinationCapabilities\x12>\n" +
 	"\n" +
 	"sink_class\x18\x01 \x01(\x0e2\x1f.openetl.connector.v1.SinkClassR\tsinkClass\x129\n" +
@@ -2192,7 +2223,8 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\x13max_commit_interval\x18\t \x01(\v2\x19.google.protobuf.DurationR\x11maxCommitInterval\x12:\n" +
 	"\bdelivery\x18\n" +
 	" \x01(\x0e2\x1e.openetl.connector.v1.DeliveryR\bdelivery\x12<\n" +
-	"\x05holds\x18\v \x01(\v2&.openetl.connector.v1.HoldCapabilitiesR\x05holds\"l\n" +
+	"\x05holds\x18\v \x01(\v2&.openetl.connector.v1.HoldCapabilitiesR\x05holds\x12(\n" +
+	"\x10max_writer_lanes\x18\f \x01(\rR\x0emaxWriterLanes\"l\n" +
 	"\x10HoldCapabilities\x12\x15\n" +
 	"\x06by_key\x18\x01 \x01(\bR\x05byKey\x12\x13\n" +
 	"\x05by_id\x18\x02 \x01(\bR\x04byId\x12\x12\n" +
@@ -2215,7 +2247,7 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"startReads\x12?\n" +
 	"\bend_read\x18\b \x01(\v2\".openetl.connector.v1.WriteEndReadH\x00R\aendRead\x12K\n" +
 	"\fstaged_files\x18\t \x01(\v2&.openetl.connector.v1.WriteStagedFilesH\x00R\vstagedFilesB\x05\n" +
-	"\x03msg\"\xb7\x02\n" +
+	"\x03msg\"\xe1\x02\n" +
 	"\tWriteOpen\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\x12\x1a\n" +
 	"\bpipeline\x18\x02 \x01(\tR\bpipeline\x12\x1c\n" +
@@ -2225,7 +2257,9 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"generation\x127\n" +
 	"\x05scope\x18\x05 \x01(\x0e2!.openetl.connector.v1.CommitScopeR\x05scope\x12;\n" +
 	"\astreams\x18\x06 \x03(\v2!.openetl.connector.v1.WriteStreamR\astreams\x12B\n" +
-	"\x0fcommit_interval\x18\a \x01(\v2\x19.google.protobuf.DurationR\x0ecommitInterval\"\xe9\x01\n" +
+	"\x0fcommit_interval\x18\a \x01(\v2\x19.google.protobuf.DurationR\x0ecommitInterval\x12\x12\n" +
+	"\x04lane\x18\b \x01(\rR\x04lane\x12\x14\n" +
+	"\x05lanes\x18\t \x01(\rR\x05lanes\"\xe9\x01\n" +
 	"\vWriteStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04mode\x18\x02 \x01(\x0e2\x1f.openetl.connector.v1.WriteModeR\x04mode\x12\x1f\n" +
@@ -2235,7 +2269,7 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\adeletes\x18\x05 \x01(\x0e2 .openetl.connector.v1.DeleteModeR\adeletes\"Y\n" +
 	"\fWriteRecover\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
-	"\x06staged\x18\x02 \x01(\fR\x06staged\"\x83\x01\n" +
+	"\x06staged\x18\x02 \x03(\fR\x06staged\"\x83\x01\n" +
 	"\n" +
 	"WriteBatch\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
@@ -2264,7 +2298,7 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\"X\n" +
 	"\vWriteCommit\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
-	"\x06staged\x18\x02 \x01(\fR\x06staged\"P\n" +
+	"\x06staged\x18\x02 \x03(\fR\x06staged\"P\n" +
 	"\x10WriteApplySchema\x12<\n" +
 	"\astreams\x18\x01 \x03(\v2\".openetl.connector.v1.StreamSchemaR\astreams\"E\n" +
 	"\fStreamSchema\x12\x12\n" +

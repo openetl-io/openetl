@@ -74,8 +74,17 @@ func (w *writer) call(req *protocolv1.WriteRequest) (*protocolv1.WriteResponse, 
 	return resp, nil
 }
 
+// lane0 is the committables of epoch e, staged on one writer lane; none for
+// a zero e.
+func lane0(e *protocolv1.Epoch, staged []byte) [][]byte {
+	if e.GetN() == 0 {
+		return nil
+	}
+	return [][]byte{staged}
+}
+
 func (w *writer) recover(e *protocolv1.Epoch, staged []byte) (protocolv1.Recovery, error) {
-	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Recover{Recover: &protocolv1.WriteRecover{Epoch: e, Staged: staged}}})
+	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Recover{Recover: &protocolv1.WriteRecover{Epoch: e, Staged: lane0(e, staged)}}})
 	if err != nil {
 		return 0, err
 	}
@@ -145,7 +154,7 @@ func (w *writer) schemaApplied(schemas []*protocolv1.StreamSchema) (*protocolv1.
 }
 
 func (w *writer) commit(e *protocolv1.Epoch, staged []byte) error {
-	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: e, Staged: staged}}})
+	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: e, Staged: lane0(e, staged)}}})
 	if err != nil {
 		return err
 	}

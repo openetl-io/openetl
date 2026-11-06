@@ -10,10 +10,13 @@ option go_package = "github.com/unsuitable001/openetl/sdk/go/protocol/v1;protoco
 
 // DestinationService is served by destination connectors.
 service DestinationService {
-  // One stream per attempt's writer. The platform sends open, then recover,
-  // then start_reads, batches, end_reads, pre-commits, schemas and commits,
-  // and closes its side to close the writer. The connector answers open,
-  // recover, each pre-commit, each schema and each commit.
+  // One stream per writer lane of an attempt (ADR-0027). On lane 0's, the
+  // platform sends open, then recover, then start_reads, batches, end_reads,
+  // pre-commits, schemas and commits, and closes its side to close the
+  // writer. Other lanes' streams open once lane 0 has recovered, and get no
+  // recover, schemas or commits: lane 0 commits and recovers every lane's
+  // committables. The connector answers open, recover, each pre-commit, each
+  // schema and each commit.
   //
   // Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
   // run concurrently with later batches and pre-commits, but never with each
@@ -41,6 +44,10 @@ message DestinationCapabilities {
   Delivery delivery = 10;
   // Unset: the destination takes no holds.
   HoldCapabilities holds = 11;
+  // The most writer lanes an attempt may open, whose writes run
+  // concurrently. Zero: one. A destination that can't commit every lane's
+  // committables together takes one.
+  uint32 max_writer_lanes = 12;
 }
 
 // HoldCapabilities is what a destination does with columns and cells the
@@ -133,6 +140,9 @@ message WriteOpen {
   // How often the platform commits, for sinks whose transactions must outlast
   // an epoch.
   google.protobuf.Duration commit_interval = 7;
+  // The writer's lane, of lanes. Zero lanes: one.
+  uint32 lane = 8;
+  uint32 lanes = 9;
 }
 
 message WriteStream {
@@ -172,7 +182,9 @@ enum Dedupe {
 // since none of it can be applied any more.
 message WriteRecover {
   Epoch epoch = 1;
-  bytes staged = 2;
+  // The epoch's committables, one per writer lane of the attempt that
+  // staged it, whose lanes may have been others.
+  repeated bytes staged = 2;
 }
 
 message WriteBatch {
@@ -206,9 +218,9 @@ message WriteEndRead {
 }
 
 // WriteStagedFiles hands over a stream's files in a staged epoch, in place
-// of its batches: before pre-commit, and for the epoch being recovered after
-// open and before recover. Streams without rows in the epoch get none.
-// Unanswered, like batches.
+// of its batches: the lane's, before pre-commit, and on lane 0, every lane's
+// of the epoch being recovered, after open and before recover. Streams
+// without rows in the epoch get none. Unanswered, like batches.
 message WriteStagedFiles {
   Epoch epoch = 1;
   string stream = 2;
@@ -226,8 +238,8 @@ message StagedFile {
   uint64 bytes = 3;
 }
 
-// WritePreCommit stages the epoch durably but invisibly. A staged epoch is
-// durable already, in its files.
+// WritePreCommit stages the lane's part of the epoch durably but invisibly:
+// its committable. A staged epoch is durable already, in its files.
 message WritePreCommit {
   Epoch epoch = 1;
 }
@@ -236,7 +248,8 @@ message WritePreCommit {
 // fence. Idempotent.
 message WriteCommit {
   Epoch epoch = 1;
-  bytes staged = 2;
+  // Every writer lane's committable, by lane.
+  repeated bytes staged = 2;
 }
 
 // WriteApplySchema makes each stream's table hold its schema: it creates
@@ -321,8 +334,8 @@ message WriteRecovered {
 
 message WriteStaged {
   Epoch epoch = 1;
-  // Stored in the epoch's checkpoint record and passed back to commit and
-  // recover. Keep it to a few KB.
+  // The lane's committable, stored in the epoch's checkpoint record and
+  // passed back to commit and recover. Keep it to a few KB.
   bytes staged = 2;
 }
 

@@ -89,7 +89,7 @@ func (f *fixture) read(rel string) string {
 }
 
 func (f *fixture) recover(g, n uint64, s destination.Staged) (destination.Recovery, error) {
-	return f.w.Recover(f.t.Context(), g+1, destination.Epoch{Generation: g, N: n}, s)
+	return f.w.Recover(f.t.Context(), g+1, destination.Epoch{Generation: g, N: n}, []destination.Staged{s})
 }
 
 func (f *fixture) remove(rel string) {
@@ -111,7 +111,7 @@ func TestCommitLinksStagedFilesAndMarksEachStream(t *testing.T) {
 	f := newFixture(t)
 	s := f.stage(2, 7, map[string]int{"a": 2, "b": 1})
 	e := destination.Epoch{Generation: 2, N: 7}
-	if _, err := f.w.Commit(t.Context(), e, s); err != nil {
+	if _, err := f.w.Commit(t.Context(), e, []destination.Staged{s}); err != nil {
 		t.Fatal(err)
 	}
 	for _, x := range []struct {
@@ -130,7 +130,7 @@ func TestCommitLinksStagedFilesAndMarksEachStream(t *testing.T) {
 	if f.exists("_openetl/staging/2") {
 		t.Error("staging is still there")
 	}
-	if _, err := f.w.Commit(t.Context(), e, s); err != nil {
+	if _, err := f.w.Commit(t.Context(), e, []destination.Staged{s}); err != nil {
 		t.Fatalf("second commit: %v", err)
 	}
 	if r, err := f.recover(2, 7, s); err != nil || r != destination.Applied {
@@ -188,7 +188,7 @@ func TestRecoverWithoutACheckpoint(t *testing.T) {
 func TestAnEmptyEpochCommits(t *testing.T) {
 	f := newFixture(t)
 	s := f.stage(1, 2, nil)
-	if _, err := f.w.Commit(t.Context(), destination.Epoch{Generation: 1, N: 2}, s); err != nil {
+	if _, err := f.w.Commit(t.Context(), destination.Epoch{Generation: 1, N: 2}, []destination.Staged{s}); err != nil {
 		t.Fatal(err)
 	}
 	if r, err := f.recover(1, 2, s); err != nil || r != destination.Applied {
@@ -207,7 +207,7 @@ func TestRejectsBadDescriptors(t *testing.T) {
 	}
 	for name, d := range cases {
 		b, _ := json.Marshal(d)
-		if _, err := f.w.Commit(t.Context(), e, b); err == nil {
+		if _, err := f.w.Commit(t.Context(), e, []destination.Staged{b}); err == nil {
 			t.Errorf("%s: commit succeeded", name)
 		}
 	}

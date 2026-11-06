@@ -107,7 +107,10 @@ type GetSyncSpecResponse struct {
 	// Holds released or discarded (ADR-0025), for the holds still open in the
 	// pipeline's last mirrored checkpoint. A release applies to the hold it
 	// names only while that hold is open, so sending it again does nothing.
-	Releases      []*HoldRelease `protobuf:"bytes,16,rep,name=releases,proto3" json:"releases,omitempty"`
+	Releases []*HoldRelease `protobuf:"bytes,16,rep,name=releases,proto3" json:"releases,omitempty"`
+	// The pipeline's key groups (ADR-0027), fixed when it was created. A
+	// restore from a record with another count fails.
+	KeyGroups     uint32 `protobuf:"varint,17,opt,name=key_groups,json=keyGroups,proto3" json:"key_groups,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -252,6 +255,13 @@ func (x *GetSyncSpecResponse) GetReleases() []*HoldRelease {
 		return x.Releases
 	}
 	return nil
+}
+
+func (x *GetSyncSpecResponse) GetKeyGroups() uint32 {
+	if x != nil {
+		return x.KeyGroups
+	}
+	return 0
 }
 
 type HoldRelease struct {
@@ -1890,7 +1900,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x12GetSyncSpecRequest\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion\"\xd1\t\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\"\xf0\t\n" +
 	"\x13GetSyncSpecResponse\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x1f\n" +
 	"\vpipeline_id\x18\x02 \x01(\tR\n" +
@@ -1910,7 +1920,9 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x14spark_access_secrets\x18\r \x03(\v2$.openetl.dataplane.v1.ExternalSecretR\x12sparkAccessSecrets\x12c\n" +
 	"\x0eflink_clusters\x18\x0e \x03(\v2<.openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntryR\rflinkClusters\x12V\n" +
 	"\x14flink_access_secrets\x18\x0f \x03(\v2$.openetl.dataplane.v1.ExternalSecretR\x12flinkAccessSecrets\x12=\n" +
-	"\breleases\x18\x10 \x03(\v2!.openetl.dataplane.v1.HoldReleaseR\breleases\x1aj\n" +
+	"\breleases\x18\x10 \x03(\v2!.openetl.dataplane.v1.HoldReleaseR\breleases\x12\x1d\n" +
+	"\n" +
+	"key_groups\x18\x11 \x01(\rR\tkeyGroups\x1aj\n" +
 	"\x12SparkClustersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12>\n" +
 	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedSparkClusterR\x05value:\x028\x01\x1aj\n" +

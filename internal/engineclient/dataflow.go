@@ -87,13 +87,22 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	}
 	engineSink := plan.Sink != runner.SinkPlan{}
 	onReady := func(r *enginev1.EpochReady) error {
-		ready := &runner.Ready{Staged: r.GetStaged(), Schemas: r.GetSchemas()}
+		ready := &runner.Ready{Schemas: r.GetSchemas()}
+		if engineSink {
+			for _, st := range r.GetStaged() {
+				ready.Lanes = append(ready.Lanes, runner.LaneReady{Staged: st})
+			}
+			if len(ready.Lanes) == 0 {
+				ready.Lanes = []runner.LaneReady{{}}
+			}
+		}
 		for _, st := range r.GetFiles() {
-			if ready.Files == nil {
-				ready.Files = map[string][]destination.StagedFile{}
+			lane := &ready.Lanes[0]
+			if lane.Files == nil {
+				lane.Files = map[string][]destination.StagedFile{}
 			}
 			for _, f := range st.GetFiles() {
-				ready.Files[st.GetStream()] = append(ready.Files[st.GetStream()], destination.StagedFile{Path: f.GetPath(), Rows: f.GetRows(), Bytes: f.GetBytes()})
+				lane.Files[st.GetStream()] = append(lane.Files[st.GetStream()], destination.StagedFile{Path: f.GetPath(), Rows: f.GetRows(), Bytes: f.GetBytes()})
 			}
 		}
 		for _, s := range r.GetSnapshots() {

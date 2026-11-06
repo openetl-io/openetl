@@ -10,14 +10,17 @@ import (
 	"github.com/unsuitable001/openetl/sdk/go/destination"
 )
 
-// sinkPump feeds the dataflow's output to the writer, and calls PreCommit(N)
-// once every stream has crossed barrier N. An engine sink's epochs arrive
-// staged, in their FrameReady. So do a staged destination's, whose files the
-// writer gets before PreCommit(N). A writer that tracks reads gets their
-// starts first, and each read's end when the barrier that ends it comes out,
-// or with a staged destination, at the end of its epoch.
+// sinkPump feeds one writer lane's part of the dataflow's output to its
+// writer, and calls PreCommit(N) once every stream has crossed barrier N on
+// the lane. An engine sink's epochs arrive staged, in their FrameReady. So
+// do a staged destination's, whose files the writer gets before
+// PreCommit(N). A writer that tracks reads gets their starts first, and each
+// read's end when the barrier that ends it comes out, or with a staged
+// destination, at the end of its epoch. Lane 0's pump also reports each
+// epoch ready.
 type sinkPump struct {
 	w          destination.Writer
+	lane       int
 	gen        uint64
 	engineSink bool
 	staging    Staging // set for a staged destination
@@ -31,8 +34,8 @@ type sinkPump struct {
 	nextReady uint64
 }
 
-func newSinkPump(w destination.Writer, gen, firstEpoch uint64, engineSink bool, staging Staging, streams []Stream, starts map[string]time.Time, ends readEnder, in <-chan Frame, events chan<- event) *sinkPump {
-	s := &sinkPump{w: w, gen: gen, engineSink: engineSink, staging: staging, in: in, events: events, starts: starts, ends: ends, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextReady: firstEpoch}
+func newSinkPump(w destination.Writer, lane int, gen, firstEpoch uint64, engineSink bool, staging Staging, streams []Stream, starts map[string]time.Time, ends readEnder, in <-chan Frame, events chan<- event) *sinkPump {
+	s := &sinkPump{w: w, lane: lane, gen: gen, engineSink: engineSink, staging: staging, in: in, events: events, starts: starts, ends: ends, epochOf: make(map[string]uint64), seen: make(map[uint64]int), nextReady: firstEpoch}
 	for _, st := range streams {
 		s.epochOf[st.Name] = firstEpoch
 	}
@@ -62,15 +65,25 @@ func (s *sinkPump) run(ctx context.Context) error {
 				return fmt.Errorf("runner: the dataflow reported epoch %d ready, expected %d", f.Epoch, s.nextReady)
 			}
 			s.nextReady++
+			var lane LaneReady
+			if s.staging != nil || s.engineSink {
+				if s.lane >= len(f.Ready.Lanes) {
+					return fmt.Errorf("runner: the dataflow reported epoch %d ready on %d writer lanes, not lane %d", f.Epoch, len(f.Ready.Lanes), s.lane)
+				}
+				lane = f.Ready.Lanes[s.lane]
+			}
 			switch {
 			case s.staging != nil:
-				if err := s.preCommitStaged(ctx, rt, f.Epoch, f.Ready.Files); err != nil {
+				if err := s.preCommitStaged(ctx, rt, f.Epoch, lane.Files); err != nil {
 					return err
 				}
 			case s.engineSink:
-				if err := s.staged(ctx, f.Epoch, f.Ready.Staged); err != nil {
+				if err := s.staged(ctx, f.Epoch, lane.Staged); err != nil {
 					return err
 				}
+			}
+			if s.lane > 0 {
+				continue
 			}
 			if err := s.send(ctx, event{kind: evReady, epoch: f.Epoch, ready: f.Ready}); err != nil {
 				return err
@@ -154,7 +167,44 @@ func (s *sinkPump) preCommitStaged(ctx context.Context, rt destination.ReadTrack
 }
 
 func (s *sinkPump) staged(ctx context.Context, n uint64, staged destination.Staged) error {
-	return s.send(ctx, event{kind: evStaged, epoch: n, staged: staged})
+	return s.send(ctx, event{kind: evStaged, epoch: n, lane: s.lane, staged: staged})
+}
+
+// demux sends each of the dataflow's frames to its writer lane's pump, and
+// each FrameReady to every lane's.
+func demux(ctx context.Context, from <-chan Frame, lanes []chan Frame) error {
+	defer func() {
+		for _, l := range lanes {
+			close(l)
+		}
+	}()
+	for {
+		var f Frame
+		select {
+		case fr, ok := <-from:
+			if !ok {
+				return nil
+			}
+			f = fr
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if f.Kind == FrameReady {
+			for _, l := range lanes {
+				if err := send(ctx, l, f); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if f.Lane < 0 || f.Lane >= len(lanes) {
+			release(f)
+			return fmt.Errorf("runner: the dataflow sent %s to writer lane %d of %d", f.Stream, f.Lane, len(lanes))
+		}
+		if err := send(ctx, lanes[f.Lane], f); err != nil {
+			return err
+		}
+	}
 }
 
 func (s *sinkPump) send(ctx context.Context, ev event) error {

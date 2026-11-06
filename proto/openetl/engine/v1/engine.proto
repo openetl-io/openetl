@@ -292,7 +292,8 @@ message StartJobResponse {}
 
 message RecoverRequest {
   openetl.connector.v1.Epoch epoch = 1;
-  bytes staged = 2;
+  // As openetl.connector.v1.WriteRecover's.
+  repeated bytes staged = 2;
 }
 
 message RecoverResponse {
@@ -311,8 +312,9 @@ message EventsResponse {
 // EpochReady says the engine's part of the epoch is durable.
 message EpochReady {
   openetl.connector.v1.Epoch epoch = 1;
-  // Empty with a runner sink.
-  bytes staged = 2;
+  // An engine sink's committables, one per writer lane; empty with a runner
+  // sink.
+  repeated bytes staged = 2;
   repeated StateSnapshot snapshots = 3;
   // Each stream's schema at its barrier, as an Arrow IPC stream holding only
   // the schema. Streams without one yet are missing.
@@ -384,7 +386,8 @@ message StreamMetrics {
 
 message CommitRequest {
   openetl.connector.v1.Epoch epoch = 1;
-  bytes staged = 2;
+  // Every writer lane's committable, by lane.
+  repeated bytes staged = 2;
 }
 
 message CommitResponse {}

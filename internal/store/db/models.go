@@ -282,6 +282,7 @@ type Pipeline struct {
 	UpdateTime    time.Time
 	Paused        bool
 	LaggingSince  *time.Time
+	KeyGroups     int32
 }
 
 type PipelineVersion struct {
@@ -300,6 +301,7 @@ type PipelineVersion struct {
 	SparkClusters      []byte
 	Secrets            []string
 	FlinkClusters      []byte
+	KeyGroups          int32
 }
 
 type Principal struct {

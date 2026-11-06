@@ -287,7 +287,11 @@ func (w *filesWriter) fence() uint64 {
 	return n
 }
 
-func (w *filesWriter) Commit(_ context.Context, _ destination.Epoch, s destination.Staged) (destination.Committed, error) {
+func (w *filesWriter) Commit(_ context.Context, _ destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	if w.fence() > w.gen {
 		return destination.Committed{}, destination.ErrFenced
 	}
@@ -324,7 +328,11 @@ func (w *filesWriter) apply(name string) error {
 	return os.WriteFile(w.path("applied", name), nil, 0o600)
 }
 
-func (w *filesWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
+func (w *filesWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return 0, err
+	}
 	if w.fence() > gen {
 		return 0, destination.ErrFenced
 	}

@@ -255,7 +255,7 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 		}
 		s.headPrev = prev
 	}
-	c := &coordinator{job: job, sess: a.sess, w: a.w, log: a.log, res: a.res, pending: map[uint64]*epochState{},
+	c := &coordinator{job: job, sess: a.sess, w: a.w, ws: []destination.Writer{a.w}, log: a.log, res: a.res, pending: map[uint64]*epochState{},
 		applied: map[string]*arrow.Schema{}, reported: a.held.reported, reportedOutputs: a.held.reportedOutputs, measures: a.held.measures,
 		events: make(chan event, 64)}
 	c.afterPrune = func(ctx context.Context, head *checkpoint.Record) { a.pruneFlink(ctx, head) }
@@ -347,7 +347,7 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 		staging = job.Staging
 		second.Sink = SinkPlan{StagedURL: staging.URL()}
 	}
-	sink := newSinkPump(c.w, a.sess.Generation(), first, second.Sink != SinkPlan{}, staging, job.Outputs, starts, lastEnd{ends: ends}, fromSecond, c.events)
+	sink := newSinkPump(c.w, 0, a.sess.Generation(), first, second.Sink != SinkPlan{}, staging, job.Outputs, starts, lastEnd{ends: ends}, fromSecond, c.events)
 
 	req := source.ReadRequest{Pipeline: job.Pipeline, Continuous: true}
 	for _, st := range job.Streams {
@@ -1279,10 +1279,10 @@ func (s *flinkSegment) idle(inputs []*flinkCut, outRows map[string]uint64) bool 
 // epochState is what the record of ep holds: its last cut's resume points,
 // every cut's rows and quarantine, and the second dataflow's report.
 func (s *flinkSegment) epochState(ep *flinkEpoch) *epochState {
-	st := &epochState{requested: ep.requested, placed: true, staged: true, ready: true,
-		states: map[string][]byte{}, complete: map[string]bool{}, rows: map[string]uint64{}, desc: ep.desc}
+	st := &epochState{requested: ep.requested, placed: true, ready: true, descs: []destination.Staged{ep.desc}, stagedOn: []bool{true}, staged: 1,
+		states: map[string][]byte{}, complete: map[string]bool{}, rows: map[string]uint64{}}
 	second := ep.second
-	flow := &Ready{Staged: second.Staged, Files: second.Files, Snapshots: second.Snapshots, Schemas: map[string][]byte{},
+	flow := &Ready{Lanes: second.Lanes, Snapshots: second.Snapshots, Schemas: map[string][]byte{},
 		OutputSchemas: second.Schemas, OutputRows: ep.outRows}
 	forced, reread := map[string]bool{}, map[string]bool{}
 	for _, cut := range ep.inputs {

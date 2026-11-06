@@ -130,7 +130,11 @@ func (w *parquetWriter) PreCommit(context.Context, destination.Epoch) (destinati
 	return nil, errEngineWrites
 }
 
-func (w *parquetWriter) Commit(_ context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
+func (w *parquetWriter) Commit(_ context.Context, e destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	d, err := w.descriptor(e, s)
 	if err != nil {
 		return destination.Committed{}, err
@@ -144,7 +148,11 @@ func (w *parquetWriter) Commit(_ context.Context, e destination.Epoch, s destina
 	return destination.Committed{}, nil
 }
 
-func (w *parquetWriter) Recover(_ context.Context, _ uint64, e destination.Epoch, s destination.Staged) (destination.Recovery, error) {
+func (w *parquetWriter) Recover(_ context.Context, _ uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return 0, err
+	}
 	if e.IsZero() {
 		return destination.Applied, nil
 	}

@@ -447,7 +447,7 @@ func (w *memWriter) PreCommit(_ context.Context, e destination.Epoch) (destinati
 	return destination.Staged(w.key(e)), nil
 }
 
-func (w *memWriter) Commit(_ context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
+func (w *memWriter) Commit(_ context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
 	st := w.d.st
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -544,7 +544,7 @@ func (w *memWriter) patch(table string, patches []map[string]any) {
 	}
 }
 
-func (w *memWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, _ destination.Staged) (destination.Recovery, error) {
+func (w *memWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, _ []destination.Staged) (destination.Recovery, error) {
 	if err := w.d.c.check(); err != nil {
 		return 0, err
 	}

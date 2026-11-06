@@ -79,6 +79,9 @@ message GetSyncSpecResponse {
   // pipeline's last mirrored checkpoint. A release applies to the hold it
   // names only while that hold is open, so sending it again does nothing.
   repeated HoldRelease releases = 16;
+  // The pipeline's key groups (ADR-0027), fixed when it was created. A
+  // restore from a record with another count fails.
+  uint32 key_groups = 17;
 }
 
 message HoldRelease {

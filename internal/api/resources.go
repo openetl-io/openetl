@@ -549,6 +549,7 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 		PipelineId:  id.String(),
 		Version:     row.Version,
 		DataPlane:   row.DataPlaneID,
+		KeyGroups:   uint32(row.KeyGroups), //nolint:gosec // 256
 		Pipeline:    &apiv1.PipelineSpec{},
 		Source:      &apiv1.ConnectorConfig{},
 		Destination: &apiv1.ConnectorConfig{},

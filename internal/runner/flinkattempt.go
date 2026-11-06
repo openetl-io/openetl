@@ -238,7 +238,7 @@ func (a *flinkAttempt) claim(ctx context.Context) (head, prev *checkpoint.Record
 			}
 		}
 	}
-	if a.w, err = a.job.Destination.Open(ctx, a.job.openConfig(sess.Generation(), forced)); err != nil {
+	if a.w, err = a.job.Destination.Open(ctx, a.job.openConfig(sess.Generation(), forced, 0)); err != nil {
 		return nil, nil, fmt.Errorf("runner: open destination: %w", err)
 	}
 	return head, prev, nil
@@ -400,9 +400,9 @@ func (a *flinkAttempt) before(ctx context.Context, hf *checkpoint.FlinkCheckpoin
 // if it's lost.
 func (a *flinkAttempt) recover(ctx context.Context, head, prev *checkpoint.Record, hand bool) (*checkpoint.Record, error) {
 	var e destination.Epoch
-	var staged destination.Staged
+	var staged []destination.Staged
 	if head != nil {
-		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, head.Staged
+		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, committables(head)
 		if _, err := applySchemas(ctx, a.w, map[string]*arrow.Schema{}, outputSchemas(head)); err != nil {
 			return nil, err
 		}

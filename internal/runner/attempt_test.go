@@ -116,7 +116,7 @@ func (d *blockingDest) PreCommit(_ context.Context, e destination.Epoch) (destin
 	return nil, nil
 }
 
-func (d *blockingDest) Commit(ctx context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
+func (d *blockingDest) Commit(ctx context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
 	if e.N != 1 {
 		return destination.Committed{}, nil
 	}
@@ -129,7 +129,7 @@ func (d *blockingDest) Commit(ctx context.Context, e destination.Epoch, _ destin
 	}
 }
 
-func (d *blockingDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *blockingDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 
@@ -513,11 +513,11 @@ func (d *countingDest) PreCommit(context.Context, destination.Epoch) (destinatio
 	return nil, nil
 }
 
-func (d *countingDest) Commit(context.Context, destination.Epoch, destination.Staged) (destination.Committed, error) {
+func (d *countingDest) Commit(context.Context, destination.Epoch, []destination.Staged) (destination.Committed, error) {
 	return destination.Committed{}, nil
 }
 
-func (d *countingDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *countingDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 

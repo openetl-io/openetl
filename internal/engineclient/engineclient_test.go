@@ -646,7 +646,7 @@ func (d *memDest) PreCommit(_ context.Context, e destination.Epoch) (destination
 	return destination.Staged(strconv.FormatUint(e.N, 10)), nil
 }
 
-func (d *memDest) Commit(_ context.Context, e destination.Epoch, _ destination.Staged) (destination.Committed, error) {
+func (d *memDest) Commit(_ context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for stream, ids := range d.pending[e.N] {
@@ -659,7 +659,7 @@ func (d *memDest) Commit(_ context.Context, e destination.Epoch, _ destination.S
 	return destination.Committed{}, nil
 }
 
-func (d *memDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *memDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 
@@ -1030,7 +1030,11 @@ func (d *discardDest) PreCommit(context.Context, destination.Epoch) (destination
 	return nil, errors.New("the engine sink was asked to pre-commit")
 }
 
-func (d *discardDest) Commit(_ context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
+func (d *discardDest) Commit(_ context.Context, e destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	if len(s) != 0 {
 		return destination.Committed{}, fmt.Errorf("epoch %d staged %q", e.N, s)
 	}
@@ -1038,7 +1042,7 @@ func (d *discardDest) Commit(_ context.Context, e destination.Epoch, s destinati
 	return destination.Committed{}, nil
 }
 
-func (d *discardDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *discardDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 
@@ -1247,14 +1251,18 @@ func (d *refuseDest) Write(ctx context.Context, e destination.Epoch, stream stri
 	return d.memDest.Write(ctx, e, stream, batch)
 }
 
-func (d *refuseDest) Commit(ctx context.Context, e destination.Epoch, s destination.Staged) (destination.Committed, error) {
+func (d *refuseDest) Commit(ctx context.Context, e destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	s, err := destination.One(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	d.mu.Lock()
 	d.committed = d.committed || d.extra[e.N]
 	d.mu.Unlock()
-	return d.memDest.Commit(ctx, e, s)
+	return d.memDest.Commit(ctx, e, []destination.Staged{s})
 }
 
-func (d *refuseDest) Recover(context.Context, uint64, destination.Epoch, destination.Staged) (destination.Recovery, error) {
+func (d *refuseDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	d.mu.Lock()
 	clear(d.pending)
 	clear(d.extra)
@@ -1309,7 +1317,7 @@ func TestRunAttemptHoldsAColumnTheDestinationRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := head.Streams["users"].Holds
-	if h == nil || len(h.Columns) != 1 || h.Columns[0].Column != "extra" || h.Columns[0].Delivered != nil || h.Columns[0].Reason != "a view depends on it" {
+	if h == nil || len(h.Columns) != 1 || h.Columns[0].Column != "extra" || h.Columns[0].Delivered != nil || h.Columns[0].Reason != "the destination refused it: a view depends on it" {
 		t.Fatalf("holds = %+v", h)
 	}
 	if len(h.Epochs) == 0 {

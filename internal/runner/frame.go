@@ -36,7 +36,10 @@ const (
 // Frame is one unit on a job's data path. Barriers travel in band, ordered
 // with their stream's records.
 type Frame struct {
-	Kind   FrameKind
+	Kind FrameKind
+	// Into the dataflow, the lane the frame came in on; out of it, the
+	// writer lane it goes to (ADR-0027).
+	Lane   int
 	Stream string
 	Rows   []json.RawMessage
 	Batch  arrow.RecordBatch
@@ -51,10 +54,9 @@ type Frame struct {
 
 // Ready is the dataflow's part of an epoch, recorded in its checkpoint.
 type Ready struct {
-	// What an engine sink staged.
-	Staged destination.Staged
-	// What a staged sink staged, by stream; streams without rows are missing.
-	Files      map[string][]destination.StagedFile
+	// What an engine sink or a staged sink staged, by writer lane; nil where
+	// the destination's writers stage.
+	Lanes      []LaneReady
 	Snapshots  []checkpoint.Snapshot
 	Quarantine []checkpoint.QuarantineFile
 	// Each stream's schema at its barrier, as an Arrow IPC stream holding
@@ -69,6 +71,29 @@ type Ready struct {
 	Delivered map[string][]byte
 	// The streams that hold, at their barriers.
 	Holds map[string]*ReadyHolds
+}
+
+// LaneReady is a writer lane's part of an epoch.
+type LaneReady struct {
+	// An engine sink's committable.
+	Staged destination.Staged
+	// What a staged sink staged, by stream; streams without rows are missing.
+	Files map[string][]destination.StagedFile
+}
+
+// Files are what a staged sink staged on every lane, by stream; nil if
+// none.
+func (r *Ready) Files() map[string][]destination.StagedFile {
+	var out map[string][]destination.StagedFile
+	for _, l := range r.Lanes {
+		for stream, fs := range l.Files {
+			if out == nil {
+				out = map[string][]destination.StagedFile{}
+			}
+			out[stream] = append(out[stream], fs...)
+		}
+	}
+	return out
 }
 
 // ReadyHolds are a stream's holds at its barrier.
@@ -267,7 +292,11 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 			continue
 		}
 		delete(crossed, f.Epoch)
-		if err := send(Frame{Kind: FrameReady, Epoch: f.Epoch, Ready: &Ready{Files: files[f.Epoch]}}); err != nil {
+		ready := &Ready{}
+		if staging {
+			ready.Lanes = []LaneReady{{Files: files[f.Epoch]}}
+		}
+		if err := send(Frame{Kind: FrameReady, Epoch: f.Epoch, Ready: ready}); err != nil {
 			return err
 		}
 		delete(files, f.Epoch)
