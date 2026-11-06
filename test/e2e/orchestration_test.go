@@ -405,6 +405,9 @@ func TestSupervisorIsLostAndTakesOver(t *testing.T) {
 	docs := continuousDocs(name, `{"seed": 4, "endless": true, "batchSize": 10, "delay": "200ms"}`)
 	apply(t, docs...)
 	eventually(t, 60*time.Second, "the run to stop and another to start", func() bool { return statuses(runs(t, name)) == "stopped running" })
+	// And becoming scheduled stops it, and ends the supervisor.
+	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
+	eventually(t, 60*time.Second, "the last run to stop", func() bool { return statuses(runs(t, name)) == "stopped stopped" })
 }
 
 // A sync's workflow can be lost too. The next sync stops what it left running

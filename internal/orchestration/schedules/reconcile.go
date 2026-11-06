@@ -70,29 +70,29 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	rows, err := r.Store.ListPipelinesToRun(ctx)
-	if err != nil {
-		return err
-	}
-	var pipelines []pipelineToRun
-	for _, p := range rows {
-		var spec apiv1.PipelineSpec
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(p.Spec, &spec); err != nil {
-			r.Logger.Warn("a pipeline's spec doesn't parse; leaving what runs it", "pipeline", p.ID, "err", err)
-			continue
-		}
-		pipelines = append(pipelines, pipelineToRun{
-			org: p.OrgID.String(), id: p.ID.String(), paused: p.Paused,
-			continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS, schedule: spec.GetSchedule(), runningRun: p.RunningRun,
-		})
-	}
 	orgs, err := r.Store.ListOrgs(ctx)
 	if err != nil {
 		return err
 	}
 	ours := map[string]bool{}
-	for _, o := range orgs {
-		ours[o.String()] = true
+	var pipelines []pipelineToRun
+	for _, org := range orgs {
+		ours[org.String()] = true
+		rows, err := r.Store.ListPipelinesToRun(ctx, org)
+		if err != nil {
+			return err
+		}
+		for _, p := range rows {
+			var spec apiv1.PipelineSpec
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(p.Spec, &spec); err != nil {
+				r.Logger.Warn("a pipeline's spec doesn't parse; leaving what runs it", "pipeline", p.ID, "err", err)
+				continue
+			}
+			pipelines = append(pipelines, pipelineToRun{
+				org: org.String(), id: p.ID.String(), paused: p.Paused,
+				continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS, schedule: spec.GetSchedule(), runningRun: p.RunningRun,
+			})
+		}
 	}
 	plan := planReconcile(pipelines, supervisors, schedules, ours)
 	var failed error
