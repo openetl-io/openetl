@@ -45,8 +45,12 @@ type warehouse struct {
 	reads   map[readKey][]row         // overwrite: each read's rows, until it ends
 	merged  map[string]map[string]row // merge targets, by key
 	applies map[string]int            // how often each record version was applied
+	landed  map[string][]epochRef     // the epochs each record version was applied in
 	holds   *heldTables               // nil: takes no holds
 }
+
+// epochRef is an epoch's generation and number.
+type epochRef [2]uint64
 
 func newWarehouse(dedupeCapable bool) *warehouse {
 	return &warehouse{
@@ -57,6 +61,7 @@ func newWarehouse(dedupeCapable bool) *warehouse {
 		reads:         map[readKey][]row{},
 		merged:        map[string]map[string]row{},
 		applies:       map[string]int{},
+		landed:        map[string][]epochRef{},
 	}
 }
 
@@ -101,7 +106,7 @@ func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []st
 	for _, s := range todo {
 		k := stagingKey{st.Gen, st.N, s.Name}
 		rows, patches := splitPatches(wh.staging[k])
-		if n := wh.apply(s, rows); n > 0 {
+		if n := wh.apply(s, rows, epochRef{st.Gen, st.N}); n > 0 {
 			collapsed[s.Name] += n
 		}
 		// After the epoch's rows, as on Postgres.
@@ -115,7 +120,7 @@ func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []st
 }
 
 // apply returns the rows its dedupe skipped.
-func (wh *warehouse) apply(s stagedStream, rows []row) (collapsed uint64) {
+func (wh *warehouse) apply(s stagedStream, rows []row, at epochRef) (collapsed uint64) {
 	switch destination.WriteMode(s.Mode) {
 	case destination.Merge:
 		m := wh.merged[s.Name]
@@ -127,6 +132,7 @@ func (wh *warehouse) apply(s stagedStream, rows []row) (collapsed uint64) {
 			if cur, ok := m[r.Key]; !ok || r.Seq >= cur.Seq { // the _openetl_seq guard
 				m[r.Key] = wh.held(s.Name, r, cur, ok)
 				wh.applies[r.ID]++
+				wh.landed[r.ID] = append(wh.landed[r.ID], at)
 			}
 		}
 	case destination.Overwrite:
@@ -138,20 +144,20 @@ func (wh *warehouse) apply(s stagedStream, rows []row) (collapsed uint64) {
 				delete(wh.reads, o)
 			}
 		}
-		wh.reads[k], collapsed = wh.insert(wh.reads[k], s, rows)
+		wh.reads[k], collapsed = wh.insert(wh.reads[k], s, rows, at)
 		if s.Ended {
 			wh.tables[s.Name] = wh.reads[k]
 			delete(wh.reads, k)
 		}
 	default:
-		wh.tables[s.Name], collapsed = wh.insert(wh.tables[s.Name], s, rows)
+		wh.tables[s.Name], collapsed = wh.insert(wh.tables[s.Name], s, rows, at)
 	}
 	return collapsed
 }
 
 // insert appends rows to target with s's dedupe, and returns the rows it
 // skipped.
-func (wh *warehouse) insert(target []row, s stagedStream, rows []row) ([]row, uint64) {
+func (wh *warehouse) insert(target []row, s stagedStream, rows []row, at epochRef) ([]row, uint64) {
 	var have map[string]bool
 	switch destination.Dedupe(s.Dedupe) {
 	case destination.DedupeTarget:
@@ -173,6 +179,7 @@ func (wh *warehouse) insert(target []row, s stagedStream, rows []row) ([]row, ui
 		}
 		target = append(target, wh.held(s.Name, r, row{}, false))
 		wh.applies[r.ID]++
+		wh.landed[r.ID] = append(wh.landed[r.ID], at)
 	}
 	return target, collapsed
 }
@@ -391,11 +398,14 @@ type broker struct {
 	visible  []streamRow
 	markers  map[[2]uint64]bool // (g, n) markers on the control topic
 	applies  map[string]int
+	landed   map[string][]epochRef
 	aborted  int
 	commitsN int
 }
 
-func newBroker() *broker { return &broker{markers: map[[2]uint64]bool{}, applies: map[string]int{}} }
+func newBroker() *broker {
+	return &broker{markers: map[[2]uint64]bool{}, applies: map[string]int{}, landed: map[string][]epochRef{}}
+}
 
 type kafkaDest struct {
 	w       *world
@@ -511,6 +521,7 @@ func (w *kafkaWriter) Commit(ctx context.Context, _ destination.Epoch, s destina
 		w.b.visible = append(w.b.visible, t.rows...)
 		for _, r := range t.rows {
 			w.b.applies[r.ID]++
+			w.b.landed[r.ID] = append(w.b.landed[r.ID], epochRef{st.Gen, st.N})
 		}
 		w.b.markers[[2]uint64{st.Gen, st.N}] = true
 		w.b.open[st.Slot] = nil

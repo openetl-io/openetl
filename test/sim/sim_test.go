@@ -510,6 +510,10 @@ func (w *world) check(caps destination.Capabilities, stats map[string]int) strin
 			}
 			problems = append(problems, checkAppend(s.name, w.visible(s.name), expected, copies, lo, hi)...)
 		}
+		if level < p.Level && !w.positionLost {
+			stats["streams below their planned level"]++
+			problems = append(problems, w.checkReread(s.name, p, copies)...)
+		}
 	}
 	if w.cfg.holds {
 		problems = append(problems, w.checkHolds(stats)...)
@@ -565,6 +569,43 @@ func appendBounds(level delivery.Level, dedupe, forced destination.Dedupe) (lo, 
 		// barrier collapsed the rest of an attempt.
 		return lo, same
 	}
+}
+
+// checkReread returns the rows of a stream that landed more often than its
+// plan lets them in epochs whose records don't list it as read again. Only
+// the epochs that list it, which are shown as below the planned level, may
+// repeat rows.
+func (w *world) checkReread(stream string, p delivery.Plan, copies map[string]int) []string {
+	landed, allowed := w.wh.landed, func(int) int { return 1 }
+	switch {
+	case w.cfg.kind == "webhook" || w.cfg.kind == "staged" || w.cfg.mode == destination.Overwrite:
+		// Planned at least once; an abandoned read's rows never show.
+		return nil
+	case w.cfg.kind == "kafka":
+		landed = w.broker.landed
+	}
+	if w.cfg.mode != destination.Merge {
+		_, allowed = appendBounds(p.Level, p.Dedupe, destination.DedupeNone)
+	}
+	reread := map[epochRef]bool{}
+	for _, rec := range w.written {
+		if slices.Contains(rec.Reread, stream) {
+			reread[epochRef{rec.Generation, rec.Epoch}] = true
+		}
+	}
+	var problems []string
+	for id, m := range copies {
+		var outside []epochRef
+		for _, e := range landed[id] {
+			if !reread[e] {
+				outside = append(outside, e)
+			}
+		}
+		if len(outside) > allowed(m) {
+			problems = append(problems, fmt.Sprintf("%s: %s landed in epochs %v, which don't list it as read again; the source holds %d", stream, id, outside, m))
+		}
+	}
+	return problems
 }
 
 func checkAppend(stream string, rows []row, expected map[string]record, copies map[string]int, lo, hi func(int) int) []string {
