@@ -81,6 +81,8 @@ type Worker struct {
 	Pool     string
 	// What it can place on itself.
 	Capacity resources.Size
+	// Makes a cgroup for each attempt. Nil: a watchdog holds them to their size.
+	Cgroups *resources.Cgroups
 	// How often it reports. Zero: 10 s.
 	ReportEvery time.Duration
 	Kinds       map[string]Kind
@@ -332,13 +334,23 @@ func (w *Worker) start(base, results context.Context, m *dataplanev1.Work) {
 		defer close(finished)
 		go w.cutOff(wk, kind, cancel, finished)
 
+		release, limitErr := w.limit(wk, cancel, finished)
 		var res any
 		var err error
-		if known {
-			res, err = run(ctx, kind.Handler, m.GetInput())
-		} else {
+		switch {
+		case !known:
 			err = errs.New(errs.Internal, "this runner doesn't run %s", wk.Kind)
+		case limitErr != nil:
+			err = limitErr
+		default:
+			res, err = run(ctx, kind.Handler, m.GetInput())
 		}
+		// However the attempt came to fail: killing its processes can show up
+		// as anything from a broken pipe to a cancelled context.
+		if over := wk.overMemory(); err != nil && over != nil {
+			err = over
+		}
+		release()
 		w.mu.Lock()
 		w.share()
 		delete(w.running, wk.ID)
@@ -367,6 +379,59 @@ func run(ctx context.Context, h Handler, input []byte) (res any, err error) {
 	}()
 	return h(ctx, input)
 }
+
+// limit holds an attempt to its size: with a cgroup if the runner has them, and
+// otherwise with a watchdog. What it returns ends that, once the attempt has.
+func (w *Worker) limit(wk *Work, stop context.CancelFunc, finished <-chan struct{}) (func(), error) {
+	if wk.Meter == nil || wk.Size.Memory == 0 {
+		return func() {}, nil
+	}
+	if w.Cgroups == nil {
+		go w.watchMemory(wk, stop, finished)
+		return func() {}, nil
+	}
+	g, err := w.Cgroups.Job(wk.ID, wk.Size)
+	if err != nil {
+		return func() {}, errs.Wrap(errs.Transient, err, "make the job's cgroup")
+	}
+	wk.group = g
+	wk.Meter.Contain(g)
+	return func() {
+		if err := g.Close(); err != nil {
+			w.log().Warn("removing a job's cgroup failed", "work", wk.ID, "err", err)
+		}
+	}, nil
+}
+
+// watchMemory stops an attempt whose processes hold more than its size allows,
+// so it can't push out its neighbours. There's no drain: it would be growing
+// meanwhile, and the attempt resumes from its last checkpoint.
+func (w *Worker) watchMemory(wk *Work, stop context.CancelFunc, finished <-chan struct{}) {
+	ceiling := wk.Size.MemoryCeiling()
+	t := time.NewTicker(memoryWatchEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+		case <-finished:
+			return
+		}
+		held := wk.Meter.Resident()
+		if held <= ceiling {
+			continue
+		}
+		over := errs.New(errs.ResourceExhausted, "the job's processes held %d MiB, over the %d MiB its size allows", held/resources.MiB, ceiling/resources.MiB)
+		wk.over.Store(&over)
+		w.log().Warn("stopping a job over its size", "work", wk.ID, "size", wk.Size, "err", over)
+		wk.Meter.Kill()
+		stop()
+		return
+	}
+}
+
+// memoryWatchEvery is how often the watchdog reads a job's processes. A burst
+// between readings is what oom_score_adj is for.
+const memoryWatchEvery = time.Second
 
 // cutOff ends the work's context once it has been asked to stop: at once if
 // the work doesn't stop itself at a checkpoint and was cancelled, and otherwise
@@ -466,6 +531,9 @@ type Work struct {
 	Spec
 	// What an attempt uses. Nil for a light operation.
 	Meter *resources.Meter
+	group *resources.Cgroup
+	// Why the watchdog stopped it.
+	over atomic.Pointer[error]
 
 	// How much of what it moved has had its share of the runner's work, under
 	// the worker's lock.
@@ -487,6 +555,18 @@ func newWork(m *dataplanev1.Work, drain <-chan struct{}) *Work {
 		wk.Meter = resources.NewMeter()
 	}
 	return wk
+}
+
+// overMemory is the failure of an attempt stopped for going over its size; nil
+// if it wasn't.
+func (wk *Work) overMemory() error {
+	if over := wk.over.Load(); over != nil {
+		return *over
+	}
+	if wk.group != nil && wk.group.OutOfMemory() {
+		return errs.New(errs.ResourceExhausted, "the job went over the %d MiB its size allows, and its cgroup killed it", wk.Size.MemoryCeiling()/resources.MiB)
+	}
+	return nil
 }
 
 // usage is what an attempt has used and moved, for a report; nil for a light

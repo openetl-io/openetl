@@ -203,8 +203,8 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 		return out, err
 	}
 	env.Logger = log.With("component", "connector")
-	meter := worker.From(ctx).Meter
-	env.Meter = meter
+	meter, size := worker.From(ctx).Meter, worker.From(ctx).Size
+	env.Meter, env.Size = meter, size
 	job, err := buildJob(ctx, spec, env)
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
@@ -258,7 +258,7 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	}
 	engine := a.Engine
 	engine.Logger = log.With("component", "engine")
-	engine.Meter = meter
+	engine.Meter, engine.Size = meter, size
 	job.Meter = meter
 	job.Dataflow = &engineclient.Dataflow{Options: engine}
 	job.Logger = log

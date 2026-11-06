@@ -63,6 +63,8 @@ type Options struct {
 	Spec *protocolv1.SpecResponse
 	// Counts what the process uses. Nil: nothing does.
 	Meter *resources.Meter
+	// The job's size, which sets a Go connector's GOMAXPROCS and GOMEMLIMIT.
+	Size resources.Size
 	// Serves a staged destination's files and cursors (SetStaging).
 	Staging hostservices.Staging
 }
@@ -109,7 +111,7 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 		_ = os.RemoveAll(dir)
 		return nil, errs.Wrap(errs.Internal, err, "connector: host services socket")
 	}
-	if err := p.run(ctx, exe, kind, socket, hostSocket); err != nil {
+	if err := p.run(ctx, exe, kind, socket, hostSocket, opts.Size); err != nil {
 		_ = hostLn.Close()
 		return nil, err
 	}
@@ -177,7 +179,7 @@ func ReadSpec(ctx context.Context, exe string, kind protocolv1.ConnectorKind, op
 }
 
 // run starts the executable and connects to it once it's ready.
-func (p *process) run(ctx context.Context, exe string, kind protocolv1.ConnectorKind, socket, hostSocket string) error {
+func (p *process) run(ctx context.Context, exe string, kind protocolv1.ConnectorKind, socket, hostSocket string, size resources.Size) error {
 	p.cmd = exec.Command(exe) //nolint:noctx // close stops it
 	for _, k := range passEnv {
 		if v, ok := os.LookupEnv(k); ok {
@@ -188,6 +190,8 @@ func (p *process) run(ctx context.Context, exe string, kind protocolv1.Connector
 	if kind != protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED {
 		p.cmd.Env = append(p.cmd.Env, sdk.EnvRole+"="+connspec.RoleOf(&protocolv1.SpecResponse{Kind: kind}))
 	}
+	p.cmd.Env = append(p.cmd.Env, size.ConnectorEnv()...)
+	p.meter.Confine(p.cmd)
 	stdin, err1 := p.cmd.StdinPipe()
 	stdout, err2 := p.cmd.StdoutPipe()
 	stderr, err3 := p.cmd.StderrPipe()
@@ -201,7 +205,8 @@ func (p *process) run(ctx context.Context, exe string, kind protocolv1.Connector
 		return errs.Wrap(errs.ConfigInvalid, err, "connector: start "+exe)
 	}
 	p.log = p.log.With("pid", p.cmd.Process.Pid)
-	metered := p.meter.Track(p.cmd.Process.Pid)
+	resources.KillFirst(p.cmd.Process.Pid)
+	metered := p.meter.Track(p.cmd.Process)
 
 	ready := make(chan struct{})
 	var drained sync.WaitGroup

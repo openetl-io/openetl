@@ -60,6 +60,8 @@ type Env struct {
 	Logger *slog.Logger
 	// Counts what the external connectors it starts use. Nil: nothing does.
 	Meter *resources.Meter
+	// The size of the job they're part of. Zero: they aren't part of one.
+	Size resources.Size
 }
 
 // NewSource binds a source connector to its config, a JSON object. It does
@@ -130,7 +132,7 @@ func ExecutablePath(role, name string) string {
 }
 
 func (e Env) external(spec *protocolv1.SpecResponse) external.Options {
-	return external.Options{Egress: e.Egress, Logger: e.Logger, Spec: spec, Meter: e.Meter}
+	return external.Options{Egress: e.Egress, Logger: e.Logger, Spec: spec, Meter: e.Meter, Size: e.Size}
 }
 
 // externals lists the external connectors of a kind, by name.

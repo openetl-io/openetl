@@ -462,11 +462,17 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if cfg.ReportInterval != "" && (err != nil || every <= 0) {
 		return fmt.Errorf("daemon: --report-interval %q isn't a positive duration", cfg.ReportInterval)
 	}
+	var cgroups *resources.Cgroups
+	if cfg.CgroupRoot != "" {
+		if cgroups, err = resources.OpenCgroups(cfg.CgroupRoot); err != nil {
+			return fmt.Errorf("daemon: --cgroup-root: %w", err)
+		}
+	}
 	host, _ := os.Hostname()
 	w := &dpworker.Worker{
 		API: apiClient, ID: fmt.Sprintf("%s:%d", host, os.Getpid()), Release: external.Release(), Protocol: external.Protocol,
 		Features: external.Features, Launchers: []string{dispatch.LauncherSubprocess}, Platform: connectorhost.Platform(),
-		Pool: cfg.Pool, Capacity: capacity, ReportEvery: every, Logger: log,
+		Pool: cfg.Pool, Capacity: capacity, Cgroups: cgroups, ReportEvery: every, Logger: log,
 		Kinds: map[string]dpworker.Kind{
 			// Attempts drain to a checkpoint for up to this long.
 			contract.RunSyncAttempt: {Handler: dpworker.Handle(sync.RunSyncAttempt), Checkpoints: true, StopTimeout: 2 * time.Minute},

@@ -33,6 +33,7 @@ import (
 	"github.com/openetl-io/openetl/internal/delivery"
 	"github.com/openetl-io/openetl/internal/enginesink"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -433,6 +434,27 @@ func TestRunReportsEngineDeaths(t *testing.T) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestEngineStopsAtItsMemoryLimit(t *testing.T) {
+	opts := options(t, nil)
+	opts.Size = resources.Size{CPU: 1500, Memory: 16 * resources.MiB}
+	df := &Dataflow{Options: opts}
+	df.started = func(p *process) {
+		if !slices.Contains(p.cmd.Args, "--threads") || p.cmd.Args[slices.Index(p.cmd.Args, "--threads")+1] != "2" {
+			t.Errorf("the engine's arguments are %v, want 2 threads", p.cmd.Args)
+		}
+	}
+	row := `{"x": "` + strings.Repeat("a", 4<<20) + `"}`
+	var frames []runner.Frame
+	for range 16 {
+		frames = append(frames, runner.Frame{Kind: runner.FrameRows, Stream: "a", Rows: rows(row, row, row, row)})
+	}
+	got, err := run(testContext(t), df, plan("a"), frames...)
+	release(got)
+	if errs.CodeOf(err) != errs.ResourceExhausted || !strings.Contains(err.Error(), "memory limit of 12 MiB") {
+		t.Fatalf("err = %v, want RESOURCE_EXHAUSTED at its limit", err)
 	}
 }
 

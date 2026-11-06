@@ -124,8 +124,8 @@ func (env) Discover(context.Context) (source.Catalog, error) {
 func (env) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
 	var rows []json.RawMessage
 	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		b, err := json.Marshal(map[string]string{"name": name})
+		name, value, _ := strings.Cut(kv, "=")
+		b, err := json.Marshal(map[string]string{"name": name, "value": value})
 		if err != nil {
 			return err
 		}

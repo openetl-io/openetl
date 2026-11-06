@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"os"
 	"os/exec"
 	"runtime"
 	"testing"
@@ -18,7 +19,7 @@ func TestMeterCountsAProcess(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := m.Track(cmd.Process.Pid)
+	done := m.Track(cmd.Process)
 	if runtime.GOOS == "linux" {
 		// A running process can be read there, which an attempt's reports rely on.
 		deadline := time.Now().Add(30 * time.Second)
@@ -67,10 +68,42 @@ func TestMeterSharesAddUp(t *testing.T) {
 	}
 }
 
+func TestResidentAndKill(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs /proc")
+	}
+	m := NewMeter()
+	cmd := balloon(64)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := m.Track(cmd.Process)
+	deadline := time.Now().Add(30 * time.Second)
+	for m.Resident() < 64*MiB {
+		if time.Now().After(deadline) {
+			t.Fatalf("resident = %d, want at least 64 MiB", m.Resident())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	m.Kill()
+	if err := cmd.Wait(); err == nil {
+		t.Error("the process wasn't killed")
+	}
+	done(cmd.ProcessState)
+	if n := m.Resident(); n != 0 {
+		t.Errorf("resident = %d once it has exited", n)
+	}
+}
+
 func TestNilMeter(t *testing.T) {
 	var m *Meter
-	m.Track(1)(nil)
+	m.Track(&os.Process{Pid: 1})(nil)
+	m.Confine(exec.Command("true"))
 	m.Sample()
+	m.Kill()
+	if n := m.Resident(); n != 0 {
+		t.Fatalf("resident = %d", n)
+	}
 	m.Share(1, 1)
 	m.Moved(1, 1)
 	if u := m.Usage(); u != (Usage{}) {

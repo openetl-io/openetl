@@ -21,6 +21,7 @@ import (
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -76,6 +77,9 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		return err
 	}
 	req.Passthrough = d.Options.Passthrough
+	if s := d.Options.Size; s != (resources.Size{}) {
+		req.Limits = &enginev1.Limits{MemoryBytes: uint64(s.EngineMemory())} //nolint:gosec // a size isn't negative
+	}
 	if _, err := p.client.StartJob(ctx, req); err != nil {
 		return p.explain(ctx, err)
 	}

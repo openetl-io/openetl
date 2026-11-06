@@ -69,6 +69,7 @@ impl Engine {
         if slot.is_some() {
             return Err(JobError::config("this engine already ran a job"));
         }
+        crate::memory::set_limit(req.limits.as_ref().map_or(0, |l| l.memory_bytes));
         let span = info_span!("job", openetl.pipeline = %req.pipeline, openetl.generation = req.generation);
         let _ = span.set_parent(parent);
         let plan = Arc::new(Plan::from_request(req)?);

@@ -3,13 +3,15 @@
 //!
 //! `serve` binds both sockets, then prints `ready` on stdout. It exits after
 //! Stop, when the runner closes an edge early, or, with `--watch-stdin`, when
-//! stdin closes. Logs are JSON lines on stderr; `OPENETL_ENGINE_LOG` filters
+//! stdin closes. `--threads` sets how many threads run its tasks: one per core
+//! by default. Logs are JSON lines on stderr; `OPENETL_ENGINE_LOG` filters
 //! them. Traces go out over OTLP as the OTEL_* variables say.
 
 mod dataflow;
 mod error;
 mod frame;
 mod ipc;
+mod memory;
 mod plan;
 mod quarantine;
 mod replay;
@@ -32,9 +34,12 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _};
 
+#[global_allocator]
+static ALLOCATOR: memory::Counting = memory::Counting;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "usage: openetl-engine --version
-       openetl-engine serve --control PATH --data PATH [--watch-stdin]";
+       openetl-engine serve --control PATH --data PATH [--watch-stdin] [--threads N]";
 /// How long in-flight RPCs get to finish once shutdown starts.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
@@ -42,17 +47,19 @@ struct ServeArgs {
     control: PathBuf,
     data: PathBuf,
     watch_stdin: bool,
+    threads: Option<usize>,
 }
 
 impl ServeArgs {
     fn parse(args: &[String]) -> Option<Self> {
-        let (mut control, mut data, mut watch_stdin) = (None, None, false);
+        let (mut control, mut data, mut watch_stdin, mut threads) = (None, None, false, None);
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--control" => control = Some(PathBuf::from(it.next()?)),
                 "--data" => data = Some(PathBuf::from(it.next()?)),
                 "--watch-stdin" => watch_stdin = true,
+                "--threads" => threads = Some(it.next()?.parse().ok().filter(|n| *n > 0)?),
                 _ => return None,
             }
         }
@@ -60,6 +67,7 @@ impl ServeArgs {
             control: control?,
             data: data?,
             watch_stdin,
+            threads,
         })
     }
 }
@@ -85,9 +93,11 @@ fn usage() -> ExitCode {
 }
 
 fn serve(args: ServeArgs) -> ExitCode {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build();
+    let mut rt = tokio::runtime::Builder::new_multi_thread();
+    if let Some(n) = args.threads {
+        rt.worker_threads(n);
+    }
+    let rt = rt.enable_all().build();
     // The gRPC exporter needs the runtime.
     let traces = match &rt {
         Ok(rt) => {
@@ -203,4 +213,28 @@ fn watch_stdin(shutdown: CancellationToken) {
         shutdown.cancel();
         info!("stdin closed; exiting");
     });
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Option<ServeArgs> {
+        let args: Vec<String> = ["--control", "c", "--data", "d"]
+            .iter()
+            .chain(args)
+            .map(|a| a.to_string())
+            .collect();
+        ServeArgs::parse(&args)
+    }
+
+    #[test]
+    fn threads() {
+        assert_eq!(parse(&[]).unwrap().threads, None);
+        assert_eq!(parse(&["--threads", "2"]).unwrap().threads, Some(2));
+        assert!(parse(&["--threads", "0"]).is_none());
+        assert!(parse(&["--threads", "many"]).is_none());
+        assert!(parse(&["--threads"]).is_none());
+    }
 }

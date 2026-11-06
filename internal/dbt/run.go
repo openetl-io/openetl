@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
 // Commands a step can run.
@@ -122,6 +124,7 @@ func Exec(ctx context.Context, bundle []byte, work string, inv Invocation) (*Res
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrStart, err)
 	}
+	resources.KillFirst(cmd.Process.Pid)
 	tail := logLines(out, inv.Logger)
 	err = cmd.Wait()
 

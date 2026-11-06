@@ -61,6 +61,8 @@ type Config struct {
 	Capacity string
 	// What a runner keeps for itself, as CPU,MEMORY.
 	Reserve string
+	// A delegated cgroup v2 directory for a cgroup per job. Empty: none.
+	CgroupRoot string
 	// How often a runner reports, as a Go duration.
 	ReportInterval string
 	// A file holding the runner's token. Empty: OPENETL_RUNNER_TOKEN.
@@ -112,6 +114,7 @@ var options = []option{
 	{"pool", "OPENETL_POOL", "default", "the pool this runner serves", func(c *Config) *string { return &c.Pool }},
 	{"capacity", "OPENETL_CAPACITY", "", "what this runner places on itself, as CPU,MEMORY such as 4,8Gi (default: its cgroup's or host's, less --reserve)", func(c *Config) *string { return &c.Capacity }},
 	{"reserve", "OPENETL_RESERVE", "0.5,512Mi", "what this runner keeps for itself, as CPU,MEMORY", func(c *Config) *string { return &c.Reserve }},
+	{"cgroup-root", "OPENETL_CGROUP_ROOT", "", "a cgroup v2 directory delegated to this runner alone, for a cgroup per job on Linux 5.7 or later, which holds a job to its size's CPU and memory; empty: its threads and a memory watchdog do", func(c *Config) *string { return &c.CgroupRoot }},
 	{"report-interval", "OPENETL_REPORT_INTERVAL", "10s", "how often this runner reports what it runs to the API, as a Go duration; keep it well under its work's heartbeat timeouts", func(c *Config) *string { return &c.ReportInterval }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},

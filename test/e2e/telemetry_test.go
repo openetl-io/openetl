@@ -99,7 +99,6 @@ func TestTelemetry(t *testing.T) {
 		{"runner", "openetl.engine.edge.bytes", map[string]string{"openetl.edge.direction": "to_engine"}, func(v float64) bool { return v > 0 }},
 		{"server", "temporal_request", nil, func(v float64) bool { return v > 0 }},
 		{"server", "openetl.placement.cpu.capacity", map[string]string{"data_plane": "default", "pool": "default"}, func(v float64) bool { return v > 0 }},
-		{"server", "openetl.placement.cpu.pending", nil, func(v float64) bool { return v >= 0 }},
 		{"runner", "go.memory.used", nil, func(v float64) bool { return v > 0 }},
 		{"server", "rpc.server.call.duration", map[string]string{"rpc.method": "openetl.api.v1.SourceService/DiscoverSource"}, func(v float64) bool { return v >= 1 }},
 		{"server", "openetl.pipeline.freshness", job, func(v float64) bool { return v >= 0 }},

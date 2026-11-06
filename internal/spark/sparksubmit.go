@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
 // submit runs spark-submit. Spark 3.5's lines are what it parses, which is
@@ -37,6 +38,7 @@ func (s *submit) run(ctx context.Context, args ...string) ([]string, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, errs.Wrap(errs.ConfigInvalid, err, "spark: install Spark 3.5 on the runner, or point --spark-submit at its spark-submit")
 	}
+	resources.KillFirst(cmd.Process.Pid)
 	var lines []string
 	sc := bufio.NewScanner(out)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)

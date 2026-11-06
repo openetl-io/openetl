@@ -2,6 +2,7 @@ package resources
 
 import (
 	"os"
+	"os/exec"
 	"runtime"
 	"runtime/metrics"
 	"strconv"
@@ -39,11 +40,13 @@ type Meter struct {
 	// can be read only once it has exited, resident bytes.
 	exitedCPU float64
 	exitedMem int64
+	group     *Cgroup
 }
 
 type reading struct {
-	cpu float64
-	hwm int64
+	proc *os.Process
+	cpu  float64
+	hwm  int64
 }
 
 // NewMeter starts metering an attempt.
@@ -51,14 +54,34 @@ func NewMeter() *Meter {
 	return &Meter{start: time.Now(), live: map[int]*reading{}}
 }
 
+// Contain has the processes the attempt starts from now on run in g.
+func (m *Meter) Contain(g *Cgroup) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.group = g
+}
+
+// Confine readies a process the attempt is about to start.
+func (m *Meter) Confine(cmd *exec.Cmd) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.group != nil {
+		m.group.confine(cmd)
+	}
+}
+
 // Track counts a process the attempt started, until the function it returns
 // gets the process's exit state.
-func (m *Meter) Track(pid int) func(*os.ProcessState) {
+func (m *Meter) Track(p *os.Process) func(*os.ProcessState) {
 	if m == nil {
 		return func(*os.ProcessState) {}
 	}
+	pid := p.Pid
 	m.mu.Lock()
-	m.live[pid] = &reading{}
+	m.live[pid] = &reading{proc: p}
 	m.mu.Unlock()
 	return func(st *os.ProcessState) {
 		m.mu.Lock()
@@ -119,6 +142,34 @@ func (m *Meter) Usage() Usage {
 	u := m.usage
 	u.Seconds = time.Since(m.start).Seconds()
 	return u
+}
+
+// Resident is how many bytes the attempt's running processes hold now, on
+// Linux; 0 elsewhere. It doesn't count their children, which only a cgroup
+// can see.
+func (m *Meter) Resident() int64 {
+	if m == nil || runtime.GOOS != "linux" {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for pid := range m.live {
+		n += resident(pid)
+	}
+	return n
+}
+
+// Kill kills the attempt's running processes.
+func (m *Meter) Kill() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.live {
+		_ = r.proc.Kill()
+	}
 }
 
 // Share adds to the attempt's share of the runner's own work: CPU seconds, and
@@ -184,6 +235,23 @@ func readProcess(pid int) (cpu float64, hwm int64, ok bool) {
 		return 0, 0, false
 	}
 	return cpu, HighWater(pid), true
+}
+
+// resident reads a running process's resident bytes, on Linux.
+func resident(pid int) int64 {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/statm")
+	if err != nil {
+		return 0
+	}
+	f := strings.Fields(string(b))
+	if len(f) < 2 {
+		return 0
+	}
+	pages, err := strconv.ParseInt(f[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return pages * int64(os.Getpagesize())
 }
 
 // parseStat reads the CPU seconds in a /proc/PID/stat line. The command's name
