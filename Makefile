@@ -159,13 +159,15 @@ sim: ## Commit-protocol simulation; SEEDS=n runs n seeds per sink kind
 bench-boundary: engine connectors ## Runner/engine boundary benchmark
 	go run ./test/bench/boundary -engine $(CURDIR)/target/release/openetl-engine -connectors $(BIN)/connectors $(BENCH_FLAGS)
 
+# E2E_FLAGS passes go test's flags, e.g. E2E_FLAGS=-v for each test's time.
+E2E_TIMEOUT ?= 25m
 .PHONY: e2e
 e2e: connectors ## Full-stack scenarios against the compose deps
 	cargo build -p openetl-engine
 	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
 	OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit OPENETL_SPARK_LIB=$(CURDIR)/libs/openetl-spark/java/target \
 	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
-	go test -tags e2e -count=1 -timeout 15m ./test/e2e/...
+	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(E2E_FLAGS) ./test/e2e/...
 
 # The Kubernetes targets' tests, on make kind-up's cluster and the compose
 # Postgres, Temporal and S3. KIND_HOST is how pods reach this host.

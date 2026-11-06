@@ -80,7 +80,7 @@ jobs:
       - name: Runner/engine tests against the S3 store
         run: OPENETL_ENGINE="$PWD/target/debug/openetl-engine" go test -tags integration -count=1 ./internal/engineclient/...
       - name: Scheduled syncs through the whole stack, with engine and runner kills
-        run: make e2e CONNECTORS_SRC=openetl-connectors
+        run: make e2e CONNECTORS_SRC=openetl-connectors E2E_FLAGS=-v
       # A driver's launch failures are in the worker's log.
       - name: The Spark and Flink containers' logs
         if: failure()

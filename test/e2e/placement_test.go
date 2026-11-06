@@ -19,6 +19,7 @@ import (
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/internal/platform/telemetry/telemetrytest"
 )
 
 // placementPlane makes a data plane for a test's own runners, which earlier
@@ -90,6 +91,12 @@ func TestPlacementByCapacity(t *testing.T) {
 	if s, l := used(small), used(large); s != 1 || l != 2 {
 		t.Errorf("small runs %d and large %d, want 1 and 2", s, l)
 	}
+	// The gauge has a point only while an attempt waits, and reads every 10 s.
+	eventually(t, 30*time.Second, "the server's metric of what waits", func() bool {
+		return slices.ContainsFunc(env.collector.Points("openetl.placement.cpu.pending"), func(p telemetrytest.Point) bool {
+			return p.Role == "server" && p.Attrs["data_plane"] == plane && p.Value > 0
+		})
+	})
 
 	// Deleting a pipeline frees room for the one waiting.
 	if _, err := pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + names[0]})); err != nil {
