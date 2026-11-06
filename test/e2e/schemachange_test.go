@@ -51,7 +51,7 @@ func TestAdditiveSchemaChange(t *testing.T) {
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q},
 			"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}}`, scheduled),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at"}]},
+			"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at"}]},
 			"destination": {"ref": %q, "namespace": %q, "write": "merge"}, "delivery": {"require": "effectively_once"}}}`,
 			scheduled, scheduled, scheduled, in+"_inc"),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q},

@@ -94,7 +94,7 @@ func heldSetup(t *testing.T, prefix, columns, rows, streamSpec string) (name, sr
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q},
 			"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}}`, name),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q, "streams": [%s]},
+			"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q, "streams": [%s]},
 			"destination": {"ref": %q, "namespace": %q, "write": "merge"}, "delivery": {"require": "effectively_once"}}}`,
 			name, name, streamSpec, name, in+"_dst"))
 	return name, src, dst
@@ -250,7 +250,7 @@ func TestAHeldCellIsPatchedInAfterAnOverride(t *testing.T) {
 
 	in := schema(name)
 	apply(t, fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-		"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at",
+		"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at",
 			"quarantine": "cell", "columns": {"p": {"type": "string"}}}]},
 		"destination": {"ref": %q, "namespace": %q, "write": "merge"}, "delivery": {"require": "effectively_once"}}}`,
 		name, name, name, in+"_dst"))

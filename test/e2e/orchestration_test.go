@@ -179,7 +179,7 @@ func TestPauseResumeAndSyncNow(t *testing.T) {
 	wantCode(t, err, connect.CodeFailedPrecondition, "sync while paused")
 
 	docs := pipelineDocs(name, faker, `{}`)
-	docs[2] = strings.Replace(docs[2], `"every": "1h"`, `"every": "2h"`, 1)
+	docs[2] = strings.Replace(docs[2], `"every": "720h"`, `"every": "721h"`, 1)
 	if r := apply(t, docs...); r[2].GetAction() != apiv1.ApplyAction_APPLY_ACTION_UPDATED {
 		t.Fatalf("reapplied the pipeline: %v", r[2].GetAction())
 	}

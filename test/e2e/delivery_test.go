@@ -190,7 +190,7 @@ func collapseDocs(t *testing.T, name, faker, stream string) []string {
 		t.Fatal(err)
 	}
 	d[2] = fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-		"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q, "streams": [%s]},
+		"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q, "streams": [%s]},
 		"destination": {"ref": %q, "namespace": %q, "write": "append"}}}`, name, name, stream, name, schema(name))
 	return d
 }
