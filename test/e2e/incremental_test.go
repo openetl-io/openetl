@@ -33,7 +33,7 @@ func TestPostgresIncremental(t *testing.T) {
 			fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q},
 				"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}}`, n),
 			fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-				"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at"}]},
+				"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at"}]},
 				"destination": {"ref": %q, "namespace": %q, "write": %q}, "delivery": {"require": %q, "commit": {"maxBytes": "2KB"}}}}`,
 				n, n, n, out(write), write, require))
 		if status, stats := waitSync(t, n, 60*time.Second); status != "succeeded" {

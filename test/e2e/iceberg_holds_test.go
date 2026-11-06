@@ -34,7 +34,7 @@ func icebergHeldSetup(t *testing.T, prefix string) (name, src, ns string) {
 			"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q}}}`, name, in),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at"}]},
+			"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at"}]},
 			"destination": {"ref": %q, "write": "merge"}, "delivery": {"require": "effectively_once", "commit": {"interval": "1s"}}}}`,
 			name, name, name))
 	if status, stats := syncNow(t, name); status != "succeeded" {

@@ -321,6 +321,42 @@ func (q *Queries) RecordAttemptFailure(ctx context.Context, arg RecordAttemptFai
 	return i, err
 }
 
+const runningRun = `-- name: RunningRun :one
+SELECT s.id, s.run_id, s.version, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
+FROM syncs s
+JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
+LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
+WHERE s.org_id = $1 AND s.pipeline_id = $2 AND s.continuous AND s.status = 'running'
+ORDER BY s.start_time DESC, s.id DESC
+LIMIT 1
+`
+
+type RunningRunParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+type RunningRunRow struct {
+	ID          uuid.UUID
+	RunID       string
+	Version     string
+	DataPlaneID string
+}
+
+// The continuous pipeline's run that's running, if any. The data plane is the
+// version's, or the pipeline's if the version is gone.
+func (q *Queries) RunningRun(ctx context.Context, arg RunningRunParams) (RunningRunRow, error) {
+	row := q.db.QueryRow(ctx, runningRun, arg.OrgID, arg.PipelineID)
+	var i RunningRunRow
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.Version,
+		&i.DataPlaneID,
+	)
+	return i, err
+}
+
 const startSync = `-- name: StartSync :one
 INSERT INTO syncs (org_id, id, pipeline_id, version, workflow_id, run_id, status, continuous)
 VALUES ($1, $2, $3, $4, $5, $6, 'running', $7)
@@ -370,6 +406,65 @@ func (q *Queries) StartSync(ctx context.Context, arg StartSyncParams) (Sync, err
 		&i.LastAttemptTime,
 	)
 	return i, err
+}
+
+const stopAbandonedSyncs = `-- name: StopAbandonedSyncs :many
+UPDATE syncs SET status = 'stopped', error = $1, end_time = now()
+WHERE org_id = $2 AND pipeline_id = $3 AND status = 'running' AND NOT continuous AND run_id <> $4
+RETURNING org_id, id, pipeline_id, version, workflow_id, run_id, status, error, stats, start_time, end_time, continuous, failed_attempts, last_failed_attempt, failures_since_commit, last_attempt_error, last_attempt_code, last_attempt_time
+`
+
+type StopAbandonedSyncsParams struct {
+	Error      *string
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	RunID      string
+}
+
+// The pipeline's other syncs still running. A schedule starts one sync at a
+// time, so their workflows were lost.
+func (q *Queries) StopAbandonedSyncs(ctx context.Context, arg StopAbandonedSyncsParams) ([]Sync, error) {
+	rows, err := q.db.Query(ctx, stopAbandonedSyncs,
+		arg.Error,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.RunID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Sync
+	for rows.Next() {
+		var i Sync
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.PipelineID,
+			&i.Version,
+			&i.WorkflowID,
+			&i.RunID,
+			&i.Status,
+			&i.Error,
+			&i.Stats,
+			&i.StartTime,
+			&i.EndTime,
+			&i.Continuous,
+			&i.FailedAttempts,
+			&i.LastFailedAttempt,
+			&i.FailuresSinceCommit,
+			&i.LastAttemptError,
+			&i.LastAttemptCode,
+			&i.LastAttemptTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const syncCommitted = `-- name: SyncCommitted :execrows

@@ -111,3 +111,15 @@ LEFT JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source
 LEFT JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
 LEFT JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
 WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id AND v.version = @version;
+
+-- name: ListPipelinesToRun :many
+-- The org's pipelines, with their current versions' specs, for what runs them.
+SELECT p.id, p.paused, v.spec,
+    EXISTS (
+        SELECT 1 FROM syncs s
+        WHERE s.org_id = p.org_id AND s.pipeline_id = p.id AND s.continuous AND s.status = 'running'
+    )::boolean AS running_run
+FROM pipelines p
+JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
+WHERE p.org_id = @org_id
+ORDER BY p.id;

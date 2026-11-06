@@ -12,7 +12,6 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
 	"github.com/openetl-io/openetl/internal/orchestration/sizing"
 	"github.com/openetl-io/openetl/internal/platform/resources"
-	"github.com/openetl-io/openetl/internal/platform/temporalx"
 	"github.com/openetl-io/openetl/internal/spec"
 	"github.com/openetl-io/openetl/internal/store/db"
 )
@@ -23,9 +22,9 @@ import (
 func (a *Activities) EnqueueWork(ctx context.Context, in contract.WorkInput) error {
 	needs, err := a.prepare(ctx, &in)
 	if err != nil {
-		return temporalx.ApplicationError(err)
+		return err
 	}
-	return temporalx.ApplicationError(a.Dispatch.Enqueue(ctx, in, needs))
+	return a.Dispatch.Enqueue(ctx, in, needs)
 }
 
 // prepare sizes a pipeline's attempt, and returns what a runner must have to
@@ -96,11 +95,10 @@ func (a *Activities) role(ctx context.Context, org uuid.UUID, digest, role strin
 
 // GetWork reports whether work finished, and how.
 func (a *Activities) GetWork(ctx context.Context, ref contract.WorkRef) (contract.WorkStatus, error) {
-	st, err := a.Dispatch.Status(ctx, ref)
-	return st, temporalx.ApplicationError(err)
+	return a.Dispatch.Status(ctx, ref)
 }
 
 // CancelWork stops work.
 func (a *Activities) CancelWork(ctx context.Context, ref contract.WorkRef) error {
-	return temporalx.ApplicationError(a.Dispatch.Cancel(ctx, ref))
+	return a.Dispatch.Cancel(ctx, ref)
 }

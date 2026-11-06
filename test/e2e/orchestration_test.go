@@ -5,19 +5,27 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/orchestration/schedules"
+	"github.com/openetl-io/openetl/internal/orchestration/temporalbackend"
+	"github.com/openetl-io/openetl/internal/platform/temporalx"
+	"github.com/openetl-io/openetl/internal/store"
 )
 
 func temporalClient(t *testing.T) client.Client {
@@ -171,7 +179,7 @@ func TestPauseResumeAndSyncNow(t *testing.T) {
 	wantCode(t, err, connect.CodeFailedPrecondition, "sync while paused")
 
 	docs := pipelineDocs(name, faker, `{}`)
-	docs[2] = strings.Replace(docs[2], `"every": "1h"`, `"every": "2h"`, 1)
+	docs[2] = strings.Replace(docs[2], `"every": "720h"`, `"every": "721h"`, 1)
 	if r := apply(t, docs...); r[2].GetAction() != apiv1.ApplyAction_APPLY_ACTION_UPDATED {
 		t.Fatalf("reapplied the pipeline: %v", r[2].GetAction())
 	}
@@ -320,4 +328,175 @@ func TestSearchAttributes(t *testing.T) {
 			return err == nil && res.GetCount() > 0
 		})
 	}
+}
+
+// reconcile does what an orchestrator does when it starts.
+func reconcile(t *testing.T) {
+	t.Helper()
+	st, err := store.Open(t.Context(), env.dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	backend := testBackend(t)
+	r := &schedules.Reconciler{Store: st, Schedules: &schedules.Schedules{Backend: backend}, Backend: backend, Logger: slog.New(slog.DiscardHandler)}
+	if err := r.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testBackend(t *testing.T) orchestration.Backend {
+	t.Helper()
+	backend, err := temporalbackend.Open(t.Context(), temporalx.Options{Address: env.temporal, Namespace: env.ns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(backend.Close)
+	return backend
+}
+
+func pipelineID(t *testing.T, name string) string {
+	t.Helper()
+	id, err := query[string](t, `SELECT id::text FROM pipelines WHERE name = $1`, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// A stream job's workflow can be lost, and on DBOS it is at each upgrade: a
+// supervisor started again takes over the run and its job, without starting
+// another or losing a row.
+func TestSupervisorIsLostAndTakesOver(t *testing.T) {
+	startRunner(t)
+	name := unique("taken-over")
+	startContinuous(t, name)
+	eventually(t, 30*time.Second, "a committed epoch", func() bool { return committedEpochs(t, schema(name)) > 0 })
+	id := pipelineID(t, name)
+	wf := contract.StreamWorkflowID(id)
+	jobs := func() int {
+		n, err := query[int](t, `SELECT count(*) FROM attempts WHERE pipeline_id = $1`, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := jobs(); n != 1 {
+		t.Fatalf("%d jobs before", n)
+	}
+	if err := temporalClient(t).TerminateWorkflow(t.Context(), wf, "", "the test lost it"); err != nil {
+		t.Fatal(err)
+	}
+	before := committedEpochs(t, schema(name))
+	// Listing lags, so the first reconcile may still see the old one running.
+	eventually(t, 30*time.Second, "a supervisor to run again", func() bool {
+		reconcile(t)
+		desc, err := temporalClient(t).DescribeWorkflowExecution(t.Context(), wf, "")
+		return err == nil && desc.GetWorkflowExecutionInfo().GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING
+	})
+	eventually(t, 30*time.Second, "the job to carry on", func() bool { return committedEpochs(t, schema(name)) > before+2 })
+	if got := statuses(runs(t, name)); got != "running" {
+		t.Errorf("runs %q, want the one still running", got)
+	}
+	if n := jobs(); n != 1 {
+		t.Errorf("%d jobs, want the same one still running", n)
+	}
+	// It still answers for it: a new version stops the job at a checkpoint.
+	docs := continuousDocs(name, `{"seed": 4, "endless": true, "batchSize": 10, "delay": "200ms"}`)
+	apply(t, docs...)
+	eventually(t, 60*time.Second, "the run to stop and another to start", func() bool { return statuses(runs(t, name)) == "stopped running" })
+	// And becoming scheduled stops it, and ends the supervisor.
+	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
+	eventually(t, 60*time.Second, "the last run to stop", func() bool { return statuses(runs(t, name)) == "stopped stopped" })
+}
+
+// A sync's workflow can be lost too. The next sync stops what it left running
+// and takes over from the checkpoint log, and nothing lands twice.
+func TestSyncIsLostAndTheNextTakesOver(t *testing.T) {
+	startRunner(t)
+	name := unique("lost-sync")
+	apply(t, pipelineDocs(name, slowFaker, `{"commit": {"interval": "1s"}}`)...)
+	eventually(t, 30*time.Second, "a committed epoch", func() bool { return committedEpochs(t, schema(name)) > 0 })
+	wf, err := query[string](t, `SELECT s.workflow_id FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id WHERE p.name = $1`, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := temporalClient(t).TerminateWorkflow(t.Context(), wf, "", "the test lost it"); err != nil {
+		t.Fatal(err)
+	}
+	status, stats := syncNow(t, name)
+	if status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	checkRows(t, schema(name), 2000, "users", "purchases")
+	got, err := query[string](t, `SELECT string_agg(s.status || ': ' || coalesce(s.error, ''), ',' ORDER BY s.start_time) FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id WHERE p.name = $1`, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "stopped: its workflow was lost") || !strings.HasSuffix(got, ",succeeded: ") {
+		t.Errorf("syncs %q, want one stopped and one succeeded", got)
+	}
+	// Nothing it left is still running.
+	eventually(t, 30*time.Second, "the lost sync's attempt to end", func() bool {
+		n, err := query[int](t, `SELECT count(*) FROM dispatches d JOIN attempts a ON a.org_id = d.org_id AND a.id = d.id
+			JOIN pipelines p ON p.id = a.pipeline_id WHERE p.name = $1 AND d.state <> 'finished'`, name)
+		return err == nil && n == 0
+	})
+}
+
+// An orchestrator starting makes what runs pipelines match the database:
+// what's lost comes back, what nothing wants goes, and what's another
+// install's stays.
+func TestReconcileAtStart(t *testing.T) {
+	startRunner(t)
+	name := unique("reconciled")
+	apply(t, pipelineDocs(name, `{"seed": 5, "count": 10, "batchSize": 5}`, `{}`)...)
+	if status, stats := waitSync(t, name, 60*time.Second); status != "succeeded" {
+		t.Fatalf("sync %s: %s", status, stats)
+	}
+	id := pipelineID(t, name)
+	backend := testBackend(t)
+	if err := backend.DeleteSchedule(t.Context(), contract.ScheduleID(id)); err != nil {
+		t.Fatal(err)
+	}
+	org, err := query[string](t, `SELECT org_id::text FROM pipelines WHERE id = $1`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray := func(pipeline, org string) string {
+		sched := orchestration.Schedule{
+			ID: contract.ScheduleID(pipeline), Every: time.Hour, WorkflowID: contract.SyncWorkflowID(pipeline), Workflow: contract.SyncWorkflow,
+			Input: contract.SyncInput{OrgID: org, PipelineID: pipeline}, Org: org, Paused: true,
+		}
+		if err := backend.UpsertSchedule(t.Context(), sched); err != nil {
+			t.Fatal(err)
+		}
+		return sched.ID
+	}
+	ours, theirs := stray(uuid.NewString(), org), stray(uuid.NewString(), uuid.NewString())
+	t.Cleanup(func() { _ = backend.DeleteSchedule(context.Background(), theirs) })
+
+	listed := func() map[string]bool {
+		list, err := backend.ListSchedules(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, s := range list {
+			out[s.ID] = true
+		}
+		return out
+	}
+	// Listing lags.
+	eventually(t, 30*time.Second, "the schedules to be listed", func() bool {
+		l := listed()
+		return l[ours] && l[theirs] && !l[contract.ScheduleID(id)]
+	})
+	reconcile(t)
+	eventually(t, 30*time.Second, "the schedules to match", func() bool {
+		l := listed()
+		return !l[ours] && l[theirs] && l[contract.ScheduleID(id)]
+	})
+	// The new schedule starts its first sync.
+	eventually(t, 60*time.Second, "a sync from the schedule that came back", func() bool { return syncCount(t, name) == 2 })
 }

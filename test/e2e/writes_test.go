@@ -20,7 +20,7 @@ func writeDocs(t *testing.T, name, in, out, write string, setup ...string) []str
 	dst := `{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`
 	d := docs(name, src, dst, `{}`)
 	d[2] = fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-		"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q}, "destination": {"ref": %q, "namespace": %q, "write": %q},
+		"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q}, "destination": {"ref": %q, "namespace": %q, "write": %q},
 		"delivery": {"commit": {"maxBytes": "2KB"}}}}`, name, name, name, out, write)
 	return d
 }

@@ -248,6 +248,24 @@ func (q *Queries) NewestHoldRelease(ctx context.Context, arg NewestHoldReleasePa
 	return column_1, err
 }
 
+const newestHoldReleaseAt = `-- name: NewestHoldReleaseAt :one
+SELECT coalesce(max(id::text), '')::text FROM hold_releases
+WHERE org_id = $1 AND pipeline_id = $2 AND create_time <= $3
+`
+
+type NewestHoldReleaseAtParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	At         time.Time
+}
+
+func (q *Queries) NewestHoldReleaseAt(ctx context.Context, arg NewestHoldReleaseAtParams) (string, error) {
+	row := q.db.QueryRow(ctx, newestHoldReleaseAt, arg.OrgID, arg.PipelineID, arg.At)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const pendingHoldReleases = `-- name: PendingHoldReleases :many
 SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version
 FROM hold_releases r

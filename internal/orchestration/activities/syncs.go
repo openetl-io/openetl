@@ -1,5 +1,5 @@
-// Package activities holds the control plane's activities, which run on
-// cp.orchestrator.
+// Package activities holds the control plane's steps, which run on
+// orchestrators.
 package activities
 
 import (
@@ -7,21 +7,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"go.temporal.io/sdk/activity"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 
 	"github.com/openetl-io/openetl/internal/events"
 	"github.com/openetl-io/openetl/internal/heal"
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
 	"github.com/openetl-io/openetl/internal/platform/errs"
-	"github.com/openetl-io/openetl/internal/platform/temporalx"
 	"github.com/openetl-io/openetl/internal/store"
 	"github.com/openetl-io/openetl/internal/store/db"
 )
@@ -35,16 +35,39 @@ type Activities struct {
 	Schedules interface {
 		SetPaused(ctx context.Context, pipelineID string, paused bool) error
 	}
+	Logger *slog.Logger
 }
+
+// Steps is every step, for a backend to run.
+func (a *Activities) Steps() []orchestration.Step {
+	return []orchestration.Step{
+		orchestration.NewStep(contract.StartSync, a.StartSync),
+		orchestration.NewAction(contract.FinishSync, a.FinishSync),
+		orchestration.NewStep(contract.GetStreamState, a.GetStreamState),
+		orchestration.NewStep(contract.StartRun, a.StartRun),
+		orchestration.NewAction(contract.EnqueueWork, a.EnqueueWork),
+		orchestration.NewStep(contract.GetWork, a.GetWork),
+		orchestration.NewAction(contract.CancelWork, a.CancelWork),
+		orchestration.NewStep(contract.DropMirrorPartitions, a.DropMirrorPartitions),
+		orchestration.NewStep(contract.AuditPartitions, a.AuditPartitions),
+	}
+}
+
+func (a *Activities) log() *slog.Logger {
+	if a.Logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return a.Logger
+}
+
+// abandonedSync is what a sync whose workflow was lost records.
+const abandonedSync = "its workflow was lost, and a later sync took over"
 
 // StartSync records a running sync of the pipeline's current version, unless
-// the pipeline is paused. Retries of one workflow run record it once.
+// the pipeline is paused. Retries of one workflow run record it once. It stops
+// any other sync of the pipeline still running, whose workflow was lost; the
+// checkpoint log fences what that one left running anyway.
 func (a *Activities) StartSync(ctx context.Context, in contract.SyncInput) (contract.StartSyncResult, error) {
-	res, err := a.startSync(ctx, in)
-	return res, temporalx.ApplicationError(err)
-}
-
-func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (contract.StartSyncResult, error) {
 	var res contract.StartSyncResult
 	org, pipeline, err := ids(in.OrgID, in.PipelineID)
 	if err != nil {
@@ -80,7 +103,7 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	if err != nil {
 		return res, err
 	}
-	run := activity.GetInfo(ctx).WorkflowExecution
+	run := orchestration.StepInfoOf(ctx)
 	// A UUIDv7 holds when the sync started, which data planes prune its log
 	// by.
 	sync, err := uuid.NewV7()
@@ -89,7 +112,18 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	}
 	var id uuid.UUID
 	manual := false
+	var abandoned []string
 	err = a.Store.Tx(ctx, func(q *db.Queries) error {
+		left, err := q.StopAbandonedSyncs(ctx, db.StopAbandonedSyncsParams{OrgID: org, PipelineID: pipeline, RunID: run.RunID, Error: strPtr(abandonedSync)})
+		if err != nil {
+			return err
+		}
+		for _, l := range left {
+			abandoned = append(abandoned, l.ID.String())
+			if err := recordSync(ctx, q, events.SyncStopped, l, ""); err != nil {
+				return err
+			}
+		}
 		m, err := q.TakeManualSync(ctx, db.TakeManualSyncParams{OrgID: org, ID: pipeline})
 		if err == nil {
 			manual = m
@@ -101,7 +135,7 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 			ID:         sync,
 			PipelineID: pipeline,
 			Version:    p.Version,
-			WorkflowID: run.ID,
+			WorkflowID: run.WorkflowID,
 			RunID:      run.RunID,
 		})
 		if err != nil {
@@ -113,11 +147,32 @@ func (a *Activities) startSync(ctx context.Context, in contract.SyncInput) (cont
 	if err != nil {
 		return res, err
 	}
+	a.cancelWorkOf(ctx, org, abandoned)
 	return contract.StartSyncResult{
 		SyncID: id.String(), Version: p.Version, DataPlane: p.DataPlaneID,
 		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, PostSync: steps, Manual: manual,
 		Pool: spec.GetResources().GetPool(),
 	}, nil
+}
+
+func strPtr(s string) *string { return &s }
+
+// cancelWorkOf stops what abandoned syncs left waiting or running. If it can't,
+// the checkpoint log fences their attempts, and their other work runs out.
+func (a *Activities) cancelWorkOf(ctx context.Context, org uuid.UUID, syncs []string) {
+	if len(syncs) == 0 {
+		return
+	}
+	ids, err := a.Store.UnfinishedWorkOfSyncs(ctx, db.UnfinishedWorkOfSyncsParams{OrgID: org, SyncIds: syncs})
+	if err != nil {
+		a.log().Warn("finding what abandoned syncs left running failed", "syncs", syncs, "err", err)
+		return
+	}
+	for _, id := range ids {
+		if err := a.Dispatch.Cancel(ctx, contract.WorkRef{OrgID: org.String(), ID: id}); err != nil {
+			a.log().Warn("stopping what an abandoned sync left running failed", "work", id, "err", err)
+		}
+	}
 }
 
 // postSync is the pipeline version's post-sync steps, with the bundles and
@@ -179,7 +234,7 @@ func connectorNames(v db.GetSyncSpecRow) ([]string, error) {
 func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput) error {
 	org, id, err := ids(in.OrgID, in.SyncID)
 	if err != nil {
-		return temporalx.ApplicationError(err)
+		return err
 	}
 	params := db.FinishSyncParams{OrgID: org, ID: id, Status: "succeeded"}
 	switch {
@@ -232,10 +287,10 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 	})
 	if err == nil && seen.Paused && !seen.Continuous && a.Schedules != nil {
 		if perr := a.Schedules.SetPaused(ctx, pipeline.String(), true); perr != nil {
-			activity.GetLogger(ctx).Warn("pausing the schedule failed; the pipeline is paused, so its syncs do nothing", "pipeline", pipeline, "err", perr)
+			a.log().Warn("pausing the schedule failed; the pipeline is paused, so its syncs do nothing", "pipeline", pipeline, "err", perr)
 		}
 	}
-	return temporalx.ApplicationError(err)
+	return err
 }
 
 // recordSync records a sync's event, once however often it's retried. A
@@ -262,14 +317,9 @@ func recordSync(ctx context.Context, q *db.Queries, typ string, s db.Sync, code 
 	return err
 }
 
-// GetStreamState reads the pipeline for its supervisor. A pipeline that no
-// longer exists isn't continuous.
+// GetStreamState reads the pipeline for its supervisor, with the run it has
+// running, if any. A pipeline that no longer exists isn't continuous.
 func (a *Activities) GetStreamState(ctx context.Context, in contract.StreamInput) (contract.StreamState, error) {
-	st, err := a.streamState(ctx, in)
-	return st, temporalx.ApplicationError(err)
-}
-
-func (a *Activities) streamState(ctx context.Context, in contract.StreamInput) (contract.StreamState, error) {
 	var st contract.StreamState
 	org, pipeline, err := ids(in.OrgID, in.PipelineID)
 	if err != nil {
@@ -298,25 +348,54 @@ func (a *Activities) streamState(ctx context.Context, in contract.StreamInput) (
 	if err != nil {
 		return st, err
 	}
+	left, err := a.leftRun(ctx, org, pipeline)
+	if err != nil {
+		return st, err
+	}
 	return contract.StreamState{
 		Continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
 		Paused:     p.Paused, Version: p.Version, DataPlane: p.DataPlaneID,
 		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, Releases: releases,
-		Pool: spec.GetResources().GetPool(),
+		Pool: spec.GetResources().GetPool(), Left: left,
 	}, nil
 }
 
+// leftRun is the pipeline's run that's running, and its latest job, or nil.
+func (a *Activities) leftRun(ctx context.Context, org, pipeline uuid.UUID) (*contract.LeftRun, error) {
+	run, err := a.Store.RunningRun(ctx, db.RunningRunParams{OrgID: org, PipelineID: pipeline})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	left := &contract.LeftRun{SyncID: run.ID.String(), RunKey: run.RunID, Version: run.Version, DataPlane: run.DataPlaneID}
+	job, err := a.Store.LatestAttempt(ctx, db.LatestAttemptParams{OrgID: org, SyncID: run.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return left, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	left.Job, left.JobStart, left.Earlier = job.ID, job.CreateTime, job.Attempt-1
+	left.Releases, err = a.Store.NewestHoldReleaseAt(ctx, db.NewestHoldReleaseAtParams{OrgID: org, PipelineID: pipeline, At: job.CreateTime})
+	if err != nil {
+		return nil, err
+	}
+	return left, nil
+}
+
 // StartRun records a running run of a continuous pipeline's version. Retries
-// of one activity record it once.
+// of one step record it once.
 func (a *Activities) StartRun(ctx context.Context, in contract.StartRunInput) (contract.StartRunResult, error) {
 	var res contract.StartRunResult
 	org, pipeline, err := ids(in.OrgID, in.PipelineID)
 	if err != nil {
-		return res, temporalx.ApplicationError(err)
+		return res, err
 	}
-	info := activity.GetInfo(ctx)
+	info := orchestration.StepInfoOf(ctx)
 	// The workflow run holds several runs.
-	res.RunKey = info.WorkflowExecution.RunID + "/" + info.ActivityID
+	res.RunKey = info.RunID + "/" + info.StepID
 	sync, err := uuid.NewV7()
 	if err != nil {
 		return res, err
@@ -327,7 +406,7 @@ func (a *Activities) StartRun(ctx context.Context, in contract.StartRunInput) (c
 			ID:         sync,
 			PipelineID: pipeline,
 			Version:    in.Version,
-			WorkflowID: info.WorkflowExecution.ID,
+			WorkflowID: info.WorkflowID,
 			RunID:      res.RunKey,
 			Continuous: true,
 		})
@@ -338,30 +417,25 @@ func (a *Activities) StartRun(ctx context.Context, in contract.StartRunInput) (c
 		return recordSync(ctx, q, events.SyncStarted, row, "")
 	})
 	if store.IsForeignKeyViolation(err) {
-		return res, temporalx.ApplicationError(errs.New(errs.ConfigInvalid, "pipeline %s no longer exists", in.PipelineID))
+		return res, errs.New(errs.ConfigInvalid, "pipeline %s no longer exists", in.PipelineID)
 	}
-	if err != nil {
-		return res, temporalx.ApplicationError(err)
-	}
-	return res, nil
+	return res, err
 }
 
 func (a *Activities) DropMirrorPartitions(ctx context.Context, in contract.DropMirrorPartitionsInput) ([]string, error) {
-	dropped, err := a.Store.DropMirrorPartitions(ctx, in.Before)
-	return dropped, temporalx.ApplicationError(err)
+	return a.Store.DropMirrorPartitions(ctx, in.Before)
 }
 
 // AuditPartitions creates the audit log's next month's partition, and drops
 // the months that end by in.Before.
 func (a *Activities) AuditPartitions(ctx context.Context, in contract.AuditPartitionsInput) ([]string, error) {
 	if err := a.Store.EnsureAuditPartitions(ctx, in.Now); err != nil {
-		return nil, temporalx.ApplicationError(err)
+		return nil, err
 	}
 	if in.Before.IsZero() {
 		return nil, nil
 	}
-	dropped, err := a.Store.DropAuditPartitions(ctx, in.Before)
-	return dropped, temporalx.ApplicationError(err)
+	return a.Store.DropAuditPartitions(ctx, in.Before)
 }
 
 func ids(a, b string) (uuid.UUID, uuid.UUID, error) {

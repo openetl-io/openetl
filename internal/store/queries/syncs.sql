@@ -51,3 +51,21 @@ RETURNING *;
 -- name: SyncCommitted :execrows
 UPDATE syncs SET failures_since_commit = 0
 WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND run_id = @run_id AND failures_since_commit > 0;
+
+-- name: RunningRun :one
+-- The continuous pipeline's run that's running, if any. The data plane is the
+-- version's, or the pipeline's if the version is gone.
+SELECT s.id, s.run_id, s.version, coalesce(v.data_plane_id, p.data_plane_id)::text AS data_plane_id
+FROM syncs s
+JOIN pipelines p ON p.org_id = s.org_id AND p.id = s.pipeline_id
+LEFT JOIN pipeline_versions v ON v.org_id = s.org_id AND v.pipeline_id = s.pipeline_id AND v.version = s.version
+WHERE s.org_id = @org_id AND s.pipeline_id = @pipeline_id AND s.continuous AND s.status = 'running'
+ORDER BY s.start_time DESC, s.id DESC
+LIMIT 1;
+
+-- name: StopAbandonedSyncs :many
+-- The pipeline's other syncs still running. A schedule starts one sync at a
+-- time, so their workflows were lost.
+UPDATE syncs SET status = 'stopped', error = @error, end_time = now()
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND status = 'running' AND NOT continuous AND run_id <> @run_id
+RETURNING *;

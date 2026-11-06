@@ -10,12 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/converter"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/workflow"
-
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -24,7 +19,7 @@ import (
 // streamEnv runs StreamSupervisor against a pipeline the test changes.
 type streamEnv struct {
 	t     *testing.T
-	env   *testsuite.TestWorkflowEnvironment
+	env   harness
 	plane *plane
 	state contract.StreamState
 	jobs  []contract.StreamJobInput
@@ -39,24 +34,26 @@ type job func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOu
 
 func newStreamEnv(t *testing.T, w workflows.Workflows, answer job) *streamEnv {
 	t.Helper()
-	var s testsuite.WorkflowTestSuite
-	e := &streamEnv{t: t, env: s.NewTestWorkflowEnvironment(), state: contract.StreamState{Continuous: true, Version: "v1", DataPlane: "default"}}
-	e.env.RegisterWorkflowWithOptions(w.StreamSupervisor, workflow.RegisterOptions{Name: contract.StreamSupervisorWorkflow})
-	e.env.RegisterActivityWithOptions(func(context.Context, contract.StreamInput) (contract.StreamState, error) {
+	e := &streamEnv{t: t, env: newHarness(t), state: contract.StreamState{Continuous: true, Version: "v1", DataPlane: "default"}}
+	e.env.RegisterWorkflows(w)
+	e.env.RegisterStep(orchestration.NewStep(contract.GetStreamState, func(context.Context, contract.StreamInput) (contract.StreamState, error) {
 		return e.state, nil
-	}, activity.RegisterOptions{Name: contract.GetStreamState})
+	}))
 	runs := 0
-	e.env.RegisterActivityWithOptions(func(_ context.Context, in contract.StartRunInput) (contract.StartRunResult, error) {
+	e.env.RegisterStep(orchestration.NewStep(contract.StartRun, func(_ context.Context, in contract.StartRunInput) (contract.StartRunResult, error) {
 		runs++
 		if in.Version != e.state.Version {
 			t.Errorf("run %d of %s, want %s", runs, in.Version, e.state.Version)
 		}
 		return contract.StartRunResult{SyncID: fmt.Sprintf("r%d", runs), RunKey: fmt.Sprintf("k%d", runs)}, nil
-	}, activity.RegisterOptions{Name: contract.StartRun})
-	e.env.RegisterActivityWithOptions(func(_ context.Context, in contract.FinishSyncInput) error {
+	}))
+	e.env.RegisterStep(orchestration.NewAction(contract.FinishSync, func(_ context.Context, in contract.FinishSyncInput) error {
 		e.finished = append(e.finished, in)
+		if l := e.state.Left; l != nil && l.SyncID == in.SyncID {
+			e.state.Left = nil
+		}
 		return nil
-	}, activity.RegisterOptions{Name: contract.FinishSync})
+	}))
 	e.plane = newPlane(e.env, func(in contract.WorkInput) (time.Duration, contract.WorkOutcome) {
 		j := input[contract.StreamJobInput](t, in)
 		e.jobs = append(e.jobs, j)
@@ -70,7 +67,7 @@ func newStreamEnv(t *testing.T, w workflows.Workflows, answer job) *streamEnv {
 func (e *streamEnv) at(d time.Duration, change func(*contract.StreamState)) {
 	e.env.RegisterDelayedCallback(func() {
 		change(&e.state)
-		e.env.SignalWorkflow(contract.RefreshSignal, nil)
+		e.env.Send(orchestration.Message{Kind: contract.RefreshMessage})
 	}, d)
 }
 
@@ -273,17 +270,10 @@ func TestStreamContinuesAsNewAfterAFailure(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, func(int, contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
 		return time.Minute, fail(errs.Transient)
 	})
-	e.env.SetCurrentHistoryLength(2001)
+	e.env.PastHistoryLimit()
 	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7", Earlier: 2, Backoff: 20 * time.Second}
 	err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run})
-	var can *workflow.ContinueAsNewError
-	if !errors.As(err, &can) {
-		t.Fatalf("got %v, want to continue as new", err)
-	}
-	var next contract.StreamInput
-	if err := converter.GetDefaultDataConverter().FromPayloads(can.Input, &next); err != nil {
-		t.Fatal(err)
-	}
+	next := continuedWith(t, err)
 	if r := next.Run; r == nil || r.SyncID != "r7" || r.Earlier != 3 || r.Backoff != 40*time.Second || !r.Retry {
 		t.Errorf("continued with %+v", r)
 	}
@@ -325,17 +315,10 @@ func TestStreamContinuesAsNewAfterADrain(t *testing.T) {
 		}
 		return time.Minute, fail(errs.Draining)
 	})
-	e.env.SetCurrentHistoryLength(2001)
+	e.env.PastHistoryLimit()
 	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7", Earlier: 2}
 	err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run})
-	var can *workflow.ContinueAsNewError
-	if !errors.As(err, &can) {
-		t.Fatalf("got %v, want to continue as new", err)
-	}
-	var next contract.StreamInput
-	if err := converter.GetDefaultDataConverter().FromPayloads(can.Input, &next); err != nil {
-		t.Fatal(err)
-	}
+	next := continuedWith(t, err)
 	if r := next.Run; r == nil || r.SyncID != "r7" || r.RunKey != "k7" || r.Earlier != 3 {
 		t.Errorf("continued with %+v", r)
 	}
@@ -352,17 +335,10 @@ func TestStreamContinuesAsNewAfterADrain(t *testing.T) {
 // that job instead of starting another.
 func TestStreamContinuesAsNewWhileAJobRuns(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
-	e.env.SetCurrentHistoryLength(2001)
+	e.env.PastHistoryLimit()
 	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7"}
 	err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run})
-	var can *workflow.ContinueAsNewError
-	if !errors.As(err, &can) {
-		t.Fatalf("got %v, want to continue as new", err)
-	}
-	var next contract.StreamInput
-	if err := converter.GetDefaultDataConverter().FromPayloads(can.Input, &next); err != nil {
-		t.Fatal(err)
-	}
+	next := continuedWith(t, err)
 	if r := next.Run; r == nil || r.Job == "" || r.Job != e.plane.sent[0].ID || r.JobStart.IsZero() {
 		t.Fatalf("continued with %+v", r)
 	}
@@ -422,7 +398,7 @@ func TestStreamRunsHaveTheirOwnWorkIDs(t *testing.T) {
 func TestStreamCancelled(t *testing.T) {
 	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
 	e.env.RegisterDelayedCallback(e.env.CancelWorkflow, time.Minute)
-	if err := e.run(stream); !temporal.IsCanceledError(err) {
+	if err := e.run(stream); !errors.Is(err, orchestration.ErrStopped) {
 		t.Fatalf("got %v, want cancelled", err)
 	}
 	if got := e.ends(); !slices.Equal(got, []string{"r1 stopped"}) {
@@ -439,5 +415,120 @@ func TestStreamStartsPausedAndEnds(t *testing.T) {
 	}
 	if len(e.jobs) != 0 || len(e.finished) != 0 {
 		t.Errorf("jobs %v, runs ended %v", e.versions(), e.ends())
+	}
+}
+
+// An earlier supervisor was lost while its job ran. This one waits for that
+// job, under its run, instead of starting another.
+func TestStreamTakesOverARunningJob(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.state.Left = &contract.LeftRun{SyncID: "r9", RunKey: "k9", Version: "v1", DataPlane: "default", Job: "j1", JobStart: e.env.Now(), Earlier: 2}
+	e.at(time.Minute, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.jobs) != 0 || !slices.Equal(e.plane.cancelled, []string{"j1"}) {
+		t.Errorf("%d jobs started, cancelled %v", len(e.jobs), e.plane.cancelled)
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r9 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// A run left behind that's out of date is stopped at once, as a refresh would
+// have, and the next run is of what's current.
+func TestStreamStopsAnOutdatedRunItTookOver(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.state.Left = &contract.LeftRun{SyncID: "r9", RunKey: "k9", Version: "v0", DataPlane: "default", Job: "j1", JobStart: e.env.Now()}
+	e.at(time.Hour, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(e.plane.cancelled[:1], []string{"j1"}) {
+		t.Errorf("cancelled %v", e.plane.cancelled)
+	}
+	if got := e.versions(); !slices.Equal(got, []string{"r1/v1"}) {
+		t.Errorf("jobs %v", got)
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r9 stopped", "r1 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// So is a run left behind when the pipeline has been paused since, and the
+// supervisor then waits.
+func TestStreamStopsARunItTookOverWhenPaused(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.state.Paused = true
+	e.state.Left = &contract.LeftRun{SyncID: "r9", RunKey: "k9", Version: "v1", DataPlane: "default", Job: "j1", JobStart: e.env.Now()}
+	e.at(time.Hour, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.jobs) != 0 {
+		t.Errorf("jobs %v", e.versions())
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r9 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// A hold released after the job left behind started is one it hasn't taken.
+func TestStreamRestartsARunItTookOverForARelease(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.state.Releases = "rel2"
+	e.state.Left = &contract.LeftRun{SyncID: "r9", RunKey: "k9", Version: "v1", DataPlane: "default", Releases: "rel1", Job: "j1", JobStart: e.env.Now()}
+	e.at(time.Hour, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r9 stopped", "r1 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// A run left behind before it sent a job gets its first job.
+func TestStreamTakesOverARunWithoutAJob(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.state.Left = &contract.LeftRun{SyncID: "r9", RunKey: "k9", Version: "v1", DataPlane: "default"}
+	e.at(time.Hour, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.versions(); !slices.Equal(got, []string{"r9/v1"}) || e.jobs[0].Attempt != 1 || e.jobs[0].RunKey != "k9" {
+		t.Errorf("jobs %+v", e.jobs)
+	}
+}
+
+// A job that ended while no supervisor was watching is retried, as the run's
+// next attempt.
+func TestStreamRetriesAJobThatEndedWhileLeft(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.state.Left = &contract.LeftRun{SyncID: "r9", RunKey: "k9", Version: "v1", DataPlane: "default", Job: "j1", JobStart: e.env.Now(), Earlier: 2}
+	e.plane.done["j1"] = fail(errs.Transient)
+	e.at(time.Hour, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.versions(); !slices.Equal(got, []string{"r9/v1"}) || e.jobs[0].Attempt != 4 {
+		t.Errorf("jobs %+v", e.jobs)
+	}
+}
+
+// A refresh can go to the workflow run before this one, so one that carries a
+// job on looks at the pipeline first.
+func TestStreamLooksAfterContinuing(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7", Job: "j1", JobStart: e.env.Now()}
+	e.state.Version = "v2"
+	e.at(time.Hour, gone)
+	if err := e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(e.plane.cancelled[:1], []string{"j1"}) {
+		t.Errorf("cancelled %v", e.plane.cancelled)
+	}
+	if got := e.versions(); !slices.Equal(got, []string{"r1/v2"}) {
+		t.Errorf("jobs %v", got)
 	}
 }

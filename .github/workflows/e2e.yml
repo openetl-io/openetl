@@ -43,8 +43,11 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
+            ~/.cache/golangci-lint
           key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-${{ github.job }}-
+          restore-keys: |
+            go-${{ github.job }}-
+            go-go-
       - uses: actions/cache@v6
         with:
           path: ~/.m2

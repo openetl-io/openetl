@@ -12,13 +12,13 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/attemptlog"
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/sizing"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -275,10 +275,10 @@ func (s *Server) ReadSyncLog(ctx context.Context, req *connect.Request[apiv1.Rea
 }
 
 func logsError(err error, dp string) error {
-	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
-		switch app.Type() {
+	if f, ok := errors.AsType[*orchestration.Failure](err); ok {
+		switch f.Code {
 		case errs.ConfigInvalid.String():
-			return connect.NewError(connect.CodeInvalidArgument, errors.New(app.Message()))
+			return connect.NewError(connect.CodeInvalidArgument, errors.New(f.Message))
 		case contract.NoRunner:
 			return connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner of data plane %q read the log within %s", dp, contract.LogsPickup))
 		}

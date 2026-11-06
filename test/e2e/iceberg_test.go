@@ -60,7 +60,7 @@ func icebergDocs(name, src, dst, write, delivery string) []string {
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q}, "destination": {"ref": %q, "write": %q}, "delivery": %s}}`, name, name, name, write, delivery),
+			"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q}, "destination": {"ref": %q, "write": %q}, "delivery": %s}}`, name, name, name, write, delivery),
 	}
 }
 

@@ -1,5 +1,5 @@
 // Package workflows holds the control plane's workflows. They do no I/O;
-// activities do.
+// steps do.
 package workflows
 
 import (
@@ -7,13 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
-
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
-	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
-	"github.com/openetl-io/openetl/internal/platform/temporalx"
 )
 
 const (
@@ -36,50 +32,54 @@ type Workflows struct {
 	StreamHeartbeat time.Duration
 }
 
-// cpOptions are for control-plane activities.
-var cpOptions = workflow.ActivityOptions{
-	TaskQueue:           contract.OrchestratorQueue,
-	StartToCloseTimeout: 30 * time.Second,
-	RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 10, NonRetryableErrorTypes: errs.NonRetryable()},
+// All is every workflow, for a backend to run.
+func (w Workflows) All() []orchestration.Workflow {
+	return []orchestration.Workflow{
+		orchestration.NewWorkflow(contract.SyncWorkflow, w.Sync),
+		orchestration.NewWorkflow(contract.StreamSupervisorWorkflow, func(ctx orchestration.Context, in contract.StreamInput) (struct{}, error) {
+			return struct{}{}, w.StreamSupervisor(ctx, in)
+		}),
+		orchestration.NewWorkflow(contract.ConnectorOpWorkflow, w.ConnectorOp),
+		orchestration.NewWorkflow(contract.RetentionWorkflow, w.Retention),
+		orchestration.NewWorkflow(contract.ReadLogsWorkflow, w.ReadLogs),
+	}
 }
+
+// cpStep is for most steps on the control plane.
+var cpStep = orchestration.StepOptions{Timeout: 30 * time.Second, Attempts: 10}
 
 // Sync runs one sync of a pipeline: it records the sync, runs attempts on
 // the pipeline's data plane until one succeeds or retries run out, runs the
 // post-sync steps there, then records the outcome. It does nothing if the
-// pipeline is paused or continuous.
-func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.SyncResult, error) {
-	cp := workflow.WithActivityOptions(ctx, cpOptions)
+// pipeline is paused or continuous. If it's lost, the next sync of the
+// pipeline takes over: it stops what this one left running, and carries on
+// from the checkpoint log.
+func (w Workflows) Sync(ctx orchestration.Context, in contract.SyncInput) (*contract.SyncResult, error) {
 	var started contract.StartSyncResult
-	if err := workflow.ExecuteActivity(cp, contract.StartSync, in).Get(ctx, &started); err != nil {
+	if err := ctx.Step(contract.StartSync, cpStep, in, &started); err != nil {
 		return nil, err
 	}
 	switch {
 	case started.Paused:
-		workflow.GetLogger(ctx).Info("the pipeline is paused; not syncing")
+		ctx.Logger().Info("the pipeline is paused; not syncing")
 		return nil, nil
 	case started.Continuous:
-		workflow.GetLogger(ctx).Info("the pipeline is continuous; not syncing")
+		ctx.Logger().Info("the pipeline is continuous; not syncing")
 		return nil, nil
 	}
-	err := workflow.UpsertTypedSearchAttributes(ctx,
-		temporalx.OrgIDAttr.ValueSet(in.OrgID),
-		temporalx.WorkspaceIDAttr.ValueSet(started.WorkspaceID),
-		temporalx.PipelineIDAttr.ValueSet(in.PipelineID),
-		temporalx.DataPlaneIDAttr.ValueSet(started.DataPlane),
-		temporalx.ConnectorDefAttr.ValueSet(started.Connectors),
-	)
-	if err != nil {
-		return nil, err
-	}
+	ctx.SetAttributes(orchestration.Attributes{
+		Org: in.OrgID, Workspace: started.WorkspaceID, Pipeline: in.PipelineID, DataPlane: started.DataPlane, Connectors: started.Connectors,
+	})
 
 	priority := contract.PriorityScheduled
 	if started.Manual {
 		priority = contract.PriorityManual
 	}
 	retry, heartbeat := cmp.Or(w.AttemptRetry, 30*time.Second), cmp.Or(w.AttemptHeartbeat, 2*time.Minute)
-	runKey := workflow.GetInfo(ctx).WorkflowExecution.RunID
+	runKey := ctx.Info().RunID
+	b := &inbox{ctx: ctx}
 	var res contract.AttemptResult
-	err = runWork(ctx, retryPolicy{wait: retry, maxWait: 30 * time.Minute, attempts: attemptLimit}, &res, func(n int32) contract.WorkInput {
+	err := b.runWork(retryPolicy{wait: retry, maxWait: 30 * time.Minute, attempts: attemptLimit}, &res, func(n int32) contract.WorkInput {
 		return contract.WorkInput{
 			OrgID: in.OrgID, DataPlane: started.DataPlane, ID: workID(ctx, "attempt", n), Kind: contract.RunSyncAttempt,
 			Priority: priority, Pool: started.Pool, Heartbeat: heartbeat, Timeout: attemptTimeout,
@@ -94,14 +94,13 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 	finish := contract.FinishSyncInput{OrgID: in.OrgID, SyncID: started.SyncID}
 	if err == nil {
 		finish.Result = &res
-		finish.PostSync, err = postSync(ctx, in, started, priority, retry, heartbeat)
+		finish.PostSync, err = postSync(b, in, started, priority, retry, heartbeat)
 	}
 	if err != nil {
-		finish.Error, finish.Code = message(err), code(err)
+		finish.Error, finish.Code = err.Error(), orchestration.CodeOf(err)
 	}
 	// Recorded even if the workflow is being cancelled.
-	fctx, _ := workflow.NewDisconnectedContext(cp)
-	if ferr := workflow.ExecuteActivity(fctx, contract.FinishSync, finish).Get(fctx, nil); ferr != nil && err == nil {
+	if ferr := ctx.Step(contract.FinishSync, cpStep, finish, nil); ferr != nil && err == nil {
 		err = ferr
 	}
 	if err != nil {
@@ -112,9 +111,10 @@ func (w Workflows) Sync(ctx workflow.Context, in contract.SyncInput) (*contract.
 
 // postSync runs the post-sync steps in order, until one fails. A dbt
 // command or Spark application that fails isn't retried.
-func postSync(ctx workflow.Context, in contract.SyncInput, started contract.StartSyncResult, priority int, retry, heartbeat time.Duration) ([]contract.PostSyncResult, error) {
+func postSync(b *inbox, in contract.SyncInput, started contract.StartSyncResult, priority int, retry, heartbeat time.Duration) ([]contract.PostSyncResult, error) {
+	ctx := b.ctx
 	policy := retryPolicy{wait: retry, maxWait: 100 * retry, attempts: 3}
-	runKey := workflow.GetInfo(ctx).WorkflowExecution.RunID
+	runKey := ctx.Info().RunID
 	step := func(i int, n int32, kind string, input any) contract.WorkInput {
 		return contract.WorkInput{
 			OrgID: in.OrgID, DataPlane: started.DataPlane, ID: workID(ctx, fmt.Sprintf("step-%d", i+1), n), Kind: kind,
@@ -125,7 +125,7 @@ func postSync(ctx workflow.Context, in contract.SyncInput, started contract.Star
 	for i, s := range started.PostSync {
 		if sp := s.Spark; sp != nil {
 			var r contract.SparkResult
-			err := runWork(ctx, policy, &r, func(n int32) contract.WorkInput {
+			err := b.runWork(policy, &r, func(n int32) contract.WorkInput {
 				return step(i, n, contract.RunSpark, contract.SparkInput{
 					OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *sp,
 					SyncID: started.SyncID, RunKey: runKey, StepNumber: i + 1, Attempt: n,
@@ -138,7 +138,7 @@ func postSync(ctx workflow.Context, in contract.SyncInput, started contract.Star
 			continue
 		}
 		var r contract.DbtResult
-		err := runWork(ctx, policy, &r, func(n int32) contract.WorkInput {
+		err := b.runWork(policy, &r, func(n int32) contract.WorkInput {
 			return step(i, n, contract.RunDbt, contract.DbtInput{
 				OrgID: in.OrgID, PipelineID: in.PipelineID, Version: started.Version, Step: *s.Dbt,
 				SyncID: started.SyncID, StepNumber: i + 1, Attempt: n,

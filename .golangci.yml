@@ -46,20 +46,26 @@ linters:
               desc: the data path must not depend on workflow code
             - pkg: github.com/openetl-io/openetl/internal/api
               desc: the data path must not depend on the API server
-        runners-reach-only-the-api:
-          files: ["**/internal/runner/**", "**/internal/orchestration/contract/**", "**/internal/orchestration/dispatch/**"]
+        only-the-temporal-backend-imports-temporal:
+          files: ["$all", "!**/internal/orchestration/temporalbackend/**", "!**/internal/platform/temporalx/**", "!**/test/e2e/**", "!**/internal/orchestration/workflows/*_test.go"]
           deny:
             - pkg: go.temporal.io
-              desc: runners reach only the API (ADR-0028); workflows' backend stays behind the API and the orchestrator
+              desc: workflows are written against internal/orchestration, and runners reach only the API (ADR-0028)
         workflows-are-deterministic:
-          files: ["**/internal/orchestration/workflows/**"]
+          files: ["**/internal/orchestration/workflows/**", "!**/*_test.go"]
           deny:
             - pkg: net/http
-              desc: workflow code must not do I/O; use an activity
+              desc: workflow code must not do I/O; use a step
             - pkg: database/sql
-              desc: workflow code must not do I/O; use an activity
+              desc: workflow code must not do I/O; use a step
             - pkg: os
-              desc: workflow code must not do I/O; use an activity
+              desc: workflow code must not do I/O; use a step
+            - pkg: math/rand
+              desc: workflow code must be deterministic
+            - pkg: crypto/rand
+              desc: workflow code must be deterministic
+            - pkg: sync
+              desc: workflow code must be deterministic
         only-engineclient-talks-to-the-engine:
           files: ["$all", "!**/internal/engineclient/**"]
           deny:

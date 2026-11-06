@@ -23,7 +23,7 @@ const usage = `usage: openetld <role> [flags]
 
 Roles:
   server        the API server
-  orchestrator  the Temporal worker for control-plane workflows, and placement
+  orchestrator  runs control-plane workflows, and placement
   runner        runs a data plane's attempts, which it takes from the API
   dev           server, orchestrator and runner in one process
   gateway       webhook ingress (not built yet)

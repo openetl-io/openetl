@@ -4,8 +4,7 @@ import (
 	"cmp"
 	"time"
 
-	"go.temporal.io/sdk/workflow"
-
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 )
 
@@ -13,7 +12,7 @@ import (
 // plane, or cancels a deleted pipeline's Flink jobs. A teardown retries
 // until the operation times out, since the pipeline it cleans up after is
 // gone.
-func (w Workflows) ConnectorOp(ctx workflow.Context, in contract.ConnectorOpInput) (*contract.ConnectorOpResult, error) {
+func (w Workflows) ConnectorOp(ctx orchestration.Context, in contract.ConnectorOpInput) (*contract.ConnectorOpResult, error) {
 	work := contract.WorkInput{
 		OrgID: in.OrgID, DataPlane: in.DataPlane, Light: contract.LightOps, Kind: contract.CheckConnector, Input: in,
 		Heartbeat: cmp.Or(w.AttemptHeartbeat, time.Minute), Pickup: contract.OpPickup, Timeout: 2 * time.Minute,
@@ -32,7 +31,7 @@ func (w Workflows) ConnectorOp(ctx workflow.Context, in contract.ConnectorOpInpu
 		policy = retryPolicy{wait: time.Second, maxWait: time.Minute}
 	}
 	var res contract.ConnectorOpResult
-	if err := runWork(ctx, policy, &res, func(n int32) contract.WorkInput {
+	if err := (&inbox{ctx: ctx}).runWork(policy, &res, func(n int32) contract.WorkInput {
 		w := work
 		w.ID = workID(ctx, in.Op, n)
 		return w

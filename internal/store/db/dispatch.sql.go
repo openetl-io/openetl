@@ -492,6 +492,31 @@ func (q *Queries) IsFinishedByRunner(ctx context.Context, arg IsFinishedByRunner
 	return exists, err
 }
 
+const latestAttempt = `-- name: LatestAttempt :one
+SELECT id, attempt, create_time FROM attempts
+WHERE org_id = $1 AND sync_id = $2
+ORDER BY attempt DESC, create_time DESC
+LIMIT 1
+`
+
+type LatestAttemptParams struct {
+	OrgID  uuid.UUID
+	SyncID uuid.UUID
+}
+
+type LatestAttemptRow struct {
+	ID         string
+	Attempt    int32
+	CreateTime time.Time
+}
+
+func (q *Queries) LatestAttempt(ctx context.Context, arg LatestAttemptParams) (LatestAttemptRow, error) {
+	row := q.db.QueryRow(ctx, latestAttempt, arg.OrgID, arg.SyncID)
+	var i LatestAttemptRow
+	err := row.Scan(&i.ID, &i.Attempt, &i.CreateTime)
+	return i, err
+}
+
 const lockPlacement = `-- name: LockPlacement :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
@@ -1085,6 +1110,37 @@ func (q *Queries) TakeManualSync(ctx context.Context, arg TakeManualSyncParams) 
 	var manual bool
 	err := row.Scan(&manual)
 	return manual, err
+}
+
+const unfinishedWorkOfSyncs = `-- name: UnfinishedWorkOfSyncs :many
+SELECT id FROM dispatches
+WHERE org_id = $1 AND state <> 'finished' AND input->>'SyncID' = ANY($2::text[])
+`
+
+type UnfinishedWorkOfSyncsParams struct {
+	OrgID   uuid.UUID
+	SyncIds []string
+}
+
+// What the syncs have running or waiting, their post-sync steps included.
+func (q *Queries) UnfinishedWorkOfSyncs(ctx context.Context, arg UnfinishedWorkOfSyncsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, unfinishedWorkOfSyncs, arg.OrgID, arg.SyncIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const unwokenDispatches = `-- name: UnwokenDispatches :many

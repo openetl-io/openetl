@@ -556,7 +556,7 @@ func pipelineDocs(name string, faker, delivery string) []string {
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q},
 			"spec": {"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}}`, name),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q},
+			"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q},
 			"destination": {"ref": %q, "namespace": %q}, "delivery": %s}}`, name, name, name, schema(name), delivery),
 	}
 }
@@ -682,7 +682,7 @@ func docs(name, src, dst, pipeline string) []string {
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-			"spec": {"schedule": {"every": "1h"}, "source": {"ref": %q}, "destination": {"ref": %q}, "delivery": %s}}`, name, name, name, pipeline),
+			"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q}, "destination": {"ref": %q}, "delivery": %s}}`, name, name, name, pipeline),
 	}
 }
 

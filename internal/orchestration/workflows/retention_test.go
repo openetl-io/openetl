@@ -6,30 +6,26 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/workflow"
-
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 )
 
 func TestRetentionDropsTheMirrorsOldDays(t *testing.T) {
-	var s testsuite.WorkflowTestSuite
-	env := s.NewTestWorkflowEnvironment()
+	env := newHarness(t)
 	now := time.Date(2026, 11, 1, 0, 30, 0, 0, time.UTC)
 	env.SetStartTime(now)
-	env.RegisterWorkflowWithOptions(workflows.Workflows{}.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
+	env.RegisterWorkflows(workflows.Workflows{})
 	var before time.Time
-	env.RegisterActivityWithOptions(func(_ context.Context, in contract.DropMirrorPartitionsInput) ([]string, error) {
+	env.RegisterStep(orchestration.NewStep(contract.DropMirrorPartitions, func(_ context.Context, in contract.DropMirrorPartitionsInput) ([]string, error) {
 		before = in.Before
 		return []string{"checkpoint_mirror_20261001"}, nil
-	}, activity.RegisterOptions{Name: contract.DropMirrorPartitions})
+	}))
 	var audit contract.AuditPartitionsInput
-	env.RegisterActivityWithOptions(func(_ context.Context, in contract.AuditPartitionsInput) ([]string, error) {
+	env.RegisterStep(orchestration.NewStep(contract.AuditPartitions, func(_ context.Context, in contract.AuditPartitionsInput) ([]string, error) {
 		audit = in
 		return []string{"audit_log_202607"}, nil
-	}, activity.RegisterOptions{Name: contract.AuditPartitions})
+	}))
 	env.ExecuteWorkflow(contract.RetentionWorkflow, contract.RetentionInput{CheckpointHistory: 30 * 24 * time.Hour, AuditHistory: 90 * 24 * time.Hour})
 	var res contract.RetentionResult
 	if err := env.GetWorkflowResult(&res); err != nil {
@@ -49,16 +45,14 @@ func TestRetentionDropsTheMirrorsOldDays(t *testing.T) {
 // Without an audit history, the audit log keeps every month, and still gets
 // the next one's partition.
 func TestRetentionKeepsTheAuditLog(t *testing.T) {
-	var s testsuite.WorkflowTestSuite
-	env := s.NewTestWorkflowEnvironment()
-	env.RegisterWorkflowWithOptions(workflows.Workflows{}.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
-	env.RegisterActivityWithOptions(func(context.Context, contract.DropMirrorPartitionsInput) ([]string, error) { return nil, nil },
-		activity.RegisterOptions{Name: contract.DropMirrorPartitions})
+	env := newHarness(t)
+	env.RegisterWorkflows(workflows.Workflows{})
+	env.RegisterStep(orchestration.NewStep(contract.DropMirrorPartitions, func(context.Context, contract.DropMirrorPartitionsInput) ([]string, error) { return nil, nil }))
 	var audit *contract.AuditPartitionsInput
-	env.RegisterActivityWithOptions(func(_ context.Context, in contract.AuditPartitionsInput) ([]string, error) {
+	env.RegisterStep(orchestration.NewStep(contract.AuditPartitions, func(_ context.Context, in contract.AuditPartitionsInput) ([]string, error) {
 		audit = &in
 		return nil, nil
-	}, activity.RegisterOptions{Name: contract.AuditPartitions})
+	}))
 	env.ExecuteWorkflow(contract.RetentionWorkflow, contract.RetentionInput{CheckpointHistory: time.Hour})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -69,14 +63,13 @@ func TestRetentionKeepsTheAuditLog(t *testing.T) {
 }
 
 func TestRetentionNeedsAHistory(t *testing.T) {
-	var s testsuite.WorkflowTestSuite
-	env := s.NewTestWorkflowEnvironment()
-	env.RegisterWorkflowWithOptions(workflows.Workflows{}.Retention, workflow.RegisterOptions{Name: contract.RetentionWorkflow})
+	env := newHarness(t)
+	env.RegisterWorkflows(workflows.Workflows{})
 	dropped := false
-	env.RegisterActivityWithOptions(func(context.Context, contract.DropMirrorPartitionsInput) ([]string, error) {
+	env.RegisterStep(orchestration.NewStep(contract.DropMirrorPartitions, func(context.Context, contract.DropMirrorPartitionsInput) ([]string, error) {
 		dropped = true
 		return nil, nil
-	}, activity.RegisterOptions{Name: contract.DropMirrorPartitions})
+	}))
 	env.ExecuteWorkflow(contract.RetentionWorkflow, contract.RetentionInput{})
 	if env.GetWorkflowError() == nil || dropped {
 		t.Fatal("a zero checkpoint history dropped everything")

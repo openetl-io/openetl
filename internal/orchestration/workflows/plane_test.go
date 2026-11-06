@@ -7,9 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/testsuite"
-
+	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 )
@@ -21,7 +19,7 @@ const forever = 1000 * time.Hour
 // wait on the workflow's clock, which wakes the workflow unless silent says
 // not to.
 type plane struct {
-	env *testsuite.TestWorkflowEnvironment
+	env harness
 	// How the work goes.
 	run func(in contract.WorkInput) (time.Duration, contract.WorkOutcome)
 	// Wakes get lost, and the workflow must look.
@@ -37,11 +35,11 @@ type plane struct {
 	looks     int
 }
 
-func newPlane(env *testsuite.TestWorkflowEnvironment, run func(contract.WorkInput) (time.Duration, contract.WorkOutcome)) *plane {
+func newPlane(env harness, run func(contract.WorkInput) (time.Duration, contract.WorkOutcome)) *plane {
 	p := &plane{env: env, run: run, done: map[string]contract.WorkOutcome{}}
-	env.RegisterActivityWithOptions(p.enqueue, activity.RegisterOptions{Name: contract.EnqueueWork})
-	env.RegisterActivityWithOptions(p.status, activity.RegisterOptions{Name: contract.GetWork})
-	env.RegisterActivityWithOptions(p.cancel, activity.RegisterOptions{Name: contract.CancelWork})
+	env.RegisterStep(orchestration.NewAction(contract.EnqueueWork, p.enqueue))
+	env.RegisterStep(orchestration.NewStep(contract.GetWork, p.status))
+	env.RegisterStep(orchestration.NewAction(contract.CancelWork, p.cancel))
 	return p
 }
 
@@ -69,7 +67,7 @@ func (p *plane) finish(id string, out contract.WorkOutcome) {
 	}
 	p.mu.Unlock()
 	if !was && !p.silent {
-		p.env.SignalWorkflow(contract.WakeSignal, id)
+		p.env.Send(orchestration.Message{Kind: contract.WakeMessage, Work: id})
 	}
 }
 
