@@ -56,6 +56,28 @@ message StartJobRequest {
   // at {g}/{N}/{stream}/part-{k}.parquet below it, with the stream's name
   // percent-encoded. Empty: nothing is held.
   string held_url = 15;
+  // The attempt's lanes (ADR-0027): parallel copies of its path, each with an
+  // inbound edge. Zero: one.
+  uint32 lanes = 16;
+  // Its writer lanes, at most lanes: a writer of the destination each, or a
+  // part of an engine sink's files. Lane i goes to writer lane i mod
+  // writer_lanes where it runs straight. Zero: one.
+  uint32 writer_lanes = 17;
+  // The pipeline's key groups, a power of two. Writer lane w owns the w-th
+  // of writer_lanes contiguous ranges of them. Zero: 256.
+  uint32 key_groups = 18;
+}
+
+// Routing is how a stream's rows reach writer lanes.
+enum Routing {
+  // Straight.
+  ROUTING_UNSPECIFIED = 0;
+  // From each lane to its writer lane.
+  ROUTING_STRAIGHT = 1;
+  // To the writer lane owning the key group of each row's primary key
+  // (openetl.kg.v1), so a key's rows meet: a keyed stream whose splits don't
+  // partition it by key.
+  ROUTING_KEY_GROUP = 2;
 }
 
 enum SchemaPolicy {
@@ -112,6 +134,7 @@ message StreamPlan {
   bool changelog = 10;
   // Unset: the stream holds nothing.
   HoldPlan holds = 11;
+  Routing routing = 12;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
@@ -238,6 +261,9 @@ message Edge {
   EdgeDirection direction = 2;
   // A frame's stream index points into this list.
   repeated string streams = 3;
+  // Inbound, its lane; outbound, its writer lane. Every lane passes every
+  // stream's barriers.
+  uint32 lane = 4;
 }
 
 enum EdgeDirection {
@@ -321,8 +347,8 @@ message EpochReady {
   map<string, bytes> schemas = 4;
   // Records quarantined in the epoch, one file per stream that had any.
   repeated QuarantineFile quarantine = 5;
-  // A staged sink's files, by stream, with paths below its URL. Streams
-  // without rows in the epoch are missing.
+  // A staged sink's files, by stream and writer lane, with paths below its
+  // URL. Streams without rows in the epoch are missing.
   repeated StagedStream files = 6;
   // By stream, for streams with a HoldPlan that hold anything or replay.
   map<string, StreamHolds> holds = 7;
@@ -353,6 +379,8 @@ message CellHolds {
 message StagedStream {
   string stream = 1;
   repeated openetl.connector.v1.StagedFile files = 2;
+  // The writer lane that staged them.
+  uint32 lane = 3;
 }
 
 // QuarantineFile holds JSON lines, one per record: the stream, the reason
@@ -363,9 +391,19 @@ message QuarantineFile {
   uint64 rows = 3;
 }
 
+// StateSnapshot is an operator's state for a range of key groups, which
+// names it, never the lane that wrote it.
 message StateSnapshot {
   string operator = 1;
   string url = 2;
+  // Unset: all of them.
+  KeyGroupRange key_groups = 3;
+}
+
+// KeyGroupRange is key groups first to last, inclusive.
+message KeyGroupRange {
+  uint32 first = 1;
+  uint32 last = 2;
 }
 
 // Metrics are cumulative since the job started.

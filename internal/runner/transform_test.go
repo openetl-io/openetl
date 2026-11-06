@@ -82,7 +82,7 @@ type fakeTransform struct {
 	staged map[string][]arrow.RecordBatch
 }
 
-func (f *fakeTransform) stage(_ context.Context, e destination.Epoch, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
+func (f *fakeTransform) stage(_ context.Context, e destination.Epoch, _ int, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
 	var rows int64
 	for _, b := range batches {
 		b.Retain()

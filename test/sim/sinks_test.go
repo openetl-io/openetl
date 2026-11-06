@@ -652,8 +652,8 @@ func epochDir(e destination.Epoch) string { return fmt.Sprintf("%d/%d/", e.Gener
 
 func (s *simStaging) URL() string { return "sim://staging" }
 
-// stage is the dataflow's part: one file per stream and epoch.
-func (s *simStaging) stage(ctx context.Context, e destination.Epoch, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
+// stage is the dataflow's part: one file per stream, writer lane and epoch.
+func (s *simStaging) stage(ctx context.Context, e destination.Epoch, lane int, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
 	var rows []row
 	for _, b := range batches {
 		rows = append(rows, rowsOf(b)...)
@@ -661,7 +661,7 @@ func (s *simStaging) stage(ctx context.Context, e destination.Epoch, stream stri
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	path := epochDir(e) + stream + "/part-00000.parquet"
+	path := epochDir(e) + stream + fmt.Sprintf("/part-%d-00000.parquet", lane)
 	err := outcome(s.w.sched.point(ctx, s.attempt, "staging.write"), func() error {
 		s.s.mu.Lock()
 		defer s.s.mu.Unlock()

@@ -116,7 +116,7 @@ func (d *stagedDest) Recover(_ context.Context, gen uint64, e destination.Epoch,
 
 func (d *stagedDest) Close(context.Context) error { return nil }
 
-func stageAll(_ context.Context, e destination.Epoch, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
+func stageAll(_ context.Context, e destination.Epoch, _ int, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
 	var rows int64
 	for _, b := range batches {
 		rows += b.NumRows()

@@ -64,7 +64,7 @@ func (a *sparkApp) point(ctx context.Context, op string, apply func() error) err
 func (a *sparkApp) URL() string { return "sim://spark" }
 
 // stage is the first dataflow's part: one file per input and epoch.
-func (a *sparkApp) stage(ctx context.Context, e destination.Epoch, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
+func (a *sparkApp) stage(ctx context.Context, e destination.Epoch, _ int, stream string, batches []arrow.RecordBatch) ([]destination.StagedFile, error) {
 	var rows []row
 	for _, b := range batches {
 		rows = append(rows, rowsOf(b)...)

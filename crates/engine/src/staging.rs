@@ -134,6 +134,7 @@ impl Staging {
         self.sealed.entry(epoch).or_default().push(StagedStream {
             stream: st.name.clone(),
             files,
+            lane: 0,
         });
         Ok(bytes)
     }

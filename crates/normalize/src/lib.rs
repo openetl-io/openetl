@@ -8,6 +8,7 @@ mod control;
 mod evolve;
 pub mod hold;
 mod ids;
+pub mod keygroup;
 pub mod naming;
 mod shape;
 
@@ -15,6 +16,7 @@ pub use coerce::{Infinity, check_declared, render_row};
 pub use control::CONTROL_KEY;
 pub use evolve::{Policy, VERSIONS_KEY, widens};
 pub use ids::Identity;
+pub use keygroup::{KEY_GROUP_HASH, key_groups};
 pub use shape::{Shaped, Shaper};
 
 use coerce::Target;

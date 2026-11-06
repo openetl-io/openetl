@@ -97,7 +97,10 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 			}
 		}
 		for _, st := range r.GetFiles() {
-			lane := &ready.Lanes[0]
+			if int(st.GetLane()) >= len(ready.Lanes) {
+				return errs.New(errs.Internal, "engineclient: the engine staged %s on writer lane %d of %d", st.GetStream(), st.GetLane(), len(ready.Lanes))
+			}
+			lane := &ready.Lanes[st.GetLane()]
 			if lane.Files == nil {
 				lane.Files = map[string][]destination.StagedFile{}
 			}
@@ -106,7 +109,11 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 			}
 		}
 		for _, s := range r.GetSnapshots() {
-			ready.Snapshots = append(ready.Snapshots, checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()})
+			snap := checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()}
+			if kg := s.GetKeyGroups(); kg != nil {
+				snap.KeyGroups = &checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}
+			}
+			ready.Snapshots = append(ready.Snapshots, snap)
 		}
 		for _, q := range r.GetQuarantine() {
 			ready.Quarantine = append(ready.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), URL: q.GetUrl(), Rows: q.GetRows()})
@@ -223,6 +230,9 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		SchemaPolicy:       schemaPolicies[plan.Policy],
 		QuarantineInfinity: plan.QuarantineInfinity,
 		HeldUrl:            plan.HeldURL,
+		Lanes:              uint32(plan.Lanes),       //nolint:gosec // small
+		WriterLanes:        uint32(plan.WriterLanes), //nolint:gosec // small
+		KeyGroups:          uint32(plan.KeyGroups),   //nolint:gosec // small
 	}
 	for i, s := range plan.Streams {
 		names[i] = s.Name
@@ -243,9 +253,16 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 			Changelog:            s.Read == source.CDC,
 			Holds:                holdPlan(plan.Holds[s.Name]),
 		})
+		if plan.KeyGrouped[s.Name] {
+			req.Streams[i].Routing = enginev1.Routing_ROUTING_KEY_GROUP
+		}
 	}
 	for _, s := range plan.Snapshots {
-		req.RestoredSnapshots = append(req.RestoredSnapshots, &enginev1.StateSnapshot{Operator: s.Operator, Url: s.URL})
+		ss := &enginev1.StateSnapshot{Operator: s.Operator, Url: s.URL}
+		if r := s.KeyGroups; r != nil {
+			ss.KeyGroups = &enginev1.KeyGroupRange{First: uint32(r.First), Last: uint32(r.Last)} //nolint:gosec // small
+		}
+		req.RestoredSnapshots = append(req.RestoredSnapshots, ss)
 	}
 	req.Edges = []*enginev1.Edge{
 		{Id: inEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names},
@@ -449,6 +466,12 @@ func writeEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []stri
 		}
 		if !ok {
 			break
+		}
+		if f.Lane != 0 {
+			if f.Batch != nil {
+				f.Batch.Release()
+			}
+			return fmt.Errorf("engineclient: a frame on lane %d; the engine runs one", f.Lane)
 		}
 		i, known := index[f.Stream]
 		var kind enginev1.FrameKind

@@ -5,7 +5,7 @@ use openetl_normalize::hold::{ColumnHold, HoldConfig, Limits, Show, Why};
 use openetl_normalize::naming::{Namer, Naming, RESERVED_TABLES, TABLE_KEY};
 use openetl_normalize::{Identity, Infinity, Policy, TypeOptions};
 use openetl_proto::engine::v1::{
-    EdgeDirection, Held, HeldMode, SchemaPolicy, StartJobRequest, StreamPlan, sink_plan,
+    EdgeDirection, Held, HeldMode, Routing, SchemaPolicy, StartJobRequest, StreamPlan, sink_plan,
 };
 
 use crate::error::JobError;
@@ -191,6 +191,18 @@ impl Plan {
                 s.operator
             )));
         }
+        let (lanes, writer_lanes) = (req.lanes.max(1), req.writer_lanes.max(1));
+        if lanes > 1 || writer_lanes > 1 {
+            return Err(JobError::config(format!(
+                "{lanes} lanes and {writer_lanes} writer lanes; this engine runs one of each"
+            )));
+        }
+        if req.key_groups != 0 && !req.key_groups.is_power_of_two() {
+            return Err(JobError::config(format!(
+                "{} key groups, not a power of two",
+                req.key_groups
+            )));
+        }
         let mut index = HashMap::new();
         let mut restored = Vec::with_capacity(req.streams.len());
         let mut declared = Vec::with_capacity(req.streams.len());
@@ -198,6 +210,12 @@ impl Plan {
             if s.name.is_empty() || index.insert(s.name.as_str(), i).is_some() {
                 return Err(JobError::config(format!(
                     "stream name {:?} is empty or repeated",
+                    s.name
+                )));
+            }
+            if s.routing() == Routing::KeyGroup && s.primary_key.is_empty() {
+                return Err(JobError::config(format!(
+                    "stream {} is routed by key group, and has no primary key",
                     s.name
                 )));
             }
@@ -292,6 +310,12 @@ impl Plan {
                 return Err(JobError::config(format!(
                     "edge id {:?} is empty or repeated",
                     e.id
+                )));
+            }
+            if e.lane != 0 {
+                return Err(JobError::config(format!(
+                    "edge {} is on lane {}, and the job has one",
+                    e.id, e.lane
                 )));
             }
             let mut streams = Vec::with_capacity(e.streams.len());
@@ -437,6 +461,7 @@ pub(crate) mod tests {
             id: id.into(),
             direction: dir as i32,
             streams: streams.iter().map(|s| s.to_string()).collect(),
+            lane: 0,
         }
     }
 
@@ -472,6 +497,9 @@ pub(crate) mod tests {
             quarantine_infinity: false,
             passthrough: false,
             held_url: String::new(),
+            lanes: 0,
+            writer_lanes: 0,
+            key_groups: 0,
         }
     }
 
@@ -665,12 +693,24 @@ pub(crate) mod tests {
                 "restored schema",
                 Box::new(|r| r.streams[0].restored_schema = vec![1]),
             ),
+            ("two lanes", Box::new(|r| r.lanes = 2)),
+            ("two writer lanes", Box::new(|r| r.writer_lanes = 2)),
+            (
+                "key groups not a power of two",
+                Box::new(|r| r.key_groups = 100),
+            ),
+            ("an edge on lane 1", Box::new(|r| r.edges[0].lane = 1)),
+            (
+                "routed by key group without a key",
+                Box::new(|r| r.streams[0].routing = Routing::KeyGroup as i32),
+            ),
             (
                 "restored snapshot",
                 Box::new(|r| {
                     r.restored_snapshots.push(StateSnapshot {
                         operator: "window".into(),
                         url: "file:///x".into(),
+                        key_groups: None,
                     })
                 }),
             ),

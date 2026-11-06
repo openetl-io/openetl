@@ -98,6 +98,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			NanosecondTimestamps: ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
 			Require:              plan.Level(ps.GetRequire()),
 			Deletes:              deletes,
+			SplitsByKey:          cs.SplitsByKey,
 		}
 		if ps != nil {
 			s.Collapse = ps.Collapse

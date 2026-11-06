@@ -57,6 +57,8 @@ type Stream struct {
 	Transformed bool
 	// Nil: the stream holds nothing back (ADR-0025).
 	Holds *StreamHolds
+	// Where the source splits it, every record of a key is in one split.
+	SplitsByKey bool
 }
 
 func (s Stream) delivery() delivery.Stream {
@@ -918,6 +920,16 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	}
 	if len(c.holdPlans) > 0 {
 		plan.HeldURL, plan.Holds = c.job.HeldURL, c.holdPlans
+	}
+	plan.Lanes, plan.WriterLanes, plan.KeyGroups = c.job.lanes(), c.job.writerLanes(), c.job.keyGroups()
+	for _, s := range c.job.Streams {
+		// A key's rows meet on one writer lane.
+		if len(s.PrimaryKey) > 0 && !s.SplitsByKey && plan.WriterLanes > 1 {
+			if plan.KeyGrouped == nil {
+				plan.KeyGrouped = map[string]bool{}
+			}
+			plan.KeyGrouped[s.Name] = true
+		}
 	}
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots
