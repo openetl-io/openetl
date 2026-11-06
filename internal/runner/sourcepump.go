@@ -73,6 +73,9 @@ type streamPos struct {
 	// By lane: the pending barrier is on it, and what the stream's splits on
 	// it emitted after placing the barrier before it was.
 	lanes []laneHold
+	// Splits a held emit adds, by the lane it's held on: what they emit
+	// waits behind it.
+	adding map[string]int
 }
 
 type laneHold struct {
@@ -232,7 +235,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, splits m
 	}
 	for _, s := range job.Streams {
 		p.order = append(p.order, s.Name)
-		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes)}
+		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes), adding: map[string]int{}}
 		for i, sp := range splits[s.Name] {
 			pos := &splitPos{id: sp.ID, lane: i % p.lanes, resume: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced}
 			st.splits = append(st.splits, pos)
@@ -371,17 +374,32 @@ func (p *sourcePump) handle(e emit) error {
 	if e.kind == emitDone {
 		return p.finish()
 	}
+	p.emitted.Add(1)
+	return p.route(e)
+}
+
+// route applies an emit, or holds it until its split's stream has the
+// pending barrier on the split's lane.
+func (p *sourcePump) route(e emit) error {
 	st := p.streams[e.stream]
 	sp := st.byID[e.split]
-	if sp == nil {
-		return fmt.Errorf("runner: source emitted on split %q of stream %q, which it doesn't have", e.split, e.stream)
+	lane := -1
+	switch l, adding := st.adding[e.split]; {
+	case sp == nil && adding:
+		lane = l
+	case sp == nil:
+		return fmt.Errorf("runner: source emitted on %s, which it doesn't have", splitName(e.stream, e.split))
+	case p.pending != 0 && sp.placed && !st.lanes[sp.lane].placed:
+		lane = sp.lane
 	}
-	p.emitted.Add(1)
-	if l := &st.lanes[sp.lane]; p.pending != 0 && sp.placed && !l.placed {
-		l.held = append(l.held, e)
-		return nil
+	if lane < 0 {
+		return p.apply(e.stream, st, sp, e)
 	}
-	return p.apply(e.stream, st, sp, e)
+	st.lanes[lane].held = append(st.lanes[lane].held, e)
+	for _, a := range e.added {
+		st.adding[a.ID] = lane
+	}
+	return nil
 }
 
 func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) error {
@@ -461,6 +479,7 @@ func (p *sourcePump) add(name string, st *streamPos, splits []source.Split, late
 		pos := &splitPos{id: s.ID, lane: slices.Index(open, slices.Min(open)), resume: s.State, placed: later, later: later}
 		st.splits = append(st.splits, pos)
 		st.byID[s.ID] = pos
+		delete(st.adding, s.ID)
 		if p.pending != 0 && !later {
 			p.unplaced++
 		}
@@ -644,7 +663,7 @@ func (p *sourcePump) placeLane(name string, lane int) error {
 	held := l.held
 	l.held = nil
 	for _, e := range held {
-		if err := p.apply(name, st, st.byID[e.split], e); err != nil {
+		if err := p.route(e); err != nil {
 			return err
 		}
 	}

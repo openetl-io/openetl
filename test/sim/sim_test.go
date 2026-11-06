@@ -88,6 +88,11 @@ type streamCfg struct {
 	outReplay   source.Replay
 	// Nil: holds nothing.
 	holds *holdCfg
+	// Its parts, each read as a split; whether they're by key; how likely a
+	// resume point splits a split's remainder.
+	parts   int
+	byKey   bool
+	resplit int
 }
 
 // delivery is what the destination gets: the stream, or the transform's
@@ -109,6 +114,8 @@ type config struct {
 	settings delivery.Settings
 	faults   int
 	zombies  int
+	// The attempts' lanes.
+	lanes int
 	// Checkpoint records each attempt keeps.
 	keep int
 	// Holds: held values a replay reads at a time, how likely a retry takes
@@ -126,11 +133,14 @@ func (c config) String() string {
 	if c.flink {
 		b.WriteString("flink ")
 	}
-	fmt.Fprintf(&b, "sink=%s mode=%d scope=%d require=%v maxBytes=%d interval=%v resumeTimeout=%v faults=%d zombies=%d keep=%d streams=",
+	fmt.Fprintf(&b, "sink=%s mode=%d scope=%d require=%v maxBytes=%d interval=%v resumeTimeout=%v faults=%d zombies=%d keep=%d lanes=%d streams=",
 		c.kind, c.mode, c.settings.Scope, c.settings.Require, c.settings.CommitMaxBytes,
-		c.settings.CommitInterval, c.settings.ResumePointTimeout, c.faults, c.zombies, c.keep)
+		c.settings.CommitInterval, c.settings.ResumePointTimeout, c.faults, c.zombies, c.keep, c.lanes)
 	for _, s := range c.streams {
-		fmt.Fprintf(&b, "%s(%v, keyed=%v", s.name, s.replay, s.keyed)
+		fmt.Fprintf(&b, "%s(%v, keyed=%v, parts=%d", s.name, s.replay, s.keyed, s.parts)
+		if s.parts > 1 {
+			fmt.Fprintf(&b, ", byKey=%v, resplit=%d%%", s.byKey, s.resplit)
+		}
 		if s.require != 0 {
 			fmt.Fprintf(&b, ", require=%v", s.require)
 		}
@@ -188,6 +198,15 @@ func randomConfig(rng *rand.Rand, kind string) config {
 		if holds && s.keyed {
 			s.holds = randomHolds(rng, c.mode, 40)
 		}
+		// A transform's inputs are read whole. Merge needs a key's versions in
+		// order, so in one split: splits by key, which aren't split again.
+		s.parts, s.byKey = 1, c.mode == destination.Merge || rng.IntN(2) == 0
+		if !spark && !flink {
+			s.parts = 1 + rng.IntN(4)
+		}
+		if !s.byKey && rng.IntN(2) == 0 {
+			s.resplit = 10 + rng.IntN(30)
+		}
 		c.streams = append(c.streams, s)
 	}
 	if spark || flink {
@@ -224,6 +243,11 @@ func randomConfig(rng *rand.Rand, kind string) config {
 		c.settings.ResumePointTimeout = time.Duration(1+rng.IntN(20)) * time.Second
 	}
 	c.keep = 2 + rng.IntN(3)
+	// Transforms, and the holds kind's dataflow, run one lane.
+	c.lanes = 1
+	if !spark && !flink && !holds {
+		c.lanes = 1 + rng.IntN(3)
+	}
 	return c
 }
 
@@ -291,6 +315,7 @@ func (w *world) job(attempt int) runner.Job {
 		Dataflow:    runner.Passthrough{Convert: toArrow},
 		Settings:    w.cfg.settings,
 		KeepRecords: w.cfg.keep,
+		Lanes:       w.cfg.lanes,
 	}
 	if w.cfg.holds {
 		j.HeldURL = "sim://held"
@@ -303,7 +328,8 @@ func (w *world) job(attempt int) runner.Job {
 		j.Dataflow = runner.Passthrough{Convert: toArrow, Stage: st.stage}
 	}
 	for _, s := range w.cfg.streams {
-		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, Require: s.require, Collapse: s.collapse, Holds: s.holds.streamHolds()}
+		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, Require: s.require, Collapse: s.collapse, Holds: s.holds.streamHolds(),
+			SplitsByKey: s.byKey && s.resplit == 0}
 		if s.keyed {
 			st.PrimaryKey = []string{"key"}
 		}
@@ -355,6 +381,7 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 			markHolds(rng, u, s.holds, 0)
 		}
 		u.cdc = cfg.holds
+		u.parts, u.byKey, u.resplit = s.parts, s.byKey, s.resplit
 		if cfg.mode == destination.Overwrite {
 			w.wh.tables[s.name] = []row{{ID: "stale-" + s.name, Key: "stale", Value: "an earlier read"}}
 			if rng.IntN(5) == 0 {
@@ -438,6 +465,30 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 	res.steps = w.sched.steps
 	res.stats["attempts"] += attempts
 	res.stats["zombies"] += zombies
+	res.stats[fmt.Sprintf("lanes:%d", cfg.lanes)]++
+	resplit := map[string]bool{}
+	for _, rec := range w.written {
+		for name := range rec.Streams {
+			for _, sp := range rec.Splits(name) {
+				if strings.Contains(sp.ID, ".") {
+					resplit[name+"/"+sp.ID] = true
+				}
+			}
+		}
+	}
+	res.stats["splits added by re-splits"] += len(resplit)
+	writers := min(cfg.lanes, caps.Lanes())
+	for _, s := range cfg.streams {
+		if s.parts > 1 {
+			res.stats["streams in splits"]++
+		}
+		if s.keyed && (!s.byKey || s.resplit != 0) && writers > 1 {
+			res.stats["streams routed by key group"]++
+		}
+	}
+	if writers > 1 {
+		res.stats["seeds with writer lanes"]++
+	}
 	if cfg.spark {
 		res.stats["spark generations ended by a newer one"] += len(w.spark.dropped)
 	}

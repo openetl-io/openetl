@@ -1575,8 +1575,9 @@ func (x *ParquetSink) GetUrl() string {
 // StagedSink stages each epoch as Parquet files below url, for a destination
 // connector that loads them (DELIVERY_STAGED), at
 // {g}/{N}/{stream}/part-{k}.parquet with the stream's name percent-encoded,
-// or {g}/{N}/{dir}/{stream}/part-{k}.parquet with a dir. EpochReady.files
-// lists them.
+// or {g}/{N}/{dir}/{stream}/part-{k}.parquet with a dir. A writer lane's
+// n-th file of a stream in an epoch is k = n * writer_lanes + lane, so one
+// lane's are 0, 1, 2 and so on. EpochReady.files lists them.
 type StagedSink struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// As quarantine_url.

@@ -26,6 +26,7 @@ type marker struct {
 type stagingKey struct {
 	gen, n uint64
 	stream string
+	lane   int
 }
 
 type readKey struct {
@@ -74,12 +75,46 @@ type stagedStream struct {
 	Read  int64 `json:"read,omitempty"`
 	Ended bool  `json:"ended,omitempty"`
 	Empty bool  `json:"empty,omitempty"`
+	// Across an epoch's committables: the writer lanes that staged rows.
+	Lanes []int `json:"-"`
 }
 
+// warehouseStaged is one writer lane's committable.
 type warehouseStaged struct {
 	Gen     uint64         `json:"gen"`
 	N       uint64         `json:"n"`
+	Lane    int            `json:"lane"`
 	Streams []stagedStream `json:"streams"`
+}
+
+// mergeStaged is what every lane staged for an epoch: each stream once,
+// with the lanes that staged rows for it.
+func mergeStaged(staged []destination.Staged) (warehouseStaged, error) {
+	var out warehouseStaged
+	idx := map[string]int{}
+	for _, b := range staged {
+		var st warehouseStaged
+		if err := json.Unmarshal(b, &st); err != nil {
+			return out, err
+		}
+		out.Gen, out.N = st.Gen, st.N
+		for _, ss := range st.Streams {
+			i, ok := idx[ss.Name]
+			if !ok {
+				i = len(out.Streams)
+				idx[ss.Name] = i
+				merged := ss
+				merged.Empty, merged.Lanes = true, nil
+				out.Streams = append(out.Streams, merged)
+			}
+			if !ss.Empty {
+				out.Streams[i].Empty = false
+				out.Streams[i].Lanes = append(out.Streams[i].Lanes, st.Lane)
+			}
+			out.Streams[i].Ended = out.Streams[i].Ended || ss.Ended
+		}
+	}
+	return out, nil
 }
 
 var errStagingMissing = errors.New("sim: staging missing")
@@ -98,14 +133,21 @@ func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []st
 		if wh.loads[marker{s.Name, st.Gen, st.N}] {
 			continue
 		}
-		if _, ok := wh.staging[stagingKey{st.Gen, st.N, s.Name}]; !ok && !s.Empty {
-			return fmt.Errorf("%w for %s in %d-g%d", errStagingMissing, s.Name, st.N, st.Gen)
+		for _, l := range s.Lanes {
+			if _, ok := wh.staging[stagingKey{st.Gen, st.N, s.Name, l}]; !ok {
+				return fmt.Errorf("%w for %s on lane %d in %d-g%d", errStagingMissing, s.Name, l, st.N, st.Gen)
+			}
 		}
 		todo = append(todo, s)
 	}
 	for _, s := range todo {
-		k := stagingKey{st.Gen, st.N, s.Name}
-		rows, patches := splitPatches(wh.staging[k])
+		var staged []row
+		for _, l := range s.Lanes {
+			k := stagingKey{st.Gen, st.N, s.Name, l}
+			staged = append(staged, wh.staging[k]...)
+			delete(wh.staging, k)
+		}
+		rows, patches := splitPatches(staged)
 		if n := wh.apply(s, rows, epochRef{st.Gen, st.N}); n > 0 {
 			collapsed[s.Name] += n
 		}
@@ -114,7 +156,6 @@ func (wh *warehouse) applyTx(applierGen uint64, st warehouseStaged, streams []st
 			wh.patch(s, p)
 		}
 		wh.loads[marker{s.Name, st.Gen, st.N}] = true
-		delete(wh.staging, k)
 	}
 	return nil
 }
@@ -184,8 +225,8 @@ func (wh *warehouse) insert(target []row, s stagedStream, rows []row, at epochRe
 	return target, collapsed
 }
 
-// missing returns the streams without a marker, how many of them have
-// staging to apply, and how many of those still have it.
+// missing returns the streams without a marker, how much staging they
+// have to apply, by lane, and how much of it is still there.
 func (wh *warehouse) missing(st warehouseStaged) (missing []stagedStream, needs, staged int) {
 	wh.mu.Lock()
 	defer wh.mu.Unlock()
@@ -194,12 +235,11 @@ func (wh *warehouse) missing(st warehouseStaged) (missing []stagedStream, needs,
 			continue
 		}
 		missing = append(missing, s)
-		if s.Empty {
-			continue
-		}
-		needs++
-		if _, ok := wh.staging[stagingKey{st.Gen, st.N, s.Name}]; ok {
-			staged++
+		for _, l := range s.Lanes {
+			needs++
+			if _, ok := wh.staging[stagingKey{st.Gen, st.N, s.Name, l}]; ok {
+				staged++
+			}
 		}
 	}
 	return missing, needs, staged
@@ -223,7 +263,7 @@ type warehouseDest struct {
 }
 
 func (d *warehouseDest) Capabilities() destination.Capabilities {
-	c := destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}, MinCommitInterval: time.Second}
+	c := destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}, MinCommitInterval: time.Second, WriterLanes: 3}
 	if d.wh.dedupeCapable {
 		c.DedupeAtApply = true
 		c.Scopes = append(c.Scopes, destination.ScopePipeline)
@@ -236,7 +276,7 @@ func (d *warehouseDest) Capabilities() destination.Capabilities {
 }
 
 func (d *warehouseDest) Open(ctx context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
-	if err := outcome(d.w.sched.point(ctx, d.attempt, "sink.open"), nop); err != nil {
+	if err := outcome(d.w.sched.point(ctx, d.attempt, lane("sink.open", cfg.Lane)), nop); err != nil {
 		return nil, err
 	}
 	ww := &warehouseWriter{warehouseDest: d, cfg: cfg, buf: map[uint64]map[string][]row{}, ended: map[uint64][]string{}}
@@ -268,7 +308,7 @@ func (w *warehouseWriter) EndRead(_ context.Context, e destination.Epoch, stream
 
 func (w *warehouseWriter) Write(ctx context.Context, e destination.Epoch, stream string, batch arrow.RecordBatch) error {
 	rows := rowsOf(batch)
-	return outcome(w.w.sched.point(ctx, w.attempt, "sink.write"), func() error {
+	return outcome(w.w.sched.point(ctx, w.attempt, lane("sink.write", w.cfg.Lane)), func() error {
 		if w.buf[e.N] == nil {
 			w.buf[e.N] = map[string][]row{}
 		}
@@ -278,7 +318,7 @@ func (w *warehouseWriter) Write(ctx context.Context, e destination.Epoch, stream
 }
 
 func (w *warehouseWriter) PreCommit(ctx context.Context, e destination.Epoch) (destination.Staged, error) {
-	st := warehouseStaged{Gen: e.Generation, N: e.N}
+	st := warehouseStaged{Gen: e.Generation, N: e.N, Lane: w.cfg.Lane}
 	for _, s := range w.cfg.Streams {
 		rows := w.buf[e.N][s.Name]
 		ss := stagedStream{Name: s.Name, Mode: int(s.Mode), Dedupe: int(s.Dedupe)}
@@ -293,10 +333,10 @@ func (w *warehouseWriter) PreCommit(ctx context.Context, e destination.Epoch) (d
 			}
 			continue
 		}
-		err := outcome(w.w.sched.point(ctx, w.attempt, "sink.stage"), func() error {
+		err := outcome(w.w.sched.point(ctx, w.attempt, lane("sink.stage", w.cfg.Lane)), func() error {
 			w.wh.mu.Lock()
 			defer w.wh.mu.Unlock()
-			w.wh.staging[stagingKey{e.Generation, e.N, s.Name}] = slices.Clone(rows)
+			w.wh.staging[stagingKey{e.Generation, e.N, s.Name, w.cfg.Lane}] = slices.Clone(rows)
 			return nil
 		})
 		if err != nil {
@@ -323,12 +363,8 @@ func (w *warehouseWriter) applyScoped(ctx context.Context, st warehouseStaged, s
 }
 
 func (w *warehouseWriter) Commit(ctx context.Context, _ destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
-	s, err := destination.One(staged)
+	st, err := mergeStaged(staged)
 	if err != nil {
-		return destination.Committed{}, err
-	}
-	var st warehouseStaged
-	if err := json.Unmarshal(s, &st); err != nil {
 		return destination.Committed{}, err
 	}
 	c := destination.Committed{Collapsed: map[string]uint64{}}
@@ -336,11 +372,7 @@ func (w *warehouseWriter) Commit(ctx context.Context, _ destination.Epoch, stage
 }
 
 func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
-	s, err := destination.One(staged)
-	if err != nil {
-		return 0, err
-	}
-	err = outcome(w.w.sched.point(ctx, w.attempt, "sink.recover"), func() error {
+	err := outcome(w.w.sched.point(ctx, w.attempt, "sink.recover"), func() error {
 		w.wh.mu.Lock()
 		defer w.wh.mu.Unlock()
 		if w.wh.fence > gen {
@@ -355,8 +387,8 @@ func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination
 	if e.IsZero() {
 		return destination.Applied, nil
 	}
-	var st warehouseStaged
-	if err := json.Unmarshal(s, &st); err != nil {
+	st, err := mergeStaged(staged)
+	if err != nil {
 		return 0, err
 	}
 	missing, needs, have := w.wh.missing(st)
@@ -384,6 +416,9 @@ func (w *warehouseWriter) Recover(ctx context.Context, gen uint64, e destination
 }
 
 func (w *warehouseWriter) Close(context.Context) error { return nil }
+
+// lane names a writer lane's yield point.
+func lane(op string, l int) string { return fmt.Sprintf("%s@%d", op, l) }
 
 // ---- Transactional stream: Kafka, with a pool of transactional producers.
 
@@ -579,16 +614,21 @@ type webhookDest struct {
 }
 
 func (d *webhookDest) Capabilities() destination.Capabilities {
-	return destination.Capabilities{Class: destination.DeliverAndAck, Scopes: []destination.Scope{destination.ScopeStream}}
+	return destination.Capabilities{Class: destination.DeliverAndAck, Scopes: []destination.Scope{destination.ScopeStream}, WriterLanes: 3}
 }
 
-func (d *webhookDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
-	return d, nil
+func (d *webhookDest) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
+	return &webhookWriter{d, cfg.Lane}, nil
 }
 
-func (d *webhookDest) Write(ctx context.Context, _ destination.Epoch, stream string, batch arrow.RecordBatch) error {
+type webhookWriter struct {
+	*webhookDest
+	lane int
+}
+
+func (d *webhookWriter) Write(ctx context.Context, _ destination.Epoch, stream string, batch arrow.RecordBatch) error {
 	rows := rowsOf(batch)
-	return outcome(d.w.sched.point(ctx, d.attempt, "hook.deliver"), func() error {
+	return outcome(d.w.sched.point(ctx, d.attempt, lane("hook.deliver", d.lane)), func() error {
 		d.r.mu.Lock()
 		defer d.r.mu.Unlock()
 		for _, r := range rows {
@@ -601,22 +641,22 @@ func (d *webhookDest) Write(ctx context.Context, _ destination.Epoch, stream str
 
 // Write returns once the receiver has acknowledged. PreCommit still yields,
 // so runs stay reproducible.
-func (d *webhookDest) PreCommit(ctx context.Context, _ destination.Epoch) (destination.Staged, error) {
-	if err := outcome(d.w.sched.point(ctx, d.attempt, "hook.precommit"), nop); err != nil {
+func (d *webhookWriter) PreCommit(ctx context.Context, _ destination.Epoch) (destination.Staged, error) {
+	if err := outcome(d.w.sched.point(ctx, d.attempt, lane("hook.precommit", d.lane)), nop); err != nil {
 		return nil, err
 	}
 	return destination.Staged("{}"), nil
 }
 
-func (d *webhookDest) Commit(context.Context, destination.Epoch, []destination.Staged) (destination.Committed, error) {
+func (d *webhookWriter) Commit(context.Context, destination.Epoch, []destination.Staged) (destination.Committed, error) {
 	return destination.Committed{}, nil
 }
 
-func (d *webhookDest) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
+func (d *webhookWriter) Recover(context.Context, uint64, destination.Epoch, []destination.Staged) (destination.Recovery, error) {
 	return destination.Applied, nil
 }
 
-func (d *webhookDest) Close(context.Context) error { return nil }
+func (d *webhookWriter) Close(context.Context) error { return nil }
 
 // ---- Deliver and acknowledge from Parquet the platform staged: an API that
 // takes each epoch in Commit, with a delivery cursor.
@@ -661,7 +701,8 @@ func (s *simStaging) stage(ctx context.Context, e destination.Epoch, lane int, s
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	path := epochDir(e) + stream + fmt.Sprintf("/part-%d-00000.parquet", lane)
+	// The lane's first file, as the engine names it.
+	path := epochDir(e) + stream + fmt.Sprintf("/part-%05d.parquet", lane)
 	err := outcome(s.w.sched.point(ctx, s.attempt, "staging.write"), func() error {
 		s.s.mu.Lock()
 		defer s.s.mu.Unlock()
@@ -798,8 +839,6 @@ type stagedAPIDest struct {
 	r       *receiver
 	st      *simStaging
 	attempt int
-	mu      sync.Mutex
-	files   map[destination.Epoch]map[string][]destination.StagedFile
 }
 
 type apiCursor struct {
@@ -807,20 +846,32 @@ type apiCursor struct {
 	Done         bool
 }
 
+// apiStaged is a writer lane's committable: the files it was handed, which
+// lane 0 delivers in Commit.
+type apiStaged struct {
+	Files map[string][]destination.StagedFile `json:"files,omitempty"`
+}
+
 func (d *stagedAPIDest) Capabilities() destination.Capabilities {
-	return destination.Capabilities{Class: destination.DeliverAndAck, Scopes: []destination.Scope{destination.ScopePipeline, destination.ScopeStream}, Delivery: destination.DeliveryStaged}
+	return destination.Capabilities{Class: destination.DeliverAndAck, Scopes: []destination.Scope{destination.ScopePipeline, destination.ScopeStream}, Delivery: destination.DeliveryStaged, WriterLanes: 3}
 }
 
-func (d *stagedAPIDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
-	d.files = map[destination.Epoch]map[string][]destination.StagedFile{}
-	return d, nil
+func (d *stagedAPIDest) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
+	return &stagedAPIWriter{stagedAPIDest: d, lane: cfg.Lane, files: map[destination.Epoch]map[string][]destination.StagedFile{}}, nil
 }
 
-func (d *stagedAPIDest) Write(context.Context, destination.Epoch, string, arrow.RecordBatch) error {
+type stagedAPIWriter struct {
+	*stagedAPIDest
+	lane  int
+	mu    sync.Mutex
+	files map[destination.Epoch]map[string][]destination.StagedFile
+}
+
+func (d *stagedAPIWriter) Write(context.Context, destination.Epoch, string, arrow.RecordBatch) error {
 	return errors.New("sim: a staged destination got a batch")
 }
 
-func (d *stagedAPIDest) WriteStaged(_ context.Context, e destination.Epoch, stream string, files []destination.StagedFile) error {
+func (d *stagedAPIWriter) WriteStaged(_ context.Context, e destination.Epoch, stream string, files []destination.StagedFile) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.files[e] == nil {
@@ -830,32 +881,60 @@ func (d *stagedAPIDest) WriteStaged(_ context.Context, e destination.Epoch, stre
 	return nil
 }
 
-func (d *stagedAPIDest) PreCommit(ctx context.Context, _ destination.Epoch) (destination.Staged, error) {
-	if err := outcome(d.w.sched.point(ctx, d.attempt, "api.precommit"), nop); err != nil {
+func (d *stagedAPIWriter) PreCommit(ctx context.Context, e destination.Epoch) (destination.Staged, error) {
+	if err := outcome(d.w.sched.point(ctx, d.attempt, lane("api.precommit", d.lane)), nop); err != nil {
 		return nil, err
 	}
-	return destination.Staged("{}"), nil
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return json.Marshal(apiStaged{Files: d.files[e]})
 }
 
-func (d *stagedAPIDest) Commit(ctx context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
-	_, err := d.deliver(ctx, e)
+func (d *stagedAPIWriter) Commit(ctx context.Context, e destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
+	files, err := apiFiles(staged)
+	if err != nil {
+		return destination.Committed{}, err
+	}
+	_, err = d.deliver(ctx, e, files)
 	return destination.Committed{}, err
 }
 
-func (d *stagedAPIDest) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ []destination.Staged) (destination.Recovery, error) {
+// Recover delivers what's left of the files it was handed: every lane's,
+// unless the epoch was committed, whose files are gone.
+func (d *stagedAPIWriter) Recover(ctx context.Context, _ uint64, e destination.Epoch, _ []destination.Staged) (destination.Recovery, error) {
 	if e.IsZero() {
 		return destination.Applied, nil
 	}
-	redone, err := d.deliver(ctx, e)
+	d.mu.Lock()
+	files := d.files[e]
+	d.mu.Unlock()
+	redone, err := d.deliver(ctx, e, files)
 	if err != nil || !redone {
 		return destination.Applied, err
 	}
 	return destination.Redone, nil
 }
 
+func (d *stagedAPIWriter) Close(context.Context) error { return nil }
+
+// apiFiles are every lane's files of an epoch, by stream, in lane order.
+func apiFiles(staged []destination.Staged) (map[string][]destination.StagedFile, error) {
+	files := map[string][]destination.StagedFile{}
+	for _, b := range staged {
+		var st apiStaged
+		if err := json.Unmarshal(b, &st); err != nil {
+			return nil, err
+		}
+		for stream, fs := range st.Files {
+			files[stream] = append(files[stream], fs...)
+		}
+	}
+	return files, nil
+}
+
 // deliver sends each file from the cursor on, and saves the cursor once the
 // API has each. It reports whether anything was left to send.
-func (d *stagedAPIDest) deliver(ctx context.Context, e destination.Epoch) (bool, error) {
+func (d *stagedAPIWriter) deliver(ctx context.Context, e destination.Epoch, files map[string][]destination.StagedFile) (bool, error) {
 	var from apiCursor
 	if c := d.st.cursor(e); c != nil {
 		if err := json.Unmarshal(c, &from); err != nil {
@@ -865,9 +944,6 @@ func (d *stagedAPIDest) deliver(ctx context.Context, e destination.Epoch) (bool,
 	if from.Done {
 		return false, nil
 	}
-	d.mu.Lock()
-	files := d.files[e]
-	d.mu.Unlock()
 	save := func(c apiCursor) error {
 		b, err := json.Marshal(c)
 		if err != nil {
