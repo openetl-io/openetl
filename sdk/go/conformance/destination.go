@@ -33,11 +33,30 @@ type DestinationSuite struct {
 	// Read returns the records the destination has made visible for stream
 	// in namespace, as readers of the destination see them, each by field
 	// name; none for a stream it hasn't created. Nil skips the checks that
-	// write. The checks compare the
-	// fields "id", an int64, "v", a string, a soft-deleted row's
-	// "_openetl_deleted", a bool, and the columns schemas add, "w", a string,
-	// and "n", an int64, by their text, so any Go value that prints the same
-	// will do. A cell without a value is nil, or not there.
+	// write. The checks compare the fields "id", an int64, "v", a string, a
+	// soft-deleted row's "_openetl_deleted", a bool, and the columns schemas
+	// add, "w", a string, and "n", an int64, by their text, so any Go value
+	// that prints the same will do. A cell without a value is nil, or not
+	// there.
+	//
+	// write/type-changes and types read their columns' values by type, from
+	// any of these, or a pointer to one, a driver.Valuer giving one, or a
+	// struct whose Valid is false for null:
+	//   - integers: any Go integer, a whole float, json.Number or text
+	//   - floats: float32, float64, json.Number or text, NaN and infinities
+	//     as "NaN", "Infinity", "+Inf" and the like
+	//   - decimals: text, json.Number, *big.Rat, *big.Int or a fmt.Stringer
+	//   - text: string or []byte; binary: []byte, Postgres's \x hex, or
+	//     base64
+	//   - timestamps and dates: time.Time, or RFC 3339 or SQL text
+	//   - times of day: time.Duration, "15:04:05.999999", microseconds, or
+	//     a struct with Microseconds, as pgtype.Time
+	//   - intervals: arrow.MonthDayNanoInterval, a struct or object with
+	//     months, days and nanoseconds or microseconds, as pgtype.Interval,
+	//     ISO 8601 or Postgres's text
+	//   - lists: a slice, or a JSON array
+	//   - JSON: its text, json.RawMessage, or the value decoded
+	//   - UUIDs: text, 16 bytes, or a [16]byte
 	Read func(ctx context.Context, namespace, stream string) ([]map[string]any, error)
 	// Namespace returns a new namespace for one check. Nil: conformance_
 	// and random letters.
