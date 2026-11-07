@@ -21,16 +21,16 @@ import (
 	"github.com/openetl-io/openetl/internal/github"
 	"github.com/openetl-io/openetl/internal/netguard"
 	"github.com/openetl-io/openetl/internal/oci"
+	"github.com/openetl-io/openetl/internal/pkgref"
 	"github.com/openetl-io/openetl/internal/secrets"
-	"github.com/openetl-io/openetl/internal/spec"
 	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 // OfficialURL is where the official connectors are published.
-const OfficialURL = "oci://ghcr.io/openetl-io/connectors"
+const OfficialURL = pkgref.OfficialURL
 
 // OfficialRepository is the official connectors' GitHub repository.
-const OfficialRepository = "https://github.com/openetl-io/openetl-connectors"
+const OfficialRepository = pkgref.OfficialRepository
 
 // OfficialName is the official source's name.
 const OfficialName = "official"
@@ -82,9 +82,7 @@ type Credential struct {
 }
 
 // Covers reports whether a source's URL covers url: url is it, or below it.
-func Covers(source, url string) bool {
-	return url == source || strings.HasPrefix(url, source+"/") || strings.HasPrefix(url, source+":") || strings.HasPrefix(url, source+"@")
-}
+func Covers(source, url string) bool { return pkgref.Covers(source, url) }
 
 // Credential returns the credential of the source with the longest URL that
 // covers url.
@@ -157,111 +155,16 @@ func (c *Catalog) GitHub(ctx context.Context, repository string) (*github.Client
 	return &github.Client{HTTP: c.http(), API: c.GitHubAPI, Token: cred.Password}, nil
 }
 
-// official reports whether url is one official packages may come from.
-func (c *Catalog) official(url string) bool {
-	official := c.Official
-	if len(official) == 0 {
-		official = []string{OfficialURL, OfficialRepository}
-	}
-	for _, o := range official {
-		if Covers(o, url) {
-			return true
-		}
-	}
-	return false
-}
-
 // Resolved is a connector version a reference names.
-type Resolved struct {
-	// The descriptor, YAML or JSON.
-	Content []byte
-	// The manifest's oci:// URL by digest, or the release's page.
-	Provenance string
-}
+type Resolved = pkgref.Resolved
 
 // Resolve fetches the connector version a reference names:
 // oci://REGISTRY/REPOSITORY:VERSION or @sha256:…, or
-// github.com/OWNER/REPO[/PACKAGE]@VERSION. A package under the reserved
-// openetl owner must come from where the official packages are published.
+// github.com/OWNER/REPO[/PACKAGE]@VERSION, with the connected sources'
+// credentials. A package under the reserved openetl owner must come from
+// where the official packages are published.
 func (c *Catalog) Resolve(ctx context.Context, reference string) (*Resolved, error) {
-	var out *Resolved
-	var where string
-	switch {
-	case strings.HasPrefix(reference, oci.Scheme):
-		r, err := oci.Parse(reference)
-		if err != nil {
-			return nil, err
-		}
-		if r.Reference() == "" {
-			return nil, fmt.Errorf("%s names no version: add :VERSION or @sha256:…", reference)
-		}
-		p, err := c.OCI().Pull(ctx, r)
-		if err != nil {
-			return nil, err
-		}
-		where = r.Repo().String()
-		out = &Resolved{Content: p.Descriptor, Provenance: r.Repo().At(p.Manifest.Descriptor.Digest.String()).String()}
-	case strings.HasPrefix(reference, "github.com/"):
-		r, ok := github.ParseRef(reference)
-		if !ok {
-			return nil, fmt.Errorf("%q isn't github.com/OWNER/REPO[/PACKAGE]@VERSION", reference)
-		}
-		gh, err := c.GitHub(ctx, r.Repository())
-		if err != nil {
-			return nil, err
-		}
-		rel, err := gh.ReleaseByTag(ctx, r.Owner, r.Repo, r.Tag())
-		if err != nil {
-			return nil, err
-		}
-		a, err := descriptorAsset(rel, r.Package)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", reference, err)
-		}
-		var buf bytes.Buffer
-		if err := gh.Download(ctx, a, &buf, oci.MaxManifest); err != nil {
-			return nil, err
-		}
-		where = r.Repository()
-		out = &Resolved{Content: buf.Bytes(), Provenance: rel.HTMLURL}
-	default:
-		return nil, fmt.Errorf("%q isn't an oci:// or github.com/ reference", reference)
-	}
-	doc, err := spec.Parse(out.Content)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", reference, err)
-	}
-	if doc.Kind != spec.KindConnector {
-		return nil, fmt.Errorf("%s is a %s, not a Connector", reference, doc.Kind)
-	}
-	if owner, _ := spec.SplitName(doc.Name); owner == spec.OfficialOwner && !c.official(where) {
-		return nil, fmt.Errorf("%s names %s, and the %s owner is reserved for the official connectors, which aren't published there", reference, doc.Name, spec.OfficialOwner)
-	}
-	return out, nil
-}
-
-// descriptorAsset is a release's descriptor: PACKAGE.connector.yaml, or its
-// one *.connector.yaml when pkg is empty.
-func descriptorAsset(rel *github.Release, pkg string) (github.Asset, error) {
-	if pkg != "" {
-		if a, ok := rel.Asset(pkg + ".connector.yaml"); ok {
-			return a, nil
-		}
-		return github.Asset{}, fmt.Errorf("release %s has no %s.connector.yaml", rel.TagName, pkg)
-	}
-	var found []github.Asset
-	for _, a := range rel.Assets {
-		if strings.HasSuffix(a.Name, ".connector.yaml") {
-			found = append(found, a)
-		}
-	}
-	switch len(found) {
-	case 1:
-		return found[0], nil
-	case 0:
-		return github.Asset{}, fmt.Errorf("release %s has no *.connector.yaml", rel.TagName)
-	}
-	return github.Asset{}, fmt.Errorf("release %s has %d descriptors; name the package, github.com/OWNER/REPO/PACKAGE@VERSION", rel.TagName, len(found))
+	return pkgref.Resolver{OCI: c.OCI(), GitHub: c.GitHub, Official: c.Official}.Resolve(ctx, reference)
 }
 
 // Logo is a logo's content.
