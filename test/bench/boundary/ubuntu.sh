@@ -44,7 +44,7 @@ if [ -n "${ICEBERG:-}" ]; then
   [ -x /usr/local/bin/weed ] || curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/download/4.51/linux_amd64.tar.gz | tar -C /usr/local/bin -xz weed
   [ -f /opt/iceberg-rest.jar ] || { echo "no /opt/iceberg-rest.jar: copy it from apache/iceberg-rest-fixture:1.10.1" >&2; exit 1; }
   mkdir -p /var/lib/weed
-  pgrep -x weed >/dev/null || WEED_MASTER_VOLUME_GROWTH_COPY_1=1 nohup weed server -dir=/var/lib/weed -s3 -s3.port=8333 -master.volumeSizeLimitMB=1024 >/var/log/weed.log 2>&1 &
+  pgrep -x weed >/dev/null || WEED_MASTER_VOLUME_GROWTH_COPY_1=1 nohup weed server -dir=/var/lib/weed -volume.max=0 -s3 -s3.port=8333 -master.volumeSizeLimitMB=1024 >/var/log/weed.log 2>&1 &
   # The image's environment: a catalog in a file, as each pooled connection
   # to SQLite's in-memory one has a database of its own.
   pgrep -f iceberg-rest.jar >/dev/null || CATALOG_CATALOG__IMPL=org.apache.iceberg.jdbc.JdbcCatalog CATALOG_URI=jdbc:sqlite:/var/lib/iceberg-catalog.db \
