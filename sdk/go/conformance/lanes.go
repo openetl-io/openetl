@@ -129,7 +129,7 @@ func byLanes(n int, versions ...map[string][]record) []laneWork {
 		for _, name := range kitStreams {
 			byLane := make([][]record, n)
 			for _, rec := range recs[name] {
-				l := int(rec.id) % n //nolint:gosec // small
+				l := int(rec.id) % n
 				byLane[l] = append(byLane[l], rec)
 			}
 			for l, rs := range byLane {
@@ -437,14 +437,16 @@ func (r *destinationRun) checkLanesCrashAfterRecord(_ T, s *session, n int) {
 	var e *protocolv1.Epoch
 	var staged [][]byte
 	var at int64
+	prev := 0
 	for i, m := range counts {
-		gen := uint64(i + 1) //nolint:gosec // small
+		gen := uint64(i + 1)
 		var rec protocolv1.Recovery
 		a, rec = s.attempt(gen, m, e, staged)
 		if e != nil {
 			s.wantRedone(gen, rec)
-			s.expect(fmt.Sprintf("after recovering %d lanes' epoch on %d", counts[i-1], m), want)
+			s.expect(fmt.Sprintf("after recovering %d lanes' epoch on %d", prev, m), want)
 		}
+		prev = m
 		recs := map[string][]record{"alpha": records(at, at+5, "a"), "beta": records(at, at+2, "b")}
 		at += 5
 		want = merged(want, recs)
@@ -452,7 +454,7 @@ func (r *destinationRun) checkLanesCrashAfterRecord(_ T, s *session, n int) {
 		staged = a.stage(e, byLanes(m, recs)...)
 		a.crash()
 	}
-	last := uint64(len(counts) + 1) //nolint:gosec // small
+	last := uint64(len(counts) + 1)
 	a, rec := s.attempt(last, n, e, staged)
 	s.wantRedone(last, rec)
 	s.expect("after the last recovery", want)
