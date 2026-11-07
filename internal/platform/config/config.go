@@ -82,7 +82,8 @@ type Config struct {
 	// How many pods a launcher has at once, and their vCPUs between them.
 	MaxPods   int
 	MaxPodCPU string
-	// A file holding the pod the kubernetes launcher makes pods from.
+	// A file holding the pod the kubernetes launcher makes pods from, or
+	// podtemplate/NAME.
 	PodTemplate string
 	// Empty: the kubeconfig context's, or the launcher's own.
 	PodNamespace string
@@ -150,7 +151,7 @@ var options = []option{
 	{"pod-min-size", "OPENETL_POD_MIN_SIZE", "m", "a launcher's pool sends jobs this size or larger in CPU or memory to pods, and those no runner of the pool could take: xs to xl, or CPU,MEMORY such as 0,0 for every job", func(c *Config) *string { return &c.PodMinSize }},
 	{"pod-max-size", "OPENETL_POD_MAX_SIZE", "", "the largest pod a launcher makes, as a preset or CPU,MEMORY (default: any size)", func(c *Config) *string { return &c.PodMaxSize }},
 	{"max-pod-cpu", "OPENETL_MAX_POD_CPU", "64", "the vCPUs a launcher's pods may have between them; 0: no limit", func(c *Config) *string { return &c.MaxPodCPU }},
-	{"pod-template", "OPENETL_POD_TEMPLATE", "", "a YAML file holding the pod the kubernetes launcher makes each attempt's from: its container runs openetld's image with the API's URL, the runner token and the checkpoint store, and the launcher sets the rest", func(c *Config) *string { return &c.PodTemplate }},
+	{"pod-template", "OPENETL_POD_TEMPLATE", "", "the pod the kubernetes launcher makes each attempt's from, in a YAML file or as podtemplate/NAME, a PodTemplate in the pods' namespace: its container runs openetld's image with the API's URL, the runner token and the checkpoint store, and the launcher sets the rest", func(c *Config) *string { return &c.PodTemplate }},
 	{"pod-namespace", "OPENETL_POD_NAMESPACE", "", "the namespace the kubernetes launcher makes pods in (default: the kubeconfig context's, or the launcher's own)", func(c *Config) *string { return &c.PodNamespace }},
 	{"kubeconfig", "OPENETL_KUBECONFIG", "", "a kubeconfig file for the kubernetes launcher (default: its service account; it never reads one it isn't given)", func(c *Config) *string { return &c.Kubeconfig }},
 	{"pod-scratch", "OPENETL_POD_SCRATCH", "10Gi", "each pod's ephemeral storage, for its runner's scratch; 0: none set", func(c *Config) *string { return &c.PodScratch }},

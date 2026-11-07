@@ -81,22 +81,29 @@ type KubernetesOptions struct {
 	Kubeconfig string
 	// Empty: the kubeconfig context's, or the service account's.
 	Namespace string
-	// A file holding the pod template, in YAML.
+	// A file holding the pod template, in YAML, or podtemplate/NAME for a
+	// PodTemplate in the pods' namespace.
 	Template string
 }
 
 // OpenKubernetes is a Kubernetes launcher, but for the fields o doesn't set.
-func OpenKubernetes(o KubernetesOptions) (*Kubernetes, error) {
+func OpenKubernetes(ctx context.Context, o KubernetesOptions) (*Kubernetes, error) {
 	if o.Template == "" {
 		return nil, errors.New("pods: the kubernetes launcher needs --pod-template, a pod whose container runs openetld's image")
 	}
-	b, err := os.ReadFile(o.Template)
-	if err != nil {
-		return nil, fmt.Errorf("pods: --pod-template: %w", err)
-	}
-	tmpl, err := ParseTemplate(b)
-	if err != nil {
-		return nil, err
+	var (
+		tmpl *corev1.Pod
+		err  error
+	)
+	name, fromAPI := strings.CutPrefix(o.Template, "podtemplate/")
+	if !fromAPI {
+		b, err := os.ReadFile(o.Template)
+		if err != nil {
+			return nil, fmt.Errorf("pods: --pod-template: %w", err)
+		}
+		if tmpl, err = ParseTemplate(b); err != nil {
+			return nil, err
+		}
 	}
 	var cfg *restclient.Config
 	ns := o.Namespace
@@ -126,7 +133,24 @@ func OpenKubernetes(o KubernetesOptions) (*Kubernetes, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pods: the Kubernetes API: %w", err)
 	}
-	return &Kubernetes{Client: client, Namespace: cmp.Or(ns, "default"), Template: tmpl}, nil
+	ns = cmp.Or(ns, "default")
+	if fromAPI {
+		if tmpl, err = PodTemplate(ctx, client, ns, name); err != nil {
+			return nil, err
+		}
+	}
+	return &Kubernetes{Client: client, Namespace: ns, Template: tmpl}, nil
+}
+
+// PodTemplate reads the template from a PodTemplate, which kustomize's images
+// and patches reach as they do a Deployment's.
+func PodTemplate(ctx context.Context, client kubernetes.Interface, namespace, name string) (*corev1.Pod, error) {
+	pt, err := client.CoreV1().PodTemplates(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("pods: --pod-template: the PodTemplate %s in namespace %s: %w", name, namespace, err)
+	}
+	p := &corev1.Pod{ObjectMeta: pt.Template.ObjectMeta, Spec: pt.Template.Spec}
+	return p, checkTemplate(p)
 }
 
 // ParseTemplate reads a pod template.
@@ -135,10 +159,14 @@ func ParseTemplate(b []byte) (*corev1.Pod, error) {
 	if err := yaml.UnmarshalStrict(b, &p); err != nil {
 		return nil, fmt.Errorf("pods: the pod template: %w", err)
 	}
+	return &p, checkTemplate(&p)
+}
+
+func checkTemplate(p *corev1.Pod) error {
 	if len(p.Spec.Containers) == 0 {
-		return nil, errors.New("pods: the pod template has no container to run openetld in")
+		return errors.New("pods: the pod template has no container to run openetld in")
 	}
-	return &p, nil
+	return nil
 }
 
 func (k *Kubernetes) Launch(ctx context.Context, l Launch) error {

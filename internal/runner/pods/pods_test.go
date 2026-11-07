@@ -129,6 +129,29 @@ func TestPodFromTemplate(t *testing.T) {
 	}
 }
 
+// A PodTemplate in the pods' namespace serves as the template, and a missing
+// one is named.
+func TestPodTemplateFromTheAPI(t *testing.T) {
+	file, err := ParseTemplate([]byte(template))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientset(&corev1.PodTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "openetl-attempt", Namespace: "etl"},
+		Template:   corev1.PodTemplateSpec{ObjectMeta: file.ObjectMeta, Spec: file.Spec},
+	})
+	p, err := PodTemplate(t.Context(), c, "etl", "openetl-attempt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Labels["team"] != "data" || len(p.Spec.Containers) != 2 || p.Spec.Containers[1].Image != "ghcr.io/openetl-io/openetl:dev" {
+		t.Errorf("template %+v", p)
+	}
+	if _, err := PodTemplate(t.Context(), c, "other", "openetl-attempt"); err == nil || !strings.Contains(err.Error(), "PodTemplate openetl-attempt in namespace other") {
+		t.Errorf("err %v", err)
+	}
+}
+
 func TestLabelValues(t *testing.T) {
 	for in, want := range map[string]string{"default": "default", "a/b c": "a_b_c", "-x-": "x", strings.Repeat("a", 70): strings.Repeat("a", 63), "": ""} {
 		if got := labelValue(in); got != want {

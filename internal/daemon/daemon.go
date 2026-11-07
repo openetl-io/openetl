@@ -510,7 +510,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		log.Info("runner running one attempt", "id", w.ID, "attempt", cfg.Attempt, "placement", cfg.Placement)
 		return w.Run(ctx)
 	case cfg.Launcher != "":
-		launcher, limits, err := podLauncher(cfg)
+		launcher, limits, err := podLauncher(ctx, cfg)
 		if err != nil {
 			return err
 		}
@@ -527,7 +527,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 }
 
 // podLauncher is the runner's pod launcher, and the jobs it takes.
-func podLauncher(cfg config.Config) (pods.Launcher, dpworker.PodLimits, error) {
+func podLauncher(ctx context.Context, cfg config.Config) (pods.Launcher, dpworker.PodLimits, error) {
 	var limits dpworker.PodLimits
 	var err error
 	if limits.Min, err = sizeFlag(cfg.PodMinSize); err != nil {
@@ -549,7 +549,7 @@ func podLauncher(cfg config.Config) (pods.Launcher, dpworker.PodLimits, error) {
 	}
 	switch cfg.Launcher {
 	case "kubernetes":
-		k, err := pods.OpenKubernetes(pods.KubernetesOptions{Kubeconfig: cfg.Kubeconfig, Namespace: cfg.PodNamespace, Template: cfg.PodTemplate})
+		k, err := pods.OpenKubernetes(ctx, pods.KubernetesOptions{Kubeconfig: cfg.Kubeconfig, Namespace: cfg.PodNamespace, Template: cfg.PodTemplate})
 		if err != nil {
 			return nil, limits, err
 		}
