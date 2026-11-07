@@ -647,7 +647,10 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		if restored != nil {
 			prev = restored.Splits(s.Name)
 		}
-		if done[s.Name] || prev != nil && !restored.Streams[s.Name].Complete {
+		// A continuous read follows every split, so one that a bounded read
+		// completed means a new read.
+		ongoing := prev != nil && !restored.Streams[s.Name].Complete && !(j.Continuous && slices.ContainsFunc(prev, func(sp checkpoint.SplitState) bool { return sp.Complete }))
+		if done[s.Name] || ongoing {
 			out[s.Name] = prev
 			continue
 		}
@@ -660,7 +663,10 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		}
 		var splits []source.Split
 		var err error
-		if splitter != nil && !j.transformed() {
+		// A transform's read isn't split, unless its last read was, which
+		// only the source knows how to go on from.
+		split := len(ended) > 1 || len(ended) == 1 && ended[0].ID != checkpoint.WholeStream
+		if splitter != nil && (!j.transformed() || split) {
 			splits, err = splitter.Splits(ctx, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField}, ended)
 		} else {
 			splits, err = source.Whole(ended)

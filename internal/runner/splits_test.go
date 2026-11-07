@@ -429,3 +429,130 @@ func TestEpochsGrowWhenCommitsCantKeepUp(t *testing.T) {
 		})
 	}
 }
+
+// partSource reads two splits: a completes at once and b goes on, unless a
+// read is told to finish, when each completes.
+type partSource struct {
+	finish bool
+
+	mu    sync.Mutex
+	ended [][]source.Split
+	read  []source.ConfiguredStream
+}
+
+func (s *partSource) Splits(_ context.Context, _ source.ConfiguredStream, ended []source.Split) ([]source.Split, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ended = append(s.ended, ended)
+	out := []source.Split{{ID: "a"}, {ID: "b"}}
+	for i := range out {
+		for _, e := range ended {
+			if e.ID == out[i].ID {
+				out[i].State = e.State
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *partSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	cs := req.Streams[0]
+	s.mu.Lock()
+	s.read = append(s.read, cs)
+	finish := s.finish
+	s.mu.Unlock()
+	for _, sp := range cs.Splits {
+		e := out.Split(cs.Name, sp.ID)
+		if err := e.Records(ints("n", 1)); err != nil {
+			return err
+		}
+		if sp.ID == "a" || finish {
+			if err := e.Complete([]byte(sp.ID + "N")); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := e.ResumePoint([]byte(sp.ID + "1")); err != nil {
+			return err
+		}
+	}
+	if finish {
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A bounded read that has completed some splits, and is then followed
+// continuously, starts a new read from where each split got: a continuous
+// read follows every split, and a completed one wouldn't be read otherwise.
+func TestAContinuousReadDoesntContinueABoundedOnesCompletedSplits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		src := &partSource{}
+		attempt := func(owner string, continuous bool) {
+			t.Helper()
+			drain := make(chan struct{})
+			var once sync.Once
+			_, err := runner.RunAttempt(ctx, runner.Job{
+				Owner: owner, Sync: "s1", Pipeline: "p", Log: log, Source: src, Continuous: continuous,
+				Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
+				Destination: &countingDest{},
+				Dataflow:    runner.Passthrough{Convert: columnless},
+				Settings:    delivery.Settings{Require: delivery.ExactlyOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
+				Drain:       drain,
+				OnCommit:    func(uint64) { once.Do(func() { close(drain) }) },
+			})
+			if !errors.Is(err, runner.ErrDrained) {
+				t.Fatalf("attempt %s: %v, want drained", owner, err)
+			}
+		}
+		attempt("a1", false)
+		rec, err := log.Latest(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rec.Splits("s"); len(got) != 2 || !got[0].Complete || got[1].Complete {
+			t.Fatalf("the bounded read's record has %+v, want a complete and b not", got)
+		}
+		attempt("a2", true)
+		want := []source.Split{{ID: "a", State: []byte("aN")}, {ID: "b", State: []byte("b1")}}
+		if len(src.ended) != 2 || !reflect.DeepEqual(src.ended[1], want) {
+			t.Errorf("splits asked for with %+v, want then %+v", src.ended, want)
+		}
+		if got := src.read[1].Splits; !reflect.DeepEqual(got, want) {
+			t.Errorf("the continuous read reads %+v, want %+v", got, want)
+		}
+	})
+}
+
+// A transform added to a pipeline read in splits goes on from them: only the
+// source knows how to.
+func TestATransformContinuesFromASplitRead(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+	src := &partSource{finish: true}
+	if _, err := runner.RunAttempt(ctx, runner.Job{
+		Owner: "a1", Sync: "s1", Pipeline: "p", Log: log, Source: src,
+		Streams:     []runner.Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append}},
+		Destination: &countingDest{},
+		Dataflow:    runner.Passthrough{Convert: columnless},
+		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tr := &fakeTransform{c: &calls{}}
+	job := transformJob(log, "a2", tr, &transformDest{}, nil, outAppend)
+	job.Source, job.Sync, job.Streams = src, "s2", job.Streams[:1]
+	job.Dataflow = runner.Passthrough{Stage: tr.stage, Convert: columnless}
+	if _, err := runner.RunAttempt(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	want := []source.Split{{ID: "a", State: []byte("aN")}, {ID: "b", State: []byte("bN")}}
+	if len(src.ended) != 2 || !reflect.DeepEqual(src.ended[1], want) {
+		t.Errorf("splits asked for with %+v, want then %+v", src.ended, want)
+	}
+}
