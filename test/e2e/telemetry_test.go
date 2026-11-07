@@ -97,11 +97,17 @@ func TestTelemetry(t *testing.T) {
 		{"runner", "openetl.objectstore.calls", map[string]string{"openetl.objectstore.op": "create", "openetl.outcome": "ok"}, func(v float64) bool { return v >= 1 }},
 		{"runner", "openetl.engine.cpu.time", map[string]string{"openetl.cpu.mode": "user"}, func(v float64) bool { return v > 0 }},
 		{"runner", "openetl.engine.edge.bytes", map[string]string{"openetl.edge.direction": "to_engine"}, func(v float64) bool { return v > 0 }},
-		{"server", "temporal_request", nil, func(v float64) bool { return v > 0 }},
 		{"server", "openetl.placement.cpu.capacity", map[string]string{"data_plane": "default", "pool": "default"}, func(v float64) bool { return v > 0 }},
 		{"runner", "go.memory.used", nil, func(v float64) bool { return v > 0 }},
 		{"server", "rpc.server.call.duration", map[string]string{"rpc.method": "openetl.api.v1.SourceService/DiscoverSource"}, func(v float64) bool { return v >= 1 }},
 		{"server", "openetl.pipeline.freshness", job, func(v float64) bool { return v >= 0 }},
+	}
+	if env.orchestrator == "temporal" {
+		want = append(want, struct {
+			role, name string
+			attrs      map[string]string
+			ok         func(float64) bool
+		}{"server", "temporal_request", nil, func(v float64) bool { return v > 0 }})
 	}
 	for _, w := range want {
 		eventually(t, 30*time.Second, w.role+" metric "+w.name, func() bool {

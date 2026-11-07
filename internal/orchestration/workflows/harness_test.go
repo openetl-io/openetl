@@ -3,6 +3,7 @@ package workflows_test
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -40,6 +41,9 @@ type harness interface {
 
 func newHarness(t *testing.T) harness {
 	t.Helper()
+	if os.Getenv(onDBOS) != "" {
+		return newDBOSHarness(t)
+	}
 	var s testsuite.WorkflowTestSuite
 	return &temporalHarness{TestWorkflowEnvironment: s.NewTestWorkflowEnvironment()}
 }

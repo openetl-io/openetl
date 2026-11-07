@@ -2,6 +2,11 @@
 #
 #   docker compose -f deploy/compose/dev.yml up -d
 #
+# openetld runs workflows on DBOS, in Postgres, by default. Temporal is for
+# --orchestrator temporal and its tests:
+#
+#   docker compose -f deploy/compose/dev.yml --profile temporal up -d
+#
 # `openetld dev` uses the local filesystem as its object store by default.
 # SeaweedFS (S3), fake-gcs-server (GCS) and Azurite (Azure Blob) all enforce
 # conditional writes, for the checkpoint log's per-provider tests. An Iceberg
@@ -30,6 +35,7 @@ services:
       retries: 30
 
   temporal:
+    profiles: ["temporal"]
     image: temporalio/temporal:1.9.1
     command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-ip", "0.0.0.0", "--db-filename", "/home/temporal/temporal.db"]
     ports:

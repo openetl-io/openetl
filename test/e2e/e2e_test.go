@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,6 +50,7 @@ import (
 	"github.com/openetl-io/openetl/internal/auth"
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/daemon"
+	"github.com/openetl-io/openetl/internal/orchestration/dbosbackend"
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 	"github.com/openetl-io/openetl/internal/platform/config"
@@ -64,8 +66,10 @@ var env struct {
 	openetld, engine string
 	// The official connectors, built from openetl-connectors. Syncs download
 	// them from a file server, by their applied descriptors.
-	connectors    string
-	downloads     string
+	connectors string
+	downloads  string
+	// What runs workflows: dbos, or temporal if OPENETL_TEST_ORCHESTRATOR says.
+	orchestrator  string
 	temporal, ns  string
 	dbURL, apiURL string
 	checkpoints   string
@@ -144,27 +148,31 @@ func setup(m *testing.M) (int, error) {
 	}
 	defer func() { _ = stopTelemetry(context.Background()) }()
 
-	env.temporal = cmp.Or(os.Getenv("OPENETL_TEST_TEMPORAL_ADDRESS"), "localhost:7233")
-	env.ns = "openetl-e2e-" + strings.ToLower(rand.Text())[:10]
-	tc, err := client.DialContext(ctx, client.Options{HostPort: env.temporal})
-	if err != nil {
-		return 0, err
+	env.orchestrator = cmp.Or(os.Getenv("OPENETL_TEST_ORCHESTRATOR"), "dbos")
+	if env.orchestrator == "temporal" {
+		env.temporal = cmp.Or(os.Getenv("OPENETL_TEST_TEMPORAL_ADDRESS"), "localhost:7233")
+		env.ns = "openetl-e2e-" + strings.ToLower(rand.Text())[:10]
+		tc, err := client.DialContext(ctx, client.Options{HostPort: env.temporal})
+		if err != nil {
+			return 0, err
+		}
+		defer tc.Close()
+		if _, err := tc.WorkflowService().RegisterNamespace(ctx, &workflowservice.RegisterNamespaceRequest{
+			Namespace: env.ns, WorkflowExecutionRetentionPeriod: durationpb.New(24 * time.Hour),
+		}); err != nil {
+			return 0, fmt.Errorf("register namespace: %w", err)
+		}
+		defer func() {
+			_, _ = tc.OperatorService().DeleteNamespace(context.Background(), &operatorservice.DeleteNamespaceRequest{Namespace: env.ns})
+		}()
 	}
-	defer tc.Close()
-	if _, err := tc.WorkflowService().RegisterNamespace(ctx, &workflowservice.RegisterNamespaceRequest{
-		Namespace: env.ns, WorkflowExecutionRetentionPeriod: durationpb.New(24 * time.Hour),
-	}); err != nil {
-		return 0, fmt.Errorf("register namespace: %w", err)
-	}
-	defer func() {
-		_, _ = tc.OperatorService().DeleteNamespace(context.Background(), &operatorservice.DeleteNamespaceRequest{Namespace: env.ns})
-	}()
 
 	var drop func()
 	if env.dbURL, drop, err = storetest.Create(ctx); err != nil {
 		return 0, err
 	}
 	defer drop()
+	defer dropDBOS(env.dbURL)
 
 	files := httptest.NewServer(http.FileServer(http.Dir(env.connectors)))
 	defer files.Close()
@@ -188,7 +196,7 @@ func setup(m *testing.M) (int, error) {
 	go func() {
 		done <- daemon.Run(ctx, daemon.Options{
 			Config: config.Config{
-				DatabaseURL: env.dbURL, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
+				DatabaseURL: env.dbURL, Orchestrator: env.orchestrator, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
 				Connectors: env.noConnectors, EgressAllow: egressAllow, SecretsKey: filepath.Join(dir, "secrets.key"),
 				BootstrapKeyFile: env.keyFile, SignInRate: 1000,
 			},
@@ -227,7 +235,7 @@ func setup(m *testing.M) (int, error) {
 		return 0, err
 	}
 	code := m.Run()
-	if dir := os.Getenv("OPENETL_RECORD_HISTORIES"); dir != "" {
+	if dir := os.Getenv("OPENETL_RECORD_HISTORIES"); dir != "" && env.orchestrator == "temporal" {
 		if err := recordHistories(ctx, dir); err != nil {
 			return code, fmt.Errorf("record histories: %w", err)
 		}
@@ -270,6 +278,26 @@ func applyOfficialConnectors(ctx context.Context) error {
 	}
 	_, err := apiv1connect.NewApplyServiceClient(env.http, env.apiURL).Apply(ctx, connect.NewRequest(req))
 	return err
+}
+
+// dropDBOS drops the database DBOS made next to the metadata database.
+func dropDBOS(metadata string) {
+	system, err := dbosbackend.SystemDatabaseURL(metadata)
+	if err != nil {
+		return
+	}
+	u, err := url.Parse(system)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, metadata)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	_, _ = conn.Exec(ctx, "DROP DATABASE IF EXISTS "+strings.TrimPrefix(u.Path, "/")+" WITH (FORCE)")
 }
 
 // recordHistories writes the history of every workflow that finished, for the
@@ -423,8 +451,14 @@ func startRunnerWith(t *testing.T, token, apiURL string, extra ...string) *runne
 		args = append(args, "--dbt", env.dbt)
 	}
 	args = append(args, extra...)
+	return startOpenetld(t, []string{"OPENETL_RUNNER_TOKEN=" + token}, args...)
+}
+
+// startOpenetld starts an openetld process, for the test.
+func startOpenetld(t *testing.T, vars []string, args ...string) *runner {
+	t.Helper()
 	cmd := exec.Command(env.openetld, args...)
-	cmd.Env = append(os.Environ(), "OPENETL_RUNNER_TOKEN="+token)
+	cmd.Env = append(os.Environ(), vars...)
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
 	if err := cmd.Start(); err != nil {
@@ -437,7 +471,7 @@ func startRunnerWith(t *testing.T, token, apiURL string, extra ...string) *runne
 	t.Cleanup(func() {
 		r.kill(t)
 		if t.Failed() {
-			t.Logf("runner %d output:\n%s", cmd.Process.Pid, r.out.String())
+			t.Logf("%s %d output:\n%s", args[0], cmd.Process.Pid, r.out.String())
 		}
 	})
 	return r

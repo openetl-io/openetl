@@ -4,13 +4,23 @@ name: e2e
 # passes its secrets for the connectors' checkout.
 on:
   workflow_dispatch:
+    inputs:
+      orchestrator:
+        description: What runs workflows
+        type: choice
+        options: [dbos, temporal]
+        default: dbos
   workflow_call:
+    inputs:
+      orchestrator:
+        type: string
+        default: dbos
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-e2e-${{ github.ref }}
+  group: ${{ github.workflow }}-e2e-${{ inputs.orchestrator }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -60,7 +70,9 @@ jobs:
           "$RUNNER_TEMP/dbt/bin/pip" install --quiet dbt-core==1.12.6 dbt-postgres==1.11.0
           echo "OPENETL_DBT=$RUNNER_TEMP/dbt/bin/dbt" >> "$GITHUB_ENV"
       # The images pull and the services start while the binaries build.
-      - name: Start Postgres, Temporal, S3, Kafka, Kinesis, Spark and Flink
+      - name: Start Postgres, S3, Kafka, Kinesis, Spark and Flink, and Temporal if it's what's tested
+        env:
+          TEMPORAL: ${{ inputs.orchestrator == 'temporal' && '1' || '' }}
         run: |
           tail --pid="$(cat "$RUNNER_TEMP/free-disk.pid")" -f /dev/null
           df -h /
@@ -83,6 +95,8 @@ jobs:
       - name: Runner/engine tests against the S3 store
         run: OPENETL_ENGINE="$PWD/target/debug/openetl-engine" go test -tags integration -count=1 ./internal/engineclient/...
       - name: Scheduled syncs through the whole stack, with engine and runner kills
+        env:
+          OPENETL_TEST_ORCHESTRATOR: ${{ inputs.orchestrator }}
         run: make e2e CONNECTORS_SRC=openetl-connectors E2E_FLAGS=-v
       # A driver's launch failures are in the worker's log.
       - name: The Spark and Flink containers' logs

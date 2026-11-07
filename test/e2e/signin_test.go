@@ -272,7 +272,7 @@ func TestAuthless(t *testing.T) {
 	go func() {
 		done <- daemon.Run(ctx, daemon.Options{
 			Config: config.Config{
-				DatabaseURL: env.dbURL, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
+				DatabaseURL: env.dbURL, Orchestrator: env.orchestrator, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
 				Connectors: env.noConnectors, BootstrapKeyFile: env.keyFile, Auth: "none",
 			},
 			Roles:    daemon.Roles{Server: true},

@@ -21,7 +21,7 @@ OpenETL is licensed under Apache 2.0 and built to be self-hosted.
 | `crates/` | `openetl-engine`, the Rust data engine, and `openetl-proto`, its generated protocol types |
 | `test/sim` | A seeded simulation of the commit protocol under crashes, timeouts and zombie jobs |
 | `web/` | The UI: React and TypeScript, a client of the public API only. `web/src/gen` is generated from `proto/` and committed |
-| `deploy/compose` | Local dependencies: Postgres, Temporal, an S3-compatible store |
+| `deploy/compose` | Local dependencies: Postgres, an S3-compatible store, and Temporal in a profile |
 
 ## Development
 
@@ -32,7 +32,7 @@ make test          # Go, Rust and UI unit tests
 make sim           # commit-protocol simulation; SEEDS=10000 for more seeds
 make lint          # buf lint, golangci-lint, rustfmt, clippy, tsc
 make generate      # regenerate Go and TypeScript from proto/ after changing a .proto
-make deps-up       # Postgres, Temporal, S3, Kafka and Kinesis in Docker
+make deps-up       # Postgres, S3, Kafka and Kinesis in Docker
 make connectors    # build the official connectors from ../openetl-connectors into bin/connectors
 make e2e           # whole-stack scenarios; needs deps-up and the connectors
 make dev           # openetld with every role, and the UI at http://localhost:8080

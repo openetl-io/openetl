@@ -13,9 +13,15 @@ import (
 )
 
 type Config struct {
-	DatabaseURL       string
-	Listen            string
-	APIURL            string
+	DatabaseURL string
+	Listen      string
+	APIURL      string
+	// What runs workflows: dbos, which needs nothing but Postgres, or temporal.
+	Orchestrator string
+	// DBOS's database. Empty: on DatabaseURL's server, named after it.
+	DBOSDatabaseURL string
+	// Which orchestrator this is, on DBOS. Empty: the host name.
+	ExecutorID        string
 	TemporalAddress   string
 	TemporalNamespace string
 	DataPlane         string
@@ -100,8 +106,11 @@ var options = []option{
 	{"database-url", "OPENETL_DATABASE_URL", "postgres://openetl:openetl@localhost:5432/openetl", "metadata database URL", func(c *Config) *string { return &c.DatabaseURL }},
 	{"listen", "OPENETL_LISTEN", "localhost:8080", "API listen address", func(c *Config) *string { return &c.Listen }},
 	{"api-url", "OPENETL_API_URL", "http://localhost:8080", "API URL, for runners", func(c *Config) *string { return &c.APIURL }},
-	{"temporal-address", "OPENETL_TEMPORAL_ADDRESS", "localhost:7233", "Temporal frontend host:port", func(c *Config) *string { return &c.TemporalAddress }},
-	{"temporal-namespace", "OPENETL_TEMPORAL_NAMESPACE", "default", "Temporal namespace", func(c *Config) *string { return &c.TemporalNamespace }},
+	{"orchestrator", "OPENETL_ORCHESTRATOR", "dbos", "what runs workflows: dbos, which needs nothing but Postgres, or temporal", func(c *Config) *string { return &c.Orchestrator }},
+	{"dbos-database-url", "OPENETL_DBOS_DATABASE_URL", "", "the database DBOS keeps workflows in, which it creates if it can; not through a transaction pooler (default: on the metadata database's server, named after it with _dbos)", func(c *Config) *string { return &c.DBOSDatabaseURL }},
+	{"executor-id", "OPENETL_EXECUTOR_ID", "", "which orchestrator this is, unique among them and the same across restarts, such as its pod's name; on DBOS only (default: the host name)", func(c *Config) *string { return &c.ExecutorID }},
+	{"temporal-address", "OPENETL_TEMPORAL_ADDRESS", "localhost:7233", "Temporal frontend host:port; on Temporal only", func(c *Config) *string { return &c.TemporalAddress }},
+	{"temporal-namespace", "OPENETL_TEMPORAL_NAMESPACE", "default", "Temporal namespace; on Temporal only", func(c *Config) *string { return &c.TemporalNamespace }},
 	{"data-plane", "OPENETL_DATA_PLANE", "default", "data plane ID", func(c *Config) *string { return &c.DataPlane }},
 	{"checkpoints", "OPENETL_CHECKPOINTS", ".openetl/checkpoints", "checkpoint store: a directory, s3://bucket?region=…&endpoint=…, gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it", func(c *Config) *string { return &c.Checkpoints }},
 	{"engine", "OPENETL_ENGINE", "", "openetl-engine executable (default: next to openetld, then on PATH)", func(c *Config) *string { return &c.Engine }},

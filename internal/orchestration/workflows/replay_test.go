@@ -14,7 +14,8 @@ import (
 
 // Recorded histories replay against the current code, so a change that would
 // break running workflows on Temporal fails here; such a change needs
-// Context.Version. Record new ones with OPENETL_RECORD_HISTORIES=dir make e2e.
+// Context.Version. Record new ones with OPENETL_TEST_ORCHESTRATOR=temporal
+// OPENETL_RECORD_HISTORIES=dir make e2e.
 func TestReplayHistories(t *testing.T) {
 	files, err := filepath.Glob("testdata/histories/*.json")
 	if err != nil || len(files) == 0 {

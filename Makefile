@@ -59,11 +59,11 @@ web-dev: web/node_modules/.modules.yaml ## Run the UI's dev server against the A
 
 # DEPS names the services to start, e.g. DEPS="postgres s3"; all by default.
 .PHONY: deps-up deps-down
-deps-up: ## Start local dependencies (Postgres, Temporal, S3, GCS, Azure, Kafka, Kinesis, Spark, Flink)
+deps-up: ## Start local dependencies (Postgres, S3, GCS, Azure, Kafka, Kinesis, Spark, Flink); TEMPORAL=1 adds Temporal, as does naming it in DEPS
 	@mkdir -p $(OPENETL_SPARK_SHARE)
-	docker compose -f deploy/compose/dev.yml up -d --wait $(DEPS)
+	docker compose -f deploy/compose/dev.yml $(if $(or $(TEMPORAL),$(findstring temporal,$(DEPS))),--profile temporal) up -d --wait $(DEPS) $(if $(and $(TEMPORAL),$(DEPS)),temporal)
 deps-down: ## Stop local dependencies
-	docker compose -f deploy/compose/dev.yml down
+	docker compose -f deploy/compose/dev.yml --profile temporal down
 
 # The kubeconfig is the cluster's own, so the current kubectl context is
 # never touched.
@@ -170,7 +170,7 @@ e2e: connectors ## Full-stack scenarios against the compose deps
 	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(E2E_FLAGS) ./test/e2e/...
 
 # The Kubernetes targets' tests, on make kind-up's cluster and the compose
-# Postgres, Temporal and S3. KIND_HOST is how pods reach this host.
+# Postgres and S3. KIND_HOST is how pods reach this host.
 .PHONY: e2e-kube
 e2e-kube: connectors ## Flink on the Kubernetes operator and PySpark on Spark on Kubernetes, in kind
 	cargo build -p openetl-engine
@@ -180,7 +180,7 @@ e2e-kube: connectors ## Flink on the Kubernetes operator and PySpark on Spark on
 	OPENETL_SPARK_SHARE=$(OPENETL_SPARK_SHARE) OPENETL_E2E_KUBE_SPARK_SUBMIT=$(CURDIR)/deploy/kind/spark-submit \
 	go test -tags e2e -count=1 -timeout 40m -run 'OnKubernetes' -v ./test/e2e
 
-# The chaos suite needs the compose Postgres, Temporal, S3, Kafka and Iceberg
+# The chaos suite needs the compose Postgres, S3, Kafka and Iceberg
 # catalog, and for its transforms Spark and Flink with make spark-lib and
 # flink-lib's jars; runs drawn with a transform that isn't there go without.
 # CHAOS_FLAGS passes its flags, e.g. CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'.

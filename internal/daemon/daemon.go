@@ -35,6 +35,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration"
 	cpactivities "github.com/openetl-io/openetl/internal/orchestration/activities"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/orchestration/dbosbackend"
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
 	"github.com/openetl-io/openetl/internal/orchestration/ops"
 	"github.com/openetl-io/openetl/internal/orchestration/schedules"
@@ -87,7 +88,7 @@ func Run(ctx context.Context, o Options) error {
 	)
 	// A runner reaches only the API (ADR-0028).
 	if o.Roles.Server || o.Roles.Orchestrator {
-		backend, err = temporalbackend.Open(ctx, temporalx.Options{Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, Logger: log})
+		backend, err = openBackend(ctx, cfg, log)
 		if err != nil {
 			return err
 		}
@@ -105,16 +106,12 @@ func Run(ctx context.Context, o Options) error {
 	g, gctx := errgroup.WithContext(ctx)
 	// A runner in this process drains through the API, so it stops first.
 	cpctx := gctx
+	stopControlPlane := func() {}
 	if o.Roles.Runner && (o.Roles.Server || o.Roles.Orchestrator) {
 		var stop context.CancelFunc
 		cpctx, stop = context.WithCancel(context.WithoutCancel(gctx))
 		defer stop()
-		g.Go(func() error {
-			defer stop()
-			return runRunner(gctx, cfg, log.With("role", "runner"))
-		})
-	} else if o.Roles.Runner {
-		g.Go(func() error { return runRunner(gctx, cfg, log.With("role", "runner")) })
+		stopControlPlane = stop
 	}
 	if o.Roles.Server {
 		ln := o.Listener
@@ -209,6 +206,14 @@ func Run(ctx context.Context, o Options) error {
 			o.Webhooks(notifier)
 		}
 		g.Go(func() error { return notifier.Run(cpctx) })
+	}
+	// After the server's part, which gives a runner in this process the API's
+	// address and a token.
+	if o.Roles.Runner {
+		g.Go(func() error {
+			defer stopControlPlane()
+			return runRunner(gctx, cfg, log.With("role", "runner"))
+		})
 	}
 	if o.Roles.Orchestrator {
 		reg, err := work.RegisterMetrics()
@@ -351,6 +356,23 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, ready func(stri
 		return err
 	}
 	return nil
+}
+
+func openBackend(ctx context.Context, cfg config.Config, log *slog.Logger) (orchestration.Backend, error) {
+	switch cfg.Orchestrator {
+	case "temporal":
+		return temporalbackend.Open(ctx, temporalx.Options{Address: cfg.TemporalAddress, Namespace: cfg.TemporalNamespace, Logger: log})
+	case "", "dbos":
+		url := cfg.DBOSDatabaseURL
+		if url == "" {
+			var err error
+			if url, err = dbosbackend.SystemDatabaseURL(cfg.DatabaseURL); err != nil {
+				return nil, fmt.Errorf("daemon: --dbos-database-url: %w", err)
+			}
+		}
+		return dbosbackend.Open(ctx, dbosbackend.Options{DatabaseURL: url, ExecutorID: cfg.ExecutorID, Logger: log.With("component", "dbos")})
+	}
+	return nil, fmt.Errorf("daemon: --orchestrator: %q is neither dbos nor temporal", cfg.Orchestrator)
 }
 
 func orchestrate(ctx context.Context, cfg config.Config, backend orchestration.Backend, st *store.Store, work *dispatch.Dispatcher, wf workflows.Workflows, log *slog.Logger) error {
