@@ -32,15 +32,17 @@ func laneDocs(t *testing.T, name, dest, write string, rows int) []string {
 	return d
 }
 
-// ranOnLanes checks the engine ran the sync on this many lanes.
+// ranOnLanes checks the engine ran the sync on this many lanes, and as many
+// writer lanes: the destinations here take 16, as their descriptors say.
 func ranOnLanes(t *testing.T, pipeline string, lanes int) {
 	t.Helper()
 	for _, e := range wholeLog(t, latestSync(t, pipeline).GetName()) {
-		if e.GetMessage() == "job started" && int(e.GetAttrs().GetFields()["lanes"].GetNumberValue()) == lanes {
+		f := e.GetAttrs().GetFields()
+		if e.GetMessage() == "job started" && int(f["lanes"].GetNumberValue()) == lanes && int(f["writer_lanes"].GetNumberValue()) == lanes {
 			return
 		}
 	}
-	t.Errorf("no attempt of %s started the engine with %d lanes", pipeline, lanes)
+	t.Errorf("no attempt of %s started the engine with %d lanes and writer lanes", pipeline, lanes)
 }
 
 // A table read in key ranges on several lanes lands each row once, in each
