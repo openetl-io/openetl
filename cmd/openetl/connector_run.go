@@ -48,8 +48,9 @@ or github.com/OWNER/REPO[/PACKAGE]@VERSION, with GITHUB_TOKEN or GH_TOKEN when
 set. A descriptor's binary is fetched by its digest, or taken from beside a
 descriptor file, where openetl connector package wrote it. Or give --image REF
 to run an image with Docker or Podman, or --attach ADDR to wait for a
-connector you start yourself, under a debugger, say. Nothing else is needed: no openetld, Temporal,
-Postgres or bucket. Host services are the platform's, HTTP included.
+connector you start yourself, under a debugger, say. Nothing else is needed:
+no openetld, Temporal, Postgres or bucket. Host services are the platform's,
+HTTP included.
 
 A config names its secrets as {"secret": NAME}, whose values come from
 --secret NAME=VALUE, or else from OPENETL_SECRET_NAME (in capitals, with _ for
