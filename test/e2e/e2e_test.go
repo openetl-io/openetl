@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -266,7 +267,11 @@ func kubeListener(ctx context.Context, host string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("OPENETL_E2E_KUBE_HOST: %w", err)
 	}
-	egressAllow += "," + ips[0] + "/32"
+	ip, err := netip.ParseAddr(ips[0])
+	if err != nil {
+		return nil, fmt.Errorf("OPENETL_E2E_KUBE_HOST: %w", err)
+	}
+	egressAllow += "," + netip.PrefixFrom(ip, ip.BitLen()).String()
 	var lc net.ListenConfig
 	return lc.Listen(ctx, "tcp", "0.0.0.0:0")
 }

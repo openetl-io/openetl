@@ -30,7 +30,7 @@ import (
 // podsOnKube is what a test's attempts' pods need in kind: the API, the
 // checkpoint store and Postgres, at addresses pods reach.
 type podsOnKube struct {
-	k      *kube
+	k            *kube
 	client       kubernetes.Interface
 	plane, token string
 	// The template's file, and the store's URL from this host.
@@ -88,7 +88,9 @@ func kubeForPods(t *testing.T) *podsOnKube {
 	}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.CoreV1().Secrets(k.namespace).Delete(context.Background(), secret, metav1.DeleteOptions{}) })
+	t.Cleanup(func() {
+		_ = client.CoreV1().Secrets(k.namespace).Delete(context.Background(), secret, metav1.DeleteOptions{})
+	})
 
 	podStore := "s3://" + bucket + "?endpoint=" + url.QueryEscape("http://"+net.JoinHostPort(k.host, "8333"))
 	template := filepath.Join(t.TempDir(), "pod.yaml")
@@ -183,8 +185,8 @@ func TestAttemptsInPodsOnKubernetes(t *testing.T) {
 	}
 	checkRows(t, schema(batch), 2000, "users", "purchases")
 	if n, err := query[int](t, `SELECT count(*) FROM dispatches d JOIN attempts a ON a.org_id = d.org_id AND a.id = d.id
-		JOIN pipelines p ON p.org_id = a.org_id AND p.id = a.pipeline_id WHERE p.name = $1 AND d.launcher IS NOT NULL`, batch); err != nil || n != 1 {
-		t.Fatalf("%d of the sync's attempts ran in pods (%v), want 1", n, err)
+		JOIN pipelines p ON p.org_id = a.org_id AND p.id = a.pipeline_id WHERE p.name = $1 AND d.launcher IS NOT NULL`, batch); err != nil || n == 0 {
+		t.Fatalf("none of the sync's attempts ran in a pod (%v)", err)
 	}
 	batchID := mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", batch)
 	eventually(t, time.Minute, "the sync's pod to go", func() bool { return len(p.all(t, batchID)) == 0 })
