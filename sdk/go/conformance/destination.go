@@ -75,9 +75,11 @@ type DestinationSuite struct {
 	// lands.
 	Untyped bool
 	// Logical types the destination's mapping table doesn't keep exactly,
-	// by ADR-0014's names (int16, decimal, timestamp_tz, interval, …), each
-	// with what the table says of it. The types check leaves them out, and
-	// flags them.
+	// by the types check's names (boolean, int16, int32, int64, float32,
+	// float64, string, binary, decimal, decimal_10_2, timestamp_tz,
+	// timestamp, timestamp_ns, date, time, interval, list, json, uuid), each
+	// with what the table says of it. The check leaves them out, and flags
+	// them.
 	LossyTypes map[string]string
 }
 

@@ -47,7 +47,7 @@ func at(layout, s string) time.Time {
 	return t
 }
 
-// typeCases are ADR-0014's logical types, with the values the engine
+// typeCases are the platform's logical types, with the values the engine
 // hands a destination at their edges: infinities clamped to the types'
 // limits, times in microseconds.
 func typeCases(nanos bool) []typeCase {
