@@ -307,21 +307,23 @@ type store struct {
 	fences  map[string]uint64
 	markers map[string]bool
 	staging map[string]map[string][]map[string]any
-	// Rows an overwrite read has committed, until it ends.
+	// Rows an overwrite read has committed, until it ends, and that read.
 	reading map[string][]map[string]any
+	reads   map[string]int64
 	// By table, the columns that take no null.
 	notNull map[string]map[string]bool
 }
 
 func newStore() *store {
 	return &store{tables: map[string][]map[string]any{}, fences: map[string]uint64{}, markers: map[string]bool{},
-		staging: map[string]map[string][]map[string]any{}, reading: map[string][]map[string]any{}, notNull: map[string]map[string]bool{}}
+		staging: map[string]map[string][]map[string]any{}, reading: map[string][]map[string]any{}, reads: map[string]int64{}, notNull: map[string]map[string]bool{}}
 }
 
 type memDestination struct {
-	c   memConfig
-	st  *store
-	bug string
+	c     memConfig
+	st    *store
+	bug   string
+	lanes int
 }
 
 var memCapabilities = destination.Capabilities{
@@ -331,28 +333,57 @@ var memCapabilities = destination.Capabilities{
 	Holds:      destination.Holds{ByKey: true, Guarded: true},
 }
 
-func (d *memDestination) Capabilities() destination.Capabilities { return memCapabilities }
-func (d *memDestination) Check(context.Context) error            { return d.c.check() }
+func (d *memDestination) Capabilities() destination.Capabilities {
+	c := memCapabilities
+	c.WriterLanes = d.lanes
+	return c
+}
+func (d *memDestination) Check(context.Context) error { return d.c.check() }
 
 func (d *memDestination) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
 	modes := map[string]destination.WriteMode{}
 	for _, s := range cfg.Streams {
 		modes[s.Name] = s.Mode
 	}
-	return &memWriter{d: d, cfg: cfg, modes: modes, ended: map[string]bool{}, endedIn: map[string][]string{}}, nil
+	return &memWriter{d: d, cfg: cfg, modes: modes, ended: map[string]bool{}, seen: map[string]*arrow.Schema{}}, nil
 }
 
 type memWriter struct {
 	d     *memDestination
 	cfg   destination.OpenConfig
 	modes map[string]destination.WriteMode
-	// Streams whose reads ended in the epoch being written, then by epoch.
-	ended   map[string]bool
-	endedIn map[string][]string
+	// Streams whose reads ended in the epoch being written.
+	ended map[string]bool
+	// Each read's start.
+	starts map[string]int64
+	// The last schema of each stream's staging.
+	seen map[string]*arrow.Schema
+}
+
+// memStaged is a lane's committable: where it staged the epoch, and the reads
+// it knows the ends of.
+type memStaged struct {
+	Key    string
+	Ended  []string
+	Starts map[string]int64
+}
+
+func memLanes(committables []destination.Staged) ([]memStaged, error) {
+	lanes := make([]memStaged, len(committables))
+	for i, c := range committables {
+		if err := json.Unmarshal(c, &lanes[i]); err != nil {
+			return nil, err
+		}
+	}
+	return lanes, nil
 }
 
 func (w *memWriter) key(e destination.Epoch) string {
-	return fmt.Sprintf("%s/%d/%d", w.cfg.Pipeline, e.Generation, e.N)
+	return fmt.Sprintf("%s/%d/%d/%d", w.cfg.Pipeline, e.Generation, e.N, w.cfg.Lane)
+}
+
+func (w *memWriter) marker(stream string, e destination.Epoch) string {
+	return fmt.Sprintf("%s/%s/%d/%d", w.cfg.Pipeline, stream, e.Generation, e.N)
 }
 
 func (w *memWriter) Write(_ context.Context, e destination.Epoch, stream string, b arrow.RecordBatch) error {
@@ -376,6 +407,12 @@ func (w *memWriter) stage(e destination.Epoch, stream string, b arrow.RecordBatc
 	k := w.key(e)
 	if st.staging[k] == nil {
 		st.staging[k] = map[string][]map[string]any{}
+	}
+	if s := w.seen[stream]; w.d.bug == "older-batch-fails" && !patch {
+		if s != nil && b.Schema().NumFields() < s.NumFields() {
+			return errors.New("the batch has fewer columns than the last")
+		}
+		w.seen[stream] = b.Schema()
 	}
 	for i := range int(b.NumRows()) {
 		row := map[string]any{}
@@ -435,19 +472,25 @@ func kept(r map[string]any) map[string]any {
 }
 
 func (w *memWriter) PreCommit(_ context.Context, e destination.Epoch) (destination.Staged, error) {
-	w.d.st.mu.Lock()
-	w.endedIn[w.key(e)] = slices.Sorted(maps.Keys(w.ended))
-	clear(w.ended)
-	w.d.st.mu.Unlock()
-	if w.d.bug == "visible-at-precommit" {
-		w.d.st.mu.Lock()
-		w.apply(e, false)
-		w.d.st.mu.Unlock()
+	st := w.d.st
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if w.d.bug == "empty-lane-fails" && st.staging[w.key(e)] == nil {
+		return nil, errors.New("the lane staged nothing")
 	}
-	return destination.Staged(w.key(e)), nil
+	lane := memStaged{Key: w.key(e), Ended: slices.Sorted(maps.Keys(w.ended)), Starts: w.starts}
+	clear(w.ended)
+	if w.d.bug == "visible-at-precommit" {
+		w.apply(e, []memStaged{lane}, false)
+	}
+	return json.Marshal(lane)
 }
 
-func (w *memWriter) Commit(_ context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
+func (w *memWriter) Commit(_ context.Context, e destination.Epoch, committables []destination.Staged) (destination.Committed, error) {
+	lanes, err := memLanes(committables)
+	if err != nil {
+		return destination.Committed{}, err
+	}
 	st := w.d.st
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -457,25 +500,38 @@ func (w *memWriter) Commit(_ context.Context, e destination.Epoch, _ []destinati
 		}
 		return destination.Committed{}, destination.ErrFenced
 	}
-	w.apply(e, w.d.bug != "double-apply")
+	switch w.d.bug {
+	case "commit-lane-0":
+		lanes = lanes[:1]
+	case "ended-lane-0":
+		for i := range lanes[1:] {
+			lanes[i+1].Ended = nil
+		}
+	}
+	w.apply(e, lanes, w.d.bug != "double-apply")
 	return destination.Committed{}, nil
 }
 
-// apply applies e's staging to each stream without its marker.
-func (w *memWriter) apply(e destination.Epoch, marked bool) {
+// apply applies every lane's staging of e to each stream without its marker.
+func (w *memWriter) apply(e destination.Epoch, lanes []memStaged, marked bool) {
 	st := w.d.st
-	staged := maps.Clone(st.staging[w.key(e)])
-	if staged == nil {
-		staged = map[string][]map[string]any{}
+	staged := map[string][]map[string]any{}
+	var ended []string
+	starts := map[string]int64{}
+	for _, l := range lanes {
+		for stream, rows := range st.staging[l.Key] {
+			staged[stream] = append(staged[stream], rows...)
+		}
+		ended = append(ended, l.Ended...)
+		maps.Copy(starts, l.Starts)
 	}
-	ended := w.endedIn[w.key(e)]
 	for _, stream := range ended {
 		if _, ok := staged[stream]; !ok {
 			staged[stream] = nil
 		}
 	}
 	for stream, rows := range staged {
-		marker := fmt.Sprintf("%s/%s/%d/%d", w.cfg.Pipeline, stream, e.Generation, e.N)
+		marker := w.marker(stream, e)
 		if marked && st.markers[marker] {
 			continue
 		}
@@ -490,6 +546,10 @@ func (w *memWriter) apply(e destination.Epoch, marked bool) {
 		}
 		switch w.modes[stream] {
 		case destination.Overwrite:
+			if st.reads[table] != starts[stream] {
+				st.reads[table] = starts[stream]
+				delete(st.reading, table)
+			}
 			st.reading[table] = append(st.reading[table], data...)
 			if slices.Contains(ended, stream) {
 				st.tables[table] = st.reading[table]
@@ -501,6 +561,7 @@ func (w *memWriter) apply(e destination.Epoch, marked bool) {
 				switch {
 				case i < 0:
 					st.tables[table] = append(st.tables[table], r)
+				case w.d.bug == "merge-keeps-first":
 				case r["_openetl_deleted"] == true:
 					// A soft delete keeps the row's other columns.
 					t := maps.Clone(st.tables[table][i])
@@ -544,7 +605,7 @@ func (w *memWriter) patch(table string, patches []map[string]any) {
 	}
 }
 
-func (w *memWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, _ []destination.Staged) (destination.Recovery, error) {
+func (w *memWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, committables []destination.Staged) (destination.Recovery, error) {
 	if err := w.d.c.check(); err != nil {
 		return 0, err
 	}
@@ -555,24 +616,33 @@ func (w *memWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, 
 	if e.IsZero() || w.d.bug == "recover-applied" {
 		return destination.Applied, nil
 	}
-	staged, ok := st.staging[w.key(e)]
-	if !ok {
-		return destination.Lost, nil
+	lanes, err := memLanes(committables)
+	if err != nil {
+		return 0, err
+	}
+	if w.d.bug == "recover-lane-0" {
+		lanes = lanes[:1]
 	}
 	missing := false
-	for stream := range staged {
-		if !st.markers[fmt.Sprintf("%s/%s/%d/%d", w.cfg.Pipeline, stream, e.Generation, e.N)] {
-			missing = true
+	for _, l := range lanes {
+		for _, stream := range slices.Concat(slices.Collect(maps.Keys(st.staging[l.Key])), l.Ended) {
+			missing = missing || !st.markers[w.marker(stream, e)]
 		}
 	}
 	if !missing {
 		return destination.Applied, nil
 	}
-	w.apply(e, true)
+	w.apply(e, lanes, true)
 	return destination.Redone, nil
 }
 
-func (w *memWriter) StartReads(context.Context, map[string]time.Time) error { return nil }
+func (w *memWriter) StartReads(_ context.Context, starts map[string]time.Time) error {
+	w.starts = map[string]int64{}
+	for name, t := range starts {
+		w.starts[name] = t.UnixMicro()
+	}
+	return nil
+}
 
 func (w *memWriter) EndRead(_ context.Context, _ destination.Epoch, stream string) error {
 	w.ended[stream] = true
@@ -595,16 +665,20 @@ func (w *memWriter) ApplySchema(_ context.Context, streams []destination.StreamS
 }
 func (w *memWriter) Close(context.Context) error { return nil }
 
-func destinationSuite(bug string) conformance.DestinationSuite {
+func destinationSuite(bug string) conformance.DestinationSuite { return lanesSuite(bug, 0) }
+
+func lanesSuite(bug string, lanes int) conformance.DestinationSuite {
 	st := newStore()
+	caps := memCapabilities
+	caps.WriterLanes = lanes
 	return conformance.DestinationSuite{
 		Launch: conformance.InProcess(sdk.Connector{
 			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw},
 			Destination: func(config []byte, _ host.Host) (destination.Destination, error) {
 				c, err := bind(config)
-				return &memDestination{c: c, st: st, bug: bug}, err
+				return &memDestination{c: c, st: st, bug: bug, lanes: lanes}, err
 			},
-			Capabilities: memCapabilities,
+			Capabilities: caps,
 		}),
 		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
 		Read: func(_ context.Context, namespace, stream string) ([]map[string]any, error) {
@@ -627,6 +701,34 @@ func destinationSuite(bug string) conformance.DestinationSuite {
 
 func TestDestinationPasses(t *testing.T) {
 	destinationSuite("").Test(t)
+}
+
+func TestDestinationOnLanesPasses(t *testing.T) {
+	for _, lanes := range []int{2, 3, 16} {
+		t.Run(fmt.Sprint(lanes), func(t *testing.T) { lanesSuite("", lanes).Test(t) })
+	}
+}
+
+func TestDestinationLaneBugsFail(t *testing.T) {
+	cases := map[string][]string{
+		"commit-lane-0": {
+			"lanes/commit", "lanes/empty", "lanes/overwrite", "lanes/merge", "lanes/crash-after-precommit", "lanes/crash-during-commit", "lanes/crash-after-commit",
+			"lanes/fence", "lanes/overwrite-crash", "lanes/merge-crash", "lanes/schemas", "lanes/holds",
+		},
+		"ended-lane-0":      {"lanes/overwrite", "lanes/overwrite-crash", "lanes/schemas"},
+		"recover-lane-0":    {"lanes/empty", "lanes/crash-after-record", "lanes/fence", "lanes/overwrite-crash", "lanes/merge-crash"},
+		"older-batch-fails": {"lanes/schemas"},
+		"empty-lane-fails":  {"lanes/empty", "lanes/overwrite", "lanes/overwrite-crash", "lanes/merge-crash", "lanes/schemas", "lanes/holds"},
+		"merge-keeps-first": {"write/merge", "holds/patch", "holds/soft-delete", "lanes/merge", "lanes/merge-crash"},
+	}
+	for bug, checks := range cases {
+		t.Run(bug, func(t *testing.T) {
+			failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) { lanesSuite(bug, 3).Run(ctx, report) })
+			if !slices.Equal(failed, checks) {
+				t.Errorf("failed checks %v, want %v", failed, checks)
+			}
+		})
+	}
 }
 
 func TestDestinationBugsFail(t *testing.T) {

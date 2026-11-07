@@ -4,14 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
 
 	sdk "github.com/openetl-io/openetl/sdk/go"
 	"github.com/openetl-io/openetl/sdk/go/conformance"
@@ -30,10 +29,11 @@ type api struct {
 // stagedAPI delivers each staged epoch to the API in Commit, a file at a
 // time, and saves a delivery cursor once the API has each.
 type stagedAPI struct {
-	c   memConfig
-	h   host.Host
-	api *api
-	bug string
+	c     memConfig
+	h     host.Host
+	api   *api
+	bug   string
+	lanes int
 }
 
 var stagedCapabilities = destination.Capabilities{
@@ -42,8 +42,12 @@ var stagedCapabilities = destination.Capabilities{
 	Delivery: destination.DeliveryStaged,
 }
 
-func (d *stagedAPI) Capabilities() destination.Capabilities { return stagedCapabilities }
-func (d *stagedAPI) Check(context.Context) error            { return d.c.check() }
+func (d *stagedAPI) Capabilities() destination.Capabilities {
+	c := stagedCapabilities
+	c.WriterLanes = d.lanes
+	return c
+}
+func (d *stagedAPI) Check(context.Context) error { return d.c.check() }
 
 func (d *stagedAPI) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
 	if err := d.c.check(); err != nil {
@@ -80,11 +84,27 @@ func (w *stagedAPIWriter) WriteStaged(_ context.Context, e destination.Epoch, st
 	return nil
 }
 
+// PreCommit's committable lists the lane's files.
 func (w *stagedAPIWriter) PreCommit(_ context.Context, e destination.Epoch) (destination.Staged, error) {
-	return destination.Staged(fmt.Sprintf("%d/%d", e.Generation, e.N)), nil
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return json.Marshal(w.files[e])
 }
 
-func (w *stagedAPIWriter) Commit(ctx context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
+func (w *stagedAPIWriter) Commit(ctx context.Context, e destination.Epoch, committables []destination.Staged) (destination.Committed, error) {
+	all := map[string][]destination.StagedFile{}
+	for _, c := range committables {
+		var files map[string][]destination.StagedFile
+		if err := json.Unmarshal(c, &files); err != nil {
+			return destination.Committed{}, err
+		}
+		for stream, fs := range files {
+			all[stream] = append(all[stream], fs...)
+		}
+	}
+	w.mu.Lock()
+	w.files[e] = all
+	w.mu.Unlock()
 	from, err := w.cursor(ctx, e)
 	if err != nil || from.Done {
 		return destination.Committed{}, err
@@ -132,7 +152,8 @@ func (w *stagedAPIWriter) deliver(ctx context.Context, e destination.Epoch, from
 	w.mu.Unlock()
 	streams := slices.Sorted(maps.Keys(files))
 	for si, stream := range streams {
-		for fi, f := range files[stream] {
+		ordered := slices.SortedFunc(slices.Values(files[stream]), func(a, b destination.StagedFile) int { return strings.Compare(a.Path, b.Path) })
+		for fi, f := range ordered {
 			if si < from.Stream || si == from.Stream && fi < from.File {
 				continue
 			}
@@ -144,9 +165,14 @@ func (w *stagedAPIWriter) deliver(ctx context.Context, e destination.Epoch, from
 			}
 			var rows []map[string]any
 			err := staging.Read(ctx, w.d.h, f, staging.Position{}, func(_ staging.Position, b arrow.RecordBatch) error {
-				ids, vs := b.Column(b.Schema().FieldIndices("id")[0]).(*array.Int64), b.Column(b.Schema().FieldIndices("v")[0]).(*array.String)
 				for i := range int(b.NumRows()) {
-					rows = append(rows, map[string]any{"id": ids.Value(i), "v": vs.Value(i)})
+					row := map[string]any{}
+					for c, field := range b.Schema().Fields() {
+						if !b.Column(c).IsNull(i) {
+							row[field.Name] = b.Column(c).GetOneForMarshal(i)
+						}
+					}
+					rows = append(rows, row)
 				}
 				return nil
 			})
@@ -172,16 +198,20 @@ func (w *stagedAPIWriter) deliver(ctx context.Context, e destination.Epoch, from
 
 func (w *stagedAPIWriter) Close(context.Context) error { return nil }
 
-func stagedSuite(bug string) conformance.DestinationSuite {
+func stagedSuite(bug string) conformance.DestinationSuite { return stagedLanesSuite(bug, 0) }
+
+func stagedLanesSuite(bug string, lanes int) conformance.DestinationSuite {
 	a := &api{rows: map[string][]map[string]any{}}
+	caps := stagedCapabilities
+	caps.WriterLanes = lanes
 	return conformance.DestinationSuite{
 		Launch: conformance.InProcess(sdk.Connector{
 			Name: "staged", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw},
 			Destination: func(config []byte, h host.Host) (destination.Destination, error) {
 				c, err := bind(config)
-				return &stagedAPI{c: c, h: h, api: a, bug: bug}, err
+				return &stagedAPI{c: c, h: h, api: a, bug: bug, lanes: lanes}, err
 			},
-			Capabilities: stagedCapabilities,
+			Capabilities: caps,
 		}),
 		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
 		Read: func(_ context.Context, namespace, stream string) ([]map[string]any, error) {
@@ -194,6 +224,10 @@ func stagedSuite(bug string) conformance.DestinationSuite {
 
 func TestStagedDestinationPasses(t *testing.T) {
 	stagedSuite("").Test(t)
+}
+
+func TestStagedDestinationOnLanesPasses(t *testing.T) {
+	stagedLanesSuite("", 3).Test(t)
 }
 
 func TestStagedDestinationBugsFail(t *testing.T) {
