@@ -13,7 +13,7 @@ import type { JsonObject, Message } from "@bufbuild/protobuf";
  * Describes the file openetl/api/v1/sync.proto.
  */
 export const file_openetl_api_v1_sync: GenFile = /*@__PURE__*/
-  fileDesc("ChlvcGVuZXRsL2FwaS92MS9zeW5jLnByb3RvEg5vcGVuZXRsLmFwaS52MSKSBAoEU3luYxIMCgRuYW1lGAEgASgJEg8KB3ZlcnNpb24YAiABKAkSKAoFc3RhdGUYAyABKA4yGS5vcGVuZXRsLmFwaS52MS5TeW5jU3RhdGUSDQoFZXJyb3IYBCABKAkSLgoKc3RhcnRfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLAoIZW5kX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmRhdGFfcGxhbmUYByABKAkSKwoHc3RyZWFtcxgIIAMoCzIaLm9wZW5ldGwuYXBpLnYxLlN5bmNTdHJlYW0SEgoKY29udGludW91cxgJIAEoCBI0ChBsYXN0X2NvbW1pdF90aW1lGAogASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCghwcm9ncmVzcxgLIAMoCzIcLm9wZW5ldGwuYXBpLnYxLlJlYWRQcm9ncmVzcxIXCg9mYWlsZWRfYXR0ZW1wdHMYDCABKAUSGgoSbGFzdF9hdHRlbXB0X2Vycm9yGA0gASgJEjUKEWxhc3RfYXR0ZW1wdF90aW1lGA4gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBItCghhdHRlbXB0cxgPIAMoCzIbLm9wZW5ldGwuYXBpLnYxLlN5bmNBdHRlbXB0IsoBCgtTeW5jQXR0ZW1wdBIPCgdhdHRlbXB0GAEgASgFEiUKBHNpemUYAiABKAsyFy5vcGVuZXRsLmFwaS52MS5Kb2JTaXplEjIKC3NpemVfcmVhc29uGAMgASgOMh0ub3BlbmV0bC5hcGkudjEuSm9iU2l6ZVJlYXNvbhIkCgV1c2FnZRgEIAEoCzIVLm9wZW5ldGwuYXBpLnYxLlVzYWdlEgwKBHJvd3MYBSABKAQSDQoFYnl0ZXMYBiABKAQSDAoEY29kZRgHIAEoCSJDCgdKb2JTaXplEg4KBnByZXNldBgBIAEoCRISCgpjcHVfbWlsbGlzGAIgASgDEhQKDG1lbW9yeV9ieXRlcxgDIAEoAyKBAQoFVXNhZ2USEwoLY3B1X3NlY29uZHMYASABKAESGQoRcGVha19tZW1vcnlfYnl0ZXMYAiABKAMSGgoScnVubmVyX2NwdV9zZWNvbmRzGAMgASgBEhsKE3J1bm5lcl9tZW1vcnlfYnl0ZXMYBCABKAMSDwoHc2Vjb25kcxgFIAEoASKvAgoMUmVhZFByb2dyZXNzEg4KBnN0cmVhbRgBIAEoCRIWCglsYWdfYnl0ZXMYAiABKARIAIgBARIYCgtsYWdfcmVjb3JkcxgDIAEoBEgBiAEBEiYKA2xhZxgEIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbhIhChRyZXRlbnRpb25fbGVmdF9ieXRlcxgFIAEoBEgCiAEBEjEKDnJldGVudGlvbl9sZWZ0GAYgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEigKBHRpbWUYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wQgwKCl9sYWdfYnl0ZXNCDgoMX2xhZ19yZWNvcmRzQhcKFV9yZXRlbnRpb25fbGVmdF9ieXRlcyKEAQoKU3luY1N0cmVhbRIMCgRuYW1lGAEgASgJEgwKBHJvd3MYAiABKAQSGAoQcXVhcmFudGluZWRfcm93cxgDIAEoBBIWCg5jb2xsYXBzZWRfcm93cxgEIAEoBBISCgpoZWxkX2NlbGxzGAUgASgEEhQKDGhlbGRfY29sdW1ucxgGIAMoCSJJChBMaXN0U3luY3NSZXF1ZXN0Eg4KBnBhcmVudBgBIAEoCRIRCglwYWdlX3NpemUYAiABKAUSEgoKcGFnZV90b2tlbhgDIAEoCSJRChFMaXN0U3luY3NSZXNwb25zZRIjCgVzeW5jcxgBIAMoCzIULm9wZW5ldGwuYXBpLnYxLlN5bmMSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJIh4KDkdldFN5bmNSZXF1ZXN0EgwKBG5hbWUYASABKAkiNQoPR2V0U3luY1Jlc3BvbnNlEiIKBHN5bmMYASABKAsyFC5vcGVuZXRsLmFwaS52MS5TeW5jIjYKElJlYWRTeW5jTG9nUmVxdWVzdBIMCgRuYW1lGAEgASgJEhIKCnBhZ2VfdG9rZW4YAiABKAkiWQoTUmVhZFN5bmNMb2dSZXNwb25zZRIpCgdlbnRyaWVzGAEgAygLMhgub3BlbmV0bC5hcGkudjEuTG9nRW50cnkSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJIqUBCghMb2dFbnRyeRIoCgR0aW1lGAEgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBINCgVsZXZlbBgCIAEoCRIPCgdtZXNzYWdlGAMgASgJEg8KB2F0dGVtcHQYBCABKAUSFgoOcG9zdF9zeW5jX3N0ZXAYBSABKAUSJgoFYXR0cnMYBiABKAsyFy5nb29nbGUucHJvdG9idWYuU3RydWN0KuUBCg1Kb2JTaXplUmVhc29uEh8KG0pPQl9TSVpFX1JFQVNPTl9VTlNQRUNJRklFRBAAEhgKFEpPQl9TSVpFX1JFQVNPTl9TUEVDEAESGAoUSk9CX1NJWkVfUkVBU09OX0hJTlQQAhIbChdKT0JfU0laRV9SRUFTT05fREVGQVVMVBADEhsKF0pPQl9TSVpFX1JFQVNPTl9ISVNUT1JZEAQSIQodSk9CX1NJWkVfUkVBU09OX09VVF9PRl9NRU1PUlkQBRIiCh5KT0JfU0laRV9SRUFTT05fTEFSR0VTVF9SVU5ORVIQBiqIAQoJU3luY1N0YXRlEhoKFlNZTkNfU1RBVEVfVU5TUEVDSUZJRUQQABIWChJTWU5DX1NUQVRFX1JVTk5JTkcQARIYChRTWU5DX1NUQVRFX1NVQ0NFRURFRBACEhUKEVNZTkNfU1RBVEVfRkFJTEVEEAMSFgoSU1lOQ19TVEFURV9TVE9QUEVEEAQyrAMKC1N5bmNTZXJ2aWNlEoUBCglMaXN0U3luY3MSIC5vcGVuZXRsLmFwaS52MS5MaXN0U3luY3NSZXF1ZXN0GiEub3BlbmV0bC5hcGkudjEuTGlzdFN5bmNzUmVzcG9uc2UiM4LT5JMCLRIrL3YxL3twYXJlbnQ9d29ya3NwYWNlcy8qL3BpcGVsaW5lcy8qfS9zeW5jcxJ/CgdHZXRTeW5jEh4ub3BlbmV0bC5hcGkudjEuR2V0U3luY1JlcXVlc3QaHy5vcGVuZXRsLmFwaS52MS5HZXRTeW5jUmVzcG9uc2UiM4LT5JMCLRIrL3YxL3tuYW1lPXdvcmtzcGFjZXMvKi9waXBlbGluZXMvKi9zeW5jcy8qfRKTAQoLUmVhZFN5bmNMb2cSIi5vcGVuZXRsLmFwaS52MS5SZWFkU3luY0xvZ1JlcXVlc3QaIy5vcGVuZXRsLmFwaS52MS5SZWFkU3luY0xvZ1Jlc3BvbnNlIjuC0+STAjUSMy92MS97bmFtZT13b3Jrc3BhY2VzLyovcGlwZWxpbmVzLyovc3luY3MvKn06cmVhZExvZ0I4WjZnaXRodWIuY29tL29wZW5ldGwtaW8vb3BlbmV0bC9nZW4vb3BlbmV0bC9hcGkvdjE7YXBpdjFiBnByb3RvMw", [file_google_api_annotations, file_google_protobuf_duration, file_google_protobuf_struct, file_google_protobuf_timestamp]);
+  fileDesc("ChlvcGVuZXRsL2FwaS92MS9zeW5jLnByb3RvEg5vcGVuZXRsLmFwaS52MSKSBAoEU3luYxIMCgRuYW1lGAEgASgJEg8KB3ZlcnNpb24YAiABKAkSKAoFc3RhdGUYAyABKA4yGS5vcGVuZXRsLmFwaS52MS5TeW5jU3RhdGUSDQoFZXJyb3IYBCABKAkSLgoKc3RhcnRfdGltZRgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLAoIZW5kX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhIKCmRhdGFfcGxhbmUYByABKAkSKwoHc3RyZWFtcxgIIAMoCzIaLm9wZW5ldGwuYXBpLnYxLlN5bmNTdHJlYW0SEgoKY29udGludW91cxgJIAEoCBI0ChBsYXN0X2NvbW1pdF90aW1lGAogASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCghwcm9ncmVzcxgLIAMoCzIcLm9wZW5ldGwuYXBpLnYxLlJlYWRQcm9ncmVzcxIXCg9mYWlsZWRfYXR0ZW1wdHMYDCABKAUSGgoSbGFzdF9hdHRlbXB0X2Vycm9yGA0gASgJEjUKEWxhc3RfYXR0ZW1wdF90aW1lGA4gASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBItCghhdHRlbXB0cxgPIAMoCzIbLm9wZW5ldGwuYXBpLnYxLlN5bmNBdHRlbXB0IvQBCgtTeW5jQXR0ZW1wdBIPCgdhdHRlbXB0GAEgASgFEiUKBHNpemUYAiABKAsyFy5vcGVuZXRsLmFwaS52MS5Kb2JTaXplEjIKC3NpemVfcmVhc29uGAMgASgOMh0ub3BlbmV0bC5hcGkudjEuSm9iU2l6ZVJlYXNvbhIkCgV1c2FnZRgEIAEoCzIVLm9wZW5ldGwuYXBpLnYxLlVzYWdlEgwKBHJvd3MYBSABKAQSDQoFYnl0ZXMYBiABKAQSDAoEY29kZRgHIAEoCRIoCgVsYW5lcxgIIAEoCzIZLm9wZW5ldGwuYXBpLnYxLkxhbmVVc2FnZSKCAQoJTGFuZVVzYWdlEg0KBWxhbmVzGAEgASgNEg0KBWxpbWl0GAIgASgNEhQKDGJ1c3lfc2Vjb25kcxgDIAEoARIdChViYWNrcHJlc3N1cmVkX3NlY29uZHMYBCABKAESFAoMaWRsZV9zZWNvbmRzGAUgASgBEgwKBHJvd3MYBiABKAQiQwoHSm9iU2l6ZRIOCgZwcmVzZXQYASABKAkSEgoKY3B1X21pbGxpcxgCIAEoAxIUCgxtZW1vcnlfYnl0ZXMYAyABKAMigQEKBVVzYWdlEhMKC2NwdV9zZWNvbmRzGAEgASgBEhkKEXBlYWtfbWVtb3J5X2J5dGVzGAIgASgDEhoKEnJ1bm5lcl9jcHVfc2Vjb25kcxgDIAEoARIbChNydW5uZXJfbWVtb3J5X2J5dGVzGAQgASgDEg8KB3NlY29uZHMYBSABKAEirwIKDFJlYWRQcm9ncmVzcxIOCgZzdHJlYW0YASABKAkSFgoJbGFnX2J5dGVzGAIgASgESACIAQESGAoLbGFnX3JlY29yZHMYAyABKARIAYgBARImCgNsYWcYBCABKAsyGS5nb29nbGUucHJvdG9idWYuRHVyYXRpb24SIQoUcmV0ZW50aW9uX2xlZnRfYnl0ZXMYBSABKARIAogBARIxCg5yZXRlbnRpb25fbGVmdBgGIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbhIoCgR0aW1lGAcgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcEIMCgpfbGFnX2J5dGVzQg4KDF9sYWdfcmVjb3Jkc0IXChVfcmV0ZW50aW9uX2xlZnRfYnl0ZXMihAEKClN5bmNTdHJlYW0SDAoEbmFtZRgBIAEoCRIMCgRyb3dzGAIgASgEEhgKEHF1YXJhbnRpbmVkX3Jvd3MYAyABKAQSFgoOY29sbGFwc2VkX3Jvd3MYBCABKAQSEgoKaGVsZF9jZWxscxgFIAEoBBIUCgxoZWxkX2NvbHVtbnMYBiADKAkiSQoQTGlzdFN5bmNzUmVxdWVzdBIOCgZwYXJlbnQYASABKAkSEQoJcGFnZV9zaXplGAIgASgFEhIKCnBhZ2VfdG9rZW4YAyABKAkiUQoRTGlzdFN5bmNzUmVzcG9uc2USIwoFc3luY3MYASADKAsyFC5vcGVuZXRsLmFwaS52MS5TeW5jEhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSIeCg5HZXRTeW5jUmVxdWVzdBIMCgRuYW1lGAEgASgJIjUKD0dldFN5bmNSZXNwb25zZRIiCgRzeW5jGAEgASgLMhQub3BlbmV0bC5hcGkudjEuU3luYyI2ChJSZWFkU3luY0xvZ1JlcXVlc3QSDAoEbmFtZRgBIAEoCRISCgpwYWdlX3Rva2VuGAIgASgJIlkKE1JlYWRTeW5jTG9nUmVzcG9uc2USKQoHZW50cmllcxgBIAMoCzIYLm9wZW5ldGwuYXBpLnYxLkxvZ0VudHJ5EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSKlAQoITG9nRW50cnkSKAoEdGltZRgBIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASDQoFbGV2ZWwYAiABKAkSDwoHbWVzc2FnZRgDIAEoCRIPCgdhdHRlbXB0GAQgASgFEhYKDnBvc3Rfc3luY19zdGVwGAUgASgFEiYKBWF0dHJzGAYgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdCrFAgoNSm9iU2l6ZVJlYXNvbhIfChtKT0JfU0laRV9SRUFTT05fVU5TUEVDSUZJRUQQABIYChRKT0JfU0laRV9SRUFTT05fU1BFQxABEhgKFEpPQl9TSVpFX1JFQVNPTl9ISU5UEAISGwoXSk9CX1NJWkVfUkVBU09OX0RFRkFVTFQQAxIbChdKT0JfU0laRV9SRUFTT05fSElTVE9SWRAEEiEKHUpPQl9TSVpFX1JFQVNPTl9PVVRfT0ZfTUVNT1JZEAUSIgoeSk9CX1NJWkVfUkVBU09OX0xBUkdFU1RfUlVOTkVSEAYSGwoXSk9CX1NJWkVfUkVBU09OX1JFU0NBTEUQBxIeChpKT0JfU0laRV9SRUFTT05fQVVUT1NDQUxFUhAIEiEKHUpPQl9TSVpFX1JFQVNPTl9GSU5JU0hfV0lUSElOEAkqiAEKCVN5bmNTdGF0ZRIaChZTWU5DX1NUQVRFX1VOU1BFQ0lGSUVEEAASFgoSU1lOQ19TVEFURV9SVU5OSU5HEAESGAoUU1lOQ19TVEFURV9TVUNDRUVERUQQAhIVChFTWU5DX1NUQVRFX0ZBSUxFRBADEhYKElNZTkNfU1RBVEVfU1RPUFBFRBAEMqwDCgtTeW5jU2VydmljZRKFAQoJTGlzdFN5bmNzEiAub3BlbmV0bC5hcGkudjEuTGlzdFN5bmNzUmVxdWVzdBohLm9wZW5ldGwuYXBpLnYxLkxpc3RTeW5jc1Jlc3BvbnNlIjOC0+STAi0SKy92MS97cGFyZW50PXdvcmtzcGFjZXMvKi9waXBlbGluZXMvKn0vc3luY3MSfwoHR2V0U3luYxIeLm9wZW5ldGwuYXBpLnYxLkdldFN5bmNSZXF1ZXN0Gh8ub3BlbmV0bC5hcGkudjEuR2V0U3luY1Jlc3BvbnNlIjOC0+STAi0SKy92MS97bmFtZT13b3Jrc3BhY2VzLyovcGlwZWxpbmVzLyovc3luY3MvKn0SkwEKC1JlYWRTeW5jTG9nEiIub3BlbmV0bC5hcGkudjEuUmVhZFN5bmNMb2dSZXF1ZXN0GiMub3BlbmV0bC5hcGkudjEuUmVhZFN5bmNMb2dSZXNwb25zZSI7gtPkkwI1EjMvdjEve25hbWU9d29ya3NwYWNlcy8qL3BpcGVsaW5lcy8qL3N5bmNzLyp9OnJlYWRMb2dCOFo2Z2l0aHViLmNvbS9vcGVuZXRsLWlvL29wZW5ldGwvZ2VuL29wZW5ldGwvYXBpL3YxO2FwaXYxYgZwcm90bzM", [file_google_api_annotations, file_google_protobuf_duration, file_google_protobuf_struct, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message openetl.api.v1.Sync
@@ -174,6 +174,14 @@ export type SyncAttempt = Message<"openetl.api.v1.SyncAttempt"> & {
    * @generated from field: string code = 7;
    */
   code: string;
+
+  /**
+   * Its lanes and where their time went, as its runner last reported. Unset
+   * until it does, and for an attempt without lanes.
+   *
+   * @generated from field: openetl.api.v1.LaneUsage lanes = 8;
+   */
+  lanes?: LaneUsage | undefined;
 };
 
 /**
@@ -182,6 +190,60 @@ export type SyncAttempt = Message<"openetl.api.v1.SyncAttempt"> & {
  */
 export const SyncAttemptSchema: GenMessage<SyncAttempt> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_sync, 1);
+
+/**
+ * LaneUsage is how an attempt's lanes spent their time (ADR-0027 §7).
+ *
+ * @generated from message openetl.api.v1.LaneUsage
+ */
+export type LaneUsage = Message<"openetl.api.v1.LaneUsage"> & {
+  /**
+   * How many it runs.
+   *
+   * @generated from field: uint32 lanes = 1;
+   */
+  lanes: number;
+
+  /**
+   * The most it could use: the splits open when it started; 0 if its source
+   * splits running splits, so more can always be used.
+   *
+   * @generated from field: uint32 limit = 2;
+   */
+  limit: number;
+
+  /**
+   * Summed over its lanes: working, waiting for what's downstream to take
+   * what they made, and waiting for rows.
+   *
+   * @generated from field: double busy_seconds = 3;
+   */
+  busySeconds: number;
+
+  /**
+   * @generated from field: double backpressured_seconds = 4;
+   */
+  backpressuredSeconds: number;
+
+  /**
+   * @generated from field: double idle_seconds = 5;
+   */
+  idleSeconds: number;
+
+  /**
+   * The rows its lanes took in.
+   *
+   * @generated from field: uint64 rows = 6;
+   */
+  rows: bigint;
+};
+
+/**
+ * Describes the message openetl.api.v1.LaneUsage.
+ * Use `create(LaneUsageSchema)` to create a new message.
+ */
+export const LaneUsageSchema: GenMessage<LaneUsage> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_sync, 2);
 
 /**
  * JobSize is the CPU and memory a job gets (ADR-0027 §3).
@@ -212,7 +274,7 @@ export type JobSize = Message<"openetl.api.v1.JobSize"> & {
  * Use `create(JobSizeSchema)` to create a new message.
  */
 export const JobSizeSchema: GenMessage<JobSize> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 2);
+  messageDesc(file_openetl_api_v1_sync, 3);
 
 /**
  * Usage is what an attempt has used so far.
@@ -260,7 +322,7 @@ export type Usage = Message<"openetl.api.v1.Usage"> & {
  * Use `create(UsageSchema)` to create a new message.
  */
 export const UsageSchema: GenMessage<Usage> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 3);
+  messageDesc(file_openetl_api_v1_sync, 4);
 
 /**
  * ReadProgress is what a source reported of how far behind it a read is.
@@ -321,7 +383,7 @@ export type ReadProgress = Message<"openetl.api.v1.ReadProgress"> & {
  * Use `create(ReadProgressSchema)` to create a new message.
  */
 export const ReadProgressSchema: GenMessage<ReadProgress> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 4);
+  messageDesc(file_openetl_api_v1_sync, 5);
 
 /**
  * @generated from message openetl.api.v1.SyncStream
@@ -373,7 +435,7 @@ export type SyncStream = Message<"openetl.api.v1.SyncStream"> & {
  * Use `create(SyncStreamSchema)` to create a new message.
  */
 export const SyncStreamSchema: GenMessage<SyncStream> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 5);
+  messageDesc(file_openetl_api_v1_sync, 6);
 
 /**
  * @generated from message openetl.api.v1.ListSyncsRequest
@@ -402,7 +464,7 @@ export type ListSyncsRequest = Message<"openetl.api.v1.ListSyncsRequest"> & {
  * Use `create(ListSyncsRequestSchema)` to create a new message.
  */
 export const ListSyncsRequestSchema: GenMessage<ListSyncsRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 6);
+  messageDesc(file_openetl_api_v1_sync, 7);
 
 /**
  * @generated from message openetl.api.v1.ListSyncsResponse
@@ -424,7 +486,7 @@ export type ListSyncsResponse = Message<"openetl.api.v1.ListSyncsResponse"> & {
  * Use `create(ListSyncsResponseSchema)` to create a new message.
  */
 export const ListSyncsResponseSchema: GenMessage<ListSyncsResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 7);
+  messageDesc(file_openetl_api_v1_sync, 8);
 
 /**
  * @generated from message openetl.api.v1.GetSyncRequest
@@ -441,7 +503,7 @@ export type GetSyncRequest = Message<"openetl.api.v1.GetSyncRequest"> & {
  * Use `create(GetSyncRequestSchema)` to create a new message.
  */
 export const GetSyncRequestSchema: GenMessage<GetSyncRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 8);
+  messageDesc(file_openetl_api_v1_sync, 9);
 
 /**
  * @generated from message openetl.api.v1.GetSyncResponse
@@ -458,7 +520,7 @@ export type GetSyncResponse = Message<"openetl.api.v1.GetSyncResponse"> & {
  * Use `create(GetSyncResponseSchema)` to create a new message.
  */
 export const GetSyncResponseSchema: GenMessage<GetSyncResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 9);
+  messageDesc(file_openetl_api_v1_sync, 10);
 
 /**
  * @generated from message openetl.api.v1.ReadSyncLogRequest
@@ -482,7 +544,7 @@ export type ReadSyncLogRequest = Message<"openetl.api.v1.ReadSyncLogRequest"> & 
  * Use `create(ReadSyncLogRequestSchema)` to create a new message.
  */
 export const ReadSyncLogRequestSchema: GenMessage<ReadSyncLogRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 10);
+  messageDesc(file_openetl_api_v1_sync, 11);
 
 /**
  * @generated from message openetl.api.v1.ReadSyncLogResponse
@@ -507,7 +569,7 @@ export type ReadSyncLogResponse = Message<"openetl.api.v1.ReadSyncLogResponse"> 
  * Use `create(ReadSyncLogResponseSchema)` to create a new message.
  */
 export const ReadSyncLogResponseSchema: GenMessage<ReadSyncLogResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 11);
+  messageDesc(file_openetl_api_v1_sync, 12);
 
 /**
  * A line of a sync's log, from the runner, the engine, the connectors or
@@ -561,7 +623,7 @@ export type LogEntry = Message<"openetl.api.v1.LogEntry"> & {
  * Use `create(LogEntrySchema)` to create a new message.
  */
 export const LogEntrySchema: GenMessage<LogEntry> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_sync, 12);
+  messageDesc(file_openetl_api_v1_sync, 13);
 
 /**
  * JobSizeReason is what set a job's size.
@@ -616,6 +678,29 @@ export enum JobSizeReason {
    * @generated from enum value: JOB_SIZE_REASON_LARGEST_RUNNER = 6;
    */
   LARGEST_RUNNER = 6,
+
+  /**
+   * Rescaled through the API, until the pipeline's next version.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_RESCALE = 7;
+   */
+  RESCALE = 7,
+
+  /**
+   * The job loop's lanes for a continuous pipeline, from how busy its lanes
+   * were and its lag.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_AUTOSCALER = 8;
+   */
+  AUTOSCALER = 8,
+
+  /**
+   * The lanes to finish within resources.finishWithin, from the last sync's
+   * bytes and each lane's measured rate.
+   *
+   * @generated from enum value: JOB_SIZE_REASON_FINISH_WITHIN = 9;
+   */
+  FINISH_WITHIN = 9,
 }
 
 /**

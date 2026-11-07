@@ -36,6 +36,10 @@ Commands:
   pause NAME      stop a pipeline's scheduled syncs
   resume NAME     start a pipeline's scheduled syncs again
   sync NAME       start a sync of a pipeline now
+  rescale --size SIZE NAME
+                  size a pipeline's jobs until its next version, which
+                  restarts a running job at a checkpoint; auto gives the
+                  spec back its say
   syncs NAME      list a pipeline's syncs, newest first
   versions NAME   list a pipeline's versions, newest first
   logs NAME       print a sync's log; -f follows a running one
@@ -117,6 +121,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runHolds(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
+	case "rescale":
+		return runRescale(ctx, args[1:], out)
 	case "syncs":
 		return runSyncs(ctx, args[1:], out)
 	case "versions":
@@ -297,6 +303,12 @@ func reasonText(r apiv1.JobSizeReason) string {
 		return "after an attempt ran out of memory"
 	case apiv1.JobSizeReason_JOB_SIZE_REASON_LARGEST_RUNNER:
 		return "the most a runner can take"
+	case apiv1.JobSizeReason_JOB_SIZE_REASON_RESCALE:
+		return "rescaled through the API"
+	case apiv1.JobSizeReason_JOB_SIZE_REASON_AUTOSCALER:
+		return "the lanes its job loop chose"
+	case apiv1.JobSizeReason_JOB_SIZE_REASON_FINISH_WITHIN:
+		return "the lanes to finish within resources.finishWithin"
 	}
 	return "the default"
 }
@@ -384,6 +396,50 @@ func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) 
 		return err
 	}
 	fmt.Fprintln(out, done, name)
+	return nil
+}
+
+func runRescale(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("openetl rescale", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: openetl rescale --size SIZE [flags] NAME")
+		fs.PrintDefaults()
+	}
+	conn := apiFlags(fs)
+	workspace := fs.String("workspace", "default", "the pipeline's workspace")
+	size := fs.String("size", "", "xs, s, m, l, xl, CPU,MEMORY such as 3,6Gi, or auto for the spec's")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("rescale takes one pipeline name, after its flags")
+	}
+	req := &apiv1.RescalePipelineRequest{Name: "workspaces/" + *workspace + "/pipelines/" + fs.Arg(0)}
+	switch _, preset := resources.Preset(*size); {
+	case *size == "":
+		return errors.New("rescale needs --size")
+	case *size == "auto":
+	case preset:
+		req.Size = &apiv1.JobSize{Preset: *size}
+	default:
+		s, err := resources.Parse(*size)
+		if err != nil {
+			return fmt.Errorf("--size: %w", err)
+		}
+		req.Size = &apiv1.JobSize{CpuMillis: s.CPU, MemoryBytes: s.Memory}
+	}
+	c, err := client(conn, apiv1connect.NewPipelineServiceClient)
+	if err != nil {
+		return err
+	}
+	if _, err := c.RescalePipeline(ctx, connect.NewRequest(req)); err != nil {
+		return err
+	}
+	if req.Size == nil {
+		fmt.Fprintln(out, "gave the spec back its say in the size of", req.GetName())
+		return nil
+	}
+	fmt.Fprintf(out, "rescaled %s to %s until its next version\n", req.GetName(), *size)
 	return nil
 }
 

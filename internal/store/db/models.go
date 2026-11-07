@@ -30,23 +30,29 @@ type Artifact struct {
 }
 
 type Attempt struct {
-	OrgID            uuid.UUID
-	ID               string
-	PipelineID       uuid.UUID
-	SyncID           uuid.UUID
-	Attempt          int32
-	SizeCpu          int64
-	SizeMemory       int64
-	SizeReason       string
-	CpuSeconds       float64
-	PeakMemory       int64
-	RunnerCpuSeconds float64
-	RunnerMemory     int64
-	Seconds          float64
-	Rows             int64
-	Bytes            int64
-	Code             string
-	CreateTime       time.Time
+	OrgID                uuid.UUID
+	ID                   string
+	PipelineID           uuid.UUID
+	SyncID               uuid.UUID
+	Attempt              int32
+	SizeCpu              int64
+	SizeMemory           int64
+	SizeReason           string
+	CpuSeconds           float64
+	PeakMemory           int64
+	RunnerCpuSeconds     float64
+	RunnerMemory         int64
+	Seconds              float64
+	Rows                 int64
+	Bytes                int64
+	Code                 string
+	CreateTime           time.Time
+	Lanes                int32
+	LaneLimit            int32
+	BusySeconds          float64
+	BackpressuredSeconds float64
+	IdleSeconds          float64
+	LaneRows             int64
 }
 
 type AuditLog struct {
@@ -187,6 +193,7 @@ type Dispatch struct {
 	Outcome        []byte
 	FinishTime     *time.Time
 	Woken          bool
+	Drain          bool
 }
 
 type FlinkCluster struct {
@@ -275,6 +282,30 @@ type Incident struct {
 	LastSeenTime  time.Time
 	ResolveTime   *time.Time
 	Resolution    *string
+}
+
+type JobScale struct {
+	OrgID       uuid.UUID
+	PipelineID  uuid.UUID
+	SizeCpu     int64
+	SizeMemory  int64
+	SizeVersion string
+	Lanes       int32
+	Note        string
+	RescaleTime *time.Time
+}
+
+type LaneSample struct {
+	OrgID                uuid.UUID
+	AttemptID            string
+	PipelineID           uuid.UUID
+	SampleTime           time.Time
+	Lanes                int32
+	LaneLimit            int32
+	BusySeconds          float64
+	BackpressuredSeconds float64
+	IdleSeconds          float64
+	LaneRows             int64
 }
 
 type Org struct {

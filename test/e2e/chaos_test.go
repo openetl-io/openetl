@@ -6,7 +6,8 @@ package e2e
 // runners, engines and connectors die, runners are partitioned from the API,
 // and the object store fails, then checks that every row landed once. Runners die at the commit protocol's crash points too,
 // injected by their object-store proxies. Some runs into Postgres add a
-// column mid-run, which block holds, and release it at random times.
+// column mid-run, which block holds, and release it at random times. Some
+// runs are rescaled through the API, up and down, at random times.
 //
 //	make chaos CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'
 //	go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/0042-' -chaos.seed=7   # one run again
@@ -78,6 +79,8 @@ type chaosConfig struct {
 	holds bool
 	// spec.resources.size, which sets how many lanes it runs; empty: auto.
 	size string
+	// How often it's rescaled through the API while it writes.
+	rescales int
 }
 
 // The faults a run can draw besides crash points.
@@ -92,6 +95,7 @@ const (
 	faultDriver      = "kill Spark driver"
 	faultTaskManager = "kill Flink TaskManager"
 	faultJobManager  = "kill Flink JobManager"
+	faultRescale     = "rescale"
 )
 
 func drawConfig(seed uint64, i int) chaosConfig {
@@ -168,6 +172,10 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	}
 	// Postgres takes holds, on streams no transform reads.
 	c.holds = c.source != "kafka" && c.dest == "postgres" && c.transform == "" && rng.IntN(3) == 0
+	// A transform runs one lane, whatever its size.
+	if c.transform == "" && rng.IntN(3) == 0 {
+		c.rescales = 1 + rng.IntN(2)
+	}
 	return c
 }
 
@@ -208,6 +216,9 @@ func (c chaosConfig) String() string {
 	}
 	if c.size != "" {
 		commit += " size=" + c.size
+	}
+	if c.rescales > 0 {
+		commit += fmt.Sprintf(" rescales=%d", c.rescales)
 	}
 	return fmt.Sprintf("%s %s noise=%v faults=[%s]", c.name(), commit, c.noise, strings.Join(c.faults, ", "))
 }
@@ -479,6 +490,9 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	defer stopWrite()
 	var faults sync.WaitGroup
 	faults.Go(func() { s.inject(writeCtx, t.Context(), c, rng, pipeline) })
+	if c.rescales > 0 {
+		faults.Go(func() { s.rescale(writeCtx, c, rand.New(rand.NewPCG(c.seed, uint64(c.i)<<32|0x5ca1e)), pipeline, name) })
+	}
 	if c.holds {
 		releaseCtx, stopReleases := context.WithCancel(t.Context())
 		var releases sync.WaitGroup
@@ -646,6 +660,37 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 		} else {
 			s.book.count(pipeline, "missed "+e.fault)
 		}
+	}
+}
+
+// rescale rescales the pipeline, by its ID and name, through the API at
+// random times while ctx lasts, to s, m, l or back to its spec's size. It
+// needs no runner, so it keeps its own clock rather than waiting behind the
+// faults.
+func (s *chaosSuite) rescale(ctx context.Context, c chaosConfig, rng *rand.Rand, pipeline, name string) {
+	write := c.writing()
+	ats := make([]time.Duration, c.rescales)
+	for i := range ats {
+		ats[i] = write/10 + upTo(rng, write*8/10)
+	}
+	slices.Sort(ats)
+	start := time.Now()
+	for _, at := range ats {
+		size := []string{"s", "m", "l", "auto"}[rng.IntN(4)]
+		pause(ctx, time.Until(start.Add(at)))
+		if ctx.Err() != nil {
+			s.book.count(pipeline, "missed "+faultRescale)
+			continue
+		}
+		req := &apiv1.RescalePipelineRequest{Name: "workspaces/default/pipelines/" + name}
+		if size != "auto" {
+			req.Size = &apiv1.JobSize{Preset: size}
+		}
+		if _, err := pipelines().RescalePipeline(ctx, connect.NewRequest(req)); err != nil {
+			s.book.count(pipeline, "missed "+faultRescale+": "+connect.CodeOf(err).String())
+			continue
+		}
+		s.book.count(pipeline, faultRescale+" to "+size)
 	}
 }
 

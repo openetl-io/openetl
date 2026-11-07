@@ -107,8 +107,12 @@ export function PipelinePage() {
               <DescriptionItem label="Size">
                 <span title={sizeAmounts(sized.size)}>
                   {sizeLabel(sized.size)}, {sizeReasonLabel[sized.sizeReason]}
+                  {sized.lanes && `, ${sized.lanes.lanes} ${sized.lanes.lanes === 1 ? "lane" : "lanes"}`}
                 </span>
               </DescriptionItem>
+            )}
+            {pl.status?.scaling?.note === "destination_bound" && (
+              <DescriptionItem label="Scaling">Falling behind while its lanes wait for the destination, so more lanes won't help</DescriptionItem>
             )}
             <DescriptionItem label="Version">
               <Tooltip>

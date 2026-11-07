@@ -118,11 +118,13 @@ const presets: Record<string, [bigint, bigint]> = { s: [1000n, 2n << 30n], m: [2
 
 function attempt(n: number, preset: string, why: JobSizeReason, seconds: number, gib: number, code = "") {
   const [cpuMillis, memoryBytes] = presets[preset]!;
+  const lanes = Number(cpuMillis) / 1000;
   return create(SyncAttemptSchema, {
     attempt: n,
     size: { preset, cpuMillis, memoryBytes },
     sizeReason: why,
     usage: { cpuSeconds: seconds * 0.6, peakMemoryBytes: BigInt(Math.round(gib * 2 ** 30)), runnerCpuSeconds: seconds * 0.05, runnerMemoryBytes: 80n << 20n, seconds },
+    lanes: { lanes, busySeconds: seconds * lanes * 0.55, backpressuredSeconds: seconds * lanes * 0.1, idleSeconds: seconds * lanes * 0.35 },
     code,
   });
 }

@@ -19,7 +19,7 @@ let password = "correct horse battery staple";
 const roles = ["viewer", "operator", "editor", "admin", "owner"] as const;
 type RoleName = (typeof roles)[number];
 const least: Record<string, RoleName> = {
-  "pipelines.get": "viewer", "pipelines.pause": "operator", "pipelines.sync": "operator", "pipelines.delete": "editor",
+  "pipelines.get": "viewer", "pipelines.pause": "operator", "pipelines.sync": "operator", "pipelines.rescale": "operator", "pipelines.delete": "editor",
   "syncs.get": "viewer", "logs.get": "viewer", "sources.get": "viewer", "sources.check": "operator",
   "sources.discover": "operator", "sources.delete": "editor", "destinations.get": "viewer", "destinations.check": "operator",
   "destinations.delete": "editor", "dbtProjects.get": "viewer", "dbtProjects.delete": "editor", "secrets.get": "viewer",

@@ -1676,6 +1676,47 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:rescale:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Sets the size of the pipeline's jobs until its next version, or gives
+                 the spec back its say. A running job stops at a checkpoint and starts
+                 again at the new size (ADR-0027 §7).
+            operationId: PipelineService_RescalePipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RescalePipelineRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RescalePipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines/{pipeline}:resume:
         post:
             tags:
@@ -3685,6 +3726,9 @@ components:
                         - JOB_SIZE_REASON_HISTORY
                         - JOB_SIZE_REASON_OUT_OF_MEMORY
                         - JOB_SIZE_REASON_LARGEST_RUNNER
+                        - JOB_SIZE_REASON_RESCALE
+                        - JOB_SIZE_REASON_AUTOSCALER
+                        - JOB_SIZE_REASON_FINISH_WITHIN
                     type: string
                     format: enum
                 pool:
@@ -3709,11 +3753,36 @@ components:
                 finishWithin:
                     pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
                     type: string
-                    description: 'Scheduled only: lanes from the expected bytes, from P1.35.'
+                    description: |-
+                        Scheduled only, with an automatic size: as many lanes as the last
+                         sync's bytes need, at each lane's measured rate, to finish within it.
                 pool:
                     type: string
                     description: 'The runners that run its jobs. Unset: default.'
             description: JobResources sizes the pipeline's jobs (ADR-0027 §3).
+        JobScaling:
+            type: object
+            properties:
+                size:
+                    allOf:
+                        - $ref: '#/components/schemas/JobSize'
+                    description: Set by RescalePipeline for the current version.
+                lanes:
+                    type: integer
+                    description: The job loop's lanes for a continuous pipeline; 0 if it hasn't chosen.
+                    format: uint32
+                rescaleTime:
+                    type: string
+                    description: When either last changed.
+                    format: date-time
+                note:
+                    type: string
+                    description: |-
+                        Why the job loop isn't rescaling it: destination_bound when its lanes
+                         mostly wait for the destination, which more lanes won't help.
+            description: |-
+                JobScaling is what rescaled a pipeline's jobs, besides its spec (ADR-0027
+                 §7).
         JobSize:
             type: object
             properties:
@@ -3746,6 +3815,35 @@ components:
                     description: Updated at most once a minute.
                     format: date-time
             description: 'An API key. Calls send it as Authorization: Bearer KEY.'
+        LaneUsage:
+            type: object
+            properties:
+                lanes:
+                    type: integer
+                    description: How many it runs.
+                    format: uint32
+                limit:
+                    type: integer
+                    description: |-
+                        The most it could use: the splits open when it started; 0 if its source
+                         splits running splits, so more can always be used.
+                    format: uint32
+                busySeconds:
+                    type: number
+                    description: |-
+                        Summed over its lanes: working, waiting for what's downstream to take
+                         what they made, and waiting for rows.
+                    format: double
+                backpressuredSeconds:
+                    type: number
+                    format: double
+                idleSeconds:
+                    type: number
+                    format: double
+                rows:
+                    type: string
+                    description: The rows its lanes took in.
+            description: LaneUsage is how an attempt's lanes spent their time (ADR-0027 §7).
         ListAuditEntriesResponse:
             type: object
             properties:
@@ -4180,6 +4278,10 @@ components:
                     type: integer
                     description: Incidents open on it.
                     format: int32
+                scaling:
+                    allOf:
+                        - $ref: '#/components/schemas/JobScaling'
+                    description: How the control plane scales its jobs; unset if nothing has.
             description: PipelineStatus is what the pipeline's syncs did.
         PipelineStream:
             type: object
@@ -4410,6 +4512,20 @@ components:
             properties:
                 hold:
                     $ref: '#/components/schemas/Hold'
+        RescalePipelineRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                size:
+                    allOf:
+                        - $ref: '#/components/schemas/JobSize'
+                    description: 'A preset or amounts; unset: the spec''s size again.'
+        RescalePipelineResponse:
+            type: object
+            properties:
+                pipeline:
+                    $ref: '#/components/schemas/Pipeline'
         ResolveIncidentRequest:
             type: object
             properties:
@@ -4887,6 +5003,9 @@ components:
                         - JOB_SIZE_REASON_HISTORY
                         - JOB_SIZE_REASON_OUT_OF_MEMORY
                         - JOB_SIZE_REASON_LARGEST_RUNNER
+                        - JOB_SIZE_REASON_RESCALE
+                        - JOB_SIZE_REASON_AUTOSCALER
+                        - JOB_SIZE_REASON_FINISH_WITHIN
                     type: string
                     format: enum
                 usage:
@@ -4901,6 +5020,12 @@ components:
                 code:
                     type: string
                     description: The taxonomy code it failed with, as its runner reported it.
+                lanes:
+                    allOf:
+                        - $ref: '#/components/schemas/LaneUsage'
+                    description: |-
+                        Its lanes and where their time went, as its runner last reported. Unset
+                         until it does, and for an attempt without lanes.
             description: SyncAttempt is one attempt of a sync, or one job of a continuous run.
         SyncPipelineRequest:
             type: object

@@ -84,7 +84,7 @@ func (f *fixture) report(id string, capacity resources.Size, running ...string) 
 	for _, w := range running {
 		r.Running = append(r.Running, RunningWork{ID: w, Epoch: 3, Size: resources.S})
 	}
-	stop, err := f.d.Report(f.t.Context(), r)
+	stop, _, err := f.d.Report(f.t.Context(), r)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestDrainingReturnsPlacements(t *testing.T) {
 	f := setup(t, Options{})
 	f.report("r", resources.M)
 	f.attempt("a")
-	if _, err := f.d.Report(t.Context(), Report{Org: f.org, DataPlane: "default", Runner: db.ReportRunnerParams{
+	if _, _, err := f.d.Report(t.Context(), Report{Org: f.org, DataPlane: "default", Runner: db.ReportRunnerParams{
 		ID: "r", Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64",
 		Pool: "default", CapacityCpu: resources.M.CPU, CapacityMemory: resources.M.Memory, Draining: true,
 	}}); err != nil {
@@ -773,14 +773,14 @@ func TestAttemptUsage(t *testing.T) {
 			ID: "r", Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64",
 			Pool: "default", CapacityCpu: resources.L.CPU, CapacityMemory: resources.L.Memory,
 		}, Running: []RunningWork{{ID: id, Epoch: 1, Size: resources.M, Usage: used}}}
-		if _, err := f.d.Report(ctx, report); err != nil {
+		if _, _, err := f.d.Report(ctx, report); err != nil {
 			t.Fatal(err)
 		}
 		// A report from a runner it isn't on says nothing about it.
 		stale := report
 		stale.Runner.ID, stale.Runner.Draining = "other", true
 		stale.Running = []RunningWork{{ID: id, Epoch: 1, Size: resources.M, Usage: &AttemptUsage{Usage: resources.Usage{Memory: 1 << 40}}}}
-		if _, err := f.d.Report(ctx, stale); err != nil {
+		if _, _, err := f.d.Report(ctx, stale); err != nil {
 			t.Fatal(err)
 		}
 		more := &AttemptUsage{Usage: resources.Usage{CPU: 20, Memory: 90, RunnerCPU: 2, RunnerMemory: 5, Seconds: 120}, Rows: 7, Bytes: 700}
@@ -825,7 +825,7 @@ func TestPools(t *testing.T) {
 		ID: "batch", Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64",
 		Pool: "batch", CapacityCpu: resources.L.CPU, CapacityMemory: resources.L.Memory,
 	}}
-	if _, err := f.d.Report(ctx, r); err != nil {
+	if _, _, err := f.d.Report(ctx, r); err != nil {
 		t.Fatal(err)
 	}
 	err := f.d.Enqueue(ctx, contract.WorkInput{
@@ -865,4 +865,71 @@ func (f *fixture) pipelineAndSync() (pipeline, sync uuid.UUID) {
 		f.t.Fatal(err)
 	}
 	return pipeline, sync
+}
+
+// A rescale drains the pipeline's running attempts through their runners'
+// reports, and ends those not started as drained at once. Reports keep each
+// attempt's lanes, which the last sync's attempts give finishWithin.
+func TestRescale(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	pipeline, sync := f.pipelineAndSync()
+	f.report("r", resources.M)
+	for n, id := range []string{"running", "waiting"} {
+		err := f.d.Enqueue(ctx, contract.WorkInput{
+			OrgID: f.org.String(), DataPlane: "default", ID: id, WorkflowID: "wf", Kind: contract.RunStreamJob, Input: map[string]string{"a": id},
+			Size: resources.M, Heartbeat: time.Minute, Timeout: time.Hour, Priority: contract.PriorityScheduled,
+			PipelineID: pipeline.String(), Version: "v", SyncID: sync.String(), Attempt: int32(n + 1),
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if work, err := f.d.Poll(ctx, f.org, "default", "r", 0, 0); err != nil || len(work) != 1 || work[0].ID != "running" {
+		t.Fatalf("poll: %v, %v", work, err)
+	}
+	lanes := resources.Lanes{Count: 2, Limit: 4, Busy: 50, Backpressured: 5, Idle: 65, Rows: 1000}
+	report := Report{Org: f.org, DataPlane: "default", Runner: db.ReportRunnerParams{
+		ID: "r", Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64",
+		Pool: "default", CapacityCpu: resources.M.CPU, CapacityMemory: resources.M.Memory,
+	}, Running: []RunningWork{{ID: "running", Epoch: 1, Size: resources.M, Usage: &AttemptUsage{Usage: resources.Usage{Seconds: 60}, Bytes: 6000, Lanes: lanes}}}}
+	if stop, drain, err := f.d.Report(ctx, report); err != nil || len(stop)+len(drain) != 0 {
+		t.Fatalf("report: stop %v, drain %v, %v", stop, drain, err)
+	}
+	if err := f.d.Store.Tx(ctx, func(q *db.Queries) error {
+		if _, err := q.RescaleWaiting(ctx, db.RescaleWaitingParams{OrgID: f.org, PipelineID: pipeline, Outcome: marshalOutcome(contract.WorkOutcome{Code: errs.Draining.String()})}); err != nil {
+			return err
+		}
+		_, err := q.RescaleRunning(ctx, db.RescaleRunningParams{OrgID: f.org, PipelineID: pipeline})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := f.d.Status(ctx, contract.WorkRef{OrgID: f.org.String(), ID: "waiting"}); err != nil || !st.Done || st.Outcome.Code != errs.Draining.String() {
+		t.Errorf("the attempt not started: %+v, %v", st, err)
+	}
+	if stop, drain, err := f.d.Report(ctx, report); err != nil || len(stop) != 0 || !slices.Equal(drain, []string{"running"}) {
+		t.Fatalf("report: stop %v, drain %v, %v", stop, drain, err)
+	}
+	rows, err := f.d.Store.SyncAttempts(ctx, db.SyncAttemptsParams{OrgID: f.org, SyncIds: []uuid.UUID{sync}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rows[0]; r.Lanes != 2 || r.LaneLimit != 4 || r.BusySeconds != 50 || r.BackpressuredSeconds != 5 || r.IdleSeconds != 65 || r.LaneRows != 1000 {
+		t.Errorf("the running attempt's lanes: %+v", r)
+	}
+	if ok, err := f.d.Result(ctx, f.org, "default", "r", "running", contract.WorkOutcome{}, false, report.Running[0].Usage); err != nil || !ok {
+		t.Fatalf("result: %v, %v", ok, err)
+	}
+	if _, err := f.d.Store.FinishSync(ctx, db.FinishSyncParams{OrgID: f.org, ID: sync, Status: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	last, err := sizing.LastSync(ctx, f.d.Store.Queries, f.org, pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sizing.SyncAttempt{{Bytes: 6000, Seconds: 60, Lanes: 2, Limit: 4}, {}}
+	if !slices.Equal(last, want) {
+		t.Errorf("the last sync's attempts %+v, want %+v", last, want)
+	}
 }

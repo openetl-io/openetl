@@ -22,10 +22,12 @@ import (
 
 // permissions are what each role may do, by the least role that may.
 var permissions = map[string]auth.Role{
-	"pipelines.get":    auth.Viewer,
-	"pipelines.pause":  auth.Operator,
-	"pipelines.sync":   auth.Operator,
-	"pipelines.delete": auth.Editor,
+	"pipelines.get":   auth.Viewer,
+	"pipelines.pause": auth.Operator,
+	"pipelines.sync":  auth.Operator,
+	// Rescaling spends the data plane's room, as a sync does.
+	"pipelines.rescale": auth.Operator,
+	"pipelines.delete":  auth.Editor,
 	// Releasing a hold approves its change.
 	"pipelines.holds":      auth.Editor,
 	"syncs.get":            auth.Viewer,
@@ -113,6 +115,7 @@ var rules = map[string]rule{
 	apiv1connect.PipelineServicePausePipelineProcedure:        {"pipelines.pause", inName, false},
 	apiv1connect.PipelineServiceResumePipelineProcedure:       {"pipelines.pause", inName, false},
 	apiv1connect.PipelineServiceSyncPipelineProcedure:         {"pipelines.sync", inName, false},
+	apiv1connect.PipelineServiceRescalePipelineProcedure:      {"pipelines.rescale", inName, false},
 	apiv1connect.PipelineServiceListPipelineVersionsProcedure: {"pipelines.get", inParent, false},
 	apiv1connect.PipelineServiceGetPipelineVersionProcedure:   {"pipelines.get", inName, false},
 	apiv1connect.PipelineServiceGetPipelinePlanProcedure:      {"pipelines.get", inName, false},

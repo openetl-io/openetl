@@ -36,6 +36,15 @@ service PipelineService {
       body: "*"
     };
   }
+  // Sets the size of the pipeline's jobs until its next version, or gives
+  // the spec back its say. A running job stops at a checkpoint and starts
+  // again at the new size (ADR-0027 §7).
+  rpc RescalePipeline(RescalePipelineRequest) returns (RescalePipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:rescale"
+      body: "*"
+    };
+  }
   // Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
   // paused or a sync is running.
   rpc SyncPipeline(SyncPipelineRequest) returns (SyncPipelineResponse) {
@@ -148,6 +157,22 @@ message PipelineStatus {
   google.protobuf.Timestamp last_success_time = 2;
   // Incidents open on it.
   int32 open_incidents = 3;
+  // How the control plane scales its jobs; unset if nothing has.
+  JobScaling scaling = 4;
+}
+
+// JobScaling is what rescaled a pipeline's jobs, besides its spec (ADR-0027
+// §7).
+message JobScaling {
+  // Set by RescalePipeline for the current version.
+  JobSize size = 1;
+  // The job loop's lanes for a continuous pipeline; 0 if it hasn't chosen.
+  uint32 lanes = 2;
+  // When either last changed.
+  google.protobuf.Timestamp rescale_time = 3;
+  // Why the job loop isn't rescaling it: destination_bound when its lanes
+  // mostly wait for the destination, which more lanes won't help.
+  string note = 4;
 }
 
 // PipelineSpec is the spec of a Pipeline document. Unset fields take their
@@ -183,7 +208,8 @@ message JobResources {
   // What a job may grow to: auto's choice, and a retry after running out of
   // memory. Unset: xl for auto, and size itself otherwise.
   JobSize max = 3;
-  // Scheduled only: lanes from the expected bytes, from P1.35.
+  // Scheduled only, with an automatic size: as many lanes as the last
+  // sync's bytes need, at each lane's measured rate, to finish within it.
   google.protobuf.Duration finish_within = 4;
   // The runners that run its jobs. Unset: default.
   string pool = 5;
@@ -562,6 +588,16 @@ message PausePipelineRequest {
 }
 
 message PausePipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message RescalePipelineRequest {
+  string name = 1;
+  // A preset or amounts; unset: the spec's size again.
+  JobSize size = 2;
+}
+
+message RescalePipelineResponse {
   Pipeline pipeline = 1;
 }
 

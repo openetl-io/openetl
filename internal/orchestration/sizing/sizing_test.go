@@ -2,6 +2,7 @@ package sizing
 
 import (
 	"testing"
+	"time"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
@@ -125,6 +126,41 @@ func TestChoose(t *testing.T) {
 			Input{Runners: []resources.Size{{CPU: 100, Memory: 100}}},
 			Choice{resources.S, FromDefault},
 		},
+		{
+			"a rescale holds over the spec's size",
+			Input{Spec: Spec{Size: resources.M}, Rescale: resources.L, Lanes: 1, LanesReason: FromAutoscaler},
+			Choice{resources.L, FromRescale},
+		},
+		{
+			"a rescale holds over the spec's min",
+			Input{Spec: Spec{Min: resources.L}, Rescale: resources.S},
+			Choice{resources.S, FromRescale},
+		},
+		{
+			"a rescale grows up to max when it runs out of memory",
+			Input{Spec: Spec{Max: resources.XL}, Rescale: resources.S, History: []Attempt{{Size: resources.S, Code: oom}}},
+			Choice{resources.M, FromOOM},
+		},
+		{
+			"lanes set the CPU, and the peak the memory",
+			Input{Lanes: 3, LanesReason: FromAutoscaler, History: []Attempt{{Memory: mem(0.5), CPU: 600, Seconds: 600}}},
+			Choice{resources.L, FromAutoscaler},
+		},
+		{
+			"memory over the lanes' preset takes a larger one",
+			Input{Lanes: 1, LanesReason: FromFinishWithin, History: []Attempt{{Memory: mem(5)}}},
+			Choice{resources.L, FromFinishWithin},
+		},
+		{
+			"lanes stay within max",
+			Input{Spec: Spec{Max: resources.M}, Lanes: 8, LanesReason: FromAutoscaler},
+			Choice{resources.M, FromSpec},
+		},
+		{
+			"a set size holds over lanes",
+			Input{Spec: Spec{Size: resources.S}, Lanes: 4, LanesReason: FromAutoscaler},
+			Choice{resources.S, FromSpec},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Choose(tc.in); got != tc.want {
@@ -135,7 +171,7 @@ func TestChoose(t *testing.T) {
 }
 
 func TestReasonsHaveAPINames(t *testing.T) {
-	for _, r := range []Reason{FromSpec, FromHint, FromDefault, FromHistory, FromOOM, FromLargest} {
+	for _, r := range []Reason{FromSpec, FromHint, FromDefault, FromHistory, FromOOM, FromLargest, FromRescale, FromAutoscaler, FromFinishWithin} {
 		if r.API() == 0 {
 			t.Errorf("%s has no API name", r)
 		}
@@ -148,5 +184,36 @@ func TestLargestHint(t *testing.T) {
 	}
 	if got := LargestHint("", ""); got != (resources.Size{}) {
 		t.Fatalf("LargestHint = %v, want none", got)
+	}
+}
+
+func TestFinishWithin(t *testing.T) {
+	gb := int64(1) << 30
+	for _, tc := range []struct {
+		name string
+		d    time.Duration
+		last []SyncAttempt
+		want int
+	}{
+		{"no last sync", time.Hour, nil, 0},
+		{"no lanes measured", time.Hour, []SyncAttempt{{Bytes: gb, Seconds: 600}}, 0},
+		// 10 GiB at 10 MiB/s a lane is 1,024 lane-seconds.
+		{"fast enough on one lane", time.Hour, []SyncAttempt{{Bytes: 10 * gb, Seconds: 1024, Lanes: 1}}, 1},
+		{"as many as the bytes need", 5 * time.Minute, []SyncAttempt{{Bytes: 10 * gb, Seconds: 1024, Lanes: 1}}, 4},
+		{"the rate is per lane", 5 * time.Minute, []SyncAttempt{{Bytes: 10 * gb, Seconds: 512, Lanes: 2}}, 4},
+		{
+			"every attempt's bytes are expected, and only those with lanes give the rate",
+			5 * time.Minute,
+			[]SyncAttempt{{Bytes: 5 * gb, Seconds: 0}, {Bytes: 5 * gb, Seconds: 512, Lanes: 1}},
+			4,
+		},
+		{"no more than its splits", 5 * time.Minute, []SyncAttempt{{Bytes: 10 * gb, Seconds: 1024, Lanes: 1, Limit: 2}}, 2},
+		{"no deadline", 0, []SyncAttempt{{Bytes: 10 * gb, Seconds: 1024, Lanes: 1}}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FinishWithin(tc.d, tc.last); got != tc.want {
+				t.Fatalf("FinishWithin = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }

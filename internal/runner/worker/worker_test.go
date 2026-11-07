@@ -37,6 +37,7 @@ type fakeAPI struct {
 	reports []*dataplanev1.ReportRunnerRequest
 	results []*dataplanev1.ReportResultRequest
 	stop    []string
+	drain   []string
 	// Results fail until this many have been tried.
 	failResults int
 	refused     bool
@@ -46,7 +47,7 @@ func (f *fakeAPI) ReportRunner(_ context.Context, req *connect.Request[dataplane
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reports = append(f.reports, req.Msg)
-	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{Stop: f.stop}), nil
+	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{Stop: f.stop, Drain: f.drain}), nil
 }
 
 func (f *fakeAPI) PollWork(ctx context.Context, req *connect.Request[dataplanev1.PollWorkRequest]) (*connect.Response[dataplanev1.PollWorkResponse], error) {
@@ -428,6 +429,33 @@ func TestStopFromAReport(t *testing.T) {
 		if r := api.result(id); !r.GetCancelled() || r.GetCode() != "" {
 			t.Errorf("%s: %v", id, r)
 		}
+	}
+}
+
+// A rescale drains an attempt, as the runner stopping does, without
+// cancelling it; it says what its lanes did until then.
+func TestDrainFromAReport(t *testing.T) {
+	api, _, _ := start(t, map[string]Kind{"attempt": {Checkpoints: true, Handler: Handle(func(ctx context.Context, _ struct{}) (struct{}, error) {
+		From(ctx).Meter.SetLanes(2, 0)
+		From(ctx).Meter.AddLanes(3*time.Second, time.Second, 2*time.Second, 10)
+		<-From(ctx).Stopping()
+		if From(ctx).Cancelled() {
+			t.Error("it thinks it was cancelled")
+		}
+		return struct{}{}, errs.New(errs.Draining, "drained")
+	})}}, resources.L)
+	api.give(work("a", "attempt", small, struct{}{}))
+	eventually(t, "it running", func() bool { r := api.lastReport(); return r != nil && len(r.GetRunning()) == 1 })
+	api.mu.Lock()
+	api.drain = []string{"a"}
+	api.mu.Unlock()
+	eventually(t, "its result", func() bool { return api.result("a") != nil })
+	r := api.result("a")
+	if r.GetCode() != "DRAINING" || r.GetCancelled() {
+		t.Fatalf("result %v", r)
+	}
+	if l := r.GetLanes(); l.GetLanes() != 2 || l.GetBusySeconds() != 3 || l.GetBackpressuredSeconds() != 1 || l.GetIdleSeconds() != 2 || l.GetRows() != 10 {
+		t.Errorf("lanes %v", l)
 	}
 }
 

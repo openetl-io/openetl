@@ -72,7 +72,12 @@ func (a *Activities) prepare(ctx context.Context, in *contract.WorkInput) ([]dis
 	if err != nil {
 		return nil, err
 	}
-	c := sizing.Choose(sizing.Input{Spec: sp, Hint: sizing.LargestHint(hints...), History: history, Runners: runners})
+	sin := sizing.Input{Spec: sp, Hint: sizing.LargestHint(hints...), History: history, Runners: runners}
+	continuous := in.Kind == contract.RunStreamJob
+	if err := sizing.Rescaled(ctx, a.Store.Queries, org, pipeline, in.Version, continuous, pipelineSpec.GetResources().GetFinishWithin().AsDuration(), &sin); err != nil {
+		return nil, err
+	}
+	c := sizing.Choose(sin)
 	in.Size, in.SizeReason, in.Pool = c.Size, string(c.Reason), sp.Pool
 	return needs, nil
 }

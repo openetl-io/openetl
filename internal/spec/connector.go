@@ -275,6 +275,10 @@ type capabilitiesYAML struct {
 	// Empty: append only.
 	WriteModes []string   `yaml:"writeModes,omitempty" json:"writeModes,omitempty"`
 	Holds      *holdsYAML `yaml:"holds,omitempty" json:"holds,omitempty"`
+	// Empty: streamed.
+	Delivery string `yaml:"delivery,omitempty" json:"delivery,omitempty"`
+	// Zero: one.
+	MaxWriterLanes uint32 `yaml:"maxWriterLanes,omitempty" json:"maxWriterLanes,omitempty"`
 }
 
 type holdsYAML struct {
@@ -499,8 +503,12 @@ func parseCapabilities(y *capabilitiesYAML) (*protocolv1.DestinationCapabilities
 	}
 	c := &protocolv1.DestinationCapabilities{
 		DedupeAtApply: y.DedupeAtApply, NanosecondTimestamps: y.NanosecondTimestamps, MaxIdentifierLength: y.MaxIdentifierLength,
+		MaxWriterLanes: y.MaxWriterLanes,
 	}
 	var err error
+	if c.Delivery, err = enum(protocolv1.Delivery_value, "DELIVERY_", "delivery", y.Delivery, protocolv1.Delivery_DELIVERY_UNSPECIFIED); err != nil {
+		return nil, err
+	}
 	if c.SinkClass, err = enum(protocolv1.SinkClass_value, "SINK_CLASS_", "class", y.Class, protocolv1.SinkClass_SINK_CLASS_UNSPECIFIED); err != nil {
 		return nil, err
 	}
@@ -585,6 +593,10 @@ func specToYAML(s *protocolv1.SpecResponse) (specYAML, error) {
 		y.Capabilities = &capabilitiesYAML{
 			Class: lower(c.GetSinkClass().String(), "SINK_CLASS_"), DedupeAtApply: c.GetDedupeAtApply(),
 			NanosecondTimestamps: c.GetNanosecondTimestamps(), MaxIdentifierLength: c.GetMaxIdentifierLength(),
+			MaxWriterLanes: c.GetMaxWriterLanes(),
+		}
+		if d := c.GetDelivery(); d != protocolv1.Delivery_DELIVERY_UNSPECIFIED {
+			y.Capabilities.Delivery = lower(d.String(), "DELIVERY_")
 		}
 		for _, sc := range c.GetScopes() {
 			y.Capabilities.Scopes = append(y.Capabilities.Scopes, lower(sc.String(), "COMMIT_SCOPE_"))

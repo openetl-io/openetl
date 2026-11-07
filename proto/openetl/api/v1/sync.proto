@@ -74,6 +74,25 @@ message SyncAttempt {
   uint64 bytes = 6;
   // The taxonomy code it failed with, as its runner reported it.
   string code = 7;
+  // Its lanes and where their time went, as its runner last reported. Unset
+  // until it does, and for an attempt without lanes.
+  LaneUsage lanes = 8;
+}
+
+// LaneUsage is how an attempt's lanes spent their time (ADR-0027 §7).
+message LaneUsage {
+  // How many it runs.
+  uint32 lanes = 1;
+  // The most it could use: the splits open when it started; 0 if its source
+  // splits running splits, so more can always be used.
+  uint32 limit = 2;
+  // Summed over its lanes: working, waiting for what's downstream to take
+  // what they made, and waiting for rows.
+  double busy_seconds = 3;
+  double backpressured_seconds = 4;
+  double idle_seconds = 5;
+  // The rows its lanes took in.
+  uint64 rows = 6;
 }
 
 // JobSize is the CPU and memory a job gets (ADR-0027 §3).
@@ -100,6 +119,14 @@ enum JobSizeReason {
   // It would have taken more, but that's the most a runner of its pool can
   // take now.
   JOB_SIZE_REASON_LARGEST_RUNNER = 6;
+  // Rescaled through the API, until the pipeline's next version.
+  JOB_SIZE_REASON_RESCALE = 7;
+  // The job loop's lanes for a continuous pipeline, from how busy its lanes
+  // were and its lag.
+  JOB_SIZE_REASON_AUTOSCALER = 8;
+  // The lanes to finish within resources.finishWithin, from the last sync's
+  // bytes and each lane's measured rate.
+  JOB_SIZE_REASON_FINISH_WITHIN = 9;
 }
 
 // Usage is what an attempt has used so far.

@@ -25,7 +25,13 @@ UPDATE attempts a SET
     runner_memory = GREATEST(a.runner_memory, (@runner_memory::bigint[])[array_position(@ids::text[], a.id)]),
     seconds = GREATEST(a.seconds, (@seconds::double precision[])[array_position(@ids::text[], a.id)]),
     rows = GREATEST(a.rows, (@rows::bigint[])[array_position(@ids::text[], a.id)]),
-    bytes = GREATEST(a.bytes, (@bytes::bigint[])[array_position(@ids::text[], a.id)])
+    bytes = GREATEST(a.bytes, (@bytes::bigint[])[array_position(@ids::text[], a.id)]),
+    lanes = GREATEST(a.lanes, (@lanes::integer[])[array_position(@ids::text[], a.id)]),
+    lane_limit = GREATEST(a.lane_limit, (@lane_limit::integer[])[array_position(@ids::text[], a.id)]),
+    busy_seconds = GREATEST(a.busy_seconds, (@busy_seconds::double precision[])[array_position(@ids::text[], a.id)]),
+    backpressured_seconds = GREATEST(a.backpressured_seconds, (@backpressured_seconds::double precision[])[array_position(@ids::text[], a.id)]),
+    idle_seconds = GREATEST(a.idle_seconds, (@idle_seconds::double precision[])[array_position(@ids::text[], a.id)]),
+    lane_rows = GREATEST(a.lane_rows, (@lane_rows::bigint[])[array_position(@ids::text[], a.id)])
 WHERE a.org_id = @org_id AND a.id = ANY(@ids::text[]);
 
 -- name: SetAttemptCode :exec
@@ -39,6 +45,17 @@ FROM attempts
 WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND (peak_memory > 0 OR cpu_seconds > 0 OR code <> '')
 ORDER BY create_time DESC
 LIMIT @max_rows;
+
+-- name: LastSyncAttempts :many
+-- The attempts of the pipeline's latest scheduled sync that succeeded, in
+-- order.
+SELECT a.bytes, a.seconds, a.lanes, a.lane_limit FROM attempts a
+WHERE a.org_id = @org_id AND a.sync_id = (
+    SELECT s.id FROM syncs s
+    WHERE s.org_id = @org_id AND s.pipeline_id = @pipeline_id AND s.status = 'succeeded' AND NOT s.continuous
+    ORDER BY s.start_time DESC LIMIT 1
+)
+ORDER BY a.attempt, a.create_time;
 
 -- name: SyncAttempts :many
 -- The syncs' attempts, in order.
@@ -119,7 +136,7 @@ UPDATE dispatches d SET
     lease_deadline = LEAST(now() + (d.heartbeat_ms * interval '1 millisecond'), d.run_deadline),
     epoch = GREATEST(d.epoch, (@epochs::bigint[])[array_position(@ids::text[], d.id)])
 WHERE d.org_id = @org_id AND d.data_plane_id = @data_plane_id AND d.runner = @runner AND d.id = ANY(@ids::text[]) AND d.state = 'running'
-RETURNING d.id, d.cancel;
+RETURNING d.id, d.cancel, d.drain;
 
 -- name: FinishRunning :execrows
 -- A runner's result, if the work is still its own.
@@ -151,6 +168,22 @@ WHERE org_id = @org_id AND id = @id AND state IN ('pending', 'placed');
 -- name: CancelRunning :exec
 -- Its runner hears on its next report.
 UPDATE dispatches SET cancel = true WHERE org_id = @org_id AND id = @id AND state = 'running';
+
+-- name: RescaleWaiting :execrows
+-- A rescale's: the pipeline's attempts no runner has started finish as
+-- drained, so their workflows send them again at once, sized again.
+UPDATE dispatches d SET state = 'finished', outcome = @outcome, finish_time = now()
+FROM attempts a
+WHERE d.org_id = @org_id AND a.org_id = d.org_id AND a.id = d.id AND a.pipeline_id = @pipeline_id
+  AND d.state IN ('pending', 'placed');
+
+-- name: RescaleRunning :execrows
+-- A rescale's: the pipeline's running attempts stop at a checkpoint and end
+-- as drained, as their runners hear on their next reports.
+UPDATE dispatches d SET drain = true
+FROM attempts a
+WHERE d.org_id = @org_id AND a.org_id = d.org_id AND a.id = d.id AND a.pipeline_id = @pipeline_id
+  AND d.state = 'running' AND NOT d.cancel AND (sqlc.narg('id')::text IS NULL OR d.id = sqlc.narg('id'));
 
 -- name: ReturnUnstarted :execrows
 -- Attempts whose runner didn't start them in time go back to wait for room,

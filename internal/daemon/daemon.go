@@ -38,6 +38,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/dbosbackend"
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
 	"github.com/openetl-io/openetl/internal/orchestration/ops"
+	"github.com/openetl-io/openetl/internal/orchestration/scaling"
 	"github.com/openetl-io/openetl/internal/orchestration/schedules"
 	"github.com/openetl-io/openetl/internal/orchestration/temporalbackend"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
@@ -69,6 +70,8 @@ type Options struct {
 	Workflows workflows.Workflows
 	// The dispatcher's timings; zero means production's.
 	Dispatch dispatch.Options
+	// The job loop's; zero means production's.
+	Scaling scaling.Options
 	// Changes the server's notifier before it starts, for tests.
 	Webhooks func(*webhooks.Notifier)
 }
@@ -223,6 +226,8 @@ func Run(ctx context.Context, o Options) error {
 		defer func() { _ = reg.Unregister() }()
 		g.Go(func() error { return orchestrate(cpctx, cfg, backend, st, work, o.Workflows, log) })
 		g.Go(func() error { return work.Run(cpctx) })
+		jobs := &scaling.Loop{Store: st, Options: o.Scaling, Logger: log.With("component", "scaling")}
+		g.Go(func() error { return jobs.Run(cpctx) })
 	}
 	return g.Wait()
 }
