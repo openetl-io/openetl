@@ -219,6 +219,14 @@ patches:
                   limits:
                     cpu: "3"
                     memory: 6Gi
+  # kind's node has room for little more than the other tests' pods.
+  - target:
+      kind: Deployment
+      labelSelector: app.kubernetes.io/name=openetl
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 10m
   - target:
       kind: ScaledObject
       name: openetl-runner-default

@@ -39,8 +39,12 @@ helm upgrade --install flink-kubernetes-operator \
 	"https://downloads.apache.org/flink/flink-kubernetes-operator-$operator/flink-kubernetes-operator-$operator-helm.tgz" \
 	--kubeconfig "$kubeconfig" --namespace flink-operator --create-namespace \
 	--set webhook.create=false --set "watchNamespaces={$namespace}" --wait --timeout 5m
+# kind's one node is the CI runner's 4 vCPUs, which Flink's and Spark's pods
+# nearly fill, so KEDA asks for next to none.
 helm upgrade --install keda keda --repo https://kedacore.github.io/charts --version "$keda" \
-	--kubeconfig "$kubeconfig" --namespace keda --create-namespace --wait --timeout 5m
+	--kubeconfig "$kubeconfig" --namespace keda --create-namespace --wait --timeout 5m \
+	--set resources.operator.requests.cpu=10m --set resources.metricServer.requests.cpu=10m \
+	--set resources.webhooks.requests.cpu=10m
 k apply -f "$(dirname "$0")/prometheus.yaml"
 k -n monitoring rollout status deploy/prometheus --timeout 3m
 
