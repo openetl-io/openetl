@@ -91,7 +91,7 @@ type DataPlaneServiceClient interface {
 	// attempt already reported is skipped.
 	ReportAttemptFailure(context.Context, *connect.Request[v1.ReportAttemptFailureRequest]) (*connect.Response[v1.ReportAttemptFailureResponse], error)
 	// What a runner is, can run and is running, when it starts and every 10 s.
-	// It's every running attempt's heartbeat (ADR-0028). The plan checks
+	// It's every running attempt's heartbeat. The plan checks
 	// connectors against the runners its data plane reported lately, and the
 	// placer places attempts on those reporting now.
 	ReportRunner(context.Context, *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error)
@@ -282,7 +282,7 @@ type DataPlaneServiceHandler interface {
 	// attempt already reported is skipped.
 	ReportAttemptFailure(context.Context, *connect.Request[v1.ReportAttemptFailureRequest]) (*connect.Response[v1.ReportAttemptFailureResponse], error)
 	// What a runner is, can run and is running, when it starts and every 10 s.
-	// It's every running attempt's heartbeat (ADR-0028). The plan checks
+	// It's every running attempt's heartbeat. The plan checks
 	// connectors against the runners its data plane reported lately, and the
 	// placer places attempts on those reporting now.
 	ReportRunner(context.Context, *connect.Request[v1.ReportRunnerRequest]) (*connect.Response[v1.ReportRunnerResponse], error)

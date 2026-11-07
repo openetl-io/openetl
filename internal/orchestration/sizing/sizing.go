@@ -1,4 +1,4 @@
-// Package sizing works out the size of a pipeline's next attempt (ADR-0027 §3).
+// Package sizing works out the size of a pipeline's next attempt.
 package sizing
 
 import (

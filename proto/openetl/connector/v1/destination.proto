@@ -10,7 +10,7 @@ option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1
 
 // DestinationService is served by destination connectors.
 service DestinationService {
-  // One stream per writer lane of an attempt (ADR-0027). On lane 0's, the
+  // One stream per writer lane of an attempt. On lane 0's, the
   // platform sends open, then recover, then start_reads, batches, end_reads,
   // pre-commits, schemas and commits, and closes its side to close the
   // writer. Other lanes' streams open once lane 0 has recovered, and get no
@@ -51,7 +51,7 @@ message DestinationCapabilities {
 }
 
 // HoldCapabilities is what a destination does with columns and cells the
-// platform holds back (ADR-0025). A held cell arrives as null, or as the
+// platform holds back. A held cell arrives as null, or as the
 // pipeline's held value, and the row's _openetl_held lists its column. A
 // patch fills it in later.
 message HoldCapabilities {

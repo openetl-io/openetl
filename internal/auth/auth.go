@@ -1,5 +1,5 @@
 // Package auth makes API keys and runner tokens, and defines the roles keys
-// act with (ADR-0019).
+// act with.
 package auth
 
 import (

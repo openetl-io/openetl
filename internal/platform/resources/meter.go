@@ -26,7 +26,7 @@ type Usage struct {
 	Seconds float64
 }
 
-// Lanes is how an attempt's lanes spent their time (ADR-0027 §7).
+// Lanes is how an attempt's lanes spent their time.
 type Lanes struct {
 	// How many it runs, and the most it could: 0 if more can always be used.
 	Count, Limit int
@@ -37,7 +37,7 @@ type Lanes struct {
 	Rows int64
 }
 
-// Meter adds up what one attempt uses (ADR-0027 §3). A nil Meter counts
+// Meter adds up what one attempt uses. A nil Meter counts
 // nothing. Its methods may be called concurrently.
 type Meter struct {
 	start time.Time

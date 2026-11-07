@@ -535,7 +535,7 @@ func (x *DestinationCapabilities) GetMaxWriterLanes() uint32 {
 }
 
 // HoldCapabilities is what a destination does with columns and cells the
-// platform holds back (ADR-0025). A held cell arrives as null, or as the
+// platform holds back. A held cell arrives as null, or as the
 // pipeline's held value, and the row's _openetl_held lists its column. A
 // patch fills it in later.
 type HoldCapabilities struct {

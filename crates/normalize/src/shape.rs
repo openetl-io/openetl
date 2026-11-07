@@ -154,7 +154,7 @@ impl Shaper {
         })
     }
 
-    /// A copy for another lane: everything lanes share (ADR-0027), which is
+    /// A copy for another lane: everything lanes share, which is
     /// all but what it has parsed.
     pub fn fork(&self) -> Self {
         Self {
@@ -189,8 +189,8 @@ impl Shaper {
             .collect()
     }
 
-    /// Holds columns and cells back instead of stopping or rejecting rows
-    /// (ADR-0025). The stream must be keyed.
+    /// Holds columns and cells back instead of stopping or rejecting rows.
+    /// The stream must be keyed.
     pub fn with_holds(mut self, config: HoldConfig) -> Result<Self, Error> {
         if self.identity.key.is_empty() {
             return Err(Error::Declared("only a keyed stream holds columns".into()));

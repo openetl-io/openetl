@@ -105,11 +105,11 @@ type GetSyncSpecResponse struct {
 	// Fields of the pipeline's flink_access.keys that name secrets in cloud
 	// secret stores.
 	FlinkAccessSecrets []*ExternalSecret `protobuf:"bytes,15,rep,name=flink_access_secrets,json=flinkAccessSecrets,proto3" json:"flink_access_secrets,omitempty"`
-	// Holds released or discarded (ADR-0025), for the holds still open in the
+	// Holds released or discarded, for the holds still open in the
 	// pipeline's last mirrored checkpoint. A release applies to the hold it
 	// names only while that hold is open, so sending it again does nothing.
 	Releases []*HoldRelease `protobuf:"bytes,16,rep,name=releases,proto3" json:"releases,omitempty"`
-	// The pipeline's key groups (ADR-0027), fixed when it was created. A
+	// The pipeline's key groups, fixed when it was created. A
 	// restore from a record with another count fails.
 	KeyGroups     uint32 `protobuf:"varint,17,opt,name=key_groups,json=keyGroups,proto3" json:"key_groups,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -869,7 +869,7 @@ type CheckpointStream struct {
 	// Rows the apply didn't insert because a row with the same _openetl_id
 	// was earlier in the epoch or already in the destination.
 	CollapsedRows uint64 `protobuf:"varint,7,opt,name=collapsed_rows,json=collapsedRows,proto3" json:"collapsed_rows,omitempty"`
-	// Its holds open at the checkpoint (ADR-0025).
+	// Its holds open at the checkpoint.
 	Holds []*CheckpointHold `protobuf:"bytes,8,rep,name=holds,proto3" json:"holds,omitempty"`
 	// Cells held in the epoch.
 	HeldCells uint64 `protobuf:"varint,9,opt,name=held_cells,json=heldCells,proto3" json:"held_cells,omitempty"`

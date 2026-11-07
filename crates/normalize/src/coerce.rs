@@ -637,7 +637,7 @@ where
     (out, failed)
 }
 
-/// A typed cell as text: what a held cell keeps (ADR-0025). Strings are
+/// A typed cell as text: what a held cell keeps. Strings are
 /// kept as they are, other values in their display form.
 pub(crate) fn cell_text(a: &ArrayRef, row: usize) -> Option<String> {
     if a.is_null(row) {

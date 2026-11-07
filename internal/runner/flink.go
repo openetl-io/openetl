@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// Flink runs the user's Flink job around a continuous pipeline's attempts
-// (ADR-0022 §3), on one FlinkCluster. Each generation's job has its own ID,
+// Flink runs the user's Flink job around a continuous pipeline's attempts,
+// on one FlinkCluster. Each generation's job has its own ID,
 // FlinkJobID's, and its checkpoints are below the pipeline's checkpoint
 // directory.
 type Flink interface {

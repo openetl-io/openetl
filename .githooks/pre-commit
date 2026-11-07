@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Checks what a commit touches. make hooks installs it; git commit --no-verify
+# skips it.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+touched() { grep -E "$1" <<<"$staged" || true; }
+dirs() { while read -r f; do [ -z "$f" ] || dirname "$f"; done | sort -u; }
+top=$PWD
+
+need() {
+	[ -x "$1" ] || { echo "pre-commit: $1 is missing; run make tools" >&2; exit 1; }
+}
+
+# golangci-lint the packages in module $1 under the directories after it,
+# skipping those that build tags other than integration leave empty, as
+# make lint's ./... does.
+lint() {
+	local module=$1 pkgs
+	shift
+	[ $# -gt 0 ] || return 0
+	pkgs=$(cd "$module" && go list -tags integration -e -f '{{if not .Error}}{{.Dir}}{{end}}' "$@")
+	[ -z "$pkgs" ] || (cd "$module" && "$top/bin/golangci-lint" run $pkgs)
+}
+
+go_files=$(touched '\.go$')
+if [ -n "$go_files" ]; then
+	unformatted=$(gofmt -l $go_files)
+	if [ -n "$unformatted" ]; then
+		echo "pre-commit: gofmt -w these:" >&2
+		echo "$unformatted" >&2
+		exit 1
+	fi
+	need bin/golangci-lint
+	lint . $( (grep -v -E '^(sdk/go|tools)/' <<<"$go_files" || true) | dirs | sed 's|^|./|')
+	lint sdk/go $( (grep -E '^sdk/go/' <<<"$go_files" || true) | dirs | sed 's|^sdk/go|.|')
+fi
+
+if [ -n "$(touched '\.rs$|(^|/)Cargo\.(toml|lock)$|^clippy\.toml$')" ]; then
+	cargo fmt --all --check
+	cargo clippy --workspace --all-targets -- -D warnings
+fi
+
+if [ -n "$(touched '^web/.*\.(ts|tsx)$|^web/(package\.json|tsconfig.*\.json)$')" ]; then
+	pnpm --dir web typecheck
+fi
+
+if [ -n "$(touched '\.proto$|^buf.*\.yaml$')" ]; then
+	need bin/buf
+	bin/buf lint
+	bin/buf format --diff --exit-code
+fi

@@ -19,7 +19,7 @@ const metricsEvery = 10 * time.Second
 
 // RegisterMetrics adds the placer's gauges, by data plane and pool, and for
 // demand by size and whether runners or pods run it, which autoscalers scale
-// on (ADR-0027 §7). Unregister it when the orchestrator stops.
+// on. Unregister it when the orchestrator stops.
 func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
 	meter := otel.Meter("github.com/openetl-io/openetl/internal/orchestration/dispatch")
 	gauge := func(name, unit, description string) (metric.Float64ObservableGauge, error) {

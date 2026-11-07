@@ -1,6 +1,6 @@
 // Package dbosbackend runs workflows on DBOS Transact, a library that keeps
 // them in a database of its own on the control plane's Postgres server, so a
-// small install runs no Temporal (ADR-0028). What DBOS doesn't do it does in
+// small install runs no Temporal. What DBOS doesn't do it does in
 // that database's openetl schema: IDs that start again, schedules, and
 // replicas recovering each other.
 package dbosbackend

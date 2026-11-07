@@ -75,7 +75,7 @@ func signIn(c *http.Client, email, password string, remember bool) (*connect.Res
 // cookie works only on Connect calls from the server's own origin, and ends
 // when the user signs out or changes their password, an admin signs them
 // out, or they're disabled. Too many failures lock the account until a new
-// link sets a password (ADR-0020).
+// link sets a password.
 func TestSignIn(t *testing.T) {
 	ctx := t.Context()
 	owner := accessAs(env.http)

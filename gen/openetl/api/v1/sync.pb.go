@@ -442,7 +442,7 @@ func (x *SyncAttempt) GetLanes() *LaneUsage {
 	return nil
 }
 
-// LaneUsage is how an attempt's lanes spent their time (ADR-0027 §7).
+// LaneUsage is how an attempt's lanes spent their time.
 type LaneUsage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// How many it runs.
@@ -533,7 +533,7 @@ func (x *LaneUsage) GetRows() uint64 {
 	return 0
 }
 
-// JobSize is the CPU and memory a job gets (ADR-0027 §3).
+// JobSize is the CPU and memory a job gets.
 type JobSize struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// xs, s, m, l or xl. In a spec, the amounts are then unset.
@@ -786,7 +786,7 @@ type SyncStream struct {
 	// Rows the destination didn't insert because a row with the same
 	// _openetl_id was earlier in the epoch or already there.
 	CollapsedRows uint64 `protobuf:"varint,4,opt,name=collapsed_rows,json=collapsedRows,proto3" json:"collapsed_rows,omitempty"`
-	// Cells held in its committed epochs (ADR-0025).
+	// Cells held in its committed epochs.
 	HeldCells uint64 `protobuf:"varint,5,opt,name=held_cells,json=heldCells,proto3" json:"held_cells,omitempty"`
 	// The columns it held at its latest commit, whole or some of their
 	// cells; discarded ones are left out.

@@ -1,5 +1,5 @@
-// Package spark runs a pipeline's Spark applications on the user's clusters
-// (ADR-0022). Everything a cluster reads or writes of the data plane's store
+// Package spark runs a pipeline's Spark applications on the user's clusters.
+// Everything a cluster reads or writes of the data plane's store
 // is below the pipeline's {org}/{pipeline}/_spark/: the checked copies of its
 // code, under code/{sha256}/, its syncs' contexts, under context/{sync}/,
 // and each generation's transform, under {g}/.

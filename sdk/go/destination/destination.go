@@ -130,7 +130,7 @@ type Capabilities struct {
 	Delivery   Delivery
 	// Zero: the destination takes no holds.
 	Holds Holds
-	// The most writer lanes an attempt may open (ADR-0027): a Writer each,
+	// The most writer lanes an attempt may open: a Writer each,
 	// whose writes run concurrently. 0: one. A destination that can't commit
 	// every lane's committables together takes one.
 	WriterLanes int
@@ -140,7 +140,7 @@ type Capabilities struct {
 func (c Capabilities) Lanes() int { return max(c.WriterLanes, 1) }
 
 // Holds is what a destination does with columns and cells the platform
-// holds back (ADR-0025). A held cell arrives as null, or as the pipeline's
+// holds back. A held cell arrives as null, or as the pipeline's
 // held value, and HeldColumn lists its column in the row. A Patcher fills
 // it in later.
 type Holds struct {

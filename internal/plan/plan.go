@@ -196,7 +196,7 @@ func SyncProblem(mode destination.WriteMode, stream string, read apiv1.SyncMode)
 }
 
 // Holds reports whether a stream holds columns instead of stopping on a
-// change, and cells if its spec asks (ADR-0025): a keyed stream, not a
+// change, and cells if its spec asks: a keyed stream, not a
 // transform's input, into a destination that patches its write mode.
 func Holds(caps destination.Capabilities, mode destination.WriteMode, keyed bool) bool {
 	return keyed && caps.Holds.Takes(mode)

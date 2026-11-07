@@ -65,7 +65,7 @@ type Connector struct {
 	// source.Acknowledger.
 	Acknowledges bool
 	// The source implements source.Splitter, and divides streams into
-	// splits (ADR-0027).
+	// splits.
 	Splits bool
 	// The source implements source.Resplitter.
 	Resplit bool

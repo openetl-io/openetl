@@ -33,8 +33,8 @@ const (
 	// Out of the dataflow only, with Plan.ReportSchemas: Stream's schema is
 	// Schema from its next batch on, and from now if it had none.
 	FrameSchema
-	// Out of the dataflow only: Batch holds patches of held cells
-	// (ADR-0025), for the destination's Patcher.
+	// Out of the dataflow only: Batch holds patches of held cells,
+	// for the destination's Patcher.
 	FramePatch
 )
 
@@ -43,7 +43,7 @@ const (
 type Frame struct {
 	Kind FrameKind
 	// Into the dataflow, the lane the frame came in on; out of it, the
-	// writer lane it goes to (ADR-0027).
+	// writer lane it goes to.
 	Lane   int
 	Stream string
 	Rows   []json.RawMessage
@@ -148,7 +148,7 @@ type Plan struct {
 	HeldURL string
 	// How streams hold; those that hold nothing are missing.
 	Holds map[string]*HoldPlan
-	// The attempt's lanes and writer lanes (ADR-0027), at most as many; 0
+	// The attempt's lanes and writer lanes, at most as many; 0
 	// is one. A stream's frames go from lane i to writer lane i mod
 	// WriterLanes, or for one in KeyGrouped, each row to the writer lane
 	// owning its key's group: writer lane w owns the w-th of WriterLanes

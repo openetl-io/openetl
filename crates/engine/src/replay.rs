@@ -1,4 +1,4 @@
-//! Replays a stream's held values (ADR-0025): reads its held files in
+//! Replays a stream's held values: reads its held files in
 //! order, from where an earlier attempt's replay got, a chunk at a time.
 
 use arrow_array::RecordBatch;

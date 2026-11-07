@@ -18,7 +18,7 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
-// The flink kind runs a continuous pipeline with a Flink job (ADR-0022 §3)
+// The flink kind runs a continuous pipeline with a Flink job
 // before one of the other sinks: flinktest's fake job passes each stream to
 // the output of its name. Each attempt drains a while after its source has
 // read everything; a drained attempt ends the seed only if every record is

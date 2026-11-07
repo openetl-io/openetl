@@ -22,7 +22,7 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
-// Holds (ADR-0025). The holds kind is the warehouse taking holds, as
+// Holds. The holds kind is the warehouse taking holds, as
 // Postgres does, with keyed streams that hold the cells whose values don't
 // fit, or their whole value column after a type change that the
 // destination doesn't make. holdFlow plays the engine's part. A retry may

@@ -1,5 +1,5 @@
 -- +goose Up
--- What the placer needs from each runner's report (ADR-0027 §6). Capacities
+-- What the placer needs from each runner's report. Capacities
 -- and sizes are in millicores and bytes. A runner's orphans are attempts it
 -- reports that aren't placed on it any more, which still use its room until
 -- they stop.
@@ -17,7 +17,7 @@ ALTER TABLE runners
 -- by; StartSync clears it.
 ALTER TABLE pipelines ADD COLUMN manual_sync_time timestamptz;
 
--- Work a workflow sent to a data plane (ADR-0028 §1): attempts, which the
+-- Work a workflow sent to a data plane: attempts, which the
 -- placer places on a runner, and light operations, which any runner takes.
 -- pending -> placed -> running -> finished for an attempt; pending -> running
 -- -> finished for a light operation. Deadlines are on the database's clock.

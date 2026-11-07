@@ -24,7 +24,7 @@ import (
 // RescalePipeline sets the size of the pipeline's jobs until its next
 // version, or gives the spec back its say. What's running stops at a
 // checkpoint and starts again at the new size, and what hasn't started is
-// sized again (ADR-0027 §7).
+// sized again.
 func (s *Server) RescalePipeline(ctx context.Context, req *connect.Request[apiv1.RescalePipelineRequest]) (*connect.Response[apiv1.RescalePipelineResponse], error) {
 	ws, p, err := s.getPipeline(ctx, req.Msg.GetName())
 	if err != nil {

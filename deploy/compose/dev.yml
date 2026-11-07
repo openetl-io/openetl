@@ -151,8 +151,8 @@ services:
       interval: 2s
       retries: 30
 
-  # A Spark 3.5 standalone master and worker, for pipelines' Spark steps
-  # (ADR-0022). Clusters name the master spark://spark-master:7077, and
+  # A Spark 3.5 standalone master and worker, for pipelines' Spark steps.
+  # Clusters name the master spark://spark-master:7077, and
   # runners on the host submit through deploy/compose/spark-submit, which runs
   # spark-submit in this container. OPENETL_SPARK_SHARE is mounted at the same
   # path in both, so a runner whose store is below it hands Spark file:// URIs

@@ -1,5 +1,5 @@
 // Package temporalbackend runs workflows on Temporal, on a worker that polls
-// its one task queue. Runners never touch it (ADR-0028).
+// its one task queue. Runners never touch it.
 package temporalbackend
 
 import (

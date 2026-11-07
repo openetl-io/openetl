@@ -69,7 +69,7 @@ type Stream struct {
 	// without a primary key. Nil: only for superset streams that require
 	// more than at least once.
 	Collapse *bool
-	// A transform's output (ADR-0022): exact when every input is, and never
+	// A transform's output: exact when every input is, and never
 	// deduped, since once the user's code re-keys, aggregates or explodes
 	// rows, an ID can't tell a repeated input from a new one.
 	Transformed bool

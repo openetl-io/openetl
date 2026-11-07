@@ -247,8 +247,7 @@ export const PipelineStatusSchema: GenMessage<PipelineStatus> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_pipeline, 3);
 
 /**
- * JobScaling is what rescaled a pipeline's jobs, besides its spec (ADR-0027
- * §7).
+ * JobScaling is what rescaled a pipeline's jobs, besides its spec.
  *
  * @generated from message openetl.api.v1.JobScaling
  */
@@ -384,7 +383,7 @@ export const PipelineSpecSchema: GenMessage<PipelineSpec> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_pipeline, 5);
 
 /**
- * JobResources sizes the pipeline's jobs (ADR-0027 §3).
+ * JobResources sizes the pipeline's jobs.
  *
  * @generated from message openetl.api.v1.JobResources
  */
@@ -1002,7 +1001,7 @@ export type PipelineStream = Message<"openetl.api.v1.PipelineStream"> & {
   collapse?: boolean | undefined;
 
   /**
-   * What a value that doesn't fit its type holds back (ADR-0025): its row,
+   * What a value that doesn't fit its type holds back: its row,
    * the default, or only its cell, for a keyed stream into a destination
    * that patches.
    *
@@ -2097,7 +2096,7 @@ export type CheckpointStream = Message<"openetl.api.v1.CheckpointStream"> & {
   collapsedRows: bigint;
 
   /**
-   * Cells held in the epoch (ADR-0025).
+   * Cells held in the epoch.
    *
    * @generated from field: uint64 held_cells = 8;
    */
@@ -2115,7 +2114,7 @@ export type CheckpointStream = Message<"openetl.api.v1.CheckpointStream"> & {
    * Set where the epoch got less than the stream's planned level: the level
    * its rows got, and the one planned. It read them again after a restore
    * from a forced barrier, before its next resume point, and they may
-   * repeat rows an earlier epoch committed (ADR-0016).
+   * repeat rows an earlier epoch committed.
    *
    * @generated from field: openetl.api.v1.DeliveryLevel level = 10;
    */
@@ -3220,7 +3219,7 @@ export const PipelineService: GenService<{
   /**
    * Sets the size of the pipeline's jobs until its next version, or gives
    * the spec back its say. A running job stops at a checkpoint and starts
-   * again at the new size (ADR-0027 §7).
+   * again at the new size.
    *
    * @generated from rpc openetl.api.v1.PipelineService.RescalePipeline
    */
@@ -3291,7 +3290,7 @@ export const PipelineService: GenService<{
     output: typeof ListCheckpointsResponseSchema;
   },
   /**
-   * The columns and cells the pipeline holds back (ADR-0025), as its last
+   * The columns and cells the pipeline holds back, as its last
    * checkpoint left them.
    *
    * @generated from rpc openetl.api.v1.PipelineService.ListHolds

@@ -1,5 +1,5 @@
 -- +goose Up
--- A pod per attempt (ADR-0027 §5). A pod launcher reports the jobs it takes
+-- A pod per attempt. A pod launcher reports the jobs it takes
 -- and its caps; a pod reports the one attempt it runs, and is never placed on.
 -- Sizes are in millicores and bytes; a max of 0 is no limit.
 ALTER TABLE runners

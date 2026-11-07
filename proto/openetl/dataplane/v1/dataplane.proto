@@ -37,7 +37,7 @@ service DataPlaneService {
   // attempt already reported is skipped.
   rpc ReportAttemptFailure(ReportAttemptFailureRequest) returns (ReportAttemptFailureResponse);
   // What a runner is, can run and is running, when it starts and every 10 s.
-  // It's every running attempt's heartbeat (ADR-0028). The plan checks
+  // It's every running attempt's heartbeat. The plan checks
   // connectors against the runners its data plane reported lately, and the
   // placer places attempts on those reporting now.
   rpc ReportRunner(ReportRunnerRequest) returns (ReportRunnerResponse);
@@ -86,11 +86,11 @@ message GetSyncSpecResponse {
   // Fields of the pipeline's flink_access.keys that name secrets in cloud
   // secret stores.
   repeated ExternalSecret flink_access_secrets = 15;
-  // Holds released or discarded (ADR-0025), for the holds still open in the
+  // Holds released or discarded, for the holds still open in the
   // pipeline's last mirrored checkpoint. A release applies to the hold it
   // names only while that hold is open, so sending it again does nothing.
   repeated HoldRelease releases = 16;
-  // The pipeline's key groups (ADR-0027), fixed when it was created. A
+  // The pipeline's key groups, fixed when it was created. A
   // restore from a record with another count fails.
   uint32 key_groups = 17;
 }
@@ -196,7 +196,7 @@ message CheckpointStream {
   // Rows the apply didn't insert because a row with the same _openetl_id
   // was earlier in the epoch or already in the destination.
   uint64 collapsed_rows = 7;
-  // Its holds open at the checkpoint (ADR-0025).
+  // Its holds open at the checkpoint.
   repeated CheckpointHold holds = 8;
   // Cells held in the epoch.
   uint64 held_cells = 9;

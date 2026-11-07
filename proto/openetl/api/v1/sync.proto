@@ -79,7 +79,7 @@ message SyncAttempt {
   LaneUsage lanes = 8;
 }
 
-// LaneUsage is how an attempt's lanes spent their time (ADR-0027 §7).
+// LaneUsage is how an attempt's lanes spent their time.
 message LaneUsage {
   // How many it runs.
   uint32 lanes = 1;
@@ -95,7 +95,7 @@ message LaneUsage {
   uint64 rows = 6;
 }
 
-// JobSize is the CPU and memory a job gets (ADR-0027 §3).
+// JobSize is the CPU and memory a job gets.
 message JobSize {
   // xs, s, m, l or xl. In a spec, the amounts are then unset.
   string preset = 1;
@@ -169,7 +169,7 @@ message SyncStream {
   // Rows the destination didn't insert because a row with the same
   // _openetl_id was earlier in the epoch or already there.
   uint64 collapsed_rows = 4;
-  // Cells held in its committed epochs (ADR-0025).
+  // Cells held in its committed epochs.
   uint64 held_cells = 5;
   // The columns it held at its latest commit, whole or some of their
   // cells; discarded ones are left out.

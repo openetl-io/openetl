@@ -41,6 +41,10 @@ $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION):
 .PHONY: tools
 tools: $(BIN)/.tools ## Build the pinned developer tools into bin/
 
+.PHONY: hooks
+hooks: ## Check what each commit touches before it's made
+	git config core.hooksPath .githooks
+
 .PHONY: dev
 dev: deps-up connectors web ## Start compose deps and run openetld dev, with the UI
 	cargo build -p openetl-engine
@@ -106,7 +110,7 @@ image: ## Build openetld's image (IMAGE), with ENGINE, a Linux openetl-engine
 kind-load: ## Load IMAGE into make kind-up's cluster
 	docker save $(IMAGE) | docker exec -i openetl-control-plane ctr --namespace=k8s.io images import --digests --snapshotter=overlayfs -
 
-# openetl-spark and openetl-flink (ADR-0022): the jars, built and tested in a
+# openetl-spark and openetl-flink: the jars, built and tested in a
 # pinned Maven image, so no JDK is needed on the host; and openetl-spark's
 # Python package's tests. Spark's tests need a passwd entry for the
 # container's user, for Hadoop's login. MAVEN_FLAGS=-DskipTests builds the

@@ -9,7 +9,7 @@ option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1
 // SourceService is served by source connectors. The platform commits only at
 // the resume points a source emits.
 //
-// A stream's read is a set of splits (ADR-0027): resumable slices, such as
+// A stream's read is a set of splits: resumable slices, such as
 // key ranges, partitions or shards, which a source may read concurrently.
 // The whole stream is the split with the empty ID, and a stream is read as
 // that one split unless the platform asks Splits for others.
@@ -100,7 +100,7 @@ message ReadRequest {
   // source until the read is cancelled. Otherwise they complete once
   // they've caught up with where their source was when the read started.
   bool continuous = 4;
-  // How many of its splits the read may read at a time (ADR-0027), a whole
+  // How many of its splits the read may read at a time, a whole
   // stream counting as one, more if they share a connection. Zero: one.
   uint32 lanes = 5;
 }

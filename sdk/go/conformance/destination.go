@@ -17,7 +17,7 @@ import (
 )
 
 // DestinationSuite checks a destination connector by writing through it as
-// the platform does, crashing where ADR-0013 says a runner can, and reading
+// the platform does, crashing where a runner can, and reading
 // back what it made visible.
 type DestinationSuite struct {
 	Launch Launcher

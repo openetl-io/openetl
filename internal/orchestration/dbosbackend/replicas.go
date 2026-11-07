@@ -141,7 +141,7 @@ func release(conn *pgxpool.Conn, locked bool) {
 // replica whose reports have lapsed, or of another version with no one left
 // to run it. Those of this version carry on from where they were, here or on
 // another replica. Those of another can't, so they're cancelled and started
-// again, as the workflows know how to (ADR-0028 §3).
+// again, as the workflows know how to.
 func (b *Backend) recoverLapsed(ctx context.Context, version string) error {
 	live, err := b.liveExecutors(ctx)
 	if err != nil {

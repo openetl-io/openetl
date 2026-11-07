@@ -27,7 +27,7 @@ var styleHash = regexp.MustCompile(`^'sha(256|384|512)-[A-Za-z0-9+/]+={0,2}'$`)
 const permissionsPolicy = "accelerometer=(), bluetooth=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), " +
 	"hid=(), magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=()"
 
-// policy is the UI's Content-Security-Policy (ADR-0020). Connectors' logos
+// policy is the UI's Content-Security-Policy. Connectors' logos
 // are linked from their projects' sites, hence img-src https:.
 func policy(nonce string, styleHashes []string) string {
 	style := []string{"'self'"}

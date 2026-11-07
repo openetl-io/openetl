@@ -250,7 +250,7 @@ func TestFullRefreshReadsEverySync(t *testing.T) {
 }
 
 // A schema change the block policy stops fails the sync once, with no
-// retries (P1.3-D).
+// retries.
 func TestBlockedSchemaChangeIsNotRetried(t *testing.T) {
 	startRunner(t)
 	name := unique("blocked")

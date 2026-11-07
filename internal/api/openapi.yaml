@@ -1109,7 +1109,7 @@ paths:
             tags:
                 - PipelineService
             description: |-
-                The columns and cells the pipeline holds back (ADR-0025), as its last
+                The columns and cells the pipeline holds back, as its last
                  checkpoint left them.
             operationId: PipelineService_ListHolds
             parameters:
@@ -1683,7 +1683,7 @@ paths:
             description: |-
                 Sets the size of the pipeline's jobs until its next version, or gives
                  the spec back its say. A running job stops at a checkpoint and starts
-                 again at the new size (ADR-0027 §7).
+                 again at the new size.
             operationId: PipelineService_RescalePipeline
             parameters:
                 - name: workspace
@@ -2808,7 +2808,7 @@ components:
                          was earlier in the epoch or already in the destination.
                 heldCells:
                     type: string
-                    description: Cells held in the epoch (ADR-0025).
+                    description: Cells held in the epoch.
                 heldColumns:
                     type: array
                     items:
@@ -2827,7 +2827,7 @@ components:
                         Set where the epoch got less than the stream's planned level: the level
                          its rows got, and the one planned. It read them again after a restore
                          from a forced barrier, before its next resume point, and they may
-                         repeat rows an earlier epoch committed (ADR-0016).
+                         repeat rows an earlier epoch committed.
                     format: enum
                 plannedLevel:
                     enum:
@@ -3759,7 +3759,7 @@ components:
                 pool:
                     type: string
                     description: 'The runners that run its jobs. Unset: default.'
-            description: JobResources sizes the pipeline's jobs (ADR-0027 §3).
+            description: JobResources sizes the pipeline's jobs.
         JobScaling:
             type: object
             properties:
@@ -3780,9 +3780,7 @@ components:
                     description: |-
                         Why the job loop isn't rescaling it: destination_bound when its lanes
                          mostly wait for the destination, which more lanes won't help.
-            description: |-
-                JobScaling is what rescaled a pipeline's jobs, besides its spec (ADR-0027
-                 §7).
+            description: JobScaling is what rescaled a pipeline's jobs, besides its spec.
         JobSize:
             type: object
             properties:
@@ -3793,7 +3791,7 @@ components:
                     type: string
                 memoryBytes:
                     type: string
-            description: JobSize is the CPU and memory a job gets (ADR-0027 §3).
+            description: JobSize is the CPU and memory a job gets.
         Key:
             type: object
             properties:
@@ -3843,7 +3841,7 @@ components:
                 rows:
                     type: string
                     description: The rows its lanes took in.
-            description: LaneUsage is how an attempt's lanes spent their time (ADR-0027 §7).
+            description: LaneUsage is how an attempt's lanes spent their time.
         ListAuditEntriesResponse:
             type: object
             properties:
@@ -4341,7 +4339,7 @@ components:
                         - QUARANTINE_SCOPE_CELL
                     type: string
                     description: |-
-                        What a value that doesn't fit its type holds back (ADR-0025): its row,
+                        What a value that doesn't fit its type holds back: its row,
                          the default, or only its cell, for a keyed stream into a destination
                          that patches.
                     format: enum
@@ -5073,7 +5071,7 @@ components:
                          _openetl_id was earlier in the epoch or already there.
                 heldCells:
                     type: string
-                    description: Cells held in its committed epochs (ADR-0025).
+                    description: Cells held in its committed epochs.
                 heldColumns:
                     type: array
                     items:

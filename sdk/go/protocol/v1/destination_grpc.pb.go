@@ -28,7 +28,7 @@ const (
 //
 // DestinationService is served by destination connectors.
 type DestinationServiceClient interface {
-	// One stream per writer lane of an attempt (ADR-0027). On lane 0's, the
+	// One stream per writer lane of an attempt. On lane 0's, the
 	// platform sends open, then recover, then start_reads, batches, end_reads,
 	// pre-commits, schemas and commits, and closes its side to close the
 	// writer. Other lanes' streams open once lane 0 has recovered, and get no
@@ -70,7 +70,7 @@ type DestinationService_WriteClient = grpc.BidiStreamingClient[WriteRequest, Wri
 //
 // DestinationService is served by destination connectors.
 type DestinationServiceServer interface {
-	// One stream per writer lane of an attempt (ADR-0027). On lane 0's, the
+	// One stream per writer lane of an attempt. On lane 0's, the
 	// platform sends open, then recover, then start_reads, batches, end_reads,
 	// pre-commits, schemas and commits, and closes its side to close the
 	// writer. Other lanes' streams open once lane 0 has recovered, and get no

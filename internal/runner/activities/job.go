@@ -189,7 +189,7 @@ var columnTypes = map[apiv1.ColumnType]arrow.DataType{
 	apiv1.ColumnType_COLUMN_TYPE_FLOAT64: arrow.PrimitiveTypes.Float64,
 }
 
-// streamHolds is how a stream holds back columns and cells (ADR-0025).
+// streamHolds is how a stream holds back columns and cells.
 func streamHolds(ps *apiv1.PipelineStream) *runner.StreamHolds {
 	h := &runner.StreamHolds{
 		Cells: ps.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL,

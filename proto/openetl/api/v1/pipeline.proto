@@ -38,7 +38,7 @@ service PipelineService {
   }
   // Sets the size of the pipeline's jobs until its next version, or gives
   // the spec back its say. A running job stops at a checkpoint and starts
-  // again at the new size (ADR-0027 §7).
+  // again at the new size.
   rpc RescalePipeline(RescalePipelineRequest) returns (RescalePipelineResponse) {
     option (google.api.http) = {
       post: "/v1/{name=workspaces/*/pipelines/*}:rescale"
@@ -74,7 +74,7 @@ service PipelineService {
   rpc ListCheckpoints(ListCheckpointsRequest) returns (ListCheckpointsResponse) {
     option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/checkpoints"};
   }
-  // The columns and cells the pipeline holds back (ADR-0025), as its last
+  // The columns and cells the pipeline holds back, as its last
   // checkpoint left them.
   rpc ListHolds(ListHoldsRequest) returns (ListHoldsResponse) {
     option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/holds"};
@@ -161,8 +161,7 @@ message PipelineStatus {
   JobScaling scaling = 4;
 }
 
-// JobScaling is what rescaled a pipeline's jobs, besides its spec (ADR-0027
-// §7).
+// JobScaling is what rescaled a pipeline's jobs, besides its spec.
 message JobScaling {
   // Set by RescalePipeline for the current version.
   JobSize size = 1;
@@ -199,7 +198,7 @@ message PipelineSpec {
   JobResources resources = 14;
 }
 
-// JobResources sizes the pipeline's jobs (ADR-0027 §3).
+// JobResources sizes the pipeline's jobs.
 message JobResources {
   // Unset: auto, from the connectors' hints and then the job's measured peaks.
   JobSize size = 1;
@@ -415,7 +414,7 @@ message PipelineStream {
   // primary key. Unset: true for a superset stream whose require is above
   // at least once, otherwise false.
   optional bool collapse = 7;
-  // What a value that doesn't fit its type holds back (ADR-0025): its row,
+  // What a value that doesn't fit its type holds back: its row,
   // the default, or only its cell, for a keyed stream into a destination
   // that patches.
   QuarantineScope quarantine = 8;
@@ -798,7 +797,7 @@ message CheckpointStream {
   // Rows the apply didn't insert because a row with the same _openetl_id
   // was earlier in the epoch or already in the destination.
   uint64 collapsed_rows = 7;
-  // Cells held in the epoch (ADR-0025).
+  // Cells held in the epoch.
   uint64 held_cells = 8;
   // The columns it held at the checkpoint, whole or some of their cells;
   // discarded ones are left out.
@@ -806,7 +805,7 @@ message CheckpointStream {
   // Set where the epoch got less than the stream's planned level: the level
   // its rows got, and the one planned. It read them again after a restore
   // from a forced barrier, before its next resume point, and they may
-  // repeat rows an earlier epoch committed (ADR-0016).
+  // repeat rows an earlier epoch committed.
   DeliveryLevel level = 10;
   DeliveryLevel planned_level = 11;
 }

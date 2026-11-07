@@ -182,7 +182,7 @@
             "delivery": { "description": "How epochs reach it: streamed as batches, or staged as Parquet files the platform hands over. None: streamed.", "enum": ["streamed", "staged"] },
             "maxWriterLanes": { "description": "The most writer lanes an attempt may open, writing concurrently. None: one.", "type": "integer", "minimum": 0, "maximum": 4294967295 },
             "holds": {
-              "description": "What the destination does with held columns and cells (ADR-0025). None: it takes no holds.",
+              "description": "What the destination does with held columns and cells. None: it takes no holds.",
               "type": "object",
               "additionalProperties": false,
               "properties": {

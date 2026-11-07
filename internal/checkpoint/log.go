@@ -45,7 +45,7 @@ type StreamState struct {
 	// The state of the stream's one split, the whole stream; nil with
 	// Splits.
 	State []byte `json:"state,omitempty"`
-	// The stream's splits (ADR-0027), where it has any but the whole stream.
+	// The stream's splits, where it has any but the whole stream.
 	Splits []SplitState `json:"splits,omitempty"`
 	// The engine's schema for the stream at this checkpoint: an Arrow IPC
 	// stream holding only the schema.
@@ -61,7 +61,7 @@ type StreamState struct {
 	// The schema the destination has, where columns are held whole; nil
 	// where it's Schema.
 	Delivered []byte `json:"delivered,omitempty"`
-	// Columns and cells held back (ADR-0025).
+	// Columns and cells held back.
 	Holds *Holds `json:"holds,omitempty"`
 }
 

@@ -4,44 +4,65 @@ OpenETL moves data from where it is produced to where it is used: databases, Saa
 
 OpenETL is licensed under Apache 2.0 and built to be self-hosted.
 
-**Status: pre-alpha.** Nothing here is usable yet. The first release, 0.1 alpha, will run scheduled batch syncs from Postgres and a few SaaS APIs into Postgres, a warehouse and Parquet on S3.
+**Status: pre-alpha.** Nothing has been released, and the API, the pipeline spec and the protocols still change without notice. The first release, 0.1 alpha, will run scheduled and continuous pipelines:
+
+- from Postgres (full refresh, incremental by a cursor, and CDC), Kafka and Kinesis,
+- into Postgres, Iceberg (REST and Glue catalogs), Parquet on S3, Kafka and Kinesis,
+- with transforms on your own Spark and Flink clusters, dbt after a sync, and metrics and traces over OpenTelemetry.
+
+## How it works
+
+- **The control plane** is `openetld`: the API, which the `openetl` CLI and the UI use, and orchestrators, which schedule syncs and place each attempt on a runner. Workflows run on DBOS, which needs nothing but Postgres, or on Temporal.
+- **Runners** make up a data plane. They take their work from the API and run each attempt: connectors as subprocesses speaking the connector protocol, with `openetl-engine`, the Rust data engine, between source and destination. On Kubernetes, an attempt can run in a pod of its own, sized for its job.
+- **Checkpoints** are a log in object storage, one record per checkpoint, updated by compare-and-swap, which also fences out attempts that were replaced. The destination connector commits each epoch behind that fence, so an attempt that crashes resumes from the last checkpoint, and a destination that allows it never applies an epoch twice.
 
 ## Repository layout
 
 | Path | What it holds |
 |---|---|
-| `proto/openetl` | The protocols: `connector/v1` (what connectors speak, including host services), `engine/v1` (runner to engine) and `api/v1` (the control-plane API) |
-| `gen/`, `sdk/go/protocol/v1` | Go generated from `proto/` by `make generate`, committed |
-| `internal/checkpoint` | The checkpoint log: one record per checkpoint plus a `HEAD` pointer in object storage, updated by compare-and-swap, which also fences out replaced jobs |
-| `internal/runner` | The data-plane job driver and checkpoint coordinator |
-| `internal/delivery` | Each stream's delivery guarantee, computed from the sink, the source's replay behaviour, the write mode, the primary key and the required level |
-| `internal/platform/errs` | The error taxonomy every boundary carries |
-| `sdk/go` | The Go connector SDK (a separate module), with `sdk.Serve` for external connectors |
-| `internal/connectorhost` | Connectors the runner hosts: the few built in, declarative sources, and external connectors, which it starts as subprocesses |
-| `crates/` | `openetl-engine`, the Rust data engine, and `openetl-proto`, its generated protocol types |
-| `test/sim` | A seeded simulation of the commit protocol under crashes, timeouts and zombie jobs |
-| `web/` | The UI: React and TypeScript, a client of the public API only. `web/src/gen` is generated from `proto/` and committed |
-| `deploy/compose` | Local dependencies: Postgres, an S3-compatible store, and Temporal in a profile |
+| `cmd/openetld`, `cmd/openetl` | The daemon (roles `server`, `orchestrator` and `runner`, or `dev` for all three) and the CLI |
+| `proto/openetl` | The protocols: `connector/v1` (what connectors speak, including host services), `engine/v1` (runner to engine), `dataplane/v1` (runners to the API) and `api/v1` (the API) |
+| `gen/`, `sdk/go/protocol/v1`, `web/src/gen`, `internal/api/openapi.yaml` | Generated from `proto/` by `make generate`, and committed |
+| `internal/api` | The API server |
+| `internal/orchestration` | Workflows, written against one interface with a DBOS and a Temporal backend, and placement and dispatch to runners |
+| `internal/runner` | Runners: attempts, the checkpoint coordinator, and pod launchers |
+| `internal/checkpoint` | The checkpoint log |
+| `internal/delivery` | Each stream's delivery guarantee, worked out from the destination, the source's replay behaviour, the write mode, the primary key and the level the pipeline requires |
+| `internal/store` | The metadata store on Postgres: migrations, and queries, from which sqlc generates `internal/store/db` |
+| `internal/connectorhost`, `connectors/native` | Connectors the runner hosts: the two built in (`faker` and `stdout`), declarative sources, and external connectors |
+| `sdk/go` | The Go connector SDK, a module of its own, with `sdk.Serve` for external connectors and a conformance suite |
+| `crates/` | `openetl-engine`, the Rust data engine, and its libraries |
+| `libs/` | `openetl-spark` and `openetl-flink`: what runs on your Spark and Flink clusters |
+| `web/` | The UI: React and TypeScript, a client of the API only |
+| `deploy/` | Local dependencies in Docker Compose, `openetld`'s image, and manifests for Kubernetes |
+| `test/` | `sim`, a seeded simulation of the commit protocol under crashes, timeouts and zombie attempts; `e2e`, whole-stack scenarios and the chaos suite; `bench` |
+| `examples/` | Pipelines to try |
 
 ## Development
 
-You need Go 1.26, Rust (the toolchain is pinned in `rust-toolchain.toml`; rustup installs it), and Node 22 with pnpm for the UI. Developer tools are pinned in `tools/go.mod` and built into `bin/` by `make tools`; the UI's, protoc-gen-es among them, in `web/package.json`.
+You need Go 1.26, Rust (the toolchain is pinned in `rust-toolchain.toml`, and rustup installs it), Node 22 with pnpm for the UI, and Docker. Developer tools are pinned in `tools/go.mod` and built into `bin/` by `make tools`; the UI's are in `web/package.json`.
 
 ```sh
-make test          # Go, Rust and UI unit tests
-make sim           # commit-protocol simulation; SEEDS=10000 for more seeds
-make lint          # buf lint, golangci-lint, rustfmt, clippy, tsc
-make generate      # regenerate Go and TypeScript from proto/ after changing a .proto
-make deps-up       # Postgres, S3, Kafka and Kinesis in Docker
-make connectors    # build the official connectors from ../openetl-connectors into bin/connectors
-make e2e           # whole-stack scenarios; needs deps-up and the connectors
-make dev           # openetld with every role, and the UI at http://localhost:8080
-make web-dev       # the UI's dev server, proxying the API on localhost:8080
+make hooks             # check formatting and lint before each commit
+make test              # Go, Rust and UI unit tests
+make lint              # buf, golangci-lint, rustfmt, clippy, cargo-deny and tsc
+make generate          # regenerate code after changing a .proto or a query
+make sim               # the commit-protocol simulation; SEEDS=10000 for more seeds
+make deps-up           # Postgres, S3, Kafka, Kinesis, Spark, Flink and more in Docker; TEMPORAL=1 adds Temporal
+make test-integration  # integration tests against those
+make connectors        # build the official connectors from ../openetl-connectors into bin/connectors
+make e2e               # whole-stack scenarios; needs deps-up and the connectors
+make dev               # openetld dev, with the UI at http://localhost:8080
+make web-dev           # the UI's dev server, against the API on localhost:8080
 ```
 
-The UI signs in with an API key. `openetld` writes the owner's key to `.openetl/admin.key` when it creates the org, and `openetl key create` makes more. `openetld --web DIR` serves a built UI (`make web` builds `web/dist`) next to the API, on the same origin.
+`make help` lists the rest.
 
-The official connectors, Postgres's included, live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Clone it next to this repo, or set `CONNECTORS_SRC`.
+`openetld dev` runs the server, an orchestrator and a runner in one process, and asks no one to sign in while it listens only on a loopback address. `openetld server` writes the owner's API key to `.openetl/admin.key` when it creates the org, and `openetl principal password-link` gives a user a link to set a password for the UI.
+
+To try a pipeline, run `make deps-up` and `make dev`, then follow the comment at the top of [`examples/faker-to-postgres.yaml`](examples/faker-to-postgres.yaml).
+
+The official connectors, Postgres's included, live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Clone it next to this repository, or set `CONNECTORS_SRC`.
 
 ## License
 

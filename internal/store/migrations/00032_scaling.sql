@@ -1,5 +1,5 @@
 -- +goose Up
--- Each attempt's lanes, as its runner last reported them (ADR-0027 §7): how
+-- Each attempt's lanes, as its runner last reported them: how
 -- many, the most it could use (0: no limit), and where their time went, summed
 -- over them.
 ALTER TABLE attempts

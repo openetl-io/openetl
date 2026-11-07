@@ -25,7 +25,7 @@ import (
 	"github.com/openetl-io/openetl/internal/spark"
 )
 
-// Spark runs pipelines' Spark steps on their clusters (ADR-0022).
+// Spark runs pipelines' Spark steps on their clusters.
 type Spark struct {
 	API dataplanev1connect.DataPlaneServiceClient
 	// Nil: secrets in cloud secret stores can't be read.

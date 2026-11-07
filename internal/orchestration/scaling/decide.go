@@ -1,4 +1,4 @@
-// Package scaling is the job loop for continuous pipelines (ADR-0027 §7): it
+// Package scaling is the job loop for continuous pipelines: it
 // watches each running stream job's lanes, and rescales a job whose lanes
 // call for more or fewer.
 package scaling

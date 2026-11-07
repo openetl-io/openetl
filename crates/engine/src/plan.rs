@@ -44,7 +44,7 @@ pub struct Plan {
     /// Each stream's: rows go to the writer lane owning their key's group,
     /// not straight from their lane.
     pub routed: Vec<bool>,
-    /// Each stream's holds (ADR-0025); None where it holds nothing.
+    /// Each stream's holds; None where it holds nothing.
     pub holds: Vec<Option<HoldConfig>>,
     /// Each stream's replay of released holds.
     pub replays: Vec<Option<ReplayPlan>>,

@@ -1,5 +1,5 @@
 // Package flink runs a continuous pipeline's Flink job on the user's
-// cluster (ADR-0022): the Flink Kubernetes Operator, a standalone session
+// cluster: the Flink Kubernetes Operator, a standalone session
 // cluster's REST API, or EMR on EC2. Everything a cluster reads or writes of
 // the data plane's store is below the pipeline's {org}/{pipeline}/_flink/:
 // the checked copies of its code under code/{sha256}/, each job's

@@ -16,7 +16,7 @@ coverage.*
 *.coverprofile
 profile.cov
 
-# go.work and go.work.sum are committed: see docs on the repo layout.
+# go.work and go.work.sum are committed.
 
 # Rust, and Maven
 /target/

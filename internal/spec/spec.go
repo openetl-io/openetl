@@ -394,7 +394,7 @@ type deliveryYAML struct {
 	ResumePointTimeout string `yaml:"resumePointTimeout"`
 }
 
-// jobResourcesYAML is spec.resources (ADR-0027 §3). A size is auto, a preset
+// jobResourcesYAML is spec.resources. A size is auto, a preset
 // or {cpu, memory}.
 type jobResourcesYAML struct {
 	Size         yaml.Node `yaml:"size"`

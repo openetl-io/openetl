@@ -60,8 +60,8 @@ func (s *schemaChanged) Error() string {
 	return fmt.Sprintf("runner: stream %q's schema changed, so the Flink job is deployed again", s.stream)
 }
 
-// flinkAttempt is one attempt of a continuous pipeline with a Flink job
-// (ADR-0022 §3). It deploys the job once, and runs the dataflow around it in
+// flinkAttempt is one attempt of a continuous pipeline with a Flink job.
+// It deploys the job once, and runs the dataflow around it in
 // segments: a new segment, under a new generation, starts after the job's
 // tasks restart, and a new deploy after a stream's schema changes.
 type flinkAttempt struct {
