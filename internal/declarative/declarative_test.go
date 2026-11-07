@@ -410,6 +410,144 @@ func TestIncrementalUnordered(t *testing.T) {
 	}
 }
 
+// splitRecorder keeps what each split emits.
+type splitRecorder struct {
+	*recorder
+	mu     sync.Mutex
+	ids    map[string][]string
+	resume map[string][]string
+	next   map[string]string
+}
+
+func (r *splitRecorder) Split(_, id string) source.SplitEmitter { return splitOf{r, id} }
+
+type splitOf struct {
+	r  *splitRecorder
+	id string
+}
+
+func (s splitOf) Rows(rows []json.RawMessage) error {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	for _, b := range rows {
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			return err
+		}
+		s.r.ids[s.id] = append(s.r.ids[s.id], fmt.Sprint(m["id"]))
+	}
+	return nil
+}
+
+func (s splitOf) Records(arrow.RecordBatch) error { return fmt.Errorf("records for %s", s.id) }
+
+func (s splitOf) ResumePoint(state []byte, _ ...source.Split) error {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	s.r.resume[s.id] = append(s.r.resume[s.id], string(state))
+	return nil
+}
+
+func (s splitOf) Complete(next []byte, _ ...source.Split) error {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	s.r.next[s.id] = string(next)
+	return nil
+}
+
+func TestPartitionsAreSplits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("page") == "2" {
+			writeJSON(w, []any{map[string]any{"id": q.Get("account") + "-2", "at": "2026-01-02"}})
+			return
+		}
+		w.Header().Set("Link", fmt.Sprintf(`</events?account=%s&page=2>; rel="next"`, q.Get("account")))
+		writeJSON(w, []any{map[string]any{"id": q.Get("account") + "-1", "at": "2026-01-01"}})
+	}))
+	defer srv.Close()
+	m := testManifest(`accounts: { type: array, items: { type: string } }`, `
+streams:
+  - name: events
+    partitions: { values: "config.accounts" }
+    request: { path: /events, params: { account: "{partition}" } }
+    paginator: { type: link }
+    incremental: { cursor_field: at, type: string }
+`)
+	s := bind(t, m, srv, map[string]any{"accounts": []any{"a", "b", "c"}})
+	sp, ok := s.(source.Splitter)
+	if !ok {
+		t.Fatal("not a Splitter")
+	}
+	cs := source.ConfiguredStream{Name: "events", SyncMode: source.Incremental, Cursor: "at"}
+	splits, err := sp.Splits(t.Context(), cs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(splits) != 3 {
+		t.Fatalf("%d splits, want 3", len(splits))
+	}
+	cs.Splits = splits
+	r := &splitRecorder{recorder: newRecorder(), ids: map[string][]string{}, resume: map[string][]string{}, next: map[string]string{}}
+	if err := s.Read(t.Context(), source.ReadRequest{Streams: []source.ConfiguredStream{cs}, Lanes: 2}, r); err != nil {
+		t.Fatal(err)
+	}
+	for i, account := range []string{"a", "b", "c"} {
+		id := splits[i].ID
+		if got, want := r.ids[id], []string{account + "-1", account + "-2"}; !slices.Equal(got, want) {
+			t.Errorf("split %s: ids %v, want %v", account, got, want)
+		}
+		if len(r.resume[id]) != 1 || !strings.Contains(r.resume[id][0], fmt.Sprintf(`"partition":%q`, account)) {
+			t.Errorf("split %s: resume points %v keep no partition", account, r.resume[id])
+		}
+	}
+
+	// A later read continues each partition from its floor, and a partition
+	// that's new starts from the beginning.
+	s = bind(t, m, srv, map[string]any{"accounts": []any{"a", "d"}})
+	sp, _ = s.(source.Splitter)
+	ended := []source.Split{{ID: splits[0].ID, State: []byte(r.next[splits[0].ID])}}
+	again, err := sp.Splits(t.Context(), cs, ended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 || again[0].ID != splits[0].ID {
+		t.Fatalf("splits %v", again)
+	}
+	if !strings.Contains(string(again[0].State), `"cursor":"2026-01-02"`) || strings.Contains(string(again[1].State), "cursor") {
+		t.Errorf("states %s and %s", again[0].State, again[1].State)
+	}
+}
+
+func TestPartitionsOverARange(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.URL.Query().Get("from")+".."+r.URL.Query().Get("to"))
+		mu.Unlock()
+		writeJSON(w, []any{})
+	}))
+	defer srv.Close()
+	m := testManifest("", `
+streams:
+  - name: days
+    partitions:
+      range: { start: "timestamp('2026-01-01T00:00:00Z')", end: "timestamp('2026-01-02T12:00:00Z')", step: 24h }
+    request: { path: /days, params: { from: "{partition.start}", to: "{partition.end}" } }
+`)
+	s := bind(t, m, srv, nil)
+	// A read asked for no splits still reads its partitions.
+	r := &splitRecorder{recorder: newRecorder(), ids: map[string][]string{}, resume: map[string][]string{}, next: map[string]string{}}
+	if err := s.Read(t.Context(), source.ReadRequest{Streams: []source.ConfiguredStream{{Name: "days"}}}, r); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"2026-01-01T00:00:00Z..2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z..2026-01-02T12:00:00Z"}
+	if !slices.Equal(seen, want) {
+		t.Errorf("partitions %v, want %v", seen, want)
+	}
+}
+
 func TestChildStreams(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -769,6 +907,10 @@ func TestLoadErrors(t *testing.T) {
 		{"parent in a stream without one", "", "streams:\n  - { name: a, request: { path: '/{parent.id}' } }", "undeclared reference to 'parent'"},
 		{"auth from a plain property", "", "  auth: { type: bearer, token: { secret: base_url } }\nstreams:\n  - { name: a, request: { path: /a } }", "isn't marked x-secret"},
 		{"a missing parent", "", "streams:\n  - { name: a, parent: { stream: b }, request: { path: /a } }", `no parent stream "b"`},
+		{"partitions without a kind", "", "streams:\n  - { name: a, partitions: {}, request: { path: /a } }", "set either values or range"},
+		{"partitions of both kinds", "", "streams:\n  - { name: a, partitions: { values: \"[1]\", range: { start: now, step: 1h } }, request: { path: /a } }", "set either values or range"},
+		{"a bad partition step", "", "streams:\n  - { name: a, partitions: { range: { start: now, step: soon } }, request: { path: /a } }", "isn't a positive duration"},
+		{"a child with partitions", "", "streams:\n  - { name: p, primary_key: [id], request: { path: /p } }\n  - { name: a, parent: { stream: p }, partitions: { values: \"[1]\" }, request: { path: /a } }", "can't have partitions"},
 		{"a parent without a key", "", "streams:\n  - { name: p, request: { path: /p } }\n  - { name: a, parent: { stream: p }, request: { path: /a } }", "needs a primary key"},
 		{"a grandchild", "", "streams:\n  - { name: p, primary_key: [id], request: { path: /p } }\n  - { name: c, primary_key: [id], parent: { stream: p }, request: { path: /c } }\n  - { name: g, parent: { stream: c }, request: { path: /g } }", "has a parent of its own"},
 		{"an ordered child", "", "streams:\n  - { name: p, primary_key: [id], request: { path: /p } }\n  - { name: c, parent: { stream: p }, request: { path: /c }, incremental: { cursor_field: t, type: datetime, ordered: true } }", "can't be ordered"},

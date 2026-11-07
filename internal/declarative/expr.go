@@ -20,25 +20,27 @@ import (
 
 // Variables, and where expressions see them.
 const (
-	varConfig   = "config"
-	varState    = "state"
-	varPage     = "page"
-	varParent   = "parent"
-	varNow      = "now"
-	varResponse = "response"
-	varRecords  = "records"
-	varRequest  = "request"
+	varConfig    = "config"
+	varState     = "state"
+	varPage      = "page"
+	varParent    = "parent"
+	varPartition = "partition"
+	varNow       = "now"
+	varResponse  = "response"
+	varRecords   = "records"
+	varRequest   = "request"
 )
 
 var varTypes = map[string]*cel.Type{
-	varConfig:   cel.MapType(cel.StringType, cel.DynType),
-	varState:    cel.MapType(cel.StringType, cel.DynType),
-	varPage:     cel.MapType(cel.StringType, cel.DynType),
-	varParent:   cel.MapType(cel.StringType, cel.DynType),
-	varNow:      cel.TimestampType,
-	varResponse: cel.MapType(cel.StringType, cel.DynType),
-	varRecords:  cel.ListType(cel.DynType),
-	varRequest:  cel.MapType(cel.StringType, cel.DynType),
+	varConfig:    cel.MapType(cel.StringType, cel.DynType),
+	varState:     cel.MapType(cel.StringType, cel.DynType),
+	varPage:      cel.MapType(cel.StringType, cel.DynType),
+	varParent:    cel.MapType(cel.StringType, cel.DynType),
+	varPartition: cel.DynType,
+	varNow:       cel.TimestampType,
+	varResponse:  cel.MapType(cel.StringType, cel.DynType),
+	varRecords:   cel.ListType(cel.DynType),
+	varRequest:   cel.MapType(cel.StringType, cel.DynType),
 }
 
 // The fields of the variables whose fields are fixed.

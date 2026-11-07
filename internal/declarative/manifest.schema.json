@@ -292,6 +292,34 @@
           "additionalProperties": false,
           "properties": { "stream": { "type": "string" } }
         },
+        "partitions": {
+          "description": "Read the stream in splits, concurrently where the job has room, each with its own place and floor. Requests see each one as partition. Not for a stream with a parent.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "values": {
+              "description": "An expression over config and now, returning a list: a partition per entry.",
+              "$ref": "#/$defs/expression"
+            },
+            "range": {
+              "description": "Partitions of {start, end}, in RFC 3339, a step at a time.",
+              "type": "object",
+              "required": ["start", "step"],
+              "additionalProperties": false,
+              "properties": {
+                "start": {
+                  "description": "An expression over config and now, returning a timestamp.",
+                  "$ref": "#/$defs/expression"
+                },
+                "end": {
+                  "description": "As start. Default: now.",
+                  "$ref": "#/$defs/expression"
+                },
+                "step": { "description": "A duration, such as 24h.", "type": "string" }
+              }
+            }
+          }
+        },
         "errors": { "$ref": "#/$defs/errors" },
         "schema": {
           "description": "JSON Schema for some or all of the record's top-level properties, which declares their types. The others are inferred.",
@@ -306,7 +334,7 @@
       }
     },
     "request": {
-      "description": "Templates over config, state, page, parent and now.",
+      "description": "Templates over config, state, page, parent, partition and now.",
       "type": "object",
       "required": ["path"],
       "additionalProperties": false,

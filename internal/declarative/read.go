@@ -3,6 +3,7 @@ package declarative
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -30,8 +31,9 @@ type src struct {
 }
 
 var (
-	_ source.Source  = (*src)(nil)
-	_ source.Checker = (*src)(nil)
+	_ source.Source   = (*src)(nil)
+	_ source.Checker  = (*src)(nil)
+	_ source.Splitter = (*src)(nil)
 )
 
 // Every stream is superset: cursor floors and lookback windows read records
@@ -57,20 +59,131 @@ func (s *src) Check(ctx context.Context) error {
 	return err
 }
 
-// Read reads the requested streams one after another.
+// Splits are a stream's partitions, each continuing from where its last read
+// ended. A partition no longer listed is forgotten.
+func (s *src) Splits(ctx context.Context, cs source.ConfiguredStream, ended []source.Split) ([]source.Split, error) {
+	st := s.b.c.stream(cs.Name)
+	if st == nil || st.partitions == nil {
+		return source.Whole(ended)
+	}
+	values, err := s.partitionValues(ctx, st.partitions)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %s: partitions: %w", s.b.c.name, st.name, err)
+	}
+	if len(values) == 0 {
+		return nil, errs.New(errs.ConfigInvalid, "%s: %s: no partitions", s.b.c.name, st.name)
+	}
+	floors := make(map[string][]byte, len(ended))
+	for _, sp := range ended {
+		floors[sp.ID] = sp.State
+	}
+	out := make([]source.Split, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, v := range values {
+		raw, err := marshal(v)
+		if err != nil {
+			return nil, errs.Wrap(errs.ConfigInvalid, err, fmt.Sprintf("%s: %s: a partition", s.b.c.name, st.name))
+		}
+		sum := sha256.Sum256(raw)
+		id := hex.EncodeToString(sum[:8])
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		var ss streamState
+		if b := floors[id]; len(b) > 0 {
+			if err := json.Unmarshal(b, &ss); err != nil {
+				return nil, errs.Wrap(errs.ConfigInvalid, err, fmt.Sprintf("%s: %s: state", s.b.c.name, st.name))
+			}
+		}
+		ss.Partition = raw
+		state, err := marshal(ss)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, source.Split{ID: id, State: state})
+	}
+	return out, nil
+}
+
+func (s *src) partitionValues(ctx context.Context, p *partitions) ([]any, error) {
+	now, err := s.h.Now(ctx)
+	if err != nil {
+		return nil, err
+	}
+	vars := map[string]any{varConfig: s.b.config, varNow: now}
+	if p.values != nil {
+		v, err := p.values.eval(vars)
+		if err != nil {
+			return nil, err
+		}
+		n, err := native(v)
+		if err != nil {
+			return nil, err
+		}
+		list, ok := n.([]any)
+		if !ok {
+			return nil, fmt.Errorf("values isn't a list: %T", n)
+		}
+		return list, nil
+	}
+	from, err := timestampOf(p.start, vars)
+	if err != nil {
+		return nil, err
+	}
+	to := now
+	if p.end != nil {
+		if to, err = timestampOf(p.end, vars); err != nil {
+			return nil, err
+		}
+	}
+	var out []any
+	for at := from; at.Before(to); at = at.Add(p.step) {
+		end := at.Add(p.step)
+		if end.After(to) {
+			end = to
+		}
+		out = append(out, map[string]any{"start": at.UTC().Format(time.RFC3339Nano), "end": end.UTC().Format(time.RFC3339Nano)})
+	}
+	return out, nil
+}
+
+func timestampOf(e *expr, vars map[string]any) (time.Time, error) {
+	v, err := e.eval(vars)
+	if err != nil {
+		return time.Time{}, err
+	}
+	t, ok := v.Value().(time.Time)
+	if !ok {
+		return time.Time{}, fmt.Errorf("not a timestamp: %v", v.Type())
+	}
+	return t, nil
+}
+
+// Read reads the requested streams, and their partitions, as many at a time
+// as the request says.
 func (s *src) Read(ctx context.Context, req source.ReadRequest, emit source.Emitter) error {
-	for _, cs := range req.Streams {
+	for i, cs := range req.Streams {
 		st := s.b.c.stream(cs.Name)
 		if st == nil {
 			return errs.New(errs.ConfigInvalid, "%s: no stream %q", s.b.c.name, cs.Name)
 		}
+		if st.partitions != nil && len(cs.Splits) == 0 {
+			var err error
+			if req.Streams[i].Splits, err = s.Splits(ctx, cs, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return source.ReadSplits(ctx, req, emit, func(ctx context.Context, cs source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+		st := s.b.c.stream(cs.Name)
 		var ss streamState
-		if len(cs.State) > 0 {
-			if err := json.Unmarshal(cs.State, &ss); err != nil {
+		if len(sp.State) > 0 {
+			if err := json.Unmarshal(sp.State, &ss); err != nil {
 				return errs.Wrap(errs.ConfigInvalid, err, fmt.Sprintf("%s: %s: state", s.b.c.name, st.name))
 			}
 		}
-		out := &rows{stream: st.name, emit: emit}
+		out := &rows{emit: e, partition: ss.Partition}
 		var err error
 		if st.parent != nil {
 			err = s.readChild(ctx, st, ss, out)
@@ -80,8 +193,8 @@ func (s *src) Read(ctx context.Context, req source.ReadRequest, emit source.Emit
 		if err != nil {
 			return fmt.Errorf("%s: %s: %w", s.b.c.name, st.name, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (c *Connector) stream(name string) *stream {
@@ -108,11 +221,19 @@ type streamState struct {
 	Parent  *string           `json:"parent,omitempty"`
 	Done    []json.RawMessage `json:"done,omitempty"`
 	Current json.RawMessage   `json:"current,omitempty"`
+	// The partition it's a place in.
+	Partition json.RawMessage `json:"partition,omitempty"`
 }
 
 var errTokenRejected = errs.New(errs.ContractChanged, "the API rejected a page token it had just given")
 
 func (s *src) readStream(ctx context.Context, st *stream, ss streamState, out *rows) error {
+	var part any
+	if len(ss.Partition) > 0 {
+		if err := json.Unmarshal(ss.Partition, &part); err != nil {
+			return errs.Wrap(errs.ConfigInvalid, err, "state")
+		}
+	}
 	t := newTracker(st.inc, ss)
 	token := ss.Page
 	resumed := token != ""
@@ -121,7 +242,7 @@ func (s *src) readStream(ctx context.Context, st *stream, ss streamState, out *r
 		if err != nil {
 			return err
 		}
-		p, err := s.fetch(ctx, st, call{state: sv, token: token})
+		p, err := s.fetch(ctx, st, call{state: sv, token: token, partition: part})
 		if err != nil {
 			return err
 		}
@@ -293,6 +414,8 @@ type call struct {
 	// state.cursor, if the stream has a floor.
 	state  map[string]any
 	parent map[string]any
+	// Nil without partitions.
+	partition any
 	// Empty: the first page.
 	token string
 }
@@ -315,7 +438,7 @@ func (s *src) fetch(ctx context.Context, st *stream, c call) (*page, error) {
 	if c.token != "" {
 		pv["token"] = c.token
 	}
-	vars := map[string]any{varConfig: s.b.config, varNow: now, varState: orEmpty(c.state), varPage: pv, varParent: orEmpty(c.parent)}
+	vars := map[string]any{varConfig: s.b.config, varNow: now, varState: orEmpty(c.state), varPage: pv, varParent: orEmpty(c.parent), varPartition: c.partition}
 	req, err := s.request(ctx, st, vars, c.token)
 	if err != nil {
 		return nil, err
@@ -921,10 +1044,11 @@ const (
 
 // rows sends one stream's records, batched.
 type rows struct {
-	stream   string
-	emit     source.Emitter
-	buf      []json.RawMessage
-	bufBytes int
+	emit source.SplitEmitter
+	// Kept in every resume point.
+	partition json.RawMessage
+	buf       []json.RawMessage
+	bufBytes  int
 }
 
 func (r *rows) add(rec map[string]any) error {
@@ -944,7 +1068,7 @@ func (r *rows) flush() error {
 	if len(r.buf) == 0 {
 		return nil
 	}
-	err := r.emit.Rows(r.stream, r.buf)
+	err := r.emit.Rows(r.buf)
 	r.buf, r.bufBytes = nil, 0
 	return err
 }
@@ -953,18 +1077,19 @@ func (r *rows) resumePoint(s streamState) error {
 	if err := r.flush(); err != nil {
 		return err
 	}
+	s.Partition = r.partition
 	b, err := marshal(s)
 	if err != nil {
 		return err
 	}
-	return r.emit.ResumePoint(r.stream, b)
+	return r.emit.ResumePoint(b)
 }
 
 func (r *rows) complete(next []byte) error {
 	if err := r.flush(); err != nil {
 		return err
 	}
-	return r.emit.Complete(r.stream, next)
+	return r.emit.Complete(next)
 }
 
 // marshal encodes JSON without escaping HTML characters, so text keeps its
