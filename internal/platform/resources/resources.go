@@ -116,6 +116,11 @@ func (s Size) String() string {
 	return fmt.Sprintf("%s vCPU, %d MiB", cpu, s.Memory/MiB)
 }
 
+// Flag is s as Parse reads it.
+func (s Size) Flag() string {
+	return strconv.FormatFloat(float64(s.CPU)/1000, 'f', -1, 64) + "," + strconv.FormatInt(s.Memory, 10)
+}
+
 // Parse reads "CPU,MEMORY", such as "0.5,512Mi" or "2,4Gi".
 func Parse(v string) (Size, error) {
 	c, m, ok := strings.Cut(v, ",")

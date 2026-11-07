@@ -68,7 +68,7 @@ deps-down: ## Stop local dependencies
 # The kubeconfig is the cluster's own, so the current kubectl context is
 # never touched.
 KIND_KUBECONFIG ?= $(CURDIR)/.openetl/kind/kubeconfig
-.PHONY: kind-up kind-down
+.PHONY: kind-up kind-down kind-load
 kind-up: ## Start a kind cluster with the Flink operator and Spark's service account, for the e2e tests' Kubernetes targets
 	KIND_KUBECONFIG=$(KIND_KUBECONFIG) OPENETL_SPARK_SHARE=$(OPENETL_SPARK_SHARE) sh deploy/kind/up.sh
 kind-down: ## Delete the kind cluster
@@ -84,6 +84,27 @@ connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connec
 	@mkdir -p $(BIN)/connectors
 	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/openetl-io/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
 	cd $(CONNECTORS_SRC) && GOWORK=$(BIN)/connectors.work go build -o $(BIN)/connectors/ ./cmd/...
+
+# openetld's image, from Linux builds of openetld, the engine and the official
+# connectors. ENGINE is a Linux openetl-engine; on Linux, the debug build.
+IMAGE ?= openetl:dev
+IMAGE_ARCH ?= $(shell go env GOARCH)
+ENGINE ?= $(CURDIR)/target/debug/openetl-engine
+.PHONY: image
+image: ## Build openetld's image (IMAGE), with ENGINE, a Linux openetl-engine
+	@test -f $(CONNECTORS_SRC)/go.mod || { echo "clone openetl-connectors into $(CONNECTORS_SRC), or set CONNECTORS_SRC"; exit 1; }
+	@file -b $(ENGINE) | grep -q ELF || { echo "ENGINE=$(ENGINE) isn't a Linux openetl-engine"; exit 1; }
+	rm -rf $(BIN)/image && mkdir -p $(BIN)/image/connectors
+	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/openetl-io/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
+	GOOS=linux GOARCH=$(IMAGE_ARCH) CGO_ENABLED=0 go build -o $(BIN)/image/openetld ./cmd/openetld
+	cd $(CONNECTORS_SRC) && GOOS=linux GOARCH=$(IMAGE_ARCH) CGO_ENABLED=0 GOWORK=$(BIN)/connectors.work go build -o $(BIN)/image/connectors/ ./cmd/...
+	cp $(ENGINE) $(BIN)/image/openetl-engine
+	docker build --platform linux/$(IMAGE_ARCH) -t $(IMAGE) -f deploy/image/Dockerfile $(BIN)/image
+
+# kind load fails on Docker's containerd image store, so the node imports
+# what docker save writes, for its own platform only.
+kind-load: ## Load IMAGE into make kind-up's cluster
+	docker save $(IMAGE) | docker exec -i openetl-control-plane ctr --namespace=k8s.io images import --digests --snapshotter=overlayfs -
 
 # openetl-spark and openetl-flink (ADR-0022): the jars, built and tested in a
 # pinned Maven image, so no JDK is needed on the host; and openetl-spark's
@@ -170,13 +191,15 @@ e2e: connectors ## Full-stack scenarios against the compose deps
 	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(E2E_FLAGS) ./test/e2e/...
 
 # The Kubernetes targets' tests, on make kind-up's cluster and the compose
-# Postgres and S3. KIND_HOST is how pods reach this host.
+# Postgres and S3. KIND_HOST is how pods reach this host. KIND_IMAGE is
+# openetld's image in the cluster (make image kind-load), for attempts' pods;
+# without it, their test skips.
 .PHONY: e2e-kube
-e2e-kube: connectors ## Flink on the Kubernetes operator and PySpark on Spark on Kubernetes, in kind
+e2e-kube: connectors ## Flink on the Kubernetes operator, PySpark on Spark on Kubernetes, and attempts in pods, in kind
 	cargo build -p openetl-engine
 	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
 	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
-	OPENETL_E2E_KUBECONFIG=$(KIND_KUBECONFIG) OPENETL_E2E_KUBE_HOST=$(KIND_HOST) \
+	OPENETL_E2E_KUBECONFIG=$(KIND_KUBECONFIG) OPENETL_E2E_KUBE_HOST=$(KIND_HOST) OPENETL_E2E_KUBE_IMAGE=$(KIND_IMAGE) \
 	OPENETL_SPARK_SHARE=$(OPENETL_SPARK_SHARE) OPENETL_E2E_KUBE_SPARK_SUBMIT=$(CURDIR)/deploy/kind/spark-submit \
 	go test -tags e2e -count=1 -timeout 40m -run 'OnKubernetes' -v ./test/e2e
 

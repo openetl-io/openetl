@@ -327,6 +327,32 @@ message ReportRunnerRequest {
   bool draining = 10;
   // Each running attempt or operation, whose lease this report extends.
   repeated RunningWork running = 11;
+  // Set when it's a pod launcher, which runs no attempt itself: the placer
+  // sends its pool's jobs from min_size up to it, and it makes a pod for
+  // each.
+  PodLauncher pods = 12;
+  // A launcher's pods that are still there, so the answer can say which to
+  // delete.
+  repeated Launch launched = 13;
+  // The one attempt a pod runs; nothing is placed on such a runner.
+  string attempt = 14;
+}
+
+message PodLauncher {
+  // Jobs with this much CPU or memory, or more, go to pods.
+  Resources min_size = 1;
+  // The largest pod it makes; unset: any size.
+  Resources max_size = 2;
+  // How many pods it has at once, and how much CPU they have between them.
+  uint32 max_pods = 3;
+  int64 max_cpu_millis = 4;
+}
+
+// Launch is an attempt's placement on a pod launcher.
+message Launch {
+  string attempt = 1;
+  // Which of the attempt's placements, which goes up each time it's placed.
+  uint32 placement = 2;
 }
 
 message Resources {
@@ -356,6 +382,8 @@ message ReportRunnerResponse {
   // Running attempts to stop at their next checkpoint and end with DRAINING,
   // so their workflows start them again at once: they're being rescaled.
   repeated string drain = 2;
+  // A launcher's pods to delete: their attempts ended, or were placed again.
+  repeated Launch reap = 3;
 }
 
 message PollWorkRequest {
@@ -365,6 +393,9 @@ message PollWorkRequest {
   // How many log reads it can take now, which are apart from operations so
   // busy runners still answer them.
   uint32 free_log_reads = 3;
+  // A pod's attempt, which it takes without waiting if it's still the pod's
+  // to run; then the runner takes nothing else.
+  Launch attempt = 4;
 }
 
 message PollWorkResponse {
@@ -389,6 +420,9 @@ message Work {
   Resources size = 6;
   // The trace it's part of, as W3C headers.
   map<string, string> trace = 7;
+  // Set when a pod launcher is to make a pod for the attempt, which runs it,
+  // rather than run it itself: its placement.
+  uint32 placement = 8;
 }
 
 message ReportResultRequest {
@@ -415,6 +449,9 @@ message ReportResultRequest {
   uint64 bytes = 12;
   // An attempt's lanes in all; unset for work without lanes.
   openetl.api.v1.LaneUsage lanes = 13;
+  // Set by a pod launcher for an attempt it launched, whose pod couldn't be
+  // made or ended without a result: that placement.
+  uint32 placement = 14;
 }
 
 message ReportResultResponse {

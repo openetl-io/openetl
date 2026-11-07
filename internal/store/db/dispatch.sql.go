@@ -47,6 +47,149 @@ func (q *Queries) CancelWaiting(ctx context.Context, arg CancelWaitingParams) (i
 	return result.RowsAffected(), nil
 }
 
+const claimLaunched = `-- name: ClaimLaunched :many
+UPDATE dispatches SET state = 'running', runner = $1,
+    run_deadline = now() + (timeout_ms * interval '1 millisecond'),
+    lease_deadline = now() + (LEAST(heartbeat_ms, timeout_ms) * interval '1 millisecond')
+WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND placements = $5
+    AND launcher IS NOT NULL AND launched AND state = 'placed' AND start_deadline > now() AND NOT cancel
+RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched
+`
+
+type ClaimLaunchedParams struct {
+	Runner      *string
+	OrgID       uuid.UUID
+	DataPlaneID string
+	ID          string
+	Placement   int32
+}
+
+// A pod's attempt, if it's still the pod's placement and in time: from now
+// it's the pod's to run.
+func (q *Queries) ClaimLaunched(ctx context.Context, arg ClaimLaunchedParams) ([]Dispatch, error) {
+	rows, err := q.db.Query(ctx, claimLaunched,
+		arg.Runner,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.ID,
+		arg.Placement,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Dispatch
+	for rows.Next() {
+		var i Dispatch
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.DataPlaneID,
+			&i.WorkflowID,
+			&i.Kind,
+			&i.Input,
+			&i.Light,
+			&i.Pool,
+			&i.SizeCpu,
+			&i.SizeMemory,
+			&i.Priority,
+			&i.Needs,
+			&i.Trace,
+			&i.State,
+			&i.Runner,
+			&i.HeartbeatMs,
+			&i.StartTimeoutMs,
+			&i.TimeoutMs,
+			&i.EnqueueTime,
+			&i.StartDeadline,
+			&i.RunDeadline,
+			&i.LeaseDeadline,
+			&i.Cancel,
+			&i.Epoch,
+			&i.Outcome,
+			&i.FinishTime,
+			&i.Woken,
+			&i.Drain,
+			&i.Launcher,
+			&i.Placements,
+			&i.Launched,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimLaunches = `-- name: ClaimLaunches :many
+UPDATE dispatches SET launched = true
+WHERE org_id = $1 AND data_plane_id = $2 AND launcher = $3 AND runner = $3
+    AND state = 'placed' AND NOT launched AND start_deadline > now() AND NOT cancel
+RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched
+`
+
+type ClaimLaunchesParams struct {
+	OrgID       uuid.UUID
+	DataPlaneID string
+	Launcher    *string
+}
+
+// The attempts placed on this pod launcher that it hasn't made pods for.
+func (q *Queries) ClaimLaunches(ctx context.Context, arg ClaimLaunchesParams) ([]Dispatch, error) {
+	rows, err := q.db.Query(ctx, claimLaunches, arg.OrgID, arg.DataPlaneID, arg.Launcher)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Dispatch
+	for rows.Next() {
+		var i Dispatch
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.DataPlaneID,
+			&i.WorkflowID,
+			&i.Kind,
+			&i.Input,
+			&i.Light,
+			&i.Pool,
+			&i.SizeCpu,
+			&i.SizeMemory,
+			&i.Priority,
+			&i.Needs,
+			&i.Trace,
+			&i.State,
+			&i.Runner,
+			&i.HeartbeatMs,
+			&i.StartTimeoutMs,
+			&i.TimeoutMs,
+			&i.EnqueueTime,
+			&i.StartDeadline,
+			&i.RunDeadline,
+			&i.LeaseDeadline,
+			&i.Cancel,
+			&i.Epoch,
+			&i.Outcome,
+			&i.FinishTime,
+			&i.Woken,
+			&i.Drain,
+			&i.Launcher,
+			&i.Placements,
+			&i.Launched,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const claimLight = `-- name: ClaimLight :many
 WITH picked AS MATERIALIZED (
     SELECT w.id FROM dispatches w
@@ -60,7 +203,7 @@ UPDATE dispatches d SET state = 'running', runner = $1,
     lease_deadline = now() + (LEAST(d.heartbeat_ms, d.timeout_ms) * interval '1 millisecond')
 FROM picked
 WHERE d.org_id = $2 AND d.id = picked.id
-RETURNING d.org_id, d.id, d.data_plane_id, d.workflow_id, d.kind, d.input, d.light, d.pool, d.size_cpu, d.size_memory, d.priority, d.needs, d.trace, d.state, d.runner, d.heartbeat_ms, d.start_timeout_ms, d.timeout_ms, d.enqueue_time, d.start_deadline, d.run_deadline, d.lease_deadline, d.cancel, d.epoch, d.outcome, d.finish_time, d.woken, d.drain
+RETURNING d.org_id, d.id, d.data_plane_id, d.workflow_id, d.kind, d.input, d.light, d.pool, d.size_cpu, d.size_memory, d.priority, d.needs, d.trace, d.state, d.runner, d.heartbeat_ms, d.start_timeout_ms, d.timeout_ms, d.enqueue_time, d.start_deadline, d.run_deadline, d.lease_deadline, d.cancel, d.epoch, d.outcome, d.finish_time, d.woken, d.drain, d.launcher, d.placements, d.launched
 `
 
 type ClaimLightParams struct {
@@ -117,6 +260,9 @@ func (q *Queries) ClaimLight(ctx context.Context, arg ClaimLightParams) ([]Dispa
 			&i.FinishTime,
 			&i.Woken,
 			&i.Drain,
+			&i.Launcher,
+			&i.Placements,
+			&i.Launched,
 		); err != nil {
 			return nil, err
 		}
@@ -133,7 +279,8 @@ UPDATE dispatches SET state = 'running',
     run_deadline = now() + (timeout_ms * interval '1 millisecond'),
     lease_deadline = now() + (LEAST(heartbeat_ms, timeout_ms) * interval '1 millisecond')
 WHERE org_id = $1 AND data_plane_id = $2 AND runner = $3 AND state = 'placed' AND start_deadline > now() AND NOT cancel
-RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain
+    AND launcher IS NULL
+RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched
 `
 
 type ClaimPlacedParams struct {
@@ -181,6 +328,9 @@ func (q *Queries) ClaimPlaced(ctx context.Context, arg ClaimPlacedParams) ([]Dis
 			&i.FinishTime,
 			&i.Woken,
 			&i.Drain,
+			&i.Launcher,
+			&i.Placements,
+			&i.Launched,
 		); err != nil {
 			return nil, err
 		}
@@ -369,6 +519,38 @@ type FinishDispatchParams struct {
 func (q *Queries) FinishDispatch(ctx context.Context, arg FinishDispatchParams) error {
 	_, err := q.db.Exec(ctx, finishDispatch, arg.Outcome, arg.OrgID, arg.ID)
 	return err
+}
+
+const finishLaunch = `-- name: FinishLaunch :execrows
+UPDATE dispatches SET state = 'finished', outcome = $1, finish_time = now()
+WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND launcher = $5 AND placements = $6
+    AND state IN ('placed', 'running')
+`
+
+type FinishLaunchParams struct {
+	Outcome     []byte
+	OrgID       uuid.UUID
+	DataPlaneID string
+	ID          string
+	Launcher    *string
+	Placement   int32
+}
+
+// A launcher's word on an attempt whose pod couldn't be made or ended without
+// a result, if it's still that placement's.
+func (q *Queries) FinishLaunch(ctx context.Context, arg FinishLaunchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishLaunch,
+		arg.Outcome,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.ID,
+		arg.Launcher,
+		arg.Placement,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const finishRunning = `-- name: FinishRunning :execrows
@@ -569,6 +751,44 @@ func (q *Queries) LatestAttempt(ctx context.Context, arg LatestAttemptParams) (L
 	return i, err
 }
 
+const liveLaunches = `-- name: LiveLaunches :many
+SELECT id, placements FROM dispatches
+WHERE org_id = $1 AND id = ANY($2::text[]) AND launcher IS NOT NULL AND state IN ('placed', 'running')
+`
+
+type LiveLaunchesParams struct {
+	OrgID uuid.UUID
+	Ids   []string
+}
+
+type LiveLaunchesRow struct {
+	ID         string
+	Placements int32
+}
+
+// Which of a launcher's pods' placements are still waiting to start or
+// running. Across the org's data planes, so a launcher that sees another's
+// pods leaves them be.
+func (q *Queries) LiveLaunches(ctx context.Context, arg LiveLaunchesParams) ([]LiveLaunchesRow, error) {
+	rows, err := q.db.Query(ctx, liveLaunches, arg.OrgID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LiveLaunchesRow
+	for rows.Next() {
+		var i LiveLaunchesRow
+		if err := rows.Scan(&i.ID, &i.Placements); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockPlacement = `-- name: LockPlacement :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
@@ -697,18 +917,28 @@ func (q *Queries) PendingDataPlanes(ctx context.Context, orgID uuid.UUID) ([]str
 }
 
 const placeDispatch = `-- name: PlaceDispatch :exec
-UPDATE dispatches SET state = 'placed', runner = $1, start_deadline = now() + (start_timeout_ms * interval '1 millisecond')
-WHERE org_id = $2 AND id = $3 AND state = 'pending'
+UPDATE dispatches SET state = 'placed', runner = $1, launcher = $2, placements = placements + 1,
+    start_deadline = now() + (COALESCE($3::bigint, start_timeout_ms) * interval '1 millisecond')
+WHERE org_id = $4 AND id = $5 AND state = 'pending'
 `
 
 type PlaceDispatchParams struct {
-	Runner *string
-	OrgID  uuid.UUID
-	ID     string
+	Runner   *string
+	Launcher *string
+	StartMs  *int64
+	OrgID    uuid.UUID
+	ID       string
 }
 
+// On a runner, or on a pod launcher with the time a pod takes to start.
 func (q *Queries) PlaceDispatch(ctx context.Context, arg PlaceDispatchParams) error {
-	_, err := q.db.Exec(ctx, placeDispatch, arg.Runner, arg.OrgID, arg.ID)
+	_, err := q.db.Exec(ctx, placeDispatch,
+		arg.Runner,
+		arg.Launcher,
+		arg.StartMs,
+		arg.OrgID,
+		arg.ID,
+	)
 	return err
 }
 
@@ -717,6 +947,7 @@ SELECT r.data_plane_id, r.pool,
     sum(r.capacity_cpu)::bigint AS cpu, sum(r.capacity_memory)::bigint AS memory
 FROM runners r
 WHERE r.org_id = $1 AND r.report_time >= now() - ($2::bigint * interval '1 millisecond') AND NOT r.draining
+    AND NOT r.launcher AND r.attempt = ''
 GROUP BY r.data_plane_id, r.pool
 `
 
@@ -808,7 +1039,7 @@ func (q *Queries) PlacementDemand(ctx context.Context, orgID uuid.UUID) ([]Place
 }
 
 const placementRunners = `-- name: PlacementRunners :many
-SELECT r.org_id, r.data_plane_id, r.id, r.release, r.protocol, r.features, r.launchers, r.platform, r.report_time, r.pool, r.capacity_cpu, r.capacity_memory, r.reserved_cpu, r.reserved_memory, r.orphan_cpu, r.orphan_memory, r.draining,
+SELECT r.org_id, r.data_plane_id, r.id, r.release, r.protocol, r.features, r.launchers, r.platform, r.report_time, r.pool, r.capacity_cpu, r.capacity_memory, r.reserved_cpu, r.reserved_memory, r.orphan_cpu, r.orphan_memory, r.draining, r.launcher, r.pod_min_cpu, r.pod_min_memory, r.pod_max_cpu, r.pod_max_memory, r.max_pods, r.max_pod_cpu, r.attempt,
     COALESCE(u.cpu, 0)::bigint AS used_cpu,
     COALESCE(u.memory, 0)::bigint AS used_memory,
     COALESCE(u.attempts, 0)::bigint AS attempts
@@ -816,9 +1047,9 @@ FROM runners r
 LEFT JOIN LATERAL (
     SELECT sum(d.size_cpu) AS cpu, sum(d.size_memory) AS memory, count(*) AS attempts
     FROM dispatches d
-    WHERE d.org_id = r.org_id AND d.data_plane_id = r.data_plane_id AND d.runner = r.id AND d.state IN ('placed', 'running')
+    WHERE d.org_id = r.org_id AND d.data_plane_id = r.data_plane_id AND (d.runner = r.id OR d.launcher = r.id) AND d.state IN ('placed', 'running')
 ) u ON true
-WHERE r.org_id = $1 AND r.data_plane_id = $2
+WHERE r.org_id = $1 AND r.data_plane_id = $2 AND r.attempt = ''
     AND r.report_time >= now() - ($3::bigint * interval '1 millisecond')
 ORDER BY r.id
 `
@@ -847,12 +1078,21 @@ type PlacementRunnersRow struct {
 	OrphanCpu      int64
 	OrphanMemory   int64
 	Draining       bool
+	Launcher       bool
+	PodMinCpu      int64
+	PodMinMemory   int64
+	PodMaxCpu      int64
+	PodMaxMemory   int64
+	MaxPods        int32
+	MaxPodCpu      int64
+	Attempt        string
 	UsedCpu        int64
 	UsedMemory     int64
 	Attempts       int64
 }
 
-// A data plane's runners reporting now, with the room their placements use.
+// A data plane's runners and pod launchers reporting now, with the room their
+// placements use: a launcher's go on using it while their pods run them.
 func (q *Queries) PlacementRunners(ctx context.Context, arg PlacementRunnersParams) ([]PlacementRunnersRow, error) {
 	rows, err := q.db.Query(ctx, placementRunners, arg.OrgID, arg.DataPlaneID, arg.LapseMs)
 	if err != nil {
@@ -880,6 +1120,14 @@ func (q *Queries) PlacementRunners(ctx context.Context, arg PlacementRunnersPara
 			&i.OrphanCpu,
 			&i.OrphanMemory,
 			&i.Draining,
+			&i.Launcher,
+			&i.PodMinCpu,
+			&i.PodMinMemory,
+			&i.PodMaxCpu,
+			&i.PodMaxMemory,
+			&i.MaxPods,
+			&i.MaxPodCpu,
+			&i.Attempt,
 			&i.UsedCpu,
 			&i.UsedMemory,
 			&i.Attempts,
@@ -1010,7 +1258,7 @@ func (q *Queries) RecordAttemptUsage(ctx context.Context, arg RecordAttemptUsage
 }
 
 const replaceRunning = `-- name: ReplaceRunning :execrows
-UPDATE dispatches SET state = 'pending', runner = NULL, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
 WHERE org_id = $1 AND data_plane_id = $2 AND id = $3 AND runner = $4 AND state = 'running' AND light = ''
 `
 
@@ -1081,9 +1329,38 @@ func (q *Queries) RescaleWaiting(ctx context.Context, arg RescaleWaitingParams) 
 	return result.RowsAffected(), nil
 }
 
+const returnLaunch = `-- name: ReturnLaunch :execrows
+UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL
+WHERE org_id = $1 AND data_plane_id = $2 AND id = $3 AND launcher = $4 AND placements = $5
+    AND state = 'placed'
+`
+
+type ReturnLaunchParams struct {
+	OrgID       uuid.UUID
+	DataPlaneID string
+	ID          string
+	Launcher    *string
+	Placement   int32
+}
+
+// A launcher that couldn't make a pod for now: the attempt is placed again.
+func (q *Queries) ReturnLaunch(ctx context.Context, arg ReturnLaunchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, returnLaunch,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.ID,
+		arg.Launcher,
+		arg.Placement,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const returnPlaced = `-- name: ReturnPlaced :exec
-UPDATE dispatches SET state = 'pending', runner = NULL, start_deadline = NULL
-WHERE org_id = $1 AND data_plane_id = $2 AND runner = $3 AND state = 'placed'
+UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, start_deadline = NULL
+WHERE org_id = $1 AND data_plane_id = $2 AND runner = $3 AND state = 'placed' AND NOT launched
 `
 
 type ReturnPlacedParams struct {
@@ -1092,19 +1369,20 @@ type ReturnPlacedParams struct {
 	Runner      *string
 }
 
-// A draining runner won't start what's placed on it, so it's placed again.
+// A draining runner won't start what's placed on it, so it's placed again;
+// but not what a launcher made a pod for, which the pod may start.
 func (q *Queries) ReturnPlaced(ctx context.Context, arg ReturnPlacedParams) error {
 	_, err := q.db.Exec(ctx, returnPlaced, arg.OrgID, arg.DataPlaneID, arg.Runner)
 	return err
 }
 
 const returnUnstarted = `-- name: ReturnUnstarted :execrows
-UPDATE dispatches SET state = 'pending', runner = NULL, start_deadline = NULL
+UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL
 WHERE org_id = $1 AND state = 'placed' AND start_deadline <= now()
 `
 
-// Attempts whose runner didn't start them in time go back to wait for room,
-// keeping their place in the queue.
+// Attempts whose runner or pod didn't start them in time go back to wait for
+// room, keeping their place in the queue.
 func (q *Queries) ReturnUnstarted(ctx context.Context, orgID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, returnUnstarted, orgID)
 	if err != nil {

@@ -80,7 +80,8 @@ func (q *Queries) ConnectorVersionsByDigest(ctx context.Context, arg ConnectorVe
 }
 
 const deleteStaleRunners = `-- name: DeleteStaleRunners :exec
-DELETE FROM runners WHERE org_id = $1 AND report_time < $2
+DELETE FROM runners
+WHERE org_id = $1 AND (report_time < $2 OR (attempt <> '' AND report_time < now() - interval '10 minutes'))
 `
 
 type DeleteStaleRunnersParams struct {
@@ -88,6 +89,7 @@ type DeleteStaleRunnersParams struct {
 	Before time.Time
 }
 
+// A pod's row goes soon after its last report, as it never reports again.
 func (q *Queries) DeleteStaleRunners(ctx context.Context, arg DeleteStaleRunnersParams) error {
 	_, err := q.db.Exec(ctx, deleteStaleRunners, arg.OrgID, arg.Before)
 	return err
@@ -377,8 +379,8 @@ func (q *Queries) ListVersionRoles(ctx context.Context, arg ListVersionRolesPara
 }
 
 const recentRunners = `-- name: RecentRunners :many
-SELECT org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time, pool, capacity_cpu, capacity_memory, reserved_cpu, reserved_memory, orphan_cpu, orphan_memory, draining FROM runners
-WHERE org_id = $1 AND data_plane_id = $2 AND report_time >= $3
+SELECT org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time, pool, capacity_cpu, capacity_memory, reserved_cpu, reserved_memory, orphan_cpu, orphan_memory, draining, launcher, pod_min_cpu, pod_min_memory, pod_max_cpu, pod_max_memory, max_pods, max_pod_cpu, attempt FROM runners
+WHERE org_id = $1 AND data_plane_id = $2 AND report_time >= $3 AND attempt = ''
 ORDER BY id
 `
 
@@ -388,7 +390,8 @@ type RecentRunnersParams struct {
 	Since       time.Time
 }
 
-// A data plane's runners that reported since @since; old reports go.
+// A data plane's runners that reported since @since, but for pods, which run
+// what their launcher could; old reports go.
 func (q *Queries) RecentRunners(ctx context.Context, arg RecentRunnersParams) ([]Runner, error) {
 	rows, err := q.db.Query(ctx, recentRunners, arg.OrgID, arg.DataPlaneID, arg.Since)
 	if err != nil {
@@ -416,6 +419,14 @@ func (q *Queries) RecentRunners(ctx context.Context, arg RecentRunnersParams) ([
 			&i.OrphanCpu,
 			&i.OrphanMemory,
 			&i.Draining,
+			&i.Launcher,
+			&i.PodMinCpu,
+			&i.PodMinMemory,
+			&i.PodMaxCpu,
+			&i.PodMaxMemory,
+			&i.MaxPods,
+			&i.MaxPodCpu,
+			&i.Attempt,
 		); err != nil {
 			return nil, err
 		}
@@ -430,18 +441,23 @@ func (q *Queries) RecentRunners(ctx context.Context, arg RecentRunnersParams) ([
 const reportRunner = `-- name: ReportRunner :exec
 INSERT INTO runners (
     org_id, data_plane_id, id, release, protocol, features, launchers, platform, report_time,
-    pool, capacity_cpu, capacity_memory, reserved_cpu, reserved_memory, orphan_cpu, orphan_memory, draining
+    pool, capacity_cpu, capacity_memory, reserved_cpu, reserved_memory, orphan_cpu, orphan_memory, draining,
+    launcher, pod_min_cpu, pod_min_memory, pod_max_cpu, pod_max_memory, max_pods, max_pod_cpu, attempt
 )
 VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, now(),
-    $9, $10, $11, $12, $13, $14, $15, $16
+    $9, $10, $11, $12, $13, $14, $15, $16,
+    $17, $18, $19, $20, $21, $22, $23, $24
 )
 ON CONFLICT (org_id, data_plane_id, id) DO UPDATE SET
     release = EXCLUDED.release, protocol = EXCLUDED.protocol, features = EXCLUDED.features,
     launchers = EXCLUDED.launchers, platform = EXCLUDED.platform, report_time = now(),
     pool = EXCLUDED.pool, capacity_cpu = EXCLUDED.capacity_cpu, capacity_memory = EXCLUDED.capacity_memory,
     reserved_cpu = EXCLUDED.reserved_cpu, reserved_memory = EXCLUDED.reserved_memory,
-    orphan_cpu = EXCLUDED.orphan_cpu, orphan_memory = EXCLUDED.orphan_memory, draining = EXCLUDED.draining
+    orphan_cpu = EXCLUDED.orphan_cpu, orphan_memory = EXCLUDED.orphan_memory, draining = EXCLUDED.draining,
+    launcher = EXCLUDED.launcher, pod_min_cpu = EXCLUDED.pod_min_cpu, pod_min_memory = EXCLUDED.pod_min_memory,
+    pod_max_cpu = EXCLUDED.pod_max_cpu, pod_max_memory = EXCLUDED.pod_max_memory,
+    max_pods = EXCLUDED.max_pods, max_pod_cpu = EXCLUDED.max_pod_cpu, attempt = EXCLUDED.attempt
 `
 
 type ReportRunnerParams struct {
@@ -461,6 +477,14 @@ type ReportRunnerParams struct {
 	OrphanCpu      int64
 	OrphanMemory   int64
 	Draining       bool
+	Launcher       bool
+	PodMinCpu      int64
+	PodMinMemory   int64
+	PodMaxCpu      int64
+	PodMaxMemory   int64
+	MaxPods        int32
+	MaxPodCpu      int64
+	Attempt        string
 }
 
 func (q *Queries) ReportRunner(ctx context.Context, arg ReportRunnerParams) error {
@@ -481,6 +505,14 @@ func (q *Queries) ReportRunner(ctx context.Context, arg ReportRunnerParams) erro
 		arg.OrphanCpu,
 		arg.OrphanMemory,
 		arg.Draining,
+		arg.Launcher,
+		arg.PodMinCpu,
+		arg.PodMinMemory,
+		arg.PodMaxCpu,
+		arg.PodMaxMemory,
+		arg.MaxPods,
+		arg.MaxPodCpu,
+		arg.Attempt,
 	)
 	return err
 }

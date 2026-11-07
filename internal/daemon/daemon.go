@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -46,6 +47,7 @@ import (
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/platform/temporalx"
 	dpactivities "github.com/openetl-io/openetl/internal/runner/activities"
+	"github.com/openetl-io/openetl/internal/runner/pods"
 	dpworker "github.com/openetl-io/openetl/internal/runner/worker"
 	"github.com/openetl-io/openetl/internal/secrets"
 	"github.com/openetl-io/openetl/internal/secretstore"
@@ -420,9 +422,11 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if !auth.IsRunnerToken(token) {
 		return errors.New("daemon: the runner's token isn't a runner token; openetl dataplane token create makes one")
 	}
-	capacity, err := runnerCapacity(cfg, log)
-	if err != nil {
-		return err
+	var capacity resources.Size
+	if cfg.Launcher == "" || cfg.Attempt != "" {
+		if capacity, err = runnerCapacity(cfg, log); err != nil {
+			return err
+		}
 	}
 	otel, err := otelconnect.NewInterceptor()
 	if err != nil {
@@ -497,8 +501,81 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			contract.ReadLogs:       {Handler: dpworker.Handle((&dpactivities.Logs{Store: cps}).ReadLogs)},
 		},
 	}
+	switch {
+	case cfg.Attempt != "":
+		if cfg.Placement <= 0 || cfg.Placement > math.MaxInt32 {
+			return errors.New("daemon: --attempt needs its --placement, which the launcher sets")
+		}
+		w.Attempt = &dpworker.Attempt{ID: cfg.Attempt, Placement: int32(cfg.Placement)}
+		log.Info("runner running one attempt", "id", w.ID, "attempt", cfg.Attempt, "placement", cfg.Placement)
+		return w.Run(ctx)
+	case cfg.Launcher != "":
+		launcher, limits, err := podLauncher(cfg)
+		if err != nil {
+			return err
+		}
+		if c, ok := launcher.(interface{ Close() }); ok {
+			defer c.Close()
+		}
+		w.Launcher, w.Pods = launcher, limits
+		log.Info("pod launcher polling", "id", w.ID, "launcher", cfg.Launcher, "data_plane", cfg.DataPlane, "pool", cfg.Pool,
+			"pod_min_size", limits.Min.String(), "max_pods", limits.MaxPods, "checkpoints", cfg.Checkpoints)
+		return w.Run(ctx)
+	}
 	log.Info("runner polling", "id", w.ID, "data_plane", cfg.DataPlane, "pool", cfg.Pool, "capacity", capacity.String(), "checkpoints", cfg.Checkpoints)
 	return w.Run(ctx)
+}
+
+// podLauncher is the runner's pod launcher, and the jobs it takes.
+func podLauncher(cfg config.Config) (pods.Launcher, dpworker.PodLimits, error) {
+	var limits dpworker.PodLimits
+	var err error
+	if limits.Min, err = sizeFlag(cfg.PodMinSize); err != nil {
+		return nil, limits, fmt.Errorf("daemon: --pod-min-size: %w", err)
+	}
+	if cfg.PodMaxSize != "" {
+		if limits.Max, err = sizeFlag(cfg.PodMaxSize); err != nil {
+			return nil, limits, fmt.Errorf("daemon: --pod-max-size: %w", err)
+		}
+	}
+	cpu, err := strconv.ParseFloat(cfg.MaxPodCPU, 64)
+	if err != nil || cpu < 0 {
+		return nil, limits, fmt.Errorf("daemon: --max-pod-cpu %q isn't a number of vCPUs", cfg.MaxPodCPU)
+	}
+	limits.MaxPods, limits.MaxCPU = max(0, cfg.MaxPods), int64(cpu*1000)
+	reserve, err := resources.Parse(cfg.Reserve)
+	if err != nil {
+		return nil, limits, fmt.Errorf("daemon: --reserve: %w", err)
+	}
+	switch cfg.Launcher {
+	case "kubernetes":
+		k, err := pods.OpenKubernetes(pods.KubernetesOptions{Kubeconfig: cfg.Kubeconfig, Namespace: cfg.PodNamespace, Template: cfg.PodTemplate})
+		if err != nil {
+			return nil, limits, err
+		}
+		if k.Scratch, err = resources.ParseMemory(cfg.PodScratch); err != nil {
+			return nil, limits, fmt.Errorf("daemon: --pod-scratch: %w", err)
+		}
+		k.DataPlane, k.Pool, k.Reserve = cfg.DataPlane, cfg.Pool, reserve
+		return k, limits, nil
+	case "process":
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, limits, err
+		}
+		// Its own flags, but with the attempt in the environment, which makes
+		// each process a pod.
+		return &pods.Processes{Command: append([]string{exe}, os.Args[1:]...), Environ: os.Environ(), Pool: cfg.Pool}, limits, nil
+	}
+	return nil, limits, fmt.Errorf("daemon: --launcher %q is neither kubernetes nor process", cfg.Launcher)
+}
+
+// sizeFlag reads a size given as a preset or CPU,MEMORY.
+func sizeFlag(v string) (resources.Size, error) {
+	if p, ok := resources.Preset(v); ok {
+		return p, nil
+	}
+	return resources.Parse(v)
 }
 
 // runnerCapacity is what the runner places on itself: what --capacity says,

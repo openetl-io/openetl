@@ -1,0 +1,280 @@
+package pods
+
+import (
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
+)
+
+const template = `
+apiVersion: v1
+kind: Pod
+metadata:
+  labels: {team: data}
+spec:
+  serviceAccountName: openetl-attempt
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions: [{key: zone, operator: In, values: [a]}]
+  containers:
+  - name: sidecar
+    image: proxy
+  - name: runner
+    image: ghcr.io/openetl-io/openetl:dev
+    args: [runner]
+    env: [{name: OPENETL_API_URL, value: "http://openetl:8080"}]
+`
+
+func launcher(t *testing.T) (*Kubernetes, *fake.Clientset) {
+	t.Helper()
+	tmpl, err := ParseTemplate([]byte(template))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientset()
+	return &Kubernetes{
+		Client: c, Namespace: "etl", Template: tmpl, DataPlane: "default", Pool: "big",
+		Reserve: resources.Size{CPU: 500, Memory: 512 * resources.MiB}, Scratch: 10 * resources.GiB, Arch: "arm64",
+	}, c
+}
+
+func batch() Launch {
+	return Launch{Attempt: "run/attempt/1", Placement: 2, Kind: contract.RunSyncAttempt, Size: resources.M, Pipeline: "8f0b6d5e-7c1a-4a43-9f5e-1d2c3b4a5f60", StopTimeout: 120}
+}
+
+func env(c *corev1.Container) map[string]string {
+	out := map[string]string{}
+	for _, e := range c.Env {
+		out[e.Name] = e.Value
+	}
+	return out
+}
+
+// A pod is the template with the attempt's size, labels and environment,
+// and what keeps batch pods off nothing and streams off spot.
+func TestPodFromTemplate(t *testing.T) {
+	k, _ := launcher(t)
+	p := k.Pod(batch())
+	if p.Name != Name("run/attempt/1", 2) || len(p.Name) > 63 || p.Namespace != "etl" {
+		t.Errorf("name %q in %q", p.Name, p.Namespace)
+	}
+	if p.Labels["team"] != "data" || p.Labels[labelJob] != "batch" || p.Labels[labelPool] != "big" || p.Labels[labelPipeline] != "8f0b6d5e-7c1a-4a43-9f5e-1d2c3b4a5f60" {
+		t.Errorf("labels %v", p.Labels)
+	}
+	if p.Annotations[annoAttempt] != "run/attempt/1" || p.Annotations[annoPlacement] != "2" || p.Annotations[annoDoNotDisrupt] != "" {
+		t.Errorf("annotations %v", p.Annotations)
+	}
+	if p.Spec.RestartPolicy != corev1.RestartPolicyNever || *p.Spec.TerminationGracePeriodSeconds != 150 || p.Spec.ServiceAccountName != "openetl-attempt" {
+		t.Errorf("spec %+v", p.Spec)
+	}
+	if p.Spec.NodeSelector[corev1.LabelArchStable] != "arm64" || p.Spec.NodeSelector[corev1.LabelOSStable] != "linux" {
+		t.Errorf("node selector %v", p.Spec.NodeSelector)
+	}
+	if len(p.Spec.Tolerations) != len(spotTaints) {
+		t.Errorf("tolerations %v, want spot's", p.Spec.Tolerations)
+	}
+	if exprs := p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchExpressions; len(exprs) != 1 {
+		t.Errorf("a batch pod's node affinity %v, want the template's", exprs)
+	}
+	c := &p.Spec.Containers[1]
+	if e := env(c); e["OPENETL_ATTEMPT"] != "run/attempt/1" || e["OPENETL_PLACEMENT"] != "2" || e["OPENETL_POOL"] != "big" || e["OPENETL_CAPACITY"] != "2,4294967296" || e["OPENETL_API_URL"] == "" {
+		t.Errorf("env %v", e)
+	}
+	if len(p.Spec.Containers[0].Env) != 0 {
+		t.Errorf("the sidecar has %v, want it left be", p.Spec.Containers[0].Env)
+	}
+	want := corev1.ResourceList{
+		corev1.ResourceCPU: resource.MustParse("2500m"), corev1.ResourceMemory: resource.MustParse("4608Mi"), corev1.ResourceEphemeralStorage: resource.MustParse("10Gi"),
+	}
+	for name, q := range want {
+		if r, l := c.Resources.Requests[name], c.Resources.Limits[name]; r.Cmp(q) != 0 || l.Cmp(q) != 0 {
+			t.Errorf("%s: requests %s and limits %s, want %s", name, r.String(), l.String(), q.String())
+		}
+	}
+	if c.TerminationMessagePolicy != corev1.TerminationMessageFallbackToLogsOnError {
+		t.Errorf("termination message policy %q", c.TerminationMessagePolicy)
+	}
+	if k.Template.Labels[labelJob] != "" || len(k.Template.Spec.Containers[1].Env) != 1 {
+		t.Error("making a pod changed the template")
+	}
+
+	l := batch()
+	l.Kind, l.StopTimeout = contract.RunStreamJob, 600
+	p = k.Pod(l)
+	if p.Labels[labelJob] != "stream" || p.Annotations[annoDoNotDisrupt] != "true" || *p.Spec.TerminationGracePeriodSeconds != 630 || len(p.Spec.Tolerations) != 0 {
+		t.Errorf("stream pod %v %v %d %v", p.Labels, p.Annotations, *p.Spec.TerminationGracePeriodSeconds, p.Spec.Tolerations)
+	}
+	exprs := p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchExpressions
+	if len(exprs) != 1+len(spotLabels) || !slices.ContainsFunc(exprs, func(e corev1.NodeSelectorRequirement) bool {
+		return e.Key == "karpenter.sh/capacity-type" && e.Operator == corev1.NodeSelectorOpNotIn && slices.Equal(e.Values, []string{"spot"})
+	}) {
+		t.Errorf("a stream pod's node affinity %v, want the template's and not spot", exprs)
+	}
+}
+
+func TestLabelValues(t *testing.T) {
+	for in, want := range map[string]string{"default": "default", "a/b c": "a_b_c", "-x-": "x", strings.Repeat("a", 70): strings.Repeat("a", 63), "": ""} {
+		if got := labelValue(in); got != want {
+			t.Errorf("labelValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLaunchErrors(t *testing.T) {
+	k, c := launcher(t)
+	if err := k.Launch(t.Context(), batch()); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Launch(t.Context(), batch()); err != nil {
+		t.Fatalf("launching again: %v, want nil", err)
+	}
+	gr := schema.GroupResource{Resource: "pods"}
+	for _, tc := range []struct {
+		err  error
+		code errs.Code
+	}{
+		{apierrors.NewForbidden(gr, "x", errors.New(`exceeded quota: compute, requested: cpu=4`)), errs.Transient},
+		{apierrors.NewForbidden(gr, "x", errors.New(`User "system:serviceaccount:etl:openetl" cannot create resource "pods"`)), errs.ConfigInvalid},
+		{apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, "x", nil), errs.ConfigInvalid},
+		{apierrors.NewServiceUnavailable("down"), errs.Transient},
+	} {
+		c.PrependReactor("create", "pods", func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, tc.err })
+		l := batch()
+		l.Placement++
+		if err := k.Launch(t.Context(), l); errs.CodeOf(err) != tc.code {
+			t.Errorf("%v: got %v (%s), want %s", tc.err, err, errs.CodeOf(err), tc.code)
+		}
+	}
+}
+
+func status(phase corev1.PodPhase, cs ...corev1.ContainerStatus) corev1.PodStatus {
+	return corev1.PodStatus{Phase: phase, ContainerStatuses: cs}
+}
+
+// Pods says which ended and how, and which are stuck.
+func TestPodsStates(t *testing.T) {
+	k, c := launcher(t)
+	add := func(attempt string, st corev1.PodStatus) {
+		l := batch()
+		l.Attempt = attempt
+		p := k.Pod(l)
+		p.Status = st
+		if _, err := c.CoreV1().Pods("etl").Create(t.Context(), p, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("running", status(corev1.PodRunning))
+	add("pulling", status(corev1.PodPending, corev1.ContainerStatus{Name: "runner", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "no such image"}}}))
+	add("starting", status(corev1.PodPending, corev1.ContainerStatus{Name: "runner", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}}))
+	add("oom", status(corev1.PodFailed, corev1.ContainerStatus{Name: "runner", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}}))
+	add("crashed", status(corev1.PodFailed, corev1.ContainerStatus{Name: "runner", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, Message: "daemon: the runner's token isn't a runner token\n"}}}))
+	add("evicted", corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted", Message: "The node was low on resource: ephemeral-storage."})
+	add("done", status(corev1.PodSucceeded))
+	// Someone else's pod with the labels, but none of ours.
+	other := k.Pod(batch())
+	other.Name, other.Annotations = "stray", nil
+	if _, err := c.CoreV1().Pods("etl").Create(t.Context(), other, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := k.Pods(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byAttempt := map[string]Pod{}
+	for _, p := range got {
+		byAttempt[p.Attempt] = p
+	}
+	if len(got) != 7 {
+		t.Fatalf("got %d pods, want 7: %+v", len(got), got)
+	}
+	check := func(attempt string, ended bool, code errs.Code, has string) {
+		t.Helper()
+		p := byAttempt[attempt]
+		if p.Ended != ended || p.Placement != 2 || p.Name != Name(attempt, 2) {
+			t.Errorf("%s: %+v", attempt, p)
+		}
+		if ended && (errs.CodeOf(p.Failure) != code || !strings.Contains(p.Failure.Error(), has)) {
+			t.Errorf("%s: failure %v, want %s with %q", attempt, p.Failure, code, has)
+		}
+	}
+	check("running", false, 0, "")
+	check("starting", false, 0, "")
+	check("oom", true, errs.ResourceExhausted, "went over its memory limit, 4608Mi")
+	check("crashed", true, errs.Transient, "exit code 1 (Error): daemon: the runner's token isn't a runner token")
+	check("evicted", true, errs.Transient, "Evicted The node was low on resource")
+	check("done", true, errs.Transient, "ended without the attempt's result")
+	if byAttempt["pulling"].Stuck != "ImagePullBackOff: no such image" || byAttempt["starting"].Stuck != "" {
+		t.Errorf("stuck: %q and %q", byAttempt["pulling"].Stuck, byAttempt["starting"].Stuck)
+	}
+
+	if err := k.Delete(t.Context(), byAttempt["done"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Delete(t.Context(), byAttempt["done"]); err != nil {
+		t.Fatalf("deleting again: %v, want nil", err)
+	}
+	if got, _ := k.Pods(t.Context()); len(got) != 6 {
+		t.Errorf("%d pods after a delete, want 6", len(got))
+	}
+}
+
+// A process gets the attempt in its environment, ends as it ends, and stops
+// when it's deleted.
+func TestProcesses(t *testing.T) {
+	p := &Processes{Command: []string{"/bin/sh", "-c", `test "$OPENETL_ATTEMPT" = a/1 && test "$OPENETL_PLACEMENT" = 1 || exit 7; [ "$OPENETL_POOL" = big ] || exit 8; exec sleep 30`}, Pool: "big"}
+	t.Cleanup(p.Close)
+	l := Launch{Attempt: "a/1", Placement: 1, Kind: contract.RunSyncAttempt, Size: resources.S}
+	if err := p.Launch(t.Context(), l); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Launch(t.Context(), l); err != nil {
+		t.Fatal(err)
+	}
+	pods, _ := p.Pods(t.Context())
+	if len(pods) != 1 || pods[0].Ended || pods[0].Name != Name("a/1", 1) {
+		t.Fatalf("pods %+v, want one running", pods)
+	}
+	if err := p.Delete(t.Context(), pods[0]); err != nil {
+		t.Fatal(err)
+	}
+	if pods, _ := p.Pods(t.Context()); len(pods) != 0 {
+		t.Fatalf("pods %+v after a delete", pods)
+	}
+
+	l.Attempt = "b/1"
+	if err := p.Launch(t.Context(), l); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		pods, _ := p.Pods(t.Context())
+		if len(pods) == 1 && pods[0].Ended {
+			if errs.CodeOf(pods[0].Failure) != errs.Transient || !strings.Contains(pods[0].Failure.Error(), "exit status 7") {
+				t.Errorf("failure %v", pods[0].Failure)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pods %+v, want b's ended", pods)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
