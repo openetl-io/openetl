@@ -270,14 +270,14 @@ WHERE r.org_id = @org_id AND r.report_time >= now() - (sqlc.arg(lapse_ms)::bigin
 GROUP BY r.data_plane_id, r.pool;
 
 -- name: PlacementDemand :many
--- Attempts placed, running or waiting by pool and size, for the placer's
--- metrics.
-SELECT data_plane_id, pool, size_cpu, size_memory, state,
+-- Attempts placed, running or waiting by pool and size, and whether a
+-- launcher's pod has them, for the placer's metrics.
+SELECT data_plane_id, pool, size_cpu, size_memory, state, (launcher IS NOT NULL)::boolean AS pod,
     count(*)::bigint AS attempts,
     COALESCE(max(extract(epoch FROM now() - enqueue_time)), 0)::double precision AS oldest_seconds
 FROM dispatches
 WHERE org_id = @org_id AND light = '' AND state IN ('pending', 'placed', 'running')
-GROUP BY data_plane_id, pool, size_cpu, size_memory, state;
+GROUP BY data_plane_id, pool, size_cpu, size_memory, state, launcher IS NOT NULL;
 
 -- name: TakeManualSync :one
 -- Whether the API just started this pipeline's sync by hand. RETURNING sees

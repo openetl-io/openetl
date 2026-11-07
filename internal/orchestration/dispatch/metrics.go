@@ -18,8 +18,8 @@ import (
 const metricsEvery = 10 * time.Second
 
 // RegisterMetrics adds the placer's gauges, by data plane and pool, and for
-// demand by size, which autoscalers scale on (ADR-0027 §7). Unregister it when
-// the orchestrator stops.
+// demand by size and whether runners or pods run it, which autoscalers scale
+// on (ADR-0027 §7). Unregister it when the orchestrator stops.
 func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
 	meter := otel.Meter("github.com/openetl-io/openetl/internal/orchestration/dispatch")
 	gauge := func(name, unit, description string) (metric.Float64ObservableGauge, error) {
@@ -57,7 +57,7 @@ func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
 		mu       sync.Mutex
 		read     time.Time
 		capacity []db.PlacementCapacityRow
-		demand   []db.PlacementDemandRow
+		demands  []demand
 	)
 	return meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
 		mu.Lock()
@@ -69,7 +69,7 @@ func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
 			if err != nil {
 				d.log().Warn("reading placement for metrics failed", "err", err)
 			} else {
-				capacity, demand, read = c, de, time.Now()
+				capacity, demands, read = c, de, time.Now()
 			}
 		}
 		for _, r := range capacity {
@@ -77,14 +77,14 @@ func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
 			o.ObserveFloat64(cpuCapacity, float64(r.Cpu)/1000, attrs)
 			o.ObserveFloat64(memCapacity, float64(r.Memory), attrs)
 		}
-		for _, r := range demand {
-			size := resources.Size{CPU: r.SizeCpu, Memory: r.SizeMemory}
-			attrs := metric.WithAttributes(attribute.String("data_plane", r.DataPlaneID), attribute.String("pool", r.Pool), attribute.String("size", size.Name()))
-			cpu, mem := float64(r.Attempts*r.SizeCpu)/1000, float64(r.Attempts*r.SizeMemory)
-			if r.State == "pending" {
+		for _, de := range demands {
+			attrs := metric.WithAttributes(attribute.String("data_plane", de.dataPlane), attribute.String("pool", de.pool),
+				attribute.String("size", de.size.Name()), attribute.String("runs_on", de.runsOn()))
+			cpu, mem := float64(de.attempts*de.size.CPU)/1000, float64(de.attempts*de.size.Memory)
+			if de.pending {
 				o.ObserveFloat64(cpuPending, cpu, attrs)
 				o.ObserveFloat64(memPending, mem, attrs)
-				o.ObserveFloat64(age, r.OldestSeconds, attrs)
+				o.ObserveFloat64(age, de.oldest, attrs)
 			} else {
 				o.ObserveFloat64(cpuReserved, cpu, attrs)
 				o.ObserveFloat64(memReserved, mem, attrs)
@@ -94,23 +94,86 @@ func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
 	}, cpuCapacity, cpuReserved, cpuPending, memCapacity, memReserved, memPending, age)
 }
 
-func (d *Dispatcher) readMetrics(ctx context.Context) ([]db.PlacementCapacityRow, []db.PlacementDemandRow, error) {
+func (d *Dispatcher) readMetrics(ctx context.Context) ([]db.PlacementCapacityRow, []demand, error) {
 	orgs, err := d.Store.ListOrgs(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 	var capacity []db.PlacementCapacityRow
-	var demand []db.PlacementDemandRow
+	var demands []demand
 	for _, org := range orgs {
 		c, err := d.Store.PlacementCapacity(ctx, db.PlacementCapacityParams{OrgID: org, LapseMs: d.lapse().Milliseconds()})
 		if err != nil {
 			return nil, nil, err
 		}
-		de, err := d.Store.PlacementDemand(ctx, org)
+		rows, err := d.Store.PlacementDemand(ctx, org)
 		if err != nil {
 			return nil, nil, err
 		}
-		capacity, demand = append(capacity, c...), append(demand, de...)
+		de, err := sumDemand(rows, func(dataPlane string) ([]Runner, error) {
+			rows, err := d.Store.PlacementRunners(ctx, db.PlacementRunnersParams{OrgID: org, DataPlaneID: dataPlane, LapseMs: d.lapse().Milliseconds()})
+			runners, _ := runnersOf(rows)
+			return runners, err
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		capacity, demands = append(capacity, c...), append(demands, de...)
 	}
-	return capacity, demand, nil
+	return capacity, demands, nil
+}
+
+type demandKey struct {
+	dataPlane, pool string
+	size            resources.Size
+	pending, pod    bool
+}
+
+// demand is the attempts of a data plane, pool and size that are placed or
+// running, or that wait for room, on runners or in pods.
+type demand struct {
+	demandKey
+	attempts int64
+	// How long the oldest has waited, if they wait.
+	oldest float64
+}
+
+func (d demand) runsOn() string {
+	if d.pod {
+		return "pod"
+	}
+	return "runner"
+}
+
+// sumDemand adds rows up by where their attempts run, so an autoscaler of
+// runners sees their demand alone. An attempt waiting for room goes where the
+// placer would send it among the data plane's runners now.
+func sumDemand(rows []db.PlacementDemandRow, runners func(dataPlane string) ([]Runner, error)) ([]demand, error) {
+	planes := map[string][]Runner{}
+	at := map[demandKey]int{}
+	var out []demand
+	for _, r := range rows {
+		k := demandKey{dataPlane: r.DataPlaneID, pool: r.Pool, size: resources.Size{CPU: r.SizeCpu, Memory: r.SizeMemory}, pending: r.State == "pending", pod: r.Pod}
+		if k.pending {
+			rs, ok := planes[k.dataPlane]
+			if !ok {
+				var err error
+				if rs, err = runners(k.dataPlane); err != nil {
+					return nil, err
+				}
+				planes[k.dataPlane] = rs
+			}
+			k.pod = ToPods(rs, k.pool, k.size)
+		}
+		i, ok := at[k]
+		if !ok {
+			i, at[k] = len(out), len(out)
+			out = append(out, demand{demandKey: k})
+		}
+		out[i].attempts += r.Attempts
+		if k.pending {
+			out[i].oldest = max(out[i].oldest, r.OldestSeconds)
+		}
+	}
+	return out, nil
 }

@@ -990,12 +990,12 @@ func (q *Queries) PlacementCapacity(ctx context.Context, arg PlacementCapacityPa
 }
 
 const placementDemand = `-- name: PlacementDemand :many
-SELECT data_plane_id, pool, size_cpu, size_memory, state,
+SELECT data_plane_id, pool, size_cpu, size_memory, state, (launcher IS NOT NULL)::boolean AS pod,
     count(*)::bigint AS attempts,
     COALESCE(max(extract(epoch FROM now() - enqueue_time)), 0)::double precision AS oldest_seconds
 FROM dispatches
 WHERE org_id = $1 AND light = '' AND state IN ('pending', 'placed', 'running')
-GROUP BY data_plane_id, pool, size_cpu, size_memory, state
+GROUP BY data_plane_id, pool, size_cpu, size_memory, state, launcher IS NOT NULL
 `
 
 type PlacementDemandRow struct {
@@ -1004,12 +1004,13 @@ type PlacementDemandRow struct {
 	SizeCpu       int64
 	SizeMemory    int64
 	State         string
+	Pod           bool
 	Attempts      int64
 	OldestSeconds float64
 }
 
-// Attempts placed, running or waiting by pool and size, for the placer's
-// metrics.
+// Attempts placed, running or waiting by pool and size, and whether a
+// launcher's pod has them, for the placer's metrics.
 func (q *Queries) PlacementDemand(ctx context.Context, orgID uuid.UUID) ([]PlacementDemandRow, error) {
 	rows, err := q.db.Query(ctx, placementDemand, orgID)
 	if err != nil {
@@ -1025,6 +1026,7 @@ func (q *Queries) PlacementDemand(ctx context.Context, orgID uuid.UUID) ([]Place
 			&i.SizeCpu,
 			&i.SizeMemory,
 			&i.State,
+			&i.Pod,
 			&i.Attempts,
 			&i.OldestSeconds,
 		); err != nil {
