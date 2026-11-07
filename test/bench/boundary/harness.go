@@ -50,6 +50,13 @@ type countingSplit struct {
 	n *atomic.Int64
 }
 
+func (s countingSplit) Rows(rows []json.RawMessage) error {
+	for _, r := range rows {
+		s.n.Add(int64(len(r)))
+	}
+	return s.SplitEmitter.Rows(rows)
+}
+
 func (s countingSplit) Records(b arrow.RecordBatch) error {
 	s.n.Add(util.TotalRecordSize(b))
 	return s.SplitEmitter.Records(b)

@@ -76,6 +76,8 @@ type chaosConfig struct {
 	// A column added to the source mid-run is held under block, and
 	// released.
 	holds bool
+	// spec.resources.size, which sets how many lanes it runs; empty: auto.
+	size string
 }
 
 // The faults a run can draw besides crash points.
@@ -120,6 +122,10 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	}
 	if c.source == "incremental" && (c.dest == "iceberg" || c.transform == "spark") {
 		c.write = "merge"
+	}
+	// A transform runs on one lane, whatever its size.
+	if c.transform == "" {
+		c.size = pick("", "", "m", "l")
 	}
 	c.scope = pick("pipeline", "stream")
 	if c.dest == "kafka" {
@@ -200,6 +206,9 @@ func (c chaosConfig) String() string {
 	if c.every != "" {
 		commit += " every=" + c.every
 	}
+	if c.size != "" {
+		commit += " size=" + c.size
+	}
 	return fmt.Sprintf("%s %s noise=%v faults=[%s]", c.name(), commit, c.noise, strings.Join(c.faults, ", "))
 }
 
@@ -231,6 +240,9 @@ func (c chaosConfig) pipelineDoc(name, pipeSource, pipeDest string, transform ma
 	}
 	if dataPlane != "" {
 		spec["dataPlane"] = dataPlane
+	}
+	if c.size != "" {
+		spec["resources"] = map[string]string{"size": c.size}
 	}
 	return mustJSON(map[string]any{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": map[string]string{"name": name}, "spec": spec})
 }
