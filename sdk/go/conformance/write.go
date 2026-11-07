@@ -288,6 +288,8 @@ func buildData(stream string, data []arrow.Field, recs []record, op string) arro
 				c.Append(int32(r.id & math.MaxInt32))
 			case *array.Int64Builder:
 				c.Append(r.id)
+			case *array.Float64Builder:
+				c.Append(float64(r.id))
 			}
 		}
 		b.Field(m).(*array.FixedSizeBinaryBuilder).Append(rowID(stream, r))

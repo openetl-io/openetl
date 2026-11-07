@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -532,13 +534,35 @@ func (w *memWriter) stage(e destination.Epoch, stream string, b arrow.RecordBatc
 				row[f.Name] = b.Column(c).GetOneForMarshal(i)
 			default:
 				if !strings.HasPrefix(f.Name, "_openetl") {
-					row[f.Name] = b.Column(c).GetOneForMarshal(i)
+					row[f.Name] = w.d.mapType(b.Column(c), i)
 				}
 			}
 		}
 		st.staging[k][stream] = append(st.staging[k][stream], row)
 	}
 	return nil
+}
+
+// mapType is the memory destination's mapping table, with its bugs.
+func (d *memDestination) mapType(a arrow.Array, i int) any {
+	v := a.GetOneForMarshal(i)
+	switch a := a.(type) {
+	case *array.Float64:
+		if d.bug == "types-nan-null" && math.IsNaN(a.Value(i)) {
+			return nil
+		}
+	case *array.Decimal128:
+		if d.bug == "types-decimal-float" && a.IsValid(i) {
+			f, _ := strconv.ParseFloat(a.ValueStr(i), 64)
+			return f
+		}
+	case *array.Timestamp:
+		if d.bug == "types-millis" && a.IsValid(i) {
+			unit := a.DataType().(*arrow.TimestampType).Unit
+			return a.Value(i).ToTime(unit).Truncate(time.Millisecond)
+		}
+	}
+	return v
 }
 
 func heldList(a arrow.Array, i int) []string {
@@ -776,10 +800,19 @@ func (w *memWriter) ApplySchema(_ context.Context, streams []destination.StreamS
 			case arrow.TypeEqual(have, f.Type) || narrower(f.Type, have):
 			case w.d.bug == "type-changes-unasked" || allow && w.d.bug != "type-changes-refused":
 				st.types[t][f.Name] = f.Type
+				for _, row := range st.tables[t] {
+					if v, ok := row[f.Name]; ok && v != nil && f.Type.ID() == arrow.STRING {
+						row[f.Name] = fmt.Sprint(v)
+					}
+				}
 			default:
-				out.Refused = append(out.Refused, destination.RefusedColumn{
+				rc := destination.RefusedColumn{
 					Stream: s.Name, Column: f.Name, Reason: "it doesn't change a column's type", FromType: have.String(), ToType: f.Type.String(),
-				})
+				}
+				if w.d.bug == "refusal-unexplained" {
+					rc = destination.RefusedColumn{Stream: s.Name, Column: f.Name}
+				}
+				out.Refused = append(out.Refused, rc)
 			}
 		}
 	}
@@ -877,6 +910,10 @@ func TestDestinationBugsFail(t *testing.T) {
 		"limits-without-not-null": {"holds/not-null"},
 		"type-changes-unasked":    {"write/type-changes"},
 		"type-changes-refused":    {"write/type-changes"},
+		"refusal-unexplained":     {"write/type-changes"},
+		"types-nan-null":          {"types"},
+		"types-decimal-float":     {"types"},
+		"types-millis":            {"types"},
 	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {
@@ -885,5 +922,22 @@ func TestDestinationBugsFail(t *testing.T) {
 				t.Errorf("failed checks %v, want %v", failed, checks)
 			}
 		})
+	}
+}
+
+// A type the mapping table says it doesn't keep exactly isn't checked, and
+// is flagged.
+func TestDestinationLossyTypes(t *testing.T) {
+	s := destinationSuite("types-nan-null")
+	s.LossyTypes = map[string]string{"float64": "NaN is stored as null"}
+	var flagged bool
+	failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) {
+		s.Run(ctx, func(r conformance.Result) {
+			flagged = flagged || r.Check == "types" && slices.ContainsFunc(r.Log, func(l string) bool { return strings.Contains(l, "NaN is stored as null") })
+			report(r)
+		})
+	})
+	if len(failed) > 0 || !flagged {
+		t.Errorf("failed %v, flagged %v; want none failed, and float64 flagged", failed, flagged)
 	}
 }
