@@ -67,6 +67,11 @@ func TestTypesNorm(t *testing.T) {
 		{"list", []*int64{nil}, []any{nil}},
 		{"json", map[string]any{"b": 1, "a": []any{}}, `{"a": [], "b": 1}`},
 		{"json", []byte(`{"a" : 1}`), `{"a":1}`},
+		{"binary", "AP8=", []byte{0, 0xff}},
+		{"interval", map[string]any{"months": json.Number("14"), "days": json.Number("0"), "nanoseconds": json.Number("-1000")}, arrow.MonthDayNanoInterval{Months: 14, Nanoseconds: -1000}},
+		{"json", "text", `"text"`},
+		{"json", json.Number("123"), `123`},
+		{"json", map[string]any{"a": []any{json.Number("1")}}, `{"a": [1]}`},
 		{"uuid", [16]byte(uuid.Max), uuid.Max},
 		{"uuid", "A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11", uuid.MustParse("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")},
 		{"uuid", uuid.Nil[:], uuid.Nil},
@@ -88,7 +93,7 @@ func TestTypesNorm(t *testing.T) {
 		logical string
 		read    any
 	}{
-		{"int64", "1.5"}, {"interval", "soon"}, {"uuid", "nope"}, {"json", "{"}, {"date", 3.5},
+		{"int64", "1.5"}, {"interval", "soon"}, {"uuid", "nope"}, {"json", make(chan int)}, {"date", 3.5},
 	} {
 		if got, err := cases[bad.logical].norm(bad.read); err == nil {
 			t.Errorf("%s %#v: read as %s, want an error", bad.logical, bad.read, got)

@@ -62,6 +62,8 @@ func runConnectorTest(ctx context.Context, args []string, out io.Writer) error {
 	dropCmd := f.fs.String("drop-command", "", "a command that removes what the checks wrote in $OPENETL_NAMESPACE")
 	settle := f.fs.Duration("settle", 0, "how long after a commit a destination's readers can take to see it, as Kafka's consumers can")
 	untyped := f.fs.Bool("untyped", false, "the destination keeps no column types, as a topic of JSON records doesn't")
+	var lossy files
+	f.fs.Var(&lossy, "lossy-type", "TYPE=WHAT: a logical type the destination's mapping table doesn't keep exactly, such as interval, and what the table says of it; the types check leaves it out; repeatable")
 	runPattern := f.fs.String("run", "", "run only the checks whose names match this regular expression")
 	asJSON := f.fs.Bool("json", false, "print a JSON object a check, with its check, result (pass, fail or skip) and log")
 	if err := f.parse(args); err != nil {
@@ -99,9 +101,9 @@ func runConnectorTest(ctx context.Context, args []string, out io.Writer) error {
 	var run func(context.Context, func(string) bool, func(conformance.Result))
 	switch s.GetKind() {
 	case protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE:
-		if *readCmd != "" || *dropCmd != "" || *settle != 0 || *untyped {
+		if *readCmd != "" || *dropCmd != "" || *settle != 0 || *untyped || len(lossy) > 0 {
 			_ = p.Close()
-			return errors.New("--read-command, --drop-command, --settle and --untyped are for destinations")
+			return errors.New("--read-command, --drop-command, --settle, --untyped and --lossy-type are for destinations")
 		}
 		suite := conformance.SourceSuite{Launch: t.launch, Config: config, BadCredentials: bad, Unreachable: down,
 			ResumePoints: *resumePoints, ReadTimeout: *readTimeout}
@@ -131,6 +133,17 @@ func runConnectorTest(ctx context.Context, args []string, out io.Writer) error {
 		}
 		suite := conformance.DestinationSuite{Launch: t.launch, Config: config, BadCredentials: bad, Unreachable: down,
 			Settle: *settle, Untyped: *untyped}
+		for _, l := range lossy {
+			name, what, ok := strings.Cut(l, "=")
+			if !ok || name == "" {
+				_ = p.Close()
+				return fmt.Errorf("--lossy-type %s: want TYPE=WHAT", l)
+			}
+			if suite.LossyTypes == nil {
+				suite.LossyTypes = map[string]string{}
+			}
+			suite.LossyTypes[name] = what
+		}
 		if *readCmd != "" {
 			suite.Read = func(ctx context.Context, namespace, stream string) ([]map[string]any, error) {
 				b, err := shell(ctx, *readCmd, "OPENETL_NAMESPACE="+namespace, "OPENETL_STREAM="+stream)

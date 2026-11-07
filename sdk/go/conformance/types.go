@@ -3,6 +3,7 @@ package conformance
 import (
 	"bytes"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -281,6 +282,9 @@ func (c typeCase) norm(v any) (string, error) {
 					return strings.ToLower(h), nil
 				}
 			}
+			if b, err := base64.StdEncoding.Strict().DecodeString(x); err == nil {
+				return hex.EncodeToString(b), nil
+			}
 			return hex.EncodeToString([]byte(x)), nil
 		}
 	case "decimal", "decimal_10_2":
@@ -337,14 +341,14 @@ func (c typeCase) norm(v any) (string, error) {
 			b = x
 		case json.RawMessage:
 			b = x
-		default:
+		}
+		// What isn't JSON text is a JSON value its reader decoded, such as
+		// a string.
+		if b == nil || !json.Valid(b) {
 			var err error
-			if b, err = json.Marshal(x); err != nil {
+			if b, err = json.Marshal(v); err != nil {
 				return bad()
 			}
-		}
-		if !json.Valid(b) {
-			return bad()
 		}
 		return canonicalJSON(b), nil
 	case "uuid":
@@ -584,6 +588,9 @@ func interval(v any) (arrow.MonthDayNanoInterval, bool) {
 	case string:
 		return parseInterval(strings.TrimSpace(x))
 	}
+	if m, ok := v.(map[string]any); ok {
+		return intervalObject(m)
+	}
 	if !structFields(v, "Months", "Days") {
 		return arrow.MonthDayNanoInterval{}, false
 	}
@@ -598,6 +605,32 @@ func interval(v any) (arrow.MonthDayNanoInterval, bool) {
 		return arrow.MonthDayNanoInterval{}, false
 	}
 	return monthDayNano(rv.FieldByName("Months").Int(), rv.FieldByName("Days").Int(), ns)
+}
+
+// intervalObject reads an interval as JSON spells Arrow's: months, days,
+// and nanoseconds or microseconds.
+func intervalObject(m map[string]any) (arrow.MonthDayNanoInterval, bool) {
+	field := func(name string) (int64, bool) {
+		for k, v := range m {
+			if strings.EqualFold(k, name) {
+				n, ok := integer(v)
+				return n.Int64(), ok && n.IsInt64()
+			}
+		}
+		return 0, false
+	}
+	months, ok1 := field("months")
+	days, ok2 := field("days")
+	ns, ok3 := field("nanoseconds")
+	if !ok3 {
+		var us int64
+		us, ok3 = field("microseconds")
+		ns = us * 1000
+	}
+	if !ok1 || !ok2 || !ok3 {
+		return arrow.MonthDayNanoInterval{}, false
+	}
+	return monthDayNano(months, days, ns)
 }
 
 func monthDayNano(months, days, ns int64) (arrow.MonthDayNanoInterval, bool) {
