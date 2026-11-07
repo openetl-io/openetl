@@ -72,6 +72,9 @@ type Kubernetes struct {
 	Scratch int64
 	// GOARCH of the pods' nodes; empty: the launcher's.
 	Arch string
+	// Stream pods never go on spot nodes. Otherwise they only prefer not to,
+	// so they still run where there's nothing else.
+	StreamsAvoidSpot bool
 }
 
 // KubernetesOptions say where a Kubernetes launcher makes its pods.
@@ -199,10 +202,15 @@ func (k *Kubernetes) Pod(l Launch) *corev1.Pod {
 	grace := l.StopTimeout + 30
 	s.TerminationGracePeriodSeconds = &grace
 	s.NodeSelector = with(s.NodeSelector, map[string]string{corev1.LabelOSStable: "linux", corev1.LabelArchStable: cmp.Or(k.Arch, runtime.GOARCH)})
-	if job == "stream" {
+	switch {
+	case job == "stream" && k.StreamsAvoidSpot:
 		p.Annotations[annoDoNotDisrupt] = "true"
 		avoidSpot(s)
-	} else {
+	case job == "stream":
+		p.Annotations[annoDoNotDisrupt] = "true"
+		preferNoSpot(s)
+		s.Tolerations = append(s.Tolerations, spotTaints...)
+	default:
 		s.Tolerations = append(s.Tolerations, spotTaints...)
 	}
 
@@ -230,13 +238,33 @@ func (k *Kubernetes) Pod(l Launch) *corev1.Pod {
 	return p
 }
 
-// avoidSpot keeps a pod off spot nodes, adding to each of the template's node
-// selector terms, which are ORed.
-func avoidSpot(s *corev1.PodSpec) {
+func notSpot() []corev1.NodeSelectorRequirement {
 	var exprs []corev1.NodeSelectorRequirement
 	for _, l := range spotLabels {
 		exprs = append(exprs, corev1.NodeSelectorRequirement{Key: l.key, Operator: corev1.NodeSelectorOpNotIn, Values: []string{l.value}})
 	}
+	return exprs
+}
+
+// preferNoSpot has a pod prefer nodes that aren't spot. Karpenter asks for
+// such a node first, and relaxes the preference only when its node pools
+// can't give one.
+func preferNoSpot(s *corev1.PodSpec) {
+	if s.Affinity == nil {
+		s.Affinity = &corev1.Affinity{}
+	}
+	if s.Affinity.NodeAffinity == nil {
+		s.Affinity.NodeAffinity = &corev1.NodeAffinity{}
+	}
+	na := s.Affinity.NodeAffinity
+	na.PreferredDuringSchedulingIgnoredDuringExecution = append(na.PreferredDuringSchedulingIgnoredDuringExecution,
+		corev1.PreferredSchedulingTerm{Weight: 100, Preference: corev1.NodeSelectorTerm{MatchExpressions: notSpot()}})
+}
+
+// avoidSpot keeps a pod off spot nodes, adding to each of the template's node
+// selector terms, which are ORed.
+func avoidSpot(s *corev1.PodSpec) {
+	exprs := notSpot()
 	if s.Affinity == nil {
 		s.Affinity = &corev1.Affinity{}
 	}

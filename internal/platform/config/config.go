@@ -91,6 +91,8 @@ type Config struct {
 	Kubeconfig string
 	// Each pod's ephemeral storage, such as 10Gi; 0: none set.
 	PodScratch string
+	// Whether stream pods avoid spot nodes or only prefer to.
+	PodStreamSpot string
 	// The one attempt a pod's runner runs, and its placement.
 	Attempt   string
 	Placement int
@@ -154,6 +156,7 @@ var options = []option{
 	{"pod-template", "OPENETL_POD_TEMPLATE", "", "the pod the kubernetes launcher makes each attempt's from, in a YAML file or as podtemplate/NAME, a PodTemplate in the pods' namespace: its container runs openetld's image with the API's URL, the runner token and the checkpoint store, and the launcher sets the rest", func(c *Config) *string { return &c.PodTemplate }},
 	{"pod-namespace", "OPENETL_POD_NAMESPACE", "", "the namespace the kubernetes launcher makes pods in (default: the kubeconfig context's, or the launcher's own)", func(c *Config) *string { return &c.PodNamespace }},
 	{"kubeconfig", "OPENETL_KUBECONFIG", "", "a kubeconfig file for the kubernetes launcher (default: its service account; it never reads one it isn't given)", func(c *Config) *string { return &c.Kubeconfig }},
+	{"pod-stream-spot", "OPENETL_POD_STREAM_SPOT", "prefer", "whether the kubernetes launcher's stream pods keep off spot nodes: prefer, so they run on spot only where there's nothing else, or avoid, so they never do", func(c *Config) *string { return &c.PodStreamSpot }},
 	{"pod-scratch", "OPENETL_POD_SCRATCH", "10Gi", "each pod's ephemeral storage, for its runner's scratch; 0: none set", func(c *Config) *string { return &c.PodScratch }},
 	{"attempt", "OPENETL_ATTEMPT", "", "the one attempt this runner runs before it stops, as a pod launcher's pod; set by the launcher", func(c *Config) *string { return &c.Attempt }},
 	{"report-interval", "OPENETL_REPORT_INTERVAL", "10s", "how often this runner reports what it runs to the API, as a Go duration; keep it well under its work's heartbeat timeouts", func(c *Config) *string { return &c.ReportInterval }},

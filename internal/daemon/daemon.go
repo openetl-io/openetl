@@ -549,6 +549,9 @@ func podLauncher(ctx context.Context, cfg config.Config) (pods.Launcher, dpworke
 	}
 	switch cfg.Launcher {
 	case "kubernetes":
+		if cfg.PodStreamSpot != "prefer" && cfg.PodStreamSpot != "avoid" {
+			return nil, limits, fmt.Errorf("daemon: --pod-stream-spot %q is neither prefer nor avoid", cfg.PodStreamSpot)
+		}
 		k, err := pods.OpenKubernetes(ctx, pods.KubernetesOptions{Kubeconfig: cfg.Kubeconfig, Namespace: cfg.PodNamespace, Template: cfg.PodTemplate})
 		if err != nil {
 			return nil, limits, err
@@ -556,7 +559,7 @@ func podLauncher(ctx context.Context, cfg config.Config) (pods.Launcher, dpworke
 		if k.Scratch, err = resources.ParseMemory(cfg.PodScratch); err != nil {
 			return nil, limits, fmt.Errorf("daemon: --pod-scratch: %w", err)
 		}
-		k.DataPlane, k.Pool, k.Reserve = cfg.DataPlane, cfg.Pool, reserve
+		k.DataPlane, k.Pool, k.Reserve, k.StreamsAvoidSpot = cfg.DataPlane, cfg.Pool, reserve, cfg.PodStreamSpot == "avoid"
 		return k, limits, nil
 	case "process":
 		exe, err := os.Executable()

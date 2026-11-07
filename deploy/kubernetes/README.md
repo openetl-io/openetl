@@ -74,7 +74,13 @@ Each job has a size, from `xs` (0.5 vCPU, 1 GiB) to `xl` (8 vCPUs, 16 GiB), whic
 
 Jobs that don't fit anywhere wait until there's room. A runner told to stop finishes its jobs at a checkpoint first, up to 2 minutes for a sync and 10 for a stream, and they're placed again; its grace period covers that.
 
-A pod's spec comes from the PodTemplate `openetl-attempt-default`, to which the launcher adds the job, labels, resources and node constraints. Sync pods tolerate GKE's and AKS's spot taints. Stream pods keep off spot nodes and carry `karpenter.sh/do-not-disrupt`. The launcher reads the template when it starts, so restart it after changing the template (`kubectl -n openetl rollout restart deploy/openetl-launcher-default`).
+A pod's spec comes from the PodTemplate `openetl-attempt-default`, to which the launcher adds the job, labels, resources and node constraints. The launcher reads the template when it starts, so restart it after changing the template (`kubectl -n openetl rollout restart deploy/openetl-launcher-default`).
+
+### Spot nodes
+
+Sync pods tolerate GKE's and AKS's spot taints, and run on spot nodes wherever they're offered: on an interruption notice they finish at a checkpoint and are placed again. Stream pods tolerate them too, but prefer nodes that aren't spot, so they run on spot only when there's nothing else, and they carry `karpenter.sh/do-not-disrupt`, so consolidation leaves them alone. A stream interrupted on spot finishes at a checkpoint if it can within the notice, and otherwise starts again from its last one; either way nothing is lost or written twice.
+
+To keep streams off spot nodes entirely, set `OPENETL_POD_STREAM_SPOT` to `avoid` on the launcher. They then never start on a cluster that only has spot nodes. Karpenter asks for a node that isn't spot before it relaxes the preference, but the Cluster Autoscaler doesn't weigh it when it picks a node group, so with the Cluster Autoscaler, set `avoid` if streams must never run on spot.
 
 To add a pool, copy `runner-default.yaml` and `launcher-default.yaml` with another name and `OPENETL_POOL`, and point pipelines at it with `spec.resources.pool`. A pool with only a launcher runs every job in pods.
 
@@ -105,7 +111,7 @@ KEDA keeps at least one runner: a pool with a launcher and no runners sends ever
 - `openetl-attempts`, for job pods, on spot or on-demand instances. Consolidation leaves stream pods alone, and sync pods on spot finish at a checkpoint on an interruption notice and are placed again.
 - `openetl-runners`, for shared runners, on-demand only, removed only when empty.
 
-Apply it on its own (`kubectl apply -f deploy/kubernetes/karpenter/nodepools.yaml`), then add `karpenter` to `components` in `kustomization.yaml`, which gives runners and job pods the node selector and toleration for their pool. A pool of runners that only runs syncs can use spot instances too.
+Apply it on its own (`kubectl apply -f deploy/kubernetes/karpenter/nodepools.yaml`), then add `karpenter` to `components` in `kustomization.yaml`, which gives runners and job pods the node selector and toleration for their pool. A pool of runners that only runs syncs can use spot instances too. Where only spot instances can be added, allow spot in `openetl-runners` as well; streams on those runners are interrupted as [stream pods on spot](#spot-nodes) are.
 
 With the Cluster Autoscaler instead, make node groups with the same `openetl.io/nodes` labels and taints.
 

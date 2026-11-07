@@ -1,6 +1,7 @@
 # Karpenter's node pools for openetl on AWS, applied on their own (kubectl
 # apply -f): attempts' pods on spot or on-demand nodes, and shared runners on
-# on-demand ones. The launcher keeps a stream's pod off spot nodes and marks it
+# on-demand ones. The launcher has a stream's pod prefer nodes that aren't
+# spot, which Karpenter gives it unless only spot is left, and marks it
 # karpenter.sh/do-not-disrupt, so consolidation leaves it be; a sync's pod
 # drains to a checkpoint on a spot notice and is placed again. The component
 # beside this file sends the pods to them.
