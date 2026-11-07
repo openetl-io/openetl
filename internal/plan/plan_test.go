@@ -131,6 +131,22 @@ func TestPipeline(t *testing.T) {
 			problems: []string{`stream "a" is read with incremental, whose reads end`}},
 		{name: "deletes without merge", cat: catalog, caps: warehouse, spec: `{"destination": {"deletes": "DELETE_MODE_HARD"}, "source": {"streams": [{"name": "orders"}]}}`,
 			streams: "orders exactly_once exact replay", warnings: []string{": destination.deletes applies only to merge"}},
+		{name: "type changes", cat: catalog, caps: warehouse,
+			spec:     `{"destination": {"typeChanges": "TYPE_CHANGES_ALLOW"}, "source": {"streams": [{"name": "orders"}, {"name": "events", "typeChanges": "TYPE_CHANGES_REFUSE"}]}}`,
+			streams:  "orders exactly_once+types exact replay; events exactly_once+dedupe superset replay, deduped at apply",
+			warnings: []string{": typeChanges: allow lets the destination change a column's type itself as the source's widens: int16 to int32"}},
+		{name: "type changes on a stream", cat: catalog, caps: warehouse, spec: `{"source": {"streams": [{"name": "orders", "typeChanges": "TYPE_CHANGES_ALLOW"}, {"name": "logs"}]}}`,
+			streams:  "orders exactly_once+types exact replay; logs exactly_once+dedupe+collapse superset replay, no primary key: collapsed within each epoch and against the target",
+			warnings: []string{": typeChanges: allow lets the destination", "logs: it has no primary key"}},
+		{name: "type changes every stream refuses", cat: catalog, caps: warehouse,
+			spec:    `{"destination": {"typeChanges": "TYPE_CHANGES_ALLOW"}, "source": {"streams": [{"name": "orders", "typeChanges": "TYPE_CHANGES_REFUSE"}]}}`,
+			streams: "orders exactly_once exact replay"},
+		{name: "type changes under block", cat: catalog, caps: warehouse,
+			spec:     `{"schemaPolicy": "SCHEMA_POLICY_BLOCK", "destination": {"typeChanges": "TYPE_CHANGES_ALLOW"}, "source": {"streams": [{"name": "orders"}]}}`,
+			streams:  "orders exactly_once+types exact replay",
+			warnings: []string{": typeChanges: allow changes nothing, as schemaPolicy block holds every type change"}},
+		{name: "type changes, no catalog", caps: warehouse, spec: `{"schemaPolicy": "SCHEMA_POLICY_IGNORE_NEW", "destination": {"typeChanges": "TYPE_CHANGES_ALLOW"}}`,
+			warnings: []string{": typeChanges: allow changes nothing, as schemaPolicy ignore_new casts"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := &apiv1.PipelineSpec{}
@@ -148,6 +164,9 @@ func TestPipeline(t *testing.T) {
 				}
 				if s.GetCollapse() {
 					level += "+collapse"
+				}
+				if s.GetTypeChanges() {
+					level += "+types"
 				}
 				got = append(got, s.GetName()+" "+level+" "+s.GetReason())
 			}
@@ -301,9 +320,15 @@ func TestTransformOutputs(t *testing.T) {
 		t.Errorf("plans = %v, problems = %v", plans, problems)
 	}
 	merged := spark(&apiv1.TransformOutput{Name: "enriched", PrimaryKey: []string{"order_id"}, Write: apiv1.WriteMode_WRITE_MODE_MERGE, Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE})
-	plans, problems, _ = Pipeline(merged, cat, warehouse)
-	if len(problems) != 0 || len(plans) != 1 || plans[0].GetLevel() != apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE {
-		t.Errorf("plans = %v, problems = %v", plans, problems)
+	plans, problems, warnings := Pipeline(merged, cat, warehouse)
+	if len(problems) != 0 || len(plans) != 1 || plans[0].GetLevel() != apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE || plans[0].GetTypeChanges() || len(warnings) != 0 {
+		t.Errorf("plans = %v, problems = %v, warnings = %v", plans, problems, warnings)
+	}
+	// Outputs take the destination's typeChanges.
+	merged.Destination = &apiv1.PipelineDestination{TypeChanges: apiv1.TypeChanges_TYPE_CHANGES_ALLOW}
+	plans, _, warnings = Pipeline(merged, cat, warehouse)
+	if !plans[0].GetTypeChanges() || len(warnings) != 1 || !strings.Contains(warnings[0].GetMessage(), "typeChanges: allow lets") {
+		t.Errorf("plans = %v, warnings = %v", plans, warnings)
 	}
 	exactly := spark(&apiv1.TransformOutput{Name: "enriched", Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE})
 	if _, problems, _ = Pipeline(exactly, cat, warehouse); len(problems) != 1 || !strings.Contains(problems[0].Error(), "transform.spark.outputs[enriched].require") {

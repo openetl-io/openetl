@@ -98,6 +98,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			NanosecondTimestamps: ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
 			Require:              plan.Level(ps.GetRequire()),
 			Deletes:              deletes,
+			AllowTypeChanges:     plan.TypeChanges(p, ps),
 			SplitsByKey:          cs.SplitsByKey,
 		}
 		if ps != nil {
@@ -149,7 +150,8 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 				return job, errs.Wrap(errs.ConfigInvalid, err, "runner")
 			}
 			d := o.Delivery()
-			out := runner.Stream{Name: o.Name, Replay: d.Replay, Mode: o.Mode, PrimaryKey: o.PrimaryKey, Require: o.Require, Deletes: deletes, Transformed: true}
+			out := runner.Stream{Name: o.Name, Replay: d.Replay, Mode: o.Mode, PrimaryKey: o.PrimaryKey, Require: o.Require, Deletes: deletes, Transformed: true,
+				AllowTypeChanges: plan.TypeChanges(p, nil)}
 			if o.Mode == destination.Merge && changelog {
 				out.Read = source.CDC
 			}

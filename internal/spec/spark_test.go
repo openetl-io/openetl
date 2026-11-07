@@ -104,6 +104,7 @@ func TestParseSparkTransform(t *testing.T) {
 		"continuous":      header + "spec:\n  mode: continuous\n  source: {ref: s}\n  destination: {ref: d}\n  transform: {spark: {cluster: lab, " + jar + "}}\n",
 		"nanoseconds":     header + "spec:\n  schedule: {every: 1m}\n  source: {ref: s, streams: [{name: o, timestamps: nanosecond}]}\n  destination: {ref: d}\n  transform: {spark: {cluster: lab, " + jar + "}}\n",
 		"collapse":        header + "spec:\n  schedule: {every: 1m}\n  source: {ref: s, streams: [{name: o, collapse: true}]}\n  destination: {ref: d}\n  transform: {spark: {cluster: lab, " + jar + "}}\n",
+		"typeChanges":     header + "spec:\n  schedule: {every: 1m}\n  source: {ref: s, streams: [{name: o, typeChanges: allow}]}\n  destination: {ref: d}\n  transform: {spark: {cluster: lab, " + jar + "}}\n",
 		"cluster":         transform("{cluster: Lab, " + jar + "}"),
 		"jar, no class":   transform("{cluster: lab, code: {jar: 's3://j/a.jar', sha256: " + digest + "}}"),
 		"python class":    transform("{cluster: lab, code: {python: 's3://j/a.py', sha256: " + digest + ", class: T}}"),

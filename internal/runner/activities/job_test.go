@@ -32,7 +32,8 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 					"b": {Type: apiv1.ColumnType_COLUMN_TYPE_FLOAT64},
 				},
 			}}},
-			Types: &apiv1.Types{Infinity: apiv1.Infinity_INFINITY_QUARANTINE},
+			Types:       &apiv1.Types{Infinity: apiv1.Infinity_INFINITY_QUARANTINE},
+			Destination: &apiv1.PipelineDestination{TypeChanges: apiv1.TypeChanges_TYPE_CHANGES_ALLOW},
 		},
 		Releases: []*dataplanev1.HoldRelease{{Stream: "users", Column: "a", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}}},
 	}, connectorhost.Env{})
@@ -51,6 +52,9 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 	}
 	if len(job.Releases) != 1 || job.Releases[0].Column != "a" {
 		t.Errorf("releases %+v", job.Releases)
+	}
+	if !job.Streams[0].AllowTypeChanges {
+		t.Error("the destination's typeChanges: allow didn't reach the stream")
 	}
 }
 

@@ -52,7 +52,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 	for _, s := range open.GetStreams() {
 		cfg.Streams = append(cfg.Streams, destination.Stream{
 			Name: s.GetName(), Mode: destination.WriteMode(s.GetMode()), PrimaryKey: s.GetPrimaryKey(),
-			Dedupe: destination.Dedupe(s.GetDedupe()), Deletes: destination.DeleteMode(s.GetDeletes()),
+			Dedupe: destination.Dedupe(s.GetDedupe()), Deletes: destination.DeleteMode(s.GetDeletes()), AllowTypeChanges: s.GetAllowTypeChanges(),
 		})
 	}
 	w, err := dst.Open(ctx, cfg)

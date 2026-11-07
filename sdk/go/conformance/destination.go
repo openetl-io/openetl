@@ -48,6 +48,10 @@ type DestinationSuite struct {
 	// How long after a commit the destination's readers can take to see it,
 	// as Kafka's consumers can. Zero: they see it at once.
 	Settle time.Duration
+	// The destination keeps no column types, as a topic of JSON records
+	// doesn't, so write/type-changes checks only that a widened column
+	// lands.
+	Untyped bool
 }
 
 // The kit's streams.
@@ -95,6 +99,7 @@ func (r *destinationRun) checks() []Check {
 		Check{"write/overwrite", r.checkOverwrite},
 		Check{"write/merge", r.checkMerge},
 		Check{"write/evolution", r.checkEvolution},
+		Check{"write/type-changes", r.checkTypeChanges},
 		Check{"holds/patch", r.checkHoldsPatch},
 		Check{"holds/last", r.checkHoldsLast},
 		Check{"holds/soft-delete", r.checkHoldsSoftDelete},
@@ -171,6 +176,8 @@ type session struct {
 	scope    protocolv1.CommitScope
 	mode     protocolv1.WriteMode
 	data     []arrow.Field
+	// The streams let the destination change a column's type.
+	allowTypeChanges bool
 	// When reads start, for attempts on lanes.
 	start time.Time
 	// For a staged destination: where its epochs are staged, the batches of
@@ -233,7 +240,7 @@ func (s *session) openLane(gen uint64, lane, lanes int) *writer {
 		open.Lane = uint32(lane)
 	}
 	for _, name := range kitStreams {
-		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: name, Mode: s.mode, PrimaryKey: []string{"id"}})
+		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: name, Mode: s.mode, PrimaryKey: []string{"id"}, AllowTypeChanges: s.allowTypeChanges})
 	}
 	w, err := openWriter(s.t.Context(), s.r.proc.Conn(), open)
 	if err != nil {
@@ -813,4 +820,92 @@ func (r *destinationRun) checkEvolution(t T) {
 	}
 	s.expect("after the added column", merged(e1, map[string][]record{"alpha": records(2, 4, "a")}))
 	s.close(w)
+}
+
+// Write: type changes: a column whose type widens is refused, by apply_schema
+// or by the write, unless its stream allows type changes; then the
+// destination takes the wider type and keeps the rows it has.
+func (r *destinationRun) checkTypeChanges(t T) {
+	r.process(t)
+	if r.s.Read == nil {
+		t.Fatalf("the suite has no Read")
+	}
+	narrow := append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "n", Type: arrow.PrimitiveTypes.Int32, Nullable: true})
+	wide := append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "n", Type: arrow.PrimitiveTypes.Int64, Nullable: true})
+	small, large := records(0, 2, "a"), records(1<<33, 1<<33+2, "a")
+	s := r.session(t, r.spec.GetDestination().GetScopes()[0], protocolv1.WriteMode_WRITE_MODE_APPEND)
+	s.data = narrow
+	w, _ := s.begin(1, nil, nil)
+	b := buildData("alpha", narrow, small, "insert")
+	err := s.write(w, epoch(1, 1), "alpha", b)
+	b.Release()
+	if err != nil {
+		t.Fatalf("%s a batch with an int32 column: %s: %v", s.where(), codeOf(err), err)
+	}
+	staged, err := s.preCommit(w, epoch(1, 1))
+	if err != nil {
+		t.Fatalf("%s pre-commit with an int32 column: %s: %v", s.where(), codeOf(err), err)
+	}
+	s.commit(w, epoch(1, 1), staged)
+
+	s.data = wide
+	refused, err := s.widen(w, epoch(1, 2), large)
+	switch {
+	case err != nil:
+		t.Fatalf("%s the column widened to int64: %s: %v", s.where(), codeOf(err), err)
+	case !refused && r.s.Untyped:
+		s.expect("after the column widened", map[string][]record{"alpha": append(small, large...)})
+		s.close(w)
+		return
+	case !refused:
+		t.Fatalf("%s the destination took a column's change from int32 to int64, which its stream doesn't allow", s.where())
+	}
+	w.crash()
+	s.expect("after the change was refused", map[string][]record{"alpha": small})
+
+	s.allowTypeChanges = true
+	w, _ = s.begin(2, epoch(1, 1), staged)
+	if refused, err = s.widen(w, epoch(2, 2), large); err != nil || refused {
+		t.Fatalf("%s the column widened to int64, which its stream allows: refused %v: %s: %v", s.where(), refused, codeOf(err), err)
+	}
+	s.expect("after the allowed change", map[string][]record{"alpha": append(small, large...)})
+	ns := map[int64]string{}
+	for _, rec := range append(small, large...) {
+		ns[rec.id] = fmt.Sprint(rec.id)
+	}
+	s.expectColumn("after the allowed change", "alpha", "n", ns)
+	s.close(w)
+}
+
+// widen writes epoch e's records with the session's columns and commits it,
+// and reports whether the destination refused n's type: in apply_schema's
+// answer, or with SCHEMA_DRIFT.
+func (s *session) widen(w *writer, e *protocolv1.Epoch, recs []record) (bool, error) {
+	if w.opened.GetAppliesSchema() {
+		b, err := arrowipc.EncodeSchema(streamSchema("alpha", s.data))
+		if err != nil {
+			return false, err
+		}
+		a, err := w.schemaApplied([]*protocolv1.StreamSchema{{Name: "alpha", ArrowSchema: b}})
+		if err != nil {
+			return false, err
+		}
+		if slices.ContainsFunc(a.GetRefused(), func(c *protocolv1.RefusedColumn) bool { return c.GetStream() == "alpha" && c.GetColumn() == "n" }) {
+			return true, nil
+		}
+	}
+	b := buildData("alpha", s.data, recs, "insert")
+	err := s.write(w, e, "alpha", b)
+	b.Release()
+	var staged []byte
+	if err == nil {
+		staged, err = s.preCommit(w, e)
+	}
+	if err == nil {
+		err = s.tryCommit(w, e, staged)
+	}
+	if codeOf(err) == protocolv1.ErrorCode_ERROR_CODE_SCHEMA_DRIFT {
+		return true, nil
+	}
+	return false, err
 }

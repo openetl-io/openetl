@@ -287,11 +287,12 @@ type pipelineYAML struct {
 		Streams []streamYAML `yaml:"streams"`
 	} `yaml:"source"`
 	Destination struct {
-		Ref       string `yaml:"ref"`
-		Write     string `yaml:"write"`
-		Namespace string `yaml:"namespace"`
-		Naming    string `yaml:"naming"`
-		Deletes   string `yaml:"deletes"`
+		Ref         string `yaml:"ref"`
+		Write       string `yaml:"write"`
+		Namespace   string `yaml:"namespace"`
+		Naming      string `yaml:"naming"`
+		Deletes     string `yaml:"deletes"`
+		TypeChanges string `yaml:"typeChanges"`
 	} `yaml:"destination"`
 	SchemaPolicy string        `yaml:"schemaPolicy"`
 	Delivery     *deliveryYAML `yaml:"delivery"`
@@ -329,16 +330,17 @@ type scheduleYAML struct {
 }
 
 type streamYAML struct {
-	Name       string `yaml:"name"`
-	Sync       string `yaml:"sync"`
-	Cursor     string `yaml:"cursor"`
-	Timestamps string `yaml:"timestamps"`
-	Require    string `yaml:"require"`
-	Collapse   *bool  `yaml:"collapse"`
-	Quarantine string `yaml:"quarantine"`
-	heldYAML   `yaml:",inline"`
-	Groups     [][]string `yaml:"groups"`
-	Columns    map[string]struct {
+	Name        string `yaml:"name"`
+	Sync        string `yaml:"sync"`
+	Cursor      string `yaml:"cursor"`
+	Timestamps  string `yaml:"timestamps"`
+	Require     string `yaml:"require"`
+	Collapse    *bool  `yaml:"collapse"`
+	Quarantine  string `yaml:"quarantine"`
+	heldYAML    `yaml:",inline"`
+	Groups      [][]string `yaml:"groups"`
+	TypeChanges string     `yaml:"typeChanges"`
+	Columns     map[string]struct {
 		Op       string `yaml:"op"`
 		Type     string `yaml:"type"`
 		heldYAML `yaml:",inline"`
@@ -582,6 +584,12 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		if st.Held, err = parseHeld(at, s.heldYAML); err != nil {
 			return nil, err
 		}
+		if st.TypeChanges, err = enum(apiv1.TypeChanges_value, "TYPE_CHANGES_", at+".typeChanges", s.TypeChanges, apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED); err != nil {
+			return nil, err
+		}
+		if (spark || flink) && st.TypeChanges != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED {
+			return nil, fmt.Errorf("%s.typeChanges: a transform's inputs aren't written to the destination; destination.typeChanges says what its outputs' columns may do", at)
+		}
 		for j, g := range s.Groups {
 			if len(g) < 2 || slices.Contains(g, "") {
 				return nil, fmt.Errorf("%s.groups[%d]: a group has two columns or more", at, j)
@@ -623,6 +631,9 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		return nil, err
 	}
 	if p.Destination.Deletes, err = enum(apiv1.DeleteMode_value, "DELETE_MODE_", "destination.deletes", y.Destination.Deletes, apiv1.DeleteMode_DELETE_MODE_UNSPECIFIED); err != nil {
+		return nil, err
+	}
+	if p.Destination.TypeChanges, err = enum(apiv1.TypeChanges_value, "TYPE_CHANGES_", "destination.typeChanges", y.Destination.TypeChanges, apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED); err != nil {
 		return nil, err
 	}
 	if p.SchemaPolicy, err = enum(apiv1.SchemaPolicy_value, "SCHEMA_POLICY_", "schemaPolicy", y.SchemaPolicy, apiv1.SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL); err != nil {

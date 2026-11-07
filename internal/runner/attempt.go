@@ -53,6 +53,9 @@ type Stream struct {
 	Collapse *bool
 	// How merge applies deletes; zero: soft.
 	Deletes destination.DeleteMode
+	// The destination may change a column's type itself when the stream's
+	// widens.
+	AllowTypeChanges bool
 	// One of a transform's outputs, whose Replay is exact when every input's
 	// is. Its Read is CDC when it's a changelog: merged, from a changelog.
 	Transformed bool
@@ -510,11 +513,12 @@ func (j *Job) openConfig(gen uint64, forced map[string]bool, lane int) destinati
 		Lane: lane}
 	for _, s := range j.sinkStreams() {
 		cfg.Streams = append(cfg.Streams, destination.Stream{
-			Name:       s.Name,
-			Mode:       s.Mode,
-			PrimaryKey: s.PrimaryKey,
-			Dedupe:     delivery.Dedupe(caps, s.delivery(), j.Settings.Require, forced[s.Name] || s.Transformed && len(forced) > 0),
-			Deletes:    s.Deletes,
+			Name:             s.Name,
+			Mode:             s.Mode,
+			PrimaryKey:       s.PrimaryKey,
+			Dedupe:           delivery.Dedupe(caps, s.delivery(), j.Settings.Require, forced[s.Name] || s.Transformed && len(forced) > 0),
+			Deletes:          s.Deletes,
+			AllowTypeChanges: s.AllowTypeChanges,
 		})
 	}
 	return cfg

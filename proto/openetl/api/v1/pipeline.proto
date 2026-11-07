@@ -423,6 +423,21 @@ message PipelineStream {
   Held held = 9;
   // Columns held together, by source name: holding one holds the rest.
   repeated ColumnGroup groups = 10;
+  // Overrides destination.type_changes for this stream.
+  TypeChanges type_changes = 11;
+}
+
+// Whether a destination changes a column's type itself when the stream's
+// widens.
+enum TypeChanges {
+  // Refuse, unless destination.type_changes says otherwise.
+  TYPE_CHANGES_UNSPECIFIED = 0;
+  // The destination refuses, and the column is held or the stream stops
+  // until a person changes the column. The default.
+  TYPE_CHANGES_REFUSE = 1;
+  // The destination changes the column's type in place, which on a
+  // database can rewrite the table under a lock.
+  TYPE_CHANGES_ALLOW = 2;
 }
 
 enum QuarantineScope {
@@ -492,6 +507,8 @@ message PipelineDestination {
   Naming naming = 4;
   // How merge applies deletes. Unset: soft.
   DeleteMode deletes = 5;
+  // For every stream that doesn't say. Unset: refuse.
+  TypeChanges type_changes = 6;
 }
 
 enum DeleteMode {
@@ -702,6 +719,9 @@ message StreamPlan {
   // destination.write, or with none, overwrite for a full refresh into a
   // destination that has it, and append otherwise.
   WriteMode write = 6;
+  // The destination changes a column's type itself when the stream's
+  // widens, rather than refusing it.
+  bool type_changes = 7;
 }
 
 // StreamSchema is a version of a stream's schema, as the destination has it.

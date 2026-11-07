@@ -213,7 +213,7 @@ func stagedLanesSuite(bug string, lanes int) conformance.DestinationSuite {
 			},
 			Capabilities: caps,
 		}),
-		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
+		Config: good, BadCredentials: badCredentials, Unreachable: unreachable, Untyped: true,
 		Read: func(_ context.Context, namespace, stream string) ([]map[string]any, error) {
 			a.mu.Lock()
 			defer a.mu.Unlock()

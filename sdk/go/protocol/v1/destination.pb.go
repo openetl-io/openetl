@@ -972,9 +972,12 @@ type WriteStream struct {
 	// Only for sinks with dedupe_at_apply.
 	Dedupe Dedupe `protobuf:"varint,4,opt,name=dedupe,proto3,enum=openetl.connector.v1.Dedupe" json:"dedupe,omitempty"`
 	// Merge only.
-	Deletes       DeleteMode `protobuf:"varint,5,opt,name=deletes,proto3,enum=openetl.connector.v1.DeleteMode" json:"deletes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Deletes DeleteMode `protobuf:"varint,5,opt,name=deletes,proto3,enum=openetl.connector.v1.DeleteMode" json:"deletes,omitempty"`
+	// The pipeline lets the destination change a column's or a field's type
+	// to the stream's when it widens, which it otherwise refuses.
+	AllowTypeChanges bool `protobuf:"varint,6,opt,name=allow_type_changes,json=allowTypeChanges,proto3" json:"allow_type_changes,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WriteStream) Reset() {
@@ -1040,6 +1043,13 @@ func (x *WriteStream) GetDeletes() DeleteMode {
 		return x.Deletes
 	}
 	return DeleteMode_DELETE_MODE_UNSPECIFIED
+}
+
+func (x *WriteStream) GetAllowTypeChanges() bool {
+	if x != nil {
+		return x.AllowTypeChanges
+	}
+	return false
 }
 
 // WriteRecover raises the destination fence to the writer's generation, then
@@ -2251,14 +2261,15 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\astreams\x18\x06 \x03(\v2!.openetl.connector.v1.WriteStreamR\astreams\x12B\n" +
 	"\x0fcommit_interval\x18\a \x01(\v2\x19.google.protobuf.DurationR\x0ecommitInterval\x12\x12\n" +
 	"\x04lane\x18\b \x01(\rR\x04laneJ\x04\b\t\x10\n" +
-	"\"\xe9\x01\n" +
+	"\"\x97\x02\n" +
 	"\vWriteStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04mode\x18\x02 \x01(\x0e2\x1f.openetl.connector.v1.WriteModeR\x04mode\x12\x1f\n" +
 	"\vprimary_key\x18\x03 \x03(\tR\n" +
 	"primaryKey\x124\n" +
 	"\x06dedupe\x18\x04 \x01(\x0e2\x1c.openetl.connector.v1.DedupeR\x06dedupe\x12:\n" +
-	"\adeletes\x18\x05 \x01(\x0e2 .openetl.connector.v1.DeleteModeR\adeletes\"Y\n" +
+	"\adeletes\x18\x05 \x01(\x0e2 .openetl.connector.v1.DeleteModeR\adeletes\x12,\n" +
+	"\x12allow_type_changes\x18\x06 \x01(\bR\x10allowTypeChanges\"Y\n" +
 	"\fWriteRecover\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
 	"\x06staged\x18\x02 \x03(\fR\x06staged\"\x83\x01\n" +
