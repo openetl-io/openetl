@@ -33,7 +33,7 @@ const (
 // SourceService is served by source connectors. The platform commits only at
 // the resume points a source emits.
 //
-// A stream's read is a set of splits (ADR-0027): resumable slices, such as
+// A stream's read is a set of splits: resumable slices, such as
 // key ranges, partitions or shards, which a source may read concurrently.
 // The whole stream is the split with the empty ID, and a stream is read as
 // that one split unless the platform asks Splits for others.
@@ -128,7 +128,7 @@ func (c *sourceServiceClient) Resplit(ctx context.Context, in *ResplitRequest, o
 // SourceService is served by source connectors. The platform commits only at
 // the resume points a source emits.
 //
-// A stream's read is a set of splits (ADR-0027): resumable slices, such as
+// A stream's read is a set of splits: resumable slices, such as
 // key ranges, partitions or shards, which a source may read concurrently.
 // The whole stream is the split with the empty ID, and a stream is read as
 // that one split unless the platform asks Splits for others.

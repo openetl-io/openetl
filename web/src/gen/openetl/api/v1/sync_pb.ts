@@ -192,7 +192,7 @@ export const SyncAttemptSchema: GenMessage<SyncAttempt> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_sync, 1);
 
 /**
- * LaneUsage is how an attempt's lanes spent their time (ADR-0027 §7).
+ * LaneUsage is how an attempt's lanes spent their time.
  *
  * @generated from message openetl.api.v1.LaneUsage
  */
@@ -246,7 +246,7 @@ export const LaneUsageSchema: GenMessage<LaneUsage> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_sync, 2);
 
 /**
- * JobSize is the CPU and memory a job gets (ADR-0027 §3).
+ * JobSize is the CPU and memory a job gets.
  *
  * @generated from message openetl.api.v1.JobSize
  */
@@ -415,7 +415,7 @@ export type SyncStream = Message<"openetl.api.v1.SyncStream"> & {
   collapsedRows: bigint;
 
   /**
-   * Cells held in its committed epochs (ADR-0025).
+   * Cells held in its committed epochs.
    *
    * @generated from field: uint64 held_cells = 5;
    */

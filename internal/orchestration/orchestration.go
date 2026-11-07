@@ -1,5 +1,5 @@
 // Package orchestration is what workflows are written against, so each runs
-// on either backend (ADR-0028). Backends differ most in cancelling: Temporal
+// on either backend. Backends differ most in cancelling: Temporal
 // lets a cancelled workflow run steps, and DBOS doesn't, so here cancelling
 // is a message, and a workflow cleans up and ends by itself.
 package orchestration

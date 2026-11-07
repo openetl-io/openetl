@@ -1,4 +1,4 @@
-// Package worker is a runner's side of dispatch (ADR-0028 §1): it reports the
+// Package worker is a runner's side of dispatch: it reports the
 // runner to the API, long-polls for work, runs it, and reports its results.
 package worker
 

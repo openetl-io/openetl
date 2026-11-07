@@ -65,7 +65,7 @@ type Server struct {
 	// it's lagging. Zero: 5 min.
 	LaggingAfter time.Duration
 	// Sign-in is off: calls without a credential act as LocalPrincipal, an
-	// owner (ADR-0020).
+	// owner.
 	Authless bool
 	// The URL browsers use. Password links start with it, and an https one
 	// makes the session's cookie Secure. Empty: http://localhost.

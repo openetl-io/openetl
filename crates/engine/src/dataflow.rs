@@ -65,7 +65,7 @@ enum Doing {
     Idle = 2,
 }
 
-/// Where a lane's time goes (ADR-0027 §7), in nanoseconds. What it's doing
+/// Where a lane's time goes, in nanoseconds. What it's doing
 /// and since when, from the job's start, share one word: the top two bits
 /// and the rest.
 struct LaneClock {
@@ -150,7 +150,7 @@ struct At {
     holds: Option<StreamHolds>,
 }
 
-/// A stream's one schema, whatever its lanes (ADR-0027). Each lane shapes
+/// A stream's one schema, whatever its lanes. Each lane shapes
 /// with a copy of the owner's shaper. A lane that changes its copy publishes
 /// it if nobody has since it copied; otherwise it copies the latest and shapes
 /// its batch again.

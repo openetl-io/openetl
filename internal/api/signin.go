@@ -25,7 +25,7 @@ import (
 	"github.com/openetl-io/openetl/internal/store/db"
 )
 
-// Sign-in (ADR-0020).
+// Sign-in.
 const (
 	defaultSessionIdle   = 12 * time.Hour
 	defaultSessionMaxAge = 7 * 24 * time.Hour

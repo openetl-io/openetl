@@ -1,4 +1,4 @@
-// The rules the UI checks before the server sees a password (ADR-0020); the
+// The rules the UI checks before the server sees a password; the
 // server checks them again, and also refuses common passwords.
 
 export const minPassword = 15;

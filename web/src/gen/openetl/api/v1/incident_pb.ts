@@ -384,7 +384,7 @@ export enum IncidentClass {
   QUARANTINE = 9,
 
   /**
-   * A stream holds a column or cells back (ADR-0025) until they're released
+   * A stream holds a column or cells back until they're released
    * or discarded.
    *
    * @generated from enum value: INCIDENT_CLASS_HELD = 10;

@@ -1,6 +1,6 @@
 -- +goose Up
 -- Each attempt of a sync or a continuous run: what it was sized at and why,
--- and what it used (ADR-0027 §3). Dispatches are gone a day after they finish;
+-- and what it used. Dispatches are gone a day after they finish;
 -- sizing goes by the last few attempts, however long ago they ran.
 CREATE TABLE attempts (
     org_id             uuid NOT NULL,

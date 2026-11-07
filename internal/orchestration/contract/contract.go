@@ -364,7 +364,7 @@ type StreamState struct {
 	WorkspaceID string
 	// Of the source and the destination.
 	Connectors []string
-	// The newest hold release or discard (ADR-0025), which a run takes when
+	// The newest hold release or discard, which a run takes when
 	// it starts; empty for none.
 	Releases string
 	// The pool its jobs go to; empty for the default.

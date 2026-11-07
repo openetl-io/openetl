@@ -105,7 +105,7 @@ func (s *Store) Tx(ctx context.Context, f func(q *db.Queries) error) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error { return f(s.WithTx(tx)) })
 }
 
-// Tenant is the install's one org until multi-tenancy arrives.
+// Tenant is the install's one org and its default workspace.
 type Tenant struct {
 	Org       uuid.UUID
 	Workspace uuid.UUID

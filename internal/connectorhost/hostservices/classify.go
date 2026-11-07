@@ -14,7 +14,7 @@ import (
 )
 
 // classify maps a failed status to the taxonomy. A manifest's error mapping
-// can override it (P1.7).
+// can override it.
 func classify(status int, h http.Header) errs.Code {
 	switch {
 	case status == http.StatusUnauthorized:

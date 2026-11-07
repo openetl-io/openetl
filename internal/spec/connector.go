@@ -138,7 +138,7 @@ type Resources struct {
 	CPU, Memory string
 	// The size of TMPDIR.
 	Disk string
-	// The job size it wants, xs to xl, which auto starts from (ADR-0027 §3).
+	// The job size it wants, xs to xl, which auto starts from.
 	Hint string
 }
 

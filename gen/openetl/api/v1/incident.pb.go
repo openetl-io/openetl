@@ -50,7 +50,7 @@ const (
 	IncidentClass_INCIDENT_CLASS_RETENTION_AT_RISK IncidentClass = 8
 	// A stream is quarantining a large share of its rows.
 	IncidentClass_INCIDENT_CLASS_QUARANTINE IncidentClass = 9
-	// A stream holds a column or cells back (ADR-0025) until they're released
+	// A stream holds a column or cells back until they're released
 	// or discarded.
 	IncidentClass_INCIDENT_CLASS_HELD IncidentClass = 10
 )

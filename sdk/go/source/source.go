@@ -70,7 +70,7 @@ type ConfiguredStream struct {
 // WholeStream is the ID of the split that is the whole stream.
 const WholeStream = ""
 
-// Split is one of a stream's splits (ADR-0027): a resumable slice of its
+// Split is one of a stream's splits: a resumable slice of its
 // read, such as a key range, a partition or a shard, which a source may read
 // concurrently with the others. IDs are the source's, unique within the
 // stream for as long as its read lasts. A stream is read as one split, the
@@ -90,7 +90,7 @@ type ReadRequest struct {
 	// source until ctx is cancelled. Otherwise they complete once they've
 	// caught up with where their source was when the read started.
 	Continuous bool
-	// How many splits the read may read at a time (ADR-0027), a stream read
+	// How many splits the read may read at a time, a stream read
 	// whole counting as one; 0 is one. ReadSplits follows it.
 	Lanes int
 }

@@ -1,5 +1,5 @@
-// Package pods makes a pod for each attempt placed on a pod launcher (ADR-0027
-// §5): on Kubernetes, or as a process of its own, for development and tests.
+// Package pods makes a pod for each attempt placed on a pod launcher:
+// on Kubernetes, or as a process of its own, for development and tests.
 // The pod runs openetld runner for that one attempt, which it takes from the
 // API.
 package pods

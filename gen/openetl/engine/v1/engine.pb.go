@@ -384,11 +384,11 @@ type StartJobRequest struct {
 	// Batches reach the sink as they came: not coerced, renamed or given
 	// metadata columns. Rows fail the job. For measuring the boundary.
 	Passthrough bool `protobuf:"varint,14,opt,name=passthrough,proto3" json:"passthrough,omitempty"`
-	// Where held values are kept (ADR-0025), as quarantine_url: Parquet files
+	// Where held values are kept, as quarantine_url: Parquet files
 	// at {g}/{N}/{stream}/part-{k}.parquet below it, with the stream's name
 	// percent-encoded. Empty: nothing is held.
 	HeldUrl string `protobuf:"bytes,15,opt,name=held_url,json=heldUrl,proto3" json:"held_url,omitempty"`
-	// The attempt's lanes (ADR-0027): parallel copies of its path, each with an
+	// The attempt's lanes: parallel copies of its path, each with an
 	// inbound edge. Zero: one.
 	Lanes uint32 `protobuf:"varint,16,opt,name=lanes,proto3" json:"lanes,omitempty"`
 	// Its writer lanes, at most lanes: a writer of the destination each, or a
@@ -764,7 +764,7 @@ func (x *StreamPlan) GetRouting() Routing {
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
-// delivers the rest of the row (ADR-0025). A column is held when the schema
+// delivers the rest of the row. A column is held when the schema
 // policy would stop on its change (allow_columns, block), when the
 // destination's limits say it can't take the change, or when the
 // destination refused it. Columns are named by their destination names,
@@ -2500,7 +2500,7 @@ func (x *Metrics) GetLanes() []*LaneMetrics {
 	return nil
 }
 
-// LaneMetrics is where a lane's time went (ADR-0027 §7): working, waiting
+// LaneMetrics is where a lane's time went: working, waiting
 // for its writer lanes to take what it made, or waiting for its edge.
 type LaneMetrics struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`

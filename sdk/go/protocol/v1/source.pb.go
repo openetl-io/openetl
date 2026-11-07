@@ -453,7 +453,7 @@ type ReadRequest struct {
 	// source until the read is cancelled. Otherwise they complete once
 	// they've caught up with where their source was when the read started.
 	Continuous bool `protobuf:"varint,4,opt,name=continuous,proto3" json:"continuous,omitempty"`
-	// How many of its splits the read may read at a time (ADR-0027), a whole
+	// How many of its splits the read may read at a time, a whole
 	// stream counting as one, more if they share a connection. Zero: one.
 	Lanes         uint32 `protobuf:"varint,5,opt,name=lanes,proto3" json:"lanes,omitempty"`
 	unknownFields protoimpl.UnknownFields

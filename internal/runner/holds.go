@@ -14,7 +14,7 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
-// HeldMode is what a held cell shows (ADR-0025).
+// HeldMode is what a held cell shows.
 type HeldMode int
 
 const (
@@ -31,7 +31,7 @@ type Held struct {
 }
 
 // StreamHolds is how a stream holds back a column, or a row's cell, and
-// delivers the rest of the row (ADR-0025).
+// delivers the rest of the row.
 type StreamHolds struct {
 	// A value that doesn't fit holds its cell instead of quarantining its
 	// row.

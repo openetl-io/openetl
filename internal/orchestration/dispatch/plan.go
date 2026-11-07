@@ -1,7 +1,6 @@
 // Package dispatch sends workflows' work to data planes through the API
-// (ADR-0028 §1) and places attempts on runners (ADR-0027 §6): dispatch rows
-// in Postgres, leases on its clock, long polls, and waking the workflows
-// waiting for results.
+// and places attempts on runners: dispatch rows in Postgres, leases on its
+// clock, long polls, and waking the workflows waiting for results.
 package dispatch
 
 import (

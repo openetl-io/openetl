@@ -41,7 +41,7 @@ const (
 	FrameKind_FRAME_KIND_BARRIER       FrameKind = 4
 	FrameKind_FRAME_KIND_SCHEMA_CHANGE FrameKind = 5
 	FrameKind_FRAME_KIND_END_OF_STREAM FrameKind = 7
-	// From the engine only: a BATCH of patches (ADR-0025), as
+	// From the engine only: a BATCH of patches, as
 	// openetl.connector.v1.WriteBatch.patch describes.
 	FrameKind_FRAME_KIND_PATCH FrameKind = 8
 )

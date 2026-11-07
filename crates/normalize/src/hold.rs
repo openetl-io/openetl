@@ -1,4 +1,4 @@
-//! Column holds and cell holds (ADR-0025): what a stream holds back while
+//! Column holds and cell holds: what a stream holds back while
 //! the rest of each row is delivered, the batches its held values are kept
 //! in, and the patches that fill them in later.
 

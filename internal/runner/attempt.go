@@ -59,7 +59,7 @@ type Stream struct {
 	// One of a transform's outputs, whose Replay is exact when every input's
 	// is. Its Read is CDC when it's a changelog: merged, from a changelog.
 	Transformed bool
-	// Nil: the stream holds nothing back (ADR-0025).
+	// Nil: the stream holds nothing back.
 	Holds *StreamHolds
 	// Where the source splits it, every record of a key is in one split.
 	SplitsByKey bool
@@ -167,7 +167,7 @@ type Job struct {
 	HeldURL string
 	// Holds released or discarded since they started.
 	Releases []Release
-	// The most lanes the attempt runs (ADR-0027); 0: one. It runs no more than
+	// The most lanes the attempt runs; 0: one. It runs no more than
 	// it has splits to read, and has as many writer lanes, up to what the
 	// destination takes.
 	Lanes int

@@ -16,8 +16,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// Passwords are hashed with argon2id at OWASP's settings, as PHC strings
-// (ADR-0020).
+// Passwords are hashed with argon2id at OWASP's settings, as PHC strings.
 const (
 	argonMemory  = 19 * 1024
 	argonTime    = 2

@@ -15,8 +15,8 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
-// Transform runs the user's code between the source and the destination
-// (ADR-0022). An attempt's first dataflow stages each epoch's inputs below
+// Transform runs the user's code between the source and the destination.
+// An attempt's first dataflow stages each epoch's inputs below
 // URL, at {g}/{N}/in/{stream}/; Epoch turns them into the outputs; and a
 // second dataflow takes those to the destination. Epochs reach it one at a
 // time, in order.

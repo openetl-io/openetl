@@ -1,5 +1,5 @@
 -- +goose Up
--- Each pipeline's holds (ADR-0025), as its newest mirrored checkpoint left
+-- Each pipeline's holds, as its newest mirrored checkpoint left
 -- them. They're kept apart from the mirror, whose partitions go after 30
 -- days, and replaced whole by each newer checkpoint.
 CREATE TABLE holds (

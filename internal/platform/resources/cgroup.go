@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// Cgroups makes a cgroup v2 for each job under a delegated directory
-// (ADR-0027 §4), which belongs to one runner.
+// Cgroups makes a cgroup v2 for each job under a delegated directory,
+// which belongs to one runner.
 type Cgroups struct {
 	root string
 }

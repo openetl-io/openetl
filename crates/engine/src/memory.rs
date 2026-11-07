@@ -1,5 +1,5 @@
 //! The engine's allocator: the system's, counting what the process holds, which
-//! ends the process at the job's memory limit (ADR-0027 §4). An allocator can't
+//! ends the process at the job's memory limit. An allocator can't
 //! return an error that reaches the job, so the runner reads this exit code as
 //! RESOURCE_EXHAUSTED instead; a restart resumes from the last checkpoint.
 

@@ -1,4 +1,4 @@
-//! Key groups (ADR-0027). A key's group is `h mod n` for a pipeline's `n`
+//! Key groups. A key's group is `h mod n` for a pipeline's `n`
 //! groups, a power of two, where `h` is the xxh3-64 hash of `openetl.kg.v1`
 //! and each of the key's values in key order: a little-endian u32 length,
 //! then its bytes, or the length `u32::MAX` alone for a null.

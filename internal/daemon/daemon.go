@@ -91,7 +91,7 @@ func Run(ctx context.Context, o Options) error {
 		work    *dispatch.Dispatcher
 		err     error
 	)
-	// A runner reaches only the API (ADR-0028).
+	// A runner reaches only the API.
 	if o.Roles.Server || o.Roles.Orchestrator {
 		backend, err = openBackend(ctx, cfg, log)
 		if err != nil {
@@ -234,7 +234,7 @@ func Run(ctx context.Context, o Options) error {
 	return g.Wait()
 }
 
-// configureSignIn sets the server's sign-in from cfg (ADR-0020). It refuses
+// configureSignIn sets the server's sign-in from cfg. It refuses
 // --auth none on an address that isn't loopback, unless that's allowed.
 func configureSignIn(srv *api.Server, cfg config.Config, addr net.Addr, log *slog.Logger) error {
 	host, port := "localhost", ""

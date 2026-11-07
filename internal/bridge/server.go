@@ -1,5 +1,5 @@
-// Package bridge serves openetl.bridge.v1 to the Flink jobs a runner deploys
-// (ADR-0022 §3): over TLS with a certificate the runner makes when it starts,
+// Package bridge serves openetl.bridge.v1 to the Flink jobs a runner deploys:
+// over TLS with a certificate the runner makes when it starts,
 // which jobs pin by fingerprint, and to each attempt's job by its own token.
 package bridge
 

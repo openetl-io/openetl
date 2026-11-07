@@ -1366,8 +1366,7 @@ func (x *PipelineStatus) GetScaling() *JobScaling {
 	return nil
 }
 
-// JobScaling is what rescaled a pipeline's jobs, besides its spec (ADR-0027
-// §7).
+// JobScaling is what rescaled a pipeline's jobs, besides its spec.
 type JobScaling struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Set by RescalePipeline for the current version.
@@ -1596,7 +1595,7 @@ func (x *PipelineSpec) GetResources() *JobResources {
 	return nil
 }
 
-// JobResources sizes the pipeline's jobs (ADR-0027 §3).
+// JobResources sizes the pipeline's jobs.
 type JobResources struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Unset: auto, from the connectors' hints and then the job's measured peaks.
@@ -2762,7 +2761,7 @@ type PipelineStream struct {
 	// primary key. Unset: true for a superset stream whose require is above
 	// at least once, otherwise false.
 	Collapse *bool `protobuf:"varint,7,opt,name=collapse,proto3,oneof" json:"collapse,omitempty"`
-	// What a value that doesn't fit its type holds back (ADR-0025): its row,
+	// What a value that doesn't fit its type holds back: its row,
 	// the default, or only its cell, for a keyed stream into a destination
 	// that patches.
 	Quarantine QuarantineScope `protobuf:"varint,8,opt,name=quarantine,proto3,enum=openetl.api.v1.QuarantineScope" json:"quarantine,omitempty"`
@@ -5004,7 +5003,7 @@ type CheckpointStream struct {
 	// Rows the apply didn't insert because a row with the same _openetl_id
 	// was earlier in the epoch or already in the destination.
 	CollapsedRows uint64 `protobuf:"varint,7,opt,name=collapsed_rows,json=collapsedRows,proto3" json:"collapsed_rows,omitempty"`
-	// Cells held in the epoch (ADR-0025).
+	// Cells held in the epoch.
 	HeldCells uint64 `protobuf:"varint,8,opt,name=held_cells,json=heldCells,proto3" json:"held_cells,omitempty"`
 	// The columns it held at the checkpoint, whole or some of their cells;
 	// discarded ones are left out.
@@ -5012,7 +5011,7 @@ type CheckpointStream struct {
 	// Set where the epoch got less than the stream's planned level: the level
 	// its rows got, and the one planned. It read them again after a restore
 	// from a forced barrier, before its next resume point, and they may
-	// repeat rows an earlier epoch committed (ADR-0016).
+	// repeat rows an earlier epoch committed.
 	Level         DeliveryLevel `protobuf:"varint,10,opt,name=level,proto3,enum=openetl.api.v1.DeliveryLevel" json:"level,omitempty"`
 	PlannedLevel  DeliveryLevel `protobuf:"varint,11,opt,name=planned_level,json=plannedLevel,proto3,enum=openetl.api.v1.DeliveryLevel" json:"planned_level,omitempty"`
 	unknownFields protoimpl.UnknownFields

@@ -1,4 +1,4 @@
-// Package resources holds jobs' and runners' sizes (ADR-0027 §3).
+// Package resources holds jobs' and runners' sizes.
 package resources
 
 import (

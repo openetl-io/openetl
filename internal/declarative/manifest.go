@@ -67,7 +67,7 @@ type manifest struct {
 	} `json:"metadata"`
 	Spec struct {
 		Config json.RawMessage `json:"config"`
-		// The job size it wants (ADR-0027 §3).
+		// The job size it wants.
 		Resources *struct {
 			Hint string `json:"hint"`
 		} `json:"resources"`

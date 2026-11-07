@@ -8,7 +8,7 @@
   <artifactId>openetl-spark</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <name>openetl-spark</name>
-  <description>Spark applications' side of openetl: the sync's context for post-sync steps, and the driver of a pipeline's transform (ADR-0022).</description>
+  <description>Spark applications' side of openetl: the sync's context for post-sync steps, and the driver of a pipeline's transform.</description>
   <url>https://github.com/openetl-io/openetl</url>
 
   <licenses>

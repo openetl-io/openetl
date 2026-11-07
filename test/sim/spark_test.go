@@ -15,7 +15,7 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
-// sparkCluster is a Spark cluster for a transform (ADR-0022 §2): each
+// sparkCluster is a Spark cluster for a transform: each
 // generation's application, and the inputs the first dataflow staged, by
 // path below the transform's URL. Its transform returns each input's rows
 // as the output of the input's name, without field metadata, as Spark

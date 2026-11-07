@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-// A job's processes share its size (ADR-0027 §4). Each one's limit says what
+// A job's processes share its size. Each one's limit says what
 // it may use alone, so together they may add up to more than the size; what
 // holds them all to it is MemoryCeiling.
 

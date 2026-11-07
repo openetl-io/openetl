@@ -15,7 +15,7 @@ import (
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
-// runHolds lists a pipeline's holds (ADR-0025), or releases or discards one.
+// runHolds lists a pipeline's holds, or releases or discards one.
 func runHolds(ctx context.Context, args []string, out io.Writer) error {
 	sub := "list"
 	if len(args) > 0 && (args[0] == "list" || args[0] == "release" || args[0] == "discard") {

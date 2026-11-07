@@ -50,12 +50,12 @@ linters:
           files: ["$all", "!**/internal/orchestration/temporalbackend/**", "!**/internal/platform/temporalx/**", "!**/test/e2e/**", "!**/internal/orchestration/workflows/*_test.go"]
           deny:
             - pkg: go.temporal.io
-              desc: workflows are written against internal/orchestration, and runners reach only the API (ADR-0028)
+              desc: workflows are written against internal/orchestration, and runners reach only the API
         only-the-dbos-backend-imports-dbos:
           files: ["$all", "!**/internal/orchestration/dbosbackend/**", "!**/test/e2e/**", "!**/internal/orchestration/workflows/*_test.go"]
           deny:
             - pkg: github.com/dbos-inc/dbos-transact-golang
-              desc: workflows are written against internal/orchestration, and runners reach only the API (ADR-0028)
+              desc: workflows are written against internal/orchestration, and runners reach only the API
         workflows-are-deterministic:
           files: ["**/internal/orchestration/workflows/**", "!**/*_test.go"]
           deny:
@@ -99,7 +99,7 @@ linters:
       - path: cmd/openetl/
         linters: [forbidigo]
       # Staged files come from URLs the runner signed for one object each,
-      # which connectors fetch themselves on every egress tier (ADR-0021).
+      # which connectors fetch themselves on every egress tier.
       - path: sdk/go/staging/
         linters: [forbidigo]
 

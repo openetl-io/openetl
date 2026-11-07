@@ -53,7 +53,7 @@ func TransformName(pipeline string, gen uint64) string {
 	return "openetl-" + strings.ToLower(pipeline) + "-g" + strconv.FormatUint(gen, 10)
 }
 
-// Transform is one attempt's Spark transform (ADR-0022 §2): one application,
+// Transform is one attempt's Spark transform: one application,
 // which openetl-spark's driver runs, and the files below {g}/ of the
 // pipeline's area through which the runner hands it each epoch:
 //   - _alive, rewritten while the attempt runs, and _end once it's over;

@@ -77,7 +77,7 @@ func TestUndeclaredReplayIsSuperset(t *testing.T) {
 	}
 }
 
-// The rows of ADR-0016's table for superset streams without a primary key,
+// What collapse and require give a superset stream without a primary key,
 // with the require set by the pipeline or by the stream.
 func TestCollapse(t *testing.T) {
 	for _, tc := range []struct {

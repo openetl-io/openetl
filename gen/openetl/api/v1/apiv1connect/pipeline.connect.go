@@ -90,7 +90,7 @@ type PipelineServiceClient interface {
 	ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error)
 	// Sets the size of the pipeline's jobs until its next version, or gives
 	// the spec back its say. A running job stops at a checkpoint and starts
-	// again at the new size (ADR-0027 §7).
+	// again at the new size.
 	RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error)
 	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
 	// paused or a sync is running.
@@ -106,7 +106,7 @@ type PipelineServiceClient interface {
 	// The checkpoints the pipeline's syncs committed, newest first. The
 	// control plane keeps 30 days of them.
 	ListCheckpoints(context.Context, *connect.Request[v1.ListCheckpointsRequest]) (*connect.Response[v1.ListCheckpointsResponse], error)
-	// The columns and cells the pipeline holds back (ADR-0025), as its last
+	// The columns and cells the pipeline holds back, as its last
 	// checkpoint left them.
 	ListHolds(context.Context, *connect.Request[v1.ListHoldsRequest]) (*connect.Response[v1.ListHoldsResponse], error)
 	// Releases a hold: its held values are patched in, and a column held
@@ -326,7 +326,7 @@ type PipelineServiceHandler interface {
 	ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error)
 	// Sets the size of the pipeline's jobs until its next version, or gives
 	// the spec back its say. A running job stops at a checkpoint and starts
-	// again at the new size (ADR-0027 §7).
+	// again at the new size.
 	RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error)
 	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
 	// paused or a sync is running.
@@ -342,7 +342,7 @@ type PipelineServiceHandler interface {
 	// The checkpoints the pipeline's syncs committed, newest first. The
 	// control plane keeps 30 days of them.
 	ListCheckpoints(context.Context, *connect.Request[v1.ListCheckpointsRequest]) (*connect.Response[v1.ListCheckpointsResponse], error)
-	// The columns and cells the pipeline holds back (ADR-0025), as its last
+	// The columns and cells the pipeline holds back, as its last
 	// checkpoint left them.
 	ListHolds(context.Context, *connect.Request[v1.ListHoldsRequest]) (*connect.Response[v1.ListHoldsResponse], error)
 	// Releases a hold: its held values are patched in, and a column held

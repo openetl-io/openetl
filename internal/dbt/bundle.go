@@ -23,7 +23,7 @@ import (
 // MediaType is a bundle's, as an artifact.
 const MediaType = "application/vnd.openetl.dbt.v1.tar+gzip"
 
-// Limits on a bundle. ADR-0015 caps it at 16 MiB compressed.
+// Limits on a bundle: 16 MiB compressed at most.
 const (
 	MaxBundle   = 16 << 20
 	maxUnpacked = 256 << 20
