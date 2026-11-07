@@ -63,7 +63,7 @@ web-dev: web/node_modules/.modules.yaml ## Run the UI's dev server against the A
 
 # DEPS names the services to start, e.g. DEPS="postgres s3"; all by default.
 .PHONY: deps-up deps-down
-deps-up: ## Start local dependencies (Postgres, S3, GCS, Azure, Kafka, Kinesis, Spark, Flink); TEMPORAL=1 adds Temporal, as does naming it in DEPS
+deps-up: ## Start local dependencies (Postgres, S3, GCS, Azure, Kafka, Kinesis, Spark, Flink, an OCI registry); TEMPORAL=1 adds Temporal, as does naming it in DEPS
 	@mkdir -p $(OPENETL_SPARK_SHARE)
 	docker compose -f deploy/compose/dev.yml $(if $(or $(TEMPORAL),$(findstring temporal,$(DEPS))),--profile temporal) up -d --wait $(DEPS) $(if $(and $(TEMPORAL),$(DEPS)),temporal)
 deps-down: ## Stop local dependencies

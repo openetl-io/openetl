@@ -432,10 +432,13 @@ func catalogOptions(ctx context.Context, cfg config.Config, st *store.Store, log
 	if err != nil {
 		return nil, fmt.Errorf("daemon: --egress-allow: %w", err)
 	}
-	keyring, err := openKeyring(ctx, cfg.SecretsKey, st)
-	if err != nil {
-		log.Warn("the catalog refresh can't open secrets, so connector sources with a secret won't list", "err", err)
-		keyring = nil
+	var keyring *secrets.Keyring
+	if _, err := os.Stat(cfg.SecretsKey); cfg.SecretsKey != "" && (err == nil || strings.Contains(cfg.SecretsKey, "://")) {
+		// A key file is the server's to create; this only opens it.
+		if keyring, err = openKeyring(ctx, cfg.SecretsKey, st); err != nil {
+			log.Warn("the catalog refresh can't open secrets, so connector sources with a secret won't list", "err", err)
+			keyring = nil
+		}
 	}
 	if keyring != nil {
 		context.AfterFunc(ctx, func() { _ = keyring.Close() })

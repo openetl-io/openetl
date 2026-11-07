@@ -69,7 +69,8 @@ func separateControlPlane(t *testing.T) *controlPlane {
 func (c *controlPlane) server(flags ...string) *runner {
 	c.t.Helper()
 	return startOpenetld(c.t, nil, append([]string{"server", "--database-url", env.dbURL, "--listen", c.addr, "--secrets-key", filepath.Join(c.dir, "secrets.key"),
-		"--bootstrap-key-file", env.keyFile, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--sign-in-rate", "1000"}, flags...)...)
+		"--bootstrap-key-file", env.keyFile, "--connectors", env.noConnectors, "--egress-allow", egressAllow, "--sign-in-rate", "1000",
+		"--official-connectors="}, flags...)...)
 }
 
 func (c *controlPlane) orchestrator(id string, vars []string, flags ...string) *runner {
@@ -295,7 +296,7 @@ func TestDevMode(t *testing.T) {
 	cp := separateControlPlane(t)
 	startOpenetld(t, nil, "dev", "--database-url", env.dbURL, "--listen", cp.addr, "--secrets-key", filepath.Join(cp.dir, "secrets.key"),
 		"--bootstrap-key-file", env.keyFile, "--connectors", env.noConnectors, "--egress-allow", egressAllow,
-		"--checkpoints", env.checkpoints, "--cache", env.cache, "--engine", env.engine)
+		"--checkpoints", env.checkpoints, "--cache", env.cache, "--engine", env.engine, "--official-connectors=")
 	cp.connect()
 	name := unique("dev-mode")
 	apply(t, pipelineDocs(name, `{"seed": 5, "count": 100}`, `{}`)...)

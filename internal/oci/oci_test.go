@@ -82,8 +82,14 @@ func TestNewer(t *testing.T) {
 }
 
 func TestPushPullAndIndex(t *testing.T) {
-	ctx := context.Background()
 	c, ns := testRegistry(t)
+	testPushPullAndIndex(t, c, ns)
+}
+
+// testPushPullAndIndex pushes, pulls and indexes packages in ns, which is
+// empty.
+func testPushPullAndIndex(t *testing.T, c *Client, ns Ref) {
+	ctx := context.Background()
 	repo := ns.Child("postgres")
 	bin := []byte("#!/bin/sh\necho connector\n")
 	logo := []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
