@@ -133,7 +133,7 @@ func (w *laneWriter) Write(_ context.Context, e destination.Epoch, _ string, b a
 	return nil
 }
 
-func (w *laneWriter) PreCommit(_ context.Context, e destination.Epoch) (destination.Staged, error) {
+func (w *laneWriter) PreCommit(context.Context, destination.Epoch) (destination.Staged, error) {
 	return fmt.Appendf(nil, "%d", w.lane), nil
 }
 

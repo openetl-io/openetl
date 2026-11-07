@@ -288,7 +288,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		req.RestoredSnapshots = append(req.RestoredSnapshots, ss)
 	}
 	for l := range max(plan.Lanes, 1) {
-		req.Edges = append(req.Edges, &enginev1.Edge{Id: inEdge(l), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names, Lane: uint32(l)}) //nolint:gosec // small
+		req.Edges = append(req.Edges, &enginev1.Edge{Id: inEdge(l), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names, Lane: uint32(l)})
 	}
 	switch {
 	case plan.Sink.ParquetURL != "":
@@ -299,7 +299,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Discard{Discard: &enginev1.DiscardSink{}}}
 	default:
 		for w := range max(plan.WriterLanes, 1) {
-			req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge(w), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names, Lane: uint32(w)}) //nolint:gosec // small
+			req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge(w), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names, Lane: uint32(w)})
 		}
 	}
 	return req, names, index, nil
