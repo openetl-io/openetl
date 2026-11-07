@@ -2,6 +2,7 @@ import { Code, ConnectError, createRouterTransport } from "@connectrpc/connect";
 import { AccessService } from "@/gen/openetl/api/v1/access_pb";
 import { AuditService } from "@/gen/openetl/api/v1/audit_pb";
 import { DestinationService, SourceService } from "@/gen/openetl/api/v1/connection_pb";
+import { ConnectorService } from "@/gen/openetl/api/v1/connector_pb";
 import { DbtProjectService } from "@/gen/openetl/api/v1/dbt_pb";
 import { IncidentService, IncidentState } from "@/gen/openetl/api/v1/incident_pb";
 import { SecretService } from "@/gen/openetl/api/v1/secret_pb";
@@ -13,6 +14,7 @@ import { checkpoints, holds, log, plan, schemas, versions } from "./detail";
 import { auditEntries, dataPlanes, dbtProjects, deliveries, incidents, keys, principals as others, runnerTokens, secrets, webhooks } from "./workspace";
 import { accessSession, requireSession, user } from "./session";
 import { resolve, sendTest, setDisabled, setPaused, startSync } from "./actions";
+import { catalogPackage, catalogPackages, connectorSources } from "./catalog";
 import { signedOut } from "@/lib/api";
 
 const principals = [user, ...others];
@@ -72,6 +74,12 @@ export const mockTransport = createRouterTransport(({ service }) => {
   });
   service(SecretService, {
     listSecrets: async () => (await latency(), { secrets }),
+  });
+  service(ConnectorService, {
+    listCatalog: async () => (await latency(), { packages: catalogPackages }),
+    listConnectorSources: async () => (await latency(), { sources: connectorSources }),
+    // Slower: the API fetches the descriptor the first time.
+    getCatalogPackage: async ({ name }) => (await latency(), await latency(), catalogPackage(name)),
   });
   service(DbtProjectService, {
     listDbtProjects: async () => (await latency(), { dbtProjects }),

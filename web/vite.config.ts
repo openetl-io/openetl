@@ -46,6 +46,7 @@ export default defineConfig({
       "/openetl.api.v1.": api,
       "/v1/": api,
       "/healthz": api,
+      "/logos/": api,
     },
   },
   build: { chunkSizeWarningLimit: 700 },
