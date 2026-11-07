@@ -115,17 +115,58 @@ func TestPodFromTemplate(t *testing.T) {
 		t.Error("making a pod changed the template")
 	}
 
+	notSpot := func(exprs []corev1.NodeSelectorRequirement) bool {
+		return slices.ContainsFunc(exprs, func(e corev1.NodeSelectorRequirement) bool {
+			return e.Key == "karpenter.sh/capacity-type" && e.Operator == corev1.NodeSelectorOpNotIn && slices.Equal(e.Values, []string{"spot"})
+		})
+	}
+	// By default a stream pod prefers nodes that aren't spot, and can still
+	// run on spot ones where there's nothing else.
 	l := batch()
 	l.Kind, l.StopTimeout = contract.RunStreamJob, 600
 	p = k.Pod(l)
-	if p.Labels[labelJob] != "stream" || p.Annotations[annoDoNotDisrupt] != "true" || *p.Spec.TerminationGracePeriodSeconds != 630 || len(p.Spec.Tolerations) != 0 {
+	if p.Labels[labelJob] != "stream" || p.Annotations[annoDoNotDisrupt] != "true" || *p.Spec.TerminationGracePeriodSeconds != 630 || len(p.Spec.Tolerations) != len(spotTaints) {
 		t.Errorf("stream pod %v %v %d %v", p.Labels, p.Annotations, *p.Spec.TerminationGracePeriodSeconds, p.Spec.Tolerations)
 	}
+	na := p.Spec.Affinity.NodeAffinity
+	if exprs := na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchExpressions; len(exprs) != 1 {
+		t.Errorf("a stream pod's required node affinity %v, want the template's alone", exprs)
+	}
+	if pref := na.PreferredDuringSchedulingIgnoredDuringExecution; len(pref) != 1 || pref[0].Weight != 100 || len(pref[0].Preference.MatchExpressions) != len(spotLabels) || !notSpot(pref[0].Preference.MatchExpressions) {
+		t.Errorf("a stream pod's preferred node affinity %v, want not spot", pref)
+	}
+
+	k.StreamsAvoidSpot = true
+	p = k.Pod(l)
+	if len(p.Spec.Tolerations) != 0 || p.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution != nil {
+		t.Errorf("an avoiding stream pod's tolerations %v and preferences %v", p.Spec.Tolerations, p.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution)
+	}
 	exprs := p.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchExpressions
-	if len(exprs) != 1+len(spotLabels) || !slices.ContainsFunc(exprs, func(e corev1.NodeSelectorRequirement) bool {
-		return e.Key == "karpenter.sh/capacity-type" && e.Operator == corev1.NodeSelectorOpNotIn && slices.Equal(e.Values, []string{"spot"})
-	}) {
-		t.Errorf("a stream pod's node affinity %v, want the template's and not spot", exprs)
+	if len(exprs) != 1+len(spotLabels) || !notSpot(exprs) {
+		t.Errorf("an avoiding stream pod's node affinity %v, want the template's and not spot", exprs)
+	}
+}
+
+// A PodTemplate in the pods' namespace serves as the template, and a missing
+// one is named.
+func TestPodTemplateFromTheAPI(t *testing.T) {
+	file, err := ParseTemplate([]byte(template))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientset(&corev1.PodTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "openetl-attempt", Namespace: "etl"},
+		Template:   corev1.PodTemplateSpec{ObjectMeta: file.ObjectMeta, Spec: file.Spec},
+	})
+	p, err := PodTemplate(t.Context(), c, "etl", "openetl-attempt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Labels["team"] != "data" || len(p.Spec.Containers) != 2 || p.Spec.Containers[1].Image != "ghcr.io/openetl-io/openetl:dev" {
+		t.Errorf("template %+v", p)
+	}
+	if _, err := PodTemplate(t.Context(), c, "other", "openetl-attempt"); err == nil || !strings.Contains(err.Error(), "PodTemplate openetl-attempt in namespace other") {
+		t.Errorf("err %v", err)
 	}
 }
 

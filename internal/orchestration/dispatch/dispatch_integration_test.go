@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1127,5 +1128,40 @@ func TestPodPoolAndDrainingLauncher(t *testing.T) {
 	}
 	if st, err := f.d.Store.GetDispatchOutcome(ctx, db.GetDispatchOutcomeParams{OrgID: f.org, ID: "t"}); err != nil || st.State != "pending" {
 		t.Fatalf("t is %v (%v), want pending", st.State, err)
+	}
+}
+
+// The placer's metrics count what a launcher's pods run, or will, apart from
+// runners' demand, and add up what's placed and what's running.
+func TestMetricsSplitPodsFromRunners(t *testing.T) {
+	f := setup(t, Options{})
+	f.report("shared", resources.M)
+	f.launcher("pods", Pods{Min: resources.L, MaxPods: 1})
+	f.sized("running", resources.S)
+	f.poll("shared", 0, 0)
+	f.sized("placed", resources.S)
+	f.sized("waiting", resources.S)
+	f.sized("pod", resources.L)
+	f.sized("next-pod", resources.L)
+	capacity, demands, err := f.d.readMetrics(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capacity) != 1 || capacity[0].Cpu != resources.M.CPU {
+		t.Errorf("capacity %+v, want shared's alone", capacity)
+	}
+	got := map[demandKey]int64{}
+	for _, d := range demands {
+		got[d.demandKey] = d.attempts
+	}
+	key := func(size resources.Size, pending, pod bool) demandKey {
+		return demandKey{dataPlane: "default", pool: "default", size: size, pending: pending, pod: pod}
+	}
+	want := map[demandKey]int64{
+		key(resources.S, false, false): 2, key(resources.S, true, false): 1,
+		key(resources.L, false, true): 1, key(resources.L, true, true): 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("demand %v, want %v", got, want)
 	}
 }

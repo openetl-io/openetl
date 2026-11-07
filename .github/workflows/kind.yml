@@ -42,23 +42,32 @@ jobs:
             echo "openetl-connectors has no branch $BRANCH, so main"
           fi
       - run: rustup show active-toolchain || rustup toolchain install
+      # e2e's caches, restored but not saved: it builds the same engine,
+      # connectors and test binary, and a third set per branch would push
+      # the others out of the repository's 10 GB.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e
+          save-if: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: false
-      - uses: actions/cache@v6
+      - uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-${{ github.job }}-
-      - uses: actions/cache@v6
+            ~/.cache/golangci-lint
+          key: go-e2e-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-e2e-
+            go-go-
+      - uses: actions/cache/restore@v6
         with:
           path: ~/.m2
-          key: maven-${{ github.job }}-${{ hashFiles('libs/**/pom.xml') }}
-          restore-keys: maven-${{ github.job }}-
+          key: maven-e2e-${{ hashFiles('libs/**/pom.xml') }}
+          restore-keys: maven-e2e-
       - name: Start Postgres, S3 and kind
         run: |
           tail --pid="$(cat "$RUNNER_TEMP/free-disk.pid")" -f /dev/null

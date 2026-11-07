@@ -1,0 +1,5 @@
+# KEDA scales the default pool's runners on the placer's metrics.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - runner-default.yaml

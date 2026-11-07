@@ -1,0 +1,23 @@
+# What every openetld here shares. The server and orchestrators also take the
+# Secret openetl, and runners, the launcher and its pods the Secret
+# openetl-runner (README.md).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openetl
+  labels:
+    app.kubernetes.io/name: openetl
+data:
+  OPENETL_API_URL: http://openetl-server:8080
+  OPENETL_DATA_PLANE: default
+  # Where runners and pods keep checkpoints and staging: s3://, gs:// or
+  # azblob://, with its credentials in the Secret openetl-runner or from the
+  # pods' workload identity.
+  OPENETL_CHECKPOINTS: s3://openetl-checkpoints?region=us-east-1
+  OPENETL_LOG_FORMAT: json
+  # Every openetld serves its metrics for Prometheus on port 9464.
+  OTEL_METRICS_EXPORTER: prometheus
+  OTEL_EXPORTER_PROMETHEUS_HOST: 0.0.0.0
+  OTEL_EXPORTER_PROMETHEUS_PORT: "9464"
+  # The root filesystem is read-only.
+  HOME: /var/lib/openetl

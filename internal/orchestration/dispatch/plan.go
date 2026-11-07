@@ -215,6 +215,12 @@ func (p *planner) room(i int) resources.Size {
 	return p.runners[i].Capacity.Sub(p.runners[i].Used)
 }
 
+// ToPods reports whether a job of the pool and size would go to a pod launcher
+// among runners.
+func ToPods(runners []Runner, pool string, size resources.Size) bool {
+	return (&planner{runners: runners}).toPods(Request{Pool: pool, Size: size})
+}
+
 // toPods reports whether r goes to a pod launcher: one of its pool takes its
 // size, or none of the pool's runners could ever take it.
 func (p *planner) toPods(r Request) bool {

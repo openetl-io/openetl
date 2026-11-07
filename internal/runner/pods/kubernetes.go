@@ -72,6 +72,9 @@ type Kubernetes struct {
 	Scratch int64
 	// GOARCH of the pods' nodes; empty: the launcher's.
 	Arch string
+	// Stream pods never go on spot nodes. Otherwise they only prefer not to,
+	// so they still run where there's nothing else.
+	StreamsAvoidSpot bool
 }
 
 // KubernetesOptions say where a Kubernetes launcher makes its pods.
@@ -81,22 +84,29 @@ type KubernetesOptions struct {
 	Kubeconfig string
 	// Empty: the kubeconfig context's, or the service account's.
 	Namespace string
-	// A file holding the pod template, in YAML.
+	// A file holding the pod template, in YAML, or podtemplate/NAME for a
+	// PodTemplate in the pods' namespace.
 	Template string
 }
 
 // OpenKubernetes is a Kubernetes launcher, but for the fields o doesn't set.
-func OpenKubernetes(o KubernetesOptions) (*Kubernetes, error) {
+func OpenKubernetes(ctx context.Context, o KubernetesOptions) (*Kubernetes, error) {
 	if o.Template == "" {
 		return nil, errors.New("pods: the kubernetes launcher needs --pod-template, a pod whose container runs openetld's image")
 	}
-	b, err := os.ReadFile(o.Template)
-	if err != nil {
-		return nil, fmt.Errorf("pods: --pod-template: %w", err)
-	}
-	tmpl, err := ParseTemplate(b)
-	if err != nil {
-		return nil, err
+	var (
+		tmpl *corev1.Pod
+		err  error
+	)
+	name, fromAPI := strings.CutPrefix(o.Template, "podtemplate/")
+	if !fromAPI {
+		b, err := os.ReadFile(o.Template)
+		if err != nil {
+			return nil, fmt.Errorf("pods: --pod-template: %w", err)
+		}
+		if tmpl, err = ParseTemplate(b); err != nil {
+			return nil, err
+		}
 	}
 	var cfg *restclient.Config
 	ns := o.Namespace
@@ -126,7 +136,24 @@ func OpenKubernetes(o KubernetesOptions) (*Kubernetes, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pods: the Kubernetes API: %w", err)
 	}
-	return &Kubernetes{Client: client, Namespace: cmp.Or(ns, "default"), Template: tmpl}, nil
+	ns = cmp.Or(ns, "default")
+	if fromAPI {
+		if tmpl, err = PodTemplate(ctx, client, ns, name); err != nil {
+			return nil, err
+		}
+	}
+	return &Kubernetes{Client: client, Namespace: ns, Template: tmpl}, nil
+}
+
+// PodTemplate reads the template from a PodTemplate, which kustomize's images
+// and patches reach as they do a Deployment's.
+func PodTemplate(ctx context.Context, client kubernetes.Interface, namespace, name string) (*corev1.Pod, error) {
+	pt, err := client.CoreV1().PodTemplates(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("pods: --pod-template: the PodTemplate %s in namespace %s: %w", name, namespace, err)
+	}
+	p := &corev1.Pod{ObjectMeta: pt.Template.ObjectMeta, Spec: pt.Template.Spec}
+	return p, checkTemplate(p)
 }
 
 // ParseTemplate reads a pod template.
@@ -135,10 +162,14 @@ func ParseTemplate(b []byte) (*corev1.Pod, error) {
 	if err := yaml.UnmarshalStrict(b, &p); err != nil {
 		return nil, fmt.Errorf("pods: the pod template: %w", err)
 	}
+	return &p, checkTemplate(&p)
+}
+
+func checkTemplate(p *corev1.Pod) error {
 	if len(p.Spec.Containers) == 0 {
-		return nil, errors.New("pods: the pod template has no container to run openetld in")
+		return errors.New("pods: the pod template has no container to run openetld in")
 	}
-	return &p, nil
+	return nil
 }
 
 func (k *Kubernetes) Launch(ctx context.Context, l Launch) error {
@@ -171,10 +202,15 @@ func (k *Kubernetes) Pod(l Launch) *corev1.Pod {
 	grace := l.StopTimeout + 30
 	s.TerminationGracePeriodSeconds = &grace
 	s.NodeSelector = with(s.NodeSelector, map[string]string{corev1.LabelOSStable: "linux", corev1.LabelArchStable: cmp.Or(k.Arch, runtime.GOARCH)})
-	if job == "stream" {
+	switch {
+	case job == "stream" && k.StreamsAvoidSpot:
 		p.Annotations[annoDoNotDisrupt] = "true"
 		avoidSpot(s)
-	} else {
+	case job == "stream":
+		p.Annotations[annoDoNotDisrupt] = "true"
+		preferNoSpot(s)
+		s.Tolerations = append(s.Tolerations, spotTaints...)
+	default:
 		s.Tolerations = append(s.Tolerations, spotTaints...)
 	}
 
@@ -202,13 +238,33 @@ func (k *Kubernetes) Pod(l Launch) *corev1.Pod {
 	return p
 }
 
-// avoidSpot keeps a pod off spot nodes, adding to each of the template's node
-// selector terms, which are ORed.
-func avoidSpot(s *corev1.PodSpec) {
+func notSpot() []corev1.NodeSelectorRequirement {
 	var exprs []corev1.NodeSelectorRequirement
 	for _, l := range spotLabels {
 		exprs = append(exprs, corev1.NodeSelectorRequirement{Key: l.key, Operator: corev1.NodeSelectorOpNotIn, Values: []string{l.value}})
 	}
+	return exprs
+}
+
+// preferNoSpot has a pod prefer nodes that aren't spot. Karpenter asks for
+// such a node first, and relaxes the preference only when its node pools
+// can't give one.
+func preferNoSpot(s *corev1.PodSpec) {
+	if s.Affinity == nil {
+		s.Affinity = &corev1.Affinity{}
+	}
+	if s.Affinity.NodeAffinity == nil {
+		s.Affinity.NodeAffinity = &corev1.NodeAffinity{}
+	}
+	na := s.Affinity.NodeAffinity
+	na.PreferredDuringSchedulingIgnoredDuringExecution = append(na.PreferredDuringSchedulingIgnoredDuringExecution,
+		corev1.PreferredSchedulingTerm{Weight: 100, Preference: corev1.NodeSelectorTerm{MatchExpressions: notSpot()}})
+}
+
+// avoidSpot keeps a pod off spot nodes, adding to each of the template's node
+// selector terms, which are ORed.
+func avoidSpot(s *corev1.PodSpec) {
+	exprs := notSpot()
 	if s.Affinity == nil {
 		s.Affinity = &corev1.Affinity{}
 	}

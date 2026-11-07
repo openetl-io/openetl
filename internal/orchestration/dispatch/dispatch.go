@@ -181,6 +181,24 @@ func (d *Dispatcher) Capacities(ctx context.Context, org uuid.UUID, dataPlane, p
 	return out, nil
 }
 
+// runnersOf is the runners as the placer sees them, and the CPU placed on
+// them.
+func runnersOf(rows []db.PlacementRunnersRow) ([]Runner, int64) {
+	runners := make([]Runner, len(rows))
+	reserved := int64(0)
+	for i, r := range rows {
+		reserved += r.UsedCpu
+		runners[i] = Runner{
+			RunnerFacts: RunnerFacts{ID: r.ID, Release: r.Release, Protocol: r.Protocol, Platform: r.Platform, Features: r.Features, Launchers: r.Launchers},
+			Pool:        r.Pool, Draining: r.Draining, Attempts: int(r.Attempts),
+			Capacity: resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory},
+			Used:     resources.Size{CPU: r.UsedCpu + r.OrphanCpu, Memory: r.UsedMemory + r.OrphanMemory},
+			Pods:     podsOf(r),
+		}
+	}
+	return runners, reserved
+}
+
 // podsOf is a pod launcher's limits, or nil if r is a runner.
 func podsOf(r db.PlacementRunnersRow) *Pods {
 	if !r.Launcher {
@@ -563,18 +581,7 @@ func (d *Dispatcher) pass(ctx context.Context, org uuid.UUID, dataPlane string) 
 		if err != nil {
 			return err
 		}
-		runners := make([]Runner, len(rows))
-		reserved := int64(0)
-		for i, r := range rows {
-			reserved += r.UsedCpu
-			runners[i] = Runner{
-				RunnerFacts: RunnerFacts{ID: r.ID, Release: r.Release, Protocol: r.Protocol, Platform: r.Platform, Features: r.Features, Launchers: r.Launchers},
-				Pool:        r.Pool, Draining: r.Draining, Attempts: int(r.Attempts),
-				Capacity: resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory},
-				Used:     resources.Size{CPU: r.UsedCpu + r.OrphanCpu, Memory: r.UsedMemory + r.OrphanMemory},
-				Pods:     podsOf(r),
-			}
-		}
+		runners, reserved := runnersOf(rows)
 		requests := make([]Request, len(pending))
 		for i, p := range pending {
 			var needs []Need
