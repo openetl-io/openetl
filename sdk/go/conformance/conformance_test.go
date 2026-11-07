@@ -721,9 +721,14 @@ func TestDestinationLaneBugsFail(t *testing.T) {
 		"empty-lane-fails":  {"lanes/empty", "lanes/overwrite", "lanes/overwrite-crash", "lanes/merge-crash", "lanes/schemas", "lanes/holds"},
 		"merge-keeps-first": {"write/merge", "holds/patch", "holds/soft-delete", "lanes/merge", "lanes/merge-crash"},
 	}
+	// Checks that catch a bug only when a crash lands at the right moment.
+	sometimes := map[string][]string{
+		"recover-lane-0": {"lanes/crash-during-commit"},
+	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {
 			failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) { lanesSuite(bug, 3).Run(ctx, report) })
+			failed = slices.DeleteFunc(failed, func(c string) bool { return slices.Contains(sometimes[bug], c) })
 			if !slices.Equal(failed, checks) {
 				t.Errorf("failed checks %v, want %v", failed, checks)
 			}
