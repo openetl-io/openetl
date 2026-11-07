@@ -38,8 +38,6 @@ type Dataflow struct {
 var _ runner.Dataflow = (*Dataflow)(nil)
 
 const (
-	inEdge  = "in"
-	outEdge = "out"
 	// How long a failed edge waits for the engine to explain the failure.
 	failureGrace = 5 * time.Second
 )
@@ -93,11 +91,12 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	onReady := func(r *enginev1.EpochReady) error {
 		ready := &runner.Ready{Schemas: r.GetSchemas()}
 		if engineSink {
-			for _, st := range r.GetStaged() {
-				ready.Lanes = append(ready.Lanes, runner.LaneReady{Staged: st})
-			}
-			if len(ready.Lanes) == 0 {
-				ready.Lanes = []runner.LaneReady{{}}
+			ready.Lanes = make([]runner.LaneReady, max(plan.WriterLanes, 1))
+			for w, st := range r.GetStaged() {
+				if w >= len(ready.Lanes) {
+					return errs.New(errs.Internal, "engineclient: the engine staged %d writer lanes of %d", len(r.GetStaged()), len(ready.Lanes))
+				}
+				ready.Lanes[w].Staged = st
 			}
 		}
 		for _, st := range r.GetFiles() {
@@ -145,31 +144,51 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		<-evDone
 	}()
 
-	toEngine, err := p.dialEdge(ctx, inEdge)
-	if err != nil {
-		return err
+	var conns []*net.UnixConn
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+	dial := func(edge string) (*net.UnixConn, error) {
+		c, err := p.dialEdge(ctx, edge)
+		if err == nil {
+			conns = append(conns, c)
+		}
+		return c, err
 	}
-	defer toEngine.Close()
-	var fromEngine *net.UnixConn
-	if !engineSink {
-		if fromEngine, err = p.dialEdge(ctx, outEdge); err != nil {
+	toEngine := make([]*net.UnixConn, max(plan.Lanes, 1))
+	for l := range toEngine {
+		if toEngine[l], err = dial(inEdge(l)); err != nil {
 			return err
 		}
-		defer fromEngine.Close()
+	}
+	var fromEngine []*net.UnixConn
+	if !engineSink {
+		fromEngine = make([]*net.UnixConn, max(plan.WriterLanes, 1))
+		for w := range fromEngine {
+			if fromEngine[w], err = dial(outEdge(w)); err != nil {
+				return err
+			}
+		}
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	// Unblocks reads and writes once the group is done.
 	defer context.AfterFunc(gctx, func() {
-		_ = toEngine.Close()
-		if fromEngine != nil {
-			_ = fromEngine.Close()
+		for _, c := range conns {
+			_ = c.Close()
 		}
 	})()
-	g.Go(func() error { return writeEdge(gctx, toEngine, plan.Generation, names, index, alloc, in) })
-	if fromEngine != nil {
+	lanes := make([]chan runner.Frame, len(toEngine))
+	for l, conn := range toEngine {
+		lanes[l] = make(chan runner.Frame, 16)
+		g.Go(func() error { return writeEdge(gctx, conn, l, plan.Generation, names, index, alloc, lanes[l]) })
+	}
+	g.Go(func() error { return splitLanes(gctx, in, lanes) })
+	for w, conn := range fromEngine {
 		g.Go(func() error {
-			return readEdge(gctx, fromEngine, plan.Generation, names, alloc, plan.ReportSchemas, out)
+			return readEdge(gctx, conn, w, plan.Generation, names, alloc, plan.ReportSchemas, out)
 		})
 	}
 	g.Go(func() error {
@@ -227,7 +246,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		Job:        plan.Owner,
 		Generation: plan.Generation,
 		FirstEpoch: plan.FirstEpoch,
-		Sink:       &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Runner{Runner: &enginev1.RunnerSink{Edge: outEdge}}},
+		Sink:       &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Runner{Runner: &enginev1.RunnerSink{}}},
 		Naming:     &enginev1.Naming{KeepSourceNames: plan.Naming.KeepSource, MaxLength: uint32(max(plan.Naming.MaxLength, 0))}, //nolint:gosec // identifier limits are small
 
 		QuarantineUrl:      plan.QuarantineURL,
@@ -268,8 +287,8 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		}
 		req.RestoredSnapshots = append(req.RestoredSnapshots, ss)
 	}
-	req.Edges = []*enginev1.Edge{
-		{Id: inEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names},
+	for l := range max(plan.Lanes, 1) {
+		req.Edges = append(req.Edges, &enginev1.Edge{Id: inEdge(l), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names, Lane: uint32(l)})
 	}
 	switch {
 	case plan.Sink.ParquetURL != "":
@@ -279,7 +298,9 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	case plan.Sink.Discard:
 		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Discard{Discard: &enginev1.DiscardSink{}}}
 	default:
-		req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge, Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names})
+		for w := range max(plan.WriterLanes, 1) {
+			req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge(w), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names, Lane: uint32(w)})
+		}
 	}
 	return req, names, index, nil
 }
@@ -449,7 +470,48 @@ func fromStatus(err error) error {
 	return nil
 }
 
-func writeEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []string, index map[string]uint32, alloc memory.Allocator, in <-chan runner.Frame) error {
+func inEdge(lane int) string { return fmt.Sprintf("in-%d", lane) }
+
+func outEdge(lane int) string { return fmt.Sprintf("out-%d", lane) }
+
+// splitLanes sends each frame to its lane's edge, and closes them all once
+// in is drained.
+func splitLanes(ctx context.Context, in <-chan runner.Frame, lanes []chan runner.Frame) error {
+	defer func() {
+		for _, l := range lanes {
+			close(l)
+		}
+	}()
+	for {
+		var f runner.Frame
+		var ok bool
+		select {
+		case f, ok = <-in:
+			if !ok {
+				return nil
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if f.Lane < 0 || f.Lane >= len(lanes) {
+			if f.Batch != nil {
+				f.Batch.Release()
+			}
+			return fmt.Errorf("engineclient: a frame on lane %d of %d", f.Lane, len(lanes))
+		}
+		select {
+		case lanes[f.Lane] <- f:
+		case <-ctx.Done():
+			if f.Batch != nil {
+				f.Batch.Release()
+			}
+			return ctx.Err()
+		}
+	}
+}
+
+func writeEdge(ctx context.Context, conn *net.UnixConn, lane int, gen uint64, names []string, index map[string]uint32, alloc memory.Allocator, in <-chan runner.Frame) error {
+	edge := inEdge(lane)
 	fw := newFrameWriter(conn)
 	var buf bytes.Buffer
 	var err error
@@ -460,7 +522,7 @@ func writeEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []stri
 		case f, ok = <-in:
 		default:
 			if err := fw.flush(); err != nil {
-				return fmt.Errorf("engineclient: write edge %s: %w", inEdge, err)
+				return fmt.Errorf("engineclient: write edge %s: %w", edge, err)
 			}
 			select {
 			case f, ok = <-in:
@@ -470,12 +532,6 @@ func writeEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []stri
 		}
 		if !ok {
 			break
-		}
-		if f.Lane != 0 {
-			if f.Batch != nil {
-				f.Batch.Release()
-			}
-			return fmt.Errorf("engineclient: a frame on lane %d; the engine runs one", f.Lane)
 		}
 		i, known := index[f.Stream]
 		var kind enginev1.FrameKind
@@ -493,17 +549,17 @@ func writeEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []stri
 			return err
 		}
 		if err := fw.write(kind, i, payload); err != nil {
-			return fmt.Errorf("engineclient: write edge %s: %w", inEdge, err)
+			return fmt.Errorf("engineclient: write edge %s: %w", edge, err)
 		}
 		edgeBytes.Add(ctx, int64(len(payload)), toEngine)
 	}
 	for _, name := range names {
 		if err := fw.write(enginev1.FrameKind_FRAME_KIND_END_OF_STREAM, index[name], nil); err != nil {
-			return fmt.Errorf("engineclient: write edge %s: %w", inEdge, err)
+			return fmt.Errorf("engineclient: write edge %s: %w", edge, err)
 		}
 	}
 	if err := fw.flush(); err != nil {
-		return fmt.Errorf("engineclient: write edge %s: %w", inEdge, err)
+		return fmt.Errorf("engineclient: write edge %s: %w", edge, err)
 	}
 	return conn.CloseWrite()
 }
@@ -538,7 +594,7 @@ func encode(f runner.Frame, gen uint64, alloc memory.Allocator, buf *bytes.Buffe
 	}
 }
 
-func readEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []string, alloc memory.Allocator, schemas bool, out chan<- runner.Frame) error {
+func readEdge(ctx context.Context, conn *net.UnixConn, lane int, gen uint64, names []string, alloc memory.Allocator, schemas bool, out chan<- runner.Frame) error {
 	fr := newFrameReader(conn)
 	ended := make([]bool, len(names))
 	open := len(names)
@@ -551,13 +607,13 @@ func readEdge(ctx context.Context, conn *net.UnixConn, gen uint64, names []strin
 			return errors.New("engineclient: the engine closed its edge before every stream ended")
 		}
 		if err != nil {
-			return fmt.Errorf("engineclient: read edge %s: %w", outEdge, err)
+			return fmt.Errorf("engineclient: read edge %s: %w", outEdge(lane), err)
 		}
 		if int(stream) >= len(names) || ended[stream] {
 			return fmt.Errorf("engineclient: unexpected %v frame for stream %d", kind, stream)
 		}
 		edgeBytes.Add(ctx, int64(len(payload)), fromEngine)
-		f := runner.Frame{Stream: names[stream]}
+		f := runner.Frame{Stream: names[stream], Lane: lane}
 		switch kind {
 		case enginev1.FrameKind_FRAME_KIND_BATCH:
 			if f.Batch, err = decodeBatch(payload, alloc); err != nil {

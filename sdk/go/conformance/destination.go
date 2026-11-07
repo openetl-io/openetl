@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"testing"
@@ -30,9 +31,10 @@ type DestinationSuite struct {
 	// Read returns the records the destination has made visible for stream
 	// in namespace, as readers of the destination see them, each by field
 	// name; none for a stream it hasn't created. The checks compare the
-	// fields "id", an int64, "v", a string, and a soft-deleted row's
-	// "_openetl_deleted", a bool, by their text, so any Go value that
-	// prints the same will do.
+	// fields "id", an int64, "v", a string, a soft-deleted row's
+	// "_openetl_deleted", a bool, and the columns schemas add, "w", a string,
+	// and "n", an int64, by their text, so any Go value that prints the same
+	// will do. A cell without a value is nil, or not there.
 	Read func(ctx context.Context, namespace, stream string) ([]map[string]any, error)
 	// Namespace returns a new namespace for one check. Nil: conformance_
 	// and random letters.
@@ -97,6 +99,19 @@ func (r *destinationRun) checks() []Check {
 		Check{"holds/last", r.checkHoldsLast},
 		Check{"holds/soft-delete", r.checkHoldsSoftDelete},
 		Check{"holds/not-null", r.checkHoldsNotNull},
+		Check{"lanes/commit", r.eachLanes(r.checkLanesCommit)},
+		Check{"lanes/empty", r.eachLanes(r.checkLanesEmpty)},
+		Check{"lanes/overwrite", r.checkLanesOverwrite},
+		Check{"lanes/merge", r.checkLanesMerge},
+		Check{"lanes/crash-after-precommit", r.eachLanes(r.checkLanesCrashAfterPreCommit)},
+		Check{"lanes/crash-after-record", r.eachLanes(r.checkLanesCrashAfterRecord)},
+		Check{"lanes/crash-during-commit", r.eachLanes(r.checkLanesCrashDuringCommit)},
+		Check{"lanes/crash-after-commit", r.eachLanes(r.checkLanesCrashAfterCommit)},
+		Check{"lanes/fence", r.eachLanes(r.checkLanesFence)},
+		Check{"lanes/overwrite-crash", r.checkLanesOverwriteCrash},
+		Check{"lanes/merge-crash", r.checkLanesMergeCrash},
+		Check{"lanes/schemas", r.checkLanesSchemas},
+		Check{"lanes/holds", r.checkLanesHolds},
 	)
 }
 
@@ -156,10 +171,14 @@ type session struct {
 	scope    protocolv1.CommitScope
 	mode     protocolv1.WriteMode
 	data     []arrow.Field
+	// When reads start, for attempts on lanes.
+	start time.Time
 	// For a staged destination: where its epochs are staged, the batches of
-	// the epoch being written, and each epoch's files by stream.
+	// the epoch being written by lane, and each epoch's files by stream, every
+	// lane's.
 	area    *stagingArea
-	pending map[string][]arrow.RecordBatch
+	mu      sync.Mutex
+	pending map[int]map[string][]arrow.RecordBatch
 	files   map[string]map[string][]*protocolv1.StagedFile
 }
 
@@ -171,13 +190,15 @@ func (r *destinationRun) session(t T, scope protocolv1.CommitScope, mode protoco
 	r.mu.Lock()
 	r.namespaces = append(r.namespaces, ns)
 	r.mu.Unlock()
-	s := &session{t: t, r: r, ns: ns, pipeline: newID(), scope: scope, mode: mode, data: dataFields}
+	s := &session{t: t, r: r, ns: ns, pipeline: newID(), scope: scope, mode: mode, data: dataFields, start: time.Now()}
 	if r.staged() {
-		s.area, s.pending, s.files = r.area(t), map[string][]arrow.RecordBatch{}, map[string]map[string][]*protocolv1.StagedFile{}
+		s.area, s.pending, s.files = r.area(t), map[int]map[string][]arrow.RecordBatch{}, map[string]map[string][]*protocolv1.StagedFile{}
 		t.Cleanup(func() {
-			for _, bs := range s.pending {
-				for _, b := range bs {
-					b.Release()
+			for _, streams := range s.pending {
+				for _, bs := range streams {
+					for _, b := range bs {
+						b.Release()
+					}
 				}
 			}
 		})
@@ -198,17 +219,27 @@ func scopeName(s protocolv1.CommitScope) string {
 
 func (s *session) open(gen uint64) *writer {
 	s.t.Helper()
+	return s.openLane(gen, 0, 1)
+}
+
+// openLane opens lane of an attempt's lanes.
+func (s *session) openLane(gen uint64, lane, lanes int) *writer {
+	s.t.Helper()
 	open := &protocolv1.WriteOpen{
 		Config: s.r.proc.Config(), Pipeline: s.pipeline, Namespace: s.ns, Generation: gen, Scope: s.scope,
 		CommitInterval: durationpb.New(time.Second),
+	}
+	if lane > 0 && lane <= math.MaxUint32 {
+		open.Lane = uint32(lane)
 	}
 	for _, name := range kitStreams {
 		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: name, Mode: s.mode, PrimaryKey: []string{"id"}})
 	}
 	w, err := openWriter(s.t.Context(), s.r.proc.Conn(), open)
 	if err != nil {
-		s.t.Fatalf("%s open generation %d: %s: %v", s.where(), gen, codeOf(err), err)
+		s.t.Fatalf("%s open generation %d, lane %d: %s: %v", s.where(), gen, lane, codeOf(err), err)
 	}
+	w.lane, w.lanes = lane, lanes
 	s.t.Cleanup(w.crash)
 	return w
 }
@@ -269,8 +300,13 @@ func (s *session) write(w *writer, e *protocolv1.Epoch, stream string, b arrow.R
 	if s.area == nil {
 		return w.batch(e, stream, b)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending[w.lane] == nil {
+		s.pending[w.lane] = map[string][]arrow.RecordBatch{}
+	}
 	for i := int64(0); i < b.NumRows(); i += recordsPerFile {
-		s.pending[stream] = append(s.pending[stream], b.NewSlice(i, min(i+recordsPerFile, b.NumRows())))
+		s.pending[w.lane][stream] = append(s.pending[w.lane][stream], b.NewSlice(i, min(i+recordsPerFile, b.NumRows())))
 	}
 	return nil
 }
@@ -279,43 +315,64 @@ func (s *session) write(w *writer, e *protocolv1.Epoch, stream string, b arrow.R
 // write kept as e's files, and hands them over.
 func (s *session) preCommit(w *writer, e *protocolv1.Epoch) ([]byte, error) {
 	if s.area != nil {
+		s.mu.Lock()
+		pending := s.pending[w.lane]
+		s.mu.Unlock()
 		files := map[string][]*protocolv1.StagedFile{}
 		for _, name := range kitStreams {
-			bs := s.pending[name]
+			bs := pending[name]
 			if len(bs) == 0 {
 				continue
 			}
-			fs, err := s.area.stage(e, name, bs)
+			fs, err := s.area.stage(e, name, w.lane, w.lanes, bs)
 			for _, b := range bs {
 				b.Release()
 			}
-			delete(s.pending, name)
+			delete(pending, name)
 			if err != nil {
 				return nil, err
 			}
 			files[name] = fs
 		}
-		s.files[epochString(e)] = files
-		s.handOver(w, e)
+		s.mu.Lock()
+		if s.files[epochString(e)] == nil {
+			s.files[epochString(e)] = map[string][]*protocolv1.StagedFile{}
+		}
+		for name, fs := range files {
+			s.files[epochString(e)][name] = append(s.files[epochString(e)][name], fs...)
+		}
+		s.mu.Unlock()
+		if err := handFiles(w, e, files); err != nil {
+			return nil, err
+		}
 	}
 	return w.preCommit(e)
 }
 
-// handOver sends e's staged files, stream by stream.
+// handOver sends e's staged files, every lane's, stream by stream.
 func (s *session) handOver(w *writer, e *protocolv1.Epoch) {
 	s.t.Helper()
 	if s.area == nil {
 		return
 	}
+	s.mu.Lock()
 	files := s.files[epochString(e)]
+	s.mu.Unlock()
+	if err := handFiles(w, e, files); err != nil {
+		s.t.Fatalf("%s staged_files of epoch %s: %s: %v", s.where(), epochString(e), codeOf(err), err)
+	}
+}
+
+func handFiles(w *writer, e *protocolv1.Epoch, files map[string][]*protocolv1.StagedFile) error {
 	for _, name := range kitStreams {
 		if len(files[name]) == 0 {
 			continue
 		}
 		if err := w.stagedFiles(e, name, files[name]); err != nil {
-			s.t.Fatalf("%s staged_files of epoch %s: %s: %v", s.where(), epochString(e), codeOf(err), err)
+			return err
 		}
 	}
+	return nil
 }
 
 // visible counts the ids each kit stream's records have in the

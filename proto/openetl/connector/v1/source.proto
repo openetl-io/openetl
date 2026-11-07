@@ -100,6 +100,9 @@ message ReadRequest {
   // source until the read is cancelled. Otherwise they complete once
   // they've caught up with where their source was when the read started.
   bool continuous = 4;
+  // How many of its splits the read may read at a time (ADR-0027), a whole
+  // stream counting as one, more if they share a connection. Zero: one.
+  uint32 lanes = 5;
 }
 
 message ConfiguredStream {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -42,7 +43,9 @@ type emit struct {
 
 // splitPos is where one of a stream's splits is in the read.
 type splitPos struct {
-	id   string
+	id string
+	// Set when it first emits, so the splits being read keep to lanes of
+	// their own; -1 before.
 	lane int
 	// state at the last resume point, or restored
 	resume   []byte
@@ -62,6 +65,9 @@ type splitPos struct {
 	rereading bool
 	// It emitted while rereading since the last barrier.
 	reread bool
+	// When it first emitted, and whether the source refused to split it.
+	started time.Time
+	unsplit bool
 }
 
 type streamPos struct {
@@ -77,6 +83,11 @@ type streamPos struct {
 	// Splits a held emit adds, by the lane it's held on: what they emit
 	// waits behind it.
 	adding map[string]int
+	// Its frames go to the lanes in turn: order doesn't matter to it, so all
+	// of them can do its work. Its splits share lanes[0], and its barrier goes
+	// on every lane at once.
+	inTurn bool
+	turn   int
 }
 
 type laneHold struct {
@@ -84,32 +95,23 @@ type laneHold struct {
 	held   []emit
 }
 
-// readEnds records the barrier that ends each stream's read, and the last
-// barrier placed on every split, for the sink pumps: a writer lane can pass
-// a stream's barrier before the source has placed it on every lane, so they
-// wait for the whole epoch to be placed before they end reads in it.
+// readEnds records the barrier that ends each stream's read, for the sink
+// pumps. It's set before the last of the stream's lanes passes that barrier,
+// so that lane's writer knows. A writer never waits for it: that would hold
+// up what the source emits for its lane, and with it what the source emits
+// after, which can be the very barrier it would be waiting for.
 type readEnds struct {
-	mu     sync.Mutex
-	at     map[string]uint64
-	placed uint64
-	wake   chan struct{}
+	mu sync.Mutex
+	at map[string]uint64
 }
 
 func newReadEnds() *readEnds {
-	return &readEnds{at: map[string]uint64{}, wake: make(chan struct{})}
+	return &readEnds{at: map[string]uint64{}}
 }
 
 func (r *readEnds) set(stream string, epoch uint64) {
 	r.mu.Lock()
 	r.at[stream] = epoch
-	r.mu.Unlock()
-}
-
-func (r *readEnds) setPlaced(epoch uint64) {
-	r.mu.Lock()
-	r.placed = epoch
-	close(r.wake)
-	r.wake = make(chan struct{})
 	r.mu.Unlock()
 }
 
@@ -119,26 +121,8 @@ func (r *readEnds) endsAt(stream string, epoch uint64) bool {
 	return r.at[stream] == epoch
 }
 
-func (r *readEnds) waitPlaced(ctx context.Context, epoch uint64) error {
-	for {
-		r.mu.Lock()
-		placed, wake := r.placed, r.wake
-		r.mu.Unlock()
-		if placed >= epoch {
-			return nil
-		}
-		select {
-		case <-wake:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
 type readEnder interface {
 	endsAt(stream string, epoch uint64) bool
-	// waitPlaced returns once barrier epoch is placed on every split.
-	waitPlaced(ctx context.Context, epoch uint64) error
 }
 
 // lastEnd ends a transform's outputs' reads in the epoch where the last of
@@ -162,15 +146,6 @@ func (l lastEnd) endsAt(_ string, epoch uint64) bool {
 	return len(l.inputs) > 0 && last == epoch
 }
 
-// Without inputs, as a Flink job's outputs, no read ends, and the sink's
-// epochs aren't the source's barriers.
-func (l lastEnd) waitPlaced(ctx context.Context, epoch uint64) error {
-	if len(l.inputs) == 0 {
-		return nil
-	}
-	return l.ends.waitPlaced(ctx, epoch)
-}
-
 // sourcePump is the connector's Emitter. It places each requested barrier on
 // every split right after that split's next resume point, and forwards a
 // stream's barrier on a lane once every split of the stream on the lane has
@@ -185,12 +160,18 @@ type sourcePump struct {
 	events   chan<- event
 	ends     *readEnds
 	lanes    int
+	// By lane: the splits emitting on it.
+	load []int
+	// Asked to split a straggler when a lane has nothing to do.
+	resplitter  source.Resplitter
+	resplitting chan resplitAnswer
+	log         *slog.Logger
 
 	order   []string // stream names, in configuration order
 	streams map[string]*streamPos
 	known   map[string]bool // read by Emitter methods on the connector's goroutine
 
-	maxBytes      int64
+	maxBytes      atomic.Int64
 	meter         *resources.Meter
 	forceAfter    time.Duration
 	requested     uint64 // the last barrier requested
@@ -229,18 +210,26 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, splits m
 		events:     events,
 		ends:       ends,
 		lanes:      job.lanes(),
+		load:       make([]int, job.lanes()),
 		streams:    make(map[string]*streamPos, len(job.Streams)),
 		known:      make(map[string]bool, len(job.Streams)),
-		maxBytes:   job.Settings.CommitMaxBytes,
 		meter:      job.Meter,
 		forceAfter: job.Settings.ResumePointTimeout,
 		progress:   job.Progress,
+		log:        job.Logger,
 	}
+	if p.log == nil {
+		p.log = slog.New(slog.DiscardHandler)
+	}
+	if job.canResplit(ctx) {
+		p.resplitter, _ = job.Source.(source.Resplitter)
+	}
+	p.maxBytes.Store(job.Settings.CommitMaxBytes)
 	for _, s := range job.Streams {
 		p.order = append(p.order, s.Name)
-		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes), adding: map[string]int{}}
-		for i, sp := range splits[s.Name] {
-			pos := &splitPos{id: sp.ID, lane: i % p.lanes, resume: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced}
+		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes), adding: map[string]int{}, inTurn: job.inTurn(s)}
+		for _, sp := range splits[s.Name] {
+			pos := &splitPos{id: sp.ID, lane: st.firstLane(), resume: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced}
 			st.splits = append(st.splits, pos)
 			st.byID[sp.ID] = pos
 		}
@@ -342,6 +331,12 @@ func (p *sourcePump) stop() { close(p.stopCh) }
 
 func (p *sourcePump) run() error {
 	defer close(p.out)
+	var resplit <-chan time.Time
+	if p.resplitter != nil && p.lanes > 1 {
+		t := time.NewTicker(resplitEvery)
+		defer t.Stop()
+		resplit = t.C
+	}
 	for {
 		// Barrier requests first, so ready requests and emits keep one order.
 		select {
@@ -365,6 +360,11 @@ func (p *sourcePump) run() error {
 			if err := p.forceWaiting(); err != nil {
 				return err
 			}
+		case <-resplit:
+			p.resplit()
+		case a := <-p.resplitting:
+			p.resplitting = nil
+			a.sp.unsplit = !a.accepted
 		case <-p.stopCh:
 			return nil
 		case <-p.ctx.Done():
@@ -381,6 +381,69 @@ func (p *sourcePump) handle(e emit) error {
 	return p.route(e)
 }
 
+func (st *streamPos) firstLane() int {
+	if st.inTurn {
+		return 0
+	}
+	return -1
+}
+
+// assign gives a split that's starting to emit the lane emitting the least.
+func (p *sourcePump) assign(sp *splitPos) {
+	sp.lane = slices.Index(p.load, slices.Min(p.load))
+	p.load[sp.lane]++
+	sp.started = time.Now()
+}
+
+// How often a lane with nothing to do asks for a straggler to be split.
+const resplitEvery = 5 * time.Second
+
+type resplitAnswer struct {
+	sp       *splitPos
+	accepted bool
+}
+
+// resplit asks the source to split the split that's been reading longest, if
+// a lane has nothing to do, and no split is waiting to start. Once it adds a
+// split, a lane takes it when it starts.
+func (p *sourcePump) resplit() {
+	if p.done || p.resplitting != nil || slices.Min(p.load) > 0 {
+		return
+	}
+	var stream string
+	var longest *splitPos
+	for _, name := range p.order {
+		st := p.streams[name]
+		if st.ended || st.inTurn {
+			continue
+		}
+		for _, sp := range st.splits {
+			if sp.complete || sp.unsplit {
+				continue
+			}
+			if sp.lane < 0 {
+				return
+			}
+			if longest == nil || sp.started.Before(longest.started) {
+				stream, longest = name, sp
+			}
+		}
+	}
+	if longest == nil {
+		return
+	}
+	id, answer := longest.id, make(chan resplitAnswer, 1)
+	p.resplitting = answer
+	sp := longest
+	go func() {
+		accepted, err := p.resplitter.Resplit(p.ctx, stream, id)
+		if err != nil && p.ctx.Err() == nil {
+			p.log.Warn("asking to split a split failed", "stream", stream, "split", id, "err", err)
+		}
+		answer <- resplitAnswer{sp: sp, accepted: accepted}
+	}()
+}
+
 // route applies an emit, or holds it until its split's stream has the
 // pending barrier on the split's lane.
 func (p *sourcePump) route(e emit) error {
@@ -392,8 +455,13 @@ func (p *sourcePump) route(e emit) error {
 		lane = l
 	case sp == nil:
 		return fmt.Errorf("runner: source emitted on %s, which it doesn't have", splitName(e.stream, e.split))
-	case p.pending != 0 && sp.placed && !st.lanes[sp.lane].placed:
-		lane = sp.lane
+	default:
+		if sp.lane < 0 && !sp.complete && (e.kind == emitRows || e.kind == emitBatch) {
+			p.assign(sp)
+		}
+		if p.pending != 0 && sp.placed && sp.lane >= 0 && !st.lanes[sp.lane].placed {
+			lane = sp.lane
+		}
 	}
 	if lane < 0 {
 		return p.apply(e.stream, st, sp, e)
@@ -411,15 +479,20 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 	}
 	switch e.kind {
 	case emitRows, emitBatch:
-		f := Frame{Kind: FrameRows, Lane: sp.lane, Stream: name, Rows: e.rows}
+		lane := sp.lane
+		if st.inTurn {
+			lane = st.turn % p.lanes
+			st.turn++
+		}
+		f := Frame{Kind: FrameRows, Lane: lane, Stream: name, Rows: e.rows}
 		rows, bytes := int64(len(e.rows)), int64(0)
 		switch {
 		case e.batch != nil:
-			f = Frame{Kind: FrameBatch, Lane: sp.lane, Stream: name, Batch: e.batch}
+			f = Frame{Kind: FrameBatch, Lane: lane, Stream: name, Batch: e.batch}
 			rows += e.batch.NumRows()
 			bytes += util.TotalRecordSize(e.batch)
 		case e.kind == emitBatch:
-			f = Frame{Kind: FrameBatch, Lane: sp.lane, Stream: name, IPC: e.encoded.Bytes}
+			f = Frame{Kind: FrameBatch, Lane: lane, Stream: name, IPC: e.encoded.Bytes}
 			rows += e.encoded.Rows
 			bytes += e.encoded.Size
 		}
@@ -434,13 +507,16 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 		if err := p.forward(f); err != nil {
 			return err
 		}
-		if p.maxBytes > 0 && p.bytes >= p.maxBytes && !p.thresholdSent {
+		if limit := p.maxBytes.Load(); limit > 0 && p.bytes >= limit && !p.thresholdSent {
 			p.thresholdSent = true
 			return p.notify(event{kind: evThreshold})
 		}
 		return nil
 	case emitComplete:
 		sp.complete = true
+		if sp.lane >= 0 && !st.inTurn {
+			p.load[sp.lane]--
+		}
 	}
 	// A resume point, which completion also is.
 	before := sp.placed
@@ -468,21 +544,14 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 	return nil
 }
 
-// add adds splits to a stream, each to the lane with the fewest of the
-// stream's open splits. later: they join after the pending barrier.
+// add adds splits to a stream. later: they join after the pending barrier.
 func (p *sourcePump) add(name string, st *streamPos, splits []source.Split, later bool) ([]*splitPos, error) {
 	var out []*splitPos
 	for _, s := range splits {
 		if st.byID[s.ID] != nil {
 			return nil, fmt.Errorf("runner: source added %s, which the stream already has", splitName(name, s.ID))
 		}
-		open := make([]int, p.lanes)
-		for _, sp := range st.splits {
-			if !sp.complete {
-				open[sp.lane]++
-			}
-		}
-		pos := &splitPos{id: s.ID, lane: slices.Index(open, slices.Min(open)), resume: s.State, placed: later, later: later}
+		pos := &splitPos{id: s.ID, lane: st.firstLane(), resume: s.State, placed: later, later: later}
 		st.splits = append(st.splits, pos)
 		st.byID[s.ID] = pos
 		delete(st.adding, s.ID)
@@ -533,32 +602,54 @@ func (p *sourcePump) request(n uint64) error {
 			st.lanes[l].placed = false
 		}
 	}
-	// Lanes without splits of a stream are at its barrier.
-	for _, name := range p.order {
-		for l := range p.lanes {
-			if !slices.ContainsFunc(p.streams[name].splits, func(sp *splitPos) bool { return sp.lane == l }) {
-				if err := p.placeLane(name, l); err != nil {
-					return err
+	// A read that has ended places what's left, and a split with nothing
+	// emitted since its last resume point is at one. Before lanes get their
+	// barriers, so the lane that gets a stream's last one knows if its read
+	// ended.
+	if p.done {
+		if err := p.placeRemaining(); err != nil {
+			return err
+		}
+	} else {
+		for _, name := range p.order {
+			for _, sp := range slices.Clone(p.streams[name].splits) {
+				if !sp.dirty && !sp.placed && p.pending != 0 {
+					if err := p.place(name, sp, false); err != nil {
+						return err
+					}
 				}
 			}
 		}
 	}
-	if p.done {
-		return p.placeRemaining()
+	if p.pending == 0 {
+		return nil
 	}
-	// Nothing emitted since its last resume point: it's at one.
+	// Lanes without splits of a stream still to place it are at its barrier.
 	for _, name := range p.order {
-		for _, sp := range slices.Clone(p.streams[name].splits) {
-			if !sp.dirty && !sp.placed && p.pending != 0 {
-				if err := p.place(name, sp, false); err != nil {
-					return err
-				}
-			}
+		if err := p.placeFreeLanes(name); err != nil {
+			return err
 		}
 	}
 	if p.pending != 0 && p.forceAfter > 0 {
 		p.forceTimer = time.NewTimer(p.forceAfter)
 		p.forceC = p.forceTimer.C
+	}
+	return nil
+}
+
+// placeFreeLanes forwards the stream's pending barrier on every lane none of
+// its unplaced splits are on.
+func (p *sourcePump) placeFreeLanes(name string) error {
+	st := p.streams[name]
+	for l := range p.lanes {
+		if st.inTurn && l > 0 {
+			break
+		}
+		if !slices.ContainsFunc(st.splits, func(sp *splitPos) bool { return sp.lane == l && !sp.placed }) {
+			if err := p.placeLane(name, l); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -616,20 +707,23 @@ func (p *sourcePump) place(name string, sp *splitPos, forced bool) error {
 	sp.rows, sp.reread = 0, false
 	p.unplaced--
 	n := p.pending
-	if p.unplaced == 0 {
-		// Before the last lane's barrier goes out, so a sink that sees it
-		// knows which reads end in the epoch.
-		for _, s := range p.order {
-			at := p.splits[s]
-			if st := p.streams[s]; !st.ended && !slices.ContainsFunc(at, func(sp checkpoint.SplitState) bool { return !sp.Complete }) {
-				st.ended = true
-				p.ends.set(s, n)
-			}
-		}
-		p.ends.setPlaced(n)
+	// Before the last lane's barrier goes out, so the sink that sees it knows
+	// the read ended in the epoch.
+	if !st.ended && !slices.ContainsFunc(st.splits, func(o *splitPos) bool { return !o.placed }) &&
+		!slices.ContainsFunc(p.splits[name], func(sp checkpoint.SplitState) bool { return !sp.Complete }) {
+		st.ended = true
+		p.ends.set(name, n)
 	}
-	if !slices.ContainsFunc(st.splits, func(o *splitPos) bool { return o.lane == sp.lane && !o.placed }) {
+	if sp.lane >= 0 && !slices.ContainsFunc(st.splits, func(o *splitPos) bool { return o.lane == sp.lane && !o.placed }) {
 		if err := p.placeLane(name, sp.lane); err != nil {
+			return err
+		}
+	}
+	if p.unplaced > 0 || p.pending != n {
+		return nil
+	}
+	for _, s := range p.order {
+		if err := p.placeFreeLanes(s); err != nil {
 			return err
 		}
 	}
@@ -663,7 +757,13 @@ func (p *sourcePump) placeLane(name string, lane int) error {
 		return nil
 	}
 	l.placed = true
-	if err := p.forward(Frame{Kind: FrameBarrier, Lane: lane, Stream: name, Epoch: p.pending}); err != nil {
+	if st.inTurn {
+		for each := range p.lanes {
+			if err := p.forward(Frame{Kind: FrameBarrier, Lane: each, Stream: name, Epoch: p.pending}); err != nil {
+				return err
+			}
+		}
+	} else if err := p.forward(Frame{Kind: FrameBarrier, Lane: lane, Stream: name, Epoch: p.pending}); err != nil {
 		return err
 	}
 	held := l.held

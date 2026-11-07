@@ -872,9 +872,8 @@ type WriteOpen struct {
 	// How often the platform commits, for sinks whose transactions must outlast
 	// an epoch.
 	CommitInterval *durationpb.Duration `protobuf:"bytes,7,opt,name=commit_interval,json=commitInterval,proto3" json:"commit_interval,omitempty"`
-	// The writer's lane, of lanes. Zero lanes: one.
+	// The writer's lane.
 	Lane          uint32 `protobuf:"varint,8,opt,name=lane,proto3" json:"lane,omitempty"`
-	Lanes         uint32 `protobuf:"varint,9,opt,name=lanes,proto3" json:"lanes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -961,13 +960,6 @@ func (x *WriteOpen) GetCommitInterval() *durationpb.Duration {
 func (x *WriteOpen) GetLane() uint32 {
 	if x != nil {
 		return x.Lane
-	}
-	return 0
-}
-
-func (x *WriteOpen) GetLanes() uint32 {
-	if x != nil {
-		return x.Lanes
 	}
 	return 0
 }
@@ -2247,7 +2239,7 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"startReads\x12?\n" +
 	"\bend_read\x18\b \x01(\v2\".openetl.connector.v1.WriteEndReadH\x00R\aendRead\x12K\n" +
 	"\fstaged_files\x18\t \x01(\v2&.openetl.connector.v1.WriteStagedFilesH\x00R\vstagedFilesB\x05\n" +
-	"\x03msg\"\xe1\x02\n" +
+	"\x03msg\"\xd1\x02\n" +
 	"\tWriteOpen\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\x12\x1a\n" +
 	"\bpipeline\x18\x02 \x01(\tR\bpipeline\x12\x1c\n" +
@@ -2258,8 +2250,8 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\x05scope\x18\x05 \x01(\x0e2!.openetl.connector.v1.CommitScopeR\x05scope\x12;\n" +
 	"\astreams\x18\x06 \x03(\v2!.openetl.connector.v1.WriteStreamR\astreams\x12B\n" +
 	"\x0fcommit_interval\x18\a \x01(\v2\x19.google.protobuf.DurationR\x0ecommitInterval\x12\x12\n" +
-	"\x04lane\x18\b \x01(\rR\x04lane\x12\x14\n" +
-	"\x05lanes\x18\t \x01(\rR\x05lanes\"\xe9\x01\n" +
+	"\x04lane\x18\b \x01(\rR\x04laneJ\x04\b\t\x10\n" +
+	"\"\xe9\x01\n" +
 	"\vWriteStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04mode\x18\x02 \x01(\x0e2\x1f.openetl.connector.v1.WriteModeR\x04mode\x12\x1f\n" +

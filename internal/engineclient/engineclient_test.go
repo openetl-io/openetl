@@ -499,11 +499,11 @@ func startJob(t *testing.T) (p *process, in, out io.Closer) {
 	if _, err := p.client.StartJob(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	toEngine, err := p.dialEdge(ctx, inEdge)
+	toEngine, err := p.dialEdge(ctx, inEdge(0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	fromEngine, err := p.dialEdge(ctx, outEdge)
+	fromEngine, err := p.dialEdge(ctx, outEdge(0))
 	if err != nil {
 		t.Fatal(err)
 	}

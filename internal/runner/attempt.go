@@ -164,8 +164,9 @@ type Job struct {
 	HeldURL string
 	// Holds released or discarded since they started.
 	Releases []Release
-	// How many lanes the attempt runs (ADR-0027); 0: one. It has as many
-	// writer lanes, up to what the destination takes.
+	// The most lanes the attempt runs (ADR-0027); 0: one. It runs no more than
+	// it has splits to read, and has as many writer lanes, up to what the
+	// destination takes.
 	Lanes int
 	// The pipeline's key groups; 0: checkpoint.KeyGroups. A restore from a
 	// record with another count fails.
@@ -175,6 +176,50 @@ type Job struct {
 }
 
 func (j *Job) lanes() int { return max(j.Lanes, 1) }
+
+// inTurn says a stream's frames can go to the lanes in turn: it has no key
+// to keep together, and its destination puts rows in tables, whose order
+// doesn't follow what a stream emits. A log keeps a split's order, as a
+// partition's or a shard's matters there.
+func (j *Job) inTurn(s Stream) bool {
+	return j.lanes() > 1 && len(s.PrimaryKey) == 0 && j.Destination.Capabilities().Class == destination.StageAndApply
+}
+
+// canResplit says the source splits a running split's remainder.
+func (j *Job) canResplit(ctx context.Context) bool {
+	rs, ok := j.Source.(source.Resplitter)
+	if !ok {
+		return false
+	}
+	if c, ok := rs.(interface{ Resplits(context.Context) bool }); ok {
+		return c.Resplits(ctx)
+	}
+	return true
+}
+
+// settleLanes bounds the attempt's lanes by the splits there are to read,
+// unless a stream is read in splits by a source that can make more.
+func (j *Job) settleLanes(ctx context.Context, splits map[string][]checkpoint.SplitState, done map[string]bool) {
+	if j.lanes() == 1 {
+		return
+	}
+	open, inParts := 0, false
+	for _, s := range j.Streams {
+		if done[s.Name] {
+			continue
+		}
+		for _, sp := range splits[s.Name] {
+			if !sp.Complete {
+				open++
+				inParts = inParts || sp.ID != checkpoint.WholeStream
+			}
+		}
+	}
+	if inParts && j.canResplit(ctx) {
+		return
+	}
+	j.Lanes = min(j.Lanes, max(open, 1))
+}
 
 func (j *Job) writerLanes() int {
 	return min(j.lanes(), j.Destination.Capabilities().Lanes())
@@ -388,6 +433,12 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		res.Restored = restored.Epoch
 	}
 	log.Debug("attempt recovered", "recovery", res.Recovery.String(), "restored", res.Restored)
+	done := job.doneStreams(restored)
+	splits, err := job.readSplits(rctx, restored, done)
+	if err != nil {
+		return res, err
+	}
+	job.settleLanes(rctx, splits, done)
 	// The other lanes open behind the fence lane 0 raised.
 	for lane := 1; lane < job.writerLanes(); lane++ {
 		lw, err := job.Destination.Open(rctx, job.openConfig(res.Generation, forced, lane))
@@ -426,7 +477,18 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 			return res, fmt.Errorf("runner: start the transform: %w", err)
 		}
 	}
-	return res, c.run(ctx, restored, canForce)
+	return res, c.run(ctx, restored, canForce, splits, done)
+}
+
+// doneStreams are those a retry within the sync doesn't read again.
+func (j *Job) doneStreams(restored *checkpoint.Record) map[string]bool {
+	done := map[string]bool{}
+	if restored != nil && j.Sync != "" && restored.Sync == j.Sync {
+		for name, st := range restored.Streams {
+			done[name] = st.Complete
+		}
+	}
+	return done
 }
 
 // openConfig is the destination's for writer lane lane of generation gen.
@@ -434,7 +496,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 func (j *Job) openConfig(gen uint64, forced map[string]bool, lane int) destination.OpenConfig {
 	caps := j.Destination.Capabilities()
 	cfg := destination.OpenConfig{Pipeline: j.Pipeline, Generation: gen, Scope: j.Settings.Scope, Namespace: j.Namespace, CommitInterval: j.Settings.CommitInterval,
-		Lane: lane, Lanes: j.writerLanes()}
+		Lane: lane}
 	for _, s := range j.sinkStreams() {
 		cfg.Streams = append(cfg.Streams, destination.Stream{
 			Name:       s.Name,
@@ -585,7 +647,10 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		if restored != nil {
 			prev = restored.Splits(s.Name)
 		}
-		if done[s.Name] || prev != nil && !restored.Streams[s.Name].Complete {
+		// A continuous read follows every split, so one that a bounded read
+		// completed means a new read.
+		ongoing := prev != nil && !restored.Streams[s.Name].Complete && !(j.Continuous && slices.ContainsFunc(prev, func(sp checkpoint.SplitState) bool { return sp.Complete }))
+		if done[s.Name] || ongoing {
 			out[s.Name] = prev
 			continue
 		}
@@ -598,7 +663,10 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		}
 		var splits []source.Split
 		var err error
-		if splitter != nil && !j.transformed() {
+		// A transform's read isn't split, unless its last read was, which
+		// only the source knows how to go on from.
+		split := len(ended) > 1 || len(ended) == 1 && ended[0].ID != checkpoint.WholeStream
+		if splitter != nil && (!j.transformed() || split) {
 			splits, err = splitter.Splits(ctx, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField}, ended)
 		} else {
 			splits, err = source.Whole(ended)
@@ -624,7 +692,7 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 // readRequest reads the splits of every stream not done that haven't
 // completed, and streams read whole from their states.
 func (j *Job) readRequest(splits map[string][]checkpoint.SplitState, done map[string]bool) source.ReadRequest {
-	req := source.ReadRequest{Pipeline: j.Pipeline, Continuous: j.Continuous}
+	req := source.ReadRequest{Pipeline: j.Pipeline, Continuous: j.Continuous, Lanes: j.lanes()}
 	for _, s := range j.Streams {
 		if done[s.Name] {
 			continue
@@ -791,7 +859,9 @@ type event struct {
 }
 
 type epochState struct {
-	requested     time.Time
+	requested time.Time
+	// When the epoch began: the barrier before it, or the attempt's start.
+	began         time.Time
 	placed, ready bool
 	// Each writer lane's committable, which lanes have staged, and how many.
 	descs    []destination.Staged
@@ -842,8 +912,9 @@ type coordinator struct {
 	// The restored record's outputs' schemas.
 	outputSchemas map[string][]byte
 	readStarts    map[string]int64
-	sincePrune    int                                 // owned by the committer: commits since it last pruned
-	seen          uint64                              // what the source had emitted when the last barrier was requested
+	sincePrune    int    // owned by the committer: commits since it last pruned
+	seen          uint64 // what the source had emitted when the last barrier was requested
+	lastBarrier   time.Time
 	lastStaged    destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
 	syncStart     *checkpoint.RecordRef               // the record the sync started after; nil if unknown
 	syncRows      map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
@@ -858,7 +929,7 @@ type coordinator struct {
 	replaying bool
 }
 
-func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool) error {
+func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool, splits map[string][]checkpoint.SplitState, done map[string]bool) error {
 	schemas := map[string][]byte{}
 	now := time.Now().UnixMicro()
 	c.readStarts = make(map[string]int64, len(c.job.Streams))
@@ -883,6 +954,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	}
 	c.next = c.committed + 1
 	c.res.Last = c.committed
+	c.lastBarrier = time.Now()
 	if c.job.Sync != "" {
 		c.syncStart, c.syncRows = syncSoFar(restored, c.job.Sync)
 	}
@@ -892,16 +964,6 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	fromFlow := make(chan Frame, 16)
 	c.events = make(chan event, 64)
 	c.commits = make(chan commitReq, 1)
-	done := map[string]bool{}
-	if restored != nil && c.job.Sync != "" && restored.Sync == c.job.Sync {
-		for name, st := range restored.Streams {
-			done[name] = st.Complete
-		}
-	}
-	splits, err := c.job.readSplits(ctx, restored, done)
-	if err != nil {
-		return err
-	}
 	ends := newReadEnds()
 	c.pump = newSourcePump(gctx, c.job, c.committed, splits, canForce, done, ends, toFlow, c.events)
 	plan := Plan{
@@ -927,7 +989,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	plan.Lanes, plan.WriterLanes, plan.KeyGroups = c.job.lanes(), c.job.writerLanes(), c.job.keyGroups()
 	for _, s := range c.job.Streams {
 		// A key's rows meet on one writer lane.
-		if len(s.PrimaryKey) > 0 && !s.SplitsByKey && plan.WriterLanes > 1 {
+		if len(s.PrimaryKey) > 0 && (!s.SplitsByKey || s.Read == source.CDC) && plan.WriterLanes > 1 {
 			if plan.KeyGrouped == nil {
 				plan.KeyGrouped = map[string]bool{}
 			}
@@ -1041,7 +1103,9 @@ func (c *coordinator) loop(ctx context.Context) error {
 			if c.draining && c.drainEpoch == 0 {
 				c.drainEpoch = n
 			}
-			c.pending[n] = &epochState{requested: time.Now()}
+			now := time.Now()
+			c.pending[n] = &epochState{requested: now, began: c.lastBarrier}
+			c.lastBarrier = now
 			c.seen = c.pump.emitted.Load()
 			if err := c.pump.requestBarrier(n); err != nil {
 				return err
@@ -1069,6 +1133,9 @@ func (c *coordinator) loop(ctx context.Context) error {
 // One epoch staging, one waiting to commit; with a transform, one more in
 // it.
 const maxInFlight = 2
+
+// How far commit times can raise an epoch's byte threshold.
+const maxEpochBytes = 16 << 30
 
 func (c *coordinator) shouldRequest() bool {
 	limit := uint64(maxInFlight)
@@ -1307,6 +1374,7 @@ func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *
 	}
 	c.log.Debug("epoch committed", "epoch", n, "forced", rec.Forced)
 	c.measure(ctx, rec, st.flow, collapsed, time.Since(start), time.Since(st.requested))
+	c.growEpochs(time.Since(start), time.Since(st.began))
 	if c.job.OnSchemas != nil {
 		inputs, err := changedRaw(c.reported, st.flow.Schemas)
 		if err != nil {
@@ -1360,6 +1428,18 @@ func (c *coordinator) dropStaged(ctx context.Context, e destination.Epoch, stage
 	}
 	if staged {
 		c.lastStaged = e
+	}
+}
+
+// growEpochs raises the byte threshold when commits take more than a quarter
+// of an epoch's time, since one committer manages only a few a second.
+func (c *coordinator) growEpochs(commit, epoch time.Duration) {
+	if c.job.Settings.CommitMaxBytesSet || commit*4 <= epoch {
+		return
+	}
+	if b := c.pump.maxBytes.Load(); b > 0 && b < maxEpochBytes {
+		c.pump.maxBytes.Store(min(b*2, maxEpochBytes))
+		c.log.Debug("epochs grow", "bytes", min(b*2, maxEpochBytes), "commit", commit, "epoch", epoch)
 	}
 }
 

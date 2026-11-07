@@ -14,9 +14,10 @@ import (
 // writer, and calls PreCommit(N) once every stream has crossed barrier N on
 // the lane. An engine sink's epochs arrive staged, in their FrameReady. So
 // do a staged destination's, whose files the writer gets before
-// PreCommit(N). A writer that tracks reads gets their starts first, and the
-// ends of the reads that end in N before PreCommit(N), once N is placed on
-// every split. Lane 0's pump also reports each epoch ready.
+// PreCommit(N). A writer that tracks reads gets their starts first, and
+// before PreCommit(N) the ends of the reads known to end in N, which the
+// writer of a read's last lane always knows. Lane 0's pump also reports each
+// epoch ready.
 type sinkPump struct {
 	w          destination.Writer
 	lane       int
@@ -160,9 +161,6 @@ func (s *sinkPump) preCommitStaged(ctx context.Context, rt destination.ReadTrack
 func (s *sinkPump) endReads(ctx context.Context, rt destination.ReadTracker, n uint64) error {
 	if rt == nil {
 		return nil
-	}
-	if err := s.ends.waitPlaced(ctx, n); err != nil {
-		return err
 	}
 	e := destination.Epoch{Generation: s.gen, N: n}
 	for _, stream := range slices.Sorted(maps.Keys(s.epochOf)) {

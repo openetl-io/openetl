@@ -8,6 +8,11 @@
 # ../openetl-connectors), which make connectors builds against this checkout.
 # OPENETL_COMMIT and OPENETL_CONNECTORS_COMMIT name the commits in the report
 # when there is no .git, as in a copy made with git archive.
+# With ICEBERG=1, it also runs SeaweedFS and Iceberg's REST catalog, without
+# Docker, for -lanes; destination-iceberg's config is then in $ICEBERG_CONFIG.
+# The catalog is only published as an image, so copy its jar to
+# /opt/iceberg-rest.jar first, from /usr/lib/iceberg-rest/iceberg-rest-adapter.jar
+# in apache/iceberg-rest-fixture:1.10.1.
 set -euo pipefail
 
 connectors=${CONNECTORS_SRC:-../openetl-connectors}
@@ -33,6 +38,25 @@ su postgres -c "psql -qtA -c \"SELECT 1 FROM pg_roles WHERE rolname = 'openetl'\
   su postgres -c "psql -q -c \"CREATE ROLE openetl LOGIN SUPERUSER PASSWORD 'openetl'\""
 su postgres -c "psql -qtA -c \"SELECT 1 FROM pg_database WHERE datname = 'openetl'\"" | grep -q 1 ||
   su postgres -c "createdb -O openetl openetl"
+
+if [ -n "${ICEBERG:-}" ]; then
+  apt-get install -yq --no-install-recommends default-jre-headless
+  [ -x /usr/local/bin/weed ] || curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/download/4.51/linux_amd64.tar.gz | tar -C /usr/local/bin -xz weed
+  [ -f /opt/iceberg-rest.jar ] || { echo "no /opt/iceberg-rest.jar: copy it from apache/iceberg-rest-fixture:1.10.1" >&2; exit 1; }
+  mkdir -p /var/lib/weed
+  pgrep -x weed >/dev/null || WEED_MASTER_VOLUME_GROWTH_COPY_1=1 nohup weed server -dir=/var/lib/weed -volume.max=0 -s3 -s3.port=8333 -master.volumeSizeLimitMB=1024 >/var/log/weed.log 2>&1 &
+  # The image's environment: a catalog in a file, as each pooled connection
+  # to SQLite's in-memory one has a database of its own.
+  pgrep -f iceberg-rest.jar >/dev/null || CATALOG_CATALOG__IMPL=org.apache.iceberg.jdbc.JdbcCatalog CATALOG_URI=jdbc:sqlite:/var/lib/iceberg-catalog.db \
+    CATALOG_JDBC_USER=user CATALOG_JDBC_PASSWORD=password CATALOG_JDBC_STRICT__MODE=true \
+    CATALOG_WAREHOUSE=s3://iceberg/ CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO \
+    CATALOG_S3_ENDPOINT=http://127.0.0.1:8333 CATALOG_S3_PATH__STYLE__ACCESS=true AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=openetl AWS_SECRET_ACCESS_KEY=openetl \
+    nohup java -jar /opt/iceberg-rest.jar >/var/log/iceberg-rest.log 2>&1 &
+  # 409 once the bucket exists, as on a second run.
+  until curl -s -o /dev/null -w '%{http_code}' -X PUT http://127.0.0.1:8333/iceberg | grep -q '^200$\|^409$'; do sleep 1; done
+  until curl -fs http://127.0.0.1:8181/v1/config >/dev/null 2>&1; do sleep 1; done
+  export ICEBERG_CONFIG='{"uri": "http://127.0.0.1:8181", "namespace": "bench", "s3Endpoint": "http://127.0.0.1:8333", "region": "us-east-1", "accessKeyId": "openetl", "secretAccessKey": "openetl"}'
+fi
 
 go_version=$(sed -n 's/^toolchain go//p' go.mod)
 if [ "$(go env GOVERSION 2>/dev/null)" != "go$go_version" ]; then

@@ -53,6 +53,18 @@ jobs:
           ref: main
           path: openetl-connectors
           ssh-key: ${{ secrets.CONNECTORS_DEPLOY_KEY }}
+      # openetl-connectors' branch of this one's name, when it has one, so a
+      # change across both repositories is checked whole.
+      - name: Connectors of the same branch
+        working-directory: openetl-connectors
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if git fetch --depth=1 origin "refs/heads/$BRANCH"; then
+            git checkout --detach FETCH_HEAD
+          else
+            echo "openetl-connectors has no branch $BRANCH, so main"
+          fi
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-go@v6

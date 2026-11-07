@@ -52,7 +52,7 @@ struct Holding {
     discarded: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Holds {
     config: HoldConfig,
     columns: BTreeMap<String, Holding>,
@@ -92,6 +92,8 @@ pub struct Shaper {
     /// `_openetl_unchanged`.
     changelog: bool,
     holds: Option<Holds>,
+    /// What lanes share has changed since [`Shaper::take_changed`].
+    changed: bool,
 }
 
 impl Shaper {
@@ -148,7 +150,43 @@ impl Shaper {
             soft_deletes: false,
             changelog: false,
             holds: None,
+            changed: false,
         })
+    }
+
+    /// A copy for another lane: everything lanes share (ADR-0027), which is
+    /// all but what it has parsed.
+    pub fn fork(&self) -> Self {
+        Self {
+            namer: self.namer.clone(),
+            table: self.table.clone(),
+            identity: self.identity.clone(),
+            policy: self.policy,
+            declared: self.declared.clone(),
+            types: self.types,
+            norm: None,
+            evolver: self.evolver.clone(),
+            current: self.current.clone(),
+            fresh: self.fresh,
+            soft_deletes: self.soft_deletes,
+            changelog: self.changelog,
+            holds: self.holds.clone(),
+            changed: false,
+        }
+    }
+
+    /// Whether what lanes share has changed since the last call.
+    pub fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// The primary key's columns under destination names.
+    pub fn key_columns(&self) -> Vec<String> {
+        self.identity
+            .key
+            .iter()
+            .map(|k| self.namer.get(k).unwrap_or(k).to_owned())
+            .collect()
     }
 
     /// Holds columns and cells back instead of stopping or rejecting rows
@@ -287,6 +325,7 @@ impl Shaper {
         for f in schema.fields() {
             let dest = self.namer.name(f.name());
             if let Some(c) = h.pending.remove(&dest) {
+                self.changed = true;
                 self.evolver.holding.insert(f.name().clone());
                 h.columns.insert(
                     f.name().clone(),
@@ -385,8 +424,10 @@ impl Shaper {
         Ok(changed)
     }
 
-    /// Called at each barrier: from now on, the schema policy applies.
-    pub fn seal(&mut self) {
+    /// Called at each barrier: from now on, the schema policy applies. True
+    /// if it didn't before.
+    pub fn seal(&mut self) -> bool {
+        let before = self.evolver.established();
         self.evolver.establish();
         if self.policy == Policy::IgnoreNew
             && self.evolver.established()
@@ -394,6 +435,7 @@ impl Shaper {
         {
             n.freeze();
         }
+        self.evolver.established() != before
     }
 
     /// Converts raw rows. On error, the schema is unchanged.
@@ -567,6 +609,7 @@ impl Shaper {
             return false;
         };
         if !started.is_empty() {
+            self.changed = true;
             let prior: HashMap<String, Field> = self
                 .delivered()
                 .or_else(|| self.current.clone())
@@ -597,6 +640,7 @@ impl Shaper {
         }
         let now = !h.started && (!cells.is_empty() || h.columns.values().any(|c| !c.discarded));
         h.started |= now;
+        self.changed |= now;
         self.holds = Some(h);
         now
     }
@@ -1024,6 +1068,7 @@ impl Shaper {
         }
         let schema = Arc::new(Schema::new_with_metadata(fields, md));
         if data {
+            self.changed |= self.current.as_ref() != Some(&schema);
             self.current = Some(schema.clone());
             self.fresh = true;
         }

@@ -48,7 +48,6 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 		// Unset is zero.
 		CommitInterval: open.GetCommitInterval().AsDuration(),
 		Lane:           int(open.GetLane()),
-		Lanes:          max(int(open.GetLanes()), 1),
 	}
 	for _, s := range open.GetStreams() {
 		cfg.Streams = append(cfg.Streams, destination.Stream{

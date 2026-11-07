@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -89,6 +90,9 @@ type ReadRequest struct {
 	// source until ctx is cancelled. Otherwise they complete once they've
 	// caught up with where their source was when the read started.
 	Continuous bool
+	// How many splits the read may read at a time (ADR-0027), a stream read
+	// whole counting as one; 0 is one. ReadSplits follows it.
+	Lanes int
 }
 
 // A changelog stream's typed batches (read with CDC) carry each record's
@@ -264,6 +268,146 @@ func (w whole) Complete(next []byte, added ...Split) error {
 	}
 	return w.out.Complete(w.stream, next)
 }
+
+// ReadSplit reads one split of a stream, from its state, emitting on out. It
+// returns once the split is complete, or with an error.
+type ReadSplit func(ctx context.Context, stream ConfiguredStream, split Split, out SplitEmitter) error
+
+// ReadSplits reads the request's streams with read, up to req.Lanes splits at
+// a time; a stream without splits is one split, the whole stream. Splits that
+// an emitter's ResumePoint or Complete adds join those waiting. It returns
+// once every split is read, or with the first error, which cancels the rest.
+func ReadSplits(ctx context.Context, req ReadRequest, out Emitter, read ReadSplit) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	q := &splitQueue{}
+	q.wake = sync.NewCond(&q.mu)
+	for _, cs := range req.Streams {
+		splits := cs.Splits
+		if len(splits) == 0 {
+			splits = []Split{{ID: WholeStream, State: cs.State}}
+		}
+		for _, sp := range splits {
+			q.waiting = append(q.waiting, queuedSplit{stream: cs, split: sp})
+		}
+	}
+	stop := context.AfterFunc(ctx, func() {
+		q.mu.Lock()
+		q.stopped = true
+		q.wake.Broadcast()
+		q.mu.Unlock()
+	})
+	defer stop()
+	var wg sync.WaitGroup
+	for range max(req.Lanes, 1) {
+		wg.Go(func() {
+			for {
+				next, ok := q.next()
+				if !ok {
+					return
+				}
+				em := queuedEmitter{SplitEmitter: out.Split(next.stream.Name, next.split.ID), q: q, stream: next.stream}
+				var e SplitEmitter = em
+				if f, ok := em.SplitEmitter.(SplitForwarder); ok {
+					e = queuedForwarder{em, f}
+				}
+				if err := read(ctx, next.stream, next.split, e); err != nil {
+					cancel(err)
+					q.done()
+					return
+				}
+				q.done()
+			}
+		})
+	}
+	wg.Wait()
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+type queuedSplit struct {
+	stream ConfiguredStream
+	split  Split
+}
+
+type splitQueue struct {
+	mu      sync.Mutex
+	wake    *sync.Cond
+	waiting []queuedSplit
+	reading int
+	stopped bool
+}
+
+// next returns the next split to read, waiting for one if another read may
+// add some; false once there are none, or the read has stopped.
+func (q *splitQueue) next() (queuedSplit, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for !q.stopped {
+		if len(q.waiting) > 0 {
+			s := q.waiting[0]
+			q.waiting = q.waiting[1:]
+			q.reading++
+			return s, true
+		}
+		if q.reading == 0 {
+			return queuedSplit{}, false
+		}
+		q.wake.Wait()
+	}
+	return queuedSplit{}, false
+}
+
+func (q *splitQueue) done() {
+	q.mu.Lock()
+	q.reading--
+	q.wake.Broadcast()
+	q.mu.Unlock()
+}
+
+func (q *splitQueue) add(stream ConfiguredStream, added []Split) {
+	if len(added) == 0 {
+		return
+	}
+	q.mu.Lock()
+	for _, sp := range added {
+		q.waiting = append(q.waiting, queuedSplit{stream: stream, split: sp})
+	}
+	q.wake.Broadcast()
+	q.mu.Unlock()
+}
+
+// queuedEmitter queues the splits a read adds, once the platform has them.
+type queuedEmitter struct {
+	SplitEmitter
+	q      *splitQueue
+	stream ConfiguredStream
+}
+
+func (e queuedEmitter) ResumePoint(state []byte, added ...Split) error {
+	if err := e.SplitEmitter.ResumePoint(state, added...); err != nil {
+		return err
+	}
+	e.q.add(e.stream, added)
+	return nil
+}
+
+func (e queuedEmitter) Complete(next []byte, added ...Split) error {
+	if err := e.SplitEmitter.Complete(next, added...); err != nil {
+		return err
+	}
+	e.q.add(e.stream, added)
+	return nil
+}
+
+type queuedForwarder struct {
+	queuedEmitter
+	f SplitForwarder
+}
+
+func (e queuedForwarder) Forward(batch arrowipc.Encoded) error { return e.f.Forward(batch) }
 
 // Progress says how far a read is behind its source, and how much longer
 // the source keeps what the read hasn't acknowledged. Nil fields are

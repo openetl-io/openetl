@@ -269,7 +269,7 @@ func (c *common) work(t T, p Process) error {
 		return err
 	}
 	defer a.close()
-	files, err := a.stage(e, kitStreams[0], []arrow.RecordBatch{b})
+	files, err := a.stage(e, kitStreams[0], 0, 1, []arrow.RecordBatch{b})
 	if err != nil {
 		return err
 	}

@@ -130,12 +130,12 @@ func (a *stagingArea) serve(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "", st.ModTime(), f)
 }
 
-// stage writes a stream's records in epoch e as Parquet files, and lets the
-// destination read them.
-func (a *stagingArea) stage(e *protocolv1.Epoch, stream string, batches []arrow.RecordBatch) ([]*protocolv1.StagedFile, error) {
+// stage writes a stream's records on a lane of lanes in epoch e as Parquet
+// files, named as the platform's are, and lets the destination read them.
+func (a *stagingArea) stage(e *protocolv1.Epoch, stream string, lane, lanes int, batches []arrow.RecordBatch) ([]*protocolv1.StagedFile, error) {
 	var files []*protocolv1.StagedFile
 	for k, b := range batches {
-		rel := fmt.Sprintf("%d/%d/%s/part-%05d.parquet", e.GetGeneration(), e.GetN(), stream, k)
+		rel := fmt.Sprintf("%d/%d/%s/part-%05d.parquet", e.GetGeneration(), e.GetN(), stream, k*lanes+lane)
 		var buf bytes.Buffer
 		tbl := array.NewTableFromRecords(b.Schema(), []arrow.RecordBatch{b})
 		err := pqarrow.WriteTable(tbl, &buf, max(b.NumRows(), 1), parquet.NewWriterProperties(), pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema()))

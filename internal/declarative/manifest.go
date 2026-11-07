@@ -183,6 +183,14 @@ type streamSpec struct {
 	Parent *struct {
 		Stream string `json:"stream"`
 	} `json:"parent"`
+	Partitions *struct {
+		Values string `json:"values"`
+		Range  *struct {
+			Start string `json:"start"`
+			End   string `json:"end"`
+			Step  string `json:"step"`
+		} `json:"range"`
+	} `json:"partitions"`
 	Errors []ruleSpec      `json:"errors"`
 	Schema json.RawMessage `json:"schema"`
 }
@@ -267,9 +275,21 @@ type stream struct {
 	pager   pager
 	inc     *incremental
 	parent  *stream
+	// Nil: read whole.
+	partitions *partitions
 	// The stream's own, then the manifest's.
 	rules  []*rule
 	schema *arrow.Schema
+}
+
+// partitions are a stream's splits: one read of it per value, or per step of a
+// range, each with its own place and floor, which requests see as partition.
+type partitions struct {
+	values *expr
+	// A range's partitions are {start, end}, in RFC 3339, from start up to
+	// end, by default now.
+	start, end *expr
+	step       time.Duration
 }
 
 type pager struct {
@@ -307,11 +327,15 @@ var (
 	claimVars    = []string{varConfig, varNow}
 )
 
-func withParent(vars []string, parent bool) []string {
-	if !parent {
-		return vars
+// forStream adds what a stream's expressions see beyond a place's own.
+func forStream(vars []string, parent, partitioned bool) []string {
+	if parent {
+		vars = append(slices.Clone(vars), varParent)
 	}
-	return append(slices.Clone(vars), varParent)
+	if partitioned {
+		vars = append(slices.Clone(vars), varPartition)
+	}
+	return vars
 }
 
 // Load parses a manifest, in YAML or JSON, and checks it: against the
@@ -658,45 +682,81 @@ func compileRules(cc *compiler, where string, specs []ruleSpec, vars []string) (
 
 var cursorKinds = []string{"datetime", "unix", "integer", "string"}
 
+func compilePartitions(cc *compiler, where string, s *streamSpec) (*partitions, error) {
+	p := s.Partitions
+	if p == nil {
+		return nil, nil
+	}
+	where += ": partitions"
+	if s.Parent != nil {
+		return nil, fmt.Errorf("%s: a child stream can't have partitions", where)
+	}
+	out := &partitions{}
+	var err error
+	if (p.Values == "") == (p.Range == nil) {
+		return nil, fmt.Errorf("%s: set either values or range", where)
+	}
+	if p.Values != "" {
+		out.values, err = cc.expr(where+".values", p.Values, claimVars, cel.ListType(cel.DynType))
+		return out, err
+	}
+	if out.step, err = time.ParseDuration(p.Range.Step); err != nil || out.step <= 0 {
+		return nil, fmt.Errorf("%s.range.step: %q isn't a positive duration", where, p.Range.Step)
+	}
+	if out.start, err = cc.expr(where+".range.start", p.Range.Start, claimVars, cel.TimestampType); err != nil {
+		return nil, err
+	}
+	if p.Range.End != "" {
+		if out.end, err = cc.expr(where+".range.end", p.Range.End, claimVars, cel.TimestampType); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func (c *Connector) compileStream(cc *compiler, s *streamSpec, parent *stream, httpRules []*rule) (*stream, error) {
 	where := "stream " + s.Name
 	child := parent != nil
+	vars := func(base []string) []string { return forStream(base, child, s.Partitions != nil) }
 	st := &stream{name: s.Name, primaryKey: s.PrimaryKey, method: s.Request.Method, idempotent: s.Request.Idempotent, parent: parent}
 	if st.method == "" {
 		st.method = "GET"
 	}
 	var err error
-	if st.path, err = cc.template(where+": request.path", s.Request.Path, withParent(requestVars, child)); err != nil {
+	if st.partitions, err = compilePartitions(cc, where, s); err != nil {
 		return nil, err
 	}
-	if st.params, err = namedTemplates(cc, where+": request.params", s.Request.Params, withParent(requestVars, child)); err != nil {
+	if st.path, err = cc.template(where+": request.path", s.Request.Path, vars(requestVars)); err != nil {
 		return nil, err
 	}
-	if st.headers, err = namedTemplates(cc, where+": request.headers", s.Request.Headers, withParent(requestVars, child)); err != nil {
+	if st.params, err = namedTemplates(cc, where+": request.params", s.Request.Params, vars(requestVars)); err != nil {
+		return nil, err
+	}
+	if st.headers, err = namedTemplates(cc, where+": request.headers", s.Request.Headers, vars(requestVars)); err != nil {
 		return nil, err
 	}
 	if s.Request.Body != "" {
 		if st.method == "GET" {
 			return nil, fmt.Errorf("%s: a GET request has no body", where)
 		}
-		if st.body, err = cc.expr(where+": request.body", s.Request.Body, withParent(requestVars, child)); err != nil {
+		if st.body, err = cc.expr(where+": request.body", s.Request.Body, vars(requestVars)); err != nil {
 			return nil, err
 		}
 	}
 	if s.Records != "" {
-		if st.records, err = cc.expr(where+": records", s.Records, withParent(responseVars, child), cel.ListType(cel.DynType)); err != nil {
+		if st.records, err = cc.expr(where+": records", s.Records, vars(responseVars), cel.ListType(cel.DynType)); err != nil {
 			return nil, err
 		}
 	}
 	if p := s.Paginator; p != nil {
 		st.pager = pager{kind: p.Type, param: p.Param, size: p.Size, sizeParam: p.SizeParam}
 		if p.Next != "" {
-			if st.pager.next, err = cc.expr(where+": paginator.next", p.Next, withParent(pagerVars, child)); err != nil {
+			if st.pager.next, err = cc.expr(where+": paginator.next", p.Next, vars(pagerVars)); err != nil {
 				return nil, err
 			}
 		}
 		if p.Stop != "" {
-			if st.pager.stop, err = cc.expr(where+": paginator.stop", p.Stop, withParent(pagerVars, child), cel.BoolType); err != nil {
+			if st.pager.stop, err = cc.expr(where+": paginator.stop", p.Stop, vars(pagerVars), cel.BoolType); err != nil {
 				return nil, err
 			}
 		}
@@ -730,7 +790,7 @@ func (c *Connector) compileStream(cc *compiler, s *streamSpec, parent *stream, h
 			return nil, fmt.Errorf("%s: incremental.type %q", where, inc.Type)
 		}
 	}
-	rules, err := compileRules(cc, where+": errors", s.Errors, withParent(responseVars, child))
+	rules, err := compileRules(cc, where+": errors", s.Errors, vars(responseVars))
 	if err != nil {
 		return nil, err
 	}

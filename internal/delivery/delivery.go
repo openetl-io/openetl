@@ -45,9 +45,11 @@ type Settings struct {
 	Require Level
 	// 0 disables.
 	CommitInterval time.Duration
-	// Bytes read since the last barrier; 0 disables.
-	CommitMaxBytes int64
-	Scope          destination.Scope
+	// Bytes read since the last barrier; 0 disables. Unless the pipeline sets
+	// it, it grows when commits can't keep up.
+	CommitMaxBytes    int64
+	CommitMaxBytesSet bool
+	Scope             destination.Scope
 	// How long a barrier waits for a resume point before it is forced; 0
 	// waits forever.
 	ResumePointTimeout time.Duration

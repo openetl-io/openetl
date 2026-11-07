@@ -1480,10 +1480,10 @@ func (*SinkPlan_Discard) isSinkPlan_Sink() {}
 
 func (*SinkPlan_Staged) isSinkPlan_Sink() {}
 
-// RunnerSink is a Go sink in the runner, fed by a FROM_ENGINE edge.
+// RunnerSink is a Go sink in the runner, fed by the FROM_ENGINE edges, one
+// per writer lane.
 type RunnerSink struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Edge          string                 `protobuf:"bytes,1,opt,name=edge,proto3" json:"edge,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1516,13 +1516,6 @@ func (x *RunnerSink) ProtoReflect() protoreflect.Message {
 // Deprecated: Use RunnerSink.ProtoReflect.Descriptor instead.
 func (*RunnerSink) Descriptor() ([]byte, []int) {
 	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{12}
-}
-
-func (x *RunnerSink) GetEdge() string {
-	if x != nil {
-		return x.Edge
-	}
-	return ""
 }
 
 // ParquetSink stages each epoch as Parquet files under url, and reports them
@@ -2862,10 +2855,9 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\aparquet\x18\x02 \x01(\v2\x1e.openetl.engine.v1.ParquetSinkH\x00R\aparquet\x12:\n" +
 	"\adiscard\x18\x03 \x01(\v2\x1e.openetl.engine.v1.DiscardSinkH\x00R\adiscard\x127\n" +
 	"\x06staged\x18\x04 \x01(\v2\x1d.openetl.engine.v1.StagedSinkH\x00R\x06stagedB\x06\n" +
-	"\x04sink\" \n" +
+	"\x04sink\"\x12\n" +
 	"\n" +
-	"RunnerSink\x12\x12\n" +
-	"\x04edge\x18\x01 \x01(\tR\x04edge\"\x1f\n" +
+	"RunnerSinkJ\x04\b\x01\x10\x02\"\x1f\n" +
 	"\vParquetSink\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\"0\n" +
 	"\n" +

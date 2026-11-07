@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -137,6 +138,9 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 		return err
 	}
 	preq := &protocolv1.ReadRequest{Config: p.config, Pipeline: req.Pipeline, Continuous: req.Continuous}
+	if req.Lanes > 0 && req.Lanes <= math.MaxUint32 {
+		preq.Lanes = uint32(req.Lanes)
+	}
 	for _, cs := range req.Streams {
 		preq.Streams = append(preq.Streams, configuredStream(cs))
 	}
@@ -284,6 +288,12 @@ func (s *Source) Splits(ctx context.Context, stream source.ConfiguredStream, end
 		return nil, fmt.Errorf("connector: splits of %s: %w", stream.Name, p.failure(errs.FromStatus(err)))
 	}
 	return splitsOf(resp.GetSplits()), nil
+}
+
+// Resplits says the connector splits a running split's remainder.
+func (s *Source) Resplits(ctx context.Context) bool {
+	p, err := s.proc(ctx)
+	return err == nil && p.spec.GetSource().GetResplit()
 }
 
 // Resplit asks a connector that splits a running split's remainder to; one

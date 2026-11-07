@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"time"
 
@@ -26,6 +27,8 @@ type writer struct {
 	stream grpc.BidiStreamingClient[protocolv1.WriteRequest, protocolv1.WriteResponse]
 	cancel context.CancelFunc
 	opened *protocolv1.WriteOpened
+	// Its lane, of the attempt's lanes.
+	lane, lanes int
 }
 
 // openWriter's stream lives until close or crash, not just ctx.
@@ -84,7 +87,11 @@ func lane0(e *protocolv1.Epoch, staged []byte) [][]byte {
 }
 
 func (w *writer) recover(e *protocolv1.Epoch, staged []byte) (protocolv1.Recovery, error) {
-	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Recover{Recover: &protocolv1.WriteRecover{Epoch: e, Staged: lane0(e, staged)}}})
+	return w.recoverLanes(e, lane0(e, staged))
+}
+
+func (w *writer) recoverLanes(e *protocolv1.Epoch, staged [][]byte) (protocolv1.Recovery, error) {
+	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Recover{Recover: &protocolv1.WriteRecover{Epoch: e, Staged: staged}}})
 	if err != nil {
 		return 0, err
 	}
@@ -154,7 +161,11 @@ func (w *writer) schemaApplied(schemas []*protocolv1.StreamSchema) (*protocolv1.
 }
 
 func (w *writer) commit(e *protocolv1.Epoch, staged []byte) error {
-	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: e, Staged: lane0(e, staged)}}})
+	return w.commitLanes(e, lane0(e, staged))
+}
+
+func (w *writer) commitLanes(e *protocolv1.Epoch, staged [][]byte) error {
+	resp, err := w.call(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: e, Staged: staged}}})
 	if err != nil {
 		return err
 	}
@@ -208,6 +219,9 @@ var dataFields = []arrow.Field{
 	{Name: "v", Type: arrow.BinaryTypes.String, Nullable: true},
 }
 
+// A column schemas add.
+var wField = arrow.Field{Name: "w", Type: arrow.BinaryTypes.String, Nullable: true}
+
 func metadataFields() []arrow.Field {
 	ts := &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}
 	return []arrow.Field{
@@ -251,8 +265,14 @@ func buildWideBatch(stream string, recs []record) arrow.RecordBatch {
 func build(stream string, recs []record, op string, wide bool) arrow.RecordBatch {
 	data := dataFields
 	if wide {
-		data = append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "w", Type: arrow.BinaryTypes.String, Nullable: true})
+		data = append(append([]arrow.Field{}, dataFields...), wField)
 	}
+	return buildData(stream, data, recs, op)
+}
+
+// buildData's records have the columns data, of the kit's data columns, w
+// and n: w is "w" and the id, and n the id.
+func buildData(stream string, data []arrow.Field, recs []record, op string) arrow.RecordBatch {
 	b := array.NewRecordBuilder(memory.DefaultAllocator, streamSchema(stream, data))
 	defer b.Release()
 	now := arrow.Timestamp(time.Now().UnixMicro())
@@ -260,8 +280,15 @@ func build(stream string, recs []record, op string, wide bool) arrow.RecordBatch
 	for _, r := range recs {
 		b.Field(0).(*array.Int64Builder).Append(r.id)
 		b.Field(1).(*array.StringBuilder).Append(r.v)
-		if wide {
-			b.Field(2).(*array.StringBuilder).Append("w" + strconv.FormatInt(r.id, 10))
+		for i := 2; i < m; i++ {
+			switch c := b.Field(i).(type) {
+			case *array.StringBuilder:
+				c.Append("w" + strconv.FormatInt(r.id, 10))
+			case *array.Int32Builder:
+				c.Append(int32(r.id & math.MaxInt32))
+			case *array.Int64Builder:
+				c.Append(r.id)
+			}
 		}
 		b.Field(m).(*array.FixedSizeBinaryBuilder).Append(rowID(stream, r))
 		b.Field(m + 1).(*array.StringBuilder).Append(op)

@@ -79,7 +79,7 @@ pub(crate) struct Conformed {
 /// When the evolver holds a column instead of stopping on its change, or
 /// sending one the destination can't take. Columns are named by their
 /// source names.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct HoldRules {
     pub unholdable: HashSet<String>,
     /// Columns whose type the destination can't change.
@@ -91,7 +91,7 @@ pub(crate) struct HoldRules {
     pub cells: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Evolver {
     policy: Policy,
     /// Under source names; a column versioned k times is `{name}__v{k}`.

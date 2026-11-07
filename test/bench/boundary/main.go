@@ -47,16 +47,19 @@ import (
 )
 
 var (
-	dsnFlag    = flag.String("dsn", cmp.Or(os.Getenv("OPENETL_TEST_POSTGRES_DSN"), "postgres://openetl:openetl@localhost:5432/openetl"), "Postgres for the dataset and for destination-postgres")
-	engineFlag = flag.String("engine", "target/release/openetl-engine", "the openetl-engine binary")
-	connFlag   = flag.String("connectors", "bin/connectors", "a directory with source-postgres and destination-postgres (make connectors)")
-	rowsFlag   = flag.Int("rows", 5_000_000, "rows in the dataset")
-	runsFlag   = flag.Int("runs", 3, "runs of each phase; the report shows medians")
-	replayFlag = flag.Int("replay-mb", 512, "MB of batches held in memory for the replay phases")
-	sizeFlag   = flag.String("size", "", "a job's size, xs to xl: every phase's engines and connectors run with the limits a runner gives it; empty: none")
-	neighbours = flag.Int("neighbours", 0, "instead of the phases, measure what a large snapshot does to this many small syncs on the machine")
-	unlimited  = flag.Bool("neighbours-unlimited", false, "with -neighbours, run them without their sizes' limits, to compare")
-	profile    = flag.String("cpuprofile", "", "write the runner's CPU profile to this file")
+	dsnFlag     = flag.String("dsn", cmp.Or(os.Getenv("OPENETL_TEST_POSTGRES_DSN"), "postgres://openetl:openetl@localhost:5432/openetl"), "Postgres for the dataset and for destination-postgres")
+	engineFlag  = flag.String("engine", "target/release/openetl-engine", "the openetl-engine binary")
+	connFlag    = flag.String("connectors", "bin/connectors", "a directory with source-postgres and destination-postgres (make connectors)")
+	rowsFlag    = flag.Int("rows", 5_000_000, "rows in the dataset")
+	runsFlag    = flag.Int("runs", 3, "runs of each phase; the report shows medians")
+	replayFlag  = flag.Int("replay-mb", 512, "MB of batches held in memory for the replay phases")
+	sizeFlag    = flag.String("size", "", "a job's size, xs to xl: every phase's engines and connectors run with the limits a runner gives it; empty: none")
+	neighbours  = flag.Int("neighbours", 0, "instead of the phases, measure what a large snapshot does to this many small syncs on the machine")
+	unlimited   = flag.Bool("neighbours-unlimited", false, "with -neighbours, run them without their sizes' limits, to compare")
+	lanesFlag   = flag.String("lanes", "", "instead of the phases, measure these counts of lanes, such as 1,2,4,8: the raw lane, and Postgres into Parquet and Iceberg")
+	laneBytes   = flag.Int64("lane-bytes", 2e9, "with -lanes, bytes of raw rows per lane")
+	icebergFlag = flag.String("iceberg", os.Getenv("ICEBERG_CONFIG"), "with -lanes, destination-iceberg's config; default $ICEBERG_CONFIG")
+	profile     = flag.String("cpuprofile", "", "write the runner's CPU profile to this file")
 )
 
 const (
@@ -119,6 +122,13 @@ func run(ctx context.Context) error {
 	}
 	if *neighbours > 0 {
 		return measureNeighbours(ctx, conn, bin, *neighbours)
+	}
+	if *lanesFlag != "" {
+		counts, err := parseLanes(*lanesFlag)
+		if err != nil {
+			return err
+		}
+		return measureLanes(ctx, conn, bin, counts)
 	}
 	idle, err := idleRSS(ctx, bin)
 	if err != nil {

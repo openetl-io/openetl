@@ -10,6 +10,8 @@ pub struct JobError {
     pub message: String,
     /// The runner closed its side of the job, so the engine exits.
     pub runner_gone: bool,
+    /// A lane found its writer lane gone, whose own error says why.
+    pub stopped: bool,
 }
 
 impl JobError {
@@ -18,6 +20,7 @@ impl JobError {
             code,
             message: message.into(),
             runner_gone: false,
+            stopped: false,
         }
     }
 
@@ -32,6 +35,13 @@ impl JobError {
     pub fn runner_gone(message: impl Into<String>) -> Self {
         Self {
             runner_gone: true,
+            ..Self::internal(message)
+        }
+    }
+
+    pub fn stopped(message: impl Into<String>) -> Self {
+        Self {
+            stopped: true,
             ..Self::internal(message)
         }
     }

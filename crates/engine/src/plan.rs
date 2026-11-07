@@ -36,8 +36,14 @@ pub struct Plan {
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
     /// Batches skip shaping, for measuring the boundary.
     pub passthrough: bool,
+    /// One edge per lane, in lane order.
     pub inbound: Vec<EdgePlan>,
     pub sink: Sink,
+    pub writer_lanes: usize,
+    pub key_groups: u32,
+    /// Each stream's: rows go to the writer lane owning their key's group,
+    /// not straight from their lane.
+    pub routed: Vec<bool>,
     /// Each stream's holds (ADR-0025); None where it holds nothing.
     pub holds: Vec<Option<HoldConfig>>,
     /// Each stream's replay of released holds.
@@ -152,11 +158,12 @@ fn holds(s: &StreamPlan) -> Result<(Option<HoldConfig>, Option<ReplayPlan>), Job
 
 #[derive(Debug)]
 pub enum Sink {
-    /// A Go sink in the runner, fed by an edge that carries every stream.
+    /// A Go sink in the runner, fed by an edge per writer lane, in order,
+    /// each carrying every stream.
     Runner {
-        edge: EdgePlan,
-        /// Each stream's index on the edge.
-        out_index: Vec<u32>,
+        edges: Vec<EdgePlan>,
+        /// By edge, each stream's index on it.
+        out_index: Vec<Vec<u32>>,
     },
     Parquet {
         url: String,
@@ -191,10 +198,10 @@ impl Plan {
                 s.operator
             )));
         }
-        let (lanes, writer_lanes) = (req.lanes.max(1), req.writer_lanes.max(1));
-        if lanes > 1 || writer_lanes > 1 {
+        let (lanes, writer_lanes) = (req.lanes.max(1) as usize, req.writer_lanes.max(1) as usize);
+        if writer_lanes > lanes {
             return Err(JobError::config(format!(
-                "{lanes} lanes and {writer_lanes} writer lanes; this engine runs one of each"
+                "{writer_lanes} writer lanes for {lanes} lanes"
             )));
         }
         if req.key_groups != 0 && !req.key_groups.is_power_of_two() {
@@ -291,31 +298,23 @@ impl Plan {
             .sink
             .and_then(|s| s.sink)
             .ok_or_else(|| JobError::config("the job has no sink"))?;
-        let sink_edge = match &sink {
-            sink_plan::Sink::Runner(r) => Some(r.edge.as_str()),
+        match &sink {
+            sink_plan::Sink::Runner(_) => {}
             sink_plan::Sink::Parquet(p) => {
                 openetl_formats::check(&p.url, &tables)
                     .map_err(|e| JobError::config(e.to_string()))?;
-                None
             }
-            sink_plan::Sink::Staged(_) | sink_plan::Sink::Discard(_) => None,
-        };
+            sink_plan::Sink::Staged(_) | sink_plan::Sink::Discard(_) => {}
+        }
 
         let mut ids = HashSet::new();
-        let mut inbound = Vec::new();
-        let mut outbound = None;
-        let mut fed = vec![0; req.streams.len()];
+        let mut inbound: Vec<Option<EdgePlan>> = (0..lanes).map(|_| None).collect();
+        let mut outbound: Vec<Option<EdgePlan>> = (0..writer_lanes).map(|_| None).collect();
         for e in &req.edges {
             if e.id.is_empty() || !ids.insert(e.id.as_str()) {
                 return Err(JobError::config(format!(
                     "edge id {:?} is empty or repeated",
                     e.id
-                )));
-            }
-            if e.lane != 0 {
-                return Err(JobError::config(format!(
-                    "edge {} is on lane {}, and the job has one",
-                    e.id, e.lane
                 )));
             }
             let mut streams = Vec::with_capacity(e.streams.len());
@@ -335,46 +334,73 @@ impl Plan {
                 id: e.id.clone(),
                 streams,
             };
-            match e.direction() {
-                EdgeDirection::ToEngine => {
-                    for &i in &edge.streams {
-                        fed[i] += 1;
-                    }
-                    inbound.push(edge);
-                }
-                EdgeDirection::FromEngine if Some(e.id.as_str()) == sink_edge => {
-                    outbound = Some(edge)
-                }
-                EdgeDirection::FromEngine => {
+            let slots = match e.direction() {
+                EdgeDirection::ToEngine => &mut inbound,
+                EdgeDirection::FromEngine if !matches!(sink, sink_plan::Sink::Runner(_)) => {
                     return Err(JobError::config(format!(
                         "edge {} leaves the engine but isn't the sink's",
                         e.id
                     )));
                 }
+                EdgeDirection::FromEngine => &mut outbound,
                 EdgeDirection::Unspecified => {
                     return Err(JobError::config(format!("edge {} has no direction", e.id)));
                 }
+            };
+            let Some(slot) = slots.get_mut(e.lane as usize) else {
+                return Err(JobError::config(format!(
+                    "edge {} is on lane {}, and the job has {} of its kind",
+                    e.id,
+                    e.lane,
+                    slots.len()
+                )));
+            };
+            if slot.replace(edge).is_some() {
+                return Err(JobError::config(format!(
+                    "two edges on lane {} of the same direction",
+                    e.lane
+                )));
             }
         }
-        if let Some(i) = fed.iter().position(|&n| n != 1) {
-            return Err(JobError::config(format!(
-                "stream {:?} must arrive on exactly one edge",
-                req.streams[i].name
-            )));
+        let inbound = inbound
+            .into_iter()
+            .enumerate()
+            .map(|(lane, e)| e.ok_or_else(|| JobError::config(format!("lane {lane} has no edge"))))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (i, s) in req.streams.iter().enumerate() {
+            if inbound.iter().any(|e| !e.streams.contains(&i)) {
+                return Err(JobError::config(format!(
+                    "stream {:?} must arrive on every lane's edge",
+                    s.name
+                )));
+            }
         }
         let sink = match sink {
-            sink_plan::Sink::Runner(r) => {
-                let edge = outbound.ok_or_else(|| {
-                    JobError::config(format!("the sink's edge {:?} isn't planned", r.edge))
-                })?;
-                if edge.streams.len() != names.len() {
-                    return Err(JobError::config("the sink's edge must carry every stream"));
+            sink_plan::Sink::Runner(_) => {
+                let edges = outbound
+                    .into_iter()
+                    .enumerate()
+                    .map(|(lane, e)| {
+                        e.ok_or_else(|| {
+                            JobError::config(format!("the sink has no edge on lane {lane}"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut out_index = Vec::with_capacity(edges.len());
+                for edge in &edges {
+                    if edge.streams.len() != names.len() {
+                        return Err(JobError::config(format!(
+                            "the sink's edge {} must carry every stream",
+                            edge.id
+                        )));
+                    }
+                    let mut index = vec![0; names.len()];
+                    for (pos, &i) in edge.streams.iter().enumerate() {
+                        index[i] = pos as u32;
+                    }
+                    out_index.push(index);
                 }
-                let mut out_index = vec![0; names.len()];
-                for (pos, &i) in edge.streams.iter().enumerate() {
-                    out_index[i] = pos as u32;
-                }
-                Sink::Runner { edge, out_index }
+                Sink::Runner { edges, out_index }
             }
             sink_plan::Sink::Parquet(p) => Sink::Parquet { url: p.url },
             sink_plan::Sink::Staged(s) => {
@@ -428,6 +454,16 @@ impl Plan {
             passthrough: req.passthrough,
             inbound,
             sink,
+            writer_lanes,
+            key_groups: match req.key_groups {
+                0 => 256,
+                n => n,
+            },
+            routed: req
+                .streams
+                .iter()
+                .map(|s| s.routing() == Routing::KeyGroup)
+                .collect(),
             holds: holds_,
             replays,
             held_url,
@@ -487,7 +523,7 @@ pub(crate) mod tests {
                 ),
             ],
             sink: Some(SinkPlan {
-                sink: Some(sink_plan::Sink::Runner(RunnerSink { edge: "out".into() })),
+                sink: Some(sink_plan::Sink::Runner(RunnerSink {})),
             }),
             limits: None,
             restored_snapshots: Vec::new(),
@@ -562,11 +598,72 @@ pub(crate) mod tests {
         let p = Plan::from_request(request(&["a", "b", "c"])).unwrap();
         assert_eq!(p.inbound.len(), 1);
         assert_eq!(p.inbound[0].streams, vec![0, 1, 2]);
-        let Sink::Runner { edge, out_index } = p.sink else {
+        let Sink::Runner { edges, out_index } = p.sink else {
             panic!("{:?}", p.sink)
         };
-        assert_eq!(edge.streams, vec![2, 1, 0]);
-        assert_eq!(out_index, vec![2, 1, 0]);
+        assert_eq!(edges[0].streams, vec![2, 1, 0]);
+        assert_eq!(out_index, vec![vec![2, 1, 0]]);
+    }
+
+    pub(crate) fn lanes_request(streams: &[&str], lanes: u32, writers: u32) -> StartJobRequest {
+        let mut req = request(streams);
+        req.lanes = lanes;
+        req.writer_lanes = writers;
+        req.edges.clear();
+        for l in 0..lanes {
+            let mut e = edge(&format!("in-{l}"), EdgeDirection::ToEngine, streams);
+            e.lane = l;
+            req.edges.push(e);
+        }
+        for w in 0..writers {
+            let mut e = edge(&format!("out-{w}"), EdgeDirection::FromEngine, streams);
+            e.lane = w;
+            req.edges.push(e);
+        }
+        req
+    }
+
+    #[test]
+    fn lanes_take_an_edge_each_in_lane_order() {
+        let mut req = lanes_request(&["a", "b"], 3, 2);
+        req.edges.reverse();
+        let p = Plan::from_request(req).unwrap();
+        let ids: Vec<_> = p.inbound.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["in-0", "in-1", "in-2"]);
+        let Sink::Runner { edges, .. } = &p.sink else {
+            panic!("{:?}", p.sink)
+        };
+        let ids: Vec<_> = edges.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["out-0", "out-1"]);
+        assert_eq!(p.writer_lanes, 2);
+        assert_eq!(p.key_groups, 256);
+    }
+
+    #[test]
+    fn checks_lanes_and_their_edges() {
+        let refused = |req: StartJobRequest, what: &str| {
+            let e = Plan::from_request(req).unwrap_err().message;
+            assert!(e.contains(what), "{e}");
+        };
+        refused(lanes_request(&["a"], 1, 2), "2 writer lanes for 1 lanes");
+        let mut req = lanes_request(&["a"], 2, 1);
+        req.edges.remove(1);
+        refused(req, "lane 1 has no edge");
+        let mut req = lanes_request(&["a"], 2, 2);
+        req.edges.pop();
+        refused(req, "the sink has no edge on lane 1");
+        let mut req = lanes_request(&["a"], 2, 1);
+        req.edges[1].lane = 0;
+        refused(req, "two edges on lane 0");
+        let mut req = lanes_request(&["a"], 2, 1);
+        req.edges[1].lane = 5;
+        refused(req, "on lane 5");
+        let mut req = lanes_request(&["a", "b"], 2, 1);
+        req.edges[1].streams.pop();
+        refused(req, "must arrive on every lane's edge");
+        let mut req = lanes_request(&["a"], 2, 2);
+        req.key_groups = 100;
+        refused(req, "not a power of two");
     }
 
     #[test]

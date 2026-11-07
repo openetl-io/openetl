@@ -83,6 +83,7 @@ func (p *Parquet) Capabilities() destination.Capabilities {
 		DefaultCommitInterval: time.Minute,
 		MinCommitInterval:     time.Second,
 		NanosecondTimestamps:  true,
+		WriterLanes:           maxWriterLanes,
 	}
 }
 
@@ -120,6 +121,9 @@ type parquetWriter struct {
 	root string
 }
 
+// The most writer lanes an attempt writes Parquet with.
+const maxWriterLanes = 16
+
 var errEngineWrites = errors.New("parquet: the engine writes this destination's data")
 
 func (w *parquetWriter) Write(context.Context, destination.Epoch, string, arrow.RecordBatch) error {
@@ -131,11 +135,7 @@ func (w *parquetWriter) PreCommit(context.Context, destination.Epoch) (destinati
 }
 
 func (w *parquetWriter) Commit(_ context.Context, e destination.Epoch, staged []destination.Staged) (destination.Committed, error) {
-	s, err := destination.One(staged)
-	if err != nil {
-		return destination.Committed{}, err
-	}
-	d, err := w.descriptor(e, s)
+	d, err := w.descriptors(e, staged)
 	if err != nil {
 		return destination.Committed{}, err
 	}
@@ -149,14 +149,10 @@ func (w *parquetWriter) Commit(_ context.Context, e destination.Epoch, staged []
 }
 
 func (w *parquetWriter) Recover(_ context.Context, _ uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
-	s, err := destination.One(staged)
-	if err != nil {
-		return 0, err
-	}
 	if e.IsZero() {
 		return destination.Applied, nil
 	}
-	d, err := w.descriptor(e, s)
+	d, err := w.descriptors(e, staged)
 	if err != nil {
 		return 0, err
 	}
@@ -213,6 +209,30 @@ func (w *parquetWriter) Recover(_ context.Context, _ uint64, e destination.Epoch
 }
 
 func (w *parquetWriter) Close(context.Context) error { return nil }
+
+// descriptors is every writer lane's descriptor of an epoch as one: a stream's
+// files on every lane, under its one marker.
+func (w *parquetWriter) descriptors(e destination.Epoch, staged []destination.Staged) (descriptor, error) {
+	var all descriptor
+	at := map[string]int{}
+	for _, s := range staged {
+		d, err := w.descriptor(e, s)
+		if err != nil {
+			return all, err
+		}
+		all.Generation, all.Epoch, all.Staging = d.Generation, d.Epoch, d.Staging
+		for _, st := range d.Streams {
+			i, ok := at[st.Stream]
+			if !ok {
+				i = len(all.Streams)
+				at[st.Stream] = i
+				all.Streams = append(all.Streams, stagedStream{Stream: st.Stream, Marker: st.Marker})
+			}
+			all.Streams[i].Files = append(all.Streams[i].Files, st.Files...)
+		}
+	}
+	return all, nil
+}
 
 func (w *parquetWriter) descriptor(e destination.Epoch, s destination.Staged) (descriptor, error) {
 	var d descriptor
