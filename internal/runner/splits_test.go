@@ -280,7 +280,7 @@ func (p plainSource) Splits(ctx context.Context, s source.ConfiguredStream, ende
 // An attempt runs no more lanes than it has splits to read, and the source
 // hears how many.
 func TestAnAttemptsLanesFollowItsSplits(t *testing.T) {
-	src := &laneSource{ids: []string{"a", "b"}}
+	src := &laneSource{ids: []string{"a", "b"}, meet: make(chan struct{})}
 	flow := &laneFlow{Passthrough: runner.Passthrough{Convert: columnless}}
 	if _, err := runner.RunAttempt(t.Context(), laneJob(plainSource{src}, flow, 4, []string{"id"})); err != nil {
 		t.Fatal(err)
