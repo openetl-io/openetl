@@ -1,0 +1,51 @@
+# The default pool's runners, scaled on what's placed on them or waits for
+# room, in vCPUs and in bytes, over what one runner takes. Demand bound for
+# pods isn't counted: the launcher makes those, and the node autoscaler finds
+# them room. Every orchestrator exports the same values, so max by size counts
+# them once, and or vector(0) keeps a sum from going empty when nothing waits.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: openetl-runner-default
+  labels:
+    app.kubernetes.io/name: openetl
+    app.kubernetes.io/component: runner
+    openetl.io/pool: default
+spec:
+  scaleTargetRef:
+    name: openetl-runner-default
+  # A pool with a launcher sends every job to pods while it has no runner, so
+  # it never scales from zero.
+  minReplicaCount: 1
+  maxReplicaCount: 20
+  pollingInterval: 15
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # A runner goes after ten minutes of less demand, one a minute, and
+          # drains first.
+          stabilizationWindowSeconds: 600
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: prometheus
+      name: cpu
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc
+        query: |
+          (sum(max by (size) (openetl_placement_cpu_reserved{data_plane="default", pool="default", runs_on="runner"})) or vector(0))
+          + (sum(max by (size) (openetl_placement_cpu_pending{data_plane="default", pool="default", runs_on="runner"})) or vector(0))
+        # A runner's 4 vCPUs less its reserve.
+        threshold: "3.5"
+    - type: prometheus
+      name: memory
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc
+        query: |
+          (sum(max by (size) (openetl_placement_memory_reserved_bytes{data_plane="default", pool="default", runs_on="runner"})) or vector(0))
+          + (sum(max by (size) (openetl_placement_memory_pending_bytes{data_plane="default", pool="default", runs_on="runner"})) or vector(0))
+        # A runner's 8 GiB less its reserve, 7.5 GiB.
+        threshold: "8053063680"

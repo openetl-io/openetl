@@ -1,0 +1,165 @@
+# The default pool's pod launcher. Jobs of size m and up, and any no runner of
+# the pool could take, each run in a pod of their own, made from the
+# PodTemplate openetl-attempt-default with the job's size as its requests and
+# limits. The launcher deletes a pod once its attempt ends.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openetl-launcher
+  labels:
+    app.kubernetes.io/name: openetl
+    app.kubernetes.io/component: launcher
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openetl-launcher
+  labels:
+    app.kubernetes.io/name: openetl
+    app.kubernetes.io/component: launcher
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, list, delete]
+  - apiGroups: [""]
+    resources: [podtemplates]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openetl-launcher
+  labels:
+    app.kubernetes.io/name: openetl
+    app.kubernetes.io/component: launcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openetl-launcher
+subjects:
+  - kind: ServiceAccount
+    name: openetl-launcher
+---
+# The launcher reads it when it starts; restart the launcher after changing it.
+# It adds the attempt, labels, resources and node constraints.
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: openetl-attempt-default
+  labels:
+    app.kubernetes.io/name: openetl
+    app.kubernetes.io/component: launcher
+template:
+  metadata:
+    labels:
+      app.kubernetes.io/name: openetl
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9464"
+  spec:
+    automountServiceAccountToken: false
+    securityContext:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: runner
+        image: openetl
+        args: [runner]
+        envFrom:
+          - configMapRef:
+              name: openetl
+          - secretRef:
+              name: openetl-runner
+        ports:
+          - name: metrics
+            containerPort: 9464
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        volumeMounts:
+          - name: state
+            mountPath: /var/lib/openetl
+          - name: tmp
+            mountPath: /tmp
+    volumes:
+      - name: state
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openetl-launcher-default
+  labels:
+    app.kubernetes.io/name: openetl
+    app.kubernetes.io/component: launcher
+    openetl.io/pool: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openetl
+      app.kubernetes.io/component: launcher
+      openetl.io/pool: default
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openetl
+        app.kubernetes.io/component: launcher
+        openetl.io/pool: default
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+    spec:
+      serviceAccountName: openetl-launcher
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: launcher
+          image: openetl
+          args: [runner]
+          envFrom:
+            - configMapRef:
+                name: openetl
+            - secretRef:
+                name: openetl-runner
+          env:
+            - name: OPENETL_POOL
+              value: default
+            - name: OPENETL_LAUNCHER
+              value: kubernetes
+            - name: OPENETL_POD_TEMPLATE
+              value: podtemplate/openetl-attempt-default
+            - name: OPENETL_POD_MIN_SIZE
+              value: m
+          ports:
+            - name: metrics
+              containerPort: 9464
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/openetl
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

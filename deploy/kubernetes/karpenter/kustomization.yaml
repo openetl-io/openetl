@@ -1,0 +1,38 @@
+# Sends the default pool's runners and attempts' pods to the node pools in
+# nodepools.yaml, which aren't part of it: they have no namespace.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      kind: Deployment
+      name: openetl-runner-default
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: openetl-runner-default
+      spec:
+        template:
+          spec:
+            nodeSelector:
+              openetl.io/nodes: runners
+            tolerations:
+              - key: openetl.io/nodes
+                value: runners
+                effect: NoSchedule
+  - target:
+      kind: PodTemplate
+      name: openetl-attempt-default
+    patch: |
+      apiVersion: v1
+      kind: PodTemplate
+      metadata:
+        name: openetl-attempt-default
+      template:
+        spec:
+          nodeSelector:
+            openetl.io/nodes: attempts
+          tolerations:
+            - key: openetl.io/nodes
+              value: attempts
+              effect: NoSchedule

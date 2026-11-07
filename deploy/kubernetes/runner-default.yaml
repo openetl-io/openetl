@@ -1,0 +1,72 @@
+# The default pool's shared runners. A runner places jobs on itself up to its
+# limits less OPENETL_RESERVE (0.5 vCPU and 512 MiB), so its requests are its
+# limits. KEDA scales them (keda/). A runner told to stop drains its jobs to a
+# checkpoint first: up to 2 minutes for a sync's, 10 for a stream's.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openetl-runner-default
+  labels:
+    app.kubernetes.io/name: openetl
+    app.kubernetes.io/component: runner
+    openetl.io/pool: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openetl
+      app.kubernetes.io/component: runner
+      openetl.io/pool: default
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openetl
+        app.kubernetes.io/component: runner
+        openetl.io/pool: default
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 630
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runner
+          image: openetl
+          args: [runner]
+          envFrom:
+            - configMapRef:
+                name: openetl
+            - secretRef:
+                name: openetl-runner
+          env:
+            - name: OPENETL_POOL
+              value: default
+          ports:
+            - name: metrics
+              containerPort: 9464
+          resources:
+            requests:
+              cpu: "4"
+              memory: 8Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/openetl
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

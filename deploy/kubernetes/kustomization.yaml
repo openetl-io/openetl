@@ -1,0 +1,22 @@
+# openetl on Kubernetes without the operator: the control plane, and the
+# default pool's runners and pod launcher. README.md says what to create
+# first, and how to scale.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: openetl
+resources:
+  - config.yaml
+  - server.yaml
+  - orchestrator.yaml
+  - runner-default.yaml
+  - launcher-default.yaml
+# KEDA scales runners on the placer's metrics; Karpenter's node pools take
+# attempts' pods and runners (apply karpenter/nodepools.yaml first).
+# components:
+#   - keda
+#   - karpenter
+images:
+  # openetld's image, from make image; kustomize edit set image
+  # openetl=REGISTRY/openetl:TAG sets yours.
+  - name: openetl
+    newTag: dev
