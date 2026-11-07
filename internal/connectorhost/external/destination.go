@@ -108,7 +108,6 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		Generation: cfg.Generation,
 		Scope:      protocolv1.CommitScope(cfg.Scope), //nolint:gosec // small
 		Lane:       uint32(cfg.Lane),                  //nolint:gosec // small
-		Lanes:      uint32(cfg.Lanes),                 //nolint:gosec // small
 	}
 	if cfg.CommitInterval > 0 {
 		open.CommitInterval = durationpb.New(cfg.CommitInterval)

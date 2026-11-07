@@ -3,7 +3,8 @@
 //!
 //! Layout under the sink's root, for generation `g` and epoch `N`, where
 //! `{dir}` is the stream's destination table:
-//! - `_openetl/staging/{g}/{N}/{dir}/part-{k}.parquet`: staged, not visible
+//! - `_openetl/staging/{g}/{N}/{dir}/part-{k}.parquet`: staged, not visible;
+//!   writer lane `l` of `n` writes the `k` with `k mod n == l`
 //! - `{dir}/{N:020}-g{g:020}-{k:05}.parquet`: the name a commit gives it
 //! - `_openetl/loads/{dir}/{N:020}-g{g:020}`: the stream's commit marker
 
@@ -79,6 +80,8 @@ pub struct StagedFile {
 pub struct ParquetStaging {
     root: PathBuf,
     generation: u64,
+    lane: usize,
+    lanes: usize,
     props: WriterProperties,
     streams: Vec<Stream>,
     sealed: BTreeMap<u64, Vec<StagedStream>>,
@@ -108,6 +111,8 @@ impl ParquetStaging {
         generation: u64,
         first_epoch: u64,
         streams: &[(String, String)],
+        lane: usize,
+        lanes: usize,
     ) -> Result<Self, Error> {
         let dirs: Vec<String> = streams.iter().map(|(_, d)| d.clone()).collect();
         let root = check(url, &dirs)?;
@@ -118,6 +123,8 @@ impl ParquetStaging {
         Ok(Self {
             root: PathBuf::from(root),
             generation,
+            lane,
+            lanes,
             props,
             streams: streams
                 .iter()
@@ -145,9 +152,14 @@ impl ParquetStaging {
         }
         let part = match &mut st.part {
             Some(p) => p,
-            None => st
-                .part
-                .insert(open(&self.root, self.generation, &self.props, st, batch)?),
+            None => st.part.insert(open(
+                &self.root,
+                self.generation,
+                st.files.len() * self.lanes + self.lane,
+                &self.props,
+                st,
+                batch,
+            )?),
         };
         part.writer.write(batch).map_err(pq_err(&part.path))?;
         part.file.rows += batch.num_rows() as u64;
@@ -241,11 +253,12 @@ fn check_name(s: &str) -> Result<(), Error> {
 fn open(
     root: &Path,
     generation: u64,
+    k: usize,
     props: &WriterProperties,
     st: &Stream,
     batch: &RecordBatch,
 ) -> Result<Part, Error> {
-    let (name, epoch, k) = (&st.dir, st.epoch, st.files.len());
+    let (name, epoch) = (&st.dir, st.epoch);
     let dir = format!("{RESERVED}/staging/{generation}/{epoch}/{name}");
     fs::create_dir_all(root.join(&dir)).map_err(io_err(&root.join(&dir)))?;
     let staged = format!("{dir}/part-{k:05}.parquet");
@@ -325,7 +338,7 @@ mod tests {
             .iter()
             .map(|s| (s.to_string(), s.to_string()))
             .collect();
-        ParquetStaging::new(&format!("file://{}", dir.display()), 3, 5, &names).unwrap()
+        ParquetStaging::new(&format!("file://{}", dir.display()), 3, 5, &names, 0, 1).unwrap()
     }
 
     fn read(path: &Path) -> Vec<RecordBatch> {
@@ -442,14 +455,21 @@ mod tests {
     fn rejects_bad_urls_and_stream_names() {
         for url in ["s3://b/p", "file://relative", "/abs"] {
             assert!(matches!(
-                ParquetStaging::new(url, 1, 1, &[]),
+                ParquetStaging::new(url, 1, 1, &[], 0, 1),
                 Err(Error::Config(_))
             ));
         }
         for name in ["", ".", "..", "_openetl", "a/b", "a b"] {
             assert!(
                 matches!(
-                    ParquetStaging::new("file:///tmp", 1, 1, &[("s".into(), name.to_string())]),
+                    ParquetStaging::new(
+                        "file:///tmp",
+                        1,
+                        1,
+                        &[("s".into(), name.to_string())],
+                        0,
+                        1
+                    ),
                     Err(Error::Config(_))
                 ),
                 "{name:?}"

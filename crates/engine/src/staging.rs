@@ -2,7 +2,8 @@
 //! for a Spark transform's inputs. Each stream's batches in epoch N go to
 //! `{g}/{N}/{stream}/part-{k}.parquet` below the sink's URL, or
 //! `{g}/{N}/{dir}/{stream}/part-{k}.parquet` with a dir, with the stream's
-//! name percent-encoded, and the epoch's EpochReady lists them.
+//! name percent-encoded, and the epoch's EpochReady lists them. Writer lane
+//! `l` of `n` writes parts `k` with `k mod n == l`.
 
 use std::collections::BTreeMap;
 
@@ -31,6 +32,8 @@ pub struct Staging {
     /// Empty for none.
     dir: String,
     generation: u64,
+    lane: u32,
+    lanes: usize,
     props: WriterProperties,
     streams: Vec<Stream>,
     sealed: BTreeMap<u64, Vec<StagedStream>>,
@@ -59,6 +62,8 @@ impl Staging {
         generation: u64,
         first_epoch: u64,
         streams: &[String],
+        lane: usize,
+        lanes: usize,
     ) -> Result<Self, JobError> {
         let props = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
@@ -68,6 +73,8 @@ impl Staging {
             location: Location::open(url, "staging URL")?,
             dir: dir.to_owned(),
             generation,
+            lane: lane as u32,
+            lanes,
             props,
             streams: streams
                 .iter()
@@ -99,6 +106,7 @@ impl Staging {
                 &self.location,
                 &self.dir,
                 self.generation,
+                st.files.len() * self.lanes + self.lane as usize,
                 &self.props,
                 st,
                 batch.schema(),
@@ -134,7 +142,7 @@ impl Staging {
         self.sealed.entry(epoch).or_default().push(StagedStream {
             stream: st.name.clone(),
             files,
-            lane: 0,
+            lane: self.lane,
         });
         Ok(bytes)
     }
@@ -172,6 +180,7 @@ fn open(
     location: &Location,
     dir: &str,
     generation: u64,
+    part: usize,
     props: &WriterProperties,
     st: &Stream,
     schema: SchemaRef,
@@ -181,7 +190,7 @@ fn open(
         parts.push(dir.to_owned());
     }
     parts.push(st.name.clone());
-    parts.push(format!("part-{:05}.parquet", st.files.len()));
+    parts.push(format!("part-{part:05}.parquet"));
     let rel = Path::from_iter(parts);
     let path = Path::from_iter(location.prefix.parts().chain(rel.parts()));
     let out = BufWriter::new(location.store.clone(), path);
@@ -254,7 +263,7 @@ mod tests {
     async fn stages_each_streams_epochs_and_drops_what_no_barrier_ends() {
         let dir = tempfile::tempdir().unwrap();
         let url = format!("file://{}/s", dir.path().display());
-        let mut st = Staging::open(&url, "", 3, 5, &["a/b".into(), "c".into()]).unwrap();
+        let mut st = Staging::open(&url, "", 3, 5, &["a/b".into(), "c".into()], 0, 1).unwrap();
         st.write(0, &batch(&[1, 2])).await.unwrap();
         st.write(0, &batch(&[3])).await.unwrap();
         // A new schema starts a new file.
@@ -310,10 +319,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_writer_lanes_parts_are_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}/s", dir.path().display());
+        let mut st = Staging::open(&url, "", 2, 7, &["a".into()], 1, 3).unwrap();
+        st.write(0, &batch(&[1])).await.unwrap();
+        let wide = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Utf8, true),
+        ]));
+        let b = RecordBatch::try_new(
+            wide,
+            vec![
+                Arc::new(Int64Array::from(vec![2])),
+                Arc::new(StringArray::from(vec!["x"])),
+            ],
+        )
+        .unwrap();
+        st.write(0, &b).await.unwrap();
+        st.seal(0).await.unwrap();
+        let seven = st.take(7);
+        assert_eq!(seven[0].lane, 1);
+        let paths: Vec<_> = seven[0].files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["2/7/a/part-00001.parquet", "2/7/a/part-00004.parquet"]
+        );
+    }
+
+    #[tokio::test]
     async fn stages_in_each_epochs_dir() {
         let dir = tempfile::tempdir().unwrap();
         let url = format!("file://{}/s", dir.path().display());
-        let mut st = Staging::open(&url, "in", 2, 7, &["a".into()]).unwrap();
+        let mut st = Staging::open(&url, "in", 2, 7, &["a".into()], 0, 1).unwrap();
         st.write(0, &batch(&[1])).await.unwrap();
         st.seal(0).await.unwrap();
         let seven = st.take(7);

@@ -29,6 +29,7 @@ import (
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/worker"
 	"github.com/openetl-io/openetl/internal/secretstore"
@@ -255,6 +256,9 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 		}
 		defer func() { _ = fl.Close() }()
 		job.Flink, job.Bridge = fl, a.Bridge
+	}
+	if size != (resources.Size{}) && job.Transform == nil && job.Flink == nil {
+		job.Lanes = size.Threads()
 	}
 	engine := a.Engine
 	engine.Logger = log.With("component", "engine")

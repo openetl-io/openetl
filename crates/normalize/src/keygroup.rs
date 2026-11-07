@@ -27,9 +27,10 @@ use arrow_array::types::{
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type,
     UInt32Type, UInt64Type,
 };
-use arrow_array::{Array, GenericByteArray, RecordBatch};
+use arrow_array::{Array, GenericByteArray, RecordBatch, UInt32Array};
 use arrow_buffer::ArrowNativeType;
 use arrow_schema::{ArrowError, DataType, Field, TimeUnit};
+use arrow_select::take::take_record_batch;
 use twox_hash::XxHash3_64;
 
 use crate::{EXTENSION_NAME_KEY, JSON_EXTENSION};
@@ -76,6 +77,27 @@ pub fn key_groups(
         out.push((XxHash3_64::oneshot(&buf) % u64::from(groups)) as u32);
     }
     Ok(out)
+}
+
+/// `batch`'s rows by the part owning their key's group, of `parts` contiguous
+/// ranges of `groups`; None for a part without rows. Rows keep their order
+/// within a part.
+pub fn by_key_group(
+    batch: &RecordBatch,
+    key: &[String],
+    groups: u32,
+    parts: usize,
+) -> Result<Vec<Option<RecordBatch>>, ArrowError> {
+    let mut rows = vec![Vec::new(); parts];
+    for (row, g) in key_groups(batch, key, groups)?.into_iter().enumerate() {
+        rows[g as usize * parts / groups as usize].push(row as u32);
+    }
+    rows.into_iter()
+        .map(|r| match r.is_empty() {
+            true => Ok(None),
+            false => take_record_batch(batch, &UInt32Array::from(r)).map(Some),
+        })
+        .collect()
 }
 
 fn hashable(dt: &DataType) -> bool {
@@ -292,6 +314,30 @@ mod tests {
 
     use super::*;
     use crate::widens;
+
+    #[test]
+    fn parts_own_contiguous_ranges_and_keep_order() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let ids: Vec<i64> = (0..1000).collect();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(ids))]).unwrap();
+        let key = ["id".to_string()];
+        let parts = by_key_group(&batch, &key, 256, 4).unwrap();
+        assert_eq!(parts.len(), 4);
+        let mut seen = 0;
+        for (p, part) in parts.iter().enumerate() {
+            let part = part.as_ref().unwrap();
+            seen += part.num_rows();
+            let groups = key_groups(part, &key, 256).unwrap();
+            assert!(groups.iter().all(|g| *g as usize * 4 / 256 == p));
+            let ids = part
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            assert!(ids.values().windows(2).all(|w| w[0] < w[1]));
+        }
+        assert_eq!(seen, 1000);
+    }
 
     fn groups(cols: &[(&str, ArrayRef)], n: u32) -> Vec<u32> {
         let fields: Vec<Field> = cols

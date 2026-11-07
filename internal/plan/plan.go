@@ -57,7 +57,7 @@ func Settings(p *apiv1.PipelineSpec, caps destination.Capabilities) delivery.Set
 			s.CommitInterval = c.GetInterval().AsDuration()
 		}
 		if c.GetMaxBytes() > 0 {
-			s.CommitMaxBytes = c.GetMaxBytes()
+			s.CommitMaxBytes, s.CommitMaxBytesSet = c.GetMaxBytes(), true
 		}
 		switch c.GetScope() {
 		case apiv1.CommitScope_COMMIT_SCOPE_PIPELINE:

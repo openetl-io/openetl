@@ -1,5 +1,6 @@
 //! Records the engine can't take. Each stream's are kept per epoch as JSON
-//! lines in `{g}/{N}/{stream}.jsonl` below the job's quarantine URL, and the
+//! lines in `{g}/{N}/{stream}.jsonl` below the job's quarantine URL, or
+//! `{stream}.{k}.jsonl` from the k-th of its lanes after the first, and the
 //! epoch's checkpoint lists the files.
 
 use std::sync::Arc;
@@ -36,13 +37,14 @@ impl Quarantine {
         generation: u64,
         epoch: u64,
         stream: &str,
+        lane: usize,
         lines: Vec<u8>,
     ) -> Result<String, JobError> {
-        let rel = Path::from_iter([
-            generation.to_string(),
-            epoch.to_string(),
-            format!("{stream}.jsonl"),
-        ]);
+        let name = match lane {
+            0 => format!("{stream}.jsonl"),
+            k => format!("{stream}.{k}.jsonl"),
+        };
+        let rel = Path::from_iter([generation.to_string(), epoch.to_string(), name]);
         let path = Path::from_iter(self.prefix.parts().chain(rel.parts()));
         self.store
             .put(&path, PutPayload::from(lines))
@@ -61,8 +63,10 @@ mod tests {
     async fn keeps_lines_per_stream_and_epoch() {
         let dir = tempfile::tempdir().unwrap();
         let q = Quarantine::open(&format!("file://{}/q", dir.path().display())).unwrap();
-        let url = q.put(2, 7, "a/b", b"{}\n".to_vec()).await.unwrap();
+        let url = q.put(2, 7, "a/b", 0, b"{}\n".to_vec()).await.unwrap();
         assert!(url.ends_with("/q/2/7/a%2Fb.jsonl"), "{url}");
+        let url = q.put(2, 7, "a/b", 3, b"{}\n".to_vec()).await.unwrap();
+        assert!(url.ends_with("/q/2/7/a%2Fb.3.jsonl"), "{url}");
         let file = dir.path().join("q/2/7/a%2Fb.jsonl");
         assert_eq!(std::fs::read(file).unwrap(), b"{}\n");
     }

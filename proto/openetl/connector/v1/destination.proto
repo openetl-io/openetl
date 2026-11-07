@@ -140,9 +140,9 @@ message WriteOpen {
   // How often the platform commits, for sinks whose transactions must outlast
   // an epoch.
   google.protobuf.Duration commit_interval = 7;
-  // The writer's lane, of lanes. Zero lanes: one.
+  // The writer's lane.
   uint32 lane = 8;
-  uint32 lanes = 9;
+  reserved 9;
 }
 
 message WriteStream {

@@ -84,19 +84,21 @@ impl Engine {
             job.edges.insert(e.id.clone(), tx);
             inbound.push((e.id.clone(), rx));
         }
-        let outbound = match &plan.sink {
-            Sink::Runner { edge, .. } => {
+        let mut outbound = Vec::new();
+        if let Sink::Runner { edges, .. } = &plan.sink {
+            for e in edges {
                 let (tx, rx) = oneshot::channel();
-                job.edges.insert(edge.id.clone(), tx);
-                Some(rx)
+                job.edges.insert(e.id.clone(), tx);
+                outbound.push((e.id.clone(), rx));
             }
-            Sink::Parquet { .. } | Sink::Staged { .. } | Sink::Discard => None,
-        };
+        }
         *slot = Some(job);
 
         info!(
             generation = plan.generation,
             streams = plan.streams.len(),
+            lanes = plan.inbound.len(),
+            writer_lanes = plan.writer_lanes,
             "job started"
         );
         let shutdown = self.shutdown.clone();
@@ -135,7 +137,7 @@ impl Engine {
 async fn run(
     plan: Arc<Plan>,
     inbound: Vec<(String, oneshot::Receiver<Edge>)>,
-    outbound: Option<oneshot::Receiver<Edge>>,
+    outbound: Vec<(String, oneshot::Receiver<Edge>)>,
     events: Events,
 ) -> Result<(), JobError> {
     let connect = async {
@@ -146,17 +148,16 @@ async fn run(
                 .map_err(|_| JobError::internal(format!("edge {id} was dropped")))?;
             readers.push(edge.reader);
         }
-        let writer = match outbound {
-            Some(rx) => Some(
-                rx.await
-                    .map_err(|_| JobError::internal("the outbound edge was dropped"))?
-                    .writer,
-            ),
-            None => None,
-        };
-        Ok::<_, JobError>((readers, writer))
+        let mut writers = Vec::with_capacity(outbound.len());
+        for (id, rx) in outbound {
+            let edge = rx
+                .await
+                .map_err(|_| JobError::internal(format!("edge {id} was dropped")))?;
+            writers.push(edge.writer);
+        }
+        Ok::<_, JobError>((readers, writers))
     };
-    let (readers, writer) = match tokio::time::timeout(EDGE_TIMEOUT, connect).await {
+    let (readers, writers) = match tokio::time::timeout(EDGE_TIMEOUT, connect).await {
         Ok(Ok(conns)) => conns,
         Ok(Err(e)) => {
             dataflow::report(&events, &e).await;
@@ -168,7 +169,7 @@ async fn run(
             return Err(e);
         }
     };
-    dataflow::run(plan, readers, writer, events).await
+    dataflow::run(plan, readers, writers, events).await
 }
 
 pub async fn accept_edges(listener: UnixListener, engine: Arc<Engine>) {

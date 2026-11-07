@@ -1,24 +1,27 @@
-//! The P0 dataflow: every inbound stream passes through to the sink, with raw
-//! rows normalized to Arrow. A runner sink gets barriers in band; a Parquet
-//! or staged sink stages each epoch and reports it in EpochReady.
+//! The dataflow. Each lane reads its inbound edge and normalizes what it
+//! carries, raw rows to Arrow, on a task of its own, and hands it to a writer
+//! lane: its own, or for a stream routed by key group, the one owning each
+//! row's group. Each writer lane aligns the lanes feeding it, and writes to a
+//! runner sink, with barriers in band, or to a Parquet or staged sink, which
+//! stages each epoch and reports it in EpochReady.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use openetl_formats::ParquetStaging;
-use openetl_normalize::{Error as NormalizeError, Shaper, logical_type};
+use openetl_normalize::{Error as NormalizeError, Shaped, Shaper, by_key_group, logical_type};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
     Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, Metrics,
-    QuarantineFile, Rows, SchemaChange, StagedStream, StreamHolds, StreamMetrics, events_response,
-    hold_cause,
+    QuarantineFile, ReplayProgress, Rows, SchemaChange, StagedStream, StreamHolds, StreamMetrics,
+    events_response, hold_cause,
 };
 use prost::Message;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -52,7 +55,7 @@ struct Counters {
     cells_held: AtomicU64,
 }
 
-/// What an inbound edge hands to the outbound one. Streams are indexes into
+/// What a lane hands to a writer lane. Streams are indexes into
 /// Plan::streams.
 enum Out {
     Batch(usize, RecordBatch),
@@ -61,10 +64,21 @@ enum Out {
     /// Held values of the stream's current epoch.
     Held(usize, RecordBatch),
     Patch(usize, RecordBatch),
-    /// With the stream's state at the barrier, and what it quarantined in
-    /// the epoch.
-    Barrier(usize, Epoch, At, Option<QuarantineFile>),
-    End(usize, At),
+    Barrier(usize, Epoch),
+    End(usize),
+}
+
+impl Out {
+    fn stream(&self) -> usize {
+        match self {
+            Out::Batch(s, _)
+            | Out::SchemaChange(s, _)
+            | Out::Held(s, _)
+            | Out::Patch(s, _)
+            | Out::Barrier(s, _)
+            | Out::End(s) => *s,
+        }
+    }
 }
 
 /// A stream's state at a barrier or its end.
@@ -77,87 +91,254 @@ struct At {
     holds: Option<StreamHolds>,
 }
 
-type Writer = Pin<Box<dyn Future<Output = Result<bool, JobError>> + Send>>;
+/// A stream's one schema, whatever its lanes (ADR-0027). Each lane shapes
+/// with a copy of the owner's shaper. A lane that changes its copy publishes
+/// it if nobody has since it copied; otherwise it copies the latest and shapes
+/// its batch again.
+struct Owner {
+    version: AtomicU64,
+    state: Mutex<OwnerState>,
+}
+
+struct OwnerState {
+    shaper: Shaper,
+    version: u64,
+    /// By epoch, until it's ready.
+    crossings: BTreeMap<u64, Crossing>,
+    /// Lanes that ended the stream.
+    ended: usize,
+    at_end: At,
+}
+
+/// What a stream's lanes did in an epoch, as they pass its barrier.
+#[derive(Default)]
+struct Crossing {
+    lanes: usize,
+    cells: BTreeMap<String, CellHolds>,
+    quarantine: Vec<QuarantineFile>,
+    replayed: Option<ReplayProgress>,
+    /// Once every lane has passed it.
+    at: Option<At>,
+}
+
+impl Owner {
+    fn new(plan: &Plan, s: usize) -> Result<Self, JobError> {
+        let bad = |e: NormalizeError| JobError::config(format!("stream {}: {e}", plan.streams[s]));
+        let mut shaper = Shaper::new(
+            plan.naming,
+            plan.tables[s].clone(),
+            plan.identities[s].clone(),
+            plan.policy,
+            plan.restored[s].clone(),
+            plan.declared[s].clone(),
+            plan.types[s],
+        )
+        .map_err(bad)?
+        .with_soft_deletes(plan.soft_deletes[s])
+        .with_changelog(plan.changelog[s]);
+        if let Some(h) = &plan.holds[s] {
+            shaper = shaper.with_holds(h.clone()).map_err(bad)?;
+        }
+        if let (Some(r), Some(_)) = (&plan.replays[s], &plan.held_url) {
+            // Patches go out at the types the destination will have.
+            shaper
+                .version(&r.versioned)
+                .and_then(|_| shaper.declare())
+                .map_err(|e| shape_error(&plan.streams[s], e))?;
+        }
+        shaper.take_changed();
+        Ok(Self {
+            version: AtomicU64::new(0),
+            state: Mutex::new(OwnerState {
+                shaper,
+                version: 0,
+                crossings: BTreeMap::new(),
+                ended: 0,
+                at_end: At::default(),
+            }),
+        })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, OwnerState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A lane passed the stream's barrier n. The last to pass it fixes the
+    /// stream's state there: from then on, the schema policy applies.
+    fn cross(
+        &self,
+        plan: &Plan,
+        stream: usize,
+        n: u64,
+        quarantine: Option<QuarantineFile>,
+        cells: BTreeMap<String, CellHolds>,
+        replayed: Option<ReplayProgress>,
+    ) -> Result<(), JobError> {
+        let mut guard = self.lock();
+        let o = &mut *guard;
+        let c = o.crossings.entry(n).or_default();
+        c.lanes += 1;
+        c.quarantine.extend(quarantine);
+        for (column, held) in cells {
+            let e = c.cells.entry(column).or_insert_with(|| CellHolds {
+                cells: 0,
+                reason: held.reason,
+            });
+            e.cells += held.cells;
+        }
+        c.replayed = c.replayed.take().or(replayed);
+        if c.lanes < plan.inbound.len() {
+            return Ok(());
+        }
+        if o.shaper.seal() {
+            o.version += 1;
+            self.version.store(o.version, Ordering::Release);
+        }
+        let mut state = at(plan, stream, &o.shaper)?;
+        if let Some(h) = &mut state.holds {
+            h.cells = std::mem::take(&mut c.cells).into_iter().collect();
+            h.replayed = c.replayed.take();
+        }
+        c.at = Some(state);
+        Ok(())
+    }
+
+    /// A lane ended the stream.
+    fn end(&self, plan: &Plan, stream: usize) -> Result<(), JobError> {
+        let mut o = self.lock();
+        o.ended += 1;
+        if o.ended == plan.inbound.len() {
+            o.at_end = at(plan, stream, &o.shaper)?;
+        }
+        Ok(())
+    }
+
+    /// The stream's state in ready epoch n, and what it quarantined in it.
+    fn take(&self, n: u64) -> (At, Vec<QuarantineFile>) {
+        let mut o = self.lock();
+        match o.crossings.remove(&n) {
+            Some(Crossing {
+                at: Some(at),
+                quarantine,
+                ..
+            }) => (at, quarantine),
+            _ => (o.at_end.clone(), Vec::new()),
+        }
+    }
+}
+
+/// What every lane and writer lane of a job share.
+struct Flow {
+    plan: Arc<Plan>,
+    owners: Vec<Owner>,
+    counters: Vec<Counters>,
+    /// Held across sending epochs, so they go out in order.
+    align: tokio::sync::Mutex<Alignment>,
+    events: Events,
+}
+
+type Task = Pin<Box<dyn Future<Output = Result<bool, JobError>> + Send>>;
 
 /// Runs the job until every stream has ended at the sink and every inbound
-/// edge has closed. `outbound` is the runner sink's edge. Failures are
-/// reported on `events` before the edges close.
+/// edge has closed. `inbound` has an edge per lane, in order, and `outbound`
+/// the runner sink's, per writer lane. Failures are reported on `events`
+/// before the edges close.
 pub async fn run<R, W>(
     plan: Arc<Plan>,
     inbound: Vec<R>,
-    outbound: Option<W>,
+    outbound: Vec<W>,
     events: Events,
 ) -> Result<(), JobError>
 where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let counters: Arc<Vec<Counters>> =
-        Arc::new(plan.streams.iter().map(|_| Counters::default()).collect());
-    let (tx, rx) = mpsc::channel(16);
-    let mut writer: Writer = match (&plan.sink, outbound) {
-        (Sink::Runner { .. }, Some(w)) => Box::pin(write_edge(
-            plan.clone(),
-            w,
-            rx,
-            events.clone(),
-            counters.clone(),
-        )),
-        (Sink::Parquet { url }, None) => {
-            let (plan, url, events, counters) =
-                (plan.clone(), url.clone(), events.clone(), counters.clone());
-            let span = Span::current();
-            Box::pin(async move {
-                tokio::task::spawn_blocking(move || {
-                    span.in_scope(|| write_parquet(&plan, &url, rx, &events, &counters))
-                })
-                .await
-                .map_err(|e| JobError::internal(format!("the Parquet sink failed: {e}")))?
-            })
-        }
-        (Sink::Staged { url, dir }, None) => Box::pin(write_staged(
-            plan.clone(),
-            url.clone(),
-            dir.clone(),
-            rx,
-            events.clone(),
-            counters.clone(),
-        )),
-        (Sink::Discard, None) => Box::pin(write_discard(
-            plan.clone(),
-            rx,
-            events.clone(),
-            counters.clone(),
-        )),
-        _ => {
-            let e = JobError::internal("the outbound edge doesn't match the sink");
+    let owners: Result<Vec<_>, _> = (0..plan.streams.len())
+        .map(|s| Owner::new(&plan, s))
+        .collect();
+    let owners = match owners {
+        Ok(o) => o,
+        Err(e) => {
             report(&events, &e).await;
             return Err(e);
         }
     };
-    let mut readers = JoinSet::new();
-    for (edge, r) in inbound.into_iter().enumerate() {
-        readers.spawn(
-            read_edge(plan.clone(), edge, r, tx.clone(), counters.clone()).in_current_span(),
-        );
+    let flow = Arc::new(Flow {
+        counters: plan.streams.iter().map(|_| Counters::default()).collect(),
+        owners,
+        align: tokio::sync::Mutex::new(Alignment::new(
+            plan.streams.len(),
+            plan.writer_lanes,
+            plan.first_epoch,
+        )),
+        events: events.clone(),
+        plan: plan.clone(),
+    });
+    let mut senders = Vec::with_capacity(plan.writer_lanes);
+    let mut feeds = Vec::with_capacity(plan.writer_lanes);
+    for w in 0..plan.writer_lanes {
+        let (tx, rx) = mpsc::channel(16);
+        senders.push(tx);
+        feeds.push(Feed::new(&plan, w, rx));
     }
-    drop(tx);
+    let mut writers: JoinSet<Result<bool, JobError>> = JoinSet::new();
+    let mut outbound = outbound.into_iter();
+    for (writer, feed) in feeds.into_iter().enumerate() {
+        let flow = flow.clone();
+        let task: Task = match (&plan.sink, outbound.next()) {
+            (Sink::Runner { .. }, Some(w)) => Box::pin(write_edge(flow, writer, w, feed)),
+            (Sink::Parquet { url }, None) => {
+                let url = url.clone();
+                let span = Span::current();
+                let rt = tokio::runtime::Handle::current();
+                Box::pin(async move {
+                    tokio::task::spawn_blocking(move || {
+                        span.in_scope(|| write_parquet(&flow, writer, &url, feed, &rt))
+                    })
+                    .await
+                    .map_err(|e| JobError::internal(format!("the Parquet sink failed: {e}")))?
+                })
+            }
+            (Sink::Staged { url, dir }, None) => {
+                Box::pin(write_staged(flow, writer, url.clone(), dir.clone(), feed))
+            }
+            (Sink::Discard, None) => Box::pin(write_discard(flow, writer, feed)),
+            _ => {
+                let e = JobError::internal("the outbound edge doesn't match the sink");
+                report(&events, &e).await;
+                return Err(e);
+            }
+        };
+        writers.spawn(task.in_current_span());
+    }
+    let mut readers = JoinSet::new();
+    for (lane, r) in inbound.into_iter().enumerate() {
+        let lane = Lane {
+            flow: flow.clone(),
+            lane,
+            tx: senders.clone(),
+        };
+        readers.spawn(read_edge(lane, r).in_current_span());
+    }
+    drop(senders);
 
-    let mut written = None;
+    let mut complete = true;
     let res = loop {
         tokio::select! {
-            r = &mut writer, if written.is_none() => match r {
-                Ok(complete) => written = Some(complete),
-                Err(e) => break Err(e),
+            Some(joined) = writers.join_next() => match joined {
+                Ok(Ok(c)) => complete &= c,
+                Ok(Err(e)) => break Err(e),
+                Err(e) => break Err(JobError::internal(format!("a writer lane failed: {e}"))),
             },
             Some(joined) = readers.join_next() => match joined {
                 Ok(Ok(())) => {}
+                Ok(Err(e)) if e.stopped => {}
                 Ok(Err(e)) => break Err(e),
                 Err(e) => break Err(JobError::internal(format!("an edge reader failed: {e}"))),
             },
-            else => break match written {
-                Some(true) => Ok(()),
-                _ => Err(JobError::internal("the inbound edges stopped early")),
+            else => break match complete {
+                true => Ok(()),
+                false => Err(JobError::internal("the inbound edges stopped early")),
             },
         }
     };
@@ -167,66 +348,151 @@ where
     res
 }
 
-async fn read_edge<R>(
-    plan: Arc<Plan>,
-    edge: usize,
-    mut r: R,
-    tx: mpsc::Sender<Out>,
-    counters: Arc<Vec<Counters>>,
-) -> Result<(), JobError>
+/// One lane's copy of a stream.
+struct LaneStream {
+    stream: usize,
+    shaper: Shaper,
+    version: u64,
+    next_epoch: u64,
+    ended: bool,
+    /// Quarantined lines since its last barrier, and how many.
+    quarantined: (Vec<u8>, u64),
+    /// Held cells since its last barrier, by column.
+    cells: BTreeMap<String, CellHolds>,
+    /// Lane 0 replays released holds.
+    replay: Option<Replayer>,
+}
+
+impl LaneStream {
+    /// Takes the owner's latest schema, if another lane changed it.
+    fn catch_up(&mut self, owner: &Owner) {
+        if owner.version.load(Ordering::Acquire) != self.version {
+            let o = owner.lock();
+            self.shaper = o.shaper.fork();
+            self.version = o.version;
+        }
+    }
+
+    /// Shapes with the owner's latest schema, and publishes what that changes.
+    fn shape(
+        &mut self,
+        owner: &Owner,
+        f: impl Fn(&mut Shaper) -> Result<Shaped, NormalizeError>,
+    ) -> Result<Shaped, NormalizeError> {
+        loop {
+            self.catch_up(owner);
+            let out = f(&mut self.shaper);
+            let changed = self.shaper.take_changed();
+            if out.is_err() {
+                if owner.version.load(Ordering::Acquire) == self.version {
+                    return out;
+                }
+                continue;
+            }
+            if !changed {
+                return out;
+            }
+            let mut o = owner.lock();
+            if o.version != self.version {
+                continue;
+            }
+            o.version += 1;
+            self.version = o.version;
+            o.shaper = self.shaper.fork();
+            owner.version.store(o.version, Ordering::Release);
+            return out;
+        }
+    }
+}
+
+/// A lane, with a sender to each writer lane.
+struct Lane {
+    flow: Arc<Flow>,
+    lane: usize,
+    tx: Vec<mpsc::Sender<(usize, Out)>>,
+}
+
+impl Lane {
+    async fn send_to(&self, w: usize, out: Out) -> Result<(), JobError> {
+        self.tx[w]
+            .send((self.lane, out))
+            .await
+            .map_err(|_| JobError::stopped("the outbound edge stopped"))
+    }
+
+    /// Sends to the lane's own writer lane.
+    async fn send(&self, out: Out) -> Result<(), JobError> {
+        self.send_to(self.lane % self.tx.len(), out).await
+    }
+
+    fn routed(&self, stream: usize) -> bool {
+        self.flow.plan.routed[stream] && self.tx.len() > 1
+    }
+
+    /// Sends a batch's rows to their writer lanes.
+    async fn rows(
+        &self,
+        stream: usize,
+        key: &[String],
+        batch: RecordBatch,
+    ) -> Result<(), JobError> {
+        if !self.routed(stream) {
+            return self.send(Out::Batch(stream, batch)).await;
+        }
+        let parts = by_key_group(&batch, key, self.flow.plan.key_groups, self.tx.len())
+            .map_err(|e| shape_error(&self.flow.plan.streams[stream], NormalizeError::Arrow(e)))?;
+        for (w, part) in parts.into_iter().enumerate() {
+            if let Some(part) = part {
+                self.send_to(w, Out::Batch(stream, part)).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends a schema change, a barrier or an end to every writer lane the
+    /// stream's rows on this lane can reach.
+    async fn all(&self, stream: usize, out: impl Fn() -> Out) -> Result<(), JobError> {
+        if !self.routed(stream) {
+            return self.send(out()).await;
+        }
+        for w in 0..self.tx.len() {
+            self.send_to(w, out()).await?;
+        }
+        Ok(())
+    }
+}
+
+async fn read_edge<R>(lane: Lane, mut r: R) -> Result<(), JobError>
 where
     R: AsyncBufRead + Unpin,
 {
-    let id = &plan.inbound[edge].id;
-    let streams = &plan.inbound[edge].streams;
-    let mut shape = Vec::with_capacity(streams.len());
-    for &s in streams {
-        let sh = Shaper::new(
-            plan.naming,
-            plan.tables[s].clone(),
-            plan.identities[s].clone(),
-            plan.policy,
-            plan.restored[s].clone(),
-            plan.declared[s].clone(),
-            plan.types[s],
-        )
-        .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?
-        .with_soft_deletes(plan.soft_deletes[s])
-        .with_changelog(plan.changelog[s]);
-        let sh = match &plan.holds[s] {
-            Some(h) => sh
-                .with_holds(h.clone())
-                .map_err(|e| JobError::config(format!("stream {}: {e}", plan.streams[s])))?,
-            None => sh,
-        };
-        shape.push(sh);
-    }
-    let mut replays = Vec::with_capacity(streams.len());
-    for (local, &s) in streams.iter().enumerate() {
-        replays.push(match (&plan.replays[s], &plan.held_url) {
-            (Some(r), Some(url)) => {
-                // Patches go out at the types the destination will have.
-                shape[local]
-                    .version(&r.versioned)
-                    .and_then(|_| shape[local].declare())
-                    .map_err(|e| shape_error(&plan.streams[s], e))?;
-                Some(Replayer::open(url, r.clone())?)
-            }
+    let flow = lane.flow.clone();
+    let plan = &flow.plan;
+    let id = &plan.inbound[lane.lane].id;
+    let mut streams = Vec::with_capacity(plan.inbound[lane.lane].streams.len());
+    for &s in &plan.inbound[lane.lane].streams {
+        let replay = match (lane.lane, &plan.replays[s], &plan.held_url) {
+            (0, Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
             _ => None,
+        };
+        let o = flow.owners[s].lock();
+        streams.push(LaneStream {
+            stream: s,
+            shaper: o.shaper.fork(),
+            version: o.version,
+            next_epoch: plan.first_epoch,
+            ended: false,
+            quarantined: (Vec::new(), 0),
+            cells: BTreeMap::new(),
+            replay,
         });
     }
-    let mut next_epoch = vec![plan.first_epoch; streams.len()];
-    let mut ended = vec![false; streams.len()];
-    // Each stream's quarantined lines since its last barrier, and how many.
-    let mut quarantined: Vec<(Vec<u8>, u64)> = vec![(Vec::new(), 0); streams.len()];
-    // Each stream's held cells since its last barrier, by column.
-    let mut cells: Vec<BTreeMap<String, CellHolds>> = vec![BTreeMap::new(); streams.len()];
     let protocol = |msg: String| JobError::internal(format!("edge {id}: {msg}"));
 
     loop {
         let f = match frame::read(&mut r).await {
             Ok(Some(f)) => f,
-            Ok(None) if ended.iter().all(|e| *e) => return Ok(()),
+            Ok(None) if streams.iter().all(|s| s.ended) => return Ok(()),
             Ok(None) => {
                 return Err(JobError::runner_gone(format!(
                     "edge {id} closed before its streams ended"
@@ -238,21 +504,23 @@ where
             Err(e) => return Err(JobError::runner_gone(format!("edge {id}: {e}"))),
         };
         let local = f.stream as usize;
-        let Some(&stream) = streams.get(local) else {
+        let Some(ls) = streams.get_mut(local) else {
             return Err(protocol(format!(
                 "frame for stream {local}, which the edge doesn't carry"
             )));
         };
-        if ended[local] {
+        let stream = ls.stream;
+        if ls.ended {
             return Err(protocol(format!(
                 "frame after the end of stream {}",
                 plan.streams[stream]
             )));
         }
-        let c = &counters[stream];
+        let owner = &flow.owners[stream];
+        let c = &flow.counters[stream];
         c.bytes_in
             .fetch_add(f.payload.len() as u64, Ordering::Relaxed);
-        let out = match f.kind {
+        match f.kind {
             FrameKind::Rows if plan.passthrough => {
                 return Err(protocol("rows in a passthrough job".into()));
             }
@@ -262,95 +530,89 @@ where
                 c.rows_in
                     .fetch_add(rows.rows.len() as u64, Ordering::Relaxed);
                 let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = rows.rows.len())
-                    .in_scope(|| shape[local].rows(rows.rows.iter().map(Vec::as_slice)))
+                    .in_scope(|| ls.shape(owner, |sh| sh.rows(rows.rows.iter().map(Vec::as_slice))))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| String::from_utf8_lossy(&rows.rows[row]).into_owned();
-                hold(
-                    &plan,
-                    stream,
-                    &n.rejected,
-                    record,
-                    &mut quarantined[local],
-                    c,
-                )?;
-                match shaped(&tx, stream, n, &plan, &mut cells[local], c).await? {
-                    Some(out) => out,
-                    None => continue,
-                }
+                hold(plan, stream, &n.rejected, record, &mut ls.quarantined, c)?;
+                shaped(&lane, ls, n, c).await?;
             }
             FrameKind::Batch => {
                 let batch = ipc::decode_batch(f.payload).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
                 if plan.passthrough {
-                    send(&tx, Out::Batch(stream, batch)).await?;
+                    lane.send(Out::Batch(stream, batch)).await?;
                     continue;
                 }
                 let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = batch.num_rows())
-                    .in_scope(|| shape[local].batch(&batch))
+                    .in_scope(|| ls.shape(owner, |sh| sh.batch(&batch)))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| openetl_normalize::render_row(&batch, row);
-                hold(
-                    &plan,
-                    stream,
-                    &n.rejected,
-                    record,
-                    &mut quarantined[local],
-                    c,
-                )?;
-                match shaped(&tx, stream, n, &plan, &mut cells[local], c).await? {
-                    Some(out) => out,
-                    None => continue,
-                }
+                hold(plan, stream, &n.rejected, record, &mut ls.quarantined, c)?;
+                shaped(&lane, ls, n, c).await?;
             }
             FrameKind::Barrier => {
                 let epoch = Barrier::decode(f.payload.as_slice())
                     .map_err(|e| protocol(e.to_string()))?
                     .epoch
                     .unwrap_or_default();
-                if epoch.generation != plan.generation || epoch.n != next_epoch[local] {
+                if epoch.generation != plan.generation || epoch.n != ls.next_epoch {
                     return Err(protocol(format!(
                         "stream {} crossed barrier ({}, {}) while in ({}, {})",
                         plan.streams[stream],
                         epoch.generation,
                         epoch.n,
                         plan.generation,
-                        next_epoch[local]
+                        ls.next_epoch
                     )));
                 }
-                next_epoch[local] += 1;
-                let (lines, rows) = std::mem::take(&mut quarantined[local]);
+                ls.next_epoch += 1;
+                let (lines, rows) = std::mem::take(&mut ls.quarantined);
                 let q = match &plan.quarantine {
                     Some(q) if rows > 0 => Some(QuarantineFile {
                         stream: plan.streams[stream].clone(),
                         url: q
-                            .put(epoch.generation, epoch.n, &plan.streams[stream], lines)
+                            .put(
+                                epoch.generation,
+                                epoch.n,
+                                &plan.streams[stream],
+                                lane.lane,
+                                lines,
+                            )
                             .await?,
                         rows,
                     }),
                     _ => None,
                 };
-                shape[local].seal();
-                let mut at = at(&plan, stream, &shape[local], replays[local].as_ref())?;
-                if let Some(h) = &mut at.holds {
-                    h.cells = std::mem::take(&mut cells[local]).into_iter().collect();
+                let replayed = ls.replay.as_ref().map(Replayer::progress);
+                owner.cross(
+                    plan,
+                    stream,
+                    epoch.n,
+                    q,
+                    std::mem::take(&mut ls.cells),
+                    replayed,
+                )?;
+                lane.all(stream, || Out::Barrier(stream, epoch)).await?;
+                if ls.replay.is_some() {
+                    ls.catch_up(owner);
+                    replay(&lane, ls).await?;
                 }
-                send(&tx, Out::Barrier(stream, epoch, at, q)).await?;
-                if let Some(r) = &mut replays[local] {
-                    replay(&tx, stream, r, &shape[local]).await?;
-                }
-                continue;
             }
-            FrameKind::SchemaChange => Out::SchemaChange(stream, f.payload),
+            FrameKind::SchemaChange => {
+                let payload = f.payload;
+                lane.all(stream, || Out::SchemaChange(stream, payload.clone()))
+                    .await?;
+            }
             FrameKind::EndOfStream => {
-                ended[local] = true;
-                Out::End(stream, at(&plan, stream, &shape[local], None)?)
+                ls.ended = true;
+                owner.end(plan, stream)?;
+                lane.all(stream, || Out::End(stream)).await?;
             }
             k @ (FrameKind::Hello | FrameKind::Unspecified | FrameKind::Patch) => {
                 return Err(protocol(format!("unexpected {} frame", k.as_str_name())));
             }
-        };
-        send(&tx, out).await?;
+        }
     }
 }
 
@@ -389,42 +651,43 @@ fn hold(
     Ok(())
 }
 
-/// Sends a shaped batch's schema change and held values; returns the batch
-/// to send, if it has rows.
-async fn shaped(
-    tx: &mpsc::Sender<Out>,
-    stream: usize,
-    n: openetl_normalize::Shaped,
-    plan: &Plan,
-    cells: &mut BTreeMap<String, CellHolds>,
-    c: &Counters,
-) -> Result<Option<Out>, JobError> {
+/// Sends a shaped batch: its schema change, its held values and its rows.
+async fn shaped(lane: &Lane, ls: &mut LaneStream, n: Shaped, c: &Counters) -> Result<(), JobError> {
+    let stream = ls.stream;
     for v in &n.versioned {
-        tracing::warn!(stream = %plan.streams[stream], "{v}");
+        tracing::warn!(stream = %lane.flow.plan.streams[stream], "{v}");
     }
     if n.schema_changed {
-        send(tx, schema_change(stream, &n.batch)?).await?;
+        let change = schema_change(stream, &n.batch)?;
+        lane.all(stream, || match &change {
+            Out::SchemaChange(s, p) => Out::SchemaChange(*s, p.clone()),
+            _ => unreachable!(),
+        })
+        .await?;
     }
     for (column, reason) in n.cells {
-        let e = cells
+        let e = ls
+            .cells
             .entry(column)
             .or_insert_with(|| CellHolds { cells: 0, reason });
         e.cells += 1;
         c.cells_held.fetch_add(1, Ordering::Relaxed);
     }
     for b in n.held {
-        send(tx, Out::Held(stream, b)).await?;
+        lane.send(Out::Held(stream, b)).await?;
     }
-    Ok((n.batch.num_rows() > 0).then_some(Out::Batch(stream, n.batch)))
+    if n.batch.num_rows() > 0 {
+        let key = match lane.routed(stream) {
+            true => ls.shaper.key_columns(),
+            false => Vec::new(),
+        };
+        lane.rows(stream, &key, n.batch).await?;
+    }
+    Ok(())
 }
 
 /// A stream's state, with its holds if it holds.
-fn at(
-    plan: &Plan,
-    stream: usize,
-    shaper: &Shaper,
-    replay: Option<&Replayer>,
-) -> Result<At, JobError> {
+fn at(plan: &Plan, stream: usize, shaper: &Shaper) -> Result<At, JobError> {
     let mut at = At {
         schema: shaper.schema(),
         delivered: shaper.delivered(),
@@ -452,7 +715,7 @@ fn at(
             holding,
             cells: HashMap::new(),
             files: Vec::new(),
-            replayed: replay.map(Replayer::progress),
+            replayed: None,
         });
     }
     Ok(at)
@@ -482,19 +745,18 @@ fn cause(h: &openetl_normalize::hold::ColumnHold, schema: Option<&SchemaRef>) ->
 }
 
 /// Sends the replay's next chunk of patches, which land in the next epoch.
-async fn replay(
-    tx: &mpsc::Sender<Out>,
-    stream: usize,
-    r: &mut Replayer,
-    shaper: &Shaper,
-) -> Result<(), JobError> {
+async fn replay(lane: &Lane, ls: &mut LaneStream) -> Result<(), JobError> {
+    let Some(r) = &mut ls.replay else {
+        return Ok(());
+    };
     for b in r.chunk().await? {
-        let (patch, still) = shaper
+        let (patch, still) = ls
+            .shaper
             .patch(&b, r.columns())
             .map_err(|e| JobError::internal(format!("patches: {e}")))?;
         r.still_held(still);
         if let Some(p) = patch {
-            send(tx, Out::Patch(stream, p)).await?;
+            lane.send(Out::Patch(ls.stream, p)).await?;
         }
     }
     Ok(())
@@ -526,23 +788,185 @@ fn shape_error(stream: &str, e: NormalizeError) -> JobError {
     JobError::new(code, format!("stream {stream}: {e}"))
 }
 
-async fn send(tx: &mpsc::Sender<Out>, out: Out) -> Result<(), JobError> {
-    tx.send(out)
-        .await
-        .map_err(|_| JobError::internal("the outbound edge stopped"))
+/// How a stream's lanes stand at a writer lane.
+#[derive(Clone, Copy, PartialEq)]
+enum Standing {
+    Open,
+    AtBarrier(Epoch),
+    Ended,
 }
 
-/// Which epochs every stream has crossed or ended, and each stream's schema
-/// at those points.
+/// A stream at a writer lane: the lanes feeding it, how each stands, and
+/// what each sent after its barrier, which waits until they're all there.
+struct StreamFeed {
+    feeders: Vec<usize>,
+    standing: Vec<Standing>,
+    waiting: Vec<VecDeque<Out>>,
+}
+
+/// One writer lane's input: what its lanes send, aligned on each stream's
+/// barriers. It never stops reading to align, so what a lane sends past a
+/// barrier can't hold up the lanes that haven't reached it: it waits in memory,
+/// under the job's limit.
+struct Feed {
+    rx: mpsc::Receiver<(usize, Out)>,
+    streams: Vec<StreamFeed>,
+    ready: VecDeque<Out>,
+}
+
+enum Next {
+    Item(Out),
+    Empty,
+    Closed,
+}
+
+impl Feed {
+    fn new(plan: &Plan, writer: usize, rx: mpsc::Receiver<(usize, Out)>) -> Self {
+        let lanes = plan.inbound.len();
+        let streams = (0..plan.streams.len())
+            .map(|s| {
+                let feeders: Vec<usize> = (0..lanes)
+                    .filter(|l| {
+                        plan.routed[s] && plan.writer_lanes > 1 || l % plan.writer_lanes == writer
+                    })
+                    .collect();
+                StreamFeed {
+                    standing: vec![Standing::Open; feeders.len()],
+                    waiting: feeders.iter().map(|_| VecDeque::new()).collect(),
+                    feeders,
+                }
+            })
+            .collect();
+        Self {
+            rx,
+            streams,
+            ready: VecDeque::new(),
+        }
+    }
+
+    async fn next(&mut self) -> Result<Option<Out>, JobError> {
+        loop {
+            if let Some(out) = self.ready.pop_front() {
+                return Ok(Some(out));
+            }
+            match self.rx.recv().await {
+                Some((lane, out)) => self.take(lane, out)?,
+                None => return Ok(None),
+            }
+        }
+    }
+
+    fn try_next(&mut self) -> Result<Next, JobError> {
+        loop {
+            if let Some(out) = self.ready.pop_front() {
+                return Ok(Next::Item(out));
+            }
+            match self.rx.try_recv() {
+                Ok((lane, out)) => self.take(lane, out)?,
+                Err(TryRecvError::Empty) => return Ok(Next::Empty),
+                Err(TryRecvError::Disconnected) => return Ok(Next::Closed),
+            }
+        }
+    }
+
+    fn take(&mut self, lane: usize, out: Out) -> Result<(), JobError> {
+        let s = out.stream();
+        let st = &mut self.streams[s];
+        if st.feeders.len() == 1 {
+            self.ready.push_back(out);
+            return Ok(());
+        }
+        let Some(i) = st.feeders.iter().position(|f| *f == lane) else {
+            return Err(JobError::internal(format!(
+                "lane {lane} sent stream {s} to a writer lane it doesn't feed"
+            )));
+        };
+        if st.standing[i] == Standing::Open {
+            Self::stand(st, i, out, &mut self.ready);
+        } else {
+            st.waiting[i].push_back(out);
+        }
+        self.align(s)
+    }
+
+    /// Takes what lane i sent while it's open.
+    fn stand(st: &mut StreamFeed, i: usize, out: Out, ready: &mut VecDeque<Out>) {
+        match out {
+            Out::Barrier(_, e) => st.standing[i] = Standing::AtBarrier(e),
+            Out::End(_) => st.standing[i] = Standing::Ended,
+            out => ready.push_back(out),
+        }
+    }
+
+    /// Passes the stream's barrier, or its end, as long as every lane is there.
+    fn align(&mut self, s: usize) -> Result<(), JobError> {
+        let st = &mut self.streams[s];
+        loop {
+            // Rows after their last barrier are never committed, so a lane's
+            // end also ends those waiting at a barrier it won't reach.
+            if st.standing.contains(&Standing::Ended) {
+                for i in 0..st.standing.len() {
+                    if st.waiting[i].iter().any(|o| matches!(o, Out::End(_))) {
+                        st.standing[i] = Standing::Ended;
+                    }
+                    if st.standing[i] == Standing::Ended {
+                        st.waiting[i].clear();
+                    }
+                }
+                if st.standing.iter().all(|t| *t == Standing::Ended) {
+                    self.ready.push_back(Out::End(s));
+                    st.standing.iter_mut().for_each(|t| *t = Standing::Open);
+                }
+                return Ok(());
+            }
+            let Some(Standing::AtBarrier(e)) = st.standing.first().copied() else {
+                return Ok(());
+            };
+            if !st
+                .standing
+                .iter()
+                .all(|t| matches!(t, Standing::AtBarrier(_)))
+            {
+                return Ok(());
+            }
+            if st.standing.iter().any(|t| *t != Standing::AtBarrier(e)) {
+                return Err(JobError::internal(format!(
+                    "stream {s}'s lanes passed different barriers"
+                )));
+            }
+            self.ready.push_back(Out::Barrier(s, e));
+            for i in 0..st.standing.len() {
+                st.standing[i] = Standing::Open;
+                while st.standing[i] == Standing::Open {
+                    let Some(out) = st.waiting[i].pop_front() else {
+                        break;
+                    };
+                    Self::stand(st, i, out, &mut self.ready);
+                }
+            }
+        }
+    }
+}
+
+/// What a writer lane staged in an epoch.
+#[derive(Default)]
+struct Pieces {
+    /// By writer lane.
+    staged: BTreeMap<usize, Vec<u8>>,
+    files: Vec<StagedStream>,
+    held: Vec<StagedStream>,
+}
+
+/// Which epochs each writer lane has crossed or ended on each stream.
 struct Alignment {
-    crossed: Vec<u64>,
-    ended: Vec<bool>,
+    /// By stream, then writer lane.
+    crossed: Vec<Vec<u64>>,
+    ended: Vec<Vec<bool>>,
+    /// By writer lane: the epochs it has crossed on every stream.
+    own: Vec<u64>,
     ready: u64,
     highest: u64,
-    /// States at barriers whose epoch isn't ready yet.
-    at_barrier: Vec<VecDeque<(u64, At)>>,
-    at_end: Vec<At>,
-    quarantined: BTreeMap<u64, Vec<QuarantineFile>>,
+    pieces: BTreeMap<u64, Pieces>,
     /// The job's span, and the span of the next epoch to become ready,
     /// which opened when the one before it was ready.
     job: Span,
@@ -550,58 +974,60 @@ struct Alignment {
 }
 
 impl Alignment {
-    fn new(streams: usize, first_epoch: u64) -> Self {
+    fn new(streams: usize, writers: usize, first_epoch: u64) -> Self {
         let job = Span::current();
         Self {
             epoch: info_span!(parent: &job, "epoch", openetl.epoch = first_epoch),
             job,
-            crossed: vec![first_epoch - 1; streams],
-            ended: vec![false; streams],
+            crossed: vec![vec![first_epoch - 1; writers]; streams],
+            ended: vec![vec![false; writers]; streams],
+            own: vec![first_epoch - 1; writers],
             ready: first_epoch - 1,
             highest: first_epoch - 1,
-            at_barrier: vec![VecDeque::new(); streams],
-            at_end: vec![At::default(); streams],
-            quarantined: BTreeMap::new(),
+            pieces: BTreeMap::new(),
         }
     }
 
-    fn cross(&mut self, stream: usize, n: u64, at: At, quarantined: Option<QuarantineFile>) {
-        self.crossed[stream] = n;
+    fn cross(&mut self, stream: usize, writer: usize, n: u64) {
+        self.crossed[stream][writer] = n;
         self.highest = self.highest.max(n);
-        self.at_barrier[stream].push_back((n, at));
-        if let Some(q) = quarantined {
-            self.quarantined.entry(n).or_default().push(q);
-        }
     }
 
-    fn end(&mut self, stream: usize, at: At) {
-        self.ended[stream] = true;
-        self.at_end[stream] = at;
-    }
-
-    /// Each stream's state in ready epoch n. Call for each ready epoch, in
-    /// order.
-    fn states(&mut self, n: u64) -> Vec<(usize, At)> {
-        let mut out = Vec::new();
-        for (s, queue) in self.at_barrier.iter_mut().enumerate() {
-            let mut at = None;
-            while queue.front().is_some_and(|(m, _)| *m <= n) {
-                at = queue.pop_front().map(|(_, a)| a);
-            }
-            out.push((s, at.unwrap_or_else(|| self.at_end[s].clone())));
-        }
-        out
+    fn end(&mut self, stream: usize, writer: usize) {
+        self.ended[stream][writer] = true;
     }
 
     fn done(&self) -> bool {
-        self.ended.iter().all(|e| *e)
+        self.ended.iter().flatten().all(|e| *e)
+    }
+
+    fn pieces(&mut self, n: u64) -> &mut Pieces {
+        self.pieces.entry(n).or_default()
+    }
+
+    /// The epochs the writer lane has crossed on every stream since the last
+    /// call.
+    fn own(&mut self, writer: usize) -> RangeInclusive<u64> {
+        let aligned = (0..self.crossed.len())
+            .filter(|&s| !self.ended[s][writer])
+            .map(|s| self.crossed[s][writer])
+            .min()
+            .unwrap_or(self.highest)
+            .min(self.highest);
+        let own = self.own[writer] + 1..=aligned;
+        self.own[writer] = self.own[writer].max(aligned);
+        own
     }
 
     /// The epochs that became ready since the last call.
     fn advance(&mut self) -> RangeInclusive<u64> {
-        let aligned = (0..self.crossed.len())
-            .filter(|&s| !self.ended[s])
-            .map(|s| self.crossed[s])
+        let aligned = self
+            .crossed
+            .iter()
+            .flatten()
+            .zip(self.ended.iter().flatten())
+            .filter(|(_, ended)| !**ended)
+            .map(|(crossed, _)| *crossed)
             .min()
             .unwrap_or(self.highest)
             .min(self.highest);
@@ -611,74 +1037,99 @@ impl Alignment {
     }
 }
 
-fn epoch_ready(
-    plan: &Plan,
-    align: &mut Alignment,
-    n: u64,
-    staged: Vec<Vec<u8>>,
-    files: Vec<StagedStream>,
-    held: Vec<StagedStream>,
-) -> Result<EventsResponse, JobError> {
-    align.epoch = if align.done() && n >= align.highest {
-        Span::none()
-    } else {
-        info_span!(parent: &align.job, "epoch", openetl.epoch = n + 1)
-    };
-    let encode = |schema: &SchemaRef| {
-        ipc::encode_schema(schema).map_err(|e| JobError::internal(format!("encode a schema: {e}")))
-    };
-    let mut held: HashMap<String, Vec<_>> = held.into_iter().map(|s| (s.stream, s.files)).collect();
-    let mut schemas = HashMap::new();
-    let mut delivered = HashMap::new();
-    let mut holds = HashMap::new();
-    for (s, at) in align.states(n) {
-        let name = &plan.streams[s];
-        if let Some(sc) = &at.schema {
-            schemas.insert(name.clone(), encode(sc)?);
+impl Flow {
+    /// Reports the epochs that became ready.
+    async fn settle(&self, align: &mut Alignment) -> Result<(), JobError> {
+        let ready = align.advance();
+        if ready.is_empty() {
+            return Ok(());
         }
-        if let Some(d) = &at.delivered {
-            delivered.insert(name.clone(), encode(d)?);
+        for n in ready {
+            // The runner records every EpochReady, so this waits.
+            let ev = self.epoch_ready(align, n)?;
+            let _ = self.events.send(Ok(ev)).await;
         }
-        if let Some(mut h) = at.holds {
-            h.files = held.remove(name).unwrap_or_default();
-            holds.insert(name.clone(), h);
-        }
+        let _ = self
+            .events
+            .try_send(Ok(metrics(&self.plan, &self.counters)));
+        Ok(())
     }
-    Ok(EventsResponse {
-        event: Some(events_response::Event::EpochReady(EpochReady {
-            epoch: Some(Epoch {
-                generation: plan.generation,
-                n,
-            }),
+
+    fn epoch_ready(&self, align: &mut Alignment, n: u64) -> Result<EventsResponse, JobError> {
+        align.epoch = if align.done() && n >= align.highest {
+            Span::none()
+        } else {
+            info_span!(parent: &align.job, "epoch", openetl.epoch = n + 1)
+        };
+        let encode = |schema: &SchemaRef| {
+            ipc::encode_schema(schema)
+                .map_err(|e| JobError::internal(format!("encode a schema: {e}")))
+        };
+        let plan = &self.plan;
+        let Pieces {
             staged,
-            snapshots: Vec::new(),
-            schemas,
-            quarantine: align.quarantined.remove(&n).unwrap_or_default(),
             files,
-            holds,
-            delivered,
-        })),
-    })
+            held,
+        } = align.pieces.remove(&n).unwrap_or_default();
+        let mut by_stream: HashMap<String, Vec<_>> = HashMap::new();
+        for s in held {
+            by_stream.entry(s.stream).or_default().extend(s.files);
+        }
+        let mut schemas = HashMap::new();
+        let mut delivered = HashMap::new();
+        let mut holds = HashMap::new();
+        let mut quarantine = Vec::new();
+        for (s, owner) in self.owners.iter().enumerate() {
+            let (at, q) = owner.take(n);
+            quarantine.extend(q);
+            let name = &plan.streams[s];
+            if let Some(sc) = &at.schema {
+                schemas.insert(name.clone(), encode(sc)?);
+            }
+            if let Some(d) = &at.delivered {
+                delivered.insert(name.clone(), encode(d)?);
+            }
+            if let Some(mut h) = at.holds {
+                h.files = by_stream.remove(name).unwrap_or_default();
+                holds.insert(name.clone(), h);
+            }
+        }
+        Ok(EventsResponse {
+            event: Some(events_response::Event::EpochReady(EpochReady {
+                epoch: Some(Epoch {
+                    generation: plan.generation,
+                    n,
+                }),
+                staged: staged.into_values().collect(),
+                snapshots: Vec::new(),
+                schemas,
+                quarantine,
+                files,
+                holds,
+                delivered,
+            })),
+        })
+    }
 }
 
 /// Returns false if the inbound edges closed before every stream ended.
 async fn write_edge<W>(
-    plan: Arc<Plan>,
+    flow: Arc<Flow>,
+    writer: usize,
     w: W,
-    mut rx: mpsc::Receiver<Out>,
-    events: Events,
-    counters: Arc<Vec<Counters>>,
+    mut feed: Feed,
 ) -> Result<bool, JobError>
 where
     W: AsyncWrite + Unpin,
 {
-    let Sink::Runner { edge, out_index } = &plan.sink else {
+    let plan = &flow.plan;
+    let counters = &flow.counters;
+    let Sink::Runner { edges, out_index } = &plan.sink else {
         return Err(JobError::internal("the sink has no edge"));
     };
-    let id = &edge.id;
+    let (id, out_index) = (&edges[writer].id, &out_index[writer]);
     let gone = |e: std::io::Error| JobError::runner_gone(format!("edge {id}: {e}"));
     let mut w = BufWriter::with_capacity(1 << 16, w);
-    let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
     let mut held = match &plan.held_url {
         Some(url) => Some(Staging::open(
             url,
@@ -686,22 +1137,25 @@ where
             plan.generation,
             plan.first_epoch,
             &plan.streams,
+            writer,
+            plan.writer_lanes,
         )?),
         None => None,
     };
 
-    while !align.done() {
-        let item = match rx.try_recv() {
-            Ok(item) => item,
-            Err(TryRecvError::Empty) => {
+    let mut open = plan.streams.len();
+    while open > 0 {
+        let item = match feed.try_next()? {
+            Next::Item(item) => item,
+            Next::Empty => {
                 w.flush().await.map_err(gone)?;
-                match rx.recv().await {
+                match feed.next().await? {
                     Some(item) => item,
                     None => return Ok(false),
                 }
             }
             // A reader failed, and its error says why.
-            Err(TryRecvError::Disconnected) => return Ok(false),
+            Next::Closed => return Ok(false),
         };
         let (kind, stream, payload) = match item {
             Out::Batch(s, batch) => {
@@ -731,44 +1185,46 @@ where
                     .fetch_add(payload.len() as u64, Ordering::Relaxed);
                 (FrameKind::Patch, s, payload)
             }
-            Out::Barrier(s, epoch, at, quarantined) => {
+            Out::Barrier(s, epoch) => {
                 if let Some(h) = &mut held {
                     h.seal(s).await?;
                 }
-                align.cross(s, epoch.n, at, quarantined);
-                (
-                    FrameKind::Barrier,
-                    s,
-                    Barrier { epoch: Some(epoch) }.encode_to_vec(),
-                )
+                let payload = Barrier { epoch: Some(epoch) }.encode_to_vec();
+                frame::write(&mut w, FrameKind::Barrier, out_index[s], &payload)
+                    .await
+                    .map_err(gone)?;
+                w.flush().await.map_err(gone)?;
+                let mut a = flow.align.lock().await;
+                a.cross(s, writer, epoch.n);
+                if let Some(h) = &mut held {
+                    let files = h.take(epoch.n);
+                    a.pieces(epoch.n).held.extend(files);
+                }
+                flow.settle(&mut a).await?;
+                continue;
             }
-            Out::End(s, at) => {
+            Out::End(s) => {
                 if let Some(h) = &mut held {
                     h.end(s).await?;
                 }
-                align.end(s, at);
-                (FrameKind::EndOfStream, s, Vec::new())
+                frame::write(&mut w, FrameKind::EndOfStream, out_index[s], &[])
+                    .await
+                    .map_err(gone)?;
+                w.flush().await.map_err(gone)?;
+                open -= 1;
+                let mut a = flow.align.lock().await;
+                a.end(s, writer);
+                flow.settle(&mut a).await?;
+                continue;
             }
         };
         frame::write(&mut w, kind, out_index[stream], &payload)
             .await
             .map_err(gone)?;
-
-        let ready = align.advance();
-        if !ready.is_empty() {
-            w.flush().await.map_err(gone)?;
-            for n in ready {
-                let held = held.as_mut().map(|h| h.take(n)).unwrap_or_default();
-                // The runner records every EpochReady, so this waits.
-                let ev = epoch_ready(&plan, &mut align, n, Vec::new(), Vec::new(), held)?;
-                let _ = events.send(Ok(ev)).await;
-            }
-            let _ = events.try_send(Ok(metrics(&plan, &counters)));
-        }
     }
     w.flush().await.map_err(gone)?;
     w.shutdown().await.map_err(gone)?;
-    let _ = events.try_send(Ok(metrics(&plan, &counters)));
+    let _ = flow.events.try_send(Ok(metrics(plan, counters)));
     Ok(true)
 }
 
@@ -776,162 +1232,181 @@ where
 /// its EpochReady. Runs on a blocking thread. Returns false if the inbound
 /// edges closed before every stream ended.
 fn write_parquet(
-    plan: &Plan,
+    flow: &Flow,
+    writer: usize,
     url: &str,
-    mut rx: mpsc::Receiver<Out>,
-    events: &Events,
-    counters: &[Counters],
+    mut feed: Feed,
+    rt: &tokio::runtime::Handle,
 ) -> Result<bool, JobError> {
+    let plan = &flow.plan;
+    let counters = &flow.counters;
     let streams: Vec<(String, String)> = plan
         .streams
         .iter()
         .cloned()
         .zip(plan.tables.iter().cloned())
         .collect();
-    let mut staging = ParquetStaging::new(url, plan.generation, plan.first_epoch, &streams)
-        .map_err(sink_error)?;
-    let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
+    let mut staging = ParquetStaging::new(
+        url,
+        plan.generation,
+        plan.first_epoch,
+        &streams,
+        writer,
+        plan.writer_lanes,
+    )
+    .map_err(sink_error)?;
 
-    while !align.done() {
-        let Some(item) = rx.blocking_recv() else {
+    let mut open = plan.streams.len();
+    while open > 0 {
+        let Some(item) = rt.block_on(feed.next())? else {
             return Ok(false);
         };
-        match item {
+        let mark: Mark = match item {
             Out::Batch(s, batch) => {
                 staging.write(s, &batch).map_err(sink_error)?;
                 counters[s]
                     .rows_out
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+                continue;
             }
             // Each batch carries its schema.
-            Out::SchemaChange(..) => {}
+            Out::SchemaChange(..) => continue,
             Out::Held(..) | Out::Patch(..) => return Err(no_holds()),
-            Out::Barrier(s, epoch, at, quarantined) => {
+            Out::Barrier(s, epoch) => {
                 let bytes = staging.seal(s).map_err(sink_error)?;
                 counters[s].bytes_out.fetch_add(bytes, Ordering::Relaxed);
-                align.cross(s, epoch.n, at, quarantined);
+                Mark::Cross(s, epoch.n)
             }
-            Out::End(s, at) => {
+            Out::End(s) => {
                 staging.end(s).map_err(sink_error)?;
-                align.end(s, at);
+                open -= 1;
+                Mark::End(s)
             }
-        }
-        let ready = align.advance();
-        if ready.is_empty() {
-            continue;
-        }
-        for n in ready {
-            let staged = serde_json::to_vec(&staging.take(n))
-                .map_err(|e| JobError::internal(format!("encode the staged descriptor: {e}")))?;
-            let ev = epoch_ready(plan, &mut align, n, vec![staged], Vec::new(), Vec::new())?;
-            let _ = events.blocking_send(Ok(ev));
-        }
-        let _ = events.try_send(Ok(metrics(plan, counters)));
+        };
+        rt.block_on(async {
+            let mut a = flow.align.lock().await;
+            mark.apply(&mut a, writer);
+            for n in a.own(writer) {
+                let staged = serde_json::to_vec(&staging.take(n)).map_err(|e| {
+                    JobError::internal(format!("encode the staged descriptor: {e}"))
+                })?;
+                a.pieces(n).staged.insert(writer, staged);
+            }
+            flow.settle(&mut a).await
+        })?;
     }
-    let _ = events.try_send(Ok(metrics(plan, counters)));
+    let _ = flow.events.try_send(Ok(metrics(plan, counters)));
     Ok(true)
+}
+
+/// A writer lane's crossing or end of a stream.
+enum Mark {
+    Cross(usize, u64),
+    End(usize),
+}
+
+impl Mark {
+    fn apply(&self, a: &mut Alignment, writer: usize) {
+        match *self {
+            Mark::Cross(s, n) => a.cross(s, writer, n),
+            Mark::End(s) => a.end(s, writer),
+        }
+    }
 }
 
 /// Stages every stream as Parquet for a destination connector, and lists each
 /// epoch's files in its EpochReady. Returns false if the inbound edges closed
 /// before every stream ended.
 async fn write_staged(
-    plan: Arc<Plan>,
+    flow: Arc<Flow>,
+    writer: usize,
     url: String,
     dir: String,
-    mut rx: mpsc::Receiver<Out>,
-    events: Events,
-    counters: Arc<Vec<Counters>>,
+    mut feed: Feed,
 ) -> Result<bool, JobError> {
-    let mut staging = Staging::open(&url, &dir, plan.generation, plan.first_epoch, &plan.streams)?;
-    let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
-    while !align.done() {
-        let Some(item) = rx.recv().await else {
+    let plan = &flow.plan;
+    let counters = &flow.counters;
+    let mut staging = Staging::open(
+        &url,
+        &dir,
+        plan.generation,
+        plan.first_epoch,
+        &plan.streams,
+        writer,
+        plan.writer_lanes,
+    )?;
+    let mut open = plan.streams.len();
+    while open > 0 {
+        let Some(item) = feed.next().await? else {
             return Ok(false);
         };
-        match item {
+        let mark = match item {
             Out::Batch(s, batch) => {
                 staging.write(s, &batch).await?;
                 counters[s]
                     .rows_out
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+                continue;
             }
             // Each file carries its schema.
-            Out::SchemaChange(..) => {}
+            Out::SchemaChange(..) => continue,
             Out::Held(..) | Out::Patch(..) => return Err(no_holds()),
-            Out::Barrier(s, epoch, at, quarantined) => {
+            Out::Barrier(s, epoch) => {
                 let bytes = staging.seal(s).await?;
                 counters[s].bytes_out.fetch_add(bytes, Ordering::Relaxed);
-                align.cross(s, epoch.n, at, quarantined);
+                Mark::Cross(s, epoch.n)
             }
-            Out::End(s, at) => {
+            Out::End(s) => {
                 staging.end(s).await?;
-                align.end(s, at);
+                open -= 1;
+                Mark::End(s)
             }
+        };
+        let mut a = flow.align.lock().await;
+        mark.apply(&mut a, writer);
+        if let Mark::Cross(_, n) = mark {
+            let files = staging.take(n);
+            a.pieces(n).files.extend(files);
         }
-        let ready = align.advance();
-        if ready.is_empty() {
-            continue;
-        }
-        for n in ready {
-            let ev = epoch_ready(
-                &plan,
-                &mut align,
-                n,
-                Vec::new(),
-                staging.take(n),
-                Vec::new(),
-            )?;
-            let _ = events.send(Ok(ev)).await;
-        }
-        let _ = events.try_send(Ok(metrics(&plan, &counters)));
+        flow.settle(&mut a).await?;
     }
-    let _ = events.try_send(Ok(metrics(&plan, &counters)));
+    let _ = flow.events.try_send(Ok(metrics(plan, counters)));
     Ok(true)
 }
 
 /// Drops every batch, and reports each epoch ready with nothing staged.
 /// Returns false if the inbound edges closed before every stream ended.
-async fn write_discard(
-    plan: Arc<Plan>,
-    mut rx: mpsc::Receiver<Out>,
-    events: Events,
-    counters: Arc<Vec<Counters>>,
-) -> Result<bool, JobError> {
-    let mut align = Alignment::new(plan.streams.len(), plan.first_epoch);
-    while !align.done() {
-        let Some(item) = rx.recv().await else {
+async fn write_discard(flow: Arc<Flow>, writer: usize, mut feed: Feed) -> Result<bool, JobError> {
+    let plan = &flow.plan;
+    let counters = &flow.counters;
+    let mut open = plan.streams.len();
+    while open > 0 {
+        let Some(item) = feed.next().await? else {
             return Ok(false);
         };
-        match item {
+        let mark = match item {
             Out::Batch(s, batch) => {
                 counters[s]
                     .rows_out
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+                continue;
             }
-            Out::SchemaChange(..) => {}
+            Out::SchemaChange(..) => continue,
             Out::Held(..) | Out::Patch(..) => return Err(no_holds()),
-            Out::Barrier(s, epoch, at, quarantined) => align.cross(s, epoch.n, at, quarantined),
-            Out::End(s, at) => align.end(s, at),
+            Out::Barrier(s, epoch) => Mark::Cross(s, epoch.n),
+            Out::End(s) => {
+                open -= 1;
+                Mark::End(s)
+            }
+        };
+        let mut a = flow.align.lock().await;
+        mark.apply(&mut a, writer);
+        for n in a.own(writer) {
+            a.pieces(n).staged.insert(writer, Vec::new());
         }
-        let ready = align.advance();
-        if ready.is_empty() {
-            continue;
-        }
-        for n in ready {
-            let ev = epoch_ready(
-                &plan,
-                &mut align,
-                n,
-                vec![Vec::new()],
-                Vec::new(),
-                Vec::new(),
-            )?;
-            let _ = events.send(Ok(ev)).await;
-        }
-        let _ = events.try_send(Ok(metrics(&plan, &counters)));
+        flow.settle(&mut a).await?;
     }
-    let _ = events.try_send(Ok(metrics(&plan, &counters)));
+    let _ = flow.events.try_send(Ok(metrics(plan, counters)));
     Ok(true)
 }
 
@@ -1010,7 +1485,7 @@ mod tests {
         let job = tokio::spawn(run(
             plan,
             vec![BufReader::new(engine_in)],
-            Some(engine_out),
+            vec![engine_out],
             tx,
         ));
         Harness {
@@ -1045,6 +1520,301 @@ mod tests {
             out.push(f);
         }
         out
+    }
+
+    struct LaneHarness {
+        ins: Vec<DuplexStream>,
+        outs: Vec<BufReader<DuplexStream>>,
+        events: mpsc::Receiver<Result<EventsResponse, Status>>,
+        job: tokio::task::JoinHandle<Result<(), JobError>>,
+    }
+
+    fn start_lanes(req: openetl_proto::engine::v1::StartJobRequest) -> LaneHarness {
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let (mut ins, mut readers, mut outs, mut writers) = (vec![], vec![], vec![], vec![]);
+        for _ in 0..plan.inbound.len() {
+            let (w, r) = duplex(1 << 16);
+            ins.push(w);
+            readers.push(BufReader::new(r));
+        }
+        if matches!(plan.sink, Sink::Runner { .. }) {
+            for _ in 0..plan.writer_lanes {
+                let (w, r) = duplex(1 << 16);
+                writers.push(w);
+                outs.push(BufReader::new(r));
+            }
+        }
+        let (tx, events) = mpsc::channel(64);
+        let job = tokio::spawn(run(plan, readers, writers, tx));
+        LaneHarness {
+            ins,
+            outs,
+            events,
+            job,
+        }
+    }
+
+    impl LaneHarness {
+        async fn end_all(&mut self, streams: u32) {
+            for w in &mut self.ins {
+                for s in 0..streams {
+                    put(w, FrameKind::EndOfStream, s, vec![]).await;
+                }
+                w.shutdown().await.unwrap();
+            }
+        }
+
+        async fn finish(mut self) -> (Vec<Vec<frame::Frame>>, Vec<EpochReady>) {
+            let mut drains = JoinSet::new();
+            let n = self.outs.len();
+            for (i, mut r) in std::mem::take(&mut self.outs).into_iter().enumerate() {
+                drains.spawn(async move { (i, drain(&mut r).await) });
+            }
+            let mut out: Vec<Vec<frame::Frame>> = (0..n).map(|_| Vec::new()).collect();
+            while let Some(d) = drains.join_next().await {
+                let (i, frames) = d.unwrap();
+                out[i] = frames;
+            }
+            self.job.await.unwrap().unwrap();
+            (out, ready(&mut self.events).await)
+        }
+    }
+
+    fn data_frames(frames: &[frame::Frame]) -> Vec<(FrameKind, u32)> {
+        frames
+            .iter()
+            .filter(|f| f.kind != FrameKind::SchemaChange)
+            .map(|f| (f.kind, f.stream))
+            .collect()
+    }
+
+    fn int_column(f: &frame::Frame, name: &str) -> Vec<i64> {
+        let b = ipc::decode_batch(f.payload.clone()).unwrap();
+        let schema = b.schema();
+        let c = b.column(schema.index_of(name).unwrap());
+        c.as_primitive::<arrow_array::types::Int64Type>()
+            .iter()
+            .flatten()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn straight_lanes_write_on_their_own_writer_lanes() {
+        let mut h = start_lanes(crate::plan::tests::lanes_request(&["a"], 2, 2));
+        put(&mut h.ins[1], FrameKind::Rows, 0, rows(&[r#"{"x": 2}"#])).await;
+        put(&mut h.ins[1], FrameKind::Barrier, 0, barrier(1)).await;
+        // A writer lane doesn't wait for another: lane 1's rows after its
+        // barrier go out before lane 0 has reached it.
+        put(&mut h.ins[1], FrameKind::Rows, 0, rows(&[r#"{"x": 3}"#])).await;
+        let mut seen = Vec::new();
+        while seen.len() < 4 {
+            seen.push(frame::read(&mut h.outs[1]).await.unwrap().unwrap().kind);
+        }
+        use FrameKind as K;
+        assert_eq!(seen, [K::SchemaChange, K::Batch, K::Barrier, K::Batch]);
+        assert!(h.events.try_recv().is_err(), "the epoch isn't ready yet");
+
+        put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        put(&mut h.ins[0], FrameKind::Barrier, 0, barrier(1)).await;
+        h.end_all(1).await;
+        let (out, ready) = h.finish().await;
+        assert_eq!(
+            data_frames(&out[0]),
+            [(K::Batch, 0), (K::Barrier, 0), (K::EndOfStream, 0)]
+        );
+        let batch = out[0].iter().find(|f| f.kind == K::Batch).unwrap();
+        assert_eq!(int_column(batch, "x"), [1]);
+        assert_eq!(out[1].last().unwrap().kind, K::EndOfStream);
+        let ns: Vec<_> = ready.iter().map(|r| r.epoch.unwrap().n).collect();
+        assert_eq!(ns, [1]);
+    }
+
+    #[tokio::test]
+    async fn a_writer_lane_aligns_the_lanes_feeding_it() {
+        let mut h = start_lanes(crate::plan::tests::lanes_request(&["a"], 2, 1));
+        put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        put(&mut h.ins[0], FrameKind::Barrier, 0, barrier(1)).await;
+        // After its barrier: it waits for lane 1's, with its edge still read.
+        for i in 0..2000 {
+            let row = format!(r#"{{"x": {}}}"#, 100 + i);
+            put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[&row])).await;
+        }
+        put(&mut h.ins[0], FrameKind::Barrier, 0, barrier(2)).await;
+        put(&mut h.ins[1], FrameKind::Rows, 0, rows(&[r#"{"x": 2}"#])).await;
+        put(&mut h.ins[1], FrameKind::Barrier, 0, barrier(1)).await;
+        put(&mut h.ins[1], FrameKind::Barrier, 0, barrier(2)).await;
+        h.end_all(1).await;
+        let (out, ready) = h.finish().await;
+        let frames = &out[0];
+        let barrier1 = frames
+            .iter()
+            .position(|f| f.kind == FrameKind::Barrier)
+            .unwrap();
+        let before: Vec<i64> = frames[..barrier1]
+            .iter()
+            .filter(|f| f.kind == FrameKind::Batch)
+            .flat_map(|f| int_column(f, "x"))
+            .collect();
+        assert_eq!(before.len(), 2);
+        assert!(before.contains(&1) && before.contains(&2));
+        let after: Vec<i64> = frames[barrier1 + 1..]
+            .iter()
+            .filter(|f| f.kind == FrameKind::Batch)
+            .flat_map(|f| int_column(f, "x"))
+            .collect();
+        assert_eq!(after, (100..2100).collect::<Vec<i64>>());
+        let barriers = frames.iter().filter(|f| f.kind == FrameKind::Barrier);
+        assert_eq!(barriers.count(), 2);
+        let ns: Vec<_> = ready.iter().map(|r| r.epoch.unwrap().n).collect();
+        assert_eq!(ns, [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn rows_routed_by_key_group_meet_on_one_writer_lane() {
+        let mut req = crate::plan::tests::lanes_request(&["a"], 2, 2);
+        req.streams[0].primary_key = vec!["id".into()];
+        req.streams[0].routing = openetl_proto::engine::v1::Routing::KeyGroup as i32;
+        let mut h = start_lanes(req);
+        let all: Vec<String> = (0..200).map(|i| format!(r#"{{"id": {i}}}"#)).collect();
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        put(&mut h.ins[0], FrameKind::Rows, 0, rows(&all)).await;
+        put(&mut h.ins[1], FrameKind::Rows, 0, rows(&all)).await;
+        for w in &mut h.ins {
+            put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        }
+        h.end_all(1).await;
+        let (out, ready) = h.finish().await;
+        let mut seen = [Vec::new(), Vec::new()];
+        for (w, frames) in out.iter().enumerate() {
+            let barriers = frames.iter().filter(|f| f.kind == FrameKind::Barrier);
+            assert_eq!(barriers.count(), 1);
+            seen[w] = frames
+                .iter()
+                .filter(|f| f.kind == FrameKind::Batch)
+                .flat_map(|f| int_column(f, "id"))
+                .collect();
+            assert!(!seen[w].is_empty());
+        }
+        assert_eq!(seen[0].len() + seen[1].len(), 400);
+        for id in &seen[0] {
+            assert!(!seen[1].contains(id), "{id} reached both writer lanes");
+        }
+        assert_eq!(ready.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn lanes_share_one_schema_and_the_epoch_keeps_its_latest() {
+        let mut h = start_lanes(crate::plan::tests::lanes_request(&["a"], 2, 2));
+        put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        put(&mut h.ins[0], FrameKind::Barrier, 0, barrier(1)).await;
+        put(
+            &mut h.ins[1],
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"x": 2.5, "y": "s"}"#]),
+        )
+        .await;
+        while frame::read(&mut h.outs[1]).await.unwrap().unwrap().kind != FrameKind::Batch {}
+        put(&mut h.ins[1], FrameKind::Barrier, 0, barrier(1)).await;
+        // Lane 0 takes the owner's schema for an integer it would otherwise
+        // infer on its own.
+        put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[r#"{"x": 3}"#])).await;
+        put(&mut h.ins[0], FrameKind::Barrier, 0, barrier(2)).await;
+        put(&mut h.ins[1], FrameKind::Barrier, 0, barrier(2)).await;
+        h.end_all(1).await;
+        let (out, ready) = h.finish().await;
+        let batches: Vec<_> = out[0]
+            .iter()
+            .filter(|f| f.kind == FrameKind::Batch)
+            .map(|f| ipc::decode_batch(f.payload.clone()).unwrap())
+            .collect();
+        assert_eq!(batches[0].schema().field(0).data_type(), &DataType::Int64);
+        assert_eq!(batches[1].schema().field(0).data_type(), &DataType::Float64);
+        assert!(batches[1].schema().field_with_name("y").is_ok());
+        use DataType as T;
+        let shapes: Vec<_> = ready.iter().map(schema_types).collect();
+        let full = vec![("a".to_string(), vec![T::Float64, T::Utf8])];
+        assert_eq!(shapes, [full.clone(), full]);
+    }
+
+    #[tokio::test]
+    async fn the_schema_policy_starts_once_every_lane_has_passed_the_barrier() {
+        let mut req = crate::plan::tests::lanes_request(&["a"], 2, 2);
+        req.schema_policy = openetl_proto::engine::v1::SchemaPolicy::Block as i32;
+        let mut h = start_lanes(req);
+        put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        put(&mut h.ins[0], FrameKind::Barrier, 0, barrier(1)).await;
+        // Still in the epoch that establishes the schema on this lane.
+        put(&mut h.ins[1], FrameKind::Rows, 0, rows(&[r#"{"y": 1}"#])).await;
+        put(&mut h.ins[1], FrameKind::Barrier, 0, barrier(1)).await;
+        put(&mut h.ins[1], FrameKind::Rows, 0, rows(&[r#"{"z": 1}"#])).await;
+        h.ins[1].flush().await.unwrap();
+        let err = h.job.await.unwrap().unwrap_err();
+        assert_eq!(err.code, ErrorCode::SchemaDrift, "{err}");
+        assert!(err.message.contains('z'), "{err}");
+    }
+
+    #[tokio::test]
+    async fn parquet_and_staged_sinks_stage_a_part_per_writer_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        for sink in ["parquet", "staged"] {
+            let url = format!("file://{}/{sink}", dir.path().display());
+            let mut req = crate::plan::tests::lanes_request(&["a"], 2, 2);
+            req.edges
+                .retain(|e| e.direction() == openetl_proto::engine::v1::EdgeDirection::ToEngine);
+            req.sink = Some(openetl_proto::engine::v1::SinkPlan {
+                sink: Some(match sink {
+                    "parquet" => openetl_proto::engine::v1::sink_plan::Sink::Parquet(
+                        openetl_proto::engine::v1::ParquetSink { url: url.clone() },
+                    ),
+                    _ => openetl_proto::engine::v1::sink_plan::Sink::Staged(
+                        openetl_proto::engine::v1::StagedSink {
+                            url: url.clone(),
+                            dir: String::new(),
+                        },
+                    ),
+                }),
+            });
+            let mut h = start_lanes(req);
+            for w in 0..2 {
+                let row = format!(r#"{{"x": {w}}}"#);
+                put(&mut h.ins[w], FrameKind::Rows, 0, rows(&[&row])).await;
+                put(&mut h.ins[w], FrameKind::Barrier, 0, barrier(1)).await;
+            }
+            h.end_all(1).await;
+            let (_, ready) = h.finish().await;
+            assert_eq!(ready.len(), 1, "{sink}");
+            match sink {
+                "parquet" => {
+                    assert_eq!(ready[0].staged.len(), 2);
+                    let parts: Vec<String> = ready[0]
+                        .staged
+                        .iter()
+                        .map(|s| {
+                            let d: openetl_formats::Descriptor = serde_json::from_slice(s).unwrap();
+                            d.streams[0].files[0].staged.clone()
+                        })
+                        .collect();
+                    assert!(parts[0].ends_with("part-00000.parquet"), "{parts:?}");
+                    assert!(parts[1].ends_with("part-00001.parquet"), "{parts:?}");
+                }
+                _ => {
+                    let mut files: Vec<_> = ready[0]
+                        .files
+                        .iter()
+                        .map(|f| (f.lane, f.files[0].path.clone()))
+                        .collect();
+                    files.sort();
+                    assert_eq!(
+                        files,
+                        [
+                            (0, "1/1/a/part-00000.parquet".to_string()),
+                            (1, "1/1/a/part-00001.parquet".to_string())
+                        ]
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -1441,7 +2211,7 @@ mod tests {
         let job = tokio::spawn(run::<_, DuplexStream>(
             plan,
             vec![BufReader::new(engine_in)],
-            None,
+            Vec::<DuplexStream>::new(),
             tx,
         ));
         put(
@@ -1510,7 +2280,7 @@ mod tests {
         let job = tokio::spawn(run::<_, DuplexStream>(
             plan,
             vec![BufReader::new(engine_in)],
-            None,
+            Vec::<DuplexStream>::new(),
             tx,
         ));
         put(
@@ -1563,7 +2333,7 @@ mod tests {
         let job = tokio::spawn(run::<_, DuplexStream>(
             plan,
             vec![BufReader::new(engine_in)],
-            None,
+            Vec::<DuplexStream>::new(),
             tx,
         ));
         put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;

@@ -281,9 +281,10 @@ message SinkPlan {
   }
 }
 
-// RunnerSink is a Go sink in the runner, fed by a FROM_ENGINE edge.
+// RunnerSink is a Go sink in the runner, fed by the FROM_ENGINE edges, one
+// per writer lane.
 message RunnerSink {
-  string edge = 1;
+  reserved 1;
 }
 
 // ParquetSink stages each epoch as Parquet files under url, and reports them

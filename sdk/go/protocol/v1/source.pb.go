@@ -452,7 +452,10 @@ type ReadRequest struct {
 	// The read never ends: streams read with cdc or stream follow their
 	// source until the read is cancelled. Otherwise they complete once
 	// they've caught up with where their source was when the read started.
-	Continuous    bool `protobuf:"varint,4,opt,name=continuous,proto3" json:"continuous,omitempty"`
+	Continuous bool `protobuf:"varint,4,opt,name=continuous,proto3" json:"continuous,omitempty"`
+	// How many of its splits the read may read at a time (ADR-0027), a whole
+	// stream counting as one, more if they share a connection. Zero: one.
+	Lanes         uint32 `protobuf:"varint,5,opt,name=lanes,proto3" json:"lanes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -513,6 +516,13 @@ func (x *ReadRequest) GetContinuous() bool {
 		return x.Continuous
 	}
 	return false
+}
+
+func (x *ReadRequest) GetLanes() uint32 {
+	if x != nil {
+		return x.Lanes
+	}
+	return 0
 }
 
 type ConfiguredStream struct {
@@ -1548,14 +1558,15 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\x0edefault_cursor\x18\x06 \x01(\tR\rdefaultCursor\x122\n" +
 	"\x15source_defined_cursor\x18\a \x01(\bR\x13sourceDefinedCursor\x124\n" +
 	"\x06replay\x18\b \x01(\x0e2\x1c.openetl.connector.v1.ReplayR\x06replay\x12\"\n" +
-	"\rsplits_by_key\x18\t \x01(\bR\vsplitsByKey\"\xa3\x01\n" +
+	"\rsplits_by_key\x18\t \x01(\bR\vsplitsByKey\"\xb9\x01\n" +
 	"\vReadRequest\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\x12@\n" +
 	"\astreams\x18\x02 \x03(\v2&.openetl.connector.v1.ConfiguredStreamR\astreams\x12\x1a\n" +
 	"\bpipeline\x18\x03 \x01(\tR\bpipeline\x12\x1e\n" +
 	"\n" +
 	"continuous\x18\x04 \x01(\bR\n" +
-	"continuous\"\xd5\x01\n" +
+	"continuous\x12\x14\n" +
+	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\xd5\x01\n" +
 	"\x10ConfiguredStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12;\n" +
 	"\tsync_mode\x18\x02 \x01(\x0e2\x1e.openetl.connector.v1.SyncModeR\bsyncMode\x12\x16\n" +

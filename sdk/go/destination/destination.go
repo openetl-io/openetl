@@ -219,10 +219,10 @@ type OpenConfig struct {
 	// How often epochs are committed, for sinks whose transactions must
 	// outlast one; 0 if the platform doesn't say.
 	CommitInterval time.Duration
-	// The writer's lane, of Lanes; 0 Lanes is one. Lane 0's writer also
-	// applies schemas, recovers and commits, for every lane, and the others'
-	// open once it has recovered.
-	Lane, Lanes int
+	// The writer's lane. Lane 0's writer also applies schemas, recovers and
+	// commits, for every lane, and the others' open once it has recovered,
+	// when the attempt has settled how many it has.
+	Lane int
 }
 
 type Destination interface {
@@ -284,8 +284,10 @@ type ReadTracker interface {
 	// attempt began keeps its start, so a stream whose start changed began a
 	// new read.
 	StartReads(ctx context.Context, starts map[string]time.Time) error
-	// EndRead says stream's read ended in epoch e: its last batch came
-	// before this call, and PreCommit(e) after it.
+	// EndRead says stream's read ended in epoch e: the lane's last batch of
+	// it came before this call, and PreCommit(e) after it. Not every lane
+	// gets it, but at least one does, before the epoch's committables are
+	// made: Commit and Recover act on it if any committable says so.
 	EndRead(ctx context.Context, e Epoch, stream string) error
 }
 
