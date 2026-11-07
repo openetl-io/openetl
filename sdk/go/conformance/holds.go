@@ -122,9 +122,7 @@ func (w *writer) patch(e *protocolv1.Epoch, stream string, rec arrow.RecordBatch
 func (r *destinationRun) holds(t T) *protocolv1.HoldCapabilities {
 	t.Helper()
 	r.process(t)
-	if r.s.Read == nil {
-		t.Fatalf("the suite has no Read")
-	}
+	r.needRead(t)
 	h := r.spec.GetDestination().GetHolds()
 	if !h.GetGuarded() || !h.GetByKey() && !h.GetById() {
 		t.Skipf("the destination takes no holds")

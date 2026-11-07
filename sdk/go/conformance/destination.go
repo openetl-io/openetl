@@ -30,7 +30,8 @@ type DestinationSuite struct {
 	Unreachable []byte
 	// Read returns the records the destination has made visible for stream
 	// in namespace, as readers of the destination see them, each by field
-	// name; none for a stream it hasn't created. The checks compare the
+	// name; none for a stream it hasn't created. Nil skips the checks that
+	// write. The checks compare the
 	// fields "id", an int64, "v", a string, a soft-deleted row's
 	// "_openetl_deleted", a bool, and the columns schemas add, "w", a string,
 	// and "n", an int64, by their text, so any Go value that prints the same
@@ -131,6 +132,15 @@ func (r *destinationRun) drop() {
 	}
 }
 
+// needRead skips a check that reads the destination back, when the suite
+// can't.
+func (r *destinationRun) needRead(t T) {
+	t.Helper()
+	if r.s.Read == nil {
+		t.Skipf("the suite has no Read, so it can't see what the destination made visible")
+	}
+}
+
 func (r *destinationRun) class() protocolv1.SinkClass {
 	return r.spec.GetDestination().GetSinkClass()
 }
@@ -158,9 +168,7 @@ func (r *destinationRun) area(t T) *stagingArea {
 func (r *destinationRun) each(check func(T, *session)) func(T) {
 	return func(t T) {
 		r.process(t)
-		if r.s.Read == nil {
-			t.Fatalf("the suite has no Read")
-		}
+		r.needRead(t)
 		for _, scope := range r.spec.GetDestination().GetScopes() {
 			check(t, r.session(t, scope, protocolv1.WriteMode_WRITE_MODE_APPEND))
 		}
@@ -714,9 +722,7 @@ func (r *destinationRun) supportsMode(mode protocolv1.WriteMode) bool {
 func (r *destinationRun) supports(t T, mode protocolv1.WriteMode) {
 	t.Helper()
 	r.process(t)
-	if r.s.Read == nil {
-		t.Fatalf("the suite has no Read")
-	}
+	r.needRead(t)
 	if !slices.Contains(r.spec.GetDestination().GetWriteModes(), mode) {
 		t.Skipf("the destination doesn't write %s", mode)
 	}
@@ -777,9 +783,7 @@ func (r *destinationRun) checkMerge(t T) {
 // nothing, and its values land.
 func (r *destinationRun) checkEvolution(t T) {
 	r.process(t)
-	if r.s.Read == nil {
-		t.Fatalf("the suite has no Read")
-	}
+	r.needRead(t)
 	s := r.session(t, r.spec.GetDestination().GetScopes()[0], protocolv1.WriteMode_WRITE_MODE_APPEND)
 	w, _ := s.begin(1, nil, nil)
 	if !w.opened.GetAppliesSchema() {
@@ -827,9 +831,7 @@ func (r *destinationRun) checkEvolution(t T) {
 // destination takes the wider type and keeps the rows it has.
 func (r *destinationRun) checkTypeChanges(t T) {
 	r.process(t)
-	if r.s.Read == nil {
-		t.Fatalf("the suite has no Read")
-	}
+	r.needRead(t)
 	narrow := append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "n", Type: arrow.PrimitiveTypes.Int32, Nullable: true})
 	wide := append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "n", Type: arrow.PrimitiveTypes.Int64, Nullable: true})
 	small, large := records(0, 2, "a"), records(1<<33, 1<<33+2, "a")
