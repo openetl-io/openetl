@@ -315,7 +315,8 @@ func (w *world) job(attempt int) runner.Job {
 		Dataflow:    runner.Passthrough{Convert: toArrow},
 		Settings:    w.cfg.settings,
 		KeepRecords: w.cfg.keep,
-		Lanes:       w.cfg.lanes,
+		// An attempt may run other lanes than the one before.
+		Lanes: 1 + (attempt+w.sync)%w.cfg.lanes,
 	}
 	if w.cfg.holds {
 		j.HeldURL = "sim://held"

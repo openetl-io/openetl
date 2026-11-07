@@ -198,12 +198,12 @@ func (j *Job) canResplit(ctx context.Context) bool {
 }
 
 // settleLanes bounds the attempt's lanes by the splits there are to read,
-// unless the source can make more.
+// unless a stream is read in splits by a source that can make more.
 func (j *Job) settleLanes(ctx context.Context, splits map[string][]checkpoint.SplitState, done map[string]bool) {
-	if j.lanes() == 1 || j.canResplit(ctx) {
+	if j.lanes() == 1 {
 		return
 	}
-	open := 0
+	open, inParts := 0, false
 	for _, s := range j.Streams {
 		if done[s.Name] {
 			continue
@@ -211,8 +211,12 @@ func (j *Job) settleLanes(ctx context.Context, splits map[string][]checkpoint.Sp
 		for _, sp := range splits[s.Name] {
 			if !sp.Complete {
 				open++
+				inParts = inParts || sp.ID != checkpoint.WholeStream
 			}
 		}
+	}
+	if inParts && j.canResplit(ctx) {
+		return
 	}
 	j.Lanes = min(j.Lanes, max(open, 1))
 }
