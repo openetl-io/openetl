@@ -10,6 +10,9 @@
 # when there is no .git, as in a copy made with git archive.
 # With ICEBERG=1, it also runs SeaweedFS and Iceberg's REST catalog, without
 # Docker, for -lanes; destination-iceberg's config is then in $ICEBERG_CONFIG.
+# The catalog is only published as an image, so copy its jar to
+# /opt/iceberg-rest.jar first, from /usr/lib/iceberg-rest/iceberg-rest-adapter.jar
+# in apache/iceberg-rest-fixture:1.10.1.
 set -euo pipefail
 
 connectors=${CONNECTORS_SRC:-../openetl-connectors}
@@ -39,7 +42,7 @@ su postgres -c "psql -qtA -c \"SELECT 1 FROM pg_database WHERE datname = 'openet
 if [ -n "${ICEBERG:-}" ]; then
   apt-get install -yq --no-install-recommends default-jre-headless
   [ -x /usr/local/bin/weed ] || curl -fsSL https://github.com/seaweedfs/seaweedfs/releases/download/4.51/linux_amd64.tar.gz | tar -C /usr/local/bin -xz weed
-  [ -f /opt/iceberg-rest.jar ] || curl -fsSL -o /opt/iceberg-rest.jar https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-open-api/1.10.1/iceberg-open-api-1.10.1-test-fixtures-runtime.jar
+  [ -f /opt/iceberg-rest.jar ] || { echo "no /opt/iceberg-rest.jar: copy it from apache/iceberg-rest-fixture:1.10.1" >&2; exit 1; }
   mkdir -p /var/lib/weed
   pgrep -x weed >/dev/null || WEED_MASTER_VOLUME_GROWTH_COPY_1=1 nohup weed server -dir=/var/lib/weed -s3 -s3.port=8333 -master.volumeSizeLimitMB=1024 >/var/log/weed.log 2>&1 &
   pgrep -f iceberg-rest.jar >/dev/null || CATALOG_WAREHOUSE=s3://iceberg/ CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO \
