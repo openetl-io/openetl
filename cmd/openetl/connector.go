@@ -17,6 +17,7 @@ import (
 	"github.com/openetl-io/openetl/internal/connectorhost/external"
 	"github.com/openetl-io/openetl/internal/connectorpkg"
 	"github.com/openetl-io/openetl/internal/declarative"
+	"github.com/openetl-io/openetl/internal/oci"
 	"github.com/openetl-io/openetl/internal/spec"
 	"github.com/openetl-io/openetl/sdk/go/conformance"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -28,10 +29,15 @@ Commands:
   package [DIR...] (--tag TAG | --version VERSION)
             build each directory's openetl-connector.yaml for every platform,
             and write its executables and descriptor, for a release
+  publish oci://REGISTRY/NAMESPACE [DESCRIPTOR...]
+            push what package wrote to an OCI registry, and list it in the
+            namespace's index
   validate [DIR...]
             check each directory's openetl-connector.yaml, without building
-  apply -f FILE
-            apply the connector versions in FILE: descriptors and manifests
+  apply (-f FILE | REFERENCE...)
+            apply connector versions: descriptors and manifests in FILE, or
+            oci://REGISTRY/REPOSITORY:VERSION and
+            github.com/OWNER/REPO[/PACKAGE]@VERSION references
   spec TARGET
             print a connector's spec
   check --config FILE TARGET
@@ -56,6 +62,8 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 	switch args[0] {
 	case "package":
 		return runPackage(ctx, args[1:], out)
+	case "publish":
+		return runPublish(ctx, args[1:], out)
 	case "validate":
 		return runValidate(args[1:], out)
 	case "apply":
@@ -83,12 +91,12 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 func runPackage(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("openetl connector package", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: openetl connector package [DIR...] (--tag TAG | --version VERSION) [--out DIR] [--url-template URL] [--platforms LIST]")
+		fmt.Fprintln(fs.Output(), "usage: openetl connector package [DIR...] (--tag TAG | --version VERSION) [--out DIR] [--url-template URL] [--platforms LIST] [--publish oci://REGISTRY/NAMESPACE]")
 		fmt.Fprintln(fs.Output(), "\nBuilds the package in each DIR (default .) from its openetl-connector.yaml, for every platform, and writes")
 		fmt.Fprintln(fs.Output(), "each executable as its release asset, NAME-ROLE-OS-ARCH, and the descriptor, NAME.connector.yaml, into --out.")
 		fmt.Fprintln(fs.Output(), "--tag NAME/vX.Y.Z picks the DIR whose package is NAME, among DIRs or the subdirectories of ., and --tag vX.Y.Z")
 		fmt.Fprintln(fs.Output(), "takes a repository with one package. --version without --tag packages every DIR, each tagged v{version}, or")
-		fmt.Fprintln(fs.Output(), "NAME/v{version} when there are several.")
+		fmt.Fprintln(fs.Output(), "NAME/v{version} when there are several. --publish then pushes each, as openetl connector publish does.")
 		fs.PrintDefaults()
 	}
 	tag := fs.String("tag", "", "the release's git tag: NAME/vX.Y.Z, or vX.Y.Z")
@@ -97,6 +105,7 @@ func runPackage(ctx context.Context, args []string, out io.Writer) error {
 	urls := fs.String("url-template", "", "where runners download each executable, with {tag}, {asset}, {version}, {name}, {role}, {os} and {arch} (default: the GitHub release's assets)")
 	platforms := fs.String("platforms", "", "the os/arch pairs to build, comma-separated (default: the file's)")
 	verbose := fs.Bool("v", false, "show the builds' output")
+	publish := fs.String("publish", "", "an oci://REGISTRY/NAMESPACE to push each package to, once packaged")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -108,11 +117,17 @@ func runPackage(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	o := connectorpkg.Options{
-		Out: *outDir, URLTemplate: *urls,
-		Registry:  &connectorpkg.Registry{Client: &http.Client{Timeout: time.Minute}},
-		ImageSpec: imageSpec,
+	var ns oci.Ref
+	if *publish != "" {
+		if ns, err = namespace(*publish); err != nil {
+			return err
+		}
 	}
+	reg, err := registryClient()
+	if err != nil {
+		return err
+	}
+	o := connectorpkg.Options{Out: *outDir, URLTemplate: *urls, Images: reg, ImageSpec: imageSpec}
 	if *platforms != "" {
 		o.Platforms = strings.Split(*platforms, ",")
 	}
@@ -126,8 +141,86 @@ func runPackage(ctx context.Context, args []string, out io.Writer) error {
 			return fmt.Errorf("%s: %w", j.file.Name, err)
 		}
 		fmt.Fprintf(out, "%s %s: %s\n", j.file.FullName(), j.version, res.Descriptor)
+		if *publish != "" {
+			if err := publishOne(ctx, reg, ns, res.Descriptor, out); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func runPublish(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("openetl connector publish", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: openetl connector publish oci://REGISTRY/NAMESPACE [DESCRIPTOR...]")
+		fmt.Fprintln(fs.Output(), "\nPushes each package version openetl connector package wrote (default: every dist/*.connector.yaml), with the")
+		fmt.Fprintln(fs.Output(), "executables and logo beside it, to NAMESPACE/NAME, tagged with its version, and lists it in NAMESPACE/index,")
+		fmt.Fprintln(fs.Output(), "tagged NAME, when it's the package's highest version. Credentials come from Docker's config and credential")
+		fmt.Fprintln(fs.Output(), "helpers, as docker login and oras login write them.")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		fs.Usage()
+		return errors.New("publish needs an oci://REGISTRY/NAMESPACE")
+	}
+	ns, err := namespace(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	descriptors := fs.Args()[1:]
+	if len(descriptors) == 0 {
+		if descriptors, err = filepath.Glob(filepath.Join("dist", "*.connector.yaml")); err != nil {
+			return err
+		}
+		if len(descriptors) == 0 {
+			return errors.New("dist has no descriptors; run openetl connector package first, or name them")
+		}
+	}
+	reg, err := registryClient()
+	if err != nil {
+		return err
+	}
+	for _, d := range descriptors {
+		if err := publishOne(ctx, reg, ns, d, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func publishOne(ctx context.Context, reg *oci.Client, ns oci.Ref, descriptor string, out io.Writer) error {
+	p, err := connectorpkg.Publish(ctx, reg, ns, descriptor)
+	if err != nil {
+		return fmt.Errorf("%s: %w", descriptor, err)
+	}
+	indexed := "not indexed: the index lists a higher version"
+	if p.Indexed {
+		indexed = "indexed"
+	}
+	fmt.Fprintf(out, "%s %s: %s (%s)\n", p.Name, p.Version, p.Ref, indexed)
+	return nil
+}
+
+// namespace reads oci://REGISTRY/NAMESPACE.
+func namespace(s string) (oci.Ref, error) {
+	ns, err := oci.Parse(s)
+	if err == nil && ns.Reference() != "" {
+		err = fmt.Errorf("%s names a tag or digest; give the namespace alone, such as oci://ghcr.io/acme/connectors", s)
+	}
+	return ns, err
+}
+
+// registryClient reaches registries as the user, with Docker's credentials.
+func registryClient() (*oci.Client, error) {
+	creds, err := oci.DockerCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("docker's credentials: %w", err)
+	}
+	return &oci.Client{HTTP: &http.Client{Timeout: 10 * time.Minute}, Credentials: creds}, nil
 }
 
 // imageSpec reads an image-only role's spec, through Docker or Podman.

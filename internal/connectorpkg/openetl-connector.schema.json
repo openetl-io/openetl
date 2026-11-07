@@ -12,11 +12,15 @@
       "type": "string",
       "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
     },
+    "title": { "description": "A display name, such as PostgreSQL. None: the name.", "type": "string", "maxLength": 100, "pattern": "^[^\\n\\r]*$" },
     "description": { "description": "One line.", "type": "string", "maxLength": 500, "pattern": "^[^\\n\\r]*$" },
     "license": { "description": "An SPDX expression, such as Apache-2.0.", "type": "string", "pattern": "^[A-Za-z0-9.+:()\\- ]{1,100}$" },
     "repository": { "description": "The package's source repository. Its name stays with it.", "$ref": "#/$defs/https" },
     "docs": { "$ref": "#/$defs/https" },
-    "logo": { "description": "An image, which the UI shows.", "$ref": "#/$defs/https" },
+    "logo": {
+      "description": "An SVG or PNG image of at most 256 KiB, which the UI shows: a file beside this one, such as ./logo.svg, which is packaged with each version, or an https URL.",
+      "anyOf": [{ "$ref": "#/$defs/https" }, { "type": "string", "pattern": "^[^:/][^:]*\\.(svg|png)$" }]
+    },
     "author": { "type": "string", "maxLength": 200 },
     "tags": {
       "type": "array",

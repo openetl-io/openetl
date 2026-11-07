@@ -14,6 +14,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/oci"
 	"github.com/openetl-io/openetl/internal/spec"
 )
 
@@ -112,7 +113,7 @@ func TestPackage(t *testing.T) {
 	out := t.TempDir()
 	res, err := Package(t.Context(), f, Options{
 		Version: "0.3.0", Tag: "files/v0.3.0", Out: out, Platforms: []string{host, "linux/riscv64"},
-		Registry: &Registry{Client: reg.Client(), Insecure: map[string]bool{strings.TrimPrefix(reg.URL, "http://"): true}},
+		Images: &oci.Client{HTTP: reg.Client()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +179,7 @@ func TestPackage(t *testing.T) {
 
 	only, _ := Load("testdata/files")
 	only.Roles["destination"] = &Role{Image: f.Roles["destination"].Image}
-	_, err = Package(t.Context(), only, Options{Version: "0.3.0", Out: t.TempDir(), Registry: &Registry{Client: reg.Client(), Insecure: map[string]bool{strings.TrimPrefix(reg.URL, "http://"): true}}})
+	_, err = Package(t.Context(), only, Options{Version: "0.3.0", Out: t.TempDir(), Images: &oci.Client{HTTP: reg.Client()}})
 	if err == nil || !strings.Contains(err.Error(), "Docker or Podman") {
 		t.Errorf("an image-only role with no way to read its spec: %v", err)
 	}

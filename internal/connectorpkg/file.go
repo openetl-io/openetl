@@ -16,6 +16,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/openetl-io/openetl/internal/oci"
 	"github.com/openetl-io/openetl/internal/spec"
 )
 
@@ -48,16 +49,18 @@ type File struct {
 	// The directory it's in, which its paths are relative to.
 	Dir string `yaml:"-"`
 
-	Name        string           `yaml:"name"`
-	Description string           `yaml:"description"`
-	License     string           `yaml:"license"`
-	Repository  string           `yaml:"repository"`
-	Docs        string           `yaml:"docs"`
-	Logo        string           `yaml:"logo"`
-	Author      string           `yaml:"author"`
-	Tags        []string         `yaml:"tags"`
-	Platforms   []string         `yaml:"platforms"`
-	Roles       map[string]*Role `yaml:"roles"`
+	Name        string `yaml:"name"`
+	Title       string `yaml:"title"`
+	Description string `yaml:"description"`
+	License     string `yaml:"license"`
+	Repository  string `yaml:"repository"`
+	Docs        string `yaml:"docs"`
+	// An https URL, or a file relative to Dir.
+	Logo      string           `yaml:"logo"`
+	Author    string           `yaml:"author"`
+	Tags      []string         `yaml:"tags"`
+	Platforms []string         `yaml:"platforms"`
+	Roles     map[string]*Role `yaml:"roles"`
 }
 
 // Role is how one role is built or run.
@@ -91,12 +94,38 @@ type Build struct {
 	Output string `yaml:"output"`
 }
 
-// Info is the file's metadata, as a descriptor holds it.
+// Info is the file's metadata, as a descriptor holds it. A logo file isn't
+// in it: Package gives it a URL.
 func (f *File) Info() spec.Info {
-	return spec.Info{
-		Description: f.Description, License: f.License, Repository: f.Repository, Docs: f.Docs,
-		Logo: f.Logo, Author: f.Author, Tags: f.Tags,
+	i := spec.Info{
+		Title: f.Title, Description: f.Description, License: f.License, Repository: f.Repository, Docs: f.Docs,
+		Author: f.Author, Tags: f.Tags,
 	}
+	if !f.LogoFile() {
+		i.Logo = f.Logo
+	}
+	return i
+}
+
+// LogoFile reports whether the logo is a file beside the file, which is
+// packaged with each version.
+func (f *File) LogoFile() bool { return f.Logo != "" && !strings.HasPrefix(f.Logo, "https://") }
+
+// ReadLogo reads the logo file, which must be below Dir, and returns its
+// media type.
+func (f *File) ReadLogo() ([]byte, string, error) {
+	b, err := readBelow(f.Dir, f.Logo)
+	if err != nil {
+		return nil, "", fmt.Errorf("logo: %w", err)
+	}
+	if len(b) > oci.MaxLogo {
+		return nil, "", fmt.Errorf("logo: %s is more than %d KiB", f.Logo, oci.MaxLogo>>10)
+	}
+	t := oci.LogoType(f.Logo, b)
+	if t == "" {
+		return nil, "", fmt.Errorf("logo: %s is neither an SVG nor a PNG image", f.Logo)
+	}
+	return b, t, nil
 }
 
 // FullName is the package's name with its owner.
@@ -131,6 +160,11 @@ func Load(dir string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	f.Dir = dir
+	if f.LogoFile() {
+		if _, _, err := f.ReadLogo(); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	for name, r := range f.Roles {
 		if r.Build != nil && r.Build.Go != "" {
 			if fi, err := os.Stat(filepath.Join(dir, r.Build.Go)); err != nil || !fi.IsDir() {
@@ -144,6 +178,16 @@ func Load(dir string) (*File, error) {
 		}
 	}
 	return f, nil
+}
+
+// readBelow reads name, a path relative to dir that stays below it.
+func readBelow(dir, name string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	return root.ReadFile(filepath.FromSlash(name))
 }
 
 // Parse checks an openetl-connector.yaml against its JSON Schema and the
