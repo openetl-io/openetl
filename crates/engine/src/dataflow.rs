@@ -1817,6 +1817,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn lanes_settle_on_one_schema_without_publishing_again() {
+        let plan = Plan::from_request(crate::plan::tests::lanes_request(&["a"], 4, 4)).unwrap();
+        let owner = Owner::new(&plan, 0).unwrap();
+        let mut lanes: Vec<LaneStream> = (0..4)
+            .map(|_| {
+                let o = owner.lock();
+                LaneStream {
+                    stream: 0,
+                    shaper: o.shaper.fork(),
+                    version: o.version,
+                    next_epoch: 1,
+                    ended: false,
+                    quarantined: (Vec::new(), 0),
+                    cells: BTreeMap::new(),
+                    replay: None,
+                }
+            })
+            .collect();
+        let rows: Vec<String> = (0..50)
+            .map(|i| format!(r#"{{"id": {i}, "price": {i}.25, "name": "n{i}", "at": "2026-01-01T00:00:{:02}Z"}}"#, i % 60))
+            .collect();
+        for round in 0..20 {
+            for ls in &mut lanes {
+                ls.shape(&owner, |sh| sh.rows(rows.iter().map(|r| r.as_bytes())))
+                    .unwrap();
+            }
+            if round == 0 {
+                continue;
+            }
+            assert!(
+                owner.version.load(Ordering::Acquire) <= 4,
+                "the schema was published {} times by round {round}",
+                owner.version.load(Ordering::Acquire)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn passes_streams_through_with_barriers_in_band() {
         let mut h = start(1);

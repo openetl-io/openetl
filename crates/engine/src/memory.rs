@@ -6,16 +6,26 @@
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::io::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering::Relaxed};
 
 /// The exit code for reaching the limit, which is in `Limits.memory_bytes`'s
 /// contract. It's EX_TEMPFAIL: the job can run again.
 const EXIT_OVER_LIMIT: i32 = 75;
 
-static HELD: AtomicUsize = AtomicUsize::new(0);
+static HELD: AtomicIsize = AtomicIsize::new(0);
 static LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
 static EXITING: AtomicBool = AtomicBool::new(false);
+
+/// What a thread counts before it adds to HELD: lanes' threads allocating at
+/// once would otherwise all write its one cache line. So HELD trails what
+/// threads hold by less than this each, and a larger allocation counts at once.
+const BATCH: isize = 1 << 20;
+
+thread_local! {
+    static PENDING: Cell<isize> = const { Cell::new(0) };
+}
 
 pub struct Counting;
 
@@ -34,14 +44,14 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) };
-        HELD.fetch_sub(layout.size(), Relaxed);
+        count(-(layout.size() as isize));
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if new_size > layout.size() {
             charge(new_size - layout.size());
         } else {
-            HELD.fetch_sub(layout.size() - new_size, Relaxed);
+            count(-((layout.size() - new_size) as isize));
         }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -49,7 +59,27 @@ unsafe impl GlobalAlloc for Counting {
 
 #[inline]
 fn charge(bytes: usize) {
-    if HELD.fetch_add(bytes, Relaxed).saturating_add(bytes) > LIMIT.load(Relaxed) {
+    count(bytes as isize);
+}
+
+/// Adds to the thread's pending count, and to HELD once that's a batch: then
+/// what's held is checked against the limit.
+#[inline]
+fn count(bytes: isize) {
+    let due = PENDING.try_with(|p| {
+        let n = p.get() + bytes;
+        if n.abs() < BATCH {
+            p.set(n);
+            return 0;
+        }
+        p.set(0);
+        n
+    });
+    let due = due.unwrap_or(bytes);
+    if due != 0
+        && HELD.fetch_add(due, Relaxed) + due
+            > LIMIT.load(Relaxed).min(isize::MAX as usize) as isize
+    {
         over_limit();
     }
 }
@@ -76,7 +106,7 @@ pub fn set_limit(bytes: u64) {
 
 /// How many bytes the process's allocations hold now.
 pub fn held() -> u64 {
-    HELD.load(Relaxed) as u64
+    HELD.load(Relaxed).max(0) as u64
 }
 
 #[cfg(test)]

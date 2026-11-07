@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/engineclient"
@@ -118,7 +120,11 @@ func (manyWriters) Capabilities() destination.Capabilities {
 
 // measureLanes runs the raw lane, and Postgres into Parquet and Iceberg, at
 // each count of lanes.
-func measureLanes(ctx context.Context, bin string, counts []int) error {
+func measureLanes(ctx context.Context, conn *pgx.Conn, bin string, counts []int) error {
+	// Splits come from the key's histogram.
+	if _, err := conn.Exec(ctx, "ANALYZE "+pgx.Identifier{schema, table}.Sanitize()); err != nil {
+		return err
+	}
 	b := &bench{runs: *runsFlag}
 	type line struct {
 		name  string

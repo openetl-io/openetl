@@ -58,7 +58,7 @@ var (
 	unlimited   = flag.Bool("neighbours-unlimited", false, "with -neighbours, run them without their sizes' limits, to compare")
 	lanesFlag   = flag.String("lanes", "", "instead of the phases, measure these counts of lanes, such as 1,2,4,8: the raw lane, and Postgres into Parquet and Iceberg")
 	laneBytes   = flag.Int64("lane-bytes", 2e9, "with -lanes, bytes of raw rows per lane")
-	icebergFlag = flag.String("iceberg", "", "with -lanes, destination-iceberg's config")
+	icebergFlag = flag.String("iceberg", os.Getenv("ICEBERG_CONFIG"), "with -lanes, destination-iceberg's config; default $ICEBERG_CONFIG")
 	profile     = flag.String("cpuprofile", "", "write the runner's CPU profile to this file")
 )
 
@@ -128,7 +128,7 @@ func run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		return measureLanes(ctx, bin, counts)
+		return measureLanes(ctx, conn, bin, counts)
 	}
 	idle, err := idleRSS(ctx, bin)
 	if err != nil {
