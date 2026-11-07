@@ -116,6 +116,7 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		open.Streams = append(open.Streams, &protocolv1.WriteStream{
 			Name: s.Name, Mode: protocolv1.WriteMode(s.Mode), PrimaryKey: s.PrimaryKey, //nolint:gosec // small
 			Dedupe: protocolv1.Dedupe(s.Dedupe), Deletes: protocolv1.DeleteMode(s.Deletes), //nolint:gosec // small
+			AllowTypeChanges: s.AllowTypeChanges,
 		})
 	}
 	// The stream lives until Close, or until ctx is done.

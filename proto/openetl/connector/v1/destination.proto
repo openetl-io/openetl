@@ -153,6 +153,9 @@ message WriteStream {
   Dedupe dedupe = 4;
   // Merge only.
   DeleteMode deletes = 5;
+  // The pipeline lets the destination change a column's or a field's type
+  // to the stream's when it widens, which it otherwise refuses.
+  bool allow_type_changes = 6;
 }
 
 // DeleteMode is how merge applies a record whose _openetl_op is delete.

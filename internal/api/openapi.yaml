@@ -4151,6 +4151,14 @@ components:
                     type: string
                     description: 'How merge applies deletes. Unset: soft.'
                     format: enum
+                typeChanges:
+                    enum:
+                        - TYPE_CHANGES_UNSPECIFIED
+                        - TYPE_CHANGES_REFUSE
+                        - TYPE_CHANGES_ALLOW
+                    type: string
+                    description: 'For every stream that doesn''t say. Unset: refuse.'
+                    format: enum
         PipelinePlan:
             type: object
             properties:
@@ -4346,6 +4354,14 @@ components:
                     items:
                         $ref: '#/components/schemas/ColumnGroup'
                     description: 'Columns held together, by source name: holding one holds the rest.'
+                typeChanges:
+                    enum:
+                        - TYPE_CHANGES_UNSPECIFIED
+                        - TYPE_CHANGES_REFUSE
+                        - TYPE_CHANGES_ALLOW
+                    type: string
+                    description: Overrides destination.type_changes for this stream.
+                    format: enum
         PipelineVersion:
             type: object
             properties:
@@ -4883,6 +4899,11 @@ components:
                         destination.write, or with none, overwrite for a full refresh into a
                          destination that has it, and append otherwise.
                     format: enum
+                typeChanges:
+                    type: boolean
+                    description: |-
+                        The destination changes a column's type itself when the stream's
+                         widens, rather than refusing it.
         StreamSchema:
             type: object
             properties:

@@ -177,6 +177,31 @@ func TestAWidenedColumnIsHeldAndReleased(t *testing.T) {
 	}
 }
 
+// A stream whose spec allows type changes has a widened column changed in
+// place: nothing is held, and every row lands with its new value.
+func TestAWidenedColumnLandsInPlaceWhenTheSpecAllows(t *testing.T) {
+	startRunner(t)
+	name, src, dst := heldSetup(t, "widened", "v int NOT NULL", "(id, v) SELECT i, i FROM generate_series(1, 50) i",
+		`{"name": "items", "sync": "incremental", "cursor": "at", "typeChanges": "allow"}`)
+	if status, stats := syncNow(t, name); status != "succeeded" {
+		t.Fatalf("first sync %s: %s", status, stats)
+	}
+	run(t, "ALTER TABLE "+src+" ALTER COLUMN v TYPE bigint",
+		"UPDATE "+src+" SET v = 3000000000 + id, at = nextval('"+pgx.Identifier{schema(name), "items_at"}.Sanitize()+"') WHERE id <= 10")
+	if status, stats := syncNow(t, name); status != "succeeded" {
+		t.Fatalf("the sync after the change %s: %s", status, stats)
+	}
+	if typ, _ := query[string](t, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = '"+dst+"'::regclass AND attname = 'v'"); typ != "bigint" {
+		t.Errorf("v is %s, want bigint", typ)
+	}
+	if n, err := query[int64](t, `SELECT count(*) FROM `+src+` s FULL JOIN `+dst+` d USING (id) WHERE d.v IS DISTINCT FROM s.v`); err != nil || n != 0 {
+		t.Errorf("%d rows differ from the source: %v", n, err)
+	}
+	if holds := listHolds(t, name); len(holds) != 0 {
+		t.Errorf("holds %v", holds)
+	}
+}
+
 // A widened column released to a new version needs no ALTER: the column
 // keeps its type, v__v2 is added with the new one, and the held values,
 // and every value from then on, land in it.

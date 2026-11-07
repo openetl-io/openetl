@@ -30,12 +30,14 @@ spec:
       - name: events
         require: at_least_once
         collapse: false
+        typeChanges: refuse
       - name: logs
   destination:
     ref: warehouse
     namespace: raw_faker
     naming: source
     deletes: hard
+    typeChanges: allow
   schemaPolicy: block
   delivery:
     require: exactly_once
@@ -82,6 +84,10 @@ func TestParsePipeline(t *testing.T) {
 		t.Error("naming")
 	case p.GetDestination().GetDeletes() != apiv1.DeleteMode_DELETE_MODE_HARD:
 		t.Error("deletes")
+	case p.GetDestination().GetTypeChanges() != apiv1.TypeChanges_TYPE_CHANGES_ALLOW:
+		t.Error("destination.typeChanges")
+	case p.GetSource().GetStreams()[1].GetTypeChanges() != apiv1.TypeChanges_TYPE_CHANGES_REFUSE || p.GetSource().GetStreams()[2].GetTypeChanges() != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED:
+		t.Error("a stream's typeChanges")
 	case p.GetSchemaPolicy() != apiv1.SchemaPolicy_SCHEMA_POLICY_BLOCK:
 		t.Error("schemaPolicy")
 	case p.GetDelivery().GetRequire() != apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE:
@@ -231,6 +237,8 @@ func TestParseErrors(t *testing.T) {
 		"unknown enum":               header + strings.Replace(base, "{ref: d}", "{ref: d, write: upsert}", 1),
 		"naming":                     header + strings.Replace(base, "{ref: d}", "{ref: d, naming: exact}", 1),
 		"deletes":                    header + strings.Replace(base, "{ref: d}", "{ref: d, deletes: purge}", 1),
+		"typeChanges":                header + strings.Replace(base, "{ref: d}", "{ref: d, typeChanges: widen}", 1),
+		"stream typeChanges":         header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, typeChanges: true}]}", 1),
 		"column ops":                 header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {op: hash}}}]}", 1),
 		"column type":                header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {type: int64}}}]}", 1),
 		"no column type":             header + strings.Replace(base, "{ref: s}", "{ref: s, streams: [{name: a, columns: {x: {}}}]}", 1),

@@ -206,6 +206,9 @@ type Stream struct {
 	Dedupe Dedupe
 	// Merge only; zero: SoftDelete.
 	Deletes DeleteMode
+	// The pipeline lets the destination change a column's or a field's type
+	// to the stream's when it widens, which it otherwise refuses.
+	AllowTypeChanges bool
 }
 
 type OpenConfig struct {

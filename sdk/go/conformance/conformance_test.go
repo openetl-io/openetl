@@ -312,11 +312,14 @@ type store struct {
 	reads   map[string]int64
 	// By table, the columns that take no null.
 	notNull map[string]map[string]bool
+	// By table, each column's type.
+	types map[string]map[string]arrow.DataType
 }
 
 func newStore() *store {
 	return &store{tables: map[string][]map[string]any{}, fences: map[string]uint64{}, markers: map[string]bool{},
-		staging: map[string]map[string][]map[string]any{}, reading: map[string][]map[string]any{}, reads: map[string]int64{}, notNull: map[string]map[string]bool{}}
+		staging: map[string]map[string][]map[string]any{}, reading: map[string][]map[string]any{}, reads: map[string]int64{}, notNull: map[string]map[string]bool{},
+		types: map[string]map[string]arrow.DataType{}}
 }
 
 type memDestination struct {
@@ -655,13 +658,40 @@ func (w *memWriter) ApplySchema(_ context.Context, streams []destination.StreamS
 	defer st.mu.Unlock()
 	out := destination.SchemaApplied{Limits: map[string]destination.TableLimits{}}
 	for _, s := range streams {
+		t := w.cfg.Namespace + "." + s.Name
 		var l destination.TableLimits
 		if w.d.bug != "limits-without-not-null" {
-			l.NotNull = slices.Sorted(maps.Keys(st.notNull[w.cfg.Namespace+"."+s.Name]))
+			l.NotNull = slices.Sorted(maps.Keys(st.notNull[t]))
 		}
 		out.Limits[s.Name] = l
+		if st.types[t] == nil {
+			st.types[t] = map[string]arrow.DataType{}
+		}
+		allow := slices.ContainsFunc(w.cfg.Streams, func(c destination.Stream) bool { return c.Name == s.Name && c.AllowTypeChanges })
+		for _, f := range s.Schema.Fields() {
+			have, ok := st.types[t][f.Name]
+			switch {
+			case !ok:
+				st.types[t][f.Name] = f.Type
+			case arrow.TypeEqual(have, f.Type) || narrower(f.Type, have):
+			case w.d.bug == "type-changes-unasked" || allow && w.d.bug != "type-changes-refused":
+				st.types[t][f.Name] = f.Type
+			default:
+				out.Refused = append(out.Refused, destination.RefusedColumn{
+					Stream: s.Name, Column: f.Name, Reason: "it doesn't change a column's type", FromType: have.String(), ToType: f.Type.String(),
+				})
+			}
+		}
 	}
 	return out, nil
+}
+
+// narrower reports whether a is an integer narrower than b, which a table
+// holding b takes as it is.
+func narrower(a, b arrow.DataType) bool {
+	wa, ok := a.(arrow.FixedWidthDataType)
+	wb, okb := b.(arrow.FixedWidthDataType)
+	return ok && okb && arrow.IsInteger(a.ID()) && arrow.IsInteger(b.ID()) && wa.BitWidth() < wb.BitWidth()
 }
 func (w *memWriter) Close(context.Context) error { return nil }
 
@@ -745,6 +775,8 @@ func TestDestinationBugsFail(t *testing.T) {
 		"unguarded-patch":         {"holds/patch", "holds/soft-delete"},
 		"patch-undeletes":         {"holds/soft-delete"},
 		"limits-without-not-null": {"holds/not-null"},
+		"type-changes-unasked":    {"write/type-changes"},
+		"type-changes-refused":    {"write/type-changes"},
 	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {

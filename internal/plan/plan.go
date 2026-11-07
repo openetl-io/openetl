@@ -129,6 +129,34 @@ func Deletes(p *apiv1.PipelineSpec) destination.DeleteMode {
 	return destination.SoftDelete
 }
 
+// TypeChanges reports whether the destination may change a column's type
+// itself when the stream's widens: the stream's typeChanges, or else the
+// destination's. A transform's outputs take the destination's.
+func TypeChanges(p *apiv1.PipelineSpec, ps *apiv1.PipelineStream) bool {
+	return cmp.Or(ps.GetTypeChanges(), p.GetDestination().GetTypeChanges()) == apiv1.TypeChanges_TYPE_CHANGES_ALLOW
+}
+
+// typeChangeWarnings say what typeChanges: allow lets through, and when the
+// schema policy lets none through.
+func typeChangeWarnings(p *apiv1.PipelineSpec) []*apiv1.PlanWarning {
+	allowed := TypeChanges(p, nil) && (p.GetTransform() != nil || len(p.GetSource().GetStreams()) == 0)
+	for _, ps := range p.GetSource().GetStreams() {
+		allowed = allowed || p.GetTransform() == nil && TypeChanges(p, ps)
+	}
+	if !allowed {
+		return nil
+	}
+	switch p.GetSchemaPolicy() {
+	case apiv1.SchemaPolicy_SCHEMA_POLICY_BLOCK:
+		return []*apiv1.PlanWarning{{Message: "typeChanges: allow changes nothing, as schemaPolicy block holds every type change"}}
+	case apiv1.SchemaPolicy_SCHEMA_POLICY_IGNORE_NEW:
+		return []*apiv1.PlanWarning{{Message: "typeChanges: allow changes nothing, as schemaPolicy ignore_new casts values to the type a column has"}}
+	}
+	return []*apiv1.PlanWarning{{Message: "typeChanges: allow lets the destination change a column's type itself as the source's widens: " +
+		"int16 to int32 to int64 to float64, float32 to float64, an integer or decimal to a decimal that holds it, and anything to a string. " +
+		"A database may rewrite the table to do it, and lock it meanwhile"}}
+}
+
 func Continuous(p *apiv1.PipelineSpec) bool {
 	return p.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS
 }
@@ -245,7 +273,7 @@ var levels = map[delivery.Level]apiv1.DeliveryLevel{
 // only the settings.
 func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities) ([]*apiv1.StreamPlan, []error, []*apiv1.PlanWarning) {
 	settings := Settings(spec, caps)
-	var warnings []*apiv1.PlanWarning
+	warnings := typeChangeWarnings(spec)
 	deletesIgnored := func(merges bool) {
 		if spec.GetDestination().GetDeletes() != apiv1.DeleteMode_DELETE_MODE_UNSPECIFIED && !merges {
 			warnings = append(warnings, &apiv1.PlanWarning{Message: "destination.deletes applies only to merge, so it's ignored"})
@@ -340,7 +368,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
 		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
-			Write: apiv1.WriteMode(mode)}) //nolint:gosec // small
+			Write: apiv1.WriteMode(mode), TypeChanges: TypeChanges(spec, s.ps)}) //nolint:gosec // small
 	}
 	if spec.GetTransform() != nil {
 		for _, o := range Outputs(spec, caps, inputs) {
@@ -351,7 +379,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 			d := o.Delivery()
 			ds = append(ds, d)
 			p := delivery.PlanStream(caps, d, settings.Require)
-			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiv1.WriteMode(o.Mode)}) //nolint:gosec // small
+			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiv1.WriteMode(o.Mode), TypeChanges: TypeChanges(spec, nil)}) //nolint:gosec // small
 		}
 	}
 	deletesIgnored(merges || len(streams) == 0 && WriteMode(spec) == destination.Merge)
