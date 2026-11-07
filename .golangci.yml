@@ -22,7 +22,7 @@ linters:
         - pattern: ^http\.(DefaultClient|DefaultTransport|Transport|Get|Head|Post|PostForm)$
           pkg: ^net/http$
           msg: outbound HTTP goes through internal/netguard, the SSRF guard
-    # Package boundary rules. Each one is explained in the repo layout docs.
+    # Package boundary rules, each with its reason.
     depguard:
       rules:
         connectors-use-only-the-sdk:

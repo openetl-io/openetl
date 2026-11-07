@@ -41,6 +41,10 @@ $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION):
 .PHONY: tools
 tools: $(BIN)/.tools ## Build the pinned developer tools into bin/
 
+.PHONY: hooks
+hooks: ## Check what each commit touches before it's made
+	git config core.hooksPath .githooks
+
 .PHONY: dev
 dev: deps-up connectors web ## Start compose deps and run openetld dev, with the UI
 	cargo build -p openetl-engine
