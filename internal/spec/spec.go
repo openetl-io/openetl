@@ -80,6 +80,7 @@ type metadata struct {
 	Name        string       `yaml:"name"`
 	Workspace   string       `yaml:"workspace"`
 	Version     string       `yaml:"version"`
+	Title       string       `yaml:"title"`
 	Description string       `yaml:"description"`
 	License     string       `yaml:"license"`
 	Repository  string       `yaml:"repository"`
@@ -91,7 +92,7 @@ type metadata struct {
 }
 
 func (m metadata) hasInfo() bool {
-	return m.Description != "" || m.License != "" || m.Repository != "" || m.Docs != "" || m.Author != "" || m.Logo != "" || m.Tags != nil || m.Release != nil
+	return m.Title != "" || m.Description != "" || m.License != "" || m.Repository != "" || m.Docs != "" || m.Author != "" || m.Logo != "" || m.Tags != nil || m.Release != nil
 }
 
 type releaseYAML struct {
@@ -102,6 +103,8 @@ type releaseYAML struct {
 // Info describes a connector version for people and the UI. Only
 // Repository is required, and only of a v1alpha2 descriptor.
 type Info struct {
+	// A display name, such as PostgreSQL; empty: the name.
+	Title       string
 	Description string
 	// An SPDX expression.
 	License string
@@ -110,7 +113,7 @@ type Info struct {
 	// An https URL.
 	Docs   string
 	Author string
-	// An https URL of an image.
+	// An https or oci:// URL of an SVG or PNG image.
 	Logo       string
 	Tags       []string
 	ReleaseTag string
@@ -126,6 +129,8 @@ var (
 // CheckInfo checks a connector version's metadata.
 func CheckInfo(info Info) error {
 	switch {
+	case len(info.Title) > 100 || strings.ContainsAny(info.Title, "\n\r"):
+		return errors.New("metadata.title must be one line of at most 100 characters")
 	case len(info.Author) > 200:
 		return errors.New("metadata.author is longer than 200 characters")
 	case len(info.Description) > 500 || strings.ContainsAny(info.Description, "\n\r"):
@@ -142,9 +147,11 @@ func CheckInfo(info Info) error {
 			return fmt.Errorf("metadata.tags: %q must be lowercase letters, digits and hyphens, at most 32 characters", t)
 		}
 	}
+	if _, oci := OCIBlobURL(info.Logo); info.Logo != "" && !oci && !httpURL(info.Logo, false) {
+		return fmt.Errorf("metadata.logo %q must be an https URL or an oci:// URL with a digest", info.Logo)
+	}
 	for _, f := range []struct{ field, v string }{
-		{"metadata.repository", info.Repository}, {"metadata.docs", info.Docs},
-		{"metadata.logo", info.Logo}, {"metadata.release.url", info.ReleaseURL},
+		{"metadata.repository", info.Repository}, {"metadata.docs", info.Docs}, {"metadata.release.url", info.ReleaseURL},
 	} {
 		if f.v != "" && !httpURL(f.v, false) {
 			return fmt.Errorf("%s %q must be an https URL", f.field, f.v)
@@ -154,7 +161,7 @@ func CheckInfo(info Info) error {
 }
 
 func parseInfo(m metadata) (Info, error) {
-	info := Info{Description: m.Description, License: m.License, Repository: m.Repository, Docs: m.Docs, Author: m.Author, Logo: m.Logo, Tags: m.Tags}
+	info := Info{Title: m.Title, Description: m.Description, License: m.License, Repository: m.Repository, Docs: m.Docs, Author: m.Author, Logo: m.Logo, Tags: m.Tags}
 	if m.Release != nil {
 		info.ReleaseTag, info.ReleaseURL = m.Release.Tag, m.Release.URL
 	}
