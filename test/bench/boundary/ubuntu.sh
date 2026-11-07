@@ -45,7 +45,11 @@ if [ -n "${ICEBERG:-}" ]; then
   [ -f /opt/iceberg-rest.jar ] || { echo "no /opt/iceberg-rest.jar: copy it from apache/iceberg-rest-fixture:1.10.1" >&2; exit 1; }
   mkdir -p /var/lib/weed
   pgrep -x weed >/dev/null || WEED_MASTER_VOLUME_GROWTH_COPY_1=1 nohup weed server -dir=/var/lib/weed -s3 -s3.port=8333 -master.volumeSizeLimitMB=1024 >/var/log/weed.log 2>&1 &
-  pgrep -f iceberg-rest.jar >/dev/null || CATALOG_WAREHOUSE=s3://iceberg/ CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO \
+  # The image's environment: a catalog in a file, as each pooled connection
+  # to SQLite's in-memory one has a database of its own.
+  pgrep -f iceberg-rest.jar >/dev/null || CATALOG_CATALOG__IMPL=org.apache.iceberg.jdbc.JdbcCatalog CATALOG_URI=jdbc:sqlite:/var/lib/iceberg-catalog.db \
+    CATALOG_JDBC_USER=user CATALOG_JDBC_PASSWORD=password CATALOG_JDBC_STRICT__MODE=true \
+    CATALOG_WAREHOUSE=s3://iceberg/ CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO \
     CATALOG_S3_ENDPOINT=http://127.0.0.1:8333 CATALOG_S3_PATH__STYLE__ACCESS=true AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=openetl AWS_SECRET_ACCESS_KEY=openetl \
     nohup java -jar /opt/iceberg-rest.jar >/var/log/iceberg-rest.log 2>&1 &
   until curl -fs -X PUT http://127.0.0.1:8333/iceberg >/dev/null 2>&1; do sleep 1; done
