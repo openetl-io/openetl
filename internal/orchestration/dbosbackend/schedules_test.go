@@ -7,6 +7,7 @@ import (
 
 func TestTimetable(t *testing.T) {
 	start := time.Date(2026, 11, 7, 10, 7, 30, 0, time.UTC)
+	inIST := start.In(time.FixedZone("IST", 5*60*60+30*60))
 	hourly := timetable{every: time.Hour}
 	for _, tc := range []struct {
 		name string
@@ -20,6 +21,8 @@ func TestTimetable(t *testing.T) {
 		{"many missed make up one", hourly, start, start.Add(5*time.Hour + time.Minute), start.Add(6 * time.Hour)},
 		{"cron goes by the clock", timetable{cron: "0 12 * * *"}, start, start, time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)},
 		{"cron's descriptors", timetable{cron: "@hourly"}, start, start, time.Date(2026, 11, 7, 11, 0, 0, 0, time.UTC)},
+		{"cron is in UTC wherever this runs", timetable{cron: "0 12 * * *"}, inIST, inIST, time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)},
+		{"cron can name a zone", timetable{cron: "CRON_TZ=Asia/Kolkata 0 12 * * *"}, start, start, time.Date(2026, 11, 8, 6, 30, 0, 0, time.UTC)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := tc.t.after(tc.due, tc.now)

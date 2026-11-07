@@ -44,7 +44,8 @@ func (t timetable) next(after time.Time) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	return s.Next(after), nil
+	// A cron without a zone goes by the zone of the time it's given.
+	return s.Next(after.UTC()), nil
 }
 
 // fireAt is when to start what's due at a time.

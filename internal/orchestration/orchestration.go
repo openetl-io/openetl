@@ -226,7 +226,7 @@ type Run interface {
 // while one of its workflows is running.
 type Schedule struct {
 	ID string
-	// One of these two.
+	// One of these two. A cron is in UTC unless it starts with CRON_TZ=.
 	Every time.Duration
 	Cron  string
 	// Up to how much later each start may be, so a fleet doesn't start at
