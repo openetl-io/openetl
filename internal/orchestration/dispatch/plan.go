@@ -7,6 +7,7 @@ package dispatch
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -92,11 +93,47 @@ type Runner struct {
 	RunnerFacts
 	Pool     string
 	Capacity resources.Size
-	// What's placed on it, and what it runs that isn't any more.
+	// What's placed on it, and what it runs that isn't any more; a launcher's
+	// pods' too.
 	Used resources.Size
 	// What's placed on it.
 	Attempts int
 	Draining bool
+	// Set for a pod launcher, which makes a pod for each attempt placed on it
+	// rather than run it.
+	Pods *Pods
+}
+
+// Pods is what a pod launcher takes.
+type Pods struct {
+	// Jobs with this much CPU or memory, or more, go to pods.
+	Min resources.Size
+	// The largest pod it makes; zero: any size.
+	Max resources.Size
+	// How many pods it has at once, and their CPU between them; zero: no
+	// limit.
+	MaxPods int
+	MaxCPU  int64
+}
+
+// Takes reports whether a job of size s is large enough for pods.
+func (p *Pods) Takes(s resources.Size) bool { return s.CPU >= p.Min.CPU || s.Memory >= p.Min.Memory }
+
+// Allows reports whether the launcher can ever make a pod of size s.
+func (p *Pods) Allows(s resources.Size) bool {
+	return (p.Max == resources.Size{} || s.Fits(p.Max)) && (p.MaxCPU == 0 || s.CPU <= p.MaxCPU)
+}
+
+// Largest is the largest pod it makes, for the plan's check.
+func (p *Pods) Largest() resources.Size { return LargestPod(p.Max) }
+
+// LargestPod is the largest pod a launcher makes whose max is maxSize, zero
+// for any size.
+func LargestPod(maxSize resources.Size) resources.Size {
+	if maxSize != (resources.Size{}) {
+		return maxSize
+	}
+	return resources.Size{CPU: math.MaxInt64, Memory: math.MaxInt64}
 }
 
 // Request is an attempt waiting for room.
@@ -117,8 +154,10 @@ type Request struct {
 
 // Decision is where a request goes: on Runner, or it fails with Failure.
 type Decision struct {
-	ID      string
-	Runner  string
+	ID     string
+	Runner string
+	// Runner is a pod launcher.
+	Launch  bool
 	Failure string
 }
 
@@ -130,6 +169,10 @@ const DefaultReserveAfter = 2 * time.Minute
 // has reserved now. A request that fits a runner goes on the one it leaves
 // least room on, among those of the highest priority, then the org with the
 // least reserved CPU per weight, then the longest-waiting.
+//
+// A request goes to a pod launcher of its pool instead if it's large enough
+// for one, or no runner of its pool could ever take it, and the launcher's
+// caps leave room.
 //
 // A request that has waited reserveAfter goes first if it fits. If it doesn't,
 // it reserves the runner with the most room, so nothing else goes there until
@@ -172,9 +215,30 @@ func (p *planner) room(i int) resources.Size {
 	return p.runners[i].Capacity.Sub(p.runners[i].Used)
 }
 
-// eligible is a runner of the request's pool, not stopping, that can run it.
-func eligible(rn *Runner, r Request) bool {
-	if rn.Pool != r.Pool || rn.Draining {
+// toPods reports whether r goes to a pod launcher: one of its pool takes its
+// size, or none of the pool's runners could ever take it.
+func (p *planner) toPods(r Request) bool {
+	launcher, fits := false, false
+	for i := range p.runners {
+		rn := &p.runners[i]
+		switch {
+		case rn.Pool != r.Pool || rn.Draining:
+		case rn.Pods != nil:
+			if rn.Pods.Takes(r.Size) {
+				return true
+			}
+			launcher = true
+		case r.Size.Fits(rn.Capacity):
+			fits = true
+		}
+	}
+	return launcher && !fits
+}
+
+// eligible is a runner of the request's pool, not stopping, that can run it:
+// a pod launcher if it goes to pods, and otherwise a runner.
+func (p *planner) eligible(rn *Runner, r Request) bool {
+	if rn.Pool != r.Pool || rn.Draining || (rn.Pods != nil) != p.toPods(r) {
 		return false
 	}
 	for _, n := range r.Needs {
@@ -185,13 +249,31 @@ func eligible(rn *Runner, r Request) bool {
 	return true
 }
 
+// fits reports whether r fits on runner i now.
+func (p *planner) fits(i int, r Request) bool {
+	rn := &p.runners[i]
+	if rn.Pods == nil {
+		return r.Size.Fits(p.room(i))
+	}
+	return rn.Pods.Allows(r.Size) && (rn.Pods.MaxPods == 0 || rn.Attempts < rn.Pods.MaxPods) &&
+		(rn.Pods.MaxCPU == 0 || rn.Used.CPU+r.Size.CPU <= rn.Pods.MaxCPU)
+}
+
+// fitsEver reports whether r could fit on runner i once it's empty.
+func fitsEver(rn *Runner, r Request) bool {
+	if rn.Pods == nil {
+		return r.Size.Fits(rn.Capacity)
+	}
+	return rn.Pods.Allows(r.Size)
+}
+
 // bestFit is the eligible runner r fits and leaves least room on, or -1.
 // Runners held for another request don't count.
 func (p *planner) bestFit(r Request) int {
 	best := -1
 	for i := range p.runners {
 		rn := &p.runners[i]
-		if p.held[rn.ID] || !eligible(rn, r) || !r.Size.Fits(p.room(i)) {
+		if p.held[rn.ID] || !p.eligible(rn, r) || !p.fits(i, r) {
 			continue
 		}
 		if best < 0 {
@@ -210,7 +292,7 @@ func (p *planner) place(r Request, i int) {
 	p.runners[i].Used = p.runners[i].Used.Add(r.Size)
 	p.runners[i].Attempts++
 	p.org[r.Org] += r.Size.CPU
-	p.out = append(p.out, Decision{ID: r.ID, Runner: p.runners[i].ID})
+	p.out = append(p.out, Decision{ID: r.ID, Runner: p.runners[i].ID, Launch: p.runners[i].Pods != nil})
 }
 
 // next is the request that gets room next, or -1 if none fits.
@@ -246,13 +328,14 @@ func (p *planner) starving(r Request) {
 		return
 	}
 	var candidates, pool []int
+	pods := p.toPods(r)
 	for i := range p.runners {
 		rn := &p.runners[i]
-		if rn.Pool != r.Pool || rn.Draining {
+		if rn.Pool != r.Pool || rn.Draining || (rn.Pods != nil) != pods {
 			continue
 		}
 		pool = append(pool, i)
-		if eligible(rn, r) && r.Size.Fits(rn.Capacity) {
+		if p.eligible(rn, r) && fitsEver(rn, r) {
 			candidates = append(candidates, i)
 		}
 	}
@@ -281,10 +364,18 @@ func (p *planner) starving(r Request) {
 func (p *planner) neverFits(r Request, pool []int) string {
 	var why []string
 	var largest resources.Size
+	pods := false
 	for _, i := range pool {
 		rn := &p.runners[i]
-		if rn.Capacity.Weight() > largest.Weight() {
-			largest = rn.Capacity
+		capacity := rn.Capacity
+		if rn.Pods != nil {
+			pods, capacity = true, rn.Pods.Largest()
+			if rn.Pods.MaxCPU > 0 && rn.Pods.MaxCPU < capacity.CPU {
+				capacity.CPU = rn.Pods.MaxCPU
+			}
+		}
+		if capacity.Weight() > largest.Weight() {
+			largest = capacity
 		}
 		for _, n := range r.Needs {
 			if w := n.Why(rn.RunnerFacts); w != "" {
@@ -295,6 +386,9 @@ func (p *planner) neverFits(r Request, pool []int) string {
 	if len(why) > 0 {
 		slices.Sort(why)
 		return fmt.Sprintf("no runner of pool %q can run its connectors: %s", r.Pool, strings.Join(slices.Compact(why), "; "))
+	}
+	if pods {
+		return fmt.Sprintf("its size, %s, is larger than any pod a launcher of pool %q makes; the largest has %s", r.Size, r.Pool, largest)
 	}
 	return fmt.Sprintf("its size, %s, doesn't fit any runner of pool %q; the largest has %s", r.Size, r.Pool, largest)
 }

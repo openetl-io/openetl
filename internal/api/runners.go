@@ -47,6 +47,12 @@ func (s *Server) ReportRunner(ctx context.Context, req *connect.Request[dataplan
 		return nil, invalid("a runner can't run more than %d things at once", maxRunnerWork)
 	case len(m.GetPool()) > 64:
 		return nil, invalid("a pool's name is at most 64 characters")
+	case len(m.GetLaunched()) > maxRunnerWork:
+		return nil, invalid("a launcher can't have more than %d pods at once", maxRunnerWork)
+	case len(m.GetAttempt()) > 255:
+		return nil, invalid("attempt is at most 255 characters")
+	case m.GetPods() != nil && m.GetAttempt() != "":
+		return nil, invalid("a pod runs its attempt, and launches none")
 	}
 	dp := callerOf(ctx).dataPlane
 	running := make([]dispatch.RunningWork, len(m.GetRunning()))
@@ -57,23 +63,42 @@ func (s *Server) ReportRunner(ctx context.Context, req *connect.Request[dataplan
 		}
 	}
 	capacity, reserved := sizeOf(m.GetCapacity()), sizeOf(m.GetReserved())
-	stop, drain, err := s.Dispatch.Report(ctx, dispatch.Report{
-		Org: s.Tenant.Org, DataPlane: dp, Running: running,
-		Runner: db.ReportRunnerParams{
-			ID: m.GetRunner(), Release: truncate(m.GetRelease(), 64), Protocol: truncate(m.GetProtocol(), 16),
-			Features: nonNil(m.GetFeatures()), Launchers: nonNil(m.GetLaunchers()), Platform: m.GetPlatform(),
-			Pool: cmp.Or(m.GetPool(), "default"), CapacityCpu: capacity.CPU, CapacityMemory: capacity.Memory,
-			ReservedCpu: reserved.CPU, ReservedMemory: reserved.Memory, Draining: m.GetDraining(),
-		},
-	})
+	params := db.ReportRunnerParams{
+		ID: m.GetRunner(), Release: truncate(m.GetRelease(), 64), Protocol: truncate(m.GetProtocol(), 16),
+		Features: nonNil(m.GetFeatures()), Launchers: nonNil(m.GetLaunchers()), Platform: m.GetPlatform(),
+		Pool: cmp.Or(m.GetPool(), "default"), CapacityCpu: capacity.CPU, CapacityMemory: capacity.Memory,
+		ReservedCpu: reserved.CPU, ReservedMemory: reserved.Memory, Draining: m.GetDraining(), Attempt: m.GetAttempt(),
+	}
+	if p := m.GetPods(); p != nil {
+		low, high := sizeOf(p.GetMinSize()), sizeOf(p.GetMaxSize())
+		params.Launcher, params.PodMinCpu, params.PodMinMemory, params.PodMaxCpu, params.PodMaxMemory = true, low.CPU, low.Memory, high.CPU, high.Memory
+		params.MaxPods, params.MaxPodCpu = int32(min(p.GetMaxPods(), math.MaxInt32)), p.GetMaxCpuMillis()
+	}
+	stop, drain, err := s.Dispatch.Report(ctx, dispatch.Report{Org: s.Tenant.Org, DataPlane: dp, Running: running, Runner: params})
+	if err != nil {
+		return nil, err
+	}
+	launched := make([]dispatch.Launch, len(m.GetLaunched()))
+	for i, l := range m.GetLaunched() {
+		launched[i] = dispatch.Launch{Attempt: l.GetAttempt(), Placement: placementOf(l.GetPlacement())}
+	}
+	reap, err := s.Dispatch.Reap(ctx, s.Tenant.Org, launched)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.Store.DeleteStaleRunners(ctx, db.DeleteStaleRunnersParams{OrgID: s.Tenant.Org, Before: time.Now().Add(-24 * time.Hour)}); err != nil {
 		s.log().Warn("dropping stale runners failed", "err", err)
 	}
-	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{Stop: stop, Drain: drain}), nil
+	res := &dataplanev1.ReportRunnerResponse{Stop: stop, Drain: drain}
+	for _, l := range reap {
+		res.Reap = append(res.Reap, &dataplanev1.Launch{Attempt: l.Attempt, Placement: uint32(max(0, l.Placement))})
+	}
+	return connect.NewResponse(res), nil
 }
+
+// placementOf is a placement's number as the store keeps it; one past the
+// store's range matches none.
+func placementOf(n uint32) int32 { return int32(min(n, math.MaxInt32)) }
 
 // maxRunnerWork bounds a report, far above what a runner runs.
 const maxRunnerWork = 10000
@@ -118,7 +143,13 @@ func (s *Server) PollWork(ctx context.Context, req *connect.Request[dataplanev1.
 	if m.GetRunner() == "" || len(m.GetRunner()) > 255 {
 		return nil, invalid("runner must name the runner, in at most 255 characters")
 	}
-	work, err := s.Dispatch.Poll(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), int32(min(m.GetFreeOperations(), maxFreeWork)), int32(min(m.GetFreeLogReads(), maxFreeWork)))
+	var work []db.Dispatch
+	var err error
+	if a := m.GetAttempt(); a != nil {
+		work, err = s.Dispatch.ClaimAttempt(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), a.GetAttempt(), placementOf(a.GetPlacement()))
+	} else {
+		work, err = s.Dispatch.Poll(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), int32(min(m.GetFreeOperations(), maxFreeWork)), int32(min(m.GetFreeLogReads(), maxFreeWork)))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +162,9 @@ func (s *Server) PollWork(ctx context.Context, req *connect.Request[dataplanev1.
 		}
 		if w.Light == "" {
 			out.Size = &dataplanev1.Resources{CpuMillis: w.SizeCpu, MemoryBytes: w.SizeMemory}
+		}
+		if w.State == "placed" && w.Launched {
+			out.Placement = uint32(max(0, w.Placements))
 		}
 		if err := json.Unmarshal(w.Trace, &out.Trace); err != nil {
 			return nil, err
@@ -153,7 +187,13 @@ func (s *Server) ReportResult(ctx context.Context, req *connect.Request[dataplan
 	if len(out.Result) > 0 && !json.Valid(out.Result) {
 		return nil, invalid("the result isn't JSON")
 	}
-	accepted, err := s.Dispatch.Result(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), out, m.GetNoCapacity(), usageOf(m.GetUsage(), m.GetRows(), m.GetBytes(), m.GetLanes()))
+	var accepted bool
+	var err error
+	if n := m.GetPlacement(); n > 0 {
+		accepted, err = s.Dispatch.LaunchResult(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), placementOf(n), out, m.GetNoCapacity())
+	} else {
+		accepted, err = s.Dispatch.Result(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), out, m.GetNoCapacity(), usageOf(m.GetUsage(), m.GetRows(), m.GetBytes(), m.GetLanes()))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -161,9 +201,9 @@ func (s *Server) ReportResult(ctx context.Context, req *connect.Request[dataplan
 }
 
 // planJob is what the pipeline's next attempt would be sized at, and checks
-// that a runner of its pool can take the size. That's a problem when the pool's
-// runners reported lately and none can, and a note when none reported. A pod
-// launcher can take any size, from P1.36.
+// that a runner or pod launcher of its pool can take the size. That's a
+// problem when the pool's runners reported lately and none can, and a note
+// when none reported.
 func (s *Server) planJob(ctx context.Context, q *db.Queries, p *planned, out *apiv1.PipelinePlan) error {
 	sp := sizing.SpecOf(p.v.spec.GetResources())
 	rows, err := q.RecentRunners(ctx, db.RecentRunnersParams{OrgID: s.Tenant.Org, DataPlaneID: p.v.dataPlane, Since: time.Now().Add(-runnerReach)})
@@ -172,7 +212,11 @@ func (s *Server) planJob(ctx context.Context, q *db.Queries, p *planned, out *ap
 	}
 	var capacities []resources.Size
 	for _, r := range rows {
-		if r.Pool == sp.Pool && r.CapacityCpu > 0 {
+		switch {
+		case r.Pool != sp.Pool:
+		case r.Launcher:
+			capacities = append(capacities, dispatch.LargestPod(resources.Size{CPU: r.PodMaxCpu, Memory: r.PodMaxMemory}))
+		case r.CapacityCpu > 0:
 			capacities = append(capacities, resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory})
 		}
 	}

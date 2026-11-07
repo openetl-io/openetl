@@ -37,6 +37,9 @@ type Options struct {
 	ReportLapse time.Duration
 	// How long a runner has to start an attempt placed on it. Zero: 30 s.
 	StartTimeout time.Duration
+	// How long a pod launcher's pod has to start an attempt placed on the
+	// launcher, a new node's start-up included. Zero: 5 minutes.
+	PodStartTimeout time.Duration
 	// How long a request waits before it reserves a runner, or fails if none
 	// could take it. Zero: DefaultReserveAfter.
 	ReserveAfter time.Duration
@@ -167,11 +170,27 @@ func (d *Dispatcher) Capacities(ctx context.Context, org uuid.UUID, dataPlane, p
 	}
 	var out []resources.Size
 	for _, r := range rows {
-		if r.Pool == pool && !r.Draining {
+		switch {
+		case r.Pool != pool || r.Draining:
+		case r.Launcher:
+			out = append(out, podsOf(r).Largest())
+		default:
 			out = append(out, resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory})
 		}
 	}
 	return out, nil
+}
+
+// podsOf is a pod launcher's limits, or nil if r is a runner.
+func podsOf(r db.PlacementRunnersRow) *Pods {
+	if !r.Launcher {
+		return nil
+	}
+	return &Pods{
+		Min:     resources.Size{CPU: r.PodMinCpu, Memory: r.PodMinMemory},
+		Max:     resources.Size{CPU: r.PodMaxCpu, Memory: r.PodMaxMemory},
+		MaxPods: int(r.MaxPods), MaxCPU: r.MaxPodCpu,
+	}
 }
 
 // Status reports whether the work finished, and how. Work that's gone counts
@@ -388,6 +407,11 @@ func (d *Dispatcher) claim(ctx context.Context, org uuid.UUID, dataPlane, runner
 	if err != nil {
 		return nil, err
 	}
+	launches, err := d.Store.ClaimLaunches(ctx, db.ClaimLaunchesParams{OrgID: org, DataPlaneID: dataPlane, Launcher: id})
+	if err != nil {
+		return work, err
+	}
+	work = append(work, launches...)
 	for _, l := range []struct {
 		light string
 		free  int32
@@ -402,6 +426,79 @@ func (d *Dispatcher) claim(ctx context.Context, org uuid.UUID, dataPlane, runner
 		work = append(work, rows...)
 	}
 	return work, nil
+}
+
+// ClaimAttempt hands a pod the attempt its launcher made it for, if it's
+// still that placement's and in time; otherwise none.
+func (d *Dispatcher) ClaimAttempt(ctx context.Context, org uuid.UUID, dataPlane, runner, id string, placement int32) ([]db.Dispatch, error) {
+	return d.Store.ClaimLaunched(ctx, db.ClaimLaunchedParams{Runner: &runner, OrgID: org, DataPlaneID: dataPlane, ID: id, Placement: placement})
+}
+
+// LaunchResult records what a pod launcher says of a placement it launched,
+// whose pod couldn't be made or ended without a result: noCapacity places it
+// again, and otherwise out is its outcome. It returns false if the attempt has
+// moved on from that placement.
+func (d *Dispatcher) LaunchResult(ctx context.Context, org uuid.UUID, dataPlane, launcher, id string, placement int32, out contract.WorkOutcome, noCapacity bool) (bool, error) {
+	if noCapacity {
+		n, err := d.Store.ReturnLaunch(ctx, db.ReturnLaunchParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Launcher: &launcher, Placement: placement})
+		if err != nil || n == 0 {
+			return false, err
+		}
+		return true, d.pass(ctx, org, dataPlane)
+	}
+	var n int64
+	err := d.Store.Tx(ctx, func(q *db.Queries) error {
+		var err error
+		n, err = q.FinishLaunch(ctx, db.FinishLaunchParams{Outcome: marshalOutcome(out), OrgID: org, DataPlaneID: dataPlane, ID: id, Launcher: &launcher, Placement: placement})
+		if err != nil || n == 0 {
+			return err
+		}
+		return q.SetAttemptCode(ctx, db.SetAttemptCodeParams{OrgID: org, ID: id, Code: out.Code})
+	})
+	if err != nil || n == 0 {
+		return false, err
+	}
+	row, err := d.Store.GetDispatchWorkflow(ctx, db.GetDispatchWorkflowParams{OrgID: org, ID: id})
+	if err != nil {
+		return true, err
+	}
+	if err := d.wake(ctx, org, id, row); err != nil {
+		d.log().Warn("waking the workflow failed", "work", id, "workflow", row, "err", err)
+	}
+	return true, nil
+}
+
+// Launch is an attempt's placement on a pod launcher, as its pod says.
+type Launch struct {
+	Attempt   string
+	Placement int32
+}
+
+// Reap is which of a launcher's pods to delete: those whose placements no
+// longer wait to start or run.
+func (d *Dispatcher) Reap(ctx context.Context, org uuid.UUID, pods []Launch) ([]Launch, error) {
+	if len(pods) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, len(pods))
+	for i, p := range pods {
+		ids[i] = p.Attempt
+	}
+	live, err := d.Store.LiveLaunches(ctx, db.LiveLaunchesParams{OrgID: org, Ids: ids})
+	if err != nil {
+		return nil, err
+	}
+	current := map[string]int32{}
+	for _, l := range live {
+		current[l.ID] = l.Placements
+	}
+	var reap []Launch
+	for _, p := range pods {
+		if n, ok := current[p.Attempt]; !ok || n != p.Placement {
+			reap = append(reap, p)
+		}
+	}
+	return reap, nil
 }
 
 // Result records what a runner says of its work, and wakes the workflow
@@ -475,6 +572,7 @@ func (d *Dispatcher) pass(ctx context.Context, org uuid.UUID, dataPlane string) 
 				Pool:        r.Pool, Draining: r.Draining, Attempts: int(r.Attempts),
 				Capacity: resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory},
 				Used:     resources.Size{CPU: r.UsedCpu + r.OrphanCpu, Memory: r.UsedMemory + r.OrphanMemory},
+				Pods:     podsOf(r),
 			}
 		}
 		requests := make([]Request, len(pending))
@@ -497,8 +595,12 @@ func (d *Dispatcher) pass(ctx context.Context, org uuid.UUID, dataPlane string) 
 				}
 				continue
 			}
-			runner := dec.Runner
-			if err := q.PlaceDispatch(ctx, db.PlaceDispatchParams{OrgID: org, ID: dec.ID, Runner: &runner}); err != nil {
+			place := db.PlaceDispatchParams{OrgID: org, ID: dec.ID, Runner: &dec.Runner}
+			if dec.Launch {
+				start := cmp.Or(d.Options.PodStartTimeout, 5*time.Minute).Milliseconds()
+				place.Launcher, place.StartMs = &dec.Runner, &start
+			}
+			if err := q.PlaceDispatch(ctx, place); err != nil {
 				return err
 			}
 		}

@@ -71,6 +71,28 @@ type Config struct {
 	CgroupRoot string
 	// How often a runner reports, as a Go duration.
 	ReportInterval string
+	// Makes a runner a pod launcher: kubernetes, or process for development
+	// and tests. Empty: it runs its attempts itself.
+	Launcher string
+	// The jobs a launcher sends to pods, as a preset or CPU,MEMORY: this
+	// size or larger, in either.
+	PodMinSize string
+	// The largest pod a launcher makes. Empty: any size.
+	PodMaxSize string
+	// How many pods a launcher has at once, and their vCPUs between them.
+	MaxPods   int
+	MaxPodCPU string
+	// A file holding the pod the kubernetes launcher makes pods from.
+	PodTemplate string
+	// Empty: the kubeconfig context's, or the launcher's own.
+	PodNamespace string
+	// Empty: the launcher's service account.
+	Kubeconfig string
+	// Each pod's ephemeral storage, such as 10Gi; 0: none set.
+	PodScratch string
+	// The one attempt a pod's runner runs, and its placement.
+	Attempt   string
+	Placement int
 	// A file holding the runner's token. Empty: OPENETL_RUNNER_TOKEN.
 	TokenFile string
 	// From OPENETL_RUNNER_TOKEN only, so it isn't in a process listing.
@@ -124,6 +146,15 @@ var options = []option{
 	{"capacity", "OPENETL_CAPACITY", "", "what this runner places on itself, as CPU,MEMORY such as 4,8Gi (default: its cgroup's or host's, less --reserve)", func(c *Config) *string { return &c.Capacity }},
 	{"reserve", "OPENETL_RESERVE", "0.5,512Mi", "what this runner keeps for itself, as CPU,MEMORY", func(c *Config) *string { return &c.Reserve }},
 	{"cgroup-root", "OPENETL_CGROUP_ROOT", "", "a cgroup v2 directory delegated to this runner alone, for a cgroup per job on Linux 5.7 or later, which holds a job to its size's CPU and memory; empty: its threads and a memory watchdog do", func(c *Config) *string { return &c.CgroupRoot }},
+	{"launcher", "OPENETL_LAUNCHER", "", "makes this runner a pod launcher for its pool, which runs light operations itself and makes a pod for each attempt placed on it: kubernetes, or process, which runs each in a process of its own, for development and tests", func(c *Config) *string { return &c.Launcher }},
+	{"pod-min-size", "OPENETL_POD_MIN_SIZE", "m", "a launcher's pool sends jobs this size or larger in CPU or memory to pods, and those no runner of the pool could take: xs to xl, or CPU,MEMORY such as 0,0 for every job", func(c *Config) *string { return &c.PodMinSize }},
+	{"pod-max-size", "OPENETL_POD_MAX_SIZE", "", "the largest pod a launcher makes, as a preset or CPU,MEMORY (default: any size)", func(c *Config) *string { return &c.PodMaxSize }},
+	{"max-pod-cpu", "OPENETL_MAX_POD_CPU", "64", "the vCPUs a launcher's pods may have between them; 0: no limit", func(c *Config) *string { return &c.MaxPodCPU }},
+	{"pod-template", "OPENETL_POD_TEMPLATE", "", "a YAML file holding the pod the kubernetes launcher makes each attempt's from: its container runs openetld's image with the API's URL, the runner token and the checkpoint store, and the launcher sets the rest", func(c *Config) *string { return &c.PodTemplate }},
+	{"pod-namespace", "OPENETL_POD_NAMESPACE", "", "the namespace the kubernetes launcher makes pods in (default: the kubeconfig context's, or the launcher's own)", func(c *Config) *string { return &c.PodNamespace }},
+	{"kubeconfig", "OPENETL_KUBECONFIG", "", "a kubeconfig file for the kubernetes launcher (default: its service account; it never reads one it isn't given)", func(c *Config) *string { return &c.Kubeconfig }},
+	{"pod-scratch", "OPENETL_POD_SCRATCH", "10Gi", "each pod's ephemeral storage, for its runner's scratch; 0: none set", func(c *Config) *string { return &c.PodScratch }},
+	{"attempt", "OPENETL_ATTEMPT", "", "the one attempt this runner runs before it stops, as a pod launcher's pod; set by the launcher", func(c *Config) *string { return &c.Attempt }},
 	{"report-interval", "OPENETL_REPORT_INTERVAL", "10s", "how often this runner reports what it runs to the API, as a Go duration; keep it well under its work's heartbeat timeouts", func(c *Config) *string { return &c.ReportInterval }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
@@ -157,6 +188,8 @@ type intOption struct {
 }
 
 var intOptions = []intOption{
+	{"max-pods", "OPENETL_MAX_PODS", 20, "how many pods a launcher has at once; 0: no limit", func(c *Config) *int { return &c.MaxPods }},
+	{"placement", "OPENETL_PLACEMENT", 0, "which placement of --attempt this pod is for; set by the launcher", func(c *Config) *int { return &c.Placement }},
 	{"log-max-size", "OPENETL_LOG_MAX_SIZE", 100, "megabytes a log file reaches before it's rotated", func(c *Config) *int { return &c.LogMaxSize }},
 	{"log-max-files", "OPENETL_LOG_MAX_FILES", 5, "rotated log files kept", func(c *Config) *int { return &c.LogMaxFiles }},
 	{"sign-in-rate", "OPENETL_SIGN_IN_RATE", 20, "sign-ins a minute each client address may make; behind a proxy, every user shares its address", func(c *Config) *int { return &c.SignInRate }},

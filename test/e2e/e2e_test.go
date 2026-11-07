@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -92,8 +93,9 @@ var env struct {
 	collector *telemetrytest.Collector
 }
 
-// The connectors' file server is on loopback.
-const egressAllow = "127.0.0.1/32"
+// The connectors' file server is on loopback, and for the Kubernetes targets
+// at the address pods reach this host at too.
+var egressAllow = "127.0.0.1/32"
 
 func TestMain(m *testing.M) {
 	code, err := setup(m)
@@ -174,9 +176,20 @@ func setup(m *testing.M) (int, error) {
 	defer drop()
 	defer dropDBOS(env.dbURL)
 
-	files := httptest.NewServer(http.FileServer(http.Dir(env.connectors)))
+	files := httptest.NewUnstartedServer(http.FileServer(http.Dir(env.connectors)))
+	kubeHost := os.Getenv("OPENETL_E2E_KUBE_HOST")
+	if kubeHost != "" {
+		// Attempts' pods download the connectors too.
+		if files.Listener, err = kubeListener(ctx, kubeHost); err != nil {
+			return 0, err
+		}
+	}
+	files.Start()
 	defer files.Close()
 	env.downloads = files.URL
+	if kubeHost != "" {
+		env.downloads = "http://" + net.JoinHostPort(kubeHost, strconv.Itoa(files.Listener.Addr().(*net.TCPAddr).Port))
+	}
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
@@ -189,7 +202,7 @@ func setup(m *testing.M) (int, error) {
 	// Short timeouts, so tests don't wait out production's, unless
 	// OPENETL_E2E_TIMEOUTS=production measures with them.
 	wf := workflows.Workflows{AttemptRetry: time.Second, AttemptHeartbeat: 4 * time.Second, StreamHeartbeat: 4 * time.Second}
-	placement := dispatch.Options{ReportLapse: 3 * time.Second, StartTimeout: 3 * time.Second, ReserveAfter: 5 * time.Second}
+	placement := dispatch.Options{ReportLapse: 3 * time.Second, StartTimeout: 3 * time.Second, PodStartTimeout: 30 * time.Second, ReserveAfter: 5 * time.Second}
 	if os.Getenv("OPENETL_E2E_TIMEOUTS") == "production" {
 		wf, placement = workflows.Workflows{}, dispatch.Options{}
 	}
@@ -245,6 +258,22 @@ func setup(m *testing.M) (int, error) {
 		return code, fmt.Errorf("server: %w", err)
 	}
 	return code, nil
+}
+
+// kubeListener listens on every address, for pods that reach this host at
+// host, and lets runners reach it there.
+func kubeListener(ctx context.Context, host string) (net.Listener, error) {
+	ips, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("OPENETL_E2E_KUBE_HOST: %w", err)
+	}
+	ip, err := netip.ParseAddr(ips[0])
+	if err != nil {
+		return nil, fmt.Errorf("OPENETL_E2E_KUBE_HOST: %w", err)
+	}
+	egressAllow += "," + netip.PrefixFrom(ip, ip.BitLen()).String()
+	var lc net.ListenConfig
+	return lc.Listen(ctx, "tcp", "0.0.0.0:0")
 }
 
 // officialRepository is the official connectors'.

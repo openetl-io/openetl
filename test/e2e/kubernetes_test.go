@@ -283,7 +283,14 @@ func TestFlinkOnKubernetes(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 5*time.Minute, "the paused job's deployment deleted", func() bool { return len(k.deployments(t, id)) == 0 })
-	if got := statuses(runs(t, name)); !strings.HasSuffix(got, "stopped") || strings.Contains(got, "failed") {
+	// The run stops once the runner's result reaches its workflow, after the
+	// deployment has gone.
+	var got string
+	eventually(t, time.Minute, "the paused run to stop", func() bool {
+		got = statuses(runs(t, name))
+		return !strings.HasSuffix(got, "running")
+	})
+	if !strings.HasSuffix(got, "stopped") || strings.Contains(got, "failed") {
 		t.Errorf("runs %q", got)
 	}
 	landed(t, name)

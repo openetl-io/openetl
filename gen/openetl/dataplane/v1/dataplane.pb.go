@@ -1800,7 +1800,16 @@ type ReportRunnerRequest struct {
 	// It's stopping, so nothing more is placed on it.
 	Draining bool `protobuf:"varint,10,opt,name=draining,proto3" json:"draining,omitempty"`
 	// Each running attempt or operation, whose lease this report extends.
-	Running       []*RunningWork `protobuf:"bytes,11,rep,name=running,proto3" json:"running,omitempty"`
+	Running []*RunningWork `protobuf:"bytes,11,rep,name=running,proto3" json:"running,omitempty"`
+	// Set when it's a pod launcher, which runs no attempt itself: the placer
+	// sends its pool's jobs from min_size up to it, and it makes a pod for
+	// each.
+	Pods *PodLauncher `protobuf:"bytes,12,opt,name=pods,proto3" json:"pods,omitempty"`
+	// A launcher's pods that are still there, so the answer can say which to
+	// delete.
+	Launched []*Launch `protobuf:"bytes,13,rep,name=launched,proto3" json:"launched,omitempty"`
+	// The one attempt a pod runs; nothing is placed on such a runner.
+	Attempt       string `protobuf:"bytes,14,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1912,6 +1921,152 @@ func (x *ReportRunnerRequest) GetRunning() []*RunningWork {
 	return nil
 }
 
+func (x *ReportRunnerRequest) GetPods() *PodLauncher {
+	if x != nil {
+		return x.Pods
+	}
+	return nil
+}
+
+func (x *ReportRunnerRequest) GetLaunched() []*Launch {
+	if x != nil {
+		return x.Launched
+	}
+	return nil
+}
+
+func (x *ReportRunnerRequest) GetAttempt() string {
+	if x != nil {
+		return x.Attempt
+	}
+	return ""
+}
+
+type PodLauncher struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Jobs with this much CPU or memory, or more, go to pods.
+	MinSize *Resources `protobuf:"bytes,1,opt,name=min_size,json=minSize,proto3" json:"min_size,omitempty"`
+	// The largest pod it makes; unset: any size.
+	MaxSize *Resources `protobuf:"bytes,2,opt,name=max_size,json=maxSize,proto3" json:"max_size,omitempty"`
+	// How many pods it has at once, and how much CPU they have between them.
+	MaxPods       uint32 `protobuf:"varint,3,opt,name=max_pods,json=maxPods,proto3" json:"max_pods,omitempty"`
+	MaxCpuMillis  int64  `protobuf:"varint,4,opt,name=max_cpu_millis,json=maxCpuMillis,proto3" json:"max_cpu_millis,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PodLauncher) Reset() {
+	*x = PodLauncher{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PodLauncher) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PodLauncher) ProtoMessage() {}
+
+func (x *PodLauncher) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PodLauncher.ProtoReflect.Descriptor instead.
+func (*PodLauncher) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *PodLauncher) GetMinSize() *Resources {
+	if x != nil {
+		return x.MinSize
+	}
+	return nil
+}
+
+func (x *PodLauncher) GetMaxSize() *Resources {
+	if x != nil {
+		return x.MaxSize
+	}
+	return nil
+}
+
+func (x *PodLauncher) GetMaxPods() uint32 {
+	if x != nil {
+		return x.MaxPods
+	}
+	return 0
+}
+
+func (x *PodLauncher) GetMaxCpuMillis() int64 {
+	if x != nil {
+		return x.MaxCpuMillis
+	}
+	return 0
+}
+
+// Launch is an attempt's placement on a pod launcher.
+type Launch struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Attempt string                 `protobuf:"bytes,1,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	// Which of the attempt's placements, which goes up each time it's placed.
+	Placement     uint32 `protobuf:"varint,2,opt,name=placement,proto3" json:"placement,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Launch) Reset() {
+	*x = Launch{}
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Launch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Launch) ProtoMessage() {}
+
+func (x *Launch) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Launch.ProtoReflect.Descriptor instead.
+func (*Launch) Descriptor() ([]byte, []int) {
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *Launch) GetAttempt() string {
+	if x != nil {
+		return x.Attempt
+	}
+	return ""
+}
+
+func (x *Launch) GetPlacement() uint32 {
+	if x != nil {
+		return x.Placement
+	}
+	return 0
+}
+
 type Resources struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CpuMillis     int64                  `protobuf:"varint,1,opt,name=cpu_millis,json=cpuMillis,proto3" json:"cpu_millis,omitempty"`
@@ -1922,7 +2077,7 @@ type Resources struct {
 
 func (x *Resources) Reset() {
 	*x = Resources{}
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[24]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1934,7 +2089,7 @@ func (x *Resources) String() string {
 func (*Resources) ProtoMessage() {}
 
 func (x *Resources) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[24]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1947,7 +2102,7 @@ func (x *Resources) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Resources.ProtoReflect.Descriptor instead.
 func (*Resources) Descriptor() ([]byte, []int) {
-	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{24}
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *Resources) GetCpuMillis() int64 {
@@ -1984,7 +2139,7 @@ type RunningWork struct {
 
 func (x *RunningWork) Reset() {
 	*x = RunningWork{}
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[25]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1996,7 +2151,7 @@ func (x *RunningWork) String() string {
 func (*RunningWork) ProtoMessage() {}
 
 func (x *RunningWork) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[25]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2009,7 +2164,7 @@ func (x *RunningWork) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunningWork.ProtoReflect.Descriptor instead.
 func (*RunningWork) Descriptor() ([]byte, []int) {
-	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{25}
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *RunningWork) GetId() string {
@@ -2068,14 +2223,16 @@ type ReportRunnerResponse struct {
 	Stop []string `protobuf:"bytes,1,rep,name=stop,proto3" json:"stop,omitempty"`
 	// Running attempts to stop at their next checkpoint and end with DRAINING,
 	// so their workflows start them again at once: they're being rescaled.
-	Drain         []string `protobuf:"bytes,2,rep,name=drain,proto3" json:"drain,omitempty"`
+	Drain []string `protobuf:"bytes,2,rep,name=drain,proto3" json:"drain,omitempty"`
+	// A launcher's pods to delete: their attempts ended, or were placed again.
+	Reap          []*Launch `protobuf:"bytes,3,rep,name=reap,proto3" json:"reap,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReportRunnerResponse) Reset() {
 	*x = ReportRunnerResponse{}
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[26]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2087,7 +2244,7 @@ func (x *ReportRunnerResponse) String() string {
 func (*ReportRunnerResponse) ProtoMessage() {}
 
 func (x *ReportRunnerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[26]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2100,7 +2257,7 @@ func (x *ReportRunnerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportRunnerResponse.ProtoReflect.Descriptor instead.
 func (*ReportRunnerResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{26}
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ReportRunnerResponse) GetStop() []string {
@@ -2117,6 +2274,13 @@ func (x *ReportRunnerResponse) GetDrain() []string {
 	return nil
 }
 
+func (x *ReportRunnerResponse) GetReap() []*Launch {
+	if x != nil {
+		return x.Reap
+	}
+	return nil
+}
+
 type PollWorkRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Runner string                 `protobuf:"bytes,1,opt,name=runner,proto3" json:"runner,omitempty"`
@@ -2124,14 +2288,17 @@ type PollWorkRequest struct {
 	FreeOperations uint32 `protobuf:"varint,2,opt,name=free_operations,json=freeOperations,proto3" json:"free_operations,omitempty"`
 	// How many log reads it can take now, which are apart from operations so
 	// busy runners still answer them.
-	FreeLogReads  uint32 `protobuf:"varint,3,opt,name=free_log_reads,json=freeLogReads,proto3" json:"free_log_reads,omitempty"`
+	FreeLogReads uint32 `protobuf:"varint,3,opt,name=free_log_reads,json=freeLogReads,proto3" json:"free_log_reads,omitempty"`
+	// A pod's attempt, which it takes without waiting if it's still the pod's
+	// to run; then the runner takes nothing else.
+	Attempt       *Launch `protobuf:"bytes,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PollWorkRequest) Reset() {
 	*x = PollWorkRequest{}
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[27]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2143,7 +2310,7 @@ func (x *PollWorkRequest) String() string {
 func (*PollWorkRequest) ProtoMessage() {}
 
 func (x *PollWorkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[27]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2156,7 +2323,7 @@ func (x *PollWorkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollWorkRequest.ProtoReflect.Descriptor instead.
 func (*PollWorkRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{27}
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *PollWorkRequest) GetRunner() string {
@@ -2180,6 +2347,13 @@ func (x *PollWorkRequest) GetFreeLogReads() uint32 {
 	return 0
 }
 
+func (x *PollWorkRequest) GetAttempt() *Launch {
+	if x != nil {
+		return x.Attempt
+	}
+	return nil
+}
+
 type PollWorkResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Empty when the wait ended with nothing to do; poll again.
@@ -2190,7 +2364,7 @@ type PollWorkResponse struct {
 
 func (x *PollWorkResponse) Reset() {
 	*x = PollWorkResponse{}
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[28]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2202,7 +2376,7 @@ func (x *PollWorkResponse) String() string {
 func (*PollWorkResponse) ProtoMessage() {}
 
 func (x *PollWorkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[28]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2215,7 +2389,7 @@ func (x *PollWorkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollWorkResponse.ProtoReflect.Descriptor instead.
 func (*PollWorkResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{28}
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *PollWorkResponse) GetWork() []*Work {
@@ -2242,14 +2416,17 @@ type Work struct {
 	// What it's placed for; unset for a light operation.
 	Size *Resources `protobuf:"bytes,6,opt,name=size,proto3" json:"size,omitempty"`
 	// The trace it's part of, as W3C headers.
-	Trace         map[string]string `protobuf:"bytes,7,rep,name=trace,proto3" json:"trace,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Trace map[string]string `protobuf:"bytes,7,rep,name=trace,proto3" json:"trace,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Set when a pod launcher is to make a pod for the attempt, which runs it,
+	// rather than run it itself: its placement.
+	Placement     uint32 `protobuf:"varint,8,opt,name=placement,proto3" json:"placement,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Work) Reset() {
 	*x = Work{}
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[29]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2261,7 +2438,7 @@ func (x *Work) String() string {
 func (*Work) ProtoMessage() {}
 
 func (x *Work) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[29]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2274,7 +2451,7 @@ func (x *Work) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Work.ProtoReflect.Descriptor instead.
 func (*Work) Descriptor() ([]byte, []int) {
-	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{29}
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *Work) GetId() string {
@@ -2326,6 +2503,13 @@ func (x *Work) GetTrace() map[string]string {
 	return nil
 }
 
+func (x *Work) GetPlacement() uint32 {
+	if x != nil {
+		return x.Placement
+	}
+	return 0
+}
+
 type ReportResultRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Runner string                 `protobuf:"bytes,1,opt,name=runner,proto3" json:"runner,omitempty"`
@@ -2350,14 +2534,17 @@ type ReportResultRequest struct {
 	Rows  uint64    `protobuf:"varint,11,opt,name=rows,proto3" json:"rows,omitempty"`
 	Bytes uint64    `protobuf:"varint,12,opt,name=bytes,proto3" json:"bytes,omitempty"`
 	// An attempt's lanes in all; unset for work without lanes.
-	Lanes         *v1.LaneUsage `protobuf:"bytes,13,opt,name=lanes,proto3" json:"lanes,omitempty"`
+	Lanes *v1.LaneUsage `protobuf:"bytes,13,opt,name=lanes,proto3" json:"lanes,omitempty"`
+	// Set by a pod launcher for an attempt it launched, whose pod couldn't be
+	// made or ended without a result: that placement.
+	Placement     uint32 `protobuf:"varint,14,opt,name=placement,proto3" json:"placement,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReportResultRequest) Reset() {
 	*x = ReportResultRequest{}
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[30]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2369,7 +2556,7 @@ func (x *ReportResultRequest) String() string {
 func (*ReportResultRequest) ProtoMessage() {}
 
 func (x *ReportResultRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[30]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2382,7 +2569,7 @@ func (x *ReportResultRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportResultRequest.ProtoReflect.Descriptor instead.
 func (*ReportResultRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{30}
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ReportResultRequest) GetRunner() string {
@@ -2476,6 +2663,13 @@ func (x *ReportResultRequest) GetLanes() *v1.LaneUsage {
 	return nil
 }
 
+func (x *ReportResultRequest) GetPlacement() uint32 {
+	if x != nil {
+		return x.Placement
+	}
+	return 0
+}
+
 type ReportResultResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// False if the work isn't this runner's to report any more.
@@ -2486,7 +2680,7 @@ type ReportResultResponse struct {
 
 func (x *ReportResultResponse) Reset() {
 	*x = ReportResultResponse{}
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[31]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2498,7 +2692,7 @@ func (x *ReportResultResponse) String() string {
 func (*ReportResultResponse) ProtoMessage() {}
 
 func (x *ReportResultResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[31]
+	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2511,7 +2705,7 @@ func (x *ReportResultResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportResultResponse.ProtoReflect.Descriptor instead.
 func (*ReportResultResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{31}
+	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ReportResultResponse) GetAccepted() bool {
@@ -2685,7 +2879,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x04code\x18\x04 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x12.\n" +
 	"\x04time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\"\x1e\n" +
-	"\x1cReportAttemptFailureResponse\"\xa0\x03\n" +
+	"\x1cReportAttemptFailureResponse\"\xab\x04\n" +
 	"\x13ReportRunnerRequest\x12\x16\n" +
 	"\x06runner\x18\x01 \x01(\tR\x06runner\x12\x18\n" +
 	"\arelease\x18\x02 \x01(\tR\arelease\x12\x1a\n" +
@@ -2698,7 +2892,18 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\breserved\x18\t \x01(\v2\x1f.openetl.dataplane.v1.ResourcesR\breserved\x12\x1a\n" +
 	"\bdraining\x18\n" +
 	" \x01(\bR\bdraining\x12;\n" +
-	"\arunning\x18\v \x03(\v2!.openetl.dataplane.v1.RunningWorkR\arunning\"M\n" +
+	"\arunning\x18\v \x03(\v2!.openetl.dataplane.v1.RunningWorkR\arunning\x125\n" +
+	"\x04pods\x18\f \x01(\v2!.openetl.dataplane.v1.PodLauncherR\x04pods\x128\n" +
+	"\blaunched\x18\r \x03(\v2\x1c.openetl.dataplane.v1.LaunchR\blaunched\x12\x18\n" +
+	"\aattempt\x18\x0e \x01(\tR\aattempt\"\xc6\x01\n" +
+	"\vPodLauncher\x12:\n" +
+	"\bmin_size\x18\x01 \x01(\v2\x1f.openetl.dataplane.v1.ResourcesR\aminSize\x12:\n" +
+	"\bmax_size\x18\x02 \x01(\v2\x1f.openetl.dataplane.v1.ResourcesR\amaxSize\x12\x19\n" +
+	"\bmax_pods\x18\x03 \x01(\rR\amaxPods\x12$\n" +
+	"\x0emax_cpu_millis\x18\x04 \x01(\x03R\fmaxCpuMillis\"@\n" +
+	"\x06Launch\x12\x18\n" +
+	"\aattempt\x18\x01 \x01(\tR\aattempt\x12\x1c\n" +
+	"\tplacement\x18\x02 \x01(\rR\tplacement\"M\n" +
 	"\tResources\x12\x1d\n" +
 	"\n" +
 	"cpu_millis\x18\x01 \x01(\x03R\tcpuMillis\x12!\n" +
@@ -2710,16 +2915,18 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05usage\x18\x04 \x01(\v2\x15.openetl.api.v1.UsageR\x05usage\x12\x12\n" +
 	"\x04rows\x18\x05 \x01(\x04R\x04rows\x12\x14\n" +
 	"\x05bytes\x18\x06 \x01(\x04R\x05bytes\x12/\n" +
-	"\x05lanes\x18\a \x01(\v2\x19.openetl.api.v1.LaneUsageR\x05lanes\"@\n" +
+	"\x05lanes\x18\a \x01(\v2\x19.openetl.api.v1.LaneUsageR\x05lanes\"r\n" +
 	"\x14ReportRunnerResponse\x12\x12\n" +
 	"\x04stop\x18\x01 \x03(\tR\x04stop\x12\x14\n" +
-	"\x05drain\x18\x02 \x03(\tR\x05drain\"x\n" +
+	"\x05drain\x18\x02 \x03(\tR\x05drain\x120\n" +
+	"\x04reap\x18\x03 \x03(\v2\x1c.openetl.dataplane.v1.LaunchR\x04reap\"\xb0\x01\n" +
 	"\x0fPollWorkRequest\x12\x16\n" +
 	"\x06runner\x18\x01 \x01(\tR\x06runner\x12'\n" +
 	"\x0ffree_operations\x18\x02 \x01(\rR\x0efreeOperations\x12$\n" +
-	"\x0efree_log_reads\x18\x03 \x01(\rR\ffreeLogReads\"B\n" +
+	"\x0efree_log_reads\x18\x03 \x01(\rR\ffreeLogReads\x126\n" +
+	"\aattempt\x18\x04 \x01(\v2\x1c.openetl.dataplane.v1.LaunchR\aattempt\"B\n" +
 	"\x10PollWorkResponse\x12.\n" +
-	"\x04work\x18\x01 \x03(\v2\x1a.openetl.dataplane.v1.WorkR\x04work\"\xe9\x02\n" +
+	"\x04work\x18\x01 \x03(\v2\x1a.openetl.dataplane.v1.WorkR\x04work\"\x87\x03\n" +
 	"\x04Work\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +
@@ -2727,11 +2934,12 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x11heartbeat_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x10heartbeatTimeout\x123\n" +
 	"\atimeout\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x123\n" +
 	"\x04size\x18\x06 \x01(\v2\x1f.openetl.dataplane.v1.ResourcesR\x04size\x12;\n" +
-	"\x05trace\x18\a \x03(\v2%.openetl.dataplane.v1.Work.TraceEntryR\x05trace\x1a8\n" +
+	"\x05trace\x18\a \x03(\v2%.openetl.dataplane.v1.Work.TraceEntryR\x05trace\x12\x1c\n" +
+	"\tplacement\x18\b \x01(\rR\tplacement\x1a8\n" +
 	"\n" +
 	"TraceEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xab\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc9\x03\n" +
 	"\x13ReportResultRequest\x12\x16\n" +
 	"\x06runner\x18\x01 \x01(\tR\x06runner\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x16\n" +
@@ -2748,7 +2956,8 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	" \x01(\v2\x15.openetl.api.v1.UsageR\x05usage\x12\x12\n" +
 	"\x04rows\x18\v \x01(\x04R\x04rows\x12\x14\n" +
 	"\x05bytes\x18\f \x01(\x04R\x05bytes\x12/\n" +
-	"\x05lanes\x18\r \x01(\v2\x19.openetl.api.v1.LaneUsageR\x05lanes\"2\n" +
+	"\x05lanes\x18\r \x01(\v2\x19.openetl.api.v1.LaneUsageR\x05lanes\x12\x1c\n" +
+	"\tplacement\x18\x0e \x01(\rR\tplacement\"2\n" +
 	"\x14ReportResultResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted2\xb5\t\n" +
 	"\x10DataPlaneService\x12b\n" +
@@ -2776,7 +2985,7 @@ func file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP() []byte {
 	return file_openetl_dataplane_v1_dataplane_proto_rawDescData
 }
 
-var file_openetl_dataplane_v1_dataplane_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
+var file_openetl_dataplane_v1_dataplane_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
 var file_openetl_dataplane_v1_dataplane_proto_goTypes = []any{
 	(*GetSyncSpecRequest)(nil),           // 0: openetl.dataplane.v1.GetSyncSpecRequest
 	(*GetSyncSpecResponse)(nil),          // 1: openetl.dataplane.v1.GetSyncSpecResponse
@@ -2802,112 +3011,120 @@ var file_openetl_dataplane_v1_dataplane_proto_goTypes = []any{
 	(*ReportAttemptFailureRequest)(nil),  // 21: openetl.dataplane.v1.ReportAttemptFailureRequest
 	(*ReportAttemptFailureResponse)(nil), // 22: openetl.dataplane.v1.ReportAttemptFailureResponse
 	(*ReportRunnerRequest)(nil),          // 23: openetl.dataplane.v1.ReportRunnerRequest
-	(*Resources)(nil),                    // 24: openetl.dataplane.v1.Resources
-	(*RunningWork)(nil),                  // 25: openetl.dataplane.v1.RunningWork
-	(*ReportRunnerResponse)(nil),         // 26: openetl.dataplane.v1.ReportRunnerResponse
-	(*PollWorkRequest)(nil),              // 27: openetl.dataplane.v1.PollWorkRequest
-	(*PollWorkResponse)(nil),             // 28: openetl.dataplane.v1.PollWorkResponse
-	(*Work)(nil),                         // 29: openetl.dataplane.v1.Work
-	(*ReportResultRequest)(nil),          // 30: openetl.dataplane.v1.ReportResultRequest
-	(*ReportResultResponse)(nil),         // 31: openetl.dataplane.v1.ReportResultResponse
-	nil,                                  // 32: openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry
-	nil,                                  // 33: openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntry
-	nil,                                  // 34: openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
-	nil,                                  // 35: openetl.dataplane.v1.ReportSchemasRequest.OutputSchemasEntry
-	nil,                                  // 36: openetl.dataplane.v1.Work.TraceEntry
-	(*v1.PipelineSpec)(nil),              // 37: openetl.api.v1.PipelineSpec
-	(*v1.ConnectorConfig)(nil),           // 38: openetl.api.v1.ConnectorConfig
-	(*v1.FlinkClusterSpec)(nil),          // 39: openetl.api.v1.FlinkClusterSpec
-	(*v1.SparkClusterSpec)(nil),          // 40: openetl.api.v1.SparkClusterSpec
-	(*timestamppb.Timestamp)(nil),        // 41: google.protobuf.Timestamp
-	(*v11.Progress)(nil),                 // 42: openetl.connector.v1.Progress
-	(*v1.Usage)(nil),                     // 43: openetl.api.v1.Usage
-	(v1.DeliveryLevel)(0),                // 44: openetl.api.v1.DeliveryLevel
-	(*v1.HoldCause)(nil),                 // 45: openetl.api.v1.HoldCause
-	(*v1.HoldRefusal)(nil),               // 46: openetl.api.v1.HoldRefusal
-	(*v1.Catalog)(nil),                   // 47: openetl.api.v1.Catalog
-	(*v1.LaneUsage)(nil),                 // 48: openetl.api.v1.LaneUsage
-	(*durationpb.Duration)(nil),          // 49: google.protobuf.Duration
+	(*PodLauncher)(nil),                  // 24: openetl.dataplane.v1.PodLauncher
+	(*Launch)(nil),                       // 25: openetl.dataplane.v1.Launch
+	(*Resources)(nil),                    // 26: openetl.dataplane.v1.Resources
+	(*RunningWork)(nil),                  // 27: openetl.dataplane.v1.RunningWork
+	(*ReportRunnerResponse)(nil),         // 28: openetl.dataplane.v1.ReportRunnerResponse
+	(*PollWorkRequest)(nil),              // 29: openetl.dataplane.v1.PollWorkRequest
+	(*PollWorkResponse)(nil),             // 30: openetl.dataplane.v1.PollWorkResponse
+	(*Work)(nil),                         // 31: openetl.dataplane.v1.Work
+	(*ReportResultRequest)(nil),          // 32: openetl.dataplane.v1.ReportResultRequest
+	(*ReportResultResponse)(nil),         // 33: openetl.dataplane.v1.ReportResultResponse
+	nil,                                  // 34: openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry
+	nil,                                  // 35: openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntry
+	nil,                                  // 36: openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	nil,                                  // 37: openetl.dataplane.v1.ReportSchemasRequest.OutputSchemasEntry
+	nil,                                  // 38: openetl.dataplane.v1.Work.TraceEntry
+	(*v1.PipelineSpec)(nil),              // 39: openetl.api.v1.PipelineSpec
+	(*v1.ConnectorConfig)(nil),           // 40: openetl.api.v1.ConnectorConfig
+	(*v1.FlinkClusterSpec)(nil),          // 41: openetl.api.v1.FlinkClusterSpec
+	(*v1.SparkClusterSpec)(nil),          // 42: openetl.api.v1.SparkClusterSpec
+	(*timestamppb.Timestamp)(nil),        // 43: google.protobuf.Timestamp
+	(*v11.Progress)(nil),                 // 44: openetl.connector.v1.Progress
+	(*v1.Usage)(nil),                     // 45: openetl.api.v1.Usage
+	(v1.DeliveryLevel)(0),                // 46: openetl.api.v1.DeliveryLevel
+	(*v1.HoldCause)(nil),                 // 47: openetl.api.v1.HoldCause
+	(*v1.HoldRefusal)(nil),               // 48: openetl.api.v1.HoldRefusal
+	(*v1.Catalog)(nil),                   // 49: openetl.api.v1.Catalog
+	(*v1.LaneUsage)(nil),                 // 50: openetl.api.v1.LaneUsage
+	(*durationpb.Duration)(nil),          // 51: google.protobuf.Duration
 }
 var file_openetl_dataplane_v1_dataplane_proto_depIdxs = []int32{
-	37, // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
-	38, // 1: openetl.dataplane.v1.GetSyncSpecResponse.source:type_name -> openetl.api.v1.ConnectorConfig
-	38, // 2: openetl.dataplane.v1.GetSyncSpecResponse.destination:type_name -> openetl.api.v1.ConnectorConfig
+	39, // 0: openetl.dataplane.v1.GetSyncSpecResponse.pipeline:type_name -> openetl.api.v1.PipelineSpec
+	40, // 1: openetl.dataplane.v1.GetSyncSpecResponse.source:type_name -> openetl.api.v1.ConnectorConfig
+	40, // 2: openetl.dataplane.v1.GetSyncSpecResponse.destination:type_name -> openetl.api.v1.ConnectorConfig
 	5,  // 3: openetl.dataplane.v1.GetSyncSpecResponse.source_secrets:type_name -> openetl.dataplane.v1.ExternalSecret
 	5,  // 4: openetl.dataplane.v1.GetSyncSpecResponse.destination_secrets:type_name -> openetl.dataplane.v1.ExternalSecret
-	32, // 5: openetl.dataplane.v1.GetSyncSpecResponse.spark_clusters:type_name -> openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry
+	34, // 5: openetl.dataplane.v1.GetSyncSpecResponse.spark_clusters:type_name -> openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry
 	5,  // 6: openetl.dataplane.v1.GetSyncSpecResponse.spark_access_secrets:type_name -> openetl.dataplane.v1.ExternalSecret
-	33, // 7: openetl.dataplane.v1.GetSyncSpecResponse.flink_clusters:type_name -> openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntry
+	35, // 7: openetl.dataplane.v1.GetSyncSpecResponse.flink_clusters:type_name -> openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntry
 	5,  // 8: openetl.dataplane.v1.GetSyncSpecResponse.flink_access_secrets:type_name -> openetl.dataplane.v1.ExternalSecret
 	2,  // 9: openetl.dataplane.v1.GetSyncSpecResponse.releases:type_name -> openetl.dataplane.v1.HoldRelease
 	9,  // 10: openetl.dataplane.v1.HoldRelease.since:type_name -> openetl.dataplane.v1.CheckpointRef
-	39, // 11: openetl.dataplane.v1.PinnedFlinkCluster.spec:type_name -> openetl.api.v1.FlinkClusterSpec
+	41, // 11: openetl.dataplane.v1.PinnedFlinkCluster.spec:type_name -> openetl.api.v1.FlinkClusterSpec
 	5,  // 12: openetl.dataplane.v1.PinnedFlinkCluster.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
 	5,  // 13: openetl.dataplane.v1.PinnedFlinkCluster.target_secrets:type_name -> openetl.dataplane.v1.ExternalSecret
-	40, // 14: openetl.dataplane.v1.PinnedSparkCluster.spec:type_name -> openetl.api.v1.SparkClusterSpec
+	42, // 14: openetl.dataplane.v1.PinnedSparkCluster.spec:type_name -> openetl.api.v1.SparkClusterSpec
 	5,  // 15: openetl.dataplane.v1.PinnedSparkCluster.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
-	34, // 16: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
-	35, // 17: openetl.dataplane.v1.ReportSchemasRequest.output_schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.OutputSchemasEntry
+	36, // 16: openetl.dataplane.v1.ReportSchemasRequest.schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.SchemasEntry
+	37, // 17: openetl.dataplane.v1.ReportSchemasRequest.output_schemas:type_name -> openetl.dataplane.v1.ReportSchemasRequest.OutputSchemasEntry
 	9,  // 18: openetl.dataplane.v1.ReportCheckpointRequest.previous:type_name -> openetl.dataplane.v1.CheckpointRef
-	41, // 19: openetl.dataplane.v1.ReportCheckpointRequest.create_time:type_name -> google.protobuf.Timestamp
+	43, // 19: openetl.dataplane.v1.ReportCheckpointRequest.create_time:type_name -> google.protobuf.Timestamp
 	10, // 20: openetl.dataplane.v1.ReportCheckpointRequest.streams:type_name -> openetl.dataplane.v1.CheckpointStream
-	42, // 21: openetl.dataplane.v1.ReportCheckpointRequest.progress:type_name -> openetl.connector.v1.Progress
-	43, // 22: openetl.dataplane.v1.ReportCheckpointRequest.usage:type_name -> openetl.api.v1.Usage
+	44, // 21: openetl.dataplane.v1.ReportCheckpointRequest.progress:type_name -> openetl.connector.v1.Progress
+	45, // 22: openetl.dataplane.v1.ReportCheckpointRequest.usage:type_name -> openetl.api.v1.Usage
 	11, // 23: openetl.dataplane.v1.CheckpointStream.holds:type_name -> openetl.dataplane.v1.CheckpointHold
-	44, // 24: openetl.dataplane.v1.CheckpointStream.level:type_name -> openetl.api.v1.DeliveryLevel
-	44, // 25: openetl.dataplane.v1.CheckpointStream.planned_level:type_name -> openetl.api.v1.DeliveryLevel
+	46, // 24: openetl.dataplane.v1.CheckpointStream.level:type_name -> openetl.api.v1.DeliveryLevel
+	46, // 25: openetl.dataplane.v1.CheckpointStream.planned_level:type_name -> openetl.api.v1.DeliveryLevel
 	9,  // 26: openetl.dataplane.v1.CheckpointHold.since:type_name -> openetl.dataplane.v1.CheckpointRef
-	41, // 27: openetl.dataplane.v1.CheckpointHold.start_time:type_name -> google.protobuf.Timestamp
-	45, // 28: openetl.dataplane.v1.CheckpointHold.cause:type_name -> openetl.api.v1.HoldCause
-	46, // 29: openetl.dataplane.v1.CheckpointHold.refused:type_name -> openetl.api.v1.HoldRefusal
-	38, // 30: openetl.dataplane.v1.GetConnectorConfigResponse.config:type_name -> openetl.api.v1.ConnectorConfig
+	43, // 27: openetl.dataplane.v1.CheckpointHold.start_time:type_name -> google.protobuf.Timestamp
+	47, // 28: openetl.dataplane.v1.CheckpointHold.cause:type_name -> openetl.api.v1.HoldCause
+	48, // 29: openetl.dataplane.v1.CheckpointHold.refused:type_name -> openetl.api.v1.HoldRefusal
+	40, // 30: openetl.dataplane.v1.GetConnectorConfigResponse.config:type_name -> openetl.api.v1.ConnectorConfig
 	5,  // 31: openetl.dataplane.v1.GetConnectorConfigResponse.secrets:type_name -> openetl.dataplane.v1.ExternalSecret
 	3,  // 32: openetl.dataplane.v1.GetFlinkTeardownResponse.cluster:type_name -> openetl.dataplane.v1.PinnedFlinkCluster
-	47, // 33: openetl.dataplane.v1.ReportCatalogRequest.catalog:type_name -> openetl.api.v1.Catalog
-	41, // 34: openetl.dataplane.v1.ReportAttemptFailureRequest.time:type_name -> google.protobuf.Timestamp
-	24, // 35: openetl.dataplane.v1.ReportRunnerRequest.capacity:type_name -> openetl.dataplane.v1.Resources
-	24, // 36: openetl.dataplane.v1.ReportRunnerRequest.reserved:type_name -> openetl.dataplane.v1.Resources
-	25, // 37: openetl.dataplane.v1.ReportRunnerRequest.running:type_name -> openetl.dataplane.v1.RunningWork
-	24, // 38: openetl.dataplane.v1.RunningWork.size:type_name -> openetl.dataplane.v1.Resources
-	43, // 39: openetl.dataplane.v1.RunningWork.usage:type_name -> openetl.api.v1.Usage
-	48, // 40: openetl.dataplane.v1.RunningWork.lanes:type_name -> openetl.api.v1.LaneUsage
-	29, // 41: openetl.dataplane.v1.PollWorkResponse.work:type_name -> openetl.dataplane.v1.Work
-	49, // 42: openetl.dataplane.v1.Work.heartbeat_timeout:type_name -> google.protobuf.Duration
-	49, // 43: openetl.dataplane.v1.Work.timeout:type_name -> google.protobuf.Duration
-	24, // 44: openetl.dataplane.v1.Work.size:type_name -> openetl.dataplane.v1.Resources
-	36, // 45: openetl.dataplane.v1.Work.trace:type_name -> openetl.dataplane.v1.Work.TraceEntry
-	49, // 46: openetl.dataplane.v1.ReportResultRequest.retry_after:type_name -> google.protobuf.Duration
-	43, // 47: openetl.dataplane.v1.ReportResultRequest.usage:type_name -> openetl.api.v1.Usage
-	48, // 48: openetl.dataplane.v1.ReportResultRequest.lanes:type_name -> openetl.api.v1.LaneUsage
-	4,  // 49: openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedSparkCluster
-	3,  // 50: openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedFlinkCluster
-	0,  // 51: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
-	6,  // 52: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
-	8,  // 53: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
-	13, // 54: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:input_type -> openetl.dataplane.v1.GetConnectorConfigRequest
-	17, // 55: openetl.dataplane.v1.DataPlaneService.ReportCatalog:input_type -> openetl.dataplane.v1.ReportCatalogRequest
-	19, // 56: openetl.dataplane.v1.DataPlaneService.GetArtifact:input_type -> openetl.dataplane.v1.GetArtifactRequest
-	21, // 57: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:input_type -> openetl.dataplane.v1.ReportAttemptFailureRequest
-	23, // 58: openetl.dataplane.v1.DataPlaneService.ReportRunner:input_type -> openetl.dataplane.v1.ReportRunnerRequest
-	27, // 59: openetl.dataplane.v1.DataPlaneService.PollWork:input_type -> openetl.dataplane.v1.PollWorkRequest
-	30, // 60: openetl.dataplane.v1.DataPlaneService.ReportResult:input_type -> openetl.dataplane.v1.ReportResultRequest
-	15, // 61: openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown:input_type -> openetl.dataplane.v1.GetFlinkTeardownRequest
-	1,  // 62: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
-	7,  // 63: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
-	12, // 64: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
-	14, // 65: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:output_type -> openetl.dataplane.v1.GetConnectorConfigResponse
-	18, // 66: openetl.dataplane.v1.DataPlaneService.ReportCatalog:output_type -> openetl.dataplane.v1.ReportCatalogResponse
-	20, // 67: openetl.dataplane.v1.DataPlaneService.GetArtifact:output_type -> openetl.dataplane.v1.GetArtifactResponse
-	22, // 68: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:output_type -> openetl.dataplane.v1.ReportAttemptFailureResponse
-	26, // 69: openetl.dataplane.v1.DataPlaneService.ReportRunner:output_type -> openetl.dataplane.v1.ReportRunnerResponse
-	28, // 70: openetl.dataplane.v1.DataPlaneService.PollWork:output_type -> openetl.dataplane.v1.PollWorkResponse
-	31, // 71: openetl.dataplane.v1.DataPlaneService.ReportResult:output_type -> openetl.dataplane.v1.ReportResultResponse
-	16, // 72: openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown:output_type -> openetl.dataplane.v1.GetFlinkTeardownResponse
-	62, // [62:73] is the sub-list for method output_type
-	51, // [51:62] is the sub-list for method input_type
-	51, // [51:51] is the sub-list for extension type_name
-	51, // [51:51] is the sub-list for extension extendee
-	0,  // [0:51] is the sub-list for field type_name
+	49, // 33: openetl.dataplane.v1.ReportCatalogRequest.catalog:type_name -> openetl.api.v1.Catalog
+	43, // 34: openetl.dataplane.v1.ReportAttemptFailureRequest.time:type_name -> google.protobuf.Timestamp
+	26, // 35: openetl.dataplane.v1.ReportRunnerRequest.capacity:type_name -> openetl.dataplane.v1.Resources
+	26, // 36: openetl.dataplane.v1.ReportRunnerRequest.reserved:type_name -> openetl.dataplane.v1.Resources
+	27, // 37: openetl.dataplane.v1.ReportRunnerRequest.running:type_name -> openetl.dataplane.v1.RunningWork
+	24, // 38: openetl.dataplane.v1.ReportRunnerRequest.pods:type_name -> openetl.dataplane.v1.PodLauncher
+	25, // 39: openetl.dataplane.v1.ReportRunnerRequest.launched:type_name -> openetl.dataplane.v1.Launch
+	26, // 40: openetl.dataplane.v1.PodLauncher.min_size:type_name -> openetl.dataplane.v1.Resources
+	26, // 41: openetl.dataplane.v1.PodLauncher.max_size:type_name -> openetl.dataplane.v1.Resources
+	26, // 42: openetl.dataplane.v1.RunningWork.size:type_name -> openetl.dataplane.v1.Resources
+	45, // 43: openetl.dataplane.v1.RunningWork.usage:type_name -> openetl.api.v1.Usage
+	50, // 44: openetl.dataplane.v1.RunningWork.lanes:type_name -> openetl.api.v1.LaneUsage
+	25, // 45: openetl.dataplane.v1.ReportRunnerResponse.reap:type_name -> openetl.dataplane.v1.Launch
+	25, // 46: openetl.dataplane.v1.PollWorkRequest.attempt:type_name -> openetl.dataplane.v1.Launch
+	31, // 47: openetl.dataplane.v1.PollWorkResponse.work:type_name -> openetl.dataplane.v1.Work
+	51, // 48: openetl.dataplane.v1.Work.heartbeat_timeout:type_name -> google.protobuf.Duration
+	51, // 49: openetl.dataplane.v1.Work.timeout:type_name -> google.protobuf.Duration
+	26, // 50: openetl.dataplane.v1.Work.size:type_name -> openetl.dataplane.v1.Resources
+	38, // 51: openetl.dataplane.v1.Work.trace:type_name -> openetl.dataplane.v1.Work.TraceEntry
+	51, // 52: openetl.dataplane.v1.ReportResultRequest.retry_after:type_name -> google.protobuf.Duration
+	45, // 53: openetl.dataplane.v1.ReportResultRequest.usage:type_name -> openetl.api.v1.Usage
+	50, // 54: openetl.dataplane.v1.ReportResultRequest.lanes:type_name -> openetl.api.v1.LaneUsage
+	4,  // 55: openetl.dataplane.v1.GetSyncSpecResponse.SparkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedSparkCluster
+	3,  // 56: openetl.dataplane.v1.GetSyncSpecResponse.FlinkClustersEntry.value:type_name -> openetl.dataplane.v1.PinnedFlinkCluster
+	0,  // 57: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:input_type -> openetl.dataplane.v1.GetSyncSpecRequest
+	6,  // 58: openetl.dataplane.v1.DataPlaneService.ReportSchemas:input_type -> openetl.dataplane.v1.ReportSchemasRequest
+	8,  // 59: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:input_type -> openetl.dataplane.v1.ReportCheckpointRequest
+	13, // 60: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:input_type -> openetl.dataplane.v1.GetConnectorConfigRequest
+	17, // 61: openetl.dataplane.v1.DataPlaneService.ReportCatalog:input_type -> openetl.dataplane.v1.ReportCatalogRequest
+	19, // 62: openetl.dataplane.v1.DataPlaneService.GetArtifact:input_type -> openetl.dataplane.v1.GetArtifactRequest
+	21, // 63: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:input_type -> openetl.dataplane.v1.ReportAttemptFailureRequest
+	23, // 64: openetl.dataplane.v1.DataPlaneService.ReportRunner:input_type -> openetl.dataplane.v1.ReportRunnerRequest
+	29, // 65: openetl.dataplane.v1.DataPlaneService.PollWork:input_type -> openetl.dataplane.v1.PollWorkRequest
+	32, // 66: openetl.dataplane.v1.DataPlaneService.ReportResult:input_type -> openetl.dataplane.v1.ReportResultRequest
+	15, // 67: openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown:input_type -> openetl.dataplane.v1.GetFlinkTeardownRequest
+	1,  // 68: openetl.dataplane.v1.DataPlaneService.GetSyncSpec:output_type -> openetl.dataplane.v1.GetSyncSpecResponse
+	7,  // 69: openetl.dataplane.v1.DataPlaneService.ReportSchemas:output_type -> openetl.dataplane.v1.ReportSchemasResponse
+	12, // 70: openetl.dataplane.v1.DataPlaneService.ReportCheckpoint:output_type -> openetl.dataplane.v1.ReportCheckpointResponse
+	14, // 71: openetl.dataplane.v1.DataPlaneService.GetConnectorConfig:output_type -> openetl.dataplane.v1.GetConnectorConfigResponse
+	18, // 72: openetl.dataplane.v1.DataPlaneService.ReportCatalog:output_type -> openetl.dataplane.v1.ReportCatalogResponse
+	20, // 73: openetl.dataplane.v1.DataPlaneService.GetArtifact:output_type -> openetl.dataplane.v1.GetArtifactResponse
+	22, // 74: openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure:output_type -> openetl.dataplane.v1.ReportAttemptFailureResponse
+	28, // 75: openetl.dataplane.v1.DataPlaneService.ReportRunner:output_type -> openetl.dataplane.v1.ReportRunnerResponse
+	30, // 76: openetl.dataplane.v1.DataPlaneService.PollWork:output_type -> openetl.dataplane.v1.PollWorkResponse
+	33, // 77: openetl.dataplane.v1.DataPlaneService.ReportResult:output_type -> openetl.dataplane.v1.ReportResultResponse
+	16, // 78: openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown:output_type -> openetl.dataplane.v1.GetFlinkTeardownResponse
+	68, // [68:79] is the sub-list for method output_type
+	57, // [57:68] is the sub-list for method input_type
+	57, // [57:57] is the sub-list for extension type_name
+	57, // [57:57] is the sub-list for extension extendee
+	0,  // [0:57] is the sub-list for field type_name
 }
 
 func init() { file_openetl_dataplane_v1_dataplane_proto_init() }
@@ -2925,7 +3142,7 @@ func file_openetl_dataplane_v1_dataplane_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_dataplane_v1_dataplane_proto_rawDesc), len(file_openetl_dataplane_v1_dataplane_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   37,
+			NumMessages:   39,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

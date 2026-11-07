@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"math"
@@ -29,6 +30,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/runner/pods"
 )
 
 // A runner takes this many light operations at a time, of each kind.
@@ -88,6 +90,12 @@ type Worker struct {
 	ReportEvery time.Duration
 	Kinds       map[string]Kind
 	Logger      *slog.Logger
+	// Set for a pod launcher: it makes a pod for each attempt placed on it,
+	// within Pods, and runs only light operations itself.
+	Launcher pods.Launcher
+	Pods     PodLimits
+	// Set for a pod: it runs this attempt and stops.
+	Attempt *Attempt
 
 	mu       sync.Mutex
 	running  map[string]*Work
@@ -99,6 +107,25 @@ type Worker struct {
 	drain     chan struct{}
 	handlers  sync.WaitGroup
 	results   sync.WaitGroup
+	// A launcher's pods it has said ended badly, or logged as stuck.
+	told map[string]bool
+}
+
+// PodLimits are the jobs a pod launcher takes, and its caps.
+type PodLimits struct {
+	// Jobs with this much CPU or memory, or more.
+	Min resources.Size
+	// The largest pod; zero: any.
+	Max resources.Size
+	// Zero: no limit.
+	MaxPods int
+	MaxCPU  int64
+}
+
+// Attempt is a pod's attempt, and which placement of it the pod is for.
+type Attempt struct {
+	ID        string
+	Placement int32
 }
 
 func (w *Worker) log() *slog.Logger {
@@ -113,6 +140,7 @@ func (w *Worker) log() *slog.Logger {
 // gone out.
 func (w *Worker) Run(ctx context.Context) error {
 	w.running = map[string]*Work{}
+	w.told = map[string]bool{}
 	w.drain = make(chan struct{})
 	w.sharedCPU, _ = resources.Self()
 	base := context.WithoutCancel(ctx)
@@ -127,11 +155,30 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.reports(reportCtx)
 	}()
 	polled := make(chan struct{})
+	var pollErr error
 	go func() {
 		defer close(polled)
+		if w.Attempt != nil {
+			pollErr = w.claim(ctx, base, resultCtx)
+			return
+		}
 		w.poll(ctx, base, resultCtx)
 	}()
-	<-ctx.Done()
+	if w.Attempt != nil {
+		// A pod stops once its attempt has, or it has none.
+		idle := make(chan struct{})
+		go func() {
+			<-polled
+			w.handlers.Wait()
+			close(idle)
+		}()
+		select {
+		case <-ctx.Done():
+		case <-idle:
+		}
+	} else {
+		<-ctx.Done()
+	}
 	<-polled
 	close(w.drain)
 	if err := w.report(base); err != nil {
@@ -153,7 +200,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	stopReports()
 	<-reported
-	return nil
+	return pollErr
 }
 
 func (w *Worker) reports(ctx context.Context) {
@@ -196,9 +243,13 @@ func (w *Worker) report(ctx context.Context) error {
 		Runner: w.ID, Release: w.Release, Protocol: w.Protocol, Features: w.Features, Launchers: w.Launchers, Platform: w.Platform,
 		Pool: w.Pool, Capacity: protoSize(w.Capacity), Reserved: protoSize(w.reserved), Draining: w.draining(),
 	}
+	if w.Attempt != nil {
+		req.Attempt = w.Attempt.ID
+	}
 	w.share()
 	running := slices.Collect(maps.Values(w.running))
 	w.mu.Unlock()
+	launched := w.reportPods(ctx, req)
 	for _, wk := range running {
 		r := &dataplanev1.RunningWork{Id: wk.ID, Epoch: wk.epoch.Load(), Size: protoSize(wk.Size), Lanes: APILanes(wk.Meter.Lanes())}
 		r.Usage, r.Rows, r.Bytes = wk.usage()
@@ -213,7 +264,6 @@ func (w *Worker) report(ctx context.Context) error {
 		return err
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	for _, id := range res.Msg.GetStop() {
 		if wk, ok := w.running[id]; ok {
 			wk.requestStop()
@@ -224,7 +274,73 @@ func (w *Worker) report(ctx context.Context) error {
 			wk.requestDrain()
 		}
 	}
+	w.mu.Unlock()
+	w.tend(ctx, launched, res.Msg.GetReap())
 	return nil
+}
+
+// reportPods adds a launcher's limits and pods to its report, and returns
+// the pods.
+func (w *Worker) reportPods(ctx context.Context, req *dataplanev1.ReportRunnerRequest) []pods.Pod {
+	if w.Launcher == nil {
+		return nil
+	}
+	req.Pods = &dataplanev1.PodLauncher{MinSize: protoSize(w.Pods.Min), MaxPods: count32(w.Pods.MaxPods), MaxCpuMillis: w.Pods.MaxCPU}
+	if w.Pods.Max != (resources.Size{}) {
+		req.Pods.MaxSize = protoSize(w.Pods.Max)
+	}
+	launched, err := w.Launcher.Pods(ctx)
+	if err != nil {
+		// Reaping waits for the next report.
+		w.log().Warn("listing the launcher's pods failed", "err", err)
+		return nil
+	}
+	for _, p := range launched {
+		req.Launched = append(req.Launched, &dataplanev1.Launch{Attempt: p.Attempt, Placement: uint32(max(0, p.Placement))})
+	}
+	return launched
+}
+
+// tend deletes a launcher's pods whose placements have ended, and says how
+// the others that ended did, as their runners couldn't.
+func (w *Worker) tend(ctx context.Context, launched []pods.Pod, reap []*dataplanev1.Launch) {
+	gone := map[string]bool{}
+	for _, l := range reap {
+		gone[pods.Name(l.GetAttempt(), int32(min(l.GetPlacement(), math.MaxInt32)))] = true
+	}
+	for _, p := range launched {
+		if gone[p.Name] {
+			if err := w.Launcher.Delete(ctx, p); err != nil {
+				w.log().Warn("deleting an attempt's pod failed; the next report tries again", "pod", p.Name, "err", err)
+				continue
+			}
+			w.mu.Lock()
+			delete(w.told, p.Name)
+			w.mu.Unlock()
+			continue
+		}
+		w.mu.Lock()
+		told := w.told[p.Name]
+		w.told[p.Name] = told || p.Ended || p.Stuck != ""
+		w.mu.Unlock()
+		switch {
+		case told:
+		case p.Ended:
+			w.log().Warn("an attempt's pod ended without its result", "pod", p.Name, "attempt", p.Attempt, "err", p.Failure)
+			w.send(context.WithoutCancel(ctx), launchFailure(w.ID, p.Attempt, p.Placement, p.Failure))
+		case p.Stuck != "":
+			w.log().Warn("an attempt's pod hasn't started, and is placed again if it doesn't start in time", "pod", p.Name, "attempt", p.Attempt, "why", p.Stuck)
+		}
+	}
+}
+
+// launchFailure is a launcher's result for a placement whose pod failed.
+func launchFailure(runner, attempt string, placement int32, err error) *dataplanev1.ReportResultRequest {
+	code := errs.CodeOf(err)
+	return &dataplanev1.ReportResultRequest{
+		Runner: runner, Id: attempt, Placement: uint32(max(0, placement)),
+		Code: code.String(), Message: err.Error(), NonRetryable: !code.Retryable(),
+	}
 }
 
 // share gives the attempts running their share of what the runner has used
@@ -296,9 +412,94 @@ func (w *Worker) poll(ctx, base, results context.Context) {
 		}
 		backoff = time.Second
 		for _, m := range res.Msg.GetWork() {
+			if m.GetPlacement() > 0 && w.Launcher != nil {
+				w.launch(base, results, m)
+				continue
+			}
 			w.start(base, results, m)
 		}
 	}
+}
+
+// claim takes a pod's attempt and starts it. It tries for a while if the API
+// can't be reached; a pod whose attempt has moved on has nothing to do.
+func (w *Worker) claim(ctx, base, results context.Context) error {
+	req := &dataplanev1.PollWorkRequest{Runner: w.ID, Attempt: &dataplanev1.Launch{Attempt: w.Attempt.ID, Placement: uint32(max(0, w.Attempt.Placement))}}
+	backoff, deadline := time.Second, time.Now().Add(2*time.Minute)
+	for {
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		res, err := w.API.PollWork(pctx, connect.NewRequest(req))
+		cancel()
+		switch {
+		case err == nil && len(res.Msg.GetWork()) == 0:
+			w.log().Info("the attempt isn't this pod's to run any more", "attempt", w.Attempt.ID, "placement", w.Attempt.Placement)
+			return nil
+		case err == nil:
+			for _, m := range res.Msg.GetWork() {
+				w.start(base, results, m)
+			}
+			return nil
+		case ctx.Err() != nil:
+			return nil
+		case time.Now().After(deadline):
+			return fmt.Errorf("worker: taking attempt %s from the API: %w", w.Attempt.ID, err)
+		}
+		w.log().Warn("taking the attempt from the API failed; trying again", "err", err)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return nil
+		}
+		backoff = min(2*backoff, 10*time.Second)
+	}
+}
+
+// launch makes a pod for an attempt placed on the launcher. If it can't for
+// now, the attempt is placed again; if it never can, the attempt fails.
+func (w *Worker) launch(base, results context.Context, m *dataplanev1.Work) {
+	l := pods.Launch{
+		Attempt: m.GetId(), Placement: int32(min(m.GetPlacement(), math.MaxInt32)), Kind: m.GetKind(),
+		Size:        resources.Size{CPU: m.GetSize().GetCpuMillis(), Memory: m.GetSize().GetMemoryBytes()},
+		Pipeline:    pipelineOf(m.GetInput()),
+		StopTimeout: int64(cmp.Or(w.Kinds[m.GetKind()].StopTimeout, 2*time.Minute) / time.Second),
+	}
+	w.handlers.Go(func() {
+		wait := time.Second
+		for {
+			ctx, cancel := context.WithTimeout(base, 30*time.Second)
+			err := w.Launcher.Launch(ctx, l)
+			cancel()
+			if err == nil {
+				w.log().Info("launched a pod for an attempt", "attempt", l.Attempt, "placement", l.Placement, "size", l.Size, "pod", pods.Name(l.Attempt, l.Placement))
+				return
+			}
+			if errs.CodeOf(err) == errs.ConfigInvalid {
+				w.log().Warn("the attempt's pod can't be made", "attempt", l.Attempt, "err", err)
+				w.send(results, launchFailure(w.ID, l.Attempt, l.Placement, err))
+				return
+			}
+			again := &dataplanev1.ReportResultRequest{Runner: w.ID, Id: l.Attempt, Placement: uint32(max(0, l.Placement)), NoCapacity: true}
+			if wait > time.Minute {
+				w.log().Warn("the attempt's pod couldn't be made for now; it's placed again", "attempt", l.Attempt, "err", err)
+				w.send(results, again)
+				return
+			}
+			select {
+			case <-time.After(wait):
+			case <-w.drain:
+				w.send(results, again)
+				return
+			}
+			wait *= 2
+		}
+	})
+}
+
+// pipelineOf is the pipeline an attempt's input names, if it names one.
+func pipelineOf(input []byte) string {
+	var in struct{ PipelineID string }
+	_ = json.Unmarshal(input, &in)
+	return in.PipelineID
 }
 
 func (w *Worker) start(base, results context.Context, m *dataplanev1.Work) {
@@ -306,7 +507,8 @@ func (w *Worker) start(base, results context.Context, m *dataplanev1.Work) {
 	kind, known := w.Kinds[wk.Kind]
 	light := m.GetSize() == nil
 	w.mu.Lock()
-	if !light && !wk.Size.Fits(w.Capacity.Sub(w.reserved)) {
+	// A pod was made for its attempt.
+	if !light && w.Attempt == nil && !wk.Size.Fits(w.Capacity.Sub(w.reserved)) {
 		w.mu.Unlock()
 		w.log().Warn("no room for what was placed here, whose report must have been stale", "work", wk.ID, "size", wk.Size)
 		w.send(results, &dataplanev1.ReportResultRequest{Runner: w.ID, Id: wk.ID, NoCapacity: true})

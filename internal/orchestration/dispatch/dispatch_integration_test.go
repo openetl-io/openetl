@@ -933,3 +933,199 @@ func TestRescale(t *testing.T) {
 		t.Errorf("the last sync's attempts %+v, want %+v", last, want)
 	}
 }
+
+// launcher has a pod launcher report its pods, and returns which to delete.
+func (f *fixture) launcher(id string, pods Pods, launched ...Launch) []Launch {
+	f.t.Helper()
+	if _, _, err := f.d.Report(f.t.Context(), Report{Org: f.org, DataPlane: "default", Runner: db.ReportRunnerParams{
+		ID: id, Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64", Pool: "default",
+		Launcher: true, PodMinCpu: pods.Min.CPU, PodMinMemory: pods.Min.Memory, PodMaxCpu: pods.Max.CPU, PodMaxMemory: pods.Max.Memory,
+		MaxPods: int32(pods.MaxPods), MaxPodCpu: pods.MaxCPU,
+	}}); err != nil {
+		f.t.Fatal(err)
+	}
+	reap, err := f.d.Reap(f.t.Context(), f.org, launched)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return reap
+}
+
+func (f *fixture) sized(id string, size resources.Size) {
+	f.t.Helper()
+	err := f.d.Enqueue(f.t.Context(), contract.WorkInput{
+		OrgID: f.org.String(), DataPlane: "default", ID: id, WorkflowID: "wf", Kind: contract.RunSyncAttempt, Input: map[string]string{},
+		Size: size, Heartbeat: time.Minute, Timeout: time.Hour, Priority: contract.PriorityScheduled,
+	}, nil)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// launches is what the launcher's poll hands it: the attempts' IDs and
+// placements.
+func (f *fixture) launches(launcher string) []Launch {
+	f.t.Helper()
+	work, err := f.d.claim(f.t.Context(), f.org, "default", launcher, 0, 0)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var out []Launch
+	for _, w := range work {
+		if w.State != "placed" || !w.Launched {
+			f.t.Fatalf("the launcher got %s as %s, launched %v", w.ID, w.State, w.Launched)
+		}
+		out = append(out, Launch{Attempt: w.ID, Placement: w.Placements})
+	}
+	return out
+}
+
+// claimAs has a pod take its attempt, and reports whether it got it.
+func (f *fixture) claimAs(pod string, l Launch) bool {
+	f.t.Helper()
+	work, err := f.d.ClaimAttempt(f.t.Context(), f.org, "default", pod, l.Attempt, l.Placement)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return len(work) == 1
+}
+
+// A large attempt goes to the pod launcher, which takes it once; its pod, and
+// only a pod of that placement, runs it; it counts against the launcher's caps
+// until it ends; and then the launcher deletes the pod.
+func TestAttemptInAPod(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	f.report("shared", resources.XL)
+	f.launcher("pods", Pods{Min: resources.M, MaxPods: 1})
+	f.sized("small", resources.S)
+	f.sized("large", resources.L)
+	f.sized("next", resources.L)
+	if got := f.poll("shared", 0, 0); !slices.Equal(got, []string{"small"}) {
+		t.Fatalf("shared got %v, want small", got)
+	}
+	got := f.launches("pods")
+	if len(got) != 1 || got[0] != (Launch{"large", 1}) {
+		t.Fatalf("the launcher got %v, want large's first placement only: one pod at most", got)
+	}
+	if again := f.launches("pods"); len(again) != 0 {
+		t.Fatalf("launched twice: %v", again)
+	}
+	if f.claimAs("stale", Launch{"large", 2}) {
+		t.Fatal("a pod of another placement took it")
+	}
+	if !f.claimAs("pod-1", got[0]) {
+		t.Fatal("its pod didn't get it")
+	}
+	if f.claimAs("pod-2", got[0]) {
+		t.Fatal("a second pod got it too")
+	}
+	// The pod's reports keep it; it still holds the launcher's one pod.
+	stop, _, err := f.d.Report(ctx, Report{Org: f.org, DataPlane: "default", Running: []RunningWork{{ID: "large", Size: resources.L}}, Runner: db.ReportRunnerParams{
+		ID: "pod-1", Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64", Pool: "default",
+		CapacityCpu: resources.L.CPU, CapacityMemory: resources.L.Memory, Attempt: "large",
+	}})
+	if err != nil || len(stop) != 0 {
+		t.Fatalf("stop %v (%v)", stop, err)
+	}
+	f.tick()
+	if got := f.launches("pods"); len(got) != 0 {
+		t.Fatalf("the launcher got %v while its one pod runs", got)
+	}
+	if reap := f.launcher("pods", Pods{Min: resources.M, MaxPods: 1}, Launch{"large", 1}); len(reap) != 0 {
+		t.Fatalf("reap %v while it runs", reap)
+	}
+	// A pod's report doesn't make it a runner.
+	if c, err := f.d.Capacities(ctx, f.org, "default", "default"); err != nil || len(c) != 2 || !slices.Contains(c, resources.XL) {
+		t.Fatalf("capacities %v (%v), want shared's and the launcher's", c, err)
+	}
+	if ok, err := f.d.Result(ctx, f.org, "default", "pod-1", "large", contract.WorkOutcome{Result: []byte(`{}`)}, false, nil); err != nil || !ok {
+		t.Fatalf("result: %v %v", ok, err)
+	}
+	if st := f.status("large"); !st.Done || !f.waker.has("large") {
+		t.Fatalf("status %+v", st)
+	}
+	if reap := f.launcher("pods", Pods{Min: resources.M, MaxPods: 1}, Launch{"large", 1}); !slices.Equal(reap, []Launch{{"large", 1}}) {
+		t.Fatalf("reap %v, want large's pod", reap)
+	}
+	f.tick()
+	if got := f.launches("pods"); len(got) != 1 || got[0].Attempt != "next" {
+		t.Fatalf("the launcher got %v, want next", got)
+	}
+}
+
+// A pod that doesn't start in time is replaced: the attempt is placed again,
+// and the first pod can neither take it nor stay. A launcher that can't make a
+// pod for now places it again; one whose pod died says how.
+func TestLaunchesThatFail(t *testing.T) {
+	f := setup(t, Options{PodStartTimeout: time.Second})
+	ctx := t.Context()
+	f.launcher("pods", Pods{Min: resources.M})
+	f.sized("a", resources.L)
+	first := f.launches("pods")
+	if len(first) != 1 {
+		t.Fatalf("launches %v", first)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	f.tick()
+	second := f.launches("pods")
+	if len(second) != 1 || second[0] != (Launch{"a", 2}) {
+		t.Fatalf("launches %v, want a's second placement", second)
+	}
+	if f.claimAs("late", first[0]) {
+		t.Fatal("the first pod took it late")
+	}
+	if reap := f.launcher("pods", Pods{Min: resources.M}, first[0], second[0]); !slices.Equal(reap, []Launch{first[0]}) {
+		t.Fatalf("reap %v, want the first pod", reap)
+	}
+
+	// No room for a pod: placed again at once, as a third placement.
+	if ok, err := f.d.LaunchResult(ctx, f.org, "default", "pods", "a", 2, contract.WorkOutcome{}, true); err != nil || !ok {
+		t.Fatalf("no capacity: %v %v", ok, err)
+	}
+	third := f.launches("pods")
+	if len(third) != 1 || third[0] != (Launch{"a", 3}) {
+		t.Fatalf("launches %v, want a's third placement", third)
+	}
+	// Late word of an earlier placement changes nothing.
+	if ok, err := f.d.LaunchResult(ctx, f.org, "default", "pods", "a", 2, contract.WorkOutcome{Code: "TRANSIENT"}, false); err != nil || ok {
+		t.Fatalf("a stale placement's failure: %v %v", ok, err)
+	}
+	if !f.claimAs("pod-3", third[0]) {
+		t.Fatal("its pod didn't get it")
+	}
+	oom := contract.WorkOutcome{Code: errs.ResourceExhausted.String(), Message: "its pod went over its memory limit"}
+	if ok, err := f.d.LaunchResult(ctx, f.org, "default", "pods", "a", 3, oom, false); err != nil || !ok {
+		t.Fatalf("its pod's failure: %v %v", ok, err)
+	}
+	if st := f.status("a"); !st.Done || st.Outcome.Code != errs.ResourceExhausted.String() || !f.waker.has("a") {
+		t.Fatalf("status %+v", st)
+	}
+}
+
+// The pool's runners are too small for a job below the launcher's threshold,
+// so it goes to a pod; and a draining launcher keeps the pods it's making.
+func TestPodPoolAndDrainingLauncher(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	f.report("tiny", resources.XS)
+	f.launcher("pods", Pods{Min: resources.XL})
+	f.sized("s", resources.S)
+	got := f.launches("pods")
+	if len(got) != 1 {
+		t.Fatalf("launches %v, want s, which tiny can't take", got)
+	}
+	f.sized("t", resources.S)
+	if _, _, err := f.d.Report(ctx, Report{Org: f.org, DataPlane: "default", Runner: db.ReportRunnerParams{
+		ID: "pods", Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64", Pool: "default",
+		Launcher: true, PodMinCpu: resources.XL.CPU, PodMinMemory: resources.XL.Memory, Draining: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !f.claimAs("pod", got[0]) {
+		t.Fatal("the pod being made lost its attempt when its launcher drained")
+	}
+	if st, err := f.d.Store.GetDispatchOutcome(ctx, db.GetDispatchOutcomeParams{OrgID: f.org, ID: "t"}); err != nil || st.State != "pending" {
+		t.Fatalf("t is %v (%v), want pending", st.State, err)
+	}
+}

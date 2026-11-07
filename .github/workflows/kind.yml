@@ -1,8 +1,8 @@
 name: kind
 
-# Flink on the Kubernetes operator and PySpark on Spark on Kubernetes, in
-# kind: on demand (gh workflow run kind.yml --ref <branch>), and nightly from
-# full.
+# Flink on the Kubernetes operator, PySpark on Spark on Kubernetes, and
+# attempts in pods, in kind: on demand (gh workflow run kind.yml --ref
+# <branch>), and nightly from full.
 on:
   workflow_dispatch:
   workflow_call:
@@ -65,27 +65,30 @@ jobs:
           curl -fsSLo "$RUNNER_TEMP/kind" https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
           sudo install "$RUNNER_TEMP/kind" /usr/local/bin/kind
           (set +e; make deps-up DEPS="postgres s3" && make kind-up; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
-      - name: Build the engine, the connectors and openetl-flink
+      - name: Build the engine, the connectors, openetl-flink and openetld's image
         run: |
           make connectors CONNECTORS_SRC=openetl-connectors
           make flink-lib MAVEN_FLAGS=-DskipTests
           cargo build -p openetl-engine
+          make image CONNECTORS_SRC=openetl-connectors IMAGE=openetl:e2e
       - name: Wait for the services
         timeout-minutes: 15
         run: |
           until [ -f "$RUNNER_TEMP/deps.status" ]; do sleep 1; done
           cat "$RUNNER_TEMP/deps.log"
           exit "$(cat "$RUNNER_TEMP/deps.status")"
+      - name: Load openetld's image into kind
+        run: make kind-load IMAGE=openetl:e2e
       # Pods reach the host at the kind network's gateway.
-      - name: Flink on the operator, with JobManager and runner kills; PySpark after and inside a sync
+      - name: Flink on the operator, with JobManager and runner kills; PySpark after and inside a sync; attempts in pods
         run: |
           host=$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' | tr ' ' '\n' | grep -m1 '\.')
-          make e2e-kube CONNECTORS_SRC=openetl-connectors KIND_HOST="$host"
+          make e2e-kube CONNECTORS_SRC=openetl-connectors KIND_HOST="$host" KIND_IMAGE=openetl:e2e
       - name: The operator's and Flink's logs
         if: failure()
         run: |
           k() { kubectl --kubeconfig .openetl/kind/kubeconfig "$@"; }
           k -n flink-operator logs deploy/flink-kubernetes-operator --tail 300
-          k -n openetl get flinkdeployments,pods -o wide
+          k -n openetl get flinkdeployments,pods -o wide --show-labels
           k -n openetl get events --sort-by=.lastTimestamp | tail -50
           for p in $(k -n openetl get pods -o name); do k -n openetl logs "$p" --tail 100; done

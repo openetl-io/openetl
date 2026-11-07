@@ -194,6 +194,9 @@ type Dispatch struct {
 	FinishTime     *time.Time
 	Woken          bool
 	Drain          bool
+	Launcher       *string
+	Placements     int32
+	Launched       bool
 }
 
 type FlinkCluster struct {
@@ -424,6 +427,14 @@ type Runner struct {
 	OrphanCpu      int64
 	OrphanMemory   int64
 	Draining       bool
+	Launcher       bool
+	PodMinCpu      int64
+	PodMinMemory   int64
+	PodMaxCpu      int64
+	PodMaxMemory   int64
+	MaxPods        int32
+	MaxPodCpu      int64
+	Attempt        string
 }
 
 type RunnerToken struct {

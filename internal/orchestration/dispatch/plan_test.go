@@ -200,3 +200,85 @@ func TestWhySaysWhatTheRunnerLacks(t *testing.T) {
 		}
 	}
 }
+
+func launcher(id string, pods Pods) Runner {
+	r := runner(id, resources.Size{}, resources.Size{})
+	r.Pods = &pods
+	return r
+}
+
+func sized(id string, size resources.Size, waited time.Duration) Request {
+	r := request(id, waited)
+	r.Size = size
+	return r
+}
+
+// Jobs from the launcher's threshold up go to pods, though a runner has room;
+// smaller ones stay on runners.
+func TestLargeJobsGoToPods(t *testing.T) {
+	ds := Plan([]Runner{runner("shared", resources.XL, resources.Size{}), launcher("pods", Pods{Min: resources.M})},
+		[]Request{sized("small", resources.S, 0), sized("large", resources.L, 0), sized("memory", resources.Size{CPU: 500, Memory: 8 * resources.GiB}, 0)}, nil, DefaultReserveAfter)
+	got := placed(ds)
+	if got["small"] != "shared" || got["large"] != "pods" || got["memory"] != "pods" {
+		t.Fatalf("got %v, want small on shared, and large and memory, at or over m in one, on pods", got)
+	}
+	for _, d := range ds {
+		if d.Launch != (d.Runner == "pods") {
+			t.Errorf("%+v says Launch wrongly", d)
+		}
+	}
+}
+
+// A pool with a launcher and no runner large enough sends a job to pods
+// whatever its size: a pool of pods.
+func TestJobsNoRunnerCouldTakeGoToPods(t *testing.T) {
+	ds := Plan([]Runner{runner("tiny", resources.XS, resources.Size{}), launcher("pods", Pods{Min: resources.XL})}, []Request{sized("s", resources.S, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["s"] != "pods" {
+		t.Fatalf("got %v, want s on pods, as tiny can't ever take it", got)
+	}
+	ds = Plan([]Runner{launcher("pods", Pods{Min: resources.XL})}, []Request{sized("s", resources.S, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["s"] != "pods" {
+		t.Fatalf("got %v, want s on pods, the pool's only launcher", got)
+	}
+}
+
+// The launcher's caps hold, and what's over them waits.
+func TestLauncherCaps(t *testing.T) {
+	pods := launcher("pods", Pods{MaxPods: 2})
+	pods.Attempts, pods.Used = 1, resources.M
+	ds := Plan([]Runner{pods}, []Request{sized("a", resources.M, time.Second), sized("b", resources.M, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["a"] != "pods" || len(got) != 1 {
+		t.Fatalf("got %v, want a only: two pods at most", got)
+	}
+	cpu := launcher("pods", Pods{MaxCPU: 5000})
+	ds = Plan([]Runner{cpu}, []Request{sized("a", resources.L, time.Second), sized("b", resources.S, 0), sized("c", resources.S, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["a"] != "pods" || got["b"] != "pods" || len(got) != 2 {
+		t.Fatalf("got %v, want a and b: 5 vCPUs at most between them", got)
+	}
+}
+
+// A size larger than any pod a launcher makes fails once it has waited,
+// saying so; one within its CPU cap but over what's left of it waits.
+func TestTooLargeForPodsFails(t *testing.T) {
+	ds := Plan([]Runner{launcher("pods", Pods{Max: resources.L})}, []Request{sized("xl", resources.XL, 3*time.Minute)}, nil, DefaultReserveAfter)
+	if len(ds) != 1 || ds[0].Runner != "" || !strings.Contains(ds[0].Failure, "larger than any pod a launcher of pool \"default\" makes; the largest has 4 vCPU, 8 GiB") {
+		t.Fatalf("got %+v, want a failure naming the largest pod", ds)
+	}
+	busy := launcher("pods", Pods{MaxCPU: 8000})
+	busy.Used, busy.Attempts = resources.L, 1
+	ds = Plan([]Runner{busy}, []Request{sized("xl", resources.XL, 3*time.Minute)}, nil, DefaultReserveAfter)
+	if len(ds) != 0 {
+		t.Fatalf("got %+v, want xl to wait for the pods' CPU", ds)
+	}
+}
+
+// A launcher that's stopping takes nothing, and its pool's large jobs go to
+// a runner that can take them meanwhile.
+func TestDrainingLauncher(t *testing.T) {
+	pods := launcher("pods", Pods{Min: resources.M})
+	pods.Draining = true
+	ds := Plan([]Runner{runner("shared", resources.XL, resources.Size{}), pods}, []Request{sized("l", resources.L, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["l"] != "shared" {
+		t.Fatalf("got %v, want l on shared", got)
+	}
+}

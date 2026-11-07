@@ -71,7 +71,8 @@ SELECT state, outcome FROM dispatches WHERE org_id = @org_id AND id = @id;
 SELECT pg_advisory_xact_lock(hashtextextended(@data_plane::text, 0));
 
 -- name: PlacementRunners :many
--- A data plane's runners reporting now, with the room their placements use.
+-- A data plane's runners and pod launchers reporting now, with the room their
+-- placements use: a launcher's go on using it while their pods run them.
 SELECT r.*,
     COALESCE(u.cpu, 0)::bigint AS used_cpu,
     COALESCE(u.memory, 0)::bigint AS used_memory,
@@ -80,9 +81,9 @@ FROM runners r
 LEFT JOIN LATERAL (
     SELECT sum(d.size_cpu) AS cpu, sum(d.size_memory) AS memory, count(*) AS attempts
     FROM dispatches d
-    WHERE d.org_id = r.org_id AND d.data_plane_id = r.data_plane_id AND d.runner = r.id AND d.state IN ('placed', 'running')
+    WHERE d.org_id = r.org_id AND d.data_plane_id = r.data_plane_id AND (d.runner = r.id OR d.launcher = r.id) AND d.state IN ('placed', 'running')
 ) u ON true
-WHERE r.org_id = @org_id AND r.data_plane_id = @data_plane_id
+WHERE r.org_id = @org_id AND r.data_plane_id = @data_plane_id AND r.attempt = ''
     AND r.report_time >= now() - (sqlc.arg(lapse_ms)::bigint * interval '1 millisecond')
 ORDER BY r.id;
 
@@ -97,7 +98,9 @@ ORDER BY priority, enqueue_time
 LIMIT @max_rows;
 
 -- name: PlaceDispatch :exec
-UPDATE dispatches SET state = 'placed', runner = @runner, start_deadline = now() + (start_timeout_ms * interval '1 millisecond')
+-- On a runner, or on a pod launcher with the time a pod takes to start.
+UPDATE dispatches SET state = 'placed', runner = @runner, launcher = sqlc.narg('launcher'), placements = placements + 1,
+    start_deadline = now() + (COALESCE(sqlc.narg('start_ms')::bigint, start_timeout_ms) * interval '1 millisecond')
 WHERE org_id = @org_id AND id = @id AND state = 'pending';
 
 -- name: NotifyDispatch :exec
@@ -110,7 +113,45 @@ UPDATE dispatches SET state = 'running',
     run_deadline = now() + (timeout_ms * interval '1 millisecond'),
     lease_deadline = now() + (LEAST(heartbeat_ms, timeout_ms) * interval '1 millisecond')
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND runner = @runner AND state = 'placed' AND start_deadline > now() AND NOT cancel
+    AND launcher IS NULL
 RETURNING *;
+
+-- name: ClaimLaunches :many
+-- The attempts placed on this pod launcher that it hasn't made pods for.
+UPDATE dispatches SET launched = true
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND launcher = @launcher AND runner = @launcher
+    AND state = 'placed' AND NOT launched AND start_deadline > now() AND NOT cancel
+RETURNING *;
+
+-- name: ClaimLaunched :many
+-- A pod's attempt, if it's still the pod's placement and in time: from now
+-- it's the pod's to run.
+UPDATE dispatches SET state = 'running', runner = @runner,
+    run_deadline = now() + (timeout_ms * interval '1 millisecond'),
+    lease_deadline = now() + (LEAST(heartbeat_ms, timeout_ms) * interval '1 millisecond')
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND placements = @placement
+    AND launcher IS NOT NULL AND launched AND state = 'placed' AND start_deadline > now() AND NOT cancel
+RETURNING *;
+
+-- name: FinishLaunch :execrows
+-- A launcher's word on an attempt whose pod couldn't be made or ended without
+-- a result, if it's still that placement's.
+UPDATE dispatches SET state = 'finished', outcome = @outcome, finish_time = now()
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND launcher = @launcher AND placements = @placement
+    AND state IN ('placed', 'running');
+
+-- name: ReturnLaunch :execrows
+-- A launcher that couldn't make a pod for now: the attempt is placed again.
+UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND launcher = @launcher AND placements = @placement
+    AND state = 'placed';
+
+-- name: LiveLaunches :many
+-- Which of a launcher's pods' placements are still waiting to start or
+-- running. Across the org's data planes, so a launcher that sees another's
+-- pods leaves them be.
+SELECT id, placements FROM dispatches
+WHERE org_id = @org_id AND id = ANY(@ids::text[]) AND launcher IS NOT NULL AND state IN ('placed', 'running');
 
 -- name: ClaimLight :many
 -- Light operations of this kind, up to what the runner has room for. The CTE
@@ -152,7 +193,7 @@ SELECT EXISTS (
 
 -- name: ReplaceRunning :execrows
 -- A runner with no room for what was placed on it: it's placed again.
-UPDATE dispatches SET state = 'pending', runner = NULL, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runner = @runner AND state = 'running' AND light = '';
 
 -- name: FinishDispatch :exec
@@ -186,9 +227,9 @@ WHERE d.org_id = @org_id AND a.org_id = d.org_id AND a.id = d.id AND a.pipeline_
   AND d.state = 'running' AND NOT d.cancel AND (sqlc.narg('id')::text IS NULL OR d.id = sqlc.narg('id'));
 
 -- name: ReturnUnstarted :execrows
--- Attempts whose runner didn't start them in time go back to wait for room,
--- keeping their place in the queue.
-UPDATE dispatches SET state = 'pending', runner = NULL, start_deadline = NULL
+-- Attempts whose runner or pod didn't start them in time go back to wait for
+-- room, keeping their place in the queue.
+UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL
 WHERE org_id = @org_id AND state = 'placed' AND start_deadline <= now();
 
 -- name: ExpireUnclaimed :execrows
@@ -225,6 +266,7 @@ SELECT r.data_plane_id, r.pool,
     sum(r.capacity_cpu)::bigint AS cpu, sum(r.capacity_memory)::bigint AS memory
 FROM runners r
 WHERE r.org_id = @org_id AND r.report_time >= now() - (sqlc.arg(lapse_ms)::bigint * interval '1 millisecond') AND NOT r.draining
+    AND NOT r.launcher AND r.attempt = ''
 GROUP BY r.data_plane_id, r.pool;
 
 -- name: PlacementDemand :many
@@ -254,9 +296,10 @@ RETURNING marked.manual_sync_time > now() - interval '5 minutes' AS manual;
 UPDATE pipelines SET manual_sync_time = now() WHERE org_id = @org_id AND id = @id;
 
 -- name: ReturnPlaced :exec
--- A draining runner won't start what's placed on it, so it's placed again.
-UPDATE dispatches SET state = 'pending', runner = NULL, start_deadline = NULL
-WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND runner = @runner AND state = 'placed';
+-- A draining runner won't start what's placed on it, so it's placed again;
+-- but not what a launcher made a pod for, which the pod may start.
+UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, start_deadline = NULL
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND runner = @runner AND state = 'placed' AND NOT launched;
 
 -- name: GetDispatchWorkflow :one
 SELECT workflow_id FROM dispatches WHERE org_id = @org_id AND id = @id;

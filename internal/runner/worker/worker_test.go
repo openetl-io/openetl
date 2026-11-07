@@ -25,6 +25,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/runner/pods"
 )
 
 // fakeAPI hands out work, and answers reports with what stop says.
@@ -38,6 +39,7 @@ type fakeAPI struct {
 	results []*dataplanev1.ReportResultRequest
 	stop    []string
 	drain   []string
+	reap    []*dataplanev1.Launch
 	// Results fail until this many have been tried.
 	failResults int
 	refused     bool
@@ -47,7 +49,7 @@ func (f *fakeAPI) ReportRunner(_ context.Context, req *connect.Request[dataplane
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reports = append(f.reports, req.Msg)
-	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{Stop: f.stop, Drain: f.drain}), nil
+	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{Stop: f.stop, Drain: f.drain, Reap: f.reap}), nil
 }
 
 func (f *fakeAPI) PollWork(ctx context.Context, req *connect.Request[dataplanev1.PollWorkRequest]) (*connect.Response[dataplanev1.PollWorkResponse], error) {
@@ -628,5 +630,229 @@ func TestWorkWithoutAWorkerNeverStops(t *testing.T) {
 	}
 	if wk.Cancelled() {
 		t.Error("it's cancelled")
+	}
+}
+
+// fakeLauncher keeps pods in memory.
+type fakeLauncher struct {
+	mu       sync.Mutex
+	launched []pods.Launch
+	pods     map[string]*pods.Pod
+	deleted  []string
+	fail     error
+	tries    int
+}
+
+func (f *fakeLauncher) Launch(_ context.Context, l pods.Launch) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tries++
+	if f.fail != nil {
+		return f.fail
+	}
+	f.launched = append(f.launched, l)
+	if f.pods == nil {
+		f.pods = map[string]*pods.Pod{}
+	}
+	name := pods.Name(l.Attempt, l.Placement)
+	f.pods[name] = &pods.Pod{Name: name, Attempt: l.Attempt, Placement: l.Placement}
+	return nil
+}
+
+func (f *fakeLauncher) Pods(context.Context) ([]pods.Pod, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []pods.Pod
+	for _, p := range f.pods {
+		out = append(out, *p)
+	}
+	return out, nil
+}
+
+func (f *fakeLauncher) Delete(_ context.Context, p pods.Pod) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.pods, p.Name)
+	f.deleted = append(f.deleted, p.Name)
+	return nil
+}
+
+func (f *fakeLauncher) end(name string, failure error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pods[name].Ended, f.pods[name].Failure = true, failure
+}
+
+func (f *fakeAPI) launchResults(placement uint32) []*dataplanev1.ReportResultRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*dataplanev1.ReportResultRequest
+	for _, r := range f.results {
+		if r.GetPlacement() == placement {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// A launcher makes a pod for each launch it's given, reports its pods, says
+// once how one that died ended, and deletes those the API says to.
+func TestLauncherMakesPods(t *testing.T) {
+	l := &fakeLauncher{}
+	api, stop := startLauncher(t, l)
+	launch := work("sync/1/1", contract.RunSyncAttempt, small, map[string]string{"PipelineID": "p1"})
+	launch.Placement = 3
+	api.give(launch)
+	eventually(t, "the pod", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return len(l.launched) == 1
+	})
+	if got := l.launched[0]; got.Attempt != "sync/1/1" || got.Placement != 3 || got.Pipeline != "p1" || got.Size != (resources.Size{CPU: 1000, Memory: 1 << 30}) || got.StopTimeout != 120 {
+		t.Errorf("launched %+v", got)
+	}
+	name := pods.Name("sync/1/1", 3)
+	eventually(t, "a report of the pod", func() bool {
+		r := api.lastReport()
+		return r != nil && len(r.GetLaunched()) == 1 && r.GetLaunched()[0].GetPlacement() == 3
+	})
+	if p := api.lastReport().GetPods(); p.GetMinSize().GetCpuMillis() != 2000 || p.GetMaxPods() != 5 || p.GetMaxSize() != nil {
+		t.Errorf("pods %v", p)
+	}
+	if len(api.launchResults(3)) != 0 {
+		t.Fatal("a result for a pod that's running")
+	}
+
+	l.end(name, errs.New(errs.ResourceExhausted, "its pod went over its memory limit"))
+	eventually(t, "the launcher's result", func() bool { return len(api.launchResults(3)) == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if rs := api.launchResults(3); len(rs) != 1 || rs[0].GetCode() != "RESOURCE_EXHAUSTED" || rs[0].GetNonRetryable() || rs[0].GetId() != "sync/1/1" {
+		t.Errorf("results %v, want one RESOURCE_EXHAUSTED", rs)
+	}
+	api.mu.Lock()
+	api.reap = []*dataplanev1.Launch{{Attempt: "sync/1/1", Placement: 3}}
+	api.mu.Unlock()
+	eventually(t, "the pod deleted", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return len(l.deleted) == 1 && l.deleted[0] == name
+	})
+
+	// A pod that can't ever be made fails its attempt; one that can't be made
+	// for now is placed again when the launcher stops.
+	l.mu.Lock()
+	l.fail = errs.New(errs.ConfigInvalid, "pods: forbidden")
+	l.mu.Unlock()
+	bad := work("sync/2/1", contract.RunSyncAttempt, small, nil)
+	bad.Placement = 4
+	api.give(bad)
+	eventually(t, "the failure", func() bool { return len(api.launchResults(4)) == 1 })
+	if r := api.launchResults(4)[0]; r.GetCode() != "CONFIG_INVALID" || !r.GetNonRetryable() {
+		t.Errorf("result %v", r)
+	}
+	l.mu.Lock()
+	l.fail = errs.New(errs.Transient, "pods: the API server is down")
+	tries := l.tries
+	l.mu.Unlock()
+	later := work("sync/3/1", contract.RunSyncAttempt, small, nil)
+	later.Placement = 5
+	api.give(later)
+	eventually(t, "the launch tried", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return l.tries > tries
+	})
+	stop()
+	if rs := api.launchResults(5); len(rs) != 1 || !rs[0].GetNoCapacity() {
+		t.Errorf("results %v, want it placed again", rs)
+	}
+}
+
+// startLauncher runs a launcher against a fake API until the returned stop is
+// called.
+func startLauncher(t *testing.T, l pods.Launcher) (api *fakeAPI, stop func()) {
+	t.Helper()
+	api, w := fakeWorker(t)
+	w.Launcher, w.Pods = l, PodLimits{Min: resources.M, MaxPods: 5}
+	w.Kinds = map[string]Kind{contract.RunSyncAttempt: {StopTimeout: 2 * time.Minute, Checkpoints: true}}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return api, stop
+}
+
+func fakeWorker(t *testing.T) (*fakeAPI, *Worker) {
+	t.Helper()
+	api := &fakeAPI{}
+	mux := http.NewServeMux()
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return api, &Worker{
+		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), ID: "r1", Release: "dev", Protocol: "v1", Platform: "linux/amd64",
+		Pool: "default", ReportEvery: 5 * time.Millisecond,
+	}
+}
+
+// runPod runs a pod's worker until it stops of itself.
+func runPod(t *testing.T, w *Worker) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- w.Run(t.Context()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pod didn't stop")
+	}
+}
+
+// A pod takes its one attempt, runs it, reports it, and stops of itself.
+func TestPodRunsItsAttempt(t *testing.T) {
+	api, w := fakeWorker(t)
+	api.give(work("sync/1/1", "run", small, nil))
+	ran := false
+	w.Attempt = &Attempt{ID: "sync/1/1", Placement: 2}
+	w.Kinds = map[string]Kind{"run": {Handler: func(context.Context, []byte) (any, error) {
+		ran = true
+		time.Sleep(30 * time.Millisecond)
+		return map[string]int{"N": 1}, nil
+	}}}
+	runPod(t, w)
+	if !ran {
+		t.Fatal("the attempt didn't run")
+	}
+	if r := api.result("sync/1/1"); r == nil || string(r.GetResult()) != `{"N":1}` {
+		t.Errorf("result %v", r)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.polls) != 1 || api.polls[0].GetAttempt().GetAttempt() != "sync/1/1" || api.polls[0].GetAttempt().GetPlacement() != 2 {
+		t.Errorf("polls %v, want one for its attempt", api.polls)
+	}
+	if len(api.reports) == 0 || api.reports[0].GetAttempt() != "sync/1/1" {
+		t.Errorf("reports %v, want them to name the attempt", api.reports)
+	}
+}
+
+// A pod whose attempt has moved on stops at once.
+func TestPodWithoutItsAttemptStops(t *testing.T) {
+	api, w := fakeWorker(t)
+	w.Attempt = &Attempt{ID: "gone", Placement: 1}
+	runPod(t, w)
+	if len(api.results) != 0 {
+		t.Errorf("results %v, want none", api.results)
 	}
 }
