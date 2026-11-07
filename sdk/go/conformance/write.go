@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"time"
 
@@ -284,7 +285,7 @@ func buildData(stream string, data []arrow.Field, recs []record, op string) arro
 			case *array.StringBuilder:
 				c.Append("w" + strconv.FormatInt(r.id, 10))
 			case *array.Int32Builder:
-				c.Append(int32(r.id)) //nolint:gosec // small
+				c.Append(int32(r.id & math.MaxInt32))
 			case *array.Int64Builder:
 				c.Append(r.id)
 			}

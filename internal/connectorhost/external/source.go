@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -136,7 +137,10 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 	if err != nil {
 		return err
 	}
-	preq := &protocolv1.ReadRequest{Config: p.config, Pipeline: req.Pipeline, Continuous: req.Continuous, Lanes: uint32(req.Lanes)} //nolint:gosec // small
+	preq := &protocolv1.ReadRequest{Config: p.config, Pipeline: req.Pipeline, Continuous: req.Continuous}
+	if req.Lanes > 0 && req.Lanes <= math.MaxUint32 {
+		preq.Lanes = uint32(req.Lanes)
+	}
 	for _, cs := range req.Streams {
 		preq.Streams = append(preq.Streams, configuredStream(cs))
 	}

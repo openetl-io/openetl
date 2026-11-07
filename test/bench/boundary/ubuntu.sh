@@ -52,7 +52,8 @@ if [ -n "${ICEBERG:-}" ]; then
     CATALOG_WAREHOUSE=s3://iceberg/ CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO \
     CATALOG_S3_ENDPOINT=http://127.0.0.1:8333 CATALOG_S3_PATH__STYLE__ACCESS=true AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=openetl AWS_SECRET_ACCESS_KEY=openetl \
     nohup java -jar /opt/iceberg-rest.jar >/var/log/iceberg-rest.log 2>&1 &
-  until curl -fs -X PUT http://127.0.0.1:8333/iceberg >/dev/null 2>&1; do sleep 1; done
+  # 409 once the bucket exists, as on a second run.
+  until curl -s -o /dev/null -w '%{http_code}' -X PUT http://127.0.0.1:8333/iceberg | grep -q '^200$\|^409$'; do sleep 1; done
   until curl -fs http://127.0.0.1:8181/v1/config >/dev/null 2>&1; do sleep 1; done
   export ICEBERG_CONFIG='{"uri": "http://127.0.0.1:8181", "namespace": "bench", "s3Endpoint": "http://127.0.0.1:8333", "region": "us-east-1", "accessKeyId": "openetl", "secretAccessKey": "openetl"}'
 fi

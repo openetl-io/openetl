@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"testing"
@@ -226,7 +227,10 @@ func (s *session) openLane(gen uint64, lane, lanes int) *writer {
 	s.t.Helper()
 	open := &protocolv1.WriteOpen{
 		Config: s.r.proc.Config(), Pipeline: s.pipeline, Namespace: s.ns, Generation: gen, Scope: s.scope,
-		CommitInterval: durationpb.New(time.Second), Lane: uint32(lane), //nolint:gosec // small
+		CommitInterval: durationpb.New(time.Second),
+	}
+	if lane > 0 && lane <= math.MaxUint32 {
+		open.Lane = uint32(lane)
 	}
 	for _, name := range kitStreams {
 		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: name, Mode: s.mode, PrimaryKey: []string{"id"}})

@@ -249,6 +249,11 @@ func (d *laneDest) Capabilities() destination.Capabilities {
 	return c
 }
 
+// Open gives each writer lane a writer of its own, as lanes write at once.
+func (d *laneDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	return &countingDest{}, nil
+}
+
 func laneJob(src source.Source, flow runner.Dataflow, lanes int, key []string) runner.Job {
 	return runner.Job{
 		Owner: "o", Sync: "s", Pipeline: "p", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), Source: src,
