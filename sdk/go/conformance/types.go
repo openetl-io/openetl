@@ -774,10 +774,17 @@ func (r *destinationRun) checkTypes(t T) {
 		t.Fatalf("%s pre-commit of the types stream: %s: %v", s.where(), codeOf(err), err)
 	}
 	s.commit(w, epoch(1, 1), staged)
-	rows := s.read(typesStream)
 	byID := map[string]map[string]any{}
-	for _, row := range rows {
-		byID[fmt.Sprint(row["id"])] = row
+	deadline := time.Now().Add(r.s.Settle)
+	for {
+		clear(byID)
+		for _, row := range s.read(typesStream) {
+			byID[fmt.Sprint(row["id"])] = row
+		}
+		if len(byID) >= typesRows(cases) || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if len(byID) != typesRows(cases) {
 		t.Errorf("%s the types stream has %d rows, not %d", s.where(), len(byID), typesRows(cases))

@@ -912,14 +912,21 @@ func (r *destinationRun) typeChange(t T, from, to arrow.DataType, must bool) {
 		return
 	}
 	s.expect("after "+change+", allowed", map[string][]record{"alpha": append(small, large...)})
-	tc := typeCase{logical: logicalOf(to)}
+	tc, old := typeCase{logical: logicalOf(to)}, typeCase{logical: logicalOf(from)}
 	for _, row := range s.read("alpha") {
 		var id int64
 		if _, err := fmt.Sscan(fmt.Sprint(row["id"]), &id); err != nil {
 			t.Fatalf("%s alpha's id %v: %v", s.where(), row["id"], err)
 		}
-		want := widened(to, id, id < 1<<33)
+		earlier := id < 1<<33
+		want := widened(to, id, earlier)
 		got, err := tc.norm(row["n"])
+		if earlier && (err != nil || got != tc.want(want)) {
+			// Files written before keep their type, which readers widen.
+			if g, err2 := old.norm(row["n"]); err2 == nil && g == old.want(id) {
+				continue
+			}
+		}
 		switch {
 		case err != nil:
 			t.Errorf("%s after %s, allowed: id %d's n: %v", s.where(), change, id, err)
@@ -932,6 +939,8 @@ func (r *destinationRun) typeChange(t T, from, to arrow.DataType, must bool) {
 
 func logicalOf(dt arrow.DataType) string {
 	switch dt.ID() {
+	case arrow.INT32:
+		return "int32"
 	case arrow.FLOAT64:
 		return "float64"
 	case arrow.STRING:
