@@ -32,6 +32,10 @@ service DataPlaneService {
   // An artifact by digest, such as a connector version's descriptor or
   // manifest. Its content never changes, so runners cache it.
   rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse);
+  // The credential of the connected source of connectors whose URL is the
+  // longest prefix of url, for a binary's oci:// blob or release asset; none
+  // when no source covers it.
+  rpc GetFetchCredential(GetFetchCredentialRequest) returns (GetFetchCredentialResponse);
   // Records an attempt of a sync or a stream job that failed, so the
   // control plane sees retries Temporal hides, such as a crash loop. An
   // attempt already reported is skipped.
@@ -250,6 +254,20 @@ message GetConnectorConfigResponse {
   string connector = 4;
   // As GetSyncSpecResponse's source_secrets.
   repeated ExternalSecret secrets = 5;
+}
+
+message GetFetchCredentialRequest {
+  // oci://REGISTRY/REPOSITORY…, or https://github.com/OWNER/REPO/….
+  string url = 1;
+}
+
+message GetFetchCredentialResponse {
+  // connectorSources/{source}; empty when no source covers the URL, or it
+  // has no secret.
+  string source = 1;
+  string username = 2;
+  // A registry's password or token, or a GitHub token.
+  string password = 3;
 }
 
 message GetFlinkTeardownRequest {

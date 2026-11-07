@@ -221,7 +221,7 @@ func (f *runFlags) document(ctx context.Context, t *runTarget, path, role string
 		if bin.Digest == "" {
 			return fmt.Errorf("%s's binary for %s has no digest; package pins it", t.name, connectorhost.Platform())
 		}
-		fetch := connectorhost.Fetcher{Client: &http.Client{Timeout: 10 * time.Minute}, Cache: *f.cache}
+		fetch := connectorhost.Fetcher{Client: &http.Client{Timeout: 10 * time.Minute}, Cache: *f.cache, Credential: dockerCredential}
 		_, short := spec.SplitName(v.Name)
 		exe, err := fetch.Executable(ctx, bin, role+"-"+short)
 		if err != nil {

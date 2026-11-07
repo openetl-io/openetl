@@ -64,6 +64,24 @@ func (s *Schedules) EnsureRetention(ctx context.Context, in contract.RetentionIn
 	return nil
 }
 
+// EnsureCatalogRefresh creates or updates the CatalogRefreshWorkflow
+// schedule, which lists connected sources of connectors.
+func (s *Schedules) EnsureCatalogRefresh(ctx context.Context) error {
+	err := s.Backend.UpsertSchedule(ctx, orchestration.Schedule{
+		ID:         contract.CatalogRefreshScheduleID,
+		Every:      contract.CatalogRefreshEvery,
+		Jitter:     time.Minute,
+		WorkflowID: contract.CatalogRefreshWorkflowID,
+		Workflow:   contract.CatalogRefreshWorkflow,
+		Input:      struct{}{},
+		StartNow:   true,
+	})
+	if err != nil {
+		return fmt.Errorf("schedules: %w", err)
+	}
+	return nil
+}
+
 // Delete removes the pipeline's schedule, if it has one. A running sync
 // isn't stopped.
 func (s *Schedules) Delete(ctx context.Context, pipelineID string) error {

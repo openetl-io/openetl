@@ -187,10 +187,24 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if len(paths) == 0 || fs.NArg() > 0 {
+	var refs []string
+	if mode == applyConnectors {
+		refs = fs.Args()
+		for _, r := range refs {
+			if !strings.HasPrefix(r, "oci://") && !strings.HasPrefix(r, "github.com/") {
+				return fmt.Errorf("%q isn't a reference: oci://REGISTRY/REPOSITORY:VERSION or github.com/OWNER/REPO[/PACKAGE]@VERSION", r)
+			}
+		}
+		if len(paths) == 0 && len(refs) == 0 {
+			return errors.New("connector apply takes -f FILE, or references such as oci://ghcr.io/openetl-io/connectors/postgres:0.2.0")
+		}
+	} else if len(paths) == 0 || fs.NArg() > 0 {
 		return fmt.Errorf("%s takes one or more -f FILE, and no arguments", strings.TrimPrefix(cmd, "openetl "))
 	}
 	req := &apiv1.ApplyRequest{ValidateOnly: *dryRun || mode == planAll, Client: "cli", Transfer: transfer}
+	for _, r := range refs {
+		req.Documents = append(req.Documents, &apiv1.Document{Reference: r})
+	}
 	if *workspace != "" {
 		req.Workspace = "workspaces/" + *workspace
 	}

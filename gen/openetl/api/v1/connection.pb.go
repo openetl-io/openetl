@@ -331,7 +331,9 @@ type ConnectorVersion struct {
 	// sha256:{hex}
 	Digest string `protobuf:"bytes,3,opt,name=digest,proto3" json:"digest,omitempty"`
 	Author string `protobuf:"bytes,4,opt,name=author,proto3" json:"author,omitempty"`
-	// An https URL of an image.
+	// Where the control plane serves its logo, such as /logos/sha256:…, or the
+	// descriptor's https URL where the logo couldn't be fetched; empty without
+	// one.
 	Logo string `protobuf:"bytes,5,opt,name=logo,proto3" json:"logo,omitempty"`
 	// The git tag the version was released from.
 	ReleaseTag string `protobuf:"bytes,6,opt,name=release_tag,json=releaseTag,proto3" json:"release_tag,omitempty"`
@@ -343,8 +345,10 @@ type ConnectorVersion struct {
 	// An https URL of the package's source repository.
 	Repository string `protobuf:"bytes,10,opt,name=repository,proto3" json:"repository,omitempty"`
 	// An https URL.
-	Docs          string   `protobuf:"bytes,11,opt,name=docs,proto3" json:"docs,omitempty"`
-	Tags          []string `protobuf:"bytes,12,rep,name=tags,proto3" json:"tags,omitempty"`
+	Docs string   `protobuf:"bytes,11,opt,name=docs,proto3" json:"docs,omitempty"`
+	Tags []string `protobuf:"bytes,12,rep,name=tags,proto3" json:"tags,omitempty"`
+	// A display name; empty: the name.
+	Title         string `protobuf:"bytes,13,opt,name=title,proto3" json:"title,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -461,6 +465,13 @@ func (x *ConnectorVersion) GetTags() []string {
 		return x.Tags
 	}
 	return nil
+}
+
+func (x *ConnectorVersion) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
 }
 
 // ConnectorConfig is the spec of a Source or Destination document.
@@ -1698,7 +1709,7 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"createTime\x12;\n" +
 	"\vupdate_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"updateTime\x12>\n" +
-	"\tconnector\x18\a \x01(\v2 .openetl.api.v1.ConnectorVersionR\tconnector\"\xca\x02\n" +
+	"\tconnector\x18\a \x01(\v2 .openetl.api.v1.ConnectorVersionR\tconnector\"\xe0\x02\n" +
 	"\x10ConnectorVersion\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x16\n" +
@@ -1716,7 +1727,8 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	" \x01(\tR\n" +
 	"repository\x12\x12\n" +
 	"\x04docs\x18\v \x01(\tR\x04docs\x12\x12\n" +
-	"\x04tags\x18\f \x03(\tR\x04tags\"`\n" +
+	"\x04tags\x18\f \x03(\tR\x04tags\x12\x14\n" +
+	"\x05title\x18\r \x01(\tR\x05title\"`\n" +
 	"\x0fConnectorConfig\x12\x1c\n" +
 	"\tconnector\x18\x01 \x01(\tR\tconnector\x12/\n" +
 	"\x06config\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x06config\"&\n" +

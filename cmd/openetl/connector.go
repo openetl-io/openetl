@@ -38,6 +38,9 @@ Commands:
             apply connector versions: descriptors and manifests in FILE, or
             oci://REGISTRY/REPOSITORY:VERSION and
             github.com/OWNER/REPO[/PACKAGE]@VERSION references
+  catalog [--refresh]
+            list the packages of the connected sources of connectors, with
+            the reference to apply each by
   spec TARGET
             print a connector's spec
   check --config FILE TARGET
@@ -64,6 +67,8 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 		return runPackage(ctx, args[1:], out)
 	case "publish":
 		return runPublish(ctx, args[1:], out)
+	case "catalog":
+		return runCatalog(ctx, args[1:], out)
 	case "validate":
 		return runValidate(args[1:], out)
 	case "apply":
@@ -214,6 +219,21 @@ func namespace(s string) (oci.Ref, error) {
 	return ns, err
 }
 
+// dockerCredential is Docker's credential for an oci:// URL's registry, for
+// connectorhost.Fetcher.
+func dockerCredential(ctx context.Context, url string) (string, string, error) {
+	r, err := oci.Parse(url)
+	if err != nil {
+		return "", "", nil
+	}
+	creds, err := oci.DockerCredentials()
+	if err != nil {
+		return "", "", err
+	}
+	c, err := creds(ctx, r)
+	return c.Username, c.Password, err
+}
+
 // registryClient reaches registries as the user, with Docker's credentials.
 func registryClient() (*oci.Client, error) {
 	creds, err := oci.DockerCredentials()
@@ -341,8 +361,8 @@ func onlyConnectorVersions(content []byte, origin string) error {
 	if err := yaml.Unmarshal(content, &head); err != nil {
 		return fmt.Errorf("%s: %w", origin, err)
 	}
-	if head.Kind != spec.KindConnector && head.Kind != spec.KindDeclarativeSource {
-		return fmt.Errorf("%s is a %s; connector apply takes Connector and DeclarativeSource documents, and openetl apply takes the rest", origin, head.Kind)
+	if head.Kind != spec.KindConnector && head.Kind != spec.KindDeclarativeSource && head.Kind != spec.KindConnectorSource {
+		return fmt.Errorf("%s is a %s; connector apply takes Connector, DeclarativeSource and ConnectorSource documents, and openetl apply takes the rest", origin, head.Kind)
 	}
 	return nil
 }

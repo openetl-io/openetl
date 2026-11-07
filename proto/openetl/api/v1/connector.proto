@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+package openetl.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/api/v1;apiv1";
+
+// ConnectorService lists connected sources of connectors and the catalog of
+// packages they hold, and deletes sources. ApplyService connects them, and
+// applies connector versions, by reference too.
+service ConnectorService {
+  rpc ListConnectorSources(ListConnectorSourcesRequest) returns (ListConnectorSourcesResponse) {
+    option (google.api.http) = {get: "/v1/connectorSources"};
+  }
+  // Its packages leave the catalog. Versions applied from it stay.
+  rpc DeleteConnectorSource(DeleteConnectorSourceRequest) returns (DeleteConnectorSourceResponse) {
+    option (google.api.http) = {delete: "/v1/{name=connectorSources/*}"};
+  }
+  // Each package of every connected source, at its highest version, as its
+  // source last listed it.
+  rpc ListCatalog(ListCatalogRequest) returns (ListCatalogResponse) {
+    option (google.api.http) = {get: "/v1/catalog"};
+  }
+  // A package with its roles' config fields, from its highest version's
+  // descriptor, which the first call fetches.
+  rpc GetCatalogPackage(GetCatalogPackageRequest) returns (GetCatalogPackageResponse) {
+    option (google.api.http) = {get: "/v1/{name=catalog/*/*/*}"};
+  }
+  // Lists every connected source now, as the control plane does every 15
+  // minutes.
+  rpc RefreshCatalog(RefreshCatalogRequest) returns (RefreshCatalogResponse) {
+    option (google.api.http) = {
+      post: "/v1/catalog:refresh"
+      body: "*"
+    };
+  }
+}
+
+// ConnectorSourceSpec is a ConnectorSource document's spec: an OCI registry
+// namespace or a GitHub repository whose connector packages the catalog
+// lists.
+message ConnectorSourceSpec {
+  // oci://REGISTRY/NAMESPACE, or https://github.com/OWNER/REPO.
+  string url = 1;
+  // A registry's user, beside the secret; GitHub takes none.
+  string username = 2;
+  // A secret holding a registry's password or token, or a GitHub token:
+  // workspaces/{workspace}/secrets/{secret}, or a secret's name in the
+  // default workspace. It must hold its value, not a ref. The control plane
+  // lists the source with it, and runners fetch binaries under its URL with
+  // it.
+  string secret = 3;
+}
+
+message ConnectorSource {
+  // connectorSources/{source}
+  string name = 1;
+  ConnectorSourceSpec spec = 2;
+  // The official connectors' source, connected when the org was created.
+  bool official = 3;
+  // When it last listed without an error.
+  google.protobuf.Timestamp refresh_time = 4;
+  // Why it last failed to list; empty if it didn't. It keeps its last
+  // listing meanwhile.
+  string error = 5;
+  google.protobuf.Timestamp error_time = 6;
+  int32 packages = 7;
+}
+
+message ListConnectorSourcesRequest {}
+
+message ListConnectorSourcesResponse {
+  repeated ConnectorSource sources = 1;
+}
+
+message DeleteConnectorSourceRequest {
+  string name = 1;
+}
+
+message DeleteConnectorSourceResponse {}
+
+// CatalogPackage is a package as its source's index or releases describe it:
+// what its publisher says, until it's applied.
+message CatalogPackage {
+  // catalog/{source}/{owner}/{name}
+  string name = 1;
+  // connectorSources/{source}
+  string source = 2;
+  // owner/name
+  string package = 3;
+  string title = 4;
+  // The highest version.
+  string version = 5;
+  string author = 6;
+  string description = 7;
+  // An SPDX expression.
+  string license = 8;
+  // An https URL of the package's source repository.
+  string repository = 9;
+  // An https URL.
+  string docs = 10;
+  // source, destination or both.
+  repeated string roles = 11;
+  repeated string tags = 12;
+  // Where the control plane serves its logo, such as /logos/sha256:…; empty
+  // without one.
+  string logo = 13;
+  // What openetl connector apply takes: oci://…:VERSION or
+  // github.com/OWNER/REPO[/PACKAGE]@VERSION.
+  string reference = 14;
+  // Listed from the official source under the reserved openetl owner.
+  bool official = 15;
+  // Named under the reserved openetl owner by a source that isn't the
+  // official one, so applying it is refused.
+  bool impostor = 16;
+  // The highest version the org has applied; empty if none.
+  string applied_version = 17;
+}
+
+// ConfigField is a top-level field of a role's config, from its JSON
+// Schema.
+message ConfigField {
+  string name = 1;
+  // The JSON Schema type, such as string or object; empty when it doesn't
+  // say.
+  string type = 2;
+  string title = 3;
+  string description = 4;
+  bool required = 5;
+  // Its value is a secret's name, never the secret.
+  bool secret = 6;
+}
+
+message CatalogRole {
+  // source or destination
+  string role = 1;
+  repeated ConfigField config = 2;
+}
+
+message ListCatalogRequest {}
+
+message ListCatalogResponse {
+  repeated CatalogPackage packages = 1;
+}
+
+message GetCatalogPackageRequest {
+  string name = 1;
+}
+
+message GetCatalogPackageResponse {
+  CatalogPackage package = 1;
+  repeated CatalogRole roles = 2;
+}
+
+message RefreshCatalogRequest {}
+
+message RefreshCatalogResponse {
+  repeated ConnectorSource sources = 1;
+}

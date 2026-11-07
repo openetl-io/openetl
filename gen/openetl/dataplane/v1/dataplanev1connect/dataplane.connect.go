@@ -51,6 +51,9 @@ const (
 	// DataPlaneServiceGetArtifactProcedure is the fully-qualified name of the DataPlaneService's
 	// GetArtifact RPC.
 	DataPlaneServiceGetArtifactProcedure = "/openetl.dataplane.v1.DataPlaneService/GetArtifact"
+	// DataPlaneServiceGetFetchCredentialProcedure is the fully-qualified name of the DataPlaneService's
+	// GetFetchCredential RPC.
+	DataPlaneServiceGetFetchCredentialProcedure = "/openetl.dataplane.v1.DataPlaneService/GetFetchCredential"
 	// DataPlaneServiceReportAttemptFailureProcedure is the fully-qualified name of the
 	// DataPlaneService's ReportAttemptFailure RPC.
 	DataPlaneServiceReportAttemptFailureProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportAttemptFailure"
@@ -86,6 +89,10 @@ type DataPlaneServiceClient interface {
 	// An artifact by digest, such as a connector version's descriptor or
 	// manifest. Its content never changes, so runners cache it.
 	GetArtifact(context.Context, *connect.Request[v1.GetArtifactRequest]) (*connect.Response[v1.GetArtifactResponse], error)
+	// The credential of the connected source of connectors whose URL is the
+	// longest prefix of url, for a binary's oci:// blob or release asset; none
+	// when no source covers it.
+	GetFetchCredential(context.Context, *connect.Request[v1.GetFetchCredentialRequest]) (*connect.Response[v1.GetFetchCredentialResponse], error)
 	// Records an attempt of a sync or a stream job that failed, so the
 	// control plane sees retries Temporal hides, such as a crash loop. An
 	// attempt already reported is skipped.
@@ -155,6 +162,12 @@ func NewDataPlaneServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(dataPlaneServiceMethods.ByName("GetArtifact")),
 			connect.WithClientOptions(opts...),
 		),
+		getFetchCredential: connect.NewClient[v1.GetFetchCredentialRequest, v1.GetFetchCredentialResponse](
+			httpClient,
+			baseURL+DataPlaneServiceGetFetchCredentialProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("GetFetchCredential")),
+			connect.WithClientOptions(opts...),
+		),
 		reportAttemptFailure: connect.NewClient[v1.ReportAttemptFailureRequest, v1.ReportAttemptFailureResponse](
 			httpClient,
 			baseURL+DataPlaneServiceReportAttemptFailureProcedure,
@@ -196,6 +209,7 @@ type dataPlaneServiceClient struct {
 	getConnectorConfig   *connect.Client[v1.GetConnectorConfigRequest, v1.GetConnectorConfigResponse]
 	reportCatalog        *connect.Client[v1.ReportCatalogRequest, v1.ReportCatalogResponse]
 	getArtifact          *connect.Client[v1.GetArtifactRequest, v1.GetArtifactResponse]
+	getFetchCredential   *connect.Client[v1.GetFetchCredentialRequest, v1.GetFetchCredentialResponse]
 	reportAttemptFailure *connect.Client[v1.ReportAttemptFailureRequest, v1.ReportAttemptFailureResponse]
 	reportRunner         *connect.Client[v1.ReportRunnerRequest, v1.ReportRunnerResponse]
 	pollWork             *connect.Client[v1.PollWorkRequest, v1.PollWorkResponse]
@@ -231,6 +245,11 @@ func (c *dataPlaneServiceClient) ReportCatalog(ctx context.Context, req *connect
 // GetArtifact calls openetl.dataplane.v1.DataPlaneService.GetArtifact.
 func (c *dataPlaneServiceClient) GetArtifact(ctx context.Context, req *connect.Request[v1.GetArtifactRequest]) (*connect.Response[v1.GetArtifactResponse], error) {
 	return c.getArtifact.CallUnary(ctx, req)
+}
+
+// GetFetchCredential calls openetl.dataplane.v1.DataPlaneService.GetFetchCredential.
+func (c *dataPlaneServiceClient) GetFetchCredential(ctx context.Context, req *connect.Request[v1.GetFetchCredentialRequest]) (*connect.Response[v1.GetFetchCredentialResponse], error) {
+	return c.getFetchCredential.CallUnary(ctx, req)
 }
 
 // ReportAttemptFailure calls openetl.dataplane.v1.DataPlaneService.ReportAttemptFailure.
@@ -277,6 +296,10 @@ type DataPlaneServiceHandler interface {
 	// An artifact by digest, such as a connector version's descriptor or
 	// manifest. Its content never changes, so runners cache it.
 	GetArtifact(context.Context, *connect.Request[v1.GetArtifactRequest]) (*connect.Response[v1.GetArtifactResponse], error)
+	// The credential of the connected source of connectors whose URL is the
+	// longest prefix of url, for a binary's oci:// blob or release asset; none
+	// when no source covers it.
+	GetFetchCredential(context.Context, *connect.Request[v1.GetFetchCredentialRequest]) (*connect.Response[v1.GetFetchCredentialResponse], error)
 	// Records an attempt of a sync or a stream job that failed, so the
 	// control plane sees retries Temporal hides, such as a crash loop. An
 	// attempt already reported is skipped.
@@ -342,6 +365,12 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 		connect.WithSchema(dataPlaneServiceMethods.ByName("GetArtifact")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dataPlaneServiceGetFetchCredentialHandler := connect.NewUnaryHandler(
+		DataPlaneServiceGetFetchCredentialProcedure,
+		svc.GetFetchCredential,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("GetFetchCredential")),
+		connect.WithHandlerOptions(opts...),
+	)
 	dataPlaneServiceReportAttemptFailureHandler := connect.NewUnaryHandler(
 		DataPlaneServiceReportAttemptFailureProcedure,
 		svc.ReportAttemptFailure,
@@ -386,6 +415,8 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 			dataPlaneServiceReportCatalogHandler.ServeHTTP(w, r)
 		case DataPlaneServiceGetArtifactProcedure:
 			dataPlaneServiceGetArtifactHandler.ServeHTTP(w, r)
+		case DataPlaneServiceGetFetchCredentialProcedure:
+			dataPlaneServiceGetFetchCredentialHandler.ServeHTTP(w, r)
 		case DataPlaneServiceReportAttemptFailureProcedure:
 			dataPlaneServiceReportAttemptFailureHandler.ServeHTTP(w, r)
 		case DataPlaneServiceReportRunnerProcedure:
@@ -427,6 +458,10 @@ func (UnimplementedDataPlaneServiceHandler) ReportCatalog(context.Context, *conn
 
 func (UnimplementedDataPlaneServiceHandler) GetArtifact(context.Context, *connect.Request[v1.GetArtifactRequest]) (*connect.Response[v1.GetArtifactResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.GetArtifact is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) GetFetchCredential(context.Context, *connect.Request[v1.GetFetchCredentialRequest]) (*connect.Response[v1.GetFetchCredentialResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.GetFetchCredential is not implemented"))
 }
 
 func (UnimplementedDataPlaneServiceHandler) ReportAttemptFailure(context.Context, *connect.Request[v1.ReportAttemptFailureRequest]) (*connect.Response[v1.ReportAttemptFailureResponse], error) {

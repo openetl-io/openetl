@@ -334,3 +334,42 @@ func TestParseHolds(t *testing.T) {
 		t.Errorf("a transform's input holds: %v", err)
 	}
 }
+
+func TestParseConnectorSource(t *testing.T) {
+	doc := func(spec string) string {
+		return "apiVersion: openetl.io/v1alpha1\nkind: ConnectorSource\nmetadata: {name: acme}\nspec: " + spec + "\n"
+	}
+	for in, want := range map[string]string{
+		`{url: "oci://ghcr.io/acme/connectors"}`:                                         "oci://ghcr.io/acme/connectors||",
+		`{url: "oci://localhost:5000/acme", username: bot, secret: ghcr}`:                "oci://localhost:5000/acme|bot|workspaces/default/secrets/ghcr",
+		`{url: "https://github.com/acme/conn", secret: workspaces/ops/secrets/gh-token}`: "https://github.com/acme/conn||workspaces/ops/secrets/gh-token",
+	} {
+		d, err := Parse([]byte(doc(in)))
+		if err != nil {
+			t.Errorf("%s: %v", in, err)
+			continue
+		}
+		s := d.ConnectorSource
+		if got := s.GetUrl() + "|" + s.GetUsername() + "|" + s.GetSecret(); got != want || d.Kind != KindConnectorSource || d.Name != "acme" {
+			t.Errorf("%s: %s", in, got)
+		}
+	}
+	for _, in := range []string{
+		`{}`,
+		`{url: "oci://ghcr.io/acme/connectors:1.0.0"}`,
+		`{url: "oci://ghcr.io"}`,
+		`{url: "https://gitlab.com/acme/conn"}`,
+		`{url: "https://github.com/acme/conn/"}`,
+		`{url: "https://github.com/acme/conn", username: bot, secret: x}`,
+		`{url: "oci://ghcr.io/acme", username: bot}`,
+		`{url: "oci://ghcr.io/acme", secret: "workspaces/x/y"}`,
+		`{url: "oci://ghcr.io/acme", other: 1}`,
+	} {
+		if _, err := Parse([]byte(doc(in))); err == nil {
+			t.Errorf("%s parsed", in)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(doc(`{url: "oci://ghcr.io/acme"}`), "{name: acme}", "{name: acme, workspace: default}", 1))); err == nil {
+		t.Error("a connector source in a workspace parsed")
+	}
+}

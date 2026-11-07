@@ -38,6 +38,9 @@ const (
 	KindDbtProject = "DbtProject"
 	// Where a workspace's platform events go.
 	KindWebhook = "Webhook"
+	// An OCI registry namespace or a GitHub repository whose connector
+	// packages the catalog lists. It belongs to the org.
+	KindConnectorSource = "ConnectorSource"
 	// Where Spark applications run.
 	KindSparkCluster = "SparkCluster"
 	// Where Flink jobs run.
@@ -63,10 +66,11 @@ type Document struct {
 	// The whole manifest, as canonical JSON, for declarative.Load.
 	Manifest []byte
 	// A gzipped tar of the project's files, which dbt.Canonical checks.
-	Bundle       []byte
-	Webhook      *apiv1.WebhookSpec
-	SparkCluster *apiv1.SparkClusterSpec
-	FlinkCluster *apiv1.FlinkClusterSpec
+	Bundle          []byte
+	Webhook         *apiv1.WebhookSpec
+	ConnectorSource *apiv1.ConnectorSourceSpec
+	SparkCluster    *apiv1.SparkClusterSpec
+	FlinkCluster    *apiv1.FlinkClusterSpec
 }
 
 type envelope struct {
@@ -239,12 +243,17 @@ func Parse(content []byte) (*Document, error) {
 		doc.Bundle, err = parseDbtProject(spec)
 	case KindWebhook:
 		doc.Webhook, err = parseWebhook(spec)
+	case KindConnectorSource:
+		if doc.Workspace != "" {
+			return nil, errors.New("metadata.workspace: a connector source belongs to the org, not a workspace")
+		}
+		doc.ConnectorSource, err = parseConnectorSource(spec)
 	case KindSparkCluster:
 		doc.SparkCluster, err = parseSparkCluster(spec)
 	case KindFlinkCluster:
 		doc.FlinkCluster, err = parseFlinkCluster(spec)
 	default:
-		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, DbtProject, Webhook, SparkCluster or FlinkCluster", env.Kind)
+		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, ConnectorSource, DbtProject, Webhook, SparkCluster or FlinkCluster", env.Kind)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("spec: %w", err)
@@ -788,6 +797,54 @@ func parseWebhook(b []byte) (*apiv1.WebhookSpec, error) {
 		return nil, errors.New("secrets: each secret once")
 	}
 	return &apiv1.WebhookSpec{Url: y.URL, Events: y.Events, Pipelines: y.Pipelines, Secrets: y.Secrets}, nil
+}
+
+var (
+	ociNamespacePattern = regexp.MustCompile(`^oci://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?/[a-z0-9]+([._/-][a-z0-9]+)*$`)
+	githubRepoPattern   = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
+	secretNamePattern   = regexp.MustCompile(`^workspaces/([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)/secrets/([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)$`)
+)
+
+// GitHubRepository reports whether url is https://github.com/OWNER/REPO.
+func GitHubRepository(url string) bool { return githubRepoPattern.MatchString(url) }
+
+// SecretResource is a connector source's secret as a resource name: a bare
+// name is the default workspace's.
+func SecretResource(secret string) string {
+	if secret == "" || strings.Contains(secret, "/") {
+		return secret
+	}
+	return "workspaces/default/secrets/" + secret
+}
+
+type connectorSourceYAML struct {
+	URL      string `yaml:"url"`
+	Username string `yaml:"username"`
+	Secret   string `yaml:"secret"`
+}
+
+func parseConnectorSource(b []byte) (*apiv1.ConnectorSourceSpec, error) {
+	var y connectorSourceYAML
+	if err := strict(b, &y); err != nil {
+		return nil, err
+	}
+	switch {
+	case y.URL == "":
+		return nil, errors.New("url is missing: oci://REGISTRY/NAMESPACE or https://github.com/OWNER/REPO")
+	case strings.HasPrefix(y.URL, "oci://") && !ociNamespacePattern.MatchString(y.URL):
+		return nil, fmt.Errorf("url %q isn't oci://REGISTRY/NAMESPACE, without a tag or digest", y.URL)
+	case !strings.HasPrefix(y.URL, "oci://") && !GitHubRepository(y.URL):
+		return nil, fmt.Errorf("url %q isn't oci://REGISTRY/NAMESPACE or https://github.com/OWNER/REPO", y.URL)
+	case GitHubRepository(y.URL) && y.Username != "":
+		return nil, errors.New("username: a GitHub token needs none")
+	case y.Username != "" && y.Secret == "":
+		return nil, errors.New("username needs a secret, its password or token")
+	case y.Secret != "" && !ValidName(y.Secret) && !secretNamePattern.MatchString(y.Secret):
+		return nil, fmt.Errorf("secret %q isn't a secret's name, or workspaces/{workspace}/secrets/{secret}", y.Secret)
+	case len(y.Username) > 200:
+		return nil, errors.New("username is longer than 200 characters")
+	}
+	return &apiv1.ConnectorSourceSpec{Url: y.URL, Username: y.Username, Secret: SecretResource(y.Secret)}, nil
 }
 
 func parseDelivery(y *deliveryYAML) (*apiv1.Delivery, error) {

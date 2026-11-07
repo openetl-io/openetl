@@ -263,6 +263,22 @@ func connectorEnv(ctx context.Context, env connectorhost.Env, versions *connecto
 	return env, nil
 }
 
+// FetchCredentials asks the API for the credential of the connected source
+// of connectors that covers a binary's URL.
+func FetchCredentials(api dataplanev1connect.DataPlaneServiceClient) func(context.Context, string) (string, string, error) {
+	return func(ctx context.Context, url string) (string, string, error) {
+		res, err := api.GetFetchCredential(ctx, connect.NewRequest(&dataplanev1.GetFetchCredentialRequest{Url: url}))
+		if err != nil {
+			code := errs.Transient
+			if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+				code = errs.ConfigInvalid
+			}
+			return "", "", errs.Wrap(code, err, "the credential for "+url)
+		}
+		return res.Msg.GetUsername(), res.Msg.GetPassword(), nil
+	}
+}
+
 // Artifacts fetches artifacts by digest from the API, for
 // connectorhost.Fetcher.
 func Artifacts(api dataplanev1connect.DataPlaneServiceClient) func(context.Context, string) ([]byte, error) {

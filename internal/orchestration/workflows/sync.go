@@ -41,6 +41,7 @@ func (w Workflows) All() []orchestration.Workflow {
 		}),
 		orchestration.NewWorkflow(contract.ConnectorOpWorkflow, w.ConnectorOp),
 		orchestration.NewWorkflow(contract.RetentionWorkflow, w.Retention),
+		orchestration.NewWorkflow(contract.CatalogRefreshWorkflow, w.CatalogRefresh),
 		orchestration.NewWorkflow(contract.ReadLogsWorkflow, w.ReadLogs),
 	}
 }

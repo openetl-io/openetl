@@ -21,6 +21,7 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/events"
+	"github.com/openetl-io/openetl/internal/pkgcatalog"
 	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/spec"
 	"github.com/openetl-io/openetl/internal/store"
@@ -62,19 +63,34 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		}
 		defWS = ws
 	}
-	docs := make([]*spec.Document, len(req.Msg.GetDocuments()))
+	for _, d := range req.Msg.GetDocuments() {
+		if d.GetReference() == "" {
+			continue
+		}
+		if err := authorize(ctx, "connectors.apply", ""); err != nil {
+			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("%s: %w", d.GetReference(), errors.Unwrap(err)))
+		}
+	}
+	reqDocs, err := s.resolveReferences(ctx, req.Msg.GetDocuments())
+	if err != nil {
+		return nil, err
+	}
+	docs := make([]*spec.Document, len(reqDocs))
 	origins := make([]string, len(docs))
 	seen := map[string]int{}
-	for i, d := range req.Msg.GetDocuments() {
+	for i, d := range reqDocs {
 		origins[i] = cmp.Or(d.GetOrigin(), fmt.Sprintf("document %d", i+1))
 		doc, err := spec.Parse(d.GetContent())
 		if err != nil {
 			return nil, invalid("%s: %v", origins[i], err)
 		}
 		var key string
-		if versioned(doc) {
+		switch {
+		case versioned(doc):
 			key = "connector/" + doc.Name + "@" + doc.Version + "/" + strings.Join(roles(doc), "+")
-		} else {
+		case orgLevel(doc):
+			key = doc.Kind + "/" + doc.Name
+		default:
 			doc.Workspace = cmp.Or(doc.Workspace, defWS)
 			key = doc.Kind + "/" + doc.Workspace + "/" + doc.Name
 		}
@@ -92,7 +108,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	}
 	for i, doc := range docs {
 		perm, ws := "documents.apply", doc.Workspace
-		if versioned(doc) {
+		if orgLevel(doc) {
 			perm, ws = "connectors.apply", ""
 		}
 		if err := authorize(ctx, perm, ws); err != nil {
@@ -102,6 +118,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	if err := s.pinBinaries(ctx, docs, origins); err != nil {
 		return nil, err
 	}
+	logos := s.fetchLogos(ctx, docs)
 	// Sources and destinations refer to connector versions, and pipelines to
 	// sources, destinations, dbt projects and Spark and Flink clusters, so each goes
 	// before what refers to it.
@@ -111,7 +128,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	}
 	rank := func(i int) int {
 		switch {
-		case versioned(docs[i]):
+		case orgLevel(docs[i]):
 			return 0
 		case docs[i].Kind == spec.KindPipeline:
 			return 2
@@ -126,9 +143,11 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	var scheds []schedule
 	// Pipelines a source or destination change gave a version.
 	var dependents []*planned
-	err := s.Store.Tx(ctx, func(q *db.Queries) error {
-		dependents = nil
+	var listSources []string
+	err = s.Store.Tx(ctx, func(q *db.Queries) error {
+		dependents, listSources = nil, nil
 		ch := newChanges()
+		ch.logos = logos
 		for _, name := range req.Msg.GetTransfer() {
 			ch.transfer[spec.FullName(name)] = true
 		}
@@ -162,6 +181,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		if err := refuse(ch, res.Plans); err != nil {
 			return err
 		}
+		listSources = ch.listSources
 		return s.recordApplied(ctx, q, ch)
 	})
 	if errors.Is(err, errValidateOnly) {
@@ -173,6 +193,7 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 		return nil, err
 	}
 	auditApplied(ctx, res)
+	s.listSourcesSoon(listSources)
 	for _, d := range dependents {
 		if plan.Continuous(d.v.spec) {
 			scheds = append(scheds, schedule{pipelineID: d.id.String(), continuous: true})
@@ -210,6 +231,9 @@ func documentName(doc *spec.Document) string {
 	if versioned(doc) {
 		return connectorName(doc.Name, doc.Version)
 	}
+	if doc.Kind == spec.KindConnectorSource {
+		return sourceName(doc.Name)
+	}
 	collection := map[string]string{
 		spec.KindSource: "sources", spec.KindDestination: "destinations", spec.KindPipeline: "pipelines", spec.KindDbtProject: "dbtProjects",
 		spec.KindWebhook: "webhooks", spec.KindSparkCluster: "sparkClusters", spec.KindFlinkCluster: "flinkClusters",
@@ -241,8 +265,12 @@ func (s *Server) workspace(ctx context.Context, q *db.Queries, name string) (uui
 }
 
 func (s *Server) applyOne(ctx context.Context, q *db.Queries, doc *spec.Document, provenance string, ch *changes) (*apiv1.AppliedResource, *schedule, error) {
+	if doc.Kind == spec.KindConnectorSource {
+		res, err := s.applyConnectorSource(ctx, q, doc, ch)
+		return res, nil, err
+	}
 	if versioned(doc) {
-		res, err := s.applyConnectorVersion(ctx, q, doc, provenance, ch.transfer)
+		res, err := s.applyConnectorVersion(ctx, q, doc, provenance, ch.transfer, ch.logos)
 		return res, nil, err
 	}
 	wsID, err := s.workspace(ctx, q, doc.Workspace)
@@ -595,6 +623,10 @@ type changes struct {
 	// Connector packages, by full name, whose versions may come from
 	// another repository.
 	transfer map[string]bool
+	// Logos of connector versions, fetched before the transaction.
+	logos map[*spec.Document]*pkgcatalog.Logo
+	// Connector sources connected or changed, to list once applied.
+	listSources []string
 }
 
 func newChanges() *changes {
