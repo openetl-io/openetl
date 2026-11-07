@@ -42,6 +42,8 @@ spec:
     maxIdentifierLength: 63
     writeModes: [append, overwrite, merge]
     holds: {byKey: true, byId: true, last: true, guarded: true}
+    delivery: streamed
+    maxWriterLanes: 16
   config:
     type: object
     required: [dsn]
@@ -82,6 +84,8 @@ func TestParseDescriptor(t *testing.T) {
 			MaxIdentifierLength:   63,
 			WriteModes:            []protocolv1.WriteMode{protocolv1.WriteMode_WRITE_MODE_APPEND, protocolv1.WriteMode_WRITE_MODE_OVERWRITE, protocolv1.WriteMode_WRITE_MODE_MERGE},
 			Holds:                 &protocolv1.HoldCapabilities{ByKey: true, ById: true, Last: true, Guarded: true},
+			Delivery:              protocolv1.Delivery_DELIVERY_STREAMED,
+			MaxWriterLanes:        16,
 		},
 	}
 	if !proto.Equal(role.Spec, want) {
