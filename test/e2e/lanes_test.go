@@ -102,7 +102,8 @@ func TestLanesThroughARunnerKill(t *testing.T) {
 }
 
 // A CDC table on several lanes: its rows are routed by key group, and later
-// changes to a key supersede earlier ones whichever writer lane has it.
+// changes to a key supersede earlier ones whichever writer lane has it. A
+// soft delete keeps the other columns as the target had them.
 func TestLanesCDCRoutedByKey(t *testing.T) {
 	startRunner(t)
 	name := unique("lanes-cdc")
@@ -111,7 +112,6 @@ func TestLanesCDCRoutedByKey(t *testing.T) {
 	run(t, "CREATE SCHEMA "+pgx.Identifier{in}.Sanitize(),
 		"CREATE TABLE "+table+" (id bigint PRIMARY KEY, v int)",
 		"INSERT INTO "+table+" SELECT i, 0 FROM generate_series(1, 2000) i")
-	t.Cleanup(func() { run(t, "DROP SCHEMA IF EXISTS "+pgx.Identifier{in}.Sanitize()+" CASCADE") })
 	src := fmt.Sprintf(`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}, "schema": %q, "tables": ["items"], "slot": %q, "publication": %q}}`, in, "s_"+in, "p_"+in)
 	dst := `{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`
 	d := docs(name, src, dst, `{}`)
@@ -132,8 +132,17 @@ func TestLanesCDCRoutedByKey(t *testing.T) {
 		run(t, fmt.Sprintf("UPDATE %s SET v = %d", table, v))
 	}
 	run(t, "DELETE FROM "+table+" WHERE id % 2 = 0")
+	state := ""
+	defer func() {
+		if t.Failed() {
+			t.Logf("live rows, deleted rows, live rows' lowest v and the highest: %s", state)
+			groups, err := query[string](t, "SELECT string_agg(g, '; ') FROM (SELECT _openetl_deleted || ' v=' || v || ': ' || count(*) || ' ids ' || min(id) || '..' || max(id) || ' unchanged ' || coalesce(max(_openetl_unchanged::text), '-') AS g FROM "+out+" GROUP BY _openetl_deleted, v ORDER BY 1) x")
+			t.Logf("by deleted and v: %s %v", groups, err)
+		}
+	}()
 	eventually(t, 2*time.Minute, "the changes", func() bool {
-		s, err := query[string](t, "SELECT count(*) FILTER (WHERE NOT _openetl_deleted) || ' ' || min(v) || ' ' || max(v) FROM "+out)
-		return err == nil && s == "1000 5 5"
+		s, err := query[string](t, "SELECT count(*) FILTER (WHERE NOT _openetl_deleted) || ' ' || count(*) FILTER (WHERE _openetl_deleted AND id % 2 = 0) || ' ' || min(v) FILTER (WHERE NOT _openetl_deleted) || ' ' || max(v) FROM "+out)
+		state = fmt.Sprint(s, err)
+		return err == nil && s == "1000 1000 5 5"
 	})
 }
