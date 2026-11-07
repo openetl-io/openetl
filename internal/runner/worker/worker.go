@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"math"
 	"runtime/debug"
 	"slices"
 	"sync"
@@ -199,7 +200,7 @@ func (w *Worker) report(ctx context.Context) error {
 	running := slices.Collect(maps.Values(w.running))
 	w.mu.Unlock()
 	for _, wk := range running {
-		r := &dataplanev1.RunningWork{Id: wk.ID, Epoch: wk.epoch.Load(), Size: protoSize(wk.Size)}
+		r := &dataplanev1.RunningWork{Id: wk.ID, Epoch: wk.epoch.Load(), Size: protoSize(wk.Size), Lanes: APILanes(wk.Meter.Lanes())}
 		r.Usage, r.Rows, r.Bytes = wk.usage()
 		req.Running = append(req.Running, r)
 	}
@@ -216,6 +217,11 @@ func (w *Worker) report(ctx context.Context) error {
 	for _, id := range res.Msg.GetStop() {
 		if wk, ok := w.running[id]; ok {
 			wk.requestStop()
+		}
+	}
+	for _, id := range res.Msg.GetDrain() {
+		if wk, ok := w.running[id]; ok {
+			wk.requestDrain()
 		}
 	}
 	return nil
@@ -459,7 +465,7 @@ func (w *Worker) cutOff(wk *Work, kind Kind, cancel context.CancelFunc, finished
 
 // outcome is the result report of work that returned res and err.
 func outcome(runner string, wk *Work, res any, err error) *dataplanev1.ReportResultRequest {
-	out := &dataplanev1.ReportResultRequest{Runner: runner, Id: wk.ID}
+	out := &dataplanev1.ReportResultRequest{Runner: runner, Id: wk.ID, Lanes: APILanes(wk.Meter.Lanes())}
 	out.Usage, out.Rows, out.Bytes = wk.usage()
 	var failure *contract.Failure
 	switch {
@@ -541,6 +547,9 @@ type Work struct {
 	epoch       atomic.Uint64
 	stop        chan struct{}
 	stopOnce    sync.Once
+	// A rescale: it stops at a checkpoint as if the runner were stopping.
+	rescale     chan struct{}
+	rescaleOnce sync.Once
 	drain       <-chan struct{}
 	stopping    func() <-chan struct{}
 }
@@ -579,6 +588,24 @@ func (wk *Work) usage() (*apiv1.Usage, uint64, uint64) {
 	return APIUsage(wk.Meter.Usage()), uint64(max(0, rows)), uint64(max(0, bytes))
 }
 
+// APILanes is l as the API says it; nil before an attempt settles its lanes.
+func APILanes(l resources.Lanes) *apiv1.LaneUsage {
+	if l.Count == 0 {
+		return nil
+	}
+	return &apiv1.LaneUsage{
+		Lanes: count32(l.Count), Limit: count32(l.Limit),
+		BusySeconds: l.Busy, BackpressuredSeconds: l.Backpressured, IdleSeconds: l.Idle, Rows: uint64(max(0, l.Rows)),
+	}
+}
+
+func count32(n int) uint32 {
+	if n > 0 && n <= math.MaxUint32 {
+		return uint32(n)
+	}
+	return 0
+}
+
 // APIUsage is u as the API says it.
 func APIUsage(u resources.Usage) *apiv1.Usage {
 	return &apiv1.Usage{
@@ -588,13 +615,14 @@ func APIUsage(u resources.Usage) *apiv1.Usage {
 
 // NewWork is work ready to run, on a runner that stops when drain closes.
 func NewWork(s Spec, drain <-chan struct{}) *Work {
-	wk := &Work{Spec: s, stop: make(chan struct{}), drain: drain}
+	wk := &Work{Spec: s, stop: make(chan struct{}), rescale: make(chan struct{}), drain: drain}
 	wk.stopping = sync.OnceValue(func() <-chan struct{} {
 		c := make(chan struct{})
 		go func() {
 			defer close(c)
 			select {
 			case <-wk.stop:
+			case <-wk.rescale:
 			case <-wk.drain:
 			}
 		}()
@@ -607,6 +635,12 @@ func NewWork(s Spec, drain <-chan struct{}) *Work {
 func (wk *Work) RequestStop() { wk.requestStop() }
 
 func (wk *Work) requestStop() { wk.stopOnce.Do(func() { close(wk.stop) }) }
+
+// RequestDrain asks it to stop at its next checkpoint and end with DRAINING,
+// as a rescale's report answer does.
+func (wk *Work) RequestDrain() { wk.requestDrain() }
+
+func (wk *Work) requestDrain() { wk.rescaleOnce.Do(func() { close(wk.rescale) }) }
 
 // Cancelled reports whether it was asked to stop: it was cancelled, or
 // something else may have replaced it.

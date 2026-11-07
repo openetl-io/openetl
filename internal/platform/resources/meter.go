@@ -26,6 +26,17 @@ type Usage struct {
 	Seconds float64
 }
 
+// Lanes is how an attempt's lanes spent their time (ADR-0027 §7).
+type Lanes struct {
+	// How many it runs, and the most it could: 0 if more can always be used.
+	Count, Limit int
+	// Summed over its lanes, in seconds: working, waiting for what's
+	// downstream, and waiting for rows.
+	Busy, Backpressured, Idle float64
+	// What its lanes took in.
+	Rows int64
+}
+
 // Meter adds up what one attempt uses (ADR-0027 §3). A nil Meter counts
 // nothing. Its methods may be called concurrently.
 type Meter struct {
@@ -36,6 +47,7 @@ type Meter struct {
 	mu    sync.Mutex
 	live  map[int]*reading
 	usage Usage
+	lanes Lanes
 	// What exited processes used, in CPU seconds and, where a process's peak
 	// can be read only once it has exited, resident bytes.
 	exitedCPU float64
@@ -191,6 +203,40 @@ func (m *Meter) Moved(rows, bytes int64) {
 	}
 	m.rows.Add(rows)
 	m.bytes.Add(bytes)
+}
+
+// SetLanes records how many lanes the attempt runs, and the most it could.
+func (m *Meter) SetLanes(count, limit int) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lanes.Count, m.lanes.Limit = count, limit
+}
+
+// AddLanes adds what its lanes did since the last time.
+func (m *Meter) AddLanes(busy, backpressured, idle time.Duration, rows int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lanes.Busy += busy.Seconds()
+	m.lanes.Backpressured += backpressured.Seconds()
+	m.lanes.Idle += idle.Seconds()
+	m.lanes.Rows += rows
+}
+
+// Lanes is what the attempt's lanes have done so far; zero before it settles
+// them.
+func (m *Meter) Lanes() Lanes {
+	if m == nil {
+		return Lanes{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lanes
 }
 
 // Progress is how many rows and bytes the attempt's source has emitted.

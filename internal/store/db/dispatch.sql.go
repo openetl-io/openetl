@@ -60,7 +60,7 @@ UPDATE dispatches d SET state = 'running', runner = $1,
     lease_deadline = now() + (LEAST(d.heartbeat_ms, d.timeout_ms) * interval '1 millisecond')
 FROM picked
 WHERE d.org_id = $2 AND d.id = picked.id
-RETURNING d.org_id, d.id, d.data_plane_id, d.workflow_id, d.kind, d.input, d.light, d.pool, d.size_cpu, d.size_memory, d.priority, d.needs, d.trace, d.state, d.runner, d.heartbeat_ms, d.start_timeout_ms, d.timeout_ms, d.enqueue_time, d.start_deadline, d.run_deadline, d.lease_deadline, d.cancel, d.epoch, d.outcome, d.finish_time, d.woken
+RETURNING d.org_id, d.id, d.data_plane_id, d.workflow_id, d.kind, d.input, d.light, d.pool, d.size_cpu, d.size_memory, d.priority, d.needs, d.trace, d.state, d.runner, d.heartbeat_ms, d.start_timeout_ms, d.timeout_ms, d.enqueue_time, d.start_deadline, d.run_deadline, d.lease_deadline, d.cancel, d.epoch, d.outcome, d.finish_time, d.woken, d.drain
 `
 
 type ClaimLightParams struct {
@@ -116,6 +116,7 @@ func (q *Queries) ClaimLight(ctx context.Context, arg ClaimLightParams) ([]Dispa
 			&i.Outcome,
 			&i.FinishTime,
 			&i.Woken,
+			&i.Drain,
 		); err != nil {
 			return nil, err
 		}
@@ -132,7 +133,7 @@ UPDATE dispatches SET state = 'running',
     run_deadline = now() + (timeout_ms * interval '1 millisecond'),
     lease_deadline = now() + (LEAST(heartbeat_ms, timeout_ms) * interval '1 millisecond')
 WHERE org_id = $1 AND data_plane_id = $2 AND runner = $3 AND state = 'placed' AND start_deadline > now() AND NOT cancel
-RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken
+RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain
 `
 
 type ClaimPlacedParams struct {
@@ -179,6 +180,7 @@ func (q *Queries) ClaimPlaced(ctx context.Context, arg ClaimPlacedParams) ([]Dis
 			&i.Outcome,
 			&i.FinishTime,
 			&i.Woken,
+			&i.Drain,
 		); err != nil {
 			return nil, err
 		}
@@ -307,7 +309,7 @@ UPDATE dispatches d SET
     lease_deadline = LEAST(now() + (d.heartbeat_ms * interval '1 millisecond'), d.run_deadline),
     epoch = GREATEST(d.epoch, ($1::bigint[])[array_position($2::text[], d.id)])
 WHERE d.org_id = $3 AND d.data_plane_id = $4 AND d.runner = $5 AND d.id = ANY($2::text[]) AND d.state = 'running'
-RETURNING d.id, d.cancel
+RETURNING d.id, d.cancel, d.drain
 `
 
 type ExtendLeasesParams struct {
@@ -321,6 +323,7 @@ type ExtendLeasesParams struct {
 type ExtendLeasesRow struct {
 	ID     string
 	Cancel bool
+	Drain  bool
 }
 
 // What a runner's report keeps alive, and which of it was asked to stop. What
@@ -340,7 +343,7 @@ func (q *Queries) ExtendLeases(ctx context.Context, arg ExtendLeasesParams) ([]E
 	var items []ExtendLeasesRow
 	for rows.Next() {
 		var i ExtendLeasesRow
-		if err := rows.Scan(&i.ID, &i.Cancel); err != nil {
+		if err := rows.Scan(&i.ID, &i.Cancel, &i.Drain); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -490,6 +493,55 @@ func (q *Queries) IsFinishedByRunner(ctx context.Context, arg IsFinishedByRunner
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const lastSyncAttempts = `-- name: LastSyncAttempts :many
+SELECT a.bytes, a.seconds, a.lanes, a.lane_limit FROM attempts a
+WHERE a.org_id = $1 AND a.sync_id = (
+    SELECT s.id FROM syncs s
+    WHERE s.org_id = $1 AND s.pipeline_id = $2 AND s.status = 'succeeded' AND NOT s.continuous
+    ORDER BY s.start_time DESC LIMIT 1
+)
+ORDER BY a.attempt, a.create_time
+`
+
+type LastSyncAttemptsParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+type LastSyncAttemptsRow struct {
+	Bytes     int64
+	Seconds   float64
+	Lanes     int32
+	LaneLimit int32
+}
+
+// The attempts of the pipeline's latest scheduled sync that succeeded, in
+// order.
+func (q *Queries) LastSyncAttempts(ctx context.Context, arg LastSyncAttemptsParams) ([]LastSyncAttemptsRow, error) {
+	rows, err := q.db.Query(ctx, lastSyncAttempts, arg.OrgID, arg.PipelineID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LastSyncAttemptsRow
+	for rows.Next() {
+		var i LastSyncAttemptsRow
+		if err := rows.Scan(
+			&i.Bytes,
+			&i.Seconds,
+			&i.Lanes,
+			&i.LaneLimit,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const latestAttempt = `-- name: LatestAttempt :one
@@ -906,20 +958,32 @@ UPDATE attempts a SET
     runner_memory = GREATEST(a.runner_memory, ($5::bigint[])[array_position($2::text[], a.id)]),
     seconds = GREATEST(a.seconds, ($6::double precision[])[array_position($2::text[], a.id)]),
     rows = GREATEST(a.rows, ($7::bigint[])[array_position($2::text[], a.id)]),
-    bytes = GREATEST(a.bytes, ($8::bigint[])[array_position($2::text[], a.id)])
-WHERE a.org_id = $9 AND a.id = ANY($2::text[])
+    bytes = GREATEST(a.bytes, ($8::bigint[])[array_position($2::text[], a.id)]),
+    lanes = GREATEST(a.lanes, ($9::integer[])[array_position($2::text[], a.id)]),
+    lane_limit = GREATEST(a.lane_limit, ($10::integer[])[array_position($2::text[], a.id)]),
+    busy_seconds = GREATEST(a.busy_seconds, ($11::double precision[])[array_position($2::text[], a.id)]),
+    backpressured_seconds = GREATEST(a.backpressured_seconds, ($12::double precision[])[array_position($2::text[], a.id)]),
+    idle_seconds = GREATEST(a.idle_seconds, ($13::double precision[])[array_position($2::text[], a.id)]),
+    lane_rows = GREATEST(a.lane_rows, ($14::bigint[])[array_position($2::text[], a.id)])
+WHERE a.org_id = $15 AND a.id = ANY($2::text[])
 `
 
 type RecordAttemptUsageParams struct {
-	CpuSeconds       []float64
-	Ids              []string
-	PeakMemory       []int64
-	RunnerCpuSeconds []float64
-	RunnerMemory     []int64
-	Seconds          []float64
-	Rows             []int64
-	Bytes            []int64
-	OrgID            uuid.UUID
+	CpuSeconds           []float64
+	Ids                  []string
+	PeakMemory           []int64
+	RunnerCpuSeconds     []float64
+	RunnerMemory         []int64
+	Seconds              []float64
+	Rows                 []int64
+	Bytes                []int64
+	Lanes                []int32
+	LaneLimit            []int32
+	BusySeconds          []float64
+	BackpressuredSeconds []float64
+	IdleSeconds          []float64
+	LaneRows             []int64
+	OrgID                uuid.UUID
 }
 
 // What runners' reports say of what they run. Reports may arrive out of order
@@ -934,6 +998,12 @@ func (q *Queries) RecordAttemptUsage(ctx context.Context, arg RecordAttemptUsage
 		arg.Seconds,
 		arg.Rows,
 		arg.Bytes,
+		arg.Lanes,
+		arg.LaneLimit,
+		arg.BusySeconds,
+		arg.BackpressuredSeconds,
+		arg.IdleSeconds,
+		arg.LaneRows,
 		arg.OrgID,
 	)
 	return err
@@ -959,6 +1029,52 @@ func (q *Queries) ReplaceRunning(ctx context.Context, arg ReplaceRunningParams) 
 		arg.ID,
 		arg.Runner,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rescaleRunning = `-- name: RescaleRunning :execrows
+UPDATE dispatches d SET drain = true
+FROM attempts a
+WHERE d.org_id = $1 AND a.org_id = d.org_id AND a.id = d.id AND a.pipeline_id = $2
+  AND d.state = 'running' AND NOT d.cancel AND ($3::text IS NULL OR d.id = $3)
+`
+
+type RescaleRunningParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	ID         *string
+}
+
+// A rescale's: the pipeline's running attempts stop at a checkpoint and end
+// as drained, as their runners hear on their next reports.
+func (q *Queries) RescaleRunning(ctx context.Context, arg RescaleRunningParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescaleRunning, arg.OrgID, arg.PipelineID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rescaleWaiting = `-- name: RescaleWaiting :execrows
+UPDATE dispatches d SET state = 'finished', outcome = $1, finish_time = now()
+FROM attempts a
+WHERE d.org_id = $2 AND a.org_id = d.org_id AND a.id = d.id AND a.pipeline_id = $3
+  AND d.state IN ('pending', 'placed')
+`
+
+type RescaleWaitingParams struct {
+	Outcome    []byte
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+// A rescale's: the pipeline's attempts no runner has started finish as
+// drained, so their workflows send them again at once, sized again.
+func (q *Queries) RescaleWaiting(ctx context.Context, arg RescaleWaitingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescaleWaiting, arg.Outcome, arg.OrgID, arg.PipelineID)
 	if err != nil {
 		return 0, err
 	}
@@ -1037,7 +1153,7 @@ func (q *Queries) SetAttemptCode(ctx context.Context, arg SetAttemptCodeParams) 
 }
 
 const syncAttempts = `-- name: SyncAttempts :many
-SELECT org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, cpu_seconds, peak_memory, runner_cpu_seconds, runner_memory, seconds, rows, bytes, code, create_time FROM attempts
+SELECT org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, cpu_seconds, peak_memory, runner_cpu_seconds, runner_memory, seconds, rows, bytes, code, create_time, lanes, lane_limit, busy_seconds, backpressured_seconds, idle_seconds, lane_rows FROM attempts
 WHERE org_id = $1 AND sync_id = ANY($2::uuid[])
 ORDER BY sync_id, attempt, create_time
 `
@@ -1075,6 +1191,12 @@ func (q *Queries) SyncAttempts(ctx context.Context, arg SyncAttemptsParams) ([]A
 			&i.Bytes,
 			&i.Code,
 			&i.CreateTime,
+			&i.Lanes,
+			&i.LaneLimit,
+			&i.BusySeconds,
+			&i.BackpressuredSeconds,
+			&i.IdleSeconds,
+			&i.LaneRows,
 		); err != nil {
 			return nil, err
 		}

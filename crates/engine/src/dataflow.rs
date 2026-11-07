@@ -11,7 +11,7 @@ use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -19,9 +19,9 @@ use openetl_formats::ParquetStaging;
 use openetl_normalize::{Error as NormalizeError, Shaped, Shaper, by_key_group, logical_type};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
-    Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, Metrics,
-    QuarantineFile, ReplayProgress, Rows, SchemaChange, StagedStream, StreamHolds, StreamMetrics,
-    events_response, hold_cause,
+    Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, LaneMetrics,
+    Metrics, QuarantineFile, ReplayProgress, Rows, SchemaChange, StagedStream, StreamHolds,
+    StreamMetrics, events_response, hold_cause,
 };
 use prost::Message;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -53,6 +53,65 @@ struct Counters {
     bytes_out: AtomicU64,
     rows_quarantined: AtomicU64,
     cells_held: AtomicU64,
+}
+
+/// What a lane is doing.
+#[derive(Clone, Copy)]
+enum Doing {
+    Busy = 0,
+    /// Waiting for a writer lane to take what it made.
+    Backpressured = 1,
+    /// Waiting for its edge.
+    Idle = 2,
+}
+
+/// Where a lane's time goes (ADR-0027 §7), in nanoseconds. What it's doing
+/// and since when, from the job's start, share one word: the top two bits
+/// and the rest.
+struct LaneClock {
+    spent: [AtomicU64; 3],
+    rows_in: AtomicU64,
+    now: AtomicU64,
+}
+
+const SINCE: u64 = (1 << 62) - 1;
+
+impl LaneClock {
+    fn new() -> Self {
+        LaneClock {
+            spent: Default::default(),
+            rows_in: AtomicU64::new(0),
+            now: AtomicU64::new((Doing::Idle as u64) << 62),
+        }
+    }
+
+    fn enter(&self, start: Instant, doing: Doing) {
+        let at = nanos(start);
+        let was = self.now.swap(((doing as u64) << 62) | at, Ordering::AcqRel);
+        self.spent[(was >> 62) as usize % 3]
+            .fetch_add(at.saturating_sub(was & SINCE), Ordering::Relaxed);
+    }
+
+    /// What it has spent, with what it's doing now counted so far.
+    fn metrics(&self, start: Instant) -> LaneMetrics {
+        let at = nanos(start);
+        let was = self.now.load(Ordering::Acquire);
+        let mut spent = [0; 3];
+        for (i, s) in self.spent.iter().enumerate() {
+            spent[i] = s.load(Ordering::Relaxed);
+        }
+        spent[(was >> 62) as usize % 3] += at.saturating_sub(was & SINCE);
+        LaneMetrics {
+            busy_nanos: spent[Doing::Busy as usize],
+            backpressured_nanos: spent[Doing::Backpressured as usize],
+            idle_nanos: spent[Doing::Idle as usize],
+            rows_in: self.rows_in.load(Ordering::Relaxed),
+        }
+    }
+}
+
+fn nanos(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_nanos()).unwrap_or(SINCE) & SINCE
 }
 
 /// What a lane hands to a writer lane. Streams are indexes into
@@ -232,9 +291,38 @@ struct Flow {
     plan: Arc<Plan>,
     owners: Vec<Owner>,
     counters: Vec<Counters>,
+    lanes: Vec<LaneClock>,
+    start: Instant,
     /// Held across sending epochs, so they go out in order.
     align: tokio::sync::Mutex<Alignment>,
     events: Events,
+}
+
+impl Flow {
+    fn metrics(&self) -> EventsResponse {
+        let streams = self
+            .plan
+            .streams
+            .iter()
+            .zip(&self.counters)
+            .map(|(name, c)| StreamMetrics {
+                stream: name.clone(),
+                rows_in: c.rows_in.load(Ordering::Relaxed),
+                bytes_in: c.bytes_in.load(Ordering::Relaxed),
+                rows_out: c.rows_out.load(Ordering::Relaxed),
+                bytes_out: c.bytes_out.load(Ordering::Relaxed),
+                rows_quarantined: c.rows_quarantined.load(Ordering::Relaxed),
+                cells_held: c.cells_held.load(Ordering::Relaxed),
+            })
+            .collect();
+        EventsResponse {
+            event: Some(events_response::Event::Metrics(Metrics {
+                streams,
+                memory_bytes: crate::memory::held(),
+                lanes: self.lanes.iter().map(|l| l.metrics(self.start)).collect(),
+            })),
+        }
+    }
 }
 
 type Task = Pin<Box<dyn Future<Output = Result<bool, JobError>> + Send>>;
@@ -265,6 +353,8 @@ where
     };
     let flow = Arc::new(Flow {
         counters: plan.streams.iter().map(|_| Counters::default()).collect(),
+        lanes: inbound.iter().map(|_| LaneClock::new()).collect(),
+        start: Instant::now(),
         owners,
         align: tokio::sync::Mutex::new(Alignment::new(
             plan.streams.len(),
@@ -413,11 +503,21 @@ struct Lane {
 }
 
 impl Lane {
+    fn enter(&self, doing: Doing) {
+        self.flow.lanes[self.lane].enter(self.flow.start, doing);
+    }
+
     async fn send_to(&self, w: usize, out: Out) -> Result<(), JobError> {
-        self.tx[w]
-            .send((self.lane, out))
-            .await
-            .map_err(|_| JobError::stopped("the outbound edge stopped"))
+        let stopped = |_| JobError::stopped("the outbound edge stopped");
+        let out = match self.tx[w].try_send((self.lane, out)) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::error::TrySendError::Full(out)) => out,
+            Err(mpsc::error::TrySendError::Closed(_)) => return Err(stopped(())),
+        };
+        self.enter(Doing::Backpressured);
+        let sent = self.tx[w].send(out).await.map_err(|_| stopped(()));
+        self.enter(Doing::Busy);
+        sent
     }
 
     /// Sends to the lane's own writer lane.
@@ -490,7 +590,10 @@ where
     let protocol = |msg: String| JobError::internal(format!("edge {id}: {msg}"));
 
     loop {
-        let f = match frame::read(&mut r).await {
+        lane.enter(Doing::Idle);
+        let read = frame::read(&mut r).await;
+        lane.enter(Doing::Busy);
+        let f = match read {
             Ok(Some(f)) => f,
             Ok(None) if streams.iter().all(|s| s.ended) => return Ok(()),
             Ok(None) => {
@@ -529,6 +632,9 @@ where
                     Rows::decode(f.payload.as_slice()).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
                     .fetch_add(rows.rows.len() as u64, Ordering::Relaxed);
+                flow.lanes[lane.lane]
+                    .rows_in
+                    .fetch_add(rows.rows.len() as u64, Ordering::Relaxed);
                 let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = rows.rows.len())
                     .in_scope(|| ls.shape(owner, |sh| sh.rows(rows.rows.iter().map(Vec::as_slice))))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
@@ -539,6 +645,9 @@ where
             FrameKind::Batch => {
                 let batch = ipc::decode_batch(f.payload).map_err(|e| protocol(e.to_string()))?;
                 c.rows_in
+                    .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+                flow.lanes[lane.lane]
+                    .rows_in
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
                 if plan.passthrough {
                     lane.send(Out::Batch(stream, batch)).await?;
@@ -1049,9 +1158,7 @@ impl Flow {
             let ev = self.epoch_ready(align, n)?;
             let _ = self.events.send(Ok(ev)).await;
         }
-        let _ = self
-            .events
-            .try_send(Ok(metrics(&self.plan, &self.counters)));
+        let _ = self.events.try_send(Ok(self.metrics()));
         Ok(())
     }
 
@@ -1224,7 +1331,7 @@ where
     }
     w.flush().await.map_err(gone)?;
     w.shutdown().await.map_err(gone)?;
-    let _ = flow.events.try_send(Ok(metrics(plan, counters)));
+    let _ = flow.events.try_send(Ok(flow.metrics()));
     Ok(true)
 }
 
@@ -1295,7 +1402,7 @@ fn write_parquet(
             flow.settle(&mut a).await
         })?;
     }
-    let _ = flow.events.try_send(Ok(metrics(plan, counters)));
+    let _ = flow.events.try_send(Ok(flow.metrics()));
     Ok(true)
 }
 
@@ -1370,7 +1477,7 @@ async fn write_staged(
         }
         flow.settle(&mut a).await?;
     }
-    let _ = flow.events.try_send(Ok(metrics(plan, counters)));
+    let _ = flow.events.try_send(Ok(flow.metrics()));
     Ok(true)
 }
 
@@ -1406,7 +1513,7 @@ async fn write_discard(flow: Arc<Flow>, writer: usize, mut feed: Feed) -> Result
         }
         flow.settle(&mut a).await?;
     }
-    let _ = flow.events.try_send(Ok(metrics(plan, counters)));
+    let _ = flow.events.try_send(Ok(flow.metrics()));
     Ok(true)
 }
 
@@ -1427,29 +1534,6 @@ fn sink_error(e: openetl_formats::Error) -> JobError {
         E::Parquet { .. } => ErrorCode::Internal,
     };
     JobError::new(code, format!("Parquet sink: {e}"))
-}
-
-fn metrics(plan: &Plan, counters: &[Counters]) -> EventsResponse {
-    let streams = plan
-        .streams
-        .iter()
-        .zip(counters)
-        .map(|(name, c)| StreamMetrics {
-            stream: name.clone(),
-            rows_in: c.rows_in.load(Ordering::Relaxed),
-            bytes_in: c.bytes_in.load(Ordering::Relaxed),
-            rows_out: c.rows_out.load(Ordering::Relaxed),
-            bytes_out: c.bytes_out.load(Ordering::Relaxed),
-            rows_quarantined: c.rows_quarantined.load(Ordering::Relaxed),
-            cells_held: c.cells_held.load(Ordering::Relaxed),
-        })
-        .collect();
-    EventsResponse {
-        event: Some(events_response::Event::Metrics(Metrics {
-            streams,
-            memory_bytes: crate::memory::held(),
-        })),
-    }
 }
 
 #[cfg(test)]
@@ -1564,7 +1648,17 @@ mod tests {
             }
         }
 
-        async fn finish(mut self) -> (Vec<Vec<frame::Frame>>, Vec<EpochReady>) {
+        async fn finish(self) -> (Vec<Vec<frame::Frame>>, Vec<EpochReady>) {
+            let (out, mut events) = self.finish_events().await;
+            (out, ready(&mut events).await)
+        }
+
+        async fn finish_events(
+            mut self,
+        ) -> (
+            Vec<Vec<frame::Frame>>,
+            mpsc::Receiver<Result<EventsResponse, Status>>,
+        ) {
             let mut drains = JoinSet::new();
             let n = self.outs.len();
             for (i, mut r) in std::mem::take(&mut self.outs).into_iter().enumerate() {
@@ -1576,7 +1670,7 @@ mod tests {
                 out[i] = frames;
             }
             self.job.await.unwrap().unwrap();
-            (out, ready(&mut self.events).await)
+            (out, self.events)
         }
     }
 
@@ -1627,6 +1721,46 @@ mod tests {
         assert_eq!(out[1].last().unwrap().kind, K::EndOfStream);
         let ns: Vec<_> = ready.iter().map(|r| r.epoch.unwrap().n).collect();
         assert_eq!(ns, [1]);
+    }
+
+    #[test]
+    fn a_lanes_clock_counts_what_it_is_doing_so_far() {
+        let start = Instant::now();
+        let c = LaneClock::new();
+        std::thread::sleep(Duration::from_millis(20));
+        c.enter(start, Doing::Busy);
+        std::thread::sleep(Duration::from_millis(10));
+        c.enter(start, Doing::Backpressured);
+        std::thread::sleep(Duration::from_millis(10));
+        let m = c.metrics(start);
+        assert!(m.idle_nanos >= 20_000_000, "{m:?}");
+        assert!(m.busy_nanos >= 10_000_000, "{m:?}");
+        assert!(m.backpressured_nanos >= 10_000_000, "{m:?}");
+        let spent = m.idle_nanos + m.busy_nanos + m.backpressured_nanos;
+        assert!(spent <= nanos(start), "{m:?}");
+    }
+
+    #[tokio::test]
+    async fn metrics_count_each_lanes_rows() {
+        let mut h = start_lanes(crate::plan::tests::lanes_request(&["a"], 2, 2));
+        let two = rows(&[r#"{"x": 1}"#, r#"{"x": 2}"#]);
+        put(&mut h.ins[0], FrameKind::Rows, 0, two).await;
+        put(&mut h.ins[1], FrameKind::Rows, 0, rows(&[r#"{"x": 3}"#])).await;
+        for i in 0..2 {
+            put(&mut h.ins[i], FrameKind::Barrier, 0, barrier(1)).await;
+        }
+        h.end_all(1).await;
+        let (_, mut events) = h.finish_events().await;
+        let mut last = None;
+        while let Some(Ok(ev)) = events.recv().await {
+            if let Some(events_response::Event::Metrics(m)) = ev.event {
+                last = Some(m);
+            }
+        }
+        let lanes = last.unwrap().lanes;
+        let rows: Vec<_> = lanes.iter().map(|l| l.rows_in).collect();
+        assert_eq!(rows, [2, 1]);
+        assert!(lanes.iter().all(|l| l.idle_nanos > 0 && l.busy_nanos > 0));
     }
 
     #[tokio::test]

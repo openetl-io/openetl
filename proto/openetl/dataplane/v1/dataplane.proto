@@ -344,12 +344,18 @@ message RunningWork {
   openetl.api.v1.Usage usage = 4;
   uint64 rows = 5;
   uint64 bytes = 6;
+  // An attempt's lanes so far; unset before its engine reports them, and for
+  // work without lanes.
+  openetl.api.v1.LaneUsage lanes = 7;
 }
 
 message ReportRunnerResponse {
   // Running work to stop, at its next checkpoint if it has them: it was
   // cancelled, or its lease ended and something else may have replaced it.
   repeated string stop = 1;
+  // Running attempts to stop at their next checkpoint and end with DRAINING,
+  // so their workflows start them again at once: they're being rescaled.
+  repeated string drain = 2;
 }
 
 message PollWorkRequest {
@@ -407,6 +413,8 @@ message ReportResultRequest {
   openetl.api.v1.Usage usage = 10;
   uint64 rows = 11;
   uint64 bytes = 12;
+  // An attempt's lanes in all; unset for work without lanes.
+  openetl.api.v1.LaneUsage lanes = 13;
 }
 
 message ReportResultResponse {

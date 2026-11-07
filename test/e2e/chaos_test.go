@@ -6,7 +6,8 @@ package e2e
 // runners, engines and connectors die, runners are partitioned from the API,
 // and the object store fails, then checks that every row landed once. Runners die at the commit protocol's crash points too,
 // injected by their object-store proxies. Some runs into Postgres add a
-// column mid-run, which block holds, and release it at random times.
+// column mid-run, which block holds, and release it at random times. Some
+// runs are rescaled through the API, up and down, at random times.
 //
 //	make chaos CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'
 //	go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/0042-' -chaos.seed=7   # one run again
@@ -92,6 +93,7 @@ const (
 	faultDriver      = "kill Spark driver"
 	faultTaskManager = "kill Flink TaskManager"
 	faultJobManager  = "kill Flink JobManager"
+	faultRescale     = "rescale"
 )
 
 func drawConfig(seed uint64, i int) chaosConfig {
@@ -168,6 +170,12 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	}
 	// Postgres takes holds, on streams no transform reads.
 	c.holds = c.source != "kafka" && c.dest == "postgres" && c.transform == "" && rng.IntN(3) == 0
+	// A transform runs one lane, whatever its size.
+	if c.transform == "" && rng.IntN(3) == 0 {
+		for range 1 + rng.IntN(2) {
+			c.faults = append(c.faults, faultRescale)
+		}
+	}
 	return c
 }
 
@@ -611,6 +619,18 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 			continue
 		}
 		switch e.fault {
+		case faultRescale:
+			size := []string{"s", "m", "l", "auto"}[rng.IntN(4)]
+			req := &apiv1.RescalePipelineRequest{Name: "workspaces/default/pipelines/" + pipeline}
+			if size != "auto" {
+				req.Size = &apiv1.JobSize{Preset: size}
+			}
+			if _, err := pipelines().RescalePipeline(base, connect.NewRequest(req)); err != nil {
+				s.book.count(pipeline, "missed "+e.fault)
+			} else {
+				s.book.count(pipeline, e.fault+" to "+size)
+			}
+			continue
 		case faultDriver, faultTaskManager, faultJobManager:
 			if s.clusterFault(base, &partitions, e.fault, rng, pipeline) {
 				s.book.count(pipeline, e.fault)

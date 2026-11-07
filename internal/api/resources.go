@@ -58,14 +58,17 @@ func (s *Server) pipeline(ctx context.Context, ws string, p db.Pipeline) (*apiv1
 	if err := protojson.Unmarshal(v.Spec, out.Spec); err != nil {
 		return nil, err
 	}
-	out.Status, err = s.pipelineStatus(ctx, out.Name, p.ID)
+	out.Status, err = s.pipelineStatus(ctx, out.Name, p.ID, p.Version)
 	return out, err
 }
 
-func (s *Server) pipelineStatus(ctx context.Context, name string, id uuid.UUID) (*apiv1.PipelineStatus, error) {
+func (s *Server) pipelineStatus(ctx context.Context, name string, id uuid.UUID, version string) (*apiv1.PipelineStatus, error) {
 	out := &apiv1.PipelineStatus{}
 	open, err := s.Store.CountOpenIncidents(ctx, db.CountOpenIncidentsParams{OrgID: s.Tenant.Org, PipelineIds: []uuid.UUID{id}})
 	if err != nil {
+		return nil, err
+	}
+	if out.Scaling, err = s.scaling(ctx, id, version); err != nil {
 		return nil, err
 	}
 	for _, o := range open {

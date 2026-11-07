@@ -22,6 +22,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
 	"github.com/openetl-io/openetl/internal/orchestration/sizing"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/spec"
 	"github.com/openetl-io/openetl/internal/store/db"
@@ -52,11 +53,11 @@ func (s *Server) ReportRunner(ctx context.Context, req *connect.Request[dataplan
 	for i, w := range m.GetRunning() {
 		running[i] = dispatch.RunningWork{
 			ID: w.GetId(), Epoch: int64(min(w.GetEpoch(), math.MaxInt64)), Size: sizeOf(w.GetSize()),
-			Usage: usageOf(w.GetUsage(), w.GetRows(), w.GetBytes()),
+			Usage: usageOf(w.GetUsage(), w.GetRows(), w.GetBytes(), w.GetLanes()),
 		}
 	}
 	capacity, reserved := sizeOf(m.GetCapacity()), sizeOf(m.GetReserved())
-	stop, err := s.Dispatch.Report(ctx, dispatch.Report{
+	stop, drain, err := s.Dispatch.Report(ctx, dispatch.Report{
 		Org: s.Tenant.Org, DataPlane: dp, Running: running,
 		Runner: db.ReportRunnerParams{
 			ID: m.GetRunner(), Release: truncate(m.GetRelease(), 64), Protocol: truncate(m.GetProtocol(), 16),
@@ -71,7 +72,7 @@ func (s *Server) ReportRunner(ctx context.Context, req *connect.Request[dataplan
 	if err := s.Store.DeleteStaleRunners(ctx, db.DeleteStaleRunnersParams{OrgID: s.Tenant.Org, Before: time.Now().Add(-24 * time.Hour)}); err != nil {
 		s.log().Warn("dropping stale runners failed", "err", err)
 	}
-	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{Stop: stop}), nil
+	return connect.NewResponse(&dataplanev1.ReportRunnerResponse{Stop: stop, Drain: drain}), nil
 }
 
 // maxRunnerWork bounds a report, far above what a runner runs.
@@ -81,7 +82,7 @@ func sizeOf(r *dataplanev1.Resources) resources.Size {
 	return resources.Size{CPU: r.GetCpuMillis(), Memory: r.GetMemoryBytes()}
 }
 
-func usageOf(u *apiv1.Usage, rows, bytes uint64) *dispatch.AttemptUsage {
+func usageOf(u *apiv1.Usage, rows, bytes uint64, lanes *apiv1.LaneUsage) *dispatch.AttemptUsage {
 	if u == nil {
 		return nil
 	}
@@ -91,8 +92,16 @@ func usageOf(u *apiv1.Usage, rows, bytes uint64) *dispatch.AttemptUsage {
 			RunnerMemory: u.GetRunnerMemoryBytes(), Seconds: seconds(u.GetSeconds()),
 		},
 		Rows: int64(min(rows, math.MaxInt64)), Bytes: int64(min(bytes, math.MaxInt64)),
+		Lanes: resources.Lanes{
+			Count: int(min(lanes.GetLanes(), maxLanes)), Limit: int(min(lanes.GetLimit(), maxLanes)),
+			Busy: seconds(lanes.GetBusySeconds()), Backpressured: seconds(lanes.GetBackpressuredSeconds()), Idle: seconds(lanes.GetIdleSeconds()),
+			Rows: int64(min(lanes.GetRows(), math.MaxInt64)),
+		},
 	}
 }
+
+// maxLanes bounds a report's lanes, far above what an attempt runs.
+const maxLanes = 1 << 16
 
 // seconds is 0 for what a runner can't have measured: sizing takes the largest
 // figure it hears, and NaN is larger than any.
@@ -144,7 +153,7 @@ func (s *Server) ReportResult(ctx context.Context, req *connect.Request[dataplan
 	if len(out.Result) > 0 && !json.Valid(out.Result) {
 		return nil, invalid("the result isn't JSON")
 	}
-	accepted, err := s.Dispatch.Result(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), out, m.GetNoCapacity(), usageOf(m.GetUsage(), m.GetRows(), m.GetBytes()))
+	accepted, err := s.Dispatch.Result(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), out, m.GetNoCapacity(), usageOf(m.GetUsage(), m.GetRows(), m.GetBytes(), m.GetLanes()))
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +182,10 @@ func (s *Server) planJob(ctx context.Context, q *db.Queries, p *planned, out *ap
 	}
 	if p.id != uuid.Nil {
 		if in.History, err = sizing.History(ctx, q, s.Tenant.Org, p.id); err != nil {
+			return err
+		}
+		res := p.v.spec.GetResources()
+		if err := sizing.Rescaled(ctx, q, s.Tenant.Org, p.id, p.version, plan.Continuous(p.v.spec), res.GetFinishWithin().AsDuration(), &in); err != nil {
 			return err
 		}
 	}

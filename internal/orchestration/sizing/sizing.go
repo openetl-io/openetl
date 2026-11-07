@@ -4,10 +4,14 @@ package sizing
 import (
 	"cmp"
 	"context"
+	"errors"
+	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -25,6 +29,10 @@ const (
 	FromHistory Reason = "history"
 	FromOOM     Reason = "out_of_memory"
 	FromLargest Reason = "largest_runner"
+	FromRescale Reason = "rescale"
+	// The job loop's lanes, for a continuous pipeline.
+	FromAutoscaler   Reason = "autoscaler"
+	FromFinishWithin Reason = "finish_within"
 )
 
 // historyLength is how many of a job's latest attempts size it.
@@ -90,6 +98,12 @@ type Input struct {
 	History []Attempt
 	// The capacities of the runners of its pool; empty if none is reporting.
 	Runners []resources.Size
+	// RescalePipeline's size, which holds as the spec's would; zero if none.
+	Rescale resources.Size
+	// The lanes an automatic size gives CPU for, and what chose them; 0 if
+	// nothing did.
+	Lanes       int
+	LanesReason Reason
 }
 
 // Choice is a job's size, and what set it.
@@ -100,11 +114,18 @@ type Choice struct {
 
 // Choose sizes a job's next attempt.
 func Choose(in Input) Choice {
-	fixed := in.Spec.Size != resources.Size{}
+	sp, fixedBy := in.Spec, FromSpec
+	if in.Rescale != (resources.Size{}) {
+		sp.Size, fixedBy = in.Rescale, FromRescale
+	}
+	fixed := sp.Size != resources.Size{}
 	var c Choice
 	switch peak, measured := peak(in.History); {
 	case fixed:
-		c = Choice{in.Spec.Size, FromSpec}
+		c = Choice{sp.Size, fixedBy}
+	case in.Lanes > 0:
+		// A lane a vCPU; memory as its peaks say.
+		c = Choice{resources.Size{CPU: int64(in.Lanes) * 1000, Memory: peak.Memory}.Smallest(), in.LanesReason}
 	case measured:
 		c = Choice{peak.Smallest(), FromHistory}
 	case in.Hint != resources.Size{}:
@@ -120,20 +141,20 @@ func Choose(in Input) Choice {
 			c = Choice{c.Size.Above(up), FromOOM}
 		}
 	}
-	floor := in.Spec.Min
+	floor := sp.Min
 	if fixed {
-		floor = in.Spec.Size
+		floor = sp.Size
 	}
 	if !floor.Fits(c.Size) {
-		c = Choice{c.Size.Above(floor), FromSpec}
+		c = Choice{c.Size.Above(floor), fixedBy}
 	}
-	limit := in.Spec.Max
+	limit := sp.Max
 	switch {
 	case limit != resources.Size{}:
 	case fixed:
-		limit = in.Spec.Size
+		limit = sp.Size
 	default:
-		limit = resources.XL.Above(in.Spec.Min)
+		limit = resources.XL.Above(sp.Min)
 	}
 	if !c.Size.Fits(limit) {
 		c = Choice{c.Size.Below(limit), FromSpec}
@@ -204,6 +225,42 @@ func percentile95(v []float64) float64 {
 	return v[i] + (at-float64(i))*(v[i+1]-v[i])
 }
 
+// SyncAttempt is what an attempt of a pipeline's last sync moved.
+type SyncAttempt struct {
+	// What its source emitted.
+	Bytes   int64
+	Seconds float64
+	// Its lanes, and the most it could use: 0 if more can always be used.
+	Lanes, Limit int
+}
+
+// FinishWithin is how many lanes a scheduled job needs to finish within d:
+// the last sync's bytes, at the rate its lanes moved them, up to the most its
+// last attempt could use. 0 if the last sync doesn't say.
+func FinishWithin(d time.Duration, last []SyncAttempt) int {
+	if d <= 0 || len(last) == 0 {
+		return 0
+	}
+	var bytes, laneBytes int64
+	var laneSeconds float64
+	for _, a := range last {
+		bytes += a.Bytes
+		if a.Lanes > 0 && a.Seconds > 0 {
+			laneBytes += a.Bytes
+			laneSeconds += a.Seconds * float64(a.Lanes)
+		}
+	}
+	if laneBytes == 0 || laneSeconds == 0 {
+		return 0
+	}
+	perLane := float64(laneBytes) / laneSeconds
+	lanes := max(1, int(math.Ceil(float64(bytes)/(perLane*d.Seconds()))))
+	if limit := last[len(last)-1].Limit; limit > 0 {
+		lanes = min(lanes, limit)
+	}
+	return lanes
+}
+
 // LargestHint is the largest of hints, by weight: a preset's name for each
 // connector that gives one. Zero if none does.
 func LargestHint(hints ...string) resources.Size {
@@ -214,6 +271,50 @@ func LargestHint(hints ...string) resources.Size {
 		}
 	}
 	return out
+}
+
+// Rescaled adds to in what rescaled the pipeline's jobs besides its spec:
+// RescalePipeline's size for this version, the job loop's lanes for a
+// continuous pipeline, and finishWithin's for a scheduled one.
+func Rescaled(ctx context.Context, q *db.Queries, org, pipeline uuid.UUID, version string, continuous bool, finishWithin time.Duration, in *Input) error {
+	scale, err := q.GetJobScale(ctx, db.GetJobScaleParams{OrgID: org, PipelineID: pipeline})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return err
+	default:
+		if scale.SizeVersion == version {
+			in.Rescale = resources.Size{CPU: scale.SizeCpu, Memory: scale.SizeMemory}
+		}
+		if continuous && scale.Lanes > 0 {
+			in.Lanes, in.LanesReason = int(scale.Lanes), FromAutoscaler
+		}
+	}
+	if continuous || finishWithin <= 0 {
+		return nil
+	}
+	last, err := LastSync(ctx, q, org, pipeline)
+	if err != nil {
+		return err
+	}
+	if n := FinishWithin(finishWithin, last); n > 0 {
+		in.Lanes, in.LanesReason = n, FromFinishWithin
+	}
+	return nil
+}
+
+// LastSync reads the attempts of the pipeline's latest scheduled sync that
+// succeeded.
+func LastSync(ctx context.Context, q *db.Queries, org, pipeline uuid.UUID) ([]SyncAttempt, error) {
+	rows, err := q.LastSyncAttempts(ctx, db.LastSyncAttemptsParams{OrgID: org, PipelineID: pipeline})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SyncAttempt, len(rows))
+	for i, r := range rows {
+		out[i] = SyncAttempt{Bytes: r.Bytes, Seconds: r.Seconds, Lanes: int(r.Lanes), Limit: int(r.LaneLimit)}
+	}
+	return out, nil
 }
 
 // History reads the pipeline's latest attempts.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -239,6 +240,7 @@ type RunningWork struct {
 type AttemptUsage struct {
 	resources.Usage
 	Rows, Bytes int64
+	Lanes       resources.Lanes
 }
 
 // recordUsage records what attempts have used, of those its caller has checked
@@ -255,6 +257,12 @@ func recordUsage(ctx context.Context, q *db.Queries, org uuid.UUID, works []Runn
 			p.Seconds = append(p.Seconds, u.Seconds)
 			p.Rows = append(p.Rows, u.Rows)
 			p.Bytes = append(p.Bytes, u.Bytes)
+			p.Lanes = append(p.Lanes, count32(u.Lanes.Count))
+			p.LaneLimit = append(p.LaneLimit, count32(u.Lanes.Limit))
+			p.BusySeconds = append(p.BusySeconds, u.Lanes.Busy)
+			p.BackpressuredSeconds = append(p.BackpressuredSeconds, u.Lanes.Backpressured)
+			p.IdleSeconds = append(p.IdleSeconds, u.Lanes.Idle)
+			p.LaneRows = append(p.LaneRows, u.Lanes.Rows)
 		}
 	}
 	if len(p.Ids) == 0 {
@@ -264,9 +272,17 @@ func recordUsage(ctx context.Context, q *db.Queries, org uuid.UUID, works []Runn
 	return q.RecordAttemptUsage(ctx, p)
 }
 
+func count32(n int) int32 {
+	if n > 0 && n <= math.MaxInt32 {
+		return int32(n)
+	}
+	return 0
+}
+
 // Report records a runner's report and extends the leases of what it runs.
-// It returns the work the runner should stop.
-func (d *Dispatcher) Report(ctx context.Context, r Report) (stop []string, err error) {
+// It returns the work the runner should stop, and the attempts it should
+// drain for a rescale.
+func (d *Dispatcher) Report(ctx context.Context, r Report) (stop, drain []string, err error) {
 	ids, epochs := make([]string, len(r.Running)), make([]int64, len(r.Running))
 	for i, w := range r.Running {
 		ids[i], epochs[i] = w.ID, w.Epoch
@@ -280,8 +296,11 @@ func (d *Dispatcher) Report(ctx context.Context, r Report) (stop []string, err e
 		keep := map[string]bool{}
 		for _, l := range live {
 			keep[l.ID] = true
-			if l.Cancel {
+			switch {
+			case l.Cancel:
 				stop = append(stop, l.ID)
+			case l.Drain:
+				drain = append(drain, l.ID)
 			}
 		}
 		params := r.Runner
@@ -307,7 +326,8 @@ func (d *Dispatcher) Report(ctx context.Context, r Report) (stop []string, err e
 		return q.ReportRunner(ctx, params)
 	})
 	slices.Sort(stop)
-	return stop, err
+	slices.Sort(drain)
+	return stop, drain, err
 }
 
 // Poll waits for work for the runner, and hands it over.

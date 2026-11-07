@@ -134,7 +134,7 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	// ev is set before evDone closes.
 	var ev eventsResult
 	evDone := make(chan struct{})
-	counters := newJobCounters(plan.Org, plan.Pipeline)
+	counters := newJobCounters(plan.Org, plan.Pipeline, p.meter)
 	go func() {
 		ev = consumeEvents(events, p.log, onReady, counters)
 		close(evDone)

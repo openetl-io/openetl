@@ -198,10 +198,21 @@ func (j *Job) canResplit(ctx context.Context) bool {
 }
 
 // settleLanes bounds the attempt's lanes by the splits there are to read,
-// unless a stream is read in splits by a source that can make more.
+// unless a stream is read in splits by a source that can make more, and
+// records them, with that bound, on the attempt's meter.
 func (j *Job) settleLanes(ctx context.Context, splits map[string][]checkpoint.SplitState, done map[string]bool) {
-	if j.lanes() == 1 {
-		return
+	limit := j.laneLimit(ctx, splits, done)
+	if limit > 0 {
+		j.Lanes = min(j.lanes(), limit)
+	}
+	j.Meter.SetLanes(j.lanes(), limit)
+}
+
+// laneLimit is the most lanes the attempt could use: its open splits, or 0
+// if its source splits running splits. Transforms run one lane.
+func (j *Job) laneLimit(ctx context.Context, splits map[string][]checkpoint.SplitState, done map[string]bool) int {
+	if j.transformed() {
+		return 1
 	}
 	open, inParts := 0, false
 	for _, s := range j.Streams {
@@ -216,9 +227,9 @@ func (j *Job) settleLanes(ctx context.Context, splits map[string][]checkpoint.Sp
 		}
 	}
 	if inParts && j.canResplit(ctx) {
-		return
+		return 0
 	}
-	j.Lanes = min(j.Lanes, max(open, 1))
+	return max(open, 1)
 }
 
 func (j *Job) writerLanes() int {

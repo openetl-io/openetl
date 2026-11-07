@@ -48,6 +48,9 @@ const (
 	// PipelineServiceResumePipelineProcedure is the fully-qualified name of the PipelineService's
 	// ResumePipeline RPC.
 	PipelineServiceResumePipelineProcedure = "/openetl.api.v1.PipelineService/ResumePipeline"
+	// PipelineServiceRescalePipelineProcedure is the fully-qualified name of the PipelineService's
+	// RescalePipeline RPC.
+	PipelineServiceRescalePipelineProcedure = "/openetl.api.v1.PipelineService/RescalePipeline"
 	// PipelineServiceSyncPipelineProcedure is the fully-qualified name of the PipelineService's
 	// SyncPipeline RPC.
 	PipelineServiceSyncPipelineProcedure = "/openetl.api.v1.PipelineService/SyncPipeline"
@@ -85,6 +88,10 @@ type PipelineServiceClient interface {
 	// Stops scheduled syncs. A sync that is running carries on.
 	PausePipeline(context.Context, *connect.Request[v1.PausePipelineRequest]) (*connect.Response[v1.PausePipelineResponse], error)
 	ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error)
+	// Sets the size of the pipeline's jobs until its next version, or gives
+	// the spec back its say. A running job stops at a checkpoint and starts
+	// again at the new size (ADR-0027 §7).
+	RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error)
 	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
 	// paused or a sync is running.
 	SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error)
@@ -152,6 +159,12 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(pipelineServiceMethods.ByName("ResumePipeline")),
 			connect.WithClientOptions(opts...),
 		),
+		rescalePipeline: connect.NewClient[v1.RescalePipelineRequest, v1.RescalePipelineResponse](
+			httpClient,
+			baseURL+PipelineServiceRescalePipelineProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("RescalePipeline")),
+			connect.WithClientOptions(opts...),
+		),
 		syncPipeline: connect.NewClient[v1.SyncPipelineRequest, v1.SyncPipelineResponse](
 			httpClient,
 			baseURL+PipelineServiceSyncPipelineProcedure,
@@ -216,6 +229,7 @@ type pipelineServiceClient struct {
 	deletePipeline       *connect.Client[v1.DeletePipelineRequest, v1.DeletePipelineResponse]
 	pausePipeline        *connect.Client[v1.PausePipelineRequest, v1.PausePipelineResponse]
 	resumePipeline       *connect.Client[v1.ResumePipelineRequest, v1.ResumePipelineResponse]
+	rescalePipeline      *connect.Client[v1.RescalePipelineRequest, v1.RescalePipelineResponse]
 	syncPipeline         *connect.Client[v1.SyncPipelineRequest, v1.SyncPipelineResponse]
 	listPipelineVersions *connect.Client[v1.ListPipelineVersionsRequest, v1.ListPipelineVersionsResponse]
 	getPipelineVersion   *connect.Client[v1.GetPipelineVersionRequest, v1.GetPipelineVersionResponse]
@@ -250,6 +264,11 @@ func (c *pipelineServiceClient) PausePipeline(ctx context.Context, req *connect.
 // ResumePipeline calls openetl.api.v1.PipelineService.ResumePipeline.
 func (c *pipelineServiceClient) ResumePipeline(ctx context.Context, req *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error) {
 	return c.resumePipeline.CallUnary(ctx, req)
+}
+
+// RescalePipeline calls openetl.api.v1.PipelineService.RescalePipeline.
+func (c *pipelineServiceClient) RescalePipeline(ctx context.Context, req *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error) {
+	return c.rescalePipeline.CallUnary(ctx, req)
 }
 
 // SyncPipeline calls openetl.api.v1.PipelineService.SyncPipeline.
@@ -305,6 +324,10 @@ type PipelineServiceHandler interface {
 	// Stops scheduled syncs. A sync that is running carries on.
 	PausePipeline(context.Context, *connect.Request[v1.PausePipelineRequest]) (*connect.Response[v1.PausePipelineResponse], error)
 	ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error)
+	// Sets the size of the pipeline's jobs until its next version, or gives
+	// the spec back its say. A running job stops at a checkpoint and starts
+	// again at the new size (ADR-0027 §7).
+	RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error)
 	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
 	// paused or a sync is running.
 	SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error)
@@ -366,6 +389,12 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 		PipelineServiceResumePipelineProcedure,
 		svc.ResumePipeline,
 		connect.WithSchema(pipelineServiceMethods.ByName("ResumePipeline")),
+		connect.WithHandlerOptions(opts...),
+	)
+	pipelineServiceRescalePipelineHandler := connect.NewUnaryHandler(
+		PipelineServiceRescalePipelineProcedure,
+		svc.RescalePipeline,
+		connect.WithSchema(pipelineServiceMethods.ByName("RescalePipeline")),
 		connect.WithHandlerOptions(opts...),
 	)
 	pipelineServiceSyncPipelineHandler := connect.NewUnaryHandler(
@@ -434,6 +463,8 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 			pipelineServicePausePipelineHandler.ServeHTTP(w, r)
 		case PipelineServiceResumePipelineProcedure:
 			pipelineServiceResumePipelineHandler.ServeHTTP(w, r)
+		case PipelineServiceRescalePipelineProcedure:
+			pipelineServiceRescalePipelineHandler.ServeHTTP(w, r)
 		case PipelineServiceSyncPipelineProcedure:
 			pipelineServiceSyncPipelineHandler.ServeHTTP(w, r)
 		case PipelineServiceListPipelineVersionsProcedure:
@@ -479,6 +510,10 @@ func (UnimplementedPipelineServiceHandler) PausePipeline(context.Context, *conne
 
 func (UnimplementedPipelineServiceHandler) ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ResumePipeline is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.RescalePipeline is not implemented"))
 }
 
 func (UnimplementedPipelineServiceHandler) SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error) {

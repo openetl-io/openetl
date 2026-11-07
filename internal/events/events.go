@@ -28,6 +28,7 @@ const (
 	PipelineResumed   = "pipeline.resumed"
 	PipelineLagging   = "pipeline.lagging"
 	PipelineRecovered = "pipeline.recovered"
+	PipelineRescaled  = "pipeline.rescaled"
 	SchemaChanged     = "schema.changed"
 	SchemaBlocked     = "schema.blocked"
 	IncidentOpened    = "incident.opened"
@@ -40,6 +41,7 @@ const (
 var Types = []string{
 	SyncStarted, SyncSucceeded, SyncFailed, SyncStopped,
 	PipelineCreated, PipelineUpdated, PipelineDeleted, PipelinePaused, PipelineResumed, PipelineLagging, PipelineRecovered,
+	PipelineRescaled,
 	SchemaChanged, SchemaBlocked,
 	IncidentOpened, IncidentEscalated, IncidentResolved,
 	WebhookTest,
@@ -150,6 +152,21 @@ type Lag struct {
 	Since            time.Time `json:"since"`
 	// The stream furthest behind; empty for the whole read.
 	Stream string `json:"stream,omitempty"`
+}
+
+// Rescale is a pipeline's jobs rescaled, through the API or by the job loop.
+// A running job stops at a checkpoint and starts again at the new size.
+type Rescale struct {
+	Pipeline string `json:"pipeline"`
+	Version  string `json:"version"`
+	// api or autoscaler.
+	By string `json:"by"`
+	// The API's size, such as l or "3 vCPU, 6 GiB"; empty when it gives the
+	// spec back its say.
+	Size string `json:"size,omitempty"`
+	// The job loop's lanes, and those of the job it rescales.
+	Lanes     int `json:"lanes,omitempty"`
+	FromLanes int `json:"fromLanes,omitempty"`
 }
 
 type Column struct {

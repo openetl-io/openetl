@@ -174,6 +174,15 @@ func attemptOut(a db.Attempt) *apiv1.SyncAttempt {
 			CpuSeconds: a.CpuSeconds, PeakMemoryBytes: a.PeakMemory, RunnerCpuSeconds: a.RunnerCpuSeconds, RunnerMemoryBytes: a.RunnerMemory, Seconds: a.Seconds,
 		}
 	}
+	if a.Lanes > 0 {
+		out.Lanes = &apiv1.LaneUsage{
+			Lanes: uint32(a.Lanes), BusySeconds: a.BusySeconds, BackpressuredSeconds: a.BackpressuredSeconds, IdleSeconds: a.IdleSeconds,
+			Rows: uint64(max(0, a.LaneRows)),
+		}
+		if a.LaneLimit > 0 {
+			out.Lanes.Limit = uint32(a.LaneLimit)
+		}
+	}
 	return out
 }
 

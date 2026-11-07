@@ -414,6 +414,17 @@ message Metrics {
   repeated StreamMetrics streams = 1;
   // What the engine's allocations hold now.
   uint64 memory_bytes = 2;
+  // Each lane's, in lane order.
+  repeated LaneMetrics lanes = 3;
+}
+
+// LaneMetrics is where a lane's time went (ADR-0027 §7): working, waiting
+// for its writer lanes to take what it made, or waiting for its edge.
+message LaneMetrics {
+  uint64 busy_nanos = 1;
+  uint64 backpressured_nanos = 2;
+  uint64 idle_nanos = 3;
+  uint64 rows_in = 4;
 }
 
 message StreamMetrics {
