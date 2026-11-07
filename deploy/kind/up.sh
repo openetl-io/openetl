@@ -1,7 +1,8 @@
 #!/bin/sh
 # A kind cluster for the e2e tests' Kubernetes targets: the Flink operator,
 # without its webhook, watching one namespace, and Spark's service account
-# there. Its kubeconfig goes to KIND_KUBECONFIG, never to the default one.
+# there; and KEDA, with a Prometheus for its triggers (prometheus.yaml beside
+# this file). Its kubeconfig goes to KIND_KUBECONFIG, never to the default one.
 #
 # Spark's pods read and write the runner's store where the node mounts
 # OPENETL_SPARK_SHARE, at the same path, and spark-submit runs in the
@@ -13,6 +14,7 @@ name=${KIND_NAME:-openetl}
 kubeconfig=${KIND_KUBECONFIG:-.openetl/kind/kubeconfig}
 namespace=${KIND_NAMESPACE:-openetl}
 operator=${FLINK_OPERATOR_VERSION:-1.16.1}
+keda=${KEDA_VERSION:-2.21.0}
 flink=${FLINK_IMAGE:-flink:1.20.5}
 spark=${SPARK_IMAGE:-apache/spark:3.5.8}
 share=${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}
@@ -37,6 +39,10 @@ helm upgrade --install flink-kubernetes-operator \
 	"https://downloads.apache.org/flink/flink-kubernetes-operator-$operator/flink-kubernetes-operator-$operator-helm.tgz" \
 	--kubeconfig "$kubeconfig" --namespace flink-operator --create-namespace \
 	--set webhook.create=false --set "watchNamespaces={$namespace}" --wait --timeout 5m
+helm upgrade --install keda keda --repo https://kedacore.github.io/charts --version "$keda" \
+	--kubeconfig "$kubeconfig" --namespace keda --create-namespace --wait --timeout 5m
+k apply -f "$(dirname "$0")/prometheus.yaml"
+k -n monitoring rollout status deploy/prometheus --timeout 3m
 
 kind get kubeconfig --internal --name "$name" > "$kubeconfig-internal"
 docker rm -f "$name-kind-spark-submit" >/dev/null 2>&1 || true
