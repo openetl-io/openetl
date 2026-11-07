@@ -187,7 +187,7 @@ func planReconcile(pipelines []pipelineToRun, supervisors []orchestration.Runnin
 		}
 	}
 	for _, s := range schedules {
-		if !wantSchedule[s.ID] && ours[s.Org] && s.ID != contract.RetentionScheduleID && strings.HasPrefix(s.ID, contract.ScheduleID("")) {
+		if !wantSchedule[s.ID] && ours[s.Org] && s.ID != contract.RetentionScheduleID && s.ID != contract.CatalogRefreshScheduleID && strings.HasPrefix(s.ID, contract.ScheduleID("")) {
 			plan.deleteSchedules = append(plan.deleteSchedules, s.ID)
 		}
 	}

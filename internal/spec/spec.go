@@ -38,6 +38,9 @@ const (
 	KindDbtProject = "DbtProject"
 	// Where a workspace's platform events go.
 	KindWebhook = "Webhook"
+	// An OCI registry namespace or a GitHub repository whose connector
+	// packages the catalog lists. It belongs to the org.
+	KindConnectorSource = "ConnectorSource"
 	// Where Spark applications run.
 	KindSparkCluster = "SparkCluster"
 	// Where Flink jobs run.
@@ -63,10 +66,11 @@ type Document struct {
 	// The whole manifest, as canonical JSON, for declarative.Load.
 	Manifest []byte
 	// A gzipped tar of the project's files, which dbt.Canonical checks.
-	Bundle       []byte
-	Webhook      *apiv1.WebhookSpec
-	SparkCluster *apiv1.SparkClusterSpec
-	FlinkCluster *apiv1.FlinkClusterSpec
+	Bundle          []byte
+	Webhook         *apiv1.WebhookSpec
+	ConnectorSource *apiv1.ConnectorSourceSpec
+	SparkCluster    *apiv1.SparkClusterSpec
+	FlinkCluster    *apiv1.FlinkClusterSpec
 }
 
 type envelope struct {
@@ -80,6 +84,7 @@ type metadata struct {
 	Name        string       `yaml:"name"`
 	Workspace   string       `yaml:"workspace"`
 	Version     string       `yaml:"version"`
+	Title       string       `yaml:"title"`
 	Description string       `yaml:"description"`
 	License     string       `yaml:"license"`
 	Repository  string       `yaml:"repository"`
@@ -91,7 +96,7 @@ type metadata struct {
 }
 
 func (m metadata) hasInfo() bool {
-	return m.Description != "" || m.License != "" || m.Repository != "" || m.Docs != "" || m.Author != "" || m.Logo != "" || m.Tags != nil || m.Release != nil
+	return m.Title != "" || m.Description != "" || m.License != "" || m.Repository != "" || m.Docs != "" || m.Author != "" || m.Logo != "" || m.Tags != nil || m.Release != nil
 }
 
 type releaseYAML struct {
@@ -102,6 +107,8 @@ type releaseYAML struct {
 // Info describes a connector version for people and the UI. Only
 // Repository is required, and only of a v1alpha2 descriptor.
 type Info struct {
+	// A display name, such as PostgreSQL; empty: the name.
+	Title       string
 	Description string
 	// An SPDX expression.
 	License string
@@ -110,7 +117,7 @@ type Info struct {
 	// An https URL.
 	Docs   string
 	Author string
-	// An https URL of an image.
+	// An https or oci:// URL of an SVG or PNG image.
 	Logo       string
 	Tags       []string
 	ReleaseTag string
@@ -126,6 +133,8 @@ var (
 // CheckInfo checks a connector version's metadata.
 func CheckInfo(info Info) error {
 	switch {
+	case len(info.Title) > 100 || strings.ContainsAny(info.Title, "\n\r"):
+		return errors.New("metadata.title must be one line of at most 100 characters")
 	case len(info.Author) > 200:
 		return errors.New("metadata.author is longer than 200 characters")
 	case len(info.Description) > 500 || strings.ContainsAny(info.Description, "\n\r"):
@@ -142,9 +151,11 @@ func CheckInfo(info Info) error {
 			return fmt.Errorf("metadata.tags: %q must be lowercase letters, digits and hyphens, at most 32 characters", t)
 		}
 	}
+	if _, oci := OCIBlobURL(info.Logo); info.Logo != "" && !oci && !httpURL(info.Logo, false) {
+		return fmt.Errorf("metadata.logo %q must be an https URL or an oci:// URL with a digest", info.Logo)
+	}
 	for _, f := range []struct{ field, v string }{
-		{"metadata.repository", info.Repository}, {"metadata.docs", info.Docs},
-		{"metadata.logo", info.Logo}, {"metadata.release.url", info.ReleaseURL},
+		{"metadata.repository", info.Repository}, {"metadata.docs", info.Docs}, {"metadata.release.url", info.ReleaseURL},
 	} {
 		if f.v != "" && !httpURL(f.v, false) {
 			return fmt.Errorf("%s %q must be an https URL", f.field, f.v)
@@ -154,7 +165,7 @@ func CheckInfo(info Info) error {
 }
 
 func parseInfo(m metadata) (Info, error) {
-	info := Info{Description: m.Description, License: m.License, Repository: m.Repository, Docs: m.Docs, Author: m.Author, Logo: m.Logo, Tags: m.Tags}
+	info := Info{Title: m.Title, Description: m.Description, License: m.License, Repository: m.Repository, Docs: m.Docs, Author: m.Author, Logo: m.Logo, Tags: m.Tags}
 	if m.Release != nil {
 		info.ReleaseTag, info.ReleaseURL = m.Release.Tag, m.Release.URL
 	}
@@ -232,12 +243,17 @@ func Parse(content []byte) (*Document, error) {
 		doc.Bundle, err = parseDbtProject(spec)
 	case KindWebhook:
 		doc.Webhook, err = parseWebhook(spec)
+	case KindConnectorSource:
+		if doc.Workspace != "" {
+			return nil, errors.New("metadata.workspace: a connector source belongs to the org, not a workspace")
+		}
+		doc.ConnectorSource, err = parseConnectorSource(spec)
 	case KindSparkCluster:
 		doc.SparkCluster, err = parseSparkCluster(spec)
 	case KindFlinkCluster:
 		doc.FlinkCluster, err = parseFlinkCluster(spec)
 	default:
-		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, DbtProject, Webhook, SparkCluster or FlinkCluster", env.Kind)
+		return nil, fmt.Errorf("kind %q isn't one of Source, Destination, Pipeline, Connector, DeclarativeSource, ConnectorSource, DbtProject, Webhook, SparkCluster or FlinkCluster", env.Kind)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("spec: %w", err)
@@ -781,6 +797,54 @@ func parseWebhook(b []byte) (*apiv1.WebhookSpec, error) {
 		return nil, errors.New("secrets: each secret once")
 	}
 	return &apiv1.WebhookSpec{Url: y.URL, Events: y.Events, Pipelines: y.Pipelines, Secrets: y.Secrets}, nil
+}
+
+var (
+	ociNamespacePattern = regexp.MustCompile(`^oci://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?/[a-z0-9]+([._/-][a-z0-9]+)*$`)
+	githubRepoPattern   = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
+	secretNamePattern   = regexp.MustCompile(`^workspaces/([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)/secrets/([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)$`)
+)
+
+// GitHubRepository reports whether url is https://github.com/OWNER/REPO.
+func GitHubRepository(url string) bool { return githubRepoPattern.MatchString(url) }
+
+// SecretResource is a connector source's secret as a resource name: a bare
+// name is the default workspace's.
+func SecretResource(secret string) string {
+	if secret == "" || strings.Contains(secret, "/") {
+		return secret
+	}
+	return "workspaces/default/secrets/" + secret
+}
+
+type connectorSourceYAML struct {
+	URL      string `yaml:"url"`
+	Username string `yaml:"username"`
+	Secret   string `yaml:"secret"`
+}
+
+func parseConnectorSource(b []byte) (*apiv1.ConnectorSourceSpec, error) {
+	var y connectorSourceYAML
+	if err := strict(b, &y); err != nil {
+		return nil, err
+	}
+	switch {
+	case y.URL == "":
+		return nil, errors.New("url is missing: oci://REGISTRY/NAMESPACE or https://github.com/OWNER/REPO")
+	case strings.HasPrefix(y.URL, "oci://") && !ociNamespacePattern.MatchString(y.URL):
+		return nil, fmt.Errorf("url %q isn't oci://REGISTRY/NAMESPACE, without a tag or digest", y.URL)
+	case !strings.HasPrefix(y.URL, "oci://") && !GitHubRepository(y.URL):
+		return nil, fmt.Errorf("url %q isn't oci://REGISTRY/NAMESPACE or https://github.com/OWNER/REPO", y.URL)
+	case GitHubRepository(y.URL) && y.Username != "":
+		return nil, errors.New("username: a GitHub token needs none")
+	case y.Username != "" && y.Secret == "":
+		return nil, errors.New("username needs a secret, its password or token")
+	case y.Secret != "" && !ValidName(y.Secret) && !secretNamePattern.MatchString(y.Secret):
+		return nil, fmt.Errorf("secret %q isn't a secret's name, or workspaces/{workspace}/secrets/{secret}", y.Secret)
+	case len(y.Username) > 200:
+		return nil, errors.New("username is longer than 200 characters")
+	}
+	return &apiv1.ConnectorSourceSpec{Url: y.URL, Username: y.Username, Secret: SecretResource(y.Secret)}, nil
 }
 
 func parseDelivery(y *deliveryYAML) (*apiv1.Delivery, error) {

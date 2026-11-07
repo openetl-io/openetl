@@ -7,8 +7,8 @@ ON CONFLICT (org_id, digest) DO NOTHING;
 SELECT * FROM artifacts WHERE org_id = @org_id AND digest = @digest;
 
 -- name: InsertConnectorVersion :exec
-INSERT INTO connector_versions (org_id, name, version, provenance, description, license, repository, docs, tags, author, logo, release_tag, release_url)
-VALUES (@org_id, @name, @version, @provenance, @description, @license, @repository, @docs, @tags, @author, @logo, @release_tag, @release_url);
+INSERT INTO connector_versions (org_id, name, version, provenance, title, description, license, repository, docs, tags, author, logo, logo_digest, release_tag, release_url)
+VALUES (@org_id, @name, @version, @provenance, @title, @description, @license, @repository, @docs, @tags, @author, @logo, @logo_digest, @release_tag, @release_url);
 
 -- name: GetConnectorVersion :one
 SELECT * FROM connector_versions

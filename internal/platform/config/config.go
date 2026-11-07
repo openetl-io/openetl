@@ -47,6 +47,14 @@ type Config struct {
 	// CIDR prefixes, comma-separated, that connectors, registries and
 	// webhooks may reach besides public addresses.
 	EgressAllow string
+	// The official connectors' registry namespace, which a new org's
+	// catalog lists. Empty: none.
+	OfficialConnectors string
+	// Registry hosts, comma-separated, reached over plain HTTP besides
+	// loopback ones.
+	RegistryPlainHTTP string
+	// GitHub's REST API. Empty: https://api.github.com.
+	GitHubAPI string
 	// The key that wraps orgs' data keys, for the API server: a key file, or
 	// a base64key://, awskms://, gcpkms:// or azurekeyvault:// URL. Empty:
 	// the server can't store secrets.
@@ -162,6 +170,9 @@ var options = []option{
 	{"report-interval", "OPENETL_REPORT_INTERVAL", "10s", "how often this runner reports what it runs to the API, as a Go duration; keep it well under its work's heartbeat timeouts", func(c *Config) *string { return &c.ReportInterval }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
+	{"official-connectors", "OPENETL_OFFICIAL_CONNECTORS", "oci://ghcr.io/openetl-io/connectors", "the official connectors' registry namespace, connected as a source of the catalog when the org is created; empty: none", func(c *Config) *string { return &c.OfficialConnectors }},
+	{"registry-plain-http", "OPENETL_REGISTRY_PLAIN_HTTP", "", "comma-separated registry hosts, host:port, reached over plain HTTP besides loopback ones", func(c *Config) *string { return &c.RegistryPlainHTTP }},
+	{"github-api", "OPENETL_GITHUB_API", "", "GitHub's REST API, for connector sources and releases (default: https://api.github.com)", func(c *Config) *string { return &c.GitHubAPI }},
 	{"lagging-after", "OPENETL_LAGGING_AFTER", "5m", "how far behind its source a continuous pipeline's read gets before the server sends pipeline.lagging to webhooks", func(c *Config) *string { return &c.LaggingAfter }},
 	{"secrets-key", "OPENETL_SECRETS_KEY", ".openetl/secrets.key", "the API server's key-encryption key for secrets: a file holding a base64-encoded 32-byte key, created if missing; or base64key://KEY, awskms://…, gcpkms://… or azurekeyvault://…", func(c *Config) *string { return &c.SecretsKey }},
 	{"bootstrap-key-file", "OPENETL_BOOTSTRAP_KEY_FILE", ".openetl/admin.key", "where the server writes the owner key of the org it creates on first start, readable only by its owner; and where openetld bootstrap-key writes a new one", func(c *Config) *string { return &c.BootstrapKeyFile }},

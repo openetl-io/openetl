@@ -115,6 +115,132 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/catalog:
+        get:
+            tags:
+                - ConnectorService
+            description: |-
+                Each package of every connected source, at its highest version, as its
+                 source last listed it.
+            operationId: ConnectorService_ListCatalog
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListCatalogResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/catalog/{catalog}/*/{*}:
+        get:
+            tags:
+                - ConnectorService
+            description: |-
+                A package with its roles' config fields, from its highest version's
+                 descriptor, which the first call fetches.
+            operationId: ConnectorService_GetCatalogPackage
+            parameters:
+                - name: catalog
+                  in: path
+                  description: The catalog id.
+                  required: true
+                  schema:
+                    type: string
+                - name: '*'
+                  in: path
+                  description: The * id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/GetCatalogPackageResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/catalog:refresh:
+        post:
+            tags:
+                - ConnectorService
+            description: |-
+                Lists every connected source now, as the control plane does every 15
+                 minutes.
+            operationId: ConnectorService_RefreshCatalog
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RefreshCatalogRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RefreshCatalogResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/connectorSources:
+        get:
+            tags:
+                - ConnectorService
+            operationId: ConnectorService_ListConnectorSources
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListConnectorSourcesResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/connectorSources/{connectorSource}:
+        delete:
+            tags:
+                - ConnectorService
+            description: Its packages leave the catalog. Versions applied from it stay.
+            operationId: ConnectorService_DeleteConnectorSource
+            parameters:
+                - name: connectorSource
+                  in: path
+                  description: The connectorSource id.
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/DeleteConnectorSourceResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/dataPlanes:
         get:
             tags:
@@ -2657,6 +2783,79 @@ components:
                          timestamp[us, tz=UTC].
                 nullable:
                     type: boolean
+        CatalogPackage:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: catalog/{source}/{owner}/{name}
+                source:
+                    type: string
+                    description: connectorSources/{source}
+                package:
+                    type: string
+                    description: owner/name
+                title:
+                    type: string
+                version:
+                    type: string
+                    description: The highest version.
+                author:
+                    type: string
+                description:
+                    type: string
+                license:
+                    type: string
+                    description: An SPDX expression.
+                repository:
+                    type: string
+                    description: An https URL of the package's source repository.
+                docs:
+                    type: string
+                    description: An https URL.
+                roles:
+                    type: array
+                    items:
+                        type: string
+                    description: source, destination or both.
+                tags:
+                    type: array
+                    items:
+                        type: string
+                logo:
+                    type: string
+                    description: |-
+                        Where the control plane serves its logo, such as /logos/sha256:…; empty
+                         without one.
+                reference:
+                    type: string
+                    description: |-
+                        What openetl connector apply takes: oci://…:VERSION or
+                         github.com/OWNER/REPO[/PACKAGE]@VERSION.
+                official:
+                    type: boolean
+                    description: Listed from the official source under the reserved openetl owner.
+                impostor:
+                    type: boolean
+                    description: |-
+                        Named under the reserved openetl owner by a source that isn't the
+                         official one, so applying it is refused.
+                appliedVersion:
+                    type: string
+                    description: The highest version the org has applied; empty if none.
+            description: |-
+                CatalogPackage is a package as its source's index or releases describe it:
+                 what its publisher says, until it's applied.
+        CatalogRole:
+            type: object
+            properties:
+                role:
+                    type: string
+                    description: source or destination
+                config:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ConfigField'
         CatalogStream:
             type: object
             properties:
@@ -2859,6 +3058,28 @@ components:
                         - COMMIT_SCOPE_STREAM
                     type: string
                     format: enum
+        ConfigField:
+            type: object
+            properties:
+                name:
+                    type: string
+                type:
+                    type: string
+                    description: |-
+                        The JSON Schema type, such as string or object; empty when it doesn't
+                         say.
+                title:
+                    type: string
+                description:
+                    type: string
+                required:
+                    type: boolean
+                secret:
+                    type: boolean
+                    description: Its value is a secret's name, never the secret.
+            description: |-
+                ConfigField is a top-level field of a role's config, from its JSON
+                 Schema.
         ConnectorConfig:
             type: object
             properties:
@@ -2869,6 +3090,53 @@ components:
                     type: object
                     description: Secret fields hold secret references, never values.
             description: ConnectorConfig is the spec of a Source or Destination document.
+        ConnectorSource:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: connectorSources/{source}
+                spec:
+                    $ref: '#/components/schemas/ConnectorSourceSpec'
+                official:
+                    type: boolean
+                    description: The official connectors' source, connected when the org was created.
+                refreshTime:
+                    type: string
+                    description: When it last listed without an error.
+                    format: date-time
+                error:
+                    type: string
+                    description: |-
+                        Why it last failed to list; empty if it didn't. It keeps its last
+                         listing meanwhile.
+                errorTime:
+                    type: string
+                    format: date-time
+                packages:
+                    type: integer
+                    format: int32
+        ConnectorSourceSpec:
+            type: object
+            properties:
+                url:
+                    type: string
+                    description: oci://REGISTRY/NAMESPACE, or https://github.com/OWNER/REPO.
+                username:
+                    type: string
+                    description: A registry's user, beside the secret; GitHub takes none.
+                secret:
+                    type: string
+                    description: |-
+                        A secret holding a registry's password or token, or a GitHub token:
+                         workspaces/{workspace}/secrets/{secret}, or a secret's name in the
+                         default workspace. It must hold its value, not a ref. The control plane
+                         lists the source with it, and runners fetch binaries under its URL with
+                         it.
+            description: |-
+                ConnectorSourceSpec is a ConnectorSource document's spec: an OCI registry
+                 namespace or a GitHub repository whose connector packages the catalog
+                 lists.
         ConnectorVersion:
             type: object
             properties:
@@ -2884,7 +3152,10 @@ components:
                     type: string
                 logo:
                     type: string
-                    description: An https URL of an image.
+                    description: |-
+                        Where the control plane serves its logo, such as /logos/sha256:…, or the
+                         descriptor's https URL where the logo couldn't be fetched; empty without
+                         one.
                 releaseTag:
                     type: string
                     description: The git tag the version was released from.
@@ -2906,6 +3177,9 @@ components:
                     type: array
                     items:
                         type: string
+                title:
+                    type: string
+                    description: 'A display name; empty: the name.'
             description: |-
                 ConnectorVersion is an applied connector version, with what its metadata
                  says about it.
@@ -3019,6 +3293,9 @@ components:
                     type: string
                     description: 'The target schema. Unset: the schema the pipeline writes to.'
             description: DbtStep runs a dbt project against the pipeline's destination.
+        DeleteConnectorSourceResponse:
+            type: object
+            properties: {}
         DeleteDbtProjectResponse:
             type: object
             properties: {}
@@ -3151,6 +3428,13 @@ components:
                 content:
                     type: string
                     format: bytes
+                reference:
+                    type: string
+                    description: |-
+                        A connector version the API fetches, in place of content:
+                         oci://REGISTRY/REPOSITORY:VERSION or @sha256:…, or
+                         github.com/OWNER/REPO[/PACKAGE]@VERSION. The manifest's digest or the
+                         release's URL is its provenance.
             description: |-
                 Document is a YAML or JSON definition with apiVersion, kind, metadata and
                  spec.
@@ -3367,6 +3651,15 @@ components:
                     description: |-
                         Sign-in is off (openetld --auth none), so calls without a credential
                          act as principals/local, an owner.
+        GetCatalogPackageResponse:
+            type: object
+            properties:
+                package:
+                    $ref: '#/components/schemas/CatalogPackage'
+                roles:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CatalogRole'
         GetDbtProjectResponse:
             type: object
             properties:
@@ -3851,6 +4144,13 @@ components:
                         $ref: '#/components/schemas/AuditEntry'
                 nextPageToken:
                     type: string
+        ListCatalogResponse:
+            type: object
+            properties:
+                packages:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CatalogPackage'
         ListCheckpointsResponse:
             type: object
             properties:
@@ -3860,6 +4160,13 @@ components:
                         $ref: '#/components/schemas/Checkpoint'
                 nextPageToken:
                     type: string
+        ListConnectorSourcesResponse:
+            type: object
+            properties:
+                sources:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ConnectorSource'
         ListDataPlanesResponse:
             type: object
             properties:
@@ -4504,6 +4811,16 @@ components:
                     description: |-
                         Where the next page starts. Unset once the sync has ended and every
                          entry is read; while it runs, more may follow, so read again with it.
+        RefreshCatalogRequest:
+            type: object
+            properties: {}
+        RefreshCatalogResponse:
+            type: object
+            properties:
+                sources:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ConnectorSource'
         ReleaseHoldRequest:
             type: object
             properties:
@@ -5290,6 +5607,11 @@ tags:
       description: |-
         AuditService reads the audit log: every call that changes something or
          reads secrets' values, who made it, and how it ended.
+    - name: ConnectorService
+      description: |-
+        ConnectorService lists connected sources of connectors and the catalog of
+         packages they hold, and deletes sources. ApplyService connects them, and
+         applies connector versions, by reference too.
     - name: DbtProjectService
       description: |-
         DbtProjectService reads and deletes dbt projects. ApplyService creates and

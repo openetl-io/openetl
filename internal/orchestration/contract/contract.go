@@ -15,6 +15,7 @@ const (
 	StreamSupervisorWorkflow = "StreamSupervisorWorkflow"
 	ConnectorOpWorkflow      = "ConnectorOpWorkflow"
 	RetentionWorkflow        = "RetentionWorkflow"
+	CatalogRefreshWorkflow   = "CatalogRefreshWorkflow"
 	ReadLogsWorkflow         = "ReadLogsWorkflow"
 
 	// Steps on the control plane.
@@ -150,6 +151,30 @@ const (
 	RetentionWorkflowID = "gc"
 	RetentionScheduleID = "schedule/gc"
 )
+
+// One catalog refresh schedule runs for the whole deployment, every
+// CatalogRefreshEvery.
+const (
+	CatalogRefreshWorkflowID = "catalog"
+	CatalogRefreshScheduleID = "schedule/catalog"
+	CatalogRefreshEvery      = 15 * time.Minute
+)
+
+// RefreshCatalog lists every org's connected sources of connectors.
+const RefreshCatalog = "RefreshCatalog"
+
+// ListedSource is what listing a connected source of connectors did.
+type ListedSource struct {
+	Org      string
+	Source   string
+	Packages int
+	// Empty when it listed; the source keeps its last listing otherwise.
+	Error string
+}
+
+type CatalogRefreshResult struct {
+	Sources []ListedSource
+}
 
 // DefaultCheckpointHistory is how long the control plane keeps the
 // checkpoint mirror.

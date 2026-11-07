@@ -19,7 +19,9 @@ import (
 
 	"github.com/openetl-io/openetl/internal/connectorhost/external"
 	"github.com/openetl-io/openetl/internal/declarative"
+	"github.com/openetl-io/openetl/internal/github"
 	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/oci"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/spec"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -204,6 +206,12 @@ type Fetcher struct {
 	// Downloads binaries; a netguard client.
 	Client *http.Client
 	Cache  string
+	// The credential for a binary's oci:// or GitHub release URL, from the
+	// connected source that covers it; an empty password for none. Nil:
+	// every fetch is anonymous.
+	Credential func(ctx context.Context, url string) (username, password string, err error)
+	// Registry hosts reached over plain HTTP, besides loopback ones.
+	PlainHTTP []string
 }
 
 // Fetch returns the connector version at digest, with role's executable
@@ -261,7 +269,7 @@ func (f *Fetcher) Executable(ctx context.Context, b spec.Binary, name string) (s
 	if err != nil {
 		return "", err
 	}
-	got, err := download(ctx, f.Client, b.URL, out)
+	got, err := f.download(ctx, b, out)
 	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
@@ -289,6 +297,54 @@ type DigestError struct{ URL, Want, Got string }
 
 func (e *DigestError) Error() string {
 	return fmt.Sprintf("%s has digest %s, not %s", e.URL, e.Got, e.Want)
+}
+
+// download writes b's content to w, and returns its digest: an oci:// blob
+// from its registry, a GitHub release asset through GitHub's API when a
+// connected source's token covers it, and other URLs over HTTP.
+func (f *Fetcher) download(ctx context.Context, b spec.Binary, w io.Writer) (string, error) {
+	h := sha256.New()
+	mw := io.MultiWriter(w, h)
+	sum := func() string { return "sha256:" + hex.EncodeToString(h.Sum(nil)) }
+	if strings.HasPrefix(b.URL, oci.Scheme) {
+		r, err := oci.Parse(b.URL)
+		if err != nil {
+			return "", err
+		}
+		c := &oci.Client{HTTP: f.Client, PlainHTTP: f.PlainHTTP}
+		if f.Credential != nil {
+			c.Credentials = func(ctx context.Context, repo oci.Ref) (oci.Credential, error) {
+				u, p, err := f.Credential(ctx, repo.String())
+				return oci.Credential{Username: u, Password: p}, err
+			}
+		}
+		if err := c.FetchBlob(ctx, r, mw, MaxExecutable); err != nil {
+			return "", err
+		}
+		return sum(), nil
+	}
+	if owner, repo, tag, name, ok := github.ParseAssetURL(b.URL); ok && f.Credential != nil {
+		_, token, err := f.Credential(ctx, b.URL)
+		if err != nil {
+			return "", err
+		}
+		if token != "" {
+			gh := &github.Client{HTTP: f.Client, Token: token}
+			rel, err := gh.ReleaseByTag(ctx, owner, repo, tag)
+			if err != nil {
+				return "", err
+			}
+			a, ok := rel.Asset(name)
+			if !ok {
+				return "", fmt.Errorf("release %s of %s/%s has no asset %s", tag, owner, repo, name)
+			}
+			if err := gh.Download(ctx, a, mw, MaxExecutable); err != nil {
+				return "", err
+			}
+			return sum(), nil
+		}
+	}
+	return download(ctx, f.Client, b.URL, w)
 }
 
 // download writes url's body to w, and returns its digest.

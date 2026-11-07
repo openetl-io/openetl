@@ -86,6 +86,27 @@ type CheckpointMirror struct {
 	Usage              []byte
 }
 
+type ConnectorCatalog struct {
+	OrgID            uuid.UUID
+	Source           string
+	Package          string
+	Key              string
+	Title            string
+	Version          string
+	Author           string
+	Description      string
+	License          string
+	Repository       string
+	Docs             string
+	Roles            []string
+	Tags             []string
+	Reference        string
+	CardDigest       string
+	LogoDigest       *string
+	DescriptorDigest *string
+	UpdateTime       time.Time
+}
+
 type ConnectorOp struct {
 	OrgID          uuid.UUID
 	ID             uuid.UUID
@@ -106,6 +127,20 @@ type ConnectorRole struct {
 	Digest  string
 }
 
+type ConnectorSource struct {
+	OrgID       uuid.UUID
+	Name        string
+	Url         string
+	Username    string
+	Secret      string
+	Official    bool
+	CreateTime  time.Time
+	UpdateTime  time.Time
+	RefreshTime *time.Time
+	Error       string
+	ErrorTime   *time.Time
+}
+
 type ConnectorVersion struct {
 	OrgID       uuid.UUID
 	Name        string
@@ -121,6 +156,8 @@ type ConnectorVersion struct {
 	Repository  string
 	Docs        string
 	Tags        []string
+	Title       string
+	LogoDigest  *string
 }
 
 type DataPlane struct {
@@ -312,9 +349,10 @@ type LaneSample struct {
 }
 
 type Org struct {
-	ID         uuid.UUID
-	Name       string
-	CreateTime time.Time
+	ID                          uuid.UUID
+	Name                        string
+	CreateTime                  time.Time
+	OfficialConnectorsConnected bool
 }
 
 type OrgKey struct {

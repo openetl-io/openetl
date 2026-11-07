@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -17,6 +18,7 @@ import (
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/events"
 	"github.com/openetl-io/openetl/internal/orchestration/schedules"
+	"github.com/openetl-io/openetl/internal/pkgcatalog"
 	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/store"
 	"github.com/openetl-io/openetl/internal/store/db"
@@ -347,12 +349,24 @@ func (s *Server) connectorVersions(ctx context.Context, cs ...connection) (map[s
 	}
 	for _, r := range rows {
 		out[r.Digest] = &apiv1.ConnectorVersion{
-			Name: connectorName(r.Name, r.Version), Version: r.Version, Digest: r.Digest,
-			Author: r.Author, Logo: r.Logo, ReleaseTag: r.ReleaseTag, ReleaseUrl: r.ReleaseUrl,
+			Name: connectorName(r.Name, r.Version), Version: r.Version, Digest: r.Digest, Title: r.Title,
+			Author: r.Author, Logo: logoURL(r.Logo, r.LogoDigest), ReleaseTag: r.ReleaseTag, ReleaseUrl: r.ReleaseUrl,
 			Description: r.Description, License: r.License, Repository: r.Repository, Docs: r.Docs, Tags: r.Tags,
 		}
 	}
 	return out, nil
+}
+
+// logoURL is where the UI loads a version's logo: the control plane's copy,
+// or its https URL where it couldn't be fetched.
+func logoURL(logo string, digest *string) string {
+	switch {
+	case digest != nil:
+		return pkgcatalog.LogoPath(*digest)
+	case strings.HasPrefix(logo, "https://"):
+		return logo
+	}
+	return ""
 }
 
 func (s *Server) getSource(ctx context.Context, name string) (string, connection, error) {

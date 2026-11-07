@@ -1,4 +1,4 @@
-import { Boxes, Database, KeyRound, ScrollText, Siren, Users, Warehouse, Webhook, Workflow, type LucideIcon } from "lucide-react";
+import { Boxes, Database, KeyRound, Plug, ScrollText, Siren, Users, Warehouse, Webhook, Workflow, type LucideIcon } from "lucide-react";
 
 export type Page =
   | "/workspaces/$workspace/pipelines"
@@ -6,6 +6,7 @@ export type Page =
   | "/workspaces/$workspace/sources"
   | "/workspaces/$workspace/destinations"
   | "/workspaces/$workspace/dbt-projects"
+  | "/workspaces/$workspace/connectors"
   | "/workspaces/$workspace/webhooks"
   | "/workspaces/$workspace/secrets"
   | "/workspaces/$workspace/access"
@@ -27,6 +28,7 @@ export const nav: { label?: string; items: NavItem[] }[] = [
       { label: "Sources", icon: Database, to: "/workspaces/$workspace/sources" },
       { label: "Destinations", icon: Warehouse, to: "/workspaces/$workspace/destinations" },
       { label: "dbt projects", icon: Boxes, to: "/workspaces/$workspace/dbt-projects" },
+      { label: "Connectors", icon: Plug, to: "/workspaces/$workspace/connectors" },
     ],
   },
   {

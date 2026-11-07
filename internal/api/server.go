@@ -61,6 +61,9 @@ type Server struct {
 	Downloads *http.Client
 	// Seals secrets' values. Nil: secrets can't be stored.
 	Secrets *secrets.Keyring
+	// How the catalog and Apply reach registries and GitHub, through
+	// Downloads.
+	Packages PackageOptions
 	// How far behind its source a continuous pipeline's read gets before
 	// it's lagging. Zero: 5 min.
 	LaggingAfter time.Duration
@@ -93,6 +96,7 @@ var (
 	_ apiv1connect.AuditServiceHandler           = (*Server)(nil)
 	_ apiv1connect.WebhookServiceHandler         = (*Server)(nil)
 	_ apiv1connect.IncidentServiceHandler        = (*Server)(nil)
+	_ apiv1connect.ConnectorServiceHandler       = (*Server)(nil)
 	_ dataplanev1connect.DataPlaneServiceHandler = (*Server)(nil)
 )
 
@@ -131,6 +135,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		vanguard.NewService(apiv1connect.NewAuditServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewWebhookServiceHandler(s, opts)),
 		vanguard.NewService(apiv1connect.NewIncidentServiceHandler(s, opts)),
+		vanguard.NewService(apiv1connect.NewConnectorServiceHandler(s, opts)),
 	}
 	// REST bodies are buffered whole before the handler's limit applies.
 	transcoder, err := vanguard.NewTranscoder(services, vanguard.WithDefaultServiceOptions(vanguard.WithMaxMessageBufferBytes(2*maxApplyBytes)))
@@ -145,6 +150,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.Handle("/", guarded)
 	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(s, opts, connect.WithReadMaxBytes(maxRunnerBytes)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
+	mux.HandleFunc("GET /logos/{digest}", s.serveLogo)
 	mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(openAPI)

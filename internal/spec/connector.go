@@ -15,6 +15,8 @@ import (
 
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/mod/semver"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/openetl-io/openetl/internal/platform/resources"
@@ -110,14 +112,29 @@ type Requires struct {
 	Platform string
 }
 
-// Binary is one platform's executable, downloaded over HTTP.
+// Binary is one platform's executable, downloaded over HTTP or fetched from
+// an OCI registry.
 type Binary struct {
+	// http, https, or oci://REGISTRY/REPOSITORY@sha256:{hex}, whose digest is
+	// Digest.
 	URL string
 	// sha256:{hex}. The API fills in a missing one when the version is
 	// applied.
 	Digest string
-	// An https URL of the binary's provenance attestation.
+	// An https or oci:// URL of the binary's provenance attestation.
 	Attestation string
+}
+
+var ociBlobPattern = regexp.MustCompile(`^oci://[^/@\s]+/[a-z0-9]+([._/-][a-z0-9]+)*@(sha256:[0-9a-f]{64})$`)
+
+// OCIBlobURL reports whether s is oci://REGISTRY/REPOSITORY@sha256:{hex},
+// and returns its digest.
+func OCIBlobURL(s string) (string, bool) {
+	m := ociBlobPattern.FindStringSubmatch(s)
+	if m == nil || len(s) > 2048 {
+		return "", false
+	}
+	return m[2], true
 }
 
 // Image is an OCI image index that serves the launch contract.
@@ -205,6 +222,8 @@ type specYAML struct {
 	Egress       *egressYAML       `yaml:"egress,omitempty" json:"egress,omitempty"`
 	Setup        bool              `yaml:"setup,omitempty" json:"setup,omitempty"`
 	Acknowledges bool              `yaml:"acknowledges,omitempty" json:"acknowledges,omitempty"`
+	Splits       bool              `yaml:"splits,omitempty" json:"splits,omitempty"`
+	Resplit      bool              `yaml:"resplit,omitempty" json:"resplit,omitempty"`
 	Capabilities *capabilitiesYAML `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	// A JSON Schema.
 	Config schemaObject `yaml:"config,omitempty" json:"config,omitzero"`
@@ -358,15 +377,22 @@ func parseRole(role string, y *roleYAML) (*Role, error) {
 		r.Binaries = map[string]Binary{}
 	}
 	for p, b := range rt.Binaries {
+		blob, oci := OCIBlobURL(b.URL)
+		_, ociAtt := OCIBlobURL(b.Attestation)
 		switch {
 		case !platformPattern.MatchString(p):
 			return nil, fmt.Errorf("runtime.binaries: %q isn't a platform, such as linux/amd64", p)
-		case !httpURL(b.URL, true):
-			return nil, fmt.Errorf("runtime.binaries.%s.url %q must be an http or https URL", p, b.URL)
+		case !oci && !httpURL(b.URL, true):
+			return nil, fmt.Errorf("runtime.binaries.%s.url %q must be an http, https or oci:// URL", p, b.URL)
 		case b.Digest != "" && !digestPattern.MatchString(b.Digest):
 			return nil, fmt.Errorf("runtime.binaries.%s.digest %q isn't sha256:{hex}", p, b.Digest)
-		case b.Attestation != "" && !httpURL(b.Attestation, false):
-			return nil, fmt.Errorf("runtime.binaries.%s.attestation %q must be an https URL", p, b.Attestation)
+		case oci && b.Digest != "" && b.Digest != blob:
+			return nil, fmt.Errorf("runtime.binaries.%s: the URL names %s, and the digest is %s", p, blob, b.Digest)
+		case b.Attestation != "" && !ociAtt && !httpURL(b.Attestation, false):
+			return nil, fmt.Errorf("runtime.binaries.%s.attestation %q must be an https or oci:// URL", p, b.Attestation)
+		}
+		if oci {
+			b.Digest = blob
 		}
 		r.Binaries[p] = Binary(b)
 	}
@@ -378,8 +404,8 @@ func parseRole(role string, y *roleYAML) (*Role, error) {
 			return nil, fmt.Errorf("runtime.image.digest %q must be its index's sha256:{hex}", im.Digest)
 		case len(im.Platforms) == 0:
 			return nil, errors.New("runtime.image.platforms, the platforms the index holds, are missing")
-		case im.Attestation != "" && !httpURL(im.Attestation, false):
-			return nil, fmt.Errorf("runtime.image.attestation %q must be an https URL", im.Attestation)
+		case im.Attestation != "" && !httpURL(im.Attestation, false) && !ociURL(im.Attestation):
+			return nil, fmt.Errorf("runtime.image.attestation %q must be an https or oci:// URL", im.Attestation)
 		case slices.Contains(im.Command, ""):
 			return nil, errors.New("runtime.image.command has an empty argument")
 		}
@@ -457,6 +483,11 @@ func (s State) check() error {
 	return nil
 }
 
+func ociURL(s string) bool {
+	_, ok := OCIBlobURL(s)
+	return ok
+}
+
 func httpURL(s string, plain bool) bool {
 	u, err := url.Parse(s)
 	return err == nil && u.Host != "" && (u.Scheme == "https" || plain && u.Scheme == "http") && len(s) <= 2048
@@ -483,14 +514,16 @@ func parseSpec(role string, y *specYAML) (*protocolv1.SpecResponse, error) {
 		return nil, errors.New("config, the config's JSON Schema, is missing")
 	case y.Capabilities != nil && role != RoleDestination:
 		return nil, errors.New("capabilities are a destination's")
-	case y.Acknowledges && role != RoleSource:
-		return nil, errors.New("acknowledges is a source's")
+	case (y.Acknowledges || y.Splits || y.Resplit) && role != RoleSource:
+		return nil, errors.New("acknowledges, splits and resplit are a source's")
+	case y.Resplit && !y.Splits:
+		return nil, errors.New("resplit needs splits")
 	}
 	if s.ConfigSchema, err = json.Marshal(y.Config); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	if role == RoleSource {
-		s.Source = &protocolv1.SourceCapabilities{Acknowledges: y.Acknowledges}
+		s.Source = &protocolv1.SourceCapabilities{Acknowledges: y.Acknowledges, Splits: y.Splits, Resplit: y.Resplit}
 	} else if s.Destination, err = parseCapabilities(y.Capabilities); err != nil {
 		return nil, fmt.Errorf("capabilities: %w", err)
 	}
@@ -563,6 +596,7 @@ type descriptorDoc struct {
 type versionedMeta struct {
 	Name        string       `yaml:"name" json:"name"`
 	Version     string       `yaml:"version" json:"version"`
+	Title       string       `yaml:"title,omitempty" json:"title,omitempty"`
 	Description string       `yaml:"description,omitempty" json:"description,omitempty"`
 	License     string       `yaml:"license,omitempty" json:"license,omitempty"`
 	Repository  string       `yaml:"repository,omitempty" json:"repository,omitempty"`
@@ -574,7 +608,8 @@ type versionedMeta struct {
 }
 
 func specToYAML(s *protocolv1.SpecResponse) (specYAML, error) {
-	y := specYAML{Setup: s.GetSetup(), Acknowledges: s.GetSource().GetAcknowledges()}
+	src := s.GetSource()
+	y := specYAML{Setup: s.GetSetup(), Acknowledges: src.GetAcknowledges(), Splits: src.GetSplits(), Resplit: src.GetResplit()}
 	y.Egress = &egressYAML{Tier: lower(s.GetEgress().GetTier().String(), "EGRESS_TIER_"), Allow: s.GetEgress().GetAllow()}
 	// No schema accepts any config.
 	y.Config = schemaObject{}
@@ -666,7 +701,7 @@ func roleToYAML(r *Role) (*roleYAML, error) {
 
 func descriptorDocument(name, version string, info Info, d *Descriptor) (descriptorDoc, error) {
 	meta := versionedMeta{
-		Name: FullName(name), Version: version, Description: info.Description, License: info.License,
+		Name: FullName(name), Version: version, Title: info.Title, Description: info.Description, License: info.License,
 		Repository: info.Repository, Docs: info.Docs, Logo: info.Logo, Author: info.Author, Tags: info.Tags,
 	}
 	if info.ReleaseTag != "" || info.ReleaseURL != "" {
@@ -787,29 +822,43 @@ func decodeJSON(b []byte) (any, error) {
 }
 
 // SameSpec reports how got, a connector's spec, differs from want, its
-// descriptor's, or "" if it doesn't. Config schemas compare as JSON values.
+// descriptor's, or "" if it doesn't. Every field is compared; config schemas
+// compare as JSON values, and an empty one as {}.
 func SameSpec(got, want *protocolv1.SpecResponse) string {
 	if got.GetKind() != want.GetKind() {
 		return fmt.Sprintf("kind %s, not %s", lower(got.GetKind().String(), "CONNECTOR_KIND_"), lower(want.GetKind().String(), "CONNECTOR_KIND_"))
 	}
 	g, gerr := roleToYAML(&Role{Spec: got})
 	w, werr := roleToYAML(&Role{Spec: want})
-	if gerr != nil || werr != nil {
+	if gerr != nil || werr != nil || !reflect.DeepEqual(jsonValue(g.Config), jsonValue(w.Config)) {
 		return "config schema"
 	}
-	var gc, wc any
-	gb, _ := json.Marshal(g.Config)
-	wb, _ := json.Marshal(w.Config)
-	if json.Unmarshal(gb, &gc) != nil || json.Unmarshal(wb, &wc) != nil || !reflect.DeepEqual(gc, wc) {
-		return "config schema"
+	gs, ws := proto.CloneOf(got), proto.CloneOf(want)
+	gs.ConfigSchema, ws.ConfigSchema = nil, nil
+	if proto.Equal(gs, ws) {
+		return ""
 	}
 	g.Config, w.Config = nil, nil
-	gb, _ = json.Marshal(g)
-	wb, _ = json.Marshal(w)
-	if !bytes.Equal(gb, wb) {
-		return fmt.Sprintf("%s, not %s", gb, wb)
+	gb, _ := json.Marshal(g)
+	wb, _ := json.Marshal(w)
+	if bytes.Equal(gb, wb) {
+		gb, _ = protojson.Marshal(gs)
+		wb, _ = protojson.Marshal(ws)
 	}
-	return ""
+	return fmt.Sprintf("%s, not %s", gb, wb)
+}
+
+// jsonValue is v as encoding/json decodes it, so numbers compare alike.
+func jsonValue(v any) any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var out any
+	if json.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return out
 }
 
 // RoleSpec is a connector's spec as a descriptor's role carries it, with

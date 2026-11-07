@@ -94,7 +94,9 @@ message ConnectorVersion {
   // sha256:{hex}
   string digest = 3;
   string author = 4;
-  // An https URL of an image.
+  // Where the control plane serves its logo, such as /logos/sha256:…, or the
+  // descriptor's https URL where the logo couldn't be fetched; empty without
+  // one.
   string logo = 5;
   // The git tag the version was released from.
   string release_tag = 6;
@@ -108,6 +110,8 @@ message ConnectorVersion {
   // An https URL.
   string docs = 11;
   repeated string tags = 12;
+  // A display name; empty: the name.
+  string title = 13;
 }
 
 // ConnectorConfig is the spec of a Source or Destination document.

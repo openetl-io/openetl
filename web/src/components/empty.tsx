@@ -40,11 +40,11 @@ export function ErrorNote({ title, message, className }: { title: string; messag
       <CircleX />
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>
-        <p className="font-mono text-[0.8125rem] wrap-break-word whitespace-pre-wrap">{summary}</p>
+        <p className="font-mono text-[0.8125rem] wrap-anywhere whitespace-pre-wrap">{summary}</p>
         {summary !== message && (
           <details className="text-[0.8125rem]">
             <summary className="w-fit cursor-pointer text-muted-foreground hover:text-foreground">The whole message</summary>
-            <p className="mt-1 font-mono wrap-break-word whitespace-pre-wrap text-muted-foreground">{message}</p>
+            <p className="mt-1 font-mono wrap-anywhere whitespace-pre-wrap text-muted-foreground">{message}</p>
           </details>
         )}
       </AlertDescription>

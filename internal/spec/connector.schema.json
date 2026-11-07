@@ -24,11 +24,12 @@
           "type": "string",
           "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
         },
+        "title": { "description": "A display name, such as PostgreSQL. None: the name.", "type": "string", "maxLength": 100, "pattern": "^[^\\r\\n]*$" },
         "description": { "description": "One line.", "type": "string", "maxLength": 500, "pattern": "^[^\\r\\n]*$" },
         "license": { "description": "An SPDX expression, such as Apache-2.0.", "type": "string", "pattern": "^[A-Za-z0-9.+:()\\- ]{1,100}$" },
         "repository": { "description": "The source repository. The package's name stays with it.", "$ref": "#/$defs/https" },
         "docs": { "$ref": "#/$defs/https" },
-        "logo": { "description": "An image, which the UI shows.", "$ref": "#/$defs/https" },
+        "logo": { "description": "An SVG or PNG image, which the UI shows.", "anyOf": [{ "$ref": "#/$defs/https" }, { "$ref": "#/$defs/ociBlob" }] },
         "author": { "type": "string", "maxLength": 200 },
         "tags": { "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" } },
         "release": {
@@ -60,6 +61,7 @@
   },
   "$defs": {
     "https": { "type": "string", "maxLength": 2048, "pattern": "^https://[^/?#\\s]+([/?#]\\S*)?$" },
+    "ociBlob": { "description": "A blob in an OCI registry, by its digest.", "type": "string", "maxLength": 2048, "pattern": "^oci://[^/@\\s]+/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}$" },
     "platform": { "description": "os/arch, such as linux/amd64.", "type": "string", "pattern": "^[a-z0-9]+/[a-z0-9]+$" },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "duration": { "description": "Such as 90s or 15m.", "type": "string", "pattern": "^-?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h)(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h))*$|^0$" },
@@ -68,6 +70,7 @@
       "type": "object",
       "required": ["runtime"],
       "additionalProperties": false,
+      "dependentRequired": { "resplit": ["splits"] },
       "properties": {
         "requires": {
           "description": "What the role needs from the platform.",
@@ -106,9 +109,9 @@
                 "required": ["url"],
                 "additionalProperties": false,
                 "properties": {
-                  "url": { "type": "string", "maxLength": 2048, "pattern": "^https?://[^/?#\\s]+([/?#]\\S*)?$" },
+                  "url": { "anyOf": [{ "type": "string", "maxLength": 2048, "pattern": "^https?://[^/?#\\s]+([/?#]\\S*)?$" }, { "$ref": "#/$defs/ociBlob" }] },
                   "digest": { "$ref": "#/$defs/digest" },
-                  "attestation": { "$ref": "#/$defs/https" }
+                  "attestation": { "anyOf": [{ "$ref": "#/$defs/https" }, { "$ref": "#/$defs/ociBlob" }] }
                 }
               }
             },
@@ -126,7 +129,7 @@
                 "digest": { "description": "The index's.", "$ref": "#/$defs/digest" },
                 "platforms": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/platform" } },
                 "command": { "description": "The connector's argv, where it isn't the entrypoint.", "type": "array", "items": { "type": "string", "minLength": 1 } },
-                "attestation": { "$ref": "#/$defs/https" }
+                "attestation": { "anyOf": [{ "$ref": "#/$defs/https" }, { "$ref": "#/$defs/ociBlob" }] }
               }
             },
             "manifest": { "description": "A DeclarativeSource's spec: the role's whole runtime, run in the platform. Sources only.", "type": "object" }
@@ -164,6 +167,8 @@
         },
         "setup": { "type": "boolean" },
         "acknowledges": { "description": "A source's: it acknowledges upstream once a checkpoint commits.", "type": "boolean" },
+        "splits": { "description": "A source's: it divides streams into splits.", "type": "boolean" },
+        "resplit": { "description": "A source's: it splits a running split's remainder. Needs splits.", "type": "boolean" },
         "capabilities": {
           "description": "A destination's.",
           "type": "object",
@@ -220,7 +225,7 @@
         { "required": ["capabilities"] },
         { "properties": { "runtime": { "not": { "required": ["manifest"] } } } }
       ],
-      "not": { "required": ["acknowledges"] }
+      "not": { "anyOf": [{ "required": ["acknowledges"] }, { "required": ["splits"] }, { "required": ["resplit"] }] }
     }
   }
 }

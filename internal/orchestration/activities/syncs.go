@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
@@ -21,7 +22,9 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
+	"github.com/openetl-io/openetl/internal/pkgcatalog"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/secrets"
 	"github.com/openetl-io/openetl/internal/store"
 	"github.com/openetl-io/openetl/internal/store/db"
 )
@@ -35,7 +38,21 @@ type Activities struct {
 	Schedules interface {
 		SetPaused(ctx context.Context, pipelineID string, paused bool) error
 	}
-	Logger *slog.Logger
+	// How RefreshCatalog reaches registries and GitHub. Nil: it lists
+	// nothing.
+	Catalog *CatalogOptions
+	Logger  *slog.Logger
+}
+
+// CatalogOptions are how RefreshCatalog lists connected sources.
+type CatalogOptions struct {
+	// Opens sources' secrets; nil: a source with a secret fails to list.
+	Secrets *secrets.Keyring
+	// A netguard client.
+	HTTP      *http.Client
+	PlainHTTP []string
+	GitHubAPI string
+	Official  []string
 }
 
 // Steps is every step, for a backend to run.
@@ -50,6 +67,7 @@ func (a *Activities) Steps() []orchestration.Step {
 		orchestration.NewAction(contract.CancelWork, a.CancelWork),
 		orchestration.NewStep(contract.DropMirrorPartitions, a.DropMirrorPartitions),
 		orchestration.NewStep(contract.AuditPartitions, a.AuditPartitions),
+		orchestration.NewStep(contract.RefreshCatalog, a.RefreshCatalog),
 	}
 }
 
@@ -429,6 +447,33 @@ func (a *Activities) StartRun(ctx context.Context, in contract.StartRunInput) (c
 
 func (a *Activities) DropMirrorPartitions(ctx context.Context, in contract.DropMirrorPartitionsInput) ([]string, error) {
 	return a.Store.DropMirrorPartitions(ctx, in.Before)
+}
+
+// RefreshCatalog lists every org's connected sources of connectors into the
+// catalog. A source that fails keeps its last listing, and its error.
+func (a *Activities) RefreshCatalog(ctx context.Context, _ struct{}) ([]contract.ListedSource, error) {
+	if a.Catalog == nil {
+		return nil, nil
+	}
+	orgs, err := a.Store.ListOrgs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []contract.ListedSource
+	for _, org := range orgs {
+		c := &pkgcatalog.Catalog{
+			Queries: a.Store.Queries, Org: org, Secrets: a.Catalog.Secrets, HTTP: a.Catalog.HTTP, PlainHTTP: a.Catalog.PlainHTTP,
+			GitHubAPI: a.Catalog.GitHubAPI, Official: a.Catalog.Official, Logger: a.log().With("org", org),
+		}
+		listed, err := c.Refresh(ctx)
+		if err != nil {
+			return out, err
+		}
+		for _, l := range listed {
+			out = append(out, contract.ListedSource{Org: org.String(), Source: l.Source, Packages: l.Packages, Error: l.Error})
+		}
+	}
+	return out, nil
 }
 
 // AuditPartitions creates the audit log's next month's partition, and drops

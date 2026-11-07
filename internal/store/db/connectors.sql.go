@@ -13,7 +13,7 @@ import (
 )
 
 const connectorVersionsByDigest = `-- name: ConnectorVersionsByDigest :many
-SELECT v.org_id, v.name, v.version, v.provenance, v.create_time, v.author, v.logo, v.release_tag, v.release_url, v.description, v.license, v.repository, v.docs, v.tags, r.role, r.digest FROM connector_versions v
+SELECT v.org_id, v.name, v.version, v.provenance, v.create_time, v.author, v.logo, v.release_tag, v.release_url, v.description, v.license, v.repository, v.docs, v.tags, v.title, v.logo_digest, r.role, r.digest FROM connector_versions v
 JOIN connector_roles r USING (org_id, name, version)
 WHERE v.org_id = $1 AND r.digest = ANY($2::text[])
 `
@@ -38,6 +38,8 @@ type ConnectorVersionsByDigestRow struct {
 	Repository  string
 	Docs        string
 	Tags        []string
+	Title       string
+	LogoDigest  *string
 	Role        string
 	Digest      string
 }
@@ -66,6 +68,8 @@ func (q *Queries) ConnectorVersionsByDigest(ctx context.Context, arg ConnectorVe
 			&i.Repository,
 			&i.Docs,
 			&i.Tags,
+			&i.Title,
+			&i.LogoDigest,
 			&i.Role,
 			&i.Digest,
 		); err != nil {
@@ -118,7 +122,7 @@ func (q *Queries) GetArtifact(ctx context.Context, arg GetArtifactParams) (Artif
 }
 
 const getConnectorVersion = `-- name: GetConnectorVersion :one
-SELECT org_id, name, version, provenance, create_time, author, logo, release_tag, release_url, description, license, repository, docs, tags FROM connector_versions
+SELECT org_id, name, version, provenance, create_time, author, logo, release_tag, release_url, description, license, repository, docs, tags, title, logo_digest FROM connector_versions
 WHERE org_id = $1 AND name = $2 AND version = $3
 `
 
@@ -146,6 +150,8 @@ func (q *Queries) GetConnectorVersion(ctx context.Context, arg GetConnectorVersi
 		&i.Repository,
 		&i.Docs,
 		&i.Tags,
+		&i.Title,
+		&i.LogoDigest,
 	)
 	return i, err
 }
@@ -198,8 +204,8 @@ func (q *Queries) InsertConnectorRole(ctx context.Context, arg InsertConnectorRo
 }
 
 const insertConnectorVersion = `-- name: InsertConnectorVersion :exec
-INSERT INTO connector_versions (org_id, name, version, provenance, description, license, repository, docs, tags, author, logo, release_tag, release_url)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+INSERT INTO connector_versions (org_id, name, version, provenance, title, description, license, repository, docs, tags, author, logo, logo_digest, release_tag, release_url)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 `
 
 type InsertConnectorVersionParams struct {
@@ -207,6 +213,7 @@ type InsertConnectorVersionParams struct {
 	Name        string
 	Version     string
 	Provenance  string
+	Title       string
 	Description string
 	License     string
 	Repository  string
@@ -214,6 +221,7 @@ type InsertConnectorVersionParams struct {
 	Tags        []string
 	Author      string
 	Logo        string
+	LogoDigest  *string
 	ReleaseTag  string
 	ReleaseUrl  string
 }
@@ -224,6 +232,7 @@ func (q *Queries) InsertConnectorVersion(ctx context.Context, arg InsertConnecto
 		arg.Name,
 		arg.Version,
 		arg.Provenance,
+		arg.Title,
 		arg.Description,
 		arg.License,
 		arg.Repository,
@@ -231,6 +240,7 @@ func (q *Queries) InsertConnectorVersion(ctx context.Context, arg InsertConnecto
 		arg.Tags,
 		arg.Author,
 		arg.Logo,
+		arg.LogoDigest,
 		arg.ReleaseTag,
 		arg.ReleaseUrl,
 	)
@@ -297,7 +307,7 @@ func (q *Queries) ListConnectorRoles(ctx context.Context, arg ListConnectorRoles
 }
 
 const listConnectorVersions = `-- name: ListConnectorVersions :many
-SELECT org_id, name, version, provenance, create_time, author, logo, release_tag, release_url, description, license, repository, docs, tags FROM connector_versions
+SELECT org_id, name, version, provenance, create_time, author, logo, release_tag, release_url, description, license, repository, docs, tags, title, logo_digest FROM connector_versions
 WHERE org_id = $1 AND name = $2
 `
 
@@ -330,6 +340,8 @@ func (q *Queries) ListConnectorVersions(ctx context.Context, arg ListConnectorVe
 			&i.Repository,
 			&i.Docs,
 			&i.Tags,
+			&i.Title,
+			&i.LogoDigest,
 		); err != nil {
 			return nil, err
 		}

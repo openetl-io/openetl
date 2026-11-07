@@ -13,8 +13,8 @@
 # REST catalog keeps its tables in the S3 store, for destination-iceberg.
 # Kafka and a schema registry are for source-kafka and destination-kafka,
 # kinesis-mock for source-kinesis and destination-kinesis, a Spark
-# standalone cluster for Spark steps, and a Flink session cluster for Flink
-# transforms.
+# standalone cluster for Spark steps, a Flink session cluster for Flink
+# transforms, and an OCI registry for connector packages.
 
 name: openetl-dev
 
@@ -132,6 +132,20 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+
+  # CNCF Distribution, in memory, on plain HTTP, with deletes, for connector
+  # packages published to and applied from an OCI registry. Clients on the
+  # host reach it at 127.0.0.1:5001, as 5000 is macOS's AirPlay receiver.
+  oci-registry:
+    image: registry:3.0.0
+    environment:
+      REGISTRY_STORAGE: inmemory
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    ports: ["5001:5000"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:5000/v2/"]
+      interval: 2s
+      retries: 30
 
   # kinesis-mock (MIT), in memory, on plain HTTP. moto's Kinesis can't
   # reshard: it keeps routing records to a split shard.

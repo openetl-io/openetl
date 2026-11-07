@@ -13,12 +13,70 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/pkgcatalog"
 	"github.com/openetl-io/openetl/internal/spec"
 	"github.com/openetl-io/openetl/internal/store/db"
 )
 
 func versioned(doc *spec.Document) bool {
 	return doc.Kind == spec.KindConnector || doc.Kind == spec.KindDeclarativeSource
+}
+
+// orgLevel reports whether a document defines something of the org's, not a
+// workspace's.
+func orgLevel(doc *spec.Document) bool {
+	return versioned(doc) || doc.Kind == spec.KindConnectorSource
+}
+
+// resolveReferences fetches the connector versions documents name by
+// reference, in place of content. It runs before the transaction, as it
+// fetches, and after authorization, as it uses the org's credentials.
+func (s *Server) resolveReferences(ctx context.Context, docs []*apiv1.Document) ([]*apiv1.Document, error) {
+	out := slices.Clone(docs)
+	for i, d := range docs {
+		if d.GetReference() == "" {
+			continue
+		}
+		if len(d.GetContent()) > 0 {
+			return nil, invalid("%s: a document has content or a reference, not both", d.GetReference())
+		}
+		c, err := s.catalog(s.Store.Queries)
+		if err != nil {
+			return nil, err
+		}
+		res, err := c.Resolve(ctx, d.GetReference())
+		if err != nil {
+			return nil, invalid("%s: %v", d.GetReference(), err)
+		}
+		out[i] = &apiv1.Document{Origin: res.Provenance, Content: res.Content}
+	}
+	return out, nil
+}
+
+// fetchLogos fetches the logos of connector versions not applied yet, before
+// the transaction. A logo that fails is left out, and the version is applied
+// without it.
+func (s *Server) fetchLogos(ctx context.Context, docs []*spec.Document) map[*spec.Document]*pkgcatalog.Logo {
+	out := map[*spec.Document]*pkgcatalog.Logo{}
+	for _, doc := range docs {
+		if doc.Kind != spec.KindConnector || doc.Info.Logo == "" || s.Downloads == nil {
+			continue
+		}
+		if _, err := s.Store.GetConnectorVersion(ctx, db.GetConnectorVersionParams{OrgID: s.Tenant.Org, Name: doc.Name, Version: doc.Version}); err == nil {
+			continue
+		}
+		c, err := s.catalog(s.Store.Queries)
+		if err != nil {
+			continue
+		}
+		l, err := c.FetchLogo(ctx, doc.Info.Logo)
+		if err != nil {
+			s.log().Warn("a connector version's logo couldn't be fetched", "connector", doc.Name, "version", doc.Version, "logo", doc.Info.Logo, "err", err)
+			continue
+		}
+		out[doc] = l
+	}
+	return out
 }
 
 // roles are a connector version document's roles, sorted.
@@ -49,7 +107,7 @@ func (s *Server) pinBinaries(ctx context.Context, docs []*spec.Document, origins
 // applyConnectorVersion stores a connector version. Versions are immutable:
 // applying one again with other content fails, except that a one-role
 // artifact may add its role to a version without it.
-func (s *Server) applyConnectorVersion(ctx context.Context, q *db.Queries, doc *spec.Document, provenance string, transfer map[string]bool) (*apiv1.AppliedResource, error) {
+func (s *Server) applyConnectorVersion(ctx context.Context, q *db.Queries, doc *spec.Document, provenance string, transfer map[string]bool, logos map[*spec.Document]*pkgcatalog.Logo) (*apiv1.AppliedResource, error) {
 	content := doc.Manifest
 	media := connectorhost.MediaTypeManifest
 	if doc.Kind == spec.KindConnector {
@@ -102,11 +160,19 @@ func (s *Server) applyConnectorVersion(ctx context.Context, q *db.Queries, doc *
 		if err := s.checkRepository(ctx, q, v, transfer); err != nil {
 			return nil, err
 		}
+		var logo *string
+		if l := logos[doc]; l != nil {
+			d, err := pkgcatalog.StoreLogo(ctx, q, s.Tenant.Org, l)
+			if err != nil {
+				return nil, err
+			}
+			logo = &d
+		}
 		i := v.Info
 		err := q.InsertConnectorVersion(ctx, db.InsertConnectorVersionParams{
-			OrgID: s.Tenant.Org, Name: v.Name, Version: v.Version, Provenance: provenance,
+			OrgID: s.Tenant.Org, Name: v.Name, Version: v.Version, Provenance: provenance, Title: i.Title,
 			Description: i.Description, License: i.License, Repository: i.Repository, Docs: i.Docs, Tags: nonNil(i.Tags),
-			Author: i.Author, Logo: i.Logo, ReleaseTag: i.ReleaseTag, ReleaseUrl: i.ReleaseURL,
+			Author: i.Author, Logo: i.Logo, LogoDigest: logo, ReleaseTag: i.ReleaseTag, ReleaseUrl: i.ReleaseURL,
 		})
 		if err != nil {
 			return nil, err
@@ -145,7 +211,7 @@ func (s *Server) checkRepository(ctx context.Context, q *db.Queries, v *connecto
 }
 
 func sameInfo(cur db.ConnectorVersion, i spec.Info) bool {
-	return cur.Description == i.Description && cur.License == i.License && cur.Repository == i.Repository && cur.Docs == i.Docs &&
+	return cur.Description == i.Description && cur.License == i.License && cur.Repository == i.Repository && cur.Docs == i.Docs && cur.Title == i.Title &&
 		slices.Equal(cur.Tags, i.Tags) && cur.Author == i.Author && cur.Logo == i.Logo && cur.ReleaseTag == i.ReleaseTag && cur.ReleaseUrl == i.ReleaseURL
 }
 

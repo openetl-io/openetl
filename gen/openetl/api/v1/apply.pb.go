@@ -160,8 +160,13 @@ func (x *ApplyRequest) GetTransfer() []string {
 type Document struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Such as a file name, for error messages.
-	Origin        string `protobuf:"bytes,1,opt,name=origin,proto3" json:"origin,omitempty"`
-	Content       []byte `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	Origin  string `protobuf:"bytes,1,opt,name=origin,proto3" json:"origin,omitempty"`
+	Content []byte `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	// A connector version the API fetches, in place of content:
+	// oci://REGISTRY/REPOSITORY:VERSION or @sha256:…, or
+	// github.com/OWNER/REPO[/PACKAGE]@VERSION. The manifest's digest or the
+	// release's URL is its provenance.
+	Reference     string `protobuf:"bytes,3,opt,name=reference,proto3" json:"reference,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -208,6 +213,13 @@ func (x *Document) GetContent() []byte {
 		return x.Content
 	}
 	return nil
+}
+
+func (x *Document) GetReference() string {
+	if x != nil {
+		return x.Reference
+	}
+	return ""
 }
 
 type ApplyResponse struct {
@@ -355,10 +367,11 @@ const file_openetl_api_v1_apply_proto_rawDesc = "" +
 	"\tdocuments\x18\x02 \x03(\v2\x18.openetl.api.v1.DocumentR\tdocuments\x12#\n" +
 	"\rvalidate_only\x18\x03 \x01(\bR\fvalidateOnly\x12\x16\n" +
 	"\x06client\x18\x04 \x01(\tR\x06client\x12\x1a\n" +
-	"\btransfer\x18\x05 \x03(\tR\btransfer\"<\n" +
+	"\btransfer\x18\x05 \x03(\tR\btransfer\"Z\n" +
 	"\bDocument\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\tR\x06origin\x12\x18\n" +
-	"\acontent\x18\x02 \x01(\fR\acontent\"\xc3\x01\n" +
+	"\acontent\x18\x02 \x01(\fR\acontent\x12\x1c\n" +
+	"\treference\x18\x03 \x01(\tR\treference\"\xc3\x01\n" +
 	"\rApplyResponse\x12=\n" +
 	"\tresources\x18\x01 \x03(\v2\x1f.openetl.api.v1.AppliedResourceR\tresources\x12?\n" +
 	"\n" +

@@ -145,6 +145,18 @@ const destination = createRoute({
   component: lazyRouteComponent(() => import("@/routes/connection"), "DestinationPage"),
 });
 
+const connectors = createRoute({
+  getParentRoute: () => app,
+  path: "/workspaces/$workspace/connectors",
+  validateSearch: (s: Record<string, unknown>): { q?: string; role?: string[]; source?: string[]; tab?: "sources"; package?: string } => ({
+    ...listSearch(["role", "source"])(s),
+    tab: s.tab === "sources" ? "sources" : undefined,
+    package: str(s.package),
+  }),
+  staticData: { crumbs: () => [{ label: "Connectors" }] },
+  component: lazyRouteComponent(() => import("@/routes/connectors"), "ConnectorsPage"),
+});
+
 const dbtProjects = createRoute({
   getParentRoute: () => app,
   path: "/workspaces/$workspace/dbt-projects",
@@ -217,6 +229,7 @@ export const router = createRouter({
       source,
       destinations,
       destination,
+      connectors,
       dbtProjects,
       webhooks,
       webhook,

@@ -5,19 +5,37 @@ import { cn } from "@/lib/utils";
 
 /**
  * A connector's mark on a neutral chip, so it reads on either theme: its logo
- * from its metadata, or its name's first letter when it has none (built-in
- * connectors) or the image doesn't load.
+ * (the URL given, or its version's), or its name's first letter when it has
+ * none (built-in connectors) or the image doesn't load.
  */
-export function ConnectorLogo({ version, connector, className }: { version?: ConnectorVersion; connector?: string; className?: string }) {
+export function ConnectorLogo({
+  version,
+  connector,
+  logo: url,
+  size = "sm",
+  className,
+}: {
+  version?: ConnectorVersion;
+  /** Its name, such as postgres or acme/files, for the initial. */
+  connector?: string;
+  /** A logo's URL, in place of its version's. */
+  logo?: string;
+  size?: "sm" | "lg";
+  className?: string;
+}) {
   const [failed, setFailed] = useState<string>();
-  const logo = version?.logo && failed !== version.logo ? version.logo : undefined;
-  const initial = (connector ?? version?.name.split("/")[1]?.replace(/^(source|destination)-/, "") ?? "").charAt(0).toUpperCase();
+  const src = url || version?.logo;
+  const logo = src && failed !== src ? src : undefined;
+  const name = connector ?? version?.name.split("/")[2] ?? "";
+  const initial = (name.split("/").pop() ?? "").replace(/^(source|destination)-/, "").charAt(0).toUpperCase();
   if (!logo && !initial) return null;
+  const lg = size === "lg";
   return (
     <span
       aria-hidden
       className={cn(
-        "inline-grid size-5 shrink-0 place-items-center rounded-sm bg-white align-[-0.3125em] ring-1 ring-black/10 dark:ring-white/10",
+        "inline-grid shrink-0 place-items-center bg-white ring-1 ring-black/10 dark:ring-white/10",
+        lg ? "size-10 rounded-md" : "size-5 rounded-sm align-[-0.3125em]",
         className,
       )}
     >
@@ -28,10 +46,10 @@ export function ConnectorLogo({ version, connector, className }: { version?: Con
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => setFailed(logo)}
-          className="size-3.5 object-contain"
+          className={cn("object-contain", lg ? "size-7" : "size-3.5")}
         />
       ) : (
-        <span className="text-[0.6875rem] leading-none font-semibold text-zinc-600">{initial}</span>
+        <span className={cn("leading-none font-semibold text-zinc-600", lg ? "text-base" : "text-[0.6875rem]")}>{initial}</span>
       )}
     </span>
   );

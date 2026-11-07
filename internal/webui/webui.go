@@ -122,5 +122,5 @@ func Handler(dir string, api http.Handler) (http.Handler, error) {
 }
 
 func isAPI(p string) bool {
-	return strings.HasPrefix(p, "/v1/") || strings.HasPrefix(p, "/openetl.") || p == "/healthz" || p == "/openapi.yaml"
+	return strings.HasPrefix(p, "/v1/") || strings.HasPrefix(p, "/openetl.") || strings.HasPrefix(p, "/logos/") || p == "/healthz" || p == "/openapi.yaml"
 }

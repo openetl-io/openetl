@@ -19,6 +19,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/declarative"
+	"github.com/openetl-io/openetl/internal/oci"
 	"github.com/openetl-io/openetl/internal/spec"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
@@ -37,7 +38,7 @@ type Options struct {
 	// Overrides the file's.
 	Platforms []string
 	// Resolves images' tags; nil: a role with an image fails.
-	Registry *Registry
+	Images *oci.Client
 	// Reads the spec of a role that only has an image; nil: such a role
 	// fails.
 	ImageSpec func(ctx context.Context, image, role string, command []string) (*protocolv1.SpecResponse, error)
@@ -49,6 +50,8 @@ type Options struct {
 type Result struct {
 	Descriptor  string
 	Executables []string
+	// The logo file's copy; empty without one.
+	Logo string
 }
 
 // Asset is the release asset of a role's executable for a platform.
@@ -63,6 +66,14 @@ func Asset(short, role, platform string) string {
 
 // DescriptorAsset is the release asset of a package's descriptor.
 func DescriptorAsset(short string) string { return short + ".connector.yaml" }
+
+// LogoAsset is the release asset of a package's logo, of a media type.
+func LogoAsset(short, mediaType string) string {
+	if mediaType == "image/png" {
+		return short + ".logo.png"
+	}
+	return short + ".logo.svg"
+}
 
 var githubRepo = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+$`)
 
@@ -94,10 +105,10 @@ func Package(ctx context.Context, f *File, o Options) (*Result, error) {
 		return nil, fmt.Errorf("the platforms must include %s, whose executable is run to read the spec", connectorhost.Platform())
 	}
 	urls := o.URLTemplate
-	if urls == "" && f.Builds() {
+	if urls == "" && (f.Builds() || f.LogoFile()) {
 		repo := strings.TrimSuffix(strings.TrimSuffix(f.Repository, "/"), ".git")
 		if !githubRepo.MatchString(repo) {
-			return nil, fmt.Errorf("%s isn't on GitHub, so give --url-template, where runners download each executable", f.Repository)
+			return nil, fmt.Errorf("%s isn't on GitHub, so give --url-template, where runners download each executable and the UI the logo", f.Repository)
 		}
 		urls = repo + "/releases/download/{tag}/{asset}"
 	}
@@ -105,6 +116,25 @@ func Package(ctx context.Context, f *File, o Options) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{}
+	asset := func(asset, role, platform string) string {
+		goos, arch, _ := strings.Cut(platform, "/")
+		return strings.NewReplacer("{tag}", tag, "{asset}", asset, "{version}", o.Version, "{name}", f.ShortName(),
+			"{role}", role, "{os}", goos, "{arch}", arch).Replace(urls)
+	}
+	info := f.Info()
+	info.ReleaseTag, info.ReleaseURL = tag, ReleaseURL(f.Repository, tag)
+	if f.LogoFile() {
+		b, mediaType, err := f.ReadLogo()
+		if err != nil {
+			return nil, err
+		}
+		name := LogoAsset(f.ShortName(), mediaType)
+		res.Logo = filepath.Join(o.Out, name)
+		if err := os.WriteFile(res.Logo, b, 0o600); err != nil {
+			return nil, err
+		}
+		info.Logo = asset(name, "", "")
+	}
 	roles := map[string]connectorhost.PackageRole{}
 	for _, role := range slices.Sorted(maps.Keys(f.Roles)) {
 		r := f.Roles[role]
@@ -124,19 +154,20 @@ func Package(ctx context.Context, f *File, o Options) (*Result, error) {
 				return nil, fmt.Errorf("build the %s role: %w", role, err)
 			}
 			for _, e := range exes {
-				asset := filepath.Base(e.Path)
-				goos, arch, _ := strings.Cut(e.Platform, "/")
-				e.URL = strings.NewReplacer("{tag}", tag, "{asset}", asset, "{version}", o.Version, "{name}", f.ShortName(),
-					"{role}", role, "{os}", goos, "{arch}", arch).Replace(urls)
+				e.URL = asset(filepath.Base(e.Path), role, e.Platform)
 				pr.Executables = append(pr.Executables, e)
 				res.Executables = append(res.Executables, e.Path)
 			}
 		}
 		if r.Image != "" {
-			if o.Registry == nil {
+			if o.Images == nil {
 				return nil, fmt.Errorf("the %s role's image can't be resolved here", role)
 			}
-			digest, plats, err := o.Registry.Resolve(ctx, r.Image, o.Version)
+			ref, err := oci.Parse(oci.Scheme + r.Image + ":" + o.Version)
+			if err != nil {
+				return nil, fmt.Errorf("the %s role's image: %w", role, err)
+			}
+			digest, plats, err := o.Images.ResolveImage(ctx, ref)
 			if err != nil {
 				return nil, fmt.Errorf("the %s role's image: %w", role, err)
 			}
@@ -159,8 +190,6 @@ func Package(ctx context.Context, f *File, o Options) (*Result, error) {
 		}
 		roles[role] = pr
 	}
-	info := f.Info()
-	info.ReleaseTag, info.ReleaseURL = tag, ReleaseURL(f.Repository, tag)
 	doc, err := connectorhost.Package(ctx, f.FullName(), o.Version, info, roles)
 	if err != nil {
 		return nil, err

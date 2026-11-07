@@ -39,6 +39,11 @@ message Document {
   // Such as a file name, for error messages.
   string origin = 1;
   bytes content = 2;
+  // A connector version the API fetches, in place of content:
+  // oci://REGISTRY/REPOSITORY:VERSION or @sha256:…, or
+  // github.com/OWNER/REPO[/PACKAGE]@VERSION. The manifest's digest or the
+  // release's URL is its provenance.
+  string reference = 3;
 }
 
 message ApplyResponse {

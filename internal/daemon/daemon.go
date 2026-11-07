@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -43,6 +44,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/schedules"
 	"github.com/openetl-io/openetl/internal/orchestration/temporalbackend"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
+	"github.com/openetl-io/openetl/internal/pkgcatalog"
 	"github.com/openetl-io/openetl/internal/platform/config"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/platform/temporalx"
@@ -132,6 +134,9 @@ func Run(ctx context.Context, o Options) error {
 		}
 		// A new org has no owner, and nor does one from before API keys.
 		tenant, err := st.Bootstrap(ctx, cfg.DataPlane, func(q *db.Queries, org uuid.UUID) error {
+			if err := pkgcatalog.ConnectOfficial(ctx, q, org, cfg.OfficialConnectors); err != nil {
+				return err
+			}
 			owners, err := q.LockOrgOwners(ctx, org)
 			if err != nil || len(owners) > 0 {
 				return err
@@ -176,6 +181,7 @@ func Run(ctx context.Context, o Options) error {
 			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Backend: backend}, Ops: &ops.Ops{Backend: backend}, Logs: &ops.Ops{Backend: backend}, Dispatch: work,
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
 			Downloads:    (&netguard.Policy{Allow: allow}).Client(),
+			Packages:     packageOptions(cfg),
 			Secrets:      keyring,
 			LaggingAfter: lagging,
 			Logger:       log.With("role", "server"),
@@ -391,10 +397,57 @@ func orchestrate(ctx context.Context, cfg config.Config, backend orchestration.B
 	if err := sched.EnsureRetention(ctx, retention); err != nil {
 		return err
 	}
+	if err := sched.EnsureCatalogRefresh(ctx); err != nil {
+		return err
+	}
+	catalog, err := catalogOptions(ctx, cfg, st, log)
+	if err != nil {
+		return err
+	}
 	reconciler := &schedules.Reconciler{Store: st, Schedules: sched, Backend: backend, Logger: log.With("component", "reconcile")}
 	go reconciler.Run(ctx)
-	acts := &cpactivities.Activities{Store: st, Schedules: sched, Dispatch: work, Logger: log.With("component", "steps")}
+	acts := &cpactivities.Activities{Store: st, Schedules: sched, Dispatch: work, Catalog: catalog, Logger: log.With("component", "steps")}
 	return backend.Run(ctx, wf.All(), acts.Steps())
+}
+
+// packageOptions are how the API server reaches registries and GitHub.
+func packageOptions(cfg config.Config) api.PackageOptions {
+	o := api.PackageOptions{GitHubAPI: cfg.GitHubAPI, Official: []string{pkgcatalog.OfficialRepository}}
+	if cfg.OfficialConnectors != "" {
+		o.Official = append(o.Official, cfg.OfficialConnectors)
+	}
+	for h := range strings.SplitSeq(cfg.RegistryPlainHTTP, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			o.PlainHTTP = append(o.PlainHTTP, h)
+		}
+	}
+	return o
+}
+
+// catalogOptions are how the orchestrator's catalog refresh lists sources.
+// Without the secrets key, sources with a secret fail to list, and the rest
+// still do.
+func catalogOptions(ctx context.Context, cfg config.Config, st *store.Store, log *slog.Logger) (*cpactivities.CatalogOptions, error) {
+	allow, err := netguard.ParsePrefixes(cfg.EgressAllow)
+	if err != nil {
+		return nil, fmt.Errorf("daemon: --egress-allow: %w", err)
+	}
+	var keyring *secrets.Keyring
+	if _, err := os.Stat(cfg.SecretsKey); cfg.SecretsKey != "" && (err == nil || strings.Contains(cfg.SecretsKey, "://")) {
+		// A key file is the server's to create; this only opens it.
+		if keyring, err = openKeyring(ctx, cfg.SecretsKey, st); err != nil {
+			log.Warn("the catalog refresh can't open secrets, so connector sources with a secret won't list", "err", err)
+			keyring = nil
+		}
+	}
+	if keyring != nil {
+		context.AfterFunc(ctx, func() { _ = keyring.Close() })
+	}
+	o := packageOptions(cfg)
+	return &cpactivities.CatalogOptions{
+		Secrets: keyring, HTTP: (&netguard.Policy{Allow: allow}).Client(),
+		PlainHTTP: o.PlainHTTP, GitHubAPI: o.GitHubAPI, Official: o.Official,
+	}, nil
 }
 
 func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
@@ -434,9 +487,11 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL, auth.WithBearer(token), connect.WithInterceptors(otel)) //nolint:forbidigo // the operator configures the API's address
 	versions := &connectorhost.Fetcher{
-		Artifact: dpactivities.Artifacts(apiClient),
-		Client:   (&netguard.Policy{Allow: allow}).Client(),
-		Cache:    cfg.Cache,
+		Artifact:   dpactivities.Artifacts(apiClient),
+		Client:     (&netguard.Policy{Allow: allow}).Client(),
+		Cache:      cfg.Cache,
+		Credential: dpactivities.FetchCredentials(apiClient),
+		PlainHTTP:  packageOptions(cfg).PlainHTTP,
 	}
 	stores := &secretstore.Reader{}
 	defer func() { _ = stores.Close() }()
