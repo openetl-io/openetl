@@ -3,11 +3,15 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
 // laneDocs syncs a table of rows read in key ranges, at size l, which gives it
@@ -119,6 +123,9 @@ func TestLanesCDCRoutedByKey(t *testing.T) {
 		"spec": {"mode": "continuous", "source": {"ref": %q, "streams": [{"name": "items", "sync": "cdc"}]},
 		"destination": {"ref": %q, "namespace": %q, "write": "merge"}, "resources": {"size": "m"}, "delivery": {"commit": {"interval": "1s"}}}}`, name, name, name, in+"_out")
 	apply(t, d...)
+	t.Cleanup(func() {
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+	})
 	out := pgx.Identifier{in + "_out", "items"}.Sanitize()
 	count := func() int64 {
 		n, err := query[int64](t, "SELECT count(*) FROM "+out)
