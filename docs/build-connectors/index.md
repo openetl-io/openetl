@@ -141,6 +141,8 @@ go build -o bin/ ./cmd/source-greetings
 
 `sdk.Full` declares a stream read whole on every sync. `sdk.Incremental` declares one read from a cursor onwards, and `sdk.Resumable` one that keeps its own state; `sdk.Paginate` marks a resume point after each page of an API. Streams declared this way are superset: a retry can repeat records, and whether they land twice depends on the destination, which can drop repeats by their `_openetl_id`.
 
+`sdk.Ordered`, like `ordered: true` in a declarative source's `incremental`, says the API returns a stream's records sorted by its cursor, oldest first, so the cursor's floor moves after every page. A cursor lower than one before it fails the read with `CONTRACT_CHANGED`, because the floor may already be past records the read hasn't reached. Equal cursors are fine. If you see that error, the API doesn't sort by that field: remove the option, and the floor moves only when the stream completes.
+
 For Arrow batches, exact replay, splits or CDC, implement `source.Source` and `destination.Destination` yourself. The official connectors in [openetl-connectors](https://github.com/openetl-io/openetl-connectors) do: each `cmd/<executable>/main.go` there hands one to `sdk.Serve`.
 
 ## Try it with the CLI

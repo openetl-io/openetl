@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 
 	sdk "github.com/openetl-io/openetl/sdk/go"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
@@ -226,6 +227,54 @@ func TestIncrementalOrdered(t *testing.T) {
 	since = nil
 	read(t, src, "b", `{"cursor":2,"since":1,"page":"t1"}`)
 	expect(t, since, "1")
+}
+
+// An ordered stream whose cursor goes backwards fails rather than move its
+// floor past records it hasn't read. A tie doesn't.
+func TestOrderedCursorGoingBackwards(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		pages [][]string
+		state string
+		fails bool
+	}{
+		{name: "within a page", pages: [][]string{{`{"id":1,"u":5}`, `{"id":2,"u":3}`}}, fails: true},
+		{name: "between pages", pages: [][]string{{`{"id":1,"u":5}`}, {`{"id":2,"u":3}`}}, fails: true},
+		{name: "ties", pages: [][]string{{`{"id":1,"u":5}`, `{"id":2,"u":5}`}, {`{"id":3,"u":5}`}}},
+		{name: "a token's records below the floor", pages: [][]string{{`{"id":1,"u":5}`}, {`{"id":2,"u":3}`}}, state: `{"cursor":5,"since":null,"page":"t1"}`, fails: true},
+		{name: "a token's records at the floor", pages: [][]string{{`{"id":1,"u":5}`}, {`{"id":2,"u":5}`}}, state: `{"cursor":5,"since":null,"page":"t1"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &pages{records: tc.pages}
+			src := &sdk.Source[config]{Name: "acme", Streams: []sdk.Stream[config]{
+				sdk.Incremental("b", "u", paginated[config](p, new([]string)), sdk.Ordered()),
+			}}
+			s, err := src.New(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cs := source.ConfiguredStream{Name: "b"}
+			if tc.state != "" {
+				cs.State = []byte(tc.state)
+			}
+			err = s.Read(context.Background(), source.ReadRequest{Streams: []source.ConfiguredStream{cs}}, &recorder{})
+			var coded interface{ ErrorCode() protocolv1.ErrorCode }
+			changed := errors.As(err, &coded) && coded.ErrorCode() == protocolv1.ErrorCode_ERROR_CODE_CONTRACT_CHANGED
+			if changed != tc.fails || (!tc.fails && err != nil) {
+				t.Errorf("Read: %v", err)
+			}
+		})
+	}
+}
+
+// A rejected token restarts from the floor, without what the read it belonged
+// to had seen.
+func TestRestartForgetsTheHighestCursor(t *testing.T) {
+	p := &pages{records: [][]string{{`{"id":1,"u":3}`}, {`{"id":2,"u":4}`}}, expired: map[string]bool{"t1": true}}
+	src := &sdk.Source[config]{Name: "acme", Streams: []sdk.Stream[config]{
+		sdk.Incremental("b", "u", paginated[config](p, new([]string)), sdk.Ordered()),
+	}}
+	read(t, src, "b", `{"cursor":9,"since":null,"page":"t1"}`)
 }
 
 func TestExpiredPageTokenRestartsFromTheFloor(t *testing.T) {

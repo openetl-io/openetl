@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
@@ -45,7 +46,9 @@ func PrimaryKey(cols ...string) StreamOption {
 }
 
 // Ordered says the API returns an incremental stream's records sorted by
-// its cursor, so the cursor floor can advance after every page.
+// its cursor, so the cursor floor can advance after every page. A cursor
+// lower than one before it fails the read with CONTRACT_CHANGED; equal ones
+// are fine.
 func Ordered() StreamOption { return func(o *streamOptions) { o.ordered = true } }
 
 func options(opts []StreamOption) streamOptions {
@@ -124,7 +127,13 @@ type Out struct {
 }
 
 func newOut[C any](ctx context.Context, st *Stream[C], emit source.Emitter, s streamState, raw []byte) *Out {
-	return &Out{ctx: ctx, stream: st.name, kind: st.kind, emit: emit, cursor: st.cursor, ordered: st.ordered, state: s, max: s.Max, resumed: s.Page, last: raw}
+	o := &Out{ctx: ctx, stream: st.name, kind: st.kind, emit: emit, cursor: st.cursor, ordered: st.ordered, state: s, max: s.Max, resumed: s.Page, last: raw}
+	// An ordered stream's floor is the highest cursor of the pages before
+	// the token, and it isn't saved as Max.
+	if st.ordered && s.Page != "" {
+		o.max = s.Cursor
+	}
+	return o
 }
 
 func (o *Out) since() Cursor {
@@ -191,6 +200,10 @@ func (o *Out) track(r json.RawMessage) error {
 	c, err := compareCursors(v, o.max)
 	if err != nil {
 		return fmt.Errorf("cursor %q: %w", o.cursor, err)
+	}
+	if c < 0 && o.ordered {
+		return WithCode(protocolv1.ErrorCode_ERROR_CODE_CONTRACT_CHANGED,
+			fmt.Errorf("cursor %q went back from %s to %s, so the API doesn't return records sorted by it, as sdk.Ordered says", o.cursor, o.max, v))
 	}
 	if c > 0 {
 		o.max = v
