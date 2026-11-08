@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
@@ -176,10 +175,6 @@ func (s *Server) ResolveIncident(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.ResolveIncidentResponse{Incident: out}), nil
 }
 
-// crashLoopFailures is how many attempts of a continuous run fail in a row,
-// without a commit, before it's a crash loop.
-const crashLoopFailures = 3
-
 func (s *Server) ReportAttemptFailure(ctx context.Context, req *connect.Request[dataplanev1.ReportAttemptFailureRequest]) (*connect.Response[dataplanev1.ReportAttemptFailureResponse], error) {
 	m := req.Msg
 	id, err := uuid.Parse(m.GetPipelineId())
@@ -196,30 +191,11 @@ func (s *Server) ReportAttemptFailure(ctx context.Context, req *connect.Request[
 	if m.GetTime().IsValid() {
 		at = m.GetTime().AsTime()
 	}
-	msg := truncate(m.GetMessage(), maxError)
-	arg := db.RecordAttemptFailureParams{
-		OrgID: s.Tenant.Org, PipelineID: id, RunID: m.GetRunId(), Attempt: m.GetAttempt(), Error: &msg, Time: &at,
+	f := heal.AttemptFailure{
+		Pipeline: id, RunID: m.GetRunId(), Attempt: m.GetAttempt(),
+		Code: truncate(m.GetCode(), 64), Message: truncate(m.GetMessage(), maxError), Time: at,
 	}
-	if code := truncate(m.GetCode(), 64); code != "" {
-		arg.Code = &code
-	}
-	err = s.Store.Tx(ctx, func(q *db.Queries) error {
-		row, err := q.RecordAttemptFailure(ctx, arg)
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Reported already, or its sync has ended.
-			return nil
-		}
-		if err != nil || !row.Continuous || row.FailuresSinceCommit < crashLoopFailures {
-			return err
-		}
-		_, err = heal.Observe(ctx, q, s.Tenant.Org, heal.Observation{
-			Pipeline: id, Version: row.Version, Class: heal.CrashLoop, Code: m.GetCode(), Message: msg,
-			Details: map[string]string{"failures": strconv.Itoa(int(row.FailuresSinceCommit)), "attempt": strconv.Itoa(int(m.GetAttempt()))},
-			Sync:    &row.ID, Key: row.ID.String(),
-		})
-		return err
-	})
-	if err != nil {
+	if err := s.Store.Tx(ctx, func(q *db.Queries) error { return heal.AttemptFailed(ctx, q, s.Tenant.Org, f) }); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&dataplanev1.ReportAttemptFailureResponse{}), nil

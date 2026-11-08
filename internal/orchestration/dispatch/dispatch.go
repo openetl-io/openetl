@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/openetl-io/openetl/internal/heal"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/sizing"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -473,7 +474,10 @@ func (d *Dispatcher) LaunchResult(ctx context.Context, org uuid.UUID, dataPlane,
 		if err != nil || n == 0 {
 			return err
 		}
-		return q.SetAttemptCode(ctx, db.SetAttemptCodeParams{OrgID: org, ID: id, Code: out.Code})
+		if err := q.SetAttemptCode(ctx, db.SetAttemptCodeParams{OrgID: org, ID: id, Code: out.Code}); err != nil {
+			return err
+		}
+		return attemptFailed(ctx, q, org, id, out)
 	})
 	if err != nil || n == 0 {
 		return false, err
@@ -539,7 +543,10 @@ func (d *Dispatcher) Result(ctx context.Context, org uuid.UUID, dataPlane, runne
 		if err := recordUsage(ctx, q, org, []RunningWork{{ID: id, Usage: usage}}); err != nil {
 			return err
 		}
-		return q.SetAttemptCode(ctx, db.SetAttemptCodeParams{OrgID: org, ID: id, Code: out.Code})
+		if err := q.SetAttemptCode(ctx, db.SetAttemptCodeParams{OrgID: org, ID: id, Code: out.Code}); err != nil {
+			return err
+		}
+		return attemptFailed(ctx, q, org, id, out)
 	})
 	if err != nil {
 		return false, err
@@ -657,6 +664,47 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	}
 }
 
+// expireLeases finishes the work whose runner stopped reporting it or that
+// ran out of time. Its runner may never tell anyone, so an attempt's failure
+// counts here.
+func (d *Dispatcher) expireLeases(ctx context.Context, org uuid.UUID) error {
+	return d.Store.Tx(ctx, func(q *db.Queries) error {
+		out := lost()
+		ids, err := q.ExpireLeases(ctx, db.ExpireLeasesParams{OrgID: org, Outcome: marshalOutcome(out)})
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if err := q.SetAttemptCode(ctx, db.SetAttemptCodeParams{OrgID: org, ID: id, Code: out.Code}); err != nil {
+				return err
+			}
+			if err := attemptFailed(ctx, q, org, id, out); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// attemptFailed counts an attempt that ended badly: a runner stopping or an
+// attempt fenced by a newer one isn't a failure. Work that isn't an attempt
+// counts for nothing.
+func attemptFailed(ctx context.Context, q *db.Queries, org uuid.UUID, id string, out contract.WorkOutcome) error {
+	if out.Code == "" || out.Cancelled || out.Code == errs.Draining.String() || out.Code == errs.Fenced.String() {
+		return nil
+	}
+	a, err := q.AttemptOfDispatch(ctx, db.AttemptOfDispatchParams{OrgID: org, ID: id})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return heal.AttemptFailed(ctx, q, org, heal.AttemptFailure{
+		Pipeline: a.PipelineID, RunID: a.RunID, Attempt: a.Attempt, Code: out.Code, Message: out.Message, Time: time.Now(),
+	})
+}
+
 func (d *Dispatcher) tick(ctx context.Context, org uuid.UUID, clean bool) error {
 	if _, err := d.Store.ReturnUnstarted(ctx, org); err != nil {
 		return err
@@ -665,7 +713,7 @@ func (d *Dispatcher) tick(ctx context.Context, org uuid.UUID, clean bool) error 
 	if _, err := d.Store.ExpireUnclaimed(ctx, db.ExpireUnclaimedParams{OrgID: org, Outcome: marshalOutcome(noRunner)}); err != nil {
 		return err
 	}
-	if _, err := d.Store.ExpireLeases(ctx, db.ExpireLeasesParams{OrgID: org, Outcome: marshalOutcome(lost())}); err != nil {
+	if err := d.expireLeases(ctx, org); err != nil {
 		return err
 	}
 	planes, err := d.Store.PendingDataPlanes(ctx, org)

@@ -269,6 +269,40 @@ func TestLeaseEnds(t *testing.T) {
 	}
 }
 
+// A runner that dies says nothing, so an attempt whose lease ends counts
+// toward a crash loop, as one its runner reports does.
+func TestLostAttemptsMakeACrashLoop(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	pipeline, sync := f.continuousRun()
+	q := f.d.Store.Queries
+	f.report("r", resources.M)
+	for n := int32(1); n <= 3; n++ {
+		id := fmt.Sprintf("job-%d", n)
+		if err := f.d.Enqueue(ctx, contract.WorkInput{
+			OrgID: f.org.String(), DataPlane: "default", ID: id, WorkflowID: "wf", Kind: contract.RunStreamJob, Input: map[string]string{},
+			Size: resources.S, Heartbeat: 200 * time.Millisecond, Timeout: time.Hour,
+			PipelineID: pipeline.String(), Version: "v", SyncID: sync.String(), Attempt: n,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+		f.poll("r", 0, 0)
+		time.Sleep(500 * time.Millisecond)
+		f.report("r", resources.M)
+		f.tick()
+		if st := f.status(id); !st.Done || st.Outcome.Code != errs.Transient.String() {
+			t.Fatalf("attempt %d: %+v", n, st)
+		}
+		open, err := q.OpenIncidents(ctx, db.OpenIncidentsParams{OrgID: f.org, PipelineID: pipeline, Class: "crash_loop"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := n == 3; (len(open) == 1) != want {
+			t.Fatalf("after %d lost attempts, %d crash loop incidents", n, len(open))
+		}
+	}
+}
+
 // Work can't outrun its timeout, however its runner reports it.
 func TestTimeoutEndsALease(t *testing.T) {
 	f := setup(t, Options{})
@@ -958,6 +992,16 @@ func TestPools(t *testing.T) {
 // pipelineAndSync makes the rows an attempt's usage hangs off.
 func (f *fixture) pipelineAndSync() (pipeline, sync uuid.UUID) {
 	f.t.Helper()
+	return f.startRun(false)
+}
+
+func (f *fixture) continuousRun() (pipeline, sync uuid.UUID) {
+	f.t.Helper()
+	return f.startRun(true)
+}
+
+func (f *fixture) startRun(continuous bool) (pipeline, sync uuid.UUID) {
+	f.t.Helper()
 	ctx, q := f.t.Context(), f.d.Store.Queries
 	src, dst := uuid.New(), uuid.New()
 	pipeline, sync = uuid.New(), uuid.New()
@@ -969,7 +1013,15 @@ func (f *fixture) pipelineAndSync() (pipeline, sync uuid.UUID) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if _, err := q.StartSync(ctx, db.StartSyncParams{OrgID: f.org, ID: sync, PipelineID: pipeline, Version: "v", WorkflowID: "wf", RunID: "run"}); err != nil {
+	err = errors.Join(
+		q.InsertSourceVersion(ctx, db.InsertSourceVersionParams{OrgID: f.org, SourceID: src, Version: "v", Spec: []byte("{}"), ConnectorDigest: "sha256:s", Secrets: []string{}, Provenance: "test"}),
+		q.InsertDestinationVersion(ctx, db.InsertDestinationVersionParams{OrgID: f.org, DestinationID: dst, Version: "v", Spec: []byte("{}"), ConnectorDigest: "sha256:d", Secrets: []string{}, Provenance: "test"}),
+		q.InsertPipelineVersion(ctx, db.InsertPipelineVersionParams{OrgID: f.org, PipelineID: pipeline, Version: "v", Spec: []byte("{}"), SourceID: src, DestinationID: dst, DataPlaneID: "default", SourceVersion: "v", DestinationVersion: "v", Dbt: []byte("{}"), SparkClusters: []byte("{}"), FlinkClusters: []byte("{}"), Secrets: []string{}, Provenance: "test"}),
+	)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if _, err := q.StartSync(ctx, db.StartSyncParams{OrgID: f.org, ID: sync, PipelineID: pipeline, Version: "v", WorkflowID: "wf", RunID: "run", Continuous: continuous}); err != nil {
 		f.t.Fatal(err)
 	}
 	return pipeline, sync

@@ -634,19 +634,20 @@ type Sync struct {
 }
 
 type Webhook struct {
-	OrgID          uuid.UUID
-	WorkspaceID    uuid.UUID
-	ID             uuid.UUID
-	Name           string
-	Spec           []byte
-	Version        string
-	Secrets        []string
-	Revision       int64
-	Disabled       bool
-	DisabledReason *string
-	FailingSince   *time.Time
-	CreateTime     time.Time
-	UpdateTime     time.Time
+	OrgID           uuid.UUID
+	WorkspaceID     uuid.UUID
+	ID              uuid.UUID
+	Name            string
+	Spec            []byte
+	Version         string
+	Secrets         []string
+	Revision        int64
+	Disabled        bool
+	DisabledReason  *string
+	FailingSince    *time.Time
+	CreateTime      time.Time
+	UpdateTime      time.Time
+	LastFailureTime *time.Time
 }
 
 type WebhookDelivery struct {

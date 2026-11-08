@@ -37,6 +37,21 @@ WHERE a.org_id = @org_id AND a.id = ANY(@ids::text[]);
 -- name: SetAttemptCode :exec
 UPDATE attempts SET code = @code WHERE org_id = @org_id AND id = @id;
 
+-- name: AttemptOfDispatch :one
+-- The attempt a dispatch is, if it's one, with its sync's run.
+SELECT a.pipeline_id, a.attempt, s.run_id
+FROM attempts a
+JOIN syncs s ON s.org_id = a.org_id AND s.id = a.sync_id
+WHERE a.org_id = @org_id AND a.id = @id;
+
+-- name: RecentFailedAttempts :one
+-- The sync's attempts created since @since that failed, by the code recorded
+-- on them. @attempt counts too: a runner's report of it can come before its
+-- result records the code.
+SELECT count(*) FROM attempts
+WHERE org_id = @org_id AND sync_id = @sync_id AND create_time >= @since
+    AND (code NOT IN ('', 'DRAINING', 'FENCED') OR attempt = @attempt);
+
 -- name: RecentAttempts :many
 -- The pipeline's latest attempts that say anything about its size: they ran,
 -- or they failed. Newest first.
@@ -247,10 +262,11 @@ WHERE org_id = @org_id AND state = 'placed' AND start_deadline <= now();
 UPDATE dispatches SET state = 'finished', outcome = @outcome, finish_time = now()
 WHERE org_id = @org_id AND state = 'pending' AND light <> '' AND start_deadline <= now();
 
--- name: ExpireLeases :execrows
+-- name: ExpireLeases :many
 -- Running work whose runner stopped reporting it, or that ran out of time.
 UPDATE dispatches SET state = 'finished', outcome = @outcome, finish_time = now()
-WHERE org_id = @org_id AND state = 'running' AND lease_deadline <= now();
+WHERE org_id = @org_id AND state = 'running' AND lease_deadline <= now()
+RETURNING id;
 
 -- name: PendingDataPlanes :many
 SELECT DISTINCT data_plane_id FROM dispatches WHERE org_id = @org_id AND state = 'pending' AND light = '';
