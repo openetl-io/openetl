@@ -384,6 +384,66 @@ func TestIncrementalOrdered(t *testing.T) {
 	}
 }
 
+// A stream that says it's ordered, and whose cursor goes backwards, fails
+// rather than move its floor past records it hasn't read. Ties are fine, and
+// so are records below the floor where a read starts from the floor less its
+// lookback.
+func TestOrderedCursorGoingBackwards(t *testing.T) {
+	floor := func(minute int, token string) []byte {
+		return fmt.Appendf(nil, `{"cursor":"2026-01-01T00:%02d:00Z","since":null,"page":%q}`, minute, token)
+	}
+	for _, tc := range []struct {
+		name    string
+		minutes []int
+		state   []byte
+		fails   bool
+	}{
+		{name: "within a page", minutes: []int{30, 10, 40, 50}, fails: true},
+		{name: "between pages", minutes: []int{10, 30, 20, 40}, fails: true},
+		{name: "ties within a page", minutes: []int{10, 10, 20, 20}},
+		{name: "a token's records tie with the floor", minutes: []int{10, 20, 20, 30}, state: floor(20, "2")},
+		{name: "a token's records are below the floor", minutes: []int{10, 20, 15, 30}, state: floor(20, "2"), fails: true},
+		{name: "a read within the lookback", minutes: []int{46, 47, 55}, state: []byte(`{"cursor":"2026-01-01T00:50:00Z"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sinces []string
+			srv := cursorAPI(tc.minutes, &sinces)
+			defer srv.Close()
+			s := bind(t, testManifest("", fmt.Sprintf(incrementalStream, ", ordered: true")), srv, nil)
+			_, err := read(t, s, source.ConfiguredStream{Name: "items", State: tc.state})
+			if tc.fails && errs.CodeOf(err) != errs.ContractChanged {
+				t.Errorf("got %v, want CONTRACT_CHANGED", err)
+			}
+			if !tc.fails && err != nil {
+				t.Error(err)
+			}
+		})
+	}
+
+	// A rejected token restarts from the floor less the lookback, so what
+	// comes first can be below the floor.
+	t.Run("a restart within the lookback", func(t *testing.T) {
+		var sinces []string
+		srv := cursorAPI([]int{36, 37, 40}, &sinces)
+		defer srv.Close()
+		expired := testManifest("", fmt.Sprintf(incrementalStream, ", ordered: true")+`
+    errors:
+      - { when: "response.status == 400", action: expired }
+`)
+		srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("offset") == "4" {
+				http.Error(w, "stale offset", http.StatusBadRequest)
+				return
+			}
+			srv.Config.Handler.ServeHTTP(w, r)
+		}))
+		defer srv2.Close()
+		if _, err := read(t, bind(t, expired, srv2, nil), source.ConfiguredStream{Name: "items", State: floor(40, "4")}); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 func TestIncrementalUnordered(t *testing.T) {
 	var sinces []string
 	srv := cursorAPI([]int{30, 10, 50, 20, 40}, &sinces)

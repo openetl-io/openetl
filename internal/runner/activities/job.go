@@ -83,7 +83,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		}
 		read := plan.ReadMode(p, declared, ps)
 		replay, cursor := plan.Replay(cs.Replay, read), cmp.Or(ps.GetCursor(), cs.CursorField)
-		if err := plan.CursorProblem(cs.Name, read, cursor); err != nil {
+		if err := plan.CursorProblem(cs.Name, read, len(cs.PrimaryKey) > 0, cursor); err != nil {
 			return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
 		}
 		// A transform's inputs aren't written; its outputs are.

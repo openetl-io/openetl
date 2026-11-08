@@ -863,6 +863,81 @@ func TestFailureAfterAnotherClaimIsFenced(t *testing.T) {
 	}
 }
 
+// A destination's refusal normally starts another attempt, but not one that
+// was fenced: its claim would fence the attempt that took over.
+func TestRefusalAfterAnotherClaimDoesntClaimAgain(t *testing.T) {
+	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+	var other *checkpoint.Session
+	dest := &refusingDest{before: func() {
+		if other != nil {
+			return
+		}
+		var err error
+		if other, err = log.Claim(t.Context(), "a2"); err != nil {
+			t.Error(err)
+		}
+	}}
+	j := job(log, "a1", pagedSource{pages: 1}, schemaFlow{}, make(chan uint64, 64))
+	j.Destination, j.HeldURL = dest, "mem://held"
+	j.Streams = []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &runner.StreamHolds{}}}
+	_, err := runner.RunAttempt(t.Context(), j)
+	if !errors.Is(err, checkpoint.ErrFenced) {
+		t.Errorf("got %v, want the attempt fenced", err)
+	}
+	var refused *runner.RefusedError
+	if !errors.As(err, &refused) {
+		t.Errorf("got %v, want the refusal kept as the cause", err)
+	}
+	if err := other.Check(t.Context()); err != nil {
+		t.Errorf("the attempt that took over lost the pipeline: %v", err)
+	}
+}
+
+// schemaFlow is Passthrough, with a schema for s in each epoch.
+type schemaFlow struct{}
+
+func (schemaFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+	defer close(out)
+	schema, err := arrowipc.EncodeSchema(arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil))
+	if err != nil {
+		return err
+	}
+	mid := make(chan runner.Frame)
+	errc := make(chan error, 1)
+	go func() { errc <- runner.Passthrough{Convert: columnless}.Run(ctx, plan, in, mid) }()
+	for fr := range mid {
+		if fr.Kind == runner.FrameReady {
+			fr.Ready.Schemas = map[string][]byte{"s": schema}
+		}
+		select {
+		case out <- fr:
+		case <-ctx.Done():
+		}
+	}
+	return <-errc
+}
+
+// refusingDest refuses every schema, after calling before.
+type refusingDest struct {
+	countingDest
+	before func()
+}
+
+func (d *refusingDest) Capabilities() destination.Capabilities {
+	c := d.countingDest.Capabilities()
+	c.Holds = destination.Holds{ByID: true, Guarded: true}
+	return c
+}
+
+func (d *refusingDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	return d, nil
+}
+
+func (d *refusingDest) ApplySchema(context.Context, []destination.StreamSchema) (destination.SchemaApplied, error) {
+	d.before()
+	return destination.SchemaApplied{Refused: []destination.RefusedColumn{{Stream: "s", Column: "id", Reason: "it refuses them all"}}}, nil
+}
+
 type failingSource struct {
 	err    error
 	before func()

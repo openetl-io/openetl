@@ -861,6 +861,11 @@ func newTracker(inc *incremental, ss streamState) *tracker {
 	t := &tracker{inc: inc, floor: ss.Cursor, since: ss.Cursor, max: ss.Max}
 	if ss.Page != "" {
 		t.since = ss.Since
+		// An ordered stream's floor is the highest cursor of the pages before
+		// the token, and it isn't saved as Max.
+		if inc != nil && inc.ordered {
+			t.max = ss.Cursor
+		}
 	}
 	if string(t.since) == "null" {
 		t.since = nil
@@ -891,9 +896,14 @@ func (t *tracker) see(rec map[string]any) error {
 		t.max = raw
 		return nil
 	}
-	if c, err := t.inc.compare(raw, t.max); err != nil {
+	c, err := t.inc.compare(raw, t.max)
+	if err != nil {
 		return err
-	} else if c > 0 {
+	}
+	if c < 0 && t.inc.ordered {
+		return errs.New(errs.ContractChanged, "cursor %s went back from %s to %s, so the API doesn't return records sorted by it, as ordered says: remove ordered from the stream's incremental", t.inc.field, t.max, raw)
+	}
+	if c > 0 {
 		t.max = raw
 	}
 	return nil

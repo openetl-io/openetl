@@ -30,6 +30,7 @@ import (
 
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/logging"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
@@ -285,8 +286,7 @@ func engineEnv() []string {
 
 // relayLogs re-logs the engine's JSON log lines.
 func (p *process) relayLogs(r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	sc := logging.Lines(r)
 	for sc.Scan() {
 		var m map[string]any
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
@@ -305,6 +305,9 @@ func (p *process) relayLogs(r io.Reader) {
 		}
 		slices.SortFunc(attrs, func(a, b slog.Attr) int { return strings.Compare(a.Key, b.Key) })
 		p.log.LogAttrs(context.Background(), level(lvl), msg, attrs...)
+	}
+	if err := sc.Err(); err != nil {
+		p.log.Warn("reading the engine's logs failed", "err", err)
 	}
 }
 

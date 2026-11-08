@@ -129,17 +129,7 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		cancel()
 		return nil, p.failure(errs.FromStatus(err))
 	}
-	w := &writer{
-		p:         p,
-		stream:    stream,
-		cancel:    cancel,
-		opened:    make(chan *protocolv1.WriteOpened, 1),
-		recovered: make(chan *protocolv1.WriteRecovered, 1),
-		staged:    make(chan *protocolv1.WriteStaged, 1),
-		committed: make(chan *protocolv1.WriteCommitted, 1),
-		applied:   make(chan *protocolv1.WriteSchemaApplied, 1),
-		done:      make(chan struct{}),
-	}
+	w := newWriter(p, stream, cancel)
 	go w.receive()
 	opened, err := call(ctx, w, &protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Open{Open: open}}, w.opened)
 	if err != nil {
@@ -172,6 +162,20 @@ type writer struct {
 	err  error
 }
 
+func newWriter(p *process, stream grpc.BidiStreamingClient[protocolv1.WriteRequest, protocolv1.WriteResponse], cancel context.CancelFunc) *writer {
+	return &writer{
+		p:         p,
+		stream:    stream,
+		cancel:    cancel,
+		opened:    make(chan *protocolv1.WriteOpened, 1),
+		recovered: make(chan *protocolv1.WriteRecovered, 1),
+		staged:    make(chan *protocolv1.WriteStaged, 1),
+		committed: make(chan *protocolv1.WriteCommitted, 1),
+		applied:   make(chan *protocolv1.WriteSchemaApplied, 1),
+		done:      make(chan struct{}),
+	}
+}
+
 func (w *writer) receive() {
 	defer close(w.done)
 	for {
@@ -183,22 +187,39 @@ func (w *writer) receive() {
 			w.err = w.p.failure(errs.FromStatus(err))
 			return
 		}
+		var taken bool
 		switch x := m.GetMsg().(type) {
 		case *protocolv1.WriteResponse_Opened:
-			w.opened <- x.Opened
+			taken = deliver(w, w.opened, x.Opened)
 		case *protocolv1.WriteResponse_Recovered:
-			w.recovered <- x.Recovered
+			taken = deliver(w, w.recovered, x.Recovered)
 		case *protocolv1.WriteResponse_Staged:
-			w.staged <- x.Staged
+			taken = deliver(w, w.staged, x.Staged)
 		case *protocolv1.WriteResponse_Committed:
-			w.committed <- x.Committed
+			taken = deliver(w, w.committed, x.Committed)
 		case *protocolv1.WriteResponse_SchemaApplied:
-			w.applied <- x.SchemaApplied
+			taken = deliver(w, w.applied, x.SchemaApplied)
 		default:
 			w.err = errs.New(errs.Internal, "connector: write: unexpected %T", x)
 			w.cancel()
 			return
 		}
+		if !taken {
+			return
+		}
+	}
+}
+
+// deliver hands a reply to its call, and fails the stream if an earlier one
+// is still waiting there: nothing asked for this one.
+func deliver[T any](w *writer, answer chan T, reply T) bool {
+	select {
+	case answer <- reply:
+		return true
+	default:
+		w.err = errs.New(errs.Internal, "connector: write: the destination sent a %T nothing asked for", reply)
+		w.cancel()
+		return false
 	}
 }
 
@@ -306,6 +327,9 @@ func (w *writer) PreCommit(ctx context.Context, e destination.Epoch) (destinatio
 	if err != nil {
 		return nil, err
 	}
+	if err := checkEpoch("pre-commit", e, st.GetEpoch()); err != nil {
+		return nil, err
+	}
 	return st.GetStaged(), nil
 }
 
@@ -317,7 +341,18 @@ func (w *writer) Commit(ctx context.Context, e destination.Epoch, staged []desti
 	if err := fenced(errs.FromProto(c.GetError())); err != nil {
 		return destination.Committed{}, err
 	}
+	if err := checkEpoch("commit", e, c.GetEpoch()); err != nil {
+		return destination.Committed{}, err
+	}
 	return destination.Committed{Collapsed: c.GetCollapsedRows()}, nil
+}
+
+// checkEpoch fails a reply to what's for epoch e that names another.
+func checkEpoch(what string, e destination.Epoch, got *protocolv1.Epoch) error {
+	if got.GetGeneration() != e.Generation || got.GetN() != e.N {
+		return errs.New(errs.Internal, "connector: write: %s of epoch %d-g%d was answered for epoch %d-g%d", what, e.N, e.Generation, got.GetN(), got.GetGeneration())
+	}
+	return nil
 }
 
 // Close ends the stream and waits for the destination to close its writer.

@@ -40,7 +40,7 @@ The Go SDK, in [`sdk/go`](../../sdk/go), does all of that in `sdk.Serve`, and it
 
 A source discovers its streams and reads them.
 
-- **Discover** returns a catalog: each stream's name, primary key, cursor field, how it can be read (full refresh, incremental, CDC or stream), and its **replay**. A stream is exact when reading again from a resume point yields exactly the records after it, as a CDC log or a Kafka partition does, and superset when records can repeat, as they do when reading from a cursor's last value. Replay is half of what sets a stream's [delivery guarantee](../get-started/concepts.md#delivery-guarantees); the destination is the other.
+- **Discover** returns a catalog: each stream's name, primary key, cursor field, how it can be read (full refresh, incremental, CDC or stream), and its **replay**. A stream is exact when reading again from a resume point yields exactly the records after it, as a CDC log or a Kafka partition does, and superset when records can repeat, as they do when reading from a cursor's last value. Replay is half of what sets a stream's [delivery guarantee](../get-started/concepts.md#delivery-guarantees); the destination is the other. A stream read with stream that has a primary key needs a cursor field that differs between a key's events, such as an offset, or the pipeline to name one: without one each event of a key would get the same `_openetl_id` and be dropped as a repeat, so OpenETL refuses the plan.
 - **Read** emits records, as JSON objects or Arrow batches, and marks **resume points**: places in a stream it can restart from, each with a state it gets back when it does. OpenETL commits only at the resume points a source emits. A bounded stream ends with **Complete**, whose state is where the next sync starts.
 - A source can also check its config (`Check`), acknowledge upstream what's committed (`Committed`, for Kafka offsets or a replication slot's position, a checkpoint behind), divide streams into splits that are read concurrently (`Splits`, `Resplit`), say how much of what it keeps for a pipeline a checkpoint's positions have used while the pipeline isn't running (`Retention`, set with `Retention: true` in `sdk.Connector`; OpenETL asks every 15 minutes and opens a **Retention at risk** incident from the answer), and prepare and remove what it keeps upstream for a pipeline (`Setup` and `Teardown`, below).
 
@@ -58,6 +58,8 @@ A writer's calls are the commit protocol:
 2. **PreCommit** makes the lane's part of the epoch durable but not visible, and returns a committable: a few kilobytes that say what it staged. OpenETL stores every lane's committable in the epoch's checkpoint record.
 3. **Commit** runs once that record is written. It makes the epoch visible with a marker per stream, behind the destination's fence, and must be idempotent.
 4. **Recover** runs when an attempt starts. It raises the fence to the attempt's generation, so older attempts can no longer commit, and says whether the epoch the checkpoint log points to was applied, applied it now, or is lost.
+
+A reply to **PreCommit** or **Commit** names the epoch of the request it answers, and each request gets one reply. OpenETL fails the attempt on a reply for another epoch, or one it didn't ask for. `sdk.Serve` does this for you.
 
 The commit is the destination's own: its staging, markers, fence and catalog live in its writer, not in OpenETL.
 
@@ -138,6 +140,8 @@ go build -o bin/ ./cmd/source-greetings
 ```
 
 `sdk.Full` declares a stream read whole on every sync. `sdk.Incremental` declares one read from a cursor onwards, and `sdk.Resumable` one that keeps its own state; `sdk.Paginate` marks a resume point after each page of an API. Streams declared this way are superset: a retry can repeat records, and whether they land twice depends on the destination, which can drop repeats by their `_openetl_id`.
+
+`sdk.Ordered`, like `ordered: true` in a declarative source's `incremental`, says the API returns a stream's records sorted by its cursor, oldest first, so the cursor's floor moves after every page. A cursor lower than one before it fails the read with `CONTRACT_CHANGED`, because the floor may already be past records the read hasn't reached. Equal cursors are fine. If you see that error, the API doesn't sort by that field: remove the option, and the floor moves only when the stream completes.
 
 For Arrow batches, exact replay, splits or CDC, implement `source.Source` and `destination.Destination` yourself. The official connectors in [openetl-connectors](https://github.com/openetl-io/openetl-connectors) do: each `cmd/<executable>/main.go` there hands one to `sdk.Serve`.
 

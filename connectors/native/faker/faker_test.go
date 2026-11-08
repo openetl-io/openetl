@@ -198,6 +198,10 @@ func TestEndlessStreamsInterleaveAndResume(t *testing.T) {
 		if !slices.Equal(cs.SyncModes, []source.SyncMode{source.Stream}) {
 			t.Errorf("%s: sync modes %v, want stream", cs.Name, cs.SyncModes)
 		}
+		// A keyed stream read needs a cursor to be planned at all.
+		if !slices.Equal(cs.PrimaryKey, []string{"id"}) || cs.CursorField != "id" {
+			t.Errorf("%s: primary key %v, cursor %q", cs.Name, cs.PrimaryKey, cs.CursorField)
+		}
 	}
 	endless := func(states map[string][]byte, n int) *recorder {
 		ctx, cancel := context.WithCancel(t.Context())

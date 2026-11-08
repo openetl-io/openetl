@@ -176,6 +176,9 @@ func (w *writer) commitLanes(e *protocolv1.Epoch, staged [][]byte) error {
 	if c.GetError() != nil {
 		return rpcerr.FromProto(c.GetError())
 	}
+	if c.GetEpoch().GetN() != e.GetN() || c.GetEpoch().GetGeneration() != e.GetGeneration() {
+		return fmt.Errorf("commit %s was answered for epoch %s", epochString(e), epochString(c.GetEpoch()))
+	}
 	return nil
 }
 
