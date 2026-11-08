@@ -45,9 +45,9 @@ Its first sync starts straight away. Open **Pipelines** in the console to see it
 | If you want to | Start with |
 |---|---|
 | Learn what OpenETL is, in plain words | [Overview](docs/get-started/overview.md) |
-| Check on pipelines and the data they deliver | [Use the console](docs/use/index.md) |
-| Build pipelines | [Pipelines](docs/pipelines/index.md) |
 | Run OpenETL for your team | [Self-host](docs/self-host/index.md) |
+| Build pipelines | [Pipelines](docs/pipelines/index.md) |
+| Check on pipelines and the data they deliver | [Use the console](docs/use/index.md) |
 | Connect dbt, Spark, Flink, your alerts or your own code | [Integrate](docs/integrate/index.md) |
 | Write a connector | [Build a connector](docs/build-connectors/index.md) |
 | Know how it works inside | [Internals](docs/internals/index.md) |
