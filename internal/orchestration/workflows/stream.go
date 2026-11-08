@@ -91,7 +91,7 @@ func (w Workflows) StreamSupervisor(ctx orchestration.Context, in contract.Strea
 			log.Info("the run stopped", "err", err)
 		}
 		// Recorded even if the workflow is being cancelled.
-		if ferr := ctx.Step(contract.FinishSync, cpStep, finish, nil); ferr != nil {
+		if ferr := ctx.Step(contract.FinishSync, finishStep, finish, nil); ferr != nil {
 			log.Warn("recording the run's end failed", "sync", in.Run.SyncID, "err", ferr)
 		}
 		in.Run = nil

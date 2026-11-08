@@ -50,6 +50,11 @@ func (w Workflows) All() []orchestration.Workflow {
 // cpStep is for most steps on the control plane.
 var cpStep = orchestration.StepOptions{Timeout: 30 * time.Second, Attempts: 10}
 
+// finishStep records how a sync or run ended, which nothing else does: its
+// tries last through about an hour and a half of the database being away. They
+// end, as a schedule starts nothing while its workflow is still here.
+var finishStep = orchestration.StepOptions{Timeout: 30 * time.Second, Attempts: 60}
+
 // Sync runs one sync of a pipeline: it records the sync, runs attempts on
 // the pipeline's data plane until one succeeds or retries run out, runs the
 // post-sync steps there, then records the outcome. It does nothing if the
@@ -102,7 +107,7 @@ func (w Workflows) Sync(ctx orchestration.Context, in contract.SyncInput) (*cont
 		finish.Error, finish.Code = err.Error(), orchestration.CodeOf(err)
 	}
 	// Recorded even if the workflow is being cancelled.
-	if ferr := ctx.Step(contract.FinishSync, cpStep, finish, nil); ferr != nil && err == nil {
+	if ferr := ctx.Step(contract.FinishSync, finishStep, finish, nil); ferr != nil && err == nil {
 		err = ferr
 	}
 	if err != nil {

@@ -21,6 +21,9 @@ type syncEnv struct {
 	finished contract.FinishSyncInput
 	calls    int
 	started  contract.StartSyncResult
+	// How many of FinishSync's tries fail; negative: every one.
+	finishFailures int
+	finishTries    int
 }
 
 func newSyncEnv(t *testing.T, attempt func(n int, in contract.AttemptInput) contract.WorkOutcome) *syncEnv {
@@ -31,6 +34,10 @@ func newSyncEnv(t *testing.T, attempt func(n int, in contract.AttemptInput) cont
 		return e.started, nil
 	}))
 	e.env.RegisterStep(orchestration.NewAction(contract.FinishSync, func(_ context.Context, in contract.FinishSyncInput) error {
+		e.finishTries++
+		if e.finishFailures < 0 || e.finishTries <= e.finishFailures {
+			return errs.New(errs.Transient, "the database is away")
+		}
 		e.finished = in
 		return nil
 	}))
@@ -191,6 +198,31 @@ func TestPausedPipelineDoesNotSync(t *testing.T) {
 	e.started = contract.StartSyncResult{Paused: true}
 	if err := e.run(t); err != nil || e.calls > 0 || e.finished.SyncID != "" {
 		t.Fatalf("error %v, %d attempts, recorded %+v", err, e.calls, e.finished)
+	}
+}
+
+// A database outage longer than other steps try for doesn't leave a finished
+// sync recorded as running.
+func TestRecordingASyncsEndOutlastsAnOutage(t *testing.T) {
+	e := newSyncEnv(t, func(int, contract.AttemptInput) contract.WorkOutcome { return result(t, contract.AttemptResult{}) })
+	e.finishFailures = 30
+	if err := e.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if e.finished.SyncID != "s1" || e.finishTries != 31 {
+		t.Errorf("recorded %+v after %d tries", e.finished, e.finishTries)
+	}
+}
+
+// It does give up, as a schedule starts nothing while the workflow runs.
+func TestRecordingASyncsEndGivesUp(t *testing.T) {
+	e := newSyncEnv(t, func(int, contract.AttemptInput) contract.WorkOutcome { return result(t, contract.AttemptResult{}) })
+	e.finishFailures = -1
+	if err := e.run(t); err == nil {
+		t.Fatal("want an error")
+	}
+	if e.finishTries != 60 {
+		t.Errorf("%d tries", e.finishTries)
 	}
 }
 
