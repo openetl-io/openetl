@@ -1,6 +1,7 @@
 package schedules
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"strings"
@@ -15,36 +16,55 @@ import (
 	"github.com/openetl-io/openetl/internal/store"
 )
 
-// reconcileRetry is how soon a reconcile that failed tries again.
-const reconcileRetry = 30 * time.Second
+const (
+	// How often an orchestrator reconciles. It's what puts right a schedule that
+	// a failed call after a commit, or two calls landing in reverse order, left
+	// out of step. On Temporal, a pass costs a few calls per schedule.
+	reconcileEvery = 10 * time.Minute
+	// How soon a reconcile that failed tries again, doubling up to
+	// reconcileEvery, so one schedule a backend keeps refusing costs no more
+	// than a pass each reconcileEvery.
+	reconcileRetry = 30 * time.Second
+)
 
 // Reconciler makes what runs pipelines match the database, when an
-// orchestrator starts: each continuous pipeline gets a supervisor, and each
-// scheduled one its schedule. A switch of backends or a workflow an operator
-// lost needs nothing else. Every step is safe to repeat, so any number of
-// orchestrators can run it.
+// orchestrator starts and every reconcileEvery after: each continuous pipeline
+// gets a supervisor, and each scheduled one its schedule, with what the
+// pipeline says now. A switch of backends or a workflow an operator lost needs
+// nothing else. Every step is safe to repeat, so any number of orchestrators
+// can run it.
+//
+// A supervisor that's running is left alone: a refresh is what starts a run
+// that failed for good again, so it can't be sent on a timer.
 type Reconciler struct {
 	Store     *store.Store
 	Schedules *Schedules
 	Backend   orchestration.Backend
 	Logger    *slog.Logger
+	// How often Run reconciles. Zero: reconcileEvery.
+	Every time.Duration
 }
 
-// Run reconciles once, trying until it has or ctx ends.
+// Run reconciles now and then every so often, until ctx ends.
 func (r *Reconciler) Run(ctx context.Context) {
+	every := cmp.Or(r.Every, reconcileEvery)
+	retry := min(reconcileRetry, every)
 	for {
-		err := r.Reconcile(ctx)
-		if err == nil {
-			return
+		wait := every
+		if err := r.Reconcile(ctx); err == nil {
+			retry = min(reconcileRetry, every)
+		} else {
+			if ctx.Err() != nil {
+				return
+			}
+			wait = retry
+			retry = min(2*retry, every)
+			r.Logger.Warn("reconciling failed; trying again", "in", wait, "err", err)
 		}
-		if ctx.Err() != nil {
-			return
-		}
-		r.Logger.Warn("reconciling failed; trying again", "in", reconcileRetry, "err", err)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(reconcileRetry):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -118,6 +138,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	for _, p := range plan.upsertSchedules {
 		note("creating a schedule", p.id, r.Schedules.Upsert(ctx, p.org, p.id, p.schedule, p.paused))
 	}
+	for _, p := range plan.updateSchedules {
+		note("updating a schedule", p.id, r.Schedules.Upsert(ctx, p.org, p.id, p.schedule, p.paused))
+	}
 	for _, p := range plan.pauseSchedules {
 		note("pausing a schedule", p.id, r.Schedules.SetPaused(ctx, p.id, p.paused))
 	}
@@ -134,10 +157,13 @@ type reconcilePlan struct {
 	startSupervisors  []pipelineToRun
 	cancelSupervisors []string
 	upsertSchedules   []pipelineToRun
+	updateSchedules   []pipelineToRun
 	pauseSchedules    []pipelineToRun
 	deleteSchedules   []string
 }
 
+// changes doesn't count updateSchedules, which a pass sets whether or not
+// they've changed.
 func (p reconcilePlan) changes() int {
 	return len(p.startSupervisors) + len(p.cancelSupervisors) + len(p.upsertSchedules) + len(p.pauseSchedules) + len(p.deleteSchedules)
 }
@@ -180,10 +206,14 @@ func planReconcile(pipelines []pipelineToRun, supervisors []orchestration.Runnin
 		}
 		wantSchedule[id] = true
 		s, ok := scheduled[id]
-		switch {
-		case !ok:
+		if !ok {
 			plan.upsertSchedules = append(plan.upsertSchedules, p)
-		case s.Paused != p.paused:
+			continue
+		}
+		// Set whether it differs or not: Temporal rewrites a cron into calendars,
+		// so there's nothing to compare it with.
+		plan.updateSchedules = append(plan.updateSchedules, p)
+		if s.Paused != p.paused {
 			plan.pauseSchedules = append(plan.pauseSchedules, p)
 		}
 	}
