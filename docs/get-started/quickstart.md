@@ -126,10 +126,10 @@ would be created workspaces/default/pipelines/faker-to-postgres (version known a
 workspaces/default/pipelines/faker-to-postgres (version known after apply)
   job size: s (1 vCPU, 2 GiB), the default, in pool default
   notes:
-    the control plane doesn't know destination "local-postgres"'s capabilities, so only the runner checks delivery, before each sync
+    source "faker" hasn't been discovered, so the plan checks only the delivery settings (openetl discover faker)
 ```
 
-Nothing has changed yet. The note says the runner checks the [delivery guarantees](./concepts.md#delivery-guarantees) before each sync, rather than the plan checking them now. The control plane learns what a destination can do from its connector's package, and this quickstart runs the connectors from a local build instead.
+Nothing has changed yet. The note says the plan doesn't know the source's streams yet, so it can't say how each will be delivered. Once the source exists, `openetl discover faker` lists them and stores the list, and from then on plans show each stream's [delivery guarantee](./concepts.md#delivery-guarantees).
 
 Apply it:
 

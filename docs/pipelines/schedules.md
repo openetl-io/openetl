@@ -38,12 +38,11 @@ spec:
   schedule: { cron: "CRON_TZ=Europe/Berlin 0 6 * * *" }
 ```
 
-> [!WARNING]
-> `openetl plan` and `openetl apply --dry-run` don't check a cron expression. An invalid one fails `openetl apply` after the pipeline is stored, and the pipeline has no schedule until you apply it again with a valid one, which starts its first sync:
->
-> ```text
-> openetl: unavailable: the definitions were stored, but what runs a pipeline couldn't be updated; apply again: schedules: schedule schedule/a4d14205-4426-470d-bda9-e2e34c624c42: end of range (25) above maximum (23): 25
-> ```
+`openetl plan` and `openetl apply` refuse a cron expression that isn't valid, before anything is stored:
+
+```text
+openetl: invalid_argument: shop-orders.yaml#1: spec: schedule.cron: "0 25 * * *" isn't a cron expression of five fields: end of range (25) above maximum (23): 25
+```
 
 ## Jitter
 
