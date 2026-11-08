@@ -156,8 +156,7 @@ func Open(ctx context.Context, o Options) (*Backend, error) {
 // createSystemDatabase makes the database and DBOS's tables, as a context does
 // and a client doesn't. On a new install, a server and an orchestrator starting
 // together race to create the database and its schema, and the one that loses
-// tries again: CREATE ... IF NOT EXISTS run at once can fail with a unique
-// violation (23505).
+// tries again.
 func createSystemDatabase(ctx context.Context, url string, log *slog.Logger) error {
 	for try := 1; ; try++ {
 		c, err := dbos.NewContext(ctx, dbos.Config{AppName: appName, DatabaseURL: url, Logger: log})
@@ -167,8 +166,7 @@ func createSystemDatabase(ctx context.Context, url string, log *slog.Logger) err
 			}
 			return nil
 		}
-		raced := strings.Contains(err.Error(), "failed to create database") || strings.Contains(err.Error(), "SQLSTATE 23505")
-		if try == createTries || !raced {
+		if try == createTries || !lostCreateRace(err) {
 			return err
 		}
 		select {
@@ -177,6 +175,15 @@ func createSystemDatabase(ctx context.Context, url string, log *slog.Logger) err
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// lostCreateRace is whether err is what losing that race looks like: CREATE
+// ... IF NOT EXISTS run at once can fail with a unique violation (23505), and
+// migrations run at once can deadlock (40P01). DBOS keeps only the text of its
+// migrations' errors, so the codes are looked for there.
+func lostCreateRace(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "failed to create database") || strings.Contains(msg, "SQLSTATE 23505") || strings.Contains(msg, "SQLSTATE 40P01")
 }
 
 func (b *Backend) Close() {
