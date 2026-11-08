@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"math"
 	"slices"
 	"strconv"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/internal/ints"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
@@ -275,9 +275,7 @@ func (s *session) openLane(gen uint64, lane, lanes int) *writer {
 		Config: s.r.proc.Config(), Pipeline: s.pipeline, Namespace: s.ns, Generation: gen, Scope: s.scope,
 		CommitInterval: durationpb.New(time.Second),
 	}
-	if lane > 0 && lane <= math.MaxUint32 {
-		open.Lane = uint32(lane)
-	}
+	open.Lane = ints.Uint32(lane)
 	for _, name := range s.streams {
 		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: name, Mode: s.mode, PrimaryKey: []string{"id"}, AllowTypeChanges: s.allowTypeChanges})
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/sizing"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/store/db"
 )
@@ -106,8 +107,8 @@ func (s *Server) syncsOut(ctx context.Context, pipeline string, rows []db.GetSyn
 	lastCommit := map[string]time.Time{}
 	for _, st := range streams {
 		ss := &apiv1.SyncStream{
-			Name: st.Name, Rows: uint64(st.Rows), QuarantinedRows: uint64(st.QuarantinedRows), CollapsedRows: uint64(st.CollapsedRows), //nolint:gosec // sums of counts
-			HeldCells: uint64(st.HeldCells), //nolint:gosec // as above
+			Name: st.Name, Rows: ints.Uint64(st.Rows), QuarantinedRows: ints.Uint64(st.QuarantinedRows), CollapsedRows: ints.Uint64(st.CollapsedRows),
+			HeldCells: ints.Uint64(st.HeldCells),
 		}
 		if len(st.HeldColumns) > 0 {
 			if err := json.Unmarshal(st.HeldColumns, &ss.HeldColumns); err != nil {
@@ -328,5 +329,5 @@ func logEntry(l contract.LogLine) *apiv1.LogEntry {
 
 func taskOf(task string) (step, attempt int32) {
 	s, a, _ := attemptlog.ParseTask(task)
-	return int32(s), int32(a) //nolint:gosec // three digits
+	return ints.Int32(s), ints.Int32(a)
 }

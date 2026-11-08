@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -147,17 +146,19 @@ func resourceManager() (string, error) {
 	if dir == "" {
 		return "", errs.New(errs.ConfigInvalid, "spark: a YARN master needs HADOOP_CONF_DIR on the runner, as spark-submit does")
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "yarn-site.xml")) //nolint:gosec // the operator's Hadoop configuration, as spark-submit reads it
+	// As spark-submit reads it, following a link out of the directory.
+	f, err := os.DirFS(dir).Open("yarn-site.xml")
 	if err != nil {
-		return "", errs.Wrap(errs.ConfigInvalid, err, "spark: YARN's settings")
+		return "", errs.Wrap(errs.ConfigInvalid, err, "spark: YARN's settings in "+dir)
 	}
+	defer func() { _ = f.Close() }()
 	var site struct {
 		Properties []struct {
 			Name  string `xml:"name"`
 			Value string `xml:"value"`
 		} `xml:"property"`
 	}
-	if err := xml.Unmarshal(b, &site); err != nil { //nolint:gosec // the operator's own file
+	if err := xml.NewDecoder(io.LimitReader(f, 16<<20)).Decode(&site); err != nil {
 		return "", errs.Wrap(errs.ConfigInvalid, err, "spark: yarn-site.xml")
 	}
 	props := map[string]string{}

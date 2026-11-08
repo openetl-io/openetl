@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -168,7 +169,7 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 }
 
 func configuredStream(cs source.ConfiguredStream) *protocolv1.ConfiguredStream {
-	return &protocolv1.ConfiguredStream{Name: cs.Name, SyncMode: protocolv1.SyncMode(cs.SyncMode), Cursor: cs.Cursor, State: cs.State, Splits: splitsProto(cs.Splits)} //nolint:gosec // small
+	return &protocolv1.ConfiguredStream{Name: cs.Name, SyncMode: ints.Enum[protocolv1.SyncMode](cs.SyncMode), Cursor: cs.Cursor, State: cs.State, Splits: splitsProto(cs.Splits)}
 }
 
 func splitsProto(ss []source.Split) []*protocolv1.Split {

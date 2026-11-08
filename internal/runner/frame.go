@@ -15,6 +15,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
@@ -453,7 +454,7 @@ func byWriterLane(plan Plan, key []string, b arrow.RecordBatch) (map[int]arrow.R
 		}
 		cols[i] = b.Column(idx[0])
 	}
-	groups := cmp.Or(plan.KeyGroups, checkpoint.KeyGroups)
+	groups := uint64(max(cmp.Or(plan.KeyGroups, checkpoint.KeyGroups), 1))
 	rows := map[int][]int{}
 	for r := range int(b.NumRows()) {
 		h := fnv.New64a()
@@ -461,7 +462,9 @@ func byWriterLane(plan Plan, key []string, b arrow.RecordBatch) (map[int]arrow.R
 			_, _ = h.Write([]byte(c.ValueStr(r)))
 			_, _ = h.Write([]byte{0})
 		}
-		w := plan.WriterLane(int(h.Sum64() % uint64(groups))) //nolint:gosec // small
+		// Below groups, so it fits.
+		g, _ := ints.Int64(h.Sum64() % groups)
+		w := plan.WriterLane(int(g))
 		rows[w] = append(rows[w], r)
 	}
 	out := make(map[int]arrow.RecordBatch, len(rows))

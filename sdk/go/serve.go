@@ -18,6 +18,7 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/configschema"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
+	"github.com/openetl-io/openetl/sdk/go/internal/ints"
 	"github.com/openetl-io/openetl/sdk/go/internal/launch"
 	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -33,7 +34,7 @@ const (
 	EnvHostAddr = "OPENETL_HOST_ADDR"
 	// Set with TCP addresses: the connector refuses calls without it, and
 	// sends it to host services.
-	EnvToken = "OPENETL_TOKEN" //nolint:gosec // a variable's name
+	EnvToken = "OPENETL_TOKEN"
 	// source or destination: the role to serve, for an executable with both.
 	EnvRole = "OPENETL_CONNECTOR_ROLE"
 	// Set to 1: exit when stdin closes.
@@ -129,7 +130,7 @@ func Serve(c Connector) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", c.Name, err)
 		stop()
-		os.Exit(1) //nolint:gocritic // stop has run
+		os.Exit(1)
 	}
 }
 
@@ -246,7 +247,7 @@ func (b *base) Spec(_ context.Context, req *protocolv1.SpecRequest) (*protocolv1
 	resp := &protocolv1.SpecResponse{
 		ProtocolVersion:  "v1",
 		ConfigSchema:     b.c.ConfigSchema,
-		Egress:           &protocolv1.Egress{Tier: protocolv1.EgressTier(max(b.c.Egress.Tier, EgressHost)), Allow: b.c.Egress.Allow}, //nolint:gosec // small
+		Egress:           &protocolv1.Egress{Tier: ints.Enum[protocolv1.EgressTier](max(b.c.Egress.Tier, EgressHost)), Allow: b.c.Egress.Allow},
 		RequiredFeatures: b.c.RequiredFeatures,
 	}
 	if b.c.Source != nil {

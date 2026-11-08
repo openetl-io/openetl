@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 )
 
 // Encoded is a batch as the protocol carries it, checked by Inspect.
@@ -199,7 +200,7 @@ func (b fb) field(pos, slot int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	vt := pos - int(int32(soff)) //nolint:gosec // a vtable offset is signed
+	vt := pos - int(signed(soff))
 	if vt < 0 || vt+4 > len(b) {
 		return 0, errMalformed
 	}
@@ -242,5 +243,13 @@ func (b fb) i64(pos int) (int64, error) {
 	if pos < 0 || pos+8 > len(b) {
 		return 0, errMalformed
 	}
-	return int64(binary.LittleEndian.Uint64(b[pos:])), nil //nolint:gosec // flatbuffer longs are signed
+	return signed(binary.LittleEndian.Uint32(b[pos+4:]))<<32 | int64(binary.LittleEndian.Uint32(b[pos:])), nil
+}
+
+// signed is u read as a two's complement int32.
+func signed(u uint32) int64 {
+	if u > math.MaxInt32 {
+		return int64(u) - 1<<32
+	}
+	return int64(u)
 }

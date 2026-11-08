@@ -21,6 +21,7 @@ import (
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -76,7 +77,7 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	}
 	req.Passthrough = d.Options.Passthrough
 	if s := d.Options.Size; s != (resources.Size{}) {
-		req.Limits = &enginev1.Limits{MemoryBytes: uint64(s.EngineMemory())} //nolint:gosec // a size isn't negative
+		req.Limits = &enginev1.Limits{MemoryBytes: ints.Uint64(s.EngineMemory())}
 	}
 	if _, err := p.client.StartJob(ctx, req); err != nil {
 		return p.explain(ctx, err)
@@ -247,15 +248,15 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		Generation: plan.Generation,
 		FirstEpoch: plan.FirstEpoch,
 		Sink:       &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Runner{Runner: &enginev1.RunnerSink{}}},
-		Naming:     &enginev1.Naming{KeepSourceNames: plan.Naming.KeepSource, MaxLength: uint32(max(plan.Naming.MaxLength, 0))}, //nolint:gosec // identifier limits are small
+		Naming:     &enginev1.Naming{KeepSourceNames: plan.Naming.KeepSource, MaxLength: ints.Uint32(plan.Naming.MaxLength)},
 
 		QuarantineUrl:      plan.QuarantineURL,
 		SchemaPolicy:       schemaPolicies[plan.Policy],
 		QuarantineInfinity: plan.QuarantineInfinity,
 		HeldUrl:            plan.HeldURL,
-		Lanes:              uint32(plan.Lanes),       //nolint:gosec // small
-		WriterLanes:        uint32(plan.WriterLanes), //nolint:gosec // small
-		KeyGroups:          uint32(plan.KeyGroups),   //nolint:gosec // small
+		Lanes:              ints.Uint32(plan.Lanes),
+		WriterLanes:        ints.Uint32(plan.WriterLanes),
+		KeyGroups:          ints.Uint32(plan.KeyGroups),
 	}
 	for i, s := range plan.Streams {
 		names[i] = s.Name
@@ -283,7 +284,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 	for _, s := range plan.Snapshots {
 		ss := &enginev1.StateSnapshot{Operator: s.Operator, Url: s.URL}
 		if r := s.KeyGroups; r != nil {
-			ss.KeyGroups = &enginev1.KeyGroupRange{First: uint32(r.First), Last: uint32(r.Last)} //nolint:gosec // small
+			ss.KeyGroups = &enginev1.KeyGroupRange{First: ints.Uint32(r.First), Last: ints.Uint32(r.Last)}
 		}
 		req.RestoredSnapshots = append(req.RestoredSnapshots, ss)
 	}
@@ -325,7 +326,7 @@ func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
 		Columns: make(map[string]*enginev1.Held, len(h.Columns)),
 		Limits: &protocolv1.TableLimits{
 			NotNull: h.Limits.NotNull, Unholdable: h.Limits.Unholdable, Fixed: h.Limits.Fixed,
-			Columns: uint32(h.Limits.Columns), MaxColumns: uint32(h.Limits.MaxColumns), //nolint:gosec // small
+			Columns: ints.Uint32(h.Limits.Columns), MaxColumns: ints.Uint32(h.Limits.MaxColumns),
 		},
 	}
 	for c, v := range h.Columns {
@@ -343,7 +344,7 @@ func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
 	if r := h.Replay; r != nil {
 		p.Replay = &enginev1.Replay{
 			Files:   r.Files,
-			From:    &enginev1.ReplayProgress{File: uint32(r.File), Row: r.Row, StillHeld: r.StillHeld}, //nolint:gosec // small
+			From:    &enginev1.ReplayProgress{File: ints.Uint32(r.File), Row: r.Row, StillHeld: r.StillHeld},
 			Columns: r.Columns,
 		}
 		for _, c := range r.Versioned {

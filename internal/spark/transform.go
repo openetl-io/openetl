@@ -504,7 +504,7 @@ func (t *Transform) Stop(ctx context.Context) error {
 // rangeReader reads an object by ranges, for Parquet's footer and column
 // chunks.
 type rangeReader struct {
-	ctx  context.Context //nolint:containedctx // the read's, for io's interfaces
+	ctx  context.Context
 	b    *blob.Bucket
 	key  string
 	size int64

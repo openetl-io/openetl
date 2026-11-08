@@ -29,6 +29,7 @@ import (
 	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner/pods"
 )
@@ -389,7 +390,7 @@ func (w *Worker) poll(ctx, base, results context.Context) {
 	var warned time.Time
 	for ctx.Err() == nil {
 		w.mu.Lock()
-		req := &dataplanev1.PollWorkRequest{Runner: w.ID, FreeOperations: uint32(maxOps - w.ops), FreeLogReads: uint32(maxLogReads - w.logReads)} //nolint:gosec // bounded by the constants
+		req := &dataplanev1.PollWorkRequest{Runner: w.ID, FreeOperations: ints.Uint32(maxOps - w.ops), FreeLogReads: ints.Uint32(maxLogReads - w.logReads)}
 		w.mu.Unlock()
 		// A little longer than the API waits.
 		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)

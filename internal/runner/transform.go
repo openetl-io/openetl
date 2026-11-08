@@ -11,6 +11,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -129,7 +130,7 @@ func (c *coordinator) transformEpochs(ctx context.Context, gen uint64, staged <-
 			if err != nil {
 				return err
 			}
-			rows[output] += uint64(ob.NumRows()) //nolint:gosec // never negative
+			rows[output] += ints.Uint64(ob.NumRows())
 			return send(ctx, to, Frame{Kind: FrameBatch, Stream: output, Batch: ob})
 		}
 		e := destination.Epoch{Generation: gen, N: f.Epoch}

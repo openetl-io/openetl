@@ -94,7 +94,7 @@ func TestCheckpointMirror(t *testing.T) {
 			continue
 		}
 		if (rec.Previous == nil) != (prevEpoch == nil) ||
-			rec.Previous != nil && (uint64(*prevEpoch) != rec.Previous.Epoch || uint64(*prevGen) != rec.Previous.Generation) { //nolint:gosec // small
+			rec.Previous != nil && (uint64(*prevEpoch) != rec.Previous.Epoch || uint64(*prevGen) != rec.Previous.Generation) {
 			t.Errorf("checkpoint %s: previous %v/%v in the mirror, %+v in the log", ref, prevEpoch, prevGen, rec.Previous)
 		}
 		if len(streams) != len(rec.Streams) {

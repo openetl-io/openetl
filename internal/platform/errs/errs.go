@@ -144,7 +144,9 @@ func ToProto(err error) *protocolv1.Error {
 		return nil
 	}
 	p := &protocolv1.Error{Code: protocolv1.ErrorCode(CodeOf(err)), Message: err.Error()}
-	if e, ok := err.(*Error); ok { //nolint:errorlint // the code has its own field, so drop it from the outermost message
+	// The code has its own field, so a message that is only an *Error's
+	// leaves it out; a wrapper's text keeps it.
+	if e, ok := errors.AsType[*Error](err); ok && p.Message == e.Error() {
 		p.Message = e.text()
 	}
 	if d := RetryAfterOf(err); d > 0 {

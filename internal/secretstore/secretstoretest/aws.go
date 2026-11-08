@@ -76,19 +76,23 @@ func (a *AWS) serve(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "InvalidAction", "only GetSecretValue")
 		return
 	}
-	var in struct{ SecretId, VersionId, VersionStage string } //nolint:revive // the API's names
+	var in struct {
+		SecretID     string `json:"SecretId"`
+		VersionID    string `json:"VersionId"`
+		VersionStage string
+	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		fail(w, http.StatusBadRequest, "SerializationException", err.Error())
 		return
 	}
-	req := Request{SecretID: in.SecretId, VersionID: in.VersionId, VersionStage: in.VersionStage}
+	req := Request{SecretID: in.SecretID, VersionID: in.VersionID, VersionStage: in.VersionStage}
 	// AWS4-HMAC-SHA256 Credential={key}/{date}/{region}/secretsmanager/aws4_request, …
 	if _, cred, ok := strings.Cut(r.Header.Get("Authorization"), "Credential="); ok {
 		req.AccessKey, _, _ = strings.Cut(cred, "/")
 	}
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
-	v, ok := a.secrets[in.SecretId]
+	v, ok := a.secrets[in.SecretID]
 	a.mu.Unlock()
 	switch {
 	case req.AccessKey == "":
@@ -97,7 +101,7 @@ func (a *AWS) serve(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "ResourceNotFoundException", "Secrets Manager can't find the specified secret.")
 	default:
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-		_ = json.NewEncoder(w).Encode(map[string]string{"Name": in.SecretId, "SecretString": v, "VersionId": "v1"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"Name": in.SecretID, "SecretString": v, "VersionId": "v1"})
 	}
 }
 

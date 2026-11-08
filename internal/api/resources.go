@@ -565,12 +565,16 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if err := onDataPlane(ctx, row.DataPlaneID, fmt.Sprintf("pipeline %s version %s", id, row.Version)); err != nil {
 		return nil, err
 	}
+	var keyGroups uint32
+	if row.KeyGroups > 0 {
+		keyGroups = uint32(row.KeyGroups)
+	}
 	res := &dataplanev1.GetSyncSpecResponse{
 		OrgId:       s.Tenant.Org.String(),
 		PipelineId:  id.String(),
 		Version:     row.Version,
 		DataPlane:   row.DataPlaneID,
-		KeyGroups:   uint32(row.KeyGroups), //nolint:gosec // 256
+		KeyGroups:   keyGroups,
 		Pipeline:    &apiv1.PipelineSpec{},
 		Source:      &apiv1.ConnectorConfig{},
 		Destination: &apiv1.ConnectorConfig{},

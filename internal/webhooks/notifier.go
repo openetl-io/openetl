@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
+	"math/big"
 	"net/http"
 	"slices"
 	"strconv"
@@ -26,6 +27,7 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/events"
 	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/secrets"
 	"github.com/openetl-io/openetl/internal/store"
 	"github.com/openetl-io/openetl/internal/store/db"
@@ -231,7 +233,7 @@ func (n *Notifier) attempt(ctx context.Context, r db.ClaimDeliveriesRow) error {
 	}
 	arg := db.RecordAttemptParams{OrgID: n.Org, ID: r.ID, Attempts: r.Attempts, State: "failed"}
 	if o.status != 0 {
-		s := int32(o.status) //nolint:gosec // an HTTP status
+		s := ints.Int32(o.status)
 		arg.ResponseStatus = &s
 		arg.ResponseBody = &o.body
 	}
@@ -239,7 +241,7 @@ func (n *Notifier) attempt(ctx context.Context, r db.ClaimDeliveriesRow) error {
 		arg.Error = &o.err
 	}
 	if o.latency > 0 {
-		ms := int32(o.latency.Milliseconds()) //nolint:gosec // at most attemptTimeout
+		ms := ints.Int32(o.latency.Milliseconds())
 		arg.LatencyMs = &ms
 		latency.Record(ctx, o.latency.Seconds(), metric.WithAttributes(attribute.String("openetl.webhook", r.WebhookID.String())))
 	}
@@ -377,7 +379,11 @@ func jitter(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0
 	}
-	return d - d/10 + rand.N(d/5+1) //nolint:gosec // spreading retries, not a secret
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(d/5)+1))
+	if err != nil {
+		return d
+	}
+	return d - d/10 + time.Duration(n.Int64())
 }
 
 // retryAfter parses Retry-After: seconds or an HTTP date.

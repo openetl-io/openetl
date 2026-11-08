@@ -18,7 +18,7 @@ import (
 func bundleDbtProject(d *apiv1.Document, base string) error {
 	var doc map[string]any
 	if err := yaml.Unmarshal(d.GetContent(), &doc); err != nil {
-		return nil //nolint:nilerr // the API reports what doesn't parse
+		return nil
 	}
 	s, _ := doc["spec"].(map[string]any)
 	dir, _ := s["path"].(string)

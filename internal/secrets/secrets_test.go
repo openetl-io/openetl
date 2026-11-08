@@ -140,8 +140,7 @@ func TestKeyFiles(t *testing.T) {
 	if err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("key file: %v, %v", fi, err)
 	}
-	sealed, err := k.Seal(ctx, org, nil, []byte("v"))
-	if err != nil {
+	if _, err := k.Seal(ctx, org, nil, []byte("v")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Open(ctx, path, keys, []uuid.UUID{org}); err != nil {
@@ -151,8 +150,9 @@ func TestKeyFiles(t *testing.T) {
 	if _, err := Open(ctx, filepath.Join(dir, "lost.key"), keys, []uuid.UUID{org}); err == nil || !strings.Contains(err.Error(), "doesn't exist, but secrets were sealed") {
 		t.Errorf("a missing key file with sealed secrets: %v", err)
 	}
+	otherKey := bytes.Repeat([]byte{7}, 32)
 	other := filepath.Join(dir, "other.key")
-	if err := os.WriteFile(other, []byte(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))), 0o600); err != nil {
+	if err := os.WriteFile(other, []byte(base64.StdEncoding.EncodeToString(otherKey)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Open(ctx, other, keys, []uuid.UUID{org}); err == nil || !strings.Contains(err.Error(), "can't unwrap") {
@@ -166,16 +166,17 @@ func TestKeyFiles(t *testing.T) {
 		t.Errorf("a malformed key file: %v", err)
 	}
 
-	b, err := os.ReadFile(path)
+	otherKeys := &memKeys{}
+	k2, err := Open(ctx, other, otherKeys, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+	sealed, err := k2.Seal(ctx, org, nil, []byte("v"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	url := "base64key://" + base64.URLEncoding.EncodeToString(raw)
-	k3, err := Open(ctx, url, keys, []uuid.UUID{org})
+	url := "base64key://" + base64.URLEncoding.EncodeToString(otherKey)
+	k3, err := Open(ctx, url, otherKeys, []uuid.UUID{org})
 	if err != nil {
 		t.Fatalf("the same key as a URL: %v", err)
 	}

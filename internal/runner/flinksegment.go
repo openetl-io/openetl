@@ -22,6 +22,7 @@ import (
 	bridgev1 "github.com/openetl-io/openetl/gen/openetl/bridge/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -716,7 +717,7 @@ func (s *flinkSegment) serveWrite(st grpc.BidiStreamingServer[bridgev1.WriteRequ
 				return err
 			}
 			s.mu.Lock()
-			s.outRows[key.output] += uint64(ob.NumRows()) //nolint:gosec // never negative
+			s.outRows[key.output] += ints.Uint64(ob.NumRows())
 			s.mu.Unlock()
 			if err = send(s.gctx, s.toSecond, Frame{Kind: FrameBatch, Stream: key.output, Batch: ob}); err != nil {
 				return status.Error(codes.Unavailable, "runner: the segment ended")

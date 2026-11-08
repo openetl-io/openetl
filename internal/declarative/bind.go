@@ -16,8 +16,8 @@ import (
 // Names of the secrets a binding composes for the host. Config property
 // names can't contain a dot, so they don't collide.
 const (
-	oauthSecret = "auth.oauth2"    //nolint:gosec // a name, not a credential
-	awsSecret   = "auth.aws_sigv4" //nolint:gosec // a name, not a credential
+	oauthSecret = "auth.oauth2"
+	awsSecret   = "auth.aws_sigv4"
 )
 
 // Binding is a connector bound to its config.

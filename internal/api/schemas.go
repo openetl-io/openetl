@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/events"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/store/db"
 	"github.com/openetl-io/openetl/internal/streamschema"
 )
@@ -80,7 +81,11 @@ func (s *Server) ReportSchemas(ctx context.Context, req *connect.Request[datapla
 		}
 		return strings.Compare(a.stream, b.stream)
 	})
-	gen, epoch := int64(req.Msg.GetGeneration()), int64(req.Msg.GetEpoch()) //nolint:gosec // generations and epochs are small
+	var b bigints
+	gen, epoch := b.of("generation", req.Msg.GetGeneration()), b.of("epoch", req.Msg.GetEpoch())
+	if b.err != nil {
+		return nil, b.err
+	}
 	res := &dataplanev1.ReportSchemasResponse{}
 	err = s.Store.Tx(ctx, func(q *db.Queries) error {
 		res.Added, res.AddedOutputs = nil, nil
@@ -205,7 +210,7 @@ func (s *Server) ListStreamSchemas(ctx context.Context, req *connect.Request[api
 		}
 		out := &apiv1.StreamSchema{
 			Stream: r.Stream, Output: r.Output, Version: r.Version, Table: r.Table, Digest: r.Digest,
-			Generation: uint64(r.Generation), Epoch: uint64(r.Epoch), //nolint:gosec // never negative
+			Generation: ints.Uint64(r.Generation), Epoch: ints.Uint64(r.Epoch),
 			CreateTime: timestamppb.New(r.CreateTime),
 		}
 		for _, c := range cols {

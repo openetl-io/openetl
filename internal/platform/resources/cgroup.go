@@ -15,9 +15,9 @@ import (
 )
 
 // Cgroups makes a cgroup v2 for each job under a delegated directory,
-// which belongs to one runner.
+// which belongs to one runner. It holds the directory open.
 type Cgroups struct {
-	root string
+	root *os.Root
 }
 
 const (
@@ -37,55 +37,62 @@ func OpenCgroups(root string) (*Cgroups, error) {
 	return openCgroups(root, os.Getpid())
 }
 
-func openCgroups(root string, pid int) (*Cgroups, error) {
-	have := fields(filepath.Join(root, "cgroup.controllers"))
-	if !slices.Contains(have, "cpu") || !slices.Contains(have, "memory") {
-		return nil, fmt.Errorf("%s isn't a cgroup v2 directory with the cpu and memory controllers, which it needs delegated to this runner", root)
+func openCgroups(dir string, pid int) (_ *Cgroups, err error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("%s isn't a cgroup v2 directory delegated to this runner: %w", dir, err)
 	}
-	if slices.Contains(fields(filepath.Join(root, "cgroup.procs")), strconv.Itoa(pid)) {
-		self := filepath.Join(root, runnerName)
-		if err := os.MkdirAll(self, 0o755); err != nil { //nolint:gosec // a cgroup's files have their own modes
+	defer func() {
+		if err != nil {
+			_ = root.Close()
+		}
+	}()
+	have := fields(root.FS(), "cgroup.controllers")
+	if !slices.Contains(have, "cpu") || !slices.Contains(have, "memory") {
+		return nil, fmt.Errorf("%s isn't a cgroup v2 directory with the cpu and memory controllers, which it needs delegated to this runner", dir)
+	}
+	if slices.Contains(fields(root.FS(), "cgroup.procs"), strconv.Itoa(pid)) {
+		if err := root.MkdirAll(runnerName, 0o750); err != nil {
 			return nil, err
 		}
-		if err := write(self, "cgroup.procs", strconv.Itoa(pid)); err != nil {
-			return nil, fmt.Errorf("move this runner out of %s: %w", root, err)
+		if err := write(root, filepath.Join(runnerName, "cgroup.procs"), strconv.Itoa(pid)); err != nil {
+			return nil, fmt.Errorf("move this runner out of %s: %w", dir, err)
 		}
 	}
 	if err := write(root, "cgroup.subtree_control", "+cpu +memory"); err != nil {
-		return nil, fmt.Errorf("enable cpu and memory in %s, which takes having no other process in it: %w", root, err)
+		return nil, fmt.Errorf("enable cpu and memory in %s, which takes having no other process in it: %w", dir, err)
 	}
-	c := &Cgroups{root: root}
-	old, err := filepath.Glob(filepath.Join(root, jobPrefix+"*"))
+	old, err := fs.Glob(root.FS(), jobPrefix+"*")
 	if err != nil {
 		return nil, err
 	}
-	for _, dir := range old {
-		if err := remove(dir); err != nil {
+	for _, name := range old {
+		if err := remove(root, name); err != nil {
 			return nil, fmt.Errorf("remove what an earlier runner left: %w", err)
 		}
 	}
-	return c, nil
+	return &Cgroups{root: root}, nil
 }
 
 // Job makes the cgroup of an attempt of this size. Going over its ceiling kills
 // all of its processes, which then count as out of memory.
 func (c *Cgroups) Job(id string, size Size) (*Cgroup, error) {
-	path := filepath.Join(c.root, jobPrefix+url.PathEscape(id))
-	if err := os.MkdirAll(path, 0o755); err != nil { //nolint:gosec // a cgroup's files have their own modes
+	name := jobPrefix + url.PathEscape(id)
+	if err := c.root.MkdirAll(name, 0o750); err != nil {
 		return nil, err
 	}
-	g := &Cgroup{path: path}
+	g := &Cgroup{root: c.root, name: name}
 	err := errors.Join(
-		write(path, "cpu.max", fmt.Sprintf("%d %d", size.CPU*cpuPeriod/1000, cpuPeriod)),
-		write(path, "memory.max", strconv.FormatInt(size.MemoryCeiling(), 10)),
-		write(path, "memory.oom.group", "1"),
+		write(c.root, filepath.Join(name, "cpu.max"), fmt.Sprintf("%d %d", size.CPU*cpuPeriod/1000, cpuPeriod)),
+		write(c.root, filepath.Join(name, "memory.max"), strconv.FormatInt(size.MemoryCeiling(), 10)),
+		write(c.root, filepath.Join(name, "memory.oom.group"), "1"),
 	)
 	// Without swap accounting there's no such file, and nothing to limit.
-	if err2 := write(path, "memory.swap.max", "0"); !errors.Is(err2, fs.ErrNotExist) {
+	if err2 := write(c.root, filepath.Join(name, "memory.swap.max"), "0"); !errors.Is(err2, fs.ErrNotExist) {
 		err = errors.Join(err, err2)
 	}
 	if err == nil {
-		g.dir, err = os.Open(path) //nolint:gosec // the operator's directory
+		g.dir, err = c.root.Open(name)
 	}
 	if err != nil {
 		_ = g.Close()
@@ -94,16 +101,17 @@ func (c *Cgroups) Job(id string, size Size) (*Cgroup, error) {
 	return g, nil
 }
 
-// Cgroup is one attempt's.
+// Cgroup is one attempt's: name in root.
 type Cgroup struct {
-	path string
+	root *os.Root
+	name string
 	// Held open to start processes in it.
 	dir *os.File
 }
 
 // OutOfMemory reports whether the kernel killed anything in it for its limit.
 func (g *Cgroup) OutOfMemory() bool {
-	b, err := os.ReadFile(filepath.Join(g.path, "memory.events")) //nolint:gosec // a cgroup's file
+	b, err := g.root.ReadFile(filepath.Join(g.name, "memory.events"))
 	if err != nil {
 		return false
 	}
@@ -120,16 +128,16 @@ func (g *Cgroup) Close() error {
 	if g.dir != nil {
 		_ = g.dir.Close()
 	}
-	return remove(g.path)
+	return remove(g.root, g.name)
 }
 
 // remove kills a job's cgroup's processes and removes it, which takes the
 // kernel a moment after they die.
-func remove(path string) error {
-	_ = write(path, "cgroup.kill", "1")
+func remove(root *os.Root, name string) error {
+	_ = write(root, filepath.Join(name, "cgroup.kill"), "1")
 	var err error
 	for range 40 {
-		if err = os.RemoveAll(path); err == nil { //nolint:gosec // the operator's directory
+		if err = root.RemoveAll(name); err == nil {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -139,8 +147,8 @@ func remove(path string) error {
 
 // write sets one of a cgroup's files. A cgroup makes its own, and asking to
 // create one it doesn't have fails differently from a missing file.
-func write(dir, file, value string) error {
-	f, err := os.OpenFile(filepath.Join(dir, file), os.O_WRONLY, 0) //nolint:gosec // a cgroup's file
+func write(root *os.Root, file, value string) error {
+	f, err := root.OpenFile(file, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}

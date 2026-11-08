@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/internal/ints"
 	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
@@ -150,7 +151,7 @@ func (a *stagingArea) stage(e *protocolv1.Epoch, stream string, lane, lanes int,
 		if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
 			return nil, err
 		}
-		files = append(files, &protocolv1.StagedFile{Path: rel, Rows: uint64(b.NumRows()), Bytes: uint64(buf.Len())}) //nolint:gosec // small
+		files = append(files, &protocolv1.StagedFile{Path: rel, Rows: ints.Uint64(b.NumRows()), Bytes: ints.Uint64(buf.Len())})
 	}
 	a.hand(files)
 	return files, nil

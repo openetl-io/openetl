@@ -29,6 +29,7 @@ import (
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/worker"
@@ -167,7 +168,7 @@ func (a *Sync) reportFailure(ctx context.Context, pipeline, run string, attempt 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	_, rerr := a.API.ReportAttemptFailure(ctx, connect.NewRequest(&dataplanev1.ReportAttemptFailureRequest{
-		PipelineId: pipeline, RunId: run, Attempt: int32(attempt), //nolint:gosec // attempts are few
+		PipelineId: pipeline, RunId: run, Attempt: ints.Int32(attempt),
 		Code: errs.CodeOf(err).String(), Message: err.Error(), Time: timestamppb.Now(),
 	}))
 	if rerr != nil {

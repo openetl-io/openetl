@@ -15,6 +15,7 @@ import (
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -60,7 +61,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	stream := func(cs source.CatalogStream, ps *apiv1.PipelineStream) (runner.Stream, error) {
 		declared := make([]apiv1.SyncMode, len(cs.SyncModes))
 		for i, m := range cs.SyncModes {
-			declared[i] = apiv1.SyncMode(m) //nolint:gosec // small
+			declared[i] = ints.Enum[apiv1.SyncMode](m)
 		}
 		read := plan.ReadMode(p, declared, ps)
 		replay, cursor := plan.Replay(cs.Replay, read), cmp.Or(ps.GetCursor(), cs.CursorField)

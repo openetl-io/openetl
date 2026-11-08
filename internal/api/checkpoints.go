@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/events"
 	"github.com/openetl-io/openetl/internal/heal"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/store"
 	"github.com/openetl-io/openetl/internal/store/db"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -69,6 +71,19 @@ type mirroredProgress struct {
 	LagMs              *int64  `json:"lag_ms,omitempty"`
 	RetentionLeftBytes *uint64 `json:"retention_left_bytes,omitempty"`
 	RetentionLeftMs    *int64  `json:"retention_left_ms,omitempty"`
+}
+
+// bigints converts a request's uint64s for bigint columns. err is
+// InvalidArgument for the first that's larger than a bigint holds, which
+// converts to 0.
+type bigints struct{ err error }
+
+func (b *bigints) of(field string, n uint64) int64 {
+	v, ok := ints.Int64(n)
+	if !ok && b.err == nil {
+		b.err = invalid("%s %d is more than %d", field, n, int64(math.MaxInt64))
+	}
+	return v
 }
 
 func millis(d *durationpb.Duration) *int64 {
@@ -132,13 +147,21 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 			return nil, err
 		}
 	}
+	var b bigints
 	arg := db.InsertMirroredCheckpointParams{
 		OrgID: s.Tenant.Org, PipelineID: id, RunID: m.GetRunId(), CommitTime: created, Streams: raw, Progress: progress, Usage: usage,
-		Epoch: int64(m.GetEpoch()), Generation: int64(m.GetGeneration()), //nolint:gosec // generations and epochs are small
+		Epoch: b.of("epoch", m.GetEpoch()), Generation: b.of("generation", m.GetGeneration()),
 	}
 	if p := m.GetPrevious(); p != nil {
-		e, g := int64(p.GetEpoch()), int64(p.GetGeneration()) //nolint:gosec // as above
+		e, g := b.of("previous.epoch", p.GetEpoch()), b.of("previous.generation", p.GetGeneration())
 		arg.PreviousEpoch, arg.PreviousGeneration = &e, &g
+	}
+	holds, err := s.holdRows(id, m, &b)
+	if err != nil {
+		return nil, err
+	}
+	if b.err != nil {
+		return nil, b.err
 	}
 	added, err := s.Store.MirrorCheckpoint(ctx, arg)
 	if store.IsForeignKeyViolation(err) {
@@ -147,7 +170,7 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err != nil {
 		return nil, err
 	}
-	if err := s.recordHolds(ctx, id, m); err != nil {
+	if err := s.recordHolds(ctx, id, arg.Generation, arg.Epoch, holds); err != nil {
 		return nil, err
 	}
 	if err := s.afterCheckpoint(ctx, id, m); err != nil {
@@ -435,11 +458,11 @@ func (s *Server) ListCheckpoints(ctx context.Context, req *connect.Request[apiv1
 			return nil, err
 		}
 		c := &apiv1.Checkpoint{
-			Epoch: uint64(r.Epoch), Generation: uint64(r.Generation), //nolint:gosec // never negative
+			Epoch: ints.Uint64(r.Epoch), Generation: ints.Uint64(r.Generation),
 			CommitTime: timestamppb.New(r.CommitTime),
 		}
 		if r.PreviousEpoch != nil && r.PreviousGeneration != nil {
-			c.PreviousEpoch, c.PreviousGeneration = uint64(*r.PreviousEpoch), uint64(*r.PreviousGeneration) //nolint:gosec // as above
+			c.PreviousEpoch, c.PreviousGeneration = ints.Uint64(*r.PreviousEpoch), ints.Uint64(*r.PreviousGeneration)
 		}
 		if r.SyncID != nil {
 			c.Sync = req.Msg.GetParent() + "/syncs/" + r.SyncID.String()

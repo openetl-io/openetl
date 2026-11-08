@@ -10,6 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/internal/ints"
 	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -187,7 +188,7 @@ func (r *sourceRun) checkDiscover(t T) {
 			t.Errorf("the suite reads %q, which the catalog doesn't list", st.Name)
 			continue
 		}
-		if m := protocolv1.SyncMode(st.Mode); len(s.GetSyncModes()) > 0 && !slices.Contains(s.GetSyncModes(), m) { //nolint:gosec // small
+		if m := ints.Enum[protocolv1.SyncMode](st.Mode); len(s.GetSyncModes()) > 0 && !slices.Contains(s.GetSyncModes(), m) {
 			t.Errorf("the suite reads %s with %s, which the catalog doesn't list for it", st.Name, m)
 		}
 	}
@@ -214,7 +215,7 @@ func (r *sourceRun) streams(t T) []*protocolv1.ConfiguredStream {
 		if cursor == "" {
 			cursor = cat[st.Name].GetDefaultCursor()
 		}
-		out = append(out, &protocolv1.ConfiguredStream{Name: st.Name, SyncMode: protocolv1.SyncMode(st.Mode), Cursor: cursor}) //nolint:gosec // small
+		out = append(out, &protocolv1.ConfiguredStream{Name: st.Name, SyncMode: ints.Enum[protocolv1.SyncMode](st.Mode), Cursor: cursor})
 	}
 	return out
 }

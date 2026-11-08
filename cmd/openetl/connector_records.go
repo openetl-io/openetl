@@ -32,7 +32,7 @@ func newRecordWriter(format, path string, stdout io.Writer) (recordWriter, error
 	var file *os.File
 	if path != "" && format != "parquet" {
 		var err error
-		if file, err = os.Create(path); err != nil { //nolint:gosec // the user names the file
+		if file, err = os.Create(filepath.Clean(path)); err != nil {
 			return nil, err
 		}
 		out = file
@@ -49,7 +49,11 @@ func newRecordWriter(format, path string, stdout io.Writer) (recordWriter, error
 		if err := os.MkdirAll(path, 0o750); err != nil {
 			return nil, err
 		}
-		return &parquetWriter{dir: path, files: map[string]*parquetFile{}}, nil
+		dir, err := os.OpenRoot(path)
+		if err != nil {
+			return nil, err
+		}
+		return &parquetWriter{dir: dir, files: map[string]*parquetFile{}}, nil
 	}
 	return nil, fmt.Errorf("--format %s: want table, jsonl or parquet", format)
 }
@@ -234,7 +238,7 @@ func objectKeys(b []byte) []string {
 // parquetWriter writes a file per stream, and another when a stream's
 // schema changes.
 type parquetWriter struct {
-	dir   string
+	dir   *os.Root
 	files map[string]*parquetFile
 }
 
@@ -265,7 +269,7 @@ func (pw *parquetWriter) records(stream string, rec arrow.RecordBatch) error {
 		if n > 1 {
 			name += fmt.Sprintf(".%d", n)
 		}
-		f, err := os.Create(filepath.Join(pw.dir, name+".parquet")) //nolint:gosec // under the directory the user names
+		f, err := pw.dir.Create(name + ".parquet")
 		if err != nil {
 			return err
 		}
@@ -292,5 +296,6 @@ func (pw *parquetWriter) close() error {
 	for _, pf := range pw.files {
 		errs = append(errs, pf.close())
 	}
+	errs = append(errs, pw.dir.Close())
 	return errors.Join(errs...)
 }

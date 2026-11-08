@@ -2,8 +2,8 @@ package resources
 
 import (
 	"errors"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,8 +16,9 @@ func Detect() (Size, error) {
 }
 
 func detect(root string, host func() (int64, error)) (Size, error) {
+	cgroup := os.DirFS(root)
 	s := Size{CPU: int64(runtime.NumCPU()) * 1000}
-	if cpu := cgroupCPU(root); cpu > 0 && cpu < s.CPU {
+	if cpu := cgroupCPU(cgroup); cpu > 0 && cpu < s.CPU {
 		s.CPU = cpu
 	}
 	mem, err := host()
@@ -25,7 +26,7 @@ func detect(root string, host func() (int64, error)) (Size, error) {
 		return s, err
 	}
 	s.Memory = mem
-	if m := cgroupMemory(root); m > 0 && m < s.Memory {
+	if m := cgroupMemory(cgroup); m > 0 && m < s.Memory {
 		s.Memory = m
 	}
 	if s.Memory <= 0 {
@@ -35,12 +36,12 @@ func detect(root string, host func() (int64, error)) (Size, error) {
 }
 
 // cgroupCPU is the cgroup's CPU quota in millicores; 0 if it has none.
-func cgroupCPU(root string) int64 {
+func cgroupCPU(cgroup fs.FS) int64 {
 	// v2: "max 100000" or "200000 100000".
-	if f := fields(filepath.Join(root, "cpu.max")); len(f) == 2 {
+	if f := fields(cgroup, "cpu.max"); len(f) == 2 {
 		return millis(f[0], f[1])
 	}
-	quota, period := fields(filepath.Join(root, "cpu", "cpu.cfs_quota_us")), fields(filepath.Join(root, "cpu", "cpu.cfs_period_us"))
+	quota, period := fields(cgroup, "cpu/cpu.cfs_quota_us"), fields(cgroup, "cpu/cpu.cfs_period_us")
 	if len(quota) == 1 && len(period) == 1 {
 		return millis(quota[0], period[0])
 	}
@@ -57,9 +58,9 @@ func millis(quota, period string) int64 {
 }
 
 // cgroupMemory is the cgroup's memory limit in bytes; 0 if it has none.
-func cgroupMemory(root string) int64 {
-	for _, path := range []string{filepath.Join(root, "memory.max"), filepath.Join(root, "memory", "memory.limit_in_bytes")} {
-		if f := fields(path); len(f) == 1 {
+func cgroupMemory(cgroup fs.FS) int64 {
+	for _, name := range []string{"memory.max", "memory/memory.limit_in_bytes"} {
+		if f := fields(cgroup, name); len(f) == 1 {
 			if n, err := strconv.ParseInt(f[0], 10, 64); err == nil && n > 0 {
 				return n
 			}
@@ -68,8 +69,9 @@ func cgroupMemory(root string) int64 {
 	return 0
 }
 
-func fields(path string) []string {
-	b, err := os.ReadFile(path) //nolint:gosec // cgroup files
+// fields is the fields of name in fsys; nil if it can't be read.
+func fields(fsys fs.FS, name string) []string {
+	b, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil
 	}

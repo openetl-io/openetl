@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -20,7 +21,6 @@ import (
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 )
 
-//nolint:gosec // usage text, not a credential
 const secretUsage = `usage: openetl secret <command> [flags]
 
 Commands:
@@ -43,7 +43,16 @@ func runSecret(ctx context.Context, args []string, out io.Writer) error {
 		return errors.New("no secret command")
 	}
 	cmd, args := args[0], args[1:]
-	fs := flag.NewFlagSet("openetl secret "+cmd, flag.ContinueOnError)
+	var name string
+	switch cmd {
+	case "set":
+		name = "openetl secret set"
+	case "list":
+		name = "openetl secret list"
+	case "delete":
+		name = "openetl secret delete"
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	conn := apiFlags(fs)
 	workspace := fs.String("workspace", "default", "the secret's workspace")
 	switch cmd {
@@ -97,7 +106,7 @@ func readValue(name, file string) (string, error) {
 	var err error
 	switch fd := int(os.Stdin.Fd()); {
 	case file != "":
-		b, err = os.ReadFile(file) //nolint:gosec // the user names the file
+		b, err = os.ReadFile(filepath.Clean(file))
 	case term.IsTerminal(fd):
 		fmt.Fprintf(os.Stderr, "value of %s: ", name)
 		b, err = term.ReadPassword(fd)

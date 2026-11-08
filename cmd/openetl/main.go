@@ -567,7 +567,7 @@ func readDocuments(path string) ([]*apiv1.Document, error) {
 	if path == "-" {
 		data, err = io.ReadAll(os.Stdin)
 	} else {
-		data, err = os.ReadFile(path) //nolint:gosec // the user names the file
+		data, err = os.ReadFile(filepath.Clean(path))
 	}
 	if err != nil {
 		return nil, err

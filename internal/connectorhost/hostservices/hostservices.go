@@ -6,10 +6,11 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
-	"math/rand/v2"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
@@ -139,7 +140,7 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 		}
 		began, clock := s.now(), time.Now()
 		if err == nil {
-			resp, release, err = s.send(withAuth(ctx, u, cred), method, u, r, deadline) //nolint:bodyclose // statusError closes it, or the caller through body
+			resp, release, err = s.send(withAuth(ctx, u, cred), method, u, r, deadline)
 		}
 		now = s.now()
 		tr := Trace{Time: began, Try: try, Method: method, URL: s.scrub(u.Redacted()), RequestHeader: s.redactHeader(r.Header, apiKeyHeader(r.Auth))}
@@ -169,6 +170,7 @@ func (s *Services) HTTP(ctx context.Context, r *host.Request) (*host.Response, e
 			}, nil
 		default:
 			se := statusError(resp, now)
+			_ = resp.Body.Close()
 			release()
 			final = se
 			tr.Status, tr.ResponseHeader, tr.Duration = se.Status, s.redactHeader(se.Header, ""), time.Since(clock)
@@ -234,7 +236,6 @@ func (s *Services) send(ctx context.Context, method string, u *url.URL, r *host.
 
 func statusError(resp *http.Response, now time.Time) *host.StatusError {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-	_ = resp.Body.Close()
 	code := classify(resp.StatusCode, resp.Header)
 	return &host.StatusError{
 		Status: resp.StatusCode,
@@ -309,7 +310,8 @@ func idempotent(method string) bool {
 // backoff is exponential, with jitter over its upper half.
 func backoff(try int) time.Duration {
 	d := min(maxBackoff, baseBackoff<<min(try, 16))
-	return d/2 + rand.N(d/2+1) //nolint:gosec // jitter needn't be unpredictable
+	jitter, _ := rand.Int(rand.Reader, big.NewInt(int64(d/2+1)))
+	return d/2 + time.Duration(jitter.Int64())
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

@@ -250,7 +250,7 @@ func (s *Server) startSession(ctx context.Context, q *db.Queries, req connect.An
 	if err := s.auditSignIn(ctx, q, req, principalName(name), session); err != nil {
 		return nil, err
 	}
-	cookie := s.cookie(c.Secret) //nolint:gosec // Secure over https; browsers drop Secure cookies over http
+	cookie := s.cookie(c.Secret)
 	if remember {
 		cookie.MaxAge = int(maxAge / time.Second)
 	}
@@ -320,7 +320,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[apiv1.C
 
 func (s *Server) DeleteSession(ctx context.Context, req *connect.Request[apiv1.DeleteSessionRequest]) (*connect.Response[apiv1.DeleteSessionResponse], error) {
 	res := connect.NewResponse(&apiv1.DeleteSessionResponse{})
-	gone := s.cookie("") //nolint:gosec // as in startSession
+	gone := s.cookie("")
 	gone.MaxAge = -1
 	res.Header().Add("Set-Cookie", gone.String())
 	secret := sessionCookie(req.Header(), gone.Name)

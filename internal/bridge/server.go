@@ -13,7 +13,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -204,45 +203,4 @@ func selfSigned() (tls.Certificate, string, error) {
 	}
 	sum := sha256.Sum256(der)
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, hex.EncodeToString(sum[:]), nil
-}
-
-// ClientTLS is the TLS config a client pinning fingerprint uses, for tests
-// and the simulation.
-func ClientTLS(fingerprint string) *tls.Config {
-	return &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true, //nolint:gosec // the certificate is pinned below
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 {
-				return errors.New("bridge: no certificate")
-			}
-			sum := sha256.Sum256(cs.PeerCertificates[0].Raw)
-			if hex.EncodeToString(sum[:]) != fingerprint {
-				return errors.New("bridge: the certificate's fingerprint isn't the pinned one")
-			}
-			return nil
-		},
-	}
-}
-
-// Dial connects to a bridge as a job's library does, for tests and the
-// simulation.
-func Dial(addr, fingerprint, token string) (bridgev1.BridgeServiceClient, func() error, error) {
-	auth := func(ctx context.Context) context.Context {
-		return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token, protocolHeader, Protocol)
-	}
-	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(credentials.NewTLS(ClientTLS(fingerprint))),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMessage), grpc.MaxCallSendMsgSize(maxMessage)),
-		grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-			return invoker(auth(ctx), method, req, reply, cc, opts...)
-		}),
-		grpc.WithStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-			return streamer(auth(ctx), desc, cc, method, opts...)
-		}),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	return bridgev1.NewBridgeServiceClient(conn), conn.Close, nil
 }

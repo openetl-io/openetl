@@ -179,7 +179,7 @@ func openKEK(ctx context.Context, ref string, create bool) (*gsecrets.Keeper, er
 		}
 		return k, nil
 	}
-	b, err := os.ReadFile(ref) //nolint:gosec // the operator names the file
+	b, err := os.ReadFile(filepath.Clean(ref))
 	if errors.Is(err, fs.ErrNotExist) {
 		if !create {
 			return nil, fmt.Errorf("secrets: the key file %s doesn't exist, but secrets were sealed with a key; restore it, or point --secrets-key at that key", ref)
@@ -197,15 +197,16 @@ func openKEK(ctx context.Context, ref string, create bool) (*gsecrets.Keeper, er
 }
 
 func createKeyFile(path string) ([]byte, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { //nolint:gosec // the operator names the file
+	path = filepath.Clean(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 	b := []byte(base64.StdEncoding.EncodeToString(key) + "\n")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // the operator names the file
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, fs.ErrExist) {
-		return os.ReadFile(path) //nolint:gosec // as above
+		return os.ReadFile(path)
 	}
 	if err != nil {
 		return nil, err
