@@ -1,4 +1,4 @@
 {
   "title": "Resource specs",
-  "pages": ["pipeline", "source", "destination"]
+  "pages": ["pipeline", "source", "destination", "connector-source"]
 }

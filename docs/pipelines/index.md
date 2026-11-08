@@ -42,7 +42,9 @@ A file can hold several documents, separated by `---`, and `-f` can be given mor
 | `Connector`, `DeclarativeSource` | A version of a connector, or of a source written in YAML | [Build a connector](../build-connectors/index.md) |
 | `ConnectorSource` | A registry or repository whose connector packages the console lists | [Build a connector](../build-connectors/index.md) |
 
-A `Source` or `Destination` names a connector, such as `postgres`, and holds that connector's `config`. What the config takes is up to the connector: each official connector's page lists it, and `openetl connector spec TARGET` prints any connector's spec, which includes its config's JSON Schema. A connector name without a version, such as `postgres`, may pin a newer version each time you apply it, and the plan warns about that; `postgres@1` keeps to major version 1.
+A `Source` or `Destination` names a connector, such as `postgres`, and holds that connector's `config`. What the config takes is up to the connector: its own documentation lists it, and `openetl connector spec TARGET` prints any connector's spec, which includes its config's JSON Schema. A connector name without a version, such as `postgres`, may pin a newer version each time you apply it, and the plan warns about that; `postgres@1` keeps to major version 1.
+
+[Choose and manage connectors](./connectors.md) covers installing official, community and private packages, selecting versions, and upgrading them independently of OpenETL.
 
 ## Secrets
 
@@ -275,13 +277,13 @@ spec:
   destination: { ref: warehouse, namespace: shop }
 ```
 
-Its streams must be read in a way that never ends: `cdc` from a database, or `stream` from an event stream such as a Kafka topic. The plan fails a stream read any other way. A continuous pipeline has no syncs, so it has no `postSync` steps, and its transform, if any, is Flink. Pausing it stops its job; resuming starts it again from its last checkpoint.
+Its streams must be read in a way that never ends: `cdc` from a database, or `stream` from an event stream such as a topic. The plan fails a stream read any other way. A continuous pipeline has no syncs, so it has no `postSync` steps, and its transform, if any, is Flink. Pausing it stops its job; resuming starts it again from its last checkpoint.
 
 ## Delivery guarantees in practice
 
 Every pipeline requires `exactly_once` unless `delivery.require`, or a stream's `require`, says otherwise, and a pipeline doesn't run while any stream's guarantee is below what it requires. Each stream's guarantee comes from what the source and the destination can each promise; the plan's streams section gives it and the reason.
 
-Some destinations can't promise more than at least once: a stream that only delivers records and waits for them to be acknowledged, such as Kinesis, can deliver one twice after a retry. A pipeline into one says so:
+Some destinations can't promise more than at least once: a stream that only delivers records and waits for them to be acknowledged, can deliver one twice after a retry. A pipeline into one says so:
 
 ```yaml
 delivery:

@@ -187,7 +187,9 @@ Most incidents resolve themselves once the pipeline makes progress again. When y
 - **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values.
 - **dbt projects** lists the dbt projects that run after pipelines' syncs, and under **Run after**, the pipelines each one runs after.
 - **Clusters** lists the Spark and Flink clusters that pipelines' transforms run on, on its **Spark** and **Flink** tabs, with what each **Runs on** (such as **spark-submit**, **EMR on EC2** or **Kubernetes**) and the pipelines it's **Used by**. A cluster's page shows its **Settings**, with what applies to any that aren't set, the **Pipelines** that use it and whether each **Runs** it as a transform or after each sync, and the properties or configuration it gives every job. Settings name secrets, and never show their values.
-- **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, and the command that applies it, which makes it available to sources and destinations.
+- **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, and the command that applies it, which makes it available to sources and destinations. A catalog source is a package registry or repository, separate from a pipeline's data source.
+
+Connectors can be official, community maintained or private to your organization. Each has its own versions and releases, separate from OpenETL. Use a package's **Docs** link for its setup, supported modes and limits. An administrator manages installation and upgrades; [Choose and manage connectors](../pipelines/connectors.md) gives the CLI steps.
 
 ## Settings
 

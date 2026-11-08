@@ -43,6 +43,8 @@ spec:
 
 [Pipeline](./specs/pipeline.md), [Source](./specs/source.md) and [Destination](./specs/destination.md) list every field of those kinds' documents. The fields of each `spec` are defined by the messages in [`proto/openetl/api/v1`](../../proto/openetl/api/v1), whose comments describe them, and read from YAML by [`internal/spec`](../../internal/spec). The [examples](../../examples) are working documents of each common kind. A `Connector` descriptor's fields are in [Connector descriptor](./connector-descriptor.md), and a `DeclarativeSource` manifest's in [Declarative source manifest](./manifest.md).
 
+[Choose and manage connectors](../pipelines/connectors.md) covers package installation and version selection. [Connector source](./specs/connector-source.md) lists the fields for adding a public or private package catalog.
+
 ## The openetl CLI
 
 `openetl` is the command-line client of the API. Run `openetl` for its commands, and `openetl COMMAND -h` for a command's flags.
@@ -175,4 +177,4 @@ External connectors serve the connector protocol, defined in [`proto/openetl/con
 
 ## Built-in connectors
 
-[Built-in connectors](./built-in-connectors.md) has every config field of `faker`, `stdout` and `parquet`. The official connectors' references are in [openetl-connectors](https://github.com/openetl-io/openetl-connectors).
+[Built-in connectors](./built-in-connectors.md) has every config field of `faker`, `stdout` and `parquet`. Other connectors define their own config references and release them with their code. The official connectors' references are in [openetl-connectors](https://github.com/openetl-io/openetl-connectors).

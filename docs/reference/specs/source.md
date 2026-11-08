@@ -9,12 +9,12 @@ A `Source` is a system pipelines read from: a connector, and that connector's co
 apiVersion: openetl.io/v1alpha1
 kind: Source
 metadata:
-  name: shop-db
+  name: demo-data
 spec:
-  connector: postgres@1
+  connector: faker
   config:
-    dsn: { secret: shop-db-dsn }
-    schema: public
+    seed: 42
+    count: 1000
 ```
 
 ## The document
@@ -38,14 +38,16 @@ A field the document doesn't have is refused.
 
 ## Connector references
 
-`connector` is a connector's name, with a version after `@` if you want one:
+`connector` is a connector's package name, with a version after `@` if you want one. `acme/billing` below is an example name, not a published connector:
 
 | Reference | What it names |
 |---|---|
-| `postgres` | The highest version of `openetl/postgres` applied to the control plane, a prerelease only if there's nothing else. With no versions applied, the runner looks for an executable named `source-postgres` in its connectors directory. |
-| `postgres@1`, `postgres@1.4` | The highest release with that major, or major and minor, version |
-| `postgres@1.2.0` | That version |
-| `postgres@sha256:DIGEST` | The version with that digest |
-| `acme/billing` | A connector of another owner, `acme`. A name without an owner is `openetl`'s. |
+| `acme/billing` | The highest stable version of `acme/billing` applied to the control plane, or the highest prerelease if there is no stable version. With no versions applied, the runner looks for `acme/source-billing` in its connectors directory. |
+| `acme/billing@1`, `acme/billing@1.4` | The highest stable release with that major, or major and minor, version |
+| `acme/billing@1.2.0` | That version |
+| `acme/billing@sha256:DIGEST` | The version with that digest |
+| `billing` | Shorthand for `openetl/billing`. A name without an owner is `openetl`'s. With no versions applied, the runner looks for `source-billing`. |
 
 Each apply resolves the reference again, so a reference without an exact version or digest may pin a newer version than the last apply did. The built-in source, `faker` (also `openetl/faker`), has no versions, so its reference takes none. [Built-in connectors](../built-in-connectors.md) has its config.
+
+Connector versions are independent of OpenETL versions. Resolution uses packages already applied to the org, not every release in a remote registry. [Choose and manage connectors](../../pipelines/connectors.md) covers installation and controlled upgrades.

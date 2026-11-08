@@ -49,6 +49,12 @@ A connector runs as a program of its own, as the runner's user, with no sandbox.
 
 So install only connectors you trust, as you would any other program on those machines. Give runners credentials for what their pipelines need and no more, and keep them off networks their pipelines don't use.
 
+## Install and upgrade connectors
+
+External connector packages have their own release cadence. Use the versions your pipelines need, whether maintained by OpenETL, the community or your organization. The source-build image described here includes official connector executables as a development convenience; those executables are not the set of systems the engine can connect.
+
+[Choose and manage connectors](../pipelines/connectors.md) covers applying packages, private registry credentials and controlled upgrades. A runner downloads the applied package's executable for its operating system and architecture. Keep the engine's storage and network requirements separate from each connector's requirements for reaching your data systems.
+
 ## Sign-in and the first owner
 
 A server asks people to sign in with a password unless it's started with `--auth none`, which `openetld dev` does. With sign-in off, a call with no API key acts as an owner, so the server refuses calls from other sites' web pages, and answers only to `localhost`, a loopback address or its `--public-url`. `--auth-none-allow-remote` lifts the second limit, for a server reached by other names.

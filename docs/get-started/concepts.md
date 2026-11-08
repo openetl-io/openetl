@@ -7,28 +7,30 @@ OpenETL has a small vocabulary. This page explains each word once, and the rest 
 
 ## Sources and destinations
 
-A **source** is a system data comes from, such as a Postgres database or a Kafka cluster. A **destination** is a system data goes to, such as a warehouse database, an Iceberg catalog or a bucket of Parquet files.
+A **source** is a configured connection that pipelines read from. A **destination** is a configured connection that pipelines write to. Each names a connector and holds the config that connector needs to reach your system.
 
 Each one holds the details of how to reach it: the server, the database, the account. Passwords and keys aren't written into it. It names a **secret** instead, which OpenETL stores encrypted.
 
 ## Connectors
 
-A **connector** is the program that knows how to talk to one kind of system. The Postgres connector reads from Postgres and writes to it; the Kafka connector does the same for Kafka. A source or destination names the connector it uses.
+A **connector** implements how to read from or write to a system. It can provide a source role, a destination role, or both. Its config, supported read and write modes, type mappings and limits belong to that connector. OpenETL runs connectors through a shared contract.
 
-A few connectors are built into OpenETL, for trying things out. The official ones, such as Postgres, Kafka and Iceberg, are in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Anyone can [write one](../build-connectors/index.md).
+Official connectors live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Anyone can [build and maintain a connector](../build-connectors/index.md), including a community project or an organization's private connector. Each connector has its own versions and releases, separate from OpenETL's. A few [built-in connectors](../reference/built-in-connectors.md) for trying pipelines out ship with OpenETL itself.
+
+A **connector package** distributes one or both roles as a version you can install. A **connector source** is a registry namespace or repository whose packages the connector catalog lists; it isn't a pipeline's data source. [Choose and manage connectors](../pipelines/connectors.md) explains how to install a package and select a version.
 
 ## Pipelines and streams
 
 A **pipeline** copies data from one source to one destination.
 
-A source offers **streams**: each table of a database, each topic of a Kafka cluster. Each stream lands as one table, one set of files or one topic in the destination. A pipeline copies every stream its source offers unless it names the ones it wants.
+A source offers **streams**: for example, tables in a database or topics in an event system. Each stream lands as one table, one set of files or one topic in the destination. A pipeline copies every stream its source offers unless it names the ones it wants.
 
 How a stream is read is its **sync mode**:
 
 - **Full refresh** reads the whole table every time.
 - **Incremental** reads the rows whose cursor, a column such as `updated_at`, has moved on since the last read.
 - **CDC** (change data capture) reads every insert, update and delete from the database's own log of changes.
-- **Stream** reads the records an event stream, such as a Kafka topic, has had since the last read.
+- **Stream** reads the records an event stream has had since the last read.
 
 How a stream is written is its **write mode**:
 

@@ -5,6 +5,8 @@ description: Run OpenETL on your computer, copy generated rows into Postgres, an
 
 In this quickstart you run OpenETL on your own computer, create a pipeline that copies generated rows into a Postgres database, and look at the result in the console and in the database. It takes about 15 minutes, most of it the first build.
 
+This is one worked example using the official Postgres connector. Its [setup and config documentation](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) lives with its code in `openetl-connectors`; the steps below build it from a local checkout. For other systems, use the [connector your pipeline needs](../pipelines/connectors.md) and its documentation.
+
 ## What you need
 
 Until the first release, OpenETL runs from source. You need:

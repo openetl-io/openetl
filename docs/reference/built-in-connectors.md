@@ -13,7 +13,7 @@ OpenETL has three connectors built in, for trying pipelines out and for tests. T
 
 A source or destination names one in `spec.connector`, as `faker` or as `openetl/faker`. Either name always means the built-in. Each one refuses config fields it doesn't know.
 
-The official connectors, such as Postgres, Kafka and Iceberg, aren't built in: they're in [openetl-connectors](https://github.com/openetl-io/openetl-connectors), with their own pages.
+Other connectors are installed separately and have their own versions and releases. They may be maintained by OpenETL, the community or your organization. [Choose and manage connectors](../pipelines/connectors.md) covers installing them; the official connectors' code and documentation live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors).
 
 ## faker
 

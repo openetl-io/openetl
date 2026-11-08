@@ -3,11 +3,11 @@ title: Reading from the start again
 description: Read a pipeline's streams again from the start, restart it from an earlier checkpoint, and keep a paused pipeline's source from discarding what it hasn't read.
 ---
 
-A pipeline carries on each sync from where the last one committed: a replication slot's position, Kafka offsets, Kinesis sequence numbers, or an incremental stream's cursor. This page covers what to do when it can't, and how OpenETL watches a source's retention while a pipeline isn't running.
+A pipeline carries on each sync from where the last one committed: a source log position, an event stream offset, or an incremental stream's cursor. This page covers what to do when it can't, and how OpenETL watches a source's retention while a pipeline isn't running.
 
 ## Read streams again from the start
 
-`openetl reset` drops the positions of a pipeline's streams, so its next sync, or a continuous pipeline's run, reads them as it would a new stream's. Postgres CDC takes a new snapshot through the pipeline's replication slot, making a new slot if the old one is gone or invalidated; Kafka and Kinesis start where `startOffset` or `startPosition` says.
+`openetl reset` drops the positions of a pipeline's streams, so its next sync, or a continuous pipeline's run, reads them as it would a new stream's. The source connector decides how a new read starts, such as taking a new snapshot or starting at a configured event offset. Check its documentation for setup, retained history and the config that controls the starting position.
 
 ```sh
 openetl reset orders-to-warehouse                  # every stream
@@ -30,14 +30,14 @@ A pipeline with a Flink transform can't be reset, since Flink keeps state of its
 
 ### After a lost position
 
-When the source no longer has a pipeline's position, as when a replication slot is lost in a failover or invalidated by `max_slot_wal_keep_size`, or Kafka's or Kinesis's retention deleted records the read hadn't reached, the sync fails with `POSITION_LOST`. A **Position lost** incident opens and pauses the pipeline. Read again from the start and resume it:
+When the source no longer has a pipeline's position, such as after a failover or when retention removes records the pipeline hasn't read, the sync fails with `POSITION_LOST`. A **Position lost** incident opens and pauses the pipeline. Read again from the start and resume it:
 
 ```sh
 openetl reset orders-to-warehouse
 openetl resume orders-to-warehouse
 ```
 
-For Postgres CDC, reset every stream: they share the slot, and a read with any stream still holding a position in a lost slot fails again.
+If the connector shares a source position across streams, follow its recovery instructions and reset all affected streams together. Resetting only one can leave other streams pointing at the position that was lost.
 
 ## When the latest checkpoint can't be read
 
@@ -55,4 +55,4 @@ A pipeline with a Flink transform doesn't restart from an earlier checkpoint, si
 
 ## Retention while a pipeline isn't running
 
-A source keeps what a pipeline hasn't read for only so long: a replication slot up to `max_slot_wal_keep_size`, a Kafka topic for its `retention.ms`, a Kinesis stream for its retention period. A running read reports how much of that it has used. When a pipeline hasn't reported for 15 minutes and no sync is running, as when it's paused or between syncs, OpenETL asks its source on a runner of its data plane every 15 minutes, without reading. At half of the source's retention a **Retention at risk** incident opens, critical at 80%, and it resolves under 40%. Resume the pipeline, or sync it more often, before the source discards what it hasn't read.
+A source may keep unread data only for a limited time or up to a storage limit. The connector's documentation describes the system's retention settings. A running read reports how much of that retention it has used when the connector supports retention reporting. When a pipeline hasn't reported for 15 minutes and no sync is running, as when it's paused or between syncs, OpenETL asks its source on a runner of its data plane every 15 minutes, without reading, if the connector declares that capability. At half of the source's retention a **Retention at risk** incident opens, critical at 80%, and it resolves under 40%. Resume the pipeline, or sync it more often, before the source discards what it hasn't read.

@@ -9,8 +9,7 @@ You run it yourself. It's open source, under Apache 2.0.
 
 ## What you can do with it
 
-- **Copy from** Postgres (whole tables, new rows, or every change as it happens), Kafka and Kinesis.
-- **Copy to** Postgres, Iceberg tables, Parquet files on S3, Kafka and Kinesis.
+- **Connect your systems** with source and destination connectors. Use an official connector, one maintained by the community, or one your organization builds for its own systems.
 - **Choose how often:** the same pipeline runs every hour, every day, or continuously.
 - **Trust what lands:** OpenETL works out, stream by stream, whether a change could ever arrive twice, and won't run a pipeline that would get less than it asks for.
 - **Shape the data** with dbt after each sync, or on your own Spark and Flink clusters.
@@ -30,7 +29,7 @@ make dev DEPS=postgres
 
 The first run takes a few minutes to build. Then the console is at [localhost:8080](http://localhost:8080).
 
-In a second terminal, in the same directory, create a pipeline that copies generated rows into that Postgres:
+This example uses the official Postgres connector built by `make dev`. In a second terminal, in the same directory, create a pipeline that copies generated rows into that Postgres:
 
 ```sh
 go build -o bin/ ./cmd/openetl && export PATH="$PWD/bin:$PATH"
@@ -52,7 +51,7 @@ Its first sync starts straight away. Open **Pipelines** in the console to see it
 | Write a connector | [Build a connector](docs/build-connectors/index.md) |
 | Know how it works inside | [Internals](docs/internals/index.md) |
 
-The official connectors, and their docs, live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors).
+External connectors have their own versions and release cadence, separate from OpenETL. The official connectors and their docs live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors); community and private connectors can live in their own repositories. [Choose and manage connectors](docs/pipelines/connectors.md) covers installation, compatibility and upgrades.
 
 ## Contributing
 

@@ -20,7 +20,7 @@ New here? Read [What is OpenETL?](./get-started/overview.md), then run the [quic
 | Look up a field, a command or a setting | [Reference](./reference/index.md) |
 | Know how it works inside | [Internals](./internals/index.md) |
 
-Each official connector has a page of its own, with what it reads or writes and how to set it up, under Connectors on the docs site and in [openetl-connectors](https://github.com/openetl-io/openetl-connectors).
+[Choose and manage connectors](./pipelines/connectors.md) covers official, community and private connectors, which have their own versions and release cadence. Each connector's documentation describes its setup, config, supported modes and limits. Official connector pages appear under Connectors on the docs site and live with their code in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Other authors host their own documentation; the console links to the package's **Docs**.
 
 > [!NOTE]
 > OpenETL is pre-alpha. Nothing has been released yet, and pipelines' format and the API can still change between versions.

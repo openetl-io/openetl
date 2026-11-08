@@ -9,11 +9,11 @@ A `Destination` is a system pipelines write to: a connector, and that connector'
 apiVersion: openetl.io/v1alpha1
 kind: Destination
 metadata:
-  name: warehouse
+  name: local-parquet
 spec:
-  connector: postgres@1
+  connector: parquet
   config:
-    dsn: { secret: warehouse-dsn }
+    url: file:///tmp/openetl-parquet
 ```
 
 ## The document

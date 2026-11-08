@@ -82,7 +82,7 @@ Data is committed in **epochs**: the records between two checkpoints. For each o
 2. The barrier travels in band through the engine to every writer lane. Once every stream has crossed it on a lane, the lane's writer runs `PreCommit(N)`: its part of the epoch is durable, but not visible, and it returns a committable.
 3. The coordinator writes record N to the checkpoint log and moves `HEAD` to it. This is the commit point.
 4. Lane 0's writer runs `Commit(N)`, which makes the epoch visible with a marker per stream, behind the destination's fence. It's idempotent, so it's retried; if it still fails, the attempt fails, and the next attempt's `Recover` applies the epoch from the committables in its record.
-5. The source is told, a checkpoint behind, what it may acknowledge upstream, such as Kafka offsets or a replication slot's position.
+5. The source is told, a checkpoint behind, what it may acknowledge upstream, such as event offsets or a replication position.
 
 Commits run one at a time, in epoch order, while barriers for later epochs go on being placed.
 

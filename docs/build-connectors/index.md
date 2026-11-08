@@ -3,7 +3,9 @@ title: Build a connector
 description: What a connector is to OpenETL, the kinds you can write, and how to build, test, package and publish one.
 ---
 
-A connector is the program that reads from or writes to one kind of system. OpenETL starts it, hands it its config, moves records between it and the data engine, and decides when to commit. Write one when OpenETL doesn't connect to a system you need, such as an internal API or a database the official connectors don't cover.
+A connector is the program that reads from or writes to one kind of system. OpenETL starts it, hands it its config, moves records between it and the data engine, and decides when to commit. Write one for a system you need to connect, such as an internal API, or for behavior an existing connector doesn't provide.
+
+You can maintain it in your own repository, release it on your own schedule, and distribute it publicly or privately. The official connectors in [openetl-connectors](https://github.com/openetl-io/openetl-connectors) use the same protocol and tooling; your connector needs nothing from that repository.
 
 This page covers the kinds of connector, the contract a source and a destination each keep, and the loop of building, testing, packaging and publishing one with the `openetl` CLI.
 
@@ -15,7 +17,7 @@ This page covers the kinds of connector, the contract a source and a destination
 | Declarative source | A YAML document of `kind: DeclarativeSource` that describes an HTTP API as data, with CEL expressions. The runner runs it: every request goes through OpenETL's host services, and a resume point follows every page. Sources only. | Anyone, without compiling anything |
 | External | An executable that serves the connector protocol, `openetl.connector.v1` over gRPC on a Unix socket. The runner starts it as a process of its own for each attempt, and for each check or discovery. | Anyone, in any language; Go has an SDK |
 
-A source or destination names its connector, such as `connector: postgres`. OpenETL looks for a built-in connector of that name first, then for a declarative source or a package version applied to the org, then for an executable in the runner's connectors directory.
+A source or destination names its connector, such as `connector: acme/greetings`. OpenETL looks for a built-in connector of that name first, then for a declarative source or a package version applied to the org, then for an executable in the runner's connectors directory.
 
 `openetl connector schema manifest` prints the JSON Schema of a declarative source's document, for your editor; the schema is [`internal/declarative/manifest.schema.json`](../../internal/declarative/manifest.schema.json).
 
@@ -40,17 +42,17 @@ The Go SDK, in [`sdk/go`](../../sdk/go), does all of that in `sdk.Serve`, and it
 
 A source discovers its streams and reads them.
 
-- **Discover** returns a catalog: each stream's name, primary key, cursor field, how it can be read (full refresh, incremental, CDC or stream), and its **replay**. A stream is exact when reading again from a resume point yields exactly the records after it, as a CDC log or a Kafka partition does, and superset when records can repeat, as they do when reading from a cursor's last value. Replay is half of what sets a stream's [delivery guarantee](../get-started/concepts.md#delivery-guarantees); the destination is the other. A stream read with stream that has a primary key needs a cursor field that differs between a key's events, such as an offset, or the pipeline to name one: without one each event of a key would get the same `_openetl_id` and be dropped as a repeat, so OpenETL refuses the plan.
+- **Discover** returns a catalog: each stream's name, primary key, cursor field, how it can be read (full refresh, incremental, CDC or stream), and its **replay**. A stream is exact when reading again from a resume point yields exactly the records after it, as a change log or an ordered event partition can, and superset when records can repeat, as they do when reading from a cursor's last value. Replay is half of what sets a stream's [delivery guarantee](../get-started/concepts.md#delivery-guarantees); the destination is the other. A stream read with `stream` that has a primary key needs a cursor field that differs between a key's events, such as an offset, or the pipeline to name one: without one each event of a key would get the same `_openetl_id` and be dropped as a repeat, so OpenETL refuses the plan.
 - **Read** emits records, as JSON objects or Arrow batches, and marks **resume points**: places in a stream it can restart from, each with a state it gets back when it does. OpenETL commits only at the resume points a source emits. A bounded stream ends with **Complete**, whose state is where the next sync starts.
-- A source can also check its config (`Check`), acknowledge upstream what's committed (`Committed`, for Kafka offsets or a replication slot's position, a checkpoint behind), divide streams into splits that are read concurrently (`Splits`, `Resplit`), say how much of what it keeps for a pipeline a checkpoint's positions have used while the pipeline isn't running (`Retention`, set with `Retention: true` in `sdk.Connector`; OpenETL asks every 15 minutes and opens a **Retention at risk** incident from the answer), and prepare and remove what it keeps upstream for a pipeline (`Setup` and `Teardown`, below).
+- A source can also check its config (`Check`), acknowledge upstream what's committed (`Committed`, for event offsets or a replication position, a checkpoint behind), divide streams into splits that are read concurrently (`Splits`, `Resplit`), say how much of what it keeps for a pipeline a checkpoint's positions have used while the pipeline isn't running (`Retention`, set with `Retention: true` in `sdk.Connector`; OpenETL asks every 15 minutes and opens a **Retention at risk** incident from the answer), and prepare and remove what it keeps upstream for a pipeline (`Setup` and `Teardown`, below).
 
 ### A destination
 
 A destination declares its **capabilities**, and opens a writer for each writer lane of an attempt. Its capabilities say how it makes an epoch, the data between two checkpoints, visible:
 
-- **Stage and apply:** stage in `PreCommit`, apply in `Commit`, with a marker per stream behind a fence. Postgres, Iceberg and Parquet files work this way.
-- **Transactional stream:** flush into a transaction in `PreCommit`, commit it in `Commit`. Kafka works this way.
-- **Deliver and acknowledge:** deliver during the epoch, and return from `PreCommit` once everything is acknowledged. Kinesis works this way.
+- **Stage and apply:** stage in `PreCommit`, apply in `Commit`, with a marker per stream behind a fence.
+- **Transactional stream:** flush into a transaction in `PreCommit`, commit it in `Commit`.
+- **Deliver and acknowledge:** deliver during the epoch, and return from `PreCommit` once everything is acknowledged.
 
 A writer's calls are the commit protocol:
 
@@ -147,7 +149,7 @@ For Arrow batches, exact replay, splits or CDC, implement `source.Source` and `d
 
 ## Try it with the CLI
 
-`openetl connector` runs a connector the way a runner does, with nothing else running: no `openetld`, Postgres or bucket. Build the CLI from a checkout of OpenETL, as in the [quickstart](../get-started/quickstart.md#3-build-the-cli).
+`openetl connector` runs a connector the way a runner does, with nothing else running: no running OpenETL installation. Build the CLI from a checkout of OpenETL, as in the [quickstart](../get-started/quickstart.md#3-build-the-cli).
 
 Print its spec, as the runner sees it:
 
@@ -277,6 +279,27 @@ openetl connector apply -f dist/greetings.connector.yaml
 ```
 
 A `ConnectorSource` document connects a registry namespace or a GitHub repository to the org as a source of its catalog. `openetl connector catalog`, and **Connectors** in the console, list the packages its sources offer, with the command that applies each. OpenETL connects the official connectors' source, `oci://ghcr.io/openetl-io/connectors`, when it creates the org.
+
+## Release and compatibility
+
+Choose a package name under your own owner, such as `acme/greetings`. A name without an owner belongs to `openetl`. Use your own name for a fork too, so an installation can distinguish it from the original package. Package names stay associated with their source repository, and applied versions are immutable: changed code or metadata needs a new version.
+
+Your connector's version is independent of OpenETL's version and of other connectors' versions. For a repository with one package, tags can be `v0.1.0`; for several packages, `greetings/v0.1.0` lets each package release separately. `openetl connector package --tag TAG` selects the package and version from that tag.
+
+Compatibility comes from the role's contract, not matching version numbers:
+
+- The descriptor records the connector protocol and required features reported by the executable's spec. A runner must support them.
+- `roles.ROLE.requires.platform` in `openetl-connector.yaml` declares the oldest OpenETL release the role runs on, when it needs a minimum release.
+- `roles.ROLE.state.version` and `roles.ROLE.state.reads` describe the checkpoint state it writes and the oldest state it reads. Document state changes and whether an older connector can resume after an upgrade.
+- Build executables for the operating systems and architectures your users' runners use. An image-only role cannot run on a runner without a container launcher.
+
+Test the released artifact with the conformance kit against the OpenETL versions you support. Publish release notes for config, behavior and state changes, and keep setup instructions and limits with the connector version. The [package file](../reference/connector-file.md) and [descriptor](../reference/connector-descriptor.md) references define these fields.
+
+### Private distribution
+
+The same package commands work for a private connector. Publish to a registry namespace your organization controls, or upload the descriptor and binaries to a private GitHub release. Your organization supplies its own repository, docs URL and release process; no entry in the official connector repository is required.
+
+The CLI reads Docker's registry credentials when publishing or running a package locally. An OpenETL installation uses the credentials in its own `ConnectorSource` instead. Give the people installing your package its reference, the required role and platform versions, and the [private connector setup](../pipelines/connectors.md#private-connectors).
 
 ## Document it
 

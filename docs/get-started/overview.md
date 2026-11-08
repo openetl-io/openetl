@@ -1,26 +1,22 @@
 ---
 title: What is OpenETL?
-description: What OpenETL does, who it's for, and what it can connect today.
+description: What OpenETL does, who it's for, and how connectors link your systems.
 ---
 
-OpenETL keeps copies of your data where people need them. It reads from the systems where data is made, such as an application's Postgres database or a Kafka topic, and writes into the systems where it's used, such as a warehouse, a data lake or another stream. It keeps those copies up to date, on a schedule or continuously, and tells you when something needs attention.
+OpenETL keeps copies of your data where people need them. It reads through source connectors from the systems where data is made, and writes through destination connectors into the systems where it's used, such as a warehouse, a data lake or another stream. It keeps those copies up to date, on a schedule or continuously, and tells you when something needs attention.
 
 It's open source, under Apache 2.0, and you run it on your own machines or your own cloud account, so your data doesn't pass through anyone else's.
 
 > [!NOTE]
 > OpenETL is pre-alpha. Nothing has been released yet, and pipelines' format and the API can still change between versions.
 
-## What it connects
+## Connect your systems
 
-| Read from | Write to |
-|---|---|
-| Postgres: whole tables, new rows by a column such as `updated_at`, or every change as it happens (CDC) | Postgres |
-| Kafka | Iceberg tables, through a REST or AWS Glue catalog |
-| Kinesis | Parquet files on S3 |
-| | Kafka |
-| | Kinesis |
+[Connectors](./concepts.md#connectors) provide the connection to each system. A connector can read data, write data, or do both. Which systems you can connect, and which ways you can read or write them, depend on the connectors you install.
 
-Each of these is a [connector](./concepts.md#connectors). The official connectors' own pages, with how to set each one up, are in [openetl-connectors](https://github.com/openetl-io/openetl-connectors).
+The official connectors live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Community members and organizations can also build and maintain connectors in their own repositories, including private ones. Connector authors choose their own versions and release cadence, independently of OpenETL.
+
+For setup, permissions, config and limits, read the documentation for the connector version you use. [Choose and manage connectors](../pipelines/connectors.md) explains how to find, install and upgrade them. [Build a connector](../build-connectors/index.md) covers writing your own.
 
 ## What it does for you
 
@@ -37,7 +33,7 @@ Each of these is a [connector](./concepts.md#connectors). The official connector
 - **People who depend on the data,** such as analysts and product managers, use the console to see whether their tables are fresh and why one isn't. [Use the console](../use/index.md) is for them.
 - **Data and analytics engineers** write and review pipelines. Start with [Pipelines](../pipelines/index.md).
 - **Platform engineers** install and run OpenETL for everyone else. Start with [Self-host](../self-host/index.md).
-- **Developers** connect it to other tools, or write connectors for systems it doesn't support: [Integrate](../integrate/index.md) and [Build a connector](../build-connectors/index.md).
+- **Developers** connect it to other tools, or write connectors for systems they need: [Integrate](../integrate/index.md) and [Build a connector](../build-connectors/index.md).
 
 ## Next
 
