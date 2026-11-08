@@ -180,7 +180,7 @@ func (q *Queries) EnableWebhook(ctx context.Context, arg EnableWebhookParams) er
 }
 
 const getWebhook = `-- name: GetWebhook :one
-SELECT org_id, workspace_id, id, name, spec, version, secrets, revision, disabled, disabled_reason, failing_since, create_time, update_time FROM webhooks WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, spec, version, secrets, revision, disabled, disabled_reason, failing_since, create_time, update_time, last_failure_time FROM webhooks WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 `
 
 type GetWebhookParams struct {
@@ -206,6 +206,7 @@ func (q *Queries) GetWebhook(ctx context.Context, arg GetWebhookParams) (Webhook
 		&i.FailingSince,
 		&i.CreateTime,
 		&i.UpdateTime,
+		&i.LastFailureTime,
 	)
 	return i, err
 }
@@ -293,7 +294,7 @@ func (q *Queries) InsertWebhook(ctx context.Context, arg InsertWebhookParams) er
 }
 
 const listEnabledWebhooks = `-- name: ListEnabledWebhooks :many
-SELECT org_id, workspace_id, id, name, spec, version, secrets, revision, disabled, disabled_reason, failing_since, create_time, update_time FROM webhooks WHERE org_id = $1 AND workspace_id = ANY($2::uuid[]) AND NOT disabled
+SELECT org_id, workspace_id, id, name, spec, version, secrets, revision, disabled, disabled_reason, failing_since, create_time, update_time, last_failure_time FROM webhooks WHERE org_id = $1 AND workspace_id = ANY($2::uuid[]) AND NOT disabled
 `
 
 type ListEnabledWebhooksParams struct {
@@ -324,6 +325,7 @@ func (q *Queries) ListEnabledWebhooks(ctx context.Context, arg ListEnabledWebhoo
 			&i.FailingSince,
 			&i.CreateTime,
 			&i.UpdateTime,
+			&i.LastFailureTime,
 		); err != nil {
 			return nil, err
 		}
@@ -412,7 +414,7 @@ func (q *Queries) ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeli
 }
 
 const listWebhooks = `-- name: ListWebhooks :many
-SELECT org_id, workspace_id, id, name, spec, version, secrets, revision, disabled, disabled_reason, failing_since, create_time, update_time FROM webhooks
+SELECT org_id, workspace_id, id, name, spec, version, secrets, revision, disabled, disabled_reason, failing_since, create_time, update_time, last_failure_time FROM webhooks
 WHERE org_id = $1 AND workspace_id = $2 AND name > $3
 ORDER BY name LIMIT $4
 `
@@ -452,6 +454,7 @@ func (q *Queries) ListWebhooks(ctx context.Context, arg ListWebhooksParams) ([]W
 			&i.FailingSince,
 			&i.CreateTime,
 			&i.UpdateTime,
+			&i.LastFailureTime,
 		); err != nil {
 			return nil, err
 		}
@@ -502,7 +505,7 @@ func (q *Queries) ListWebhooksUsingSecrets(ctx context.Context, arg ListWebhooks
 }
 
 const lockWebhook = `-- name: LockWebhook :one
-SELECT org_id, workspace_id, id, name, spec, version, secrets, revision, disabled, disabled_reason, failing_since, create_time, update_time FROM webhooks WHERE org_id = $1 AND workspace_id = $2 AND name = $3
+SELECT org_id, workspace_id, id, name, spec, version, secrets, revision, disabled, disabled_reason, failing_since, create_time, update_time, last_failure_time FROM webhooks WHERE org_id = $1 AND workspace_id = $2 AND name = $3
 FOR UPDATE
 `
 
@@ -529,6 +532,7 @@ func (q *Queries) LockWebhook(ctx context.Context, arg LockWebhookParams) (Webho
 		&i.FailingSince,
 		&i.CreateTime,
 		&i.UpdateTime,
+		&i.LastFailureTime,
 	)
 	return i, err
 }
@@ -631,19 +635,27 @@ func (q *Queries) UpdateWebhook(ctx context.Context, arg UpdateWebhookParams) er
 }
 
 const webhookFailed = `-- name: WebhookFailed :one
-UPDATE webhooks SET failing_since = coalesce(failing_since, now())
-WHERE org_id = $1 AND id = $2
+UPDATE webhooks SET
+    failing_since = CASE
+        WHEN failing_since IS NULL OR last_failure_time IS NULL
+            OR last_failure_time <= now() - make_interval(secs => $1::float8)
+        THEN now() ELSE failing_since END,
+    last_failure_time = now()
+WHERE org_id = $2 AND id = $3
 RETURNING extract(epoch FROM now() - failing_since)::float8 AS failing_seconds
 `
 
 type WebhookFailedParams struct {
-	OrgID uuid.UUID
-	ID    uuid.UUID
+	GapSeconds float64
+	OrgID      uuid.UUID
+	ID         uuid.UUID
 }
 
-// How long the webhook has been failing.
+// How long the webhook has been failing: since its first failure, or since
+// the first after a @gap_seconds or longer without one, so a quiet spell
+// doesn't count as failing.
 func (q *Queries) WebhookFailed(ctx context.Context, arg WebhookFailedParams) (float64, error) {
-	row := q.db.QueryRow(ctx, webhookFailed, arg.OrgID, arg.ID)
+	row := q.db.QueryRow(ctx, webhookFailed, arg.GapSeconds, arg.OrgID, arg.ID)
 	var failing_seconds float64
 	err := row.Scan(&failing_seconds)
 	return failing_seconds, err

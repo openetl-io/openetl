@@ -12,6 +12,32 @@ import (
 	"github.com/google/uuid"
 )
 
+const attemptOfDispatch = `-- name: AttemptOfDispatch :one
+SELECT a.pipeline_id, a.attempt, s.run_id
+FROM attempts a
+JOIN syncs s ON s.org_id = a.org_id AND s.id = a.sync_id
+WHERE a.org_id = $1 AND a.id = $2
+`
+
+type AttemptOfDispatchParams struct {
+	OrgID uuid.UUID
+	ID    string
+}
+
+type AttemptOfDispatchRow struct {
+	PipelineID uuid.UUID
+	Attempt    int32
+	RunID      string
+}
+
+// The attempt a dispatch is, if it's one, with its sync's run.
+func (q *Queries) AttemptOfDispatch(ctx context.Context, arg AttemptOfDispatchParams) (AttemptOfDispatchRow, error) {
+	row := q.db.QueryRow(ctx, attemptOfDispatch, arg.OrgID, arg.ID)
+	var i AttemptOfDispatchRow
+	err := row.Scan(&i.PipelineID, &i.Attempt, &i.RunID)
+	return i, err
+}
+
 const cancelDispatch = `-- name: CancelDispatch :exec
 UPDATE dispatches SET
     state = CASE WHEN state = 'running' THEN state ELSE 'finished' END,
@@ -404,9 +430,10 @@ func (q *Queries) EnqueueDispatch(ctx context.Context, arg EnqueueDispatchParams
 	return result.RowsAffected(), nil
 }
 
-const expireLeases = `-- name: ExpireLeases :execrows
+const expireLeases = `-- name: ExpireLeases :many
 UPDATE dispatches SET state = 'finished', outcome = $1, finish_time = now()
 WHERE org_id = $2 AND state = 'running' AND lease_deadline <= now()
+RETURNING id
 `
 
 type ExpireLeasesParams struct {
@@ -415,12 +442,24 @@ type ExpireLeasesParams struct {
 }
 
 // Running work whose runner stopped reporting it, or that ran out of time.
-func (q *Queries) ExpireLeases(ctx context.Context, arg ExpireLeasesParams) (int64, error) {
-	result, err := q.db.Exec(ctx, expireLeases, arg.Outcome, arg.OrgID)
+func (q *Queries) ExpireLeases(ctx context.Context, arg ExpireLeasesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, expireLeases, arg.Outcome, arg.OrgID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const expireUnclaimed = `-- name: ExpireUnclaimed :execrows
@@ -1180,6 +1219,34 @@ func (q *Queries) RecentAttempts(ctx context.Context, arg RecentAttemptsParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const recentFailedAttempts = `-- name: RecentFailedAttempts :one
+SELECT count(*) FROM attempts
+WHERE org_id = $1 AND sync_id = $2 AND create_time >= $3
+    AND (code NOT IN ('', 'DRAINING', 'FENCED') OR attempt = $4)
+`
+
+type RecentFailedAttemptsParams struct {
+	OrgID   uuid.UUID
+	SyncID  uuid.UUID
+	Since   time.Time
+	Attempt int32
+}
+
+// The sync's attempts created since @since that failed, by the code recorded
+// on them. @attempt counts too: a runner's report of it can come before its
+// result records the code.
+func (q *Queries) RecentFailedAttempts(ctx context.Context, arg RecentFailedAttemptsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, recentFailedAttempts,
+		arg.OrgID,
+		arg.SyncID,
+		arg.Since,
+		arg.Attempt,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const recordAttemptUsage = `-- name: RecordAttemptUsage :exec

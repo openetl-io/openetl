@@ -37,6 +37,10 @@ import (
 // in a way worth retrying: about a day in all.
 var DefaultRetries = []time.Duration{5 * time.Second, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 5 * time.Hour, 10 * time.Hour, 10 * time.Hour}
 
+// failureGap is how long a webhook goes without a failure before its next
+// one starts its failing period over, longer than the wait before any retry.
+const failureGap = 24 * time.Hour
+
 const (
 	// How long one attempt may take, and how long a claimed delivery is
 	// left to its notifier: longer than a whole batch's attempts can take.
@@ -272,7 +276,7 @@ func (n *Notifier) attempt(ctx context.Context, r db.ClaimDeliveriesRow) error {
 	case o.local:
 		return nil
 	}
-	failing, err := n.Store.WebhookFailed(ctx, db.WebhookFailedParams{OrgID: n.Org, ID: r.WebhookID})
+	failing, err := n.Store.WebhookFailed(ctx, db.WebhookFailedParams{OrgID: n.Org, ID: r.WebhookID, GapSeconds: failureGap.Seconds()})
 	if err != nil {
 		return err
 	}

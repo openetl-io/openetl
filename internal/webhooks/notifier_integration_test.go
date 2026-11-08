@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -32,6 +33,7 @@ import (
 
 type fixture struct {
 	st     *store.Store
+	conn   *pgx.Conn
 	tenant store.Tenant
 	keys   *secrets.Keyring
 	// The signing key in the secret "hook-key".
@@ -41,7 +43,8 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ctx := t.Context()
-	st, err := store.Open(ctx, storetest.NewDatabase(t))
+	url := storetest.NewDatabase(t)
+	st, err := store.Open(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +52,12 @@ func newFixture(t *testing.T) *fixture {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{st: st}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	f := &fixture{st: st, conn: conn}
 	if f.tenant, err = st.Bootstrap(ctx, "default", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +330,7 @@ func TestSuccessClearsAFailureFromDuringTheAttempt(t *testing.T) {
 	f := newFixture(t)
 	var hook uuid.UUID
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-		if _, err := f.st.WebhookFailed(req.Context(), db.WebhookFailedParams{OrgID: f.tenant.Org, ID: hook}); err != nil {
+		if _, err := f.st.WebhookFailed(req.Context(), db.WebhookFailedParams{OrgID: f.tenant.Org, ID: hook, GapSeconds: 3600}); err != nil {
 			t.Error(err)
 		}
 	}))
@@ -399,6 +407,38 @@ func TestFailingWebhooksAreDisabled(t *testing.T) {
 	got := r.deliveries()
 	if last := got[len(got)-1]; last.id != want[0].String() {
 		t.Errorf("after enabling, the last delivery was %s, want %s", last.id, want[0])
+	}
+}
+
+// A failure after a quiet spell starts a webhook's failing period over,
+// however long ago the earlier failures began.
+func TestAQuietSpellRestartsTheFailingPeriod(t *testing.T) {
+	f := newFixture(t)
+	r := newReceiver(t, f.key, 500, 500)
+	hook := f.webhook(t, "quiet", &apiv1.WebhookSpec{Url: r.URL, Events: []string{"*"}, Secrets: []string{"hook-key"}})
+	backdate := func(lastFailure string) {
+		t.Helper()
+		_, err := f.conn.Exec(t.Context(), `UPDATE webhooks SET failing_since = now() - interval '4 days', last_failure_time = now() - $1::interval WHERE org_id = $2 AND id = $3`,
+			lastFailure, f.tenant.Org, hook)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	failing := func() float64 {
+		t.Helper()
+		s, err := f.st.WebhookFailed(t.Context(), db.WebhookFailedParams{OrgID: f.tenant.Org, ID: hook, GapSeconds: (24 * time.Hour).Seconds()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	backdate("2 days")
+	if s := failing(); s > 60 {
+		t.Errorf("after two quiet days, it has been failing for %v s, want moments", s)
+	}
+	backdate("1 hour")
+	if s := failing(); s < (3 * 24 * time.Hour).Seconds() {
+		t.Errorf("an hour after the last failure, it has been failing for %v s, want its 4 days", s)
 	}
 }
 

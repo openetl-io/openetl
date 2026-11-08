@@ -315,11 +315,18 @@ func Resolve(ctx context.Context, q *db.Queries, org, pipeline uuid.UUID, classe
 	return rows, nil
 }
 
-// ResolveOne resolves an open incident by hand.
+// ResolveOne resolves an open incident by hand. A pipeline that's still
+// lagging opens a new incident at its next checkpoint, so resolving doesn't
+// silence it.
 func ResolveOne(ctx context.Context, q *db.Queries, org, id uuid.UUID, resolution string) (db.Incident, error) {
 	r, err := q.ResolveIncident(ctx, db.ResolveIncidentParams{OrgID: org, ID: id, Resolution: &resolution})
 	if err != nil {
 		return r, err
+	}
+	if r.Class == string(Lagging) {
+		if _, err := q.StopLagging(ctx, db.StopLaggingParams{OrgID: org, ID: r.PipelineID}); err != nil {
+			return r, err
+		}
 	}
 	t, err := names(ctx, q, org, r.PipelineID)
 	if err != nil {

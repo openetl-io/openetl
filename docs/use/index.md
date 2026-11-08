@@ -166,7 +166,7 @@ And these kinds:
 | **Schema blocked** | A stream's schema changed in a way the pipeline doesn't take. |
 | **Rate limited** | The source kept limiting requests until the sync ran out of retries. |
 | **Position lost** | The source no longer has the point the pipeline was reading from, so reading can't carry on from there. |
-| **Crash loop** | A continuous pipeline keeps failing without committing anything. |
+| **Crash loop** | A continuous pipeline's attempts fail or lose their runner, three in a row within a day, without committing anything. |
 | **Lagging** | A continuous pipeline has fallen too far behind its source. |
 | **Retention at risk** | The pipeline's reading is so far behind that it has used half or more of what the source keeps for it, such as a database's log of changes. |
 | **Quarantine** | A stream is holding back a large share of its rows. |
@@ -180,7 +180,7 @@ An incident's page has **What happened**, with a link to the sync's log; **Next 
 
 What they changed shows under **Not as the spec says** on the pipeline's **Overview**, where you can undo it. A pipeline's definition decides how far heal goes: it can propose these actions without taking them, or take none.
 
-Most incidents resolve themselves once the pipeline makes progress again. When you fixed something in a way OpenETL can't see, **Resolve** closes it by hand, with an optional **Comment** that's kept with the resolution. If it happens again, a new incident opens.
+Most incidents resolve themselves once the pipeline makes progress again. When you fixed something in a way OpenETL can't see, **Resolve** closes it by hand, with an optional **Comment** that's kept with the resolution. If it happens again, a new incident opens. A **Lagging** incident you resolve while the pipeline is still behind opens again at its next checkpoint.
 
 ## Sources, destinations and connectors
 

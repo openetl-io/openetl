@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -262,5 +263,84 @@ func TestConcurrentSightings(t *testing.T) {
 	}
 	if n != 1 || occurrences != 8 {
 		t.Errorf("%d incidents with %d occurrences, want 1 with 8", n, occurrences)
+	}
+}
+
+// Resolving a lagging incident by hand doesn't silence the pipeline: its
+// next checkpoint past the threshold opens a new one.
+func TestResolvingALaggingIncidentOpensAgainIfStillLagging(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	p := f.pipelines[""]
+	started, err := f.s.StartLagging(ctx, db.StartLaggingParams{OrgID: f.org, ID: p})
+	if err != nil || started != 1 {
+		t.Fatalf("StartLagging: %d, %v", started, err)
+	}
+	seen := f.observe(t, heal.Observation{Pipeline: p, Version: "v1", Class: heal.Lagging, Severity: heal.Warning, Message: "far behind", Key: "first"})
+	if err := f.s.Tx(ctx, func(q *db.Queries) error {
+		_, err := heal.ResolveOne(ctx, q, f.org, seen.Incident.ID, "looked at it")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := f.s.StartLagging(ctx, db.StartLaggingParams{OrgID: f.org, ID: p})
+	if err != nil || again != 1 {
+		t.Fatalf("StartLagging after resolving: %d, %v; the pipeline would stay silent", again, err)
+	}
+}
+
+// Only failures in the last day count toward a crash loop.
+func TestCrashLoopCountsTheLastDay(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	p := f.pipelines[""]
+	sync := uuid.New()
+	if _, err := f.s.StartSync(ctx, db.StartSyncParams{OrgID: f.org, ID: sync, PipelineID: p, Version: "v1", WorkflowID: "wf", RunID: "run", Continuous: true}); err != nil {
+		t.Fatal(err)
+	}
+	attempt := func(n int32, age string) {
+		t.Helper()
+		_, err := f.conn.Exec(ctx, `INSERT INTO attempts (org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, code, create_time)
+			VALUES ($1, $2, $3, $4, $5, 1, 1, 'test', 'TRANSIENT', now() - $6::interval)`, f.org, fmt.Sprintf("a-%d", n), p, sync, n, age)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	fail := func(n int32) {
+		t.Helper()
+		if err := f.s.Tx(ctx, func(q *db.Queries) error {
+			return heal.AttemptFailed(ctx, q, f.org, heal.AttemptFailure{Pipeline: p, RunID: "run", Attempt: n, Code: "TRANSIENT", Message: "boom", Time: time.Now()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open := func() int {
+		t.Helper()
+		rows, err := f.s.OpenIncidents(ctx, db.OpenIncidentsParams{OrgID: f.org, PipelineID: p, Class: string(heal.CrashLoop)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(rows)
+	}
+	// Two days old, so only two of these are in the last day.
+	attempt(1, "2 days")
+	fail(1)
+	attempt(2, "1 hour")
+	fail(2)
+	attempt(3, "1 minute")
+	fail(3)
+	if n := open(); n != 0 {
+		t.Fatalf("%d incidents with only two failures in the last day", n)
+	}
+	attempt(4, "1 second")
+	fail(4)
+	if n := open(); n != 1 {
+		t.Fatalf("%d incidents with three failures in the last day", n)
+	}
+	// Told again, it counts once.
+	fail(4)
+	s, err := f.s.GetSyncByRun(ctx, db.GetSyncByRunParams{OrgID: f.org, PipelineID: p, RunID: "run"})
+	if err != nil || s.FailedAttempts != 4 {
+		t.Fatalf("failed attempts: %d, %v", s.FailedAttempts, err)
 	}
 }

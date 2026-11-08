@@ -98,9 +98,16 @@ WHERE org_id = @org_id AND id = @id AND attempts = @attempts AND (@state <> 'pen
 -- name: WebhookSucceeded :exec
 UPDATE webhooks SET failing_since = NULL WHERE org_id = @org_id AND id = @id AND failing_since IS NOT NULL;
 
--- How long the webhook has been failing.
+-- How long the webhook has been failing: since its first failure, or since
+-- the first after a @gap_seconds or longer without one, so a quiet spell
+-- doesn't count as failing.
 -- name: WebhookFailed :one
-UPDATE webhooks SET failing_since = coalesce(failing_since, now())
+UPDATE webhooks SET
+    failing_since = CASE
+        WHEN failing_since IS NULL OR last_failure_time IS NULL
+            OR last_failure_time <= now() - make_interval(secs => @gap_seconds::float8)
+        THEN now() ELSE failing_since END,
+    last_failure_time = now()
 WHERE org_id = @org_id AND id = @id
 RETURNING extract(epoch FROM now() - failing_since)::float8 AS failing_seconds;
 
