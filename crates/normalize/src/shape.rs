@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::coerce::Target;
 use crate::control::Control;
-use crate::evolve::{Conformed, Evolver, HoldRules, Policy, VERSIONS_KEY};
+use crate::evolve::{BIG_INTS_KEY, Conformed, Evolver, HoldRules, Policy, VERSIONS_KEY};
 use crate::hold::{
     CELL, COLUMN, ColumnHold, FILLS_KEY, HELD_COLUMN, HELD_KEY, HOLD_KIND_KEY, HeldCell,
     HoldConfig, Show, Why,
@@ -130,6 +130,10 @@ impl Shaper {
                 fields.push(f.as_ref().clone().with_name(name));
             }
             evolver = Evolver::new(policy, Some(&Schema::new(fields)), versions);
+            if let Some(v) = r.metadata().get(BIG_INTS_KEY) {
+                evolver.big_ints = serde_json::from_str(v)
+                    .map_err(|_| Error::Restored(format!("its {BIG_INTS_KEY} metadata")))?;
+            }
         }
         evolver.infinity = types.infinity;
         let declared = match declared {
@@ -569,6 +573,7 @@ impl Shaper {
             Some(s)
                 if self.fresh
                     && !c.changed
+                    && !c.big_ints_grew
                     && !started
                     && seq.is_none_or(|t| {
                         s.field_with_name("_openetl_seq")
@@ -1066,9 +1071,14 @@ impl Shaper {
         {
             md.insert(VERSIONS_KEY.to_owned(), v);
         }
+        if !self.evolver.big_ints.is_empty()
+            && let Ok(v) = serde_json::to_string(&self.evolver.big_ints)
+        {
+            md.insert(BIG_INTS_KEY.to_owned(), v);
+        }
         let schema = Arc::new(Schema::new_with_metadata(fields, md));
         if data {
-            self.changed |= self.current.as_ref() != Some(&schema);
+            self.changed |= !same_but_big_ints(self.current.as_deref(), &schema);
             self.current = Some(schema.clone());
             self.fresh = true;
         }
@@ -1165,6 +1175,18 @@ impl Shaper {
         let opts = RecordBatchOptions::new().with_row_count(Some(n));
         Ok(RecordBatch::try_new_with_options(schema, columns, &opts)?)
     }
+}
+
+/// Whether two schemas differ at most in which columns have held big
+/// integers, which matters only when restoring.
+fn same_but_big_ints(a: Option<&Schema>, b: &Schema) -> bool {
+    let Some(a) = a else { return false };
+    let without = |s: &Schema| {
+        let mut md = s.metadata().clone();
+        md.remove(BIG_INTS_KEY);
+        md
+    };
+    a.fields() == b.fields() && without(a) == without(b)
 }
 
 fn now_micros() -> i64 {
@@ -1705,6 +1727,42 @@ mod tests {
         assert_eq!(n.batch.schema().fields(), schema.fields());
         assert_eq!(n.batch.column(0).null_count(), 1);
         assert!(n.versioned.is_empty());
+    }
+
+    #[test]
+    fn a_restored_stream_remembers_columns_past_2_53() {
+        let typed = |a: ArrayRef| RecordBatch::try_from_iter(vec![("X", a)]).unwrap();
+        let mut s = shaper(None);
+        let n = s
+            .batch(&typed(Arc::new(Int64Array::from(vec![(1 << 53) + 1]))))
+            .unwrap();
+        s.seal();
+        let schema = n.batch.schema();
+        assert_eq!(schema.metadata().get(BIG_INTS_KEY).unwrap(), r#"["X"]"#);
+
+        let mut r = shaper(Some(schema.clone()));
+        let float = typed(Arc::new(arrow_array::Float64Array::from(vec![1.5])));
+        let n = r.batch(&float).unwrap();
+        assert!(n.schema_changed);
+        assert_eq!(n.batch.schema().field(0).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn a_first_big_integer_is_not_a_schema_change() {
+        let typed = |a: ArrayRef| RecordBatch::try_from_iter(vec![("X", a)]).unwrap();
+        let mut s = shaper(None);
+        let first = s
+            .batch(&typed(Arc::new(Int64Array::from(vec![1]))))
+            .unwrap();
+        assert!(first.schema_changed);
+        let big = s
+            .batch(&typed(Arc::new(Int64Array::from(vec![(1 << 53) + 1]))))
+            .unwrap();
+        assert!(!big.schema_changed);
+        assert_eq!(
+            big.batch.schema().metadata().get(BIG_INTS_KEY).unwrap(),
+            r#"["X"]"#
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ mod shape;
 
 pub use coerce::{Infinity, check_declared, render_row};
 pub use control::CONTROL_KEY;
-pub use evolve::{Policy, VERSIONS_KEY, widens};
+pub use evolve::{BIG_INTS_KEY, Policy, VERSIONS_KEY, widens};
 pub use ids::Identity;
 pub use keygroup::{KEY_GROUP_HASH, by_key_group, key_groups};
 pub use shape::{Shaped, Shaper};
@@ -77,10 +77,15 @@ pub struct TypeOptions {
     pub nanoseconds: bool,
 }
 
+/// The largest integer magnitude up to which `Float64` is exact.
+pub(crate) const MAX_EXACT_FLOAT_INT: u64 = 1 << 53;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Boolean,
     Int64,
+    /// An `Int64` that has held a value past ±2^53, which `Float64` rounds.
+    BigInt64,
     Float64,
     String,
     /// A nested object or array.
@@ -92,8 +97,11 @@ impl Kind {
         match v {
             Value::Null => None,
             Value::Bool(_) => Some(Kind::Boolean),
-            Value::Number(n) if n.is_i64() => Some(Kind::Int64),
-            Value::Number(_) => Some(Kind::Float64),
+            Value::Number(n) => Some(match n.as_i64() {
+                Some(i) if i.unsigned_abs() > MAX_EXACT_FLOAT_INT => Kind::BigInt64,
+                Some(_) => Kind::Int64,
+                None => Kind::Float64,
+            }),
             Value::String(_) => Some(Kind::String),
             Value::Array(_) | Value::Object(_) => Some(Kind::Json),
         }
@@ -103,6 +111,7 @@ impl Kind {
     fn join(self, other: Kind) -> Kind {
         match (self, other) {
             (a, b) if a == b => a,
+            (Kind::Int64, Kind::BigInt64) | (Kind::BigInt64, Kind::Int64) => Kind::BigInt64,
             (Kind::Int64, Kind::Float64) | (Kind::Float64, Kind::Int64) => Kind::Float64,
             _ => Kind::String,
         }
@@ -123,7 +132,7 @@ impl Kind {
     fn field(self, name: &str) -> Field {
         let dt = match self {
             Kind::Boolean => DataType::Boolean,
-            Kind::Int64 => DataType::Int64,
+            Kind::Int64 | Kind::BigInt64 => DataType::Int64,
             Kind::Float64 => DataType::Float64,
             Kind::String | Kind::Json => DataType::Utf8,
         };
@@ -209,7 +218,8 @@ impl Ty {
 
 /// Infers and holds one stream's schema. Columns appear in the order their
 /// first non-null value arrived, and inferred types only widen: `int64` to
-/// `float64` to `string`, and anything else to `string`. Declared columns
+/// `float64` to `string`, and anything else to `string`. An `int64` that has
+/// held a value past ±2^53 goes to `string` instead of `float64`. Declared columns
 /// keep their types, and a row whose value doesn't fit is rejected.
 #[derive(Debug)]
 pub struct Normalizer {
@@ -400,7 +410,8 @@ impl Normalizer {
                         let widened = cur.join(kind);
                         if widened != cur {
                             columns[i].1 = Ty::Inferred(widened);
-                            changed = true;
+                            // BigInt64 is still an int64 column.
+                            changed |= widened != Kind::BigInt64;
                         }
                     }
                 }
@@ -509,7 +520,7 @@ fn build(kind: Kind, name: &str, rows: &[Map<String, Value>]) -> ArrayRef {
             values.for_each(|v| b.append_option(v.and_then(Value::as_bool)));
             Arc::new(b.finish())
         }
-        Kind::Int64 => {
+        Kind::Int64 | Kind::BigInt64 => {
             let mut b = Int64Builder::with_capacity(rows.len());
             values.for_each(|v| b.append_option(v.and_then(Value::as_i64)));
             Arc::new(b.finish())
@@ -603,6 +614,42 @@ mod tests {
         assert_eq!(types(&n), vec![("x".into(), DataType::Float64)]);
         let x = out.batch.column(0).as_primitive::<Float64Type>();
         assert_eq!(x.iter().collect::<Vec<_>>(), vec![Some(1.0), Some(2.5)]);
+    }
+
+    #[test]
+    fn big_integers_and_floats_join_to_strings() {
+        let mut n = Normalizer::default();
+        let out = push(
+            &mut n,
+            &[
+                r#"{"id": 9007199254740993}"#,
+                r#"{"id": 1.5}"#,
+                r#"{"id": 2}"#,
+            ],
+        );
+        assert_eq!(types(&n), vec![("id".into(), DataType::Utf8)]);
+        let id: Vec<_> = out.batch.column(0).as_string::<i32>().iter().collect();
+        assert_eq!(id, vec![Some("9007199254740993"), Some("1.5"), Some("2")]);
+    }
+
+    #[test]
+    fn a_big_integer_keeps_a_column_int64_until_a_float_arrives() {
+        let mut n = Normalizer::default();
+        let first = push(&mut n, &[r#"{"id": 9007199254740993}"#, r#"{"id": 2}"#]);
+        assert_eq!(types(&n), vec![("id".into(), DataType::Int64)]);
+        assert!(first.schema_changed);
+        let again = push(&mut n, &[r#"{"id": 9007199254740995}"#]);
+        assert!(!again.schema_changed);
+        let widened = push(&mut n, &[r#"{"id": 1.5}"#]);
+        assert!(widened.schema_changed);
+        assert_eq!(types(&n), vec![("id".into(), DataType::Utf8)]);
+    }
+
+    #[test]
+    fn integers_within_exact_range_still_widen_to_float() {
+        let mut n = Normalizer::default();
+        push(&mut n, &[r#"{"x": 9007199254740992}"#, r#"{"x": 1.5}"#]);
+        assert_eq!(types(&n), vec![("x".into(), DataType::Float64)]);
     }
 
     #[test]
