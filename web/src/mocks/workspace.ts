@@ -234,7 +234,7 @@ export const sparkClusters: SparkCluster[] = [
           conf: {
             "spark.executor.memory": "8g",
             "spark.executor.cores": "4",
-            "spark.hadoop.fs.s3a.access.key": "AKIA4EXAMPLE7Q2LAKE",
+            "spark.sql.shuffle.partitions": "64",
             "spark.hadoop.fs.s3a.secret.key": { secret: "lake-spark-s3" },
           },
         },
