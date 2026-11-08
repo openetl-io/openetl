@@ -98,7 +98,9 @@ func (s *standalone) Submit(ctx context.Context, app Application) (string, error
 		return m[1], nil
 	}
 	if err == nil {
-		err = errors.New("spark-submit didn't say which driver it submitted: " + lastLines(lines, 3))
+		// A standalone driver can be found only by this ID, so a retry would
+		// submit a second one.
+		return "", errs.New(errs.ConfigInvalid, "spark: spark-submit to %s exited without saying which driver it submitted, so the first driver may still be running untracked: look for it in the master's UI, and set spark-submit's client log level to INFO, where it says: %s", s.master, lastLines(lines, 3))
 	}
 	return "", failed(err, "spark: submit to "+s.master)
 }
