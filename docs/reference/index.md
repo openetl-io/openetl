@@ -41,7 +41,7 @@ spec:
 
 `Connector` and `DeclarativeSource` documents also need `metadata.version`, a semantic version such as `1.2.0`, and their names may have an owner, as in `acme/billing`. A `Connector` descriptor at `openetl.io/v1alpha1` is still read, as a package with one role.
 
-The fields of each `spec` are defined by the messages in [`proto/openetl/api/v1`](../../proto/openetl/api/v1), whose comments describe them, and read from YAML by [`internal/spec`](../../internal/spec). The [examples](../../examples) are working documents of each common kind. A `Connector` descriptor's and a `DeclarativeSource` manifest's fields are in their JSON Schemas, under [JSON Schemas](#json-schemas).
+[Pipeline](./specs/pipeline.md), [Source](./specs/source.md) and [Destination](./specs/destination.md) list every field of those kinds' documents. The fields of each `spec` are defined by the messages in [`proto/openetl/api/v1`](../../proto/openetl/api/v1), whose comments describe them, and read from YAML by [`internal/spec`](../../internal/spec). The [examples](../../examples) are working documents of each common kind. A `Connector` descriptor's fields are in [Connector descriptor](./connector-descriptor.md), and a `DeclarativeSource` manifest's in [Declarative source manifest](./manifest.md).
 
 ## The openetl CLI
 
@@ -109,7 +109,7 @@ The commands and their help are in [`cmd/openetl`](../../cmd/openetl).
 
 Every setting is a flag and an environment variable: `--database-url` is also `OPENETL_DATABASE_URL`. A flag overrides the variable, and the variable overrides the default. Every role takes every setting, and uses the ones that concern it. `openetld ROLE -h` lists them all with their variables and defaults. A runner's token can also come from `OPENETL_RUNNER_TOKEN`, which has no flag.
 
-The settings are defined in [`internal/platform/config/config.go`](../../internal/platform/config/config.go). Traces and metrics are set with the standard `OTEL_*` variables instead: a signal is exported only once its exporter (`OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`) or an OTLP endpoint is set, and `OTEL_METRICS_EXPORTER=prometheus` serves a Prometheus endpoint.
+[openetld settings](./openetld.md) lists every setting with its flag, variable and default, and the `OTEL_*` variables that set up traces and metrics.
 
 ## The API
 
@@ -146,6 +146,8 @@ Each API method's role is in [`internal/api/authz.go`](../../internal/api/authz.
 | `openetl connector schema file` | A package's `openetl-connector.yaml` | [`internal/connectorpkg/openetl-connector.schema.json`](../../internal/connectorpkg/openetl-connector.schema.json) |
 | `openetl connector schema descriptor` | A `Connector` descriptor | [`internal/spec/connector.schema.json`](../../internal/spec/connector.schema.json) |
 | `openetl connector schema manifest` | A `DeclarativeSource` manifest | [`internal/declarative/manifest.schema.json`](../../internal/declarative/manifest.schema.json) |
+
+Their fields are listed in [openetl-connector.yaml](./connector-file.md), [Connector descriptor](./connector-descriptor.md) and [Declarative source manifest](./manifest.md).
 
 ## Platform events
 

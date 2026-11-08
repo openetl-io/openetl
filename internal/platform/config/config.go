@@ -211,6 +211,45 @@ var intOptions = []intOption{
 	{"audit-retention-days", "OPENETL_AUDIT_RETENTION_DAYS", 90, "days the audit log keeps entries at least: a month's entries go once the month ended that long ago; 0 keeps every entry", func(c *Config) *int { return &c.AuditRetentionDays }},
 }
 
+// RunnerTokenEnv holds a runner's token. It has no flag, so the token isn't
+// in a process listing.
+const RunnerTokenEnv = "OPENETL_RUNNER_TOKEN"
+
+// DevDefaults are openetld dev's defaults, by flag name, where they differ
+// from the built-in ones.
+func DevDefaults() map[string]string {
+	return map[string]string{"log-format": "text", "auth": "none"}
+}
+
+// A Setting is one of openetld's settings, with its built-in default.
+type Setting struct {
+	// Empty for a setting that is an environment variable only.
+	Flag    string
+	Env     string
+	Default string
+	Usage   string
+	// string, int or bool.
+	Type string
+}
+
+// Settings lists every setting: the string, int and bool flags, each in the
+// order they're defined, then the runner token.
+func Settings() []Setting {
+	var out []Setting
+	for _, o := range options {
+		out = append(out, Setting{Flag: o.flag, Env: o.env, Default: o.def, Usage: o.usage, Type: "string"})
+	}
+	for _, o := range intOptions {
+		out = append(out, Setting{Flag: o.flag, Env: o.env, Default: strconv.Itoa(o.def), Usage: o.usage, Type: "int"})
+	}
+	for _, o := range boolOptions {
+		out = append(out, Setting{Flag: o.flag, Env: o.env, Default: "false", Usage: o.usage, Type: "bool"})
+	}
+	return append(out, Setting{Env: RunnerTokenEnv, Usage: runnerTokenUsage, Type: "string"})
+}
+
+const runnerTokenUsage = "the runner's token, when --token-file names no file; it has no flag, so the token isn't in a process listing"
+
 // Parse parses args. defaults override the built-in defaults, by flag name;
 // environment variables override both, and flags override everything.
 func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config, error) {
@@ -247,7 +286,7 @@ func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config,
 	if fs.NArg() > 0 {
 		return c, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	c.RunnerToken = os.Getenv("OPENETL_RUNNER_TOKEN")
+	c.RunnerToken = os.Getenv(RunnerTokenEnv)
 	if c.AuditRetentionDays < 0 {
 		return c, fmt.Errorf("config: audit-retention-days is %d; it can't be negative", c.AuditRetentionDays)
 	}

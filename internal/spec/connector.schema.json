@@ -10,6 +10,7 @@
     "apiVersion": { "const": "openetl.io/v1alpha2" },
     "kind": { "const": "Connector" },
     "metadata": {
+      "description": "Which package and version this is, and what the console shows about it.",
       "type": "object",
       "required": ["name", "version", "repository"],
       "additionalProperties": false,
@@ -28,45 +29,49 @@
         "description": { "description": "One line.", "type": "string", "maxLength": 500, "pattern": "^[^\\r\\n]*$" },
         "license": { "description": "An SPDX expression, such as Apache-2.0.", "type": "string", "pattern": "^[A-Za-z0-9.+:()\\- ]{1,100}$" },
         "repository": { "description": "The source repository. The package's name stays with it.", "$ref": "#/$defs/https" },
-        "docs": { "$ref": "#/$defs/https" },
+        "docs": { "description": "The package's documentation, which the console's connector catalog links to.", "$ref": "#/$defs/https" },
         "logo": { "description": "An SVG or PNG image, which the UI shows.", "anyOf": [{ "$ref": "#/$defs/https" }, { "$ref": "#/$defs/ociBlob" }] },
-        "author": { "type": "string", "maxLength": 200 },
-        "tags": { "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" } },
+        "author": { "description": "Who makes the package, which the catalog shows.", "type": "string", "maxLength": 200 },
+        "tags": { "description": "Words the catalog shows with the package, such as database.", "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" } },
         "release": {
+          "description": "The release the version was built from.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "tag": { "description": "The git tag the version was built from.", "type": "string", "maxLength": 255, "pattern": "^\\S*$" },
-            "url": { "$ref": "#/$defs/https" }
+            "url": { "description": "The release's page.", "$ref": "#/$defs/https" }
           }
         }
       }
     },
     "spec": {
+      "description": "Each role's runtime and spec.",
       "type": "object",
       "required": ["roles"],
       "additionalProperties": false,
       "properties": {
         "roles": {
+          "description": "What the package provides: a source, a destination, or both.",
           "type": "object",
           "minProperties": 1,
           "additionalProperties": false,
           "properties": {
-            "source": { "$ref": "#/$defs/source" },
-            "destination": { "$ref": "#/$defs/destination" }
+            "source": { "description": "The package's source.", "$ref": "#/$defs/source" },
+            "destination": { "description": "The package's destination.", "$ref": "#/$defs/destination" }
           }
         }
       }
     }
   },
   "$defs": {
-    "https": { "type": "string", "maxLength": 2048, "pattern": "^https://[^/?#\\s]+([/?#]\\S*)?$" },
+    "https": { "description": "An https URL.", "type": "string", "maxLength": 2048, "pattern": "^https://[^/?#\\s]+([/?#]\\S*)?$" },
     "ociBlob": { "description": "A blob in an OCI registry, by its digest.", "type": "string", "maxLength": 2048, "pattern": "^oci://[^/@\\s]+/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}$" },
     "platform": { "description": "os/arch, such as linux/amd64.", "type": "string", "pattern": "^[a-z0-9]+/[a-z0-9]+$" },
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "duration": { "description": "Such as 90s or 15m.", "type": "string", "pattern": "^-?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h)(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h))*$|^0$" },
+    "digest": { "description": "A SHA-256 digest: sha256: and 64 hex digits.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "duration": { "description": "A Go duration, such as 90s or 15m.", "type": "string", "pattern": "^-?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h)(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h))*$|^0$" },
     "bytes": { "description": "A Kubernetes quantity of bytes, such as 512Mi.", "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti|k|M|G|T)?$" },
     "role": {
+      "description": "What a package provides as a source or a destination, and how it runs.",
       "type": "object",
       "required": ["runtime"],
       "additionalProperties": false,
@@ -105,13 +110,14 @@
               "type": "object",
               "propertyNames": { "$ref": "#/$defs/platform" },
               "additionalProperties": {
+                "description": "One platform's executable.",
                 "type": "object",
                 "required": ["url"],
                 "additionalProperties": false,
                 "properties": {
-                  "url": { "anyOf": [{ "type": "string", "maxLength": 2048, "pattern": "^https?://[^/?#\\s]+([/?#]\\S*)?$" }, { "$ref": "#/$defs/ociBlob" }] },
-                  "digest": { "$ref": "#/$defs/digest" },
-                  "attestation": { "anyOf": [{ "$ref": "#/$defs/https" }, { "$ref": "#/$defs/ociBlob" }] }
+                  "url": { "description": "Where the executable is downloaded from: an http or https URL, or a blob in an OCI registry.", "anyOf": [{ "type": "string", "maxLength": 2048, "pattern": "^https?://[^/?#\\s]+([/?#]\\S*)?$" }, { "$ref": "#/$defs/ociBlob" }] },
+                  "digest": { "description": "The executable's digest. The API fills in a missing one when the version is applied.", "$ref": "#/$defs/digest" },
+                  "attestation": { "description": "The executable's provenance attestation.", "anyOf": [{ "$ref": "#/$defs/https" }, { "$ref": "#/$defs/ociBlob" }] }
                 }
               }
             },
@@ -126,10 +132,10 @@
                   "type": "string",
                   "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*(\\.[a-z0-9-]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+$"
                 },
-                "digest": { "description": "The index's.", "$ref": "#/$defs/digest" },
-                "platforms": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/platform" } },
+                "digest": { "description": "The index's digest.", "$ref": "#/$defs/digest" },
+                "platforms": { "description": "The platforms the index has an image for.", "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/platform" } },
                 "command": { "description": "The connector's argv, where it isn't the entrypoint.", "type": "array", "items": { "type": "string", "minLength": 1 } },
-                "attestation": { "anyOf": [{ "$ref": "#/$defs/https" }, { "$ref": "#/$defs/ociBlob" }] }
+                "attestation": { "description": "The image's provenance attestation.", "anyOf": [{ "$ref": "#/$defs/https" }, { "$ref": "#/$defs/ociBlob" }] }
               }
             },
             "manifest": { "description": "A DeclarativeSource's spec: the role's whole runtime, run in the platform. Sources only.", "type": "object" }
@@ -140,8 +146,8 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "cpu": { "type": "string", "pattern": "^([0-9]+m|[0-9]+(\\.[0-9]{1,3})?)$" },
-            "memory": { "$ref": "#/$defs/bytes" },
+            "cpu": { "description": "CPU, as a Kubernetes quantity, such as 500m or 2.", "type": "string", "pattern": "^([0-9]+m|[0-9]+(\\.[0-9]{1,3})?)$" },
+            "memory": { "description": "Memory.", "$ref": "#/$defs/bytes" },
             "disk": { "description": "The size of TMPDIR.", "$ref": "#/$defs/bytes" },
             "hint": { "description": "The job size a pipeline of this role starts at when it's sized automatically.", "enum": ["xs", "s", "m", "l", "xl"] }
           }
@@ -152,20 +158,21 @@
           "required": ["version", "reads"],
           "additionalProperties": false,
           "properties": {
-            "version": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
-            "reads": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+            "version": { "description": "The version of the state it writes.", "type": "integer", "minimum": 1, "maximum": 4294967295 },
+            "reads": { "description": "The oldest version of the state it can resume from.", "type": "integer", "minimum": 1, "maximum": 4294967295 }
           }
         },
         "egress": {
+          "description": "What the connector may reach on the network.",
           "type": "object",
           "required": ["tier"],
           "additionalProperties": false,
           "properties": {
-            "tier": { "enum": ["host", "proxy", "raw"] },
+            "tier": { "description": "`host`: only through the host's services. `proxy`: HTTPS through a forward proxy, to the hosts in `allow`, for vendor SDKs. `raw`: sockets, to the host:port pairs in `allow`, for database drivers.", "enum": ["host", "proxy", "raw"] },
             "allow": { "description": "Hosts on the proxy tier, host:port pairs on raw.", "type": "array", "items": { "type": "string" } }
           }
         },
-        "setup": { "type": "boolean" },
+        "setup": { "description": "The connector serves `Setup` and `Teardown`.", "type": "boolean" },
         "acknowledges": { "description": "A source's: it acknowledges upstream once a checkpoint commits.", "type": "boolean" },
         "splits": { "description": "A source's: it divides streams into splits.", "type": "boolean" },
         "resplit": { "description": "A source's: it splits a running split's remainder. Needs splits.", "type": "boolean" },
@@ -175,14 +182,14 @@
           "required": ["class"],
           "additionalProperties": false,
           "properties": {
-            "class": { "enum": ["stage_and_apply", "transactional_stream", "deliver_and_ack"] },
-            "scopes": { "type": "array", "items": { "enum": ["pipeline", "stream"] } },
-            "dedupeAtApply": { "type": "boolean" },
-            "defaultCommitInterval": { "$ref": "#/$defs/duration" },
-            "minCommitInterval": { "$ref": "#/$defs/duration" },
-            "maxCommitInterval": { "$ref": "#/$defs/duration" },
-            "nanosecondTimestamps": { "type": "boolean" },
-            "maxIdentifierLength": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "class": { "description": "How the destination makes an epoch visible. `stage_and_apply`: it stages in `PreCommit` and applies in `Commit`. `transactional_stream`: it flushes into a transaction in `PreCommit` and commits it in `Commit`. `deliver_and_ack`: it delivers during the epoch, and `PreCommit` returns once everything is acknowledged.", "enum": ["stage_and_apply", "transactional_stream", "deliver_and_ack"] },
+            "scopes": { "description": "The commit scopes a pipeline may choose in `delivery.commit.scope`: `pipeline`, where every stream's epoch becomes visible together, and `stream`, where each stream's does on its own.", "type": "array", "items": { "enum": ["pipeline", "stream"] } },
+            "dedupeAtApply": { "description": "The destination can skip append and overwrite rows whose `_openetl_id` is already in the target.", "type": "boolean" },
+            "defaultCommitInterval": { "description": "The commit interval of a pipeline whose `delivery.commit.interval` sets none.", "$ref": "#/$defs/duration" },
+            "minCommitInterval": { "description": "The shortest `delivery.commit.interval` a pipeline may set.", "$ref": "#/$defs/duration" },
+            "maxCommitInterval": { "description": "The longest `delivery.commit.interval` a pipeline may set. None: no maximum.", "$ref": "#/$defs/duration" },
+            "nanosecondTimestamps": { "description": "Timestamps keep nanoseconds; otherwise only microseconds.", "type": "boolean" },
+            "maxIdentifierLength": { "description": "The longest table or column name, in bytes; 0 for no limit.", "type": "integer", "minimum": 0, "maximum": 4294967295 },
             "writeModes": { "description": "None: append only.", "type": "array", "items": { "enum": ["append", "overwrite", "merge"] } },
             "delivery": { "description": "How epochs reach it: streamed as batches, or staged as Parquet files the platform hands over. None: streamed.", "enum": ["streamed", "staged"] },
             "maxWriterLanes": { "description": "The most writer lanes an attempt may open, writing concurrently. None: one.", "type": "integer", "minimum": 0, "maximum": 4294967295 },
@@ -192,7 +199,7 @@
               "additionalProperties": false,
               "properties": {
                 "byKey": { "description": "Patches a merge stream's rows by their key.", "type": "boolean" },
-                "byId": { "description": "Patches an append stream's rows by their _openetl_id.", "type": "boolean" },
+                "byId": { "description": "Patches an append stream's rows by their `_openetl_id`.", "type": "boolean" },
                 "last": { "description": "A held cell can keep the target's value, in a merge stream.", "type": "boolean" },
                 "guarded": { "description": "A patch fills a cell only where the target still holds the version it comes from.", "type": "boolean" }
               }

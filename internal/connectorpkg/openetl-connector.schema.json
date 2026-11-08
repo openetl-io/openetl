@@ -8,7 +8,7 @@
   "additionalProperties": false,
   "properties": {
     "name": {
-      "description": "owner/name, or name for the official owner, openetl. Each part is lowercase letters, digits and hyphens, at most 63 characters.",
+      "description": "The package's name: owner/name, or name for the official owner, openetl. Each part is lowercase letters, digits and hyphens, at most 63 characters.",
       "type": "string",
       "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
     },
@@ -16,13 +16,14 @@
     "description": { "description": "One line.", "type": "string", "maxLength": 500, "pattern": "^[^\\n\\r]*$" },
     "license": { "description": "An SPDX expression, such as Apache-2.0.", "type": "string", "pattern": "^[A-Za-z0-9.+:()\\- ]{1,100}$" },
     "repository": { "description": "The package's source repository. Its name stays with it.", "$ref": "#/$defs/https" },
-    "docs": { "$ref": "#/$defs/https" },
+    "docs": { "description": "The package's documentation, which the console's connector catalog links to.", "$ref": "#/$defs/https" },
     "logo": {
       "description": "An SVG or PNG image of at most 256 KiB, which the UI shows: a file beside this one, such as ./logo.svg, which is packaged with each version, or an https URL.",
       "anyOf": [{ "$ref": "#/$defs/https" }, { "type": "string", "pattern": "^[^:/][^:]*\\.(svg|png)$" }]
     },
-    "author": { "type": "string", "maxLength": 200 },
+    "author": { "description": "Who makes the package, which the catalog shows.", "type": "string", "maxLength": 200 },
     "tags": {
+      "description": "Words the catalog shows with the package, such as database.",
       "type": "array",
       "maxItems": 20,
       "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" }
@@ -35,19 +36,21 @@
       "items": { "$ref": "#/$defs/platform" }
     },
     "roles": {
+      "description": "What the package provides, a source, a destination or both, and how each is built or run.",
       "type": "object",
       "minProperties": 1,
       "additionalProperties": false,
       "properties": {
-        "source": { "$ref": "#/$defs/role" },
-        "destination": { "$ref": "#/$defs/role" }
+        "source": { "description": "The package's source.", "$ref": "#/$defs/role" },
+        "destination": { "description": "The package's destination.", "$ref": "#/$defs/role" }
       }
     }
   },
   "$defs": {
-    "https": { "type": "string", "pattern": "^https://[^/?#\\s]+", "maxLength": 2048 },
-    "platform": { "type": "string", "pattern": "^[a-z0-9]+/[a-z0-9]+$" },
+    "https": { "description": "An https URL.", "type": "string", "pattern": "^https://[^/?#\\s]+", "maxLength": 2048 },
+    "platform": { "description": "os/arch, such as linux/amd64.", "type": "string", "pattern": "^[a-z0-9]+/[a-z0-9]+$" },
     "role": {
+      "description": "How one role is built, or run from an image or a manifest.",
       "type": "object",
       "additionalProperties": false,
       "anyOf": [{ "required": ["build"] }, { "required": ["image"] }, { "required": ["manifest"] }],
@@ -58,9 +61,9 @@
           "additionalProperties": false,
           "oneOf": [{ "required": ["go"] }, { "required": ["command", "output"] }],
           "properties": {
-            "go": { "description": "A Go main package, relative to this file, cross-compiled with CGO_ENABLED=0.", "type": "string", "minLength": 1 },
-            "command": { "description": "Run once with sh in this file's directory; OPENETL_VERSION and OPENETL_PLATFORMS are set.", "type": "string", "minLength": 1 },
-            "output": { "description": "Where command leaves each platform's executable, relative to this file, with {os} and {arch}.", "type": "string", "minLength": 1 }
+            "go": { "description": "A Go main package, relative to this file, cross-compiled with `CGO_ENABLED=0`.", "type": "string", "minLength": 1 },
+            "command": { "description": "Run once with sh in this file's directory, with `OPENETL_VERSION` and `OPENETL_PLATFORMS` set.", "type": "string", "minLength": 1 },
+            "output": { "description": "Where `command` leaves each platform's executable, relative to this file, with `{os}` and `{arch}` in it.", "type": "string", "minLength": 1 }
           }
         },
         "image": {
@@ -75,6 +78,7 @@
         },
         "manifest": { "description": "A DeclarativeSource document, relative to this file. Sources only, and nothing else.", "type": "string", "minLength": 1 },
         "requires": {
+          "description": "What the role needs from the platform.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -86,8 +90,8 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "cpu": { "type": "string", "pattern": "^([0-9]+m|[0-9]+(\\.[0-9]{1,3})?)$" },
-            "memory": { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti|k|M|G|T)?$" },
+            "cpu": { "description": "CPU, as a Kubernetes quantity, such as 500m or 2.", "type": "string", "pattern": "^([0-9]+m|[0-9]+(\\.[0-9]{1,3})?)$" },
+            "memory": { "description": "Memory, as a Kubernetes quantity, such as 512Mi.", "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti|k|M|G|T)?$" },
             "disk": { "description": "The size of TMPDIR.", "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti|k|M|G|T)?$" },
             "hint": { "description": "The job size a pipeline of this role starts at when it's sized automatically.", "enum": ["xs", "s", "m", "l", "xl"] }
           }
@@ -98,8 +102,8 @@
           "required": ["version", "reads"],
           "additionalProperties": false,
           "properties": {
-            "version": { "type": "integer", "minimum": 1 },
-            "reads": { "type": "integer", "minimum": 1 }
+            "version": { "description": "The version of the state the role writes.", "type": "integer", "minimum": 1 },
+            "reads": { "description": "The oldest version of the state the role can resume from.", "type": "integer", "minimum": 1 }
           }
         }
       }

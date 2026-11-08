@@ -140,12 +140,13 @@ engine: ## Build openetl-engine
 
 # Clearing first drops code for deleted protos.
 .PHONY: generate
-generate: tools web/node_modules/.modules.yaml ## Generate code from protos and SQL
+generate: tools web/node_modules/.modules.yaml ## Generate code from protos and SQL, and the reference pages from the schemas and settings
 	rm -rf gen sdk/go/protocol internal/store/db web/src/gen
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate --template buf.gen.api.yaml
 	$(BIN)/buf generate --template buf.gen.web.yaml
 	$(BIN)/sqlc generate -f internal/store/sqlc.yaml
+	go run ./internal/refdocs
 
 .PHONY: lint
 lint: tools $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION) web/node_modules/.modules.yaml ## Lint protos, Go, Rust and the UI, and check Rust dependencies

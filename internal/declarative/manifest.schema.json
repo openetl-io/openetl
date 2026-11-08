@@ -10,6 +10,7 @@
     "apiVersion": { "const": "openetl.io/v1alpha1" },
     "kind": { "const": "DeclarativeSource" },
     "metadata": {
+      "description": "Which connector and version this is, and what the console shows about it.",
       "type": "object",
       "required": ["name", "version"],
       "additionalProperties": false,
@@ -28,7 +29,7 @@
         "license": { "description": "An SPDX expression, such as Apache-2.0.", "type": "string", "maxLength": 100 },
         "repository": { "description": "An https URL of the source repository.", "type": "string", "pattern": "^https://" },
         "docs": { "description": "An https URL.", "type": "string", "pattern": "^https://" },
-        "tags": { "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" } },
+        "tags": { "description": "Words the catalog shows with the connector, such as crm.", "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" } },
         "author": {
           "description": "Who made the connector.",
           "type": "string",
@@ -51,11 +52,13 @@
       }
     },
     "spec": {
+      "description": "The source: its config, how it calls the API, and its streams.",
       "type": "object",
       "required": ["config", "http", "streams"],
       "additionalProperties": false,
       "properties": {
         "resources": {
+          "description": "What the source asks of its jobs.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -63,12 +66,13 @@
           }
         },
         "config": {
-          "description": "The JSON Schema of the connector's config: an object. Top-level string properties with x-secret: true are secrets, which only auth and sign can reference, by name. Expressions see the other properties as config.<name>.",
+          "description": "The JSON Schema of the connector's config: an object. Top-level string properties with x-secret: true are secrets, which only auth and sign can reference, by name. Expressions see the other properties as config.NAME.",
           "type": "object",
           "required": ["type"],
           "properties": {
             "type": { "const": "object" },
             "properties": {
+              "description": "The config's properties, by name, each a JSON Schema.",
               "type": "object",
               "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
             }
@@ -80,9 +84,10 @@
           "type": "object",
           "required": ["stream"],
           "additionalProperties": false,
-          "properties": { "stream": { "type": "string" } }
+          "properties": { "stream": { "description": "The stream whose first page Check fetches.", "type": "string" } }
         },
         "streams": {
+          "description": "The streams the source reads.",
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/stream" }
@@ -101,6 +106,7 @@
       "type": "string"
     },
     "templates": {
+      "description": "Names, each with a template, such as a request's query parameters.",
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/template" }
     },
@@ -114,12 +120,14 @@
       "type": "object",
       "required": ["secret"],
       "additionalProperties": false,
-      "properties": { "secret": { "type": "string", "minLength": 1 } }
+      "properties": { "secret": { "description": "The name of a config property marked x-secret.", "type": "string", "minLength": 1 } }
     },
     "templateOrSecret": {
+      "description": "A template, or a secret.",
       "oneOf": [{ "$ref": "#/$defs/template" }, { "$ref": "#/$defs/secret" }]
     },
     "http": {
+      "description": "How the source calls the API: its base URL, headers, auth, signing, rate limit and error rules.",
       "type": "object",
       "required": ["base_url"],
       "additionalProperties": false,
@@ -135,6 +143,7 @@
         "auth": { "$ref": "#/$defs/auth" },
         "sign": { "$ref": "#/$defs/sign" },
         "rate_limit": {
+          "description": "How fast the source sends requests.",
           "type": "object",
           "required": ["rps"],
           "additionalProperties": false,
@@ -157,14 +166,14 @@
       "type": "object",
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["bearer", "basic", "api_key", "oauth2", "aws_sigv4"] }
+        "type": { "description": "How requests authenticate.", "enum": ["bearer", "basic", "api_key", "oauth2", "aws_sigv4"] }
       },
       "allOf": [
         {
           "if": { "properties": { "type": { "const": "bearer" } } },
           "then": {
             "required": ["token"],
-            "properties": { "token": { "$ref": "#/$defs/secret" } }
+            "properties": { "token": { "description": "The bearer token.", "$ref": "#/$defs/secret" } }
           }
         },
         {
@@ -173,7 +182,7 @@
             "required": ["username", "password"],
             "properties": {
               "username": { "description": "A template over config.", "$ref": "#/$defs/template" },
-              "password": { "$ref": "#/$defs/secret" }
+              "password": { "description": "The password.", "$ref": "#/$defs/secret" }
             }
           }
         },
@@ -183,7 +192,7 @@
             "required": ["key"],
             "oneOf": [{ "required": ["header"] }, { "required": ["query"] }],
             "properties": {
-              "key": { "$ref": "#/$defs/secret" },
+              "key": { "description": "The API key.", "$ref": "#/$defs/secret" },
               "header": { "description": "The header the key goes in, such as X-API-Key.", "type": "string", "minLength": 1 },
               "query": { "description": "The query parameter the key goes in.", "type": "string", "minLength": 1 },
               "prefix": { "description": "Put before the key, such as \"Token \".", "type": "string" }
@@ -196,13 +205,13 @@
             "required": ["token_url", "client_id", "client_secret"],
             "properties": {
               "token_url": { "description": "A template over config.", "$ref": "#/$defs/template" },
-              "client_id": { "$ref": "#/$defs/templateOrSecret" },
-              "client_secret": { "$ref": "#/$defs/secret" },
+              "client_id": { "description": "The client's ID.", "$ref": "#/$defs/templateOrSecret" },
+              "client_secret": { "description": "The client's secret.", "$ref": "#/$defs/secret" },
               "refresh_token": {
-                "description": "Without one, the host uses the client credentials grant.",
+                "description": "A refresh token, for the refresh token grant. Without one, the host uses the client credentials grant.",
                 "$ref": "#/$defs/secret"
               },
-              "scopes": { "type": "array", "items": { "type": "string" } },
+              "scopes": { "description": "The scopes to ask for.", "type": "array", "items": { "type": "string" } },
               "auth_style": {
                 "description": "Where the client credentials go in token requests. Default: the host tries both.",
                 "enum": ["header", "params"]
@@ -215,11 +224,11 @@
           "then": {
             "required": ["access_key_id", "secret_access_key", "region", "service"],
             "properties": {
-              "access_key_id": { "$ref": "#/$defs/templateOrSecret" },
-              "secret_access_key": { "$ref": "#/$defs/secret" },
-              "session_token": { "$ref": "#/$defs/secret" },
+              "access_key_id": { "description": "The AWS access key ID.", "$ref": "#/$defs/templateOrSecret" },
+              "secret_access_key": { "description": "The AWS secret access key.", "$ref": "#/$defs/secret" },
+              "session_token": { "description": "An AWS session token, for temporary credentials.", "$ref": "#/$defs/secret" },
               "region": { "description": "A template over config.", "$ref": "#/$defs/template" },
-              "service": { "type": "string", "minLength": 1 }
+              "service": { "description": "The AWS service's signing name, such as execute-api.", "type": "string", "minLength": 1 }
             }
           }
         }
@@ -231,8 +240,8 @@
       "type": "object",
       "required": ["type", "key"],
       "properties": {
-        "type": { "enum": ["hmac", "jwt"] },
-        "key": { "$ref": "#/$defs/secret" }
+        "type": { "description": "How requests are signed.", "enum": ["hmac", "jwt"] },
+        "key": { "description": "The signing key.", "$ref": "#/$defs/secret" }
       },
       "allOf": [
         {
@@ -241,15 +250,15 @@
             "required": ["hash", "message"],
             "oneOf": [{ "required": ["header"] }, { "required": ["query"] }],
             "properties": {
-              "hash": { "enum": ["sha1", "sha256", "sha512"] },
+              "hash": { "description": "The HMAC's hash function.", "enum": ["sha1", "sha256", "sha512"] },
               "message": {
                 "description": "An expression over request (method, url, path, query, headers, body), config and now, returning a string or bytes.",
                 "$ref": "#/$defs/expression"
               },
               "encoding": { "description": "Default: hex.", "enum": ["hex", "base64"] },
-              "header": { "type": "string", "minLength": 1 },
-              "query": { "type": "string", "minLength": 1 },
-              "prefix": { "type": "string" }
+              "header": { "description": "The header the MAC goes in.", "type": "string", "minLength": 1 },
+              "query": { "description": "The query parameter the MAC goes in.", "type": "string", "minLength": 1 },
+              "prefix": { "description": "Put before the MAC.", "type": "string" }
             }
           }
         },
@@ -258,7 +267,7 @@
           "then": {
             "required": ["algorithm", "claims"],
             "properties": {
-              "algorithm": { "enum": ["HS256", "RS256", "ES256"] },
+              "algorithm": { "description": "The JWT's signing algorithm.", "enum": ["HS256", "RS256", "ES256"] },
               "claims": { "description": "An expression over config and now, returning a map.", "$ref": "#/$defs/expression" },
               "jose_header": {
                 "description": "An expression returning extra header fields, such as kid. The host sets alg and typ.",
@@ -272,13 +281,14 @@
       "unevaluatedProperties": false
     },
     "stream": {
+      "description": "A stream the source reads: how to request it, page through it, and find its records.",
       "type": "object",
       "required": ["name", "request"],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "primary_key": { "type": "array", "items": { "type": "string" } },
-        "request": { "$ref": "#/$defs/request" },
+        "name": { "description": "The stream's name.", "type": "string", "minLength": 1 },
+        "primary_key": { "description": "The top-level properties that make up a record's primary key.", "type": "array", "items": { "type": "string" } },
+        "request": { "description": "The request for each page.", "$ref": "#/$defs/request" },
         "records": {
           "description": "An expression over response, returning the page's records, each an object. Default: response.body.",
           "$ref": "#/$defs/expression"
@@ -290,7 +300,7 @@
           "type": "object",
           "required": ["stream"],
           "additionalProperties": false,
-          "properties": { "stream": { "type": "string" } }
+          "properties": { "stream": { "description": "The parent stream's name.", "type": "string" } }
         },
         "partitions": {
           "description": "Read the stream in splits, concurrently where the job has room, each with its own place and floor. Requests see each one as partition. Not for a stream with a parent.",
@@ -320,12 +330,13 @@
             }
           }
         },
-        "errors": { "$ref": "#/$defs/errors" },
+        "errors": { "description": "Error rules for this stream, tried before the API's.", "$ref": "#/$defs/errors" },
         "schema": {
           "description": "JSON Schema for some or all of the record's top-level properties, which declares their types. The others are inferred.",
           "type": "object",
           "properties": {
             "properties": {
+              "description": "The properties' JSON Schemas, by name.",
               "type": "object",
               "additionalProperties": { "type": "object" }
             }
@@ -339,13 +350,13 @@
       "required": ["path"],
       "additionalProperties": false,
       "properties": {
-        "method": { "enum": ["GET", "POST"] },
+        "method": { "description": "Default: GET.", "enum": ["GET", "POST"] },
         "path": {
           "description": "Appended to the base URL. Holes are escaped as path segments.",
           "$ref": "#/$defs/template"
         },
-        "params": { "$ref": "#/$defs/templates" },
-        "headers": { "$ref": "#/$defs/templates" },
+        "params": { "description": "Query parameters.", "$ref": "#/$defs/templates" },
+        "headers": { "description": "Headers, besides the API's.", "$ref": "#/$defs/templates" },
         "body": {
           "description": "An expression whose value is sent as JSON.",
           "$ref": "#/$defs/expression"
@@ -361,7 +372,7 @@
       "type": "object",
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["cursor", "next_url", "link", "offset", "page"] },
+        "type": { "description": "How the next page is found.", "enum": ["cursor", "next_url", "link", "offset", "page"] },
         "stop": {
           "description": "An expression over response and records; true ends pagination.",
           "$ref": "#/$defs/expression"
@@ -432,7 +443,7 @@
       "properties": {
         "cursor_field": { "description": "A top-level property of the records.", "type": "string", "minLength": 1 },
         "type": {
-          "description": "datetime: RFC 3339 text, and state.cursor is a timestamp. unix: seconds since 1970, and state.cursor is an int. integer and string: compared as they are.",
+          "description": "`datetime`: RFC 3339 text, and `state.cursor` is a timestamp. `unix`: seconds since 1970, and `state.cursor` is an int. `integer` and `string`: compared as they are.",
           "enum": ["datetime", "unix", "integer", "string"]
         },
         "lookback": {
@@ -455,7 +466,7 @@
         "properties": {
           "when": { "description": "An expression over response.", "$ref": "#/$defs/expression" },
           "action": {
-            "description": "fail: fail with code and message. ignore: treat the response as an empty last page. expired: the page token a resumed read started from was rejected, so the stream starts over from its floor.",
+            "description": "`fail`: fail with `code` and `message`. `ignore`: treat the response as an empty last page. `expired`: the page token a resumed read started from was rejected, so the stream starts over from its floor.",
             "enum": ["fail", "ignore", "expired"]
           },
           "code": {

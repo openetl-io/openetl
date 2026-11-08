@@ -70,6 +70,6 @@ Keep to one kind of page at a time: a tutorial walks through something that work
 
 ## Checking a change
 
-`go test ./test/docs` checks the rules a machine can: every page's frontmatter, no `# H1`, no raw HTML, alt text on images, links that resolve with anchors that exist, and a `meta.json` in every folder that lists each of its pages. `make test` runs it, and so does CI when `docs/` changes.
+`go test ./test/docs` checks the rules a machine can: every page's frontmatter, no `# H1`, no raw HTML, alt text on images, links that resolve with anchors that exist, a `meta.json` in every folder that lists each of its pages, a row on the resource spec pages for every field `internal/spec` reads, example documents there that parse, and generated pages that match their sources. `make test` runs it, and so does CI when `docs/` changes.
 
 The rest is yours: look at every page you changed as GitHub renders it, read it once as its section's reader would, and run every command and snippet you added or changed.
