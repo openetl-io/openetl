@@ -36,7 +36,7 @@ The sidebar has:
 - **Pipelines**, the place to start.
 - **Incidents**, with a count of the ones open.
 - Under **Connections**: **Sources**, **Destinations**, **dbt projects** and **Connectors**.
-- Under **Settings**: **Webhooks**, **Secrets**, **Access**, and for admins, **Audit log**.
+- Under **Settings**: **Webhooks**, **Secrets**, **Access** and **Audit log**, which only admins can read.
 
 **Search**, at the top, or ⌘K on a Mac and Ctrl+K elsewhere, jumps to any pipeline or page. It also switches the theme and the row density, and signs you out.
 
@@ -181,7 +181,7 @@ Most incidents resolve themselves once the pipeline makes progress again. When y
 - **Webhooks** lists the addresses OpenETL sends events to, such as failed syncs and incidents, and whether each is **Enabled**, **Failing** or **Disabled**. A webhook's page lists its **Deliveries**, and has **Send test event**, **Disable** and **Enable**.
 - **Secrets** lists the passwords and keys that configs name, and which sources and destinations each is **Used by**. No page shows a secret's value.
 - **Access** lists the people and service accounts under **Principals**, with their roles, and the **Runner tokens** that let runners join. A person's page lists their API keys, and an admin can **Sign out everywhere** for them there.
-- **Audit log** lists every change, and every read of a secret, with who made it. Only admins see it.
+- **Audit log** lists every change, and every read of a secret, with who made it. Only admins can read it.
 
 ## What your role lets you do
 
