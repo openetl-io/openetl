@@ -1,0 +1,74 @@
+---
+title: Self-host
+description: What an OpenETL installation is made of, what it needs, and the settings every installation sets.
+---
+
+This section is for the people who install OpenETL, keep it running and upgrade it for everyone else. It assumes you know Linux, containers, Postgres and object storage; the [Kubernetes guide](./kubernetes.md) assumes Kubernetes too.
+
+To try OpenETL on one computer instead, the [quickstart](../get-started/quickstart.md) is quicker.
+
+## The parts
+
+Everything is one program, `openetld`, started in a role:
+
+| Role | What it does | What it needs |
+|---|---|---|
+| `openetld server` | Serves the API, and the console when `--web` names a built UI. Holds no state but the database, so you can run several. | Postgres, the key that encrypts secrets |
+| `openetld orchestrator` | Runs the control plane's workflows: schedules syncs, retries them, opens incidents, and places each job on a runner. Run two or more; when one stops, another takes over its work. | Postgres, or Temporal (see [orchestrators](#choose-an-orchestrator)) |
+| `openetld runner` | Takes jobs from the API and runs them: the connectors as programs of their own, with `openetl-engine` between them. Runners make up a data plane, and serve a pool within it. | The API's URL, a runner token, object storage for checkpoints, and the engine and connectors next to `openetld` |
+| `openetld runner --launcher kubernetes` | A runner that makes a pod of its own for each job placed on it, sized for that job, instead of running it itself. | As a runner, and a service account that may create pods |
+| `openetld dev` | All of the above in one process, without sign-in, for one computer. Not for an installation others use. | Postgres |
+
+Runners reach the control plane only through the API, so they can run anywhere that can reach it and your data: in the same cluster, or near your databases on another network.
+
+## What you need
+
+- **Postgres** for the metadata database: pipelines, versions, syncs, secrets (encrypted), users and audit. On the default orchestrator, the orchestrators also keep their workflows in a second database on the same server, named after the first with `_dbos`, which they create if the user may.
+- **Object storage** for checkpoints and staging: an S3 bucket (or one on an S3-compatible store), a GCS bucket or an Azure Blob Storage container. A local directory works when everything runs on one machine.
+- **`openetld`, `openetl-engine` and the connectors.** A runner looks for the engine next to `openetld`, then on its `PATH`, and for connectors in `connectors/` next to `openetld`. `openetld`'s image holds all three. No image or binary has been released, so build them from source: [CONTRIBUTING.md](../../CONTRIBUTING.md) has how, and the [Kubernetes guide](./kubernetes.md#before-you-start) how to build the image.
+
+## The settings every installation sets
+
+Every flag of `openetld` can also be set by an environment variable; `openetld ROLE -h` lists them all, with their defaults. These are the ones an installation can't do without:
+
+| Variable | Set on | What it is |
+|---|---|---|
+| `OPENETL_DATABASE_URL` | Servers and orchestrators | The metadata database. Don't connect through a transaction pooler. |
+| `OPENETL_SECRETS_KEY` | Servers and orchestrators | The key that encrypts secrets: `base64key://KEY`, a file holding one, or a KMS key (`awskms://…`, `gcpkms://…`, `azurekeyvault://…`). Keep a copy: without it, stored secrets can't be read. |
+| `OPENETL_PUBLIC_URL` | Servers | The URL people open the console at. Password links start with it, and an `https://` URL makes the session cookie secure. |
+| `OPENETL_API_URL` | Runners | The API's URL, as runners reach it. |
+| `OPENETL_RUNNER_TOKEN` | Runners | The token runners authenticate with, which `openetl dataplane token create` makes. `OPENETL_RUNNER_TOKEN_FILE` names a file holding it instead. |
+| `OPENETL_CHECKPOINTS` | Runners | Where checkpoints and staging go, such as `s3://my-bucket?region=eu-west-1`. |
+| `OPENETL_ORCHESTRATOR` | Servers and orchestrators | `dbos`, the default, or `temporal`. |
+
+The HTTP requests OpenETL makes itself, for webhooks, for downloads from registries, and for connectors that make their requests through it, reach only public addresses, plus the ranges `OPENETL_EGRESS_ALLOW` lists, such as your own networks.
+
+## Sign-in and the first owner
+
+A server asks people to sign in with a password unless it's started with `--auth none`, which `openetld dev` does. On its first start, the server creates the installation's org and writes an owner's API key to `.openetl/admin.key`, or to the file `OPENETL_BOOTSTRAP_KEY_FILE` names. With that key:
+
+```sh
+export OPENETL_API_URL=https://openetl.example.com OPENETL_API_KEY="$(cat admin.key)"
+openetl principal password-link NAME
+```
+
+gives a person a link to set their password. `openetl principal` creates people and service accounts and grants them roles, and `openetl key` manages API keys. If every owner key is lost, `openetld bootstrap-key` writes a new one.
+
+## Choose an orchestrator
+
+Orchestrators run workflows on one of two backends, chosen when you install:
+
+- **DBOS**, the default, keeps workflows in Postgres, so an installation needs nothing else.
+- **Temporal** runs them on a Temporal cluster you already have: set `OPENETL_ORCHESTRATOR=temporal`, `OPENETL_TEMPORAL_ADDRESS` and `OPENETL_TEMPORAL_NAMESPACE`.
+
+Changing an installation's orchestrator later isn't supported.
+
+## Monitoring
+
+`openetld` exports metrics and traces with OpenTelemetry, configured by the standard `OTEL_*` variables: nothing is exported until an exporter or an OTLP endpoint is set. `OTEL_METRICS_EXPORTER=prometheus` serves metrics for Prometheus to scrape instead, which the Kubernetes manifests do on port 9464. Logs are JSON on standard error by default (`OPENETL_LOG_FORMAT`, `OPENETL_LOG_OUTPUT`).
+
+## Install
+
+- [On Kubernetes](./kubernetes.md), with plain manifests: API servers, orchestrators, a pool of runners and a pod launcher, with recipes for scaling runners with KEDA and nodes with Karpenter.
+
+These docs have no guide for other platforms. There, run the same roles as processes or containers, with the settings above.

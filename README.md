@@ -1,68 +1,62 @@
 # OpenETL
 
-OpenETL moves data from where it is produced to where it is used: databases, SaaS APIs, event streams and webhooks into warehouses, lakes, streams and HTTP endpoints. The same pipeline runs as a scheduled batch or continuously as a stream, with exactly-once delivery wherever the destination allows it.
+OpenETL moves data from where it's made to where it's used. It copies tables, changes and events from databases and streams into warehouses, lakes and other streams, on a schedule or continuously, and lands each change once wherever the destination can promise that.
 
-OpenETL is licensed under Apache 2.0 and built to be self-hosted.
+You run it yourself. It's open source, under Apache 2.0.
 
-**Status: pre-alpha.** Nothing has been released, and the API, the pipeline spec and the protocols still change without notice. The first release, 0.1 alpha, will run scheduled and continuous pipelines:
+> [!NOTE]
+> OpenETL is pre-alpha: nothing has been released yet, and pipelines' format and the API can still change.
 
-- from Postgres (full refresh, incremental by a cursor, and CDC), Kafka and Kinesis,
-- into Postgres, Iceberg (REST and Glue catalogs), Parquet on S3, Kafka and Kinesis,
-- with transforms on your own Spark and Flink clusters, dbt after a sync, and metrics and traces over OpenTelemetry.
+## What you can do with it
 
-## How it works
+- **Copy from** Postgres (whole tables, new rows, or every change as it happens), Kafka and Kinesis.
+- **Copy to** Postgres, Iceberg tables, Parquet files on S3, Kafka and Kinesis.
+- **Choose how often:** the same pipeline runs every hour, every day, or continuously.
+- **Trust what lands:** OpenETL works out, stream by stream, whether a change could ever arrive twice, and won't run a pipeline that would get less than it asks for.
+- **Shape the data** with dbt after each sync, or on your own Spark and Flink clusters.
+- **See what's happening** in the console: how fresh each table is, what failed and what to do about it. Metrics and traces go to anything that speaks OpenTelemetry.
+- **Keep pipelines in git** as YAML, and review a plan of each change before you apply it.
 
-- **The control plane** is `openetld`: the API, which the `openetl` CLI and the UI use, and orchestrators, which schedule syncs and place each attempt on a runner. Workflows run on DBOS, which needs nothing but Postgres, or on Temporal.
-- **Runners** make up a data plane. They take their work from the API and run each attempt: connectors as subprocesses speaking the connector protocol, with `openetl-engine`, the Rust data engine, between source and destination. On Kubernetes, an attempt can run in a pod of its own, sized for its job.
-- **Checkpoints** are a log in object storage, one record per checkpoint, updated by compare-and-swap, which also fences out attempts that were replaced. The destination connector commits each epoch behind that fence, so an attempt that crashes resumes from the last checkpoint, and a destination that allows it never applies an epoch twice.
+## Get started
 
-## Repository layout
-
-| Path | What it holds |
-|---|---|
-| `cmd/openetld`, `cmd/openetl` | The daemon (roles `server`, `orchestrator` and `runner`, or `dev` for all three) and the CLI |
-| `proto/openetl` | The protocols: `connector/v1` (what connectors speak, including host services), `engine/v1` (runner to engine), `dataplane/v1` (runners to the API) and `api/v1` (the API) |
-| `gen/`, `sdk/go/protocol/v1`, `web/src/gen`, `internal/api/openapi.yaml` | Generated from `proto/` by `make generate`, and committed |
-| `internal/api` | The API server |
-| `internal/orchestration` | Workflows, written against one interface with a DBOS and a Temporal backend, and placement and dispatch to runners |
-| `internal/runner` | Runners: attempts, the checkpoint coordinator, and pod launchers |
-| `internal/checkpoint` | The checkpoint log |
-| `internal/delivery` | Each stream's delivery guarantee, worked out from the destination, the source's replay behaviour, the write mode, the primary key and the level the pipeline requires |
-| `internal/store` | The metadata store on Postgres: migrations, and queries, from which sqlc generates `internal/store/db` |
-| `internal/connectorhost`, `connectors/native` | Connectors the runner hosts: the two built in (`faker` and `stdout`), declarative sources, and external connectors |
-| `sdk/go` | The Go connector SDK, a module of its own, with `sdk.Serve` for external connectors and a conformance suite |
-| `crates/` | `openetl-engine`, the Rust data engine, and its libraries |
-| `libs/` | `openetl-spark` and `openetl-flink`: what runs on your Spark and Flink clusters |
-| `web/` | The UI: React and TypeScript, a client of the API only |
-| `deploy/` | Local dependencies in Docker Compose, `openetld`'s image, and manifests for Kubernetes |
-| `test/` | `sim`, a seeded simulation of the commit protocol under crashes, timeouts and zombie attempts; `e2e`, whole-stack scenarios and the chaos suite; `bench` |
-| `examples/` | Pipelines to try |
-
-## Development
-
-You need Go 1.26, Rust (the toolchain is pinned in `rust-toolchain.toml`, and rustup installs it), Node 22 with pnpm for the UI, and Docker. Developer tools are pinned in `tools/go.mod` and built into `bin/` by `make tools`; the UI's are in `web/package.json`.
+Until the first release, you run OpenETL from source. You need Git, [Go](https://go.dev/dl/) 1.26, [Rust](https://rustup.rs), [Node](https://nodejs.org) 22 with [pnpm](https://pnpm.io/installation), and [Docker](https://docs.docker.com/get-started/get-docker/).
 
 ```sh
-make hooks             # check formatting and lint before each commit
-make test              # Go, Rust and UI unit tests
-make lint              # buf, golangci-lint, rustfmt, clippy, cargo-deny and tsc
-make generate          # regenerate code after changing a .proto or a query
-make sim               # the commit-protocol simulation; SEEDS=10000 for more seeds
-make deps-up           # Postgres, S3, Kafka, Kinesis, Spark, Flink and more in Docker; TEMPORAL=1 adds Temporal
-make test-integration  # integration tests against those
-make connectors        # build the official connectors from ../openetl-connectors into bin/connectors
-make e2e               # whole-stack scenarios; needs deps-up and the connectors
-make dev               # openetld dev, with the UI at http://localhost:8080
-make web-dev           # the UI's dev server, against the API on localhost:8080
+git clone https://github.com/openetl-io/openetl
+git clone https://github.com/openetl-io/openetl-connectors
+cd openetl
+make dev DEPS=postgres
 ```
 
-`make help` lists the rest.
+The first run takes a few minutes to build. Then the console is at [localhost:8080](http://localhost:8080).
 
-`openetld dev` runs the server, an orchestrator and a runner in one process, and asks no one to sign in while it listens only on a loopback address. `openetld server` writes the owner's API key to `.openetl/admin.key` when it creates the org, and `openetl principal password-link` gives a user a link to set a password for the UI.
+In a second terminal, in the same directory, create a pipeline that copies generated rows into that Postgres:
 
-To try a pipeline, run `make deps-up` and `make dev`, then follow the comment at the top of [`examples/faker-to-postgres.yaml`](examples/faker-to-postgres.yaml).
+```sh
+go build -o bin/ ./cmd/openetl && export PATH="$PWD/bin:$PATH"
+echo postgres://openetl:openetl@localhost:5432/openetl | openetl secret set local-postgres-dsn
+openetl apply -f examples/faker-to-postgres.yaml
+```
 
-The official connectors, Postgres's included, live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Clone it next to this repository, or set `CONNECTORS_SRC`.
+Its first sync starts straight away. Open **Pipelines** in the console to see it land. The [quickstart](docs/get-started/quickstart.md) explains each step and what to try next.
+
+## Documentation
+
+| If you want to | Start with |
+|---|---|
+| Learn what OpenETL is, in plain words | [Overview](docs/get-started/overview.md) |
+| Check on pipelines and the data they deliver | [Use the console](docs/use/index.md) |
+| Build pipelines | [Pipelines](docs/pipelines/index.md) |
+| Run OpenETL for your team | [Self-host](docs/self-host/index.md) |
+| Connect dbt, Spark, Flink, your alerts or your own code | [Integrate](docs/integrate/index.md) |
+| Write a connector | [Build a connector](docs/build-connectors/index.md) |
+| Know how it works inside | [Internals](docs/internals/index.md) |
+
+The official connectors, and their docs, live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors).
+
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has how to build and test OpenETL.
 
 ## License
 

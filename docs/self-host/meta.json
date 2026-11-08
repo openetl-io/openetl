@@ -1,0 +1,7 @@
+{
+  "title": "Self-host",
+  "description": "Install, run, scale and upgrade OpenETL",
+  "icon": "Server",
+  "root": true,
+  "pages": ["index", "kubernetes"]
+}

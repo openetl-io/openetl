@@ -1,0 +1,32 @@
+name: docs
+
+# On pushes rather than pull requests, as go.yml does: a pull request's path
+# filters see its whole diff.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "docs/**"
+      - "test/docs/**"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - ".github/workflows/docs.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./test/docs

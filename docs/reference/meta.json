@@ -1,0 +1,7 @@
+{
+  "title": "Reference",
+  "description": "Specs, commands, settings, events and schemas",
+  "icon": "BookOpen",
+  "root": true,
+  "pages": ["index", "built-in-connectors"]
+}
