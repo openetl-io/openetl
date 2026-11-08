@@ -447,6 +447,11 @@ type runner struct {
 	done chan struct{}
 }
 
+// ownsID says whether a runner ID, host:pid:suffix, is this runner's.
+func (r *runner) ownsID(id string) bool {
+	return strings.Contains(id, fmt.Sprintf(":%d:", r.cmd.Process.Pid))
+}
+
 // runnerCapacity is more than a test's runner needs: they take up streams
 // earlier tests left running, which would otherwise crowd out their own.
 const runnerCapacity = "64,128Gi"

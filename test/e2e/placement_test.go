@@ -82,7 +82,7 @@ func TestPlacementByCapacity(t *testing.T) {
 		t.Errorf("%d jobs running, want 3", got)
 	}
 	used := func(r *runner) int {
-		n, err := query[int](t, "SELECT count(*) FROM dispatches WHERE data_plane_id = $1 AND runner LIKE '%:' || $2::text AND state = 'running'", plane, strconv.Itoa(r.cmd.Process.Pid))
+		n, err := query[int](t, "SELECT count(*) FROM dispatches WHERE data_plane_id = $1 AND runner LIKE '%:' || $2::text || ':%' AND state = 'running'", plane, strconv.Itoa(r.cmd.Process.Pid))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -236,14 +236,14 @@ func TestSizesAndPools(t *testing.T) {
 	}
 	name := unique("sized")
 	sizedStreamOn(t, name, plane, `{"size": "m"}`)
-	eventually(t, 60*time.Second, "the job to run on the large runner", func() bool { return strings.HasSuffix(runsOn(name), fmt.Sprintf(":%d", large.cmd.Process.Pid)) })
+	eventually(t, 60*time.Second, "the job to run on the large runner", func() bool { return large.ownsID(runsOn(name)) })
 	if got := latestAttempts(t, name); len(got) != 1 || got[0].cpu != 2000 || got[0].why != "spec" {
 		t.Errorf("attempts %+v, want one sized m by the spec", got)
 	}
 
 	pooled := unique("pooled")
 	sizedStreamOn(t, pooled, plane, `{"size": "s", "pool": "batch"}`)
-	eventually(t, 60*time.Second, "the job to run in its pool", func() bool { return strings.HasSuffix(runsOn(pooled), fmt.Sprintf(":%d", batch.cmd.Process.Pid)) })
+	eventually(t, 60*time.Second, "the job to run in its pool", func() bool { return batch.ownsID(runsOn(pooled)) })
 }
 
 // An attempt killed for memory is retried one size up, and later syncs start

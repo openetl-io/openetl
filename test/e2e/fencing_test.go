@@ -231,7 +231,7 @@ func TestRunnerDiesBetweenPlacementAndStart(t *testing.T) {
 	}
 	eventually(t, 30*time.Second, "the attempt to be placed on it", func() bool { return work("state") == "placed" })
 	placedOn := work("runner")
-	if !strings.HasSuffix(placedOn, fmt.Sprintf(":%d", first.cmd.Process.Pid)) {
+	if !first.ownsID(placedOn) {
 		t.Fatalf("placed on %q", placedOn)
 	}
 	first.kill(t)
