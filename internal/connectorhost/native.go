@@ -62,6 +62,8 @@ type Env struct {
 	Meter *resources.Meter
 	// The size of the job they're part of. Zero: they aren't part of one.
 	Size resources.Size
+	// Multiplies the rate limits a declarative source declares; 0: 1.
+	RateLimitScale float64
 }
 
 // NewSource binds a source connector to its config, a JSON object. It does
@@ -193,6 +195,11 @@ func declarativeSource(m *declarative.Connector, config []byte, env Env) (source
 	log := env.Logger
 	if log == nil {
 		log = slog.Default()
+	}
+	if s := env.RateLimitScale; s > 0 && s != 1 {
+		for key, rps := range b.RateLimits {
+			b.RateLimits[key] = rps * s
+		}
 	}
 	h := hostservices.New(hostservices.Options{
 		Policy:     env.Egress,

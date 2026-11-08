@@ -29,19 +29,23 @@ const (
 	PipelineLagging   = "pipeline.lagging"
 	PipelineRecovered = "pipeline.recovered"
 	PipelineRescaled  = "pipeline.rescaled"
-	SchemaChanged     = "schema.changed"
-	SchemaBlocked     = "schema.blocked"
-	IncidentOpened    = "incident.opened"
-	IncidentEscalated = "incident.escalated"
-	IncidentResolved  = "incident.resolved"
-	WebhookTest       = "webhook.test"
+	// Heal set one of its overrides, or someone removed one.
+	PipelineOverridden = "pipeline.overridden"
+	StreamPaused       = "stream.paused"
+	StreamResumed      = "stream.resumed"
+	SchemaChanged      = "schema.changed"
+	SchemaBlocked      = "schema.blocked"
+	IncidentOpened     = "incident.opened"
+	IncidentEscalated  = "incident.escalated"
+	IncidentResolved   = "incident.resolved"
+	WebhookTest        = "webhook.test"
 )
 
 // Types is every event type there is.
 var Types = []string{
 	SyncStarted, SyncSucceeded, SyncFailed, SyncStopped,
 	PipelineCreated, PipelineUpdated, PipelineDeleted, PipelinePaused, PipelineResumed, PipelineLagging, PipelineRecovered,
-	PipelineRescaled,
+	PipelineRescaled, PipelineOverridden, StreamPaused, StreamResumed,
 	SchemaChanged, SchemaBlocked,
 	IncidentOpened, IncidentEscalated, IncidentResolved,
 	WebhookTest,
@@ -139,8 +143,14 @@ type Pipeline struct {
 	PreviousVersion string `json:"previousVersion,omitempty"`
 	// Where the version came from, such as cli:shop.yaml#3.
 	Provenance string `json:"provenance,omitempty"`
-	// The incident a playbook paused it for.
+	// The incident a playbook paused it, or overrode its spec, for.
 	Incident string `json:"incident,omitempty"`
+	// A stream paused or resumed on its own.
+	Stream string `json:"stream,omitempty"`
+	// An override's spec field, and its value as JSON; empty once it's
+	// removed.
+	Field string `json:"field,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 // Lag is a continuous pipeline's read falling behind, or catching up.

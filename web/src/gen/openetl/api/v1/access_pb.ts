@@ -1145,7 +1145,8 @@ export enum Role {
   VIEWER = 1,
 
   /**
-   * Pauses, resumes, syncs and rescales pipelines; checks and discovers
+   * Pauses, resumes, syncs and rescales pipelines, pauses and resumes
+   * their streams, and removes heal's overrides; checks and discovers
    * sources and destinations; tests, disables and enables webhooks;
    * resolves incidents; refreshes the connector catalog.
    *

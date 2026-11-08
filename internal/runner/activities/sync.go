@@ -271,6 +271,7 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	job.OnCommit = p.onCommit
 	reports := newReporter(ctx, a.API, spec.GetPipelineId(), p.sync, log)
 	reports.progress, reports.lowered, reports.meter = job.Progress, job.Lowered(), meter
+	reports.reads, reports.paused = streamReads(&job)
 	job.OnSchemas, job.OnCheckpoint = reports.schemas, reports.checkpoint
 	r, err := runner.RunAttempt(ctx, job)
 	reports.close(5 * time.Second)

@@ -33,10 +33,13 @@ type Activities struct {
 	Store *store.Store
 	// Sends workflows' work to data planes.
 	Dispatch *dispatch.Dispatcher
-	// Pauses the schedules of pipelines a playbook paused. Nil: only the
-	// pipeline is, which stops its syncs all the same.
+	// Pauses the schedules of pipelines a playbook paused, and changes those a
+	// playbook slowed down. Nil: only the pipeline is paused, which stops its
+	// syncs all the same, and the schedule changes at the pipeline's next
+	// apply.
 	Schedules interface {
 		SetPaused(ctx context.Context, pipelineID string, paused bool) error
+		Upsert(ctx context.Context, orgID, pipelineID string, sched *apiv1.Schedule, paused bool) error
 	}
 	// How RefreshCatalog reaches registries and GitHub. Nil: it lists
 	// nothing.
@@ -295,10 +298,14 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 		switch params.Status {
 		case "failed":
 			class := heal.ClassOf(in.Code)
-			seen, err = heal.Observe(ctx, q, org, heal.Observation{
+			o := heal.Observation{
 				Pipeline: row.PipelineID, Version: row.Version, Stream: heal.StreamOf(class, in.Error), Class: class,
 				Code: in.Code, Message: in.Error, Sync: &row.ID, Key: row.ID.String(),
-			})
+			}
+			if row.EndTime != nil {
+				o.Ran = row.EndTime.Sub(row.StartTime)
+			}
+			seen, err = heal.Observe(ctx, q, org, o)
 		case "succeeded":
 			_, err = heal.Resolve(ctx, q, org, row.PipelineID, heal.ResolvedByProgress, nil, "sync "+row.ID.String()+" succeeded")
 		}
@@ -311,6 +318,17 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 	if err == nil && seen.Paused && !seen.Continuous && a.Schedules != nil {
 		if perr := a.Schedules.SetPaused(ctx, pipeline.String(), true); perr != nil {
 			a.log().Warn("pausing the schedule failed; the pipeline is paused, so its syncs do nothing", "pipeline", pipeline, "err", perr)
+		}
+	}
+	if err == nil && seen.Schedule != nil && a.Schedules != nil {
+		// An update keeps the schedule's pause state; paused applies only if
+		// it has to be made again.
+		paused := false
+		if p, perr := a.Store.GetPipelineByID(ctx, db.GetPipelineByIDParams{OrgID: org, ID: pipeline}); perr == nil {
+			paused = p.Paused
+		}
+		if perr := a.Schedules.Upsert(ctx, org.String(), pipeline.String(), seen.Schedule, paused); perr != nil {
+			a.log().Warn("changing the schedule failed; it changes at the pipeline's next apply", "pipeline", pipeline, "err", perr)
 		}
 	}
 	return err
@@ -375,10 +393,18 @@ func (a *Activities) GetStreamState(ctx context.Context, in contract.StreamInput
 	if err != nil {
 		return st, err
 	}
+	paused, err := a.Store.ListPausedStreams(ctx, db.ListPausedStreamsParams{OrgID: org, Pipelines: []uuid.UUID{pipeline}})
+	if err != nil {
+		return st, err
+	}
+	streams := make([]string, len(paused))
+	for i, r := range paused {
+		streams[i] = r.Stream
+	}
 	return contract.StreamState{
 		Continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
 		Paused:     p.Paused, Version: p.Version, DataPlane: p.DataPlaneID,
-		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, Releases: releases,
+		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, Releases: releases, PausedStreams: strings.Join(streams, ","),
 		Pool: spec.GetResources().GetPool(), Left: left,
 	}, nil
 }

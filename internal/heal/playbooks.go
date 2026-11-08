@@ -48,8 +48,16 @@ func describe(o Observation, t target) (summary, next string) {
 				"acknowledged. To read every stream again from the start (for Postgres, a new slot and snapshot), delete the " +
 				"pipeline and apply it again. Changes made in the meantime arrive as current rows, not as change history."
 	case RateLimited:
+		slow := "After 3 syncs in a row fail this way, and every 3 after, heal slows the pipeline down: it halves a declarative " +
+			"source's declared rate limit, down to an eighth, and doubles how often syncs start (schedule.every), up to a day, " +
+			"if there's no rate limit left to lower or the sync ran that long. "
+		if t.mode == apiv1.HealMode_HEAL_MODE_OFF {
+			slow = ""
+		}
 		return fmt.Sprintf("%s's source kept limiting its requests, past every retry", name),
-			"Sync less often (schedule.every), select fewer streams, or ask the API's owner for a higher limit. The incident resolves once a sync succeeds."
+			slow + "To fix it yourself, sync less often, select fewer streams, or ask the API's owner for a higher limit. " +
+				fmt.Sprintf("What heal changed stays until you remove it (openetl overrides remove %s%s FIELD), or apply a spec that changes the field. ", ws, t.pipeline) +
+				"The incident resolves once a sync succeeds."
 	case CrashLoop:
 		return fmt.Sprintf("%s's job keeps failing without committing", name),
 			fmt.Sprintf("It's retried, up to every 5 minutes, until it commits. Its log has each failure (%s).", logs)
@@ -61,10 +69,28 @@ func describe(o Observation, t target) (summary, next string) {
 			"If the read doesn't catch up before the source discards the rest, it loses its position and needs a new start. " +
 				"Resume the pipeline if it's paused, and look for what holds the read back. The incident resolves under 40%."
 	case Quarantine:
+		where := "The rows are under _quarantine in the data plane's storage"
+		if f := o.Details["quarantine_file"]; f != "" {
+			where += " (the newest: " + f + ")"
+		}
+		next := where + ", each with the reason it was refused: a value its column's type can't hold, such as a new enum " +
+			"value or a date in another format. Fix the source's data, or give the column a type that holds it."
+		resumeStream := fmt.Sprintf("openetl resume %s--stream %s %s", ws, o.Stream, t.pipeline)
+		switch s, why := quarantineStops(o, t); {
+		case t.mode == apiv1.HealMode_HEAL_MODE_OFF:
+		case s == stopStream && t.mode == apiv1.HealMode_HEAL_MODE_SUGGEST:
+			next += fmt.Sprintf(" To keep it from quarantining more meanwhile, pause the stream (openetl pause %s--stream %s %s), and resume it after (%s).", ws, o.Stream, t.pipeline, resumeStream)
+		case s == stopStream:
+			next += " Heal paused the stream, so it quarantines no more rows while the pipeline's other streams carry on. Resume it once it's fixed (" + resumeStream + ")."
+		case s == stopPipeline && t.mode == apiv1.HealMode_HEAL_MODE_SUGGEST:
+			next += " To keep it from quarantining more meanwhile, pause the pipeline, as it reads only this stream, and resume it after (openetl resume " + ws + t.pipeline + ")."
+		case s == stopPipeline:
+			next += " Heal paused the pipeline, as it reads only this stream. " + strings.ToUpper(resume[:1]) + resume[1:] + " once it's fixed."
+		default:
+			next += " Heal can't pause the stream on its own: " + why + "."
+		}
 		return fmt.Sprintf("Stream %s of %s quarantined %s of its rows in the last hour", o.Stream, name, o.Details["share"]),
-			"The rows are under _quarantine in the data plane's storage, each with the reason it was refused: a value its " +
-				"column's type can't hold, such as a new enum value or a date in another format. The incident resolves once " +
-				"the share falls under half the threshold."
+			next + " The incident resolves once the stream's share falls under half the threshold."
 	case Held:
 		next := fmt.Sprintf("The rest of each row is delivered, and the held values are kept (openetl holds %s%s).", ws, t.pipeline)
 		for _, h := range o.Holds {

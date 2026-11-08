@@ -379,6 +379,10 @@ func (c *Connector) Version() string { return c.version }
 // Hint is the job size it wants; empty if it doesn't say.
 func (c *Connector) Hint() string { return c.hint }
 
+// RateLimit is the most requests a second it declares; 0 if it declares
+// no limit.
+func (c *Connector) RateLimit() float64 { return c.rps }
+
 func (m *manifest) compile() (*Connector, error) {
 	c := &Connector{name: m.Metadata.Name, version: m.Metadata.Version, defaults: map[string]any{}}
 	if m.Spec.Resources != nil {

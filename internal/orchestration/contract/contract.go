@@ -392,6 +392,9 @@ type StreamState struct {
 	// The newest hold release or discard, which a run takes when
 	// it starts; empty for none.
 	Releases string
+	// The streams paused on their own, joined by commas in order, which a
+	// job reads when it starts; empty for none.
+	PausedStreams string `json:",omitempty"`
 	// The pool its jobs go to; empty for the default.
 	Pool string `json:",omitempty"`
 	// A run still running, which an earlier supervisor left behind if this

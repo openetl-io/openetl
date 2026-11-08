@@ -34,8 +34,14 @@ Commands:
                   Flink clusters, pipelines and webhooks in FILE
   plan -f FILE    show what apply would change, and how each pipeline
                   would sync
-  pause NAME      stop a pipeline's scheduled syncs
-  resume NAME     start a pipeline's scheduled syncs again
+  pause NAME      stop a pipeline's scheduled syncs; --stream STREAM
+                  stops only that stream, which syncs skip
+  resume NAME     start a pipeline's scheduled syncs again; --stream
+                  STREAM resumes a stream paused on its own
+  overrides NAME  list the streams paused on their own, and what heal
+                  changed in how a pipeline runs
+  overrides remove NAME FIELD
+                  give the spec back its say in a field heal overrides
   sync NAME       start a sync of a pipeline now
   rescale --size SIZE NAME
                   size a pipeline's jobs until its next version, which
@@ -126,6 +132,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "rescale":
 		return runRescale(ctx, args[1:], out)
+	case "overrides":
+		return runOverrides(ctx, args[1:], out)
 	case "syncs":
 		return runSyncs(ctx, args[1:], out)
 	case "versions":
@@ -354,10 +362,19 @@ func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
 				if st.GetTypeChanges() {
 					reason += "; columns' types change in place"
 				}
+				if st.GetPaused() {
+					reason += "; paused, so syncs skip it"
+				}
 				fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\n", st.GetName(), strings.ToLower(strings.TrimPrefix(st.GetWrite().String(), "WRITE_MODE_")),
 					strings.ToLower(strings.TrimPrefix(st.GetLevel().String(), "DELIVERY_LEVEL_")), reason)
 			}
 			_ = tw.Flush()
+		}
+		if len(p.GetOverrides()) > 0 {
+			fmt.Fprintln(out, "  heal's overrides:")
+			for _, o := range p.GetOverrides() {
+				fmt.Fprintf(out, "    %s\n", overrideText(o))
+			}
 		}
 		var warnings []string
 		for _, w := range p.GetWarnings() {
@@ -390,6 +407,10 @@ func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) 
 	}
 	conn := apiFlags(fs)
 	workspace := fs.String("workspace", "default", "the pipeline's workspace")
+	var stream *string
+	if cmd != "sync" {
+		stream = fs.String("stream", "", "only this stream, which syncs skip while it's paused; not one read with cdc or by a transform")
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -404,10 +425,10 @@ func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) 
 	var done string
 	switch cmd {
 	case "pause":
-		_, err = c.PausePipeline(ctx, connect.NewRequest(&apiv1.PausePipelineRequest{Name: name}))
+		_, err = c.PausePipeline(ctx, connect.NewRequest(&apiv1.PausePipelineRequest{Name: name, Stream: *stream}))
 		done = "paused"
 	case "resume":
-		_, err = c.ResumePipeline(ctx, connect.NewRequest(&apiv1.ResumePipelineRequest{Name: name}))
+		_, err = c.ResumePipeline(ctx, connect.NewRequest(&apiv1.ResumePipelineRequest{Name: name, Stream: *stream}))
 		done = "resumed"
 	default:
 		_, err = c.SyncPipeline(ctx, connect.NewRequest(&apiv1.SyncPipelineRequest{Name: name}))
@@ -415,6 +436,10 @@ func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) 
 	}
 	if err != nil {
 		return err
+	}
+	if stream != nil && *stream != "" {
+		fmt.Fprintf(out, "%s stream %s of %s\n", done, *stream, name)
+		return nil
 	}
 	fmt.Fprintln(out, done, name)
 	return nil

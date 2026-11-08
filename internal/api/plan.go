@@ -122,8 +122,16 @@ func pinsOf(r db.GetSyncSpecRow) (plan.Version, error) {
 }
 
 // plan is how the pipeline's new version would sync, from its source's
-// latest catalog.
+// latest catalog, with what heal and people changed of how it runs.
 func (s *Server) plan(ctx context.Context, q *db.Queries, p *planned) (*apiv1.PipelinePlan, error) {
+	out, err := s.planVersion(ctx, q, p)
+	if err != nil {
+		return nil, err
+	}
+	return out, s.planRuntime(ctx, q, p, out)
+}
+
+func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*apiv1.PipelinePlan, error) {
 	out := &apiv1.PipelinePlan{Pipeline: p.name, Version: p.version}
 	if p.prev != "" && p.prev != p.version {
 		row, err := q.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: s.Tenant.Org, PipelineID: p.id, Version: p.prev})

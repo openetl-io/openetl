@@ -113,12 +113,17 @@ LEFT JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id 
 WHERE v.org_id = @org_id AND v.pipeline_id = @pipeline_id AND v.version = @version;
 
 -- name: ListPipelinesToRun :many
--- The org's pipelines, with their current versions' specs, for what runs them.
+-- The org's pipelines, with their current versions' specs, for what runs them,
+-- and heal's override of how often syncs start, if any.
 SELECT p.id, p.paused, v.spec,
     EXISTS (
         SELECT 1 FROM syncs s
         WHERE s.org_id = p.org_id AND s.pipeline_id = p.id AND s.continuous AND s.status = 'running'
-    )::boolean AS running_run
+    )::boolean AS running_run,
+    (
+        SELECT o.value FROM pipeline_overrides o
+        WHERE o.org_id = p.org_id AND o.pipeline_id = p.id AND o.field = 'schedule.every'
+    )::jsonb AS every_override
 FROM pipelines p
 JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
 WHERE p.org_id = @org_id

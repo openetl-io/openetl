@@ -26,6 +26,7 @@ import (
 // connectors, even after an error.
 func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env) (runner.Job, error) {
 	p := spec.GetPipeline()
+	env.RateLimitScale = spec.GetRateLimitScale()
 	srcCfg, err := protojson.Marshal(spec.GetSource().GetConfig())
 	if err != nil {
 		return runner.Job{}, err
@@ -56,7 +57,21 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 
 	deletes, caps := plan.Deletes(p), dst.Capabilities()
 	transformed := p.GetTransform() != nil
-	var streams []runner.Stream
+	// A transform reads every stream; an Apply that adds one resumes them.
+	paused := map[string]bool{}
+	if !transformed {
+		for _, name := range spec.GetPausedStreams() {
+			paused[name] = true
+		}
+	}
+	var streams, pausedStreams []runner.Stream
+	add := func(s runner.Stream) {
+		if paused[s.Name] {
+			pausedStreams = append(pausedStreams, s)
+		} else {
+			streams = append(streams, s)
+		}
+	}
 	var inputs []plan.Input
 	stream := func(cs source.CatalogStream, ps *apiv1.PipelineStream) (runner.Stream, error) {
 		declared := make([]apiv1.SyncMode, len(cs.SyncModes))
@@ -124,7 +139,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			if err != nil {
 				return job, err
 			}
-			streams = append(streams, s)
+			add(s)
 		}
 	}
 	for _, ps := range p.GetSource().GetStreams() {
@@ -135,13 +150,16 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 				if err != nil {
 					return job, err
 				}
-				streams = append(streams, s)
+				add(s)
 				found = true
 			}
 		}
 		if !found {
 			return job, errs.New(errs.ConfigInvalid, "the source has no stream %q", ps.GetName())
 		}
+	}
+	if len(streams) == 0 && len(pausedStreams) > 0 {
+		return job, errs.New(errs.ConfigInvalid, "every stream of the pipeline is paused; resume one, or pause the pipeline instead")
 	}
 	var outputs []runner.Stream
 	if transformed {
@@ -173,6 +191,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		Continuous:         plan.Continuous(p),
 		Source:             src,
 		Streams:            streams,
+		Paused:             pausedStreams,
 		Outputs:            outputs,
 		Destination:        dst,
 		Namespace:          p.GetDestination().GetNamespace(),

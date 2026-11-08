@@ -1768,7 +1768,14 @@ paths:
         post:
             tags:
                 - PipelineService
-            description: Stops scheduled syncs. A sync that is running carries on.
+            description: |-
+                Stops scheduled syncs. A sync that is running carries on. With a
+                 stream, only that stream stops: syncs skip it and keep its state for
+                 when it's resumed, and a continuous pipeline's run restarts at a
+                 checkpoint without it. Fails with FAILED_PRECONDITION for a stream that
+                 can't stop on its own: one read with cdc, which shares the source's
+                 change log with the pipeline's other cdc streams; a transform's input;
+                 or the last stream that isn't paused.
             operationId: PipelineService_PausePipeline
             parameters:
                 - name: workspace
@@ -1796,6 +1803,46 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/PausePipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:removeOverride:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Removes one of heal's overrides, which gives the spec back its say in
+                 that field.
+            operationId: PipelineService_RemovePipelineOverride
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RemovePipelineOverrideRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RemovePipelineOverrideResponse'
                 default:
                     description: Default error response
                     content:
@@ -4364,11 +4411,28 @@ components:
             properties:
                 name:
                     type: string
+                stream:
+                    type: string
+                    description: 'As the source''s catalog names it; empty: the whole pipeline.'
         PausePipelineResponse:
             type: object
             properties:
                 pipeline:
                     $ref: '#/components/schemas/Pipeline'
+        PausedStream:
+            type: object
+            properties:
+                stream:
+                    type: string
+                reason:
+                    type: string
+                    description: Why it was paused.
+                incident:
+                    type: string
+                    description: The incident whose playbook paused it; empty if a person did.
+                createTime:
+                    type: string
+                    format: date-time
         PinnedConfig:
             type: object
             properties:
@@ -4413,6 +4477,18 @@ components:
                     description: Set by PausePipeline and ResumePipeline, not by the spec.
                 status:
                     $ref: '#/components/schemas/PipelineStatus'
+                pausedStreams:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PausedStream'
+                    description: |-
+                        Streams paused on their own, by PausePipeline or by heal. Syncs skip
+                         them, and keep their state for when they're resumed.
+                overrides:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PipelineOverride'
+                    description: What heal changed in how the pipeline runs, over its spec.
         PipelineColumn:
             type: object
             properties:
@@ -4472,6 +4548,36 @@ components:
                     type: string
                     description: 'For every stream that doesn''t say. Unset: refuse.'
                     format: enum
+        PipelineOverride:
+            type: object
+            properties:
+                field:
+                    type: string
+                    description: |-
+                        schedule.every: how often syncs start, which heal widens when a
+                         source keeps limiting a pipeline's requests. source.rate_limit_scale:
+                         what a declarative source's declared rate limits are multiplied by.
+                value:
+                    type: string
+                    description: As JSON, as PlanChange's are.
+                specValue:
+                    type: string
+                    description: What the spec has, as JSON; empty where it's unset.
+                reason:
+                    type: string
+                    description: Why heal set it.
+                incident:
+                    type: string
+                    description: The incident whose playbook set it.
+                updateTime:
+                    type: string
+                    description: When it last changed.
+                    format: date-time
+            description: |-
+                PipelineOverride is a value heal set for a field of the pipeline's spec,
+                 which syncs use in place of the spec's. It lasts until
+                 RemovePipelineOverride removes it, or a version changes what it
+                 overrides.
         PipelinePlan:
             type: object
             properties:
@@ -4513,6 +4619,13 @@ components:
                     allOf:
                         - $ref: '#/components/schemas/JobPlan'
                     description: What its next attempt would be sized at.
+                overrides:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PipelineOverride'
+                    description: |-
+                        Heal's overrides the pipeline keeps. One whose field the version
+                         changes is dropped, and a note says so.
             description: |-
                 PipelinePlan is how a pipeline version would sync, as far as the control
                  plane can tell from the source's latest catalog and the destination's
@@ -4865,6 +4978,19 @@ components:
             properties:
                 hold:
                     $ref: '#/components/schemas/Hold'
+        RemovePipelineOverrideRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                field:
+                    type: string
+                    description: As PipelineOverride.field.
+        RemovePipelineOverrideResponse:
+            type: object
+            properties:
+                pipeline:
+                    $ref: '#/components/schemas/Pipeline'
         RescalePipelineRequest:
             type: object
             properties:
@@ -4897,6 +5023,11 @@ components:
             properties:
                 name:
                     type: string
+                stream:
+                    type: string
+                    description: |-
+                        A stream paused on its own; empty: the whole pipeline, which leaves
+                         paused streams paused.
         ResumePipelineResponse:
             type: object
             properties:
@@ -5245,6 +5376,9 @@ components:
                     description: |-
                         The destination changes a column's type itself when the stream's
                          widens, rather than refusing it.
+                paused:
+                    type: boolean
+                    description: Paused on its own, so syncs skip it.
         StreamSchema:
             type: object
             properties:

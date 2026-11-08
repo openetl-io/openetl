@@ -179,6 +179,8 @@ openetl webhook test ops-alerts
   | `sync.started`, `sync.succeeded`, `sync.failed`, `sync.stopped` | A sync, or a continuous pipeline's run, starts or ends |
   | `pipeline.created`, `pipeline.updated`, `pipeline.deleted` | A pipeline is applied or deleted |
   | `pipeline.paused`, `pipeline.resumed`, `pipeline.rescaled` | Someone pauses, resumes or rescales a pipeline |
+  | `stream.paused`, `stream.resumed` | Someone, or heal, pauses or resumes one of a pipeline's streams |
+  | `pipeline.overridden` | Heal changes how a pipeline runs, such as syncing less often, or someone undoes it |
   | `pipeline.lagging`, `pipeline.recovered` | A continuous pipeline falls behind its source, and catches up |
   | `schema.changed`, `schema.blocked` | A stream's schema changes, or a change can't be taken |
   | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident opens, gets worse, or is resolved |

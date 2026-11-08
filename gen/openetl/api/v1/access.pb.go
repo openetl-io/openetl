@@ -79,7 +79,8 @@ const (
 	Role_ROLE_UNSPECIFIED Role = 0
 	// Reads every resource but the audit log. No role reads secrets' values.
 	Role_ROLE_VIEWER Role = 1
-	// Pauses, resumes, syncs and rescales pipelines; checks and discovers
+	// Pauses, resumes, syncs and rescales pipelines, pauses and resumes
+	// their streams, and removes heal's overrides; checks and discovers
 	// sources and destinations; tests, disables and enables webhooks;
 	// resolves incidents; refreshes the connector catalog.
 	Role_ROLE_OPERATOR Role = 2

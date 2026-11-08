@@ -11,6 +11,8 @@ import { useDataTable } from "@/components/data-table/use-data-table";
 import { ErrorNote } from "@/components/empty";
 import { Holds } from "@/components/holds";
 import { Incidents } from "@/components/incidents";
+import { RunOverrides } from "@/components/run-overrides";
+import { Badge } from "@/components/ui/badge";
 import { IncidentService, IncidentState } from "@/gen/openetl/api/v1/incident_pb";
 import {
   DeliveryLevel,
@@ -46,6 +48,7 @@ type Row = GraphStream & {
   collapsed?: bigint;
   schema?: number;
   schemaKey?: string;
+  paused?: boolean;
 };
 
 const calloutTone = {
@@ -93,6 +96,7 @@ export function Overview({
     for (const s of plan.data?.plan?.streams ?? []) Object.assign(get(s.name), { level: s.level, reason: s.reason, write: s.write });
     for (const w of plan.data?.plan?.warnings ?? []) if (w.stream) get(w.stream).warning = w.message;
     for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor });
+    for (const s of pipeline.pausedStreams) get(s.stream).paused = true;
     for (const s of last?.streams ?? [])
       Object.assign(get(s.name), { rows: s.rows, quarantined: s.quarantinedRows, held: s.heldColumns, collapsed: s.collapsedRows });
     // A transform's output comes first, and is the destination's stream of
@@ -104,7 +108,7 @@ export function Overview({
       r.schemaKey = schemaKey(s);
     }
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [plan.data, spec, last, schemas.data]);
+  }, [plan.data, spec, last, schemas.data, pipeline.pausedStreams]);
 
   const incidents = useQuery(IncidentService.method.listIncidents, { parent: pipeline.name, state: IncidentState.OPEN });
   const lastSync = pipeline.status?.lastSync;
@@ -119,6 +123,7 @@ export function Overview({
   return (
     <div className="grid gap-6">
       <Incidents workspace={workspace} pipeline={pipeline.name} live={live} />
+      <RunOverrides workspace={workspace} pipeline={pipeline} />
       {retrying && (
         <Callout tone="warning">
           {retrying.failedAttempts === 1 ? "An attempt" : `${retrying.failedAttempts} attempts`} of this {retrying.continuous ? "run" : "sync"} failed,
@@ -234,7 +239,16 @@ function StreamsTable({
       {
         id: "name",
         header: "Stream",
-        cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+        cell: ({ row }) => (
+          <span className="inline-flex items-center gap-2">
+            <span className="font-medium">{row.original.name}</span>
+            {row.original.paused && (
+              <Badge variant="outline" className="font-normal">
+                Paused
+              </Badge>
+            )}
+          </span>
+        ),
       },
       {
         id: "read",

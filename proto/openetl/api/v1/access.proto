@@ -152,7 +152,8 @@ enum Role {
   ROLE_UNSPECIFIED = 0;
   // Reads every resource but the audit log. No role reads secrets' values.
   ROLE_VIEWER = 1;
-  // Pauses, resumes, syncs and rescales pipelines; checks and discovers
+  // Pauses, resumes, syncs and rescales pipelines, pauses and resumes
+  // their streams, and removes heal's overrides; checks and discovers
   // sources and destinations; tests, disables and enables webhooks;
   // resolves incidents; refreshes the connector catalog.
   ROLE_OPERATOR = 2;

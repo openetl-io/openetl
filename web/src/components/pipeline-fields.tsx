@@ -2,6 +2,7 @@ import type { Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncState } from "@/gen/openetl/api/v1/sync_pb";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { interval } from "@/lib/format";
 import { lastUpdate, scheduleLabel, stale } from "@/lib/pipeline";
 import { cn } from "@/lib/utils";
 import { RelativeTime } from "./relative-time";
@@ -23,8 +24,17 @@ export function Freshness({ pipeline }: { pipeline: Pipeline }) {
   );
 }
 
+/** When syncs start: heal's override of how often, if it set one, or the spec's schedule. */
 export function Schedule({ pipeline, className }: { pipeline: Pipeline; className?: string }) {
   const cron = pipeline.spec?.schedule?.trigger.case === "cron";
+  const every = pipeline.overrides.find((o) => o.field === "schedule.every");
+  if (every && !cron) {
+    return (
+      <span className={className} title="Heal widened it after syncs kept failing rate limited">
+        Every {interval(parseFloat(JSON.parse(every.value)) * 1000)}, by heal
+      </span>
+    );
+  }
   return <span className={cn(cron && "font-mono text-[0.8125rem]", className)}>{scheduleLabel(pipeline.spec)}</span>;
 }
 

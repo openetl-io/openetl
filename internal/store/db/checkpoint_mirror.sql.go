@@ -92,6 +92,28 @@ func (q *Queries) LastCommits(ctx context.Context, orgID uuid.UUID) ([]LastCommi
 	return items, nil
 }
 
+const latestMirroredStreams = `-- name: LatestMirroredStreams :one
+SELECT c.streams FROM checkpoint_mirror c
+WHERE c.org_id = $1 AND c.pipeline_id = $2
+  AND c.streams @> jsonb_build_array(jsonb_build_object('name', $3::text))
+ORDER BY c.epoch DESC, c.generation DESC
+LIMIT 1
+`
+
+type LatestMirroredStreamsParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Stream     string
+}
+
+// The streams of the pipeline's newest mirrored checkpoint that has stream.
+func (q *Queries) LatestMirroredStreams(ctx context.Context, arg LatestMirroredStreamsParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, latestMirroredStreams, arg.OrgID, arg.PipelineID, arg.Stream)
+	var streams []byte
+	err := row.Scan(&streams)
+	return streams, err
+}
+
 const listCheckpoints = `-- name: ListCheckpoints :many
 SELECT c.epoch, c.generation, c.previous_epoch, c.previous_generation, c.commit_time, c.streams, c.usage,
     s.id AS sync_id

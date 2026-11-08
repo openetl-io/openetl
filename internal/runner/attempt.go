@@ -110,10 +110,13 @@ type Job struct {
 	Org      string
 	Pipeline string
 	// The read never ends (a continuous pipeline's).
-	Continuous  bool
-	Log         *checkpoint.Log
-	Source      source.Reader
-	Streams     []Stream
+	Continuous bool
+	Log        *checkpoint.Log
+	Source     source.Reader
+	Streams    []Stream
+	// Streams paused on their own: the attempt doesn't read them, and each
+	// record it writes carries their state from the record it restored.
+	Paused      []Stream
 	Destination destination.Destination
 	// The destination's schema or dataset; empty for its default.
 	Namespace string
@@ -928,13 +931,16 @@ type coordinator struct {
 	// The restored record's outputs' schemas.
 	outputSchemas map[string][]byte
 	readStarts    map[string]int64
-	sincePrune    int    // owned by the committer: commits since it last pruned
-	seen          uint64 // what the source had emitted when the last barrier was requested
-	lastBarrier   time.Time
-	lastStaged    destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
-	syncStart     *checkpoint.RecordRef               // the record the sync started after; nil if unknown
-	syncRows      map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
-	measures      map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
+	// The paused streams' states and splits in the restored record, which
+	// every record carries.
+	carried     map[string]carried
+	sincePrune  int    // owned by the committer: commits since it last pruned
+	seen        uint64 // what the source had emitted when the last barrier was requested
+	lastBarrier time.Time
+	lastStaged  destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
+	syncStart   *checkpoint.RecordRef               // the record the sync started after; nil if unknown
+	syncRows    map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
+	measures    map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
 	// Called on the committer's goroutine after it pruned the log.
 	afterPrune func(ctx context.Context, head *checkpoint.Record)
 	// Owned by the committer: each holding stream's holds as last recorded,
@@ -965,6 +971,23 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 			c.ackStates[name] = restored.Splits(name)
 			if st.Schema != nil {
 				schemas[name] = st.Schema
+			}
+		}
+		for _, s := range c.job.Paused {
+			if st, ok := restored.Streams[s.Name]; ok {
+				if c.carried == nil {
+					c.carried = map[string]carried{}
+				}
+				// Not read in the epoch, so nothing is read again; a forced
+				// position stays forced.
+				splits := slices.Clone(restored.Splits(s.Name))
+				for i := range splits {
+					splits[i].Reread = false
+				}
+				st.Rows = 0
+				c.carried[s.Name] = carried{st, splits}
+				// The source isn't reading it, so it isn't told about it.
+				delete(c.ackStates, s.Name)
 			}
 		}
 	}
@@ -1282,6 +1305,12 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 	return nil
 }
 
+// carried is a paused stream as the restored record has it.
+type carried struct {
+	state  checkpoint.StreamState
+	splits []checkpoint.SplitState
+}
+
 // record writes epoch n's checkpoint record, and drops what the epoch
 // before it staged.
 func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*checkpoint.Record, error) {
@@ -1317,6 +1346,10 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 			Holds:     holds[name],
 		}
 		rec.SetSplits(name, st.splits[name])
+	}
+	for name, cs := range c.carried {
+		rec.Streams[name] = cs.state
+		rec.SetSplits(name, cs.splits)
 	}
 	if c.job.transformed() {
 		rec.Outputs = make(map[string]checkpoint.OutputState, len(c.job.Outputs))

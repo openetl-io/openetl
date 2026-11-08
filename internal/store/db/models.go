@@ -391,6 +391,15 @@ type PasswordLink struct {
 	CreateTime  time.Time
 }
 
+type PausedStream struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Stream     string
+	Reason     string
+	IncidentID *uuid.UUID
+	CreateTime time.Time
+}
+
 type Pipeline struct {
 	OrgID          uuid.UUID
 	WorkspaceID    uuid.UUID
@@ -407,6 +416,16 @@ type Pipeline struct {
 	LaggingSince   *time.Time
 	KeyGroups      int32
 	ManualSyncTime *time.Time
+}
+
+type PipelineOverride struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Field      string
+	Value      []byte
+	Reason     string
+	IncidentID *uuid.UUID
+	UpdateTime time.Time
 }
 
 type PipelineVersion struct {

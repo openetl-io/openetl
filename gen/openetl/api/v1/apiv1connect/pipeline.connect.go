@@ -48,6 +48,9 @@ const (
 	// PipelineServiceResumePipelineProcedure is the fully-qualified name of the PipelineService's
 	// ResumePipeline RPC.
 	PipelineServiceResumePipelineProcedure = "/openetl.api.v1.PipelineService/ResumePipeline"
+	// PipelineServiceRemovePipelineOverrideProcedure is the fully-qualified name of the
+	// PipelineService's RemovePipelineOverride RPC.
+	PipelineServiceRemovePipelineOverrideProcedure = "/openetl.api.v1.PipelineService/RemovePipelineOverride"
 	// PipelineServiceRescalePipelineProcedure is the fully-qualified name of the PipelineService's
 	// RescalePipeline RPC.
 	PipelineServiceRescalePipelineProcedure = "/openetl.api.v1.PipelineService/RescalePipeline"
@@ -85,9 +88,18 @@ type PipelineServiceClient interface {
 	GetPipeline(context.Context, *connect.Request[v1.GetPipelineRequest]) (*connect.Response[v1.GetPipelineResponse], error)
 	ListPipelines(context.Context, *connect.Request[v1.ListPipelinesRequest]) (*connect.Response[v1.ListPipelinesResponse], error)
 	DeletePipeline(context.Context, *connect.Request[v1.DeletePipelineRequest]) (*connect.Response[v1.DeletePipelineResponse], error)
-	// Stops scheduled syncs. A sync that is running carries on.
+	// Stops scheduled syncs. A sync that is running carries on. With a
+	// stream, only that stream stops: syncs skip it and keep its state for
+	// when it's resumed, and a continuous pipeline's run restarts at a
+	// checkpoint without it. Fails with FAILED_PRECONDITION for a stream that
+	// can't stop on its own: one read with cdc, which shares the source's
+	// change log with the pipeline's other cdc streams; a transform's input;
+	// or the last stream that isn't paused.
 	PausePipeline(context.Context, *connect.Request[v1.PausePipelineRequest]) (*connect.Response[v1.PausePipelineResponse], error)
 	ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error)
+	// Removes one of heal's overrides, which gives the spec back its say in
+	// that field.
+	RemovePipelineOverride(context.Context, *connect.Request[v1.RemovePipelineOverrideRequest]) (*connect.Response[v1.RemovePipelineOverrideResponse], error)
 	// Sets the size of the pipeline's jobs until its next version, or gives
 	// the spec back its say. A running job stops at a checkpoint and starts
 	// again at the new size.
@@ -159,6 +171,12 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(pipelineServiceMethods.ByName("ResumePipeline")),
 			connect.WithClientOptions(opts...),
 		),
+		removePipelineOverride: connect.NewClient[v1.RemovePipelineOverrideRequest, v1.RemovePipelineOverrideResponse](
+			httpClient,
+			baseURL+PipelineServiceRemovePipelineOverrideProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("RemovePipelineOverride")),
+			connect.WithClientOptions(opts...),
+		),
 		rescalePipeline: connect.NewClient[v1.RescalePipelineRequest, v1.RescalePipelineResponse](
 			httpClient,
 			baseURL+PipelineServiceRescalePipelineProcedure,
@@ -224,21 +242,22 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 
 // pipelineServiceClient implements PipelineServiceClient.
 type pipelineServiceClient struct {
-	getPipeline          *connect.Client[v1.GetPipelineRequest, v1.GetPipelineResponse]
-	listPipelines        *connect.Client[v1.ListPipelinesRequest, v1.ListPipelinesResponse]
-	deletePipeline       *connect.Client[v1.DeletePipelineRequest, v1.DeletePipelineResponse]
-	pausePipeline        *connect.Client[v1.PausePipelineRequest, v1.PausePipelineResponse]
-	resumePipeline       *connect.Client[v1.ResumePipelineRequest, v1.ResumePipelineResponse]
-	rescalePipeline      *connect.Client[v1.RescalePipelineRequest, v1.RescalePipelineResponse]
-	syncPipeline         *connect.Client[v1.SyncPipelineRequest, v1.SyncPipelineResponse]
-	listPipelineVersions *connect.Client[v1.ListPipelineVersionsRequest, v1.ListPipelineVersionsResponse]
-	getPipelineVersion   *connect.Client[v1.GetPipelineVersionRequest, v1.GetPipelineVersionResponse]
-	getPipelinePlan      *connect.Client[v1.GetPipelinePlanRequest, v1.GetPipelinePlanResponse]
-	listStreamSchemas    *connect.Client[v1.ListStreamSchemasRequest, v1.ListStreamSchemasResponse]
-	listCheckpoints      *connect.Client[v1.ListCheckpointsRequest, v1.ListCheckpointsResponse]
-	listHolds            *connect.Client[v1.ListHoldsRequest, v1.ListHoldsResponse]
-	releaseHold          *connect.Client[v1.ReleaseHoldRequest, v1.ReleaseHoldResponse]
-	discardHold          *connect.Client[v1.DiscardHoldRequest, v1.DiscardHoldResponse]
+	getPipeline            *connect.Client[v1.GetPipelineRequest, v1.GetPipelineResponse]
+	listPipelines          *connect.Client[v1.ListPipelinesRequest, v1.ListPipelinesResponse]
+	deletePipeline         *connect.Client[v1.DeletePipelineRequest, v1.DeletePipelineResponse]
+	pausePipeline          *connect.Client[v1.PausePipelineRequest, v1.PausePipelineResponse]
+	resumePipeline         *connect.Client[v1.ResumePipelineRequest, v1.ResumePipelineResponse]
+	removePipelineOverride *connect.Client[v1.RemovePipelineOverrideRequest, v1.RemovePipelineOverrideResponse]
+	rescalePipeline        *connect.Client[v1.RescalePipelineRequest, v1.RescalePipelineResponse]
+	syncPipeline           *connect.Client[v1.SyncPipelineRequest, v1.SyncPipelineResponse]
+	listPipelineVersions   *connect.Client[v1.ListPipelineVersionsRequest, v1.ListPipelineVersionsResponse]
+	getPipelineVersion     *connect.Client[v1.GetPipelineVersionRequest, v1.GetPipelineVersionResponse]
+	getPipelinePlan        *connect.Client[v1.GetPipelinePlanRequest, v1.GetPipelinePlanResponse]
+	listStreamSchemas      *connect.Client[v1.ListStreamSchemasRequest, v1.ListStreamSchemasResponse]
+	listCheckpoints        *connect.Client[v1.ListCheckpointsRequest, v1.ListCheckpointsResponse]
+	listHolds              *connect.Client[v1.ListHoldsRequest, v1.ListHoldsResponse]
+	releaseHold            *connect.Client[v1.ReleaseHoldRequest, v1.ReleaseHoldResponse]
+	discardHold            *connect.Client[v1.DiscardHoldRequest, v1.DiscardHoldResponse]
 }
 
 // GetPipeline calls openetl.api.v1.PipelineService.GetPipeline.
@@ -264,6 +283,11 @@ func (c *pipelineServiceClient) PausePipeline(ctx context.Context, req *connect.
 // ResumePipeline calls openetl.api.v1.PipelineService.ResumePipeline.
 func (c *pipelineServiceClient) ResumePipeline(ctx context.Context, req *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error) {
 	return c.resumePipeline.CallUnary(ctx, req)
+}
+
+// RemovePipelineOverride calls openetl.api.v1.PipelineService.RemovePipelineOverride.
+func (c *pipelineServiceClient) RemovePipelineOverride(ctx context.Context, req *connect.Request[v1.RemovePipelineOverrideRequest]) (*connect.Response[v1.RemovePipelineOverrideResponse], error) {
+	return c.removePipelineOverride.CallUnary(ctx, req)
 }
 
 // RescalePipeline calls openetl.api.v1.PipelineService.RescalePipeline.
@@ -321,9 +345,18 @@ type PipelineServiceHandler interface {
 	GetPipeline(context.Context, *connect.Request[v1.GetPipelineRequest]) (*connect.Response[v1.GetPipelineResponse], error)
 	ListPipelines(context.Context, *connect.Request[v1.ListPipelinesRequest]) (*connect.Response[v1.ListPipelinesResponse], error)
 	DeletePipeline(context.Context, *connect.Request[v1.DeletePipelineRequest]) (*connect.Response[v1.DeletePipelineResponse], error)
-	// Stops scheduled syncs. A sync that is running carries on.
+	// Stops scheduled syncs. A sync that is running carries on. With a
+	// stream, only that stream stops: syncs skip it and keep its state for
+	// when it's resumed, and a continuous pipeline's run restarts at a
+	// checkpoint without it. Fails with FAILED_PRECONDITION for a stream that
+	// can't stop on its own: one read with cdc, which shares the source's
+	// change log with the pipeline's other cdc streams; a transform's input;
+	// or the last stream that isn't paused.
 	PausePipeline(context.Context, *connect.Request[v1.PausePipelineRequest]) (*connect.Response[v1.PausePipelineResponse], error)
 	ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error)
+	// Removes one of heal's overrides, which gives the spec back its say in
+	// that field.
+	RemovePipelineOverride(context.Context, *connect.Request[v1.RemovePipelineOverrideRequest]) (*connect.Response[v1.RemovePipelineOverrideResponse], error)
 	// Sets the size of the pipeline's jobs until its next version, or gives
 	// the spec back its say. A running job stops at a checkpoint and starts
 	// again at the new size.
@@ -389,6 +422,12 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 		PipelineServiceResumePipelineProcedure,
 		svc.ResumePipeline,
 		connect.WithSchema(pipelineServiceMethods.ByName("ResumePipeline")),
+		connect.WithHandlerOptions(opts...),
+	)
+	pipelineServiceRemovePipelineOverrideHandler := connect.NewUnaryHandler(
+		PipelineServiceRemovePipelineOverrideProcedure,
+		svc.RemovePipelineOverride,
+		connect.WithSchema(pipelineServiceMethods.ByName("RemovePipelineOverride")),
 		connect.WithHandlerOptions(opts...),
 	)
 	pipelineServiceRescalePipelineHandler := connect.NewUnaryHandler(
@@ -463,6 +502,8 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 			pipelineServicePausePipelineHandler.ServeHTTP(w, r)
 		case PipelineServiceResumePipelineProcedure:
 			pipelineServiceResumePipelineHandler.ServeHTTP(w, r)
+		case PipelineServiceRemovePipelineOverrideProcedure:
+			pipelineServiceRemovePipelineOverrideHandler.ServeHTTP(w, r)
 		case PipelineServiceRescalePipelineProcedure:
 			pipelineServiceRescalePipelineHandler.ServeHTTP(w, r)
 		case PipelineServiceSyncPipelineProcedure:
@@ -510,6 +551,10 @@ func (UnimplementedPipelineServiceHandler) PausePipeline(context.Context, *conne
 
 func (UnimplementedPipelineServiceHandler) ResumePipeline(context.Context, *connect.Request[v1.ResumePipelineRequest]) (*connect.Response[v1.ResumePipelineResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ResumePipeline is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) RemovePipelineOverride(context.Context, *connect.Request[v1.RemovePipelineOverrideRequest]) (*connect.Response[v1.RemovePipelineOverrideResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.RemovePipelineOverride is not implemented"))
 }
 
 func (UnimplementedPipelineServiceHandler) RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error) {

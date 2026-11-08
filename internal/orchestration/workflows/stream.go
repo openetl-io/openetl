@@ -230,7 +230,8 @@ func (w Workflows) outdated(b *inbox, in *contract.StreamInput) bool {
 		b.ctx.Logger().Warn("reading the pipeline failed; the run carries on", "err", err)
 		return false
 	}
-	return !st.Continuous || st.Paused || st.Version != run.State.Version || st.DataPlane != run.State.DataPlane || st.Releases != run.State.Releases
+	return !st.Continuous || st.Paused || st.Version != run.State.Version || st.DataPlane != run.State.DataPlane || st.Releases != run.State.Releases ||
+		st.PausedStreams != run.State.PausedStreams
 }
 
 // awaitJob waits for the run's job to end, stopping it at a checkpoint if a

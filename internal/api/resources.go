@@ -60,6 +60,9 @@ func (s *Server) pipeline(ctx context.Context, ws string, p db.Pipeline) (*apiv1
 	if err := protojson.Unmarshal(v.Spec, out.Spec); err != nil {
 		return nil, err
 	}
+	if err := s.runtime(ctx, out, p.ID); err != nil {
+		return nil, err
+	}
 	out.Status, err = s.pipelineStatus(ctx, out.Name, p.ID, p.Version)
 	return out, err
 }
@@ -202,7 +205,13 @@ func (s *Server) recordPipeline(ctx context.Context, q *db.Queries, typ, ws stri
 }
 
 func (s *Server) PausePipeline(ctx context.Context, req *connect.Request[apiv1.PausePipelineRequest]) (*connect.Response[apiv1.PausePipelineResponse], error) {
-	p, err := s.setPaused(ctx, req.Msg.GetName(), true)
+	var p *apiv1.Pipeline
+	var err error
+	if req.Msg.GetStream() != "" {
+		p, err = s.setStreamPaused(ctx, req.Msg.GetName(), req.Msg.GetStream(), true)
+	} else {
+		p, err = s.setPaused(ctx, req.Msg.GetName(), true)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +219,13 @@ func (s *Server) PausePipeline(ctx context.Context, req *connect.Request[apiv1.P
 }
 
 func (s *Server) ResumePipeline(ctx context.Context, req *connect.Request[apiv1.ResumePipelineRequest]) (*connect.Response[apiv1.ResumePipelineResponse], error) {
-	p, err := s.setPaused(ctx, req.Msg.GetName(), false)
+	var p *apiv1.Pipeline
+	var err error
+	if req.Msg.GetStream() != "" {
+		p, err = s.setStreamPaused(ctx, req.Msg.GetName(), req.Msg.GetStream(), false)
+	} else {
+		p, err = s.setPaused(ctx, req.Msg.GetName(), false)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -609,6 +624,9 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 		return nil, err
 	}
 	if res.Releases, err = s.pendingReleases(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := s.runtimeForSync(ctx, id, res); err != nil {
 		return nil, err
 	}
 	if keys := res.Pipeline.GetFlinkAccess().GetKeys(); keys != nil {

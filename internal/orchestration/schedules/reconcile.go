@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/heal"
 	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/store"
@@ -88,9 +89,14 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 				r.Logger.Warn("a pipeline's spec doesn't parse; leaving what runs it", "pipeline", p.ID, "err", err)
 				continue
 			}
+			sched, err := heal.Schedule(spec.GetSchedule(), p.EveryOverride)
+			if err != nil {
+				r.Logger.Warn("heal's override of a pipeline's schedule doesn't parse; using the spec's", "pipeline", p.ID, "err", err)
+				sched = spec.GetSchedule()
+			}
 			pipelines = append(pipelines, pipelineToRun{
 				org: org.String(), id: p.ID.String(), paused: p.Paused,
-				continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS, schedule: spec.GetSchedule(), runningRun: p.RunningRun,
+				continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS, schedule: sched, runningRun: p.RunningRun,
 			})
 		}
 	}

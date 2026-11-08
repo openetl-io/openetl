@@ -55,3 +55,11 @@ CROSS JOIN LATERAL (
     LIMIT 1
 ) c
 WHERE p.org_id = @org_id;
+
+-- name: LatestMirroredStreams :one
+-- The streams of the pipeline's newest mirrored checkpoint that has stream.
+SELECT c.streams FROM checkpoint_mirror c
+WHERE c.org_id = @org_id AND c.pipeline_id = @pipeline_id
+  AND c.streams @> jsonb_build_array(jsonb_build_object('name', @stream::text))
+ORDER BY c.epoch DESC, c.generation DESC
+LIMIT 1;
