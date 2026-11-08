@@ -348,6 +348,11 @@ const commitAttempts = 4
 func RunAttempt(ctx context.Context, job Job) (Result, error) {
 	for {
 		res, err := runAttempt(ctx, job)
+		// A fenced attempt's refusal stays in its error, but another claim
+		// would fence the attempt that took over.
+		if errors.Is(err, checkpoint.ErrFenced) {
+			return res, err
+		}
 		var re *RefusedError
 		if !errors.As(err, &re) {
 			return res, err
