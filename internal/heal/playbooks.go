@@ -10,7 +10,7 @@ import (
 // pauses reports whether the class's playbook pauses the pipeline: its
 // syncs would fail the same way until someone changes something.
 func pauses(c Class) bool {
-	return c == Auth || c == SchemaBlocked || c == PositionLost
+	return c == Auth || c == SchemaBlocked || c == PositionLost || c == CheckpointCorrupt
 }
 
 // describe is the incident's summary, and what to do about it.
@@ -44,9 +44,24 @@ func describe(o Observation, t target) (summary, next string) {
 				strings.TrimPrefix(resume, "then ") + ". The incident resolves once a sync succeeds."
 	case PositionLost:
 		return fmt.Sprintf("%s's source no longer has the position its read resumes from", name),
-			"The read can't go on from where it was: a replication slot was lost, or the source discarded what the read hadn't " +
-				"acknowledged. To read every stream again from the start (for Postgres, a new slot and snapshot), delete the " +
-				"pipeline and apply it again. Changes made in the meantime arrive as current rows, not as change history."
+			fmt.Sprintf("The read can't go on from where it was: a replication slot was lost, or the source discarded what the read hadn't "+
+				"acknowledged. Read every stream again from the start (for Postgres, a new slot and snapshot) with openetl reset %s%s, "+
+				"%s. Changes made in the meantime arrive as current rows, not as change history, and rows deleted meanwhile stay "+
+				"in the destination. Streams written with append get every row again. The incident resolves once a sync succeeds.",
+				ws, t.pipeline, resume)
+	case CheckpointCorrupt:
+		if len(o.Taken) > 0 {
+			return fmt.Sprintf("%s restarted from an earlier checkpoint, as its latest can't be read", name),
+				fmt.Sprintf("The epoch of the checkpoint that can't be read is delivered again; its log has why (%s). Look at what "+
+					"deleted or changed the data plane's storage under _checkpoints. The incident resolves once the pipeline commits again.", logs)
+		}
+		return fmt.Sprintf("%s's latest checkpoint can't be read", name),
+			fmt.Sprintf("The checkpoint the read resumes from is missing or damaged in the data plane's storage. The error says why "+
+				"the pipeline didn't restart from the one before it. To restart from there, which delivers the latest epoch again "+
+				"and so gives streams written with append and no dedupe its rows twice, run openetl rewind --yes %s%s, %s. "+
+				"Otherwise, to read every stream again from the start, delete the pipeline and apply it again. The incident "+
+				"resolves once a sync succeeds.",
+				ws, t.pipeline, resume)
 	case RateLimited:
 		slow := "After 3 syncs in a row fail this way, and every 3 after, heal slows the pipeline down: it halves a declarative " +
 			"source's declared rate limit, down to an eighth, and doubles how often syncs start (schedule.every), up to a day, " +

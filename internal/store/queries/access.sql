@@ -98,7 +98,7 @@ DELETE FROM connector_ops WHERE org_id = @org_id AND id = @id;
 DELETE FROM connector_ops WHERE org_id = @org_id AND expire_time < now();
 
 -- name: GetConnectorOp :one
-SELECT source_id, destination_id FROM connector_ops
+SELECT source_id, destination_id, pipeline_id FROM connector_ops
 WHERE org_id = @org_id AND id = @id AND data_plane_id = @data_plane_id AND expire_time > now();
 
 -- A Flink teardown the API sent to the data plane: the deleted pipeline,

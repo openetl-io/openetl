@@ -69,6 +69,12 @@ const (
 	// DataPlaneServiceGetFlinkTeardownProcedure is the fully-qualified name of the DataPlaneService's
 	// GetFlinkTeardown RPC.
 	DataPlaneServiceGetFlinkTeardownProcedure = "/openetl.dataplane.v1.DataPlaneService/GetFlinkTeardown"
+	// DataPlaneServiceReportRewindProcedure is the fully-qualified name of the DataPlaneService's
+	// ReportRewind RPC.
+	DataPlaneServiceReportRewindProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportRewind"
+	// DataPlaneServiceReportRetentionProcedure is the fully-qualified name of the DataPlaneService's
+	// ReportRetention RPC.
+	DataPlaneServiceReportRetentionProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportRetention"
 )
 
 // DataPlaneServiceClient is a client for the openetl.dataplane.v1.DataPlaneService service.
@@ -113,6 +119,12 @@ type DataPlaneServiceClient interface {
 	// teardown the API sent to the runner's data plane, which cancels the
 	// pipeline's Flink jobs.
 	GetFlinkTeardown(context.Context, *connect.Request[v1.GetFlinkTeardownRequest]) (*connect.Response[v1.GetFlinkTeardownResponse], error)
+	// Records that an attempt found the checkpoint HEAD points to unreadable,
+	// and restarted from the one before it. Reporting it again is harmless.
+	ReportRewind(context.Context, *connect.Request[v1.ReportRewindRequest]) (*connect.Response[v1.ReportRewindResponse], error)
+	// What the retention operation the control plane sent found: how much of
+	// what its source keeps for it a pipeline that isn't running has used.
+	ReportRetention(context.Context, *connect.Request[v1.ReportRetentionRequest]) (*connect.Response[v1.ReportRetentionResponse], error)
 }
 
 // NewDataPlaneServiceClient constructs a client for the openetl.dataplane.v1.DataPlaneService
@@ -198,6 +210,18 @@ func NewDataPlaneServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(dataPlaneServiceMethods.ByName("GetFlinkTeardown")),
 			connect.WithClientOptions(opts...),
 		),
+		reportRewind: connect.NewClient[v1.ReportRewindRequest, v1.ReportRewindResponse](
+			httpClient,
+			baseURL+DataPlaneServiceReportRewindProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportRewind")),
+			connect.WithClientOptions(opts...),
+		),
+		reportRetention: connect.NewClient[v1.ReportRetentionRequest, v1.ReportRetentionResponse](
+			httpClient,
+			baseURL+DataPlaneServiceReportRetentionProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportRetention")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -215,6 +239,8 @@ type dataPlaneServiceClient struct {
 	pollWork             *connect.Client[v1.PollWorkRequest, v1.PollWorkResponse]
 	reportResult         *connect.Client[v1.ReportResultRequest, v1.ReportResultResponse]
 	getFlinkTeardown     *connect.Client[v1.GetFlinkTeardownRequest, v1.GetFlinkTeardownResponse]
+	reportRewind         *connect.Client[v1.ReportRewindRequest, v1.ReportRewindResponse]
+	reportRetention      *connect.Client[v1.ReportRetentionRequest, v1.ReportRetentionResponse]
 }
 
 // GetSyncSpec calls openetl.dataplane.v1.DataPlaneService.GetSyncSpec.
@@ -277,6 +303,16 @@ func (c *dataPlaneServiceClient) GetFlinkTeardown(ctx context.Context, req *conn
 	return c.getFlinkTeardown.CallUnary(ctx, req)
 }
 
+// ReportRewind calls openetl.dataplane.v1.DataPlaneService.ReportRewind.
+func (c *dataPlaneServiceClient) ReportRewind(ctx context.Context, req *connect.Request[v1.ReportRewindRequest]) (*connect.Response[v1.ReportRewindResponse], error) {
+	return c.reportRewind.CallUnary(ctx, req)
+}
+
+// ReportRetention calls openetl.dataplane.v1.DataPlaneService.ReportRetention.
+func (c *dataPlaneServiceClient) ReportRetention(ctx context.Context, req *connect.Request[v1.ReportRetentionRequest]) (*connect.Response[v1.ReportRetentionResponse], error) {
+	return c.reportRetention.CallUnary(ctx, req)
+}
+
 // DataPlaneServiceHandler is an implementation of the openetl.dataplane.v1.DataPlaneService
 // service.
 type DataPlaneServiceHandler interface {
@@ -320,6 +356,12 @@ type DataPlaneServiceHandler interface {
 	// teardown the API sent to the runner's data plane, which cancels the
 	// pipeline's Flink jobs.
 	GetFlinkTeardown(context.Context, *connect.Request[v1.GetFlinkTeardownRequest]) (*connect.Response[v1.GetFlinkTeardownResponse], error)
+	// Records that an attempt found the checkpoint HEAD points to unreadable,
+	// and restarted from the one before it. Reporting it again is harmless.
+	ReportRewind(context.Context, *connect.Request[v1.ReportRewindRequest]) (*connect.Response[v1.ReportRewindResponse], error)
+	// What the retention operation the control plane sent found: how much of
+	// what its source keeps for it a pipeline that isn't running has used.
+	ReportRetention(context.Context, *connect.Request[v1.ReportRetentionRequest]) (*connect.Response[v1.ReportRetentionResponse], error)
 }
 
 // NewDataPlaneServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -401,6 +443,18 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 		connect.WithSchema(dataPlaneServiceMethods.ByName("GetFlinkTeardown")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dataPlaneServiceReportRewindHandler := connect.NewUnaryHandler(
+		DataPlaneServiceReportRewindProcedure,
+		svc.ReportRewind,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportRewind")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dataPlaneServiceReportRetentionHandler := connect.NewUnaryHandler(
+		DataPlaneServiceReportRetentionProcedure,
+		svc.ReportRetention,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportRetention")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.dataplane.v1.DataPlaneService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DataPlaneServiceGetSyncSpecProcedure:
@@ -427,6 +481,10 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 			dataPlaneServiceReportResultHandler.ServeHTTP(w, r)
 		case DataPlaneServiceGetFlinkTeardownProcedure:
 			dataPlaneServiceGetFlinkTeardownHandler.ServeHTTP(w, r)
+		case DataPlaneServiceReportRewindProcedure:
+			dataPlaneServiceReportRewindHandler.ServeHTTP(w, r)
+		case DataPlaneServiceReportRetentionProcedure:
+			dataPlaneServiceReportRetentionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -482,4 +540,12 @@ func (UnimplementedDataPlaneServiceHandler) ReportResult(context.Context, *conne
 
 func (UnimplementedDataPlaneServiceHandler) GetFlinkTeardown(context.Context, *connect.Request[v1.GetFlinkTeardownRequest]) (*connect.Response[v1.GetFlinkTeardownResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) ReportRewind(context.Context, *connect.Request[v1.ReportRewindRequest]) (*connect.Response[v1.ReportRewindResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportRewind is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) ReportRetention(context.Context, *connect.Request[v1.ReportRetentionRequest]) (*connect.Response[v1.ReportRetentionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportRetention is not implemented"))
 }

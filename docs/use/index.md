@@ -171,6 +171,7 @@ And these kinds:
 | **Retention at risk** | The pipeline's reading is so far behind that it has used half or more of what the source keeps for it, such as a database's log of changes. |
 | **Quarantine** | A stream is holding back a large share of its rows. |
 | **Held** | A stream is holding a column, or some of its cells, back. |
+| **Checkpoint corrupt** | The checkpoint the pipeline would carry on from can't be read, or the pipeline restarted from the one before it. |
 
 An incident's page has **What happened**, with a link to the sync's log; **Next steps**, which says what to do; **Heal**, what OpenETL did about it itself or proposes; and **Details**. Some incidents pause their pipeline, when syncing again would only fail the same way. Others change how it runs:
 
@@ -203,7 +204,7 @@ Each role includes the ones before it. A role is given for one workspace, or for
 |---|---|
 | Viewer | Sees everything in the console, except secrets' values, which no one sees. |
 | Operator | **Sync now**, **Pause** and **Resume**; resolving incidents; sending a webhook a test event, and disabling or enabling it. With the CLI, also checking that sources and destinations can be reached, and resizing a pipeline's syncs. |
-| Editor | Creating, changing and deleting sources, destinations, pipelines, dbt projects, clusters and webhooks; setting secrets; releasing and discarding holds. |
+| Editor | Creating, changing and deleting sources, destinations, pipelines, dbt projects, clusters and webhooks; setting secrets; releasing and discarding holds. With the CLI, also reading a pipeline's streams again from the start, and letting it restart from an earlier checkpoint. |
 | Admin | Installing connectors; adding people and service accounts, and giving them roles, API keys and password links; runner tokens; the audit log; signing people out everywhere. |
 | Owner | Managing other owners. |
 

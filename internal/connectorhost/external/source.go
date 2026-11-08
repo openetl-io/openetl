@@ -313,3 +313,31 @@ func (s *Source) Resplit(ctx context.Context, stream, split string) (bool, error
 	}
 	return resp.GetAccepted(), nil
 }
+
+// Retention asks a connector that reports retention how far a checkpoint's
+// positions are behind its source; one that doesn't reports none.
+func (s *Source) Retention(ctx context.Context, pipeline string, states map[string][]byte, splits map[string][]source.Split) ([]source.Progress, error) {
+	p, err := s.proc(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !p.spec.GetSource().GetRetention() {
+		return nil, nil
+	}
+	req := &protocolv1.RetentionRequest{Config: p.config, Pipeline: pipeline, States: states}
+	for name, ss := range splits {
+		if req.Splits == nil {
+			req.Splits = map[string]*protocolv1.Splits{}
+		}
+		req.Splits[name] = &protocolv1.Splits{Splits: splitsProto(ss)}
+	}
+	resp, err := protocolv1.NewSourceServiceClient(p.conn).Retention(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("connector: retention: %w", p.failure(errs.FromStatus(err)))
+	}
+	out := make([]source.Progress, len(resp.GetProgress()))
+	for i, m := range resp.GetProgress() {
+		out[i] = progress(m)
+	}
+	return out, nil
+}

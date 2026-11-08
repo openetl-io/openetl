@@ -50,6 +50,9 @@ const (
 	// replication slot lost in a failover. Only a new read from the start,
 	// such as a re-snapshot, carries on.
 	ErrorCode_ERROR_CODE_POSITION_LOST ErrorCode = 16
+	// The platform's own: the checkpoint the pipeline resumes from can't be
+	// read. A connector never returns it.
+	ErrorCode_ERROR_CODE_CHECKPOINT_CORRUPT ErrorCode = 17
 )
 
 // Enum value maps for ErrorCode.
@@ -72,6 +75,7 @@ var (
 		14: "ERROR_CODE_FENCED",
 		15: "ERROR_CODE_DRAINING",
 		16: "ERROR_CODE_POSITION_LOST",
+		17: "ERROR_CODE_CHECKPOINT_CORRUPT",
 	}
 	ErrorCode_value = map[string]int32{
 		"ERROR_CODE_UNSPECIFIED":             0,
@@ -91,6 +95,7 @@ var (
 		"ERROR_CODE_FENCED":                  14,
 		"ERROR_CODE_DRAINING":                15,
 		"ERROR_CODE_POSITION_LOST":           16,
+		"ERROR_CODE_CHECKPOINT_CORRUPT":      17,
 	}
 )
 
@@ -193,7 +198,7 @@ const file_openetl_connector_v1_errors_proto_rawDesc = "" +
 	"\x04code\x18\x01 \x01(\x0e2\x1f.openetl.connector.v1.ErrorCodeR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12:\n" +
 	"\vretry_after\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\n" +
-	"retryAfter*\x88\x04\n" +
+	"retryAfter*\xab\x04\n" +
 	"\tErrorCode\x12\x1a\n" +
 	"\x16ERROR_CODE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14ERROR_CODE_TRANSIENT\x10\x01\x12\x1b\n" +
@@ -212,7 +217,8 @@ const file_openetl_connector_v1_errors_proto_rawDesc = "" +
 	"\x13ERROR_CODE_INTERNAL\x10\r\x12\x15\n" +
 	"\x11ERROR_CODE_FENCED\x10\x0e\x12\x17\n" +
 	"\x13ERROR_CODE_DRAINING\x10\x0f\x12\x1c\n" +
-	"\x18ERROR_CODE_POSITION_LOST\x10\x10B=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\x18ERROR_CODE_POSITION_LOST\x10\x10\x12!\n" +
+	"\x1dERROR_CODE_CHECKPOINT_CORRUPT\x10\x11B=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_errors_proto_rawDescOnce sync.Once

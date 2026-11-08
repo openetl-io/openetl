@@ -24,6 +24,7 @@ const (
 	SourceService_Committed_FullMethodName = "/openetl.connector.v1.SourceService/Committed"
 	SourceService_Splits_FullMethodName    = "/openetl.connector.v1.SourceService/Splits"
 	SourceService_Resplit_FullMethodName   = "/openetl.connector.v1.SourceService/Resplit"
+	SourceService_Retention_FullMethodName = "/openetl.connector.v1.SourceService/Retention"
 )
 
 // SourceServiceClient is the client API for SourceService service.
@@ -52,6 +53,12 @@ type SourceServiceClient interface {
 	// concurrently with Read. Called only when SourceCapabilities.resplit is
 	// set.
 	Resplit(ctx context.Context, in *ResplitRequest, opts ...grpc.CallOption) (*ResplitResponse, error)
+	// With no read running: how far a checkpoint's positions are behind the
+	// source, and how much longer the source keeps what they haven't
+	// acknowledged, without reading. The platform asks while a pipeline
+	// isn't running, such as when it's paused. Called only when
+	// SourceCapabilities.retention is set.
+	Retention(ctx context.Context, in *RetentionRequest, opts ...grpc.CallOption) (*RetentionResponse, error)
 }
 
 type sourceServiceClient struct {
@@ -121,6 +128,16 @@ func (c *sourceServiceClient) Resplit(ctx context.Context, in *ResplitRequest, o
 	return out, nil
 }
 
+func (c *sourceServiceClient) Retention(ctx context.Context, in *RetentionRequest, opts ...grpc.CallOption) (*RetentionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RetentionResponse)
+	err := c.cc.Invoke(ctx, SourceService_Retention_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SourceServiceServer is the server API for SourceService service.
 // All implementations must embed UnimplementedSourceServiceServer
 // for forward compatibility.
@@ -147,6 +164,12 @@ type SourceServiceServer interface {
 	// concurrently with Read. Called only when SourceCapabilities.resplit is
 	// set.
 	Resplit(context.Context, *ResplitRequest) (*ResplitResponse, error)
+	// With no read running: how far a checkpoint's positions are behind the
+	// source, and how much longer the source keeps what they haven't
+	// acknowledged, without reading. The platform asks while a pipeline
+	// isn't running, such as when it's paused. Called only when
+	// SourceCapabilities.retention is set.
+	Retention(context.Context, *RetentionRequest) (*RetentionResponse, error)
 	mustEmbedUnimplementedSourceServiceServer()
 }
 
@@ -171,6 +194,9 @@ func (UnimplementedSourceServiceServer) Splits(context.Context, *SplitsRequest) 
 }
 func (UnimplementedSourceServiceServer) Resplit(context.Context, *ResplitRequest) (*ResplitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Resplit not implemented")
+}
+func (UnimplementedSourceServiceServer) Retention(context.Context, *RetentionRequest) (*RetentionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Retention not implemented")
 }
 func (UnimplementedSourceServiceServer) mustEmbedUnimplementedSourceServiceServer() {}
 func (UnimplementedSourceServiceServer) testEmbeddedByValue()                       {}
@@ -276,6 +302,24 @@ func _SourceService_Resplit_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SourceService_Retention_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetentionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SourceServiceServer).Retention(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SourceService_Retention_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SourceServiceServer).Retention(ctx, req.(*RetentionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SourceService_ServiceDesc is the grpc.ServiceDesc for SourceService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -298,6 +342,10 @@ var SourceService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Resplit",
 			Handler:    _SourceService_Resplit_Handler,
+		},
+		{
+			MethodName: "Retention",
+			Handler:    _SourceService_Retention_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

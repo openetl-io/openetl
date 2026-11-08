@@ -224,6 +224,7 @@ type specYAML struct {
 	Acknowledges bool              `yaml:"acknowledges,omitempty" json:"acknowledges,omitempty"`
 	Splits       bool              `yaml:"splits,omitempty" json:"splits,omitempty"`
 	Resplit      bool              `yaml:"resplit,omitempty" json:"resplit,omitempty"`
+	Retention    bool              `yaml:"retention,omitempty" json:"retention,omitempty"`
 	Capabilities *capabilitiesYAML `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	// A JSON Schema.
 	Config schemaObject `yaml:"config,omitempty" json:"config,omitzero"`
@@ -514,8 +515,8 @@ func parseSpec(role string, y *specYAML) (*protocolv1.SpecResponse, error) {
 		return nil, errors.New("config, the config's JSON Schema, is missing")
 	case y.Capabilities != nil && role != RoleDestination:
 		return nil, errors.New("capabilities are a destination's")
-	case (y.Acknowledges || y.Splits || y.Resplit) && role != RoleSource:
-		return nil, errors.New("acknowledges, splits and resplit are a source's")
+	case (y.Acknowledges || y.Splits || y.Resplit || y.Retention) && role != RoleSource:
+		return nil, errors.New("acknowledges, splits, resplit and retention are a source's")
 	case y.Resplit && !y.Splits:
 		return nil, errors.New("resplit needs splits")
 	}
@@ -523,7 +524,7 @@ func parseSpec(role string, y *specYAML) (*protocolv1.SpecResponse, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	if role == RoleSource {
-		s.Source = &protocolv1.SourceCapabilities{Acknowledges: y.Acknowledges, Splits: y.Splits, Resplit: y.Resplit}
+		s.Source = &protocolv1.SourceCapabilities{Acknowledges: y.Acknowledges, Splits: y.Splits, Resplit: y.Resplit, Retention: y.Retention}
 	} else if s.Destination, err = parseCapabilities(y.Capabilities); err != nil {
 		return nil, fmt.Errorf("capabilities: %w", err)
 	}
@@ -609,7 +610,7 @@ type versionedMeta struct {
 
 func specToYAML(s *protocolv1.SpecResponse) (specYAML, error) {
 	src := s.GetSource()
-	y := specYAML{Setup: s.GetSetup(), Acknowledges: src.GetAcknowledges(), Splits: src.GetSplits(), Resplit: src.GetResplit()}
+	y := specYAML{Setup: s.GetSetup(), Acknowledges: src.GetAcknowledges(), Splits: src.GetSplits(), Resplit: src.GetResplit(), Retention: src.GetRetention()}
 	y.Egress = &egressYAML{Tier: lower(s.GetEgress().GetTier().String(), "EGRESS_TIER_"), Allow: s.GetEgress().GetAllow()}
 	// No schema accepts any config.
 	y.Config = schemaObject{}

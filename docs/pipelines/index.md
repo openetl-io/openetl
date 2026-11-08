@@ -317,6 +317,8 @@ order by id, _openetl_seq desc;
 | `openetl sync NAME` | Start a sync of a scheduled pipeline now; it fails if the pipeline is paused or a sync is running |
 | `openetl pause NAME` | Stop a pipeline's scheduled syncs; a sync that's running carries on. A continuous pipeline's job stops. `--stream STREAM` stops only that stream, which syncs skip ([Pause one stream](./schedules.md#pause-one-stream)) |
 | `openetl resume NAME` | Start its scheduled syncs, or its job, again; `--stream STREAM` resumes a stream paused on its own |
+| `openetl reset NAME` | Read its streams again from the start on the next sync or run; `--stream` picks streams. See [Reading from the start again](./positions.md) |
+| `openetl rewind --yes NAME` | Let it restart from the checkpoint before its latest, if the latest can't be read, delivering that epoch again |
 | `openetl overrides NAME` | List its paused streams, and heal's overrides of its spec ([When heal slows syncs down](./schedules.md#when-heal-slows-syncs-down)) |
 | `openetl overrides remove NAME FIELD` | Give the spec back its say in a field heal overrides: `schedule.every` or `source.rate_limit_scale` |
 | `openetl syncs NAME` | List its syncs, newest first, with how long each took, the rows it copied, its version and any error |

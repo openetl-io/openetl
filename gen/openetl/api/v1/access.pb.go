@@ -86,6 +86,7 @@ const (
 	Role_ROLE_OPERATOR Role = 2
 	// Applies and deletes sources, destinations, pipelines, dbt projects,
 	// webhooks, and Spark and Flink clusters; releases and discards holds;
+	// resets pipelines, and lets them restart from an earlier checkpoint;
 	// sets and deletes secrets.
 	Role_ROLE_EDITOR Role = 3
 	// Applies connector versions and connector sources; manages principals,

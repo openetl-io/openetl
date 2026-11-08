@@ -56,6 +56,12 @@ service DataPlaneService {
   // teardown the API sent to the runner's data plane, which cancels the
   // pipeline's Flink jobs.
   rpc GetFlinkTeardown(GetFlinkTeardownRequest) returns (GetFlinkTeardownResponse);
+  // Records that an attempt found the checkpoint HEAD points to unreadable,
+  // and restarted from the one before it. Reporting it again is harmless.
+  rpc ReportRewind(ReportRewindRequest) returns (ReportRewindResponse);
+  // What the retention operation the control plane sent found: how much of
+  // what its source keeps for it a pipeline that isn't running has used.
+  rpc ReportRetention(ReportRetentionRequest) returns (ReportRetentionResponse);
 }
 
 message GetSyncSpecRequest {
@@ -103,6 +109,21 @@ message GetSyncSpecResponse {
   // What a declarative source's declared rate limits are multiplied by,
   // heal's override; 0: 1.
   double rate_limit_scale = 19;
+  // Streams to read again from the start, oldest first. An attempt takes
+  // those newer than the reset its restored checkpoint last took, and its
+  // checkpoints carry the newest it took, so taking one is done once.
+  repeated Reset resets = 20;
+  // Set: a person allowed a restart from the checkpoint before the latest,
+  // if the latest can't be read, whatever it does to delivery guarantees.
+  // The ID of their approval, which ReportRewind returns.
+  string rewind = 21;
+}
+
+message Reset {
+  // Ordered by creation, as UUIDv7s are.
+  string id = 1;
+  // Empty: every stream.
+  repeated string streams = 2;
 }
 
 message HoldRelease {
@@ -184,6 +205,8 @@ message ReportCheckpointRequest {
   repeated openetl.connector.v1.Progress progress = 8;
   // What the attempt had used by then.
   openetl.api.v1.Usage usage = 9;
+  // The newest reset the checkpoint has taken, as GetSyncSpec gave it.
+  string last_reset = 10;
 }
 
 message CheckpointRef {
@@ -332,6 +355,36 @@ message ReportAttemptFailureRequest {
 }
 
 message ReportAttemptFailureResponse {}
+
+message ReportRewindRequest {
+  string pipeline_id = 1;
+  // The sync's Temporal run, or the stream job's run key.
+  string run_id = 2;
+  // The checkpoint that couldn't be read, and the one restored.
+  CheckpointRef unreadable = 3;
+  // Unset: there was none, and the read started again.
+  CheckpointRef restored = 4;
+  // Why it couldn't be read.
+  string reason = 5;
+  // GetSyncSpec's rewind, if a person allowed it; empty: heal mode did.
+  string approval = 6;
+  // When it happened, on the data plane's clock.
+  google.protobuf.Timestamp time = 7;
+}
+
+message ReportRewindResponse {}
+
+message ReportRetentionRequest {
+  string pipeline_id = 1;
+  // The operation that asked.
+  string operation_id = 2;
+  // As the source answered; empty: it can't tell.
+  repeated openetl.connector.v1.Progress progress = 3;
+  // The checkpoint whose positions it was asked about.
+  CheckpointRef checkpoint = 4;
+}
+
+message ReportRetentionResponse {}
 
 message ReportRunnerRequest {
   // Unique to the runner process, such as host:pid.

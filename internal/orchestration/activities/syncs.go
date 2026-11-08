@@ -71,6 +71,7 @@ func (a *Activities) Steps() []orchestration.Step {
 		orchestration.NewStep(contract.DropMirrorPartitions, a.DropMirrorPartitions),
 		orchestration.NewStep(contract.AuditPartitions, a.AuditPartitions),
 		orchestration.NewStep(contract.RefreshCatalog, a.RefreshCatalog),
+		orchestration.NewStep(contract.ListRetentionProbes, a.ListRetentionProbes),
 	}
 }
 
@@ -389,6 +390,11 @@ func (a *Activities) GetStreamState(ctx context.Context, in contract.StreamInput
 	if err != nil {
 		return st, err
 	}
+	requested, err := a.Store.NewestCheckpointRequest(ctx, db.NewestCheckpointRequestParams{OrgID: org, PipelineID: pipeline})
+	if err != nil {
+		return st, err
+	}
+	releases = withRequests(releases, requested)
 	left, err := a.leftRun(ctx, org, pipeline)
 	if err != nil {
 		return st, err
@@ -431,7 +437,22 @@ func (a *Activities) leftRun(ctx context.Context, org, pipeline uuid.UUID) (*con
 	if err != nil {
 		return nil, err
 	}
+	requested, err := a.Store.NewestCheckpointRequestAt(ctx, db.NewestCheckpointRequestAtParams{OrgID: org, PipelineID: pipeline, At: job.CreateTime})
+	if err != nil {
+		return nil, err
+	}
+	left.Releases = withRequests(left.Releases, requested)
 	return left, nil
+}
+
+// withRequests adds the newest checkpoint request, a reset or a rewind, to
+// the newest hold release, so either restarts a running run. Without one it
+// is the release alone, as it was before requests.
+func withRequests(releases, requested string) string {
+	if requested == "" {
+		return releases
+	}
+	return releases + "/" + requested
 }
 
 // StartRun records a running run of a continuous pipeline's version. Retries

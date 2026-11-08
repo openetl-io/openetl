@@ -60,7 +60,7 @@ What the package provides: a source, a destination, or both.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `source` | [object](#specrolesrole) | No | The package's source. Can't have `capabilities`. |
-| `destination` | [object](#specrolesrole) | No | The package's destination. Needs `capabilities`. Can't have `runtime.manifest`. Can't have `acknowledges`, `splits` or `resplit`. |
+| `destination` | [object](#specrolesrole) | No | The package's destination. Needs `capabilities`. Can't have `runtime.manifest`. Can't have `acknowledges`, `splits`, `resplit` or `retention`. |
 
 - Has at least one of its fields.
 
@@ -81,6 +81,7 @@ What a package provides as a source or a destination, and how it runs.
 | `acknowledges` | boolean | No | A source's: it acknowledges upstream once a checkpoint commits. |
 | `splits` | boolean | No | A source's: it divides streams into splits. |
 | `resplit` | boolean | No | A source's: it splits a running split's remainder. Needs splits. |
+| `retention` | boolean | No | A source's: it says, without reading, how much of what it keeps for a pipeline a checkpoint's positions have used. |
 | `capabilities` | [object](#specrolesrolecapabilities) | No | A destination's. |
 | `config` | object | No | The config's JSON Schema, as Spec returns it. |
 

@@ -17,6 +17,7 @@ const (
 	RetentionWorkflow        = "RetentionWorkflow"
 	CatalogRefreshWorkflow   = "CatalogRefreshWorkflow"
 	ReadLogsWorkflow         = "ReadLogsWorkflow"
+	RetentionProbeWorkflow   = "RetentionProbeWorkflow"
 
 	// Steps on the control plane.
 	StartSync            = "StartSync"
@@ -39,6 +40,7 @@ const (
 	TeardownSource = "TeardownSource"
 	TeardownFlink  = "TeardownFlink"
 	ReadLogs       = "ReadLogs"
+	ProbeRetention = "ProbeRetention"
 )
 
 // Kinds of light operation, which runners take a fixed number of at a time,
@@ -163,6 +165,33 @@ const (
 // RefreshCatalog lists every org's connected sources of connectors.
 const RefreshCatalog = "RefreshCatalog"
 
+// One retention probe schedule runs for the whole deployment, every
+// RetentionProbeEvery. Each run asks the sources of pipelines that haven't
+// reported their read's progress for RetentionProbeEvery how much of what
+// they keep for them the pipelines have used.
+const (
+	RetentionProbeWorkflowID = "retention-probe"
+	RetentionProbeScheduleID = "schedule/retention-probe"
+	RetentionProbeEvery      = 15 * time.Minute
+	// At most this many pipelines a run.
+	RetentionProbeMax = 50
+)
+
+// ListRetentionProbes claims the pipelines a retention probe asks about, and
+// returns an OpRetention for each.
+const ListRetentionProbes = "ListRetentionProbes"
+
+type ListRetentionProbesInput struct {
+	// Pipelines that reported nothing, and weren't asked, since then.
+	Before time.Time
+	Max    int32
+}
+
+type RetentionProbeResult struct {
+	// Probes that answered, and those that failed or found no runner.
+	Probed, Failed int
+}
+
 // ListedSource is what listing a connected source of connectors did.
 type ListedSource struct {
 	Org      string
@@ -191,6 +220,9 @@ const (
 	OpTeardown = "teardown"
 	// Cancels a deleted pipeline's Flink jobs.
 	OpTeardownFlink = "teardown-flink"
+	// Asks a source how much of its retention a pipeline that isn't running
+	// has used, which the runner reports to the API.
+	OpRetention = "retention"
 )
 
 // OpPickup is how long a connector operation waits for a runner of its data
@@ -389,8 +421,8 @@ type StreamState struct {
 	WorkspaceID string
 	// Of the source and the destination.
 	Connectors []string
-	// The newest hold release or discard, which a run takes when
-	// it starts; empty for none.
+	// The newest hold release or discard, and the newest reset or rewind,
+	// which a run takes when it starts; empty for none.
 	Releases string
 	// The streams paused on their own, joined by commas in order, which a
 	// job reads when it starts; empty for none.
@@ -408,7 +440,7 @@ type LeftRun struct {
 	RunKey    string
 	Version   string
 	DataPlane string
-	// The newest hold release when its job started.
+	// As StreamState.Releases when its job started.
 	Releases string
 	// Empty if it never got one. It may have ended since.
 	Job      string `json:",omitempty"`
@@ -471,7 +503,8 @@ type ConnectorOpInput struct {
 	// OpCheck, or OpDiscover or OpTeardown, which only sources have, or
 	// OpTeardownFlink, on no connector.
 	Op string
-	// The deleted pipeline, for OpTeardown and OpTeardownFlink.
+	// The deleted pipeline, for OpTeardown and OpTeardownFlink; the pipeline
+	// asked about, for OpRetention.
 	PipelineID string
 	// One of them.
 	SourceID      string

@@ -51,7 +51,7 @@ func TestFingerprint(t *testing.T) {
 func TestClassOf(t *testing.T) {
 	for code, want := range map[errs.Code]Class{
 		errs.AuthInvalid: Auth, errs.AuthExpired: Auth, errs.SchemaDrift: SchemaBlocked, errs.RateLimited: RateLimited,
-		errs.PositionLost: PositionLost, errs.Internal: SyncFailed, errs.ConfigInvalid: SyncFailed,
+		errs.PositionLost: PositionLost, errs.Internal: SyncFailed, errs.ConfigInvalid: SyncFailed, errs.CheckpointCorrupt: CheckpointCorrupt,
 	} {
 		if got := ClassOf(code.String()); got != want {
 			t.Errorf("ClassOf(%s) = %s, want %s", code, got, want)
@@ -78,7 +78,7 @@ func TestDescribe(t *testing.T) {
 	sync := uuid.MustParse("019a4a4e-0000-7000-8000-000000000001")
 	tg := target{workspace: "analytics", pipeline: "shop", sourceSecrets: []string{"shop-dsn"}, mode: apiv1.HealMode_HEAL_MODE_UNSPECIFIED}
 	seen := map[string]Class{}
-	for _, c := range []Class{SyncFailed, Auth, SchemaBlocked, RateLimited, PositionLost, CrashLoop, Lagging, RetentionAtRisk, Quarantine} {
+	for _, c := range []Class{SyncFailed, Auth, SchemaBlocked, RateLimited, PositionLost, CrashLoop, Lagging, RetentionAtRisk, Quarantine, CheckpointCorrupt} {
 		o := Observation{Class: c, Code: "X", Stream: "items", Sync: &sync, Details: map[string]string{"used": "62%", "share": "4.0%"}}
 		summary, next := describe(o, tg)
 		if !strings.Contains(summary, "analytics/shop") || next == "" {
@@ -92,6 +92,18 @@ func TestDescribe(t *testing.T) {
 	_, next := describe(Observation{Class: Auth, Code: "AUTH_INVALID"}, tg)
 	if !strings.Contains(next, "openetl secret set shop-dsn") || !strings.Contains(next, "openetl resume --workspace analytics shop") {
 		t.Errorf("auth's next steps %q", next)
+	}
+	_, next = describe(Observation{Class: PositionLost, Code: "POSITION_LOST"}, tg)
+	if !strings.Contains(next, "openetl reset --workspace analytics shop") {
+		t.Errorf("position_lost's next steps %q", next)
+	}
+	_, next = describe(Observation{Class: CheckpointCorrupt, Code: "CHECKPOINT_CORRUPT"}, tg)
+	if !strings.Contains(next, "openetl rewind --yes --workspace analytics shop") {
+		t.Errorf("checkpoint_corrupt's next steps %q", next)
+	}
+	rewound, _ := describe(Observation{Class: CheckpointCorrupt, Taken: []Action{{Kind: "rewind"}}}, tg)
+	if failed, _ := describe(Observation{Class: CheckpointCorrupt}, tg); rewound == failed {
+		t.Errorf("a rewind and a failure have the same summary %q", rewound)
 	}
 	_, next = describe(Observation{Class: SyncFailed, Sync: &sync}, target{workspace: "default", pipeline: "shop"})
 	if !strings.Contains(next, "openetl logs --sync "+sync.String()+" shop") {

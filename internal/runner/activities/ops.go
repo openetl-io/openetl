@@ -2,6 +2,7 @@ package activities
 
 import (
 	"context"
+	"errors"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -9,11 +10,13 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/flink"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
+	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/secretstore"
 	"github.com/openetl-io/openetl/internal/streamschema"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -31,6 +34,8 @@ type Ops struct {
 	// The data plane's object store, as Sync's; empty for none, and then a
 	// deleted pipeline's Flink jobs aren't cancelled.
 	Storage string
+	// Pipelines' checkpoint logs, for retention probes; nil for none.
+	Checkpoints checkpoint.Store
 	// How TeardownFlink reaches Flink clusters.
 	Flink flink.Options
 }
@@ -164,6 +169,67 @@ func (a *Ops) TeardownSource(ctx context.Context, in contract.ConnectorOpInput) 
 	defer connectorhost.Close(src)
 	if t, ok := src.(source.Teardowner); ok {
 		return res, t.Teardown(ctx, in.PipelineID)
+	}
+	return res, nil
+}
+
+// ProbeRetention asks the source of a pipeline that isn't running how much
+// of what it keeps for the pipeline the latest checkpoint's positions have
+// used, and reports what it says to the API. A pipeline with no checkpoint,
+// or a source that can't tell, reports nothing.
+func (a *Ops) ProbeRetention(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+	var res contract.ConnectorOpResult
+	if a.Checkpoints == nil {
+		return res, errs.New(errs.ConfigInvalid, "a retention probe needs the data plane's checkpoint store, and this runner has none")
+	}
+	rec, err := checkpoint.NewLog(a.Checkpoints, in.OrgID, in.PipelineID).Latest(ctx)
+	if errors.Is(err, checkpoint.ErrUnreadable) {
+		return res, errs.Wrap(errs.CheckpointCorrupt, err, "the pipeline's latest checkpoint")
+	}
+	if err != nil || rec == nil {
+		return res, err
+	}
+	cfg, err := a.config(ctx, in)
+	if err != nil {
+		return res, err
+	}
+	res.Version = cfg.GetVersion()
+	if err := readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets()); err != nil {
+		return res, err
+	}
+	raw, err := protojson.Marshal(cfg.GetConfig().GetConfig())
+	if err != nil {
+		return res, err
+	}
+	sd, dd := opDigests(in, cfg.GetConnector())
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
+	if err != nil {
+		return res, err
+	}
+	name, _ := connectorhost.SplitRef(cfg.GetConfig().GetConnector())
+	src, err := connectorhost.NewSource(name, raw, env)
+	if err != nil {
+		return res, err
+	}
+	defer connectorhost.Close(src)
+	rr, ok := src.(source.RetentionReporter)
+	if !ok {
+		return res, nil
+	}
+	states, splits := runner.States(rec)
+	ps, err := rr.Retention(ctx, in.PipelineID, states, splits)
+	if err != nil || len(ps) == 0 {
+		return res, err
+	}
+	req := &dataplanev1.ReportRetentionRequest{
+		PipelineId: in.PipelineID, OperationId: in.OpID,
+		Checkpoint: &dataplanev1.CheckpointRef{Generation: rec.Generation, Epoch: rec.Epoch},
+	}
+	for _, p := range ps {
+		req.Progress = append(req.Progress, progressProto(p))
+	}
+	if _, err := a.API.ReportRetention(ctx, connect.NewRequest(req)); err != nil {
+		return res, errs.Wrap(errs.Transient, err, "report the retention")
 	}
 	return res, nil
 }
