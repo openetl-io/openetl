@@ -40,7 +40,7 @@ The console the server serves, and how people sign in to it.
 |---|---|---|---|
 | `--web` | `OPENETL_WEB` |  | a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI |
 | `--auth` | `OPENETL_AUTH` | `password` | how browsers sign in: password, or none, which makes every call without a credential an owner's (loopback only, unless --auth-none-allow-remote) |
-| `--auth-none-allow-remote` | `OPENETL_AUTH_NONE_ALLOW_REMOTE` | `false` | let --auth none serve on an address that isn't loopback, such as a private network or behind an authenticating proxy |
+| `--auth-none-allow-remote` | `OPENETL_AUTH_NONE_ALLOW_REMOTE` | `false` | let --auth none serve on an address that isn't loopback, such as a private network or behind an authenticating proxy, and answer to any Host |
 | `--public-url` | `OPENETL_PUBLIC_URL` |  | the URL browsers use, which password links start with; an https one makes the session cookie Secure (default: http:// and the listen address) |
 | `--session-idle-timeout` | `OPENETL_SESSION_IDLE_TIMEOUT` | `12h` | how long a UI session lasts unused, as a Go duration |
 | `--session-max-age` | `OPENETL_SESSION_MAX_AGE` | `168h` | how long a UI session lasts in all, as a Go duration |

@@ -45,7 +45,9 @@ The HTTP requests OpenETL makes itself, for webhooks, for downloads from registr
 
 ## Sign-in and the first owner
 
-A server asks people to sign in with a password unless it's started with `--auth none`, which `openetld dev` does. On its first start, the server creates the installation's org and writes an owner's API key to `.openetl/admin.key`, or to the file `OPENETL_BOOTSTRAP_KEY_FILE` names. With that key:
+A server asks people to sign in with a password unless it's started with `--auth none`, which `openetld dev` does. With sign-in off, a call with no API key acts as an owner, so the server refuses calls from other sites' web pages, and answers only to `localhost`, a loopback address or its `--public-url`. `--auth-none-allow-remote` lifts the second limit, for a server reached by other names.
+
+On its first start, the server creates the installation's org and writes an owner's API key to `.openetl/admin.key`, or to the file `OPENETL_BOOTSTRAP_KEY_FILE` names. With that key:
 
 ```sh
 export OPENETL_API_URL=https://openetl.example.com OPENETL_API_KEY="$(cat admin.key)"

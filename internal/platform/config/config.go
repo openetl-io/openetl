@@ -192,7 +192,7 @@ type boolOption struct {
 }
 
 var boolOptions = []boolOption{
-	{"auth-none-allow-remote", "OPENETL_AUTH_NONE_ALLOW_REMOTE", "let --auth none serve on an address that isn't loopback, such as a private network or behind an authenticating proxy", func(c *Config) *bool { return &c.AuthNoneAllowRemote }},
+	{"auth-none-allow-remote", "OPENETL_AUTH_NONE_ALLOW_REMOTE", "let --auth none serve on an address that isn't loopback, such as a private network or behind an authenticating proxy, and answer to any Host", func(c *Config) *bool { return &c.AuthNoneAllowRemote }},
 }
 
 type intOption struct {

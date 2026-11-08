@@ -70,6 +70,9 @@ type Server struct {
 	// Sign-in is off: calls without a credential act as LocalPrincipal, an
 	// owner.
 	Authless bool
+	// With Authless, the server is meant to be reached from elsewhere, so a
+	// call may name it by any Host.
+	AuthlessRemote bool
 	// The URL browsers use. Password links start with it, and an https one
 	// makes the session's cookie Secure. Empty: http://localhost.
 	PublicURL string
@@ -145,6 +148,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 	guarded, err := s.guardCookies(transcoder)
 	if err != nil {
+		return nil, err
+	}
+	if guarded, err = s.guardAuthless(guarded); err != nil {
 		return nil, err
 	}
 	mux.Handle("/", guarded)
