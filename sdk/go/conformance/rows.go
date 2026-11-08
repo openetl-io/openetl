@@ -98,6 +98,12 @@ func rowsAfter(events []event, i int) []row {
 func allRows(events []event) []row { return rowsAfter(events, -1) }
 
 func read(ctx context.Context, conn grpc.ClientConnInterface, req *protocolv1.ReadRequest) (*readResult, error) {
+	return readWith(ctx, conn, req, nil)
+}
+
+// readWith is read, calling each, when it isn't nil, with every event as it
+// comes.
+func readWith(ctx context.Context, conn grpc.ClientConnInterface, req *protocolv1.ReadRequest, each func(event)) (*readResult, error) {
 	stream, err := protocolv1.NewSourceServiceClient(conn).Read(ctx, req)
 	if err != nil {
 		return &readResult{err: rpcerr.FromStatus(err)}, nil
@@ -112,19 +118,24 @@ func read(ctx context.Context, conn grpc.ClientConnInterface, req *protocolv1.Re
 			res.err = rpcerr.FromStatus(err)
 			return res, nil
 		}
+		var e event
 		switch m := msg.GetMsg().(type) {
 		case *protocolv1.ReadResponse_Batch:
-			e, err := decodeBatch(m.Batch)
-			if err != nil {
+			if e, err = decodeBatch(m.Batch); err != nil {
 				return res, fmt.Errorf("a batch of %s: %w", m.Batch.GetStream(), err)
 			}
-			res.events = append(res.events, e)
 		case *protocolv1.ReadResponse_ResumePoint:
-			res.events = append(res.events, event{stream: m.ResumePoint.GetStream(), resume: true, state: m.ResumePoint.GetState()})
+			e = event{stream: m.ResumePoint.GetStream(), resume: true, state: m.ResumePoint.GetState()}
 		case *protocolv1.ReadResponse_Complete:
-			res.events = append(res.events, event{stream: m.Complete.GetStream(), complete: true, next: m.Complete.GetNext(), hasNext: m.Complete.Next != nil})
+			e = event{stream: m.Complete.GetStream(), complete: true, next: m.Complete.GetNext(), hasNext: m.Complete.Next != nil}
 		case *protocolv1.ReadResponse_Progress:
-			res.events = append(res.events, event{stream: m.Progress.GetStream(), progress: true})
+			e = event{stream: m.Progress.GetStream(), progress: true}
+		default:
+			continue
+		}
+		res.events = append(res.events, e)
+		if each != nil {
+			each(e)
 		}
 	}
 }

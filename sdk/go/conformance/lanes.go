@@ -19,9 +19,7 @@ const kitLanes = 3
 func (r *destinationRun) lanes(t T) int {
 	t.Helper()
 	r.process(t)
-	if r.s.Read == nil {
-		t.Fatalf("the suite has no Read")
-	}
+	r.needRead(t)
 	most := int(r.spec.GetDestination().GetMaxWriterLanes())
 	if most < 2 {
 		t.Skipf("the destination takes one writer lane")

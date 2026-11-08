@@ -93,6 +93,8 @@ func (r *sourceRun) checks() []Check {
 		Check{"read/full", r.checkFull},
 		Check{"read/resume", r.checkResume},
 		Check{"read/incremental", r.checkIncremental},
+		Check{"read/committed", r.checkCommitted},
+		Check{"read/continuous", r.checkContinuous},
 	)
 }
 
@@ -219,23 +221,11 @@ func (r *sourceRun) streams(t T) []*protocolv1.ConfiguredStream {
 
 func (r *sourceRun) read(t T, streams ...*protocolv1.ConfiguredStream) *readResult {
 	t.Helper()
-	p := r.process(t)
-	ctx, cancel := context.WithTimeout(t.Context(), r.readTimeout())
-	defer cancel()
+	r.process(t)
 	if r.readAs == "" {
 		r.readAs = r.pipeline()
 	}
-	res, err := read(ctx, p.Conn(), &protocolv1.ReadRequest{Config: p.Config(), Streams: streams, Pipeline: r.readAs})
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if res.err != nil {
-		if ctx.Err() != nil {
-			t.Fatalf("a bounded read didn't end within %s", r.readTimeout())
-		}
-		t.Fatalf("read: %s: %v", codeOf(res.err), res.err)
-	}
-	return res
+	return r.readUnder(t, r.readAs, streams...)
 }
 
 func (r *sourceRun) fullRead(t T) (*readResult, []*protocolv1.ConfiguredStream) {

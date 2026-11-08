@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -64,6 +66,9 @@ type upstream struct {
 	// changelog's snapshot does.
 	seq   bool
 	reads int64
+	// Changes are a log read with stream: change i has id i. A resume can't
+	// go back before trimmed, as a log discards what's acknowledged.
+	changes, trimmed int64
 }
 
 type memSource struct {
@@ -79,6 +84,10 @@ var usersSchema = arrow.NewSchema([]arrow.Field{
 
 var usersSeqSchema = arrow.NewSchema(append(usersSchema.Fields(),
 	arrow.Field{Name: "_seq", Type: arrow.PrimitiveTypes.Int64, Metadata: arrow.NewMetadata([]string{source.ControlKey}, []string{"seq"})}), nil)
+
+var changesSchema = arrow.NewSchema([]arrow.Field{
+	{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+}, nil)
 
 var eventsSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "id", Type: arrow.PrimitiveTypes.Int64},
@@ -97,10 +106,11 @@ func (s *memSource) Discover(context.Context) (source.Catalog, error) {
 		{Name: "users", PrimaryKey: []string{"id"}, Replay: source.Exact, Schema: usersSchema, SyncModes: []source.SyncMode{source.FullRefresh}},
 		{Name: "events", PrimaryKey: []string{"id"}, CursorField: "ts", Replay: source.Superset, Schema: eventsSchema,
 			SyncModes: []source.SyncMode{source.Incremental, source.FullRefresh}},
+		{Name: "changes", Replay: source.Exact, Schema: changesSchema, SyncModes: []source.SyncMode{source.Stream}},
 	}}, nil
 }
 
-func (s *memSource) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
+func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
 	if err := s.c.check(); err != nil {
 		if s.bug == "check-internal" && s.c.Token != "good" {
 			return errors.New("bad token")
@@ -122,6 +132,8 @@ func (s *memSource) Read(_ context.Context, req source.ReadRequest, out source.E
 			err = s.readUsers(users, seq, st.State, out)
 		case "events":
 			err = s.readEvents(events, st.State, out)
+		case "changes":
+			err = s.readChanges(ctx, req.Continuous, st.State, out)
 		default:
 			err = fmt.Errorf("no stream %q", st.Name)
 		}
@@ -207,6 +219,83 @@ func (s *memSource) readEvents(n int64, state []byte, out source.Emitter) error 
 	return out.Complete("events", next)
 }
 
+// readChanges reads the log from the state, the next id, on: up to where it
+// ended when the read started, or, read continuously, until cancelled.
+func (s *memSource) readChanges(ctx context.Context, continuous bool, state []byte, out source.Emitter) error {
+	var from int64
+	if state != nil {
+		if err := json.Unmarshal(state, &from); err != nil {
+			return err
+		}
+	}
+	s.up.mu.Lock()
+	end := s.up.changes
+	s.up.mu.Unlock()
+	caughtUp := false
+	for {
+		s.up.mu.Lock()
+		if continuous {
+			end = s.up.changes
+		}
+		if state != nil {
+			from = max(from, s.up.trimmed)
+		}
+		s.up.mu.Unlock()
+		if from < end {
+			to := min(from+3, end)
+			b := array.NewInt64Builder(memory.DefaultAllocator)
+			for i := from; i < to; i++ {
+				b.Append(i)
+			}
+			col := b.NewArray()
+			b.Release()
+			if err := out.Records("changes", array.NewRecordBatch(changesSchema, []arrow.Array{col}, to-from)); err != nil {
+				return err
+			}
+			from = to
+			if s.bug == "continuous-no-resume" && caughtUp {
+				continue
+			}
+			st, _ := json.Marshal(from)
+			if err := out.ResumePoint("changes", st); err != nil {
+				return err
+			}
+			continue
+		}
+		if !continuous || s.bug == "continuous-completes" {
+			return out.Complete("changes", nil)
+		}
+		caughtUp = true
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// Committed discards the log before the changes' state.
+func (s *memSource) Committed(_ context.Context, states map[string][]byte, _ map[string][]source.Split) error {
+	if s.bug == "committed-fails" {
+		return errors.New("no")
+	}
+	b, ok := states["changes"]
+	if !ok {
+		return nil
+	}
+	var at int64
+	if err := json.Unmarshal(b, &at); err != nil {
+		return err
+	}
+	if s.bug == "ack-trims-too-far" {
+		at += 2
+	}
+	s.up.mu.Lock()
+	s.up.trimmed = max(s.up.trimmed, at)
+	s.up.mu.Unlock()
+	return nil
+}
+
 func usersBatch(ids []int64, names []string) arrow.RecordBatch {
 	b := array.NewRecordBuilder(memory.DefaultAllocator, usersSchema)
 	defer b.Release()
@@ -236,24 +325,33 @@ func eventsBatch(ids, ts []int64) arrow.RecordBatch {
 }
 
 func sourceSuite(bug string) conformance.SourceSuite {
-	return memSuite(&upstream{users: 23, events: 18}, bug)
+	return memSuite(&upstream{users: 23, events: 18, changes: 14}, bug)
 }
 
 func memSuite(up *upstream, bug string) conformance.SourceSuite {
 	return conformance.SourceSuite{
 		Launch: conformance.InProcess(sdk.Connector{
-			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw},
+			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw}, Acknowledges: true,
 			Source: func(config []byte, _ host.Host) (source.Source, error) {
 				c, err := bind(config)
 				return &memSource{c: c, up: up, bug: bug}, err
 			},
 		}),
 		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
-		Streams: []conformance.Stream{{Name: "users", Mode: source.FullRefresh}, {Name: "events", Mode: source.Incremental}},
-		AddRecords: func(context.Context, string) (int, error) {
+		Streams:     []conformance.Stream{{Name: "users", Mode: source.FullRefresh}, {Name: "events", Mode: source.Incremental}, {Name: "changes", Mode: source.Stream}},
+		ReadTimeout: 5 * time.Second,
+		AddRecords: func(_ context.Context, stream string) (int, error) {
 			up.mu.Lock()
 			defer up.mu.Unlock()
-			up.events += 3
+			switch stream {
+			case "events":
+				up.events += 3
+			case "changes":
+				up.changes += 4
+				return 4, nil
+			default:
+				return 0, nil
+			}
 			return 3, nil
 		},
 	}
@@ -270,19 +368,23 @@ func TestSourceSequencesAreNotRecords(t *testing.T) {
 }
 
 func TestSourceBugsFail(t *testing.T) {
-	cases := map[string]string{
-		"resume-gap":           "read/resume",
-		"dup-key":              "read/full",
-		"batch-after-complete": "read/full",
-		"incremental-no-next":  "read/incremental",
-		"incremental-skips":    "read/incremental",
-		"check-internal":       "errors",
+	cases := map[string][]string{
+		"resume-gap":           {"read/resume", "read/committed"},
+		"dup-key":              {"read/full"},
+		"batch-after-complete": {"read/full"},
+		"incremental-no-next":  {"read/incremental"},
+		"incremental-skips":    {"read/incremental"},
+		"check-internal":       {"errors"},
+		"committed-fails":      {"read/committed"},
+		"ack-trims-too-far":    {"read/committed"},
+		"continuous-completes": {"read/continuous"},
+		"continuous-no-resume": {"read/continuous"},
 	}
-	for bug, check := range cases {
+	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {
 			failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) { sourceSuite(bug).Run(ctx, report) })
-			if !slices.Equal(failed, []string{check}) {
-				t.Errorf("failed checks %v, want [%s]", failed, check)
+			if !slices.Equal(failed, checks) {
+				t.Errorf("failed checks %v, want %v", failed, checks)
 			}
 		})
 	}
@@ -432,13 +534,35 @@ func (w *memWriter) stage(e destination.Epoch, stream string, b arrow.RecordBatc
 				row[f.Name] = b.Column(c).GetOneForMarshal(i)
 			default:
 				if !strings.HasPrefix(f.Name, "_openetl") {
-					row[f.Name] = b.Column(c).GetOneForMarshal(i)
+					row[f.Name] = w.d.mapType(b.Column(c), i)
 				}
 			}
 		}
 		st.staging[k][stream] = append(st.staging[k][stream], row)
 	}
 	return nil
+}
+
+// mapType is the memory destination's mapping table, with its bugs.
+func (d *memDestination) mapType(a arrow.Array, i int) any {
+	v := a.GetOneForMarshal(i)
+	switch a := a.(type) {
+	case *array.Float64:
+		if d.bug == "types-nan-null" && math.IsNaN(a.Value(i)) {
+			return nil
+		}
+	case *array.Decimal128:
+		if d.bug == "types-decimal-float" && a.IsValid(i) {
+			f, _ := strconv.ParseFloat(a.ValueStr(i), 64)
+			return f
+		}
+	case *array.Timestamp:
+		if d.bug == "types-millis" && a.IsValid(i) {
+			unit := a.DataType().(*arrow.TimestampType).Unit
+			return a.Value(i).ToTime(unit).Truncate(time.Millisecond)
+		}
+	}
+	return v
 }
 
 func heldList(a arrow.Array, i int) []string {
@@ -676,10 +800,19 @@ func (w *memWriter) ApplySchema(_ context.Context, streams []destination.StreamS
 			case arrow.TypeEqual(have, f.Type) || narrower(f.Type, have):
 			case w.d.bug == "type-changes-unasked" || allow && w.d.bug != "type-changes-refused":
 				st.types[t][f.Name] = f.Type
+				for _, row := range st.tables[t] {
+					if v, ok := row[f.Name]; ok && v != nil && f.Type.ID() == arrow.STRING {
+						row[f.Name] = fmt.Sprint(v)
+					}
+				}
 			default:
-				out.Refused = append(out.Refused, destination.RefusedColumn{
+				rc := destination.RefusedColumn{
 					Stream: s.Name, Column: f.Name, Reason: "it doesn't change a column's type", FromType: have.String(), ToType: f.Type.String(),
-				})
+				}
+				if w.d.bug == "refusal-unexplained" {
+					rc = destination.RefusedColumn{Stream: s.Name, Column: f.Name}
+				}
+				out.Refused = append(out.Refused, rc)
 			}
 		}
 	}
@@ -777,6 +910,10 @@ func TestDestinationBugsFail(t *testing.T) {
 		"limits-without-not-null": {"holds/not-null"},
 		"type-changes-unasked":    {"write/type-changes"},
 		"type-changes-refused":    {"write/type-changes"},
+		"refusal-unexplained":     {"write/type-changes"},
+		"types-nan-null":          {"types"},
+		"types-decimal-float":     {"types"},
+		"types-millis":            {"types"},
 	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {
@@ -785,5 +922,22 @@ func TestDestinationBugsFail(t *testing.T) {
 				t.Errorf("failed checks %v, want %v", failed, checks)
 			}
 		})
+	}
+}
+
+// A type the mapping table says it doesn't keep exactly isn't checked, and
+// is flagged.
+func TestDestinationLossyTypes(t *testing.T) {
+	s := destinationSuite("types-nan-null")
+	s.LossyTypes = map[string]string{"float64": "NaN is stored as null"}
+	var flagged bool
+	failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) {
+		s.Run(ctx, func(r conformance.Result) {
+			flagged = flagged || r.Check == "types" && slices.ContainsFunc(r.Log, func(l string) bool { return strings.Contains(l, "NaN is stored as null") })
+			report(r)
+		})
+	})
+	if len(failed) > 0 || !flagged {
+		t.Errorf("failed %v, flagged %v; want none failed, and float64 flagged", failed, flagged)
 	}
 }

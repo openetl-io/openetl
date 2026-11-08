@@ -32,8 +32,9 @@ Commands:
   publish oci://REGISTRY/NAMESPACE [DESCRIPTOR...]
             push what package wrote to an OCI registry, and list it in the
             namespace's index
-  validate [DIR...]
-            check each directory's openetl-connector.yaml, without building
+  validate [DIR...] | --artifact oci://REGISTRY/REPOSITORY:VERSION
+            check each directory's openetl-connector.yaml, without building;
+            or a package version publish pushed to a registry
   apply (-f FILE | REFERENCE...)
             apply connector versions: descriptors and manifests in FILE, or
             oci://REGISTRY/REPOSITORY:VERSION and
@@ -49,12 +50,16 @@ Commands:
             list a source's streams and columns
   read --config FILE TARGET
             read a source's records into a table, JSON lines or Parquet
+  test --config FILE TARGET
+            run the conformance kit's checks against a source or destination
   schema file|descriptor|manifest
             print the JSON Schema of openetl-connector.yaml, a descriptor
             or a manifest, for editors
 
-TARGET is an executable, a descriptor or a manifest; --image REF or
---attach ADDR stand in for it. Run openetl connector <command> -h for more.
+TARGET is an executable, a descriptor, a manifest, or a package version by
+reference, oci://REGISTRY/REPOSITORY:VERSION or
+github.com/OWNER/REPO[/PACKAGE]@VERSION; --image REF or --attach ADDR stand in
+for it. Run openetl connector <command> -h for more.
 `
 
 func runConnector(ctx context.Context, args []string, out io.Writer) error {
@@ -70,7 +75,7 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 	case "catalog":
 		return runCatalog(ctx, args[1:], out)
 	case "validate":
-		return runValidate(args[1:], out)
+		return runValidate(ctx, args[1:], out)
 	case "apply":
 		return runApplyDocuments(ctx, "openetl connector apply", args[1:], out, applyConnectors)
 	case "spec":
@@ -81,6 +86,8 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 		return runConnectorDiscover(ctx, args[1:], out)
 	case "read":
 		return runConnectorRead(ctx, args[1:], out)
+	case "test":
+		return runConnectorTest(ctx, args[1:], out)
 	case "schema":
 		schemas := map[string]func() []byte{"file": connectorpkg.Schema, "descriptor": spec.DescriptorSchema, "manifest": declarative.Schema}
 		if len(args) != 2 || schemas[args[1]] == nil {
@@ -319,16 +326,27 @@ func packageJobs(dirs []string, tag, version string) ([]packageJob, error) {
 	return jobs, nil
 }
 
-func runValidate(args []string, out io.Writer) error {
+func runValidate(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("openetl connector validate", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: openetl connector validate [DIR...] [--require FIELD,...]")
-		fmt.Fprintln(fs.Output(), "\nChecks each DIR's openetl-connector.yaml (default .) as package does, without building.")
+		fmt.Fprintln(fs.Output(), "       openetl connector validate --artifact oci://REGISTRY/NAMESPACE/NAME:VERSION")
+		fmt.Fprintln(fs.Output(), "\nChecks each DIR's openetl-connector.yaml (default .) as package does, without building. With --artifact,")
+		fmt.Fprintln(fs.Output(), "checks a package version in a registry, by tag or @sha256:..., as publish pushes one: its artifact and")
+		fmt.Fprintln(fs.Output(), "config types, the descriptor as its config, a layer for every binary and the logo, the annotations, and")
+		fmt.Fprintln(fs.Output(), "the namespace's index. Credentials come from Docker's config and credential helpers.")
 		fs.PrintDefaults()
 	}
 	require := fs.String("require", "", "fields each file must set, comma-separated: description, license, docs, logo, author or tags")
+	artifact := fs.String("artifact", "", "an oci:// package version to check, in place of directories")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *artifact != "" {
+		if fs.NArg() > 0 || *require != "" {
+			return errors.New("--artifact takes no directories or --require")
+		}
+		return validateArtifact(ctx, *artifact, out)
 	}
 	dirs := fs.Args()
 	if len(dirs) == 0 {
@@ -350,6 +368,39 @@ func runValidate(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "%s: %s\n", d, f.FullName())
 	}
 	return errors.Join(failed...)
+}
+
+// validateArtifact prints each of an artifact's checks, and fails if any
+// found a problem.
+func validateArtifact(ctx context.Context, ref string, out io.Writer) error {
+	r, err := oci.Parse(ref)
+	if err != nil {
+		return err
+	}
+	reg, err := registryClient()
+	if err != nil {
+		return err
+	}
+	findings, err := connectorpkg.CheckArtifact(ctx, reg, r)
+	if err != nil {
+		return err
+	}
+	failed := 0
+	for _, f := range findings {
+		if len(f.Problems) == 0 {
+			fmt.Fprintf(out, "ok   %s\n", f.Check)
+			continue
+		}
+		failed++
+		fmt.Fprintf(out, "FAIL %s\n", f.Check)
+		for _, p := range f.Problems {
+			fmt.Fprintf(out, "     %s\n", p)
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%s: %d of %d checks failed", ref, failed, len(findings))
+	}
+	return nil
 }
 
 // onlyConnectorVersions checks that every document is a Connector or a

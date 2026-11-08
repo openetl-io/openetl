@@ -26,7 +26,11 @@ import (
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/connectorhost/external"
 	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
+	"github.com/openetl-io/openetl/internal/connectorpkg"
+	"github.com/openetl-io/openetl/internal/github"
 	"github.com/openetl-io/openetl/internal/netguard"
+	"github.com/openetl-io/openetl/internal/oci"
+	"github.com/openetl-io/openetl/internal/pkgref"
 	"github.com/openetl-io/openetl/internal/spec"
 	sdk "github.com/openetl-io/openetl/sdk/go"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
@@ -37,11 +41,16 @@ import (
 )
 
 const runUsage = `
-TARGET is a connector's executable, its descriptor (NAME.connector.yaml), or a
-manifest (a DeclarativeSource document). Or give --image REF to run an image
-with Docker or Podman, or --attach ADDR to wait for a connector you start
-yourself, under a debugger, say. Nothing else is needed: no openetld, Temporal,
-Postgres or bucket. Host services are the platform's, HTTP included.
+TARGET is a connector's executable, its descriptor (NAME.connector.yaml), a
+manifest (a DeclarativeSource document), or a package version by reference:
+oci://REGISTRY/REPOSITORY:VERSION or @sha256:..., with Docker's credentials,
+or github.com/OWNER/REPO[/PACKAGE]@VERSION, with GITHUB_TOKEN or GH_TOKEN when
+set. A descriptor's binary is fetched by its digest, or taken from beside a
+descriptor file, where openetl connector package wrote it. Or give --image REF
+to run an image with Docker or Podman, or --attach ADDR to wait for a
+connector you start yourself, under a debugger, say. Nothing else is needed:
+no openetld, Temporal, Postgres or bucket. Host services are the platform's,
+HTTP included.
 
 A config names its secrets as {"secret": NAME}, whose values come from
 --secret NAME=VALUE, or else from OPENETL_SECRET_NAME (in capitals, with _ for
@@ -160,8 +169,19 @@ func (f *runFlags) target(ctx context.Context, role string) (*runTarget, error) 
 		}
 		t.name = *f.image
 		t.launch = conformance.Container(engine, *f.image, strings.Fields(*f.command), conformance.Resources{}, opts)
+	case pkgref.Is(f.fs.Arg(0)):
+		res, err := resolver().Resolve(ctx, f.fs.Arg(0))
+		if err != nil {
+			return nil, err
+		}
+		return t, f.document(ctx, t, res.Content, f.fs.Arg(0), "", role, policy, opts)
 	case document(f.fs.Arg(0)):
-		return t, f.document(ctx, t, f.fs.Arg(0), role, policy, opts)
+		path := f.fs.Arg(0)
+		content, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			return nil, err
+		}
+		return t, f.document(ctx, t, content, path, filepath.Dir(path), role, policy, opts)
 	default:
 		t.name = filepath.Base(f.fs.Arg(0))
 		t.launch = conformance.ExecWith(f.fs.Arg(0), opts)
@@ -178,15 +198,13 @@ func document(path string) bool {
 }
 
 // document starts a descriptor's role from its binary or its image, or a
-// manifest in this process.
-func (f *runFlags) document(ctx context.Context, t *runTarget, path, role string, policy netguard.Policy, opts conformance.Options) error {
-	content, err := os.ReadFile(path) //nolint:gosec // the user names the file
-	if err != nil {
-		return err
-	}
+// manifest in this process. A descriptor file in dir takes the binary
+// beside it that openetl connector package wrote, when its digest matches,
+// so a package runs before it's released.
+func (f *runFlags) document(ctx context.Context, t *runTarget, content []byte, origin, dir, role string, policy netguard.Policy, opts conformance.Options) error {
 	v, err := connectorhost.ParseVersion(content)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return fmt.Errorf("%s: %w", origin, err)
 	}
 	if role == "" {
 		if len(v.Roles) != 1 {
@@ -221,11 +239,16 @@ func (f *runFlags) document(ctx context.Context, t *runTarget, path, role string
 		if bin.Digest == "" {
 			return fmt.Errorf("%s's binary for %s has no digest; package pins it", t.name, connectorhost.Platform())
 		}
-		fetch := connectorhost.Fetcher{Client: &http.Client{Timeout: 10 * time.Minute}, Cache: *f.cache, Credential: dockerCredential}
 		_, short := spec.SplitName(v.Name)
-		exe, err := fetch.Executable(ctx, bin, role+"-"+short)
+		exe, err := beside(dir, connectorpkg.Asset(short, role, connectorhost.Platform()), bin.Digest)
 		if err != nil {
 			return err
+		}
+		if exe == "" {
+			fetch := connectorhost.Fetcher{Client: &http.Client{Timeout: 10 * time.Minute}, Cache: *f.cache, Credential: fetchCredential}
+			if exe, err = fetch.Executable(ctx, bin, role+"-"+short); err != nil {
+				return err
+			}
 		}
 		t.want = r.Spec
 		t.launch = conformance.ExecWith(exe, opts)
@@ -241,6 +264,50 @@ func (f *runFlags) document(ctx context.Context, t *runTarget, path, role string
 		return fmt.Errorf("%s has no binary for %s, and no image", t.name, connectorhost.Platform())
 	}
 	return nil
+}
+
+// beside is the file name in dir when it has digest; "" when dir is empty
+// or has no such file.
+func beside(dir, name, digest string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	path := filepath.Join(dir, name)
+	b, err := os.ReadFile(filepath.Clean(path))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if d := connectorhost.Digest(b); d != digest {
+		return "", fmt.Errorf("%s, beside the descriptor, has digest %s, and the descriptor says %s", path, d, digest)
+	}
+	return path, nil
+}
+
+// resolver resolves references as the user: registries with Docker's
+// credentials, and GitHub with GITHUB_TOKEN or GH_TOKEN, at GITHUB_API_URL
+// when set.
+func resolver() pkgref.Resolver {
+	reg, err := registryClient()
+	if err != nil {
+		reg = &oci.Client{HTTP: &http.Client{Timeout: 10 * time.Minute}}
+	}
+	return pkgref.Resolver{OCI: reg, GitHub: func(context.Context, string) (*github.Client, error) {
+		return &github.Client{HTTP: &http.Client{Timeout: time.Minute}, API: os.Getenv("GITHUB_API_URL"), Token: githubToken()}, nil
+	}}
+}
+
+func githubToken() string { return cmp.Or(os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN")) }
+
+// fetchCredential is the user's credential for a binary's URL: the GitHub
+// token for a release asset, and Docker's for a registry.
+func fetchCredential(ctx context.Context, url string) (string, string, error) {
+	if _, _, _, _, ok := github.ParseAssetURL(url); ok {
+		return "", githubToken(), nil
+	}
+	return dockerCredential(ctx, url)
 }
 
 // start starts the connector with config, and reads its spec.
@@ -269,25 +336,30 @@ func (t *runTarget) start(ctx context.Context, config []byte) (conformance.Proce
 // readConfig reads the config file as JSON, with the secrets it names put
 // in.
 func (f *runFlags) readConfig() ([]byte, error) {
+	return f.readConfigFile("config", *f.config)
+}
+
+// readConfigFile reads the config file a flag names, as readConfig does.
+func (f *runFlags) readConfigFile(flag, path string) ([]byte, error) {
 	var b []byte
 	var err error
-	switch *f.config {
+	switch path {
 	case "":
 		return []byte("{}"), nil
 	case "-":
 		b, err = io.ReadAll(os.Stdin)
 	default:
-		b, err = os.ReadFile(*f.config)
+		b, err = os.ReadFile(filepath.Clean(path))
 	}
 	if err != nil {
 		return nil, err
 	}
 	var v any
 	if err := yaml.Unmarshal(b, &v); err != nil {
-		return nil, fmt.Errorf("--config: %w", err)
+		return nil, fmt.Errorf("--%s: %w", flag, err)
 	}
 	if _, ok := v.(map[string]any); !ok {
-		return nil, errors.New("--config: the config isn't an object")
+		return nil, fmt.Errorf("--%s: the config isn't an object", flag)
 	}
 	given := map[string]string{}
 	for _, s := range f.secrets {

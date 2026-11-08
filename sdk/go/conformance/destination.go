@@ -3,8 +3,10 @@ package conformance
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -30,11 +32,31 @@ type DestinationSuite struct {
 	Unreachable []byte
 	// Read returns the records the destination has made visible for stream
 	// in namespace, as readers of the destination see them, each by field
-	// name; none for a stream it hasn't created. The checks compare the
-	// fields "id", an int64, "v", a string, a soft-deleted row's
-	// "_openetl_deleted", a bool, and the columns schemas add, "w", a string,
-	// and "n", an int64, by their text, so any Go value that prints the same
-	// will do. A cell without a value is nil, or not there.
+	// name; none for a stream it hasn't created. Nil skips the checks that
+	// write. The checks compare the fields "id", an int64, "v", a string, a
+	// soft-deleted row's "_openetl_deleted", a bool, and the columns schemas
+	// add, "w", a string, and "n", an int64, by their text, so any Go value
+	// that prints the same will do. A cell without a value is nil, or not
+	// there.
+	//
+	// write/type-changes and types read their columns' values by type, from
+	// any of these, or a pointer to one, a driver.Valuer giving one, or a
+	// struct whose Valid is false for null:
+	//   - integers: any Go integer, a whole float, json.Number or text
+	//   - floats: float32, float64, json.Number or text, NaN and infinities
+	//     as "NaN", "Infinity", "+Inf" and the like
+	//   - decimals: text, json.Number, *big.Rat, *big.Int or a fmt.Stringer
+	//   - text: string or []byte; binary: []byte, Postgres's \x hex, or
+	//     base64
+	//   - timestamps and dates: time.Time, or RFC 3339 or SQL text
+	//   - times of day: time.Duration, "15:04:05.999999", microseconds, or
+	//     a struct with Microseconds, as pgtype.Time
+	//   - intervals: arrow.MonthDayNanoInterval, a struct or object with
+	//     months, days and nanoseconds or microseconds, as pgtype.Interval,
+	//     ISO 8601 or Postgres's text
+	//   - lists: a slice, or a JSON array
+	//   - JSON: its text, json.RawMessage, or the value decoded
+	//   - UUIDs: text, 16 bytes, or a [16]byte
 	Read func(ctx context.Context, namespace, stream string) ([]map[string]any, error)
 	// Namespace returns a new namespace for one check. Nil: conformance_
 	// and random letters.
@@ -52,6 +74,13 @@ type DestinationSuite struct {
 	// doesn't, so write/type-changes checks only that a widened column
 	// lands.
 	Untyped bool
+	// Logical types the destination's mapping table doesn't keep exactly,
+	// by the types check's names (boolean, int16, int32, int64, float32,
+	// float64, string, binary, decimal, decimal_10_2, timestamp_tz,
+	// timestamp, timestamp_ns, date, time, interval, list, json, uuid), each
+	// with what the table says of it. The check leaves them out, and flags
+	// them.
+	LossyTypes map[string]string
 }
 
 // The kit's streams.
@@ -100,6 +129,7 @@ func (r *destinationRun) checks() []Check {
 		Check{"write/merge", r.checkMerge},
 		Check{"write/evolution", r.checkEvolution},
 		Check{"write/type-changes", r.checkTypeChanges},
+		Check{"types", r.checkTypes},
 		Check{"holds/patch", r.checkHoldsPatch},
 		Check{"holds/last", r.checkHoldsLast},
 		Check{"holds/soft-delete", r.checkHoldsSoftDelete},
@@ -131,6 +161,15 @@ func (r *destinationRun) drop() {
 	}
 }
 
+// needRead skips a check that reads the destination back, when the suite
+// can't.
+func (r *destinationRun) needRead(t T) {
+	t.Helper()
+	if r.s.Read == nil {
+		t.Skipf("the suite has no Read, so it can't see what the destination made visible")
+	}
+}
+
 func (r *destinationRun) class() protocolv1.SinkClass {
 	return r.spec.GetDestination().GetSinkClass()
 }
@@ -158,9 +197,7 @@ func (r *destinationRun) area(t T) *stagingArea {
 func (r *destinationRun) each(check func(T, *session)) func(T) {
 	return func(t T) {
 		r.process(t)
-		if r.s.Read == nil {
-			t.Fatalf("the suite has no Read")
-		}
+		r.needRead(t)
 		for _, scope := range r.spec.GetDestination().GetScopes() {
 			check(t, r.session(t, scope, protocolv1.WriteMode_WRITE_MODE_APPEND))
 		}
@@ -173,9 +210,11 @@ type session struct {
 	r        *destinationRun
 	ns       string
 	pipeline string
-	scope    protocolv1.CommitScope
-	mode     protocolv1.WriteMode
-	data     []arrow.Field
+	// The streams its writers open: the kit's, unless a check sets them.
+	streams []string
+	scope   protocolv1.CommitScope
+	mode    protocolv1.WriteMode
+	data    []arrow.Field
 	// The streams let the destination change a column's type.
 	allowTypeChanges bool
 	// When reads start, for attempts on lanes.
@@ -197,7 +236,7 @@ func (r *destinationRun) session(t T, scope protocolv1.CommitScope, mode protoco
 	r.mu.Lock()
 	r.namespaces = append(r.namespaces, ns)
 	r.mu.Unlock()
-	s := &session{t: t, r: r, ns: ns, pipeline: newID(), scope: scope, mode: mode, data: dataFields, start: time.Now()}
+	s := &session{t: t, r: r, ns: ns, pipeline: newID(), streams: kitStreams, scope: scope, mode: mode, data: dataFields, start: time.Now()}
 	if r.staged() {
 		s.area, s.pending, s.files = r.area(t), map[int]map[string][]arrow.RecordBatch{}, map[string]map[string][]*protocolv1.StagedFile{}
 		t.Cleanup(func() {
@@ -239,7 +278,7 @@ func (s *session) openLane(gen uint64, lane, lanes int) *writer {
 	if lane > 0 && lane <= math.MaxUint32 {
 		open.Lane = uint32(lane)
 	}
-	for _, name := range kitStreams {
+	for _, name := range s.streams {
 		open.Streams = append(open.Streams, &protocolv1.WriteStream{Name: name, Mode: s.mode, PrimaryKey: []string{"id"}, AllowTypeChanges: s.allowTypeChanges})
 	}
 	w, err := openWriter(s.t.Context(), s.r.proc.Conn(), open)
@@ -268,7 +307,7 @@ func (s *session) begin(gen uint64, e *protocolv1.Epoch, staged []byte) (*writer
 	if err != nil {
 		s.t.Fatalf("%s generation %d's recover of %s: %s: %v", s.where(), gen, epochString(e), codeOf(err), err)
 	}
-	if err := w.startReads(kitStreams, time.Now()); err != nil {
+	if err := w.startReads(s.streams, time.Now()); err != nil {
 		s.t.Fatalf("%s start_reads: %v", s.where(), err)
 	}
 	return w, rec
@@ -326,7 +365,7 @@ func (s *session) preCommit(w *writer, e *protocolv1.Epoch) ([]byte, error) {
 		pending := s.pending[w.lane]
 		s.mu.Unlock()
 		files := map[string][]*protocolv1.StagedFile{}
-		for _, name := range kitStreams {
+		for _, name := range s.streams {
 			bs := pending[name]
 			if len(bs) == 0 {
 				continue
@@ -371,7 +410,7 @@ func (s *session) handOver(w *writer, e *protocolv1.Epoch) {
 }
 
 func handFiles(w *writer, e *protocolv1.Epoch, files map[string][]*protocolv1.StagedFile) error {
-	for _, name := range kitStreams {
+	for _, name := range slices.Sorted(maps.Keys(files)) {
 		if len(files[name]) == 0 {
 			continue
 		}
@@ -420,7 +459,7 @@ func (s *session) applySchemas(w *writer) error {
 		return nil
 	}
 	var schemas []*protocolv1.StreamSchema
-	for _, name := range kitStreams {
+	for _, name := range s.streams {
 		b, err := arrowipc.EncodeSchema(streamSchema(name, s.data))
 		if err != nil {
 			return err
@@ -714,9 +753,7 @@ func (r *destinationRun) supportsMode(mode protocolv1.WriteMode) bool {
 func (r *destinationRun) supports(t T, mode protocolv1.WriteMode) {
 	t.Helper()
 	r.process(t)
-	if r.s.Read == nil {
-		t.Fatalf("the suite has no Read")
-	}
+	r.needRead(t)
 	if !slices.Contains(r.spec.GetDestination().GetWriteModes(), mode) {
 		t.Skipf("the destination doesn't write %s", mode)
 	}
@@ -777,9 +814,7 @@ func (r *destinationRun) checkMerge(t T) {
 // nothing, and its values land.
 func (r *destinationRun) checkEvolution(t T) {
 	r.process(t)
-	if r.s.Read == nil {
-		t.Fatalf("the suite has no Read")
-	}
+	r.needRead(t)
 	s := r.session(t, r.spec.GetDestination().GetScopes()[0], protocolv1.WriteMode_WRITE_MODE_APPEND)
 	w, _ := s.begin(1, nil, nil)
 	if !w.opened.GetAppliesSchema() {
@@ -822,16 +857,35 @@ func (r *destinationRun) checkEvolution(t T) {
 	s.close(w)
 }
 
+// The engine's widenings of a column, the type changes a pipeline's spec
+// can allow.
+var widenings = []struct {
+	from, to arrow.DataType
+	// The destination must take the change when its stream allows it.
+	must bool
+}{
+	{arrow.PrimitiveTypes.Int32, arrow.PrimitiveTypes.Int64, true},
+	{arrow.PrimitiveTypes.Int64, arrow.PrimitiveTypes.Float64, false},
+	{arrow.PrimitiveTypes.Int64, arrow.BinaryTypes.String, false},
+}
+
 // Write: type changes: a column whose type widens is refused, by apply_schema
-// or by the write, unless its stream allows type changes; then the
-// destination takes the wider type and keeps the rows it has.
+// or by the write, unless its stream allows type changes; a refusal says
+// why, and the types. Allowed, the destination takes the wider type and
+// keeps the rows it has, or, for a change it can't make, refuses it still.
 func (r *destinationRun) checkTypeChanges(t T) {
 	r.process(t)
-	if r.s.Read == nil {
-		t.Fatalf("the suite has no Read")
+	r.needRead(t)
+	for _, wd := range widenings {
+		r.typeChange(t, wd.from, wd.to, wd.must)
 	}
-	narrow := append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "n", Type: arrow.PrimitiveTypes.Int32, Nullable: true})
-	wide := append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "n", Type: arrow.PrimitiveTypes.Int64, Nullable: true})
+}
+
+func (r *destinationRun) typeChange(t T, from, to arrow.DataType, must bool) {
+	t.Helper()
+	change := fmt.Sprintf("n's change from %s to %s", from, to)
+	narrow := append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "n", Type: from, Nullable: true})
+	wide := append(append([]arrow.Field{}, dataFields...), arrow.Field{Name: "n", Type: to, Nullable: true})
 	small, large := records(0, 2, "a"), records(1<<33, 1<<33+2, "a")
 	s := r.session(t, r.spec.GetDestination().GetScopes()[0], protocolv1.WriteMode_WRITE_MODE_APPEND)
 	s.data = narrow
@@ -840,58 +894,131 @@ func (r *destinationRun) checkTypeChanges(t T) {
 	err := s.write(w, epoch(1, 1), "alpha", b)
 	b.Release()
 	if err != nil {
-		t.Fatalf("%s a batch with an int32 column: %s: %v", s.where(), codeOf(err), err)
+		t.Fatalf("%s a batch with a %s column: %s: %v", s.where(), from, codeOf(err), err)
 	}
 	staged, err := s.preCommit(w, epoch(1, 1))
 	if err != nil {
-		t.Fatalf("%s pre-commit with an int32 column: %s: %v", s.where(), codeOf(err), err)
+		t.Fatalf("%s pre-commit with a %s column: %s: %v", s.where(), from, codeOf(err), err)
 	}
 	s.commit(w, epoch(1, 1), staged)
 
 	s.data = wide
-	refused, err := s.widen(w, epoch(1, 2), large)
+	refused, rc, err := s.widen(w, epoch(1, 2), large)
 	switch {
 	case err != nil:
-		t.Fatalf("%s the column widened to int64: %s: %v", s.where(), codeOf(err), err)
+		t.Fatalf("%s %s: %s: %v", s.where(), change, codeOf(err), err)
 	case !refused && r.s.Untyped:
-		s.expect("after the column widened", map[string][]record{"alpha": append(small, large...)})
+		s.expect("after "+change, map[string][]record{"alpha": append(small, large...)})
 		s.close(w)
 		return
 	case !refused:
-		t.Fatalf("%s the destination took a column's change from int32 to int64, which its stream doesn't allow", s.where())
+		t.Fatalf("%s the destination took %s, which its stream doesn't allow", s.where(), change)
 	}
+	checkRefusal(t, s, change, rc)
 	w.crash()
-	s.expect("after the change was refused", map[string][]record{"alpha": small})
+	s.expect("after "+change+" was refused", map[string][]record{"alpha": small})
 
 	s.allowTypeChanges = true
 	w, _ = s.begin(2, epoch(1, 1), staged)
-	if refused, err = s.widen(w, epoch(2, 2), large); err != nil || refused {
-		t.Fatalf("%s the column widened to int64, which its stream allows: refused %v: %s: %v", s.where(), refused, codeOf(err), err)
+	refused, rc, err = s.widen(w, epoch(2, 2), large)
+	switch {
+	case err != nil:
+		t.Fatalf("%s %s, which its stream allows: %s: %v", s.where(), change, codeOf(err), err)
+	case refused && must:
+		t.Fatalf("%s the destination refused %s, which its stream allows", s.where(), change)
+	case refused:
+		checkRefusal(t, s, change, rc)
+		w.crash()
+		s.expect("after "+change+", allowed, was refused", map[string][]record{"alpha": small})
+		return
 	}
-	s.expect("after the allowed change", map[string][]record{"alpha": append(small, large...)})
-	ns := map[int64]string{}
-	for _, rec := range append(small, large...) {
-		ns[rec.id] = fmt.Sprint(rec.id)
+	s.expect("after "+change+", allowed", map[string][]record{"alpha": append(small, large...)})
+	tc, old := typeCase{logical: logicalOf(to)}, typeCase{logical: logicalOf(from)}
+	for _, row := range s.read("alpha") {
+		var id int64
+		if _, err := fmt.Sscan(fmt.Sprint(row["id"]), &id); err != nil {
+			t.Fatalf("%s alpha's id %v: %v", s.where(), row["id"], err)
+		}
+		earlier := id < 1<<33
+		want := widened(to, id, earlier)
+		got, err := tc.norm(row["n"])
+		if earlier && (err != nil || got != tc.want(want)) {
+			// Files written before keep their type, which readers widen.
+			if g, err2 := old.norm(row["n"]); err2 == nil && g == old.want(id) {
+				continue
+			}
+		}
+		switch {
+		case err != nil:
+			t.Errorf("%s after %s, allowed: id %d's n: %v", s.where(), change, id, err)
+		case got != tc.want(want):
+			t.Errorf("%s after %s, allowed: id %d's n is %s, not %s", s.where(), change, id, got, tc.want(want))
+		}
 	}
-	s.expectColumn("after the allowed change", "alpha", "n", ns)
 	s.close(w)
+}
+
+func logicalOf(dt arrow.DataType) string {
+	switch dt.ID() {
+	case arrow.INT32:
+		return "int32"
+	case arrow.FLOAT64:
+		return "float64"
+	case arrow.STRING:
+		return "string"
+	}
+	return "int64"
+}
+
+// widened is n as a column widened to dt holds it: an earlier row's id, as
+// the engine widens it, or a later row's value, as buildData wrote it.
+func widened(dt arrow.DataType, id int64, earlier bool) any {
+	switch dt.ID() {
+	case arrow.FLOAT64:
+		return float64(id)
+	case arrow.STRING:
+		if earlier {
+			return strconv.FormatInt(id, 10)
+		}
+		return "w" + strconv.FormatInt(id, 10)
+	}
+	return id
+}
+
+// checkRefusal: a column apply_schema refused names why, and the types in
+// the destination's names, and should give the statement that makes the
+// change.
+func checkRefusal(t T, s *session, change string, rc *protocolv1.RefusedColumn) {
+	t.Helper()
+	if rc == nil {
+		return
+	}
+	if rc.GetReason() == "" {
+		t.Errorf("%s the refusal of %s gives no reason", s.where(), change)
+	}
+	if rc.GetFromType() == "" || rc.GetToType() == "" {
+		t.Errorf("%s the refusal of %s doesn't name the column's type and the one it would take: %q to %q", s.where(), change, rc.GetFromType(), rc.GetToType())
+	}
+	if rc.GetFix() == "" {
+		flagf(t, "%s the refusal of %s gives no statement that makes the change: %s", s.where(), change, rc.GetReason())
+	}
 }
 
 // widen writes epoch e's records with the session's columns and commits it,
 // and reports whether the destination refused n's type: in apply_schema's
-// answer, or with SCHEMA_DRIFT.
-func (s *session) widen(w *writer, e *protocolv1.Epoch, recs []record) (bool, error) {
+// answer, with the refused column, or with SCHEMA_DRIFT.
+func (s *session) widen(w *writer, e *protocolv1.Epoch, recs []record) (bool, *protocolv1.RefusedColumn, error) {
 	if w.opened.GetAppliesSchema() {
 		b, err := arrowipc.EncodeSchema(streamSchema("alpha", s.data))
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		a, err := w.schemaApplied([]*protocolv1.StreamSchema{{Name: "alpha", ArrowSchema: b}})
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
-		if slices.ContainsFunc(a.GetRefused(), func(c *protocolv1.RefusedColumn) bool { return c.GetStream() == "alpha" && c.GetColumn() == "n" }) {
-			return true, nil
+		if i := slices.IndexFunc(a.GetRefused(), func(c *protocolv1.RefusedColumn) bool { return c.GetStream() == "alpha" && c.GetColumn() == "n" }); i >= 0 {
+			return true, a.GetRefused()[i], nil
 		}
 	}
 	b := buildData("alpha", s.data, recs, "insert")
@@ -905,7 +1032,7 @@ func (s *session) widen(w *writer, e *protocolv1.Epoch, recs []record) (bool, er
 		err = s.tryCommit(w, e, staged)
 	}
 	if codeOf(err) == protocolv1.ErrorCode_ERROR_CODE_SCHEMA_DRIFT {
-		return true, nil
+		return true, nil, nil
 	}
-	return false, err
+	return false, nil, err
 }

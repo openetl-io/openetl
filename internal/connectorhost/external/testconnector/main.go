@@ -63,6 +63,8 @@ func main() {
 		sdk.Serve(sdk.Connector{Name: "echo", Source: func([]byte, host.Host) (source.Source, error) { return echo{}, nil }})
 	case "destination-files":
 		sdk.Serve(filesConnector)
+	case "destination-jsonl":
+		sdk.Serve(jsonlConnector)
 	case "source-both", "destination-both":
 		both := filesConnector
 		both.Name, both.Source = "both", func(c []byte, _ host.Host) (source.Source, error) { return faker.New(c) }
