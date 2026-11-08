@@ -233,7 +233,7 @@ func (q *Queries) ListHolds(ctx context.Context, arg ListHoldsParams) ([]ListHol
 }
 
 const newestHoldRelease = `-- name: NewestHoldRelease :one
-SELECT coalesce(max(id::text), '')::text FROM hold_releases WHERE org_id = $1 AND pipeline_id = $2
+SELECT coalesce(count(*)::text || '/' || max(id::text), '')::text FROM hold_releases WHERE org_id = $1 AND pipeline_id = $2
 `
 
 type NewestHoldReleaseParams struct {
@@ -241,6 +241,8 @@ type NewestHoldReleaseParams struct {
 	PipelineID uuid.UUID
 }
 
+// What a supervisor compares to see a new release. With the count, because a
+// server with a slower clock gives a release an ID older than the newest.
 func (q *Queries) NewestHoldRelease(ctx context.Context, arg NewestHoldReleaseParams) (string, error) {
 	row := q.db.QueryRow(ctx, newestHoldRelease, arg.OrgID, arg.PipelineID)
 	var column_1 string
@@ -249,7 +251,7 @@ func (q *Queries) NewestHoldRelease(ctx context.Context, arg NewestHoldReleasePa
 }
 
 const newestHoldReleaseAt = `-- name: NewestHoldReleaseAt :one
-SELECT coalesce(max(id::text), '')::text FROM hold_releases
+SELECT coalesce(count(*)::text || '/' || max(id::text), '')::text FROM hold_releases
 WHERE org_id = $1 AND pipeline_id = $2 AND create_time <= $3
 `
 

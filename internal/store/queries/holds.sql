@@ -48,8 +48,10 @@ ORDER BY r.create_time, r.id;
 DELETE FROM hold_releases WHERE org_id = @org_id AND id = @id;
 
 -- name: NewestHoldRelease :one
-SELECT coalesce(max(id::text), '')::text FROM hold_releases WHERE org_id = @org_id AND pipeline_id = @pipeline_id;
+-- What a supervisor compares to see a new release. With the count, because a
+-- server with a slower clock gives a release an ID older than the newest.
+SELECT coalesce(count(*)::text || '/' || max(id::text), '')::text FROM hold_releases WHERE org_id = @org_id AND pipeline_id = @pipeline_id;
 
 -- name: NewestHoldReleaseAt :one
-SELECT coalesce(max(id::text), '')::text FROM hold_releases
+SELECT coalesce(count(*)::text || '/' || max(id::text), '')::text FROM hold_releases
 WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND create_time <= @at;

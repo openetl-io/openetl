@@ -443,3 +443,101 @@ func TestConnectorPackagesMigration(t *testing.T) {
 		t.Error("a role of a version that doesn't exist")
 	}
 }
+
+// What a supervisor compares to see a hold released or a reset or rewind asked
+// for changes with each one, though the server that made it has a slower clock
+// and gave it an ID older than the newest.
+func TestReleasesAndRequestsAreSeenWhateverTheirIDs(t *testing.T) {
+	ctx := t.Context()
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tenant, err := s.Bootstrap(ctx, "default", func(*db.Queries, uuid.UUID) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	// A pipeline's source and destination don't matter here.
+	if _, err := conn.Exec(ctx, "SET session_replication_role = replica"); err != nil {
+		t.Fatal(err)
+	}
+	org, pipeline := tenant.Org, uuid.New()
+	if _, err := conn.Exec(ctx, `INSERT INTO pipelines (org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision)
+		VALUES ($1, $2, $3, 'p', $2, $2, 'default', 'v1', 1)`, org, uuid.New(), pipeline); err != nil {
+		t.Fatal(err)
+	}
+	newer, older := uuid.Must(uuid.NewV7()), uuid.MustParse("00000000-0000-7000-8000-000000000001")
+	soon, before := time.Now().Add(time.Hour), time.Now().Add(-time.Hour)
+
+	releases := func() string {
+		t.Helper()
+		v, err := s.NewestHoldRelease(ctx, db.NewestHoldReleaseParams{OrgID: org, PipelineID: pipeline})
+		if err != nil {
+			t.Fatal(err)
+		}
+		at, err := s.NewestHoldReleaseAt(ctx, db.NewestHoldReleaseAtParams{OrgID: org, PipelineID: pipeline, At: soon})
+		if err != nil || at != v {
+			t.Fatalf("at %q, %v; now %q", at, err, v)
+		}
+		return v
+	}
+	release := func(id uuid.UUID, stream string) {
+		t.Helper()
+		if _, err := s.InsertHoldRelease(ctx, db.InsertHoldReleaseParams{OrgID: org, ID: id, PipelineID: pipeline, Stream: stream, ColumnName: "c", Principal: "p"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := releases(); got != "" {
+		t.Errorf("no releases: %q", got)
+	}
+	release(newer, "a")
+	first := releases()
+	release(older, "b")
+	if got := releases(); got == first || got == "" {
+		t.Errorf("a release with an older ID left %q as it was", got)
+	}
+	if got, err := s.NewestHoldReleaseAt(ctx, db.NewestHoldReleaseAtParams{OrgID: org, PipelineID: pipeline, At: before}); err != nil || got != "" {
+		t.Errorf("before any: %q, %v", got, err)
+	}
+
+	requests := func() string {
+		t.Helper()
+		v, err := s.NewestCheckpointRequest(ctx, db.NewestCheckpointRequestParams{OrgID: org, PipelineID: pipeline})
+		if err != nil {
+			t.Fatal(err)
+		}
+		at, err := s.NewestCheckpointRequestAt(ctx, db.NewestCheckpointRequestAtParams{OrgID: org, PipelineID: pipeline, At: soon})
+		if err != nil || at != v {
+			t.Fatalf("at %q, %v; now %q", at, err, v)
+		}
+		return v
+	}
+	request := func(id uuid.UUID) {
+		t.Helper()
+		if _, err := s.InsertCheckpointRequest(ctx, db.InsertCheckpointRequestParams{OrgID: org, ID: id, PipelineID: pipeline, Kind: "reset", Streams: []string{}, Principal: "p"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := requests(); got != "" {
+		t.Errorf("no requests: %q", got)
+	}
+	request(newer)
+	first = requests()
+	request(older)
+	if got := requests(); got == first || got == "" {
+		t.Errorf("a request with an older ID left %q as it was", got)
+	}
+	if got, err := s.NewestCheckpointRequestAt(ctx, db.NewestCheckpointRequestAtParams{OrgID: org, PipelineID: pipeline, At: before}); err != nil || got != "" {
+		t.Errorf("before any: %q, %v", got, err)
+	}
+}
