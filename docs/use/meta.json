@@ -2,6 +2,5 @@
   "title": "Use the console",
   "description": "For everyone who depends on the data: freshness, syncs, incidents and schema changes",
   "icon": "LayoutDashboard",
-  "root": true,
   "pages": ["index"]
 }

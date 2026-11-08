@@ -2,6 +2,5 @@
   "title": "Get started",
   "description": "What OpenETL is, a first pipeline, and the words it uses",
   "icon": "Rocket",
-  "root": true,
   "pages": ["overview", "quickstart", "concepts"]
 }
