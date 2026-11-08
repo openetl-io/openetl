@@ -1,6 +1,6 @@
 # Working on openetl
 
-For people and coding agents. [README.md](README.md) has what openetl is, the repository's layout and the make targets; this file has the rules that aren't obvious from the code. [web/AGENTS.md](web/AGENTS.md) adds the UI's.
+For people and coding agents. [README.md](README.md) has what OpenETL is, [CONTRIBUTING.md](CONTRIBUTING.md) the repository's layout and the make targets; this file has the rules that aren't obvious from the code. [web/AGENTS.md](web/AGENTS.md) adds the UI's, and [docs/AGENTS.md](docs/AGENTS.md) the docs'.
 
 ## Before a commit
 
@@ -24,6 +24,14 @@ For people and coding agents. [README.md](README.md) has what openetl is, the re
 - The official connectors live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors), which holds connector code and tests only. Tooling for connectors (packaging, validating `openetl-connector.yaml`, release names) is `openetl connector …` here, so a third-party connector needs nothing from that repository.
 - **No connector changes a column's type by itself:** not on targets, staging or anything that becomes the user's table, topic schema or files. It refuses, holding the column where the stream holds, and gives the statement or step that makes the change, unless the pipeline's spec allows the change. New columns still land.
 - `openetld` and the CLI don't call language models. A service that does is a client of the API and platform events.
+
+## Docs
+
+- `docs/` is the documentation the docs site is built from, at `main` and at each release tag, so what it says ships with the code it describes. [docs/AGENTS.md](docs/AGENTS.md) has who each section is for, the format and the style.
+- **A change and its docs land together.** A pull request that changes what someone using, running or integrating OpenETL sees (a command, a flag, a setting, a field of a spec, an event, a metric, the API, the console, a default, an error people act on) updates `docs/` in the same pull request. So does one that changes the connector protocol or the SDK, in `docs/build-connectors`.
+- **No page about one connector here.** An official connector's page is its package's `README.md` in openetl-connectors; this repository documents only the connectors built into `openetld`.
+- **The README is the front door.** It stays short and welcoming: what OpenETL does, how to try it, and where the docs for each kind of reader start. Layout, make targets and anything else for contributors go in CONTRIBUTING.md.
+- `go test ./test/docs` checks what a machine can: frontmatter, headings, raw HTML, links and anchors, and that each folder's `meta.json` lists its pages. `make test` runs it.
 
 ## Tests
 
