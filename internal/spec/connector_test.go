@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -369,6 +370,23 @@ func TestParseConnectorErrors(t *testing.T) {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: parsed", name)
 		}
+	}
+}
+
+// Versions that differ only by build metadata compare equal, so nothing could
+// tell which of them is the latest.
+func TestConnectorVersionsCarryNoBuildMetadata(t *testing.T) {
+	manifest := "apiVersion: openetl.io/v1alpha1\nkind: DeclarativeSource\nmetadata: {name: acme, version: %s}\nspec: {}\n"
+	for name, doc := range map[string]string{
+		"descriptor": strings.Replace(descriptor, "  version: 0.1.0\n", "  version: 0.1.0+build.5\n", 1),
+		"manifest":   fmt.Sprintf(manifest, "1.0.0+build.5"),
+	} {
+		if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), "build metadata") {
+			t.Errorf("%s: %v, want it refused for its build metadata", name, err)
+		}
+	}
+	if _, err := Parse(fmt.Appendf(nil, manifest, "1.0.0-rc.1")); err != nil {
+		t.Errorf("a pre-release: %v", err)
 	}
 }
 

@@ -43,9 +43,6 @@ func Publish(ctx context.Context, c *oci.Client, ns oci.Ref, descriptor string) 
 	if doc.Kind != spec.KindConnector || doc.APIVersion != spec.APIVersionConnector {
 		return nil, fmt.Errorf("%s isn't a v1alpha2 Connector descriptor", descriptor)
 	}
-	if strings.Contains(doc.Version, "+") {
-		return nil, fmt.Errorf("%s: version %s has build metadata, which a registry's tag can't carry", descriptor, doc.Version)
-	}
 	_, short := spec.SplitName(doc.Name)
 	repo := ns.Child(short)
 	dir := filepath.Dir(descriptor)

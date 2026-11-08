@@ -39,7 +39,7 @@ spec:
 | `DeclarativeSource` | `openetl.io/v1alpha1` | The org | A version of a declarative source: its manifest |
 | `ConnectorSource` | `openetl.io/v1alpha1` | The org | An OCI registry namespace or a GitHub repository whose connector packages the catalog lists |
 
-`Connector` and `DeclarativeSource` documents also need `metadata.version`, a semantic version such as `1.2.0`, and their names may have an owner, as in `acme/billing`. A `Connector` descriptor at `openetl.io/v1alpha1` is still read, as a package with one role.
+`Connector` and `DeclarativeSource` documents also need `metadata.version`, a semantic version such as `1.2.0` with no build metadata (`+…`), and their names may have an owner, as in `acme/billing`. A `Connector` descriptor at `openetl.io/v1alpha1` is still read, as a package with one role.
 
 [Pipeline](./specs/pipeline.md), [Source](./specs/source.md) and [Destination](./specs/destination.md) list every field of those kinds' documents. The fields of each `spec` are defined by the messages in [`proto/openetl/api/v1`](../../proto/openetl/api/v1), whose comments describe them, and read from YAML by [`internal/spec`](../../internal/spec). The [examples](../../examples) are working documents of each common kind. A `Connector` descriptor's fields are in [Connector descriptor](./connector-descriptor.md), and a `DeclarativeSource` manifest's in [Declarative source manifest](./manifest.md).
 
