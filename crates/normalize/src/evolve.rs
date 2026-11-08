@@ -3,22 +3,32 @@
 //! narrower types cast up, missing columns null. The schema policy decides
 //! which changes to an established schema are taken.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::hold::{HeldCell, Why};
 use std::sync::Arc;
 
+use arrow_array::cast::AsArray;
+use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions, new_null_array};
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{DataType, Field, Schema};
 
 use crate::coerce::{self, Failures, Infinity, Target};
-use crate::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, JSON_EXTENSION, logical_type};
+use crate::{
+    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, JSON_EXTENSION, MAX_EXACT_FLOAT_INT,
+    logical_type,
+};
 
 /// Schema metadata: a JSON object from each source column whose type changed
 /// incompatibly to its current version, 2 or more. Version k's values are in
 /// the column `{name}__v{k}`.
 pub const VERSIONS_KEY: &str = "openetl.versions";
+
+/// Schema metadata: a JSON array of the columns, by their names in the
+/// schema, that have held an `int64` value past ±2^53. `float64` would round
+/// them, so such a column mixed with `float64` becomes `string`.
+pub const BIG_INTS_KEY: &str = "openetl.big_ints";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Policy {
@@ -30,7 +40,8 @@ pub enum Policy {
 }
 
 /// Whether `to` holds every value of `from`. `int64` to `float64` counts, as
-/// it does for inference.
+/// it does for inference, within ±2^53; [`Evolver::conform`] looks at the
+/// values and sends a column past that to `string`.
 pub fn widens(from: &Field, to: &Field) -> bool {
     use DataType as D;
     let (a, b) = (from.data_type(), to.data_type());
@@ -74,6 +85,9 @@ pub(crate) struct Conformed {
     pub cells: Vec<HeldCell>,
     /// Columns this batch started holding, with why.
     pub held: Vec<(String, String, Why)>,
+    /// A column held its first value past ±2^53, which the schema's metadata
+    /// records though no column changed.
+    pub big_ints_grew: bool,
 }
 
 /// When the evolver holds a column instead of stopping on its change, or
@@ -105,6 +119,9 @@ pub(crate) struct Evolver {
     /// Columns held whole, by their names in the schema: their values pass
     /// through, and their type follows them.
     pub holding: HashSet<String>,
+    /// Columns that have held an `int64` value past ±2^53, by their names in
+    /// the schema. [`BIG_INTS_KEY`] carries them across attempts.
+    pub big_ints: BTreeSet<String>,
 }
 
 impl Evolver {
@@ -120,6 +137,7 @@ impl Evolver {
             infinity: Infinity::default(),
             rules: None,
             holding: HashSet::new(),
+            big_ints: BTreeSet::new(),
         };
         for f in restored.map(|r| r.fields().iter()).into_iter().flatten() {
             e.add(f.as_ref().clone());
@@ -257,6 +275,15 @@ impl Evolver {
         }
     }
 
+    /// Whether a batch's `f` meets `cur` in `int64` and `float64` on a column
+    /// past ±2^53, where `float64` can't hold every value.
+    fn mixes_big_ints(&self, name: &str, cur: &Field, f: &Field) -> bool {
+        matches!(
+            (cur.data_type(), f.data_type()),
+            (DataType::Int64, DataType::Float64) | (DataType::Float64, DataType::Int64)
+        ) && self.big_ints.contains(name)
+    }
+
     /// A change the policy doesn't take. In a stream that holds, the column
     /// couldn't be held.
     fn drift(&self, what: String) -> Error {
@@ -280,6 +307,7 @@ impl Evolver {
     /// schema, taking the changes the policy allows.
     pub fn conform(&mut self, batch: &RecordBatch) -> Result<Conformed, Error> {
         let strict = self.established;
+        let big_ints = self.big_ints.len();
         let mut changed = false;
         let mut columns: HashMap<String, ArrayRef> = HashMap::new();
         let mut failed: HashMap<usize, String> = HashMap::new();
@@ -289,6 +317,9 @@ impl Evolver {
         let schema = batch.schema();
         for (f, col) in schema.fields().iter().zip(batch.columns()) {
             let name = self.current(f.name());
+            if !self.big_ints.contains(&name) && past_exact_float(col) {
+                self.big_ints.insert(name.clone());
+            }
             let Some(&i) = self.index.get(&name) else {
                 let full = self
                     .rules
@@ -323,6 +354,15 @@ impl Evolver {
                 continue;
             };
             let cur = self.fields[i].clone();
+            let as_text = self.mixes_big_ints(&name, &cur, f);
+            let (text_field, text_col);
+            let (f, col) = if as_text {
+                text_field = Arc::new(Field::new(f.name(), DataType::Utf8, true));
+                text_col = cast_up(col, &text_field)?;
+                (&text_field, &text_col)
+            } else {
+                (f, col)
+            };
             if cur.data_type() == f.data_type() && widens(f, &cur) {
                 columns.insert(name, col.clone());
                 continue;
@@ -465,6 +505,7 @@ impl Evolver {
             versioned,
             cells,
             held,
+            big_ints_grew: self.big_ints.len() > big_ints,
         })
     }
 }
@@ -481,6 +522,22 @@ fn widened(cur: &Field, to: &Field) -> Field {
         f = f.with_metadata(md);
     }
     f
+}
+
+/// Whether an `int64` column has a value past ±2^53.
+fn past_exact_float(col: &ArrayRef) -> bool {
+    let Some(a) = col.as_primitive_opt::<Int64Type>() else {
+        return false;
+    };
+    a.iter()
+        .flatten()
+        .any(|v| v.unsigned_abs() > MAX_EXACT_FLOAT_INT)
+}
+
+/// Whether a value's text is an integer that `float64` would round.
+fn text_past_exact_float(s: &str) -> bool {
+    s.parse::<i128>()
+        .is_ok_and(|v| v.unsigned_abs() > u128::from(MAX_EXACT_FLOAT_INT))
 }
 
 /// Casts a column to a type that widens it.
@@ -517,12 +574,26 @@ fn cast_down(col: &ArrayRef, to: &Field, source: &str, inf: Infinity) -> (ArrayR
     let Ok(fmt) = ArrayFormatter::try_new(col.as_ref(), &FormatOptions::new()) else {
         return fail_all(&format!("isn't {}", logical_type(to)));
     };
+    let mut rounded = Vec::new();
     let strings: arrow_array::StringArray = (0..col.len())
-        .map(|i| (!col.is_null(i)).then(|| fmt.value(i).to_string()))
+        .map(|i| {
+            let s = (!col.is_null(i)).then(|| fmt.value(i).to_string())?;
+            if t == Target::Float64 && text_past_exact_float(&s) {
+                rounded.push((
+                    i,
+                    format!("type: column {source:?} doesn't fit a float64 exactly"),
+                ));
+                return None;
+            }
+            Some(s)
+        })
         .collect();
     let named = to.clone().with_name(source);
     match coerce::text_column(&named, t, &(Arc::new(strings) as ArrayRef), inf) {
-        Some(out) => out,
+        Some((out, mut failed)) => {
+            failed.extend(rounded);
+            (out, failed)
+        }
         None => fail_all(&format!("isn't {}", logical_type(to))),
     }
 }
@@ -592,6 +663,80 @@ mod tests {
         )]));
         assert!(widens(&json, &f(DataType::Utf8)));
         assert!(!widens(&f(DataType::Utf8), &json));
+    }
+
+    fn ints(v: &[i64]) -> RecordBatch {
+        batch(vec![(
+            "x",
+            Arc::new(Int64Array::from(v.to_vec())) as ArrayRef,
+        )])
+    }
+
+    fn floats(v: &[f64]) -> RecordBatch {
+        batch(vec![(
+            "x",
+            Arc::new(Float64Array::from(v.to_vec())) as ArrayRef,
+        )])
+    }
+
+    const BIG: i64 = (1 << 53) + 1;
+
+    fn strings(b: &RecordBatch) -> Vec<Option<&str>> {
+        b.column(0).as_string::<i32>().iter().collect()
+    }
+
+    #[test]
+    fn a_column_past_2_53_becomes_a_string_not_a_float() {
+        let mut e = Evolver::new(Policy::AllowAll, None, BTreeMap::new());
+        e.conform(&ints(&[BIG])).unwrap();
+        let c = e.conform(&floats(&[1.5])).unwrap();
+        assert!(c.changed);
+        assert_eq!(names(&e.schema())[0].1, DataType::Utf8);
+        assert_eq!(strings(&c.batch), vec![Some("1.5")]);
+        let c = e.conform(&ints(&[BIG])).unwrap();
+        assert!(!c.changed);
+        assert_eq!(strings(&c.batch), vec![Some("9007199254740993")]);
+    }
+
+    #[test]
+    fn big_integers_into_an_established_float_become_strings() {
+        let mut e = Evolver::new(Policy::AllowAll, None, BTreeMap::new());
+        e.conform(&floats(&[1.5])).unwrap();
+        let c = e.conform(&ints(&[BIG, 2])).unwrap();
+        assert!(c.changed);
+        assert_eq!(names(&e.schema())[0].1, DataType::Utf8);
+        assert_eq!(strings(&c.batch), vec![Some("9007199254740993"), Some("2")]);
+    }
+
+    #[test]
+    fn integers_within_2_53_still_widen_to_float() {
+        let mut e = Evolver::new(Policy::AllowAll, None, BTreeMap::new());
+        e.conform(&ints(&[1 << 53])).unwrap();
+        let c = e.conform(&floats(&[1.5])).unwrap();
+        assert!(c.changed);
+        assert_eq!(names(&e.schema())[0].1, DataType::Float64);
+    }
+
+    #[test]
+    fn allow_columns_takes_a_big_integer_column_going_to_string() {
+        let mut e = Evolver::new(Policy::AllowColumns, None, BTreeMap::new());
+        e.conform(&ints(&[BIG])).unwrap();
+        e.establish();
+        let c = e.conform(&floats(&[1.5])).unwrap();
+        assert!(c.changed);
+        assert_eq!(names(&e.schema())[0].1, DataType::Utf8);
+    }
+
+    #[test]
+    fn ignore_new_quarantines_a_big_integer_a_float_column_would_round() {
+        let mut e = Evolver::new(Policy::IgnoreNew, None, BTreeMap::new());
+        e.conform(&floats(&[1.5])).unwrap();
+        e.establish();
+        let c = e.conform(&ints(&[BIG, 2])).unwrap();
+        assert!(!c.changed);
+        assert_eq!(c.failed.len(), 1);
+        assert_eq!(c.failed[0].0, 0);
+        assert_eq!(names(&e.schema())[0].1, DataType::Float64);
     }
 
     #[test]
