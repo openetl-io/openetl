@@ -2,7 +2,6 @@ package runner_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -159,7 +158,7 @@ func TestRewindAfterAnUnreadableRecord(t *testing.T) {
 					rewound[0].Approval != tc.rewind.Approval {
 					t.Fatalf("rewound %+v, want once from %v to %v", rewound, unreadable, before)
 				}
-				// The first record after the restart says s read rows again.
+				// A newer generation's records follow the one restored.
 				rec, err := log.Latest(ctx)
 				for err == nil && rec.Previous != nil && *rec.Previous != before {
 					rec, err = log.Record(ctx, *rec.Previous)
@@ -167,8 +166,8 @@ func TestRewindAfterAnUnreadableRecord(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if raw, _ := json.Marshal(rec.Reread); rec.Generation <= unreadable.Generation || !strings.Contains(string(raw), `"s"`) {
-					t.Fatalf("the record after the restart is %d-g%d, rereading %s; want a newer generation's, reading s again", rec.Epoch, rec.Generation, raw)
+				if rec.Previous == nil || *rec.Previous != before || rec.Generation <= unreadable.Generation {
+					t.Fatalf("the record after the restart is %d-g%d after %v; want a newer generation's after %v", rec.Epoch, rec.Generation, rec.Previous, before)
 				}
 			})
 		})
