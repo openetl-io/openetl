@@ -65,6 +65,33 @@ var catalog = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 var withTopic = &apiv1.Catalog{Streams: append(catalog.GetStreams(),
 	&apiv1.CatalogStream{Name: "topic", Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_STREAM}})}
 
+var keyedTopic = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
+	{Name: "topic", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_STREAM}},
+}}
+
+func TestCursorProblem(t *testing.T) {
+	for _, tc := range []struct {
+		read   apiv1.SyncMode
+		keyed  bool
+		cursor string
+		fails  bool
+	}{
+		{read: apiv1.SyncMode_SYNC_MODE_INCREMENTAL, fails: true},
+		{read: apiv1.SyncMode_SYNC_MODE_INCREMENTAL, cursor: "at"},
+		{read: apiv1.SyncMode_SYNC_MODE_STREAM, keyed: true, fails: true},
+		{read: apiv1.SyncMode_SYNC_MODE_STREAM, keyed: true, cursor: "offset"},
+		{read: apiv1.SyncMode_SYNC_MODE_STREAM},
+		// A changelog's batches carry their own sequence.
+		{read: apiv1.SyncMode_SYNC_MODE_CDC, keyed: true},
+		{read: apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, keyed: true},
+		{read: apiv1.SyncMode_SYNC_MODE_UNSPECIFIED, keyed: true},
+	} {
+		if err := CursorProblem("s", tc.read, tc.keyed, tc.cursor); (err != nil) != tc.fails {
+			t.Errorf("%+v: %v", tc, err)
+		}
+	}
+}
+
 func TestPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -114,6 +141,13 @@ func TestPipeline(t *testing.T) {
 			streams: "orders exactly_once+dedupe superset replay, deduped at apply", problems: []string{`stream "orders" is read with incremental, which needs a cursor`}},
 		{name: "incremental with the spec's cursor", cat: catalog, caps: parquet, spec: `{"source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_INCREMENTAL", "cursor": "id"}]}}`,
 			streams: "orders at_least_once superset replay, and the destination can't dedupe", problems: []string{`delivery.require: stream "orders" gets at_least_once`}},
+		{name: "stream read, keyed, without a cursor", cat: keyedTopic, caps: warehouse,
+			spec:     `{"mode": "PIPELINE_MODE_CONTINUOUS", "source": {"streams": [{"name": "topic"}]}}`,
+			streams:  "topic exactly_once exact replay",
+			problems: []string{`stream "topic" has a primary key and is read with stream, which needs a cursor`}},
+		{name: "stream read, keyed, with the spec's cursor", cat: keyedTopic, caps: warehouse,
+			spec:    `{"mode": "PIPELINE_MODE_CONTINUOUS", "source": {"streams": [{"name": "topic", "cursor": "offset"}]}}`,
+			streams: "topic exactly_once exact replay"},
 		{name: "continuous", cat: withTopic, caps: warehouse,
 			spec:    `{"mode": "PIPELINE_MODE_CONTINUOUS", "source": {"streams": [{"name": "topic"}, {"name": "orders", "sync": "SYNC_MODE_CDC"}]}}`,
 			streams: "topic exactly_once exact replay; orders exactly_once exact replay"},

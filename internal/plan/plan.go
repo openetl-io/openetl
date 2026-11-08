@@ -353,7 +353,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 			problems = append(problems, fmt.Errorf("stream %q keeps nanosecond timestamps, but the destination keeps only microseconds", name))
 		}
 		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
-		if err := CursorProblem(name, read, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField())); err != nil {
+		if err := CursorProblem(name, read, len(s.cs.GetPrimaryKey()) > 0, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField())); err != nil {
 			problems = append(problems, err)
 		}
 		if spec.GetTransform() != nil {
@@ -413,10 +413,19 @@ func Replay(r source.Replay, read apiv1.SyncMode) source.Replay {
 	return r
 }
 
-// CursorProblem fails a stream read with incremental without a cursor.
-func CursorProblem(stream string, read apiv1.SyncMode, cursor string) error {
-	if read == apiv1.SyncMode_SYNC_MODE_INCREMENTAL && cursor == "" {
+// CursorProblem fails a stream read with incremental without a cursor, and a
+// keyed one read with stream without one: its read start never changes, so
+// without a cursor every event of a key would get the first's record ID, and
+// be dropped as a repeat of it.
+func CursorProblem(stream string, read apiv1.SyncMode, keyed bool, cursor string) error {
+	if cursor != "" {
+		return nil
+	}
+	switch {
+	case read == apiv1.SyncMode_SYNC_MODE_INCREMENTAL:
 		return fmt.Errorf("stream %q is read with incremental, which needs a cursor: the source names none, so set source.streams[].cursor", stream)
+	case read == apiv1.SyncMode_SYNC_MODE_STREAM && keyed:
+		return fmt.Errorf("stream %q has a primary key and is read with stream, which needs a cursor to tell one event of a key from the next: the source names none, so set source.streams[].cursor", stream)
 	}
 	return nil
 }
