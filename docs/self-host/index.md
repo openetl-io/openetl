@@ -38,7 +38,7 @@ Every flag of `openetld` can also be set by an environment variable; `openetld R
 | `OPENETL_PUBLIC_URL` | Servers | The URL people open the console at. Password links start with it, and an `https://` URL makes the session cookie secure. |
 | `OPENETL_API_URL` | Runners | The API's URL, as runners reach it. |
 | `OPENETL_RUNNER_TOKEN` | Runners | The token runners authenticate with, which `openetl dataplane token create` makes. `OPENETL_RUNNER_TOKEN_FILE` names a file holding it instead. |
-| `OPENETL_CHECKPOINTS` | Runners | Where checkpoints and staging go, such as `s3://my-bucket?region=eu-west-1`. |
+| `OPENETL_CHECKPOINTS` | Runners | Where checkpoints and staging go, such as `s3://my-bucket?region=eu-west-1`. Required: a runner won't start without it. A directory works only when every runner is on one machine, and the Kubernetes launcher needs a bucket. |
 | `OPENETL_ORCHESTRATOR` | Servers and orchestrators | `dbos`, the default, or `temporal`. |
 
 The HTTP requests OpenETL makes itself, for webhooks, for downloads from registries, and for connectors that make their requests through it, reach only public addresses, plus the ranges `OPENETL_EGRESS_ALLOW` lists, such as your own networks.

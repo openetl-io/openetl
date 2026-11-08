@@ -129,3 +129,5 @@ To run workflows on Temporal instead of DBOS, set `OPENETL_ORCHESTRATOR: tempora
 ## Upgrading
 
 Change the image in `kustomization.yaml` and apply. The new orchestrators start the old version's workflows again, and syncs carry on from their checkpoints. Each old runner finishes its jobs at a checkpoint before it stops, and they're placed again. Job pods run the launcher's image, so a pod made before the upgrade finishes on the old one.
+
+A version can write checkpoints in a newer format. A runner older than that refuses to run such a pipeline, and the sync fails with `CONFIG_INVALID`, rather than lose what the newer format holds. If you go back to an older version, run the affected pipelines on the newer one again.

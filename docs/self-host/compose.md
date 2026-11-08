@@ -195,6 +195,8 @@ Runners never connect to Temporal. Changing the orchestrator of an installation 
 
 Build or pull the new image, set `OPENETL_IMAGE` in `.env` if its name changed, and run `docker compose up -d`, which replaces each container whose image changed. The new orchestrator starts the old version's workflows again, and syncs carry on from their checkpoints. Each runner finishes its jobs at a checkpoint before it stops, taking up to 2 minutes for a sync and 10 for a stream, and they're placed again; `compose.yml` gives runners 11 minutes to stop.
 
+A version can write checkpoints in a newer format. A runner older than that refuses to run such a pipeline, and the sync fails with `CONFIG_INVALID`, rather than lose what the newer format holds. If you go back to an older version, run the affected pipelines on the newer one again.
+
 ## Back up
 
 Three things hold an installation's state:

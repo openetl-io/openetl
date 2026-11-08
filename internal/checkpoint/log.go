@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 // ErrFenced: a newer generation has claimed the pipeline. The attempt must
@@ -19,6 +21,15 @@ var ErrFenced = errors.New("checkpoint: fenced by a newer generation")
 // isn't a record of that epoch and generation.
 var ErrUnreadable = errors.New("checkpoint: record unreadable")
 
+// ErrNewerFormat: a newer version of openetld wrote HEAD. Reading on would
+// drop the fields this version doesn't know, and the next commit would write
+// them away for good, so it's refused.
+var ErrNewerFormat = errors.New("checkpoint: the log was written by a newer version")
+
+// currentFormat is the checkpoint log's format. It goes up when an older
+// version reading what's written would lose something.
+const currentFormat = 1
+
 const claimAttempts = 16
 
 type RecordRef struct {
@@ -27,6 +38,9 @@ type RecordRef struct {
 }
 
 type Head struct {
+	// The format HEAD and its records are written in; 0 before it was
+	// recorded.
+	Format     uint32 `json:"format,omitempty"`
 	Generation uint64 `json:"generation"`
 	// Owner is unique per attempt, so every HEAD write is distinct and an
 	// unknown outcome can be resolved by reading HEAD back.
@@ -413,6 +427,9 @@ func (l *Log) readHead(ctx context.Context) (Head, Version, error) {
 	if err := json.Unmarshal(data, &h); err != nil {
 		return Head{}, "", fmt.Errorf("checkpoint: decode HEAD: %w", err)
 	}
+	if h.Format > currentFormat {
+		return Head{}, "", errs.Wrap(errs.ConfigInvalid, fmt.Errorf("%w: it's format %d, and this version reads up to format %d; run this pipeline on the newer version", ErrNewerFormat, h.Format, currentFormat), "")
+	}
 	return h, v, nil
 }
 
@@ -469,6 +486,7 @@ func (l *Log) Claim(ctx context.Context, owner string) (sess *Session, err error
 		default:
 			next = Head{Generation: cur.Generation + 1, Owner: owner, Record: cur.Record, Previous: cur.Previous, First: cur.First}
 		}
+		next.Format = currentFormat
 		data, err := json.Marshal(next)
 		if err != nil {
 			return nil, err
@@ -580,6 +598,7 @@ func (s *Session) RewindTo(ctx context.Context, to *Record) (err error) {
 }
 
 func (s *Session) swapHead(ctx context.Context, next Head) error {
+	next.Format = currentFormat
 	data, err := json.Marshal(next)
 	if err != nil {
 		return err

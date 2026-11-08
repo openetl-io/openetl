@@ -11,7 +11,10 @@ import (
 	"testing"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
+
+const headKey = "org/pipe/_checkpoints/HEAD"
 
 func newLog(s checkpoint.Store) *checkpoint.Log { return checkpoint.NewLog(s, "org", "pipe") }
 
@@ -142,6 +145,60 @@ func (f *flakyStore) Swap(ctx context.Context, key string, data []byte, prev che
 		return "", errTimeout
 	}
 	return f.Store.Swap(ctx, key, data, prev)
+}
+
+func TestNewerFormatIsRefused(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	commit(t, claim(t, l, "a"), 1)
+	head, v, err := store.Get(t.Context(), headKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var h map[string]any
+	if err := json.Unmarshal(head, &h); err != nil {
+		t.Fatal(err)
+	}
+	if h["format"] != float64(1) {
+		t.Fatalf("HEAD's format is %v, want 1", h["format"])
+	}
+	h["format"] = 2
+	newer, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Swap(t.Context(), headKey, newer, v); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Claim(t.Context(), "old"); !errors.Is(err, checkpoint.ErrNewerFormat) {
+		t.Fatalf("Claim: %v, want ErrNewerFormat", err)
+	}
+	if errs.CodeOf(func() error { _, err := l.Claim(t.Context(), "old"); return err }()) != errs.ConfigInvalid {
+		t.Error("Claim's error isn't CONFIG_INVALID, so it'd be retried")
+	}
+	if _, err := l.Latest(t.Context()); !errors.Is(err, checkpoint.ErrNewerFormat) {
+		t.Fatalf("Latest: %v, want ErrNewerFormat", err)
+	}
+	// Refused, so HEAD is as the newer version left it.
+	after, _, err := store.Get(t.Context(), headKey)
+	if err != nil || string(after) != string(newer) {
+		t.Fatalf("HEAD changed: %s (%v)", after, err)
+	}
+}
+
+func TestHeadFromBeforeFormatsReads(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	if _, err := store.Create(t.Context(), headKey, []byte(`{"generation":3,"owner":"x"}`)); err != nil {
+		t.Fatal(err)
+	}
+	s := claim(t, newLog(store), "a")
+	if s.Generation() != 4 {
+		t.Fatalf("generation = %d", s.Generation())
+	}
+	data, _, err := store.Get(t.Context(), headKey)
+	if err != nil || !strings.Contains(string(data), `"format":1`) {
+		t.Fatalf("claiming didn't stamp HEAD: %s (%v)", data, err)
+	}
 }
 
 func TestUnknownOutcomes(t *testing.T) {
