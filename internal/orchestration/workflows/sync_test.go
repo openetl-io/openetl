@@ -247,6 +247,23 @@ func TestConnectorOpRunsOnTheDataPlane(t *testing.T) {
 	}
 }
 
+// A teardown waits for a runner as long as a Flink teardown does: no runner
+// for a minute would otherwise end it, and nothing would ask for it again.
+func TestTeardownWaitsLongerForARunner(t *testing.T) {
+	env := newHarness(t)
+	env.RegisterWorkflows(workflows.Workflows{})
+	p := newPlane(env, func(contract.WorkInput) (time.Duration, contract.WorkOutcome) {
+		return time.Second, result(t, contract.ConnectorOpResult{})
+	})
+	env.ExecuteWorkflow(contract.ConnectorOpWorkflow, contract.ConnectorOpInput{OrgID: "o", DataPlane: "dp1", Op: contract.OpTeardown, SourceID: "s"})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if w := p.sent[0]; w.Kind != contract.TeardownSource || w.Pickup != 5*time.Minute {
+		t.Errorf("sent %+v", w)
+	}
+}
+
 // No runner taking an operation fails it, without a retry, in a way the API
 // can tell.
 func TestConnectorOpNoRunner(t *testing.T) {
