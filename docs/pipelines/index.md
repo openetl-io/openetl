@@ -202,7 +202,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | `resources.finishWithin` | Scheduled, with an automatic size: run as many lanes as the last sync's volume needs to finish within this long | |
 | `resources.pool` | Which pool of runners runs the jobs | `default` |
 | `dataPlane` | Which data plane's runners run the jobs | The server's, `default` |
-| `heal.mode` | What OpenETL does about the pipeline's incidents: `off` opens them and does nothing else; `suggest` also proposes actions, such as pausing; `auto_safe` takes them; `auto` does the same as `auto_safe` | `auto_safe` |
+| `heal.mode` | What OpenETL does about the pipeline's incidents: `off` opens them and does nothing else; `suggest` also proposes actions, such as pausing the pipeline or a stream, or syncing less often; `auto_safe` takes them; `auto` does the same as `auto_safe` | `auto_safe` |
 
 [Schedules](./schedules.md) covers when syncs start: intervals, cron time zones, jitter, a sync that runs long, pausing, and time OpenETL wasn't running.
 
@@ -315,8 +315,10 @@ order by id, _openetl_seq desc;
 | `openetl plan -f FILE` | Show what applying the documents would change, and each pipeline's plan |
 | `openetl apply -f FILE` | Create or update the documents' resources |
 | `openetl sync NAME` | Start a sync of a scheduled pipeline now; it fails if the pipeline is paused or a sync is running |
-| `openetl pause NAME` | Stop a pipeline's scheduled syncs; a sync that's running carries on. A continuous pipeline's job stops |
-| `openetl resume NAME` | Start its scheduled syncs, or its job, again |
+| `openetl pause NAME` | Stop a pipeline's scheduled syncs; a sync that's running carries on. A continuous pipeline's job stops. `--stream STREAM` stops only that stream, which syncs skip ([Pause one stream](./schedules.md#pause-one-stream)) |
+| `openetl resume NAME` | Start its scheduled syncs, or its job, again; `--stream STREAM` resumes a stream paused on its own |
+| `openetl overrides NAME` | List its paused streams, and heal's overrides of its spec ([When heal slows syncs down](./schedules.md#when-heal-slows-syncs-down)) |
+| `openetl overrides remove NAME FIELD` | Give the spec back its say in a field heal overrides: `schedule.every` or `source.rate_limit_scale` |
 | `openetl syncs NAME` | List its syncs, newest first, with how long each took, the rows it copied, its version and any error |
 | `openetl logs NAME` | Print the latest sync's log; `-f` follows a running one, and `--sync ID` picks another sync |
 | `openetl versions NAME` | List its versions, newest first |

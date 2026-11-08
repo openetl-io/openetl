@@ -91,11 +91,16 @@ These buttons show only if your role may use them.
 
 **Overview** starts with anything wrong: the pipeline's open incidents, a sync that's retrying after failed attempts, or a last sync that failed, with a link to read its log.
 
+**Not as the spec says** follows when the pipeline runs differently from how it was set up, until someone undoes it:
+
+- A stream marked **Paused** is skipped by syncs, which keep its place for when it's resumed. It says why, and links to the incident if heal paused it. **Resume stream** starts syncing it again.
+- An entry marked **Changed by heal** is a setting heal changed, such as how often syncs start after the source kept limiting them, next to what the pipeline's definition has. **Use the spec's** goes back to the definition's value. The header's **Schedule** shows heal's interval while it applies.
+
 A diagram then shows the source, each stream, the destination, and any step that runs after each sync, such as a dbt project. The **Streams** table has a row for each stream:
 
 | Column | What it shows |
 |---|---|
-| **Stream** | The table, topic or stream it reads. |
+| **Stream** | The table, topic or stream it reads, marked **Paused** if syncs skip it. |
 | **Read** | How it's read: full refresh, incremental (and on which column), CDC or stream. **Source default** when the pipeline leaves it to the source. |
 | **Write** | How it's written: append, overwrite or merge. |
 | **Delivery** | Its [delivery guarantee](../get-started/concepts.md#delivery-guarantees): **Exactly once**, **Effectively once** or **At least once**. Hover over it for the reason. **Checked when it syncs** means the control plane can't work it out ahead of time, and checks it before each sync instead. |
@@ -167,7 +172,12 @@ And these kinds:
 | **Quarantine** | A stream is holding back a large share of its rows. |
 | **Held** | A stream is holding a column, or some of its cells, back. |
 
-An incident's page has **What happened**, with a link to the sync's log; **Next steps**, which says what to do; **Heal**, what OpenETL did about it itself or proposes; and **Details**. Some incidents pause their pipeline, when syncing again would only fail the same way.
+An incident's page has **What happened**, with a link to the sync's log; **Next steps**, which says what to do; **Heal**, what OpenETL did about it itself or proposes; and **Details**. Some incidents pause their pipeline, when syncing again would only fail the same way. Others change how it runs:
+
+- **Quarantine** pauses the stream, so it holds back no more rows while the others carry on. A stream that can't stop on its own, such as one read with CDC, isn't paused, and **Next steps** says why. A stream that's the pipeline's only one pauses the pipeline. **Next steps** names the file the held-back rows are in, each with the reason it didn't fit.
+- **Rate limited**, once 3 syncs in a row have failed this way, makes the source send requests more slowly, where it can, or syncs start less often. It does it again after every 3 more.
+
+What they changed shows under **Not as the spec says** on the pipeline's **Overview**, where you can undo it. A pipeline's definition decides how far heal goes: it can propose these actions without taking them, or take none.
 
 Most incidents resolve themselves once the pipeline makes progress again. When you fixed something in a way OpenETL can't see, **Resolve** closes it by hand, with an optional **Comment** that's kept with the resolution. If it happens again, a new incident opens.
 
@@ -217,6 +227,9 @@ openetl versions PIPELINE                # its versions, newest first
 openetl sync PIPELINE                    # Sync now
 openetl pause PIPELINE                   # Pause
 openetl resume PIPELINE                  # Resume
+openetl resume --stream STREAM PIPELINE  # Resume stream
+openetl overrides PIPELINE               # Not as the spec says
+openetl overrides remove PIPELINE FIELD  # Use the spec's
 openetl incident list                    # open incidents
 openetl incident get PIPELINE INCIDENT   # one incident: what happened and what to do
 openetl incident resolve PIPELINE INCIDENT

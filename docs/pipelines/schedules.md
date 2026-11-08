@@ -115,6 +115,47 @@ openetl: failed_precondition: workspaces/default/pipelines/shop-orders is paused
 
 Pausing a continuous pipeline stops its job, and resuming starts it again from its last checkpoint.
 
+### Pause one stream
+
+`--stream` pauses one stream and leaves the others syncing. Syncs skip the stream and keep its position, so resuming it reads on from where it stopped:
+
+```sh
+openetl pause --stream public.customers shop-orders
+openetl resume --stream public.customers shop-orders
+```
+
+```text
+paused stream public.customers of workspaces/default/pipelines/shop-orders
+resumed stream public.customers of workspaces/default/pipelines/shop-orders
+```
+
+A sync that's running carries on with the stream; a continuous pipeline's job restarts at a checkpoint without it. Some streams can't stop on their own, and pausing one fails with `failed_precondition`:
+
+- a stream read with `cdc`, which shares the source's log of changes with the pipeline's other `cdc` streams, so skipping it would lose its changes;
+- a stream a transform reads;
+- the last stream that isn't paused: pause the pipeline instead.
+
+Heal pauses a stream by itself when it quarantines too many of its rows ([Incidents](../use/index.md#incidents)). `openetl overrides NAME` lists a pipeline's paused streams, and why each was paused. Resuming the whole pipeline leaves its paused streams paused, and an apply that no longer reads a stream drops its pause.
+
+## When heal slows syncs down
+
+When 3 syncs in a row fail because the source kept limiting their requests, and every 3 after that, heal slows the pipeline down, unless `heal.mode` is `off` (`suggest` only proposes it):
+
+- A declarative source's rate limit is halved, down to an eighth of what its manifest declares.
+- An `every` schedule's interval is doubled, up to a day, when there's no rate limit left to lower or the sync ran at least as long as the interval. A `cron` schedule isn't changed.
+
+These are heal's overrides: they apply in place of the spec's values, without a new version. They stay until you remove one, or apply a version that changes the field: a new `schedule`, or a new version of the source's connector. `openetl overrides NAME` lists them, and `openetl overrides remove NAME FIELD` gives the spec back its say:
+
+```sh
+openetl overrides remove shop-orders schedule.every
+```
+
+```text
+removed heal's override of schedule.every from workspaces/default/pipelines/shop-orders; the spec has its say again
+```
+
+`openetl plan` lists the overrides a pipeline keeps, and notes the ones an apply would drop.
+
 ## When OpenETL wasn't running
 
 On the default orchestrator, if no orchestrator was running when syncs fell due, the first to start again starts one sync for all of them, however many were missed, and the schedule then carries on from its next time. On Temporal, Temporal's schedules decide what to start, and still never start a sync while one is running.

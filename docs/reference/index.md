@@ -158,6 +158,8 @@ OpenETL records these events, and [webhooks](../../examples/webhook.yaml) delive
 | `sync.started`, `sync.succeeded`, `sync.failed`, `sync.stopped` | A sync's progress |
 | `pipeline.created`, `pipeline.updated`, `pipeline.deleted` | A pipeline's changes |
 | `pipeline.paused`, `pipeline.resumed`, `pipeline.rescaled` | A pipeline paused, resumed or rescaled |
+| `stream.paused`, `stream.resumed` | One of a pipeline's streams paused or resumed on its own; `data.stream` names it, and `data.incident` the incident whose playbook paused it |
+| `pipeline.overridden` | Heal set an override of a field of the pipeline's spec, or someone removed one: `data.field`, and `data.value` as JSON, empty once it's removed |
 | `pipeline.lagging`, `pipeline.recovered` | A continuous pipeline fell behind its source, or caught up |
 | `schema.changed`, `schema.blocked` | A stream's schema changed, or a change was stopped |
 | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident's progress |
