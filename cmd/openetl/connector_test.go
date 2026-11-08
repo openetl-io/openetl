@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,6 +27,15 @@ func TestConnectorSchemas(t *testing.T) {
 	}
 	if err := run(t.Context(), []string{"connector", "schema", "pipeline"}, io.Discard); err == nil {
 		t.Error("a schema there isn't")
+	}
+}
+
+func TestParseInterspersed(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	v := fs.String("v", "", "")
+	got, err := parseInterspersed(fs, []string{"a", "-v", "1", "b", "--", "-c", "d"})
+	if err != nil || *v != "1" || strings.Join(got, " ") != "a b -c d" {
+		t.Errorf("got %q, %q, %v", got, *v, err)
 	}
 }
 
@@ -58,7 +68,7 @@ func TestPackage(t *testing.T) {
 	}
 
 	buf.Reset()
-	if err := run(t.Context(), []string{"connector", "package", "--version", "1.0.0", "--out", out, acme}, &buf); err != nil {
+	if err := run(t.Context(), []string{"connector", "package", acme, "--version", "1.0.0", "--out", out}, &buf); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "example/acme 1.0.0") {
