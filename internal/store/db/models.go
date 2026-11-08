@@ -633,6 +633,28 @@ type Sync struct {
 	LastAttemptTime     *time.Time
 }
 
+type Teardown struct {
+	OrgID           uuid.UUID
+	ID              uuid.UUID
+	WorkspaceID     uuid.UUID
+	DataPlaneID     string
+	PipelineID      uuid.UUID
+	Pipeline        string
+	Op              string
+	Connector       string
+	SourceID        *uuid.UUID
+	DestinationID   *uuid.UUID
+	Name            string
+	Spec            []byte
+	Version         string
+	ConnectorDigest string
+	Secrets         []string
+	Tries           int32
+	LastError       *string
+	NextTime        time.Time
+	CreateTime      time.Time
+}
+
 type Webhook struct {
 	OrgID          uuid.UUID
 	WorkspaceID    uuid.UUID

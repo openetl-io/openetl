@@ -17,18 +17,21 @@ import (
 )
 
 const (
-	SyncStarted       = "sync.started"
-	SyncSucceeded     = "sync.succeeded"
-	SyncFailed        = "sync.failed"
-	SyncStopped       = "sync.stopped"
-	PipelineCreated   = "pipeline.created"
-	PipelineUpdated   = "pipeline.updated"
-	PipelineDeleted   = "pipeline.deleted"
-	PipelinePaused    = "pipeline.paused"
-	PipelineResumed   = "pipeline.resumed"
-	PipelineLagging   = "pipeline.lagging"
-	PipelineRecovered = "pipeline.recovered"
-	PipelineRescaled  = "pipeline.rescaled"
+	SyncStarted     = "sync.started"
+	SyncSucceeded   = "sync.succeeded"
+	SyncFailed      = "sync.failed"
+	SyncStopped     = "sync.stopped"
+	PipelineCreated = "pipeline.created"
+	PipelineUpdated = "pipeline.updated"
+	PipelineDeleted = "pipeline.deleted"
+	// Teardown of a deleted pipeline's connector or Flink cluster was given
+	// up on, so what it would have removed is left behind.
+	PipelineTeardownFailed = "pipeline.teardown_failed"
+	PipelinePaused         = "pipeline.paused"
+	PipelineResumed        = "pipeline.resumed"
+	PipelineLagging        = "pipeline.lagging"
+	PipelineRecovered      = "pipeline.recovered"
+	PipelineRescaled       = "pipeline.rescaled"
 	// Heal set one of its overrides, or someone removed one.
 	PipelineOverridden = "pipeline.overridden"
 	StreamPaused       = "stream.paused"
@@ -45,7 +48,7 @@ const (
 // Types is every event type there is.
 var Types = []string{
 	SyncStarted, SyncSucceeded, SyncFailed, SyncStopped,
-	PipelineCreated, PipelineUpdated, PipelineDeleted, PipelinePaused, PipelineResumed, PipelineLagging, PipelineRecovered,
+	PipelineCreated, PipelineUpdated, PipelineDeleted, PipelineTeardownFailed, PipelinePaused, PipelineResumed, PipelineLagging, PipelineRecovered,
 	PipelineRescaled, PipelineOverridden, StreamPaused, StreamResumed, PipelineReset,
 	SchemaChanged, SchemaBlocked,
 	IncidentOpened, IncidentEscalated, IncidentResolved,
@@ -148,6 +151,10 @@ type Pipeline struct {
 	Incident string `json:"incident,omitempty"`
 	// A stream paused or resumed on its own.
 	Stream string `json:"stream,omitempty"`
+	// In a teardown's failure, the source, destination or Flink cluster it
+	// was for, and what it last failed with.
+	Connector string `json:"connector,omitempty"`
+	Error     string `json:"error,omitempty"`
 	// An override's spec field, and its value as JSON; empty once it's
 	// removed.
 	Field string `json:"field,omitempty"`

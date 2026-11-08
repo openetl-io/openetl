@@ -361,45 +361,6 @@ func (q *Queries) GetConnectorOp(ctx context.Context, arg GetConnectorOpParams) 
 	return i, err
 }
 
-const getFlinkTeardown = `-- name: GetFlinkTeardown :one
-SELECT o.pipeline_id, c.workspace_id, c.name, cv.version, cv.spec, cv.secrets
-FROM connector_ops o
-JOIN flink_clusters c ON c.org_id = o.org_id AND c.id = o.flink_cluster_id
-JOIN flink_cluster_versions cv ON cv.org_id = o.org_id AND cv.cluster_id = o.flink_cluster_id AND cv.version = o.flink_version
-WHERE o.org_id = $1 AND o.id = $2 AND o.data_plane_id = $3 AND o.expire_time > now()
-`
-
-type GetFlinkTeardownParams struct {
-	OrgID       uuid.UUID
-	ID          uuid.UUID
-	DataPlaneID string
-}
-
-type GetFlinkTeardownRow struct {
-	PipelineID  *uuid.UUID
-	WorkspaceID uuid.UUID
-	Name        string
-	Version     string
-	Spec        []byte
-	Secrets     []string
-}
-
-// A Flink teardown the API sent to the data plane: the deleted pipeline,
-// and the version of the Flink cluster it pinned.
-func (q *Queries) GetFlinkTeardown(ctx context.Context, arg GetFlinkTeardownParams) (GetFlinkTeardownRow, error) {
-	row := q.db.QueryRow(ctx, getFlinkTeardown, arg.OrgID, arg.ID, arg.DataPlaneID)
-	var i GetFlinkTeardownRow
-	err := row.Scan(
-		&i.PipelineID,
-		&i.WorkspaceID,
-		&i.Name,
-		&i.Version,
-		&i.Spec,
-		&i.Secrets,
-	)
-	return i, err
-}
-
 const getPassword = `-- name: GetPassword :one
 SELECT hash, locked_until FROM passwords WHERE org_id = $1 AND principal_id = $2
 `
@@ -884,6 +845,8 @@ type PipelineOnDataPlaneRow struct {
 	OnDataPlane bool
 }
 
+// A Flink teardown the API sent to the data plane: the deleted pipeline,
+// and the version of the Flink cluster it pinned.
 // Whether the pipeline exists, and whether a version of it runs on the data
 // plane.
 func (q *Queries) PipelineOnDataPlane(ctx context.Context, arg PipelineOnDataPlaneParams) (PipelineOnDataPlaneRow, error) {

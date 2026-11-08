@@ -411,6 +411,8 @@ func orchestrate(ctx context.Context, cfg config.Config, backend orchestration.B
 	}
 	reconciler := &schedules.Reconciler{Store: st, Schedules: sched, Backend: backend, Logger: log.With("component", "reconcile")}
 	go reconciler.Run(ctx)
+	teardowns := &ops.Teardowns{Store: st, Ops: &ops.Ops{Backend: backend}, Logger: log.With("component", "teardowns")}
+	go teardowns.Run(ctx)
 	acts := &cpactivities.Activities{Store: st, Schedules: sched, Dispatch: work, Catalog: catalog, Logger: log.With("component", "steps")}
 	return backend.Run(ctx, wf.All(), acts.Steps())
 }

@@ -40,6 +40,8 @@ func (r *refreshes) Refresh(context.Context, string, string) error {
 	return nil
 }
 
+func (r *refreshes) Delete(context.Context, string) error { return nil }
+
 type holdsEnv struct {
 	conn     *pgx.Conn
 	owner    apiv1connect.PipelineServiceClient
@@ -418,5 +420,69 @@ func TestARefusedReleaseIsntSentAgain(t *testing.T) {
 	again := released()
 	if len(again) != 1 || again[0].GetId() == rs[0].GetId() || !again[0].GetNewVersion() {
 		t.Errorf("releases %v, after %v", again, rs)
+	}
+}
+
+// A deleted pipeline's teardowns are recorded with the deletion, and hold what
+// a runner reads, so deleting the source afterwards doesn't lose them.
+func TestDeletingAPipelineRecordsItsTeardowns(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	pc := apiv1connect.NewPipelineServiceClient(http.DefaultClient, e.url)
+	if _, err := pc.DeletePipeline(ctx, connect.NewRequest(&apiv1.DeletePipelineRequest{Name: e.parent})); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := e.conn.Query(ctx, `SELECT id, op, source_id, destination_id, spec::text FROM teardowns WHERE pipeline = 'orders'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		id       uuid.UUID
+		op, spec string
+		src, dst *uuid.UUID
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.op, &r.src, &r.dst, &r.spec); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("%d teardowns, want one for the source and one for the destination", len(got))
+	}
+	var src row
+	for _, r := range got {
+		if r.op != "teardown" || !strings.Contains(r.spec, "postgres") {
+			t.Errorf("teardown %+v", r)
+		}
+		if r.src != nil {
+			src = r
+		}
+	}
+	if src.src == nil {
+		t.Fatalf("no teardown of the source: %+v", got)
+	}
+
+	if _, err := e.conn.Exec(ctx, `DELETE FROM sources WHERE id = $1`, *src.src); err != nil {
+		t.Fatal(err)
+	}
+	dpc := e.runner
+	req := &dataplanev1.GetConnectorConfigRequest{OperationId: src.id.String(), Connector: &dataplanev1.GetConnectorConfigRequest_SourceId{SourceId: src.src.String()}}
+	res, err := dpc.GetConnectorConfig(ctx, connect.NewRequest(req))
+	if err != nil {
+		t.Fatalf("reading a deleted source's config for its teardown: %v", err)
+	}
+	if res.Msg.GetConfig().GetConnector() != "postgres" {
+		t.Errorf("config %v", res.Msg.GetConfig())
+	}
+	// It names another source, so it's not this teardown's.
+	req = &dataplanev1.GetConnectorConfigRequest{OperationId: src.id.String(), Connector: &dataplanev1.GetConnectorConfigRequest_SourceId{SourceId: uuid.NewString()}}
+	if _, err := dpc.GetConnectorConfig(ctx, connect.NewRequest(req)); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Errorf("another source's config: %v, want permission denied", err)
 	}
 }

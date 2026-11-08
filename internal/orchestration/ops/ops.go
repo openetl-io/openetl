@@ -28,15 +28,13 @@ func (o *Ops) Run(ctx context.Context, in contract.ConnectorOpInput) (contract.C
 	return res, run.Get(ctx, &res)
 }
 
-// Start starts the operation, without waiting for it.
-func (o *Ops) Start(ctx context.Context, in contract.ConnectorOpInput) error {
-	_, err := o.start(ctx, in)
-	return err
-}
-
 func (o *Ops) start(ctx context.Context, in contract.ConnectorOpInput) (orchestration.Run, error) {
+	id := contract.OpWorkflowID(cmp.Or(in.OpID, uuid.NewString()))
+	if in.Try > 0 {
+		id = fmt.Sprintf("%s/%d", id, in.Try)
+	}
 	run, err := o.Backend.Start(ctx, orchestration.StartOptions{
-		ID:       contract.OpWorkflowID(cmp.Or(in.OpID, uuid.NewString())),
+		ID:       id,
 		Workflow: contract.ConnectorOpWorkflow,
 		Input:    in,
 		Timeout:  contract.OpTimeout,

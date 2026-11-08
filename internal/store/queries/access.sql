@@ -103,13 +103,6 @@ WHERE org_id = @org_id AND id = @id AND data_plane_id = @data_plane_id AND expir
 
 -- A Flink teardown the API sent to the data plane: the deleted pipeline,
 -- and the version of the Flink cluster it pinned.
--- name: GetFlinkTeardown :one
-SELECT o.pipeline_id, c.workspace_id, c.name, cv.version, cv.spec, cv.secrets
-FROM connector_ops o
-JOIN flink_clusters c ON c.org_id = o.org_id AND c.id = o.flink_cluster_id
-JOIN flink_cluster_versions cv ON cv.org_id = o.org_id AND cv.cluster_id = o.flink_cluster_id AND cv.version = o.flink_version
-WHERE o.org_id = @org_id AND o.id = @id AND o.data_plane_id = @data_plane_id AND o.expire_time > now();
-
 -- Whether the pipeline exists, and whether a version of it runs on the data
 -- plane.
 -- name: PipelineOnDataPlane :one

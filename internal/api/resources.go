@@ -180,18 +180,25 @@ func (s *Server) DeletePipeline(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, err
 	}
+	teardowns, err := s.teardowns(ctx, p, flinkPins)
+	if err != nil {
+		return nil, err
+	}
 	err = s.Store.Tx(ctx, func(q *db.Queries) error {
 		n, err := q.DeletePipeline(ctx, db.DeletePipelineParams{OrgID: s.Tenant.Org, ID: p.ID})
 		if err != nil || n == 0 {
 			return err
+		}
+		for _, t := range teardowns {
+			if err := q.InsertTeardown(ctx, t); err != nil {
+				return err
+			}
 		}
 		return s.recordPipeline(ctx, q, events.PipelineDeleted, ws, p)
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.teardown(ctx, p)
-	s.teardownFlink(ctx, p, flinkPins)
 	return connect.NewResponse(&apiv1.DeletePipelineResponse{}), nil
 }
 
