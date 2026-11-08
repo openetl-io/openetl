@@ -7,6 +7,8 @@ A pipeline is a YAML document that you keep in git like any other code. You writ
 
 If you haven't yet, run the [quickstart](../get-started/quickstart.md) first: this page builds on its `faker` source and `local-postgres` destination. [Concepts](../get-started/concepts.md) explains the words used here.
 
+[Your first pipeline](./first-pipeline.md) then copies tables from your own Postgres database into another, step by step.
+
 ## The documents
 
 Everything you apply is a document with the same four parts:
@@ -185,14 +187,14 @@ spec:
   heal: { mode: suggest }
 ```
 
-Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), and sizes in bytes take units (`512MB`, `64MiB`). The tables below give each field in a line; the [reference](../reference/index.md) has the rest.
+Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), and sizes in bytes take units (`512MB`, `64MiB`). The tables below give each field in a line; [Pipeline](../reference/specs/pipeline.md) in the reference has every field.
 
 ### Running
 
 | Field | What it does | Unset |
 |---|---|---|
 | `mode` | `scheduled` or `continuous` | `scheduled` |
-| `schedule.every` | Start a sync this long after the last one was due, such as `1h` | One of `every` and `cron` is required in a scheduled pipeline |
+| `schedule.every` | Start a sync this often, such as `1h` | One of `every` and `cron` is required in a scheduled pipeline |
 | `schedule.cron` | Start a sync at the times a cron expression gives, in UTC unless it starts with `CRON_TZ=`, such as `CRON_TZ=Europe/Berlin 0 6 * * *` | |
 | `schedule.jitter` | Start each sync up to this much later, at random, so pipelines on the same schedule don't all start at once | No delay |
 | `resources.size` | How much CPU and memory each job gets: `auto`, `xs` (0.5 vCPU, 1 GiB), `s` (1 vCPU, 2 GiB), `m` (2 vCPUs, 4 GiB), `l` (4 vCPUs, 8 GiB), `xl` (8 vCPUs, 16 GiB), or `{ cpu: 3, memory: 6Gi }` | `auto`: from the connectors' hints, then the job's measured peaks |
@@ -201,6 +203,8 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | `resources.pool` | Which pool of runners runs the jobs | `default` |
 | `dataPlane` | Which data plane's runners run the jobs | The server's, `default` |
 | `heal.mode` | What OpenETL does about the pipeline's incidents: `off` opens them and does nothing else; `suggest` also proposes actions, such as pausing; `auto_safe` takes them; `auto` does the same as `auto_safe` | `auto_safe` |
+
+[Schedules](./schedules.md) covers when syncs start: intervals, cron time zones, jitter, a sync that runs long, pausing, and time OpenETL wasn't running.
 
 ### Source and streams
 
@@ -301,6 +305,8 @@ select distinct on (id) *
 from faker.users
 order by id, _openetl_seq desc;
 ```
+
+[Delivery guarantees](./delivery.md) covers what decides each stream's guarantee, every reason the plan gives, streams without a primary key, and reading a stream delivered at least once.
 
 ## Day to day
 

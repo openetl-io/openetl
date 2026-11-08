@@ -2,5 +2,5 @@
   "title": "Pipelines",
   "description": "Write, plan and apply pipelines as code",
   "icon": "Workflow",
-  "pages": ["index"]
+  "pages": ["index", "first-pipeline", "delivery", "schedules"]
 }
