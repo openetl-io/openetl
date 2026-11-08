@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/openetl-io/openetl/internal/auth"
 	"github.com/openetl-io/openetl/internal/store"
@@ -191,6 +192,60 @@ func TestDropMirrorPartitions(t *testing.T) {
 	}
 	if want := []string{"checkpoint_mirror_20261001", "checkpoint_mirror_20261031"}; !slices.Equal(left, want) {
 		t.Fatalf("partitions left %v, want %v", left, want)
+	}
+}
+
+// A drop stuck behind an open reader gives up, because every query on the
+// table would queue behind it, and works once the reader has gone.
+func TestDropGivesUpBehindAnOpenReader(t *testing.T) {
+	ctx := t.Context()
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	cutoff := time.Date(2020, 3, 1, 0, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		table, partition, to string
+		drop                 func(context.Context, time.Time) ([]string, error)
+	}{
+		{"checkpoint_mirror", "checkpoint_mirror_20200101", "2020-01-02", s.DropMirrorPartitions},
+		{"audit_log", "audit_log_202001", "2020-02-01", s.DropAuditPartitions},
+	} {
+		t.Run(c.table, func(t *testing.T) {
+			if _, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s PARTITION OF %s FOR VALUES FROM ('2020-01-01') TO ('%s')`, c.partition, c.table, c.to)); err != nil {
+				t.Fatal(err)
+			}
+			reader, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = reader.Rollback(context.Background()) }()
+			if _, err := reader.Exec(ctx, "SELECT 1 FROM "+c.table+" LIMIT 1"); err != nil {
+				t.Fatal(err)
+			}
+			waiting, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			dropped, err := c.drop(waiting, cutoff)
+			if pe, ok := errors.AsType[*pgconn.PgError](err); !ok || pe.Code != "55P03" || len(dropped) != 0 {
+				t.Fatalf("behind a reader: dropped %v, %v; want a lock timeout", dropped, err)
+			}
+			if err := reader.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if dropped, err := c.drop(ctx, cutoff); err != nil || !slices.Equal(dropped, []string{c.partition}) {
+				t.Fatalf("after the reader: dropped %v, %v", dropped, err)
+			}
+		})
 	}
 }
 
