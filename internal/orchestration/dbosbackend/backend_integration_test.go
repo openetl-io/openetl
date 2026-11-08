@@ -488,6 +488,54 @@ func TestSchedulesFireOneAtATime(t *testing.T) {
 	}
 }
 
+// A deploy starts a schedule's running workflow again as a next generation, and
+// the schedule goes by that one: nothing else starts while it runs, and the
+// schedule starts again when it ends.
+func TestAScheduledWorkflowStartedAgainStillBlocksItsSchedule(t *testing.T) {
+	client, o := open(t)
+	c := &counted{}
+	workflows, steps := c.register(contract.SyncWorkflow)
+	old := another(t, dbosbackend.Options{DatabaseURL: o.DatabaseURL, ExecutorID: "old", Lapse: 2 * time.Second, Version: "v1"})
+	stop := run(t, old, workflows, steps)
+	s := orchestration.Schedule{ID: "hourly", Every: time.Hour, WorkflowID: "scheduled", Workflow: contract.SyncWorkflow, Input: "", StartNow: true}
+	if err := client.UpsertSchedule(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, "its first workflow", func() bool { return c.get(&c.before) == 1 })
+	stop()
+
+	upgraded := another(t, dbosbackend.Options{DatabaseURL: o.DatabaseURL, ExecutorID: "new", Lapse: 2 * time.Second, Version: "v2"})
+	run(t, upgraded, workflows, steps)
+	eventually(t, 30*time.Second, "it to start again", func() bool { return c.get(&c.before) == 2 })
+
+	if err := client.TriggerSchedule(t.Context(), s.ID); !errors.Is(err, orchestration.ErrRunning) {
+		t.Fatalf("triggering while it runs: %v", err)
+	}
+	if got := c.get(&c.before); got != 2 {
+		t.Fatalf("%d workflows at once", got)
+	}
+
+	list, err := client.ListRunning(t.Context(), contract.SyncWorkflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("running %+v", list)
+	}
+	if err := client.Send(t.Context(), list[0].ID, orchestration.Message{Kind: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, "it to end", func() bool { return c.get(&c.after) == 1 })
+	eventually(t, 30*time.Second, "the schedule to start another", func() bool {
+		err := client.TriggerSchedule(t.Context(), s.ID)
+		if err != nil && !errors.Is(err, orchestration.ErrRunning) {
+			t.Fatal(err)
+		}
+		return err == nil
+	})
+	eventually(t, 30*time.Second, "another workflow", func() bool { return c.get(&c.before) == 3 })
+}
+
 // Rows of finished workflows go, and what's running stays.
 func TestFinishedWorkflowsAreCollected(t *testing.T) {
 	b, o := open(t)

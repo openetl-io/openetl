@@ -149,7 +149,12 @@ func (r scheduleRow) envelope(ctx context.Context) envelope {
 // last one it started is running. The row stays locked meanwhile.
 func (b *Backend) startFrom(ctx context.Context, tx pgx.Tx, r scheduleRow, at time.Time) (bool, error) {
 	if r.lastWorkflow != "" {
-		running, err := b.isActive(ctx, r.lastWorkflow)
+		// A deploy may have started it again as a later generation.
+		n, err := b.generation(ctx, r.lastWorkflow)
+		if err != nil {
+			return false, err
+		}
+		running, err := b.isActive(ctx, generationID(r.lastWorkflow, n))
 		if err != nil {
 			return false, err
 		}
