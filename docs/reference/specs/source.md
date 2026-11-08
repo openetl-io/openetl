@@ -1,0 +1,51 @@
+---
+title: Source
+description: Every field of a Source document, which names the connector a pipeline reads with and holds its config.
+---
+
+A `Source` is a system pipelines read from: a connector, and that connector's config. Pipelines name it in `source.ref`. [Pipelines as code](../../pipelines/index.md#the-documents) shows how the documents fit together.
+
+```yaml
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: shop-db
+spec:
+  connector: postgres@1
+  config:
+    dsn: { secret: shop-db-dsn }
+    schema: public
+```
+
+## The document
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `apiVersion` | string | Required | `openetl.io/v1alpha1` |
+| `kind` | string | Required | `Source` |
+| `metadata.name` | name | Required | The source's name: lowercase letters, digits and hyphens, at most 63 characters, starting and ending with a letter or digit |
+| `metadata.workspace` | name | The workspace `openetl apply --workspace` names, `default` unless it says | The workspace it belongs to |
+| `spec` | object | Required | The fields below |
+
+A field the document doesn't have is refused.
+
+## spec
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `connector` | connector reference | Required | The connector to read with, and which of its versions. See [connector references](#connector-references). |
+| `config` | object | None | The connector's config. Its fields are the connector's own: its spec's JSON Schema defines them, which `openetl connector spec TARGET` prints. A config never holds a secret's value: a field holds `{ secret: NAME }` instead, naming a secret in the same workspace, which must exist when you apply. Where the connector's spec marks a field as secret, the config must name a secret for it. |
+
+## Connector references
+
+`connector` is a connector's name, with a version after `@` if you want one:
+
+| Reference | What it names |
+|---|---|
+| `postgres` | The highest version of `openetl/postgres` applied to the control plane, a prerelease only if there's nothing else. With no versions applied, the runner looks for an executable named `source-postgres` in its connectors directory. |
+| `postgres@1`, `postgres@1.4` | The highest release with that major, or major and minor, version |
+| `postgres@1.2.0` | That version |
+| `postgres@sha256:DIGEST` | The version with that digest |
+| `acme/billing` | A connector of another owner, `acme`. A name without an owner is `openetl`'s. |
+
+Each apply resolves the reference again, so a reference without an exact version or digest may pin a newer version than the last apply did. The built-in source, `faker` (also `openetl/faker`), has no versions, so its reference takes none. [Built-in connectors](../built-in-connectors.md) has its config.

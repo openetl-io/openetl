@@ -193,8 +193,10 @@ type PipelineMode int32
 
 const (
 	PipelineMode_PIPELINE_MODE_UNSPECIFIED PipelineMode = 0
-	PipelineMode_PIPELINE_MODE_SCHEDULED   PipelineMode = 1
-	PipelineMode_PIPELINE_MODE_CONTINUOUS  PipelineMode = 2
+	// Copies in syncs, which start on its schedule.
+	PipelineMode_PIPELINE_MODE_SCHEDULED PipelineMode = 1
+	// Runs one job that keeps reading, and commits as it goes.
+	PipelineMode_PIPELINE_MODE_CONTINUOUS PipelineMode = 2
 )
 
 // Enum value maps for PipelineMode.
@@ -298,8 +300,10 @@ type QuarantineScope int32
 
 const (
 	QuarantineScope_QUARANTINE_SCOPE_UNSPECIFIED QuarantineScope = 0
-	QuarantineScope_QUARANTINE_SCOPE_ROW         QuarantineScope = 1
-	QuarantineScope_QUARANTINE_SCOPE_CELL        QuarantineScope = 2
+	// The default.
+	QuarantineScope_QUARANTINE_SCOPE_ROW QuarantineScope = 1
+	// For a keyed stream into a destination that patches its write mode.
+	QuarantineScope_QUARANTINE_SCOPE_CELL QuarantineScope = 2
 )
 
 // Enum value maps for QuarantineScope.
@@ -607,9 +611,13 @@ type WriteMode int32
 
 const (
 	WriteMode_WRITE_MODE_UNSPECIFIED WriteMode = 0
-	WriteMode_WRITE_MODE_APPEND      WriteMode = 1
-	WriteMode_WRITE_MODE_OVERWRITE   WriteMode = 2
-	WriteMode_WRITE_MODE_MERGE       WriteMode = 3
+	// Adds what was read to what the destination has.
+	WriteMode_WRITE_MODE_APPEND WriteMode = 1
+	// Replaces what the destination has with what one sync read, so its
+	// streams are read with full_refresh.
+	WriteMode_WRITE_MODE_OVERWRITE WriteMode = 2
+	// Updates each row by its primary key.
+	WriteMode_WRITE_MODE_MERGE WriteMode = 3
 )
 
 // Enum value maps for WriteMode.
@@ -658,11 +666,19 @@ func (WriteMode) EnumDescriptor() ([]byte, []int) {
 type SchemaPolicy int32
 
 const (
-	SchemaPolicy_SCHEMA_POLICY_UNSPECIFIED   SchemaPolicy = 0
-	SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL     SchemaPolicy = 1
+	SchemaPolicy_SCHEMA_POLICY_UNSPECIFIED SchemaPolicy = 0
+	// Adds columns and widens types. A type that changes otherwise goes to a
+	// new column, col__v2. The default.
+	SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL SchemaPolicy = 1
+	// As allow_all, but a type that changes otherwise is held, or fails the
+	// sync with SCHEMA_DRIFT where the column can't be held.
 	SchemaPolicy_SCHEMA_POLICY_ALLOW_COLUMNS SchemaPolicy = 2
-	SchemaPolicy_SCHEMA_POLICY_BLOCK         SchemaPolicy = 3
-	SchemaPolicy_SCHEMA_POLICY_IGNORE_NEW    SchemaPolicy = 4
+	// Any change is held, or fails the sync with SCHEMA_DRIFT where the
+	// column can't be held.
+	SchemaPolicy_SCHEMA_POLICY_BLOCK SchemaPolicy = 3
+	// Drops new columns, and casts values to the types the columns have;
+	// values that don't fit are quarantined.
+	SchemaPolicy_SCHEMA_POLICY_IGNORE_NEW SchemaPolicy = 4
 )
 
 // Enum value maps for SchemaPolicy.
@@ -766,8 +782,10 @@ type CommitScope int32
 
 const (
 	CommitScope_COMMIT_SCOPE_UNSPECIFIED CommitScope = 0
-	CommitScope_COMMIT_SCOPE_PIPELINE    CommitScope = 1
-	CommitScope_COMMIT_SCOPE_STREAM      CommitScope = 2
+	// Every stream commits together.
+	CommitScope_COMMIT_SCOPE_PIPELINE CommitScope = 1
+	// Each stream commits on its own.
+	CommitScope_COMMIT_SCOPE_STREAM CommitScope = 2
 )
 
 // Enum value maps for CommitScope.
@@ -1394,15 +1412,20 @@ func (x *JobScaling) GetNote() string {
 // PipelineSpec is the spec of a Pipeline document. Unset fields take their
 // defaults.
 type PipelineSpec struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	Mode         PipelineMode           `protobuf:"varint,1,opt,name=mode,proto3,enum=openetl.api.v1.PipelineMode" json:"mode,omitempty"`
-	Schedule     *Schedule              `protobuf:"bytes,2,opt,name=schedule,proto3" json:"schedule,omitempty"`
-	DataPlane    string                 `protobuf:"bytes,3,opt,name=data_plane,json=dataPlane,proto3" json:"data_plane,omitempty"`
-	Source       *PipelineSource        `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
-	Destination  *PipelineDestination   `protobuf:"bytes,5,opt,name=destination,proto3" json:"destination,omitempty"`
-	SchemaPolicy SchemaPolicy           `protobuf:"varint,6,opt,name=schema_policy,json=schemaPolicy,proto3,enum=openetl.api.v1.SchemaPolicy" json:"schema_policy,omitempty"`
-	Delivery     *Delivery              `protobuf:"bytes,7,opt,name=delivery,proto3" json:"delivery,omitempty"`
-	Types        *Types                 `protobuf:"bytes,8,opt,name=types,proto3" json:"types,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unset: scheduled.
+	Mode PipelineMode `protobuf:"varint,1,opt,name=mode,proto3,enum=openetl.api.v1.PipelineMode" json:"mode,omitempty"`
+	// When a scheduled pipeline's syncs start. A continuous one has none.
+	Schedule *Schedule `protobuf:"bytes,2,opt,name=schedule,proto3" json:"schedule,omitempty"`
+	// The data plane whose runners run its jobs. Unset: the server's.
+	DataPlane   string               `protobuf:"bytes,3,opt,name=data_plane,json=dataPlane,proto3" json:"data_plane,omitempty"`
+	Source      *PipelineSource      `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	Destination *PipelineDestination `protobuf:"bytes,5,opt,name=destination,proto3" json:"destination,omitempty"`
+	// What a change to a stream's schema does once the destination has the
+	// stream. Unset: allow_all.
+	SchemaPolicy SchemaPolicy `protobuf:"varint,6,opt,name=schema_policy,json=schemaPolicy,proto3,enum=openetl.api.v1.SchemaPolicy" json:"schema_policy,omitempty"`
+	Delivery     *Delivery    `protobuf:"bytes,7,opt,name=delivery,proto3" json:"delivery,omitempty"`
+	Types        *Types       `protobuf:"bytes,8,opt,name=types,proto3" json:"types,omitempty"`
 	// Run in order after a sync's data is committed. A step that fails fails
 	// the sync, and the steps after it don't run.
 	PostSync []*PostSyncStep `protobuf:"bytes,9,rep,name=post_sync,json=postSync,proto3" json:"post_sync,omitempty"`
@@ -1993,7 +2016,7 @@ func (x *FlinkTransform) GetOutputs() []*TransformOutput {
 // the cluster its own copy.
 type FlinkCode struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// An s3:// or https:// URI the runner can read.
+	// An s3://, s3a:// or https:// URI the runner can read.
 	Jar string `protobuf:"bytes,1,opt,name=jar,proto3" json:"jar,omitempty"`
 	// The file's SHA-256, in hex.
 	Sha256 string `protobuf:"bytes,2,opt,name=sha256,proto3" json:"sha256,omitempty"`
@@ -2409,7 +2432,7 @@ func (x *SparkStep) GetConf() map[string]string {
 // it and gives the cluster its own copy.
 type SparkCode struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// An s3:// or https:// URI the runner can read.
+	// An s3://, s3a:// or https:// URI the runner can read.
 	//
 	// Types that are valid to be assigned to File:
 	//
@@ -2634,6 +2657,7 @@ type isSchedule_Trigger interface {
 }
 
 type Schedule_Every struct {
+	// Starts a sync this often.
 	Every *durationpb.Duration `protobuf:"bytes,1,opt,name=every,proto3,oneof"`
 }
 
@@ -2701,10 +2725,15 @@ func (x *PipelineSource) GetStreams() []*PipelineStream {
 }
 
 type PipelineStream struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Name   string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Sync   SyncMode               `protobuf:"varint,2,opt,name=sync,proto3,enum=openetl.api.v1.SyncMode" json:"sync,omitempty"`
-	Cursor string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// As the source's catalog names it.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Unset: the first way the source declares it reads the stream, or in a
+	// continuous pipeline the first of those that's cdc or stream.
+	Sync SyncMode `protobuf:"varint,2,opt,name=sync,proto3,enum=openetl.api.v1.SyncMode" json:"sync,omitempty"`
+	// The column an incremental read goes by. Unset: the source's cursor for
+	// the stream, if it names one.
+	Cursor string `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	// By source column name.
 	Columns    map[string]*PipelineColumn `protobuf:"bytes,4,rep,name=columns,proto3" json:"columns,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Timestamps TimestampUnit              `protobuf:"varint,5,opt,name=timestamps,proto3,enum=openetl.api.v1.TimestampUnit" json:"timestamps,omitempty"`
@@ -2990,9 +3019,12 @@ func (x *PipelineColumn) GetHeld() *Held {
 type PipelineDestination struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// A Destination ID in the same workspace.
-	Ref   string    `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
+	Ref string `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
+	// How every stream is written. Unset, for each stream, where the
+	// destination has the mode: overwrite for a full refresh, merge for a
+	// keyed stream read with cdc, and append otherwise.
 	Write WriteMode `protobuf:"varint,2,opt,name=write,proto3,enum=openetl.api.v1.WriteMode" json:"write,omitempty"`
-	// A schema or dataset.
+	// A schema or dataset. Unset: the destination's default.
 	Namespace string `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Naming    Naming `protobuf:"varint,4,opt,name=naming,proto3,enum=openetl.api.v1.Naming" json:"naming,omitempty"`
 	// How merge applies deletes. Unset: soft.
@@ -3080,7 +3112,9 @@ type Delivery struct {
 	// The plan fails if any stream's guarantee is lower. Unset: exactly once.
 	Require DeliveryLevel `protobuf:"varint,1,opt,name=require,proto3,enum=openetl.api.v1.DeliveryLevel" json:"require,omitempty"`
 	Commit  *Commit       `protobuf:"bytes,2,opt,name=commit,proto3" json:"commit,omitempty"`
-	// Unset: the default. Zero: wait forever.
+	// How long a commit waits for a point the source can resume from
+	// exactly, before it commits without one where the stream keeps its level
+	// anyway. Unset: 1m. Zero: wait forever.
 	ResumePointTimeout *durationpb.Duration `protobuf:"bytes,3,opt,name=resume_point_timeout,json=resumePointTimeout,proto3" json:"resume_point_timeout,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
@@ -3137,11 +3171,17 @@ func (x *Delivery) GetResumePointTimeout() *durationpb.Duration {
 	return nil
 }
 
+// Commit is when a pipeline commits what it has read.
 type Commit struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Interval      *durationpb.Duration   `protobuf:"bytes,1,opt,name=interval,proto3" json:"interval,omitempty"`
-	MaxBytes      int64                  `protobuf:"varint,2,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
-	Scope         CommitScope            `protobuf:"varint,3,opt,name=scope,proto3,enum=openetl.api.v1.CommitScope" json:"scope,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unset: 5m in a scheduled pipeline; in a continuous one, the
+	// destination's own interval, or else 10s.
+	Interval *durationpb.Duration `protobuf:"bytes,1,opt,name=interval,proto3" json:"interval,omitempty"`
+	// Commit once this many bytes have been read since the last commit.
+	// Unset: 256 MB, which grows when commits can't keep up.
+	MaxBytes int64 `protobuf:"varint,2,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	// Unset: pipeline where the destination can, otherwise stream.
+	Scope         CommitScope `protobuf:"varint,3,opt,name=scope,proto3,enum=openetl.api.v1.CommitScope" json:"scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
