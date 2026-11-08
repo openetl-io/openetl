@@ -101,9 +101,10 @@ func TestCheckAndDiscover(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s %s [%s] %s", s.GetName(), s.GetReplay(), strings.Join(s.GetPrimaryKey(), ","), strings.Join(cols, "; ")))
 	}
 	slices.Sort(got)
+	// items' id is its primary key, so it's NOT NULL.
 	want := []string{
 		"events REPLAY_EXACT [] id int64 true; kind utf8 true",
-		"items REPLAY_EXACT [id] id int64 true; name utf8 true; price decimal(10, 2) true",
+		"items REPLAY_EXACT [id] id int64 false; name utf8 true; price decimal(10, 2) true",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("catalog:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
