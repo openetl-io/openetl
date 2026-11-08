@@ -66,9 +66,10 @@ ORDER BY sync_id, attempt, create_time;
 -- name: GetDispatchOutcome :one
 SELECT state, outcome FROM dispatches WHERE org_id = @org_id AND id = @id;
 
--- name: LockPlacement :exec
--- Passes of a data plane run one at a time, until the transaction ends.
-SELECT pg_advisory_xact_lock(hashtextextended(@data_plane::text, 0));
+-- name: TryLockPlacement :one
+-- Passes of a data plane run one at a time, each until its transaction ends.
+-- False: another pass has it.
+SELECT pg_try_advisory_xact_lock(hashtextextended(@data_plane::text, 0));
 
 -- name: PlacementRunners :many
 -- A data plane's runners and pod launchers reporting now, with the room their

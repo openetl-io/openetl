@@ -568,11 +568,14 @@ func (d *Dispatcher) wake(ctx context.Context, org uuid.UUID, id, workflow strin
 	return d.Store.MarkWoken(ctx, db.MarkWokenParams{OrgID: org, ID: id})
 }
 
-// pass gives the room on a data plane's runners to the attempts waiting.
+// pass gives the room on a data plane's runners to the attempts waiting. If
+// another pass has the data plane, it does nothing and returns nil: what's
+// waiting stays pending, and Run's next tick places it.
 func (d *Dispatcher) pass(ctx context.Context, org uuid.UUID, dataPlane string) error {
 	return d.Store.Tx(ctx, func(q *db.Queries) error {
 		key := planeKey(org, dataPlane)
-		if err := q.LockPlacement(ctx, key); err != nil {
+		locked, err := q.TryLockPlacement(ctx, key)
+		if err != nil || !locked {
 			return err
 		}
 		pending, err := q.PendingAttempts(ctx, db.PendingAttemptsParams{OrgID: org, DataPlaneID: dataPlane, MaxRows: maxPending})

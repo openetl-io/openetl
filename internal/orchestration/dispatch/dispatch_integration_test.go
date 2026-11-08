@@ -54,12 +54,14 @@ type fixture struct {
 	waker     *fakeWaker
 	org       uuid.UUID
 	workspace uuid.UUID
+	url       string
 }
 
 func setup(t *testing.T, o Options) *fixture {
 	t.Helper()
 	ctx := t.Context()
-	s, err := store.Open(ctx, storetest.NewDatabase(t))
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func setup(t *testing.T, o Options) *fixture {
 		t.Fatal(err)
 	}
 	waker := &fakeWaker{}
-	return &fixture{t: t, d: &Dispatcher{Store: s, Waker: waker, Options: o}, waker: waker, org: tenant.Org, workspace: tenant.Workspace}
+	return &fixture{t: t, d: &Dispatcher{Store: s, Waker: waker, Options: o}, waker: waker, org: tenant.Org, workspace: tenant.Workspace, url: url}
 }
 
 // report has a runner report what it runs, and returns what to stop.
@@ -316,6 +318,8 @@ func TestRoomIsNeverOverplaced(t *testing.T) {
 		wg.Go(func() { f.attempt(fmt.Sprintf("w%d", i)) })
 	}
 	wg.Wait()
+	// Passes that found another at work left theirs to the next tick.
+	f.tick()
 	a, b := f.poll("a", 0, 0), f.poll("b", 0, 0)
 	if len(a) != 2 || len(b) != 2 {
 		t.Fatalf("a got %v, b got %v, want two each", a, b)
@@ -332,6 +336,44 @@ func TestRoomIsNeverOverplaced(t *testing.T) {
 	}
 	if got := f.poll("b", 0, 0); len(got) != 0 {
 		t.Errorf("b got %v", got)
+	}
+}
+
+// A pass that finds another at work on the data plane doesn't wait for it,
+// holding a connection, and fails nothing; the next tick places what it left.
+func TestABusyPassLeavesItsWorkToTheNextTick(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	f.report("r", resources.M)
+	conn, err := pgx.Connect(ctx, f.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	key := planeKey(f.org, "default")
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtextextended($1, 0))", key); err != nil {
+		t.Fatal(err)
+	}
+	enqueued := make(chan struct{})
+	go func() {
+		defer close(enqueued)
+		f.attempt("a")
+	}()
+	select {
+	case <-enqueued:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pass waited for the other")
+	}
+	f.tick()
+	if got := f.poll("r", 0, 0); len(got) != 0 {
+		t.Fatalf("placed by a pass that wasn't let: %v", got)
+	}
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_unlock(hashtextextended($1, 0))", key); err != nil {
+		t.Fatal(err)
+	}
+	f.tick()
+	if got := f.poll("r", 0, 0); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("got %v", got)
 	}
 }
 

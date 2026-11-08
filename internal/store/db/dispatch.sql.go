@@ -777,16 +777,6 @@ func (q *Queries) LiveLaunches(ctx context.Context, arg LiveLaunchesParams) ([]L
 	return items, nil
 }
 
-const lockPlacement = `-- name: LockPlacement :exec
-SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
-`
-
-// Passes of a data plane run one at a time, until the transaction ends.
-func (q *Queries) LockPlacement(ctx context.Context, dataPlane string) error {
-	_, err := q.db.Exec(ctx, lockPlacement, dataPlane)
-	return err
-}
-
 const markManualSync = `-- name: MarkManualSync :exec
 UPDATE pipelines SET manual_sync_time = now() WHERE org_id = $1 AND id = $2
 `
@@ -1507,6 +1497,19 @@ func (q *Queries) TakeManualSync(ctx context.Context, arg TakeManualSyncParams) 
 	var manual bool
 	err := row.Scan(&manual)
 	return manual, err
+}
+
+const tryLockPlacement = `-- name: TryLockPlacement :one
+SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+// Passes of a data plane run one at a time, each until its transaction ends.
+// False: another pass has it.
+func (q *Queries) TryLockPlacement(ctx context.Context, dataPlane string) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockPlacement, dataPlane)
+	var pg_try_advisory_xact_lock bool
+	err := row.Scan(&pg_try_advisory_xact_lock)
+	return pg_try_advisory_xact_lock, err
 }
 
 const unfinishedWorkOfSyncs = `-- name: UnfinishedWorkOfSyncs :many
