@@ -245,3 +245,4 @@ rm -rf .openetl
 - [Concepts](./concepts.md) explains pipelines, streams, delivery guarantees and the rest in a few minutes.
 - [Use the console](../use/index.md) shows what else the console tells you.
 - [Pipelines](../pipelines/index.md) covers writing your own: other sources and destinations, schedules, continuous pipelines and schema changes.
+- [Your first pipeline](../pipelines/first-pipeline.md) copies tables from your own Postgres database into another.

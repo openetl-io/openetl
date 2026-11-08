@@ -177,11 +177,16 @@ message JobScaling {
 // PipelineSpec is the spec of a Pipeline document. Unset fields take their
 // defaults.
 message PipelineSpec {
+  // Unset: scheduled.
   PipelineMode mode = 1;
+  // When a scheduled pipeline's syncs start. A continuous one has none.
   Schedule schedule = 2;
+  // The data plane whose runners run its jobs. Unset: the server's.
   string data_plane = 3;
   PipelineSource source = 4;
   PipelineDestination destination = 5;
+  // What a change to a stream's schema does once the destination has the
+  // stream. Unset: allow_all.
   SchemaPolicy schema_policy = 6;
   Delivery delivery = 7;
   Types types = 8;
@@ -278,7 +283,7 @@ message FlinkTransform {
 // FlinkCode is a jar, pinned by its digest. The runner checks it and gives
 // the cluster its own copy.
 message FlinkCode {
-  // An s3:// or https:// URI the runner can read.
+  // An s3://, s3a:// or https:// URI the runner can read.
   string jar = 1;
   // The file's SHA-256, in hex.
   string sha256 = 2;
@@ -348,7 +353,7 @@ message SparkStep {
 // SparkCode is a jar or a Python file, pinned by its digest. The runner checks
 // it and gives the cluster its own copy.
 message SparkCode {
-  // An s3:// or https:// URI the runner can read.
+  // An s3://, s3a:// or https:// URI the runner can read.
   oneof file {
     string jar = 1;
     string python = 2;
@@ -382,12 +387,15 @@ enum Infinity {
 
 enum PipelineMode {
   PIPELINE_MODE_UNSPECIFIED = 0;
+  // Copies in syncs, which start on its schedule.
   PIPELINE_MODE_SCHEDULED = 1;
+  // Runs one job that keeps reading, and commits as it goes.
   PIPELINE_MODE_CONTINUOUS = 2;
 }
 
 message Schedule {
   oneof trigger {
+    // Starts a sync this often.
     google.protobuf.Duration every = 1;
     // In UTC, unless it starts with CRON_TZ= and a time zone, as in
     // CRON_TZ=Europe/Berlin 0 6 * * *.
@@ -404,8 +412,13 @@ message PipelineSource {
 }
 
 message PipelineStream {
+  // As the source's catalog names it.
   string name = 1;
+  // Unset: the first way the source declares it reads the stream, or in a
+  // continuous pipeline the first of those that's cdc or stream.
   SyncMode sync = 2;
+  // The column an incremental read goes by. Unset: the source's cursor for
+  // the stream, if it names one.
   string cursor = 3;
   // By source column name.
   map<string, PipelineColumn> columns = 4;
@@ -443,7 +456,9 @@ enum TypeChanges {
 
 enum QuarantineScope {
   QUARANTINE_SCOPE_UNSPECIFIED = 0;
+  // The default.
   QUARANTINE_SCOPE_ROW = 1;
+  // For a keyed stream into a destination that patches its write mode.
   QUARANTINE_SCOPE_CELL = 2;
 }
 
@@ -498,8 +513,11 @@ enum ColumnType {
 message PipelineDestination {
   // A Destination ID in the same workspace.
   string ref = 1;
+  // How every stream is written. Unset, for each stream, where the
+  // destination has the mode: overwrite for a full refresh, merge for a
+  // keyed stream read with cdc, and append otherwise.
   WriteMode write = 2;
-  // A schema or dataset.
+  // A schema or dataset. Unset: the destination's default.
   string namespace = 3;
   Naming naming = 4;
   // How merge applies deletes. Unset: soft.
@@ -526,16 +544,28 @@ enum Naming {
 
 enum WriteMode {
   WRITE_MODE_UNSPECIFIED = 0;
+  // Adds what was read to what the destination has.
   WRITE_MODE_APPEND = 1;
+  // Replaces what the destination has with what one sync read, so its
+  // streams are read with full_refresh.
   WRITE_MODE_OVERWRITE = 2;
+  // Updates each row by its primary key.
   WRITE_MODE_MERGE = 3;
 }
 
 enum SchemaPolicy {
   SCHEMA_POLICY_UNSPECIFIED = 0;
+  // Adds columns and widens types. A type that changes otherwise goes to a
+  // new column, col__v2. The default.
   SCHEMA_POLICY_ALLOW_ALL = 1;
+  // As allow_all, but a type that changes otherwise is held, or fails the
+  // sync with SCHEMA_DRIFT where the column can't be held.
   SCHEMA_POLICY_ALLOW_COLUMNS = 2;
+  // Any change is held, or fails the sync with SCHEMA_DRIFT where the
+  // column can't be held.
   SCHEMA_POLICY_BLOCK = 3;
+  // Drops new columns, and casts values to the types the columns have;
+  // values that don't fit are quarantined.
   SCHEMA_POLICY_IGNORE_NEW = 4;
 }
 
@@ -546,7 +576,9 @@ message Delivery {
   // The plan fails if any stream's guarantee is lower. Unset: exactly once.
   DeliveryLevel require = 1;
   Commit commit = 2;
-  // Unset: the default. Zero: wait forever.
+  // How long a commit waits for a point the source can resume from
+  // exactly, before it commits without one where the stream keeps its level
+  // anyway. Unset: 1m. Zero: wait forever.
   google.protobuf.Duration resume_point_timeout = 3;
 }
 
@@ -557,15 +589,23 @@ enum DeliveryLevel {
   DELIVERY_LEVEL_EXACTLY_ONCE = 3;
 }
 
+// Commit is when a pipeline commits what it has read.
 message Commit {
+  // Unset: 5m in a scheduled pipeline; in a continuous one, the
+  // destination's own interval, or else 10s.
   google.protobuf.Duration interval = 1;
+  // Commit once this many bytes have been read since the last commit.
+  // Unset: 256 MB, which grows when commits can't keep up.
   int64 max_bytes = 2;
+  // Unset: pipeline where the destination can, otherwise stream.
   CommitScope scope = 3;
 }
 
 enum CommitScope {
   COMMIT_SCOPE_UNSPECIFIED = 0;
+  // Every stream commits together.
   COMMIT_SCOPE_PIPELINE = 1;
+  // Each stream commits on its own.
   COMMIT_SCOPE_STREAM = 2;
 }
 

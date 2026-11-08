@@ -1,0 +1,49 @@
+# Two tables of a Postgres database into another, every hour: customers whole,
+# orders by their updated_at column, merged so the destination keeps one row
+# per key. docs/pipelines/first-pipeline.md walks through it. Store each
+# database's DSN as a secret, then apply:
+#
+#   echo 'postgres://openetl_reader:PASSWORD@HOST:5432/app' |
+#     openetl secret set app-db-dsn
+#   echo 'postgres://openetl_writer:PASSWORD@HOST:5432/warehouse' |
+#     openetl secret set warehouse-dsn
+#   openetl apply -f examples/postgres-to-postgres.yaml
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: app-db
+spec:
+  connector: postgres
+  config:
+    dsn: { secret: app-db-dsn }
+    schema: public
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: warehouse
+spec:
+  connector: postgres
+  config:
+    dsn: { secret: warehouse-dsn }
+    schema: app
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: app-db-to-warehouse
+spec:
+  schedule: { every: 1h }
+  source:
+    ref: app-db
+    streams:
+      - name: customers
+        sync: full_refresh
+      - name: orders
+        sync: incremental
+        cursor: updated_at
+  destination:
+    ref: warehouse
+    write: merge
+  delivery:
+    require: effectively_once

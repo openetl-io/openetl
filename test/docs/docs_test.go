@@ -103,7 +103,7 @@ func TestMeta(t *testing.T) {
 			Title       string   `json:"title"`
 			Description string   `json:"description"`
 			Icon        string   `json:"icon"`
-			Root        bool     `json:"root"`
+			Root        *bool    `json:"root"`
 			Pages       []string `json:"pages"`
 		}
 		if err := json.Unmarshal(b, &meta); err != nil {
@@ -113,8 +113,11 @@ func TestMeta(t *testing.T) {
 		if meta.Title == "" && dir != root {
 			t.Errorf("%s/meta.json: no title", dir)
 		}
-		if meta.Root && (meta.Description == "" || meta.Icon == "") {
-			t.Errorf("%s/meta.json: a root section needs a description and an icon", dir)
+		if meta.Root != nil {
+			t.Errorf("%s/meta.json: has root, but sections stay folders in the site's sidebar", dir)
+		}
+		if filepath.Dir(dir) == root && (meta.Description == "" || meta.Icon == "") {
+			t.Errorf("%s/meta.json: a section needs a description and an icon", dir)
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {

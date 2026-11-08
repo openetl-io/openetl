@@ -297,16 +297,22 @@ export const JobScalingSchema: GenMessage<JobScaling> = /*@__PURE__*/
  */
 export type PipelineSpec = Message<"openetl.api.v1.PipelineSpec"> & {
   /**
+   * Unset: scheduled.
+   *
    * @generated from field: openetl.api.v1.PipelineMode mode = 1;
    */
   mode: PipelineMode;
 
   /**
+   * When a scheduled pipeline's syncs start. A continuous one has none.
+   *
    * @generated from field: openetl.api.v1.Schedule schedule = 2;
    */
   schedule?: Schedule | undefined;
 
   /**
+   * The data plane whose runners run its jobs. Unset: the server's.
+   *
    * @generated from field: string data_plane = 3;
    */
   dataPlane: string;
@@ -322,6 +328,9 @@ export type PipelineSpec = Message<"openetl.api.v1.PipelineSpec"> & {
   destination?: PipelineDestination | undefined;
 
   /**
+   * What a change to a stream's schema does once the destination has the
+   * stream. Unset: allow_all.
+   *
    * @generated from field: openetl.api.v1.SchemaPolicy schema_policy = 6;
    */
   schemaPolicy: SchemaPolicy;
@@ -628,7 +637,7 @@ export const FlinkTransformSchema: GenMessage<FlinkTransform> = /*@__PURE__*/
  */
 export type FlinkCode = Message<"openetl.api.v1.FlinkCode"> & {
   /**
-   * An s3:// or https:// URI the runner can read.
+   * An s3://, s3a:// or https:// URI the runner can read.
    *
    * @generated from field: string jar = 1;
    */
@@ -834,7 +843,7 @@ export const SparkStepSchema: GenMessage<SparkStep> = /*@__PURE__*/
  */
 export type SparkCode = Message<"openetl.api.v1.SparkCode"> & {
   /**
-   * An s3:// or https:// URI the runner can read.
+   * An s3://, s3a:// or https:// URI the runner can read.
    *
    * @generated from oneof openetl.api.v1.SparkCode.file
    */
@@ -902,6 +911,8 @@ export type Schedule = Message<"openetl.api.v1.Schedule"> & {
    */
   trigger: {
     /**
+     * Starts a sync this often.
+     *
      * @generated from field: google.protobuf.Duration every = 1;
      */
     value: Duration;
@@ -961,16 +972,24 @@ export const PipelineSourceSchema: GenMessage<PipelineSource> = /*@__PURE__*/
  */
 export type PipelineStream = Message<"openetl.api.v1.PipelineStream"> & {
   /**
+   * As the source's catalog names it.
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * Unset: the first way the source declares it reads the stream, or in a
+   * continuous pipeline the first of those that's cdc or stream.
+   *
    * @generated from field: openetl.api.v1.SyncMode sync = 2;
    */
   sync: SyncMode;
 
   /**
+   * The column an incremental read goes by. Unset: the source's cursor for
+   * the stream, if it names one.
+   *
    * @generated from field: string cursor = 3;
    */
   cursor: string;
@@ -1121,12 +1140,16 @@ export type PipelineDestination = Message<"openetl.api.v1.PipelineDestination"> 
   ref: string;
 
   /**
+   * How every stream is written. Unset, for each stream, where the
+   * destination has the mode: overwrite for a full refresh, merge for a
+   * keyed stream read with cdc, and append otherwise.
+   *
    * @generated from field: openetl.api.v1.WriteMode write = 2;
    */
   write: WriteMode;
 
   /**
-   * A schema or dataset.
+   * A schema or dataset. Unset: the destination's default.
    *
    * @generated from field: string namespace = 3;
    */
@@ -1176,7 +1199,9 @@ export type Delivery = Message<"openetl.api.v1.Delivery"> & {
   commit?: Commit | undefined;
 
   /**
-   * Unset: the default. Zero: wait forever.
+   * How long a commit waits for a point the source can resume from
+   * exactly, before it commits without one where the stream keeps its level
+   * anyway. Unset: 1m. Zero: wait forever.
    *
    * @generated from field: google.protobuf.Duration resume_point_timeout = 3;
    */
@@ -1191,20 +1216,30 @@ export const DeliverySchema: GenMessage<Delivery> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_pipeline, 27);
 
 /**
+ * Commit is when a pipeline commits what it has read.
+ *
  * @generated from message openetl.api.v1.Commit
  */
 export type Commit = Message<"openetl.api.v1.Commit"> & {
   /**
+   * Unset: 5m in a scheduled pipeline; in a continuous one, the
+   * destination's own interval, or else 10s.
+   *
    * @generated from field: google.protobuf.Duration interval = 1;
    */
   interval?: Duration | undefined;
 
   /**
+   * Commit once this many bytes have been read since the last commit.
+   * Unset: 256 MB, which grows when commits can't keep up.
+   *
    * @generated from field: int64 max_bytes = 2;
    */
   maxBytes: bigint;
 
   /**
+   * Unset: pipeline where the destination can, otherwise stream.
+   *
    * @generated from field: openetl.api.v1.CommitScope scope = 3;
    */
   scope: CommitScope;
@@ -2779,11 +2814,15 @@ export enum PipelineMode {
   UNSPECIFIED = 0,
 
   /**
+   * Copies in syncs, which start on its schedule.
+   *
    * @generated from enum value: PIPELINE_MODE_SCHEDULED = 1;
    */
   SCHEDULED = 1,
 
   /**
+   * Runs one job that keeps reading, and commits as it goes.
+   *
    * @generated from enum value: PIPELINE_MODE_CONTINUOUS = 2;
    */
   CONTINUOUS = 2,
@@ -2842,11 +2881,15 @@ export enum QuarantineScope {
   UNSPECIFIED = 0,
 
   /**
+   * The default.
+   *
    * @generated from enum value: QUARANTINE_SCOPE_ROW = 1;
    */
   ROW = 1,
 
   /**
+   * For a keyed stream into a destination that patches its write mode.
+   *
    * @generated from enum value: QUARANTINE_SCOPE_CELL = 2;
    */
   CELL = 2,
@@ -3025,16 +3068,23 @@ export enum WriteMode {
   UNSPECIFIED = 0,
 
   /**
+   * Adds what was read to what the destination has.
+   *
    * @generated from enum value: WRITE_MODE_APPEND = 1;
    */
   APPEND = 1,
 
   /**
+   * Replaces what the destination has with what one sync read, so its
+   * streams are read with full_refresh.
+   *
    * @generated from enum value: WRITE_MODE_OVERWRITE = 2;
    */
   OVERWRITE = 2,
 
   /**
+   * Updates each row by its primary key.
+   *
    * @generated from enum value: WRITE_MODE_MERGE = 3;
    */
   MERGE = 3,
@@ -3056,21 +3106,33 @@ export enum SchemaPolicy {
   UNSPECIFIED = 0,
 
   /**
+   * Adds columns and widens types. A type that changes otherwise goes to a
+   * new column, col__v2. The default.
+   *
    * @generated from enum value: SCHEMA_POLICY_ALLOW_ALL = 1;
    */
   ALLOW_ALL = 1,
 
   /**
+   * As allow_all, but a type that changes otherwise is held, or fails the
+   * sync with SCHEMA_DRIFT where the column can't be held.
+   *
    * @generated from enum value: SCHEMA_POLICY_ALLOW_COLUMNS = 2;
    */
   ALLOW_COLUMNS = 2,
 
   /**
+   * Any change is held, or fails the sync with SCHEMA_DRIFT where the
+   * column can't be held.
+   *
    * @generated from enum value: SCHEMA_POLICY_BLOCK = 3;
    */
   BLOCK = 3,
 
   /**
+   * Drops new columns, and casts values to the types the columns have;
+   * values that don't fit are quarantined.
+   *
    * @generated from enum value: SCHEMA_POLICY_IGNORE_NEW = 4;
    */
   IGNORE_NEW = 4,
@@ -3123,11 +3185,15 @@ export enum CommitScope {
   UNSPECIFIED = 0,
 
   /**
+   * Every stream commits together.
+   *
    * @generated from enum value: COMMIT_SCOPE_PIPELINE = 1;
    */
   PIPELINE = 1,
 
   /**
+   * Each stream commits on its own.
+   *
    * @generated from enum value: COMMIT_SCOPE_STREAM = 2;
    */
   STREAM = 2,

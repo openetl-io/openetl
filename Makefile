@@ -89,21 +89,37 @@ connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connec
 	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/openetl-io/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
 	cd $(CONNECTORS_SRC) && GOWORK=$(BIN)/connectors.work go build -o $(BIN)/connectors/ ./cmd/...
 
-# openetld's image, from Linux builds of openetld, the engine and the official
-# connectors. ENGINE is a Linux openetl-engine; on Linux, the debug build.
+# openetld's image, from Linux builds of openetld, the CLI, the engine and the
+# official connectors, and the console. ENGINE is a Linux openetl-engine:
+# make engine-linux's, else on Linux the debug build.
 IMAGE ?= openetl:dev
 IMAGE_ARCH ?= $(shell go env GOARCH)
-ENGINE ?= $(CURDIR)/target/debug/openetl-engine
+ENGINE ?= $(or $(wildcard $(BIN)/linux/$(IMAGE_ARCH)/openetl-engine),$(CURDIR)/target/debug/openetl-engine)
 .PHONY: image
-image: ## Build openetld's image (IMAGE), with ENGINE, a Linux openetl-engine
+image: web ## Build openetld's image (IMAGE), with ENGINE, a Linux openetl-engine
 	@test -f $(CONNECTORS_SRC)/go.mod || { echo "clone openetl-connectors into $(CONNECTORS_SRC), or set CONNECTORS_SRC"; exit 1; }
-	@file -b $(ENGINE) | grep -q ELF || { echo "ENGINE=$(ENGINE) isn't a Linux openetl-engine"; exit 1; }
+	@file -b $(ENGINE) | grep -q ELF || { echo "ENGINE=$(ENGINE) isn't a Linux openetl-engine; make engine-linux builds one"; exit 1; }
 	rm -rf $(BIN)/image && mkdir -p $(BIN)/image/connectors
 	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/openetl-io/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
 	GOOS=linux GOARCH=$(IMAGE_ARCH) CGO_ENABLED=0 go build -o $(BIN)/image/openetld ./cmd/openetld
+	GOOS=linux GOARCH=$(IMAGE_ARCH) CGO_ENABLED=0 go build -o $(BIN)/image/openetl ./cmd/openetl
 	cd $(CONNECTORS_SRC) && GOOS=linux GOARCH=$(IMAGE_ARCH) CGO_ENABLED=0 GOWORK=$(BIN)/connectors.work go build -o $(BIN)/image/connectors/ ./cmd/...
 	cp $(ENGINE) $(BIN)/image/openetl-engine
+	cp -R web/dist $(BIN)/image/web
 	docker build --platform linux/$(IMAGE_ARCH) -t $(IMAGE) -f deploy/image/Dockerfile $(BIN)/image
+	rm -rf $(BIN)/image
+
+# A release build of openetl-engine for Linux on IMAGE_ARCH, in the pinned
+# Rust toolchain's container, so make image works from any host. Its build
+# and crates stay in Docker volumes, for the next build.
+RUST_VERSION := $(shell sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+.PHONY: engine-linux
+engine-linux: ## Build a Linux openetl-engine for make image, in Docker, into bin/linux/IMAGE_ARCH
+	@mkdir -p $(BIN)/linux/$(IMAGE_ARCH)
+	docker run --rm --platform linux/$(IMAGE_ARCH) -v $(CURDIR):/src:ro -w /src \
+		-v openetl-engine-target:/target -v openetl-cargo-registry:/usr/local/cargo/registry \
+		-v $(BIN)/linux/$(IMAGE_ARCH):/out -e CARGO_TARGET_DIR=/target -e RUSTUP_TOOLCHAIN=$(RUST_VERSION) \
+		rust:$(RUST_VERSION)-bookworm sh -c 'cargo build --locked --release -p openetl-engine && cp /target/release/openetl-engine /out/'
 
 # kind load fails on Docker's containerd image store, so the node imports
 # what docker save writes, for its own platform only.
@@ -140,12 +156,13 @@ engine: ## Build openetl-engine
 
 # Clearing first drops code for deleted protos.
 .PHONY: generate
-generate: tools web/node_modules/.modules.yaml ## Generate code from protos and SQL
+generate: tools web/node_modules/.modules.yaml ## Generate code from protos and SQL, and the reference pages from the schemas and settings
 	rm -rf gen sdk/go/protocol internal/store/db web/src/gen
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate --template buf.gen.api.yaml
 	$(BIN)/buf generate --template buf.gen.web.yaml
 	$(BIN)/sqlc generate -f internal/store/sqlc.yaml
+	go run ./internal/refdocs
 
 .PHONY: lint
 lint: tools $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION) web/node_modules/.modules.yaml ## Lint protos, Go, Rust and the UI, and check Rust dependencies

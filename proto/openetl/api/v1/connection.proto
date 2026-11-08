@@ -243,9 +243,13 @@ message CatalogStream {
 
 enum SyncMode {
   SYNC_MODE_UNSPECIFIED = 0;
+  // Reads the whole stream every time.
   SYNC_MODE_FULL_REFRESH = 1;
+  // Reads the rows whose cursor has moved on since the last read.
   SYNC_MODE_INCREMENTAL = 2;
+  // Reads every insert, update and delete from the database's log.
   SYNC_MODE_CDC = 3;
+  // Reads the records an event stream has had since the last read.
   SYNC_MODE_STREAM = 4;
 }
 

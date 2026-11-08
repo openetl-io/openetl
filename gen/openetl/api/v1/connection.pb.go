@@ -27,11 +27,15 @@ const (
 type SyncMode int32
 
 const (
-	SyncMode_SYNC_MODE_UNSPECIFIED  SyncMode = 0
+	SyncMode_SYNC_MODE_UNSPECIFIED SyncMode = 0
+	// Reads the whole stream every time.
 	SyncMode_SYNC_MODE_FULL_REFRESH SyncMode = 1
-	SyncMode_SYNC_MODE_INCREMENTAL  SyncMode = 2
-	SyncMode_SYNC_MODE_CDC          SyncMode = 3
-	SyncMode_SYNC_MODE_STREAM       SyncMode = 4
+	// Reads the rows whose cursor has moved on since the last read.
+	SyncMode_SYNC_MODE_INCREMENTAL SyncMode = 2
+	// Reads every insert, update and delete from the database's log.
+	SyncMode_SYNC_MODE_CDC SyncMode = 3
+	// Reads the records an event stream has had since the last read.
+	SyncMode_SYNC_MODE_STREAM SyncMode = 4
 )
 
 // Enum value maps for SyncMode.

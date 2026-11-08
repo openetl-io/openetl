@@ -3049,15 +3049,23 @@ components:
                 interval:
                     pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
                     type: string
+                    description: |-
+                        Unset: 5m in a scheduled pipeline; in a continuous one, the
+                         destination's own interval, or else 10s.
                 maxBytes:
                     type: string
+                    description: |-
+                        Commit once this many bytes have been read since the last commit.
+                         Unset: 256 MB, which grows when commits can't keep up.
                 scope:
                     enum:
                         - COMMIT_SCOPE_UNSPECIFIED
                         - COMMIT_SCOPE_PIPELINE
                         - COMMIT_SCOPE_STREAM
                     type: string
+                    description: 'Unset: pipeline where the destination can, otherwise stream.'
                     format: enum
+            description: Commit is when a pipeline commits what it has read.
         ConfigField:
             type: object
             properties:
@@ -3346,7 +3354,10 @@ components:
                 resumePointTimeout:
                     pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
                     type: string
-                    description: 'Unset: the default. Zero: wait forever.'
+                    description: |-
+                        How long a commit waits for a point the source can resume from
+                         exactly, before it commits without one where the stream keeps its level
+                         anyway. Unset: 1m. Zero: wait forever.
         Destination:
             type: object
             properties:
@@ -3521,7 +3532,7 @@ components:
             properties:
                 jar:
                     type: string
-                    description: An s3:// or https:// URI the runner can read.
+                    description: An s3://, s3a:// or https:// URI the runner can read.
                 sha256:
                     type: string
                     description: The file's SHA-256, in hex.
@@ -4430,10 +4441,14 @@ components:
                         - WRITE_MODE_OVERWRITE
                         - WRITE_MODE_MERGE
                     type: string
+                    description: |-
+                        How every stream is written. Unset, for each stream, where the
+                         destination has the mode: overwrite for a full refresh, merge for a
+                         keyed stream read with cdc, and append otherwise.
                     format: enum
                 namespace:
                     type: string
-                    description: A schema or dataset.
+                    description: 'A schema or dataset. Unset: the destination''s default.'
                 naming:
                     enum:
                         - NAMING_UNSPECIFIED
@@ -4521,11 +4536,15 @@ components:
                         - PIPELINE_MODE_SCHEDULED
                         - PIPELINE_MODE_CONTINUOUS
                     type: string
+                    description: 'Unset: scheduled.'
                     format: enum
                 schedule:
-                    $ref: '#/components/schemas/Schedule'
+                    allOf:
+                        - $ref: '#/components/schemas/Schedule'
+                    description: When a scheduled pipeline's syncs start. A continuous one has none.
                 dataPlane:
                     type: string
+                    description: 'The data plane whose runners run its jobs. Unset: the server''s.'
                 source:
                     $ref: '#/components/schemas/PipelineSource'
                 destination:
@@ -4538,6 +4557,9 @@ components:
                         - SCHEMA_POLICY_BLOCK
                         - SCHEMA_POLICY_IGNORE_NEW
                     type: string
+                    description: |-
+                        What a change to a stream's schema does once the destination has the
+                         stream. Unset: allow_all.
                     format: enum
                 delivery:
                     $ref: '#/components/schemas/Delivery'
@@ -4594,6 +4616,7 @@ components:
             properties:
                 name:
                     type: string
+                    description: As the source's catalog names it.
                 sync:
                     enum:
                         - SYNC_MODE_UNSPECIFIED
@@ -4602,9 +4625,15 @@ components:
                         - SYNC_MODE_CDC
                         - SYNC_MODE_STREAM
                     type: string
+                    description: |-
+                        Unset: the first way the source declares it reads the stream, or in a
+                         continuous pipeline the first of those that's cdc or stream.
                     format: enum
                 cursor:
                     type: string
+                    description: |-
+                        The column an incremental read goes by. Unset: the source's cursor for
+                         the stream, if it names one.
                 columns:
                     type: object
                     additionalProperties:
@@ -4938,6 +4967,7 @@ components:
                 every:
                     pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
                     type: string
+                    description: Starts a sync this often.
                 cron:
                     type: string
                     description: |-

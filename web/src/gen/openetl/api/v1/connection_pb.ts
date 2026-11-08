@@ -774,21 +774,29 @@ export enum SyncMode {
   UNSPECIFIED = 0,
 
   /**
+   * Reads the whole stream every time.
+   *
    * @generated from enum value: SYNC_MODE_FULL_REFRESH = 1;
    */
   FULL_REFRESH = 1,
 
   /**
+   * Reads the rows whose cursor has moved on since the last read.
+   *
    * @generated from enum value: SYNC_MODE_INCREMENTAL = 2;
    */
   INCREMENTAL = 2,
 
   /**
+   * Reads every insert, update and delete from the database's log.
+   *
    * @generated from enum value: SYNC_MODE_CDC = 3;
    */
   CDC = 3,
 
   /**
+   * Reads the records an event stream has had since the last read.
+   *
    * @generated from enum value: SYNC_MODE_STREAM = 4;
    */
   STREAM = 4,

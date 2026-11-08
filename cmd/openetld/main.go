@@ -61,8 +61,7 @@ func run(ctx context.Context, args []string) error {
 		roles.Runner = true
 	case "dev":
 		roles = daemon.Roles{Server: true, Orchestrator: true, Runner: true}
-		defaults["log-format"] = "text"
-		defaults["auth"] = "none"
+		defaults = config.DevDefaults()
 	case "bootstrap-key":
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(os.Stderr, usage)

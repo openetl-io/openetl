@@ -43,7 +43,7 @@ Keep to one kind of page at a time: a tutorial walks through something that work
   ```
 
 - **No `# H1`.** The site renders the title as the heading. The body starts with a paragraph, and its headings start at `##`, in sentence case, without skipping levels. Headings are link targets, so don't reword one without fixing the links to it.
-- **Folders** each have a `meta.json` that lists their pages in order, by file name without `.md`, and gives the folder's `title`. A section's `meta.json` also has `root: true`, a `description` and an `icon` (a [Lucide](https://lucide.dev/icons) name), which the site shows in its section switcher. A page that isn't listed doesn't appear on the site.
+- **Folders** each have a `meta.json` that lists their pages in order, by file name without `.md`, and gives the folder's `title`. A section's `meta.json` also has a `description` and an `icon` (a [Lucide](https://lucide.dev/icons) name), which the site shows beside the section in its sidebar. No folder has `root`: the site keeps every section in the sidebar at once. A page that isn't listed doesn't appear on the site.
 - **File names** are lowercase words joined by hyphens, and name the page's subject or task: `kubernetes.md`, `schema-changes.md`. A folder's landing page is `index.md`.
 - **Links** between pages are relative and start with `./` or `../`, with the `.md`: `[Concepts](./concepts.md#delivery-guarantees)`. The site resolves only those. Links to files outside `docs/`, such as an example or a manifest, are relative too, and the site points them at GitHub at the same commit. Links to other repositories and sites are full URLs.
 - **Callouts** use GitHub's alert syntax, which GitHub renders and the site turns into callouts. Use them sparingly: one a page is plenty.
@@ -70,6 +70,6 @@ Keep to one kind of page at a time: a tutorial walks through something that work
 
 ## Checking a change
 
-`go test ./test/docs` checks the rules a machine can: every page's frontmatter, no `# H1`, no raw HTML, alt text on images, links that resolve with anchors that exist, and a `meta.json` in every folder that lists each of its pages. `make test` runs it, and so does CI when `docs/` changes.
+`go test ./test/docs` checks the rules a machine can: every page's frontmatter, no `# H1`, no raw HTML, alt text on images, links that resolve with anchors that exist, a `meta.json` in every folder that lists each of its pages, a row on the resource spec pages for every field `internal/spec` reads, example documents there that parse, and generated pages that match their sources. `make test` runs it, and so does CI when `docs/` changes.
 
 The rest is yours: look at every page you changed as GitHub renders it, read it once as its section's reader would, and run every command and snippet you added or changed.
