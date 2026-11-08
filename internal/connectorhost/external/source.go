@@ -80,6 +80,7 @@ var (
 	_ source.Source       = (*Source)(nil)
 	_ source.Checker      = (*Source)(nil)
 	_ source.Acknowledger = (*Source)(nil)
+	_ source.Setupper     = (*Source)(nil)
 	_ source.Teardowner   = (*Source)(nil)
 )
 
@@ -91,12 +92,28 @@ func NewSource(exe string, config []byte, opts Options) *Source {
 
 func (s *Source) Check(ctx context.Context) error { return s.check(ctx) }
 
-func (s *Source) Teardown(ctx context.Context, pipeline string) error {
-	p, err := s.proc(ctx)
-	if err != nil {
+// Setup and Teardown call the connector only when its spec sets setup, as
+// the protocol says.
+func (c *instance) Setup(ctx context.Context, pipeline string) error {
+	return c.prepare(ctx, pipeline, false)
+}
+
+func (c *instance) Teardown(ctx context.Context, pipeline string) error {
+	return c.prepare(ctx, pipeline, true)
+}
+
+func (c *instance) prepare(ctx context.Context, pipeline string, teardown bool) error {
+	p, err := c.proc(ctx)
+	if err != nil || !p.spec.GetSetup() {
 		return err
 	}
-	if _, err := protocolv1.NewConnectorServiceClient(p.conn).Teardown(ctx, &protocolv1.TeardownRequest{Config: p.config, Pipeline: pipeline}); err != nil {
+	cc := protocolv1.NewConnectorServiceClient(p.conn)
+	if teardown {
+		_, err = cc.Teardown(ctx, &protocolv1.TeardownRequest{Config: p.config, Pipeline: pipeline})
+	} else {
+		_, err = cc.Setup(ctx, &protocolv1.SetupRequest{Config: p.config, Pipeline: pipeline})
+	}
+	if err != nil {
 		return p.failure(errs.FromStatus(err))
 	}
 	return nil

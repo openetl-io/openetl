@@ -70,6 +70,10 @@ type Connector struct {
 	Splits bool
 	// The source implements source.Resplitter.
 	Resplit bool
+	// The platform calls Setup before each attempt and Teardown once a
+	// pipeline is deleted: the source or destination implements Setupper,
+	// Teardowner or both. Without it, neither is called.
+	Setup bool
 
 	Destination  func(config []byte, h host.Host) (destination.Destination, error)
 	Capabilities destination.Capabilities
@@ -249,6 +253,7 @@ func (b *base) Spec(_ context.Context, req *protocolv1.SpecRequest) (*protocolv1
 		ConfigSchema:     b.c.ConfigSchema,
 		Egress:           &protocolv1.Egress{Tier: ints.Enum[protocolv1.EgressTier](max(b.c.Egress.Tier, EgressHost)), Allow: b.c.Egress.Allow},
 		RequiredFeatures: b.c.RequiredFeatures,
+		Setup:            b.c.Setup,
 	}
 	if b.c.Source != nil {
 		resp.Kind = protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE
@@ -280,24 +285,42 @@ func (b *base) Check(ctx context.Context, req *protocolv1.CheckRequest) (*protoc
 	return &protocolv1.CheckResponse{Error: protoError(err)}, nil
 }
 
-func (b *base) Setup(context.Context, *protocolv1.SetupRequest) (*protocolv1.SetupResponse, error) {
+func (b *base) Setup(ctx context.Context, req *protocolv1.SetupRequest) (*protocolv1.SetupResponse, error) {
+	c, err := b.bound(ctx, req.GetConfig())
+	if err != nil {
+		return nil, status(err)
+	}
+	if s, ok := c.(interface {
+		Setup(context.Context, string) error
+	}); ok {
+		if err := s.Setup(ctx, req.GetPipeline()); err != nil {
+			return nil, status(err)
+		}
+	}
 	return &protocolv1.SetupResponse{}, nil
 }
 
 func (b *base) Teardown(ctx context.Context, req *protocolv1.TeardownRequest) (*protocolv1.TeardownResponse, error) {
-	if b.c.Source == nil {
-		return &protocolv1.TeardownResponse{}, nil
-	}
-	s, err := b.source(ctx, req.GetConfig())
+	c, err := b.bound(ctx, req.GetConfig())
 	if err != nil {
 		return nil, status(err)
 	}
-	if t, ok := s.(source.Teardowner); ok {
+	if t, ok := c.(interface {
+		Teardown(context.Context, string) error
+	}); ok {
 		if err := t.Teardown(ctx, req.GetPipeline()); err != nil {
 			return nil, status(err)
 		}
 	}
 	return &protocolv1.TeardownResponse{}, nil
+}
+
+// bound is the source or the destination, bound to config.
+func (b *base) bound(ctx context.Context, config []byte) (any, error) {
+	if b.c.Source != nil {
+		return b.source(ctx, config)
+	}
+	return b.destination(ctx, config)
 }
 
 func (b *base) source(ctx context.Context, config []byte) (source.Source, error) {

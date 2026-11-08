@@ -1,12 +1,56 @@
 package sdk
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/host"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
+
+type preparedDestination struct {
+	destination.Destination
+	calls *[]string
+}
+
+func (d preparedDestination) Setup(_ context.Context, pipeline string) error {
+	*d.calls = append(*d.calls, "setup "+pipeline)
+	return nil
+}
+
+func (d preparedDestination) Teardown(_ context.Context, pipeline string) error {
+	*d.calls = append(*d.calls, "teardown "+pipeline)
+	return nil
+}
+
+func TestSetupAndTeardown(t *testing.T) {
+	var calls []string
+	b, err := newBase(Connector{
+		Setup: true,
+		Destination: func([]byte, host.Host) (destination.Destination, error) {
+			return preparedDestination{calls: &calls}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := b.Spec(t.Context(), &protocolv1.SpecRequest{})
+	if err != nil || !spec.GetSetup() {
+		t.Fatalf("spec %v, %v", spec, err)
+	}
+	if _, err := b.Setup(t.Context(), &protocolv1.SetupRequest{Config: []byte("{}"), Pipeline: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Teardown(t.Context(), &protocolv1.TeardownRequest{Config: []byte("{}"), Pipeline: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(calls, ", ") != "setup p, teardown p" {
+		t.Errorf("calls %v", calls)
+	}
+}
 
 // Serve and the runner convert these by number.
 func TestNumbersMatchTheProtocol(t *testing.T) {

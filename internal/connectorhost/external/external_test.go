@@ -40,7 +40,7 @@ func TestMain(m *testing.M) {
 	if out, err := exec.Command("go", "build", "-o", bin, "./testconnector").CombinedOutput(); err != nil {
 		panic(string(out))
 	}
-	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "source-future", "source-supports", "source-echo", "destination-files", "source-both"} {
+	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "source-future", "source-supports", "source-echo", "source-prepared", "source-unprepared", "destination-files", "source-both"} {
 		if err := os.Link(bin, filepath.Join(dir, name)); err != nil {
 			panic(err)
 		}
@@ -326,6 +326,34 @@ func TestConfiguredStreams(t *testing.T) {
 	}
 	if len(out.raw) != 1 || string(out.raw[0]) != `{"cursor":"updated_at","mode":2,"state":"{\"since\":\"5\"}"}` {
 		t.Errorf("the connector saw %s", out.raw)
+	}
+}
+
+// Setup and Teardown reach a connector whose spec sets setup, and only one.
+func TestSetupAndTeardown(t *testing.T) {
+	for name, calls := range map[string]bool{"source-prepared": true, "source-unprepared": false} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg, _ := json.Marshal(map[string]string{"dir": dir})
+			src := NewSource(exe(name), cfg, Options{})
+			defer func() { _ = src.Close() }()
+			if err := src.Setup(t.Context(), "p1"); err != nil {
+				t.Fatal(err)
+			}
+			f := filepath.Join(dir, "p1")
+			if _, err := os.Stat(f); (err == nil) != calls {
+				t.Errorf("after Setup: %v", err)
+			}
+			if err := os.WriteFile(f, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := src.Teardown(t.Context(), "p1"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(f); (err != nil) != calls {
+				t.Errorf("after Teardown: %v", err)
+			}
+		})
 	}
 }
 

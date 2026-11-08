@@ -336,6 +336,22 @@ type Checker interface {
 	Check(ctx context.Context) error
 }
 
+// Setupper is implemented by destinations that prepare something for a
+// pipeline before writing for it. The platform calls Setup before each
+// attempt, so preparing what's already there isn't an error. An external
+// connector also sets sdk.Connector.Setup.
+type Setupper interface {
+	Setup(ctx context.Context, pipeline string) error
+}
+
+// Teardowner is implemented by destinations that keep something for a
+// pipeline besides its data, such as staging tables. Teardown removes it
+// once the pipeline is deleted. Removing what's already gone isn't an
+// error. An external connector also sets sdk.Connector.Setup.
+type Teardowner interface {
+	Teardown(ctx context.Context, pipeline string) error
+}
+
 // SchemaApplier is implemented by writers whose destination has a schema to
 // change, such as a database. ApplySchema makes each stream's table hold its
 // schema: it creates tables, adds columns and widens types, and never drops
