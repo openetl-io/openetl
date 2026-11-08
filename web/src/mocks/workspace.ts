@@ -1,5 +1,5 @@
-import { create } from "@bufbuild/protobuf";
-import { timestampFromMs } from "@bufbuild/protobuf/wkt";
+import { create, fromJson } from "@bufbuild/protobuf";
+import { ValueSchema, timestampFromMs } from "@bufbuild/protobuf/wkt";
 import {
   DataPlaneSchema,
   KeySchema,
@@ -14,6 +14,8 @@ import {
 } from "@/gen/openetl/api/v1/access_pb";
 import { AuditEntrySchema, type AuditEntry } from "@/gen/openetl/api/v1/audit_pb";
 import { DbtProjectSchema, type DbtProject } from "@/gen/openetl/api/v1/dbt_pb";
+import { FlinkClusterSchema, type FlinkCluster } from "@/gen/openetl/api/v1/flink_pb";
+import { SparkClusterSchema, type SparkCluster } from "@/gen/openetl/api/v1/spark_pb";
 import {
   HealActionKind,
   HealActionState,
@@ -188,6 +190,9 @@ export const secrets: Secret[] = [
   ["pagerduty-signing", ["webhooks/pagerduty"], 30],
   ["slack-signing", ["webhooks/slack-data-team"], 12],
   ["legacy-signing", [], 90],
+  ["lake-spark-s3", ["sparkClusters/lake-spark"], 18],
+  ["flink-kubeconfig", ["flinkClusters/flink-k8s"], 16],
+  ["flink-proxy-token", ["flinkClusters/flink-session"], 9],
 ].map(([id, used, days]) =>
   create(SecretSchema, {
     name: `${ws}/secrets/${id}`,
@@ -212,6 +217,87 @@ export const dbtProjects: DbtProject[] = [
     usedBy: [`${ws}/pipelines/billing-to-warehouse`],
     createTime: ago(14 * 24 * 60),
     updateTime: ago(5 * 24 * 60),
+  }),
+];
+
+const secretRef = (name: string) => fromJson(ValueSchema, { secret: name });
+const version = (seed: number) => `sha256:${(0x5e1d00 + seed * 7919).toString(16).padEnd(64, "a")}`;
+
+export const sparkClusters: SparkCluster[] = [
+  create(SparkClusterSchema, {
+    name: `${ws}/sparkClusters/lake-spark`,
+    spec: {
+      target: {
+        case: "submit",
+        value: {
+          master: "spark://spark-master.data.internal:7077",
+          conf: {
+            "spark.executor.memory": "8g",
+            "spark.executor.cores": "4",
+            "spark.sql.shuffle.partitions": "64",
+            "spark.hadoop.fs.s3a.secret.key": { secret: "lake-spark-s3" },
+          },
+        },
+      },
+    },
+    version: version(1),
+    usedBy: [`${ws}/pipelines/events-to-lake`],
+    createTime: ago(18 * 24 * 60),
+    updateTime: ago(26 * 60),
+  }),
+  create(SparkClusterSchema, {
+    name: `${ws}/sparkClusters/emr-nightly`,
+    spec: { target: { case: "emr", value: { clusterName: "nightly-batch", region: "eu-west-1" } } },
+    version: version(2),
+    usedBy: [`${ws}/pipelines/inventory-snapshot`],
+    createTime: ago(30 * 24 * 60),
+    updateTime: ago(6 * 24 * 60),
+  }),
+  create(SparkClusterSchema, {
+    name: `${ws}/sparkClusters/emr-adhoc`,
+    spec: { target: { case: "emr", value: { clusterId: "j-2AXXXXXXGAPLF", region: "eu-west-1" } } },
+    version: version(3),
+    createTime: ago(9 * 24 * 60),
+    updateTime: ago(9 * 24 * 60),
+  }),
+];
+
+export const flinkClusters: FlinkCluster[] = [
+  create(FlinkClusterSchema, {
+    name: `${ws}/flinkClusters/flink-k8s`,
+    spec: {
+      target: {
+        case: "kubernetes",
+        value: {
+          namespace: "flink-jobs",
+          image: "ghcr.io/acme/flink:1.20-s3",
+          kubeconfig: secretRef("flink-kubeconfig"),
+          jobManager: { cpu: 1, memory: "2g" },
+          taskManager: { cpu: 2, memory: "4g" },
+        },
+      },
+      conf: { "state.checkpoints.num-retained": "3", "taskmanager.numberOfTaskSlots": "2" },
+    },
+    version: version(4),
+    usedBy: [`${ws}/pipelines/clickstream-to-lake`],
+    createTime: ago(16 * 24 * 60),
+    updateTime: ago(2 * 24 * 60),
+  }),
+  create(FlinkClusterSchema, {
+    name: `${ws}/flinkClusters/flink-session`,
+    spec: {
+      target: {
+        case: "rest",
+        value: {
+          url: "https://flink.data.internal",
+          auth: secretRef("flink-proxy-token"),
+        },
+      },
+    },
+    version: version(5),
+    usedBy: [`${ws}/pipelines/events-fanout`],
+    createTime: ago(9 * 24 * 60),
+    updateTime: ago(9 * 24 * 60),
   }),
 ];
 

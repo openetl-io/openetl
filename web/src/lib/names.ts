@@ -11,6 +11,9 @@ export const sourceName = (workspace: string, source: string) => `workspaces/${w
 export const destinationName = (workspace: string, destination: string) =>
   `workspaces/${workspace}/destinations/${destination}`;
 
+export const clusterName = (workspace: string, kind: "spark" | "flink", cluster: string) =>
+  `workspaces/${workspace}/${kind}Clusters/${cluster}`;
+
 /** The last segment of a resource name. */
 export const lastSegment = (name: string) => name.slice(name.lastIndexOf("/") + 1);
 

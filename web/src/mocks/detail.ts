@@ -19,6 +19,7 @@ import {
 } from "@/gen/openetl/api/v1/pipeline_pb";
 import { LogEntrySchema, SyncState, type LogEntry, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { destinations, pipelines, syncs } from "./fixtures";
+import { flinkClusters, sparkClusters } from "./workspace";
 
 // What a pipeline's tabs and a sync's page read, made up from the pipeline
 // and its syncs.
@@ -162,11 +163,21 @@ export function holds(name: string): Hold[] {
   ];
 }
 
+/** The clusters of a kind that a spec uses, by the version of their settings. */
+function pinned(spec: Pipeline["spec"], clusters: { name: string; version: string }[], kind: "spark" | "flink") {
+  const used = new Set<string>();
+  if (spec?.transform?.engine.case === kind) used.add(spec.transform.engine.value.cluster);
+  if (kind === "spark") for (const s of spec?.postSync ?? []) if (s.step.case === "spark") used.add(s.step.value.cluster);
+  return Object.fromEntries(clusters.filter((c) => used.has(c.name.split("/").pop()!)).map((c) => [c.name.split("/").pop()!, c.version]));
+}
+
 export function versions(p: Pipeline): PipelineVersion[] {
   return [0, 1, 2].map((i) =>
     create(PipelineVersionSchema, {
       name: `${p.name}/versions/${i === 0 ? p.version : `sha256:${(0x7a3c19 + i * 4099).toString(16).padEnd(64, "0")}`}`,
       spec: p.spec,
+      sparkClusters: pinned(p.spec, sparkClusters, "spark"),
+      flinkClusters: pinned(p.spec, flinkClusters, "flink"),
       dataPlane: "default",
       provenance: i === 0 ? "git: acme/data-pipelines@4e1a9c2 by ci-deploy" : `openetl apply by priya`,
       createTime: ts(Date.now() - (2 + i * 9) * 86_400_000),

@@ -20,7 +20,7 @@ import { PipelineMode, PipelineService } from "@/gen/openetl/api/v1/pipeline_pb"
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { errorCode, errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
-import { destinationName, pipelineName, shortDigest, sourceName } from "@/lib/names";
+import { clusterName, destinationName, pipelineName, shortDigest, sourceName } from "@/lib/names";
 import { lag } from "@/lib/pipeline";
 import { sizeAmounts, sizeLabel, sizeReasonLabel } from "@/lib/sizes";
 import { pipelineStatus } from "@/lib/status";
@@ -98,6 +98,12 @@ export function PipelinePage() {
                 {spec?.destination?.namespace && <span className="text-muted-foreground">schema {spec.destination.namespace}</span>}
               </span>
             </DescriptionItem>
+            {spec?.transform?.engine.case && (
+              <DescriptionItem label="Transform">
+                {spec.transform.engine.case === "spark" ? "Spark" : "Flink"} on{" "}
+                <ResourceLink name={clusterName(workspace, spec.transform.engine.case, spec.transform.engine.value.cluster)} />
+              </DescriptionItem>
+            )}
             <DescriptionItem label="Schedule">{pl.paused ? "Paused" : <Schedule pipeline={pl} />}</DescriptionItem>
             <DescriptionItem label={continuous ? "Last commit" : "Last success"}>
               <Freshness pipeline={pl} />

@@ -13,6 +13,7 @@ import {
 import "@xyflow/react/dist/base.css";
 import { Database, Hammer, Waypoints } from "lucide-react";
 import type { DeliveryLevel } from "@/gen/openetl/api/v1/pipeline_pb";
+import { ResourceLink } from "@/components/resource-link";
 import { compact } from "@/lib/format";
 import { usePrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
@@ -20,7 +21,8 @@ import { cn } from "@/lib/utils";
 export type GraphStream = { name: string; rows?: bigint; level?: DeliveryLevel };
 type End = { name: string; connector?: string; detail?: string; logo?: string };
 
-type EndNode = Node<{ kind: "source" | "destination" | "step"; title: string; detail?: string; logo?: string }, "end">;
+/** link is a resource the detail ends with, by its API name, such as the cluster a step runs on. */
+type EndNode = Node<{ kind: "source" | "destination" | "step"; title: string; detail?: string; link?: string; logo?: string }, "end">;
 type StreamNode = Node<{ name: string; rows?: bigint; live: boolean }, "stream">;
 
 const kindIcon = { source: Database, destination: Database, step: Hammer };
@@ -41,7 +43,20 @@ function EndView({ data }: NodeProps<EndNode>) {
         {kindLabel[data.kind]}
       </div>
       <div className="mt-1 truncate font-medium">{data.title}</div>
-      {data.detail && <div className="truncate text-[0.8125rem] text-muted-foreground">{data.detail}</div>}
+      {data.detail && (
+        <div className="truncate text-[0.8125rem] text-muted-foreground">
+          {data.detail}
+          {data.link && (
+            <>
+              {" "}
+              {/* Nodes without handlers take no pointer events; the link takes its own. */}
+              <span className="nopan pointer-events-auto text-foreground">
+                <ResourceLink name={data.link} />
+              </span>
+            </>
+          )}
+        </div>
+      )}
       <Handle type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-border" />
     </div>
   );
@@ -95,7 +110,7 @@ export default function PipelineGraph({
   source: End;
   destination: End;
   streams: GraphStream[];
-  steps: { name: string; detail: string }[];
+  steps: { name: string; detail: string; link?: string }[];
   live: boolean;
 }) {
   const { dark } = usePrefs();
@@ -118,7 +133,7 @@ export default function PipelineGraph({
     let prev = "destination";
     steps.forEach((s, i) => {
       const id = `step:${i}`;
-      nodes.push({ id, type: "end", position: { x: 940 + i * 280, y: mid }, data: { kind: "step", title: s.name, detail: s.detail } });
+      nodes.push({ id, type: "end", position: { x: 940 + i * 280, y: mid }, data: { kind: "step", title: s.name, detail: s.detail, link: s.link } });
       edges.push({ id: `c:${i}`, source: prev, target: id, type: "flow", data: { live: false } });
       prev = id;
     });

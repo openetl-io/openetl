@@ -165,6 +165,31 @@ const dbtProjects = createRoute({
   component: lazyRouteComponent(() => import("@/routes/dbt-projects"), "DbtProjectsPage"),
 });
 
+const clusters = createRoute({
+  getParentRoute: () => app,
+  path: "/workspaces/$workspace/clusters",
+  validateSearch: (s: Record<string, unknown>): { q?: string; target?: string[]; tab?: "flink" } => ({
+    ...listSearch(["target"])(s),
+    tab: s.tab === "flink" ? "flink" : undefined,
+  }),
+  staticData: { crumbs: () => [{ label: "Clusters" }] },
+  component: lazyRouteComponent(() => import("@/routes/clusters"), "ClustersPage"),
+});
+
+const sparkCluster = createRoute({
+  getParentRoute: () => app,
+  path: "/workspaces/$workspace/clusters/spark/$cluster",
+  staticData: { crumbs: (p) => [page("Clusters", "clusters")(p), { label: p.cluster! }] },
+  component: lazyRouteComponent(() => import("@/routes/cluster"), "SparkClusterPage"),
+});
+
+const flinkCluster = createRoute({
+  getParentRoute: () => app,
+  path: "/workspaces/$workspace/clusters/flink/$cluster",
+  staticData: { crumbs: (p) => [page("Clusters", "clusters?tab=flink")(p), { label: p.cluster! }] },
+  component: lazyRouteComponent(() => import("@/routes/cluster"), "FlinkClusterPage"),
+});
+
 const webhooks = createRoute({
   getParentRoute: () => app,
   path: "/workspaces/$workspace/webhooks",
@@ -231,6 +256,9 @@ export const router = createRouter({
       destination,
       connectors,
       dbtProjects,
+      clusters,
+      sparkCluster,
+      flinkCluster,
       webhooks,
       webhook,
       secrets,

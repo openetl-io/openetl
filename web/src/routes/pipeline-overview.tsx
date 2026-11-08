@@ -23,7 +23,7 @@ import { type ConnectorVersion, SyncMode } from "@/gen/openetl/api/v1/connection
 import { SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { errorMessage } from "@/lib/api";
 import { compact, enumLabel, full, sentence } from "@/lib/format";
-import { lastSegment, schemaKey } from "@/lib/names";
+import { clusterName, lastSegment, schemaKey } from "@/lib/names";
 import type { GraphStream } from "@/components/pipeline-graph";
 
 const PipelineGraph = lazy(() => import("@/components/pipeline-graph"));
@@ -157,7 +157,7 @@ export function Overview({
                   return [{ name: s.step.value.project, detail: `dbt ${enumLabel(DbtCommand[s.step.value.command]).toLowerCase() || "build"}` }];
                 case "spark": {
                   const file = s.step.value.code?.file?.value ?? "";
-                  return [{ name: file.replace(/\?.*$/, "").split("/").pop() ?? "", detail: `Spark on ${s.step.value.cluster}` }];
+                  return [{ name: file.replace(/\?.*$/, "").split("/").pop() ?? "", detail: "Spark on", link: clusterName(workspace, "spark", s.step.value.cluster) }];
                 }
                 default:
                   return [];

@@ -72,18 +72,22 @@ type Def = {
   streams: string[];
   /** How many of the latest syncs failed. */
   failing?: number;
+  /** A transform on a cluster of that kind. */
+  transform?: { engine: "spark" | "flink"; cluster: string; code: string };
+  /** A Spark step after each sync: its cluster and its code. */
+  sparkStep?: { cluster: string; file: string };
 };
 
 const defs: Def[] = [
   { name: "orders-to-warehouse", source: "orders-db", destination: "warehouse", every: 15, outcome: "succeeded", rows: 1_284_019, streams: ["public.orders", "public.order_items", "public.customers"] },
   { name: "orders-cdc", source: "orders-db", destination: "lake", continuous: true, outcome: "running", rows: 48_211_906, streams: ["public.orders", "public.order_items"] },
   { name: "billing-to-warehouse", source: "billing-db", destination: "warehouse", every: 60, outcome: "failed", failing: 4, incidents: 1, rows: 0, streams: ["public.invoices", "public.payments"] },
-  { name: "inventory-snapshot", source: "inventory-db", destination: "raw-archive", cron: "0 2 * * *", outcome: "succeeded", rows: 3_904_112, streams: ["public.stock", "public.warehouses"] },
-  { name: "clickstream-to-lake", source: "clickstream", destination: "lake-glue", continuous: true, outcome: "running", rows: 912_408_337, streams: ["page_views"] },
-  { name: "events-to-lake", source: "events", destination: "lake", every: 30, outcome: "quarantined", incidents: 1, rows: 2_118_440, streams: ["orders.v1", "payments.v1", "shipments.v1"] },
+  { name: "inventory-snapshot", source: "inventory-db", destination: "raw-archive", cron: "0 2 * * *", outcome: "succeeded", rows: 3_904_112, streams: ["public.stock", "public.warehouses"], sparkStep: { cluster: "emr-nightly", file: "s3://acme-jobs/spark/compact_stock.py" } },
+  { name: "clickstream-to-lake", source: "clickstream", destination: "lake-glue", continuous: true, outcome: "running", rows: 912_408_337, streams: ["page_views"], transform: { engine: "flink", cluster: "flink-k8s", code: "s3://acme-jobs/flink/sessionize-1.4.0.jar" } },
+  { name: "events-to-lake", source: "events", destination: "lake", every: 30, outcome: "quarantined", incidents: 1, rows: 2_118_440, streams: ["orders.v1", "payments.v1", "shipments.v1"], transform: { engine: "spark", cluster: "lake-spark", code: "s3://acme-jobs/spark/enrich_events.py" } },
   { name: "customers-to-warehouse", source: "orders-db", destination: "warehouse", every: 30, outcome: "retrying", rows: 88_402, streams: ["public.customers"] },
   { name: "payments-to-archive", source: "billing-db", destination: "raw-archive", every: 360, outcome: "succeeded", paused: true, rows: 640_221, streams: ["public.payments"] },
-  { name: "events-fanout", source: "events", destination: "events-out", continuous: true, outcome: "stopped", rows: 7_220_118, streams: ["orders.v1"] },
+  { name: "events-fanout", source: "events", destination: "events-out", continuous: true, outcome: "stopped", rows: 7_220_118, streams: ["orders.v1"], transform: { engine: "flink", cluster: "flink-session", code: "s3://acme-jobs/flink/fanout-0.9.2.jar" } },
   { name: "legacy-orders", source: "orders-db", destination: "raw-archive", outcome: "never", rows: 0, streams: ["public.orders_2019"] },
   { name: "products-to-warehouse", source: "inventory-db", destination: "warehouse", every: 60, outcome: "failed", failing: 1, incidents: 2, rows: 0, streams: ["public.products", "public.categories"] },
   { name: "audit-log-archive", source: "billing-db", destination: "lake-glue", cron: "30 1 * * *", outcome: "succeeded", rows: 214_903, streams: ["audit.entries"] },
@@ -218,6 +222,13 @@ export const pipelines: Pipeline[] = defs.map((d) => {
       dataPlane: "default",
       source: { ref: d.source, streams: d.streams.map((s) => ({ name: s, sync: d.continuous ? SyncMode.INCREMENTAL : SyncMode.FULL_REFRESH })) },
       destination: { ref: d.destination },
+      transform: d.transform && {
+        engine:
+          d.transform.engine === "spark"
+            ? { case: "spark", value: { cluster: d.transform.cluster, code: { file: { case: "python", value: d.transform.code } } } }
+            : { case: "flink", value: { cluster: d.transform.cluster, code: { jar: d.transform.code } } },
+      },
+      postSync: d.sparkStep ? [{ step: { case: "spark", value: { cluster: d.sparkStep.cluster, code: { file: { case: "python", value: d.sparkStep.file } } } } }] : [],
     },
     status: { lastSync: h[0], lastSuccessTime: lastSuccess?.endTime, openIncidents: d.incidents ?? 0 },
   });

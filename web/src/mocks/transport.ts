@@ -4,6 +4,8 @@ import { AuditService } from "@/gen/openetl/api/v1/audit_pb";
 import { DestinationService, SourceService } from "@/gen/openetl/api/v1/connection_pb";
 import { ConnectorService } from "@/gen/openetl/api/v1/connector_pb";
 import { DbtProjectService } from "@/gen/openetl/api/v1/dbt_pb";
+import { FlinkClusterService } from "@/gen/openetl/api/v1/flink_pb";
+import { SparkClusterService } from "@/gen/openetl/api/v1/spark_pb";
 import { IncidentService, IncidentState } from "@/gen/openetl/api/v1/incident_pb";
 import { SecretService } from "@/gen/openetl/api/v1/secret_pb";
 import { WebhookService } from "@/gen/openetl/api/v1/webhook_pb";
@@ -11,7 +13,20 @@ import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { destinations, pipelines, sources, syncs } from "./fixtures";
 import { checkpoints, holds, log, plan, schemas, versions } from "./detail";
-import { auditEntries, dataPlanes, dbtProjects, deliveries, incidents, keys, principals as others, runnerTokens, secrets, webhooks } from "./workspace";
+import {
+  auditEntries,
+  dataPlanes,
+  dbtProjects,
+  deliveries,
+  flinkClusters,
+  incidents,
+  keys,
+  principals as others,
+  runnerTokens,
+  secrets,
+  sparkClusters,
+  webhooks,
+} from "./workspace";
 import { accessSession, requireSession, user } from "./session";
 import { resolve, sendTest, setDisabled, setPaused, startSync } from "./actions";
 import { catalogPackage, catalogPackages, connectorSources } from "./catalog";
@@ -84,6 +99,14 @@ export const mockTransport = createRouterTransport(({ service }) => {
   service(DbtProjectService, {
     listDbtProjects: async () => (await latency(), { dbtProjects }),
     getDbtProject: async ({ name }) => (await latency(), { dbtProject: find(dbtProjects, name) }),
+  });
+  service(SparkClusterService, {
+    listSparkClusters: async () => (await latency(), { sparkClusters }),
+    getSparkCluster: async ({ name }) => (await latency(), { sparkCluster: find(sparkClusters, name) }),
+  });
+  service(FlinkClusterService, {
+    listFlinkClusters: async () => (await latency(), { flinkClusters }),
+    getFlinkCluster: async ({ name }) => (await latency(), { flinkCluster: find(flinkClusters, name) }),
   });
   service(AccessService, {
     listPrincipals: async () => (await latency(), { principals }),
