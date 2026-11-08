@@ -183,7 +183,13 @@ func (s *FSStore) lockFile(p string) (unlock func(), err error) {
 	if err := s.root.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return nil, err
 	}
-	f, err := s.root.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600)
+	// Not plain O_CREATE: on macOS, openat with O_CREATE and without O_EXCL can
+	// fail with ENOENT while another caller creates the same file. Lock files
+	// are never removed, so one that exists can be opened.
+	f, err := s.root.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		f, err = s.root.OpenFile(p, os.O_RDWR, 0)
+	}
 	if err != nil {
 		return nil, err
 	}
