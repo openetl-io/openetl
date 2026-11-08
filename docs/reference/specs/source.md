@@ -5,6 +5,8 @@ description: Every field of a Source document, which names the connector a pipel
 
 A `Source` is a system pipelines read from: a connector, and that connector's config. Pipelines name it in `source.ref`. [Pipelines as code](../../pipelines/index.md#the-documents) shows how the documents fit together.
 
+The **Required** column applies within the containing object or list entry. Optional objects may be omitted; when you include one, its required children must be set. Conditional requirements are stated in the table. **Default** describes what omission means.
+
 ```yaml
 apiVersion: openetl.io/v1alpha1
 kind: Source
@@ -19,22 +21,22 @@ spec:
 
 ## The document
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `apiVersion` | string | Required | `openetl.io/v1alpha1` |
-| `kind` | string | Required | `Source` |
-| `metadata.name` | name | Required | The source's name: lowercase letters, digits and hyphens, at most 63 characters, starting and ending with a letter or digit |
-| `metadata.workspace` | name | The workspace `openetl apply --workspace` names, `default` unless it says | The workspace it belongs to |
-| `spec` | object | Required | The fields below |
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `apiVersion` | string | Yes | — | `openetl.io/v1alpha1` |
+| `kind` | string | Yes | — | `Source` |
+| `metadata.name` | name | Yes | — | The source's name: lowercase letters, digits and hyphens, at most 63 characters, starting and ending with a letter or digit |
+| `metadata.workspace` | name | No | The workspace `openetl apply --workspace` names, `default` unless it says | The workspace it belongs to |
+| `spec` | object | Yes | — | The fields below |
 
 A field the document doesn't have is refused.
 
 ## spec
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `connector` | connector reference | Required | The connector to read with, and which of its versions. See [connector references](#connector-references). |
-| `config` | object | None | The connector's config. Its fields are the connector's own: its spec's JSON Schema defines them, which `openetl connector spec TARGET` prints. A config never holds a secret's value: a field holds `{ secret: NAME }` instead, naming a secret in the same workspace, which must exist when you apply. Where the connector's spec marks a field as secret, the config must name a secret for it. |
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `connector` | connector reference | Yes | — | The connector to read with, and which of its versions. See [connector references](#connector-references). |
+| `config` | object | Depends on the connector's config schema | None | The connector's config. Its fields are the connector's own: its spec's JSON Schema defines them, which `openetl connector spec TARGET` prints. A config never holds a secret's value: a field holds `{ secret: NAME }` instead, naming a secret in the same workspace, which must exist when you apply. Where the connector's spec marks a field as secret, the config must name a secret for it. |
 
 ## Connector references
 

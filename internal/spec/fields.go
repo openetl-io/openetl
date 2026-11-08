@@ -12,8 +12,7 @@ import (
 // objects included, as dotted paths with [] after a list of objects and
 // NAME for a map's keys: source.streams[].columns.NAME.type. A field whose
 // value isn't read field by field here, such as a connector's config or a
-// size, ends its path. Nil for kinds other than Source, Destination and
-// Pipeline.
+// size, ends its path. Nil for kinds whose specs aren't read field by field.
 func FieldPaths(kind string) []string {
 	var t reflect.Type
 	switch kind {
@@ -21,6 +20,16 @@ func FieldPaths(kind string) []string {
 		t = reflect.TypeFor[pipelineYAML]()
 	case KindSource, KindDestination:
 		t = reflect.TypeFor[connectorYAML]()
+	case KindConnectorSource:
+		t = reflect.TypeFor[connectorSourceYAML]()
+	case KindDbtProject:
+		t = reflect.TypeFor[dbtProjectYAML]()
+	case KindWebhook:
+		t = reflect.TypeFor[webhookYAML]()
+	case KindSparkCluster:
+		t = reflect.TypeFor[sparkClusterYAML]()
+	case KindFlinkCluster:
+		t = reflect.TypeFor[flinkClusterYAML]()
 	default:
 		return nil
 	}

@@ -20,7 +20,7 @@ Write each page for its section's reader. Before writing, ask what they know, wh
 | `integrate` | People connecting other systems: dbt, Spark, Flink, the API, webhooks, OpenTelemetry, query engines | The other system | Say what OpenETL sends or expects, and show a working setup on each side. |
 | `self-host` | People who install, run and upgrade OpenETL | Linux, containers, Postgres, object storage; Kubernetes where a page says so | Exact commands, the settings each step needs, how to check it worked, and how to undo it. |
 | `build-connectors` | Connector developers | Go, or another language and gRPC | The contract, then a connector that works, then how to test, package and publish it. |
-| `reference` | Anyone looking something up | What they're looking for | Complete and exact: every field, flag, command or event, with its type, default and meaning. No tutorials. |
+| `reference` | Anyone looking something up | What they're looking for | Complete and exact: every field, flag, command or event, with its type, required or optional status, default and meaning. State conditional requirements, including mutually exclusive choices, explicitly. No tutorials. |
 | `internals` | Contributors, and readers who want to know how it works | Distributed systems | How and why, at the level of the code. May name packages and protocols. |
 
 Keep to one kind of page at a time: a tutorial walks through something that works end to end, a how-to does one task, a reference page lists, an explanation explains. A how-to that needs every field of something links to its reference page.

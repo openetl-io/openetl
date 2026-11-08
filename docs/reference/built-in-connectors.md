@@ -21,16 +21,16 @@ A source of generated rows. It offers two streams, `users` and `purchases`, of `
 
 ### Config
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `seed` | integer, 0 or more | `0` | Seeds the generator. The same seed gives the same rows. |
-| `count` | integer, 0 or more | `1000` | Rows per stream. With `endless`, it only sets the range of `purchases.user_id`. |
-| `batchSize` | integer, 1 or more | `100` | Rows per batch. Each batch ends at a resume point. |
-| `delay` | duration, such as `50ms` | none | A pause after each batch. With `endless`, after each round. |
-| `overlap` | integer, 0 or more | `0` | Rows before its resume point that a resumed read emits again, like a cursor's lookback window. Above 0, the streams replay a superset of what was read rather than exactly the same rows. |
-| `keyless` | boolean | `false` | The streams declare no primary key, and `id` as their cursor, like tables without a primary key. |
-| `twice` | integer, 0 or more | `0` | Makes every `twice`-th row a copy of the row before it, as a table without a primary key can hold a row twice. Needs `keyless`. |
-| `endless` | boolean | `false` | The streams never end, for a continuous pipeline. Each round emits a batch of every stream, then waits `delay`; with no `delay`, the next round starts at once. |
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `seed` | integer, 0 or more | No | `0` | Seeds the generator. The same seed gives the same rows. |
+| `count` | integer, 0 or more | No | `1000` | Rows per stream. With `endless`, it only sets the range of `purchases.user_id`. |
+| `batchSize` | integer, 1 or more | No | `100` | Rows per batch. Each batch ends at a resume point. |
+| `delay` | duration, such as `50ms` | No | none | A pause after each batch. With `endless`, after each round. |
+| `overlap` | integer, 0 or more | No | `0` | Rows before its resume point that a resumed read emits again, like a cursor's lookback window. Above 0, the streams replay a superset of what was read rather than exactly the same rows. |
+| `keyless` | boolean | No | `false` | The streams declare no primary key, and `id` as their cursor, like tables without a primary key. |
+| `twice` | integer, 0 or more | No | `0` | Makes every `twice`-th row a copy of the row before it, as a table without a primary key can hold a row twice. Needs `keyless`. |
+| `endless` | boolean | No | `false` | The streams never end, for a continuous pipeline. Each round emits a batch of every stream, then waits `delay`; with no `delay`, the next round starts at once. |
 
 ### Streams
 
@@ -136,9 +136,9 @@ A destination that writes each stream as Parquet files into a directory on the m
 
 ### Config
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `url` | string | required | `file://` followed by an absolute path, such as `file:///tmp/openetl-parquet`. The host is empty or `localhost`, with no query or fragment. |
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `url` | string | Yes | — | `file://` followed by an absolute path, such as `file:///tmp/openetl-parquet`. The host is empty or `localhost`, with no query or fragment. |
 
 `openetl check destination NAME` creates the directory if it's missing, and checks that new files can be made in it.
 

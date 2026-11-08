@@ -14,9 +14,14 @@ import (
 // specPages are the reference's pages of the kinds internal/spec reads
 // field by field.
 var specPages = map[string]string{
-	spec.KindPipeline:    "reference/specs/pipeline.md",
-	spec.KindSource:      "reference/specs/source.md",
-	spec.KindDestination: "reference/specs/destination.md",
+	spec.KindPipeline:        "reference/specs/pipeline.md",
+	spec.KindSource:          "reference/specs/source.md",
+	spec.KindDestination:     "reference/specs/destination.md",
+	spec.KindConnectorSource: "reference/specs/connector-source.md",
+	spec.KindDbtProject:      "reference/specs/dbt-project.md",
+	spec.KindWebhook:         "reference/specs/webhook.md",
+	spec.KindSparkCluster:    "reference/specs/spark-cluster.md",
+	spec.KindFlinkCluster:    "reference/specs/flink-cluster.md",
 }
 
 // envelope is a document's fields outside its spec, which a spec page
@@ -37,6 +42,9 @@ func TestSpecFields(t *testing.T) {
 		}
 		lines := strings.Split(string(b), "\n")
 		fields := append(spec.FieldPaths(kind), envelope...)
+		if kind == spec.KindConnectorSource {
+			fields = slices.DeleteFunc(fields, func(f string) bool { return f == "metadata.workspace" })
+		}
 		rows := map[string]int{}
 		for _, r := range fieldRows(lines) {
 			if _, ok := rows[r.field]; ok {
@@ -50,6 +58,13 @@ func TestSpecFields(t *testing.T) {
 		for _, f := range fields {
 			if _, ok := rows[f]; !ok {
 				t.Errorf("%s: no row for %s, which a %s document takes", file, f, kind)
+			}
+		}
+		for _, row := range fieldRows(lines) {
+			line := lines[row.line-1]
+			cells := strings.Split(strings.Trim(line, "|"), "|")
+			if len(cells) != 5 || strings.TrimSpace(cells[2]) == "" {
+				t.Errorf("%s:%d: field row needs an explicit Required column", file, row.line)
 			}
 		}
 		for _, d := range documents(lines, "yaml") {

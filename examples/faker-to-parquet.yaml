@@ -1,0 +1,30 @@
+# Built-in connectors only. With a runner on your computer, apply this file
+# and inspect /tmp/openetl-parquet. For Compose, use a path on the runner's
+# mounted volume instead. docs/self-host/compose.md explains container paths.
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: demo-data
+spec:
+  connector: faker
+  config:
+    seed: 42
+    count: 10
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: demo-files
+spec:
+  connector: parquet
+  config:
+    url: file:///tmp/openetl-parquet
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: demo-files
+spec:
+  schedule: { every: 1h }
+  source: { ref: demo-data }
+  destination: { ref: demo-files }

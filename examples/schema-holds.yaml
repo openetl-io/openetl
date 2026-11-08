@@ -1,0 +1,41 @@
+# A worked schema-change example using the official Postgres connector.
+# docs/pipelines/schema-changes.md creates the source table and walks through
+# a hold and its release. Set schema-demo-dsn before applying.
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: schema-demo
+spec:
+  connector: postgres
+  config:
+    dsn: { secret: schema-demo-dsn }
+    schema: docs_source
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: schema-demo
+spec:
+  connector: postgres
+  config:
+    dsn: { secret: schema-demo-dsn }
+    schema: docs_target
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: schema-demo
+spec:
+  schedule: { every: 1h }
+  source:
+    ref: schema-demo
+    streams:
+      - name: orders
+        sync: incremental
+        cursor: updated_at
+        quarantine: cell
+  destination:
+    ref: schema-demo
+    write: merge
+  delivery:
+    require: effectively_once

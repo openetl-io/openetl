@@ -54,12 +54,12 @@ Postgres and object storage aren't included: point OpenETL at your own.
    kubectl -n openetl exec deploy/openetl-server -- sh -c 'openetld bootstrap-key 2>/dev/null && cat .openetl/admin.key'
    ```
 
-5. Create a runner token through the API, and the Secret runners read. Add the bucket's keys to the Secret if the pods have no workload identity:
+5. Create a runner token through the API, and the Secret runners read. Replace `OWNER_KEY` with the key from step 4. Add the bucket's keys to the Secret if the pods have no workload identity:
 
    ```sh
    kubectl -n openetl port-forward svc/openetl-server 8080 &
-   export OPENETL_API_URL=http://localhost:8080 OPENETL_API_KEY=<the owner key>
-   openetl dataplane token create default --out runner.token
+   export OPENETL_API_URL=http://localhost:8080 OPENETL_API_KEY="OWNER_KEY"
+   openetl dataplane token create --out runner.token default
    kubectl -n openetl create secret generic openetl-runner \
      --from-literal=OPENETL_RUNNER_TOKEN="$(cat runner.token)"
    ```

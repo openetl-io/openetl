@@ -2,5 +2,14 @@
   "title": "Pipelines",
   "description": "Write, plan and apply pipelines as code",
   "icon": "Workflow",
-  "pages": ["index", "first-pipeline", "connectors", "delivery", "schedules", "positions"]
+  "pages": [
+    "index",
+    "first-pipeline",
+    "connectors",
+    "delivery",
+    "schedules",
+    "positions",
+    "schema-changes",
+    "troubleshooting"
+  ]
 }

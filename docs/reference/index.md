@@ -45,6 +45,8 @@ spec:
 
 [Choose and manage connectors](../pipelines/connectors.md) covers package installation and version selection. [Connector source](./specs/connector-source.md) lists the fields for adding a public or private package catalog.
 
+[Webhook](./specs/webhook.md), [dbt project](./specs/dbt-project.md), [Spark cluster](./specs/spark-cluster.md) and [Flink cluster](./specs/flink-cluster.md) complete the resource references. Each field table separates required fields, conditional requirements and defaults.
+
 ## The openetl CLI
 
 `openetl` is the command-line client of the API. Run `openetl` for its commands, and `openetl COMMAND -h` for a command's flags.
@@ -56,6 +58,9 @@ spec:
 | `pause NAME` | Stops a pipeline's scheduled syncs |
 | `resume NAME` | Starts a pipeline's scheduled syncs again |
 | `sync NAME` | Starts a sync of a pipeline now |
+| `reset NAME` | Reads streams from the start on the next sync or run; repeat `--stream STREAM` to select streams |
+| `rewind --yes NAME` | Allows recovery from the previous checkpoint, potentially delivering its epoch again |
+| `overrides NAME`, `overrides remove NAME FIELD` | Lists paused streams and heal overrides, or removes an override |
 | `rescale --size SIZE NAME` | Sizes a pipeline's jobs until its next version, which restarts a running job at a checkpoint; `auto` gives the spec back its say |
 | `syncs NAME` | Lists a pipeline's syncs, newest first |
 | `versions NAME` | Lists a pipeline's versions, newest first |
