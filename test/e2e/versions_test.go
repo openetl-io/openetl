@@ -202,7 +202,8 @@ func TestPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := current.Msg.GetPlan(); p.GetVersion() != plan.GetVersion() || len(p.GetStreams()) != 2 || p.GetStreams()[1].GetReason() != plan.GetStreams()[1].GetReason() {
+	if p := current.Msg.GetPlan(); p.GetVersion() != plan.GetVersion() || len(p.GetStreams()) != 2 || p.GetStreams()[1].GetReason() != plan.GetStreams()[1].GetReason() ||
+		len(p.GetProblems())+len(p.GetNotes()) != 0 {
 		t.Errorf("the current version's plan %v; want %v", p, plan)
 	}
 
