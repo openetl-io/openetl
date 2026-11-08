@@ -1,7 +1,6 @@
 package spark
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/logging"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 )
 
@@ -40,12 +40,14 @@ func (s *submit) run(ctx context.Context, args ...string) ([]string, error) {
 	}
 	resources.KillFirst(cmd.Process.Pid)
 	var lines []string
-	sc := bufio.NewScanner(out)
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	sc := logging.Lines(out)
 	for sc.Scan() {
 		line := sc.Text()
 		lines = append(lines, line)
 		s.log.Info(line, "component", "spark-submit")
+	}
+	if err := sc.Err(); err != nil {
+		s.log.Warn("reading spark-submit's output failed", "err", err)
 	}
 	err = cmd.Wait()
 	var exit *exec.ExitError

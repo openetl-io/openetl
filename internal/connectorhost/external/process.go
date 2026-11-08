@@ -29,6 +29,7 @@ import (
 	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
 	"github.com/openetl-io/openetl/internal/netguard"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/logging"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	connspec "github.com/openetl-io/openetl/internal/spec"
 	sdk "github.com/openetl-io/openetl/sdk/go"
@@ -324,8 +325,7 @@ func (p *process) exitError() error {
 // relayLogs logs the connector's stderr through its host services, which
 // scrub the secrets they hold. JSON lines from slog keep their level.
 func (p *process) relayLogs(r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	sc := logging.Lines(r)
 	for sc.Scan() {
 		e := host.LogEntry{Level: slog.LevelInfo, Message: sc.Text()}
 		var m map[string]any
@@ -351,5 +351,8 @@ func (p *process) relayLogs(r io.Reader) {
 		} else {
 			p.log.Log(context.Background(), e.Level, e.Message)
 		}
+	}
+	if err := sc.Err(); err != nil {
+		p.log.Warn("reading the connector's logs failed", "err", err)
 	}
 }
