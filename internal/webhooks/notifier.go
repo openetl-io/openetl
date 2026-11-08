@@ -263,10 +263,7 @@ func (n *Notifier) attempt(ctx context.Context, r db.ClaimDeliveriesRow) error {
 	}
 	switch {
 	case arg.State == "succeeded":
-		if r.FailingSince != nil {
-			return n.Store.WebhookSucceeded(ctx, db.WebhookSucceededParams{OrgID: n.Org, ID: r.WebhookID})
-		}
-		return nil
+		return n.Store.WebhookSucceeded(ctx, db.WebhookSucceededParams{OrgID: n.Org, ID: r.WebhookID})
 	case o.disable != "":
 		return n.disable(ctx, r.WebhookID, o.disable)
 	case o.local:

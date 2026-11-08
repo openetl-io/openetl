@@ -316,6 +316,29 @@ func TestRetries(t *testing.T) {
 	}
 }
 
+// Another delivery's failure recorded while this attempt is in flight is
+// cleared by its success, though the webhook wasn't failing when it was claimed.
+func TestSuccessClearsAFailureFromDuringTheAttempt(t *testing.T) {
+	f := newFixture(t)
+	var hook uuid.UUID
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+		if _, err := f.st.WebhookFailed(req.Context(), db.WebhookFailedParams{OrgID: f.tenant.Org, ID: hook}); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	hook = f.webhook(t, "racy", &apiv1.WebhookSpec{Url: srv.URL, Events: []string{"*"}, Secrets: []string{"hook-key"}})
+	f.record(t, "shop", events.SyncFailed)
+	work(t, f.notifier())
+	if ds := f.deliveries(t, hook); len(ds) != 1 || ds[0].State != "succeeded" {
+		t.Fatalf("delivery %+v", ds)
+	}
+	w, err := f.st.GetWebhook(t.Context(), db.GetWebhookParams{OrgID: f.tenant.Org, WorkspaceID: f.tenant.Workspace, Name: "racy"})
+	if err != nil || w.FailingSince != nil {
+		t.Fatalf("after a success, failing since %v (%v)", w.FailingSince, err)
+	}
+}
+
 func TestRefusals(t *testing.T) {
 	f := newFixture(t)
 	bad := newReceiver(t, f.key, http.StatusBadRequest)
