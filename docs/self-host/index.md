@@ -25,7 +25,7 @@ Runners reach the control plane only through the API, so they can run anywhere t
 
 - **Postgres** for the metadata database: pipelines, versions, syncs, secrets (encrypted), users and audit. On the default orchestrator, the orchestrators also keep their workflows in a second database on the same server, named after the first with `_dbos`, which they create if the user may.
 - **Object storage** for checkpoints and staging: an S3 bucket (or one on an S3-compatible store), a GCS bucket or an Azure Blob Storage container. A local directory works when everything runs on one machine.
-- **`openetld`, `openetl-engine` and the connectors.** A runner looks for the engine next to `openetld`, then on its `PATH`, and for connectors in `connectors/` next to `openetld`. `openetld`'s image holds all three. No image or binary has been released, so build them from source: [CONTRIBUTING.md](../../CONTRIBUTING.md) has how, and the [Kubernetes guide](./kubernetes.md#before-you-start) how to build the image.
+- **`openetld`, `openetl-engine` and the connectors.** A runner looks for the engine next to `openetld`, then on its `PATH`, and for connectors in `connectors/` next to `openetld`. `openetld`'s image holds all three, with the CLI and the console. No image or binary has been released, so build them from source: [CONTRIBUTING.md](../../CONTRIBUTING.md) has how, and the [Compose guide](./compose.md#before-you-start) how to build the image.
 
 ## The settings every installation sets
 
@@ -61,7 +61,18 @@ Orchestrators run workflows on one of two backends, chosen when you install:
 - **DBOS**, the default, keeps workflows in Postgres, so an installation needs nothing else.
 - **Temporal** runs them on a Temporal cluster you already have: set `OPENETL_ORCHESTRATOR=temporal`, `OPENETL_TEMPORAL_ADDRESS` and `OPENETL_TEMPORAL_NAMESPACE`.
 
-Changing an installation's orchestrator later isn't supported.
+Choose before the first start, and give every API server and orchestrator the same settings.
+
+### Changing it later
+
+Changing the orchestrator of an installation that's running isn't supported, and nothing in OpenETL does it for you. If there's no other way, change it with the control plane stopped:
+
+1. Pause every pipeline with `openetl pause NAME`, and wait until `openetl syncs NAME` shows none running.
+2. Stop every API server and orchestrator.
+3. Change `OPENETL_ORCHESTRATOR`, and Temporal's address and namespace, on all of them.
+4. Start them again, and resume the pipelines with `openetl resume NAME`.
+
+When they start, they rebuild schedules, and what watches each running job, from the database, so nothing carries over from the old backend and nothing needs migrating. To go back to a backend the installation used before, clear what it kept first: drop the `_dbos` database, or use a new Temporal namespace. Otherwise its old workflows start again with an old view of the pipelines.
 
 ## Monitoring
 
@@ -69,6 +80,7 @@ Changing an installation's orchestrator later isn't supported.
 
 ## Install
 
+- [With Docker Compose](./compose.md), on one machine: an API server with the console, an orchestrator, runners and Postgres.
 - [On Kubernetes](./kubernetes.md), with plain manifests: API servers, orchestrators, a pool of runners and a pod launcher, with recipes for scaling runners with KEDA and nodes with Karpenter.
 
 These docs have no guide for other platforms. There, run the same roles as processes or containers, with the settings above.

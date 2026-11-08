@@ -21,7 +21,7 @@ Postgres and object storage aren't included: point OpenETL at your own.
 
 - **Postgres** for the metadata database. On the default orchestrator (DBOS), the orchestrators also keep workflows in a second database on the same server, named after the first with `_dbos`, which they create if the user may. Otherwise create it, or name another with `OPENETL_DBOS_DATABASE_URL`. Don't connect through a transaction pooler.
 - **A bucket** in S3, GCS or Azure Blob Storage for checkpoints and staging. Runners and job pods need read and write access to it, through a workload identity or keys in the Secret `openetl-runner`.
-- **`openetld`'s image**, pushed to a registry your cluster pulls from, and set under `images` in `kustomization.yaml`. No image has been released, so build it with `make image IMAGE=REGISTRY/openetl:TAG`, with [openetl-connectors](https://github.com/openetl-io/openetl-connectors) cloned next to this repository and `ENGINE` set to a Linux build of `openetl-engine`. On Linux, the default, the debug build that `cargo build -p openetl-engine` makes, will do.
+- **`openetld`'s image**, pushed to a registry your cluster pulls from, and set under `images` in `kustomization.yaml`. No image has been released, so build it with `make engine-linux image IMAGE=REGISTRY/openetl:TAG`, with [openetl-connectors](https://github.com/openetl-io/openetl-connectors) cloned next to this repository; the [Compose guide](./compose.md#before-you-start) says what that builds. On Linux, `cargo build -p openetl-engine` in place of `make engine-linux` will do too.
 - **kubectl** 1.27 or later.
 
 ## Install
@@ -124,7 +124,7 @@ API servers and orchestrators hold no state but the database, so a plain Horizon
 
 ## Temporal
 
-To run workflows on Temporal instead of DBOS, set `OPENETL_ORCHESTRATOR: temporal`, `OPENETL_TEMPORAL_ADDRESS` and `OPENETL_TEMPORAL_NAMESPACE` in `config.yaml` before the first install. Changing an install's orchestrator later isn't supported.
+To run workflows on Temporal instead of DBOS, set `OPENETL_ORCHESTRATOR: temporal`, `OPENETL_TEMPORAL_ADDRESS` and `OPENETL_TEMPORAL_NAMESPACE` in `config.yaml` before the first install. Changing an installation's orchestrator later isn't supported; [changing it later](./index.md#changing-it-later) has the steps for when there's no other way.
 
 ## Upgrading
 

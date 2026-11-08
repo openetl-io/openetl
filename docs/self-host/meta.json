@@ -2,5 +2,5 @@
   "title": "Self-host",
   "description": "Install, run, scale and upgrade OpenETL",
   "icon": "Server",
-  "pages": ["index", "kubernetes"]
+  "pages": ["index", "compose", "kubernetes"]
 }
