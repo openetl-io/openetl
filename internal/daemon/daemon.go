@@ -455,7 +455,23 @@ func catalogOptions(ctx context.Context, cfg config.Config, st *store.Store, log
 	}, nil
 }
 
+// checkCheckpoints refuses a checkpoint store that attempts can't share.
+// Attempts move between runners, so one that restores from a directory
+// another attempt never wrote to reads every stream again from the start.
+func checkCheckpoints(cfg config.Config) error {
+	if cfg.Checkpoints == "" {
+		return errors.New("daemon: a runner needs a checkpoint store every runner of its data plane can reach: set OPENETL_CHECKPOINTS or --checkpoints to an s3://, gs:// or azblob:// URL, or a directory if the runners share one machine")
+	}
+	if cfg.Launcher == "kubernetes" && openstore.IsLocal(cfg.Checkpoints) {
+		return fmt.Errorf("daemon: the kubernetes launcher starts each attempt in a new pod, which can't read the directory %q: set OPENETL_CHECKPOINTS or --checkpoints to an s3://, gs:// or azblob:// URL", cfg.Checkpoints)
+	}
+	return nil
+}
+
 func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
+	if err := checkCheckpoints(cfg); err != nil {
+		return err
+	}
 	cps, err := openstore.Open(ctx, cfg.Checkpoints)
 	if err != nil {
 		return err

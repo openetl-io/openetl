@@ -15,11 +15,15 @@ import (
 	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
+// IsLocal is whether location is a directory, which only processes on one
+// machine can share.
+func IsLocal(location string) bool { return !strings.Contains(location, "://") }
+
 // Open takes a directory, or an s3://, gs:// or azblob:// URL as
 // objectstore.S3Client, GCSClient and AzureClient describe. A URL's path puts
 // every key under it, as it does the quarantine's.
 func Open(ctx context.Context, location string) (checkpoint.Store, error) {
-	if !strings.Contains(location, "://") {
+	if IsLocal(location) {
 		if location == "" {
 			return nil, errors.New("openstore: no location")
 		}

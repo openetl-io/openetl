@@ -91,6 +91,7 @@ services:
     environment:
       OPENETL_API_URL: http://server:8080
       OPENETL_RUNNER_TOKEN_FILE: .openetl/runner.token
+      OPENETL_CHECKPOINTS: ${OPENETL_CHECKPOINTS:-.openetl/checkpoints}
     volumes: ["runner:/var/lib/openetl"]
     depends_on:
       runner-token: { condition: service_completed_successfully }

@@ -5,7 +5,7 @@ description: Every setting of openetld, as a flag and an environment variable, w
 
 Every setting of `openetld` is a flag and an environment variable: `--database-url` is also `OPENETL_DATABASE_URL`. A flag overrides the variable, and the variable overrides the default. Every role takes every setting and uses the ones that concern it. `openetld ROLE -h` lists them, with the defaults the environment gives.
 
-`openetld dev` has defaults of its own: `--auth` is `none` and `--log-format` is `text`.
+`openetld dev` has defaults of its own: `--auth` is `none`, `--checkpoints` is `.openetl/checkpoints` and `--log-format` is `text`.
 
 This page is generated from [`internal/platform/config/config.go`](../../internal/platform/config/config.go), where the settings are defined.
 
@@ -81,7 +81,7 @@ Where a runner keeps checkpoints and its cache, the programs it runs, the pool i
 
 | Flag | Variable | Default | What it sets |
 |---|---|---|---|
-| `--checkpoints` | `OPENETL_CHECKPOINTS` | `.openetl/checkpoints` | checkpoint store: a directory, s3://bucket?region=…&endpoint=…, gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it |
+| `--checkpoints` | `OPENETL_CHECKPOINTS` |  | checkpoint store, which a runner needs (openetld dev: .openetl/checkpoints): a directory, for runners on one machine, s3://bucket?region=…&endpoint=…, gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it; the kubernetes launcher needs a bucket |
 | `--engine` | `OPENETL_ENGINE` |  | openetl-engine executable (default: next to openetld, then on PATH) |
 | `--connectors` | `OPENETL_CONNECTORS` |  | directory of external connector executables, named source-NAME and destination-NAME (default: connectors/ next to openetld) |
 | `--cache` | `OPENETL_CACHE` | `.openetl/cache` | where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables |

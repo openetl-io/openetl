@@ -145,7 +145,7 @@ var options = []option{
 	{"temporal-address", "OPENETL_TEMPORAL_ADDRESS", "localhost:7233", "Temporal frontend host:port; on Temporal only", func(c *Config) *string { return &c.TemporalAddress }},
 	{"temporal-namespace", "OPENETL_TEMPORAL_NAMESPACE", "default", "Temporal namespace; on Temporal only", func(c *Config) *string { return &c.TemporalNamespace }},
 	{"data-plane", "OPENETL_DATA_PLANE", "default", "data plane ID", func(c *Config) *string { return &c.DataPlane }},
-	{"checkpoints", "OPENETL_CHECKPOINTS", ".openetl/checkpoints", "checkpoint store: a directory, s3://bucket?region=…&endpoint=…, gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it", func(c *Config) *string { return &c.Checkpoints }},
+	{"checkpoints", "OPENETL_CHECKPOINTS", "", "checkpoint store, which a runner needs (openetld dev: .openetl/checkpoints): a directory, for runners on one machine, s3://bucket?region=…&endpoint=…, gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it; the kubernetes launcher needs a bucket", func(c *Config) *string { return &c.Checkpoints }},
 	{"engine", "OPENETL_ENGINE", "", "openetl-engine executable (default: next to openetld, then on PATH)", func(c *Config) *string { return &c.Engine }},
 	{"connectors", "OPENETL_CONNECTORS", "", "directory of external connector executables, named source-NAME and destination-NAME (default: connectors/ next to openetld)", func(c *Config) *string { return &c.Connectors }},
 	{"cache", "OPENETL_CACHE", ".openetl/cache", "where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables", func(c *Config) *string { return &c.Cache }},
@@ -218,7 +218,7 @@ const RunnerTokenEnv = "OPENETL_RUNNER_TOKEN"
 // DevDefaults are openetld dev's defaults, by flag name, where they differ
 // from the built-in ones.
 func DevDefaults() map[string]string {
-	return map[string]string{"log-format": "text", "auth": "none"}
+	return map[string]string{"log-format": "text", "auth": "none", "checkpoints": ".openetl/checkpoints"}
 }
 
 // A Setting is one of openetld's settings, with its built-in default.
