@@ -1,29 +1,24 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { Code } from "@connectrpc/connect";
 import { useQuery } from "@connectrpc/connect-query";
-import { getRouteApi, useNavigate } from "@tanstack/react-router";
+import { getRouteApi } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Database, Warehouse } from "lucide-react";
 import { stringify } from "yaml";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CodeBlock } from "@/components/code-block";
 import { ConnectorLogo } from "@/components/connector";
-import { DataTable } from "@/components/data-table/data-table";
-import { SortHeader } from "@/components/data-table/sort-header";
-import { useDataTable } from "@/components/data-table/use-data-table";
 import { DescriptionItem, DetailHeader, Section } from "@/components/detail-header";
 import { ErrorNote } from "@/components/empty";
 import { EmptyState } from "@/components/empty-state";
-import { Freshness } from "@/components/pipeline-fields";
+import { PipelinesTable } from "@/components/pipelines-table";
 import { RelativeTime } from "@/components/relative-time";
 import { ResourceLink } from "@/components/resource-link";
-import { StatusBadge } from "@/components/status";
 import { DestinationService, SourceService } from "@/gen/openetl/api/v1/connection_pb";
-import { PipelineService, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
+import type { Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { errorCode, errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
-import { lastSegment, shortDigest } from "@/lib/names";
-import { pipelineStatus } from "@/lib/status";
+import { shortDigest } from "@/lib/names";
 import { connectorName } from "@/lib/connectors";
 import type { Kind } from "./connections";
 
@@ -34,53 +29,20 @@ const routes = {
 
 /** The pipelines that read from or load into one source or destination. */
 function UsedByTable({ workspace, kind, id }: { workspace: string; kind: Kind; id: string }) {
-  const navigate = useNavigate();
-  const pipelines = useQuery(PipelineService.method.listPipelines, { parent: `workspaces/${workspace}`, pageSize: 500 });
-  const rows = useMemo(
-    () => (pipelines.data?.pipelines ?? []).filter((p) => (kind === "source" ? p.spec?.source?.ref : p.spec?.destination?.ref) === id),
-    [pipelines.data, kind, id],
-  );
-  const columns = useMemo<ColumnDef<Pipeline>[]>(
-    () => [
-      {
-        id: "name",
-        accessorFn: (p) => lastSegment(p.name),
-        header: ({ column }) => <SortHeader column={column} title="Pipeline" />,
-        cell: ({ row }) => <span className="font-medium"><ResourceLink name={row.original.name} /></span>,
+  const match = useCallback((p: Pipeline) => (kind === "source" ? p.spec?.source?.ref : p.spec?.destination?.ref) === id, [kind, id]);
+  const other = useMemo<ColumnDef<Pipeline>>(
+    () => ({
+      id: kind === "source" ? "destination" : "source",
+      header: kind === "source" ? "Destination" : "Source",
+      cell: ({ row }) => {
+        const ref = kind === "source" ? row.original.spec?.destination?.ref : row.original.spec?.source?.ref;
+        return ref && <ResourceLink name={`workspaces/${workspace}/${kind === "source" ? "destinations" : "sources"}/${ref}`} />;
       },
-      {
-        id: "status",
-        header: "Status",
-        cell: ({ row }) => <StatusBadge status={pipelineStatus(row.original)} />,
-      },
-      {
-        id: kind === "source" ? "destination" : "source",
-        header: kind === "source" ? "Destination" : "Source",
-        cell: ({ row }) => {
-          const ref = kind === "source" ? row.original.spec?.destination?.ref : row.original.spec?.source?.ref;
-          return ref && <ResourceLink name={`workspaces/${workspace}/${kind === "source" ? "destinations" : "sources"}/${ref}`} />;
-        },
-        meta: { className: "hidden md:table-cell" },
-      },
-      {
-        id: "freshness",
-        header: "Freshness",
-        cell: ({ row }) => <Freshness pipeline={row.original} />,
-        meta: { className: "hidden sm:table-cell" },
-      },
-    ],
+      meta: { className: "hidden md:table-cell" },
+    }),
     [kind, workspace],
   );
-  const table = useDataTable({ data: rows, columns, sort: [{ id: "name", desc: false }], paged: false });
-  if (pipelines.error) return <ErrorNote title="Couldn't list pipelines" message={errorMessage(pipelines.error)} />;
-  return (
-    <DataTable
-      table={table}
-      loading={pipelines.isPending}
-      empty={`No pipeline uses this ${kind} yet.`}
-      onRowClick={(r) => navigate({ to: "/workspaces/$workspace/pipelines/$pipeline", params: { workspace, pipeline: lastSegment(r.original.name) }, search: {} })}
-    />
-  );
+  return <PipelinesTable workspace={workspace} match={match} column={other} empty={`No pipeline uses this ${kind} yet.`} />;
 }
 
 function ConnectionPage({ kind }: { kind: Kind }) {

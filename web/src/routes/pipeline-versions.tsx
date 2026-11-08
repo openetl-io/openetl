@@ -6,12 +6,13 @@ import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Empty, ErrorNote } from "@/components/empty";
 import { RelativeTime } from "@/components/relative-time";
+import { ResourceLink } from "@/components/resource-link";
 import { PipelineService, type PinnedConfig } from "@/gen/openetl/api/v1/pipeline_pb";
 import { Button } from "@/components/ui/button";
 import { pipelineYAML } from "@/lib/spec-yaml";
 import { errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
-import { lastSegment, pipelineName, shortDigest } from "@/lib/names";
+import { clusterName, lastSegment, pipelineName, shortDigest } from "@/lib/names";
 import { cn } from "@/lib/utils";
 
 const CodeView = lazy(() => import("@/components/code-view"));
@@ -28,6 +29,21 @@ function Digest({ value }: { value: string }) {
       {shortDigest(value)}
       <Copy className="size-3" aria-label="Copy" />
     </button>
+  );
+}
+
+/** A cluster a version pins, by the version of its settings. */
+function PinnedCluster({ label, name, version }: { label: string; name: string; version: string }) {
+  return (
+    <div className="grid gap-0.5">
+      <dt className="text-[0.8125rem] text-muted-foreground">{label}</dt>
+      <dd className="grid gap-0.5">
+        <ResourceLink name={name} />
+        <span className="text-[0.8125rem] text-muted-foreground">
+          version <span className="font-mono" title={version}>{shortDigest(version)}</span>
+        </span>
+      </dd>
+    </div>
   );
 }
 
@@ -102,20 +118,10 @@ export function VersionsTab({ workspace, pipeline, current }: { workspace: strin
             </div>
           ))}
           {Object.entries(shown.sparkClusters).map(([cluster, version]) => (
-            <div key={cluster} className="grid gap-0.5">
-              <dt className="text-[0.8125rem] text-muted-foreground">Spark cluster {cluster}</dt>
-              <dd>
-                <Digest value={version} />
-              </dd>
-            </div>
+            <PinnedCluster key={cluster} label="Spark cluster" name={clusterName(workspace, "spark", cluster)} version={version} />
           ))}
           {Object.entries(shown.flinkClusters).map(([cluster, version]) => (
-            <div key={cluster} className="grid gap-0.5">
-              <dt className="text-[0.8125rem] text-muted-foreground">Flink cluster {cluster}</dt>
-              <dd>
-                <Digest value={version} />
-              </dd>
-            </div>
+            <PinnedCluster key={cluster} label="Flink cluster" name={clusterName(workspace, "flink", cluster)} version={version} />
           ))}
         </dl>
         <div className="grid gap-2">

@@ -42,6 +42,18 @@ export function ResourceLink({ name, label }: { name: string; label?: string }) 
           {text}
         </Link>
       );
+    case "sparkClusters":
+      return (
+        <Link to="/workspaces/$workspace/clusters/spark/$cluster" params={{ workspace, cluster: id }} className={linkClass}>
+          {text}
+        </Link>
+      );
+    case "flinkClusters":
+      return (
+        <Link to="/workspaces/$workspace/clusters/flink/$cluster" params={{ workspace, cluster: id }} className={linkClass}>
+          {text}
+        </Link>
+      );
     default:
       return <span>{text}</span>;
   }

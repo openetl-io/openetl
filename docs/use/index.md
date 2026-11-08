@@ -35,7 +35,7 @@ The sidebar has:
 
 - **Pipelines**, the place to start.
 - **Incidents**, with a count of the ones open.
-- Under **Connections**: **Sources**, **Destinations**, **dbt projects** and **Connectors**.
+- Under **Connections**: **Sources**, **Destinations**, **dbt projects**, **Clusters** and **Connectors**.
 - Under **Settings**: **Webhooks**, **Secrets**, **Access** and **Audit log**, which only admins can read.
 
 **Search**, at the top, or ⌘K on a Mac and Ctrl+K elsewhere, jumps to any pipeline or page. It also switches the theme and the row density, and signs you out.
@@ -70,6 +70,7 @@ A pipeline's status is its latest sync's, unless it's paused:
 The top of a pipeline's page has its status, and:
 
 - **Source** and **Destination**, with the schema it writes into.
+- **Transform**, if its data goes through Spark or Flink on the way: which, and the cluster it runs on.
 - **Schedule**, or **Paused**.
 - **Last success**, or **Last commit** for a continuous pipeline, which is its freshness.
 - **Behind source**, for a continuous pipeline: how far its reading was behind the source at its latest commit.
@@ -132,7 +133,7 @@ Under **To clear it**, each entry lists the ways out, likeliest first: the chang
 
 ### Versions
 
-**Versions** lists every version of the pipeline, marking the **Current** one. Each shows the file it was **Applied from**, the versions of its source and destination, and the whole pipeline as YAML, with **Copy YAML**. Applying an earlier version's YAML makes it current again.
+**Versions** lists every version of the pipeline, marking the **Current** one. Each shows the file it was **Applied from**, the versions of its source, destination and Spark or Flink clusters, and the whole pipeline as YAML, with **Copy YAML**. Applying an earlier version's YAML makes it current again.
 
 ## A sync's page
 
@@ -174,6 +175,7 @@ Most incidents resolve themselves once the pipeline makes progress again. When y
 
 - **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values.
 - **dbt projects** lists the dbt projects that run after pipelines' syncs, and under **Run after**, the pipelines each one runs after.
+- **Clusters** lists the Spark and Flink clusters that pipelines' transforms run on, on its **Spark** and **Flink** tabs, with what each **Runs on** (such as **spark-submit**, **EMR on EC2** or **Kubernetes**) and the pipelines it's **Used by**. A cluster's page shows its **Settings**, with what applies to any that aren't set, the **Pipelines** that use it and whether each **Runs** it as a transform or after each sync, and the properties or configuration it gives every job. Settings name secrets, and never show their values.
 - **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, and the command that applies it, which makes it available to sources and destinations.
 
 ## Settings
@@ -191,7 +193,7 @@ Each role includes the ones before it. A role is given for one workspace, or for
 |---|---|
 | Viewer | Sees everything in the console, except secrets' values, which no one sees. |
 | Operator | **Sync now**, **Pause** and **Resume**; resolving incidents; sending a webhook a test event, and disabling or enabling it. With the CLI, also checking that sources and destinations can be reached, and resizing a pipeline's syncs. |
-| Editor | Creating, changing and deleting sources, destinations, pipelines, dbt projects and webhooks; setting secrets; releasing and discarding holds. |
+| Editor | Creating, changing and deleting sources, destinations, pipelines, dbt projects, clusters and webhooks; setting secrets; releasing and discarding holds. |
 | Admin | Installing connectors; adding people and service accounts, and giving them roles, API keys and password links; runner tokens; the audit log; signing people out everywhere. |
 | Owner | Managing other owners. |
 
@@ -199,7 +201,7 @@ Each role includes the ones before it. A role is given for one workspace, or for
 
 Some changes are made with the `openetl` command instead, by someone whose role allows them:
 
-- **Creating or changing pipelines**, sources, destinations, dbt projects and webhooks. **New pipeline** shows the commands that do it. Pipelines are YAML files: see [Pipelines](../pipelines/index.md).
+- **Creating or changing pipelines**, sources, destinations, dbt projects, clusters and webhooks. **New pipeline** shows the commands that do it. Pipelines are YAML files: see [Pipelines](../pipelines/index.md).
 - **Setting secrets.**
 - **Releasing or discarding holds.** Each hold shows the command under **To clear it**.
 - **Adding people, giving roles and making API keys.**
