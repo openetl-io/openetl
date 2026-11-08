@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -499,7 +500,12 @@ func (a *Activities) StartRun(ctx context.Context, in contract.StartRunInput) (c
 	return res, err
 }
 
+// DropMirrorPartitions makes today's and tomorrow's partitions of the
+// checkpoint mirror, and drops the days that end by in.Before.
 func (a *Activities) DropMirrorPartitions(ctx context.Context, in contract.DropMirrorPartitionsInput) ([]string, error) {
+	if err := a.Store.EnsureMirrorPartitions(ctx, time.Now()); err != nil {
+		return nil, err
+	}
 	return a.Store.DropMirrorPartitions(ctx, in.Before)
 }
 

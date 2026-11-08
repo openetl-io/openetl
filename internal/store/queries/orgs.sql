@@ -19,3 +19,7 @@ SELECT id FROM data_planes WHERE org_id = @org_id AND id = @id;
 
 -- name: ListOrgs :many
 SELECT id FROM orgs ORDER BY id;
+
+-- name: LockApply :exec
+-- An org's applies run one at a time, until the transaction ends.
+SELECT pg_advisory_xact_lock(hashtextextended('openetl.apply.' || (@org_id::uuid)::text, 0));

@@ -68,6 +68,18 @@ func TestBindings(t *testing.T) {
 	}
 }
 
+// A server newer than the CLI can send a role the CLI doesn't know.
+func TestUnknownRolesPrint(t *testing.T) {
+	for r, want := range map[Role]string{Owner + 1: "unknown role (6)", -1: "unknown role (-1)"} {
+		if got := r.String(); got != want {
+			t.Errorf("Role(%d).String() = %q, want %q", int32(r), got, want)
+		}
+		if p, ok := ParseRole(r.String()); ok {
+			t.Errorf("ParseRole(%q) = %s, want no role", r.String(), p)
+		}
+	}
+}
+
 func TestKeyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dir", "admin.key")
 	for _, k := range []string{"oetl_first", "oetl_second"} {

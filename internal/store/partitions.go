@@ -36,13 +36,46 @@ var (
 	}
 )
 
+// ddlLockTimeout is how long a change to a table's partitions waits for its
+// locks, which include ACCESS EXCLUSIVE on the table. Every query on the table
+// queues behind a statement that's waiting, so the wait is kept short; the
+// caller decides whether to try again.
+const ddlLockTimeout = "5s"
+
+// ddl runs stmt in a transaction, which fails with lock_not_available
+// (55P03) if it doesn't get its locks in ddlLockTimeout.
+func ddl(ctx context.Context, pool *pgxpool.Pool, stmt string) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '"+ddlLockTimeout+"'"); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, stmt)
+		return err
+	})
+}
+
 // create creates the partition that holds t, unless it exists.
 func (p partitions) create(ctx context.Context, pool *pgxpool.Pool, t time.Time) error {
 	start := p.start(t)
-	_, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')`,
+	return ddl(ctx, pool, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')`,
 		pgx.Identifier{p.table + "_" + start.Format(p.layout)}.Sanitize(), pgx.Identifier{p.table}.Sanitize(),
 		start.Format(time.RFC3339), p.next(start).Format(time.RFC3339)))
-	return err
+}
+
+// ensure creates the partitions for now's period and the next, unless they
+// exist.
+func (p partitions) ensure(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
+	for _, t := range []time.Time{now, p.next(p.start(now))} {
+		err := p.create(ctx, pool, t)
+		// IF NOT EXISTS races with another process creating it.
+		if pe, ok := errors.AsType[*pgconn.PgError](err); ok && (pe.Code == "42P07" || pe.Code == "23505") {
+			err = nil
+		}
+		if err != nil {
+			return fmt.Errorf("store: %s partition: %w", p.table, err)
+		}
+	}
+	return nil
 }
 
 // insert runs insert, and if no partition holds its row, creates the one
@@ -77,7 +110,7 @@ func (p partitions) drop(ctx context.Context, pool *pgxpool.Pool, before time.Ti
 		if !ok || err != nil || p.next(start).After(before) {
 			continue
 		}
-		if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS "+pgx.Identifier{name}.Sanitize()); err != nil {
+		if err := ddl(ctx, pool, "DROP TABLE IF EXISTS "+pgx.Identifier{name}.Sanitize()); err != nil {
 			return dropped, fmt.Errorf("store: drop %s: %w", name, err)
 		}
 		dropped = append(dropped, name)

@@ -178,6 +178,13 @@ func (s *Server) UpdateSecret(ctx context.Context, req *connect.Request[apiv1.Up
 	case s.Secrets == nil:
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("this server has no secrets key (--secrets-key), so it can't store secrets' values"))
 	}
+	if ref == nil {
+		// So that sealing in the transaction neither takes a second connection
+		// from the pool nor calls a KMS while the secret's row is locked.
+		if err := s.Secrets.Warm(ctx, s.Tenant.Org); err != nil {
+			return nil, err
+		}
+	}
 	seal := func(id uuid.UUID) ([]byte, error) {
 		if ref != nil {
 			return nil, nil

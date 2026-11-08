@@ -66,7 +66,12 @@ const (
 
 var roleNames = []string{"none", "viewer", "operator", "editor", "admin", "owner"}
 
-func (r Role) String() string { return roleNames[r] }
+func (r Role) String() string {
+	if r < 0 || int(r) >= len(roleNames) {
+		return fmt.Sprintf("unknown role (%d)", int32(r))
+	}
+	return roleNames[r]
+}
 
 // OrgOnly roles are bound only on the org.
 func (r Role) OrgOnly() bool { return r >= Admin }

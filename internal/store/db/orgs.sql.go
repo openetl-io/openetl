@@ -131,3 +131,13 @@ func (q *Queries) ListOrgs(ctx context.Context) ([]uuid.UUID, error) {
 	}
 	return items, nil
 }
+
+const lockApply = `-- name: LockApply :exec
+SELECT pg_advisory_xact_lock(hashtextextended('openetl.apply.' || ($1::uuid)::text, 0))
+`
+
+// An org's applies run one at a time, until the transaction ends.
+func (q *Queries) LockApply(ctx context.Context, orgID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockApply, orgID)
+	return err
+}

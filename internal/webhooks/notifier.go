@@ -39,12 +39,15 @@ var DefaultRetries = []time.Duration{5 * time.Second, 5 * time.Minute, 30 * time
 
 const (
 	// How long one attempt may take, and how long a claimed delivery is
-	// left to its notifier.
+	// left to its notifier: longer than a whole batch's attempts can take.
 	attemptTimeout = 15 * time.Second
-	lease          = time.Minute
+	lease          = 3 * time.Minute
 	// How much of a response's body a delivery keeps.
 	maxResponseBody = 1 << 10
-	concurrency     = 8
+	// How many deliveries a notifier claims at once, and how many of them it
+	// attempts at a time.
+	batch       = 64
+	concurrency = 8
 )
 
 var (
@@ -188,7 +191,7 @@ func matches(h hook, e db.Outbox) bool {
 // Deliver makes an attempt at each due delivery, and returns how many it
 // tried.
 func (n *Notifier) Deliver(ctx context.Context) (int, error) {
-	rows, err := n.Store.ClaimDeliveries(ctx, db.ClaimDeliveriesParams{OrgID: n.Org, LeaseSeconds: lease.Seconds(), MaxRows: 64})
+	rows, err := n.Store.ClaimDeliveries(ctx, db.ClaimDeliveriesParams{OrgID: n.Org, LeaseSeconds: lease.Seconds(), MaxRows: batch})
 	if err != nil {
 		return 0, err
 	}
@@ -263,10 +266,7 @@ func (n *Notifier) attempt(ctx context.Context, r db.ClaimDeliveriesRow) error {
 	}
 	switch {
 	case arg.State == "succeeded":
-		if r.FailingSince != nil {
-			return n.Store.WebhookSucceeded(ctx, db.WebhookSucceededParams{OrgID: n.Org, ID: r.WebhookID})
-		}
-		return nil
+		return n.Store.WebhookSucceeded(ctx, db.WebhookSucceededParams{OrgID: n.Org, ID: r.WebhookID})
 	case o.disable != "":
 		return n.disable(ctx, r.WebhookID, o.disable)
 	case o.local:

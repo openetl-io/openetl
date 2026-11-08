@@ -86,12 +86,14 @@ RETURNING d.id, d.attempts, d.webhook_id, w.workspace_id, w.spec AS webhook_spec
           e.id AS event_id, e.type AS event_type, e.data AS event_data, e.create_time AS event_time;
 
 -- Records an attempt, unless another notifier claimed the delivery after
--- this one's lease ran out and recorded its own.
+-- this one's lease ran out and recorded its own. Only a delivery that's still
+-- pending can go back to pending: disabling its webhook may have failed it,
+-- and a delivery that arrived is recorded whatever has happened since.
 -- name: RecordAttempt :execrows
 UPDATE webhook_deliveries SET
     state = @state, attempts = attempts + 1, next_attempt_time = now() + make_interval(secs => @wait_seconds::float8), last_attempt_time = now(),
     response_status = @response_status, response_body = @response_body, error = @error, latency_ms = @latency_ms
-WHERE org_id = @org_id AND id = @id AND attempts = @attempts;
+WHERE org_id = @org_id AND id = @id AND attempts = @attempts AND (@state <> 'pending' OR state = 'pending');
 
 -- name: WebhookSucceeded :exec
 UPDATE webhooks SET failing_since = NULL WHERE org_id = @org_id AND id = @id AND failing_since IS NOT NULL;

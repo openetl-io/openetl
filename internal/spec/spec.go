@@ -211,6 +211,8 @@ func Parse(content []byte) (*Document, error) {
 		return nil, errors.New("metadata.workspace: connectors belong to the org, not a workspace")
 	case versioned && !semverPattern.MatchString(env.Metadata.Version):
 		return nil, fmt.Errorf("metadata.version %q must be a semantic version, such as 1.2.0", env.Metadata.Version)
+	case versioned && strings.Contains(env.Metadata.Version, "+"):
+		return nil, fmt.Errorf("metadata.version %q has build metadata, which a connector version can't carry: versions that differ only by it compare as equal", env.Metadata.Version)
 	case !versioned && env.Metadata.Version != "":
 		return nil, fmt.Errorf("metadata.version: a %s has no version", env.Kind)
 	case !versioned && env.Metadata.hasInfo():

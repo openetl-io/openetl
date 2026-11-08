@@ -64,13 +64,17 @@ func (s *Store) Listen(ctx context.Context, channel string, notify func(payload 
 }
 
 // Migrate applies pending migrations, and creates the audit log's
-// partitions for this month and the next. Concurrent callers wait on a
-// session lock.
+// partitions for this month and the next and the checkpoint mirror's for
+// today and tomorrow. Concurrent callers wait on a session lock.
 func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.migrate(ctx, 0); err != nil {
 		return err
 	}
-	return s.EnsureAuditPartitions(ctx, time.Now())
+	now := time.Now()
+	if err := s.EnsureAuditPartitions(ctx, now); err != nil {
+		return err
+	}
+	return s.EnsureMirrorPartitions(ctx, now)
 }
 
 // migrate applies pending migrations up to version, or every one if it's 0.

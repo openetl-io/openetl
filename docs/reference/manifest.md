@@ -25,7 +25,7 @@ Which connector and version this is, and what the console shows about it.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | Yes | The connector's package: owner/name, or name for the official owner, openetl. Each part is lowercase letters, digits and hyphens. Matches `^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`. |
-| `version` | string | Yes | Semantic version. Matches `^(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`. |
+| `version` | string | Yes | Semantic version, without build metadata (`+…`): versions that differ only by it compare as equal. Matches `^(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)\.(0\|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`. |
 | `description` | string | No | One line. Has at most 500 characters. |
 | `license` | string | No | An SPDX expression, such as Apache-2.0. Has at most 100 characters. |
 | `repository` | string | No | An https URL of the source repository. Matches `^https://`. |
