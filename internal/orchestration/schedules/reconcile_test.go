@@ -66,6 +66,56 @@ func TestReconcileRepairsAPause(t *testing.T) {
 	}
 }
 
+// A schedule that's there is set again, in case a change never reached it, as
+// a backend's rewriting of what it was given leaves nothing to compare. That's
+// no change to report, and a pause still goes by what the backend says.
+func TestReconcileSetsSchedulesAgain(t *testing.T) {
+	plan := planReconcile(
+		[]pipelineToRun{
+			{org: "o", id: "there", schedule: hourly},
+			{org: "o", id: "paused", paused: true, schedule: hourly},
+			{org: "o", id: "new", schedule: hourly},
+			{org: "o", id: "no-trigger", schedule: &apiv1.Schedule{}},
+		},
+		nil,
+		[]orchestration.ScheduleState{
+			{ID: contract.ScheduleID("there"), Org: "o"},
+			{ID: contract.ScheduleID("paused"), Org: "o"},
+			{ID: contract.ScheduleID("no-trigger"), Org: "o"},
+		},
+		map[string]bool{"o": true},
+	)
+	if got := ids(plan.updateSchedules); !slices.Equal(got, []string{"there", "paused"}) {
+		t.Errorf("schedules set again: %v", got)
+	}
+	if got := ids(plan.upsertSchedules); !slices.Equal(got, []string{"new"}) {
+		t.Errorf("schedules created: %v", got)
+	}
+	if got := ids(plan.pauseSchedules); !slices.Equal(got, []string{"paused"}) {
+		t.Errorf("schedules paused: %v", got)
+	}
+	if !slices.Equal(plan.deleteSchedules, []string{contract.ScheduleID("no-trigger")}) {
+		t.Errorf("schedules deleted: %v", plan.deleteSchedules)
+	}
+	if plan.changes() != 3 {
+		t.Errorf("changes %d in %+v", plan.changes(), plan)
+	}
+}
+
+// A running supervisor gets nothing from a pass: a refresh is what starts a
+// run that failed for good again, so one on a timer would restart it.
+func TestReconcileLeavesRunningSupervisorsAlone(t *testing.T) {
+	plan := planReconcile(
+		[]pipelineToRun{{org: "o", id: "c", continuous: true}},
+		[]orchestration.RunningWorkflow{{ID: contract.StreamWorkflowID("c"), Org: "o"}},
+		nil,
+		map[string]bool{"o": true},
+	)
+	if plan.changes() != 0 || len(plan.updateSchedules) != 0 {
+		t.Errorf("plan %+v", plan)
+	}
+}
+
 // Anything else of ours stops, and the deployment's retention schedule stays.
 func TestReconcileCancelsWhatNothingWants(t *testing.T) {
 	plan := planReconcile(

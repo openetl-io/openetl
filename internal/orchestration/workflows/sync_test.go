@@ -21,6 +21,9 @@ type syncEnv struct {
 	finished contract.FinishSyncInput
 	calls    int
 	started  contract.StartSyncResult
+	// How many of FinishSync's tries fail; negative: every one.
+	finishFailures int
+	finishTries    int
 }
 
 func newSyncEnv(t *testing.T, attempt func(n int, in contract.AttemptInput) contract.WorkOutcome) *syncEnv {
@@ -31,6 +34,10 @@ func newSyncEnv(t *testing.T, attempt func(n int, in contract.AttemptInput) cont
 		return e.started, nil
 	}))
 	e.env.RegisterStep(orchestration.NewAction(contract.FinishSync, func(_ context.Context, in contract.FinishSyncInput) error {
+		e.finishTries++
+		if e.finishFailures < 0 || e.finishTries <= e.finishFailures {
+			return errs.New(errs.Transient, "the database is away")
+		}
 		e.finished = in
 		return nil
 	}))
@@ -194,6 +201,31 @@ func TestPausedPipelineDoesNotSync(t *testing.T) {
 	}
 }
 
+// A database outage longer than other steps try for doesn't leave a finished
+// sync recorded as running.
+func TestRecordingASyncsEndOutlastsAnOutage(t *testing.T) {
+	e := newSyncEnv(t, func(int, contract.AttemptInput) contract.WorkOutcome { return result(t, contract.AttemptResult{}) })
+	e.finishFailures = 30
+	if err := e.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if e.finished.SyncID != "s1" || e.finishTries != 31 {
+		t.Errorf("recorded %+v after %d tries", e.finished, e.finishTries)
+	}
+}
+
+// It does give up, as a schedule starts nothing while the workflow runs.
+func TestRecordingASyncsEndGivesUp(t *testing.T) {
+	e := newSyncEnv(t, func(int, contract.AttemptInput) contract.WorkOutcome { return result(t, contract.AttemptResult{}) })
+	e.finishFailures = -1
+	if err := e.run(t); err == nil {
+		t.Fatal("want an error")
+	}
+	if e.finishTries != 60 {
+		t.Errorf("%d tries", e.finishTries)
+	}
+}
+
 // Check and Discover are light operations on the data plane, which wait a
 // while for a runner.
 func TestConnectorOpRunsOnTheDataPlane(t *testing.T) {
@@ -212,6 +244,23 @@ func TestConnectorOpRunsOnTheDataPlane(t *testing.T) {
 		if len(p.sent) != 1 || w.Kind != kind || w.Light != contract.LightOps || w.DataPlane != "dp1" || w.Pickup != contract.OpPickup || w.Size.CPU != 0 || res.Catalog != op {
 			t.Errorf("%s: sent %+v, result %+v", op, p.sent, res)
 		}
+	}
+}
+
+// A teardown waits for a runner as long as a Flink teardown does: no runner
+// for a minute would otherwise end it, and nothing would ask for it again.
+func TestTeardownWaitsLongerForARunner(t *testing.T) {
+	env := newHarness(t)
+	env.RegisterWorkflows(workflows.Workflows{})
+	p := newPlane(env, func(contract.WorkInput) (time.Duration, contract.WorkOutcome) {
+		return time.Second, result(t, contract.ConnectorOpResult{})
+	})
+	env.ExecuteWorkflow(contract.ConnectorOpWorkflow, contract.ConnectorOpInput{OrgID: "o", DataPlane: "dp1", Op: contract.OpTeardown, SourceID: "s"})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if w := p.sent[0]; w.Kind != contract.TeardownSource || w.Pickup != 5*time.Minute {
+		t.Errorf("sent %+v", w)
 	}
 }
 

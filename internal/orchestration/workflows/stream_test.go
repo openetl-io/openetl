@@ -26,6 +26,9 @@ type streamEnv struct {
 	// When each job started, on the workflow's clock.
 	starts   []time.Time
 	finished []contract.FinishSyncInput
+	// How many of FinishSync's tries fail.
+	finishFailures int
+	finishTries    int
 }
 
 // job answers the nth RunStreamJob with how long it runs on the workflow's
@@ -48,6 +51,10 @@ func newStreamEnv(t *testing.T, w workflows.Workflows, answer job) *streamEnv {
 		return contract.StartRunResult{SyncID: fmt.Sprintf("r%d", runs), RunKey: fmt.Sprintf("k%d", runs)}, nil
 	}))
 	e.env.RegisterStep(orchestration.NewAction(contract.FinishSync, func(_ context.Context, in contract.FinishSyncInput) error {
+		e.finishTries++
+		if e.finishTries <= e.finishFailures {
+			return errs.New(errs.Transient, "the database is away")
+		}
 		e.finished = append(e.finished, in)
 		if l := e.state.Left; l != nil && l.SyncID == in.SyncID {
 			e.state.Left = nil
@@ -142,6 +149,20 @@ func TestStreamRestartsForARelease(t *testing.T) {
 	}
 	if got := e.ends(); !slices.Equal(got, []string{"r1 stopped", "r2 stopped"}) {
 		t.Errorf("runs ended %v", got)
+	}
+}
+
+// A database outage longer than other steps try for doesn't leave a run that
+// ended recorded as running.
+func TestRecordingARunsEndOutlastsAnOutage(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, runsForever)
+	e.finishFailures = 30
+	e.at(time.Minute, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r1 stopped"}) || e.finishTries != 31 {
+		t.Errorf("runs ended %v after %d tries", got, e.finishTries)
 	}
 }
 

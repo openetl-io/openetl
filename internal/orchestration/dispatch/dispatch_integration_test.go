@@ -54,12 +54,14 @@ type fixture struct {
 	waker     *fakeWaker
 	org       uuid.UUID
 	workspace uuid.UUID
+	url       string
 }
 
 func setup(t *testing.T, o Options) *fixture {
 	t.Helper()
 	ctx := t.Context()
-	s, err := store.Open(ctx, storetest.NewDatabase(t))
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func setup(t *testing.T, o Options) *fixture {
 		t.Fatal(err)
 	}
 	waker := &fakeWaker{}
-	return &fixture{t: t, d: &Dispatcher{Store: s, Waker: waker, Options: o}, waker: waker, org: tenant.Org, workspace: tenant.Workspace}
+	return &fixture{t: t, d: &Dispatcher{Store: s, Waker: waker, Options: o}, waker: waker, org: tenant.Org, workspace: tenant.Workspace, url: url}
 }
 
 // report has a runner report what it runs, and returns what to stop.
@@ -255,9 +257,8 @@ func TestLeaseEnds(t *testing.T) {
 	if !f.waker.has("a") {
 		t.Error("the workflow wasn't woken")
 	}
-	if ok, err := f.d.Result(ctx, f.org, "default", "r", "a", contract.WorkOutcome{}, false, nil); err != nil || !ok {
-		// It was this runner's, and it's finished, so a late result is taken
-		// as already in, and changes nothing.
+	// The lease ended first, so its runner hears the result came too late.
+	if ok, err := f.d.Result(ctx, f.org, "default", "r", "a", contract.WorkOutcome{}, false, nil); err != nil || ok {
 		t.Errorf("late result: %v, %v", ok, err)
 	}
 	if st := f.status("a"); st.Outcome.Code != errs.Transient.String() {
@@ -316,6 +317,8 @@ func TestRoomIsNeverOverplaced(t *testing.T) {
 		wg.Go(func() { f.attempt(fmt.Sprintf("w%d", i)) })
 	}
 	wg.Wait()
+	// Passes that found another at work left theirs to the next tick.
+	f.tick()
 	a, b := f.poll("a", 0, 0), f.poll("b", 0, 0)
 	if len(a) != 2 || len(b) != 2 {
 		t.Fatalf("a got %v, b got %v, want two each", a, b)
@@ -332,6 +335,44 @@ func TestRoomIsNeverOverplaced(t *testing.T) {
 	}
 	if got := f.poll("b", 0, 0); len(got) != 0 {
 		t.Errorf("b got %v", got)
+	}
+}
+
+// A pass that finds another at work on the data plane doesn't wait for it,
+// holding a connection, and fails nothing; the next tick places what it left.
+func TestABusyPassLeavesItsWorkToTheNextTick(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	f.report("r", resources.M)
+	conn, err := pgx.Connect(ctx, f.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	key := planeKey(f.org, "default")
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtextextended($1, 0))", key); err != nil {
+		t.Fatal(err)
+	}
+	enqueued := make(chan struct{})
+	go func() {
+		defer close(enqueued)
+		f.attempt("a")
+	}()
+	select {
+	case <-enqueued:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pass waited for the other")
+	}
+	f.tick()
+	if got := f.poll("r", 0, 0); len(got) != 0 {
+		t.Fatalf("placed by a pass that wasn't let: %v", got)
+	}
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_unlock(hashtextextended($1, 0))", key); err != nil {
+		t.Fatal(err)
+	}
+	f.tick()
+	if got := f.poll("r", 0, 0); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("got %v", got)
 	}
 }
 
@@ -460,6 +501,72 @@ func TestCancel(t *testing.T) {
 	if got := f.poll("r", 0, 0); len(got) != 2 {
 		t.Errorf("got %v", got)
 	}
+}
+
+// A cancel and a runner's "no capacity" can land in either order. Either way
+// the work finishes as cancelled, its workflow hears, and it's not placed again.
+func TestCancelRacingNoCapacity(t *testing.T) {
+	running := func(t *testing.T) (*fixture, contract.WorkRef) {
+		f := setup(t, Options{})
+		f.report("r", resources.S)
+		f.attempt("a")
+		if got := f.poll("r", 0, 0); !slices.Equal(got, []string{"a"}) {
+			t.Fatalf("got %v", got)
+		}
+		return f, contract.WorkRef{OrgID: f.org.String(), ID: "a"}
+	}
+	finished := func(t *testing.T, f *fixture) {
+		t.Helper()
+		if st := f.status("a"); !st.Done || !st.Outcome.Cancelled {
+			t.Fatalf("status %+v", st)
+		}
+		f.tick()
+		if !f.waker.has("a") {
+			t.Error("the workflow wasn't woken")
+		}
+		f.report("r", resources.S)
+		f.tick()
+		if got := f.poll("r", 0, 0); len(got) != 0 {
+			t.Errorf("handed over after cancelling: %v", got)
+		}
+	}
+	t.Run("cancelled first", func(t *testing.T) {
+		f, ref := running(t)
+		if err := f.d.Cancel(t.Context(), ref); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := f.d.Result(t.Context(), f.org, "default", "r", "a", contract.WorkOutcome{}, true, nil); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		finished(t, f)
+	})
+	t.Run("returned while cancelling", func(t *testing.T) {
+		f, ref := running(t)
+		ctx := t.Context()
+		returned, commit, replaced := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+		go func() {
+			replaced <- f.d.Store.Tx(ctx, func(q *db.Queries) error {
+				runner := "r"
+				_, err := q.ReplaceRunning(ctx, db.ReplaceRunningParams{Cancelled: cancelled(), OrgID: f.org, DataPlaneID: "default", ID: "a", Runner: &runner})
+				close(returned)
+				<-commit
+				return err
+			})
+		}()
+		<-returned
+		cancelDone := make(chan error, 1)
+		go func() { cancelDone <- f.d.Cancel(ctx, ref) }()
+		// Cancel reaches the row while the runner's answer holds it.
+		time.Sleep(200 * time.Millisecond)
+		close(commit)
+		if err := <-replaced; err != nil {
+			t.Fatal(err)
+		}
+		if err := <-cancelDone; err != nil {
+			t.Fatal(err)
+		}
+		finished(t, f)
+	})
 }
 
 func TestWorkThatsGoneCountsAsLost(t *testing.T) {

@@ -12,39 +12,27 @@ import (
 	"github.com/google/uuid"
 )
 
-const cancelRunning = `-- name: CancelRunning :exec
-UPDATE dispatches SET cancel = true WHERE org_id = $1 AND id = $2 AND state = 'running'
+const cancelDispatch = `-- name: CancelDispatch :exec
+UPDATE dispatches SET
+    state = CASE WHEN state = 'running' THEN state ELSE 'finished' END,
+    outcome = CASE WHEN state = 'running' THEN outcome ELSE $1::jsonb END,
+    finish_time = CASE WHEN state = 'running' THEN finish_time ELSE now() END,
+    cancel = true
+WHERE org_id = $2 AND id = $3 AND state IN ('pending', 'placed', 'running')
 `
 
-type CancelRunningParams struct {
-	OrgID uuid.UUID
-	ID    string
-}
-
-// Its runner hears on its next report.
-func (q *Queries) CancelRunning(ctx context.Context, arg CancelRunningParams) error {
-	_, err := q.db.Exec(ctx, cancelRunning, arg.OrgID, arg.ID)
-	return err
-}
-
-const cancelWaiting = `-- name: CancelWaiting :execrows
-UPDATE dispatches SET state = 'finished', outcome = $1, finish_time = now()
-WHERE org_id = $2 AND id = $3 AND state IN ('pending', 'placed')
-`
-
-type CancelWaitingParams struct {
+type CancelDispatchParams struct {
 	Outcome []byte
 	OrgID   uuid.UUID
 	ID      string
 }
 
-// A workflow's cancellation of work no runner has started.
-func (q *Queries) CancelWaiting(ctx context.Context, arg CancelWaitingParams) (int64, error) {
-	result, err := q.db.Exec(ctx, cancelWaiting, arg.Outcome, arg.OrgID, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// A workflow's cancellation. What no runner has started finishes now, and a
+// runner hears of what it's running on its next report. One statement, so work
+// going from one state to the other meanwhile is seen in the state it ends up in.
+func (q *Queries) CancelDispatch(ctx context.Context, arg CancelDispatchParams) error {
+	_, err := q.db.Exec(ctx, cancelDispatch, arg.Outcome, arg.OrgID, arg.ID)
+	return err
 }
 
 const claimLaunched = `-- name: ClaimLaunched :many
@@ -654,6 +642,7 @@ const isFinishedByRunner = `-- name: IsFinishedByRunner :one
 SELECT EXISTS (
     SELECT 1 FROM dispatches
     WHERE org_id = $1 AND data_plane_id = $2 AND id = $3 AND runner = $4 AND state = 'finished'
+        AND outcome = $5
 )
 `
 
@@ -662,15 +651,18 @@ type IsFinishedByRunnerParams struct {
 	DataPlaneID string
 	ID          string
 	Runner      *string
+	Outcome     []byte
 }
 
-// Whether the runner's result is in already, as when it sends it again.
+// Whether this result of the runner's is in already, as when it sends it
+// again. One that came after the work's lease ended isn't.
 func (q *Queries) IsFinishedByRunner(ctx context.Context, arg IsFinishedByRunnerParams) (bool, error) {
 	row := q.db.QueryRow(ctx, isFinishedByRunner,
 		arg.OrgID,
 		arg.DataPlaneID,
 		arg.ID,
 		arg.Runner,
+		arg.Outcome,
 	)
 	var exists bool
 	err := row.Scan(&exists)
@@ -787,16 +779,6 @@ func (q *Queries) LiveLaunches(ctx context.Context, arg LiveLaunchesParams) ([]L
 		return nil, err
 	}
 	return items, nil
-}
-
-const lockPlacement = `-- name: LockPlacement :exec
-SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
-`
-
-// Passes of a data plane run one at a time, until the transaction ends.
-func (q *Queries) LockPlacement(ctx context.Context, dataPlane string) error {
-	_, err := q.db.Exec(ctx, lockPlacement, dataPlane)
-	return err
 }
 
 const markManualSync = `-- name: MarkManualSync :exec
@@ -1260,20 +1242,27 @@ func (q *Queries) RecordAttemptUsage(ctx context.Context, arg RecordAttemptUsage
 }
 
 const replaceRunning = `-- name: ReplaceRunning :execrows
-UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
-WHERE org_id = $1 AND data_plane_id = $2 AND id = $3 AND runner = $4 AND state = 'running' AND light = ''
+UPDATE dispatches SET
+    state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
+    outcome = CASE WHEN cancel THEN $1::jsonb ELSE outcome END,
+    finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND runner = $5 AND state = 'running' AND light = ''
 `
 
 type ReplaceRunningParams struct {
+	Cancelled   []byte
 	OrgID       uuid.UUID
 	DataPlaneID string
 	ID          string
 	Runner      *string
 }
 
-// A runner with no room for what was placed on it: it's placed again.
+// A runner with no room for what was placed on it: it's placed again, unless
+// it's been cancelled, which finishes it.
 func (q *Queries) ReplaceRunning(ctx context.Context, arg ReplaceRunningParams) (int64, error) {
 	result, err := q.db.Exec(ctx, replaceRunning,
+		arg.Cancelled,
 		arg.OrgID,
 		arg.DataPlaneID,
 		arg.ID,
@@ -1512,6 +1501,19 @@ func (q *Queries) TakeManualSync(ctx context.Context, arg TakeManualSyncParams) 
 	var manual bool
 	err := row.Scan(&manual)
 	return manual, err
+}
+
+const tryLockPlacement = `-- name: TryLockPlacement :one
+SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+// Passes of a data plane run one at a time, each until its transaction ends.
+// False: another pass has it.
+func (q *Queries) TryLockPlacement(ctx context.Context, dataPlane string) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockPlacement, dataPlane)
+	var pg_try_advisory_xact_lock bool
+	err := row.Scan(&pg_try_advisory_xact_lock)
+	return pg_try_advisory_xact_lock, err
 }
 
 const unfinishedWorkOfSyncs = `-- name: UnfinishedWorkOfSyncs :many

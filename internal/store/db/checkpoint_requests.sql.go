@@ -118,7 +118,7 @@ func (q *Queries) InsertCheckpointRequest(ctx context.Context, arg InsertCheckpo
 }
 
 const newestCheckpointRequest = `-- name: NewestCheckpointRequest :one
-SELECT coalesce(max(id::text), '')::text FROM checkpoint_requests WHERE org_id = $1 AND pipeline_id = $2
+SELECT coalesce(count(*)::text || '/' || max(id::text), '')::text FROM checkpoint_requests WHERE org_id = $1 AND pipeline_id = $2
 `
 
 type NewestCheckpointRequestParams struct {
@@ -126,6 +126,8 @@ type NewestCheckpointRequestParams struct {
 	PipelineID uuid.UUID
 }
 
+// What a supervisor compares to see a new request. With the count, because a
+// server with a slower clock gives a request an ID older than the newest.
 func (q *Queries) NewestCheckpointRequest(ctx context.Context, arg NewestCheckpointRequestParams) (string, error) {
 	row := q.db.QueryRow(ctx, newestCheckpointRequest, arg.OrgID, arg.PipelineID)
 	var column_1 string
@@ -134,7 +136,7 @@ func (q *Queries) NewestCheckpointRequest(ctx context.Context, arg NewestCheckpo
 }
 
 const newestCheckpointRequestAt = `-- name: NewestCheckpointRequestAt :one
-SELECT coalesce(max(id::text), '')::text FROM checkpoint_requests
+SELECT coalesce(count(*)::text || '/' || max(id::text), '')::text FROM checkpoint_requests
 WHERE org_id = $1 AND pipeline_id = $2 AND create_time <= $3
 `
 

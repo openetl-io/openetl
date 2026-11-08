@@ -8,10 +8,15 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 )
 
+// teardownPickup is how long a teardown waits for a runner. The pipeline it
+// cleans up after is gone, so nothing would ask again; a runner may have died
+// with it, and its replacement may take a while.
+const teardownPickup = 5 * time.Minute
+
 // ConnectorOp runs Check, Discover or Teardown on a runner of the data
-// plane, or cancels a deleted pipeline's Flink jobs. A teardown retries
-// until the operation times out, since the pipeline it cleans up after is
-// gone.
+// plane, or cancels a deleted pipeline's Flink jobs. A teardown that a runner
+// took retries until the operation times out, since the pipeline it cleans up
+// after is gone; one no runner takes in teardownPickup ends there.
 func (w Workflows) ConnectorOp(ctx orchestration.Context, in contract.ConnectorOpInput) (*contract.ConnectorOpResult, error) {
 	work := contract.WorkInput{
 		OrgID: in.OrgID, DataPlane: in.DataPlane, Light: contract.LightOps, Kind: contract.CheckConnector, Input: in,
@@ -26,11 +31,11 @@ func (w Workflows) ConnectorOp(ctx orchestration.Context, in contract.ConnectorO
 		if in.SourceID == "" {
 			work.Kind = contract.TeardownDestination
 		}
+		work.Pickup = teardownPickup
 		policy = retryPolicy{wait: time.Second, maxWait: time.Minute}
 	case contract.OpTeardownFlink:
-		// The jobs' runner may have died, and its replacement may take a
-		// while; the operation waits for the jobs' deployments to go.
-		work.Kind, work.Pickup, work.Timeout = contract.TeardownFlink, 5*time.Minute, 10*time.Minute
+		// The operation waits for the jobs' deployments to go.
+		work.Kind, work.Pickup, work.Timeout = contract.TeardownFlink, teardownPickup, 10*time.Minute
 		policy = retryPolicy{wait: time.Second, maxWait: time.Minute}
 	}
 	var res contract.ConnectorOpResult

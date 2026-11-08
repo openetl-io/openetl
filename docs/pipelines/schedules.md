@@ -66,6 +66,8 @@ An apply that changes a pipeline starts no sync:
 
 The next sync runs the new version. A sync that's running when you apply carries on with the version it started with.
 
+Each orchestrator sets every schedule again from its pipeline when it starts and every 10 minutes after. A change that was stored but didn't reach the schedule, because an apply, a pause or a resume failed partway, takes effect by then.
+
 ## When a sync is still running
 
 A pipeline runs one sync at a time. A sync that's due while the last one is still running is skipped, and the schedule moves on to its next time: nothing starts when the long sync ends. With `every: 1m`, a sync that takes 1 minute 18 seconds makes the schedule skip one start.

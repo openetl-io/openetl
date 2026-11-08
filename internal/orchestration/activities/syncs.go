@@ -33,13 +33,14 @@ type Activities struct {
 	Store *store.Store
 	// Sends workflows' work to data planes.
 	Dispatch *dispatch.Dispatcher
-	// Pauses the schedules of pipelines a playbook paused, and changes those a
-	// playbook slowed down. Nil: only the pipeline is paused, which stops its
-	// syncs all the same, and the schedule changes at the pipeline's next
-	// apply.
+	// Pauses the schedules of pipelines a playbook paused, changes those a
+	// playbook slowed down, and deletes those of pipelines that are gone. Nil:
+	// only the pipeline is paused, which stops its syncs all the same, and the
+	// schedule changes at the pipeline's next apply.
 	Schedules interface {
 		SetPaused(ctx context.Context, pipelineID string, paused bool) error
 		Upsert(ctx context.Context, orgID, pipelineID string, sched *apiv1.Schedule, paused bool) error
+		Delete(ctx context.Context, pipelineID string) error
 	}
 	// How RefreshCatalog reaches registries and GitHub. Nil: it lists
 	// nothing.
@@ -97,6 +98,12 @@ func (a *Activities) StartSync(ctx context.Context, in contract.SyncInput) (cont
 	}
 	p, err := a.Store.GetPipelineByID(ctx, db.GetPipelineByIDParams{OrgID: org, ID: pipeline})
 	if errors.Is(err, pgx.ErrNoRows) {
+		// A pipeline's ID is never used again, so its schedule starts nothing more.
+		if a.Schedules != nil {
+			if derr := a.Schedules.Delete(ctx, in.PipelineID); derr != nil {
+				a.log().Warn("deleting the schedule of a pipeline that's gone failed", "pipeline", in.PipelineID, "err", derr)
+			}
+		}
 		return res, errs.New(errs.ConfigInvalid, "pipeline %s no longer exists", in.PipelineID)
 	}
 	if err != nil {

@@ -252,12 +252,10 @@ func (d *Dispatcher) Cancel(ctx context.Context, ref contract.WorkRef) error {
 	if err != nil {
 		return err
 	}
-	n, err := d.Store.CancelWaiting(ctx, db.CancelWaitingParams{OrgID: org, ID: ref.ID, Outcome: marshalOutcome(contract.WorkOutcome{Cancelled: true})})
-	if err != nil || n > 0 {
-		return err
-	}
-	return d.Store.CancelRunning(ctx, db.CancelRunningParams{OrgID: org, ID: ref.ID})
+	return d.Store.CancelDispatch(ctx, db.CancelDispatchParams{OrgID: org, ID: ref.ID, Outcome: cancelled()})
 }
+
+func cancelled() []byte { return marshalOutcome(contract.WorkOutcome{Cancelled: true}) }
 
 // Report is a runner's report.
 type Report struct {
@@ -528,7 +526,7 @@ func (d *Dispatcher) Reap(ctx context.Context, org uuid.UUID, pods []Launch) ([]
 func (d *Dispatcher) Result(ctx context.Context, org uuid.UUID, dataPlane, runner, id string, out contract.WorkOutcome, noCapacity bool, usage *AttemptUsage) (bool, error) {
 	who := &runner
 	if noCapacity {
-		n, err := d.Store.ReplaceRunning(ctx, db.ReplaceRunningParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
+		n, err := d.Store.ReplaceRunning(ctx, db.ReplaceRunningParams{Cancelled: cancelled(), OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
 		return n > 0, err
 	}
 	var n int64
@@ -547,7 +545,7 @@ func (d *Dispatcher) Result(ctx context.Context, org uuid.UUID, dataPlane, runne
 		return false, err
 	}
 	if n == 0 {
-		return d.Store.IsFinishedByRunner(ctx, db.IsFinishedByRunnerParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
+		return d.Store.IsFinishedByRunner(ctx, db.IsFinishedByRunnerParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who, Outcome: marshalOutcome(out)})
 	}
 	row, err := d.Store.GetDispatchWorkflow(ctx, db.GetDispatchWorkflowParams{OrgID: org, ID: id})
 	if err != nil {
@@ -570,11 +568,14 @@ func (d *Dispatcher) wake(ctx context.Context, org uuid.UUID, id, workflow strin
 	return d.Store.MarkWoken(ctx, db.MarkWokenParams{OrgID: org, ID: id})
 }
 
-// pass gives the room on a data plane's runners to the attempts waiting.
+// pass gives the room on a data plane's runners to the attempts waiting. If
+// another pass has the data plane, it does nothing and returns nil: what's
+// waiting stays pending, and Run's next tick places it.
 func (d *Dispatcher) pass(ctx context.Context, org uuid.UUID, dataPlane string) error {
 	return d.Store.Tx(ctx, func(q *db.Queries) error {
 		key := planeKey(org, dataPlane)
-		if err := q.LockPlacement(ctx, key); err != nil {
+		locked, err := q.TryLockPlacement(ctx, key)
+		if err != nil || !locked {
 			return err
 		}
 		pending, err := q.PendingAttempts(ctx, db.PendingAttemptsParams{OrgID: org, DataPlaneID: dataPlane, MaxRows: maxPending})
