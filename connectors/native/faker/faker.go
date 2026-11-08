@@ -97,7 +97,7 @@ func (s *Source) Discover(context.Context) (source.Catalog, error) {
 	for _, st := range streams {
 		cs := source.CatalogStream{Name: st.name, PrimaryKey: []string{"id"}, Replay: replay, SyncModes: []source.SyncMode{source.FullRefresh}}
 		if s.cfg.Endless {
-			cs.SyncModes = []source.SyncMode{source.Stream}
+			cs.SyncModes, cs.CursorField = []source.SyncMode{source.Stream}, "id"
 		}
 		if s.cfg.Keyless {
 			cs.PrimaryKey, cs.CursorField = nil, "id"

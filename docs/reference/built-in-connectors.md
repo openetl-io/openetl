@@ -65,6 +65,7 @@ Each column's type is inferred from its values.
 |---|---|---|
 | Sync mode | `full_refresh` | `stream` |
 | Primary key | `id`, or none with `keyless` | `id`, or none with `keyless` |
+| Cursor | None, or `id` with `keyless` | `id` |
 | Replay | Exact, or a superset when `overlap` is above 0 | Exact, or a superset when `overlap` is above 0 |
 
 ### Example
