@@ -5,7 +5,7 @@ description: What each delivery guarantee promises, what decides a stream's, and
 
 Every stream of a pipeline has a delivery guarantee: what OpenETL promises about a row landing twice after a retry or a second read. This page covers what each guarantee promises, what decides a stream's, how `openetl plan` shows it, and how to read a stream delivered at least once. [Concepts](../get-started/concepts.md#delivery-guarantees) has the short version.
 
-The examples read two tables of a Postgres source, `shop-db`: `orders`, with a primary key `id` and an `updated_at` column, and `page_views`, which has no primary key. They write into a Postgres destination, `warehouse`.
+The examples read two tables of a Postgres source, `shop-db`: `orders`, with a primary key `id` and an `updated_at` column, and `page_views`, which has no primary key. They write into a Postgres destination, `warehouse`. These worked examples use the [official Postgres connector](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md). Check your connector version's documentation and capabilities; OpenETL computes guarantees from those capabilities rather than from the system's name.
 
 ## The three guarantees
 
@@ -42,9 +42,9 @@ page_views (exact)
 
 **The destination: how it commits.** A destination makes each commit visible in one of three ways:
 
-- It stages what was read and applies it in one step, as Postgres and Iceberg do. An exact stream gets `exactly_once`. A superset stream written with merge gets `effectively_once`, since a repeated version is written onto its own row again. A superset stream written with append or overwrite gets `at_least_once`, unless the destination can also skip rows whose `_openetl_id` its table already has, as Postgres can: then it gets `exactly_once`, by **deduping at apply**.
-- It writes each commit in a transaction, as Kafka does. An exact stream gets `exactly_once`, and a superset stream `at_least_once`.
-- It delivers records as they're read and waits for each to be acknowledged, as Kinesis does. A delivery can be retried and land twice, so every stream gets `at_least_once`.
+- It stages what was read and applies it in one step (**stage and apply**). An exact stream gets `exactly_once`. A superset stream written with merge gets `effectively_once`, since a repeated version is written onto its own row again. A superset stream written with append or overwrite gets `at_least_once`, unless the destination can also skip rows whose `_openetl_id` its table already has: then it gets `exactly_once`, by **deduping at apply**.
+- It writes each commit in a transaction (**transactional stream**). An exact stream gets `exactly_once`, and a superset stream `at_least_once`.
+- It delivers records as they're read and waits for each to be acknowledged (**deliver and acknowledge**). A delivery can be retried and land twice, so every stream gets `at_least_once`.
 
 **The stream: its write mode and its key.** Merge needs a primary key. A stream without one is covered [below](#streams-without-a-primary-key).
 

@@ -6,6 +6,8 @@ This folder is OpenETL's documentation. The docs site, in [docs-web](https://git
 
 Pages about one connector live with that connector: the official ones in [openetl-connectors](https://github.com/openetl-io/openetl-connectors), whose packages the site lists under Connectors. This folder covers OpenETL itself, and the connectors built into it (`faker`, `stdout` and `parquet`) in the reference.
 
+External connectors may be official, community maintained or private, with versions and release cadences independent of OpenETL. Explain the engine in terms of connector roles and capabilities; keep lists of systems, setup requirements and connector-specific limits with the connectors. A worked example may name a connector, but must identify it as an example and link to its own documentation.
+
 ## Who each section is for
 
 Write each page for its section's reader. Before writing, ask what they know, what they came to do, and what they'll do next.

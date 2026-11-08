@@ -255,4 +255,4 @@ where n = 1;
 
 To read the latest version of each record from a stream written with append, partition by its primary key instead, and order by `_openetl_seq` descending.
 
-Iceberg tables are committed through your REST or Glue catalog, so any engine that reads that catalog reads them as it would any other Iceberg table.
+The destination connector defines the table, file or event format and how readers see committed data. Follow that connector version's documentation for catalog setup, reader compatibility and any destination-specific metadata.

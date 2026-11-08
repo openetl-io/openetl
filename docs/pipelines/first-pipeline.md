@@ -5,6 +5,8 @@ description: Copy tables from your own Postgres database into another, from chec
 
 In this guide you copy two tables from a Postgres database into another Postgres database, once an hour, with the official Postgres connector. You give OpenETL a user on each database, store the connections as secrets, check that OpenETL reaches both, look at the source's tables, then plan and apply the pipeline. The whole pipeline is [`examples/postgres-to-postgres.yaml`](../../examples/postgres-to-postgres.yaml).
 
+The database permissions, config and behavior shown here belong to this connector. For another connector or release, follow its own documentation and [choose and manage connectors](./connectors.md) before using the same check, discover, plan and apply workflow.
+
 ## Before you start
 
 You need:
