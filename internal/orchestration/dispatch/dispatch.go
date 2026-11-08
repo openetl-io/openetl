@@ -252,12 +252,10 @@ func (d *Dispatcher) Cancel(ctx context.Context, ref contract.WorkRef) error {
 	if err != nil {
 		return err
 	}
-	n, err := d.Store.CancelWaiting(ctx, db.CancelWaitingParams{OrgID: org, ID: ref.ID, Outcome: marshalOutcome(contract.WorkOutcome{Cancelled: true})})
-	if err != nil || n > 0 {
-		return err
-	}
-	return d.Store.CancelRunning(ctx, db.CancelRunningParams{OrgID: org, ID: ref.ID})
+	return d.Store.CancelDispatch(ctx, db.CancelDispatchParams{OrgID: org, ID: ref.ID, Outcome: cancelled()})
 }
+
+func cancelled() []byte { return marshalOutcome(contract.WorkOutcome{Cancelled: true}) }
 
 // Report is a runner's report.
 type Report struct {
@@ -528,7 +526,7 @@ func (d *Dispatcher) Reap(ctx context.Context, org uuid.UUID, pods []Launch) ([]
 func (d *Dispatcher) Result(ctx context.Context, org uuid.UUID, dataPlane, runner, id string, out contract.WorkOutcome, noCapacity bool, usage *AttemptUsage) (bool, error) {
 	who := &runner
 	if noCapacity {
-		n, err := d.Store.ReplaceRunning(ctx, db.ReplaceRunningParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
+		n, err := d.Store.ReplaceRunning(ctx, db.ReplaceRunningParams{Cancelled: cancelled(), OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
 		return n > 0, err
 	}
 	var n int64

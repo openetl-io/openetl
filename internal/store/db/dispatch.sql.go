@@ -12,39 +12,27 @@ import (
 	"github.com/google/uuid"
 )
 
-const cancelRunning = `-- name: CancelRunning :exec
-UPDATE dispatches SET cancel = true WHERE org_id = $1 AND id = $2 AND state = 'running'
+const cancelDispatch = `-- name: CancelDispatch :exec
+UPDATE dispatches SET
+    state = CASE WHEN state = 'running' THEN state ELSE 'finished' END,
+    outcome = CASE WHEN state = 'running' THEN outcome ELSE $1::jsonb END,
+    finish_time = CASE WHEN state = 'running' THEN finish_time ELSE now() END,
+    cancel = true
+WHERE org_id = $2 AND id = $3 AND state IN ('pending', 'placed', 'running')
 `
 
-type CancelRunningParams struct {
-	OrgID uuid.UUID
-	ID    string
-}
-
-// Its runner hears on its next report.
-func (q *Queries) CancelRunning(ctx context.Context, arg CancelRunningParams) error {
-	_, err := q.db.Exec(ctx, cancelRunning, arg.OrgID, arg.ID)
-	return err
-}
-
-const cancelWaiting = `-- name: CancelWaiting :execrows
-UPDATE dispatches SET state = 'finished', outcome = $1, finish_time = now()
-WHERE org_id = $2 AND id = $3 AND state IN ('pending', 'placed')
-`
-
-type CancelWaitingParams struct {
+type CancelDispatchParams struct {
 	Outcome []byte
 	OrgID   uuid.UUID
 	ID      string
 }
 
-// A workflow's cancellation of work no runner has started.
-func (q *Queries) CancelWaiting(ctx context.Context, arg CancelWaitingParams) (int64, error) {
-	result, err := q.db.Exec(ctx, cancelWaiting, arg.Outcome, arg.OrgID, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// A workflow's cancellation. What no runner has started finishes now, and a
+// runner hears of what it's running on its next report. One statement, so work
+// going from one state to the other meanwhile is seen in the state it ends up in.
+func (q *Queries) CancelDispatch(ctx context.Context, arg CancelDispatchParams) error {
+	_, err := q.db.Exec(ctx, cancelDispatch, arg.Outcome, arg.OrgID, arg.ID)
+	return err
 }
 
 const claimLaunched = `-- name: ClaimLaunched :many
@@ -1260,20 +1248,27 @@ func (q *Queries) RecordAttemptUsage(ctx context.Context, arg RecordAttemptUsage
 }
 
 const replaceRunning = `-- name: ReplaceRunning :execrows
-UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
-WHERE org_id = $1 AND data_plane_id = $2 AND id = $3 AND runner = $4 AND state = 'running' AND light = ''
+UPDATE dispatches SET
+    state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
+    outcome = CASE WHEN cancel THEN $1::jsonb ELSE outcome END,
+    finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND runner = $5 AND state = 'running' AND light = ''
 `
 
 type ReplaceRunningParams struct {
+	Cancelled   []byte
 	OrgID       uuid.UUID
 	DataPlaneID string
 	ID          string
 	Runner      *string
 }
 
-// A runner with no room for what was placed on it: it's placed again.
+// A runner with no room for what was placed on it: it's placed again, unless
+// it's been cancelled, which finishes it.
 func (q *Queries) ReplaceRunning(ctx context.Context, arg ReplaceRunningParams) (int64, error) {
 	result, err := q.db.Exec(ctx, replaceRunning,
+		arg.Cancelled,
 		arg.OrgID,
 		arg.DataPlaneID,
 		arg.ID,

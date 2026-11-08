@@ -192,8 +192,13 @@ SELECT EXISTS (
 );
 
 -- name: ReplaceRunning :execrows
--- A runner with no room for what was placed on it: it's placed again.
-UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+-- A runner with no room for what was placed on it: it's placed again, unless
+-- it's been cancelled, which finishes it.
+UPDATE dispatches SET
+    state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
+    outcome = CASE WHEN cancel THEN sqlc.arg(cancelled)::jsonb ELSE outcome END,
+    finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runner = @runner AND state = 'running' AND light = '';
 
 -- name: FinishDispatch :exec
@@ -201,14 +206,16 @@ WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runne
 UPDATE dispatches SET state = 'finished', outcome = @outcome, finish_time = now()
 WHERE org_id = @org_id AND id = @id AND state = 'pending';
 
--- name: CancelWaiting :execrows
--- A workflow's cancellation of work no runner has started.
-UPDATE dispatches SET state = 'finished', outcome = @outcome, finish_time = now()
-WHERE org_id = @org_id AND id = @id AND state IN ('pending', 'placed');
-
--- name: CancelRunning :exec
--- Its runner hears on its next report.
-UPDATE dispatches SET cancel = true WHERE org_id = @org_id AND id = @id AND state = 'running';
+-- name: CancelDispatch :exec
+-- A workflow's cancellation. What no runner has started finishes now, and a
+-- runner hears of what it's running on its next report. One statement, so work
+-- going from one state to the other meanwhile is seen in the state it ends up in.
+UPDATE dispatches SET
+    state = CASE WHEN state = 'running' THEN state ELSE 'finished' END,
+    outcome = CASE WHEN state = 'running' THEN outcome ELSE sqlc.arg(outcome)::jsonb END,
+    finish_time = CASE WHEN state = 'running' THEN finish_time ELSE now() END,
+    cancel = true
+WHERE org_id = @org_id AND id = @id AND state IN ('pending', 'placed', 'running');
 
 -- name: RescaleWaiting :execrows
 -- A rescale's: the pipeline's attempts no runner has started finish as
