@@ -4712,7 +4712,8 @@ type PlanChange struct {
 	// or what the version pins: source.version, destination.version,
 	// source.connector, destination.connector or dbt.{project}.
 	Field string `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
-	// As JSON; empty where the field is unset.
+	// As JSON, with enums in the spec's words, such as "exactly_once"; empty
+	// where the field is unset.
 	Before        string `protobuf:"bytes,2,opt,name=before,proto3" json:"before,omitempty"`
 	After         string `protobuf:"bytes,3,opt,name=after,proto3" json:"after,omitempty"`
 	unknownFields protoimpl.UnknownFields

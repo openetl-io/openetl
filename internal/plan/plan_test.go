@@ -269,7 +269,7 @@ func TestDiff(t *testing.T) {
 	if err := protojsonUnmarshal(`{"source": {"ref": "s", "streams": [{"name": "orders", "cursor": "updated_at"}, {"name": "old"}]}}`, before.Spec); err != nil {
 		t.Fatal(err)
 	}
-	if err := protojsonUnmarshal(`{"source": {"ref": "s", "streams": [{"name": "orders", "cursor": "id"}]}, "delivery": {"require": "DELIVERY_LEVEL_AT_LEAST_ONCE"}}`, after.Spec); err != nil {
+	if err := protojsonUnmarshal(`{"source": {"ref": "s", "streams": [{"name": "orders", "cursor": "id", "sync": "SYNC_MODE_INCREMENTAL", "columns": {"amount": {"type": "COLUMN_TYPE_FLOAT64"}}}]}, "delivery": {"require": "DELIVERY_LEVEL_AT_LEAST_ONCE"}, "schedule": {"every": "60s"}}`, after.Spec); err != nil {
 		t.Fatal(err)
 	}
 	changes, err := Diff(before, after)
@@ -283,10 +283,13 @@ func TestDiff(t *testing.T) {
 	want := []string{
 		`dbt.gone: "sha256:g" -> `,
 		`dbt.shop: "sha256:b1" -> "sha256:b2"`,
-		`delivery.require:  -> "DELIVERY_LEVEL_AT_LEAST_ONCE"`,
+		`delivery.require:  -> "at_least_once"`,
 		`destination.connector: "sha256:a" -> "sha256:a2"`,
+		`schedule.every:  -> "60s"`,
 		`source.streams[old].name: "old" -> `,
+		`source.streams[orders].columns.amount.type:  -> "float64"`,
 		`source.streams[orders].cursor: "updated_at" -> "id"`,
+		`source.streams[orders].sync:  -> "incremental"`,
 		`source.version: "s1" -> "s2"`,
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

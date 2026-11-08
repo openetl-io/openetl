@@ -4856,7 +4856,9 @@ components:
                          source.connector, destination.connector or dbt.{project}.
                 before:
                     type: string
-                    description: As JSON; empty where the field is unset.
+                    description: |-
+                        As JSON, with enums in the spec's words, such as "exactly_once"; empty
+                         where the field is unset.
                 after:
                     type: string
         PlanWarning:

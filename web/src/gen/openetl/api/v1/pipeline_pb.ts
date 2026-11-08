@@ -1947,7 +1947,8 @@ export type PlanChange = Message<"openetl.api.v1.PlanChange"> & {
   field: string;
 
   /**
-   * As JSON; empty where the field is unset.
+   * As JSON, with enums in the spec's words, such as "exactly_once"; empty
+   * where the field is unset.
    *
    * @generated from field: string before = 2;
    */

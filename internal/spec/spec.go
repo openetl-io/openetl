@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"go.yaml.in/yaml/v3"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -522,6 +523,11 @@ func parseSchedule(y *scheduleYAML) (*apiv1.Schedule, error) {
 		}
 		sc.Trigger = &apiv1.Schedule_Every{Every: d}
 	} else {
+		// The default orchestrator's parser: a cron that passes runs on
+		// either orchestrator.
+		if _, err := cron.ParseStandard(y.Cron); err != nil {
+			return nil, fmt.Errorf("schedule.cron: %q isn't a cron expression of five fields: %w", y.Cron, err)
+		}
 		sc.Trigger = &apiv1.Schedule_Cron{Cron: y.Cron}
 	}
 	if y.Jitter != "" {
