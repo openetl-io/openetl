@@ -43,6 +43,12 @@ Every flag of `openetld` can also be set by an environment variable; `openetld R
 
 The HTTP requests OpenETL makes itself, for webhooks, for downloads from registries, and for connectors that make their requests through it, reach only public addresses, plus the ranges `OPENETL_EGRESS_ALLOW` lists, such as your own networks.
 
+## Connectors are trusted code
+
+A connector runs as a program of its own, as the runner's user, with no sandbox. It can read what the runner can read and reach what the runner can reach, including a cloud's metadata address, whatever `OPENETL_EGRESS_ALLOW` says: that setting covers requests OpenETL makes for it, not the sockets it opens itself. It can also use the secrets of the sources and destinations it runs for, and OpenETL doesn't yet check where it sends them. Its descriptor's `egress` states what it means to reach, and isn't enforced.
+
+So install only connectors you trust, as you would any other program on those machines. Give runners credentials for what their pipelines need and no more, and keep them off networks their pipelines don't use.
+
 ## Sign-in and the first owner
 
 A server asks people to sign in with a password unless it's started with `--auth none`, which `openetld dev` does. With sign-in off, a call with no API key acts as an owner, so the server refuses calls from other sites' web pages, and answers only to `localhost`, a loopback address or its `--public-url`. `--auth-none-allow-remote` lifts the second limit, for a server reached by other names.

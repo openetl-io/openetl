@@ -76,7 +76,7 @@ What a package provides as a source or a destination, and how it runs.
 | `runtime` | [object](#specrolesroleruntime) | Yes | At least one of binaries and an image, or a manifest alone. |
 | `resources` | [object](#specrolesroleresources) | No | A container launcher's requests and limits, and the job size the role wants. |
 | `state` | [object](#specrolesrolestate) | No | The version of the checkpoint state it writes, and the oldest it reads (at most version). |
-| `egress` | [object](#specrolesroleegress) | No | What the connector may reach on the network. |
+| `egress` | [object](#specrolesroleegress) | No | What the connector means to reach on the network. OpenETL doesn't enforce it yet: connectors are trusted code. |
 | `setup` | boolean | No | The connector serves `Setup` and `Teardown`. |
 | `acknowledges` | boolean | No | A source's: it acknowledges upstream once a checkpoint commits. |
 | `splits` | boolean | No | A source's: it divides streams into splits. |
@@ -155,7 +155,7 @@ The version of the checkpoint state it writes, and the oldest it reads (at most 
 
 ## `spec.roles.ROLE.egress`
 
-What the connector may reach on the network.
+What the connector means to reach on the network. OpenETL doesn't enforce it yet: connectors are trusted code.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
