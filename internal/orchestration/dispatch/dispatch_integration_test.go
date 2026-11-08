@@ -257,9 +257,8 @@ func TestLeaseEnds(t *testing.T) {
 	if !f.waker.has("a") {
 		t.Error("the workflow wasn't woken")
 	}
-	if ok, err := f.d.Result(ctx, f.org, "default", "r", "a", contract.WorkOutcome{}, false, nil); err != nil || !ok {
-		// It was this runner's, and it's finished, so a late result is taken
-		// as already in, and changes nothing.
+	// The lease ended first, so its runner hears the result came too late.
+	if ok, err := f.d.Result(ctx, f.org, "default", "r", "a", contract.WorkOutcome{}, false, nil); err != nil || ok {
 		t.Errorf("late result: %v, %v", ok, err)
 	}
 	if st := f.status("a"); st.Outcome.Code != errs.Transient.String() {

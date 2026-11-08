@@ -545,7 +545,7 @@ func (d *Dispatcher) Result(ctx context.Context, org uuid.UUID, dataPlane, runne
 		return false, err
 	}
 	if n == 0 {
-		return d.Store.IsFinishedByRunner(ctx, db.IsFinishedByRunnerParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who})
+		return d.Store.IsFinishedByRunner(ctx, db.IsFinishedByRunnerParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: who, Outcome: marshalOutcome(out)})
 	}
 	row, err := d.Store.GetDispatchWorkflow(ctx, db.GetDispatchWorkflowParams{OrgID: org, ID: id})
 	if err != nil {

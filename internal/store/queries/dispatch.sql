@@ -186,10 +186,12 @@ UPDATE dispatches SET state = 'finished', outcome = @outcome, finish_time = now(
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runner = @runner AND state = 'running';
 
 -- name: IsFinishedByRunner :one
--- Whether the runner's result is in already, as when it sends it again.
+-- Whether this result of the runner's is in already, as when it sends it
+-- again. One that came after the work's lease ended isn't.
 SELECT EXISTS (
     SELECT 1 FROM dispatches
     WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runner = @runner AND state = 'finished'
+        AND outcome = @outcome
 );
 
 -- name: ReplaceRunning :execrows

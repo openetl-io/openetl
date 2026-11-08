@@ -642,6 +642,7 @@ const isFinishedByRunner = `-- name: IsFinishedByRunner :one
 SELECT EXISTS (
     SELECT 1 FROM dispatches
     WHERE org_id = $1 AND data_plane_id = $2 AND id = $3 AND runner = $4 AND state = 'finished'
+        AND outcome = $5
 )
 `
 
@@ -650,15 +651,18 @@ type IsFinishedByRunnerParams struct {
 	DataPlaneID string
 	ID          string
 	Runner      *string
+	Outcome     []byte
 }
 
-// Whether the runner's result is in already, as when it sends it again.
+// Whether this result of the runner's is in already, as when it sends it
+// again. One that came after the work's lease ended isn't.
 func (q *Queries) IsFinishedByRunner(ctx context.Context, arg IsFinishedByRunnerParams) (bool, error) {
 	row := q.db.QueryRow(ctx, isFinishedByRunner,
 		arg.OrgID,
 		arg.DataPlaneID,
 		arg.ID,
 		arg.Runner,
+		arg.Outcome,
 	)
 	var exists bool
 	err := row.Scan(&exists)
