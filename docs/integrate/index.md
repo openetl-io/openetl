@@ -183,6 +183,7 @@ openetl webhook test ops-alerts
   | `pipeline.overridden` | Heal changes how a pipeline runs, such as syncing less often, or someone undoes it |
   | `pipeline.reset` | Someone asks for a pipeline's streams to be read again from the start; `data.streams` names them, and is left out for every stream |
   | `pipeline.lagging`, `pipeline.recovered` | A continuous pipeline falls behind its source, and catches up |
+  | `pipeline.teardown_failed` | What a deleted pipeline's connector keeps for it, such as a replication slot, couldn't be removed after 7 days of trying, and is left for someone to remove |
   | `schema.changed`, `schema.blocked` | A stream's schema changes, or a change can't be taken |
   | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident opens, gets worse, or is resolved |
   | `webhook.test` | `openetl webhook test` sends one |

@@ -273,28 +273,6 @@ func (s *Server) pinFlinkCluster(ctx context.Context, wsID uuid.UUID, name, vers
 	return p, nil
 }
 
-// teardownFlink starts a teardown of the deleted pipeline p's Flink jobs on
-// the cluster its last version pinned, if any, without waiting for it: a
-// job whose runner died before the deletion is left running, with its
-// JobManager on Kubernetes, since no attempt follows to cancel it.
-func (s *Server) teardownFlink(ctx context.Context, p db.Pipeline, pins []db.GetPinnedFlinkClustersRow) {
-	ctx = context.WithoutCancel(ctx)
-	for _, pin := range pins {
-		in := contract.ConnectorOpInput{
-			Op: contract.OpTeardownFlink, PipelineID: p.ID.String(),
-			OrgID: s.Tenant.Org.String(), WorkspaceID: p.WorkspaceID.String(), DataPlane: p.DataPlaneID,
-		}
-		op := db.InsertConnectorOpParams{PipelineID: &p.ID, FlinkClusterID: &pin.ID, FlinkVersion: &pin.Version}
-		err := s.insertOp(ctx, &in, op)
-		if err == nil {
-			err = s.Ops.Start(ctx, in)
-		}
-		if err != nil {
-			s.log().Error("Flink teardown not started", "pipeline", p.ID, "cluster", pin.Name, "err", err)
-		}
-	}
-}
-
 func (s *Server) GetFlinkTeardown(ctx context.Context, req *connect.Request[dataplanev1.GetFlinkTeardownRequest]) (*connect.Response[dataplanev1.GetFlinkTeardownResponse], error) {
 	audit(ctx).set("operation", req.Msg.GetOperationId())
 	denied := connect.NewError(connect.CodePermissionDenied, fmt.Errorf("the API sent no Flink teardown %q to data plane %q", req.Msg.GetOperationId(), callerOf(ctx).dataPlane))
@@ -302,8 +280,8 @@ func (s *Server) GetFlinkTeardown(ctx context.Context, req *connect.Request[data
 	if err != nil {
 		return nil, denied
 	}
-	r, err := s.Store.GetFlinkTeardown(ctx, db.GetFlinkTeardownParams{OrgID: s.Tenant.Org, ID: id, DataPlaneID: callerOf(ctx).dataPlane})
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && r.PipelineID == nil {
+	r, err := s.Store.GetTeardown(ctx, db.GetTeardownParams{OrgID: s.Tenant.Org, ID: id, DataPlaneID: callerOf(ctx).dataPlane})
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && r.Op != contract.OpTeardownFlink {
 		return nil, denied
 	}
 	if err != nil {

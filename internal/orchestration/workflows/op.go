@@ -15,8 +15,8 @@ const teardownPickup = 5 * time.Minute
 
 // ConnectorOp runs Check, Discover or Teardown on a runner of the data
 // plane, or cancels a deleted pipeline's Flink jobs. A teardown that a runner
-// took retries until the operation times out, since the pipeline it cleans up
-// after is gone; one no runner takes in teardownPickup ends there.
+// took retries until the operation times out; one no runner takes in
+// teardownPickup ends there. Either way ops.Teardowns tries it again, for days.
 func (w Workflows) ConnectorOp(ctx orchestration.Context, in contract.ConnectorOpInput) (*contract.ConnectorOpResult, error) {
 	work := contract.WorkInput{
 		OrgID: in.OrgID, DataPlane: in.DataPlane, Light: contract.LightOps, Kind: contract.CheckConnector, Input: in,

@@ -28,7 +28,6 @@ import (
 // OpRunner is implemented by ops.Ops.
 type OpRunner interface {
 	Run(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error)
-	Start(ctx context.Context, in contract.ConnectorOpInput) error
 }
 
 func (s *Server) CheckSource(ctx context.Context, req *connect.Request[apiv1.CheckSourceRequest]) (*connect.Response[apiv1.CheckSourceResponse], error) {
@@ -76,53 +75,74 @@ func (s *Server) DiscoverSource(ctx context.Context, req *connect.Request[apiv1.
 	return connect.NewResponse(&apiv1.DiscoverSourceResponse{Catalog: cat}), nil
 }
 
-// teardown starts a teardown of what the deleted pipeline p's source and
-// destination keep for it, such as a replication slot, without waiting for
-// it: on a runner, which calls each connector whose spec sets setup. One
-// that fails, as when the source can't be reached until the operation times
-// out, leaves it behind, and is logged on the data plane.
-func (s *Server) teardown(ctx context.Context, p db.Pipeline) {
-	ctx = context.WithoutCancel(ctx)
-	fail := func(err error) { s.log().Error("teardown not started", "pipeline", p.ID, "err", err) }
+// teardowns are what the deleted pipeline p's connectors keep for it and its
+// Flink jobs, to remove once it's gone, recorded with the deletion so a
+// failure can't lose them. They run on a runner: orchestrators retry them,
+// and DeleteSource and the like don't wait for them, as each keeps what its
+// runner reads.
+func (s *Server) teardowns(ctx context.Context, p db.Pipeline, pins []db.GetPinnedFlinkClustersRow) ([]db.InsertTeardownParams, error) {
 	src, err := s.Store.GetSourceByID(ctx, db.GetSourceByIDParams{OrgID: s.Tenant.Org, ID: p.SourceID})
 	if err != nil {
-		fail(err)
-		return
+		return nil, err
 	}
 	dst, err := s.Store.GetDestinationByID(ctx, db.GetDestinationByIDParams{OrgID: s.Tenant.Org, ID: p.DestinationID})
 	if err != nil {
-		fail(err)
-		return
+		return nil, err
 	}
+	var out []db.InsertTeardownParams
 	for _, c := range []struct {
 		role string
 		conn connection
 	}{{"source", fromSource(src)}, {"destination", fromDestination(dst)}} {
 		cfg, err := c.conn.config()
 		if err != nil {
-			fail(err)
+			s.log().Error("no teardown for a connector whose config can't be read", "pipeline", p.ID, "of", c.conn.name, "err", err)
 			continue
 		}
 		if !s.mayNeedSetup(ctx, c.role, cfg.GetConnector(), c.conn.connector) {
 			continue
 		}
-		in := contract.ConnectorOpInput{
-			Op: contract.OpTeardown, PipelineID: p.ID.String(),
-			OrgID: s.Tenant.Org.String(), WorkspaceID: c.conn.workspace.String(), DataPlane: p.DataPlaneID, Connector: cfg.GetConnector(),
+		t := db.InsertTeardownParams{
+			OrgID: s.Tenant.Org, ID: uuid.New(), WorkspaceID: c.conn.workspace, DataPlaneID: p.DataPlaneID, PipelineID: p.ID, Pipeline: p.Name,
+			Op: contract.OpTeardown, Connector: cfg.GetConnector(), Name: c.conn.name, Spec: c.conn.spec, Version: c.conn.version,
+			ConnectorDigest: c.conn.connector, Secrets: nonNil(c.conn.secrets),
 		}
 		if c.role == "source" {
-			in.SourceID = c.conn.id.String()
+			t.SourceID = &c.conn.id
 		} else {
-			in.DestinationID = c.conn.id.String()
+			t.DestinationID = &c.conn.id
 		}
-		if err := s.sendOp(ctx, &in); err != nil {
-			fail(err)
-			continue
-		}
-		if err := s.Ops.Start(ctx, in); err != nil {
-			fail(err)
-		}
+		out = append(out, t)
 	}
+	for _, pin := range pins {
+		out = append(out, db.InsertTeardownParams{
+			OrgID: s.Tenant.Org, ID: uuid.New(), WorkspaceID: p.WorkspaceID, DataPlaneID: p.DataPlaneID, PipelineID: p.ID, Pipeline: p.Name,
+			Op: contract.OpTeardownFlink, Name: pin.Name, Spec: pin.Spec, Version: pin.Version, Secrets: nonNil(pin.Secrets),
+		})
+	}
+	return out, nil
+}
+
+// teardownOf is the connection a teardown sent to the caller's data plane
+// kept, if op is one on the source or destination, which may be gone by now.
+func (s *Server) teardownOf(ctx context.Context, op string, source, destination uuid.UUID) (connection, bool, error) {
+	id, err := uuid.Parse(op)
+	if err != nil {
+		return connection{}, false, nil
+	}
+	r, err := s.Store.GetTeardown(ctx, db.GetTeardownParams{OrgID: s.Tenant.Org, ID: id, DataPlaneID: callerOf(ctx).dataPlane})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return connection{}, false, nil
+	}
+	if err != nil {
+		return connection{}, false, err
+	}
+	onSource := source != uuid.Nil && r.SourceID != nil && *r.SourceID == source
+	onDestination := destination != uuid.Nil && r.DestinationID != nil && *r.DestinationID == destination
+	if !onSource && !onDestination {
+		return connection{}, false, nil
+	}
+	return connection{name: r.Name, workspace: r.WorkspaceID, spec: r.Spec, version: r.Version, connector: r.ConnectorDigest, secrets: r.Secrets}, true, nil
 }
 
 // mayNeedSetup is false when the connector is known not to take Setup and
@@ -259,6 +279,14 @@ func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[da
 		if err != nil {
 			return nil, invalid("source_id: %v", err)
 		}
+		kept, ok, err := s.teardownOf(ctx, req.Msg.GetOperationId(), u, uuid.Nil)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			c = kept
+			break
+		}
 		if err := s.sentOp(ctx, req.Msg.GetOperationId(), u, uuid.Nil); err != nil {
 			return nil, err
 		}
@@ -273,6 +301,15 @@ func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[da
 		if err != nil {
 			return nil, invalid("destination_id: %v", err)
 		}
+		what = "destination "
+		kept, ok, err := s.teardownOf(ctx, req.Msg.GetOperationId(), uuid.Nil, u)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			c = kept
+			break
+		}
 		if err := s.sentOp(ctx, req.Msg.GetOperationId(), uuid.Nil, u); err != nil {
 			return nil, err
 		}
@@ -280,7 +317,7 @@ func (s *Server) GetConnectorConfig(ctx context.Context, req *connect.Request[da
 		if err != nil {
 			return nil, err
 		}
-		c, what = fromDestination(r), "destination "
+		c = fromDestination(r)
 	default:
 		return nil, invalid("name a source_id or a destination_id")
 	}

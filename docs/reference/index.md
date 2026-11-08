@@ -162,6 +162,7 @@ OpenETL records these events, and [webhooks](../../examples/webhook.yaml) delive
 | `pipeline.overridden` | Heal set an override of a field of the pipeline's spec, or someone removed one: `data.field`, and `data.value` as JSON, empty once it's removed |
 | `pipeline.reset` | A pipeline's streams are to be read again from the start: `data.streams`, or every stream when it's left out |
 | `pipeline.lagging`, `pipeline.recovered` | A continuous pipeline fell behind its source, or caught up |
+| `pipeline.teardown_failed` | What a deleted pipeline's connector kept for it couldn't be removed after 7 days of trying |
 | `schema.changed`, `schema.blocked` | A stream's schema changed, or a change was stopped |
 | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident's progress |
 | `webhook.test` | Sent to one webhook when it's tested, such as by `openetl webhook test` |

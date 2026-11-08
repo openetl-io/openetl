@@ -510,6 +510,9 @@ type ConnectorOpInput struct {
 	// One of them.
 	SourceID      string
 	DestinationID string
+	// A teardown's try, from 1, so each try is a workflow of its own while
+	// OpID stays the same; 0 for any other operation.
+	Try int32
 }
 
 type RetentionInput struct {
