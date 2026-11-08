@@ -276,15 +276,21 @@ func (s *Server) changeRole(ctx context.Context, name string, b *apiv1.RoleBindi
 	if b.GetWorkspace() != "" {
 		audit(ctx).set("workspace", b.GetWorkspace())
 	}
-	var ws string
+	var wsID *uuid.UUID
 	if b.GetWorkspace() != "" {
-		var err error
-		if ws, err = parseParent(b.GetWorkspace()); err != nil {
+		ws, err := parseParent(b.GetWorkspace())
+		if err != nil {
 			return nil, err
 		}
 		if role.OrgOnly() {
 			return nil, invalid("%s is bound only on the org", role)
 		}
+		// Before the transaction: this takes a connection from the pool.
+		id, err := s.wsID(ctx, ws)
+		if err != nil {
+			return nil, err
+		}
+		wsID = &id
 	}
 	if role == auth.Owner {
 		if err := authorize(ctx, "owners.manage", ""); err != nil {
@@ -296,14 +302,6 @@ func (s *Server) changeRole(ctx context.Context, name string, b *apiv1.RoleBindi
 		p, err := s.getPrincipal(ctx, q, name)
 		if err != nil {
 			return err
-		}
-		var wsID *uuid.UUID
-		if ws != "" {
-			id, err := s.wsID(ctx, ws)
-			if err != nil {
-				return err
-			}
-			wsID = &id
 		}
 		params := db.InsertRoleBindingParams{OrgID: s.Tenant.Org, PrincipalID: p.ID, Role: role.String(), WorkspaceID: wsID}
 		switch {

@@ -103,6 +103,14 @@ func (k *Keyring) Seal(ctx context.Context, org uuid.UUID, aad, value []byte) ([
 	return a.Seal(out, nonce, value, aad), nil
 }
 
+// Warm loads org's data key, creating it if org has none, so that Seal then
+// uses neither the database nor the key-encryption key. Callers that seal
+// inside a transaction call it first.
+func (k *Keyring) Warm(ctx context.Context, org uuid.UUID) error {
+	_, err := k.dataKey(ctx, org, true)
+	return err
+}
+
 func (k *Keyring) Open(ctx context.Context, org uuid.UUID, aad, sealed []byte) ([]byte, error) {
 	a, err := k.dataKey(ctx, org, false)
 	if err != nil {
