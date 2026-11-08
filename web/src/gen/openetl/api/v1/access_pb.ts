@@ -1138,22 +1138,24 @@ export enum Role {
   UNSPECIFIED = 0,
 
   /**
-   * Reads every resource. No role reads secrets' values.
+   * Reads every resource but the audit log. No role reads secrets' values.
    *
    * @generated from enum value: ROLE_VIEWER = 1;
    */
   VIEWER = 1,
 
   /**
-   * Pauses, resumes and syncs pipelines; checks and discovers sources and
-   * destinations.
+   * Pauses, resumes, syncs and rescales pipelines; checks and discovers
+   * sources and destinations; tests, disables and enables webhooks;
+   * resolves incidents; refreshes the connector catalog.
    *
    * @generated from enum value: ROLE_OPERATOR = 2;
    */
   OPERATOR = 2,
 
   /**
-   * Applies and deletes sources, destinations, pipelines and dbt projects;
+   * Applies and deletes sources, destinations, pipelines, dbt projects,
+   * webhooks, and Spark and Flink clusters; releases and discards holds;
    * sets and deletes secrets.
    *
    * @generated from enum value: ROLE_EDITOR = 3;
@@ -1161,15 +1163,17 @@ export enum Role {
   EDITOR = 3,
 
   /**
-   * Applies connector versions; manages principals, keys, roles below owner,
-   * and runner tokens. Only on the org.
+   * Applies connector versions and connector sources; manages principals,
+   * their keys and their roles below owner, and runner tokens; reads the
+   * audit log; signs users out and resets their passwords. Only on the org.
    *
    * @generated from enum value: ROLE_ADMIN = 4;
    */
   ADMIN = 4,
 
   /**
-   * Manages owners. Only on the org.
+   * Grants and revokes owner, and manages owners and their keys. Only on the
+   * org.
    *
    * @generated from enum value: ROLE_OWNER = 5;
    */
