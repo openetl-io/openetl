@@ -2,11 +2,7 @@ package store
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/openetl-io/openetl/internal/store/db"
 )
@@ -22,17 +18,7 @@ func (s *Store) WriteAuditEntry(ctx context.Context, arg db.InsertAuditEntryPara
 // and the next, unless they exist, so that entries written in a transaction
 // have one.
 func (s *Store) EnsureAuditPartitions(ctx context.Context, now time.Time) error {
-	for _, t := range []time.Time{now, auditPartitions.next(auditPartitions.start(now))} {
-		err := auditPartitions.create(ctx, s.pool, t)
-		// IF NOT EXISTS races with another process creating it.
-		if pe, ok := errors.AsType[*pgconn.PgError](err); ok && (pe.Code == "42P07" || pe.Code == "23505") {
-			err = nil
-		}
-		if err != nil {
-			return fmt.Errorf("store: audit log partition: %w", err)
-		}
-	}
-	return nil
+	return auditPartitions.ensure(ctx, s.pool, now)
 }
 
 // DropAuditPartitions drops the audit log's months that end by before, and

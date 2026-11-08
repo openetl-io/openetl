@@ -57,10 +57,25 @@ func ddl(ctx context.Context, pool *pgxpool.Pool, stmt string) error {
 // create creates the partition that holds t, unless it exists.
 func (p partitions) create(ctx context.Context, pool *pgxpool.Pool, t time.Time) error {
 	start := p.start(t)
-	_, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')`,
+	return ddl(ctx, pool, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')`,
 		pgx.Identifier{p.table + "_" + start.Format(p.layout)}.Sanitize(), pgx.Identifier{p.table}.Sanitize(),
 		start.Format(time.RFC3339), p.next(start).Format(time.RFC3339)))
-	return err
+}
+
+// ensure creates the partitions for now's period and the next, unless they
+// exist.
+func (p partitions) ensure(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
+	for _, t := range []time.Time{now, p.next(p.start(now))} {
+		err := p.create(ctx, pool, t)
+		// IF NOT EXISTS races with another process creating it.
+		if pe, ok := errors.AsType[*pgconn.PgError](err); ok && (pe.Code == "42P07" || pe.Code == "23505") {
+			err = nil
+		}
+		if err != nil {
+			return fmt.Errorf("store: %s partition: %w", p.table, err)
+		}
+	}
+	return nil
 }
 
 // insert runs insert, and if no partition holds its row, creates the one

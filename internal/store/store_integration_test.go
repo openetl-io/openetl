@@ -183,7 +183,7 @@ func TestDropMirrorPartitions(t *testing.T) {
 	}
 	var left []string
 	rows, err := conn.Query(ctx, `SELECT c.relname::text FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
-		WHERE i.inhparent = 'checkpoint_mirror'::regclass ORDER BY 1`)
+		WHERE i.inhparent = 'checkpoint_mirror'::regclass AND c.relname <= 'checkpoint_mirror_20261031' ORDER BY 1`)
 	if err == nil {
 		left, err = pgx.CollectRows(rows, pgx.RowTo[string])
 	}
@@ -244,6 +244,84 @@ func TestDropGivesUpBehindAnOpenReader(t *testing.T) {
 			}
 			if dropped, err := c.drop(ctx, cutoff); err != nil || !slices.Equal(dropped, []string{c.partition}) {
 				t.Fatalf("after the reader: dropped %v, %v", dropped, err)
+			}
+		})
+	}
+}
+
+// Migrate makes the partitions for the days checkpoints are about to land in,
+// so reports don't have to.
+func TestMigrateCreatesTheMirrorsDays(t *testing.T) {
+	ctx := t.Context()
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	for _, day := range []time.Time{today, today.AddDate(0, 0, 1)} {
+		name := "checkpoint_mirror_" + day.Format("20060102")
+		var exists bool
+		if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", name).Scan(&exists); err != nil || !exists {
+			t.Errorf("partition %s exists: %v (%v)", name, exists, err)
+		}
+	}
+}
+
+// Making a partition behind an open reader gives up, as dropping one does.
+func TestCreatingAPartitionGivesUpBehindAnOpenReader(t *testing.T) {
+	ctx := t.Context()
+	url := storetest.NewDatabase(t)
+	s, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	far := time.Date(2040, 6, 15, 0, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		table  string
+		ensure func(context.Context, time.Time) error
+	}{
+		{"checkpoint_mirror", s.EnsureMirrorPartitions},
+		{"audit_log", s.EnsureAuditPartitions},
+	} {
+		t.Run(c.table, func(t *testing.T) {
+			reader, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = reader.Rollback(context.Background()) }()
+			if _, err := reader.Exec(ctx, "SELECT 1 FROM "+c.table+" LIMIT 1"); err != nil {
+				t.Fatal(err)
+			}
+			waiting, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			err = c.ensure(waiting, far)
+			if pe, ok := errors.AsType[*pgconn.PgError](err); !ok || pe.Code != "55P03" {
+				t.Fatalf("behind a reader: %v; want a lock timeout", err)
+			}
+			if err := reader.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.ensure(ctx, far); err != nil {
+				t.Fatalf("after the reader: %v", err)
 			}
 		})
 	}
