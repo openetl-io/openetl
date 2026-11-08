@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -81,6 +82,16 @@ func (s *Server) capabilities(ctx context.Context, q *db.Queries, dst db.Destina
 		return destination.Capabilities{}, false, nil
 	}
 	caps := b.destination.Capabilities()
+	if caps.Class == 0 && v == nil {
+		// One in the connectors directory, without a descriptor: its spec
+		// says, so run it long enough to read it.
+		start, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if connectorhost.Start(start, b.destination) == nil {
+			caps = b.destination.Capabilities()
+		}
+		connectorhost.Close(b.destination)
+	}
 	return caps, caps.Class != 0, nil
 }
 

@@ -468,7 +468,8 @@ enum PipelineMode {
 
 message Schedule {
   oneof trigger {
-    // Starts a sync this often.
+    // Starts a sync this often, counting from the Unix epoch: 1h starts one
+    // on the hour.
     google.protobuf.Duration every = 1;
     // In UTC, unless it starts with CRON_TZ= and a time zone, as in
     // CRON_TZ=Europe/Berlin 0 6 * * *.
@@ -849,7 +850,8 @@ message PlanChange {
   // or what the version pins: source.version, destination.version,
   // source.connector, destination.connector or dbt.{project}.
   string field = 1;
-  // As JSON; empty where the field is unset.
+  // As JSON, with enums in the spec's words, such as "exactly_once"; empty
+  // where the field is unset.
   string before = 2;
   string after = 3;
 }

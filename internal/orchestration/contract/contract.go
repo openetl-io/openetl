@@ -31,16 +31,17 @@ const (
 	AuditPartitions      = "AuditPartitions"
 
 	// Work on a runner.
-	RunSyncAttempt = "RunSyncAttempt"
-	RunStreamJob   = "RunStreamJob"
-	RunDbt         = "RunDbt"
-	RunSpark       = "RunSpark"
-	CheckConnector = "CheckConnector"
-	DiscoverSource = "DiscoverSource"
-	TeardownSource = "TeardownSource"
-	TeardownFlink  = "TeardownFlink"
-	ReadLogs       = "ReadLogs"
-	ProbeRetention = "ProbeRetention"
+	RunSyncAttempt      = "RunSyncAttempt"
+	RunStreamJob        = "RunStreamJob"
+	RunDbt              = "RunDbt"
+	RunSpark            = "RunSpark"
+	CheckConnector      = "CheckConnector"
+	DiscoverSource      = "DiscoverSource"
+	TeardownSource      = "TeardownSource"
+	TeardownDestination = "TeardownDestination"
+	TeardownFlink       = "TeardownFlink"
+	ReadLogs            = "ReadLogs"
+	ProbeRetention      = "ProbeRetention"
 )
 
 // Kinds of light operation, which runners take a fixed number of at a time,
@@ -216,7 +217,7 @@ const DefaultLogHistory = 30 * 24 * time.Hour
 const (
 	OpCheck    = "check"
 	OpDiscover = "discover"
-	// Removes what a source keeps upstream for a deleted pipeline.
+	// Removes what a source or destination keeps for a deleted pipeline.
 	OpTeardown = "teardown"
 	// Cancels a deleted pipeline's Flink jobs.
 	OpTeardownFlink = "teardown-flink"
@@ -500,8 +501,8 @@ type ConnectorOpInput struct {
 	DataPlane   string
 	// The connector's name, such as postgres.
 	Connector string
-	// OpCheck, or OpDiscover or OpTeardown, which only sources have, or
-	// OpTeardownFlink, on no connector.
+	// OpCheck or OpTeardown, OpDiscover or OpRetention, which only sources
+	// have, or OpTeardownFlink, on no connector.
 	Op string
 	// The deleted pipeline, for OpTeardown and OpTeardownFlink; the pipeline
 	// asked about, for OpRetention.

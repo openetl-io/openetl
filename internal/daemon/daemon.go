@@ -549,15 +549,16 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			contract.RunSyncAttempt: {Handler: dpworker.Handle(sync.RunSyncAttempt), Checkpoints: true, StopTimeout: 2 * time.Minute},
 			// A Flink job's drain takes a savepoint, which takes longer with
 			// large state.
-			contract.RunStreamJob:   {Handler: dpworker.Handle(sync.RunStreamJob), Checkpoints: true, StopTimeout: 10 * time.Minute},
-			contract.RunDbt:         {Handler: dpworker.Handle(dbt.RunDbt)},
-			contract.RunSpark:       {Handler: dpworker.Handle(sparkSteps.RunSpark)},
-			contract.CheckConnector: {Handler: dpworker.Handle(connectorOps.CheckConnector)},
-			contract.DiscoverSource: {Handler: dpworker.Handle(connectorOps.DiscoverSource)},
-			contract.TeardownSource: {Handler: dpworker.Handle(connectorOps.TeardownSource)},
-			contract.TeardownFlink:  {Handler: dpworker.Handle(connectorOps.TeardownFlink)},
-			contract.ProbeRetention: {Handler: dpworker.Handle(connectorOps.ProbeRetention)},
-			contract.ReadLogs:       {Handler: dpworker.Handle((&dpactivities.Logs{Store: cps}).ReadLogs)},
+			contract.RunStreamJob:        {Handler: dpworker.Handle(sync.RunStreamJob), Checkpoints: true, StopTimeout: 10 * time.Minute},
+			contract.RunDbt:              {Handler: dpworker.Handle(dbt.RunDbt)},
+			contract.RunSpark:            {Handler: dpworker.Handle(sparkSteps.RunSpark)},
+			contract.CheckConnector:      {Handler: dpworker.Handle(connectorOps.CheckConnector)},
+			contract.DiscoverSource:      {Handler: dpworker.Handle(connectorOps.DiscoverSource)},
+			contract.TeardownSource:      {Handler: dpworker.Handle(connectorOps.TeardownSource)},
+			contract.TeardownDestination: {Handler: dpworker.Handle(connectorOps.TeardownDestination)},
+			contract.TeardownFlink:       {Handler: dpworker.Handle(connectorOps.TeardownFlink)},
+			contract.ProbeRetention:      {Handler: dpworker.Handle(connectorOps.ProbeRetention)},
+			contract.ReadLogs:            {Handler: dpworker.Handle((&dpactivities.Logs{Store: cps}).ReadLogs)},
 		},
 	}
 	switch {

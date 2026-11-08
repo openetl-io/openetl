@@ -86,10 +86,11 @@ enum SchemaPolicy {
   // Add columns and widen types. A type that isn't a widening goes to a new
   // column, col__v2.
   SCHEMA_POLICY_ALLOW_ALL = 1;
-  // As allow_all, but a type that isn't a widening fails the job with
-  // SCHEMA_DRIFT.
+  // As allow_all, but a type that isn't a widening is held, or fails the job
+  // with SCHEMA_DRIFT where the column can't be held (StreamPlan.holds).
   SCHEMA_POLICY_ALLOW_COLUMNS = 2;
-  // Any change fails the job with SCHEMA_DRIFT.
+  // Any change is held, or fails the job with SCHEMA_DRIFT where the column
+  // can't be held.
   SCHEMA_POLICY_BLOCK = 3;
   // New columns are dropped in flight. Values are coerced to the
   // established types, and records whose values don't fit are quarantined.
@@ -288,7 +289,9 @@ message RunnerSink {
 }
 
 // ParquetSink stages each epoch as Parquet files under url, and reports them
-// in EpochReady.staged.
+// in EpochReady.staged. The files' paths and names have
+// StartJobRequest.pipeline in them, so pipelines can share a url and a
+// table.
 message ParquetSink {
   // file:// and an absolute path.
   string url = 1;

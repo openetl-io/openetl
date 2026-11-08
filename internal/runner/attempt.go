@@ -943,8 +943,6 @@ func (j *Job) readRequest(splits map[string][]checkpoint.SplitState, done map[st
 	return req
 }
 
-// acknowledged are an epoch's splits as an Acknowledger takes them: the
-// states of streams read whole, and the splits of those that aren't.
 // States are a record's streams' states as an Acknowledger takes them.
 func States(rec *checkpoint.Record) (map[string][]byte, map[string][]source.Split) {
 	splits := make(map[string][]checkpoint.SplitState, len(rec.Streams))
@@ -954,6 +952,8 @@ func States(rec *checkpoint.Record) (map[string][]byte, map[string][]source.Spli
 	return acknowledged(splits)
 }
 
+// acknowledged are an epoch's splits as an Acknowledger takes them: the
+// states of streams read whole, and the splits of those that aren't.
 func acknowledged(splits map[string][]checkpoint.SplitState) (map[string][]byte, map[string][]source.Split) {
 	states := map[string][]byte{}
 	var split map[string][]source.Split

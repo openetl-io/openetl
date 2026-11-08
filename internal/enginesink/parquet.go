@@ -313,7 +313,9 @@ func apply(root *os.Root, st stagedStream) error {
 func dropStaging(root *os.Root, d descriptor) {
 	dir := filepath.FromSlash(d.Staging)
 	_ = root.RemoveAll(dir)
-	_ = root.Remove(filepath.Dir(dir)) // the generation's directory, once empty
+	// The generation's directory, and the pipeline's, once empty.
+	_ = root.Remove(filepath.Dir(dir))
+	_ = root.Remove(filepath.Dir(filepath.Dir(dir)))
 }
 
 func exists(root *os.Root, rel string) (bool, error) {

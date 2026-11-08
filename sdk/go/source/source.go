@@ -522,9 +522,18 @@ type Resplitter interface {
 	Resplit(ctx context.Context, stream, split string) (bool, error)
 }
 
+// Setupper is implemented by sources that prepare something upstream for a
+// pipeline before reading for it, such as a publication. The platform calls
+// Setup before each attempt, so preparing what's already there isn't an
+// error. An external connector also sets sdk.Connector.Setup.
+type Setupper interface {
+	Setup(ctx context.Context, pipeline string) error
+}
+
 // Teardowner is implemented by sources that keep something upstream for a
 // pipeline, such as a replication slot. Teardown removes it once the
-// pipeline is deleted. Removing what's already gone isn't an error.
+// pipeline is deleted. Removing what's already gone isn't an error. An
+// external connector also sets sdk.Connector.Setup.
 type Teardowner interface {
 	Teardown(ctx context.Context, pipeline string) error
 }

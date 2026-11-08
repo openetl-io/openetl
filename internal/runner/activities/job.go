@@ -50,6 +50,9 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	if err := errors.Join(connectorhost.Start(ctx, src), connectorhost.Start(ctx, dst)); err != nil {
 		return job, err
 	}
+	if err := connectorhost.Setup(ctx, spec.GetPipelineId(), src, dst); err != nil {
+		return job, err
+	}
 	cat, err := src.Discover(ctx)
 	if err != nil {
 		return job, err

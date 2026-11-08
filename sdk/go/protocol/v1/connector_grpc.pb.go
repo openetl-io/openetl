@@ -37,7 +37,9 @@ type ConnectorServiceClient interface {
 	// A failed check is reported in CheckResponse, not as an RPC error.
 	Check(ctx context.Context, in *CheckRequest, opts ...grpc.CallOption) (*CheckResponse, error)
 	// Setup and Teardown must be idempotent. They're called only when
-	// SpecResponse.setup is set.
+	// SpecResponse.setup is set: Setup before each attempt that reads or
+	// writes for a pipeline, and Teardown once the pipeline is deleted, to
+	// remove what the connector keeps for it.
 	Setup(ctx context.Context, in *SetupRequest, opts ...grpc.CallOption) (*SetupResponse, error)
 	Teardown(ctx context.Context, in *TeardownRequest, opts ...grpc.CallOption) (*TeardownResponse, error)
 }
@@ -102,7 +104,9 @@ type ConnectorServiceServer interface {
 	// A failed check is reported in CheckResponse, not as an RPC error.
 	Check(context.Context, *CheckRequest) (*CheckResponse, error)
 	// Setup and Teardown must be idempotent. They're called only when
-	// SpecResponse.setup is set.
+	// SpecResponse.setup is set: Setup before each attempt that reads or
+	// writes for a pipeline, and Teardown once the pipeline is deleted, to
+	// remove what the connector keeps for it.
 	Setup(context.Context, *SetupRequest) (*SetupResponse, error)
 	Teardown(context.Context, *TeardownRequest) (*TeardownResponse, error)
 	mustEmbedUnimplementedConnectorServiceServer()

@@ -156,22 +156,22 @@ openetl discover app-db
 
 ```text
 countries (exact; key code)
-  code  utf8  nullable
+  code  utf8
   name  utf8  nullable
 customers (exact; key id)
-  id          int64                  nullable
+  id          int64
   name        utf8                   nullable
   email       utf8                   nullable
   updated_at  timestamp[us, tz=UTC]  nullable
 orders (exact; key id)
-  id           int64                  nullable
+  id           int64
   customer_id  int64                  nullable
   amount       decimal(10, 2)         nullable
   status       utf8                   nullable
   updated_at   timestamp[us, tz=UTC]  nullable
 ```
 
-Each table is a stream, with its columns and the types they arrive as. `key` is the table's primary key, which the destination merges on. `exact` says how the source replays the stream: a read resumed from a checkpoint yields exactly the rows after it, none of them twice. No stream names a cursor column, so an incremental read needs the pipeline to name one. The source lists every column as nullable, whatever the table says.
+Each table is a stream, with its columns and the types they arrive as. `key` is the table's primary key, which the destination merges on. `exact` says how the source replays the stream: a read resumed from a checkpoint yields exactly the rows after it, none of them twice. No stream names a cursor column, so an incremental read needs the pipeline to name one. A column is `nullable` where a read can give it nulls. These tables can be read with `cdc`, where a deleted row carries only its key, so every column but the key is `nullable`, even where the table says `not null`.
 
 `discover` also stores this list, which plans read.
 
@@ -206,10 +206,11 @@ spec:
 - `customers` is read whole on every sync (`full_refresh`).
 - `orders` is read by its `updated_at` column (`incremental`): each sync reads the rows whose `updated_at` is at or above the highest value the last sync saw. Your application has to set `updated_at` on every change, rows whose `updated_at` is null aren't read, and deleted rows aren't seen. To see deletes, read the table with `cdc`, which the Postgres connector's page explains.
 - `write: merge` keeps one row per primary key in the destination, the latest version of the source's row.
-- `delivery.require` is the lowest [delivery guarantee](./delivery.md) the pipeline accepts. An incremental read reads the rows at the cursor's last value again, and merging them in again changes nothing, so `orders` is delivered effectively once. A pipeline requires exactly once unless it says otherwise, and without this line its syncs fail with:
+- `delivery.require` is the lowest [delivery guarantee](./delivery.md) the pipeline accepts. An incremental read reads the rows at the cursor's last value again, and merging them in again changes nothing, so `orders` is delivered effectively once. A pipeline requires exactly once unless it says otherwise, and without this line `openetl apply` refuses it:
 
   ```text
-  CONFIG_INVALID: runner: plan checks: delivery.require: stream "orders" gets effectively_once (superset replay, written with merge), below exactly_once
+  openetl: failed_precondition: the plan fails, so nothing was applied:
+  workspaces/default/pipelines/app-db-to-warehouse: delivery.require: stream "orders" gets effectively_once (superset replay, written with merge), below exactly_once
   ```
 
 The [pipeline reference](../reference/specs/pipeline.md) has every field.
@@ -225,15 +226,16 @@ openetl plan -f app-db.yaml
 ```text
 would be unchanged workspaces/default/sources/app-db (version 5e1d0feeafb7)
 would be unchanged workspaces/default/destinations/warehouse (version f9aec669685a)
-would be created workspaces/default/pipelines/app-db-to-warehouse (version c8fa37dbd430)
+would be created workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
 
-workspaces/default/pipelines/app-db-to-warehouse (version c8fa37dbd430)
+workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
   job size: s (1 vCPU, 2 GiB), the default, in pool default
-  notes:
-    the control plane doesn't know destination "warehouse"'s capabilities, so only the runner checks delivery, before each sync
+  streams:
+    customers  merge  exactly_once      exact replay
+    orders     merge  effectively_once  superset replay, written with merge
 ```
 
-The source and destination are unchanged, and the pipeline would be created. The note means the plan couldn't work out each stream's delivery guarantee: the control plane learns what a destination can do from its connector's package, and connectors run from a local build, as in the quickstart, have none. The runner checks the guarantees before each sync instead, which is where the error in the previous step comes from.
+The source and destination are unchanged, and the pipeline would be created. Each stream has the write mode it gets, its [delivery guarantee](./delivery.md) and why. A guarantee below `delivery.require` would be listed under `problems`, and `openetl apply` would refuse the pipeline, as in the previous step.
 
 ## 8. Apply
 
@@ -244,7 +246,7 @@ openetl apply -f app-db.yaml
 ```text
 unchanged workspaces/default/sources/app-db (version 5e1d0feeafb7)
 unchanged workspaces/default/destinations/warehouse (version f9aec669685a)
-created workspaces/default/pipelines/app-db-to-warehouse (version c8fa37dbd430)
+created workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
 ```
 
 A new pipeline starts its first sync straight away. List its syncs:
@@ -255,13 +257,13 @@ openetl syncs app-db-to-warehouse
 
 ```text
 SYNC                                  STATE      STARTED              TOOK  ROWS  VERSION                                                           LAST COMMIT          LAG  ERROR
-01a1ba8d-bdb2-7c02-a95d-51eec03b8a6d  succeeded  2026-11-08 15:16:53  1s    7     c8fa37dbd43022dd736944c1fa5ad7d30eba79273e6de641765ddc0cf437a5b6  2026-11-08 15:16:54  -
+01a1bafe-9b3b-7003-a556-ed9689a1d1db  succeeded  2026-11-08 17:20:10  1s    7     1e56f1b4d3be6980b640291057e775781df8344060d443736c26b0b69f1c045d  2026-11-08 17:20:10  -
 ```
 
 `ROWS` counts both streams: three customers and four orders. `openetl logs app-db-to-warehouse` prints the sync's log, which ends with the attempt's result:
 
 ```text
-2026-11-08 15:16:54.484 INFO  attempt 1 sync attempt finished committed=1 generation=1 recovery=applied restored=0
+2026-11-08 17:20:11.010 INFO  attempt 1 sync attempt finished committed=1 generation=1 recovery=applied restored=0
 ```
 
 A sync that fails has its error in the last column of `openetl syncs`, cut short, and in full in its log. The console shows the same under **Pipelines**, then **app-db-to-warehouse**.
@@ -330,8 +332,8 @@ openetl syncs app-db-to-warehouse
 
 ```text
 SYNC                                  STATE      STARTED              TOOK  ROWS  VERSION                                                           LAST COMMIT          LAG  ERROR
-01a1ba8e-1c14-7c50-a040-291a67e1460d  succeeded  2026-11-08 15:17:17  0s    6     c8fa37dbd43022dd736944c1fa5ad7d30eba79273e6de641765ddc0cf437a5b6  2026-11-08 15:17:18  -
-01a1ba8d-bdb2-7c02-a95d-51eec03b8a6d  succeeded  2026-11-08 15:16:53  1s    7     c8fa37dbd43022dd736944c1fa5ad7d30eba79273e6de641765ddc0cf437a5b6  2026-11-08 15:16:54  -
+01a1bafe-ce6b-7a29-801f-5f7a80824a09  succeeded  2026-11-08 17:20:23  1s    6     1e56f1b4d3be6980b640291057e775781df8344060d443736c26b0b69f1c045d  2026-11-08 17:20:24  -
+01a1bafe-9b3b-7003-a556-ed9689a1d1db  succeeded  2026-11-08 17:20:10  1s    7     1e56f1b4d3be6980b640291057e775781df8344060d443736c26b0b69f1c045d  2026-11-08 17:20:10  -
 ```
 
 This sync copied six rows: the three customers again, since `customers` is read whole, and three orders: 103, which changed, 105, which is new, and 104, read again because its `updated_at` was the highest the last sync saw. The destination has one row for each order, each the latest version:

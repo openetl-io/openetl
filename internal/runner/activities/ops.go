@@ -143,6 +143,16 @@ func (a *Ops) DiscoverSource(ctx context.Context, in contract.ConnectorOpInput) 
 // TeardownSource removes what a source keeps upstream for a deleted
 // pipeline.
 func (a *Ops) TeardownSource(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+	return a.teardown(ctx, in)
+}
+
+// TeardownDestination removes what a destination keeps for a deleted
+// pipeline besides its data.
+func (a *Ops) TeardownDestination(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+	return a.teardown(ctx, in)
+}
+
+func (a *Ops) teardown(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	var res contract.ConnectorOpResult
 	cfg, err := a.config(ctx, in)
 	if err != nil {
@@ -162,12 +172,19 @@ func (a *Ops) TeardownSource(ctx context.Context, in contract.ConnectorOpInput) 
 		return res, err
 	}
 	name, _ := connectorhost.SplitRef(cfg.GetConfig().GetConnector())
-	src, err := connectorhost.NewSource(name, raw, env)
+	var c any
+	if in.SourceID != "" {
+		c, err = connectorhost.NewSource(name, raw, env)
+	} else {
+		c, err = connectorhost.NewDestination(name, raw, env)
+	}
 	if err != nil {
 		return res, err
 	}
-	defer connectorhost.Close(src)
-	if t, ok := src.(source.Teardowner); ok {
+	defer connectorhost.Close(c)
+	if t, ok := c.(interface {
+		Teardown(context.Context, string) error
+	}); ok {
 		return res, t.Teardown(ctx, in.PipelineID)
 	}
 	return res, nil

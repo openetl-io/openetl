@@ -1023,7 +1023,8 @@ export type Schedule = Message<"openetl.api.v1.Schedule"> & {
    */
   trigger: {
     /**
-     * Starts a sync this often.
+     * Starts a sync this often, counting from the Unix epoch: 1h starts one
+     * on the hour.
      *
      * @generated from field: google.protobuf.Duration every = 1;
      */
@@ -2024,7 +2025,8 @@ export type PlanChange = Message<"openetl.api.v1.PlanChange"> & {
   field: string;
 
   /**
-   * As JSON; empty where the field is unset.
+   * As JSON, with enums in the spec's words, such as "exactly_once"; empty
+   * where the field is unset.
    *
    * @generated from field: string before = 2;
    */

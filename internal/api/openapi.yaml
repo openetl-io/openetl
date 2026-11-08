@@ -4945,7 +4945,9 @@ components:
                          source.connector, destination.connector or dbt.{project}.
                 before:
                     type: string
-                    description: As JSON; empty where the field is unset.
+                    description: |-
+                        As JSON, with enums in the spec's words, such as "exactly_once"; empty
+                         where the field is unset.
                 after:
                     type: string
         PlanWarning:
@@ -5215,7 +5217,9 @@ components:
                 every:
                     pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
                     type: string
-                    description: Starts a sync this often.
+                    description: |-
+                        Starts a sync this often, counting from the Unix epoch: 1h starts one
+                         on the hour.
                 cron:
                     type: string
                     description: |-

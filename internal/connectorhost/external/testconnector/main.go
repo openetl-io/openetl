@@ -61,6 +61,11 @@ func main() {
 		sdk.Serve(sdk.Connector{Name: "supports", Source: func(_ []byte, h host.Host) (source.Source, error) { return supports{h}, nil }})
 	case "source-echo":
 		sdk.Serve(sdk.Connector{Name: "echo", Source: func([]byte, host.Host) (source.Source, error) { return echo{}, nil }})
+	case "source-prepared":
+		sdk.Serve(sdk.Connector{Name: "prepared", Setup: true, Source: newPrepared})
+	case "source-unprepared":
+		// Its source has Setup and Teardown, but its spec doesn't say so.
+		sdk.Serve(sdk.Connector{Name: "unprepared", Source: newPrepared})
 	case "destination-files":
 		sdk.Serve(filesConnector)
 	case "destination-jsonl":
@@ -176,6 +181,29 @@ func (echo) Read(_ context.Context, req source.ReadRequest, out source.Emitter) 
 		if err := out.Complete(cs.Name, nil); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// prepared is echo, keeping a file in the config's dir for each pipeline
+// it's set up for, until it's torn down.
+type prepared struct {
+	echo
+	Dir string `json:"dir"`
+}
+
+func newPrepared(c []byte, _ host.Host) (source.Source, error) {
+	var p prepared
+	return p, json.Unmarshal(c, &p)
+}
+
+func (p prepared) Setup(_ context.Context, pipeline string) error {
+	return os.WriteFile(filepath.Join(p.Dir, pipeline), nil, 0o600)
+}
+
+func (p prepared) Teardown(_ context.Context, pipeline string) error {
+	if err := os.Remove(filepath.Join(p.Dir, pipeline)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return nil
 }

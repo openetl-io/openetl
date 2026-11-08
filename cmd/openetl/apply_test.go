@@ -38,7 +38,7 @@ func (fakeApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyReques
 			Pipeline: "workspaces/default/pipelines/shop-to-lake",
 		}, {
 			Pipeline: "workspaces/default/pipelines/shop-to-dw", Version: "fedcba9876543210",
-			Changes: []*apiv1.PlanChange{{Field: "source.version", Before: `"01"`, After: `"02"`}, {Field: "delivery.require", After: `"DELIVERY_LEVEL_AT_LEAST_ONCE"`}},
+			Changes: []*apiv1.PlanChange{{Field: "source.version", Before: `"01"`, After: `"02"`}, {Field: "delivery.require", After: `"at_least_once"`}},
 			Streams: []*apiv1.StreamPlan{
 				{Name: "orders", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, Reason: "exact replay", Write: apiv1.WriteMode_WRITE_MODE_OVERWRITE, TypeChanges: true},
 				{Name: "events", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, Reason: "superset replay, no primary key, and not collapsed", Write: apiv1.WriteMode_WRITE_MODE_APPEND},
@@ -87,7 +87,7 @@ workspaces/default/pipelines/shop-to-lake (version known after apply)
 workspaces/default/pipelines/shop-to-dw (version fedcba987654)
   changes:
     source.version: "01" -> "02"
-    delivery.require: (unset) -> "DELIVERY_LEVEL_AT_LEAST_ONCE"
+    delivery.require: (unset) -> "at_least_once"
   job size: m (2 vCPU, 4 GiB), from its recent peaks, in pool batch
   streams:
     orders  overwrite  exactly_once   exact replay; columns' types change in place

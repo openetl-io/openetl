@@ -42,7 +42,7 @@ A source discovers its streams and reads them.
 
 - **Discover** returns a catalog: each stream's name, primary key, cursor field, how it can be read (full refresh, incremental, CDC or stream), and its **replay**. A stream is exact when reading again from a resume point yields exactly the records after it, as a CDC log or a Kafka partition does, and superset when records can repeat, as they do when reading from a cursor's last value. Replay is half of what sets a stream's [delivery guarantee](../get-started/concepts.md#delivery-guarantees); the destination is the other.
 - **Read** emits records, as JSON objects or Arrow batches, and marks **resume points**: places in a stream it can restart from, each with a state it gets back when it does. OpenETL commits only at the resume points a source emits. A bounded stream ends with **Complete**, whose state is where the next sync starts.
-- A source can also check its config (`Check`), acknowledge upstream what's committed (`Committed`, for Kafka offsets or a replication slot's position, a checkpoint behind), divide streams into splits that are read concurrently (`Splits`, `Resplit`), say how much of what it keeps for a pipeline a checkpoint's positions have used while the pipeline isn't running (`Retention`, set with `Retention: true` in `sdk.Connector`; OpenETL asks every 15 minutes and opens a **Retention at risk** incident from the answer), and remove what it keeps upstream for a pipeline once the pipeline is deleted (`Teardown`).
+- A source can also check its config (`Check`), acknowledge upstream what's committed (`Committed`, for Kafka offsets or a replication slot's position, a checkpoint behind), divide streams into splits that are read concurrently (`Splits`, `Resplit`), say how much of what it keeps for a pipeline a checkpoint's positions have used while the pipeline isn't running (`Retention`, set with `Retention: true` in `sdk.Connector`; OpenETL asks every 15 minutes and opens a **Retention at risk** incident from the answer), and prepare and remove what it keeps upstream for a pipeline (`Setup` and `Teardown`, below).
 
 ### A destination
 
@@ -60,6 +60,10 @@ A writer's calls are the commit protocol:
 4. **Recover** runs when an attempt starts. It raises the fence to the attempt's generation, so older attempts can no longer commit, and says whether the epoch the checkpoint log points to was applied, applied it now, or is lost.
 
 The commit is the destination's own: its staging, markers, fence and catalog live in its writer, not in OpenETL.
+
+### Setup and teardown
+
+A source or destination that keeps something for each pipeline, such as a replication slot or staging tables, sets `setup` in its spec (`Setup: true` in `sdk.Connector`) and serves `Setup`, `Teardown` or both. OpenETL calls `Setup` before each attempt that reads or writes for a pipeline, and `Teardown` once the pipeline is deleted, each with the config and the pipeline's ID. Both must be idempotent: preparing what's there, or removing what's gone, isn't an error. Without `setup`, OpenETL calls neither. In Go, implement `source.Setupper` or `source.Teardowner`, and `destination.Setupper` or `destination.Teardowner`.
 
 A destination never changes the type of a column it already has unless the pipeline allows it. When a stream's column widens and the pipeline doesn't allow the change, the destination refuses it with a `RefusedColumn`: the column, the reason, the types, and a `Fix`, a statement a person can run to make the change, such as an `ALTER TABLE`. OpenETL holds the column, or stops the stream, and shows the fix. New columns still land.
 

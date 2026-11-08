@@ -167,6 +167,8 @@ pub enum Sink {
     },
     Parquet {
         url: String,
+        /// Keeps its files apart from other pipelines' under the url.
+        pipeline: String,
     },
     /// Parquet staged below url for a destination connector to load, in
     /// each epoch's dir if it isn't empty.
@@ -402,7 +404,10 @@ impl Plan {
                 }
                 Sink::Runner { edges, out_index }
             }
-            sink_plan::Sink::Parquet(p) => Sink::Parquet { url: p.url },
+            sink_plan::Sink::Parquet(p) => Sink::Parquet {
+                url: p.url,
+                pipeline: req.pipeline.clone(),
+            },
             sink_plan::Sink::Staged(s) => {
                 if s.dir.contains('/') || s.dir == "." || s.dir == ".." {
                     return Err(JobError::config(format!(
@@ -725,7 +730,7 @@ pub(crate) mod tests {
     #[test]
     fn a_parquet_sink_has_no_outbound_edge() {
         let p = Plan::from_request(parquet_request(&["a", "b"], "file:///tmp/x")).unwrap();
-        assert!(matches!(p.sink, Sink::Parquet { url } if url == "file:///tmp/x"));
+        assert!(matches!(p.sink, Sink::Parquet { url, .. } if url == "file:///tmp/x"));
     }
 
     pub(crate) fn staged_request(streams: &[&str], url: &str) -> StartJobRequest {

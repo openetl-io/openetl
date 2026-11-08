@@ -16,7 +16,9 @@ service ConnectorService {
   // A failed check is reported in CheckResponse, not as an RPC error.
   rpc Check(CheckRequest) returns (CheckResponse);
   // Setup and Teardown must be idempotent. They're called only when
-  // SpecResponse.setup is set.
+  // SpecResponse.setup is set: Setup before each attempt that reads or
+  // writes for a pipeline, and Teardown once the pipeline is deleted, to
+  // remove what the connector keeps for it.
   rpc Setup(SetupRequest) returns (SetupResponse);
   rpc Teardown(TeardownRequest) returns (TeardownResponse);
 }

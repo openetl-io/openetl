@@ -377,13 +377,13 @@ where
         let flow = flow.clone();
         let task: Task = match (&plan.sink, outbound.next()) {
             (Sink::Runner { .. }, Some(w)) => Box::pin(write_edge(flow, writer, w, feed)),
-            (Sink::Parquet { url }, None) => {
-                let url = url.clone();
+            (Sink::Parquet { url, pipeline }, None) => {
+                let (url, pipeline) = (url.clone(), pipeline.clone());
                 let span = Span::current();
                 let rt = tokio::runtime::Handle::current();
                 Box::pin(async move {
                     tokio::task::spawn_blocking(move || {
-                        span.in_scope(|| write_parquet(&flow, writer, &url, feed, &rt))
+                        span.in_scope(|| write_parquet(&flow, writer, &url, &pipeline, feed, &rt))
                     })
                     .await
                     .map_err(|e| JobError::internal(format!("the Parquet sink failed: {e}")))?
@@ -1342,6 +1342,7 @@ fn write_parquet(
     flow: &Flow,
     writer: usize,
     url: &str,
+    pipeline: &str,
     mut feed: Feed,
     rt: &tokio::runtime::Handle,
 ) -> Result<bool, JobError> {
@@ -1355,6 +1356,7 @@ fn write_parquet(
         .collect();
     let mut staging = ParquetStaging::new(
         url,
+        pipeline,
         plan.generation,
         plan.first_epoch,
         &streams,
@@ -2434,7 +2436,7 @@ mod tests {
             .map(Result::unwrap)
             .collect();
         assert_eq!(batches[0].schema().field(0).data_type(), &DataType::Float64);
-        let left = std::fs::read_dir(dir.path().join("_openetl/staging/1/3/b"))
+        let left = std::fs::read_dir(dir.path().join("_openetl/staging/p/1/3/b"))
             .unwrap()
             .count();
         assert_eq!(left, 0, "the unsealed file is removed");

@@ -23,6 +23,9 @@ func (w Workflows) ConnectorOp(ctx orchestration.Context, in contract.ConnectorO
 		work.Kind, work.Timeout = contract.DiscoverSource, 10*time.Minute
 	case contract.OpTeardown:
 		work.Kind = contract.TeardownSource
+		if in.SourceID == "" {
+			work.Kind = contract.TeardownDestination
+		}
 		policy = retryPolicy{wait: time.Second, maxWait: time.Minute}
 	case contract.OpTeardownFlink:
 		// The jobs' runner may have died, and its replacement may take a

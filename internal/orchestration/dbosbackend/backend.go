@@ -155,7 +155,9 @@ func Open(ctx context.Context, o Options) (*Backend, error) {
 
 // createSystemDatabase makes the database and DBOS's tables, as a context does
 // and a client doesn't. On a new install, a server and an orchestrator starting
-// together race to create the database, and the one that loses tries again.
+// together race to create the database and its schema, and the one that loses
+// tries again: CREATE ... IF NOT EXISTS run at once can fail with a unique
+// violation (23505).
 func createSystemDatabase(ctx context.Context, url string, log *slog.Logger) error {
 	for try := 1; ; try++ {
 		c, err := dbos.NewContext(ctx, dbos.Config{AppName: appName, DatabaseURL: url, Logger: log})
@@ -165,7 +167,8 @@ func createSystemDatabase(ctx context.Context, url string, log *slog.Logger) err
 			}
 			return nil
 		}
-		if try == createTries || !strings.Contains(err.Error(), "failed to create database") {
+		raced := strings.Contains(err.Error(), "failed to create database") || strings.Contains(err.Error(), "SQLSTATE 23505")
+		if try == createTries || !raced {
 			return err
 		}
 		select {

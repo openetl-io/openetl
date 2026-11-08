@@ -1,12 +1,15 @@
 //! File formats the engine writes. Today that is Parquet staging for an
 //! engine sink on the local filesystem.
 //!
-//! Layout under the sink's root, for generation `g` and epoch `N`, where
-//! `{dir}` is the stream's destination table:
-//! - `_openetl/staging/{g}/{N}/{dir}/part-{k}.parquet`: staged, not visible;
-//!   writer lane `l` of `n` writes the `k` with `k mod n == l`
-//! - `{dir}/{N:020}-g{g:020}-{k:05}.parquet`: the name a commit gives it
-//! - `_openetl/loads/{dir}/{N:020}-g{g:020}`: the stream's commit marker
+//! Layout under the sink's root, for pipeline `p`, generation `g` and epoch
+//! `N`, where `{dir}` is the stream's destination table, so that pipelines
+//! can share a root, and a table:
+//! - `_openetl/staging/{p}/{g}/{N}/{dir}/part-{k}.parquet`: staged, not
+//!   visible; writer lane `l` of `n` writes the `k` with `k mod n == l`
+//! - `{dir}/{N:020}-g{g:020}-{k:05}-{p}.parquet`: the name a commit gives it
+//! - `_openetl/loads/{p}/{dir}/{N:020}-g{g:020}`: the stream's commit marker
+//!
+//! Without a pipeline, `/{p}` and `-{p}` are left out.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -79,6 +82,7 @@ pub struct StagedFile {
 /// Stages each stream's batches as Parquet files, one set per epoch.
 pub struct ParquetStaging {
     root: PathBuf,
+    layout: Layout,
     generation: u64,
     lane: usize,
     lanes: usize,
@@ -104,10 +108,12 @@ struct Part {
 }
 
 impl ParquetStaging {
-    /// `url` is `file://` followed by an absolute path. `streams` holds each
-    /// stream's name and directory.
+    /// `url` is `file://` followed by an absolute path. `pipeline` is what
+    /// keeps the files apart from other pipelines' in the same root; empty
+    /// for none. `streams` holds each stream's name and directory.
     pub fn new(
         url: &str,
+        pipeline: &str,
         generation: u64,
         first_epoch: u64,
         streams: &[(String, String)],
@@ -116,12 +122,14 @@ impl ParquetStaging {
     ) -> Result<Self, Error> {
         let dirs: Vec<String> = streams.iter().map(|(_, d)| d.clone()).collect();
         let root = check(url, &dirs)?;
+        let layout = Layout::new(pipeline)?;
         let props = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
             .set_max_row_group_bytes(Some(MAX_ROW_GROUP_BYTES))
             .build();
         Ok(Self {
             root: PathBuf::from(root),
+            layout,
             generation,
             lane,
             lanes,
@@ -154,6 +162,7 @@ impl ParquetStaging {
             Some(p) => p,
             None => st.part.insert(open(
                 &self.root,
+                &self.layout,
                 self.generation,
                 st.files.len() * self.lanes + self.lane,
                 &self.props,
@@ -183,8 +192,8 @@ impl ParquetStaging {
         self.sealed.entry(epoch).or_default().push(StagedStream {
             stream: st.name.clone(),
             marker: format!(
-                "{RESERVED}/loads/{}/{epoch:020}-g{:020}",
-                st.dir, self.generation
+                "{}/{}/{epoch:020}-g{:020}",
+                self.layout.loads, st.dir, self.generation
             ),
             files,
         });
@@ -215,7 +224,7 @@ impl ParquetStaging {
         Descriptor {
             generation: self.generation,
             epoch,
-            staging: format!("{RESERVED}/staging/{}/{epoch}", self.generation),
+            staging: format!("{}/{}/{epoch}", self.layout.staging, self.generation),
             streams: self.sealed.remove(&epoch).unwrap_or_default(),
         }
     }
@@ -250,16 +259,48 @@ fn check_name(s: &str) -> Result<(), Error> {
     }
 }
 
+/// Where a sink's files go, as the module's doc says.
+struct Layout {
+    /// `_openetl/staging` and `_openetl/loads`, with the pipeline.
+    staging: String,
+    loads: String,
+    /// What a target's name ends with before `.parquet`.
+    suffix: String,
+}
+
+impl Layout {
+    fn new(pipeline: &str) -> Result<Self, Error> {
+        if pipeline.is_empty() {
+            return Ok(Self {
+                staging: format!("{RESERVED}/staging"),
+                loads: format!("{RESERVED}/loads"),
+                suffix: String::new(),
+            });
+        }
+        check_name(pipeline).map_err(|_| {
+            Error::Config(format!(
+                "pipeline {pipeline:?} can't name a directory: use letters, digits, '_', '.' and '-'"
+            ))
+        })?;
+        Ok(Self {
+            staging: format!("{RESERVED}/staging/{pipeline}"),
+            loads: format!("{RESERVED}/loads/{pipeline}"),
+            suffix: format!("-{pipeline}"),
+        })
+    }
+}
+
 fn open(
     root: &Path,
+    layout: &Layout,
     generation: u64,
     k: usize,
     props: &WriterProperties,
     st: &Stream,
     batch: &RecordBatch,
 ) -> Result<Part, Error> {
-    let (name, epoch) = (&st.dir, st.epoch);
-    let dir = format!("{RESERVED}/staging/{generation}/{epoch}/{name}");
+    let (name, epoch, suffix) = (&st.dir, st.epoch, &layout.suffix);
+    let dir = format!("{}/{generation}/{epoch}/{name}", layout.staging);
     fs::create_dir_all(root.join(&dir)).map_err(io_err(&root.join(&dir)))?;
     let staged = format!("{dir}/part-{k:05}.parquet");
     let path = root.join(&staged);
@@ -275,7 +316,7 @@ fn open(
         schema: batch.schema(),
         file: StagedFile {
             staged,
-            target: format!("{name}/{epoch:020}-g{generation:020}-{k:05}.parquet"),
+            target: format!("{name}/{epoch:020}-g{generation:020}-{k:05}{suffix}.parquet"),
             rows: 0,
             bytes: 0,
         },
@@ -334,11 +375,16 @@ mod tests {
     }
 
     fn staging(dir: &Path, streams: &[&str]) -> ParquetStaging {
+        of_pipeline(dir, "", streams)
+    }
+
+    fn of_pipeline(dir: &Path, pipeline: &str, streams: &[&str]) -> ParquetStaging {
         let names: Vec<(String, String)> = streams
             .iter()
             .map(|s| (s.to_string(), s.to_string()))
             .collect();
-        ParquetStaging::new(&format!("file://{}", dir.display()), 3, 5, &names, 0, 1).unwrap()
+        let url = format!("file://{}", dir.display());
+        ParquetStaging::new(&url, pipeline, 3, 5, &names, 0, 1).unwrap()
     }
 
     fn read(path: &Path) -> Vec<RecordBatch> {
@@ -399,6 +445,35 @@ mod tests {
     }
 
     #[test]
+    fn pipelines_share_a_root_and_a_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = Vec::new();
+        for p in ["p1", "p2"] {
+            let mut s = of_pipeline(dir.path(), p, &["a"]);
+            s.write(0, &ids(&[1])).unwrap();
+            s.seal(0).unwrap();
+            d.push(s.take(5));
+        }
+        assert_eq!(d[0].staging, "_openetl/staging/p1/3/5");
+        let (a, b) = (&d[0].streams[0], &d[1].streams[0]);
+        assert_eq!(
+            a.marker,
+            format!("_openetl/loads/p1/a/{:020}-g{:020}", 5, 3)
+        );
+        assert_eq!(
+            a.files[0].staged,
+            "_openetl/staging/p1/3/5/a/part-00000.parquet"
+        );
+        assert_eq!(
+            a.files[0].target,
+            format!("a/{:020}-g{:020}-00000-p1.parquet", 5, 3)
+        );
+        assert_ne!(a.marker, b.marker);
+        assert_ne!(a.files[0].staged, b.files[0].staged);
+        assert_ne!(a.files[0].target, b.files[0].target);
+    }
+
+    #[test]
     fn a_new_schema_starts_a_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = staging(dir.path(), &["a"]);
@@ -455,24 +530,27 @@ mod tests {
     fn rejects_bad_urls_and_stream_names() {
         for url in ["s3://b/p", "file://relative", "/abs"] {
             assert!(matches!(
-                ParquetStaging::new(url, 1, 1, &[], 0, 1),
+                ParquetStaging::new(url, "", 1, 1, &[], 0, 1),
                 Err(Error::Config(_))
             ));
         }
         for name in ["", ".", "..", "_openetl", "a/b", "a b"] {
+            let stream = [("s".into(), name.to_string())];
             assert!(
                 matches!(
-                    ParquetStaging::new(
-                        "file:///tmp",
-                        1,
-                        1,
-                        &[("s".into(), name.to_string())],
-                        0,
-                        1
-                    ),
+                    ParquetStaging::new("file:///tmp", "", 1, 1, &stream, 0, 1),
                     Err(Error::Config(_))
                 ),
                 "{name:?}"
+            );
+        }
+        for pipeline in [".", "..", "_openetl", "a/b"] {
+            assert!(
+                matches!(
+                    ParquetStaging::new("file:///tmp", pipeline, 1, 1, &[], 0, 1),
+                    Err(Error::Config(_))
+                ),
+                "{pipeline:?}"
             );
         }
     }

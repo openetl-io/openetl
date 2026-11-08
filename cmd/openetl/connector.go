@@ -118,14 +118,15 @@ func runPackage(ctx context.Context, args []string, out io.Writer) error {
 	platforms := fs.String("platforms", "", "the os/arch pairs to build, comma-separated (default: the file's)")
 	verbose := fs.Bool("v", false, "show the builds' output")
 	publish := fs.String("publish", "", "an oci://REGISTRY/NAMESPACE to push each package to, once packaged")
-	if err := fs.Parse(args); err != nil {
+	dirs, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
 	if (*tag == "") == (*version == "") {
 		fs.Usage()
 		return errors.New("package needs --tag or --version")
 	}
-	jobs, err := packageJobs(fs.Args(), *tag, *version)
+	jobs, err := packageJobs(dirs, *tag, *version)
 	if err != nil {
 		return err
 	}
@@ -160,6 +161,26 @@ func runPackage(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// parseInterspersed parses flags wherever they are among the positional
+// arguments, which it returns, up to a -- after which all are positional.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if n := len(args) - len(rest); n > 0 && args[n-1] == "--" {
+			return append(pos, rest...), nil
+		}
+		if len(rest) == 0 {
+			return pos, nil
+		}
+		pos = append(pos, rest[0])
+		args = rest[1:]
+	}
 }
 
 func runPublish(ctx context.Context, args []string, out io.Writer) error {
@@ -339,16 +360,16 @@ func runValidate(ctx context.Context, args []string, out io.Writer) error {
 	}
 	require := fs.String("require", "", "fields each file must set, comma-separated: description, license, docs, logo, author or tags")
 	artifact := fs.String("artifact", "", "an oci:// package version to check, in place of directories")
-	if err := fs.Parse(args); err != nil {
+	dirs, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
 	if *artifact != "" {
-		if fs.NArg() > 0 || *require != "" {
+		if len(dirs) > 0 || *require != "" {
 			return errors.New("--artifact takes no directories or --require")
 		}
 		return validateArtifact(ctx, *artifact, out)
 	}
-	dirs := fs.Args()
 	if len(dirs) == 0 {
 		dirs = []string{"."}
 	}

@@ -63,7 +63,7 @@ In `spec`:
 |---|---|---|---|
 | `mode` | `scheduled` or `continuous` | `scheduled` | A scheduled pipeline copies in syncs, which start on its `schedule`. A continuous one runs one job that keeps reading, and commits as it goes. A continuous pipeline has no `schedule`, `postSync`, `transform.spark` or `resources.finishWithin`. |
 | `schedule` | object | Required in a scheduled pipeline | When syncs start: one of `every` and `cron`. A new scheduled pipeline starts its first sync when it's applied. A start that comes while a sync is still running is skipped. |
-| `schedule.every` | duration, positive | | Start a sync this often, such as `1h`. |
+| `schedule.every` | duration, positive | | Start a sync this often, such as `1h`, counting from midnight UTC on 1 January 1970: `1h` starts one on the hour. |
 | `schedule.cron` | cron expression | | Start a sync at the times a cron expression gives, with five fields: minute, hour, day of the month, month and day of the week, as in `0 6 * * *`. It's in UTC unless it starts with `CRON_TZ=` and a time zone, as in `CRON_TZ=Europe/Berlin 0 6 * * *`. |
 | `schedule.jitter` | duration | None | A random delay of up to this much before each start, so that pipelines on the same schedule don't all start at once |
 | `dataPlane` | string | The server's data plane: its `--data-plane` setting, `default` unless set | The data plane whose runners run the pipeline's jobs |

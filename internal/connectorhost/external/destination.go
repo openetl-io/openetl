@@ -29,6 +29,8 @@ type Destination struct{ instance }
 var (
 	_ destination.Destination  = (*Destination)(nil)
 	_ destination.Checker      = (*Destination)(nil)
+	_ destination.Setupper     = (*Destination)(nil)
+	_ destination.Teardowner   = (*Destination)(nil)
 	_ destination.ReadTracker  = (*writer)(nil)
 	_ destination.StagedWriter = (*writer)(nil)
 )

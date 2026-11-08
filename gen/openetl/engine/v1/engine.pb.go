@@ -85,10 +85,11 @@ const (
 	// Add columns and widen types. A type that isn't a widening goes to a new
 	// column, col__v2.
 	SchemaPolicy_SCHEMA_POLICY_ALLOW_ALL SchemaPolicy = 1
-	// As allow_all, but a type that isn't a widening fails the job with
-	// SCHEMA_DRIFT.
+	// As allow_all, but a type that isn't a widening is held, or fails the job
+	// with SCHEMA_DRIFT where the column can't be held (StreamPlan.holds).
 	SchemaPolicy_SCHEMA_POLICY_ALLOW_COLUMNS SchemaPolicy = 2
-	// Any change fails the job with SCHEMA_DRIFT.
+	// Any change is held, or fails the job with SCHEMA_DRIFT where the column
+	// can't be held.
 	SchemaPolicy_SCHEMA_POLICY_BLOCK SchemaPolicy = 3
 	// New columns are dropped in flight. Values are coerced to the
 	// established types, and records whose values don't fit are quarantined.
@@ -1519,7 +1520,9 @@ func (*RunnerSink) Descriptor() ([]byte, []int) {
 }
 
 // ParquetSink stages each epoch as Parquet files under url, and reports them
-// in EpochReady.staged.
+// in EpochReady.staged. The files' paths and names have
+// StartJobRequest.pipeline in them, so pipelines can share a url and a
+// table.
 type ParquetSink struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// file:// and an absolute path.

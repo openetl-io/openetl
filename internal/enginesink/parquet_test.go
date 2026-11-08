@@ -196,6 +196,42 @@ func TestAnEmptyEpochCommits(t *testing.T) {
 	}
 }
 
+// Two pipelines' epochs of the same number into one table, as the engine
+// stages them, each with its pipeline in its paths: one's commit leaves the
+// other's staging alone.
+func TestPipelinesShareARoot(t *testing.T) {
+	f := newFixture(t)
+	e := destination.Epoch{Generation: 1, N: 3}
+	staged := map[string]destination.Staged{}
+	for _, p := range []string{"p1", "p2"} {
+		d := descriptor{Generation: 1, Epoch: 3, Staging: "_openetl/staging/" + p + "/1/3", Streams: []stagedStream{{
+			Stream: "a", Marker: fmt.Sprintf("_openetl/loads/%s/a/%020d-g%020d", p, 3, 1),
+			Files: []stagedFile{{
+				Staged: "_openetl/staging/" + p + "/1/3/a/part-00000.parquet",
+				Target: fmt.Sprintf("a/%020d-g%020d-00000-%s.parquet", 3, 1, p),
+			}},
+		}}}
+		f.write(d.Streams[0].Files[0].Staged, p)
+		staged[p], _ = json.Marshal(d)
+	}
+	for _, p := range []string{"p1", "p2"} {
+		if _, err := f.w.Commit(t.Context(), e, []destination.Staged{staged[p]}); err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		if p == "p1" && !f.exists("_openetl/staging/p2/1/3/a/part-00000.parquet") {
+			t.Fatal("p1's commit dropped p2's staging")
+		}
+	}
+	for _, p := range []string{"p1", "p2"} {
+		if got := f.read(fmt.Sprintf("a/%020d-g%020d-00000-%s.parquet", 3, 1, p)); got != p {
+			t.Errorf("%s's file holds %q", p, got)
+		}
+	}
+	if f.exists("_openetl/staging/p1") || f.exists("_openetl/staging/p2") {
+		t.Error("staging left behind")
+	}
+}
+
 func TestRejectsBadDescriptors(t *testing.T) {
 	f := newFixture(t)
 	e := destination.Epoch{Generation: 1, N: 1}

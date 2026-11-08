@@ -20,9 +20,7 @@ spec:
   destination: { ref: warehouse }
 ```
 
-`every` is a Go duration greater than zero, such as `15m`, `1h` or `24h`. The intervals count from when you applied the pipeline, not from when each sync ends: applied at 09:50, this pipeline syncs at 09:50, 10:50, 11:50 and so on, however long each sync takes.
-
-On an installation whose [orchestrator](../self-host/index.md#choose-an-orchestrator) is Temporal rather than the default, intervals count from midnight UTC on 1 January 1970 instead, so `every: 1h` syncs on the hour.
+`every` is a Go duration greater than zero, such as `15m`, `1h` or `24h`. The intervals count from midnight UTC on 1 January 1970, not from when each sync ends, so `every: 1h` syncs on the hour and `every: 15m` at 00, 15, 30 and 45 minutes past, however long each sync takes. Applied at 09:50, this pipeline syncs at 09:50, its first sync, then at 10:00, 11:00 and so on.
 
 ## At cron times
 
@@ -40,12 +38,11 @@ spec:
   schedule: { cron: "CRON_TZ=Europe/Berlin 0 6 * * *" }
 ```
 
-> [!WARNING]
-> `openetl plan` and `openetl apply --dry-run` don't check a cron expression. An invalid one fails `openetl apply` after the pipeline is stored, and the pipeline has no schedule until you apply it again with a valid one, which starts its first sync:
->
-> ```text
-> openetl: unavailable: the definitions were stored, but what runs a pipeline couldn't be updated; apply again: schedules: schedule schedule/a4d14205-4426-470d-bda9-e2e34c624c42: end of range (25) above maximum (23): 25
-> ```
+`openetl plan` and `openetl apply` refuse a cron expression that isn't valid, before anything is stored:
+
+```text
+openetl: invalid_argument: shop-orders.yaml#1: spec: schedule.cron: "0 25 * * *" isn't a cron expression of five fields: end of range (25) above maximum (23): 25
+```
 
 ## Jitter
 
@@ -64,7 +61,7 @@ Applying a new scheduled pipeline starts its first sync straight away, without w
 
 An apply that changes a pipeline starts no sync:
 
-- A change to `every` or `cron` starts the schedule over from the time of the apply. With `every: 10m` applied at 09:56, the next sync starts at 10:06.
+- A change to `every` or `cron` moves the next sync to the new schedule's next time after the apply. With `every: 10m` applied at 09:56, the next sync starts at 10:00.
 - Any other change, `jitter` included, leaves the time of the next sync as it was.
 
 The next sync runs the new version. A sync that's running when you apply carries on with the version it started with.

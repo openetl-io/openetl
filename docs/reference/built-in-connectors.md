@@ -145,11 +145,11 @@ A destination that writes each stream as Parquet files into a directory on the m
 
 | Path under the directory | What it holds |
 |---|---|
-| `TABLE/EPOCH-gGENERATION-PART.parquet` | A committed file. `TABLE` is the stream's name as the pipeline's `destination.naming` makes it. `EPOCH` and `GENERATION` are the commit's, in 20 digits each, and `PART` is the file's number in it, in 5. |
-| `_openetl/staging/` | Files of commits that haven't finished |
-| `_openetl/loads/TABLE/EPOCH-gGENERATION` | An empty file marking each stream's committed epochs |
+| `TABLE/EPOCH-gGENERATION-PART-PIPELINE.parquet` | A committed file. `TABLE` is the stream's name as the pipeline's `destination.naming` makes it. `EPOCH` and `GENERATION` are the commit's, in 20 digits each, `PART` is the file's number in it, in 5, and `PIPELINE` is the pipeline's ID. |
+| `_openetl/staging/PIPELINE/` | Files of the pipeline's commits that haven't finished |
+| `_openetl/loads/PIPELINE/TABLE/EPOCH-gGENERATION` | An empty file marking each stream's committed epochs |
 
-Read only the `TABLE` directories, and leave `_openetl` alone. No stream may be named `_openetl`. The pipeline's `destination.namespace` doesn't change where files go.
+Read only the `TABLE` directories, and leave `_openetl` alone. No stream may be named `_openetl`. The pipeline's `destination.namespace` doesn't change where files go. Pipelines can share a destination, and a table: each writes files of its own into `TABLE`. Files that OpenETL wrote before it put the pipeline's ID in their names keep their names.
 
 A file gets its name under `TABLE` only when its commit applies, and applying a commit a second time changes nothing.
 

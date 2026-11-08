@@ -177,6 +177,22 @@ func Start(ctx context.Context, connector any) error {
 	return nil
 }
 
+// Setup prepares each connector that needs it for the pipeline: those that
+// implement Setup, which an external one calls only when its spec sets
+// setup.
+func Setup(ctx context.Context, pipeline string, connectors ...any) error {
+	for _, c := range connectors {
+		if s, ok := c.(interface {
+			Setup(context.Context, string) error
+		}); ok {
+			if err := s.Setup(ctx, pipeline); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Close stops an external connector's process. It does nothing for the
 // others.
 func Close(connector any) {

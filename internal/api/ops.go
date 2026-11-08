@@ -18,6 +18,7 @@ import (
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -75,34 +76,68 @@ func (s *Server) DiscoverSource(ctx context.Context, req *connect.Request[apiv1.
 	return connect.NewResponse(&apiv1.DiscoverSourceResponse{Catalog: cat}), nil
 }
 
-// teardown starts a teardown of what the deleted pipeline p's source keeps
-// upstream for it, such as a replication slot, without waiting for it. One
+// teardown starts a teardown of what the deleted pipeline p's source and
+// destination keep for it, such as a replication slot, without waiting for
+// it: on a runner, which calls each connector whose spec sets setup. One
 // that fails, as when the source can't be reached until the operation times
 // out, leaves it behind, and is logged on the data plane.
 func (s *Server) teardown(ctx context.Context, p db.Pipeline) {
 	ctx = context.WithoutCancel(ctx)
 	fail := func(err error) { s.log().Error("teardown not started", "pipeline", p.ID, "err", err) }
-	r, err := s.Store.GetSourceByID(ctx, db.GetSourceByIDParams{OrgID: s.Tenant.Org, ID: p.SourceID})
+	src, err := s.Store.GetSourceByID(ctx, db.GetSourceByIDParams{OrgID: s.Tenant.Org, ID: p.SourceID})
 	if err != nil {
 		fail(err)
 		return
 	}
-	cfg, err := fromSource(r).config()
+	dst, err := s.Store.GetDestinationByID(ctx, db.GetDestinationByIDParams{OrgID: s.Tenant.Org, ID: p.DestinationID})
 	if err != nil {
 		fail(err)
 		return
 	}
-	in := contract.ConnectorOpInput{
-		Op: contract.OpTeardown, SourceID: r.ID.String(), PipelineID: p.ID.String(),
-		OrgID: s.Tenant.Org.String(), WorkspaceID: r.WorkspaceID.String(), DataPlane: p.DataPlaneID, Connector: cfg.GetConnector(),
+	for _, c := range []struct {
+		role string
+		conn connection
+	}{{"source", fromSource(src)}, {"destination", fromDestination(dst)}} {
+		cfg, err := c.conn.config()
+		if err != nil {
+			fail(err)
+			continue
+		}
+		if !s.mayNeedSetup(ctx, c.role, cfg.GetConnector(), c.conn.connector) {
+			continue
+		}
+		in := contract.ConnectorOpInput{
+			Op: contract.OpTeardown, PipelineID: p.ID.String(),
+			OrgID: s.Tenant.Org.String(), WorkspaceID: c.conn.workspace.String(), DataPlane: p.DataPlaneID, Connector: cfg.GetConnector(),
+		}
+		if c.role == "source" {
+			in.SourceID = c.conn.id.String()
+		} else {
+			in.DestinationID = c.conn.id.String()
+		}
+		if err := s.sendOp(ctx, &in); err != nil {
+			fail(err)
+			continue
+		}
+		if err := s.Ops.Start(ctx, in); err != nil {
+			fail(err)
+		}
 	}
-	if err := s.sendOp(ctx, &in); err != nil {
-		fail(err)
-		return
+}
+
+// mayNeedSetup is false when the connector is known not to take Setup and
+// Teardown: a manifest, or a package whose spec doesn't set setup.
+func (s *Server) mayNeedSetup(ctx context.Context, role, connector, digest string) bool {
+	if digest == "" {
+		return true
 	}
-	if err := s.Ops.Start(ctx, in); err != nil {
-		fail(err)
+	name, _ := connectorhost.SplitRef(connector)
+	v, err := s.resolveConnector(ctx, s.Store.Queries, role, name, digest)
+	if err != nil || v == nil {
+		return true
 	}
+	r, ok := v.Roles[role]
+	return !ok || r.Manifest == nil && (r.Spec == nil || r.Spec.GetSetup())
 }
 
 func checkResult(r contract.ConnectorOpResult) *apiv1.CheckResult {
