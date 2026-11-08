@@ -527,7 +527,11 @@ SELECT p.id, p.paused, v.spec,
     EXISTS (
         SELECT 1 FROM syncs s
         WHERE s.org_id = p.org_id AND s.pipeline_id = p.id AND s.continuous AND s.status = 'running'
-    )::boolean AS running_run
+    )::boolean AS running_run,
+    (
+        SELECT o.value FROM pipeline_overrides o
+        WHERE o.org_id = p.org_id AND o.pipeline_id = p.id AND o.field = 'schedule.every'
+    )::jsonb AS every_override
 FROM pipelines p
 JOIN pipeline_versions v ON v.org_id = p.org_id AND v.pipeline_id = p.id AND v.version = p.version
 WHERE p.org_id = $1
@@ -535,13 +539,15 @@ ORDER BY p.id
 `
 
 type ListPipelinesToRunRow struct {
-	ID         uuid.UUID
-	Paused     bool
-	Spec       []byte
-	RunningRun bool
+	ID            uuid.UUID
+	Paused        bool
+	Spec          []byte
+	RunningRun    bool
+	EveryOverride []byte
 }
 
-// The org's pipelines, with their current versions' specs, for what runs them.
+// The org's pipelines, with their current versions' specs, for what runs them,
+// and heal's override of how often syncs start, if any.
 func (q *Queries) ListPipelinesToRun(ctx context.Context, orgID uuid.UUID) ([]ListPipelinesToRunRow, error) {
 	rows, err := q.db.Query(ctx, listPipelinesToRun, orgID)
 	if err != nil {
@@ -556,6 +562,7 @@ func (q *Queries) ListPipelinesToRun(ctx context.Context, orgID uuid.UUID) ([]Li
 			&i.Paused,
 			&i.Spec,
 			&i.RunningRun,
+			&i.EveryOverride,
 		); err != nil {
 			return nil, err
 		}

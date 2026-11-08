@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"net/url"
 	"slices"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/plan"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/worker"
@@ -48,6 +50,10 @@ type reporter struct {
 	cells map[string]map[string]uint64
 	// As Job.Lowered says.
 	lowered map[string]runner.Lowered
+	// How the source reads each stream, the paused ones too.
+	reads map[string]apiv1.SyncMode
+	// The streams paused on their own.
+	paused map[string]bool
 }
 
 type report struct {
@@ -148,8 +154,12 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 		for _, q := range rec.Quarantine {
 			if q.Stream == name {
 				cs.QuarantinedRows += q.Rows
+				if !q.Output {
+					cs.QuarantineFile = withoutQuery(q.URL)
+				}
 			}
 		}
+		cs.Read, cs.Paused = r.reads[name], r.paused[name]
 		cs.Holds, cs.HeldCells = mirroredHolds(st.Holds), held[name]
 		if l, ok := r.lowered[name]; ok && slices.Contains(rec.Reread, name) {
 			cs.Level, cs.PlannedLevel = plan.APILevel(l.Level), plan.APILevel(l.Planned)
@@ -267,4 +277,28 @@ func mirroredHolds(h *checkpoint.Holds) []*dataplanev1.CheckpointHold {
 		}
 	}
 	return out
+}
+
+// streamReads are how the job's source reads each stream, and which it
+// doesn't, as they're paused.
+func streamReads(j *runner.Job) (map[string]apiv1.SyncMode, map[string]bool) {
+	reads, paused := map[string]apiv1.SyncMode{}, map[string]bool{}
+	for _, s := range j.Streams {
+		reads[s.Name] = ints.Enum[apiv1.SyncMode](s.Read)
+	}
+	for _, s := range j.Paused {
+		reads[s.Name], paused[s.Name] = ints.Enum[apiv1.SyncMode](s.Read), true
+	}
+	return reads, paused
+}
+
+// withoutQuery is a storage URL without its query or user, which may hold
+// settings the control plane has no use for.
+func withoutQuery(s string) string {
+	u, err := url.Parse(s)
+	if err != nil {
+		return ""
+	}
+	u.RawQuery, u.User = "", nil
+	return u.String()
 }

@@ -82,6 +82,12 @@ type Observation struct {
 	// What makes this occurrence, such as the sync's ID: seen again with the
 	// same key, it isn't another.
 	Key string
+	// Quarantine's: how the source reads the stream, and how many of the
+	// pipeline's other streams it still reads.
+	Read         apiv1.SyncMode
+	OtherStreams int
+	// How long the sync ran, for rate_limited's.
+	Ran time.Duration
 }
 
 // Seen is what observing did.
@@ -90,7 +96,13 @@ type Seen struct {
 	Opened   bool
 	// A playbook paused the pipeline; the caller pauses what runs it once
 	// the transaction commits.
-	Paused     bool
+	Paused bool
+	// A playbook paused a stream; the caller restarts a continuous
+	// pipeline's run once the transaction commits.
+	StreamPaused bool
+	// A playbook changed when syncs start, to this; the caller updates the
+	// schedule once the transaction commits.
+	Schedule   *apiv1.Schedule
 	Continuous bool
 }
 
@@ -98,7 +110,8 @@ type Seen struct {
 type target struct {
 	workspace, pipeline             string
 	workspaceID                     uuid.UUID
-	continuous                      bool
+	continuous, transform           bool
+	schedule                        *apiv1.Schedule
 	mode                            apiv1.HealMode
 	sourceSecrets                   []string
 	destinationSecrets              []string
@@ -126,6 +139,8 @@ func loadTarget(ctx context.Context, q *db.Queries, org, pipeline uuid.UUID, ver
 	return target{
 		workspace: v.Workspace, pipeline: v.Pipeline, workspaceID: v.WorkspaceID,
 		continuous:    spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
+		transform:     spec.GetTransform() != nil,
+		schedule:      spec.GetSchedule(),
 		mode:          spec.GetHeal().GetMode(),
 		sourceSecrets: v.SourceSecrets, destinationSecrets: v.DestinationSecrets,
 		sourceDigest: v.SourceConnector, destinationDigest: v.DestinationConnector,
@@ -209,10 +224,21 @@ func Observe(ctx context.Context, q *db.Queries, org uuid.UUID, o Observation) (
 			return seen, err
 		}
 	}
-	if pauses(o.Class) {
-		if seen.Paused, err = pause(ctx, q, org, t, &inc); err != nil {
-			return seen, err
+	switch {
+	case pauses(o.Class):
+		seen.Paused, err = pause(ctx, q, org, t, &inc, "Paused the pipeline, so it doesn't fail the same way until it's fixed.")
+	case o.Class == Quarantine:
+		switch s, _ := quarantineStops(o, t); s {
+		case stopStream:
+			seen.StreamPaused, err = pauseStream(ctx, q, org, t, &inc)
+		case stopPipeline:
+			seen.Paused, err = pause(ctx, q, org, t, &inc, "Paused the pipeline, so the stream, the only one it reads, quarantines no more rows.")
 		}
+	case o.Class == RateLimited:
+		seen.Schedule, err = slowDown(ctx, q, org, t, o, &inc)
+	}
+	if err != nil {
+		return seen, err
 	}
 	seen.Incident = inc
 	return seen, nil
@@ -227,8 +253,8 @@ type Action struct {
 }
 
 // pause pauses the pipeline if its heal mode lets it, or proposes it, and
-// records the action on inc.
-func pause(ctx context.Context, q *db.Queries, org uuid.UUID, t target, inc *db.Incident) (bool, error) {
+// records the action on inc. done says what pausing did, in the past tense.
+func pause(ctx context.Context, q *db.Queries, org uuid.UUID, t target, inc *db.Incident, done string) (bool, error) {
 	if t.mode == apiv1.HealMode_HEAL_MODE_OFF {
 		return false, nil
 	}
@@ -236,7 +262,7 @@ func pause(ctx context.Context, q *db.Queries, org uuid.UUID, t target, inc *db.
 	applied := false
 	switch t.mode {
 	case apiv1.HealMode_HEAL_MODE_SUGGEST:
-		a.Description = "Pause the pipeline, so it doesn't fail the same way until it's fixed; heal mode suggest doesn't."
+		a.Description = "Pause" + strings.TrimSuffix(strings.TrimPrefix(done, "Paused"), ".") + "; heal mode suggest doesn't."
 	default:
 		n, err := q.SetPipelinePaused(ctx, db.SetPipelinePausedParams{OrgID: org, ID: inc.PipelineID, Paused: true})
 		if err != nil {
@@ -246,7 +272,7 @@ func pause(ctx context.Context, q *db.Queries, org uuid.UUID, t target, inc *db.
 			return false, nil
 		}
 		applied = true
-		a.State, a.Description = "applied", "Paused the pipeline, so it doesn't fail the same way until it's fixed."
+		a.State, a.Description = "applied", done
 		name := t.name()
 		_, err = events.Record(ctx, q, org, events.Event{
 			Workspace: t.workspaceID, Type: events.PipelinePaused, Pipeline: t.pipeline,
@@ -256,19 +282,7 @@ func pause(ctx context.Context, q *db.Queries, org uuid.UUID, t target, inc *db.
 			return false, err
 		}
 	}
-	var actions []Action
-	if err := json.Unmarshal(inc.Actions, &actions); err != nil {
-		return false, err
-	}
-	raw, err := json.Marshal(append(actions, a))
-	if err != nil {
-		return false, err
-	}
-	if err := q.SetIncidentActions(ctx, db.SetIncidentActionsParams{OrgID: org, ID: inc.ID, Actions: raw}); err != nil {
-		return false, err
-	}
-	inc.Actions = raw
-	return applied, nil
+	return applied, addActions(ctx, q, org, inc, a)
 }
 
 // Resolve resolves the pipeline's open incidents of the classes, of stream

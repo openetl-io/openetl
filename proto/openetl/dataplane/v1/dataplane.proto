@@ -97,6 +97,12 @@ message GetSyncSpecResponse {
   // The pipeline's key groups, fixed when it was created. A
   // restore from a record with another count fails.
   uint32 key_groups = 17;
+  // Streams paused on their own: the attempt doesn't read them, and carries
+  // their state from the record it restores into each record it writes.
+  repeated string paused_streams = 18;
+  // What a declarative source's declared rate limits are multiplied by,
+  // heal's override; 0: 1.
+  double rate_limit_scale = 19;
 }
 
 message HoldRelease {
@@ -210,6 +216,13 @@ message CheckpointStream {
   // committed.
   openetl.api.v1.DeliveryLevel level = 10;
   openetl.api.v1.DeliveryLevel planned_level = 11;
+  // How the source reads the stream.
+  openetl.api.v1.SyncMode read = 12;
+  // Paused on its own: not read, its state carried from an earlier record.
+  bool paused = 13;
+  // The newest of the epoch's quarantine files for the stream, in the data
+  // plane's object storage; empty if it quarantined nothing.
+  string quarantine_file = 14;
 }
 
 message CheckpointHold {

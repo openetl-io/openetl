@@ -23,7 +23,13 @@ service PipelineService {
   rpc DeletePipeline(DeletePipelineRequest) returns (DeletePipelineResponse) {
     option (google.api.http) = {delete: "/v1/{name=workspaces/*/pipelines/*}"};
   }
-  // Stops scheduled syncs. A sync that is running carries on.
+  // Stops scheduled syncs. A sync that is running carries on. With a
+  // stream, only that stream stops: syncs skip it and keep its state for
+  // when it's resumed, and a continuous pipeline's run restarts at a
+  // checkpoint without it. Fails with FAILED_PRECONDITION for a stream that
+  // can't stop on its own: one read with cdc, which shares the source's
+  // change log with the pipeline's other cdc streams; a transform's input;
+  // or the last stream that isn't paused.
   rpc PausePipeline(PausePipelineRequest) returns (PausePipelineResponse) {
     option (google.api.http) = {
       post: "/v1/{name=workspaces/*/pipelines/*}:pause"
@@ -33,6 +39,14 @@ service PipelineService {
   rpc ResumePipeline(ResumePipelineRequest) returns (ResumePipelineResponse) {
     option (google.api.http) = {
       post: "/v1/{name=workspaces/*/pipelines/*}:resume"
+      body: "*"
+    };
+  }
+  // Removes one of heal's overrides, which gives the spec back its say in
+  // that field.
+  rpc RemovePipelineOverride(RemovePipelineOverrideRequest) returns (RemovePipelineOverrideResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:removeOverride"
       body: "*"
     };
   }
@@ -147,6 +161,41 @@ message Pipeline {
   // Set by PausePipeline and ResumePipeline, not by the spec.
   bool paused = 7;
   PipelineStatus status = 8;
+  // Streams paused on their own, by PausePipeline or by heal. Syncs skip
+  // them, and keep their state for when they're resumed.
+  repeated PausedStream paused_streams = 9;
+  // What heal changed in how the pipeline runs, over its spec.
+  repeated PipelineOverride overrides = 10;
+}
+
+message PausedStream {
+  string stream = 1;
+  // Why it was paused.
+  string reason = 2;
+  // The incident whose playbook paused it; empty if a person did.
+  string incident = 3;
+  google.protobuf.Timestamp create_time = 4;
+}
+
+// PipelineOverride is a value heal set for a field of the pipeline's spec,
+// which syncs use in place of the spec's. It lasts until
+// RemovePipelineOverride removes it, or a version changes what it
+// overrides.
+message PipelineOverride {
+  // schedule.every: how often syncs start, which heal widens when a
+  // source keeps limiting a pipeline's requests. source.rate_limit_scale:
+  // what a declarative source's declared rate limits are multiplied by.
+  string field = 1;
+  // As JSON, as PlanChange's are.
+  string value = 2;
+  // What the spec has, as JSON; empty where it's unset.
+  string spec_value = 3;
+  // Why heal set it.
+  string reason = 4;
+  // The incident whose playbook set it.
+  string incident = 5;
+  // When it last changed.
+  google.protobuf.Timestamp update_time = 6;
 }
 
 // PipelineStatus is what the pipeline's syncs did.
@@ -639,6 +688,8 @@ message DeletePipelineResponse {}
 
 message PausePipelineRequest {
   string name = 1;
+  // As the source's catalog names it; empty: the whole pipeline.
+  string stream = 2;
 }
 
 message PausePipelineResponse {
@@ -657,9 +708,22 @@ message RescalePipelineResponse {
 
 message ResumePipelineRequest {
   string name = 1;
+  // A stream paused on its own; empty: the whole pipeline, which leaves
+  // paused streams paused.
+  string stream = 2;
 }
 
 message ResumePipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message RemovePipelineOverrideRequest {
+  string name = 1;
+  // As PipelineOverride.field.
+  string field = 2;
+}
+
+message RemovePipelineOverrideResponse {
   Pipeline pipeline = 1;
 }
 
@@ -719,6 +783,9 @@ message PipelinePlan {
   repeated PlanWarning warnings = 7;
   // What its next attempt would be sized at.
   JobPlan job = 8;
+  // Heal's overrides the pipeline keeps. One whose field the version
+  // changes is dropped, and a note says so.
+  repeated PipelineOverride overrides = 9;
 }
 
 message JobPlan {
@@ -759,6 +826,8 @@ message StreamPlan {
   // The destination changes a column's type itself when the stream's
   // widens, rather than refusing it.
   bool type_changes = 7;
+  // Paused on its own, so syncs skip it.
+  bool paused = 8;
 }
 
 // StreamSchema is a version of a stream's schema, as the destination has it.

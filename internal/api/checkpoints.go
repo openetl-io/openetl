@@ -48,6 +48,9 @@ type mirroredStream struct {
 	// Where the epoch got less than planned.
 	Level        apiv1.DeliveryLevel `json:"level,omitempty"`
 	PlannedLevel apiv1.DeliveryLevel `json:"planned_level,omitempty"`
+	// How the source reads it; unspecified in checkpoints from before.
+	Read   apiv1.SyncMode `json:"read,omitempty"`
+	Paused bool           `json:"paused,omitempty"`
 }
 
 // heldColumns are the columns st holds, whole or some of their cells.
@@ -121,6 +124,7 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 			Name: st.GetName(), Rows: st.GetRows(), QuarantinedRows: st.GetQuarantinedRows(), CollapsedRows: st.GetCollapsedRows(),
 			Forced: st.GetForced(), Complete: st.GetComplete(), SchemaDigest: st.GetSchemaDigest(),
 			HeldCells: st.GetHeldCells(), HeldColumns: heldColumns(st), Level: st.GetLevel(), PlannedLevel: st.GetPlannedLevel(),
+			Read: st.GetRead(), Paused: st.GetPaused(),
 		})
 	}
 	slices.SortFunc(streams, func(a, b mirroredStream) int { return strings.Compare(a.Name, b.Name) })
@@ -365,7 +369,13 @@ const (
 
 func (s *Server) checkQuarantine(ctx context.Context, pipeline uuid.UUID, sync db.Sync, m *dataplanev1.ReportCheckpointRequest) error {
 	check := map[string]bool{}
+	reported := map[string]*dataplanev1.CheckpointStream{}
+	read := 0
 	for _, st := range m.GetStreams() {
+		reported[st.GetName()] = st
+		if !st.GetPaused() {
+			read++
+		}
 		if st.GetQuarantinedRows() > 0 {
 			check[st.GetName()] = true
 		}
@@ -386,7 +396,8 @@ func (s *Server) checkQuarantine(ctx context.Context, pipeline uuid.UUID, sync d
 	if err != nil {
 		return err
 	}
-	return s.Store.Tx(ctx, func(q *db.Queries) error {
+	var restart, stop bool
+	err = s.Store.Tx(ctx, func(q *db.Queries) error {
 		for _, t := range totals {
 			if !check[t.Name] || t.Rows < quarantineMinRows {
 				continue
@@ -394,18 +405,29 @@ func (s *Server) checkQuarantine(ctx context.Context, pipeline uuid.UUID, sync d
 			share := float64(t.QuarantinedRows) / float64(t.Rows)
 			switch {
 			case t.QuarantinedRows >= quarantineMinRows && share > quarantineShare:
-				_, err := heal.Observe(ctx, q, s.Tenant.Org, heal.Observation{
+				st := reported[t.Name]
+				others := read
+				if st != nil && !st.GetPaused() {
+					others--
+				}
+				o := heal.Observation{
 					Pipeline: pipeline, Version: sync.Version, Stream: t.Name, Class: heal.Quarantine, Severity: heal.Warning,
 					Message: fmt.Sprintf("%d of the stream's %d rows in the last hour were quarantined.", t.QuarantinedRows, t.Rows),
 					Details: map[string]string{
 						"share": fmt.Sprintf("%.1f%%", share*100), "quarantined_rows": strconv.FormatInt(t.QuarantinedRows, 10),
 						"rows": strconv.FormatInt(t.Rows, 10),
 					},
-					Sync: &sync.ID, Key: sync.ID.String(),
-				})
+					Sync: &sync.ID, Key: sync.ID.String(), Read: st.GetRead(), OtherStreams: max(others, 0),
+				}
+				if f := st.GetQuarantineFile(); f != "" {
+					o.Details["quarantine_file"] = f
+				}
+				seen, err := heal.Observe(ctx, q, s.Tenant.Org, o)
 				if err != nil {
 					return err
 				}
+				restart = restart || seen.StreamPaused && seen.Continuous
+				stop = stop || seen.Paused
 			case share < quarantineShare/2:
 				stream := t.Name
 				_, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, []string{string(heal.Quarantine)}, &stream,
@@ -417,6 +439,22 @@ func (s *Server) checkQuarantine(ctx context.Context, pipeline uuid.UUID, sync d
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// The sync carries on: a stream paused, or the pipeline, takes effect
+	// from the next sync, or a continuous run's next job.
+	if (restart || stop && sync.Continuous) && s.Schedules != nil {
+		if err := s.Schedules.Refresh(ctx, s.Tenant.Org.String(), pipeline.String()); err != nil {
+			s.log().Warn("restarting the run without the paused stream failed; it stops at its next restart", "pipeline", pipeline, "err", err)
+		}
+	}
+	if stop && !sync.Continuous && s.Schedules != nil {
+		if err := s.Schedules.SetPaused(ctx, pipeline.String(), true); err != nil {
+			s.log().Warn("pausing the schedule failed; the pipeline is paused, so its syncs do nothing", "pipeline", pipeline, "err", err)
+		}
+	}
+	return nil
 }
 
 func (s *Server) ListCheckpoints(ctx context.Context, req *connect.Request[apiv1.ListCheckpointsRequest]) (*connect.Response[apiv1.ListCheckpointsResponse], error) {

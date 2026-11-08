@@ -51,7 +51,11 @@ func (s *Server) runs(ctx context.Context, sc schedule) error {
 	if err := s.Schedules.StopStream(ctx, sc.pipelineID); err != nil {
 		return err
 	}
-	return s.Schedules.Upsert(ctx, s.Tenant.Org.String(), sc.pipelineID, sc.spec, sc.paused)
+	sched, err := s.effectiveSchedule(ctx, sc.pipelineID, sc.spec)
+	if err != nil {
+		return err
+	}
+	return s.Schedules.Upsert(ctx, s.Tenant.Org.String(), sc.pipelineID, sched, sc.paused)
 }
 
 func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequest]) (*connect.Response[apiv1.ApplyResponse], error) {
@@ -179,6 +183,9 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 			return errValidateOnly
 		}
 		if err := refuse(ch, res.Plans); err != nil {
+			return err
+		}
+		if err := s.keepRuntime(ctx, q, ch); err != nil {
 			return err
 		}
 		listSources = ch.listSources
