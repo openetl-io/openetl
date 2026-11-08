@@ -59,6 +59,30 @@ service PipelineService {
       body: "*"
     };
   }
+  // Reads streams again from the start: the next sync, or a continuous
+  // pipeline's next run, drops their positions and reads them as it would a
+  // new stream's, such as a new replication slot and a snapshot. What
+  // reaches the destination already stays: merge updates rows in place, and
+  // append adds them again. A continuous pipeline's run restarts at a
+  // checkpoint to take it. Fails with FAILED_PRECONDITION for a pipeline
+  // with a Flink transform, whose state Flink keeps.
+  rpc ResetPipeline(ResetPipelineRequest) returns (ResetPipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:reset"
+      body: "*"
+    };
+  }
+  // Lets the next sync or run restart from the checkpoint before the latest
+  // one if the latest can't be read. Its epoch was delivered, so it's
+  // delivered again: streams the destination neither merges nor dedupes get
+  // its rows twice. Without this, a restart happens by itself only where it
+  // can't lower a stream's guarantee, under heal mode auto or auto_safe.
+  rpc RewindPipeline(RewindPipelineRequest) returns (RewindPipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:rewind"
+      body: "*"
+    };
+  }
   // Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
   // paused or a sync is running.
   rpc SyncPipeline(SyncPipelineRequest) returns (SyncPipelineResponse) {
@@ -694,6 +718,26 @@ message PausePipelineRequest {
 }
 
 message PausePipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message ResetPipelineRequest {
+  string name = 1;
+  // The streams to read again; empty for every stream. A source that reads
+  // every stream from one position, such as Postgres CDC after its slot was
+  // lost, needs every stream read again.
+  repeated string streams = 2;
+}
+
+message ResetPipelineResponse {
+  Pipeline pipeline = 1;
+}
+
+message RewindPipelineRequest {
+  string name = 1;
+}
+
+message RewindPipelineResponse {
   Pipeline pipeline = 1;
 }
 

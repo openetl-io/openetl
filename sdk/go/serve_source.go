@@ -180,6 +180,33 @@ func (s *sourceServer) Committed(ctx context.Context, req *protocolv1.CommittedR
 
 var errNoAcknowledger = errors.New("the source doesn't acknowledge")
 
+func (s *sourceServer) Retention(ctx context.Context, req *protocolv1.RetentionRequest) (*protocolv1.RetentionResponse, error) {
+	src, err := s.source(ctx, req.GetConfig())
+	if err != nil {
+		return nil, status(err)
+	}
+	rr, ok := src.(source.RetentionReporter)
+	if !ok {
+		return nil, status(WithCode(protocolv1.ErrorCode_ERROR_CODE_INTERNAL, errors.New("the source doesn't report retention")))
+	}
+	var splits map[string][]source.Split
+	for name, ss := range req.GetSplits() {
+		if splits == nil {
+			splits = map[string][]source.Split{}
+		}
+		splits[name] = splitsOf(ss.GetSplits())
+	}
+	ps, err := rr.Retention(ctx, req.GetPipeline(), req.GetStates(), splits)
+	if err != nil {
+		return nil, status(err)
+	}
+	resp := &protocolv1.RetentionResponse{}
+	for _, p := range ps {
+		resp.Progress = append(resp.Progress, progressProto(p))
+	}
+	return resp, nil
+}
+
 // emitter sends what a source reads. Its methods may be called from several
 // goroutines.
 type emitter struct {
@@ -262,6 +289,10 @@ func (s splitEmitter) Complete(next []byte, added ...source.Split) error {
 }
 
 func (e *emitter) Progress(p source.Progress) error {
+	return e.send(&protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_Progress{Progress: progressProto(p)}})
+}
+
+func progressProto(p source.Progress) *protocolv1.Progress {
 	m := &protocolv1.Progress{Stream: p.Stream, LagBytes: p.LagBytes, LagRecords: p.LagRecords, RetentionLeftBytes: p.RetentionLeftBytes}
 	if p.Lag != nil {
 		m.Lag = durationpb.New(*p.Lag)
@@ -269,5 +300,5 @@ func (e *emitter) Progress(p source.Progress) error {
 	if p.RetentionLeft != nil {
 		m.RetentionLeft = durationpb.New(*p.RetentionLeft)
 	}
-	return e.send(&protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_Progress{Progress: m}})
+	return m
 }

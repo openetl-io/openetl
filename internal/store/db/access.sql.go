@@ -338,7 +338,7 @@ func (q *Queries) DeleteSessions(ctx context.Context, arg DeleteSessionsParams) 
 }
 
 const getConnectorOp = `-- name: GetConnectorOp :one
-SELECT source_id, destination_id FROM connector_ops
+SELECT source_id, destination_id, pipeline_id FROM connector_ops
 WHERE org_id = $1 AND id = $2 AND data_plane_id = $3 AND expire_time > now()
 `
 
@@ -351,12 +351,13 @@ type GetConnectorOpParams struct {
 type GetConnectorOpRow struct {
 	SourceID      *uuid.UUID
 	DestinationID *uuid.UUID
+	PipelineID    *uuid.UUID
 }
 
 func (q *Queries) GetConnectorOp(ctx context.Context, arg GetConnectorOpParams) (GetConnectorOpRow, error) {
 	row := q.db.QueryRow(ctx, getConnectorOp, arg.OrgID, arg.ID, arg.DataPlaneID)
 	var i GetConnectorOpRow
-	err := row.Scan(&i.SourceID, &i.DestinationID)
+	err := row.Scan(&i.SourceID, &i.DestinationID, &i.PipelineID)
 	return i, err
 }
 

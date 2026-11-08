@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,6 +172,15 @@ type Job struct {
 	HeldURL string
 	// Holds released or discarded since they started.
 	Releases []Release
+	// Streams to read again from the start, oldest first. The attempt takes
+	// those newer than its restored record's, and its records carry the
+	// newest it took.
+	Resets []Reset
+	// What the attempt does when the record HEAD points to can't be read.
+	Rewind Rewind
+	// Called once the attempt restarted from the record before HEAD's, which
+	// couldn't be read. It must not block.
+	OnRewind func(Rewound)
 	// The most lanes the attempt runs; 0: one. It runs no more than
 	// it has splits to read, and has as many writer lanes, up to what the
 	// destination takes.
@@ -183,6 +193,44 @@ type Job struct {
 }
 
 func (j *Job) lanes() int { return max(j.Lanes, 1) }
+
+// Reset is a request to read streams again from the start.
+type Reset struct {
+	// Ordered by creation.
+	ID string
+	// Empty: every stream.
+	Streams []string
+}
+
+// Rewind says whether an attempt that can't read the record HEAD points to
+// restarts from the one before it, which delivers that record's epoch
+// again.
+type Rewind struct {
+	Policy RewindPolicy
+	// A person's approval, for RewindAny.
+	Approval string
+}
+
+type RewindPolicy int
+
+const (
+	// The attempt fails with CHECKPOINT_CORRUPT.
+	RewindNever RewindPolicy = iota
+	// Only if delivering the epoch again keeps every stream's guarantee:
+	// it's merged, deduped at apply, or delivered at least once anyway.
+	RewindSafe
+	// Whatever it does to the streams' guarantees.
+	RewindAny
+)
+
+// Rewound is a restart from the record before an unreadable one.
+type Rewound struct {
+	Unreadable checkpoint.RecordRef
+	// Nil: there was none before it, and the read started again.
+	Restored *checkpoint.RecordRef
+	Reason   string
+	Approval string
+}
 
 // inTurn says a stream's frames can go to the lanes in turn: it has no key
 // to keep together, and its destination puts rows in tables, whose order
@@ -358,6 +406,10 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	log = log.With("generation", res.Generation)
 
 	head, err := sess.Load(rctx)
+	var rewound *Rewound
+	if errors.Is(err, checkpoint.ErrUnreadable) {
+		head, rewound, err = job.rewind(rctx, sess, err)
+	}
 	if err != nil {
 		return res, err
 	}
@@ -365,9 +417,13 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		return res, errs.New(errs.ConfigInvalid, "runner: the pipeline has %d key groups, and its checkpoint %d-g%d has %d", job.keyGroups(), head.Epoch, head.Generation, head.KeyGroupCount())
 	}
 	// The previous record is needed if the sink reports HEAD's epoch lost.
+	// One that can't be read fails the attempt only then.
 	var prev *checkpoint.Record
+	var prevErr error
 	if head != nil && head.Previous != nil {
-		if prev, err = job.Log.Record(rctx, *head.Previous); err != nil {
+		if prev, err = job.Log.Record(rctx, *head.Previous); errors.Is(err, checkpoint.ErrUnreadable) {
+			prev, prevErr = nil, err
+		} else if err != nil {
 			return res, err
 		}
 	}
@@ -380,6 +436,17 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 				forced[s] = true
 			}
 		}
+	}
+	if rewound != nil {
+		// The unreadable record's epoch was delivered, and is read again.
+		for _, s := range job.Streams {
+			forced[s.Name] = true
+		}
+		markForced(head, job.Streams)
+		if job.OnRewind != nil {
+			job.OnRewind(*rewound)
+		}
+		log.Warn("restarted from the checkpoint before the one HEAD pointed to, which can't be read", "unreadable", rewound.Unreadable, "reason", rewound.Reason)
 	}
 	canForce := job.canForce()
 	ws := make([]destination.Writer, 0, job.writerLanes())
@@ -400,7 +467,14 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	var staged []destination.Staged
 	applied := map[string]*arrow.Schema{}
 	var limits map[string]destination.TableLimits
-	if head != nil {
+	// After a rewind, the restored record's epoch is applied, and the
+	// destination may have dropped its markers since, so only the fence is
+	// raised.
+	recovering := head
+	if rewound != nil {
+		recovering = nil
+	}
+	if recovering != nil {
 		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, committables(head)
 		schemas := make(map[string][]byte, len(head.Streams))
 		for name, st := range head.Streams {
@@ -422,7 +496,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 		limits = a.Limits
 	}
-	if job.staged() && head != nil {
+	if job.staged() && recovering != nil {
 		if err := handOver(rctx, job.Staging, w, e, stagedFiles(head.Files)); err != nil {
 			return res, err
 		}
@@ -430,22 +504,24 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if res.Recovery, err = w.Recover(rctx, res.Generation, e, staged); err != nil {
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
 	}
-	if job.staged() && head != nil {
+	if job.staged() && recovering != nil {
 		flush(rctx, job.Staging, e, log)
 	}
 	restored := head
 	if res.Recovery == destination.Lost {
+		if prevErr != nil {
+			return res, errs.Wrap(errs.CheckpointCorrupt, prevErr, fmt.Sprintf("runner: the destination lost epoch %d, and the checkpoint before it can't be read", e.N))
+		}
 		// Safe because the epoch never became visible, and upstream is
 		// acknowledged at most up to the previous record.
-		var to *checkpoint.RecordRef
-		if prev != nil {
-			ref := prev.Ref()
-			to = &ref
-		}
-		if err := sess.Rewind(rctx, to); err != nil {
+		if err := sess.RewindTo(rctx, prev); err != nil {
 			return res, err
 		}
 		restored = prev
+	}
+	restored, reset, resetStreams := job.reset(restored)
+	if len(resetStreams) > 0 {
+		log.Info("reading streams again from the start", "streams", resetStreams, "reset", reset)
 	}
 	if restored != nil {
 		res.Restored = restored.Epoch
@@ -473,7 +549,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	span.SetAttributes(attribute.Int64("openetl.generation", ints.Int64Clamped(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", ints.Int64Clamped(res.Restored)))
 	span.End()
 
-	c := &coordinator{job: &job, sess: sess, w: w, ws: ws, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied,
+	c := &coordinator{job: &job, sess: sess, w: w, ws: ws, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reset: reset,
 		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{},
 		holds: holds, holdPlans: holdPlans}
 	for _, p := range holdPlans {
@@ -496,6 +572,142 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 	}
 	return res, c.run(ctx, restored, canForce, splits, done)
+}
+
+// rewind restarts from the record before HEAD's, which can't be read (cause),
+// if the job lets it, and returns that record. It fails with
+// CHECKPOINT_CORRUPT if it doesn't.
+func (j *Job) rewind(ctx context.Context, sess *checkpoint.Session, cause error) (*checkpoint.Record, *Rewound, error) {
+	h := sess.Head()
+	at := *h.Record
+	fail := func(format string, args ...any) error {
+		return errs.Wrap(errs.CheckpointCorrupt, cause, fmt.Sprintf("runner: the checkpoint the pipeline resumes from, %d-g%d, can't be read; ", at.Epoch, at.Generation)+fmt.Sprintf(format, args...))
+	}
+	before, known := h.Before()
+	if !known {
+		return nil, nil, fail("HEAD doesn't name the checkpoint before it, as one written by an older runner doesn't, so it can't restart from that")
+	}
+	switch j.Rewind.Policy {
+	case RewindNever:
+		return nil, nil, fail("restarting from the checkpoint before it delivers its epoch again, which the pipeline's heal mode leaves to a person")
+	case RewindSafe:
+		if lowered := j.replayLowers(); len(lowered) > 0 {
+			return nil, nil, fail("restarting from the checkpoint before it would deliver its epoch again, and %s would get rows twice, below the guarantee they require", quoteList(lowered))
+		}
+	}
+	var prev *checkpoint.Record
+	if before != nil {
+		var err error
+		if prev, err = j.Log.Record(ctx, *before); errors.Is(err, checkpoint.ErrUnreadable) {
+			return nil, nil, fail("nor can the one before it (%v)", err)
+		} else if err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := sess.RewindTo(ctx, prev); err != nil {
+		return nil, nil, err
+	}
+	rw := &Rewound{Unreadable: at, Reason: cause.Error(), Approval: j.Rewind.Approval}
+	if prev != nil {
+		ref := prev.Ref()
+		rw.Restored = &ref
+	}
+	return prev, rw, nil
+}
+
+// replayLowers are the streams whose guarantee rows read twice would lower,
+// sorted.
+func (j *Job) replayLowers() []string {
+	var out []string
+	for name, ok := range j.canForce() {
+		if !ok {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func quoteList(names []string) string {
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = strconv.Quote(n)
+	}
+	if len(q) == 1 {
+		return "stream " + q[0]
+	}
+	return "streams " + strings.Join(q[:len(q)-1], ", ") + " and " + q[len(q)-1]
+}
+
+// markForced marks the open splits of rec's streams that the attempt reads
+// as forced: restoring from rec reads rows again that may be applied. A
+// paused stream isn't read, so it keeps its marks.
+func markForced(rec *checkpoint.Record, streams []Stream) {
+	if rec == nil {
+		return
+	}
+	for _, s := range streams {
+		name := s.Name
+		if _, ok := rec.Streams[name]; !ok {
+			continue
+		}
+		splits := rec.Splits(name)
+		for i := range splits {
+			splits[i].Forced = splits[i].Forced || !splits[i].Complete
+		}
+		rec.SetSplits(name, splits)
+	}
+}
+
+// reset returns rec with the positions of the streams of resets newer than
+// its own dropped, as a copy, the newest reset it then carries, and those
+// streams. A stream keeps its schema and holds: the destination still has
+// them. A paused stream is reset too, so it carries no position and reads
+// from the start once it's resumed.
+func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []string) {
+	var taken string
+	if rec != nil {
+		taken = rec.Reset
+	}
+	newest, all := taken, false
+	want := map[string]bool{}
+	for _, r := range j.Resets {
+		if r.ID <= taken {
+			continue
+		}
+		newest = max(newest, r.ID)
+		all = all || len(r.Streams) == 0
+		for _, s := range r.Streams {
+			want[s] = true
+		}
+	}
+	if newest == taken {
+		return rec, taken, nil
+	}
+	var streams []string
+	for _, s := range slices.Concat(j.Streams, j.Paused) {
+		if all || want[s.Name] {
+			streams = append(streams, s.Name)
+		}
+	}
+	if rec == nil {
+		return nil, newest, streams
+	}
+	cp := *rec
+	cp.Streams = maps.Clone(rec.Streams)
+	cp.Forced, cp.Reread = slices.Clone(rec.Forced), slices.Clone(rec.Reread)
+	for _, name := range streams {
+		st, ok := cp.Streams[name]
+		if !ok {
+			continue
+		}
+		st.State, st.Splits, st.Complete, st.ReadStart = nil, nil, false, 0
+		cp.Streams[name] = st
+		cp.Forced = slices.DeleteFunc(cp.Forced, func(s string) bool { return s == name })
+		cp.Reread = slices.DeleteFunc(cp.Reread, func(s string) bool { return s == name })
+	}
+	cp.Reset = newest
+	return &cp, newest, streams
 }
 
 // doneStreams are those a retry within the sync doesn't read again.
@@ -731,6 +943,15 @@ func (j *Job) readRequest(splits map[string][]checkpoint.SplitState, done map[st
 	return req
 }
 
+// States are a record's streams' states as an Acknowledger takes them.
+func States(rec *checkpoint.Record) (map[string][]byte, map[string][]source.Split) {
+	splits := make(map[string][]checkpoint.SplitState, len(rec.Streams))
+	for name := range rec.Streams {
+		splits[name] = rec.Splits(name)
+	}
+	return acknowledged(splits)
+}
+
 // acknowledged are an epoch's splits as an Acknowledger takes them: the
 // states of streams read whole, and the splits of those that aren't.
 func acknowledged(splits map[string][]checkpoint.SplitState) (map[string][]byte, map[string][]source.Split) {
@@ -909,6 +1130,8 @@ type coordinator struct {
 	ws  []destination.Writer
 	log *slog.Logger
 	res *Result
+	// The newest reset the attempt took, which its records carry.
+	reset string
 
 	events      chan event
 	commits     chan commitReq
@@ -1324,6 +1547,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		Quarantine:   st.flow.Quarantine,
 		Sync:         c.job.Sync,
 		Flink:        st.flink,
+		Reset:        c.reset,
 		CreatedAt:    time.Now().UTC(),
 	}
 	if c.syncRows != nil {

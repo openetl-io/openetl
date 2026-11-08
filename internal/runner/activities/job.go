@@ -203,6 +203,8 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		SchemaPolicy:       policy,
 		QuarantineInfinity: p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_QUARANTINE,
 		Releases:           releases(spec.GetReleases()),
+		Resets:             resets(spec.GetResets()),
+		Rewind:             rewindPolicy(p.GetHeal().GetMode(), spec.GetRewind()),
 		KeyGroups:          int(spec.GetKeyGroups()),
 	}, nil
 }
@@ -251,4 +253,26 @@ func releases(rs []*dataplanev1.HoldRelease) []runner.Release {
 		out[i] = runner.Release{ID: r.GetId(), Stream: r.GetStream(), Column: r.GetColumn(), Since: since, Discard: r.GetDiscard(), NewVersion: r.GetNewVersion()}
 	}
 	return out
+}
+
+// resets are the requests to read streams again from the start.
+func resets(rs []*dataplanev1.Reset) []runner.Reset {
+	out := make([]runner.Reset, len(rs))
+	for i, r := range rs {
+		out[i] = runner.Reset{ID: r.GetId(), Streams: r.GetStreams()}
+	}
+	return out
+}
+
+// rewindPolicy is what an attempt does when HEAD's record can't be read: what
+// a person allowed, or under heal mode auto and auto_safe, a restart that
+// keeps every stream's guarantee.
+func rewindPolicy(mode apiv1.HealMode, approval string) runner.Rewind {
+	switch {
+	case approval != "":
+		return runner.Rewind{Policy: runner.RewindAny, Approval: approval}
+	case mode == apiv1.HealMode_HEAL_MODE_OFF || mode == apiv1.HealMode_HEAL_MODE_SUGGEST:
+		return runner.Rewind{}
+	}
+	return runner.Rewind{Policy: runner.RewindSafe}
 }

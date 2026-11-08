@@ -1890,6 +1890,51 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:reset:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Reads streams again from the start: the next sync, or a continuous
+                 pipeline's next run, drops their positions and reads them as it would a
+                 new stream's, such as a new replication slot and a snapshot. What
+                 reaches the destination already stays: merge updates rows in place, and
+                 append adds them again. A continuous pipeline's run restarts at a
+                 checkpoint to take it. Fails with FAILED_PRECONDITION for a pipeline
+                 with a Flink transform, whose state Flink keeps.
+            operationId: PipelineService_ResetPipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ResetPipelineRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ResetPipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines/{pipeline}:resume:
         post:
             tags:
@@ -1921,6 +1966,49 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/ResumePipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:rewind:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Lets the next sync or run restart from the checkpoint before the latest
+                 one if the latest can't be read. Its epoch was delivered, so it's
+                 delivered again: streams the destination neither merges nor dedupes get
+                 its rows twice. Without this, a restart happens by itself only where it
+                 can't lower a stream's guarantee, under heal mode auto or auto_safe.
+            operationId: PipelineService_RewindPipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/RewindPipelineRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/RewindPipelineResponse'
                 default:
                     description: Default error response
                     content:
@@ -3999,6 +4087,7 @@ components:
                         - INCIDENT_CLASS_RETENTION_AT_RISK
                         - INCIDENT_CLASS_QUARANTINE
                         - INCIDENT_CLASS_HELD
+                        - INCIDENT_CLASS_CHECKPOINT_CORRUPT
                     type: string
                     format: enum
                 code:
@@ -5007,6 +5096,24 @@ components:
             properties:
                 pipeline:
                     $ref: '#/components/schemas/Pipeline'
+        ResetPipelineRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                streams:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The streams to read again; empty for every stream. A source that reads
+                         every stream from one position, such as Postgres CDC after its slot was
+                         lost, needs every stream read again.
+        ResetPipelineResponse:
+            type: object
+            properties:
+                pipeline:
+                    $ref: '#/components/schemas/Pipeline'
         ResolveIncidentRequest:
             type: object
             properties:
@@ -5057,6 +5164,16 @@ components:
         RevokeSessionsResponse:
             type: object
             properties: {}
+        RewindPipelineRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+        RewindPipelineResponse:
+            type: object
+            properties:
+                pipeline:
+                    $ref: '#/components/schemas/Pipeline'
         RoleBinding:
             type: object
             properties:

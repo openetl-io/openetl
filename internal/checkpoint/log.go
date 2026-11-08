@@ -15,6 +15,10 @@ import (
 // stop and never claim again.
 var ErrFenced = errors.New("checkpoint: fenced by a newer generation")
 
+// ErrUnreadable: a record HEAD or another record points to is missing, or
+// isn't a record of that epoch and generation.
+var ErrUnreadable = errors.New("checkpoint: record unreadable")
+
 const claimAttempts = 16
 
 type RecordRef struct {
@@ -29,16 +33,32 @@ type Head struct {
 	Owner string `json:"owner"`
 	// Nil before the first checkpoint.
 	Record *RecordRef `json:"record,omitempty"`
+	// The record's Previous, so a record that can't be read can be stepped
+	// back from. Nil with First, or when HEAD doesn't know, as one written
+	// before it did.
+	Previous *RecordRef `json:"previous,omitempty"`
+	// Record is the log's first.
+	First bool `json:"first,omitempty"`
 }
 
 func (h Head) equal(o Head) bool {
-	if h.Generation != o.Generation || h.Owner != o.Owner {
+	if h.Generation != o.Generation || h.Owner != o.Owner || h.First != o.First {
 		return false
 	}
-	if h.Record == nil || o.Record == nil {
-		return h.Record == nil && o.Record == nil
+	return sameRef(h.Record, o.Record) && sameRef(h.Previous, o.Previous)
+}
+
+func sameRef(a, b *RecordRef) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
 	}
-	return *h.Record == *o.Record
+	return *a == *b
+}
+
+// Before is the record before HEAD's, and whether HEAD knows it: nil with
+// true when HEAD's is the log's first.
+func (h Head) Before() (*RecordRef, bool) {
+	return h.Previous, h.Previous != nil || h.First
 }
 
 type StreamState struct {
@@ -272,8 +292,11 @@ type Record struct {
 	SyncStart *RecordRef        `json:"sync_start,omitempty"`
 	SyncRows  map[string]uint64 `json:"sync_rows,omitempty"`
 	// In a Flink pipeline, the Flink checkpoint the epoch ends at.
-	Flink     *FlinkCheckpoint `json:"flink,omitempty"`
-	CreatedAt time.Time        `json:"created_at"`
+	Flink *FlinkCheckpoint `json:"flink,omitempty"`
+	// The newest reset the log has taken, carried from record to record: an
+	// attempt reads again the streams of resets newer than it.
+	Reset     string    `json:"reset,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // FlinkCheckpoint is where a Flink pipeline's record stands in Flink's
@@ -406,14 +429,22 @@ func (l *Log) Latest(ctx context.Context) (*Record, error) {
 	return l.Record(ctx, *h.Record)
 }
 
+// Record reads a record. One that's missing, can't be decoded or is of
+// another epoch or generation fails with ErrUnreadable.
 func (l *Log) Record(ctx context.Context, ref RecordRef) (*Record, error) {
 	data, _, err := l.store.Get(ctx, l.recordKey(ref))
+	if errors.Is(err, ErrNotFound) {
+		return nil, fmt.Errorf("%w: record %d-g%d is missing (%w)", ErrUnreadable, ref.Epoch, ref.Generation, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: read record %d-g%d: %w", ref.Epoch, ref.Generation, err)
 	}
 	var r Record
 	if err := json.Unmarshal(data, &r); err != nil {
-		return nil, fmt.Errorf("checkpoint: decode record %d-g%d: %w", ref.Epoch, ref.Generation, err)
+		return nil, fmt.Errorf("%w: decode record %d-g%d: %w", ErrUnreadable, ref.Epoch, ref.Generation, err)
+	}
+	if r.Ref() != ref {
+		return nil, fmt.Errorf("%w: record %d-g%d holds %d-g%d", ErrUnreadable, ref.Epoch, ref.Generation, r.Epoch, r.Generation)
 	}
 	return &r, nil
 }
@@ -436,7 +467,7 @@ func (l *Log) Claim(ctx context.Context, owner string) (sess *Session, err error
 		case err != nil:
 			return nil, fmt.Errorf("checkpoint: claim: %w", err)
 		default:
-			next = Head{Generation: cur.Generation + 1, Owner: owner, Record: cur.Record}
+			next = Head{Generation: cur.Generation + 1, Owner: owner, Record: cur.Record, Previous: cur.Previous, First: cur.First}
 		}
 		data, err := json.Marshal(next)
 		if err != nil {
@@ -514,7 +545,7 @@ func (s *Session) Commit(ctx context.Context, rec *Record) (err error) {
 			return fmt.Errorf("checkpoint: write record %d-g%d (%w), re-read: %w", ref.Epoch, ref.Generation, werr, gerr)
 		}
 	}
-	return s.swapHead(ctx, Head{Generation: s.head.Generation, Owner: s.owner, Record: &ref})
+	return s.swapHead(ctx, Head{Generation: s.head.Generation, Owner: s.owner, Record: &ref, Previous: rec.Previous, First: rec.Previous == nil})
 }
 
 // Check reads HEAD, and returns ErrFenced if another attempt has claimed the
@@ -530,10 +561,22 @@ func (s *Session) Check(ctx context.Context) error {
 	return nil
 }
 
-// Rewind moves HEAD back to an earlier record, or to none.
+// Rewind moves HEAD back to an earlier record, or to none. HEAD then
+// doesn't know the record before it, as RewindTo's does.
 func (s *Session) Rewind(ctx context.Context, to *RecordRef) (err error) {
 	defer func(start time.Time) { recordWrite(ctx, "rewind", start, err) }(time.Now())
 	return s.swapHead(ctx, Head{Generation: s.head.Generation, Owner: s.owner, Record: to})
+}
+
+// RewindTo moves HEAD back to an earlier record, or to none.
+func (s *Session) RewindTo(ctx context.Context, to *Record) (err error) {
+	defer func(start time.Time) { recordWrite(ctx, "rewind", start, err) }(time.Now())
+	next := Head{Generation: s.head.Generation, Owner: s.owner}
+	if to != nil {
+		ref := to.Ref()
+		next.Record, next.Previous, next.First = &ref, to.Previous, to.Previous == nil
+	}
+	return s.swapHead(ctx, next)
 }
 
 func (s *Session) swapHead(ctx context.Context, next Head) error {

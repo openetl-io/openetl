@@ -13,8 +13,10 @@ var (
 	orgsTable = regexp.MustCompile(`(?i)\b(FROM|INTO|UPDATE)\s+orgs\b`)
 )
 
-// Looking up a credential comes before its org is known.
-var unscoped = map[string]bool{"AuthenticateAPIKey": true, "AuthenticateRunnerToken": true, "AuthenticateSession": true, "LockPlacement": true, "NotifyDispatch": true}
+// Looking up a credential comes before its org is known; the rest work for
+// the whole deployment.
+var unscoped = map[string]bool{"AuthenticateAPIKey": true, "AuthenticateRunnerToken": true, "AuthenticateSession": true, "LockPlacement": true, "NotifyDispatch": true,
+	"ClaimRetentionProbes": true}
 
 func TestQueriesAreOrgScoped(t *testing.T) {
 	files, err := filepath.Glob("queries/*.sql")

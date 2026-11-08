@@ -34,7 +34,8 @@ impl connector::v1::ErrorCode {
             | C::ContractChanged
             | C::DestinationQuota
             | C::Fenced
-            | C::PositionLost => false,
+            | C::PositionLost
+            | C::CheckpointCorrupt => false,
         }
     }
 }

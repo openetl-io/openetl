@@ -74,6 +74,8 @@ type Connector struct {
 	// pipeline is deleted: the source or destination implements Setupper,
 	// Teardowner or both. Without it, neither is called.
 	Setup bool
+	// The source implements source.RetentionReporter.
+	Retention bool
 
 	Destination  func(config []byte, h host.Host) (destination.Destination, error)
 	Capabilities destination.Capabilities
@@ -257,7 +259,7 @@ func (b *base) Spec(_ context.Context, req *protocolv1.SpecRequest) (*protocolv1
 	}
 	if b.c.Source != nil {
 		resp.Kind = protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE
-		resp.Source = &protocolv1.SourceCapabilities{Acknowledges: b.c.Acknowledges, Splits: b.c.Splits, Resplit: b.c.Resplit}
+		resp.Source = &protocolv1.SourceCapabilities{Acknowledges: b.c.Acknowledges, Splits: b.c.Splits, Resplit: b.c.Resplit, Retention: b.c.Retention}
 	} else {
 		resp.Kind = protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION
 		resp.Destination = capabilitiesToProto(b.c.Capabilities)

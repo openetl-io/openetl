@@ -176,6 +176,7 @@
         "acknowledges": { "description": "A source's: it acknowledges upstream once a checkpoint commits.", "type": "boolean" },
         "splits": { "description": "A source's: it divides streams into splits.", "type": "boolean" },
         "resplit": { "description": "A source's: it splits a running split's remainder. Needs splits.", "type": "boolean" },
+        "retention": { "description": "A source's: it says, without reading, how much of what it keeps for a pipeline a checkpoint's positions have used.", "type": "boolean" },
         "capabilities": {
           "description": "A destination's.",
           "type": "object",
@@ -232,7 +233,7 @@
         { "required": ["capabilities"] },
         { "properties": { "runtime": { "not": { "required": ["manifest"] } } } }
       ],
-      "not": { "anyOf": [{ "required": ["acknowledges"] }, { "required": ["splits"] }, { "required": ["resplit"] }] }
+      "not": { "anyOf": [{ "required": ["acknowledges"] }, { "required": ["splits"] }, { "required": ["resplit"] }, { "required": ["retention"] }] }
     }
   }
 }

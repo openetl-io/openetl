@@ -35,11 +35,14 @@ const (
 	RetentionAtRisk Class = "retention_at_risk"
 	Quarantine      Class = "quarantine"
 	Held            Class = "held"
+	// The record a read resumes from can't be read; or, with an action taken,
+	// an attempt restarted from the one before it.
+	CheckpointCorrupt Class = "checkpoint_corrupt"
 )
 
 // ResolvedByProgress are the classes a pipeline making progress again
 // resolves: a sync that succeeds, or a continuous run's commit.
-var ResolvedByProgress = []string{string(SyncFailed), string(Auth), string(SchemaBlocked), string(RateLimited), string(PositionLost), string(CrashLoop)}
+var ResolvedByProgress = []string{string(SyncFailed), string(Auth), string(SchemaBlocked), string(RateLimited), string(PositionLost), string(CrashLoop), string(CheckpointCorrupt)}
 
 // ClassOf is the class of a sync or run that failed with code.
 func ClassOf(code string) Class {
@@ -50,6 +53,8 @@ func ClassOf(code string) Class {
 		return SchemaBlocked
 	case errs.RateLimited.String():
 		return RateLimited
+	case errs.CheckpointCorrupt.String():
+		return CheckpointCorrupt
 	case errs.PositionLost.String():
 		return PositionLost
 	}
@@ -78,6 +83,9 @@ type Observation struct {
 	Details map[string]string
 	// Held's holds, each with its ways out.
 	Holds []*apiv1.Hold
+	// What a runner did about it already, recorded on the incident in place
+	// of the playbook's own.
+	Taken []Action
 	Sync  *uuid.UUID
 	// What makes this occurrence, such as the sync's ID: seen again with the
 	// same key, it isn't another.
@@ -225,6 +233,8 @@ func Observe(ctx context.Context, q *db.Queries, org uuid.UUID, o Observation) (
 		}
 	}
 	switch {
+	case len(o.Taken) > 0:
+		err = addActions(ctx, q, org, &inc, o.Taken...)
 	case pauses(o.Class):
 		seen.Paused, err = pause(ctx, q, org, t, &inc, "Paused the pipeline, so it doesn't fail the same way until it's fixed.")
 	case o.Class == Quarantine:
@@ -371,7 +381,7 @@ func Fingerprint(class Class, code, message, source, destination string) string 
 	switch class {
 	case SyncFailed:
 		parts = append(parts, code, Normalize(message))
-	case Auth, SchemaBlocked, RateLimited, PositionLost:
+	case Auth, SchemaBlocked, RateLimited, PositionLost, CheckpointCorrupt:
 		parts = append(parts, code)
 	}
 	for _, p := range parts {

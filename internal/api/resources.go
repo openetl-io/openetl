@@ -629,6 +629,9 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if err := s.runtimeForSync(ctx, id, res); err != nil {
 		return nil, err
 	}
+	if res.Resets, res.Rewind, err = s.pendingRequests(ctx, id); err != nil {
+		return nil, err
+	}
 	if keys := res.Pipeline.GetFlinkAccess().GetKeys(); keys != nil {
 		if res.FlinkAccessSecrets, err = s.resolveSecrets(ctx, "the pipeline's flinkAccess", row.WorkspaceID, &apiv1.ConnectorConfig{Config: keys}, row.AccessSecrets); err != nil {
 			return nil, err

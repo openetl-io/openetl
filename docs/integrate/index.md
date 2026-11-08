@@ -181,6 +181,7 @@ openetl webhook test ops-alerts
   | `pipeline.paused`, `pipeline.resumed`, `pipeline.rescaled` | Someone pauses, resumes or rescales a pipeline |
   | `stream.paused`, `stream.resumed` | Someone, or heal, pauses or resumes one of a pipeline's streams |
   | `pipeline.overridden` | Heal changes how a pipeline runs, such as syncing less often, or someone undoes it |
+  | `pipeline.reset` | Someone asks for a pipeline's streams to be read again from the start; `data.streams` names them, and is left out for every stream |
   | `pipeline.lagging`, `pipeline.recovered` | A continuous pipeline falls behind its source, and catches up |
   | `schema.changed`, `schema.blocked` | A stream's schema changes, or a change can't be taken |
   | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident opens, gets worse, or is resolved |

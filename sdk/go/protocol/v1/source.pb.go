@@ -135,7 +135,9 @@ type SourceCapabilities struct {
 	// The source divides streams into splits, through Splits.
 	Splits bool `protobuf:"varint,2,opt,name=splits,proto3" json:"splits,omitempty"`
 	// The source splits a running split's remainder, through Resplit.
-	Resplit       bool `protobuf:"varint,3,opt,name=resplit,proto3" json:"resplit,omitempty"`
+	Resplit bool `protobuf:"varint,3,opt,name=resplit,proto3" json:"resplit,omitempty"`
+	// The source answers Retention.
+	Retention     bool `protobuf:"varint,4,opt,name=retention,proto3" json:"retention,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -187,6 +189,13 @@ func (x *SourceCapabilities) GetSplits() bool {
 func (x *SourceCapabilities) GetResplit() bool {
 	if x != nil {
 		return x.Resplit
+	}
+	return false
+}
+
+func (x *SourceCapabilities) GetRetention() bool {
+	if x != nil {
+		return x.Retention
 	}
 	return false
 }
@@ -1425,6 +1434,123 @@ func (x *SplitsResponse) GetSplits() []*Split {
 	return nil
 }
 
+type RetentionRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Config []byte                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	// The pipeline, as ReadRequest.pipeline.
+	Pipeline string `protobuf:"bytes,2,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
+	// As CommittedRequest's: one checkpoint's states, by stream, for streams
+	// read whole, and their splits' for those read in splits.
+	States        map[string][]byte  `protobuf:"bytes,3,rep,name=states,proto3" json:"states,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Splits        map[string]*Splits `protobuf:"bytes,4,rep,name=splits,proto3" json:"splits,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RetentionRequest) Reset() {
+	*x = RetentionRequest{}
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetentionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetentionRequest) ProtoMessage() {}
+
+func (x *RetentionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetentionRequest.ProtoReflect.Descriptor instead.
+func (*RetentionRequest) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *RetentionRequest) GetConfig() []byte {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+func (x *RetentionRequest) GetPipeline() string {
+	if x != nil {
+		return x.Pipeline
+	}
+	return ""
+}
+
+func (x *RetentionRequest) GetStates() map[string][]byte {
+	if x != nil {
+		return x.States
+	}
+	return nil
+}
+
+func (x *RetentionRequest) GetSplits() map[string]*Splits {
+	if x != nil {
+		return x.Splits
+	}
+	return nil
+}
+
+type RetentionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// As a read reports it; lag is how far behind in time the positions are.
+	// Empty: the source can't tell.
+	Progress      []*Progress `protobuf:"bytes,1,rep,name=progress,proto3" json:"progress,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RetentionResponse) Reset() {
+	*x = RetentionResponse{}
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetentionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetentionResponse) ProtoMessage() {}
+
+func (x *RetentionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetentionResponse.ProtoReflect.Descriptor instead.
+func (*RetentionResponse) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *RetentionResponse) GetProgress() []*Progress {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
 type ResplitRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Config        []byte                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
@@ -1436,7 +1562,7 @@ type ResplitRequest struct {
 
 func (x *ResplitRequest) Reset() {
 	*x = ResplitRequest{}
-	mi := &file_openetl_connector_v1_source_proto_msgTypes[19]
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1448,7 +1574,7 @@ func (x *ResplitRequest) String() string {
 func (*ResplitRequest) ProtoMessage() {}
 
 func (x *ResplitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_source_proto_msgTypes[19]
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1461,7 +1587,7 @@ func (x *ResplitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResplitRequest.ProtoReflect.Descriptor instead.
 func (*ResplitRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{19}
+	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ResplitRequest) GetConfig() []byte {
@@ -1496,7 +1622,7 @@ type ResplitResponse struct {
 
 func (x *ResplitResponse) Reset() {
 	*x = ResplitResponse{}
-	mi := &file_openetl_connector_v1_source_proto_msgTypes[20]
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1508,7 +1634,7 @@ func (x *ResplitResponse) String() string {
 func (*ResplitResponse) ProtoMessage() {}
 
 func (x *ResplitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_source_proto_msgTypes[20]
+	mi := &file_openetl_connector_v1_source_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1521,7 +1647,7 @@ func (x *ResplitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResplitResponse.ProtoReflect.Descriptor instead.
 func (*ResplitResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{20}
+	return file_openetl_connector_v1_source_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ResplitResponse) GetAccepted() bool {
@@ -1535,11 +1661,12 @@ var File_openetl_connector_v1_source_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\n" +
-	"!openetl/connector/v1/source.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\"j\n" +
+	"!openetl/connector/v1/source.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\"\x88\x01\n" +
 	"\x12SourceCapabilities\x12\"\n" +
 	"\facknowledges\x18\x01 \x01(\bR\facknowledges\x12\x16\n" +
 	"\x06splits\x18\x02 \x01(\bR\x06splits\x12\x18\n" +
-	"\aresplit\x18\x03 \x01(\bR\aresplit\")\n" +
+	"\aresplit\x18\x03 \x01(\bR\aresplit\x12\x1c\n" +
+	"\tretention\x18\x04 \x01(\bR\tretention\")\n" +
 	"\x0fDiscoverRequest\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\"K\n" +
 	"\x10DiscoverResponse\x127\n" +
@@ -1633,7 +1760,20 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\x06stream\x18\x02 \x01(\v2&.openetl.connector.v1.ConfiguredStreamR\x06stream\x121\n" +
 	"\x05ended\x18\x03 \x03(\v2\x1b.openetl.connector.v1.SplitR\x05ended\"E\n" +
 	"\x0eSplitsResponse\x123\n" +
-	"\x06splits\x18\x01 \x03(\v2\x1b.openetl.connector.v1.SplitR\x06splits\"V\n" +
+	"\x06splits\x18\x01 \x03(\v2\x1b.openetl.connector.v1.SplitR\x06splits\"\xf2\x02\n" +
+	"\x10RetentionRequest\x12\x16\n" +
+	"\x06config\x18\x01 \x01(\fR\x06config\x12\x1a\n" +
+	"\bpipeline\x18\x02 \x01(\tR\bpipeline\x12J\n" +
+	"\x06states\x18\x03 \x03(\v22.openetl.connector.v1.RetentionRequest.StatesEntryR\x06states\x12J\n" +
+	"\x06splits\x18\x04 \x03(\v22.openetl.connector.v1.RetentionRequest.SplitsEntryR\x06splits\x1a9\n" +
+	"\vStatesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\x1aW\n" +
+	"\vSplitsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
+	"\x05value\x18\x02 \x01(\v2\x1c.openetl.connector.v1.SplitsR\x05value:\x028\x01\"O\n" +
+	"\x11RetentionResponse\x12:\n" +
+	"\bprogress\x18\x01 \x03(\v2\x1e.openetl.connector.v1.ProgressR\bprogress\"V\n" +
 	"\x0eResplitRequest\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\x12\x16\n" +
 	"\x06stream\x18\x02 \x01(\tR\x06stream\x12\x14\n" +
@@ -1649,13 +1789,14 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\x06Replay\x12\x16\n" +
 	"\x12REPLAY_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fREPLAY_EXACT\x10\x01\x12\x13\n" +
-	"\x0fREPLAY_SUPERSET\x10\x022\xc6\x03\n" +
+	"\x0fREPLAY_SUPERSET\x10\x022\xa4\x04\n" +
 	"\rSourceService\x12Y\n" +
 	"\bDiscover\x12%.openetl.connector.v1.DiscoverRequest\x1a&.openetl.connector.v1.DiscoverResponse\x12O\n" +
 	"\x04Read\x12!.openetl.connector.v1.ReadRequest\x1a\".openetl.connector.v1.ReadResponse0\x01\x12\\\n" +
 	"\tCommitted\x12&.openetl.connector.v1.CommittedRequest\x1a'.openetl.connector.v1.CommittedResponse\x12S\n" +
 	"\x06Splits\x12#.openetl.connector.v1.SplitsRequest\x1a$.openetl.connector.v1.SplitsResponse\x12V\n" +
-	"\aResplit\x12$.openetl.connector.v1.ResplitRequest\x1a%.openetl.connector.v1.ResplitResponseB=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\aResplit\x12$.openetl.connector.v1.ResplitRequest\x1a%.openetl.connector.v1.ResplitResponse\x12\\\n" +
+	"\tRetention\x12&.openetl.connector.v1.RetentionRequest\x1a'.openetl.connector.v1.RetentionResponseB=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_source_proto_rawDescOnce sync.Once
@@ -1670,7 +1811,7 @@ func file_openetl_connector_v1_source_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_connector_v1_source_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_openetl_connector_v1_source_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_openetl_connector_v1_source_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_openetl_connector_v1_source_proto_goTypes = []any{
 	(SyncMode)(0),               // 0: openetl.connector.v1.SyncMode
 	(Replay)(0),                 // 1: openetl.connector.v1.Replay
@@ -1693,11 +1834,15 @@ var file_openetl_connector_v1_source_proto_goTypes = []any{
 	(*CommittedResponse)(nil),   // 18: openetl.connector.v1.CommittedResponse
 	(*SplitsRequest)(nil),       // 19: openetl.connector.v1.SplitsRequest
 	(*SplitsResponse)(nil),      // 20: openetl.connector.v1.SplitsResponse
-	(*ResplitRequest)(nil),      // 21: openetl.connector.v1.ResplitRequest
-	(*ResplitResponse)(nil),     // 22: openetl.connector.v1.ResplitResponse
-	nil,                         // 23: openetl.connector.v1.CommittedRequest.StatesEntry
-	nil,                         // 24: openetl.connector.v1.CommittedRequest.SplitsEntry
-	(*durationpb.Duration)(nil), // 25: google.protobuf.Duration
+	(*RetentionRequest)(nil),    // 21: openetl.connector.v1.RetentionRequest
+	(*RetentionResponse)(nil),   // 22: openetl.connector.v1.RetentionResponse
+	(*ResplitRequest)(nil),      // 23: openetl.connector.v1.ResplitRequest
+	(*ResplitResponse)(nil),     // 24: openetl.connector.v1.ResplitResponse
+	nil,                         // 25: openetl.connector.v1.CommittedRequest.StatesEntry
+	nil,                         // 26: openetl.connector.v1.CommittedRequest.SplitsEntry
+	nil,                         // 27: openetl.connector.v1.RetentionRequest.StatesEntry
+	nil,                         // 28: openetl.connector.v1.RetentionRequest.SplitsEntry
+	(*durationpb.Duration)(nil), // 29: google.protobuf.Duration
 }
 var file_openetl_connector_v1_source_proto_depIdxs = []int32{
 	5,  // 0: openetl.connector.v1.DiscoverResponse.catalog:type_name -> openetl.connector.v1.Catalog
@@ -1714,30 +1859,36 @@ var file_openetl_connector_v1_source_proto_depIdxs = []int32{
 	12, // 11: openetl.connector.v1.RecordBatch.rows:type_name -> openetl.connector.v1.JSONRows
 	9,  // 12: openetl.connector.v1.ResumePoint.added:type_name -> openetl.connector.v1.Split
 	9,  // 13: openetl.connector.v1.StreamComplete.added:type_name -> openetl.connector.v1.Split
-	25, // 14: openetl.connector.v1.Progress.lag:type_name -> google.protobuf.Duration
-	25, // 15: openetl.connector.v1.Progress.retention_left:type_name -> google.protobuf.Duration
-	23, // 16: openetl.connector.v1.CommittedRequest.states:type_name -> openetl.connector.v1.CommittedRequest.StatesEntry
-	24, // 17: openetl.connector.v1.CommittedRequest.splits:type_name -> openetl.connector.v1.CommittedRequest.SplitsEntry
+	29, // 14: openetl.connector.v1.Progress.lag:type_name -> google.protobuf.Duration
+	29, // 15: openetl.connector.v1.Progress.retention_left:type_name -> google.protobuf.Duration
+	25, // 16: openetl.connector.v1.CommittedRequest.states:type_name -> openetl.connector.v1.CommittedRequest.StatesEntry
+	26, // 17: openetl.connector.v1.CommittedRequest.splits:type_name -> openetl.connector.v1.CommittedRequest.SplitsEntry
 	9,  // 18: openetl.connector.v1.Splits.splits:type_name -> openetl.connector.v1.Split
 	8,  // 19: openetl.connector.v1.SplitsRequest.stream:type_name -> openetl.connector.v1.ConfiguredStream
 	9,  // 20: openetl.connector.v1.SplitsRequest.ended:type_name -> openetl.connector.v1.Split
 	9,  // 21: openetl.connector.v1.SplitsResponse.splits:type_name -> openetl.connector.v1.Split
-	17, // 22: openetl.connector.v1.CommittedRequest.SplitsEntry.value:type_name -> openetl.connector.v1.Splits
-	3,  // 23: openetl.connector.v1.SourceService.Discover:input_type -> openetl.connector.v1.DiscoverRequest
-	7,  // 24: openetl.connector.v1.SourceService.Read:input_type -> openetl.connector.v1.ReadRequest
-	16, // 25: openetl.connector.v1.SourceService.Committed:input_type -> openetl.connector.v1.CommittedRequest
-	19, // 26: openetl.connector.v1.SourceService.Splits:input_type -> openetl.connector.v1.SplitsRequest
-	21, // 27: openetl.connector.v1.SourceService.Resplit:input_type -> openetl.connector.v1.ResplitRequest
-	4,  // 28: openetl.connector.v1.SourceService.Discover:output_type -> openetl.connector.v1.DiscoverResponse
-	10, // 29: openetl.connector.v1.SourceService.Read:output_type -> openetl.connector.v1.ReadResponse
-	18, // 30: openetl.connector.v1.SourceService.Committed:output_type -> openetl.connector.v1.CommittedResponse
-	20, // 31: openetl.connector.v1.SourceService.Splits:output_type -> openetl.connector.v1.SplitsResponse
-	22, // 32: openetl.connector.v1.SourceService.Resplit:output_type -> openetl.connector.v1.ResplitResponse
-	28, // [28:33] is the sub-list for method output_type
-	23, // [23:28] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	27, // 22: openetl.connector.v1.RetentionRequest.states:type_name -> openetl.connector.v1.RetentionRequest.StatesEntry
+	28, // 23: openetl.connector.v1.RetentionRequest.splits:type_name -> openetl.connector.v1.RetentionRequest.SplitsEntry
+	15, // 24: openetl.connector.v1.RetentionResponse.progress:type_name -> openetl.connector.v1.Progress
+	17, // 25: openetl.connector.v1.CommittedRequest.SplitsEntry.value:type_name -> openetl.connector.v1.Splits
+	17, // 26: openetl.connector.v1.RetentionRequest.SplitsEntry.value:type_name -> openetl.connector.v1.Splits
+	3,  // 27: openetl.connector.v1.SourceService.Discover:input_type -> openetl.connector.v1.DiscoverRequest
+	7,  // 28: openetl.connector.v1.SourceService.Read:input_type -> openetl.connector.v1.ReadRequest
+	16, // 29: openetl.connector.v1.SourceService.Committed:input_type -> openetl.connector.v1.CommittedRequest
+	19, // 30: openetl.connector.v1.SourceService.Splits:input_type -> openetl.connector.v1.SplitsRequest
+	23, // 31: openetl.connector.v1.SourceService.Resplit:input_type -> openetl.connector.v1.ResplitRequest
+	21, // 32: openetl.connector.v1.SourceService.Retention:input_type -> openetl.connector.v1.RetentionRequest
+	4,  // 33: openetl.connector.v1.SourceService.Discover:output_type -> openetl.connector.v1.DiscoverResponse
+	10, // 34: openetl.connector.v1.SourceService.Read:output_type -> openetl.connector.v1.ReadResponse
+	18, // 35: openetl.connector.v1.SourceService.Committed:output_type -> openetl.connector.v1.CommittedResponse
+	20, // 36: openetl.connector.v1.SourceService.Splits:output_type -> openetl.connector.v1.SplitsResponse
+	24, // 37: openetl.connector.v1.SourceService.Resplit:output_type -> openetl.connector.v1.ResplitResponse
+	22, // 38: openetl.connector.v1.SourceService.Retention:output_type -> openetl.connector.v1.RetentionResponse
+	33, // [33:39] is the sub-list for method output_type
+	27, // [27:33] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_source_proto_init() }
@@ -1765,7 +1916,7 @@ func file_openetl_connector_v1_source_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_connector_v1_source_proto_rawDesc), len(file_openetl_connector_v1_source_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   23,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

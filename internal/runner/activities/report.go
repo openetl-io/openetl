@@ -131,17 +131,10 @@ func (r *reporter) heldCells(rec *checkpoint.Record) map[string]uint64 {
 func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]uint64, progress []source.Progress) *dataplanev1.ReportCheckpointRequest {
 	req := &dataplanev1.ReportCheckpointRequest{
 		PipelineId: r.pipeline, RunId: r.runID, Generation: rec.Generation, Epoch: rec.Epoch,
-		CreateTime: timestamppb.New(rec.CreatedAt),
+		CreateTime: timestamppb.New(rec.CreatedAt), LastReset: rec.Reset,
 	}
 	for _, p := range progress {
-		m := &protocolv1.Progress{Stream: p.Stream, LagBytes: p.LagBytes, LagRecords: p.LagRecords, RetentionLeftBytes: p.RetentionLeftBytes}
-		if p.Lag != nil {
-			m.Lag = durationpb.New(*p.Lag)
-		}
-		if p.RetentionLeft != nil {
-			m.RetentionLeft = durationpb.New(*p.RetentionLeft)
-		}
-		req.Progress = append(req.Progress, m)
+		req.Progress = append(req.Progress, progressProto(p))
 	}
 	if p := rec.Previous; p != nil {
 		req.Previous = &dataplanev1.CheckpointRef{Generation: p.Generation, Epoch: p.Epoch}
@@ -167,6 +160,17 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 		req.Streams = append(req.Streams, cs)
 	}
 	return req
+}
+
+func progressProto(p source.Progress) *protocolv1.Progress {
+	m := &protocolv1.Progress{Stream: p.Stream, LagBytes: p.LagBytes, LagRecords: p.LagRecords, RetentionLeftBytes: p.RetentionLeftBytes}
+	if p.Lag != nil {
+		m.Lag = durationpb.New(*p.Lag)
+	}
+	if p.RetentionLeft != nil {
+		m.RetentionLeft = durationpb.New(*p.RetentionLeft)
+	}
+	return m
 }
 
 func (r *reporter) digest(stream string, schema []byte) string {
@@ -301,4 +305,20 @@ func withoutQuery(s string) string {
 	}
 	u.RawQuery, u.User = "", nil
 	return u.String()
+}
+
+// rewound queues the report of a restart from the checkpoint before an
+// unreadable one without blocking.
+func (r *reporter) rewound(rw runner.Rewound) {
+	req := &dataplanev1.ReportRewindRequest{
+		PipelineId: r.pipeline, RunId: r.runID, Reason: rw.Reason, Approval: rw.Approval, Time: timestamppb.Now(),
+		Unreadable: &dataplanev1.CheckpointRef{Generation: rw.Unreadable.Generation, Epoch: rw.Unreadable.Epoch},
+	}
+	if p := rw.Restored; p != nil {
+		req.Restored = &dataplanev1.CheckpointRef{Generation: p.Generation, Epoch: p.Epoch}
+	}
+	r.enqueue(report{what: "rewind", epoch: rw.Unreadable.Epoch, send: func(ctx context.Context) error {
+		_, err := r.api.ReportRewind(ctx, connect.NewRequest(req))
+		return err
+	}})
 }

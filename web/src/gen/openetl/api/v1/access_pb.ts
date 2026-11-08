@@ -1157,6 +1157,7 @@ export enum Role {
   /**
    * Applies and deletes sources, destinations, pipelines, dbt projects,
    * webhooks, and Spark and Flink clusters; releases and discards holds;
+   * resets pipelines, and lets them restart from an earlier checkpoint;
    * sets and deletes secrets.
    *
    * @generated from enum value: ROLE_EDITOR = 3;

@@ -177,6 +177,14 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err := s.recordHolds(ctx, id, arg.Generation, arg.Epoch, holds); err != nil {
 		return nil, err
 	}
+	if err := s.takeResets(ctx, id, m.GetLastReset()); err != nil {
+		return nil, err
+	}
+	// The log has a record that reads, so a restart from an earlier one
+	// isn't needed.
+	if err := s.Store.TakeRewinds(ctx, db.TakeRewindsParams{OrgID: s.Tenant.Org, PipelineID: id}); err != nil {
+		return nil, err
+	}
 	if err := s.afterCheckpoint(ctx, id, m); err != nil {
 		return nil, err
 	}
@@ -302,8 +310,23 @@ const (
 // its source keeps for it, by bytes or time, turns it critical at 80%, and
 // resolves it under 40%.
 func (s *Server) checkRetention(ctx context.Context, pipeline uuid.UUID, sync db.Sync, m *dataplanev1.ReportCheckpointRequest) error {
+	return s.observeRetention(ctx, pipeline, retentionAt{version: sync.Version, sync: &sync.ID, key: sync.ID.String()}, m.GetProgress())
+}
+
+// retentionAt is where a read's retention was seen: a sync's report, or a
+// probe while the pipeline wasn't running.
+type retentionAt struct {
+	version string
+	// Nil for a probe.
+	sync *uuid.UUID
+	key  string
+	// Added to the message.
+	what string
+}
+
+func (s *Server) observeRetention(ctx context.Context, pipeline uuid.UUID, seen retentionAt, progress []*protocolv1.Progress) error {
 	used, at := -1.0, (*protocolv1.Progress)(nil)
-	for _, p := range m.GetProgress() {
+	for _, p := range progress {
 		if u := retentionUsed(p); u > used {
 			used, at = u, p
 		}
@@ -314,13 +337,13 @@ func (s *Server) checkRetention(ctx context.Context, pipeline uuid.UUID, sync db
 	return s.Store.Tx(ctx, func(q *db.Queries) error {
 		if used < retentionSafe {
 			_, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, []string{string(heal.RetentionAtRisk)}, nil,
-				fmt.Sprintf("the read has used %.0f%% of what its source keeps for it", used*100))
+				fmt.Sprintf("the read has used %.0f%% of what its source keeps for it%s", used*100, seen.what))
 			return err
 		}
 		o := heal.Observation{
-			Pipeline: pipeline, Version: sync.Version, Class: heal.RetentionAtRisk, Severity: heal.Warning, Stream: at.GetStream(),
+			Pipeline: pipeline, Version: seen.version, Class: heal.RetentionAtRisk, Severity: heal.Warning, Stream: at.GetStream(),
 			Details: map[string]string{"used": fmt.Sprintf("%.0f%%", used*100)},
-			Sync:    &sync.ID, Key: sync.ID.String(),
+			Sync:    seen.sync, Key: seen.key,
 		}
 		if used >= retentionCritical {
 			o.Severity = heal.Critical
@@ -335,7 +358,7 @@ func (s *Server) checkRetention(ctx context.Context, pipeline uuid.UUID, sync db
 			o.Details["lag_seconds"], o.Details["retention_left_seconds"] = strconv.FormatFloat(lag.Seconds(), 'f', 0, 64), strconv.FormatFloat(left.Seconds(), 'f', 0, 64)
 			have = append(have, fmt.Sprintf("%s behind with %s left", lag.Round(time.Second), left.Round(time.Second)))
 		}
-		o.Message = fmt.Sprintf("The read has used %.0f%% of what its source keeps for it: %s.", used*100, strings.Join(have, "; "))
+		o.Message = fmt.Sprintf("The read has used %.0f%% of what its source keeps for it%s: %s.", used*100, seen.what, strings.Join(have, "; "))
 		_, err := heal.Observe(ctx, q, s.Tenant.Org, o)
 		return err
 	})
