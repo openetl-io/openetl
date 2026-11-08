@@ -59,6 +59,8 @@ A writer's calls are the commit protocol:
 3. **Commit** runs once that record is written. It makes the epoch visible with a marker per stream, behind the destination's fence, and must be idempotent.
 4. **Recover** runs when an attempt starts. It raises the fence to the attempt's generation, so older attempts can no longer commit, and says whether the epoch the checkpoint log points to was applied, applied it now, or is lost.
 
+A reply to **PreCommit** or **Commit** names the epoch of the request it answers, and each request gets one reply. OpenETL fails the attempt on a reply for another epoch, or one it didn't ask for. `sdk.Serve` does this for you.
+
 The commit is the destination's own: its staging, markers, fence and catalog live in its writer, not in OpenETL.
 
 ### Setup and teardown
