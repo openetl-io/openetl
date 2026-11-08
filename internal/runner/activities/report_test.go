@@ -47,6 +47,7 @@ func TestMirroredCheckpoint(t *testing.T) {
 		Quarantine: []checkpoint.QuarantineFile{{Stream: "users", Rows: 2}, {Stream: "users", Rows: 1}},
 		Forced:     []string{"orders"},
 		Reread:     []string{"orders"},
+		SyncRows:   map[string]uint64{"users": 25},
 	}, map[string]uint64{"users": 5}, nil, []source.Progress{{LagBytes: new(uint64(4096)), Lag: new(1500 * time.Millisecond)}})
 	if req.GetPipelineId() != "p" || req.GetRunId() != "run" || req.GetEpoch() != 7 || req.GetGeneration() != 3 ||
 		req.GetPrevious().GetEpoch() != 6 || req.GetPrevious().GetGeneration() != 2 || !req.GetCreateTime().AsTime().Equal(created) {
@@ -65,6 +66,9 @@ func TestMirroredCheckpoint(t *testing.T) {
 	if u := streams[1]; u.GetName() != "users" || u.GetRows() != 10 || u.GetForced() || !u.GetComplete() || u.GetQuarantinedRows() != 3 || u.GetSchemaDigest() != want.Digest || u.GetCollapsedRows() != 5 ||
 		u.GetLevel() != 0 || u.GetPlannedLevel() != 0 {
 		t.Errorf("users: %v, want digest %s", u, want.Digest)
+	}
+	if streams[0].SyncRows != nil || streams[1].GetSyncRows() != 25 {
+		t.Errorf("sync rows: orders %v, users %v", streams[0].SyncRows, streams[1].SyncRows)
 	}
 	if p := req.GetProgress(); len(p) != 1 || p[0].GetStream() != "" || p[0].GetLagBytes() != 4096 || p[0].LagRecords != nil ||
 		p[0].GetLag().AsDuration() != 1500*time.Millisecond || p[0].RetentionLeft != nil {

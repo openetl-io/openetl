@@ -17,9 +17,15 @@ LIMIT @max_rows;
 
 -- name: SyncStreams :many
 -- What the syncs' committed epochs carried, by sync and stream. Checkpoints
--- are committed after since.
+-- are committed after since. Rows are the newest checkpoint's total for the
+-- sync, which a report that was dropped can't leave low; the epochs' sum is
+-- for checkpoints from before they carried one.
 SELECT c.run_id, (st ->> 'name')::text AS name,
-    sum((st ->> 'rows')::bigint)::bigint AS rows,
+    coalesce(
+        (array_agg((st ->> 'sync_rows')::bigint ORDER BY c.epoch DESC, c.generation DESC)
+            FILTER (WHERE st ->> 'sync_rows' IS NOT NULL))[1],
+        sum((st ->> 'rows')::bigint)
+    )::bigint AS rows,
     sum((st ->> 'quarantined_rows')::bigint)::bigint AS quarantined_rows,
     -- Checkpoints mirrored before it was counted have none.
     coalesce(sum((st ->> 'collapsed_rows')::bigint), 0)::bigint AS collapsed_rows,
