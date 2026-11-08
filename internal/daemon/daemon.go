@@ -485,7 +485,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	apiClient := dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, cfg.APIURL, auth.WithBearer(token), connect.WithInterceptors(otel)) //nolint:forbidigo // the operator configures the API's address
+	apiClient := dataplanev1connect.NewDataPlaneServiceClient(netguard.APIClient(), cfg.APIURL, auth.WithBearer(token), connect.WithInterceptors(otel))
 	versions := &connectorhost.Fetcher{
 		Artifact:   dpactivities.Artifacts(apiClient),
 		Client:     (&netguard.Policy{Allow: allow}).Client(),

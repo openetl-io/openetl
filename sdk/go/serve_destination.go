@@ -14,6 +14,7 @@ import (
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/internal/ints"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
@@ -110,7 +111,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 		case *protocolv1.WriteRequest_Recover:
 			var r destination.Recovery
 			if r, fail = w.Recover(ctx, gen, epoch(x.Recover.GetEpoch()), staged(x.Recover.GetStaged())); fail == nil {
-				fail = send(&protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_Recovered{Recovered: &protocolv1.WriteRecovered{Recovery: protocolv1.Recovery(r)}}}) //nolint:gosec // small
+				fail = send(&protocolv1.WriteResponse{Msg: &protocolv1.WriteResponse_Recovered{Recovered: &protocolv1.WriteRecovered{Recovery: ints.Enum[protocolv1.Recovery](r)}}})
 			}
 		case *protocolv1.WriteRequest_Batch:
 			fail = write(ctx, w, pw, x.Batch)
@@ -206,7 +207,7 @@ func schemaAppliedToProto(a destination.SchemaApplied) *protocolv1.WriteSchemaAp
 		for name, l := range a.Limits {
 			p.Limits[name] = &protocolv1.TableLimits{
 				NotNull: l.NotNull, Unholdable: l.Unholdable, Fixed: l.Fixed,
-				Columns: uint32(l.Columns), MaxColumns: uint32(l.MaxColumns), //nolint:gosec // small
+				Columns: ints.Uint32(l.Columns), MaxColumns: ints.Uint32(l.MaxColumns),
 			}
 		}
 	}
@@ -235,21 +236,21 @@ func staged(b [][]byte) []destination.Staged {
 
 func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapabilities {
 	p := &protocolv1.DestinationCapabilities{
-		SinkClass:            protocolv1.SinkClass(c.Class), //nolint:gosec // small
+		SinkClass:            ints.Enum[protocolv1.SinkClass](c.Class),
 		DedupeAtApply:        c.DedupeAtApply,
 		NanosecondTimestamps: c.NanosecondTimestamps,
-		MaxIdentifierLength:  uint32(c.MaxIdentifierLength),   //nolint:gosec // small
-		Delivery:             protocolv1.Delivery(c.Delivery), //nolint:gosec // small
-		MaxWriterLanes:       uint32(c.WriterLanes),           //nolint:gosec // small
+		MaxIdentifierLength:  ints.Uint32(c.MaxIdentifierLength),
+		Delivery:             ints.Enum[protocolv1.Delivery](c.Delivery),
+		MaxWriterLanes:       ints.Uint32(c.WriterLanes),
 	}
 	if h := c.Holds; h != (destination.Holds{}) {
 		p.Holds = &protocolv1.HoldCapabilities{ByKey: h.ByKey, ById: h.ByID, Last: h.Last, Guarded: h.Guarded}
 	}
 	for _, s := range c.Scopes {
-		p.Scopes = append(p.Scopes, protocolv1.CommitScope(s)) //nolint:gosec // small
+		p.Scopes = append(p.Scopes, ints.Enum[protocolv1.CommitScope](s))
 	}
 	for _, m := range c.WriteModes {
-		p.WriteModes = append(p.WriteModes, protocolv1.WriteMode(m)) //nolint:gosec // small
+		p.WriteModes = append(p.WriteModes, ints.Enum[protocolv1.WriteMode](m))
 	}
 	if c.DefaultCommitInterval > 0 {
 		p.DefaultCommitInterval = durationpb.New(c.DefaultCommitInterval)

@@ -121,7 +121,7 @@ export function IncidentsPage() {
       noun={["incident", "incidents"]}
       onRowClick={(r) => navigate({ to: "/workspaces/$workspace/incidents/$pipeline/$incident", params: { workspace, ...incidentIds(r.original) } })}
       onReset={reset}
-      empty={<EmptyState icon={Siren} title="No incidents" description="When a pipeline fails in a way heal recognizes, an incident opens here, with what heal did about it." />}
+      empty={<EmptyState icon={Siren} title="No incidents" description="When a pipeline needs attention, an incident opens here, with what happened, what OpenETL did about it, and what to do next." />}
       toolbar={
         <Toolbar search={search.q ?? ""} onSearch={(q) => setSearch({ q: q || undefined })} placeholder="Search incidents" filtered={list.filtered} onReset={reset}>
           <FacetedFilter

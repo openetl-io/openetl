@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -83,7 +84,7 @@ func TestOverTheSocket(t *testing.T) {
 
 	// Shorter than Retry-After, so the 429 comes back without a retry.
 	_, err = c.HTTP(ctx, &host.Request{URL: api.URL + "/slow", Budget: 2 * time.Second})
-	se, ok := err.(*host.StatusError) //nolint:errorlint // the client returns it unwrapped
+	se, ok := errors.AsType[*host.StatusError](err)
 	if !ok || se.Status != 429 || se.Code != protocolv1.ErrorCode_ERROR_CODE_RATE_LIMITED || se.After != 7*time.Second || string(se.Body) != "slow down" {
 		t.Fatalf("err = %#v", err)
 	}

@@ -265,7 +265,12 @@ func (f *Fetcher) Executable(ctx context.Context, b spec.Binary, name string) (s
 		return "", err
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
-	out, err := os.OpenFile(filepath.Join(tmp, name), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o755) //nolint:gosec // an executable, under the cache
+	root, err := os.OpenRoot(tmp)
+	if err != nil {
+		return "", err
+	}
+	out, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o700)
+	_ = root.Close()
 	if err != nil {
 		return "", err
 	}
@@ -390,8 +395,9 @@ func (f *Fetcher) Get(ctx context.Context, digest string) ([]byte, error) {
 		return nil, errs.New(errs.ConfigInvalid, "artifact digest %q isn't sha256:{hex}", digest)
 	}
 	dir := filepath.Join(f.Cache, "artifacts")
-	path := filepath.Join(dir, "sha256-"+hexDigest)
-	if b, err := os.ReadFile(path); err == nil && Digest(b) == digest { //nolint:gosec // under the cache
+	name := "sha256-" + hexDigest
+	path := filepath.Join(dir, name)
+	if b, err := readFileIn(dir, name); err == nil && Digest(b) == digest {
 		return b, nil
 	}
 	b, err := f.Artifact(ctx, digest)
@@ -420,6 +426,16 @@ func (f *Fetcher) Get(ctx context.Context, digest string) ([]byte, error) {
 		return nil, errs.Wrap(errs.Internal, err, "connector cache")
 	}
 	return b, nil
+}
+
+// readFileIn reads name in dir, which it can't leave.
+func readFileIn(dir, name string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	return root.ReadFile(name)
 }
 
 // Executable is one platform's executable, at a local path, and the URL it

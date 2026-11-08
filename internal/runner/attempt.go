@@ -24,6 +24,7 @@ import (
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -466,7 +467,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if err != nil {
 		return res, err
 	}
-	span.SetAttributes(attribute.Int64("openetl.generation", int64(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", int64(res.Restored))) //nolint:gosec // epochs fit
+	span.SetAttributes(attribute.Int64("openetl.generation", ints.Int64Clamped(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", ints.Int64Clamped(res.Restored)))
 	span.End()
 
 	c := &coordinator{job: &job, sess: sess, w: w, ws: ws, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied,
@@ -1258,7 +1259,7 @@ func (c *coordinator) committer(ctx context.Context) error {
 // loop, then acknowledges the previous epoch upstream.
 func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err error) {
 	start := time.Now()
-	ctx, span := tracer.Start(ctx, "commit", trace.WithAttributes(attribute.String("openetl.pipeline", c.job.Pipeline), attribute.Int64("openetl.epoch", int64(n)))) //nolint:gosec // epochs fit
+	ctx, span := tracer.Start(ctx, "commit", trace.WithAttributes(attribute.String("openetl.pipeline", c.job.Pipeline), attribute.Int64("openetl.epoch", ints.Int64Clamped(n))))
 	defer func() { endSpan(span, err) }()
 	// Before the record: a refused column can then be held, with the epoch
 	// read again.
@@ -1469,12 +1470,12 @@ func (c *coordinator) measure(ctx context.Context, rec *checkpoint.Record, ready
 	}
 	for name, st := range rec.Streams {
 		attrs := c.attrs(name)
-		rowsCommitted.Add(ctx, int64(st.Rows), attrs) //nolint:gosec // row counts fit
+		rowsCommitted.Add(ctx, ints.Int64Clamped(st.Rows), attrs)
 		if q := quarantined[name]; q > 0 {
-			rowsQuarantined.Add(ctx, int64(q), attrs) //nolint:gosec // row counts fit
+			rowsQuarantined.Add(ctx, ints.Int64Clamped(q), attrs)
 		}
 		if n := collapsed[name]; n > 0 {
-			rowsCollapsed.Add(ctx, int64(n), attrs) //nolint:gosec // row counts fit
+			rowsCollapsed.Add(ctx, ints.Int64Clamped(n), attrs)
 		}
 		c.measureHolds(ctx, name, st.Holds, ready.Holds[name], rec.CreatedAt)
 	}
@@ -1487,7 +1488,7 @@ func (c *coordinator) measureHolds(ctx context.Context, stream string, h *checkp
 	}
 	if r != nil {
 		for col, cell := range r.Cells {
-			cellsHeld.Add(ctx, int64(cell.Cells), column(col)) //nolint:gosec // cell counts fit
+			cellsHeld.Add(ctx, ints.Int64Clamped(cell.Cells), column(col))
 		}
 		var bytes uint64
 		for _, f := range r.Files {

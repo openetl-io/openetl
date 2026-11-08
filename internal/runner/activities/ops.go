@@ -13,6 +13,7 @@ import (
 	"github.com/openetl-io/openetl/internal/flink"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/secretstore"
 	"github.com/openetl-io/openetl/internal/streamschema"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -232,7 +233,7 @@ func catalogProto(cat source.Catalog) *apiv1.Catalog {
 	for _, cs := range cat.Streams {
 		s := &apiv1.CatalogStream{Name: cs.Name, PrimaryKey: cs.PrimaryKey, CursorField: cs.CursorField, Replay: replays[cs.Replay]}
 		for _, m := range cs.SyncModes {
-			s.SyncModes = append(s.SyncModes, apiv1.SyncMode(m)) //nolint:gosec // small
+			s.SyncModes = append(s.SyncModes, ints.Enum[apiv1.SyncMode](m))
 		}
 		if cs.Schema != nil {
 			for _, c := range streamschema.Columns(cs.Schema) {

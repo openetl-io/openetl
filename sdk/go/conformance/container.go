@@ -57,8 +57,8 @@ const containerPort = 7700
 // isn't there, which the ready timeout doesn't count.
 func Container(engine, image string, command []string, res Resources, o Options) Launcher {
 	return func(ctx context.Context, config []byte) (Process, error) {
-		if err := exec.CommandContext(ctx, engine, "image", "inspect", image).Run(); err != nil { //nolint:gosec // the caller names the engine and image
-			if out, err := exec.CommandContext(ctx, engine, "pull", image).CombinedOutput(); err != nil { //nolint:gosec // as above
+		if err := exec.CommandContext(ctx, engine, "image", "inspect", image).Run(); err != nil {
+			if out, err := exec.CommandContext(ctx, engine, "pull", image).CombinedOutput(); err != nil {
 				return nil, fmt.Errorf("%s pull %s: %w: %s", engine, image, err, strings.TrimSpace(string(out)))
 			}
 		}
@@ -85,8 +85,8 @@ func Container(engine, image string, command []string, res Resources, o Options)
 		case !o.TCP:
 			if uid == 0 {
 				uid, gid = 65532, 65532
-				_ = os.Chmod(p.dir, 0o777)                       //nolint:gosec // the container's user isn't ours
-				_ = os.Chmod(p.hostAddr[len("unix://"):], 0o666) //nolint:gosec // as above
+				_ = os.Chmod(p.dir, 0o777)
+				_ = os.Chmod(p.hostAddr[len("unix://"):], 0o666)
 			}
 			if engine == "podman" {
 				args = append(args, "--userns=keep-id")
@@ -114,32 +114,38 @@ func Container(engine, image string, command []string, res Resources, o Options)
 		} else {
 			args = append(args, image)
 		}
-		cmd := exec.Command(engine, args...) //nolint:gosec,noctx // the caller names the engine and image; Close stops it
+		// The engine's client outlives ctx: Close kills it if stopping the
+		// container doesn't end it.
+		life, kill := context.WithCancel(context.Background())
+		cmd := exec.CommandContext(life, engine, args...)
 		cmd.Env = env
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
+			kill()
 			p.cleanup()
 			return nil, err
 		}
 		cmd.Stderr = p.out
 		if err := cmd.Start(); err != nil {
+			kill()
 			p.cleanup()
 			return nil, fmt.Errorf("start %s: %w", engine, err)
 		}
 		exited, ready := make(chan struct{}), readyLine(stdout)
 		go func() {
 			_ = cmd.Wait()
+			kill()
 			close(exited)
 		}()
 		p.stop = func() {
 			sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			_ = exec.CommandContext(sctx, engine, "stop", "--time", "5", name).Run() //nolint:gosec // as above
+			_ = exec.CommandContext(sctx, engine, "stop", "--time", "5", name).Run()
 			select {
 			case <-exited:
 			case <-time.After(10 * time.Second):
-				_ = exec.CommandContext(sctx, engine, "rm", "--force", name).Run() //nolint:gosec // as above
-				_ = cmd.Process.Kill()
+				_ = exec.CommandContext(sctx, engine, "rm", "--force", name).Run()
+				kill()
 				<-exited
 			}
 		}
@@ -147,7 +153,7 @@ func Container(engine, image string, command []string, res Resources, o Options)
 			return nil, err
 		}
 		if o.TCP && runtime.GOOS != "linux" {
-			out, err := exec.CommandContext(ctx, engine, "port", name, strconv.Itoa(containerPort)+"/tcp").Output() //nolint:gosec // as above
+			out, err := exec.CommandContext(ctx, engine, "port", name, strconv.Itoa(containerPort)+"/tcp").Output()
 			hostPort := ""
 			if err == nil {
 				hostPort, _, _ = strings.Cut(strings.TrimSpace(string(out)), "\n")
@@ -177,7 +183,7 @@ func BuildImage(t T, engine, pkg string) string {
 		t.Fatalf("%v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-trimpath", "-o", filepath.Join(dir, "connector"), pkg) //nolint:gosec // the test names the package
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-trimpath", "-o", filepath.Join(dir, "connector"), pkg)
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build %s: %v\n%s", pkg, err, out)
@@ -186,10 +192,11 @@ func BuildImage(t T, engine, pkg string) string {
 		t.Fatalf("%v", err)
 	}
 	image := "localhost/openetl-conformance:" + launch.NewToken()[:12]
-	if out, err := exec.CommandContext(t.Context(), engine, "build", "-q", "-t", image, dir).CombinedOutput(); err != nil { //nolint:gosec // the caller names the engine
+	if out, err := exec.CommandContext(t.Context(), engine, "build", "-q", "-t", image, dir).CombinedOutput(); err != nil {
 		t.Fatalf("%s build: %v\n%s", engine, err, out)
 	}
-	t.Cleanup(func() { _ = exec.Command(engine, "rmi", "--force", image).Run() }) //nolint:gosec,noctx // as above; the test's context has ended
+	// The test's context has ended by the time cleanups run.
+	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), engine, "rmi", "--force", image).Run() })
 	return image
 }
 

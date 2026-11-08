@@ -121,7 +121,8 @@ func start(ctx context.Context, opts Options) (*process, error) {
 	if opts.Size != (resources.Size{}) {
 		args = append(args, "--threads", strconv.Itoa(opts.Size.Threads()))
 	}
-	p.cmd = exec.Command(bin, args...) //nolint:gosec,noctx // the operator configures the binary; close stops it
+	// close stops it, not ctx's end.
+	p.cmd = exec.CommandContext(context.WithoutCancel(ctx), bin, args...)
 	p.cmd.Env = engineEnv()
 	p.meter.Confine(p.cmd)
 	stdin, err1 := p.cmd.StdinPipe()

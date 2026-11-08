@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -14,23 +15,30 @@ import (
 
 // FSStore is a Store on the local filesystem. Create hard-links, which fails
 // if the target exists; Swap renames under an flock on a sidecar file, so it
-// is safe across processes on one machine.
+// is safe across processes on one machine. It holds the directory open, and
+// no key resolves outside it, through symbolic links either.
 type FSStore struct {
-	root string
+	dir  string
+	root *os.Root
 }
 
 func NewFSStore(dir string) (*FSStore, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("checkpoint: create store root: %w", err)
 	}
-	return &FSStore{root: dir}, nil
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: open store root: %w", err)
+	}
+	return &FSStore{dir: dir, root: root}, nil
 }
 
+// path is key's file, relative to the root.
 func (s *FSStore) path(key string) (string, error) {
 	if key == "" || strings.HasPrefix(key, "/") || strings.Contains(key, "..") {
 		return "", fmt.Errorf("checkpoint: invalid key %q", key)
 	}
-	return filepath.Join(s.root, filepath.FromSlash(key)), nil
+	return filepath.FromSlash(key), nil
 }
 
 func (s *FSStore) Get(_ context.Context, key string) ([]byte, Version, error) {
@@ -38,7 +46,7 @@ func (s *FSStore) Get(_ context.Context, key string) ([]byte, Version, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	data, err := os.ReadFile(p) //nolint:gosec // p is built from a validated key under the root
+	data, err := s.root.ReadFile(p)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, "", ErrNotFound
 	}
@@ -57,8 +65,8 @@ func (s *FSStore) Create(_ context.Context, key string, data []byte) (Version, e
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp) // best effort; the link is what matters
-	if err := os.Link(tmp, p); err != nil {
+	defer func() { _ = s.root.Remove(tmp) }() // best effort; the link is what matters
+	if err := s.root.Link(tmp, p); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return "", ErrPrecondition
 		}
@@ -72,13 +80,13 @@ func (s *FSStore) Swap(_ context.Context, key string, data []byte, prev Version)
 	if err != nil {
 		return "", err
 	}
-	unlock, err := lockFile(p + ".lock")
+	unlock, err := s.lockFile(p + ".lock")
 	if err != nil {
 		return "", err
 	}
 	defer unlock()
 
-	cur, err := os.ReadFile(p) //nolint:gosec // p is built from a validated key under the root
+	cur, err := s.root.ReadFile(p)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", ErrPrecondition
 	}
@@ -92,8 +100,8 @@ func (s *FSStore) Swap(_ context.Context, key string, data []byte, prev Version)
 	if err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmp, p); err != nil {
-		_ = os.Remove(tmp)
+	if err := s.root.Rename(tmp, p); err != nil {
+		_ = s.root.Remove(tmp)
 		return "", err
 	}
 	return contentVersion(data), nil
@@ -104,20 +112,20 @@ func (s *FSStore) Delete(_ context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := s.root.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil
 }
 
 func (s *FSStore) List(_ context.Context, prefix string) ([]string, error) {
-	start := s.root
+	start := s.dir
 	if i := strings.LastIndex(prefix, "/"); i > 0 {
 		p, err := s.path(prefix[:i])
 		if err != nil {
 			return nil, err
 		}
-		start = p
+		start = filepath.Join(s.dir, p)
 	}
 	var keys []string
 	err := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
@@ -130,7 +138,7 @@ func (s *FSStore) List(_ context.Context, prefix string) ([]string, error) {
 		if d.IsDir() || strings.HasSuffix(p, ".lock") || strings.HasPrefix(d.Name(), ".tmp-") {
 			return nil
 		}
-		rel, err := filepath.Rel(s.root, p)
+		rel, err := filepath.Rel(s.dir, p)
 		if err != nil {
 			return err
 		}
@@ -146,16 +154,17 @@ func (s *FSStore) List(_ context.Context, prefix string) ([]string, error) {
 	return keys, nil
 }
 
+// writeTemp writes data to a new .tmp- file beside p, and returns its path.
 func (s *FSStore) writeTemp(p string, data []byte) (string, error) {
 	dir := filepath.Dir(p)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := s.root.MkdirAll(dir, 0o750); err != nil {
 		return "", err
 	}
-	f, err := os.CreateTemp(dir, ".tmp-*")
+	name := filepath.Join(dir, ".tmp-"+rand.Text())
+	f, err := s.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
-	name := f.Name()
 	_, werr := f.Write(data)
 	if werr == nil {
 		werr = f.Sync()
@@ -164,17 +173,17 @@ func (s *FSStore) writeTemp(p string, data []byte) (string, error) {
 		werr = cerr
 	}
 	if werr != nil {
-		_ = os.Remove(name)
+		_ = s.root.Remove(name)
 		return "", werr
 	}
 	return name, nil
 }
 
-func lockFile(p string) (unlock func(), err error) {
-	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+func (s *FSStore) lockFile(p string) (unlock func(), err error) {
+	if err := s.root.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // path is built from a validated key
+	f, err := s.root.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

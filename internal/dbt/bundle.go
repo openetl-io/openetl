@@ -41,8 +41,13 @@ type Project struct {
 // target/, logs/ and profiles.yml, which can hold credentials. Vendored
 // packages in dbt_packages/ are kept, since runners don't run dbt deps.
 func Pack(dir string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
 	files := map[string][]byte{}
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -63,7 +68,7 @@ func Pack(dir string) ([]byte, error) {
 		case !d.Type().IsRegular():
 			return fmt.Errorf("%s isn't a regular file; bundles hold only files", rel)
 		}
-		b, err := os.ReadFile(p) //nolint:gosec // under the project the user names
+		b, err := root.ReadFile(filepath.FromSlash(rel))
 		if err != nil {
 			return err
 		}

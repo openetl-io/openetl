@@ -49,7 +49,10 @@ func (o Output) Open() (io.WriteCloser, error) {
 	if o.MaxSize < 1 || o.MaxFiles < 0 {
 		return nil, fmt.Errorf("logging: a log file needs a size of at least 1 MB and a number of rotated files to keep, not %d MB and %d", o.MaxSize, o.MaxFiles)
 	}
-	f, err := os.OpenFile(o.To, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640) //nolint:gosec // the operator chooses the file
+	// A file this creates is 0600. One that exists keeps its mode, and
+	// rotation copies it, so a log collector in the file's group can be let
+	// in by creating the file first.
+	f, err := os.OpenFile(o.To, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("logging: %w", err)
 	}

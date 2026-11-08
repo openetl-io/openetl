@@ -29,7 +29,7 @@ type submit struct {
 // run runs spark-submit with args, logs each line it prints, and returns
 // them. A spark-submit that can't start is CONFIG_INVALID.
 func (s *submit) run(ctx context.Context, args ...string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, s.bin, args...) //nolint:gosec // the operator's spark-submit, with arguments from the pipeline's spec
+	cmd := exec.CommandContext(ctx, s.bin, args...)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err

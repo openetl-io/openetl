@@ -180,7 +180,8 @@ func ReadSpec(ctx context.Context, exe string, kind protocolv1.ConnectorKind, op
 
 // run starts the executable and connects to it once it's ready.
 func (p *process) run(ctx context.Context, exe string, kind protocolv1.ConnectorKind, socket, hostSocket string, size resources.Size) error {
-	p.cmd = exec.Command(exe) //nolint:noctx // close stops it
+	// close stops it, not ctx's end.
+	p.cmd = exec.CommandContext(context.WithoutCancel(ctx), exe)
 	for _, k := range passEnv {
 		if v, ok := os.LookupEnv(k); ok {
 			p.cmd.Env = append(p.cmd.Env, k+"="+v)

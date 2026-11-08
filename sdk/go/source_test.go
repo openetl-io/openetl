@@ -101,7 +101,9 @@ func (p *pages) fetch(_ context.Context, token string) ([]json.RawMessage, strin
 	}
 	i := 0
 	if token != "" {
-		fmt.Sscanf(token, "t%d", &i) //nolint:errcheck // tokens are ours
+		if _, err := fmt.Sscanf(token, "t%d", &i); err != nil {
+			return nil, "", err
+		}
 	}
 	var out []json.RawMessage
 	for _, r := range p.records[i] {

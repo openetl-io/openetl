@@ -16,6 +16,7 @@ import (
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/heal"
 	"github.com/openetl-io/openetl/internal/plan"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/store/db"
 )
 
@@ -44,8 +45,8 @@ func hold(r db.ListHoldsRow) (*apiv1.Hold, error) {
 	refused := refusedBy(r)
 	h := &apiv1.Hold{
 		Stream: r.Stream, Column: r.ColumnName, Whole: r.Whole, Reason: r.Reason,
-		SinceGeneration: uint64(r.SinceGeneration), SinceEpoch: uint64(r.SinceEpoch), //nolint:gosec // generations and epochs are positive
-		Cells: uint64(r.Cells), Discarded: r.Discarded, Releasing: r.Releasing, //nolint:gosec // counts are positive
+		SinceGeneration: ints.Uint64(r.SinceGeneration), SinceEpoch: ints.Uint64(r.SinceEpoch),
+		Cells: ints.Uint64(r.Cells), Discarded: r.Discarded, Releasing: r.Releasing,
 		Pending: r.ReleaseID != nil && !r.Discarded && !r.Releasing && !refused,
 	}
 	if refused && !r.Discarded {
@@ -186,13 +187,42 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 	return out, nil
 }
 
-// recordHolds replaces the pipeline's holds with a checkpoint's, if it's
-// newer than the one they come from.
-func (s *Server) recordHolds(ctx context.Context, pipeline uuid.UUID, m *dataplanev1.ReportCheckpointRequest) error {
+// holdRows are a checkpoint's holds as the pipeline's rows.
+func (s *Server) holdRows(pipeline uuid.UUID, m *dataplanev1.ReportCheckpointRequest, b *bigints) ([]db.InsertHoldParams, error) {
+	var rows []db.InsertHoldParams
+	for _, st := range m.GetStreams() {
+		for _, h := range st.GetHolds() {
+			arg := db.InsertHoldParams{
+				OrgID: s.Tenant.Org, PipelineID: pipeline, Stream: st.GetName(), ColumnName: h.GetColumn(), Whole: h.GetWhole(),
+				Reason: h.GetReason(), SinceGeneration: b.of("hold since.generation", h.GetSince().GetGeneration()), SinceEpoch: b.of("hold since.epoch", h.GetSince().GetEpoch()),
+				Cells: b.of("hold cells", h.GetCells()), Discarded: h.GetDiscarded(), Releasing: h.GetReleasing(),
+				Refusal: h.GetRefused().GetReason(),
+			}
+			if t := h.GetStartTime(); t.IsValid() {
+				at := t.AsTime()
+				arg.StartTime = &at
+			}
+			if c := h.GetCause(); c != nil {
+				var err error
+				if arg.Cause, err = protojson.Marshal(c); err != nil {
+					return nil, err
+				}
+			}
+			if id, err := uuid.Parse(h.GetRefusedRelease()); err == nil {
+				arg.RefusedRelease = &id
+			}
+			rows = append(rows, arg)
+		}
+	}
+	return rows, nil
+}
+
+// recordHolds replaces the pipeline's holds with rows, a checkpoint's, if
+// it's newer than the one they come from.
+func (s *Server) recordHolds(ctx context.Context, pipeline uuid.UUID, generation, epoch int64, rows []db.InsertHoldParams) error {
 	return s.Store.Tx(ctx, func(q *db.Queries) error {
 		n, err := q.ClaimHoldCheckpoint(ctx, db.ClaimHoldCheckpointParams{
-			OrgID: s.Tenant.Org, PipelineID: pipeline,
-			Generation: int64(m.GetGeneration()), Epoch: int64(m.GetEpoch()), //nolint:gosec // generations and epochs are small
+			OrgID: s.Tenant.Org, PipelineID: pipeline, Generation: generation, Epoch: epoch,
 		})
 		if err != nil || n == 0 {
 			return err
@@ -200,29 +230,9 @@ func (s *Server) recordHolds(ctx context.Context, pipeline uuid.UUID, m *datapla
 		if err := q.DeleteHolds(ctx, db.DeleteHoldsParams{OrgID: s.Tenant.Org, PipelineID: pipeline}); err != nil {
 			return err
 		}
-		for _, st := range m.GetStreams() {
-			for _, h := range st.GetHolds() {
-				arg := db.InsertHoldParams{
-					OrgID: s.Tenant.Org, PipelineID: pipeline, Stream: st.GetName(), ColumnName: h.GetColumn(), Whole: h.GetWhole(),
-					Reason: h.GetReason(), SinceGeneration: int64(h.GetSince().GetGeneration()), SinceEpoch: int64(h.GetSince().GetEpoch()), //nolint:gosec // as above
-					Cells: int64(h.GetCells()), Discarded: h.GetDiscarded(), Releasing: h.GetReleasing(), //nolint:gosec // counts fit
-					Refusal: h.GetRefused().GetReason(),
-				}
-				if t := h.GetStartTime(); t.IsValid() {
-					at := t.AsTime()
-					arg.StartTime = &at
-				}
-				if c := h.GetCause(); c != nil {
-					if arg.Cause, err = protojson.Marshal(c); err != nil {
-						return err
-					}
-				}
-				if id, err := uuid.Parse(h.GetRefusedRelease()); err == nil {
-					arg.RefusedRelease = &id
-				}
-				if err := q.InsertHold(ctx, arg); err != nil {
-					return err
-				}
+		for _, arg := range rows {
+			if err := q.InsertHold(ctx, arg); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -323,7 +333,7 @@ func (s *Server) pendingReleases(ctx context.Context, pipeline uuid.UUID) ([]*da
 	for _, r := range rows {
 		out = append(out, &dataplanev1.HoldRelease{
 			Id: r.ID.String(), Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard, NewVersion: r.NewVersion,
-			Since: &dataplanev1.CheckpointRef{Generation: uint64(r.SinceGeneration), Epoch: uint64(r.SinceEpoch)}, //nolint:gosec // positive
+			Since: &dataplanev1.CheckpointRef{Generation: ints.Uint64(r.SinceGeneration), Epoch: ints.Uint64(r.SinceEpoch)},
 		})
 	}
 	return out, nil

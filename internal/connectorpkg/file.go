@@ -151,7 +151,7 @@ func (f *File) Builds() bool {
 // Load reads and checks dir's openetl-connector.yaml.
 func Load(dir string) (*File, error) {
 	path := filepath.Join(dir, FileName)
-	b, err := os.ReadFile(path) //nolint:gosec // the author's own file
+	b, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}

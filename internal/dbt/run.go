@@ -105,7 +105,7 @@ func Exec(ctx context.Context, bundle []byte, work string, inv Invocation) (*Res
 	if exc := strings.Fields(inv.Exclude); len(exc) > 0 {
 		args = append(append(args, "--exclude"), exc...)
 	}
-	cmd := exec.CommandContext(ctx, cmp.Or(inv.Executable, "dbt"), args...) //nolint:gosec // the operator names dbt; the step's selectors are arguments, not a shell
+	cmd := exec.CommandContext(ctx, cmp.Or(inv.Executable, "dbt"), args...)
 	cmd.Dir = dir
 	for _, k := range passEnv {
 		if v, ok := os.LookupEnv(k); ok {
@@ -129,7 +129,7 @@ func Exec(ctx context.Context, bundle []byte, work string, inv Invocation) (*Res
 	err = cmd.Wait()
 
 	res := &Result{Nodes: map[string]int{}}
-	failed, rerr := readResults(filepath.Join(dir, "target", "run_results.json"), res)
+	failed, rerr := readResults(dir, res)
 	var exit *exec.ExitError
 	switch {
 	case ctx.Err() != nil:
@@ -172,10 +172,15 @@ func logLines(r io.Reader, log *slog.Logger) []string {
 	return tail
 }
 
-// readResults counts run_results.json's nodes into res, and returns the
-// failed ones with their messages.
-func readResults(path string, res *Result) ([]string, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // in the project dbt ran
+// readResults counts the nodes of the run_results.json dbt wrote in dir into
+// res, and returns the failed ones with their messages.
+func readResults(dir string, res *Result) ([]string, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	b, err := root.ReadFile(filepath.Join("target", "run_results.json"))
 	if err != nil {
 		return nil, err
 	}

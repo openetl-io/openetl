@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/openetl-io/openetl/internal/platform/ints"
 )
 
 // Usage is what an attempt has used so far.
@@ -258,7 +260,7 @@ func Self() (cpu float64, heap int64) {
 	sample := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
 	metrics.Read(sample)
 	if sample[0].Value.Kind() == metrics.KindUint64 {
-		heap = int64(sample[0].Value.Uint64()) //nolint:gosec // no heap has 2^63 bytes
+		heap, _ = ints.Int64(sample[0].Value.Uint64())
 	}
 	return cpu, heap
 }

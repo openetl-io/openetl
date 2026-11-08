@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/internal/ints"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -54,11 +55,11 @@ func (s *sourceServer) Discover(ctx context.Context, req *protocolv1.DiscoverReq
 			ArrowSchema:   schema,
 			PrimaryKey:    cs.PrimaryKey,
 			DefaultCursor: cs.CursorField,
-			Replay:        protocolv1.Replay(cs.Replay), //nolint:gosec // small
+			Replay:        ints.Enum[protocolv1.Replay](cs.Replay),
 			SplitsByKey:   cs.SplitsByKey,
 		})
 		for _, m := range cs.SyncModes {
-			pc.Streams[len(pc.Streams)-1].SyncModes = append(pc.Streams[len(pc.Streams)-1].SyncModes, protocolv1.SyncMode(m)) //nolint:gosec // small
+			pc.Streams[len(pc.Streams)-1].SyncModes = append(pc.Streams[len(pc.Streams)-1].SyncModes, ints.Enum[protocolv1.SyncMode](m))
 		}
 	}
 	return &protocolv1.DiscoverResponse{Catalog: pc}, nil

@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -48,7 +49,7 @@ func (g *Server) HTTP(req *protocolv1.HTTPRequest, stream grpc.ServerStreamingSe
 	}
 	resp, err := g.s.HTTP(stream.Context(), r)
 	if se, ok := errors.AsType[*host.StatusError](err); ok {
-		head := &protocolv1.HTTPResponseHead{Status: int32(se.Status), Headers: headersToProto(se.Header), Error: errs.ToProto(se)} //nolint:gosec // an HTTP status
+		head := &protocolv1.HTTPResponseHead{Status: ints.Int32(se.Status), Headers: headersToProto(se.Header), Error: errs.ToProto(se)}
 		if err := stream.Send(&protocolv1.HTTPResponse{Part: &protocolv1.HTTPResponse_Head{Head: head}}); err != nil {
 			return err
 		}
@@ -58,7 +59,7 @@ func (g *Server) HTTP(req *protocolv1.HTTPRequest, stream grpc.ServerStreamingSe
 		return errs.Status(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	head := &protocolv1.HTTPResponseHead{Status: int32(resp.Status), Headers: headersToProto(resp.Header)} //nolint:gosec // an HTTP status
+	head := &protocolv1.HTTPResponseHead{Status: ints.Int32(resp.Status), Headers: headersToProto(resp.Header)}
 	if err := stream.Send(&protocolv1.HTTPResponse{Part: &protocolv1.HTTPResponse_Head{Head: head}}); err != nil {
 		return err
 	}

@@ -3,8 +3,10 @@ package engineclient
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 )
@@ -15,11 +17,11 @@ const (
 	maxPayload = 1 << 30
 )
 
-func putHeader(h []byte, kind enginev1.FrameKind, stream uint32, n int) {
-	h[0] = byte(kind) //nolint:gosec // frame kinds fit in a byte
+func putHeader(h []byte, kind byte, stream, n uint32) {
+	h[0] = kind
 	h[1], h[2], h[3] = 0, 0, 0
 	binary.LittleEndian.PutUint32(h[4:8], stream)
-	binary.LittleEndian.PutUint32(h[8:12], uint32(n)) //nolint:gosec // n is checked against maxPayload
+	binary.LittleEndian.PutUint32(h[8:12], n)
 }
 
 type frameWriter struct {
@@ -32,10 +34,14 @@ func newFrameWriter(w io.Writer) *frameWriter {
 }
 
 func (fw *frameWriter) write(kind enginev1.FrameKind, stream uint32, payload []byte) error {
-	if len(payload) > maxPayload {
-		return fmt.Errorf("engineclient: frame payload of %d bytes", len(payload))
+	n := len(payload)
+	if n > maxPayload {
+		return fmt.Errorf("engineclient: frame payload of %d bytes", n)
 	}
-	putHeader(fw.hdr[:], kind, stream, len(payload))
+	if kind < 0 || kind > math.MaxUint8 {
+		return fmt.Errorf("engineclient: frame kind %d", kind)
+	}
+	putHeader(fw.hdr[:], byte(kind), stream, uint32(n))
 	if _, err := fw.w.Write(fw.hdr[:]); err != nil {
 		return err
 	}
@@ -59,7 +65,7 @@ func newFrameReader(r io.Reader) *frameReader {
 // until the next call.
 func (fr *frameReader) next() (enginev1.FrameKind, uint32, []byte, error) {
 	if _, err := io.ReadFull(fr.r, fr.hdr[:]); err != nil {
-		if err == io.ErrUnexpectedEOF { //nolint:errorlint // ReadFull returns it unwrapped
+		if errors.Is(err, io.ErrUnexpectedEOF) {
 			err = fmt.Errorf("engineclient: edge closed inside a frame header: %w", err)
 		}
 		return 0, 0, nil, err

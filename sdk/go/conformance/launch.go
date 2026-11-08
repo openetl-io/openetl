@@ -90,7 +90,10 @@ func ExecWith(exe string, o Options) Launcher {
 		if err != nil {
 			return nil, err
 		}
-		cmd := exec.Command(exe) //nolint:noctx // Close stops it
+		// The process outlives ctx: Close kills it if closing its stdin
+		// doesn't end it.
+		life, kill := context.WithCancel(context.Background())
+		cmd := exec.CommandContext(life, exe)
 		for _, k := range passEnv {
 			if v, ok := os.LookupEnv(k); ok {
 				cmd.Env = append(cmd.Env, k+"="+v)
@@ -103,16 +106,19 @@ func ExecWith(exe string, o Options) Launcher {
 		stdout, err2 := cmd.StdoutPipe()
 		cmd.Stderr = p.out
 		if err := errors.Join(err1, err2); err != nil {
+			kill()
 			p.cleanup()
 			return nil, err
 		}
 		if err := cmd.Start(); err != nil {
+			kill()
 			p.cleanup()
 			return nil, fmt.Errorf("start %s: %w", exe, err)
 		}
 		exited, ready := make(chan struct{}), readyLine(stdout)
 		go func() {
 			_ = cmd.Wait()
+			kill()
 			close(exited)
 		}()
 		p.stop = func() {
@@ -120,7 +126,7 @@ func ExecWith(exe string, o Options) Launcher {
 			select {
 			case <-exited:
 			case <-time.After(10 * time.Second):
-				_ = cmd.Process.Kill()
+				kill()
 				<-exited
 			}
 		}
@@ -228,7 +234,7 @@ func Build(t T, pkg string) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	exe := filepath.Join(dir, filepath.Base(pkg))
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", exe, pkg) //nolint:gosec // the test names the package
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", exe, pkg)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build %s: %v\n%s", pkg, err, out)
 	}

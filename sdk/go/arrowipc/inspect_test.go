@@ -2,6 +2,8 @@ package arrowipc
 
 import (
 	"bytes"
+	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -137,6 +139,20 @@ func TestInspectRejects(t *testing.T) {
 		_, err := Inspect(one[:n])
 		if ok := n == eos; ok != (err == nil) {
 			t.Errorf("the first %d of %d bytes: %v", n, len(one), err)
+		}
+	}
+}
+
+func TestSignedReads(t *testing.T) {
+	for _, v := range []int64{0, 1, -1, math.MaxInt32, math.MinInt32, 1 << 32, -1 << 32, math.MaxInt64, math.MinInt64} {
+		got, err := fb(binary.LittleEndian.AppendUint64(nil, uint64(v))).i64(0)
+		if err != nil || got != v {
+			t.Errorf("i64 of %d: %d, %v", v, got, err)
+		}
+	}
+	for _, v := range []int32{0, 1, -1, math.MaxInt32, math.MinInt32} {
+		if got := signed(uint32(v)); got != int64(v) {
+			t.Errorf("signed of %d: %d", v, got)
 		}
 	}
 }

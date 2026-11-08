@@ -178,7 +178,10 @@ func (s *Source) batch(idx, next int, out source.Emitter) (int, error) {
 		if s.cfg.Twice > 0 && i > 0 && i%s.cfg.Twice == 0 {
 			from = i - 1
 		}
-		r := rand.New(rand.NewPCG(s.cfg.Seed, uint64(from)<<8|uint64(idx))) //nolint:gosec // generated test data must be reproducible
+		if from < 0 || idx < 0 {
+			return next, fmt.Errorf("faker: no row %d in stream %d", from, idx)
+		}
+		r := rand.New(rand.NewPCG(s.cfg.Seed, uint64(from)<<8|uint64(idx)))
 		b, err := json.Marshal(st.row(r, from, s.cfg.Count))
 		if err != nil {
 			return next, err

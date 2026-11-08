@@ -67,7 +67,7 @@ type Area struct {
 	stopped chan struct{}
 	// For the background writes, which outlast a cancelled attempt so its
 	// last cursors are written.
-	ctx context.Context //nolint:containedctx // the writer's, not a request's
+	ctx context.Context
 }
 
 type cursor struct {

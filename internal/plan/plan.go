@@ -85,6 +85,19 @@ func WriteMode(p *apiv1.PipelineSpec) destination.WriteMode {
 	return 0
 }
 
+// apiWriteMode is m as the API has it, WriteMode's inverse.
+func apiWriteMode(m destination.WriteMode) apiv1.WriteMode {
+	switch m {
+	case destination.Append:
+		return apiv1.WriteMode_WRITE_MODE_APPEND
+	case destination.Overwrite:
+		return apiv1.WriteMode_WRITE_MODE_OVERWRITE
+	case destination.Merge:
+		return apiv1.WriteMode_WRITE_MODE_MERGE
+	}
+	return apiv1.WriteMode_WRITE_MODE_UNSPECIFIED
+}
+
 // ReadMode is how a stream is read: its sync in the spec, or else the way
 // its source declares it reads it first, or in a continuous pipeline the
 // first declared way whose reads don't end. Unspecified if none says.
@@ -226,7 +239,7 @@ func HoldProblem(caps destination.Capabilities, mode destination.WriteMode, keye
 		return fmt.Errorf("stream %q sets how it holds cells or columns, and only a keyed stream holds them", stream)
 	}
 	if !caps.Holds.Takes(mode) {
-		name := strings.ToLower(strings.TrimPrefix(apiv1.WriteMode(mode).String(), "WRITE_MODE_")) //nolint:gosec // small
+		name := strings.ToLower(strings.TrimPrefix(apiWriteMode(mode).String(), "WRITE_MODE_"))
 		return fmt.Errorf("stream %q sets how it holds cells or columns, and the destination doesn't patch %s streams", stream, name)
 	}
 	last := ps.GetHeld().GetMode() == apiv1.HeldMode_HELD_MODE_LAST
@@ -368,7 +381,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
 		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
-			Write: apiv1.WriteMode(mode), TypeChanges: TypeChanges(spec, s.ps)}) //nolint:gosec // small
+			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps)})
 	}
 	if spec.GetTransform() != nil {
 		for _, o := range Outputs(spec, caps, inputs) {
@@ -379,7 +392,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 			d := o.Delivery()
 			ds = append(ds, d)
 			p := delivery.PlanStream(caps, d, settings.Require)
-			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiv1.WriteMode(o.Mode), TypeChanges: TypeChanges(spec, nil)}) //nolint:gosec // small
+			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, nil)})
 		}
 	}
 	deletesIgnored(merges || len(streams) == 0 && WriteMode(spec) == destination.Merge)

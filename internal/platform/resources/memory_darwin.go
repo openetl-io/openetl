@@ -1,8 +1,21 @@
 package resources
 
-import "golang.org/x/sys/unix"
+import (
+	"fmt"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/openetl-io/openetl/internal/platform/ints"
+)
 
 func hostMemory() (int64, error) {
 	n, err := unix.SysctlUint64("hw.memsize")
-	return int64(n), err //nolint:gosec // no machine has 2^63 bytes
+	if err != nil {
+		return 0, err
+	}
+	m, ok := ints.Int64(n)
+	if !ok {
+		return 0, fmt.Errorf("hw.memsize is %d bytes, more than can be counted", n)
+	}
+	return m, nil
 }

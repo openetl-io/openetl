@@ -4405,13 +4405,6 @@ components:
         PipelineColumn:
             type: object
             properties:
-                op:
-                    enum:
-                        - COLUMN_OP_KIND_UNSPECIFIED
-                        - COLUMN_OP_KIND_HASH
-                        - COLUMN_OP_KIND_BLOCK
-                    type: string
-                    format: enum
                 type:
                     enum:
                         - COLUMN_TYPE_UNSPECIFIED
@@ -4947,6 +4940,9 @@ components:
                     type: string
                 cron:
                     type: string
+                    description: |-
+                        In UTC, unless it starts with CRON_TZ= and a time zone, as in
+                         CRON_TZ=Europe/Berlin 0 6 * * *.
                 jitter:
                     pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
                     type: string

@@ -8,7 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1" //nolint:gosec // HMAC-SHA1 is what some APIs sign with
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"

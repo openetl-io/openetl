@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -69,14 +70,15 @@ func CheckPassword(hash, password string) (ok, rehash bool) {
 		return false, false
 	}
 	key, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil || len(key) == 0 {
+	n := len(key)
+	if err != nil || n == 0 || n > math.MaxUint32 {
 		return false, false
 	}
-	got := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(key))) //nolint:gosec // len(key) is small
+	got := argon2.IDKey([]byte(password), salt, t, m, p, uint32(n))
 	if subtle.ConstantTimeCompare(got, key) != 1 {
 		return false, false
 	}
-	return true, m != argonMemory || t != argonTime || p != argonThreads || len(key) != argonKeyLen
+	return true, m != argonMemory || t != argonTime || p != argonThreads || n != argonKeyLen
 }
 
 // dummyHash is checked for users without a password, so a sign-in takes as

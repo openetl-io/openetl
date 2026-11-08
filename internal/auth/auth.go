@@ -17,7 +17,7 @@ import (
 
 const (
 	KeyPrefix   = "oetl_"
-	TokenPrefix = "oetl_dp_" //nolint:gosec // a prefix, not a credential
+	TokenPrefix = "oetl_dp_"
 	// How much of a key or token the API shows.
 	shown = 12
 	// 62^43 > 2^256.
@@ -136,7 +136,7 @@ func WriteKeyFile(path, secret string) error {
 }
 
 func ReadKeyFile(path string) (string, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // the operator names the file
+	b, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return "", err
 	}

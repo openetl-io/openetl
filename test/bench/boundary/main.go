@@ -104,7 +104,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	version, err := exec.CommandContext(ctx, bin, "--version").Output() //nolint:gosec // the -engine flag
+	version, err := exec.CommandContext(ctx, bin, "--version").Output()
 	if err != nil {
 		return fmt.Errorf("run %s (make engine builds it): %w", bin, err)
 	}
@@ -407,7 +407,7 @@ func idleRSS(ctx context.Context, bin string) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	cmd := exec.CommandContext(ctx, bin, "serve", "--control", filepath.Join(dir, "c.sock"), "--data", filepath.Join(dir, "d.sock"), "--watch-stdin") //nolint:gosec // the -engine flag
+	cmd := exec.CommandContext(ctx, bin, "serve", "--control", filepath.Join(dir, "c.sock"), "--data", filepath.Join(dir, "d.sock"), "--watch-stdin")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return 0, err
@@ -431,7 +431,7 @@ func idleRSS(ctx context.Context, bin string) (int64, error) {
 		return 0, fmt.Errorf("the engine printed %q, not ready", line)
 	}
 	time.Sleep(time.Second)
-	out, err := exec.CommandContext(ctx, "ps", "-o", "rss=", "-p", strconv.Itoa(cmd.Process.Pid)).Output() //nolint:gosec // a PID
+	out, err := exec.CommandContext(ctx, "ps", "-o", "rss=", "-p", strconv.Itoa(cmd.Process.Pid)).Output()
 	if err != nil {
 		return 0, err
 	}

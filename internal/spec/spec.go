@@ -357,7 +357,6 @@ type streamYAML struct {
 	Groups      [][]string `yaml:"groups"`
 	TypeChanges string     `yaml:"typeChanges"`
 	Columns     map[string]struct {
-		Op       string `yaml:"op"`
 		Type     string `yaml:"type"`
 		heldYAML `yaml:",inline"`
 	} `yaml:"columns"`
@@ -615,9 +614,6 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		holds := s.Quarantine != "" || st.Held != nil || len(st.Groups) > 0
 		for name, c := range s.Columns {
 			field := fmt.Sprintf("source.streams[%d].columns.%s", i, name)
-			if c.Op != "" {
-				return nil, fmt.Errorf("%s: column ops aren't supported yet", field)
-			}
 			col := &apiv1.PipelineColumn{}
 			if col.Type, err = enum(apiv1.ColumnType_value, "COLUMN_TYPE_", field+".type", c.Type, apiv1.ColumnType_COLUMN_TYPE_UNSPECIFIED); err != nil {
 				return nil, err

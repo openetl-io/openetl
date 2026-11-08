@@ -38,6 +38,9 @@ type oauthSecret struct {
 type oauthCredential struct {
 	s    *Services
 	name string
+	// The secret's value as it was read, which rotate writes back with the
+	// new refresh token in it.
+	stored sdk.Secret
 
 	mu     sync.Mutex
 	secret oauthSecret
@@ -70,7 +73,7 @@ func (s *Services) oauth(ctx context.Context, name string) (*oauthCredential, er
 	if c, ok := s.tokens[name]; ok {
 		return c, nil
 	}
-	c = &oauthCredential{s: s, name: name, secret: sec}
+	c = &oauthCredential{s: s, name: name, stored: v, secret: sec}
 	s.tokens[name] = c
 	return c, nil
 }
@@ -130,7 +133,15 @@ func (c *oauthCredential) rotate(ctx context.Context) {
 		c.s.log.WarnContext(ctx, "the OAuth2 server rotated the refresh token, and nothing keeps secrets here", "secret", c.name)
 		return
 	}
-	b, err := json.Marshal(c.secret) //nolint:gosec // the rotated secret goes back to Secrets, whole
+	var fields map[string]json.RawMessage
+	err := json.NewDecoder(bytes.NewReader([]byte(c.stored.Reveal()))).Decode(&fields)
+	if err == nil {
+		fields["refresh_token"], err = json.Marshal(c.secret.RefreshToken)
+	}
+	var b []byte
+	if err == nil {
+		b, err = json.Marshal(fields)
+	}
 	if err == nil {
 		err = r.Rotate(ctx, c.name, sdk.NewSecret(string(b)))
 	}

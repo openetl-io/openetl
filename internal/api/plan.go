@@ -206,9 +206,10 @@ func (s *Server) GetPipelinePlan(ctx context.Context, req *connect.Request[apiv1
 		return nil, err
 	}
 	pl := &planned{id: p.ID, name: req.Msg.GetName(), version: p.Version, v: &pinned{
-		spec: v.Spec,
-		src:  db.Source{ID: p.SourceID, Version: row.SourceVersion},
-		dst:  db.Destination{Spec: row.DestinationSpec, ConnectorDigest: row.DestinationConnector},
+		spec:      v.Spec,
+		dataPlane: row.DataPlaneID,
+		src:       db.Source{ID: p.SourceID, Version: row.SourceVersion, Spec: row.SourceSpec, ConnectorDigest: row.SourceConnector},
+		dst:       db.Destination{Spec: row.DestinationSpec, ConnectorDigest: row.DestinationConnector},
 	}}
 	out, err := s.plan(ctx, s.Store.Queries, pl)
 	if err != nil {

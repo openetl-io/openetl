@@ -26,7 +26,6 @@ Roles:
   orchestrator  runs control-plane workflows, and placement
   runner        runs a data plane's attempts, which it takes from the API
   dev           server, orchestrator and runner in one process
-  gateway       webhook ingress (not built yet)
 
 Commands:
   bootstrap-key  give the admin service account a new owner key, in
@@ -65,8 +64,6 @@ func run(ctx context.Context, args []string) error {
 		defaults["log-format"] = "text"
 		defaults["auth"] = "none"
 	case "bootstrap-key":
-	case "gateway":
-		return fmt.Errorf("the %s role isn't built yet", role)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(os.Stderr, usage)
 		return nil

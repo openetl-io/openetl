@@ -133,6 +133,11 @@ func (p *Policy) Client() *http.Client {
 	return p.ClientVia(nil)
 }
 
+// APIClient is the client for openetld's own API, at the URL the operator
+// gave a runner, which is usually a private address. It checks no
+// addresses, so it's for that URL alone.
+func APIClient() *http.Client { return http.DefaultClient }
+
 // ClientVia is Client, with each hop going through wrap's RoundTripper
 // before Transport. Redirects are hops of their own.
 func (p *Policy) ClientVia(wrap func(http.RoundTripper) http.RoundTripper) *http.Client {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -107,7 +108,10 @@ type readerAtSeeker interface {
 // open returns a local file for a file:// URL, which a store that is a
 // directory hands out, and a remote file otherwise.
 func open(ctx context.Context, h host.Host, file destination.StagedFile) (readerAtSeeker, error) {
-	r := &remote{ctx: ctx, h: h, path: file.Path, size: int64(file.Bytes)} //nolint:gosec // file sizes fit
+	if file.Bytes > math.MaxInt64 {
+		return nil, fmt.Errorf("staging: %s: a size of %d bytes is out of range", file.Path, file.Bytes)
+	}
+	r := &remote{ctx: ctx, h: h, path: file.Path, size: int64(file.Bytes)}
 	u, err := r.signed(false)
 	if err != nil {
 		return nil, err
@@ -124,7 +128,7 @@ func open(ctx context.Context, h host.Host, file destination.StagedFile) (reader
 
 // remote reads a staged file with range requests.
 type remote struct {
-	ctx     context.Context //nolint:containedctx // io.ReaderAt takes none
+	ctx     context.Context
 	h       host.Host
 	path    string
 	size    int64

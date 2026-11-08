@@ -31,7 +31,9 @@ type ParquetConfig struct {
 
 // Parquet writes each stream's rows as Parquet files under a directory, and
 // commits an epoch by linking its staged files to names derived from (g, N).
-// That makes a repeated commit a no-op, so it needs no fence.
+// That makes a repeated commit a no-op, so it needs no fence. The directories
+// and markers it makes there are readable by everyone, as the engine's files
+// are: Spark, Flink and other tools read them, often as other users.
 type Parquet struct {
 	root string
 }
@@ -93,7 +95,7 @@ func (p *Parquet) Open(_ context.Context, cfg destination.OpenConfig) (destinati
 			return nil, fmt.Errorf("parquet: stream %q: only append writes are supported", s.Name)
 		}
 	}
-	return &parquetWriter{root: p.root}, nil
+	return &parquetWriter{dir: p.root}, nil
 }
 
 // descriptor is openetl_formats::Descriptor. Paths are relative to the root.
@@ -118,7 +120,7 @@ type stagedFile struct {
 }
 
 type parquetWriter struct {
-	root string
+	dir string
 }
 
 // The most writer lanes an attempt writes Parquet with.
@@ -139,12 +141,21 @@ func (w *parquetWriter) Commit(_ context.Context, e destination.Epoch, staged []
 	if err != nil {
 		return destination.Committed{}, err
 	}
+	root, err := os.OpenRoot(w.dir)
+	if errors.Is(err, fs.ErrNotExist) && len(d.Streams) == 0 {
+		// The engine makes the directory with its first rows.
+		return destination.Committed{}, nil
+	}
+	if err != nil {
+		return destination.Committed{}, fmt.Errorf("parquet: %w", err)
+	}
+	defer func() { _ = root.Close() }()
 	for _, st := range d.Streams {
-		if err := w.apply(st); err != nil {
+		if err := apply(root, st); err != nil {
 			return destination.Committed{}, err
 		}
 	}
-	w.dropStaging(d)
+	dropStaging(root, d)
 	return destination.Committed{}, nil
 }
 
@@ -156,10 +167,22 @@ func (w *parquetWriter) Recover(_ context.Context, _ uint64, e destination.Epoch
 	if err != nil {
 		return 0, err
 	}
+	root, err := os.OpenRoot(w.dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Without the directory, nothing is staged or linked.
+		if len(d.Streams) == 0 {
+			return destination.Applied, nil
+		}
+		return destination.Lost, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("parquet: %w", err)
+	}
+	defer func() { _ = root.Close() }()
 	var missing []stagedStream
 	lost := 0
 	for _, st := range d.Streams {
-		done, err := exists(w.path(st.Marker))
+		done, err := exists(root, st.Marker)
 		if err != nil {
 			return 0, err
 		}
@@ -169,11 +192,11 @@ func (w *parquetWriter) Recover(_ context.Context, _ uint64, e destination.Epoch
 		missing = append(missing, st)
 		have := 0
 		for _, f := range st.Files {
-			staged, err := exists(w.path(f.Staged))
+			staged, err := exists(root, f.Staged)
 			if err != nil {
 				return 0, err
 			}
-			linked, err := exists(w.path(f.Target))
+			linked, err := exists(root, f.Target)
 			if err != nil {
 				return 0, err
 			}
@@ -191,15 +214,15 @@ func (w *parquetWriter) Recover(_ context.Context, _ uint64, e destination.Epoch
 	}
 	switch {
 	case len(missing) == 0:
-		w.dropStaging(d)
+		dropStaging(root, d)
 		return destination.Applied, nil
 	case lost == 0:
 		for _, st := range missing {
-			if err := w.apply(st); err != nil {
+			if err := apply(root, st); err != nil {
 				return 0, err
 			}
 		}
-		w.dropStaging(d)
+		dropStaging(root, d)
 		return destination.Redone, nil
 	case lost == len(d.Streams):
 		return destination.Lost, nil
@@ -257,48 +280,44 @@ func (w *parquetWriter) descriptor(e destination.Epoch, s destination.Staged) (d
 	return d, nil
 }
 
-func (w *parquetWriter) path(rel string) string {
-	return filepath.Join(w.root, filepath.FromSlash(rel))
-}
-
 // apply links each staged file to its target, then writes the stream's
 // marker. A target that exists was linked by an earlier apply.
-func (w *parquetWriter) apply(st stagedStream) error {
-	if done, err := exists(w.path(st.Marker)); err != nil || done {
+func apply(root *os.Root, st stagedStream) error {
+	if done, err := exists(root, st.Marker); err != nil || done {
 		return err
 	}
 	dirs := map[string]bool{}
 	for _, f := range st.Files {
-		target := w.path(f.Target)
+		target := filepath.FromSlash(f.Target)
 		dir := filepath.Dir(target)
 		if !dirs[dir] {
-			if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // output other tools read
+			if err := root.MkdirAll(dir, 0o755); err != nil {
 				return fmt.Errorf("parquet: %w", err)
 			}
 			dirs[dir] = true
 		}
-		if err := os.Link(w.path(f.Staged), target); err != nil && !errors.Is(err, fs.ErrExist) {
+		if err := root.Link(filepath.FromSlash(f.Staged), target); err != nil && !errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("parquet: apply %s: %w", st.Stream, err)
 		}
 	}
 	for dir := range dirs {
-		if err := syncDir(dir); err != nil {
+		if err := syncDir(root, dir); err != nil {
 			return err
 		}
 	}
-	return touch(w.path(st.Marker))
+	return touch(root, st.Marker)
 }
 
 // dropStaging is best effort: staging left behind is never applied twice,
 // because its markers exist.
-func (w *parquetWriter) dropStaging(d descriptor) {
-	dir := w.path(d.Staging)
-	_ = os.RemoveAll(dir)
-	_ = os.Remove(filepath.Dir(dir)) // the generation's directory, once empty
+func dropStaging(root *os.Root, d descriptor) {
+	dir := filepath.FromSlash(d.Staging)
+	_ = root.RemoveAll(dir)
+	_ = root.Remove(filepath.Dir(dir)) // the generation's directory, once empty
 }
 
-func exists(p string) (bool, error) {
-	_, err := os.Lstat(p)
+func exists(root *os.Root, rel string) (bool, error) {
+	_, err := root.Lstat(filepath.FromSlash(rel))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
@@ -308,23 +327,24 @@ func exists(p string) (bool, error) {
 	return true, nil
 }
 
-func touch(p string) error {
+func touch(root *os.Root, rel string) error {
+	p := filepath.FromSlash(rel)
 	dir := filepath.Dir(p)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // output other tools read
+	if err := root.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("parquet: %w", err)
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // the path is checked to stay under the root
+	f, err := root.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("parquet: write marker: %w", err)
 	}
 	if err := errors.Join(f.Sync(), f.Close()); err != nil {
 		return fmt.Errorf("parquet: write marker: %w", err)
 	}
-	return syncDir(dir)
+	return syncDir(root, dir)
 }
 
-func syncDir(dir string) error {
-	d, err := os.Open(dir) //nolint:gosec // the path is checked to stay under the root
+func syncDir(root *os.Root, dir string) error {
+	d, err := root.Open(dir)
 	if err != nil {
 		return fmt.Errorf("parquet: %w", err)
 	}

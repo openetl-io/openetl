@@ -195,7 +195,7 @@ func Package(ctx context.Context, f *File, o Options) (*Result, error) {
 		return nil, err
 	}
 	res.Descriptor = filepath.Join(o.Out, DescriptorAsset(f.ShortName()))
-	return res, os.WriteFile(res.Descriptor, doc, 0o644) //nolint:gosec // a descriptor, not a secret
+	return res, os.WriteFile(res.Descriptor, doc, 0o600)
 }
 
 // build builds a role for each platform into o.Out, named as its release
@@ -205,12 +205,17 @@ func build(ctx context.Context, f *File, role string, b *Build, platforms []stri
 	if err != nil {
 		return nil, err
 	}
+	root, err := os.OpenRoot(out)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
 	log := o.Log
 	if log == nil {
 		log = io.Discard
 	}
 	if b.Command != "" {
-		cmd := exec.CommandContext(ctx, "sh", "-c", b.Command) //nolint:gosec // the author's own build
+		cmd := exec.CommandContext(ctx, "sh", "-c", b.Command)
 		cmd.Dir, cmd.Stdout, cmd.Stderr = f.Dir, log, log
 		cmd.Env = append(os.Environ(), "OPENETL_VERSION="+o.Version, "OPENETL_PLATFORMS="+strings.Join(platforms, ","))
 		if err := cmd.Run(); err != nil {
@@ -220,9 +225,10 @@ func build(ctx context.Context, f *File, role string, b *Build, platforms []stri
 	var exes []connectorhost.Executable
 	for _, p := range platforms {
 		goos, arch, _ := strings.Cut(p, "/")
-		dst := filepath.Join(out, Asset(f.ShortName(), role, p))
+		name := Asset(f.ShortName(), role, p)
+		dst := filepath.Join(out, name)
 		if b.Go != "" {
-			cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", dst, "./"+filepath.ToSlash(filepath.Clean(b.Go))) //nolint:gosec // the author's own build
+			cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", dst, "./"+filepath.ToSlash(filepath.Clean(b.Go)))
 			cmd.Dir, cmd.Stdout, cmd.Stderr = f.Dir, log, log
 			cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+arch, "CGO_ENABLED=0")
 			if err := cmd.Run(); err != nil {
@@ -230,7 +236,7 @@ func build(ctx context.Context, f *File, role string, b *Build, platforms []stri
 			}
 		} else {
 			src := filepath.Join(f.Dir, strings.NewReplacer("{os}", goos, "{arch}", arch).Replace(b.Output))
-			if err := copyExecutable(src, dst); err != nil {
+			if err := copyExecutable(src, root, name); err != nil {
 				return nil, fmt.Errorf("%s's output for %s: %w", b.Command, p, err)
 			}
 		}
@@ -239,27 +245,27 @@ func build(ctx context.Context, f *File, role string, b *Build, platforms []stri
 	return exes, nil
 }
 
-func copyExecutable(src, dst string) error {
-	in, err := os.Open(src) //nolint:gosec // the author's build output
+func copyExecutable(src string, out *os.Root, name string) error {
+	in, err := os.Open(filepath.Clean(src))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec // an executable
+	dst, err := out.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
+	if _, err := io.Copy(dst, in); err != nil {
+		_ = dst.Close()
 		return err
 	}
-	return out.Close()
+	return dst.Close()
 }
 
 // inlineManifest reads a DeclarativeSource document and returns its spec,
 // as canonical JSON, once the whole document loads.
 func inlineManifest(path string) ([]byte, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // the author's own file
+	b, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}

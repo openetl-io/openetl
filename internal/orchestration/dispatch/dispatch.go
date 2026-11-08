@@ -119,10 +119,14 @@ func (d *Dispatcher) Enqueue(ctx context.Context, in contract.WorkInput, needs [
 	if in.Light == "" {
 		start = cmp.Or(d.Options.StartTimeout, 30*time.Second)
 	}
+	if in.Priority < contract.PriorityManual || in.Priority > contract.PriorityBackfill {
+		return fmt.Errorf("dispatch: %s's priority %d isn't one of contract's", in.ID, in.Priority)
+	}
+	priority := int16(in.Priority)
 	err = d.Store.Tx(ctx, func(q *db.Queries) error {
 		_, err := q.EnqueueDispatch(ctx, db.EnqueueDispatchParams{
 			OrgID: org, ID: in.ID, DataPlaneID: in.DataPlane, WorkflowID: in.WorkflowID, Kind: in.Kind, Input: input,
-			Light: in.Light, Pool: cmp.Or(in.Pool, defaultPool), SizeCpu: in.Size.CPU, SizeMemory: in.Size.Memory, Priority: int16(in.Priority), //nolint:gosec // a few priorities
+			Light: in.Light, Pool: cmp.Or(in.Pool, defaultPool), SizeCpu: in.Size.CPU, SizeMemory: in.Size.Memory, Priority: priority,
 			Needs: needed, Trace: trace, HeartbeatMs: in.Heartbeat.Milliseconds(), StartTimeoutMs: start.Milliseconds(), TimeoutMs: in.Timeout.Milliseconds(),
 		})
 		if err != nil {

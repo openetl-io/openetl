@@ -43,7 +43,7 @@ import (
 // The engine's frame tests check the same bytes.
 func TestFrameHeader(t *testing.T) {
 	h := make([]byte, headerLen)
-	putHeader(h, enginev1.FrameKind_FRAME_KIND_BATCH, 3, 5)
+	putHeader(h, byte(enginev1.FrameKind_FRAME_KIND_BATCH), 3, 5)
 	if want := []byte{2, 0, 0, 0, 3, 0, 0, 0, 5, 0, 0, 0}; !bytes.Equal(h, want) {
 		t.Fatalf("header = %v, want %v", h, want)
 	}

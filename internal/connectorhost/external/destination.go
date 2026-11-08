@@ -15,6 +15,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -106,16 +107,16 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 		Pipeline:   cfg.Pipeline,
 		Namespace:  cfg.Namespace,
 		Generation: cfg.Generation,
-		Scope:      protocolv1.CommitScope(cfg.Scope), //nolint:gosec // small
-		Lane:       uint32(cfg.Lane),                  //nolint:gosec // small
+		Scope:      ints.Enum[protocolv1.CommitScope](cfg.Scope),
+		Lane:       ints.Uint32(cfg.Lane),
 	}
 	if cfg.CommitInterval > 0 {
 		open.CommitInterval = durationpb.New(cfg.CommitInterval)
 	}
 	for _, s := range cfg.Streams {
 		open.Streams = append(open.Streams, &protocolv1.WriteStream{
-			Name: s.Name, Mode: protocolv1.WriteMode(s.Mode), PrimaryKey: s.PrimaryKey, //nolint:gosec // small
-			Dedupe: protocolv1.Dedupe(s.Dedupe), Deletes: protocolv1.DeleteMode(s.Deletes), //nolint:gosec // small
+			Name: s.Name, Mode: ints.Enum[protocolv1.WriteMode](s.Mode), PrimaryKey: s.PrimaryKey,
+			Dedupe: ints.Enum[protocolv1.Dedupe](s.Dedupe), Deletes: ints.Enum[protocolv1.DeleteMode](s.Deletes),
 			AllowTypeChanges: s.AllowTypeChanges,
 		})
 	}

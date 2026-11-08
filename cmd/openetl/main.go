@@ -29,8 +29,9 @@ import (
 const usage = `usage: openetl <command> [flags]
 
 Commands:
-  apply -f FILE   create or update the connector versions, sources,
-                  destinations, dbt projects, pipelines and webhooks in FILE
+  apply -f FILE   create or update the connector versions, connector
+                  sources, sources, destinations, dbt projects, Spark and
+                  Flink clusters, pipelines and webhooks in FILE
   plan -f FILE    show what apply would change, and how each pipeline
                   would sync
   pause NAME      stop a pipeline's scheduled syncs
@@ -46,8 +47,10 @@ Commands:
   check source|destination NAME
                   check that a source or destination is reachable
   discover NAME   list a source's streams and columns
-  connector package|apply
-                  package and apply connector versions
+  connector COMMAND
+                  package, publish, validate and apply connector versions,
+                  and run and test a connector on its own; openetl
+                  connector lists the commands
   secret set|list|delete
                   store the secrets that configs name
   principal create|list|delete|disable|enable|grant|revoke|password-link|sign-out
@@ -564,7 +567,7 @@ func readDocuments(path string) ([]*apiv1.Document, error) {
 	if path == "-" {
 		data, err = io.ReadAll(os.Stdin)
 	} else {
-		data, err = os.ReadFile(path) //nolint:gosec // the user names the file
+		data, err = os.ReadFile(filepath.Clean(path))
 	}
 	if err != nil {
 		return nil, err

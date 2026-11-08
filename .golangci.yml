@@ -102,6 +102,36 @@ linters:
       # which connectors fetch themselves on every egress tier.
       - path: sdk/go/staging/
         linters: [forbidigo]
+      # Starting the executables an operator or a connector's author names
+      # (connectors, the engine, dbt, spark-submit, docker) is what openetl
+      # does. They get their arguments as argv, never through a shell from
+      # data, and G204 flags every one.
+      - linters: [gosec]
+        text: "G204:"
+      # G101 matches names such as token and secret. What it flags here are
+      # names, prefixes and usage text: no credential is written in code.
+      - linters: [gosec]
+        text: "G101:"
+      # Generated rows are the same for the same seed, so faker needs a
+      # seeded generator, not crypto/rand.
+      - path: connectors/native/faker/
+        linters: [gosec]
+        text: "G404:"
+      # HMAC-SHA1 is one of the signing methods connectors may ask for, as
+      # some APIs require it.
+      - path: internal/connectorhost/hostservices/sign\.go
+        linters: [gosec]
+        text: "G505:"
+      # The session cookie is Secure whenever the console is served over
+      # https; over http, browsers would drop it.
+      - path: internal/api/signin\.go
+        linters: [gosec]
+        text: "G124:"
+      # The kit's container runs as another user, which may map to any host
+      # uid, so the socket it's given must be open to everyone.
+      - path: sdk/go/conformance/container\.go
+        linters: [gosec]
+        text: "G302:"
 
 formatters:
   enable:

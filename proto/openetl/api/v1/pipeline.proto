@@ -304,12 +304,12 @@ enum HealMode {
   HEAL_MODE_UNSPECIFIED = 0;
   // Open incidents and notify; take no action.
   HEAL_MODE_OFF = 1;
-  // Apply only actions that can't hold data back (none yet), and propose
-  // the rest.
+  // Propose actions that hold data back, such as pausing the pipeline,
+  // rather than taking them.
   HEAL_MODE_SUGGEST = 2;
   // Apply every playbook's actions. The default.
   HEAL_MODE_AUTO_SAFE = 3;
-  // As auto_safe, until agentic repair exists.
+  // The same as auto_safe.
   HEAL_MODE_AUTO = 4;
 }
 
@@ -389,6 +389,8 @@ enum PipelineMode {
 message Schedule {
   oneof trigger {
     google.protobuf.Duration every = 1;
+    // In UTC, unless it starts with CRON_TZ= and a time zone, as in
+    // CRON_TZ=Europe/Berlin 0 6 * * *.
     string cron = 2;
   }
   // A random start delay of up to this much.
@@ -475,7 +477,9 @@ enum TimestampUnit {
 }
 
 message PipelineColumn {
-  ColumnOpKind op = 1;
+  reserved 1;
+  reserved "op";
+
   // Only for columns the source declares as decimals.
   ColumnType type = 2;
   // What the column's held cells show; unset: the stream's held.
@@ -489,12 +493,6 @@ enum ColumnType {
   COLUMN_TYPE_STRING = 1;
   // A double, so digits can be lost. NaN and infinities are kept.
   COLUMN_TYPE_FLOAT64 = 2;
-}
-
-enum ColumnOpKind {
-  COLUMN_OP_KIND_UNSPECIFIED = 0;
-  COLUMN_OP_KIND_HASH = 1;
-  COLUMN_OP_KIND_BLOCK = 2;
 }
 
 message PipelineDestination {

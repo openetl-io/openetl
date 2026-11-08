@@ -165,7 +165,7 @@ func TestCollapse(t *testing.T) {
 				}
 				return emitted == 600
 			})
-			if collapsed != 600-uint64(rows) { //nolint:gosec // a row count
+			if collapsed != 600-uint64(rows) {
 				t.Errorf("the syncs collapsed %d rows; %d of 600 landed", collapsed, rows)
 			}
 		})
