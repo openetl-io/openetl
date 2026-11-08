@@ -25,7 +25,7 @@ The rest of this page is about external connectors.
 
 The protocol is in [`proto/openetl/connector/v1`](../../proto/openetl/connector/v1). Every connector serves `ConnectorService` (`Spec`, `Check`, and `Setup` and `Teardown` for those that need them), and a source serves `SourceService` or a destination `DestinationService` beside it. The runner serves `HostService` to every connector it starts: HTTP requests with retries, rate limits and auth, secrets, logs and a key-value store.
 
-The runner starts a connector with these variables set, and waits up to 10 seconds for it to print `ready` on stdout:
+The runner starts a connector with these variables set, and waits up to 10 seconds for a line on stdout that is exactly `ready`. Anything printed before it, as a library might at startup, goes to the connector's log:
 
 | Variable | What it holds |
 |---|---|
@@ -194,6 +194,8 @@ id  text
 3   hello
 greetings: 3 records, complete
 ```
+
+Connectors run as trusted code: `egress` says what yours means to reach, and OpenETL doesn't enforce it yet. [What that means for the people who run them](../self-host/index.md#connectors-are-trusted-code).
 
 `openetl connector check` checks a config reaches the upstream. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
 

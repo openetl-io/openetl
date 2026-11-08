@@ -163,7 +163,7 @@
           }
         },
         "egress": {
-          "description": "What the connector may reach on the network.",
+          "description": "What the connector means to reach on the network. OpenETL doesn't enforce it yet: connectors are trusted code.",
           "type": "object",
           "required": ["tier"],
           "additionalProperties": false,

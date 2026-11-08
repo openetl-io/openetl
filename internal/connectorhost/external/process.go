@@ -5,7 +5,6 @@
 package external
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -213,10 +212,7 @@ func (p *process) run(ctx context.Context, exe string, kind protocolv1.Connector
 	ready := make(chan struct{})
 	var drained sync.WaitGroup
 	drained.Go(func() {
-		sc := bufio.NewScanner(stdout)
-		if sc.Scan() && sc.Text() == "ready" {
-			close(ready)
-		}
+		awaitReady(stdout, ready, p.log)
 		_, _ = io.Copy(io.Discard, stdout)
 	})
 	drained.Go(func() { p.relayLogs(stderr) })
@@ -324,6 +320,20 @@ func (p *process) exitError() error {
 
 // relayLogs logs the connector's stderr through its host services, which
 // scrub the secrets they hold. JSON lines from slog keep their level.
+// awaitReady reads r until a line that is exactly "ready", and closes ready
+// then. What a connector prints before it, as a library might, goes to the
+// log.
+func awaitReady(r io.Reader, ready chan<- struct{}, log *slog.Logger) {
+	sc := logging.Lines(r)
+	for sc.Scan() {
+		if sc.Text() == "ready" {
+			close(ready)
+			return
+		}
+		log.Info("connector output before ready", "line", sc.Text())
+	}
+}
+
 func (p *process) relayLogs(r io.Reader) {
 	sc := logging.Lines(r)
 	for sc.Scan() {
