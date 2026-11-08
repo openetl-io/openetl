@@ -967,7 +967,7 @@ func TestRunAttemptIntoParquet(t *testing.T) {
 	if got := readIDs(t, filepath.Join(root, "orders")); !slices.Equal(got, []int64{10}) {
 		t.Errorf("orders holds %v", got)
 	}
-	markers, err := filepath.Glob(filepath.Join(root, "_openetl", "loads", "*", "*"))
+	markers, err := filepath.Glob(filepath.Join(root, "_openetl", "loads", "pipe", "*", "*"))
 	if err != nil || len(markers) != 4 {
 		t.Errorf("markers %v, %v; want one per stream and epoch with rows", markers, err)
 	}

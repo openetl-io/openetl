@@ -832,7 +832,7 @@ func TestParquetEngineKilledMidSync(t *testing.T) {
 	apply(t, docs(name, `{"connector": "faker", "config": `+slowFaker+`}`, parquetDest(dir), `{"commit": {"interval": "1s"}}`)...)
 	pid := r.engine(t, name)
 	eventually(t, 30*time.Second, "a committed epoch", func() bool {
-		m, _ := filepath.Glob(filepath.Join(dir, "_openetl", "loads", "*", "*"))
+		m, _ := filepath.Glob(filepath.Join(dir, "_openetl", "loads", "*", "*", "*"))
 		return len(m) > 0
 	})
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {

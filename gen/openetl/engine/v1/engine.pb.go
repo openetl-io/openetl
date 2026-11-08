@@ -1520,7 +1520,9 @@ func (*RunnerSink) Descriptor() ([]byte, []int) {
 }
 
 // ParquetSink stages each epoch as Parquet files under url, and reports them
-// in EpochReady.staged.
+// in EpochReady.staged. The files' paths and names have
+// StartJobRequest.pipeline in them, so pipelines can share a url and a
+// table.
 type ParquetSink struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// file:// and an absolute path.

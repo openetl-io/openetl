@@ -289,7 +289,9 @@ message RunnerSink {
 }
 
 // ParquetSink stages each epoch as Parquet files under url, and reports them
-// in EpochReady.staged.
+// in EpochReady.staged. The files' paths and names have
+// StartJobRequest.pipeline in them, so pipelines can share a url and a
+// table.
 message ParquetSink {
   // file:// and an absolute path.
   string url = 1;
