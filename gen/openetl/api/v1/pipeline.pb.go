@@ -2842,7 +2842,8 @@ type isSchedule_Trigger interface {
 }
 
 type Schedule_Every struct {
-	// Starts a sync this often.
+	// Starts a sync this often, counting from the Unix epoch: 1h starts one
+	// on the hour.
 	Every *durationpb.Duration `protobuf:"bytes,1,opt,name=every,proto3,oneof"`
 }
 

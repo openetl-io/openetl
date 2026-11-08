@@ -1023,7 +1023,8 @@ export type Schedule = Message<"openetl.api.v1.Schedule"> & {
    */
   trigger: {
     /**
-     * Starts a sync this often.
+     * Starts a sync this often, counting from the Unix epoch: 1h starts one
+     * on the hour.
      *
      * @generated from field: google.protobuf.Duration every = 1;
      */

@@ -35,10 +35,13 @@ type timetable struct {
 	jitter time.Duration
 }
 
-// next is when it's due after a time when it was due or was asked about.
+// next is when it's due after a time, so one start makes up for however many
+// were missed. Intervals count from the Unix epoch, as Temporal's do, so
+// every 1h is due on the hour.
 func (t timetable) next(after time.Time) (time.Time, error) {
 	if t.every > 0 {
-		return after.Add(t.every), nil
+		every := int64(t.every)
+		return time.Unix(0, (after.UnixNano()/every+1)*every).UTC(), nil
 	}
 	s, err := cron.ParseStandard(t.cron)
 	if err != nil {
@@ -54,16 +57,6 @@ func (t timetable) fireAt(due time.Time) time.Time {
 		return due
 	}
 	return due.Add(rand.N(t.jitter)) // #nosec G404 -- spreading starts out needs no secrecy
-}
-
-// after is when it's next due after now, given when it was due last.
-func (t timetable) after(due, now time.Time) (time.Time, error) {
-	if t.every > 0 {
-		// One start makes up for however many were missed.
-		missed := now.Sub(due) / t.every
-		return due.Add((missed + 1) * t.every), nil
-	}
-	return t.next(now)
 }
 
 func (b *Backend) UpsertSchedule(ctx context.Context, s orchestration.Schedule) error {
@@ -133,7 +126,7 @@ func (b *Backend) PauseSchedule(ctx context.Context, id string, paused bool) err
 			return err
 		}
 		t := timetable{every: time.Duration(everyMS) * time.Millisecond, cron: cronSpec, jitter: time.Duration(jitterMS) * time.Millisecond}
-		next, err := t.after(due, now)
+		next, err := t.next(now)
 		if err != nil {
 			return err
 		}
@@ -248,7 +241,7 @@ func (b *Backend) fireDue(ctx context.Context) (int, error) {
 	var count int
 	err := pgx.BeginFunc(ctx, b.pool, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT id, every_ms, cron, jitter_ms, workflow_id, workflow, input, org, last_workflow, due, fire_at, now()
+			SELECT id, every_ms, cron, jitter_ms, workflow_id, workflow, input, org, last_workflow, fire_at, now()
 			FROM openetl.schedules WHERE NOT paused AND fire_at <= now()
 			ORDER BY fire_at LIMIT $1 FOR UPDATE SKIP LOCKED`, scheduleBatch)
 		if err != nil {
@@ -256,15 +249,15 @@ func (b *Backend) fireDue(ctx context.Context) (int, error) {
 		}
 		type dueRow struct {
 			scheduleRow
-			t              timetable
-			due, fire, now time.Time
+			t         timetable
+			fire, now time.Time
 		}
 		due, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (dueRow, error) {
 			var (
 				d                 dueRow
 				everyMS, jitterMS int64
 			)
-			err := row.Scan(&d.id, &everyMS, &d.t.cron, &jitterMS, &d.workflowID, &d.workflow, &d.input, &d.org, &d.lastWorkflow, &d.due, &d.fire, &d.now)
+			err := row.Scan(&d.id, &everyMS, &d.t.cron, &jitterMS, &d.workflowID, &d.workflow, &d.input, &d.org, &d.lastWorkflow, &d.fire, &d.now)
 			d.t.every, d.t.jitter = time.Duration(everyMS)*time.Millisecond, time.Duration(jitterMS)*time.Millisecond
 			return d, err
 		})
@@ -277,7 +270,7 @@ func (b *Backend) fireDue(ctx context.Context) (int, error) {
 			if _, err := b.startFrom(ctx, tx, d.scheduleRow, d.fire); err != nil {
 				return err
 			}
-			next, err := d.t.after(d.due, d.now)
+			next, err := d.t.next(d.now)
 			if err != nil {
 				return err
 			}
