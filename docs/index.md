@@ -12,10 +12,10 @@ New here? Read [What is OpenETL?](./get-started/overview.md), then run the [quic
 | If you want to | Start with |
 |---|---|
 | Learn what OpenETL is, in plain words | [What is OpenETL?](./get-started/overview.md) and [Concepts](./get-started/concepts.md) |
-| Check on pipelines and the data they deliver | [Use the console](./use/index.md) |
-| Build pipelines | [Pipelines](./pipelines/index.md) |
-| Connect dbt, Spark, Flink, your alerts or your own code | [Integrate](./integrate/index.md) |
 | Run OpenETL for your team | [Self-host](./self-host/index.md) |
+| Build pipelines | [Pipelines](./pipelines/index.md) |
+| Check on pipelines and the data they deliver | [Use the console](./use/index.md) |
+| Connect dbt, Spark, Flink, your alerts or your own code | [Integrate](./integrate/index.md) |
 | Write a connector | [Build a connector](./build-connectors/index.md) |
 | Look up a field, a command or a setting | [Reference](./reference/index.md) |
 | Know how it works inside | [Internals](./internals/index.md) |
