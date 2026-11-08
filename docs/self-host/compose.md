@@ -179,6 +179,8 @@ docker compose up -d --scale runner=2
 
 Runners share the volume `runner`, with its checkpoints, staging and token. Each places jobs up to the whole machine, so to share one machine between runners, give each its part with `OPENETL_CAPACITY` in `.env`, as `CPU,MEMORY`, such as `4,8Gi`.
 
+For API keys and runner tokens, follow [Manage access and credentials](./access.md). For telemetry and delivery alerts, see [Monitor an installation](./monitoring.md).
+
 ## Choose an orchestrator
 
 The stack runs workflows on DBOS, in Postgres. To run them on a Temporal cluster you already have, add these to `.env` before the first start:
@@ -199,16 +201,7 @@ A version can write checkpoints in a newer format. A runner older than that refu
 
 ## Back up
 
-Three things hold an installation's state:
-
-- **`.env`**, with the key that decrypts secrets. Keep it apart from the database's backups, so that neither alone reveals the secrets.
-- **The database**, with pipelines, versions, syncs, secrets, users, and on DBOS the workflows:
-
-  ```sh
-  docker compose exec postgres pg_dumpall -U openetl > openetl.sql
-  ```
-
-- **The volume `runner`**, with the checkpoints, unless they're in a bucket.
+[Back up and restore](./backup-and-restore.md) has the stopped-backup procedure and recovery into fresh volumes. It covers both the metadata and DBOS databases, checkpoint and staging files, the encryption key and credentials. Test a restore before relying on a backup.
 
 ## Stop and remove
 

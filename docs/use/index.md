@@ -182,6 +182,8 @@ What they changed shows under **Not as the spec says** on the pipeline's **Overv
 
 Most incidents resolve themselves once the pipeline makes progress again. When you fixed something in a way OpenETL can't see, **Resolve** closes it by hand, with an optional **Comment** that's kept with the resolution. If it happens again, a new incident opens. A **Lagging** incident you resolve while the pipeline is still behind opens again at its next checkpoint.
 
+For a pipeline that waits, fails repeatedly or stops delivering fresh data, follow [Troubleshoot a pipeline](../pipelines/troubleshooting.md). [Handle schema changes and holds](../pipelines/schema-changes.md) shows a complete hold and release.
+
 ## Sources, destinations and connectors
 
 - **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values.
@@ -198,13 +200,15 @@ Connectors can be official, community maintained or private to your organization
 - **Access** lists the people and service accounts under **Principals**, with their roles, and the **Runner tokens** that let runners join. A person's page lists their API keys, and an admin can **Sign out everywhere** for them there.
 - **Audit log** lists every change, and every read of a secret, with who made it. Only admins can read it.
 
+[Manage access and credentials](../self-host/access.md) covers adding users and service accounts, rotating credentials and removing access.
+
 ## What your role lets you do
 
 Each role includes the ones before it. A role is given for one workspace, or for the whole organization; admin and owner are only for the whole organization.
 
 | Role | What it adds |
 |---|---|
-| Viewer | Sees everything in the console, except secrets' values, which no one sees. |
+| Viewer | Reads resources in their role's scope, including sync logs and incidents. The audit log requires Admin; no role sees secret values. |
 | Operator | **Sync now**, **Pause** and **Resume**; resolving incidents; sending a webhook a test event, and disabling or enabling it. With the CLI, also checking that sources and destinations can be reached, and resizing a pipeline's syncs. |
 | Editor | Creating, changing and deleting sources, destinations, pipelines, dbt projects, clusters and webhooks; setting secrets; releasing and discarding holds. With the CLI, also reading a pipeline's streams again from the start, and letting it restart from an earlier checkpoint. |
 | Admin | Installing connectors; adding people and service accounts, and giving them roles, API keys and password links; runner tokens; the audit log; signing people out everywhere. |

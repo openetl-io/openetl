@@ -13,6 +13,8 @@ New here? Read [What is OpenETL?](./get-started/overview.md), then run the [quic
 |---|---|
 | Learn what OpenETL is, in plain words | [What is OpenETL?](./get-started/overview.md) and [Concepts](./get-started/concepts.md) |
 | Run OpenETL for your team | [Self-host](./self-host/index.md) |
+| Diagnose failures or stale data | [Troubleshoot a pipeline](./pipelines/troubleshooting.md) |
+| Manage access or recover an installation | [Access](./self-host/access.md) and [Back up and restore](./self-host/backup-and-restore.md) |
 | Build pipelines | [Pipelines](./pipelines/index.md) |
 | Check on pipelines and the data they deliver | [Use the console](./use/index.md) |
 | Connect dbt, Spark, Flink, your alerts or your own code | [Integrate](./integrate/index.md) |

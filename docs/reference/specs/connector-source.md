@@ -5,6 +5,8 @@ description: Every field of a ConnectorSource document, which connects a public 
 
 A `ConnectorSource` connects an OCI registry namespace or a GitHub repository to the org's connector catalog. It lists available packages and supplies credentials for fetching packages under its URL. It is separate from a `Source`, which configures where a pipeline reads data.
 
+The **Required** column applies within the containing object or list entry. Optional objects may be omitted; when you include one, its required children must be set. Conditional requirements are stated in the table. **Default** describes what omission means.
+
 ```yaml
 apiVersion: openetl.io/v1alpha1
 kind: ConnectorSource
@@ -18,22 +20,22 @@ spec:
 
 ## The document
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `apiVersion` | string | Required | `openetl.io/v1alpha1` |
-| `kind` | string | Required | `ConnectorSource` |
-| `metadata.name` | name | Required | The catalog source's name: lowercase letters, digits and hyphens, at most 63 characters, starting and ending with a letter or digit |
-| `spec` | object | Required | The fields below |
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `apiVersion` | string | Yes | — | `openetl.io/v1alpha1` |
+| `kind` | string | Yes | — | `ConnectorSource` |
+| `metadata.name` | name | Yes | — | The catalog source's name: lowercase letters, digits and hyphens, at most 63 characters, starting and ending with a letter or digit |
+| `spec` | object | Yes | — | The fields below |
 
 Connector sources belong to the org and are shared across workspaces. They have no package version, and `metadata.workspace` and `metadata.version` must be omitted. A field the document doesn't have is refused.
 
 ## spec
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `url` | string | Required | `oci://REGISTRY/NAMESPACE`, without a tag or digest, or `https://github.com/OWNER/REPO` |
-| `username` | string | None | The registry's user, at most 200 characters. Requires `secret`. Omit for GitHub. |
-| `secret` | secret name | None | A registry password or token, or a GitHub token. A short name means a secret in the `default` workspace; `workspaces/WORKSPACE/secrets/NAME` names one explicitly. The secret must exist and hold its value in OpenETL, rather than a reference to an external store. |
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `url` | string | Yes | — | `oci://REGISTRY/NAMESPACE`, without a tag or digest, or `https://github.com/OWNER/REPO` |
+| `username` | string | No | None | The registry's user, at most 200 characters. Requires `secret`. Omit for GitHub. |
+| `secret` | secret name | No | None | A registry password or token, or a GitHub token. A short name means a secret in the `default` workspace; `workspaces/WORKSPACE/secrets/NAME` names one explicitly. The secret must exist and hold its value in OpenETL, rather than a reference to an external store. |
 
 `secret` is a string, not the `{ secret: NAME }` object a source or destination config uses. When several connector source URLs cover an artifact URL, the longest matching URL supplies its credential. The control plane uses the credential for catalog reads and package resolution; runners use it for artifact downloads.
 

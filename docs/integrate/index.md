@@ -49,6 +49,8 @@ spec:
 - **When it runs.** Steps run in order once the sync's data is committed. A step that fails fails the sync, and the steps after it don't run. A sync runs the project as it was when the sync started.
 - **Where it runs.** Runners run dbt: the `dbt` on their `PATH`, or the executable their `--dbt` setting (`OPENETL_DBT`) names, with the destination's adapter installed, `dbt-postgres`.
 
+The [dbt project reference](../reference/specs/dbt-project.md) distinguishes the CLI's `path` input from the API's required `bundle`.
+
 ## Transforms on Spark
 
 A scheduled pipeline can run your Spark code between its source and its destination, on your own Spark cluster. A sync commits in steps called epochs. For each epoch, your code gets one DataFrame for each stream the source read, and returns a DataFrame for each output; OpenETL writes the outputs to the destination as streams of their own.
@@ -109,6 +111,8 @@ Each call sees one epoch, so a join across streams misses rows that land in diff
 
 A `SparkCluster` can also run an application after a sync, as a `postSync` step, `spark: { cluster, code, args, conf }`. openetl-spark's `SyncContext` tells that application what the sync wrote.
 
+The [Spark cluster reference](../reference/specs/spark-cluster.md) lists every target field, its requirements and defaults.
+
 ## Transforms on Flink
 
 A continuous pipeline can run your Flink job between its source and its destination, on your own Flink cluster. The job reads each stream as a `DataStream` and writes its outputs back to OpenETL, which commits them to the destination. The job's checkpoints are the pipeline's.
@@ -147,6 +151,8 @@ spec:
 - **Storage.** As with Spark, the data plane's store must be on S3 or in a directory the cluster mounts at the same path; the job's code, checkpoints and savepoints go under the pipeline's `_flink/` prefix. `flinkAccess` gives it keys or an EMR runtime role.
 
 The job is built with [openetl-flink](../../libs/openetl-flink), for Flink 1.20. `OpenEtl.fromArgs` reads the arguments the runner passes the job, `stream` gives each stream as a `DataStream<RowData>`, and `sink` writes an output. A change's `_openetl_op` becomes the row's `RowKind`. Every stream of the pipeline is read, whether the job uses it or not. The library isn't published to a package repository: `make flink-lib` builds the jar.
+
+The [Flink cluster reference](../reference/specs/flink-cluster.md) lists required target choices, authentication and resource defaults.
 
 ## Events and webhooks
 
@@ -194,6 +200,8 @@ openetl webhook test ops-alerts
 - **Deliveries.** `openetl webhook deliveries ops-alerts` lists the last 7 days' deliveries, with each one's state, status and error.
 - **Which addresses.** The server sends webhooks to public addresses only, unless its `--egress-allow` setting names the private networks it may reach as well.
 
+The [Webhook reference](../reference/specs/webhook.md) lists required fields and filter defaults.
+
 ## The API
 
 Everything the CLI and the console do goes through OpenETL's API, served by `openetld server`. The same API is served four ways:
@@ -206,7 +214,7 @@ Every call sends an API key as `Authorization: Bearer KEY`. Give each integratio
 ```sh
 openetl principal create reporting
 openetl principal grant reporting viewer
-openetl key create reporting --out reporting.key
+openetl key create --out reporting.key reporting
 curl -H "Authorization: Bearer $(cat reporting.key)" http://localhost:8080/v1/workspaces/default/pipelines
 ```
 
@@ -229,6 +237,8 @@ export OTEL_EXPORTER_PROMETHEUS_PORT=9464
 ```
 
 The [Kubernetes manifests](../self-host/kubernetes.md) set exactly that. Every process reports as the service `openetld`, with its role in `openetl.role` and its data plane in `openetl.data_plane`. Metrics are named `openetl.*`, such as `openetl.job.rows.committed`, `openetl.job.lag` and `openetl.pipeline.freshness`. Traces cover API calls, the runners' work, and each attempt's recovery and commits.
+
+[Monitor an installation](../self-host/monitoring.md) explains the metrics, missing-series behavior and alerts.
 
 ## Reading what OpenETL writes
 

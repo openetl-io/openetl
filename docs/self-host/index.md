@@ -92,6 +92,13 @@ When they start, they rebuild schedules, and what watches each running job, from
 
 `openetld` exports metrics and traces with OpenTelemetry, configured by the standard `OTEL_*` variables: nothing is exported until an exporter or an OTLP endpoint is set. `OTEL_METRICS_EXPORTER=prometheus` serves metrics for Prometheus to scrape instead, which the Kubernetes manifests do on port 9464. Logs are JSON on standard error by default (`OPENETL_LOG_FORMAT`, `OPENETL_LOG_OUTPUT`).
 
+[Monitor an installation](./monitoring.md) explains the metrics and how to choose alerts. [Troubleshoot a pipeline](../pipelines/troubleshooting.md) connects symptoms to checks and recovery.
+
+## Operating the installation
+
+- [Manage access and credentials](./access.md): users, scoped service accounts, key and runner-token rotation, and offboarding.
+- [Back up and restore](./backup-and-restore.md): the complete state inventory, a stopped Compose backup, and verification after recovery.
+
 ## Install
 
 - [With Docker Compose](./compose.md), on one machine: an API server with the console, an orchestrator, runners and Postgres.
