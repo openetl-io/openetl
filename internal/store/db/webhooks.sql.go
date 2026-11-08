@@ -569,7 +569,7 @@ const recordAttempt = `-- name: RecordAttempt :execrows
 UPDATE webhook_deliveries SET
     state = $1, attempts = attempts + 1, next_attempt_time = now() + make_interval(secs => $2::float8), last_attempt_time = now(),
     response_status = $3, response_body = $4, error = $5, latency_ms = $6
-WHERE org_id = $7 AND id = $8 AND attempts = $9
+WHERE org_id = $7 AND id = $8 AND attempts = $9 AND ($1 <> 'pending' OR state = 'pending')
 `
 
 type RecordAttemptParams struct {
@@ -585,7 +585,9 @@ type RecordAttemptParams struct {
 }
 
 // Records an attempt, unless another notifier claimed the delivery after
-// this one's lease ran out and recorded its own.
+// this one's lease ran out and recorded its own. Only a delivery that's still
+// pending can go back to pending: disabling its webhook may have failed it,
+// and a delivery that arrived is recorded whatever has happened since.
 func (q *Queries) RecordAttempt(ctx context.Context, arg RecordAttemptParams) (int64, error) {
 	result, err := q.db.Exec(ctx, recordAttempt,
 		arg.State,

@@ -420,6 +420,37 @@ func TestMissingSecretsDontDisable(t *testing.T) {
 	}
 }
 
+// A webhook disabled during an attempt keeps a delivery that didn't arrive
+// failed, and a delivery that did arrive is recorded as delivered.
+func TestAttemptsLandingAfterADisable(t *testing.T) {
+	for name, c := range map[string]struct {
+		status int
+		state  string
+	}{
+		"a retryable failure stays failed": {http.StatusServiceUnavailable, "failed"},
+		"a success is still a success":     {http.StatusOK, "succeeded"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			var hook uuid.UUID
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				reason := "turned off"
+				if err := f.st.DisableWebhook(req.Context(), db.DisableWebhookParams{OrgID: f.tenant.Org, ID: hook, Reason: &reason}); err != nil {
+					t.Error(err)
+				}
+				w.WriteHeader(c.status)
+			}))
+			t.Cleanup(srv.Close)
+			hook = f.webhook(t, "disabled", &apiv1.WebhookSpec{Url: srv.URL, Events: []string{"*"}, Secrets: []string{"hook-key"}})
+			f.record(t, "shop", events.SyncFailed)
+			work(t, f.notifier())
+			if ds := f.deliveries(t, hook); len(ds) != 1 || ds[0].State != c.state {
+				t.Fatalf("delivery %+v, want %s", ds, c.state)
+			}
+		})
+	}
+}
+
 func TestPrune(t *testing.T) {
 	f := newFixture(t)
 	r := newReceiver(t, f.key)
