@@ -1,7 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import { DestinationSchema, SourceSchema, SyncMode, type Destination, type Source } from "@/gen/openetl/api/v1/connection_pb";
-import { PipelineMode, PipelineSchema, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
+import { PausedStreamSchema, PipelineMode, PipelineOverrideSchema, PipelineSchema, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { JobSizeReason, SyncAttemptSchema, SyncSchema, SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 
 // A workspace with a pipeline in every state the UI shows, for working on the
@@ -233,3 +233,28 @@ export const pipelines: Pipeline[] = defs.map((d) => {
     status: { lastSync: h[0], lastSuccessTime: lastSuccess?.endTime, openIncidents: d.incidents ?? 0 },
   });
 });
+
+// What heal changed: a stream it paused for quarantining, and a schedule it
+// widened for rate limits.
+{
+  const orders = pipelines.find((p) => p.name.endsWith("/orders-to-warehouse"))!;
+  orders.pausedStreams = [
+    create(PausedStreamSchema, {
+      stream: "public.customers",
+      reason: "It quarantined too many of its rows.",
+      incident: `${orders.name}/incidents/0193f2a4-7c1e-7b9a-9d10-5f0c2e8b4a61`,
+      createTime: ts(now - 50 * min),
+    }),
+  ];
+  const products = pipelines.find((p) => p.name.endsWith("/products-to-warehouse"))!;
+  products.overrides = [
+    create(PipelineOverrideSchema, {
+      field: "schedule.every",
+      value: '"7200s"',
+      specValue: '"3600s"',
+      reason: "3 syncs in a row failed rate limited.",
+      incident: `${products.name}/incidents/0193f2a4-7c1e-7b9a-9d10-5f0c2e8b4a62`,
+      updateTime: ts(now - 3 * 60 * min),
+    }),
+  ];
+}

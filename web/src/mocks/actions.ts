@@ -2,7 +2,7 @@ import { create } from "@bufbuild/protobuf";
 import { DurationSchema, timestampNow } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { IncidentState, type Incident } from "@/gen/openetl/api/v1/incident_pb";
-import { PipelineMode, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
+import { PausedStreamSchema, PipelineMode, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncSchema, SyncState } from "@/gen/openetl/api/v1/sync_pb";
 import { DeliveryState, WebhookDeliverySchema, WebhookState, type Webhook } from "@/gen/openetl/api/v1/webhook_pb";
 import { syncs } from "./fixtures";
@@ -16,8 +16,19 @@ import { user } from "./session";
 const refuse = (message: string) => new ConnectError(message, Code.FailedPrecondition);
 const id = () => Math.floor(Math.random() * 0xffffff).toString(16);
 
-export function setPaused(p: Pipeline, paused: boolean) {
-  p.paused = paused;
+export function setPaused(p: Pipeline, paused: boolean, stream = "") {
+  if (!stream) {
+    p.paused = paused;
+  } else if (!paused) {
+    p.pausedStreams = p.pausedStreams.filter((s) => s.stream !== stream);
+  } else if (!p.pausedStreams.some((s) => s.stream === stream)) {
+    p.pausedStreams.push(create(PausedStreamSchema, { stream, reason: `Paused by ${user.name}.`, createTime: timestampNow() }));
+  }
+  return { pipeline: p };
+}
+
+export function removeOverride(p: Pipeline, field: string) {
+  p.overrides = p.overrides.filter((o) => o.field !== field);
   return { pipeline: p };
 }
 

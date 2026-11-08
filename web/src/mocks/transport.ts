@@ -28,7 +28,7 @@ import {
   webhooks,
 } from "./workspace";
 import { accessSession, requireSession, user } from "./session";
-import { resolve, sendTest, setDisabled, setPaused, startSync } from "./actions";
+import { removeOverride, resolve, sendTest, setDisabled, setPaused, startSync } from "./actions";
 import { catalogPackage, catalogPackages, connectorSources } from "./catalog";
 import { signedOut } from "@/lib/api";
 
@@ -53,8 +53,9 @@ export const mockTransport = createRouterTransport(({ service }) => {
     listCheckpoints: async ({ parent }) => (await latency(), { checkpoints: checkpoints(parent) }),
     listHolds: async ({ parent }) => (await latency(), { holds: holds(parent) }),
     listPipelineVersions: async ({ parent }) => (await latency(), { pipelineVersions: versions(find(pipelines, parent)) }),
-    pausePipeline: async ({ name }) => (await latency(), setPaused(find(pipelines, name), true)),
-    resumePipeline: async ({ name }) => (await latency(), setPaused(find(pipelines, name), false)),
+    pausePipeline: async ({ name, stream }) => (await latency(), setPaused(find(pipelines, name), true, stream)),
+    resumePipeline: async ({ name, stream }) => (await latency(), setPaused(find(pipelines, name), false, stream)),
+    removePipelineOverride: async ({ name, field }) => (await latency(), removeOverride(find(pipelines, name), field)),
     syncPipeline: async ({ name }) => (await latency(), startSync(find(pipelines, name))),
   });
   service(SourceService, {
