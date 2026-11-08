@@ -149,6 +149,11 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 	var dependents []*planned
 	var listSources []string
 	err = s.Store.Tx(ctx, func(q *db.Queries) error {
+		// Documents are ordered only by kind, so two applies could lock the
+		// same rows in opposite orders.
+		if err := q.LockApply(ctx, s.Tenant.Org); err != nil {
+			return err
+		}
 		dependents, listSources = nil, nil
 		ch := newChanges()
 		ch.logos = logos

@@ -16,6 +16,7 @@ import (
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/vanguard"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
@@ -193,6 +194,11 @@ func (s *Server) connectError(procedure string, err error) error {
 	}
 	if _, ok := errors.AsType[*connect.Error](err); ok {
 		return err
+	}
+	// Postgres rolled the transaction back for a deadlock or a serialization
+	// failure, so the request changed nothing.
+	if pe, ok := errors.AsType[*pgconn.PgError](err); ok && (pe.Code == "40P01" || pe.Code == "40001") {
+		return connect.NewError(connect.CodeAborted, errors.New("the request conflicted with another one and changed nothing; try again"))
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
