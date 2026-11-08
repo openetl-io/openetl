@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -540,9 +541,12 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			return fmt.Errorf("daemon: --cgroup-root: %w", err)
 		}
 	}
-	host, _ := os.Hostname()
+	id, err := runnerID(cfg.Launcher, os.Hostname)
+	if err != nil {
+		return err
+	}
 	w := &dpworker.Worker{
-		API: apiClient, ID: fmt.Sprintf("%s:%d", host, os.Getpid()), Release: external.Release(), Protocol: external.Protocol,
+		API: apiClient, ID: id, Release: external.Release(), Protocol: external.Protocol,
 		Features: external.Features, Launchers: []string{dispatch.LauncherSubprocess}, Platform: connectorhost.Platform(),
 		Pool: cfg.Pool, Capacity: capacity, Cgroups: cgroups, ReportEvery: every, Logger: log,
 		Kinds: map[string]dpworker.Kind{
@@ -585,6 +589,22 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	log.Info("runner polling", "id", w.ID, "data_plane", cfg.DataPlane, "pool", cfg.Pool, "capacity", capacity.String(), "checkpoints", cfg.Checkpoints)
 	return w.Run(ctx)
+}
+
+// runnerID names this runner to the control plane. Runners in containers can
+// share a hostname and a PID, so a suffix tells them apart; a pod launcher
+// has none, since the attempts placed on it are found by this ID after it
+// restarts in place.
+func runnerID(launcher string, hostname func() (string, error)) (string, error) {
+	host, err := hostname()
+	if err != nil {
+		return "", fmt.Errorf("daemon: naming this runner: %w", err)
+	}
+	id := fmt.Sprintf("%s:%d", host, os.Getpid())
+	if launcher == "" {
+		id += ":" + rand.Text()[:8]
+	}
+	return id, nil
 }
 
 // podLauncher is the runner's pod launcher, and the jobs it takes.
