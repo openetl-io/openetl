@@ -95,10 +95,9 @@ func sessionCookie(h http.Header, name string) string {
 // header that only a CORS preflight would allow, and the server answers
 // none. The calls that set the cookie need the same.
 func (s *Server) guardCookies(next http.Handler) (http.Handler, error) {
-	cop := http.NewCrossOriginProtection()
-	u := s.publicURL()
-	if err := cop.AddTrustedOrigin(u.Scheme + "://" + u.Host); err != nil {
-		return nil, fmt.Errorf("api: the public URL: %w", err)
+	cop, err := s.crossOrigin()
+	if err != nil {
+		return nil, err
 	}
 	name := s.cookie("").Name
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +119,58 @@ func (s *Server) guardCookies(next http.Handler) (http.Handler, error) {
 		r.Header.Del("Cookie")
 		next.ServeHTTP(w, r)
 	}), nil
+}
+
+// guardAuthless keeps web pages from using a server with no sign-in, where a
+// call without a key is an owner's. A page can POST to localhost with no
+// preflight, so a call from another site is refused whatever its content
+// type. A page on a hostname that resolves to this machine counts as the same
+// origin, so unless the server is meant to be reached remotely, a call must
+// also name it by a loopback address or its public URL.
+func (s *Server) guardAuthless(next http.Handler) (http.Handler, error) {
+	if !s.Authless {
+		return next, nil
+	}
+	cop, err := s.crossOrigin()
+	if err != nil {
+		return nil, err
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var refused string
+		switch {
+		case strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "):
+		case !s.AuthlessRemote && !s.ownHost(r.Host):
+			refused = "sign-in is off, so this server answers only to localhost and its --public-url"
+		case cop.Check(r) != nil:
+			refused = "sign-in is off, so this server refuses calls from other sites' pages"
+		}
+		if refused != "" {
+			_ = connect.NewErrorWriter().Write(w, r, connect.NewError(connect.CodePermissionDenied, errors.New(refused)))
+			return
+		}
+		next.ServeHTTP(w, r)
+	}), nil
+}
+
+// ownHost says whether host, a request's Host, is a loopback address or the
+// public URL's.
+func (s *Server) ownHost(host string) bool {
+	name := (&url.URL{Host: host}).Hostname()
+	if ip := net.ParseIP(name); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return strings.EqualFold(name, "localhost") || strings.EqualFold(name, s.publicURL().Hostname())
+}
+
+// crossOrigin refuses state-changing calls from other sites, and trusts the
+// public URL's origin.
+func (s *Server) crossOrigin() (*http.CrossOriginProtection, error) {
+	cop := http.NewCrossOriginProtection()
+	u := s.publicURL()
+	if err := cop.AddTrustedOrigin(u.Scheme + "://" + u.Host); err != nil {
+		return nil, fmt.Errorf("api: the public URL: %w", err)
+	}
+	return cop, nil
 }
 
 // sessionCaller is the principal of the call's session cookie, if it has

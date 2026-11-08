@@ -252,6 +252,7 @@ func configureSignIn(srv *api.Server, cfg config.Config, addr net.Addr, log *slo
 		}
 	}
 	srv.Authless = cfg.Auth == "none"
+	srv.AuthlessRemote = srv.Authless && cfg.AuthNoneAllowRemote
 	switch {
 	case srv.Authless && !loopback && !cfg.AuthNoneAllowRemote:
 		return fmt.Errorf("daemon: --auth none on %s, which isn't a loopback address, would make anyone who can reach it an owner; add --auth-none-allow-remote if that's what you want", addr)
