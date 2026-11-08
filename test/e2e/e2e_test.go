@@ -1,8 +1,10 @@
 //go:build e2e
 
-// Package e2e runs scheduled syncs through the whole stack: the API,
-// Temporal, the orchestrator, runner processes and their engines, into
-// Postgres. It needs the compose stack (make deps-up) and OPENETL_ENGINE.
+// Package e2e runs pipelines through the whole stack: the API, the
+// orchestrator on DBOS, or on Temporal when OPENETL_TEST_ORCHESTRATOR is
+// temporal, runner processes and their engines, the connectors, and the
+// compose stack's systems. It needs the compose stack (make deps-up) and
+// OPENETL_ENGINE.
 package e2e
 
 import (
