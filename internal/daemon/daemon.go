@@ -400,6 +400,9 @@ func orchestrate(ctx context.Context, cfg config.Config, backend orchestration.B
 	if err := sched.EnsureCatalogRefresh(ctx); err != nil {
 		return err
 	}
+	if err := sched.EnsureRetentionProbe(ctx); err != nil {
+		return err
+	}
 	catalog, err := catalogOptions(ctx, cfg, st, log)
 	if err != nil {
 		return err
@@ -523,7 +526,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		log.Info("serving the bridge to Flink jobs", "listen", cfg.BridgeListen, "advertise", br.Address())
 	}
 	connectorOps := &dpactivities.Ops{
-		API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores, Storage: cfg.Checkpoints,
+		API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores, Storage: cfg.Checkpoints, Checkpoints: cps,
 		Flink: flink.Options{Logger: log.With("component", "flink"), HTTP: (&netguard.Policy{Allow: allow}).Client()},
 	}
 	every, err := time.ParseDuration(cfg.ReportInterval)
@@ -553,6 +556,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			contract.DiscoverSource: {Handler: dpworker.Handle(connectorOps.DiscoverSource)},
 			contract.TeardownSource: {Handler: dpworker.Handle(connectorOps.TeardownSource)},
 			contract.TeardownFlink:  {Handler: dpworker.Handle(connectorOps.TeardownFlink)},
+			contract.ProbeRetention: {Handler: dpworker.Handle(connectorOps.ProbeRetention)},
 			contract.ReadLogs:       {Handler: dpworker.Handle((&dpactivities.Logs{Store: cps}).ReadLogs)},
 		},
 	}

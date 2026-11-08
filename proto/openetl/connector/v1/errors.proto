@@ -32,6 +32,9 @@ enum ErrorCode {
   // replication slot lost in a failover. Only a new read from the start,
   // such as a re-snapshot, carries on.
   ERROR_CODE_POSITION_LOST = 16;
+  // The platform's own: the checkpoint the pipeline resumes from can't be
+  // read. A connector never returns it.
+  ERROR_CODE_CHECKPOINT_CORRUPT = 17;
 }
 
 // Error is a classified failure. A failed RPC carries it in the

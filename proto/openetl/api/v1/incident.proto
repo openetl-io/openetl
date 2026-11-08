@@ -57,6 +57,9 @@ enum IncidentClass {
   // A stream holds a column or cells back until they're released
   // or discarded.
   INCIDENT_CLASS_HELD = 10;
+  // The checkpoint the read resumes from can't be read
+  // (CHECKPOINT_CORRUPT), or a restart went back to the one before it.
+  INCIDENT_CLASS_CHECKPOINT_CORRUPT = 11;
 }
 
 enum IncidentState {

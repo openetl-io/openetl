@@ -86,6 +86,17 @@ type CheckpointMirror struct {
 	Usage              []byte
 }
 
+type CheckpointRequest struct {
+	OrgID      uuid.UUID
+	ID         uuid.UUID
+	PipelineID uuid.UUID
+	Kind       string
+	Streams    []string
+	Principal  string
+	CreateTime time.Time
+	TakeTime   *time.Time
+}
+
 type ConnectorCatalog struct {
 	OrgID            uuid.UUID
 	Source           string
@@ -401,21 +412,22 @@ type PausedStream struct {
 }
 
 type Pipeline struct {
-	OrgID          uuid.UUID
-	WorkspaceID    uuid.UUID
-	ID             uuid.UUID
-	Name           string
-	SourceID       uuid.UUID
-	DestinationID  uuid.UUID
-	DataPlaneID    string
-	Version        string
-	Revision       int64
-	CreateTime     time.Time
-	UpdateTime     time.Time
-	Paused         bool
-	LaggingSince   *time.Time
-	KeyGroups      int32
-	ManualSyncTime *time.Time
+	OrgID              uuid.UUID
+	WorkspaceID        uuid.UUID
+	ID                 uuid.UUID
+	Name               string
+	SourceID           uuid.UUID
+	DestinationID      uuid.UUID
+	DataPlaneID        string
+	Version            string
+	Revision           int64
+	CreateTime         time.Time
+	UpdateTime         time.Time
+	Paused             bool
+	LaggingSince       *time.Time
+	KeyGroups          int32
+	ManualSyncTime     *time.Time
+	RetentionProbeTime *time.Time
 }
 
 type PipelineOverride struct {

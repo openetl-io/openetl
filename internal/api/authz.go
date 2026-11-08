@@ -31,7 +31,11 @@ var permissions = map[string]auth.Role{
 	"pipelines.override": auth.Operator,
 	"pipelines.delete":   auth.Editor,
 	// Releasing a hold approves its change.
-	"pipelines.holds":      auth.Editor,
+	"pipelines.holds": auth.Editor,
+	// Reading again and restarting from an older checkpoint change what lands
+	// in the destination.
+	"pipelines.reset":      auth.Editor,
+	"pipelines.rewind":     auth.Editor,
 	"syncs.get":            auth.Viewer,
 	"logs.get":             auth.Viewer,
 	"sources.get":          auth.Viewer,
@@ -121,6 +125,8 @@ var rules = map[string]rule{
 	apiv1connect.PipelineServiceResumePipelineProcedure:         {"pipelines.pause", inName, false},
 	apiv1connect.PipelineServiceSyncPipelineProcedure:           {"pipelines.sync", inName, false},
 	apiv1connect.PipelineServiceRescalePipelineProcedure:        {"pipelines.rescale", inName, false},
+	apiv1connect.PipelineServiceResetPipelineProcedure:          {"pipelines.reset", inName, false},
+	apiv1connect.PipelineServiceRewindPipelineProcedure:         {"pipelines.rewind", inName, false},
 	apiv1connect.PipelineServiceRemovePipelineOverrideProcedure: {"pipelines.override", inName, false},
 	apiv1connect.PipelineServiceListPipelineVersionsProcedure:   {"pipelines.get", inParent, false},
 	apiv1connect.PipelineServiceGetPipelineVersionProcedure:     {"pipelines.get", inName, false},
@@ -219,6 +225,8 @@ var rules = map[string]rule{
 	dataplanev1connect.DataPlaneServiceReportRunnerProcedure:         runner,
 	dataplanev1connect.DataPlaneServicePollWorkProcedure:             runner,
 	dataplanev1connect.DataPlaneServiceReportResultProcedure:         runner,
+	dataplanev1connect.DataPlaneServiceReportRewindProcedure:         runner,
+	dataplanev1connect.DataPlaneServiceReportRetentionProcedure:      runner,
 }
 
 // workspaceOf is the workspace in a name or parent, workspaces/{w}/….

@@ -53,6 +53,9 @@ const (
 	// A stream holds a column or cells back until they're released
 	// or discarded.
 	IncidentClass_INCIDENT_CLASS_HELD IncidentClass = 10
+	// The checkpoint the read resumes from can't be read
+	// (CHECKPOINT_CORRUPT), or a restart went back to the one before it.
+	IncidentClass_INCIDENT_CLASS_CHECKPOINT_CORRUPT IncidentClass = 11
 )
 
 // Enum value maps for IncidentClass.
@@ -69,19 +72,21 @@ var (
 		8:  "INCIDENT_CLASS_RETENTION_AT_RISK",
 		9:  "INCIDENT_CLASS_QUARANTINE",
 		10: "INCIDENT_CLASS_HELD",
+		11: "INCIDENT_CLASS_CHECKPOINT_CORRUPT",
 	}
 	IncidentClass_value = map[string]int32{
-		"INCIDENT_CLASS_UNSPECIFIED":       0,
-		"INCIDENT_CLASS_SYNC_FAILED":       1,
-		"INCIDENT_CLASS_AUTH":              2,
-		"INCIDENT_CLASS_SCHEMA_BLOCKED":    3,
-		"INCIDENT_CLASS_RATE_LIMITED":      4,
-		"INCIDENT_CLASS_POSITION_LOST":     5,
-		"INCIDENT_CLASS_CRASH_LOOP":        6,
-		"INCIDENT_CLASS_LAGGING":           7,
-		"INCIDENT_CLASS_RETENTION_AT_RISK": 8,
-		"INCIDENT_CLASS_QUARANTINE":        9,
-		"INCIDENT_CLASS_HELD":              10,
+		"INCIDENT_CLASS_UNSPECIFIED":        0,
+		"INCIDENT_CLASS_SYNC_FAILED":        1,
+		"INCIDENT_CLASS_AUTH":               2,
+		"INCIDENT_CLASS_SCHEMA_BLOCKED":     3,
+		"INCIDENT_CLASS_RATE_LIMITED":       4,
+		"INCIDENT_CLASS_POSITION_LOST":      5,
+		"INCIDENT_CLASS_CRASH_LOOP":         6,
+		"INCIDENT_CLASS_LAGGING":            7,
+		"INCIDENT_CLASS_RETENTION_AT_RISK":  8,
+		"INCIDENT_CLASS_QUARANTINE":         9,
+		"INCIDENT_CLASS_HELD":               10,
+		"INCIDENT_CLASS_CHECKPOINT_CORRUPT": 11,
 	}
 )
 
@@ -932,7 +937,7 @@ const file_openetl_api_v1_incident_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\acomment\x18\x02 \x01(\tR\acomment\"O\n" +
 	"\x17ResolveIncidentResponse\x124\n" +
-	"\bincident\x18\x01 \x01(\v2\x18.openetl.api.v1.IncidentR\bincident*\xe7\x02\n" +
+	"\bincident\x18\x01 \x01(\v2\x18.openetl.api.v1.IncidentR\bincident*\x8e\x03\n" +
 	"\rIncidentClass\x12\x1e\n" +
 	"\x1aINCIDENT_CLASS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aINCIDENT_CLASS_SYNC_FAILED\x10\x01\x12\x17\n" +
@@ -945,7 +950,8 @@ const file_openetl_api_v1_incident_proto_rawDesc = "" +
 	" INCIDENT_CLASS_RETENTION_AT_RISK\x10\b\x12\x1d\n" +
 	"\x19INCIDENT_CLASS_QUARANTINE\x10\t\x12\x17\n" +
 	"\x13INCIDENT_CLASS_HELD\x10\n" +
-	"*e\n" +
+	"\x12%\n" +
+	"!INCIDENT_CLASS_CHECKPOINT_CORRUPT\x10\v*e\n" +
 	"\rIncidentState\x12\x1e\n" +
 	"\x1aINCIDENT_STATE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13INCIDENT_STATE_OPEN\x10\x01\x12\x1b\n" +

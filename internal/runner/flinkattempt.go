@@ -222,11 +222,17 @@ func (a *flinkAttempt) claim(ctx context.Context) (head, prev *checkpoint.Record
 	}
 	a.sess = sess
 	a.res.Generation = sess.Generation()
-	if head, err = sess.Load(ctx); err != nil {
+	if head, err = sess.Load(ctx); errors.Is(err, checkpoint.ErrUnreadable) {
+		// Flink's own checkpoint goes with the record's, so it doesn't
+		// restart from the one before.
+		return nil, nil, errs.Wrap(errs.CheckpointCorrupt, err, "runner: the checkpoint the pipeline resumes from can't be read")
+	} else if err != nil {
 		return nil, nil, err
 	}
 	if head != nil && head.Previous != nil {
-		if prev, err = a.job.Log.Record(ctx, *head.Previous); err != nil {
+		if prev, err = a.job.Log.Record(ctx, *head.Previous); errors.Is(err, checkpoint.ErrUnreadable) {
+			return nil, nil, errs.Wrap(errs.CheckpointCorrupt, err, "runner: the checkpoint before the one the pipeline resumes from can't be read")
+		} else if err != nil {
 			return nil, nil, err
 		}
 	}
@@ -433,12 +439,7 @@ func (a *flinkAttempt) recover(ctx context.Context, head, prev *checkpoint.Recor
 // record was written, and recovers it, which raises the destination's
 // fence and lets it drop what HEAD's epoch staged.
 func (a *flinkAttempt) rewind(ctx context.Context, prev *checkpoint.Record) error {
-	var to *checkpoint.RecordRef
-	if prev != nil {
-		ref := prev.Ref()
-		to = &ref
-	}
-	if err := a.sess.Rewind(ctx, to); err != nil {
+	if err := a.sess.RewindTo(ctx, prev); err != nil {
 		return err
 	}
 	restored, err := a.recover(ctx, prev, nil, false)

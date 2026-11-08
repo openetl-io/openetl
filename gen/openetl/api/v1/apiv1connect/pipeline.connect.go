@@ -54,6 +54,12 @@ const (
 	// PipelineServiceRescalePipelineProcedure is the fully-qualified name of the PipelineService's
 	// RescalePipeline RPC.
 	PipelineServiceRescalePipelineProcedure = "/openetl.api.v1.PipelineService/RescalePipeline"
+	// PipelineServiceResetPipelineProcedure is the fully-qualified name of the PipelineService's
+	// ResetPipeline RPC.
+	PipelineServiceResetPipelineProcedure = "/openetl.api.v1.PipelineService/ResetPipeline"
+	// PipelineServiceRewindPipelineProcedure is the fully-qualified name of the PipelineService's
+	// RewindPipeline RPC.
+	PipelineServiceRewindPipelineProcedure = "/openetl.api.v1.PipelineService/RewindPipeline"
 	// PipelineServiceSyncPipelineProcedure is the fully-qualified name of the PipelineService's
 	// SyncPipeline RPC.
 	PipelineServiceSyncPipelineProcedure = "/openetl.api.v1.PipelineService/SyncPipeline"
@@ -104,6 +110,20 @@ type PipelineServiceClient interface {
 	// the spec back its say. A running job stops at a checkpoint and starts
 	// again at the new size.
 	RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error)
+	// Reads streams again from the start: the next sync, or a continuous
+	// pipeline's next run, drops their positions and reads them as it would a
+	// new stream's, such as a new replication slot and a snapshot. What
+	// reaches the destination already stays: merge updates rows in place, and
+	// append adds them again. A continuous pipeline's run restarts at a
+	// checkpoint to take it. Fails with FAILED_PRECONDITION for a pipeline
+	// with a Flink transform, whose state Flink keeps.
+	ResetPipeline(context.Context, *connect.Request[v1.ResetPipelineRequest]) (*connect.Response[v1.ResetPipelineResponse], error)
+	// Lets the next sync or run restart from the checkpoint before the latest
+	// one if the latest can't be read. Its epoch was delivered, so it's
+	// delivered again: streams the destination neither merges nor dedupes get
+	// its rows twice. Without this, a restart happens by itself only where it
+	// can't lower a stream's guarantee, under heal mode auto or auto_safe.
+	RewindPipeline(context.Context, *connect.Request[v1.RewindPipelineRequest]) (*connect.Response[v1.RewindPipelineResponse], error)
 	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
 	// paused or a sync is running.
 	SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error)
@@ -183,6 +203,18 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(pipelineServiceMethods.ByName("RescalePipeline")),
 			connect.WithClientOptions(opts...),
 		),
+		resetPipeline: connect.NewClient[v1.ResetPipelineRequest, v1.ResetPipelineResponse](
+			httpClient,
+			baseURL+PipelineServiceResetPipelineProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("ResetPipeline")),
+			connect.WithClientOptions(opts...),
+		),
+		rewindPipeline: connect.NewClient[v1.RewindPipelineRequest, v1.RewindPipelineResponse](
+			httpClient,
+			baseURL+PipelineServiceRewindPipelineProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("RewindPipeline")),
+			connect.WithClientOptions(opts...),
+		),
 		syncPipeline: connect.NewClient[v1.SyncPipelineRequest, v1.SyncPipelineResponse](
 			httpClient,
 			baseURL+PipelineServiceSyncPipelineProcedure,
@@ -249,6 +281,8 @@ type pipelineServiceClient struct {
 	resumePipeline         *connect.Client[v1.ResumePipelineRequest, v1.ResumePipelineResponse]
 	removePipelineOverride *connect.Client[v1.RemovePipelineOverrideRequest, v1.RemovePipelineOverrideResponse]
 	rescalePipeline        *connect.Client[v1.RescalePipelineRequest, v1.RescalePipelineResponse]
+	resetPipeline          *connect.Client[v1.ResetPipelineRequest, v1.ResetPipelineResponse]
+	rewindPipeline         *connect.Client[v1.RewindPipelineRequest, v1.RewindPipelineResponse]
 	syncPipeline           *connect.Client[v1.SyncPipelineRequest, v1.SyncPipelineResponse]
 	listPipelineVersions   *connect.Client[v1.ListPipelineVersionsRequest, v1.ListPipelineVersionsResponse]
 	getPipelineVersion     *connect.Client[v1.GetPipelineVersionRequest, v1.GetPipelineVersionResponse]
@@ -293,6 +327,16 @@ func (c *pipelineServiceClient) RemovePipelineOverride(ctx context.Context, req 
 // RescalePipeline calls openetl.api.v1.PipelineService.RescalePipeline.
 func (c *pipelineServiceClient) RescalePipeline(ctx context.Context, req *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error) {
 	return c.rescalePipeline.CallUnary(ctx, req)
+}
+
+// ResetPipeline calls openetl.api.v1.PipelineService.ResetPipeline.
+func (c *pipelineServiceClient) ResetPipeline(ctx context.Context, req *connect.Request[v1.ResetPipelineRequest]) (*connect.Response[v1.ResetPipelineResponse], error) {
+	return c.resetPipeline.CallUnary(ctx, req)
+}
+
+// RewindPipeline calls openetl.api.v1.PipelineService.RewindPipeline.
+func (c *pipelineServiceClient) RewindPipeline(ctx context.Context, req *connect.Request[v1.RewindPipelineRequest]) (*connect.Response[v1.RewindPipelineResponse], error) {
+	return c.rewindPipeline.CallUnary(ctx, req)
 }
 
 // SyncPipeline calls openetl.api.v1.PipelineService.SyncPipeline.
@@ -361,6 +405,20 @@ type PipelineServiceHandler interface {
 	// the spec back its say. A running job stops at a checkpoint and starts
 	// again at the new size.
 	RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error)
+	// Reads streams again from the start: the next sync, or a continuous
+	// pipeline's next run, drops their positions and reads them as it would a
+	// new stream's, such as a new replication slot and a snapshot. What
+	// reaches the destination already stays: merge updates rows in place, and
+	// append adds them again. A continuous pipeline's run restarts at a
+	// checkpoint to take it. Fails with FAILED_PRECONDITION for a pipeline
+	// with a Flink transform, whose state Flink keeps.
+	ResetPipeline(context.Context, *connect.Request[v1.ResetPipelineRequest]) (*connect.Response[v1.ResetPipelineResponse], error)
+	// Lets the next sync or run restart from the checkpoint before the latest
+	// one if the latest can't be read. Its epoch was delivered, so it's
+	// delivered again: streams the destination neither merges nor dedupes get
+	// its rows twice. Without this, a restart happens by itself only where it
+	// can't lower a stream's guarantee, under heal mode auto or auto_safe.
+	RewindPipeline(context.Context, *connect.Request[v1.RewindPipelineRequest]) (*connect.Response[v1.RewindPipelineResponse], error)
 	// Starts a sync now. Fails with FAILED_PRECONDITION if the pipeline is
 	// paused or a sync is running.
 	SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error)
@@ -436,6 +494,18 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 		connect.WithSchema(pipelineServiceMethods.ByName("RescalePipeline")),
 		connect.WithHandlerOptions(opts...),
 	)
+	pipelineServiceResetPipelineHandler := connect.NewUnaryHandler(
+		PipelineServiceResetPipelineProcedure,
+		svc.ResetPipeline,
+		connect.WithSchema(pipelineServiceMethods.ByName("ResetPipeline")),
+		connect.WithHandlerOptions(opts...),
+	)
+	pipelineServiceRewindPipelineHandler := connect.NewUnaryHandler(
+		PipelineServiceRewindPipelineProcedure,
+		svc.RewindPipeline,
+		connect.WithSchema(pipelineServiceMethods.ByName("RewindPipeline")),
+		connect.WithHandlerOptions(opts...),
+	)
 	pipelineServiceSyncPipelineHandler := connect.NewUnaryHandler(
 		PipelineServiceSyncPipelineProcedure,
 		svc.SyncPipeline,
@@ -506,6 +576,10 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 			pipelineServiceRemovePipelineOverrideHandler.ServeHTTP(w, r)
 		case PipelineServiceRescalePipelineProcedure:
 			pipelineServiceRescalePipelineHandler.ServeHTTP(w, r)
+		case PipelineServiceResetPipelineProcedure:
+			pipelineServiceResetPipelineHandler.ServeHTTP(w, r)
+		case PipelineServiceRewindPipelineProcedure:
+			pipelineServiceRewindPipelineHandler.ServeHTTP(w, r)
 		case PipelineServiceSyncPipelineProcedure:
 			pipelineServiceSyncPipelineHandler.ServeHTTP(w, r)
 		case PipelineServiceListPipelineVersionsProcedure:
@@ -559,6 +633,14 @@ func (UnimplementedPipelineServiceHandler) RemovePipelineOverride(context.Contex
 
 func (UnimplementedPipelineServiceHandler) RescalePipeline(context.Context, *connect.Request[v1.RescalePipelineRequest]) (*connect.Response[v1.RescalePipelineResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.RescalePipeline is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) ResetPipeline(context.Context, *connect.Request[v1.ResetPipelineRequest]) (*connect.Response[v1.ResetPipelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ResetPipeline is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) RewindPipeline(context.Context, *connect.Request[v1.RewindPipelineRequest]) (*connect.Response[v1.RewindPipelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.RewindPipeline is not implemented"))
 }
 
 func (UnimplementedPipelineServiceHandler) SyncPipeline(context.Context, *connect.Request[v1.SyncPipelineRequest]) (*connect.Response[v1.SyncPipelineResponse], error) {

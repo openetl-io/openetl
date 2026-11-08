@@ -43,6 +43,13 @@ Commands:
   overrides remove NAME FIELD
                   give the spec back its say in a field heal overrides
   sync NAME       start a sync of a pipeline now
+  reset [--stream STREAM]... NAME
+                  read a pipeline's streams again from the start on its
+                  next sync or run: every stream, or each --stream
+  rewind --yes NAME
+                  let a pipeline whose latest checkpoint can't be read
+                  restart from the one before it, delivering the latest
+                  epoch again
   rescale --size SIZE NAME
                   size a pipeline's jobs until its next version, which
                   restarts a running job at a checkpoint; auto gives the
@@ -130,6 +137,10 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runHolds(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
+	case "reset":
+		return runReset(ctx, args[1:], out)
+	case "rewind":
+		return runRewind(ctx, args[1:], out)
 	case "rescale":
 		return runRescale(ctx, args[1:], out)
 	case "overrides":

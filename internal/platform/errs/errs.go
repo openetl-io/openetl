@@ -33,6 +33,7 @@ const (
 	Fenced                 = Code(protocolv1.ErrorCode_ERROR_CODE_FENCED)
 	Draining               = Code(protocolv1.ErrorCode_ERROR_CODE_DRAINING)
 	PositionLost           = Code(protocolv1.ErrorCode_ERROR_CODE_POSITION_LOST)
+	CheckpointCorrupt      = Code(protocolv1.ErrorCode_ERROR_CODE_CHECKPOINT_CORRUPT)
 )
 
 // SCHEMA_DRIFT comes only from a schema policy pausing a stream, which no
@@ -54,6 +55,7 @@ var retryable = map[Code]bool{
 	Fenced:                 false,
 	Draining:               true,
 	PositionLost:           false,
+	CheckpointCorrupt:      false,
 }
 
 // Retryable reports whether an attempt that failed with c is retried.

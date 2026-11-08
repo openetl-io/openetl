@@ -481,6 +481,17 @@ type Acknowledger interface {
 	Committed(ctx context.Context, states map[string][]byte, splits map[string][]Split) error
 }
 
+// RetentionReporter is implemented by sources whose positions the source
+// keeps only so long, such as a replication slot's or a Kafka topic's.
+// Retention says, without reading, how far one checkpoint's positions are
+// behind the source and how much longer it keeps what they haven't
+// acknowledged, given its states as Committed gets them. It runs with no
+// read running, such as while the pipeline is paused. Nil fields of a
+// Progress are unknown, and no Progress means the source can't tell.
+type RetentionReporter interface {
+	Retention(ctx context.Context, pipeline string, states map[string][]byte, splits map[string][]Split) ([]Progress, error)
+}
+
 // Splitter is implemented by sources that divide streams into splits.
 // Splits returns a stream's splits for a read that starts, given where its
 // last read's splits ended, their next states; ended is nil for a stream

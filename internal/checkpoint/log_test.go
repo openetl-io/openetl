@@ -6,6 +6,8 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
@@ -260,4 +262,60 @@ func TestSetSplitsKeepsTheWholeStreamInState(t *testing.T) {
 	if !rec.Streams["s"].Complete || len(rec.Forced) != 0 {
 		t.Fatalf("stream %+v, forced %v", rec.Streams["s"], rec.Forced)
 	}
+}
+
+// HEAD names the record before its own, through claims and rewinds, so a
+// record that can't be read can be stepped back from.
+func TestHeadKnowsTheRecordBefore(t *testing.T) {
+	l := newLog(checkpoint.NewMemStore())
+	s := claim(t, l, "a")
+	if _, known := s.Head().Before(); known {
+		t.Fatal("an empty log's HEAD knows a record before it")
+	}
+	r1 := commit(t, s, 1)
+	if before, known := s.Head().Before(); before != nil || !known {
+		t.Fatalf("after the first record, Before() = %v, %v; want none, known", before, known)
+	}
+	commit(t, s, 2)
+	s = claim(t, l, "b")
+	if before, known := s.Head().Before(); !known || before == nil || *before != r1.Ref() {
+		t.Fatalf("a claim's HEAD says %v, %v before it; want %v", before, known, r1.Ref())
+	}
+	if err := s.RewindTo(t.Context(), r1); err != nil {
+		t.Fatal(err)
+	}
+	if before, known := s.Head().Before(); before != nil || !known {
+		t.Fatalf("rewound to the first record, Before() = %v, %v; want none, known", before, known)
+	}
+}
+
+func TestUnreadableRecords(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	s := claim(t, l, "a")
+	r1 := commit(t, s, 1)
+	key := func(e, g uint64) string { return "org/pipe/_checkpoints/" + pad(e) + "-g" + pad(g) + ".json" }
+	if _, err := store.Create(t.Context(), key(7, 1), []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := store.Get(t.Context(), key(r1.Epoch, r1.Generation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(t.Context(), key(8, 1), data); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []checkpoint.RecordRef{{Epoch: 6, Generation: 1}, {Epoch: 7, Generation: 1}, {Epoch: 8, Generation: 1}} {
+		if _, err := l.Record(t.Context(), ref); !errors.Is(err, checkpoint.ErrUnreadable) {
+			t.Errorf("Record(%v) = %v, want ErrUnreadable", ref, err)
+		}
+	}
+	if _, err := l.Record(t.Context(), checkpoint.RecordRef{Epoch: 6, Generation: 1}); !errors.Is(err, checkpoint.ErrNotFound) {
+		t.Errorf("a missing record's error isn't ErrNotFound: %v", err)
+	}
+}
+
+func pad(n uint64) string {
+	s := strconv.FormatUint(n, 10)
+	return strings.Repeat("0", 20-len(s)) + s
 }

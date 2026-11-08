@@ -47,6 +47,7 @@ type holdsEnv struct {
 	runner   dataplanev1connect.DataPlaneServiceClient
 	sched    *refreshes
 	pipeline uuid.UUID
+	store    *store.Store
 	parent   string
 	url      string
 }
@@ -72,7 +73,7 @@ func newHoldsEnv(t *testing.T) *holdsEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	e := &holdsEnv{conn: conn, sched: &refreshes{}, pipeline: uuid.New(), parent: "workspaces/default/pipelines/orders"}
+	e := &holdsEnv{conn: conn, sched: &refreshes{}, pipeline: uuid.New(), parent: "workspaces/default/pipelines/orders", store: s}
 	args := pgx.NamedArgs{"org": tenant.Org, "ws": tenant.Workspace, "src": uuid.New(), "dst": uuid.New(), "p": e.pipeline}
 	for _, q := range []string{
 		`INSERT INTO sources (org_id, workspace_id, id, name, spec, version, revision, connector_digest, secrets)

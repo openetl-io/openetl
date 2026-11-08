@@ -33,6 +33,7 @@ const (
 	PipelineOverridden = "pipeline.overridden"
 	StreamPaused       = "stream.paused"
 	StreamResumed      = "stream.resumed"
+	PipelineReset      = "pipeline.reset"
 	SchemaChanged      = "schema.changed"
 	SchemaBlocked      = "schema.blocked"
 	IncidentOpened     = "incident.opened"
@@ -45,7 +46,7 @@ const (
 var Types = []string{
 	SyncStarted, SyncSucceeded, SyncFailed, SyncStopped,
 	PipelineCreated, PipelineUpdated, PipelineDeleted, PipelinePaused, PipelineResumed, PipelineLagging, PipelineRecovered,
-	PipelineRescaled, PipelineOverridden, StreamPaused, StreamResumed,
+	PipelineRescaled, PipelineOverridden, StreamPaused, StreamResumed, PipelineReset,
 	SchemaChanged, SchemaBlocked,
 	IncidentOpened, IncidentEscalated, IncidentResolved,
 	WebhookTest,
@@ -151,6 +152,8 @@ type Pipeline struct {
 	// removed.
 	Field string `json:"field,omitempty"`
 	Value string `json:"value,omitempty"`
+	// The streams a reset reads again; empty for every stream.
+	Streams []string `json:"streams,omitempty"`
 }
 
 // Lag is a continuous pipeline's read falling behind, or catching up.

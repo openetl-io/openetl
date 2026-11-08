@@ -28,6 +28,12 @@ service SourceService {
   // concurrently with Read. Called only when SourceCapabilities.resplit is
   // set.
   rpc Resplit(ResplitRequest) returns (ResplitResponse);
+  // With no read running: how far a checkpoint's positions are behind the
+  // source, and how much longer the source keeps what they haven't
+  // acknowledged, without reading. The platform asks while a pipeline
+  // isn't running, such as when it's paused. Called only when
+  // SourceCapabilities.retention is set.
+  rpc Retention(RetentionRequest) returns (RetentionResponse);
 }
 
 message SourceCapabilities {
@@ -36,6 +42,8 @@ message SourceCapabilities {
   bool splits = 2;
   // The source splits a running split's remainder, through Resplit.
   bool resplit = 3;
+  // The source answers Retention.
+  bool retention = 4;
 }
 
 message DiscoverRequest {
@@ -234,6 +242,22 @@ message SplitsRequest {
 message SplitsResponse {
   // At least one. The whole stream alone: it isn't split.
   repeated Split splits = 1;
+}
+
+message RetentionRequest {
+  bytes config = 1;
+  // The pipeline, as ReadRequest.pipeline.
+  string pipeline = 2;
+  // As CommittedRequest's: one checkpoint's states, by stream, for streams
+  // read whole, and their splits' for those read in splits.
+  map<string, bytes> states = 3;
+  map<string, Splits> splits = 4;
+}
+
+message RetentionResponse {
+  // As a read reports it; lag is how far behind in time the positions are.
+  // Empty: the source can't tell.
+  repeated Progress progress = 1;
 }
 
 message ResplitRequest {
