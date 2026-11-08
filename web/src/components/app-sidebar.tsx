@@ -29,12 +29,12 @@ import {
 } from "@/components/ui/sidebar";
 import type { GetCallerResponse } from "@/gen/openetl/api/v1/access_pb";
 import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
-import { callerName, hasSession, isUser, useCaller, useSignOut } from "@/lib/caller";
+import { callerName, hasSession, isUser, useCan, useCaller, useSignOut } from "@/lib/caller";
 import { usePrefs, type Density, type Theme } from "@/lib/prefs";
 import { bindingLabel } from "./access-fields";
 import { ChangePasswordDialog } from "./change-password";
 import { Logo } from "./logo";
-import { nav, type NavItem, type Page } from "./nav";
+import { visibleNav, type NavItem, type Page } from "./nav";
 
 function NavGroup({ label, items, workspace, counts }: { label?: string; items: NavItem[]; workspace: string; counts: Partial<Record<Page, number>> }) {
   const { pathname } = useLocation();
@@ -147,6 +147,7 @@ export function AppSidebar({ workspace }: { workspace: string }) {
     { refetchInterval: 10_000 },
   );
   const incidents = pipelines.data?.pipelines.reduce((n, p) => n + (p.status?.openIncidents ?? 0), 0);
+  const can = useCan(workspace);
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
@@ -165,7 +166,7 @@ export function AppSidebar({ workspace }: { workspace: string }) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        {nav.map((g, i) => (
+        {visibleNav(can).map((g, i) => (
           <NavGroup key={i} label={g.label} items={g.items} workspace={workspace} counts={{ "/workspaces/$workspace/incidents": incidents }} />
         ))}
       </SidebarContent>

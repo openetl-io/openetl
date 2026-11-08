@@ -12,7 +12,8 @@ export type Page =
   | "/workspaces/$workspace/access"
   | "/workspaces/$workspace/audit";
 
-export type NavItem = { label: string; icon: LucideIcon; to: Page };
+/** permission, when set, is what the caller needs to see the item. */
+export type NavItem = { label: string; icon: LucideIcon; to: Page; permission?: string };
 
 /** The sidebar's groups, which the command palette also offers. */
 export const nav: { label?: string; items: NavItem[] }[] = [
@@ -37,7 +38,14 @@ export const nav: { label?: string; items: NavItem[] }[] = [
       { label: "Webhooks", icon: Webhook, to: "/workspaces/$workspace/webhooks" },
       { label: "Secrets", icon: KeyRound, to: "/workspaces/$workspace/secrets" },
       { label: "Access", icon: Users, to: "/workspaces/$workspace/access" },
-      { label: "Audit log", icon: ScrollText, to: "/workspaces/$workspace/audit" },
+      { label: "Audit log", icon: ScrollText, to: "/workspaces/$workspace/audit", permission: "audit.get" },
     ],
   },
 ];
+
+/** The groups' items the caller may see, without the groups left empty. */
+export function visibleNav(can: (permission: string) => boolean) {
+  return nav
+    .map((g) => ({ ...g, items: g.items.filter((it) => !it.permission || can(it.permission)) }))
+    .filter((g) => g.items.length > 0);
+}

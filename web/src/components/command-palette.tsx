@@ -10,10 +10,11 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
+import { useCan } from "@/lib/caller";
 import { lastSegment } from "@/lib/names";
 import { usePrefs } from "@/lib/prefs";
 import { pipelineStatus } from "@/lib/status";
-import { nav } from "./nav";
+import { visibleNav } from "./nav";
 import { StatusBadge } from "./status";
 
 export function CommandPalette({
@@ -28,6 +29,7 @@ export function CommandPalette({
   signOut?: () => void;
 }) {
   const navigate = useNavigate();
+  const can = useCan(workspace);
   const { dark, density, toggleTheme, toggleDensity } = usePrefs();
   const pipelines = useQuery(
     PipelineService.method.listPipelines,
@@ -66,7 +68,7 @@ export function CommandPalette({
           })}
         </CommandGroup>
         <CommandGroup heading="Go to">
-          {nav.flatMap((g) => g.items).map((it) => (
+          {visibleNav(can).flatMap((g) => g.items).map((it) => (
             <CommandItem key={it.to} value={`go ${it.label}`} onSelect={run(() => navigate({ to: it.to, params: { workspace }, search: {} }))}>
               <it.icon className="text-muted-foreground" />
               {it.label}
