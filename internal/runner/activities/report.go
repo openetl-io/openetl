@@ -144,6 +144,9 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 			Name: name, Rows: st.Rows, Forced: slices.Contains(rec.Forced, name), Complete: st.Complete,
 			SchemaDigest: r.digest(name, st.Schema), CollapsedRows: collapsed[name],
 		}
+		if n, ok := rec.SyncRows[name]; ok {
+			cs.SyncRows = &n
+		}
 		for _, q := range rec.Quarantine {
 			if q.Stream == name {
 				cs.QuarantinedRows += q.Rows

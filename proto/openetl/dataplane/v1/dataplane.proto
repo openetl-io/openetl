@@ -246,6 +246,9 @@ message CheckpointStream {
   // The newest of the epoch's quarantine files for the stream, in the data
   // plane's object storage; empty if it quarantined nothing.
   string quarantine_file = 14;
+  // Rows the source emitted in the sync so far, quarantined ones included.
+  // Unset in checkpoints made without a sync.
+  optional uint64 sync_rows = 15;
 }
 
 message CheckpointHold {

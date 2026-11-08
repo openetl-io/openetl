@@ -991,8 +991,11 @@ type CheckpointStream struct {
 	// The newest of the epoch's quarantine files for the stream, in the data
 	// plane's object storage; empty if it quarantined nothing.
 	QuarantineFile string `protobuf:"bytes,14,opt,name=quarantine_file,json=quarantineFile,proto3" json:"quarantine_file,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Rows the source emitted in the sync so far, quarantined ones included.
+	// Unset in checkpoints made without a sync.
+	SyncRows      *uint64 `protobuf:"varint,15,opt,name=sync_rows,json=syncRows,proto3,oneof" json:"sync_rows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CheckpointStream) Reset() {
@@ -1121,6 +1124,13 @@ func (x *CheckpointStream) GetQuarantineFile() string {
 		return x.QuarantineFile
 	}
 	return ""
+}
+
+func (x *CheckpointStream) GetSyncRows() uint64 {
+	if x != nil && x.SyncRows != nil {
+		return *x.SyncRows
+	}
+	return 0
 }
 
 type CheckpointHold struct {
@@ -3301,7 +3311,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x01 \x01(\x04R\n" +
 	"generation\x12\x14\n" +
-	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\"\xa8\x04\n" +
+	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\"\xd8\x04\n" +
 	"\x10CheckpointStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\x04R\x04rows\x12)\n" +
@@ -3318,7 +3328,10 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\rplanned_level\x18\v \x01(\x0e2\x1d.openetl.api.v1.DeliveryLevelR\fplannedLevel\x12,\n" +
 	"\x04read\x18\f \x01(\x0e2\x18.openetl.api.v1.SyncModeR\x04read\x12\x16\n" +
 	"\x06paused\x18\r \x01(\bR\x06paused\x12'\n" +
-	"\x0fquarantine_file\x18\x0e \x01(\tR\x0equarantineFile\"\xaf\x03\n" +
+	"\x0fquarantine_file\x18\x0e \x01(\tR\x0equarantineFile\x12 \n" +
+	"\tsync_rows\x18\x0f \x01(\x04H\x00R\bsyncRows\x88\x01\x01B\f\n" +
+	"\n" +
+	"_sync_rows\"\xaf\x03\n" +
 	"\x0eCheckpointHold\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12\x14\n" +
 	"\x05whole\x18\x02 \x01(\bR\x05whole\x12\x16\n" +
@@ -3678,6 +3691,7 @@ func file_openetl_dataplane_v1_dataplane_proto_init() {
 	if File_openetl_dataplane_v1_dataplane_proto != nil {
 		return
 	}
+	file_openetl_dataplane_v1_dataplane_proto_msgTypes[11].OneofWrappers = []any{}
 	file_openetl_dataplane_v1_dataplane_proto_msgTypes[14].OneofWrappers = []any{
 		(*GetConnectorConfigRequest_SourceId)(nil),
 		(*GetConnectorConfigRequest_DestinationId)(nil),

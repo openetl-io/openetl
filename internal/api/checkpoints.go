@@ -38,10 +38,12 @@ type mirroredStream struct {
 	Rows            uint64 `json:"rows"`
 	QuarantinedRows uint64 `json:"quarantined_rows"`
 	CollapsedRows   uint64 `json:"collapsed_rows"`
-	Forced          bool   `json:"forced"`
-	Complete        bool   `json:"complete"`
-	SchemaDigest    string `json:"schema_digest"`
-	HeldCells       uint64 `json:"held_cells,omitempty"`
+	// The rows of the sync so far; nil in checkpoints from before them.
+	SyncRows     *uint64 `json:"sync_rows,omitempty"`
+	Forced       bool    `json:"forced"`
+	Complete     bool    `json:"complete"`
+	SchemaDigest string  `json:"schema_digest"`
+	HeldCells    uint64  `json:"held_cells,omitempty"`
 	// The columns it held at the checkpoint; discarded ones count as
 	// nothing.
 	HeldColumns []string `json:"held_columns,omitempty"`
@@ -121,7 +123,7 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	streams := make([]mirroredStream, 0, len(m.GetStreams()))
 	for _, st := range m.GetStreams() {
 		streams = append(streams, mirroredStream{
-			Name: st.GetName(), Rows: st.GetRows(), QuarantinedRows: st.GetQuarantinedRows(), CollapsedRows: st.GetCollapsedRows(),
+			Name: st.GetName(), Rows: st.GetRows(), QuarantinedRows: st.GetQuarantinedRows(), CollapsedRows: st.GetCollapsedRows(), SyncRows: st.SyncRows,
 			Forced: st.GetForced(), Complete: st.GetComplete(), SchemaDigest: st.GetSchemaDigest(),
 			HeldCells: st.GetHeldCells(), HeldColumns: heldColumns(st), Level: st.GetLevel(), PlannedLevel: st.GetPlannedLevel(),
 			Read: st.GetRead(), Paused: st.GetPaused(),
