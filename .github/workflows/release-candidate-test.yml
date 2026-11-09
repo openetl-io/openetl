@@ -19,26 +19,20 @@ jobs:
       contents: write
       packages: write
     with:
-      version: 0.0.1-alpha.1
+      version: 0.0.1-alpha.2
       replace: true
 
   private:
     needs: candidate
     runs-on: ubuntu-latest
-    permissions:
-      packages: read
     steps:
-      - name: Every candidate package is private
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: An anonymous pull is refused
         run: |
-          gh api --paginate '/orgs/openetl-io/packages?package_type=container' \
-            --jq '.[] | select(.name | startswith("candidates/")) | "\(.name) \(.visibility) \(.repository.full_name // "unlinked")"' | tee packages.txt
-          test -s packages.txt
-          if grep -v ' private ' packages.txt; then
-            echo "::error::a candidate package isn't private"
-            exit 1
-          fi
+          r=candidates/0.0.1-alpha.2/openetl
+          t=$(curl -s "https://ghcr.io/token?scope=repository:openetl-io/$r:pull&service=ghcr.io" | jq -r '.token // ""')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" -H 'Accept: application/vnd.oci.image.index.v1+json' "https://ghcr.io/v2/openetl-io/$r/manifests/0.0.1-alpha.2")
+          echo "$r: $code"
+          [ "$code" != 200 ]
 
   discard:
     if: ${{ contains(github.event.head_commit.message, 'discard-test-candidate') }}
@@ -48,3 +42,17 @@ jobs:
       packages: write
     with:
       version: 0.0.1-alpha.1
+
+  # The first trials' connector packages, from before they moved.
+  leftovers:
+    if: ${{ contains(github.event.head_commit.message, 'discard-test-candidate') }}
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for p in postgres kafka kinesis iceberg s3 index; do
+            gh api -X DELETE "/orgs/openetl-io/packages/container/candidates%2F0.0.1-alpha.1%2Fconnectors%2F$p" && echo "deleted $p"
+          done
