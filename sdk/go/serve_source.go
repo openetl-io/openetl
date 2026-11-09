@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -95,7 +96,12 @@ func (s *sourceServer) Read(req *protocolv1.ReadRequest, stream grpc.ServerStrea
 	for _, cs := range req.GetStreams() {
 		r.Streams = append(r.Streams, configuredStream(cs))
 	}
-	return status(src.Read(ctx, r, &emitter{stream: stream}))
+	out := newEmitter(stream, r.Lanes)
+	err = src.Read(ctx, r, out)
+	if sent := out.finish(); err == nil {
+		err = sent
+	}
+	return status(err)
 }
 
 func configuredStream(cs *protocolv1.ConfiguredStream) source.ConfiguredStream {
@@ -116,7 +122,7 @@ func splitsOf(ps []*protocolv1.Split) []source.Split {
 func splitsProto(ss []source.Split) []*protocolv1.Split {
 	out := make([]*protocolv1.Split, len(ss))
 	for i, s := range ss {
-		out[i] = &protocolv1.Split{Id: s.ID, State: s.State}
+		out[i] = &protocolv1.Split{Id: s.ID, State: bytes.Clone(s.State)}
 	}
 	return out
 }
@@ -207,19 +213,105 @@ func (s *sourceServer) Retention(ctx context.Context, req *protocolv1.RetentionR
 	return resp, nil
 }
 
-// emitter sends what a source reads. Its methods may be called from several
-// goroutines.
+// emitter sends what a source reads, in the order it's emitted, encoding and
+// sending behind a short queue so the goroutines reading aren't held up by
+// the crossing. Its methods may be called from several goroutines. What they
+// accept is sent after they return, so they keep nothing of the caller's, and
+// a failure to send comes back from a later call or from finish.
 type emitter struct {
-	mu     sync.Mutex
 	stream grpc.ServerStreamingServer[protocolv1.ReadResponse]
+	// A nil entry is the end of the read.
+	queue chan *outgoing
+	// Closed once err holds the first failure; nothing is sent after it.
+	failed chan struct{}
+	err    error
+	// Closed once nothing more will be sent.
+	done chan struct{}
+}
+
+// outgoing is a queued message. A batch's has ready, closed once msg or err
+// is set by its encoding.
+type outgoing struct {
+	msg   *protocolv1.ReadResponse
+	err   error
+	ready chan struct{}
 }
 
 var _ source.Progresser = (*emitter)(nil)
 
+var errReadOver = errors.New("the read has ended")
+
+// newEmitter queues one message per lane and one more, on top of the one
+// being sent. Each queued batch is memory the source holds beyond its own.
+func newEmitter(stream grpc.ServerStreamingServer[protocolv1.ReadResponse], lanes int) *emitter {
+	e := &emitter{
+		stream: stream,
+		queue:  make(chan *outgoing, max(lanes, 1)+1),
+		failed: make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+	go e.run()
+	return e
+}
+
+func (e *emitter) run() {
+	defer close(e.done)
+	for o := range e.queue {
+		if o == nil {
+			return
+		}
+		if o.ready != nil {
+			<-o.ready
+		}
+		if e.err != nil {
+			continue
+		}
+		err := o.err
+		if err == nil {
+			err = e.stream.Send(o.msg)
+		}
+		if err != nil {
+			e.err = err
+			close(e.failed)
+		}
+	}
+}
+
+// finish waits until everything accepted has been sent, or sending has
+// failed, and returns the failure. Nothing may be emitted after it.
+func (e *emitter) finish() error {
+	e.queue <- nil
+	<-e.done
+	return e.err
+}
+
+// put queues o, blocking under backpressure, and fails once the read is
+// cancelled or sending has failed.
+func (e *emitter) put(o *outgoing) error {
+	ctx := e.stream.Context()
+	select {
+	case <-e.failed:
+		return e.err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.done:
+		return errReadOver
+	default:
+	}
+	select {
+	case e.queue <- o:
+		return nil
+	case <-e.failed:
+		return e.err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.done:
+		return errReadOver
+	}
+}
+
 func (e *emitter) send(m *protocolv1.ReadResponse) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.stream.Send(m)
+	return e.put(&outgoing{msg: m})
 }
 
 func (e *emitter) Rows(stream string, rows []json.RawMessage) error {
@@ -248,43 +340,63 @@ type splitEmitter struct {
 }
 
 func (s splitEmitter) Rows(rows []json.RawMessage) error {
-	raw := make([][]byte, len(rows))
-	for i, r := range rows {
-		raw[i] = r
-	}
 	return s.e.send(&protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_Batch{Batch: &protocolv1.RecordBatch{
 		Stream:  s.stream,
 		Split:   s.id,
-		Records: &protocolv1.RecordBatch_Rows{Rows: &protocolv1.JSONRows{Rows: raw}},
+		Records: &protocolv1.RecordBatch_Rows{Rows: &protocolv1.JSONRows{Rows: cloneRows(rows)}},
 	}}})
 }
 
-// Records releases the batch once it's sent.
+// cloneRows copies rows into one allocation.
+func cloneRows(rows []json.RawMessage) [][]byte {
+	n := 0
+	for _, r := range rows {
+		n += len(r)
+	}
+	buf := make([]byte, 0, n)
+	out := make([][]byte, len(rows))
+	for i, r := range rows {
+		start := len(buf)
+		buf = append(buf, r...)
+		out[i] = buf[start:len(buf):len(buf)]
+	}
+	return out
+}
+
+// Records takes the batch unless it returns an error.
 func (s splitEmitter) Records(batch arrow.RecordBatch) error {
-	b, err := arrowipc.EncodeBatch(batch)
-	if err != nil {
+	o := &outgoing{ready: make(chan struct{})}
+	if err := s.e.put(o); err != nil {
 		return err
 	}
-	if err := s.e.send(&protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_Batch{Batch: &protocolv1.RecordBatch{
-		Stream:  s.stream,
-		Split:   s.id,
-		Records: &protocolv1.RecordBatch_Arrow{Arrow: b},
-	}}}); err != nil {
-		return err
-	}
-	batch.Release()
+	// As many of these run at once as the queue holds, so lanes' batches are
+	// encoded in parallel and leave in the order they arrived.
+	go func() {
+		defer close(o.ready)
+		defer batch.Release()
+		b, err := arrowipc.EncodeBatch(batch)
+		if err != nil {
+			o.err = err
+			return
+		}
+		o.msg = &protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_Batch{Batch: &protocolv1.RecordBatch{
+			Stream:  s.stream,
+			Split:   s.id,
+			Records: &protocolv1.RecordBatch_Arrow{Arrow: b},
+		}}}
+	}()
 	return nil
 }
 
 func (s splitEmitter) ResumePoint(state []byte, added ...source.Split) error {
 	return s.e.send(&protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_ResumePoint{ResumePoint: &protocolv1.ResumePoint{
-		Stream: s.stream, State: state, Split: s.id, Added: splitsProto(added),
+		Stream: s.stream, State: bytes.Clone(state), Split: s.id, Added: splitsProto(added),
 	}}})
 }
 
 func (s splitEmitter) Complete(next []byte, added ...source.Split) error {
 	return s.e.send(&protocolv1.ReadResponse{Msg: &protocolv1.ReadResponse_Complete{Complete: &protocolv1.StreamComplete{
-		Stream: s.stream, Next: next, Split: s.id, Added: splitsProto(added),
+		Stream: s.stream, Next: bytes.Clone(next), Split: s.id, Added: splitsProto(added),
 	}}})
 }
 
