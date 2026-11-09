@@ -312,6 +312,75 @@ func (q *Queries) ListConnectorSources(ctx context.Context, orgID uuid.UUID) ([]
 	return items, nil
 }
 
+const listManualConnectorVersions = `-- name: ListManualConnectorVersions :many
+SELECT v.org_id, v.name, v.version, v.provenance, v.create_time, v.author, v.logo, v.release_tag, v.release_url, v.description, v.license, v.repository, v.docs, v.tags, v.title, v.logo_digest,
+    (SELECT coalesce(array_agg(r.role ORDER BY r.role), '{}')::text[] FROM connector_roles r
+     WHERE r.org_id = v.org_id AND r.name = v.name AND r.version = v.version) AS roles
+FROM connector_versions v
+WHERE v.org_id = $1 AND NOT EXISTS (SELECT 1 FROM connector_catalog c WHERE c.org_id = v.org_id AND c.package = v.name)
+ORDER BY v.name, v.version
+`
+
+type ListManualConnectorVersionsRow struct {
+	OrgID       uuid.UUID
+	Name        string
+	Version     string
+	Provenance  string
+	CreateTime  time.Time
+	Author      string
+	Logo        string
+	ReleaseTag  string
+	ReleaseUrl  string
+	Description string
+	License     string
+	Repository  string
+	Docs        string
+	Tags        []string
+	Title       string
+	LogoDigest  *string
+	Roles       []string
+}
+
+// Every applied version of the packages no connected source lists, with its
+// roles.
+func (q *Queries) ListManualConnectorVersions(ctx context.Context, orgID uuid.UUID) ([]ListManualConnectorVersionsRow, error) {
+	rows, err := q.db.Query(ctx, listManualConnectorVersions, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManualConnectorVersionsRow
+	for rows.Next() {
+		var i ListManualConnectorVersionsRow
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.Name,
+			&i.Version,
+			&i.Provenance,
+			&i.CreateTime,
+			&i.Author,
+			&i.Logo,
+			&i.ReleaseTag,
+			&i.ReleaseUrl,
+			&i.Description,
+			&i.License,
+			&i.Repository,
+			&i.Docs,
+			&i.Tags,
+			&i.Title,
+			&i.LogoDigest,
+			&i.Roles,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSourceCatalog = `-- name: ListSourceCatalog :many
 SELECT org_id, source, package, key, title, version, author, description, license, repository, docs, roles, tags, reference, card_digest, logo_digest, descriptor_digest, update_time FROM connector_catalog WHERE org_id = $1 AND source = $2
 `

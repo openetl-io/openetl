@@ -1,7 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import { CatalogPackageSchema, ConnectorSourceSchema } from "@/gen/openetl/api/v1/connector_pb";
-import { appliedState, applyCommand, failingSources, packageText, sortPackages } from "../catalog";
+import { appliedState, applyCommand, failingSources, manualLabel, packageSource, packageText, sortPackages } from "../catalog";
 
 const pkg = (p: Partial<{ title: string; package: string; source: string; official: boolean; version: string; appliedVersion: string; tags: string[] }>) =>
   create(CatalogPackageSchema, { title: p.package, version: "1.0.0", source: "connectorSources/official", ...p });
@@ -21,6 +21,11 @@ describe("catalog", () => {
     expect(appliedState(pkg({}))).toBe("none");
     expect(appliedState(pkg({ appliedVersion: "1.0.0" }))).toBe("current");
     expect(appliedState(pkg({ appliedVersion: "0.9.0" }))).toBe("older");
+  });
+
+  it("files a manual package under its own value of the Source filter", () => {
+    expect(packageSource(pkg({ source: "connectorSources/acme" }))).toBe("acme");
+    expect(packageSource(create(CatalogPackageSchema, { manual: true }))).toBe(manualLabel);
   });
 
   it("applies by the listed reference", () => {

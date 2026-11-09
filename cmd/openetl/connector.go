@@ -41,7 +41,8 @@ Commands:
             github.com/OWNER/REPO[/PACKAGE]@VERSION references
   catalog [--refresh]
             list the packages of the connected sources of connectors, with
-            the reference to apply each by
+            the reference to apply each by, and the packages applied that no
+            source lists
   spec TARGET
             print a connector's spec
   check --config FILE TARGET

@@ -56,7 +56,8 @@ type ConnectorServiceClient interface {
 	// Its packages leave the catalog. Versions applied from it stay.
 	DeleteConnectorSource(context.Context, *connect.Request[v1.DeleteConnectorSourceRequest]) (*connect.Response[v1.DeleteConnectorSourceResponse], error)
 	// Each package of every connected source, at its highest version, as its
-	// source last listed it.
+	// source last listed it, and each package the org applied that no source
+	// lists, at its highest applied version.
 	ListCatalog(context.Context, *connect.Request[v1.ListCatalogRequest]) (*connect.Response[v1.ListCatalogResponse], error)
 	// A package with its roles' config fields, from its highest version's
 	// descriptor, which the first call fetches.
@@ -150,7 +151,8 @@ type ConnectorServiceHandler interface {
 	// Its packages leave the catalog. Versions applied from it stay.
 	DeleteConnectorSource(context.Context, *connect.Request[v1.DeleteConnectorSourceRequest]) (*connect.Response[v1.DeleteConnectorSourceResponse], error)
 	// Each package of every connected source, at its highest version, as its
-	// source last listed it.
+	// source last listed it, and each package the org applied that no source
+	// lists, at its highest applied version.
 	ListCatalog(context.Context, *connect.Request[v1.ListCatalogRequest]) (*connect.Response[v1.ListCatalogResponse], error)
 	// A package with its roles' config fields, from its highest version's
 	// descriptor, which the first call fetches.

@@ -33,6 +33,8 @@ openetl connector catalog --refresh
 
 Refreshing lists what's available. It does not install a version or change a pipeline. A **connector source** is a registry namespace or repository used for this listing; it is separate from a pipeline's data source.
 
+A package you've applied that no connected source lists, from a file or by a reference, is in the catalog too, marked **Manually installed**, at the highest version you've applied. It has no apply command there, and OpenETL can't say whether a newer version exists.
+
 Use the apply command shown by the catalog, or a reference from the connector's author. These are alternative forms; replace the capitals with your package's location and version:
 
 ```sh

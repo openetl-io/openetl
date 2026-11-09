@@ -13,12 +13,12 @@ import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { QueryError } from "@/components/query-error";
 import { ConnectorService, type CatalogPackage } from "@/gen/openetl/api/v1/connector_pb";
-import { failingSources, packageText, roleLabel, sortPackages, sourceId } from "@/lib/catalog";
+import { failingSources, packageSource, packageText, roleLabel, sortPackages, sourceId } from "@/lib/catalog";
 import { useListFilter } from "@/lib/list-filter";
 
 const route = getRouteApi("/_app/workspaces/$workspace/connectors");
 
-const facets = { role: (p: CatalogPackage) => p.roles, source: (p: CatalogPackage) => sourceId(p.source) };
+const facets = { role: (p: CatalogPackage) => p.roles, source: packageSource };
 
 /** A ConnectorSource document, to start from. */
 const sourceExample = "openetl connector apply -f connector-source.yaml";
@@ -35,7 +35,7 @@ function Catalog() {
   const failing = failingSources(sources.data?.sources ?? []);
 
   if (catalog.error) return <QueryError title="Couldn't list the catalog" error={catalog.error} />;
-  if (sources.data?.sources.length === 0) {
+  if (catalog.data && all.length === 0 && sources.data?.sources.length === 0) {
     return (
       <EmptyState
         icon={Plug}

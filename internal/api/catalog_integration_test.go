@@ -293,6 +293,40 @@ func TestCatalog(t *testing.T) {
 		t.Errorf("applied %v", r)
 	}
 
+	// A package applied from a file, which no source lists, is in the catalog
+	// at its highest applied version, marked manual; a listed one isn't.
+	for _, version := range []string{"1.0.0", "2.0.0"} {
+		ledger := testDescriptor(t, "acme/ledger", version, "https://example.com/ledger-"+version, "")
+		if _, err := applier.Apply(ctx, connect.NewRequest(&apiv1.ApplyRequest{Documents: []*apiv1.Document{{Content: ledger}}})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, _ = conns.ListCatalog(ctx, connect.NewRequest(&apiv1.ListCatalogRequest{}))
+	byName = map[string]*apiv1.CatalogPackage{}
+	for _, p := range list.Msg.GetPackages() {
+		byName[p.GetName()] = p
+	}
+	ledger := byName["catalog/-/acme/ledger"]
+	if ledger == nil || !ledger.GetManual() || ledger.GetVersion() != "2.0.0" || ledger.GetAppliedVersion() != "2.0.0" || ledger.GetSource() != "" ||
+		ledger.GetReference() != "" || ledger.GetTitle() != "Title of acme/ledger" || strings.Join(ledger.GetRoles(), ",") != "source" {
+		t.Errorf("a manual package %v of %v", ledger, list.Msg.GetPackages())
+	}
+	if p := byName["catalog/acme/acme/files"]; p == nil || p.GetManual() || byName["catalog/-/acme/files"] != nil {
+		t.Errorf("a package a source lists %v, of %v", p, list.Msg.GetPackages())
+	}
+	details, err := conns.GetCatalogPackage(ctx, connect.NewRequest(&apiv1.GetCatalogPackageRequest{Name: ledger.GetName()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := details.Msg.GetRoles(); len(r) != 1 || r[0].GetRole() != "source" || len(r[0].GetConfig()) != 2 || !details.Msg.GetPackage().GetManual() {
+		t.Errorf("a manual package's details %v", details.Msg)
+	}
+	for _, name := range []string{"catalog/-/acme/files", "catalog/-/acme/nothing"} {
+		if _, err := conns.GetCatalogPackage(ctx, connect.NewRequest(&apiv1.GetCatalogPackageRequest{Name: name})); connect.CodeOf(err) != connect.CodeNotFound {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
 	// Runners get the credential of the longest source that covers a URL.
 	for u, want := range map[string]string{
 		"https://github.com/acme/conn/releases/download/files/v1.0.0/x": "acme",

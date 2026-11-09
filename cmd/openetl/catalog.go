@@ -92,13 +92,18 @@ func printCatalog(out io.Writer, pkgs []*apiv1.CatalogPackage, sources []*apiv1.
 			name += " (official)"
 		case p.GetImpostor():
 			name += " (not official)"
+		case p.GetManual():
+			name += " (manually installed)"
 		}
 		applied := p.GetAppliedVersion()
 		if applied == "" {
 			applied = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", name, p.GetVersion(), strings.Join(p.GetRoles(), ","), applied,
-			strings.TrimPrefix(p.GetSource(), "connectorSources/"), "openetl connector apply "+p.GetReference())
+		source, apply := "-", "-"
+		if !p.GetManual() {
+			source, apply = strings.TrimPrefix(p.GetSource(), "connectorSources/"), "openetl connector apply "+p.GetReference()
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", name, p.GetVersion(), strings.Join(p.GetRoles(), ","), applied, source, apply)
 	}
 	_ = tw.Flush()
 	fmt.Fprintln(out)

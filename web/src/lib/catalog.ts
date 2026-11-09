@@ -2,7 +2,8 @@ import type { CatalogPackage, ConnectorSource } from "@/gen/openetl/api/v1/conne
 import { lastSegment } from "./names";
 
 // The connector catalog: the packages connected sources list, as their
-// publishers describe them, until the org applies one.
+// publishers describe them, until the org applies one, and the packages the
+// org applied that no source lists.
 
 export const roleLabel = (role: string) => (role === "source" ? "Source" : role === "destination" ? "Destination" : role);
 
@@ -22,6 +23,12 @@ export const packageText = (p: CatalogPackage) => [p.title, p.package, p.descrip
 
 /** "official" for connectorSources/official. */
 export const sourceId = (name: string) => lastSegment(name);
+
+/** A manual package's value in the Source filter, which no source's name can be: they're lowercase, without spaces. */
+export const manualLabel = "Manually installed";
+
+/** The value of the Source filter a package falls under. */
+export const packageSource = (p: CatalogPackage) => (p.manual ? manualLabel : sourceId(p.source));
 
 /** The command that applies the package's listed version. */
 export const applyCommand = (p: CatalogPackage) => `openetl connector apply ${p.reference}`;

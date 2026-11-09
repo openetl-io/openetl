@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@connectrpc/connect-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { BadgeCheck, Check, CircleCheck, ExternalLink, KeyRound, TriangleAlert } from "lucide-react";
+import { BadgeCheck, Check, CircleCheck, ExternalLink, KeyRound, PackagePlus, TriangleAlert } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,14 +18,14 @@ import { ErrorNote } from "@/components/empty";
 import { QueryError } from "@/components/query-error";
 import { RelativeTime } from "@/components/relative-time";
 import { type CatalogPackage, type CatalogRole, ConnectorService, type ConnectorSource } from "@/gen/openetl/api/v1/connector_pb";
-import { appliedState, applyCommand, roleLabel, sourceId } from "@/lib/catalog";
+import { appliedState, applyCommand, manualLabel, roleLabel, sourceId } from "@/lib/catalog";
 import { dateOf, relative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-/** Official, not official, and which version the org has applied. */
+/** Official, not official, manually installed, and which version the org has applied. */
 export function PackageBadges({ pkg, className }: { pkg: CatalogPackage; className?: string }) {
   const applied = appliedState(pkg);
-  if (!pkg.official && !pkg.impostor && applied === "none") return null;
+  if (!pkg.official && !pkg.impostor && !pkg.manual && applied === "none") return null;
   return (
     <span className={cn("inline-flex flex-wrap items-center gap-1", className)}>
       {pkg.official && (
@@ -38,6 +38,12 @@ export function PackageBadges({ pkg, className }: { pkg: CatalogPackage; classNa
         <Badge variant="outline" className="border-failed/40 text-failed">
           <TriangleAlert aria-hidden />
           Not official
+        </Badge>
+      )}
+      {pkg.manual && (
+        <Badge variant="outline">
+          <PackagePlus aria-hidden />
+          {manualLabel}
         </Badge>
       )}
       {applied !== "none" && (
@@ -255,7 +261,9 @@ export function PackageSheet({ pkg, onClose }: { pkg?: CatalogPackage; onClose: 
                 <DescriptionItem label="Roles">
                   <RoleBadges roles={pkg.roles} />
                 </DescriptionItem>
-                <DescriptionItem label="Listed by">{sourceId(pkg.source)}</DescriptionItem>
+                <DescriptionItem label="Listed by">
+                  {pkg.manual ? <span className="text-muted-foreground">No connected source</span> : sourceId(pkg.source)}
+                </DescriptionItem>
                 {pkg.repository && (
                   <DescriptionItem label="Repository" className="sm:col-span-2">
                     <OutLink href={pkg.repository} />
@@ -276,7 +284,12 @@ export function PackageSheet({ pkg, onClose }: { pkg?: CatalogPackage; onClose: 
                       : "Applying it makes the version available to sources and destinations, which name it as "}
                     <code className="font-mono text-[0.8125rem] text-foreground">{pkg.package.replace(/^openetl\//, "")}</code>.
                   </p>
-                  <CommandLine command={applyCommand(pkg)} className="min-w-0" />
+                  {pkg.reference && <CommandLine command={applyCommand(pkg)} className="min-w-0" />}
+                  {pkg.manual && (
+                    <p className="text-sm text-muted-foreground">
+                      It was applied from a file or by a reference, and no connected source lists it, so OpenETL can't say whether a newer version exists.
+                    </p>
+                  )}
                 </Section>
               )}
               <PackageRoles name={pkg.name} />
