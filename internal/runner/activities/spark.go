@@ -142,6 +142,7 @@ func (a *Spark) run(ctx context.Context, in contract.SparkInput, log *slog.Logge
 	st, err := a.watch(ctx, sub, id, log)
 	res.State, res.URL, res.Seconds = st.State, st.URL, time.Since(start).Seconds()
 	if err == nil && st.Failed {
+		spark.LogDriver(ctx, sub, id, app)
 		err = &spark.Failed{Message: st.Message}
 	}
 	return res, err

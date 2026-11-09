@@ -31,8 +31,16 @@ type fakeSubmitter struct {
 	states map[string]State
 	found  map[string]string
 	killed []string
+	// The submissions whose driver logs were asked for.
+	logged []string
 	// Submit fails with it, after the cluster took the application.
 	submitErr error
+}
+
+func (f *fakeSubmitter) logDriver(_ context.Context, id string, _ Application) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logged = append(f.logged, id)
 }
 
 func (f *fakeSubmitter) Submit(_ context.Context, app Application) (string, error) {
@@ -282,6 +290,11 @@ func TestTransformFailures(t *testing.T) {
 	err = tr.Epoch(ctx, destination.Epoch{Generation: 1, N: 2}, nil, nil)
 	if errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "ended FAILED without transforming epoch 2: the driver's node was lost") {
 		t.Fatalf("err = %v", err)
+	}
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if !slices.Equal(sub.logged, []string{"driver-1"}) {
+		t.Errorf("asked for the driver logs of %v, want driver-1's once", sub.logged)
 	}
 }
 
