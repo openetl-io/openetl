@@ -148,6 +148,13 @@ type Client struct {
 	PlainHTTP []string
 }
 
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return (&netguard.Policy{}).Client()
+}
+
 // Repository is r's repository, with the client's credentials for it.
 func (c *Client) Repository(r Ref) (*remote.Repository, error) {
 	host, repo := r.Registry, r.Repository
@@ -157,12 +164,8 @@ func (c *Client) Repository(r Ref) (*remote.Repository, error) {
 			repo = "library/" + repo
 		}
 	}
-	hc := c.HTTP
-	if hc == nil {
-		hc = (&netguard.Policy{}).Client()
-	}
 	ac := &auth.Client{
-		Client: hc,
+		Client: c.httpClient(),
 		Cache:  auth.NewCache(),
 		// The HTTP client's dialer already guards every address.
 		BlockedRealmPrefixes: []netip.Prefix{},

@@ -196,10 +196,7 @@ func (c *Catalog) FetchLogo(ctx context.Context, url string) (*Logo, error) {
 	default:
 		return nil, fmt.Errorf("logo %q isn't an https or oci:// URL", url)
 	}
-	t := oci.LogoType(url, buf.Bytes())
-	if t == "" && bytes.Contains(bytes.ToLower(buf.Bytes()[:min(buf.Len(), 1024)]), []byte("<svg")) {
-		t = "image/svg+xml"
-	}
+	t := oci.SniffLogoType(buf.Bytes())
 	if t == "" {
 		return nil, fmt.Errorf("logo %s is neither an SVG nor a PNG image", url)
 	}

@@ -18,7 +18,7 @@
     "repository": { "description": "The package's source repository. Its name stays with it.", "$ref": "#/$defs/https" },
     "docs": { "description": "The package's documentation, which the console's connector catalog links to.", "$ref": "#/$defs/https" },
     "logo": {
-      "description": "An SVG or PNG image of at most 256 KiB, which the UI shows: a file beside this one, such as ./logo.svg, which is packaged with each version, or an https URL.",
+      "description": "An SVG or PNG image of at most 256 KiB, which the UI shows: a file beside this one, such as ./logo.svg, which is packaged with each version, or an https URL, which openetl connector publish copies into the registry.",
       "anyOf": [{ "$ref": "#/$defs/https" }, { "type": "string", "pattern": "^[^:/][^:]*\\.(svg|png)$" }]
     },
     "author": { "description": "Who makes the package, which the catalog shows.", "type": "string", "maxLength": 200 },
