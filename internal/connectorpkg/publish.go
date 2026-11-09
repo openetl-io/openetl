@@ -28,7 +28,8 @@ type Published struct {
 }
 
 // Publish pushes the package version whose descriptor Package wrote to
-// descriptor, with the executables and logo beside it, to ns, an
+// descriptor, with the executables beside it and its logo, which is downloaded
+// if it's an https URL, to ns, an
 // oci://REGISTRY/NAMESPACE: as NAMESPACE/NAME, tagged with its version, and
 // in the namespace's index when it's the package's highest version.
 func Publish(ctx context.Context, c *oci.Client, ns oci.Ref, descriptor string) (*Published, error) {
@@ -68,15 +69,10 @@ func Publish(ctx context.Context, c *oci.Client, ns oci.Ref, descriptor string) 
 	}
 	var logo *oci.Blob
 	if doc.Info.Logo != "" && !strings.HasPrefix(doc.Info.Logo, oci.Scheme) {
-		for _, t := range oci.LogoTypes {
-			path := filepath.Join(dir, LogoAsset(short, t))
-			content, err := readBelow(dir, filepath.Base(path))
-			if err != nil || !strings.HasSuffix(doc.Info.Logo, "/"+filepath.Base(path)) {
-				continue
-			}
-			logo = &oci.Blob{MediaType: t, Data: content, Annotations: map[string]string{oci.AnnotationLogo: "", ocispec.AnnotationTitle: filepath.Base(path)}}
-			doc.Info.Logo = oci.BlobURL(repo, content)
+		if logo, err = packageLogo(ctx, c, dir, short, doc.Info.Logo); err != nil {
+			return nil, fmt.Errorf("%s: %w", descriptor, err)
 		}
+		doc.Info.Logo = oci.BlobURL(repo, logo.Data)
 	}
 	if v.Descriptor, err = spec.EncodeDescriptor(doc.Name, doc.Version, doc.Info, doc.Descriptor); err != nil {
 		return nil, err
@@ -93,6 +89,26 @@ func Publish(ctx context.Context, c *oci.Client, ns oci.Ref, descriptor string) 
 		return out, fmt.Errorf("%s %s is pushed, and the index isn't updated: %w", doc.Name, doc.Version, err)
 	}
 	return out, nil
+}
+
+// packageLogo is a version's logo as a blob of its package: the file Package
+// wrote beside the descriptor, or the image at its https URL, so that catalogs
+// and private installs show it without reaching that site.
+func packageLogo(ctx context.Context, c *oci.Client, dir, short, url string) (*oci.Blob, error) {
+	blob := func(mediaType, name string, content []byte) *oci.Blob {
+		return &oci.Blob{MediaType: mediaType, Data: content, Annotations: map[string]string{oci.AnnotationLogo: "", ocispec.AnnotationTitle: name}}
+	}
+	for _, t := range oci.LogoTypes {
+		name := LogoAsset(short, t)
+		if content, err := readBelow(dir, name); err == nil && strings.HasSuffix(url, "/"+name) {
+			return blob(t, name, content), nil
+		}
+	}
+	content, t, err := c.FetchLogo(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	return blob(t, LogoAsset(short, t), content), nil
 }
 
 // Card is a version's card in its namespace's index.

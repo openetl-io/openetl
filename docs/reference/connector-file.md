@@ -19,7 +19,7 @@ This page is generated from [`internal/connectorpkg/openetl-connector.schema.jso
 | `license` | string | No | An SPDX expression, such as Apache-2.0. Matches `^[A-Za-z0-9.+:()\- ]{1,100}$`. |
 | `repository` | [`https`](#https) | Yes | The package's source repository. Its name stays with it. |
 | `docs` | [`https`](#https) | No | The package's documentation, which the console's connector catalog links to. |
-| `logo` | [`https`](#https) or string | No | An SVG or PNG image of at most 256 KiB, which the UI shows: a file beside this one, such as ./logo.svg, which is packaged with each version, or an https URL. Either [`https`](#https), or a string that matches `^[^:/][^:]*\.(svg\|png)$`. |
+| `logo` | [`https`](#https) or string | No | An SVG or PNG image of at most 256 KiB, which the UI shows: a file beside this one, such as ./logo.svg, which is packaged with each version, or an https URL, which openetl connector publish copies into the registry. Either [`https`](#https), or a string that matches `^[^:/][^:]*\.(svg\|png)$`. |
 | `author` | string | No | Who makes the package, which the catalog shows. Has at most 200 characters. |
 | `tags` | array of string | No | Words the catalog shows with the package, such as database. Has at most 20 items. Each item matches `^[a-z0-9][a-z0-9-]{0,31}$`. |
 | `platforms` | array of string | No | The os/arch pairs to build. Default: linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64. Has at least one item. Has no item twice. Each item matches `^[a-z0-9]+/[a-z0-9]+$`. |

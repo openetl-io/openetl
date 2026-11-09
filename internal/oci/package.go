@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"slices"
@@ -436,6 +437,39 @@ func LogoType(name string, content []byte) string {
 		return "image/svg+xml"
 	}
 	return ""
+}
+
+// SniffLogoType is the media type of a logo fetched from a URL, whose path
+// needn't end in its type's extension; "" if it's neither SVG nor PNG.
+func SniffLogoType(content []byte) string { return LogoType("logo.svg", content) }
+
+// FetchLogo downloads a logo from an https URL, and returns its content and
+// media type: an SVG or PNG of at most MaxLogo bytes.
+func (c *Client) FetchLogo(ctx context.Context, url string) ([]byte, string, error) {
+	if !strings.HasPrefix(url, "https://") {
+		return nil, "", fmt.Errorf("logo %q isn't an https URL", url)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("logo %s: %w", url, err)
+	}
+	res, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("logo %s: %w", url, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("logo %s: %s", url, res.Status)
+	}
+	content, err := ReadAllLimit(res.Body, MaxLogo)
+	if err != nil {
+		return nil, "", fmt.Errorf("logo %s: %w", url, err)
+	}
+	t := SniffLogoType(content)
+	if t == "" {
+		return nil, "", fmt.Errorf("logo %s is neither an SVG nor a PNG image", url)
+	}
+	return content, t, nil
 }
 
 func looksLikeSVG(b []byte) bool {
