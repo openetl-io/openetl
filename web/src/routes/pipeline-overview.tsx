@@ -107,6 +107,8 @@ export function Overview({
       r.schema = Math.max(r.schema ?? 0, s.version);
       r.schemaKey = schemaKey(s);
     }
+    // Until the source has been discovered the plan has no streams, but the spec still says how they're written.
+    for (const r of m.values()) r.write ||= spec?.destination?.write;
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [plan.data, spec, last, schemas.data, pipeline.pausedStreams]);
 
@@ -268,7 +270,7 @@ function StreamsTable({
       {
         id: "write",
         header: "Write",
-        cell: ({ row }) => <span className="text-muted-foreground">{enumLabel(WriteMode[row.original.write ?? 0]) || "Unknown"}</span>,
+        cell: ({ row }) => <span className="text-muted-foreground">{enumLabel(WriteMode[row.original.write ?? 0]) || "Destination default"}</span>,
         meta: { className: "hidden lg:table-cell" },
       },
       {
