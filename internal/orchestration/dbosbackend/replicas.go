@@ -11,8 +11,6 @@ import (
 	"github.com/dbos-inc/dbos-transact-golang/dbos"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/openetl-io/openetl/internal/orchestration"
 )
 
 const (
@@ -314,20 +312,29 @@ func (b *Backend) collect(ctx context.Context) error {
 	return err
 }
 
-// startNext is what ending with Continue does. What's in the mailbox goes to
-// the next generation, and what's sent after the ID has moved on goes there
-// anyway, but for a message already on its way, so a workflow must still look
-// at what a message would say.
+// startNext is what ending with Continue does. The commit that moves the ID on
+// to the next generation also gives it what's unread in this one's mailbox, so
+// messages keep their order and none is left where nobody will read it. The
+// ID's lock keeps any from arriving while that happens. The table is DBOS's,
+// which has no call for this; the tests fail if it changes.
 func (b *Backend) startNext(g Generation, input json.RawMessage) (string, error) {
 	next := generationID(g.ID, g.Number+1)
 	_, err := dbos.RunAsStep(g.Ctx, func(ctx context.Context) (struct{}, error) {
 		plain := plainContext{ctx}
 		env := envelope{ID: g.ID, Generation: g.Number + 1, Attributes: g.Attributes, Trace: traceHeaders(plain), Input: input}
 		err := pgx.BeginFunc(plain, b.pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(plain, lockIDExclusive, g.ID); err != nil {
+				return err
+			}
 			if err := advance(plain, tx, g.ID, g.Number); err != nil {
 				return err
 			}
-			return b.enqueue(plain, tx, next, g.Workflow, env, 0)
+			if err := b.enqueue(plain, tx, next, g.Workflow, env, 0); err != nil {
+				return err
+			}
+			_, err := tx.Exec(plain, `UPDATE dbos.notifications SET destination_uuid = $1
+				WHERE destination_uuid = $2 AND topic = $3 AND NOT consumed`, next, generationID(g.ID, g.Number), mailbox)
+			return err
 		})
 		// A crash after it committed brings this here again.
 		if errors.Is(err, dbos.ErrWorkflowIDInUse) {
@@ -338,16 +345,5 @@ func (b *Backend) startNext(g Generation, input json.RawMessage) (string, error)
 	if err != nil {
 		return "", err
 	}
-	for {
-		m, err := dbos.Recv[orchestration.Message](g.Ctx, mailbox, 0)
-		if errors.Is(err, dbos.ErrTimeout) {
-			return next, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		if err := dbos.Send(g.Ctx, next, m, mailbox); err != nil {
-			return "", err
-		}
-	}
+	return next, nil
 }
