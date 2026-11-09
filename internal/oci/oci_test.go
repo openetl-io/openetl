@@ -244,3 +244,38 @@ func TestLogoType(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchLogo(t *testing.T) {
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg"></svg>`
+	const png = "\x89PNG\r\n\x1a\nrest"
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mark":
+			_, _ = io.WriteString(w, svg)
+		case "/mark.png":
+			_, _ = io.WriteString(w, png)
+		case "/page":
+			_, _ = io.WriteString(w, "<html><script>alert(1)</script></html>")
+		case "/large":
+			_, _ = io.WriteString(w, svg+strings.Repeat(" ", MaxLogo))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client()}
+	for path, want := range map[string]struct{ content, mediaType string }{
+		"/mark":     {svg, "image/svg+xml"},
+		"/mark.png": {png, "image/png"},
+	} {
+		b, mediaType, err := c.FetchLogo(t.Context(), srv.URL+path)
+		if err != nil || string(b) != want.content || mediaType != want.mediaType {
+			t.Errorf("%s: %q, %q, %v", path, b, mediaType, err)
+		}
+	}
+	for _, url := range []string{srv.URL + "/page", srv.URL + "/large", srv.URL + "/missing", "http://example.com/mark.svg"} {
+		if _, _, err := c.FetchLogo(t.Context(), url); err == nil {
+			t.Errorf("%s was accepted", url)
+		}
+	}
+}

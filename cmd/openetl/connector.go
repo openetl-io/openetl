@@ -188,7 +188,7 @@ func runPublish(ctx context.Context, args []string, out io.Writer) error {
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: openetl connector publish oci://REGISTRY/NAMESPACE [DESCRIPTOR...]")
 		fmt.Fprintln(fs.Output(), "\nPushes each package version openetl connector package wrote (default: every dist/*.connector.yaml), with the")
-		fmt.Fprintln(fs.Output(), "executables and logo beside it, to NAMESPACE/NAME, tagged with its version, and lists it in NAMESPACE/index,")
+		fmt.Fprintln(fs.Output(), "executables beside it and its logo, downloaded if it's an https URL, to NAMESPACE/NAME, tagged with its version, and lists it in NAMESPACE/index,")
 		fmt.Fprintln(fs.Output(), "tagged NAME, when it's the package's highest version. Credentials come from Docker's config and credential")
 		fmt.Fprintln(fs.Output(), "helpers, as docker login and oras login write them.")
 		fs.PrintDefaults()

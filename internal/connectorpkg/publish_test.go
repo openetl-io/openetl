@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"log"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -155,5 +156,65 @@ func TestLogoFile(t *testing.T) {
 	}
 	if _, err := Parse([]byte(base + "logo: /etc/logo.svg\n")); err == nil {
 		t.Error("an absolute logo path parsed")
+	}
+}
+
+func TestPublishCopiesAnHTTPSLogo(t *testing.T) {
+	repo, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logos := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, testLogo)
+	}))
+	defer logos.Close()
+	dir := t.TempDir()
+	file := "name: acme/files\nrepository: https://github.com/acme/files\nlogo: " + logos.URL + "/mark\nroles:\n  destination:\n    build:\n" +
+		"      command: cd " + repo + " && go build -o " + dir + "/bin/files-$(go env GOOS)-$(go env GOARCH) ./internal/connectorhost/external/testconnector\n" +
+		"      output: bin/files-{os}-{arch}\n"
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Package(t.Context(), f, Options{Version: "1.0.0", Out: filepath.Join(dir, "dist"), Platforms: []string{connectorhost.Platform()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(ggcr.New(ggcr.Logger(log.New(io.Discard, "", 0))))
+	defer srv.Close()
+	c := &oci.Client{HTTP: logos.Client()}
+	ns, err := oci.Parse(oci.Scheme + strings.TrimPrefix(srv.URL, "http://") + "/acme/connectors")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Publish(t.Context(), c, ns, res.Descriptor); err != nil {
+		t.Fatal(err)
+	}
+	pulled, err := c.Pull(t.Context(), ns.Child("files").At("1.0.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := spec.Parse(pulled.Descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(doc.Info.Logo, ns.Child("files").String()+"@sha256:") {
+		t.Fatalf("the descriptor's logo is %s", doc.Info.Logo)
+	}
+	blob, err := oci.Parse(doc.Info.Logo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	if err := c.FetchBlob(t.Context(), blob, &got, oci.MaxLogo); err != nil || got.String() != testLogo {
+		t.Errorf("the logo's blob: %q, %v", got.String(), err)
+	}
+	cards, err := c.ListIndex(t.Context(), ns, nil)
+	if err != nil || len(cards) != 1 || cards[0].Logo == nil {
+		t.Errorf("the index's card has no logo: %+v, %v", cards, err)
 	}
 }
