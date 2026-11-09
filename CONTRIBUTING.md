@@ -48,10 +48,26 @@ make deps-down         # stop what deps-up started
 | `crates/` | `openetl-engine`, the Rust data engine, and its libraries |
 | `libs/` | `openetl-spark` and `openetl-flink`: what runs on your Spark and Flink clusters |
 | `web/` | The UI: React and TypeScript, a client of the API only |
-| `deploy/` | Local dependencies in Docker Compose, `openetld`'s image, and manifests for Kubernetes |
+| `deploy/` | Local dependencies in Docker Compose, `openetld`'s image, manifests for Kubernetes, and the release candidate script |
 | `docs/` | The documentation, which the docs site is built from |
 | `test/` | `sim`, a seeded simulation of the commit protocol under crashes, timeouts and zombie attempts; `e2e`, whole-stack scenarios and the chaos suite; `bench` |
 | `examples/` | Pipelines to try |
+
+## Releasing
+
+A release is built once, tested as built, and then promoted, so what's tested is what ships.
+
+**Build a candidate.** `gh workflow run release-candidate.yml -f version=0.1.0-alpha -f commit=SHA -f connectors=SHA` builds that commit with the version in it: archives for Linux and macOS on amd64 and arm64, the multi-arch image, the connectors, and the Spark and Flink libraries, with checksums, SBOMs and third-party notices. The files go on a draft GitHub release, which makes no tag until it's published, and the image and connector packages go to the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. `candidate.json` on the draft records the commits and digests. A version has one candidate at a time: `-f replace=true` discards the last one first.
+
+**Test those files.** `gh workflow run e2e.yml -f candidate=VERSION`, and `chaos.yml` the same way, run the suites on the candidate's binaries, at the commit it was built from. On another machine:
+
+```sh
+deploy/release/candidate.sh fetch VERSION bin/candidate
+deploy/release/candidate.sh unpack bin/candidate
+make chaos CANDIDATE=bin/candidate
+```
+
+**Discard a candidate** with `gh workflow run release-discard.yml -f version=VERSION`, which deletes its packages and its draft and refuses a version that's been published.
 
 ## Pull requests
 

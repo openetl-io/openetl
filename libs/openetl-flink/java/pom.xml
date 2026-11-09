@@ -6,7 +6,7 @@
 
   <groupId>io.openetl</groupId>
   <artifactId>openetl-flink</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>${revision}</version>
   <name>openetl-flink</name>
   <description>Flink jobs' side of openetl: a source over a continuous pipeline's streams and a sink per output, connected to the runner's bridge.</description>
   <url>https://github.com/openetl-io/openetl</url>
@@ -18,6 +18,8 @@
   </licenses>
 
   <properties>
+    <!-- A release passes -Drevision=VERSION. -->
+    <revision>0.1.0-SNAPSHOT</revision>
     <maven.compiler.release>11</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <flink.version>1.20.5</flink.version>
@@ -286,4 +288,32 @@
       </plugin>
     </plugins>
   </build>
+  <profiles>
+    <!-- A release's jar lists what it bundles. -->
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>license-maven-plugin</artifactId>
+            <version>2.8.0</version>
+            <executions>
+              <execution>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>add-third-party</goal>
+                </goals>
+                <configuration>
+                  <outputDirectory>${project.build.outputDirectory}/META-INF</outputDirectory>
+                  <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
+                  <includedScopes>compile,runtime</includedScopes>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

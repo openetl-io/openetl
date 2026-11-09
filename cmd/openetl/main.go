@@ -24,6 +24,7 @@ import (
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/openetl-io/openetl/internal/auth"
 	"github.com/openetl-io/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/platform/telemetry"
 )
 
 const usage = `usage: openetl <command> [flags]
@@ -83,6 +84,7 @@ Commands:
   holds release|discard NAME STREAM COLUMN
                   patch a hold's values in, or drop them; release
                   --new-version patches them into COLUMN__v2
+  version         print the CLI's version
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file
 (.openetl/admin.key by default, where openetld writes the owner's key).
@@ -111,6 +113,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return errors.New("no command")
 	}
 	switch args[0] {
+	case "version":
+		_, err := fmt.Fprintln(out, telemetry.Version())
+		return err
 	case "apply":
 		return runApplyDocuments(ctx, "openetl apply", args[1:], out, applyAll)
 	case "plan":

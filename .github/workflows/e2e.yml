@@ -10,11 +10,17 @@ on:
         type: choice
         options: [dbos, temporal]
         default: dbos
+      candidate:
+        description: A release candidate's version, to test its files instead of building
+        default: ""
   workflow_call:
     inputs:
       orchestrator:
         type: string
         default: dbos
+      candidate:
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -24,7 +30,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  candidate:
+    if: inputs.candidate != ''
+    uses: ./.github/workflows/candidate-files.yml
+    permissions:
+      contents: write
+    with:
+      version: ${{ inputs.candidate }}
+
   e2e:
+    needs: candidate
+    if: ${{ !cancelled() && (needs.candidate.result == 'success' || needs.candidate.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       # The whole stack's images and the connectors' builds don't fit beside
@@ -35,8 +51,22 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost > /dev/null 2>&1 &
           echo $! > "$RUNNER_TEMP/free-disk.pid"
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.candidate.outputs.commit || github.sha }}
+      - name: The candidate's files
+        if: inputs.candidate != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: candidate-files
+          path: ${{ runner.temp }}/candidate
+      - name: Unpack the candidate, for make's CANDIDATE
+        if: inputs.candidate != ''
+        run: |
+          deploy/release/candidate.sh unpack "$RUNNER_TEMP/candidate"
+          echo "CANDIDATE=$RUNNER_TEMP/candidate" >> "$GITHUB_ENV"
       # The official connectors; a nested module, so ./... skips it.
       - uses: actions/checkout@v5
+        if: inputs.candidate == ''
         with:
           repository: openetl-io/openetl-connectors
           ref: main
@@ -45,6 +75,7 @@ jobs:
       # openetl-connectors' branch of this one's name, when it has one, so a
       # change across both repositories is checked whole.
       - name: Connectors of the same branch
+        if: inputs.candidate == ''
         working-directory: openetl-connectors
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
@@ -55,7 +86,9 @@ jobs:
             echo "openetl-connectors has no branch $BRANCH, so main"
           fi
       - run: rustup show active-toolchain || rustup toolchain install
+        if: inputs.candidate == ''
       - uses: Swatinem/rust-cache@v2
+        if: inputs.candidate == ''
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -91,6 +124,7 @@ jobs:
           (set +e; make deps-up; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
       # The jars' tests run in spark-lib and flink-lib.
       - name: Build the engine, the connectors, openetl-spark, openetl-flink and the tests
+        if: inputs.candidate == ''
         run: |
           make connectors CONNECTORS_SRC=openetl-connectors
           make spark-lib MAVEN_FLAGS=-DskipTests
@@ -105,7 +139,7 @@ jobs:
           exit "$(cat "$RUNNER_TEMP/deps.status")"
       # Its integration tests stage in S3; the integration job has no engine.
       - name: Runner/engine tests against the S3 store
-        run: OPENETL_ENGINE="$PWD/target/debug/openetl-engine" go test -tags integration -count=1 ./internal/engineclient/...
+        run: OPENETL_ENGINE="${CANDIDATE:-$PWD/target/debug}/openetl-engine" go test -tags integration -count=1 ./internal/engineclient/...
       - name: Scheduled syncs through the whole stack, with engine and runner kills
         env:
           OPENETL_TEST_ORCHESTRATOR: ${{ inputs.orchestrator }}

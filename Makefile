@@ -82,11 +82,13 @@ kind-down: ## Delete the kind cluster
 # The official connectors, built from a checkout of openetl-connectors
 # against this repo's SDK. A go.work replace overrides theirs.
 CONNECTORS_SRC ?= ../openetl-connectors
-.PHONY: connectors
-connectors: ## Build the official connectors from CONNECTORS_SRC into bin/connectors
+.PHONY: connectors connectors-work
+connectors-work:
 	@test -f $(CONNECTORS_SRC)/go.mod || { echo "clone openetl-connectors into $(CONNECTORS_SRC), or set CONNECTORS_SRC"; exit 1; }
-	@mkdir -p $(BIN)/connectors
+	@mkdir -p $(BIN)
 	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/openetl-io/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
+connectors: connectors-work ## Build the official connectors from CONNECTORS_SRC into bin/connectors
+	@mkdir -p $(BIN)/connectors
 	cd $(CONNECTORS_SRC) && GOWORK=$(BIN)/connectors.work go build -o $(BIN)/connectors/ ./cmd/...
 
 # openetld's image, from Linux builds of openetld, the CLI, the engine and the
@@ -96,16 +98,15 @@ IMAGE ?= openetl:dev
 IMAGE_ARCH ?= $(shell go env GOARCH)
 ENGINE ?= $(or $(wildcard $(BIN)/linux/$(IMAGE_ARCH)/openetl-engine),$(CURDIR)/target/debug/openetl-engine)
 .PHONY: image
-image: web ## Build openetld's image (IMAGE), with ENGINE, a Linux openetl-engine
-	@test -f $(CONNECTORS_SRC)/go.mod || { echo "clone openetl-connectors into $(CONNECTORS_SRC), or set CONNECTORS_SRC"; exit 1; }
+image: web connectors-work ## Build openetld's image (IMAGE), with ENGINE, a Linux openetl-engine
 	@file -b $(ENGINE) | grep -q ELF || { echo "ENGINE=$(ENGINE) isn't a Linux openetl-engine; make engine-linux builds one"; exit 1; }
 	rm -rf $(BIN)/image && mkdir -p $(BIN)/image/connectors
-	@printf 'go 1.26.0\n\nuse %s\n\nreplace github.com/openetl-io/openetl/sdk/go => %s\n' "$(abspath $(CONNECTORS_SRC))" "$(CURDIR)/sdk/go" > $(BIN)/connectors.work
 	GOOS=linux GOARCH=$(IMAGE_ARCH) CGO_ENABLED=0 go build -o $(BIN)/image/openetld ./cmd/openetld
 	GOOS=linux GOARCH=$(IMAGE_ARCH) CGO_ENABLED=0 go build -o $(BIN)/image/openetl ./cmd/openetl
 	cd $(CONNECTORS_SRC) && GOOS=linux GOARCH=$(IMAGE_ARCH) CGO_ENABLED=0 GOWORK=$(BIN)/connectors.work go build -o $(BIN)/image/connectors/ ./cmd/...
 	cp $(ENGINE) $(BIN)/image/openetl-engine
 	cp -R web/dist $(BIN)/image/web
+	cp LICENSE NOTICE $(BIN)/image/
 	docker build --platform linux/$(IMAGE_ARCH) -t $(IMAGE) -f deploy/image/Dockerfile $(BIN)/image
 	rm -rf $(BIN)/image
 
@@ -201,14 +202,31 @@ sim: ## Commit-protocol simulation; SEEDS=n runs n seeds per sink kind
 bench-boundary: engine connectors ## Runner/engine boundary benchmark
 	go run ./test/bench/boundary -engine $(CURDIR)/target/release/openetl-engine -connectors $(BIN)/connectors $(BENCH_FLAGS)
 
+# What make e2e and make chaos run: what they build here, or with CANDIDATE=DIR
+# a release candidate's files, which deploy/release/candidate.sh fetched and
+# unpacked in DIR. Spark's tests also need their own jar, which isn't released.
+ifdef CANDIDATE
+CANDIDATE_DIR := $(abspath $(CANDIDATE))
+SUITE_BUILD := candidate-spark-tests
+SUITE_ENV := OPENETL_OPENETLD=$(CANDIDATE_DIR)/openetld OPENETL_ENGINE=$(CANDIDATE_DIR)/openetl-engine OPENETL_CONNECTORS=$(CANDIDATE_DIR)/connectors \
+	OPENETL_SPARK_LIB=$(CANDIDATE_DIR)/lib OPENETL_FLINK_LIB=$(CANDIDATE_DIR)/lib
+else
+SUITE_BUILD := suite-build
+SUITE_ENV := OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
+	OPENETL_SPARK_LIB=$(CURDIR)/libs/openetl-spark/java/target OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target
+endif
+.PHONY: suite-build candidate-spark-tests
+suite-build: connectors
+	cargo build -p openetl-engine
+candidate-spark-tests: MAVEN_FLAGS = -DskipTests
+candidate-spark-tests: spark-lib
+	cp libs/openetl-spark/java/target/openetl-spark-*-tests.jar $(CANDIDATE_DIR)/lib/
+
 # E2E_FLAGS passes go test's flags, e.g. E2E_FLAGS=-v for each test's time.
 E2E_TIMEOUT ?= 25m
 .PHONY: e2e
-e2e: connectors ## Full-stack scenarios against the compose deps
-	cargo build -p openetl-engine
-	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
-	OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit OPENETL_SPARK_LIB=$(CURDIR)/libs/openetl-spark/java/target \
-	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
+e2e: $(SUITE_BUILD) ## Full-stack scenarios against the compose deps; CANDIDATE=DIR runs a release candidate's binaries
+	$(SUITE_ENV) OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit \
 	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(E2E_FLAGS) ./test/e2e/...
 
 # The Kubernetes targets' tests, on make kind-up's cluster and the compose
@@ -230,11 +248,8 @@ e2e-kube: connectors ## Flink on the Kubernetes operator, PySpark on Spark on Ku
 # CHAOS_FLAGS passes its flags, e.g. CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'.
 CHAOS_TIMEOUT ?= 3h
 .PHONY: chaos
-chaos: connectors ## Randomized pipelines under crashes, partitions and store faults
-	cargo build -p openetl-engine
-	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
-	OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit OPENETL_SPARK_LIB=$(CURDIR)/libs/openetl-spark/java/target \
-	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
+chaos: $(SUITE_BUILD) ## Randomized pipelines under crashes, partitions and store faults; CANDIDATE=DIR runs a release candidate's binaries
+	$(SUITE_ENV) OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit \
 	go test -tags 'e2e chaos' -count=1 -timeout $(CHAOS_TIMEOUT) -run TestChaos -v ./test/e2e $(CHAOS_FLAGS)
 
 .PHONY: clean

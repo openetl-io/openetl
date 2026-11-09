@@ -49,3 +49,9 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+# What's released and what benchmarks measure. Symbols stay, for backtraces.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

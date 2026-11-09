@@ -30,6 +30,7 @@ Roles:
 Commands:
   bootstrap-key  give the admin service account a new owner key, in
                  --bootstrap-key-file, for when every owner key is lost
+  version        print openetld's version
 
 Run openetld <role> -h for its flags.
 `
@@ -63,6 +64,9 @@ func run(ctx context.Context, args []string) error {
 		roles = daemon.Roles{Server: true, Orchestrator: true, Runner: true}
 		defaults = config.DevDefaults()
 	case "bootstrap-key":
+	case "version":
+		fmt.Println(telemetry.Version())
+		return nil
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(os.Stderr, usage)
 		return nil

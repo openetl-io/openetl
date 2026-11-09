@@ -21,8 +21,9 @@ name: openetl-dev
 services:
   postgres:
     image: postgres:18
-    # Logical replication, for the Postgres source's CDC.
-    command: ["postgres", "-c", "wal_level=logical"]
+    # Logical replication, for the Postgres source's CDC. The cap keeps a slot
+    # a test left behind from filling the disk during a long chaos run.
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_slot_wal_keep_size=10GB"]
     environment:
       POSTGRES_USER: openetl
       POSTGRES_PASSWORD: openetl
