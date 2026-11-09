@@ -32,7 +32,9 @@ const usage = `usage: openetl <command> [flags]
 Commands:
   apply -f FILE   create or update the connector versions, connector
                   sources, sources, destinations, dbt projects, Spark and
-                  Flink clusters, pipelines and webhooks in FILE
+                  Flink clusters, pipelines and webhooks in FILE, then
+                  check what changed on a runner, which only warns;
+                  --no-check skips that
   plan -f FILE    show what apply would change, and how each pipeline
                   would sync
   pause NAME      stop a pipeline's scheduled syncs; --stream STREAM
@@ -58,8 +60,9 @@ Commands:
   syncs NAME      list a pipeline's syncs, newest first
   versions NAME   list a pipeline's versions, newest first
   logs NAME       print a sync's log; -f follows a running one
-  check source|destination NAME
-                  check that a source or destination is reachable
+  check source|destination|pipeline NAME
+                  check that a source or destination is reachable; for a
+                  pipeline, both of its connections, then print its plan
   discover NAME   list a source's streams and columns
   connector COMMAND
                   package, publish, validate and apply connector versions,
@@ -207,6 +210,10 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	if mode != planAll {
 		dryRun = fs.Bool("dry-run", false, "validate without changing anything")
 	}
+	noCheck := new(bool)
+	if mode == applyAll {
+		noCheck = fs.Bool("no-check", false, "don't ask a runner to check what changed, after applying it")
+	}
 	var transfer files
 	if mode == applyConnectors {
 		fs.Var(&transfer, "transfer", "a connector package whose versions may come from another repository than its earlier ones; repeatable")
@@ -281,6 +288,9 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 		return printPlans(out, res.Msg)
 	}
 	printWarnings(out, res.Msg)
+	if mode == applyAll && !*dryRun && !*noCheck {
+		checkApplied(ctx, conn, res.Msg, out)
+	}
 	return nil
 }
 
@@ -360,59 +370,63 @@ func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
 	changed := changedPipelines(res)
 	failed := false
 	for _, p := range res.GetPlans() {
-		fmt.Fprintf(out, "\n%s (%s)\n", p.GetPipeline(), versionText(p.GetVersion()))
-		if len(p.GetChanges()) > 0 {
-			fmt.Fprintln(out, "  changes:")
-			for _, c := range p.GetChanges() {
-				fmt.Fprintf(out, "    %s: %s -> %s\n", c.GetField(), cmp.Or(c.GetBefore(), "(unset)"), cmp.Or(c.GetAfter(), "(unset)"))
-			}
-		}
-		if j := p.GetJob(); j != nil {
-			fmt.Fprintf(out, "  job size: %s, %s, in pool %s\n", sizeText(j.GetSize()), reasonText(j.GetReason()), j.GetPool())
-		}
-		if len(p.GetStreams()) > 0 {
-			fmt.Fprintln(out, "  streams:")
-			tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-			for _, st := range p.GetStreams() {
-				reason := st.GetReason()
-				if st.GetTypeChanges() {
-					reason += "; columns' types change in place"
-				}
-				if st.GetPaused() {
-					reason += "; paused, so syncs skip it"
-				}
-				fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\n", st.GetName(), strings.ToLower(strings.TrimPrefix(st.GetWrite().String(), "WRITE_MODE_")),
-					strings.ToLower(strings.TrimPrefix(st.GetLevel().String(), "DELIVERY_LEVEL_")), reason)
-			}
-			_ = tw.Flush()
-		}
-		if len(p.GetOverrides()) > 0 {
-			fmt.Fprintln(out, "  heal's overrides:")
-			for _, o := range p.GetOverrides() {
-				fmt.Fprintf(out, "    %s\n", overrideText(o))
-			}
-		}
-		var warnings []string
-		for _, w := range p.GetWarnings() {
-			warnings = append(warnings, warningText(w))
-		}
-		for _, list := range []struct {
-			title string
-			items []string
-		}{{"problems", p.GetProblems()}, {"warnings", warnings}, {"notes", p.GetNotes()}} {
-			if len(list.items) > 0 {
-				fmt.Fprintf(out, "  %s:\n", list.title)
-				for _, item := range list.items {
-					fmt.Fprintf(out, "    %s\n", item)
-				}
-			}
-		}
+		printPlan(out, p)
 		failed = failed || changed[p.GetPipeline()] && len(p.GetProblems()) > 0
 	}
 	if failed {
 		return errors.New("the plan has problems, so apply would refuse it")
 	}
 	return nil
+}
+
+func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
+	fmt.Fprintf(out, "\n%s (%s)\n", p.GetPipeline(), versionText(p.GetVersion()))
+	if len(p.GetChanges()) > 0 {
+		fmt.Fprintln(out, "  changes:")
+		for _, c := range p.GetChanges() {
+			fmt.Fprintf(out, "    %s: %s -> %s\n", c.GetField(), cmp.Or(c.GetBefore(), "(unset)"), cmp.Or(c.GetAfter(), "(unset)"))
+		}
+	}
+	if j := p.GetJob(); j != nil {
+		fmt.Fprintf(out, "  job size: %s, %s, in pool %s\n", sizeText(j.GetSize()), reasonText(j.GetReason()), j.GetPool())
+	}
+	if len(p.GetStreams()) > 0 {
+		fmt.Fprintln(out, "  streams:")
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		for _, st := range p.GetStreams() {
+			reason := st.GetReason()
+			if st.GetTypeChanges() {
+				reason += "; columns' types change in place"
+			}
+			if st.GetPaused() {
+				reason += "; paused, so syncs skip it"
+			}
+			fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\n", st.GetName(), strings.ToLower(strings.TrimPrefix(st.GetWrite().String(), "WRITE_MODE_")),
+				strings.ToLower(strings.TrimPrefix(st.GetLevel().String(), "DELIVERY_LEVEL_")), reason)
+		}
+		_ = tw.Flush()
+	}
+	if len(p.GetOverrides()) > 0 {
+		fmt.Fprintln(out, "  heal's overrides:")
+		for _, o := range p.GetOverrides() {
+			fmt.Fprintf(out, "    %s\n", overrideText(o))
+		}
+	}
+	var warnings []string
+	for _, w := range p.GetWarnings() {
+		warnings = append(warnings, warningText(w))
+	}
+	for _, list := range []struct {
+		title string
+		items []string
+	}{{"problems", p.GetProblems()}, {"warnings", warnings}, {"notes", p.GetNotes()}} {
+		if len(list.items) > 0 {
+			fmt.Fprintf(out, "  %s:\n", list.title)
+			for _, item := range list.items {
+				fmt.Fprintf(out, "    %s\n", item)
+			}
+		}
+	}
 }
 
 func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) error {
@@ -518,13 +532,16 @@ func connectorFlags(cmd, usage string) (fs *flag.FlagSet, conn *api, workspace, 
 }
 
 func runCheck(ctx context.Context, args []string, out io.Writer) error {
-	fs, conn, workspace, dataPlane := connectorFlags("check", "source|destination NAME")
+	fs, conn, workspace, dataPlane := connectorFlags("check", "source|destination|pipeline NAME")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	kind := fs.Arg(0)
-	if fs.NArg() != 2 || (kind != "source" && kind != "destination") {
-		return errors.New("check takes source or destination, then a name, after its flags")
+	if fs.NArg() != 2 || (kind != "source" && kind != "destination" && kind != "pipeline") {
+		return errors.New("check takes source, destination or pipeline, then a name, after its flags")
+	}
+	if kind == "pipeline" {
+		return checkPipeline(ctx, conn, *workspace, *dataPlane, fs.Arg(1), out)
 	}
 	name := "workspaces/" + *workspace + "/" + kind + "s/" + fs.Arg(1)
 	var res *apiv1.CheckResult

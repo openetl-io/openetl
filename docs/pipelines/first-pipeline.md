@@ -115,7 +115,7 @@ spec:
 - The source `app-db` offers each table of `app`'s `public` schema as a stream.
 - The destination `warehouse` writes each stream into a table of the same name in its `app` schema, which it creates if it's missing.
 
-The [Postgres connector's page](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) lists the rest of their config. Apply the file, which stores both and starts nothing:
+The [Postgres connector's page](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) lists the rest of their config. Apply the file, which stores both, asks a runner to connect to each, and starts nothing:
 
 ```sh
 openetl apply -f app-db.yaml
@@ -124,11 +124,12 @@ openetl apply -f app-db.yaml
 ```text
 created workspaces/default/sources/app-db (version 5e1d0feeafb7)
 created workspaces/default/destinations/warehouse (version f9aec669685a)
+checked source app-db, destination warehouse
 ```
 
 ## 4. Check both connections
 
-Ask a runner to connect to each database with its config:
+The apply has already asked a runner to connect to each database, and says so with `checked`, or with a warning if one can't. What's applied stands either way. To ask again, which is how you confirm a fix:
 
 ```sh
 openetl check source app-db
@@ -249,6 +250,7 @@ openetl apply -f app-db.yaml
 unchanged workspaces/default/sources/app-db (version 5e1d0feeafb7)
 unchanged workspaces/default/destinations/warehouse (version f9aec669685a)
 created workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
+checked source app-db, destination warehouse
 ```
 
 A new pipeline starts its first sync straight away. List its syncs:

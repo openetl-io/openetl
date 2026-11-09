@@ -115,7 +115,7 @@ func TestPipeline(t *testing.T) {
 			streams:  "logs at_least_once superset replay, no primary key, and not collapsed",
 			problems: []string{`delivery.require: stream "logs" gets at_least_once`}},
 		{name: "named streams", cat: catalog, caps: warehouse, spec: `{"source": {"streams": [{"name": "orders"}, {"name": "gone"}]}}`,
-			streams: "orders exactly_once exact replay", problems: []string{`the source has no stream "gone"`}},
+			streams: "orders exactly_once exact replay", problems: []string{`the source has no stream "gone" in its latest catalog; if it's new, openetl discover refreshes that`}},
 		{name: "at least once", cat: catalog, caps: parquet, spec: `{"delivery": {"require": "DELIVERY_LEVEL_AT_LEAST_ONCE"}}`,
 			streams: "orders exactly_once exact replay; events at_least_once superset replay, and the destination can't dedupe; logs at_least_once superset replay, and the destination can't dedupe"},
 		{name: "overrides", cat: catalog, caps: warehouse,

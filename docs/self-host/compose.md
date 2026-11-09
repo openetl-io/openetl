@@ -129,6 +129,7 @@ docker compose exec server openetl syncs faker-to-files
 created workspaces/default/sources/faker (version 91f9debd5abe)
 created workspaces/default/destinations/files (version 36f53c4cd306)
 created workspaces/default/pipelines/faker-to-files (version 710045ab31ca)
+checked source faker, destination files
 SYNC                                  STATE      STARTED              TOOK  ROWS  VERSION                                                           LAST COMMIT          LAG  ERROR
 01a1ba9f-aa38-7a01-b467-c09838110cbe  succeeded  2026-11-08 10:06:28  0s    2000  710045ab31caeecaba8027eccdd9caa37c5f6f67ecc70057f2e472d0470e6710  2026-11-08 10:06:28  -
 ```

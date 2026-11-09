@@ -328,7 +328,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 	for _, ps := range spec.GetSource().GetStreams() {
 		i := slices.IndexFunc(cat.GetStreams(), func(cs *apiv1.CatalogStream) bool { return cs.GetName() == ps.GetName() })
 		if i < 0 {
-			problems = append(problems, fmt.Errorf("the source has no stream %q", ps.GetName()))
+			problems = append(problems, fmt.Errorf("the source has no stream %q in its latest catalog; if it's new, openetl discover refreshes that", ps.GetName()))
 			continue
 		}
 		streams = append(streams, selected{cs: cat.GetStreams()[i], ps: ps})
