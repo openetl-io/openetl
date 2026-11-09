@@ -544,7 +544,13 @@ type ConfiguredStream struct {
 	State []byte `protobuf:"bytes,4,opt,name=state,proto3,oneof" json:"state,omitempty"`
 	// The splits to read, with their states; empty: the whole stream, from
 	// state.
-	Splits        []*Split `protobuf:"bytes,5,rep,name=splits,proto3" json:"splits,omitempty"`
+	Splits []*Split `protobuf:"bytes,5,rep,name=splits,proto3" json:"splits,omitempty"`
+	// The columns this run declared, by the catalog's names. A column outside
+	// them has no declared type, so a source that sends values as text for
+	// the platform to parse fails the read, retryably, instead of sending
+	// one; the next attempt discovers and declares it. Empty: the request
+	// doesn't say.
+	Columns       []string `protobuf:"bytes,6,rep,name=columns,proto3" json:"columns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -610,6 +616,13 @@ func (x *ConfiguredStream) GetState() []byte {
 func (x *ConfiguredStream) GetSplits() []*Split {
 	if x != nil {
 		return x.Splits
+	}
+	return nil
+}
+
+func (x *ConfiguredStream) GetColumns() []string {
+	if x != nil {
+		return x.Columns
 	}
 	return nil
 }
@@ -1693,13 +1706,14 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\n" +
 	"continuous\x18\x04 \x01(\bR\n" +
 	"continuous\x12\x14\n" +
-	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\xd5\x01\n" +
+	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\xef\x01\n" +
 	"\x10ConfiguredStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12;\n" +
 	"\tsync_mode\x18\x02 \x01(\x0e2\x1e.openetl.connector.v1.SyncModeR\bsyncMode\x12\x16\n" +
 	"\x06cursor\x18\x03 \x01(\tR\x06cursor\x12\x19\n" +
 	"\x05state\x18\x04 \x01(\fH\x00R\x05state\x88\x01\x01\x123\n" +
-	"\x06splits\x18\x05 \x03(\v2\x1b.openetl.connector.v1.SplitR\x06splitsB\b\n" +
+	"\x06splits\x18\x05 \x03(\v2\x1b.openetl.connector.v1.SplitR\x06splits\x12\x18\n" +
+	"\acolumns\x18\x06 \x03(\tR\acolumnsB\b\n" +
 	"\x06_state\"<\n" +
 	"\x05Split\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +

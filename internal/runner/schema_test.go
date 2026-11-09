@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -88,6 +89,21 @@ func TestOverridesApplyToDeclaredDecimals(t *testing.T) {
 	}
 	if err := (Stream{Name: "s", Overrides: map[string]arrow.DataType{"amount": arrow.BinaryTypes.String}}).checkOverrides(); err == nil {
 		t.Error("an override on an undeclared stream was accepted")
+	}
+}
+
+func TestAReadNamesTheColumnsTheJobDeclared(t *testing.T) {
+	declared := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "v", Type: arrow.PrimitiveTypes.Int64},
+	}, nil)
+	j := &Job{Streams: []Stream{{Name: "typed", Schema: declared}, {Name: "untyped"}}}
+	req := j.readRequest(nil, nil)
+	if got := req.Streams[0].Columns; !slices.Equal(got, []string{"id", "v"}) {
+		t.Errorf("columns %v", got)
+	}
+	if got := req.Streams[1].Columns; got != nil {
+		t.Errorf("a stream without a schema: %v", got)
 	}
 }
 

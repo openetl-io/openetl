@@ -171,7 +171,7 @@ func (echo) Discover(context.Context) (source.Catalog, error) {
 
 func (echo) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
 	for _, cs := range req.Streams {
-		b, err := json.Marshal(map[string]any{"mode": cs.SyncMode, "cursor": cs.Cursor, "state": string(cs.State)})
+		b, err := json.Marshal(map[string]any{"mode": cs.SyncMode, "cursor": cs.Cursor, "state": string(cs.State), "columns": cs.Columns})
 		if err != nil {
 			return err
 		}

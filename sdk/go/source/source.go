@@ -65,6 +65,12 @@ type ConfiguredStream struct {
 	State []byte
 	// The splits to read; nil: the whole stream, from State.
 	Splits []Split
+	// The columns this run declared, by the catalog's names. A column outside
+	// them has no declared type, so a source that sends values as text for
+	// the platform to parse fails the read, retryably, instead of sending
+	// one; the next attempt discovers and declares it. Nil: the request
+	// doesn't say.
+	Columns []string
 }
 
 // WholeStream is the ID of the split that is the whole stream.
