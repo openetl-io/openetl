@@ -332,6 +332,15 @@ func (d *schemaDoc) condition(sec, owner *section, path string, c *object) error
 			v.intro = append(v.intro, desc)
 		}
 		sec.variants = append(sec.variants, v)
+		if props := then.obj("properties"); props != nil {
+			for _, name := range props.keys {
+				// Written out, it would get a section named after the field,
+				// which every variant's would share.
+				if b := refName(props.obj(name)); b != "" {
+					d.uses[b] = max(d.uses[b], 2)
+				}
+			}
+		}
 		return d.fill(v, owner, path, then, true)
 	}
 	has, err := hasPhrase(cond, "")

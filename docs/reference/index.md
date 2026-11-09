@@ -174,7 +174,7 @@ OpenETL records these events, and [webhooks](../../examples/webhook.yaml) delive
 | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident's progress |
 | `webhook.test` | Sent to one webhook when it's tested, such as by `openetl webhook test` |
 
-Each type's `data` is defined by the Go types in [`internal/events/events.go`](../../internal/events/events.go). No JSON Schema is published for them at this commit.
+[Platform events](./events.md) lists every field of each type's `data`, from the JSON Schema in [`internal/events/event.schema.json`](../../internal/events/event.schema.json).
 
 ## The connector protocol
 

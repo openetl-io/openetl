@@ -194,7 +194,7 @@ openetl webhook test ops-alerts
   | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident opens, gets worse, or is resolved |
   | `webhook.test` | `openetl webhook test` sends one |
 
-- **What's sent.** A `POST` with a JSON body, laid out as [Standard Webhooks](https://www.standardwebhooks.com) says: `type`, `timestamp`, and the event's `data`, which names resources as the API does, such as `workspaces/default/pipelines/faker-to-postgres`.
+- **What's sent.** A `POST` with a JSON body, laid out as [Standard Webhooks](https://www.standardwebhooks.com) says: `type`, `timestamp`, and the event's `data`, which names resources as the API does, such as `workspaces/default/pipelines/faker-to-postgres`. [Platform events](../reference/events.md) lists every field of each type's `data`.
 - **Signatures.** Each delivery carries the headers `webhook-id`, the event's ID, `webhook-timestamp` and `webhook-signature`, an HMAC-SHA256 under each of the webhook's keys. Any Standard Webhooks library verifies them. Naming two secrets lets you add a new key before removing the old one.
 - **Retries.** A `2xx` answer within 15 seconds is a delivery. No answer, a `408`, a `429` or a `5xx` is tried again for about a day, honoring `Retry-After`; another status fails the delivery. Redirects aren't followed. A delivery can arrive more than once, so drop repeats by `webhook-id`. An endpoint that answers `410 Gone`, or fails every delivery for 3 days with no day without a failure, has its webhook disabled; `openetl webhook enable` turns it back on.
 - **Deliveries.** `openetl webhook deliveries ops-alerts` lists the last 7 days' deliveries, with each one's state, status and error.

@@ -3,7 +3,9 @@
 package events
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -15,6 +17,12 @@ import (
 
 	"github.com/openetl-io/openetl/internal/store/db"
 )
+
+//go:embed event.schema.json
+var payloadSchema []byte
+
+// PayloadSchema returns the JSON Schema of a Payload.
+func PayloadSchema() []byte { return bytes.Clone(payloadSchema) }
 
 const (
 	SyncStarted     = "sync.started"
