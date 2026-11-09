@@ -115,7 +115,7 @@ jobs:
           name: engine-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/openetl-engine
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
 
   libs:
     needs: prepare
@@ -152,7 +152,7 @@ jobs:
           name: libs
           path: out/*
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
 
   connectors:
     needs: prepare
@@ -198,7 +198,7 @@ jobs:
           path: out/*
           if-no-files-found: error
           compression-level: 1
-          retention-days: 3
+          retention-days: 1
 
   # The one job that writes anywhere, after everything has built.
   assemble:
@@ -206,6 +206,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
+      actions: write # to delete this run's intermediate builds
       contents: write
       packages: write
     env:
@@ -358,3 +359,9 @@ jobs:
             --title "v$VERSION (candidate)" \
             --notes "Release candidate of v$VERSION: commit $COMMIT, connectors $CONNECTORS_COMMIT. Not published, and no tag exists yet." \
             dist/*.tar.gz dist/*.sbom.json dist/checksums.txt build/candidate/assets/* build/candidate.json
+      # A public repository's artifacts can be downloaded by anyone signed in.
+      - name: Delete this run's intermediate builds
+        if: always()
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --jq '.artifacts[].id' |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"; done

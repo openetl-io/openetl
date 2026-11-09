@@ -2,7 +2,8 @@ name: release-candidate-test
 
 # Temporary, and removed before this branch merges: dispatching a workflow
 # needs it on main, so this runs the new ones from their branch, on a throwaway
-# version. A commit message with discard-test-candidate discards it instead.
+# version, when the head commit's message has run-test-candidate, and discards
+# it when the message has discard-test-candidate.
 on:
   push:
     branches: [release-candidate-flow]
@@ -11,9 +12,10 @@ permissions: {}
 
 jobs:
   candidate:
-    if: ${{ !contains(github.event.head_commit.message, 'discard-test-candidate') }}
+    if: ${{ contains(github.event.head_commit.message, 'run-test-candidate') }}
     uses: ./.github/workflows/release-candidate.yml
     permissions:
+      actions: write
       contents: write
       packages: write
     with:
