@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -94,6 +96,10 @@ func lanesAttempt(ctx context.Context, name string, src source.Source, streams [
 		read = c
 	}
 	settings := settings(dst.Capabilities())
+	var logger *slog.Logger
+	if *verboseFlag {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
 	_, err := runner.RunAttempt(ctx, runner.Job{
 		Owner:       rand.Text(),
 		Pipeline:    name,
@@ -105,6 +111,7 @@ func lanesAttempt(ctx context.Context, name string, src source.Source, streams [
 		Dataflow:    flow,
 		Settings:    settings,
 		Lanes:       lanes,
+		Logger:      logger,
 	})
 	return c.bytes.Load(), err
 }
@@ -126,6 +133,7 @@ func measureLanes(ctx context.Context, conn *pgx.Conn, bin string, counts []int)
 		return err
 	}
 	b := &bench{runs: *runsFlag}
+	phases := strings.Split(*phasesFlag, ",")
 	type line struct {
 		name  string
 		lanes int
@@ -143,12 +151,14 @@ func measureLanes(ctx context.Context, conn *pgx.Conn, bin string, counts []int)
 	for _, n := range counts {
 		size := resources.Size{CPU: int64(n) * 1000, Memory: int64(n) * laneMemory}
 		flow := &engineclient.Dataflow{Options: engineclient.Options{Binary: bin, PeakMemory: b.enginePeak, Size: size}}
-		err := add("raw rows, discarded", n, func(ctx context.Context) (int64, error) {
-			streams := []runner.Stream{{Name: table, Replay: source.Exact, Mode: destination.Append}}
-			return lanesAttempt(ctx, "raw", newRawRows(n, int64(n)*(*laneBytes)), streams, manyWriters{}, flow, "", n)
-		})
-		if err != nil {
-			return err
+		if slices.Contains(phases, "raw") {
+			err := add("raw rows, discarded", n, func(ctx context.Context) (int64, error) {
+				streams := []runner.Stream{{Name: table, Replay: source.Exact, Mode: destination.Append}}
+				return lanesAttempt(ctx, "raw", newRawRows(n, int64(n)*(*laneBytes)), streams, manyWriters{}, flow, "", n)
+			})
+			if err != nil {
+				return err
+			}
 		}
 		env := connectorhost.Env{Connectors: *connFlag, Size: size}
 		config := fmt.Appendf(nil, `{"dsn": %q, "schema": %q, "tables": [%q], "maxConnections": %d}`, *dsnFlag, schema, table, n)
@@ -171,25 +181,27 @@ func measureLanes(ctx context.Context, conn *pgx.Conn, bin string, counts []int)
 			}
 			return lanesAttempt(ctx, name, src, streams, dst, flow, ns, n)
 		}
-		err = add("postgres into parquet", n, func(ctx context.Context) (int64, error) {
-			dir, err := os.MkdirTemp("", "bench-lanes-")
+		if slices.Contains(phases, "parquet") {
+			err := add("postgres into parquet", n, func(ctx context.Context) (int64, error) {
+				dir, err := os.MkdirTemp("", "bench-lanes-")
+				if err != nil {
+					return 0, err
+				}
+				defer func() { _ = os.RemoveAll(dir) }()
+				dst, err := enginesink.NewParquet(fmt.Appendf(nil, `{"url": %q}`, "file://"+filepath.ToSlash(dir)))
+				if err != nil {
+					return 0, err
+				}
+				return fromPostgres(ctx, "parquet", dst, "")
+			})
 			if err != nil {
-				return 0, err
+				return err
 			}
-			defer func() { _ = os.RemoveAll(dir) }()
-			dst, err := enginesink.NewParquet(fmt.Appendf(nil, `{"url": %q}`, "file://"+filepath.ToSlash(dir)))
-			if err != nil {
-				return 0, err
-			}
-			return fromPostgres(ctx, "parquet", dst, "")
-		})
-		if err != nil {
-			return err
 		}
-		if *icebergFlag == "" {
+		if *icebergFlag == "" || !slices.Contains(phases, "iceberg") {
 			continue
 		}
-		err = add("postgres into iceberg", n, func(ctx context.Context) (int64, error) {
+		err := add("postgres into iceberg", n, func(ctx context.Context) (int64, error) {
 			dst, err := connectorhost.NewDestination("iceberg", []byte(*icebergFlag), env)
 			if err != nil {
 				return 0, err

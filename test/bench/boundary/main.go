@@ -59,6 +59,9 @@ var (
 	lanesFlag   = flag.String("lanes", "", "instead of the phases, measure these counts of lanes, such as 1,2,4,8: the raw lane, and Postgres into Parquet and Iceberg")
 	laneBytes   = flag.Int64("lane-bytes", 2e9, "with -lanes, bytes of raw rows per lane")
 	icebergFlag = flag.String("iceberg", os.Getenv("ICEBERG_CONFIG"), "with -lanes, destination-iceberg's config; default $ICEBERG_CONFIG")
+	phasesFlag  = flag.String("lane-phases", "raw,parquet,iceberg", "with -lanes, the phases to run")
+	commitBytes = flag.Int64("commit-bytes", 0, "with -lanes, fix each epoch at about this many bytes; 0: the default, which grows while commits lag")
+	verboseFlag = flag.Bool("v", false, "with -lanes, log attempts at debug level on stderr, with each epoch's commit length")
 	profile     = flag.String("cpuprofile", "", "write the runner's CPU profile to this file")
 )
 
@@ -321,6 +324,9 @@ func settings(caps destination.Capabilities) delivery.Settings {
 	}
 	if caps.SupportsScope(destination.ScopePipeline) {
 		s.Scope = destination.ScopePipeline
+	}
+	if *commitBytes > 0 {
+		s.CommitMaxBytes, s.CommitMaxBytesSet = *commitBytes, true
 	}
 	return s
 }
