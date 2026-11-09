@@ -223,7 +223,7 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 			}
 		}
 		if len(paths) == 0 && len(refs) == 0 {
-			return errors.New("connector apply takes -f FILE, or references such as oci://ghcr.io/openetl-io/connectors/postgres:0.2.0")
+			return errors.New("connector apply takes -f FILE, or references such as oci://ghcr.io/openetl-io/openetl-connectors/postgres:0.2.0")
 		}
 	} else if len(paths) == 0 || fs.NArg() > 0 {
 		return fmt.Errorf("%s takes one or more -f FILE, and no arguments", strings.TrimPrefix(cmd, "openetl "))

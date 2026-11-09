@@ -237,18 +237,30 @@ bench-boundary: engine connectors ## Runner/engine boundary benchmark
 # What make e2e and make chaos run: what they build here, or with CANDIDATE=DIR
 # a release candidate's files, which deploy/release/candidate.sh fetched and
 # unpacked in DIR. Spark's tests also need their own jar, which isn't released.
+# CONNECTOR_VERSION=V installs that version of each official connector from
+# CONNECTOR_REGISTRY, as a user does, with CONNECTOR_REGISTRY_USER and
+# CONNECTOR_REGISTRY_TOKEN if it's private; otherwise they're built from
+# CONNECTORS_SRC.
 ifdef CANDIDATE
 CANDIDATE_DIR := $(abspath $(CANDIDATE))
 SUITE_BUILD := candidate-spark-tests
-SUITE_ENV := OPENETL_OPENETLD=$(CANDIDATE_DIR)/openetld OPENETL_ENGINE=$(CANDIDATE_DIR)/openetl-engine OPENETL_CONNECTORS=$(CANDIDATE_DIR)/connectors \
+SUITE_ENV := OPENETL_OPENETLD=$(CANDIDATE_DIR)/openetld OPENETL_ENGINE=$(CANDIDATE_DIR)/openetl-engine \
 	OPENETL_SPARK_LIB=$(CANDIDATE_DIR)/lib OPENETL_FLINK_LIB=$(CANDIDATE_DIR)/lib
 else
-SUITE_BUILD := suite-build
-SUITE_ENV := OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
+SUITE_BUILD := suite-engine
+SUITE_ENV := OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine \
 	OPENETL_SPARK_LIB=$(CURDIR)/libs/openetl-spark/java/target OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target
 endif
-.PHONY: suite-build candidate-spark-tests
-suite-build: connectors
+CONNECTOR_REGISTRY ?= oci://ghcr.io/openetl-io/openetl-connectors
+ifdef CONNECTOR_VERSION
+SUITE_ENV += OPENETL_E2E_CONNECTOR_REGISTRY=$(CONNECTOR_REGISTRY) OPENETL_E2E_CONNECTOR_VERSION=$(CONNECTOR_VERSION) \
+	OPENETL_E2E_CONNECTOR_USER=$(CONNECTOR_REGISTRY_USER) OPENETL_E2E_CONNECTOR_TOKEN=$(CONNECTOR_REGISTRY_TOKEN)
+else
+SUITE_BUILD += connectors
+SUITE_ENV += OPENETL_CONNECTORS=$(BIN)/connectors
+endif
+.PHONY: suite-engine candidate-spark-tests
+suite-engine:
 	cargo build -p openetl-engine
 candidate-spark-tests: MAVEN_FLAGS = -DskipTests
 candidate-spark-tests: spark-lib
@@ -257,7 +269,7 @@ candidate-spark-tests: spark-lib
 # E2E_FLAGS passes go test's flags, e.g. E2E_FLAGS=-v for each test's time.
 E2E_TIMEOUT ?= 25m
 .PHONY: e2e
-e2e: $(SUITE_BUILD) ## Full-stack scenarios against the compose deps; CANDIDATE=DIR runs a release candidate's binaries
+e2e: $(SUITE_BUILD) ## Full-stack scenarios against the compose deps; CANDIDATE=DIR runs a release candidate's binaries, CONNECTOR_VERSION=V installs connectors from their registry
 	$(SUITE_ENV) OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit \
 	go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(E2E_FLAGS) ./test/e2e/...
 
@@ -280,7 +292,7 @@ e2e-kube: connectors ## Flink on the Kubernetes operator, PySpark on Spark on Ku
 # CHAOS_FLAGS passes its flags, e.g. CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'.
 CHAOS_TIMEOUT ?= 3h
 .PHONY: chaos
-chaos: $(SUITE_BUILD) ## Randomized pipelines under crashes, partitions and store faults; CANDIDATE=DIR runs a release candidate's binaries
+chaos: $(SUITE_BUILD) ## Randomized pipelines under crashes, partitions and store faults; CANDIDATE=DIR runs a release candidate's binaries, CONNECTOR_VERSION=V installs connectors from their registry
 	$(SUITE_ENV) OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit \
 	go test -tags 'e2e chaos' -count=1 -timeout $(CHAOS_TIMEOUT) -run TestChaos -v ./test/e2e $(CHAOS_FLAGS)
 

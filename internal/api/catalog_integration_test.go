@@ -112,7 +112,7 @@ func TestCatalog(t *testing.T) {
 	reg := httptest.NewServer(registry.New(registry.Logger(log.New(io.Discard, "", 0))))
 	t.Cleanup(reg.Close)
 	host := strings.TrimPrefix(reg.URL, "http://")
-	official, err := oci.Parse(oci.Scheme + host + "/openetl-io/connectors")
+	official, err := oci.Parse(oci.Scheme + host + "/openetl-io/openetl-connectors")
 	if err != nil {
 		t.Fatal(err)
 	}

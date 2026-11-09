@@ -16,7 +16,7 @@ import (
 )
 
 // OfficialURL is where the official connectors are published.
-const OfficialURL = "oci://ghcr.io/openetl-io/connectors"
+const OfficialURL = "oci://ghcr.io/openetl-io/openetl-connectors"
 
 // OfficialRepository is the official connectors' GitHub repository.
 const OfficialRepository = "https://github.com/openetl-io/openetl-connectors"

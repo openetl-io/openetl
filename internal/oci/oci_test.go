@@ -28,8 +28,8 @@ func testRegistry(t *testing.T) (*Client, Ref) {
 
 func TestParse(t *testing.T) {
 	for in, want := range map[string]Ref{
-		"oci://ghcr.io/openetl-io/connectors":                        {Registry: "ghcr.io", Repository: "openetl-io/connectors"},
-		"oci://ghcr.io/openetl-io/connectors/postgres:0.2.0":         {Registry: "ghcr.io", Repository: "openetl-io/connectors/postgres", Tag: "0.2.0"},
+		"oci://ghcr.io/openetl-io/openetl-connectors":                {Registry: "ghcr.io", Repository: "openetl-io/openetl-connectors"},
+		"oci://ghcr.io/openetl-io/openetl-connectors/postgres:0.2.0": {Registry: "ghcr.io", Repository: "openetl-io/openetl-connectors/postgres", Tag: "0.2.0"},
 		"oci://localhost:5000/a/b":                                   {Registry: "localhost:5000", Repository: "a/b"},
 		"oci://localhost:5000/a/b@sha256:" + strings.Repeat("a", 64): {Registry: "localhost:5000", Repository: "a/b", Digest: "sha256:" + strings.Repeat("a", 64)},
 	} {

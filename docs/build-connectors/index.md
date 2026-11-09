@@ -281,7 +281,7 @@ openetl connector apply oci://REGISTRY/NAMESPACE/greetings:0.1.0
 openetl connector apply -f dist/greetings.connector.yaml
 ```
 
-A `ConnectorSource` document connects a registry namespace or a GitHub repository to the org as a source of its catalog. `openetl connector catalog`, and **Connectors** in the console, list the packages its sources offer, with the command that applies each. OpenETL connects the official connectors' source, `oci://ghcr.io/openetl-io/connectors`, when it creates the org.
+A `ConnectorSource` document connects a registry namespace or a GitHub repository to the org as a source of its catalog. `openetl connector catalog`, and **Connectors** in the console, list the packages its sources offer, with the command that applies each. OpenETL connects the official connectors' source, `oci://ghcr.io/openetl-io/openetl-connectors`, when it creates the org.
 
 ## Release and compatibility
 

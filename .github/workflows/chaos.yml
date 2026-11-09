@@ -74,7 +74,6 @@ jobs:
           deploy/release/candidate.sh unpack "$RUNNER_TEMP/candidate"
           echo "CANDIDATE=$RUNNER_TEMP/candidate" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
-        if: inputs.candidate == ''
         with:
           repository: openetl-io/openetl-connectors
           ref: main
@@ -83,7 +82,6 @@ jobs:
       # openetl-connectors' branch of this one's name, when it has one, so a
       # change across both repositories is checked whole.
       - name: Connectors of the same branch
-        if: inputs.candidate == ''
         working-directory: openetl-connectors
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}

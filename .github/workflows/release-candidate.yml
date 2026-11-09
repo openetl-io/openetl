@@ -5,6 +5,8 @@ name: release-candidate
 # makes no tag until it's published. Nothing is signed here: keyless signatures
 # go to a public log, so signing waits for publishing. The test suites run on
 # these files (gh workflow run e2e.yml -f candidate=VERSION, and chaos.yml).
+# The connectors aren't here: they're released from openetl-connectors, and
+# this image holds none, only the default that points at their registry.
 # release-discard removes a candidate. Actions are pinned by commit.
 on:
   workflow_dispatch:
@@ -17,10 +19,6 @@ on:
         description: The commit to build; empty builds the head of the branch this runs on
         type: string
         default: ""
-      connectors:
-        description: openetl-connectors' commit or branch
-        type: string
-        default: main
       replace:
         description: Discard this version's existing candidate first
         type: boolean
@@ -47,7 +45,6 @@ jobs:
     outputs:
       version: ${{ inputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
-      connectors: ${{ steps.resolve.outputs.connectors }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -56,7 +53,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-          CONNECTORS: ${{ inputs.connectors }}
           REPLACE: ${{ inputs.replace }}
         run: |
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::$VERSION isn't a version such as 0.1.0-alpha"; exit 1; }
@@ -70,14 +66,7 @@ jobs:
           if [ "$draft" = true ] && [ "$REPLACE" != true ]; then
             echo "::error::v$VERSION has a candidate; discard it with release-discard, or set replace"; exit 1
           fi
-          if [[ "$CONNECTORS" =~ ^[0-9a-f]{40}$ ]]; then
-            connectors=$CONNECTORS
-          else
-            connectors=$(git ls-remote https://github.com/openetl-io/openetl-connectors "refs/heads/$CONNECTORS" | cut -f1)
-            [ -n "$connectors" ] || { echo "::error::openetl-connectors has no branch $CONNECTORS"; exit 1; }
-          fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "connectors=$connectors" >> "$GITHUB_OUTPUT"
 
   engine:
     needs: prepare
@@ -154,55 +143,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  connectors:
-    needs: prepare
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      VERSION: ${{ needs.prepare.outputs.version }}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          ref: ${{ needs.prepare.outputs.commit }}
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          repository: openetl-io/openetl-connectors
-          ref: ${{ needs.prepare.outputs.connectors }}
-          path: openetl-connectors
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version-file: go.mod
-          cache: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: go-release-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-release-${{ github.job }}-
-      - name: Package each connector for every platform
-        run: |
-          make connectors-work CONNECTORS_SRC=openetl-connectors
-          go build -o bin/openetl ./cmd/openetl
-          out=$PWD/out
-          cd openetl-connectors
-          # The descriptors name the tags and URLs that publishing makes.
-          GOWORK=$PWD/../bin/connectors.work GOFLAGS="'-ldflags=-s -w'" ../bin/openetl connector package \
-            $(dirname */openetl-connector.yaml) \
-            --version "$VERSION" --out "$out" --platforms linux/amd64,linux/arm64
-          ls -l "$out"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: connectors
-          path: out/*
-          if-no-files-found: error
-          compression-level: 1
-          retention-days: 1
-
   # The one job that writes anywhere, after everything has built.
   assemble:
-    needs: [prepare, engine, libs, connectors]
+    needs: [prepare, engine, libs]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -212,19 +155,12 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       COMMIT: ${{ needs.prepare.outputs.commit }}
-      CONNECTORS_COMMIT: ${{ needs.prepare.outputs.connectors }}
-      NAMESPACE: ghcr.io/${{ github.repository_owner }}/candidates/${{ needs.prepare.outputs.version }}
       IMAGE: ghcr.io/${{ github.repository_owner }}/candidates/${{ needs.prepare.outputs.version }}/openetl
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.prepare.outputs.commit }}
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          repository: openetl-io/openetl-connectors
-          ref: ${{ needs.prepare.outputs.connectors }}
-          path: openetl-connectors
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
@@ -260,13 +196,9 @@ jobs:
           path: build/engine
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: connectors
-          path: build/connectors
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
           name: libs
           path: build/candidate/assets
-      - name: The console, the notices and the connectors' files
+      - name: The console and the notices
         run: |
           pnpm --dir web install --frozen-lockfile
           pnpm --dir web build
@@ -276,24 +208,8 @@ jobs:
           chmod 755 build/engine/*/openetl-engine
           rustup show active-toolchain || rustup toolchain install
           cargo fetch --locked
-          make connectors-work CONNECTORS_SRC=openetl-connectors
           mkdir -p build/candidate/notices
-          go run ./internal/notices -out build/candidate/notices/THIRD-PARTY-NOTICES.txt \
-            -connectors openetl-connectors -connectors-work "$PWD/bin/connectors.work"
-          # An asset is NAME-ROLE-OS-ARCH; its bundle names it as the role's command, ROLE-NAME.
-          for platform in linux_amd64 linux_arm64; do
-            os=${platform%_*} arch=${platform#*_}
-            bundle=build/bundle/$platform
-            mkdir -p "$bundle"
-            for f in build/connectors/*-"$os"-"$arch"; do
-              rest=${f##*/}; rest=${rest%-"$os"-"$arch"}
-              role=${rest##*-}; name=${rest%-*}
-              cp "$f" "$bundle/$role-$name"
-            done
-            chmod 755 "$bundle"/*
-            tar -czf "build/candidate/assets/connectors_${VERSION}_${os}_${arch}.tar.gz" -C "$bundle" .
-          done
-          cp build/connectors/*.connector.yaml build/candidate/assets/
+          go run ./internal/notices -out build/candidate/notices/THIRD-PARTY-NOTICES.txt
       - name: The binaries, archives, checksums and SBOMs
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
@@ -327,7 +243,6 @@ jobs:
             context=build/image/$arch
             mkdir -p "$context/connectors"
             cp "$(binary openetld "$arch")" "$(binary openetl "$arch")" "build/engine/linux_$arch/openetl-engine" LICENSE NOTICE build/candidate/notices/THIRD-PARTY-NOTICES.txt "$context/"
-            cp build/bundle/"linux_$arch"/* "$context/connectors/"
             cp -R web/dist "$context/web"
             docker buildx build --platform "linux/$arch" --provenance=false -f deploy/image/Dockerfile \
               --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
@@ -342,23 +257,17 @@ jobs:
           for arch in amd64 arm64; do
             syft "registry:$IMAGE:$VERSION" --platform "linux/$arch" -o "spdx-json=build/candidate/assets/openetl-image_${VERSION}_linux_${arch}.sbom.json"
           done
-      - name: The connector packages, in the private namespace
-        run: |
-          cli=$(jq -r '.[] | select(.type == "Binary" and .name == "openetl" and .goos == "linux" and .goarch == "amd64") | .path' dist/artifacts.json)
-          "$cli" connector publish "oci://$NAMESPACE/connectors" build/connectors/*.connector.yaml | tee build/connector-refs.txt
       - name: The draft release
         run: |
-          jq -n --arg version "$VERSION" --arg commit "$COMMIT" --arg connectors "$CONNECTORS_COMMIT" \
-            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --arg image "$IMAGE@$IMAGE_DIGEST" --rawfile refs build/connector-refs.txt '
-            {version: $version, commit: $commit, connectors_commit: $connectors, run: $run, image: $image,
-             connector_packages: ($refs | split("\n") | map(select(length > 0) | split(" ") | {name: .[0], ref: .[2]}))}' > build/candidate.json
+          jq -n --arg version "$VERSION" --arg commit "$COMMIT" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg image "$IMAGE@$IMAGE_DIGEST" \
+            '{version: $version, commit: $commit, run: $run, image: $image}' > build/candidate.json
           cat build/candidate.json
           prerelease=()
           [[ "$VERSION" != *-* ]] || prerelease=(--prerelease)
           gh release create "v$VERSION" -R "$GITHUB_REPOSITORY" --draft "${prerelease[@]}" --target "$COMMIT" \
             --title "v$VERSION (candidate)" \
-            --notes "Release candidate of v$VERSION: commit $COMMIT, connectors $CONNECTORS_COMMIT. Not published, and no tag exists yet." \
+            --notes "Release candidate of v$VERSION: commit $COMMIT. Not published, and no tag exists yet." \
             dist/*.tar.gz dist/*.sbom.json dist/checksums.txt build/candidate/assets/* build/candidate.json
       # A public repository's artifacts can be downloaded by anyone signed in.
       - name: Delete this run's intermediate builds

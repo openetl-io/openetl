@@ -71,7 +71,7 @@ What connectors, registries and webhooks may reach, and where connector packages
 | Flag | Variable | Default | What it sets |
 |---|---|---|---|
 | `--egress-allow` | `OPENETL_EGRESS_ALLOW` |  | comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks |
-| `--official-connectors` | `OPENETL_OFFICIAL_CONNECTORS` | `oci://ghcr.io/openetl-io/connectors` | the official connectors' registry namespace, connected as a source of the catalog when the org is created; empty: none |
+| `--official-connectors` | `OPENETL_OFFICIAL_CONNECTORS` | `oci://ghcr.io/openetl-io/openetl-connectors` | the official connectors' registry namespace, connected as a source of the catalog when the org is created; empty: none |
 | `--registry-plain-http` | `OPENETL_REGISTRY_PLAIN_HTTP` |  | comma-separated registry hosts, host:port, reached over plain HTTP besides loopback ones |
 | `--github-api` | `OPENETL_GITHUB_API` |  | GitHub's REST API, for connector sources and releases (default: https://api.github.com) |
 

@@ -5,8 +5,9 @@
 //
 //	go run ./internal/notices -out THIRD-PARTY-NOTICES.txt
 //
-// The official connectors' modules are included with -connectors, a checkout
-// of openetl-connectors, and -connectors-work, the go.work that builds it.
+// A release of the official connectors takes -connectors, a checkout of
+// openetl-connectors, -connectors-work, the GOWORK that builds it, and
+// -connectors-only.
 package main
 
 import (
@@ -54,12 +55,22 @@ func run(ctx context.Context) error {
 	out := flag.String("out", "THIRD-PARTY-NOTICES.txt", "the file to write")
 	connectors := flag.String("connectors", "", "a checkout of openetl-connectors")
 	work := flag.String("connectors-work", "", "the go.work that builds -connectors")
+	only := flag.Bool("connectors-only", false, "only what the connectors' binaries hold")
 	web := flag.String("web", "web", "the console's directory")
 	flag.Parse()
 
 	found := map[string]component{}
-	if err := goModules(ctx, found, "", nil, "./cmd/openetld", "./cmd/openetl"); err != nil {
-		return err
+	if !*only {
+		if err := goModules(ctx, found, "", nil, "./cmd/openetld", "./cmd/openetl"); err != nil {
+			return err
+		}
+		found["rust:std"] = component{name: "Rust standard library", declared: "MIT OR Apache-2.0"}
+		if err := rustCrates(ctx, found); err != nil {
+			return err
+		}
+		if err := webPackages(ctx, found, *web); err != nil {
+			return err
+		}
 	}
 	if *connectors != "" {
 		if err := goModules(ctx, found, *connectors, []string{"GOWORK=" + *work}, "./cmd/..."); err != nil {
@@ -71,13 +82,6 @@ func run(ctx context.Context) error {
 		return err
 	}
 	found["go:std"] = component{name: "Go standard library", dir: strings.TrimSpace(string(goroot))}
-	found["rust:std"] = component{name: "Rust standard library", declared: "MIT OR Apache-2.0"}
-	if err := rustCrates(ctx, found); err != nil {
-		return err
-	}
-	if err := webPackages(ctx, found, *web); err != nil {
-		return err
-	}
 	text, err := render(slices.Collect(maps.Values(found)))
 	if err != nil {
 		return err

@@ -24,8 +24,8 @@ describe("catalog", () => {
   });
 
   it("applies by the listed reference", () => {
-    const p = create(CatalogPackageSchema, { reference: "oci://ghcr.io/openetl-io/connectors/postgres:1.0.0" });
-    expect(applyCommand(p)).toBe("openetl connector apply oci://ghcr.io/openetl-io/connectors/postgres:1.0.0");
+    const p = create(CatalogPackageSchema, { reference: "oci://ghcr.io/openetl-io/openetl-connectors/postgres:1.0.0" });
+    expect(applyCommand(p)).toBe("openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres:1.0.0");
   });
 
   it("searches titles, names and tags", () => {

@@ -36,7 +36,7 @@ fetch() {
   [ "$(is_draft "$version")" = true ] || die "v$version has no draft release"
   mkdir -p "$dir"
   gh release download "v$version" -R "$repo" -D "$dir" --clobber \
-    -p "openetl_${version}_linux_${arch}.tar.gz" -p "connectors_${version}_linux_${arch}.tar.gz" \
+    -p "openetl_${version}_linux_${arch}.tar.gz" \
     -p 'openetl-*.jar' -p checksums.txt -p candidate.json
   (
     cd "$dir"
@@ -50,22 +50,22 @@ fetch() {
 
 unpack() {
   local dir=$1
-  mkdir -p "$dir/connectors" "$dir/lib"
+  mkdir -p "$dir/lib"
   tar -xzf "$dir"/openetl_*.tar.gz -C "$dir" --strip-components=1
-  tar -xzf "$dir"/connectors_*.tar.gz -C "$dir/connectors"
   mv "$dir"/openetl-spark-*.jar "$dir"/openetl-flink-*.jar "$dir/lib/"
 }
 
 discard() {
-  local version=$1 draft package
+  local version=$1 draft package out
   draft=$(is_draft "$version")
   [ "$draft" != false ] || die "v$version is published, so it isn't a candidate"
-  # Packages first: if deleting one fails, the draft is still there to retry from.
-  while read -r package; do
-    [ -n "$package" ] || continue
-    echo "deleting package $package"
-    gh api -X DELETE "/orgs/$org/packages/container/${package//\//%2F}"
-  done < <(gh api --paginate "/orgs/$org/packages?package_type=container" --jq '.[].name' | grep -F "candidates/$version/" || true)
+  # By name, as a workflow's token can't list an org's packages. The package
+  # goes first: if deleting it fails, the draft is still there to retry from.
+  package=candidates/$version/openetl
+  if ! out=$(gh api -X DELETE "/orgs/$org/packages/container/${package//\//%2F}" 2>&1); then
+    grep -q 'HTTP 404' <<<"$out" || die "deleting $package: $out"
+    echo "no package $package"
+  fi
   if [ "$draft" = true ]; then
     gh release delete "v$version" -R "$repo" --yes
   fi

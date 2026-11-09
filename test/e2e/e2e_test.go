@@ -71,6 +71,9 @@ var env struct {
 	// them from a file server, by their applied descriptors.
 	connectors string
 	downloads  string
+	// With a version, the official connectors are installed from this
+	// registry, as a user installs them, and not built.
+	connectorRegistry, connectorVersion string
 	// What runs workflows: dbos, or temporal if OPENETL_TEST_ORCHESTRATOR says.
 	orchestrator  string
 	temporal, ns  string
@@ -117,14 +120,24 @@ func setup(m *testing.M) (int, error) {
 	}
 	env.dbt = os.Getenv("OPENETL_DBT")
 	env.connectors = os.Getenv("OPENETL_CONNECTORS")
-	if env.connectors == "" {
-		return 0, errors.New("set OPENETL_CONNECTORS to a directory with source-postgres and destination-postgres (make e2e builds them)")
+	env.connectorRegistry, env.connectorVersion = os.Getenv("OPENETL_E2E_CONNECTOR_REGISTRY"), os.Getenv("OPENETL_E2E_CONNECTOR_VERSION")
+	if env.connectors == "" && env.connectorVersion == "" {
+		return 0, errors.New("set OPENETL_CONNECTORS to a directory with source-postgres and destination-postgres (make e2e builds them), or OPENETL_E2E_CONNECTOR_REGISTRY and OPENETL_E2E_CONNECTOR_VERSION to install them from a registry")
 	}
 	dir, err := os.MkdirTemp("", "openetl-e2e-")
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
+	if env.connectorVersion != "" {
+		env.connectors = filepath.Join(dir, "connectors")
+		if err := os.Mkdir(env.connectors, 0o750); err != nil {
+			return 0, err
+		}
+		if err := pullConnectors(ctx, env.connectors); err != nil {
+			return 0, fmt.Errorf("the connectors' executables: %w", err)
+		}
+	}
 	env.checkpoints = filepath.Join(dir, "checkpoints")
 	env.cache = filepath.Join(dir, "cache")
 	env.noConnectors = filepath.Join(dir, "no-connectors")
@@ -216,7 +229,7 @@ func setup(m *testing.M) (int, error) {
 			Config: config.Config{
 				DatabaseURL: env.dbURL, Orchestrator: env.orchestrator, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
 				Connectors: env.noConnectors, EgressAllow: egressAllow, SecretsKey: filepath.Join(dir, "secrets.key"),
-				BootstrapKeyFile: env.keyFile, SignInRate: 1000,
+				BootstrapKeyFile: env.keyFile, SignInRate: 1000, OfficialConnectors: env.connectorRegistry,
 			},
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
 			Listener:  ln,
@@ -287,6 +300,9 @@ const officialRepository = "https://github.com/openetl-io/openetl-connectors"
 // applyOfficialConnectors packages the official connectors into the test
 // file server's descriptors, for this platform, and applies them.
 func applyOfficialConnectors(ctx context.Context) error {
+	if env.connectorVersion != "" {
+		return applyRegistryConnectors(ctx)
+	}
 	req := &apiv1.ApplyRequest{}
 	packages := map[string]map[string]connectorhost.PackageRole{}
 	for _, exe := range []string{"source-postgres", "destination-postgres", "destination-iceberg", "destination-s3", "source-kafka", "destination-kafka", "source-kinesis", "destination-kinesis"} {

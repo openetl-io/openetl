@@ -20,7 +20,7 @@ const ago = (m: number) => timestampFromMs(Math.round(now - m * 60_000));
 const simpleIcon = (slug: string) => `https://cdn.simpleicons.org/${slug}`;
 const svg = (body: string) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">${body}</svg>`)}`;
 
-const official = "oci://ghcr.io/openetl-io/connectors";
+const official = "oci://ghcr.io/openetl-io/openetl-connectors";
 const acme = "https://github.com/acme/openetl-connectors";
 const internal = "oci://registry.internal:5000/data/connectors";
 
