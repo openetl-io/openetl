@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -45,7 +46,7 @@ func (c *Catalog) Refresh(ctx context.Context) ([]Listed, error) {
 		if err != nil {
 			l.Error = err.Error()
 			c.log().Warn("connector source failed to list", "source", s.Name, "url", s.Url, "err", err)
-			if ferr := c.Queries.SourceFailed(ctx, db.SourceFailedParams{OrgID: c.Org, Name: s.Name, Url: s.Url, Error: truncate(l.Error, 2000)}); ferr != nil {
+			if ferr := c.recordFailure(ctx, s.Name, s.Url, l.Error); ferr != nil {
 				return out, ferr
 			}
 		} else if err := c.Queries.SourceListed(ctx, db.SourceListedParams{OrgID: c.Org, Name: s.Name, Url: s.Url}); err != nil {
@@ -54,6 +55,18 @@ func (c *Catalog) Refresh(ctx context.Context) ([]Listed, error) {
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+// recordFailure saves why a source failed to list. A listing that ran out of
+// time ended ctx too, so this has a context of its own. One its caller gave
+// up on says nothing about the source, and isn't saved.
+func (c *Catalog) recordFailure(ctx context.Context, source, url, reason string) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil
+	}
+	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return c.Queries.SourceFailed(save, db.SourceFailedParams{OrgID: c.Org, Name: source, Url: url, Error: truncate(reason, 2000)})
 }
 
 func truncate(s string, n int) string {
