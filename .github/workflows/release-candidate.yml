@@ -306,10 +306,11 @@ jobs:
         run: |
           want=$(find web/dist -type f | wc -l)
           for archive in dist/openetl_*.tar.gz; do
-            got=$(tar -tzf "$archive" | grep -c '/web/.*[^/]$')
+            listing=$(tar -tzf "$archive")
+            got=$(grep -c '/web/.*[^/]$' <<<"$listing")
             [ "$got" = "$want" ] || { echo "::error::$archive has $got of the console's $want files"; exit 1; }
-            tar -tzf "$archive" | grep -q '/web/index.html$'
-            tar -tzf "$archive" | grep -q '/web/assets/'
+            grep -q '/web/index.html$' <<<"$listing"
+            grep -q '/web/assets/' <<<"$listing"
           done
           binary() { jq -r --arg name "$1" '.[] | select(.type == "Binary" and .name == $name and .goos == "linux" and .goarch == "amd64") | .path' dist/artifacts.json; }
           test "$("$(binary openetld)" version)" = "$VERSION"
