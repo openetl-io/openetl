@@ -1650,7 +1650,7 @@ func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *
 	if len(rec.Files) > 0 {
 		flush(ctx, c.job.Staging, e, c.log)
 	}
-	c.log.Debug("epoch committed", "epoch", n, "forced", rec.Forced)
+	c.log.Debug("epoch committed", "epoch", n, "forced", rec.Forced, "commit", time.Since(start), "since_requested", time.Since(st.requested), "since_began", time.Since(st.began))
 	c.measure(ctx, rec, st.flow, collapsed, time.Since(start), time.Since(st.requested))
 	c.growEpochs(time.Since(start), time.Since(st.began))
 	if c.job.OnSchemas != nil {
