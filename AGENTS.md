@@ -12,7 +12,7 @@ For people and coding agents. [README.md](README.md) has what OpenETL is, [CONTR
 
 - **Comments** only where they're needed: contracts, behaviour that isn't obvious, units, and what nil or zero means. Don't restate names, and don't point to documents outside this repository.
 - **No `//nolint`.** Fix what the linter found. For gosec's integer conversions, bound the value first (`if n >= 0 && n <= math.MaxUint32`) or make the types match.
-- **Generated code is committed and never edited by hand:** `gen/`, `sdk/go/protocol/`, `web/src/gen/`, `internal/api/openapi.yaml`, `internal/store/db/`, and the reference pages `docs/reference/openetld.md`, `connector-file.md`, `connector-descriptor.md` and `manifest.md`. Change the `.proto`, the query in `internal/store/queries`, the JSON Schema or `internal/platform/config`, then `make generate`.
+- **Generated code is committed and never edited by hand:** `gen/`, `sdk/go/protocol/`, `web/src/gen/`, `internal/api/openapi.yaml`, `internal/store/db/`, and the reference pages `docs/reference/openetld.md`, `connector-file.md`, `connector-descriptor.md`, `manifest.md` and `events.md`. Change the `.proto`, the query in `internal/store/queries`, the JSON Schema or `internal/platform/config`, then `make generate`.
 - **Migrations** are goose files in `internal/store/migrations`. Add a new one; don't change the statements of one that's merged.
 - `sdk/go` is a module of its own that external connectors import. Changing it changes the connector protocol's Go side, so keep it compatible or change `openetl-connectors` in step.
 

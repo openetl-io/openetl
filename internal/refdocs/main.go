@@ -1,7 +1,7 @@
 // Command refdocs writes the reference pages that come from a source of
 // truth in the code: openetld's settings, and the JSON Schemas of
-// openetl-connector.yaml, a Connector descriptor and a DeclarativeSource
-// manifest. Run it from the repository's root:
+// openetl-connector.yaml, a Connector descriptor, a DeclarativeSource
+// manifest and a platform event. Run it from the repository's root:
 //
 //	go run ./internal/refdocs
 //
@@ -9,6 +9,7 @@
 package main
 
 import (
+	"cmp"
 	"flag"
 	"fmt"
 	"os"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/connectorpkg"
 	"github.com/openetl-io/openetl/internal/declarative"
+	"github.com/openetl-io/openetl/internal/events"
 	"github.com/openetl-io/openetl/internal/spec"
 )
 
@@ -35,7 +37,12 @@ type page struct {
 	// The file it's generated from, relative to the repository's root.
 	source string
 	schema func() []byte
+	// What the page says of fields it doesn't list; empty for a document
+	// OpenETL reads, which refuses them.
+	unlisted string
 }
+
+const refused = "A field that isn't listed is refused, unless its section says other fields are allowed."
 
 var schemaPages = []page{
 	{
@@ -67,6 +74,17 @@ var schemaPages = []page{
 		},
 		source: "internal/declarative/manifest.schema.json",
 		schema: declarative.Schema,
+	},
+	{
+		file:        "events.md",
+		title:       "Platform events",
+		description: "Every platform event's type, and every field of its data.",
+		about: []string{
+			"[Webhooks](../integrate/index.md#events-and-webhooks) deliver the events you choose, each as one `POST` with this JSON body. `type` says which section below applies to `data`.",
+		},
+		source:   "internal/events/event.schema.json",
+		schema:   events.PayloadSchema,
+		unlisted: "The schema allows fields it doesn't list, so ignore any you don't know.",
 	},
 }
 
@@ -117,7 +135,7 @@ func render() ([]rendered, error) {
 		for _, a := range p.about {
 			b.WriteString(a + "\n\n")
 		}
-		fmt.Fprintf(&b, "This page is generated from [`%s`](../../%s). A field that isn't listed is refused, unless its section says other fields are allowed.\n\n", p.source, p.source)
+		fmt.Fprintf(&b, "This page is generated from [`%s`](../../%s). %s\n\n", p.source, p.source, cmp.Or(p.unlisted, refused))
 		b.WriteString(body)
 		out = append(out, rendered{p.file, strings.TrimRight(b.String(), "\n") + "\n"})
 	}

@@ -144,7 +144,7 @@ func (s *Server) recordSchemaChange(ctx context.Context, q *db.Queries, pipeline
 		return err
 	}
 	name := resourceName(names.Workspace, "pipelines", names.Name)
-	data := events.Schema{Pipeline: name, Stream: d.stream, Output: d.output, Version: version, Table: d.table}
+	data := events.Schema{Pipeline: name, Stream: d.stream, Output: d.output, Version: version, Table: d.table, Columns: []events.Column{}}
 	for _, c := range cur {
 		data.Columns = append(data.Columns, events.Column{Name: c.Name, Type: c.Type, Nullable: c.Nullable})
 		i := slices.IndexFunc(prev, func(p streamschema.Column) bool { return p.Name == c.Name })

@@ -1,0 +1,361 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openetl.io/schemas/events/v1.json",
+  "title": "openetl platform event",
+  "description": "The body of a webhook's delivery of one platform event, laid out as Standard Webhooks says. Resources are named as the API names them, such as `workspaces/default/pipelines/shop`.",
+  "type": "object",
+  "required": ["type", "timestamp", "data"],
+  "additionalProperties": true,
+  "properties": {
+    "type": {
+      "description": "What happened.",
+      "type": "string",
+      "enum": [
+        "sync.started",
+        "sync.succeeded",
+        "sync.failed",
+        "sync.stopped",
+        "pipeline.created",
+        "pipeline.updated",
+        "pipeline.deleted",
+        "pipeline.teardown_failed",
+        "pipeline.paused",
+        "pipeline.resumed",
+        "pipeline.lagging",
+        "pipeline.recovered",
+        "pipeline.rescaled",
+        "pipeline.overridden",
+        "stream.paused",
+        "stream.resumed",
+        "pipeline.reset",
+        "schema.changed",
+        "schema.blocked",
+        "incident.opened",
+        "incident.escalated",
+        "incident.resolved",
+        "webhook.test"
+      ]
+    },
+    "timestamp": { "description": "When the event was recorded, in RFC 3339.", "type": "string" },
+    "data": { "description": "The event's details. What it holds depends on `type`, as the sections below say.", "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": {"type": {"const": "sync.started"}} },
+      "then": {
+        "description": "A sync, or a continuous pipeline's run, started.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The sync.", "$ref": "#/$defs/sync"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "sync.succeeded"}} },
+      "then": {
+        "description": "A sync, or a continuous pipeline's run, ended without an error.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The sync.", "$ref": "#/$defs/sync"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "sync.failed"}} },
+      "then": {
+        "description": "A sync, or a continuous pipeline's run, failed. `error` says why, and `code` is the error's code if it has one.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The sync.", "$ref": "#/$defs/sync"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "sync.stopped"}} },
+      "then": {
+        "description": "A sync, or a continuous pipeline's run, was stopped before it ended.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The sync.", "$ref": "#/$defs/sync"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.created"}} },
+      "then": {
+        "description": "A pipeline was applied for the first time.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The pipeline's first version, with `provenance`.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.updated"}} },
+      "then": {
+        "description": "A new version of a pipeline was applied.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The new version, with `previousVersion` and `provenance`.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.deleted"}} },
+      "then": {
+        "description": "A pipeline was deleted.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The pipeline, and its last version.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.teardown_failed"}} },
+      "then": {
+        "description": "What a deleted pipeline's connector or Flink cluster kept for it couldn't be removed after 7 days of trying, and is left for someone to remove.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The pipeline, by its name alone, with `connector` and `error`.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.paused"}} },
+      "then": {
+        "description": "A pipeline was paused, by someone or by a playbook.",
+        "required": ["data"],
+        "properties": {
+          "data": { "description": "The pipeline, with its `version` if someone paused it, or the `incident` if a playbook did.", "$ref": "#/$defs/pipeline" }
+        }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.resumed"}} },
+      "then": {
+        "description": "A pipeline was resumed.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The pipeline, and its version.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.lagging"}} },
+      "then": {
+        "description": "A continuous pipeline's read fell further behind its source than its threshold.",
+        "required": ["data"],
+        "properties": { "data": {"description": "How far behind it is.", "$ref": "#/$defs/lag"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.recovered"}} },
+      "then": {
+        "description": "A continuous pipeline that was lagging caught up, to within half its threshold.",
+        "required": ["data"],
+        "properties": { "data": {"description": "How far behind it is now, and since when it had been lagging.", "$ref": "#/$defs/lag"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.rescaled"}} },
+      "then": {
+        "description": "A pipeline's jobs were rescaled, through the API or by the job loop. A running job stops at a checkpoint and starts again at the new size.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The rescale.", "$ref": "#/$defs/rescale"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.overridden"}} },
+      "then": {
+        "description": "Heal set an override of a field of the pipeline's spec, or someone removed one.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The pipeline, with `field` and `value`, and the `incident` if a playbook set it.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "stream.paused"}} },
+      "then": {
+        "description": "One of a pipeline's streams was paused on its own, by someone or by a playbook.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The pipeline, with `stream`, and the `incident` if a playbook paused it.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "stream.resumed"}} },
+      "then": {
+        "description": "One of a pipeline's streams was resumed.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The pipeline, with `stream`.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "pipeline.reset"}} },
+      "then": {
+        "description": "A pipeline's streams are to be read again from the start.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The pipeline and its version, with `streams`, or none for every stream.", "$ref": "#/$defs/pipeline"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "schema.changed"}} },
+      "then": {
+        "description": "A stream's schema has a new version.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The new schema, and how it differs from the one before.", "$ref": "#/$defs/schemaChange"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "schema.blocked"}} },
+      "then": {
+        "description": "A sync or run failed because of a schema change it can't take. It comes with that sync's `sync.failed`.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The sync, with its `error`, and `code` `SCHEMA_DRIFT`.", "$ref": "#/$defs/sync"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "incident.opened"}} },
+      "then": {
+        "description": "An incident opened.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The incident.", "$ref": "#/$defs/incident"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "incident.escalated"}} },
+      "then": {
+        "description": "An open incident became critical.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The incident.", "$ref": "#/$defs/incident"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "incident.resolved"}} },
+      "then": {
+        "description": "An incident was resolved.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The incident, with `resolveTime` and `resolution`.", "$ref": "#/$defs/incident"} }
+      }
+    },
+    {
+      "if": { "properties": {"type": {"const": "webhook.test"}} },
+      "then": {
+        "description": "Sent to one webhook when it's tested, such as by `openetl webhook test`.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The webhook.", "$ref": "#/$defs/webhookTest"} }
+      }
+    }
+  ],
+  "$defs": {
+    "sync": {
+      "description": "A sync, or a continuous pipeline's run.",
+      "type": "object",
+      "required": ["pipeline", "sync", "version", "continuous", "startTime"],
+      "additionalProperties": true,
+      "properties": {
+        "pipeline": { "description": "The pipeline's resource name.", "type": "string" },
+        "sync": { "description": "The sync's resource name.", "type": "string" },
+        "version": { "description": "The version of the pipeline it ran.", "type": "string" },
+        "continuous": { "description": "Whether it's a continuous pipeline's run, not a scheduled sync.", "type": "boolean" },
+        "startTime": { "description": "When it started, in RFC 3339.", "type": "string" },
+        "endTime": { "description": "When it ended, in RFC 3339. Left out until it has.", "type": "string" },
+        "error": { "description": "What it failed with. Left out if it didn't.", "type": "string" },
+        "code": { "description": "The error's code, such as `SCHEMA_DRIFT`. Left out if it has none.", "type": "string" }
+      }
+    },
+    "pipeline": {
+      "description": "A pipeline, and what changed about it.",
+      "type": "object",
+      "required": ["pipeline"],
+      "additionalProperties": true,
+      "properties": {
+        "pipeline": {
+          "description": "The pipeline's resource name. In `pipeline.teardown_failed`, its name alone, as the pipeline no longer exists.",
+          "type": "string"
+        },
+        "version": { "description": "The pipeline's version.", "type": "string" },
+        "previousVersion": { "description": "The version this one replaces.", "type": "string" },
+        "provenance": { "description": "Where the version came from, such as `cli:shop.yaml#3`.", "type": "string" },
+        "incident": { "description": "The resource name of the incident a playbook paused the pipeline or stream, or overrode its spec, for.", "type": "string" },
+        "stream": { "description": "The stream paused or resumed.", "type": "string" },
+        "connector": { "description": "The source, destination or Flink cluster a failed teardown was for.", "type": "string" },
+        "error": { "description": "What the teardown last failed with.", "type": "string" },
+        "field": { "description": "The field of the spec that's overridden.", "type": "string" },
+        "value": { "description": "The override's value, as JSON. Left out once it's removed.", "type": "string" },
+        "streams": { "description": "The streams a reset reads again. Left out for every stream.", "type": "array", "items": {"type": "string"} }
+      }
+    },
+    "lag": {
+      "description": "How far a continuous pipeline's read is behind its source.",
+      "type": "object",
+      "required": ["pipeline", "sync", "lagSeconds", "thresholdSeconds", "since"],
+      "additionalProperties": true,
+      "properties": {
+        "pipeline": { "description": "The pipeline's resource name.", "type": "string" },
+        "sync": { "description": "The run's resource name.", "type": "string" },
+        "lagSeconds": { "description": "How far behind the read is, in seconds.", "type": "number" },
+        "thresholdSeconds": { "description": "How far behind counts as lagging, in seconds.", "type": "number" },
+        "since": { "description": "When it started lagging, in RFC 3339.", "type": "string" },
+        "stream": { "description": "The stream furthest behind. Left out for the whole read.", "type": "string" }
+      }
+    },
+    "rescale": {
+      "description": "A pipeline's jobs rescaled.",
+      "type": "object",
+      "required": ["pipeline", "version", "by"],
+      "additionalProperties": true,
+      "properties": {
+        "pipeline": { "description": "The pipeline's resource name.", "type": "string" },
+        "version": { "description": "The pipeline's version.", "type": "string" },
+        "by": { "description": "What rescaled it.", "type": "string", "enum": ["api", "autoscaler"] },
+        "size": {
+          "description": "The size the API set, such as `l` or `3 vCPU, 6 GiB`. Left out when the job loop rescaled it, or the API gave the spec back its say.",
+          "type": "string"
+        },
+        "lanes": { "description": "The lanes the job loop set.", "type": "integer" },
+        "fromLanes": { "description": "The lanes of the job it rescaled.", "type": "integer" }
+      }
+    },
+    "schemaChange": {
+      "description": "A stream's new schema.",
+      "type": "object",
+      "required": ["pipeline", "stream", "version", "table", "columns"],
+      "additionalProperties": true,
+      "properties": {
+        "pipeline": { "description": "The pipeline's resource name.", "type": "string" },
+        "stream": { "description": "The stream.", "type": "string" },
+        "output": { "description": "Whether the stream is one of a transform's outputs.", "type": "boolean" },
+        "version": { "description": "The schema's version.", "type": "integer" },
+        "table": { "description": "The table it's written to.", "type": "string" },
+        "columns": { "description": "Every column of the new schema.", "type": "array", "items": {"$ref": "#/$defs/column"} },
+        "added": { "description": "The names of the columns added.", "type": "array", "items": {"type": "string"} },
+        "removed": { "description": "The names of the columns removed.", "type": "array", "items": {"type": "string"} },
+        "changed": { "description": "The names of the columns whose type or nullability changed.", "type": "array", "items": {"type": "string"} }
+      }
+    },
+    "column": {
+      "description": "A column of a stream's schema.",
+      "type": "object",
+      "required": ["name", "type", "nullable"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "description": "The column's name.", "type": "string" },
+        "type": { "description": "The column's type.", "type": "string" },
+        "nullable": { "description": "Whether it can be null.", "type": "boolean" }
+      }
+    },
+    "incident": {
+      "description": "An incident.",
+      "type": "object",
+      "required": ["incident", "pipeline", "class", "severity", "summary", "message", "fingerprint", "occurrences", "firstSeenTime", "lastSeenTime"],
+      "additionalProperties": true,
+      "properties": {
+        "incident": { "description": "The incident's resource name.", "type": "string" },
+        "pipeline": { "description": "The pipeline's resource name.", "type": "string" },
+        "stream": { "description": "The stream it's about. Left out for the whole pipeline.", "type": "string" },
+        "class": { "description": "What kind of incident it is, such as `auth` or `crash_loop`.", "type": "string" },
+        "code": { "description": "The error's code, if it came from one.", "type": "string" },
+        "severity": { "description": "How serious it is.", "type": "string", "enum": ["warning", "critical"] },
+        "summary": { "description": "One line about it.", "type": "string" },
+        "message": { "description": "What happened.", "type": "string" },
+        "nextSteps": { "description": "What to do about it.", "type": "string" },
+        "fingerprint": { "description": "What identifies the fault across pipelines.", "type": "string" },
+        "occurrences": { "description": "How many times it has happened.", "type": "integer" },
+        "details": { "description": "More about it, by name.", "type": "object", "additionalProperties": {"type": "string"} },
+        "sync": { "description": "The resource name of the sync it came from.", "type": "string" },
+        "firstSeenTime": { "description": "When it first happened, in RFC 3339.", "type": "string" },
+        "lastSeenTime": { "description": "When it last happened, in RFC 3339.", "type": "string" },
+        "resolveTime": { "description": "When it was resolved, in RFC 3339. Left out until it is.", "type": "string" },
+        "resolution": { "description": "How it was resolved.", "type": "string" }
+      }
+    },
+    "webhookTest": {
+      "description": "A test delivery.",
+      "type": "object",
+      "required": ["webhook"],
+      "additionalProperties": true,
+      "properties": { "webhook": {"description": "The webhook's resource name.", "type": "string"} }
+    }
+  }
+}
