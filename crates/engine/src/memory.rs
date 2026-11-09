@@ -1,14 +1,16 @@
-//! The engine's allocator: the system's, counting what the process holds, which
+//! The engine's allocator: mimalloc, counting what the process holds, which
 //! ends the process at the job's memory limit. An allocator can't
 //! return an error that reaches the job, so the runner reads this exit code as
 //! RESOURCE_EXHAUSTED instead; a restart resumes from the last checkpoint.
 
 #![allow(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering::Relaxed};
+
+use mimalloc::MiMalloc;
 
 /// The exit code for reaching the limit, which is in `Limits.memory_bytes`'s
 /// contract. It's EX_TEMPFAIL: the job can run again.
@@ -29,21 +31,21 @@ thread_local! {
 
 pub struct Counting;
 
-// SAFETY: every call goes to System with the same arguments; the counters only
+// SAFETY: every call goes to MiMalloc with the same arguments; the counters only
 // watch.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         charge(layout.size());
-        unsafe { System.alloc(layout) }
+        unsafe { MiMalloc.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         charge(layout.size());
-        unsafe { System.alloc_zeroed(layout) }
+        unsafe { MiMalloc.alloc_zeroed(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) };
+        unsafe { MiMalloc.dealloc(ptr, layout) };
         count(-(layout.size() as isize));
     }
 
@@ -53,7 +55,7 @@ unsafe impl GlobalAlloc for Counting {
         } else {
             count(-((layout.size() - new_size) as isize));
         }
-        unsafe { System.realloc(ptr, layout, new_size) }
+        unsafe { MiMalloc.realloc(ptr, layout, new_size) }
     }
 }
 

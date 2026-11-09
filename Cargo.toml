@@ -20,6 +20,7 @@ arrow-schema = "60.1.0"
 arrow-select = "60.1.0"
 base64 = "0.22.1"
 bytes = "1.12.1"
+mimalloc = { version = "0.1.52", default-features = false, features = ["v2"] }
 opentelemetry = { version = "0.33.0", default-features = false, features = ["trace"] }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
