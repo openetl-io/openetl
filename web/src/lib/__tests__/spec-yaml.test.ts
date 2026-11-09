@@ -8,6 +8,7 @@ import {
   WriteMode,
   PipelineMode,
 } from "@/gen/openetl/api/v1/pipeline_pb";
+import { SyncMode } from "@/gen/openetl/api/v1/connection_pb";
 import { goDuration, pipelineYAML } from "../spec-yaml";
 
 describe("pipelineYAML", () => {
@@ -23,6 +24,13 @@ describe("pipelineYAML", () => {
     expect(y).toContain("every: 1h30m");
     expect(y).toContain("write: merge");
     expect(y).not.toContain("workspace");
+  });
+
+  it("spells enums of the files the spec imports too", () => {
+    const spec = create(PipelineSpecSchema, { source: { ref: "shop", streams: [{ name: "orders", sync: SyncMode.FULL_REFRESH, table: "fct_orders" }] } });
+    const y = pipelineYAML("shop", "default", spec);
+    expect(y).toContain("sync: full_refresh");
+    expect(y).toContain("table: fct_orders");
   });
 
   it("formats durations", () => {
