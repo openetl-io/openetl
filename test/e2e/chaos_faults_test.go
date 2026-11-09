@@ -215,5 +215,14 @@ func (b *faultBook) died(slot int) {
 	}
 }
 
+// podDied starts the pipeline's resume clock: a pod runs only its own attempt.
+func (b *faultBook) podDied(pipeline string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if f := b.pipes[pipeline]; f != nil {
+		f.killed = time.Now()
+	}
+}
+
 // upTo is a random duration in [0, d).
 func upTo(rng *rand.Rand, d time.Duration) time.Duration { return time.Duration(rng.Int64N(int64(d))) }
