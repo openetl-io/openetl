@@ -95,9 +95,16 @@ type Cluster struct {
 	// have connected, and restores from the same checkpoint again, as
 	// openetl-flink's enumerator makes it.
 	FailOnceMore bool
+	// How long a deploy takes.
+	DeployDelay time.Duration
+	// Each deploy has the job before it call the bridge again, as a job
+	// being cancelled still can.
+	LateCalls bool
 
 	mu         sync.Mutex
 	jobs       map[string]*Job
+	last       *Job
+	late       []error
 	described  *bridgev1.DescribeResponse
 	completed  map[string][]runner.FlinkCheckpoint
 	savepoints map[string]savepoint
@@ -219,7 +226,7 @@ func (c *Cluster) restoredID(path string) (int64, error) {
 	return strconv.ParseInt(path[i+len("/chk-"):], 10, 64)
 }
 
-func (c *Cluster) Deploy(_ context.Context, d runner.FlinkDeploy) (runner.FlinkJob, error) {
+func (c *Cluster) Deploy(ctx context.Context, d runner.FlinkDeploy) (runner.FlinkJob, error) {
 	r, err := c.restoredID(d.RestoreFrom)
 	if err != nil {
 		return nil, err
@@ -232,14 +239,46 @@ func (c *Cluster) Deploy(_ context.Context, d runner.FlinkDeploy) (runner.FlinkJ
 	if interval == 0 {
 		interval = d.CheckpointInterval
 	}
+	if c.DeployDelay > 0 {
+		time.Sleep(c.DeployDelay)
+	}
 	j := &Job{cluster: c, id: fmt.Sprintf("job-g%d", d.Generation), h: h, interval: interval, from: r, next: r + 1, done: make(chan struct{})}
 	c.mu.Lock()
+	prev := c.last
+	c.last = j
 	c.jobs[j.id] = j
 	c.deploys++
 	c.mu.Unlock()
 	c.logf("flink: deploy %s from %q (checkpoint %d)", j.id, d.RestoreFrom, r)
+	if c.LateCalls && prev != nil {
+		go c.callLate(context.WithoutCancel(ctx), prev)
+	}
 	j.start(r, false)
 	return j, nil
+}
+
+// callLate makes the calls a job being cancelled can still make: its
+// enumerator's hello, and a reader's Read.
+func (c *Cluster) callLate(ctx context.Context, j *Job) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	coord := newBidi[bridgev1.CoordinateRequest, bridgev1.CoordinateResponse](ctx)
+	go func() { coord.serverDone(j.h.Coordinate(coord)) }()
+	hello := coord.call(&bridgev1.CoordinateRequest{Message: &bridgev1.CoordinateRequest_Hello{Hello: &bridgev1.EnumeratorHello{JobId: j.id}}})
+	c.mu.Lock()
+	stream := c.described.GetStreams()[0].GetName()
+	c.mu.Unlock()
+	read := j.h.Read(&bridgev1.ReadRequest{Stream: stream}, newServerStream[bridgev1.ReadResponse](ctx))
+	c.mu.Lock()
+	c.late = append(c.late, hello, read)
+	c.mu.Unlock()
+}
+
+// LateCallErrors are what the calls LateCalls made returned.
+func (c *Cluster) LateCallErrors() []error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.late)
 }
 
 func (c *Cluster) complete(job string, id int64) {

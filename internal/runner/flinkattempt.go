@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,15 +50,16 @@ const (
 // flight is dropped, and the next segment starts where Flink restores.
 var errRestarting = errors.New("runner: the Flink job is restarting")
 
-// schemaChanged: a stream's batch has a schema other than the one the job
-// was deployed with. The job is deployed again with it.
+// schemaChanged: batches of these streams have schemas other than the ones
+// the job was deployed with. The job is deployed again with them.
 type schemaChanged struct {
-	stream string
-	schema []byte
+	schemas map[string][]byte
 }
 
+func (s *schemaChanged) streams() []string { return slices.Sorted(maps.Keys(s.schemas)) }
+
 func (s *schemaChanged) Error() string {
-	return fmt.Sprintf("runner: stream %q's schema changed, so the Flink job is deployed again", s.stream)
+	return fmt.Sprintf("runner: the schemas of %q changed, so the Flink job is deployed again", s.streams())
 }
 
 // flinkAttempt is one attempt of a continuous pipeline with a Flink job.
@@ -65,12 +67,9 @@ func (s *schemaChanged) Error() string {
 // segments: a new segment, under a new generation, starts after the job's
 // tasks restart, and a new deploy after a stream's schema changes.
 type flinkAttempt struct {
-	bridgev1.UnimplementedBridgeServiceServer
-
-	job   *Job
-	log   *slog.Logger
-	res   *Result
-	token string
+	job *Job
+	log *slog.Logger
+	res *Result
 
 	// The attempt's own goroutine's.
 	sess     *checkpoint.Session
@@ -91,8 +90,16 @@ type flinkAttempt struct {
 	// coordinator during one.
 	coord chan coordMsg
 
-	mu       sync.Mutex
-	schemas  map[string][]byte // what Describe gives, by stream
+	mu      sync.Mutex
+	schemas map[string][]byte // what Describe gives, by stream
+	// The schemas batches changed streams to under a deployed job. A new
+	// segment's first dataflow starts from them, so that replaying rows no
+	// commit covers can't take a stream back to an older schema. Not a
+	// primer's schemas: those are only the declared columns, and the engine
+	// holds whatever is new to the schema it starts from to the schema policy,
+	// as the rows' own columns would be.
+	evolved  map[string][]byte
+	dep      *flinkDeployment // the job being deployed or running
 	seg      *flinkSegment
 	segReady chan struct{} // closed when seg changes
 	doneCh   chan struct{} // closed when the attempt ends
@@ -126,17 +133,16 @@ func runFlink(ctx context.Context, job Job) (res Result, err error) {
 		live.Store(job.Progress, struct{}{})
 		defer live.Delete(job.Progress)
 	}
-	token := make([]byte, 24)
-	if _, err := rand.Read(token); err != nil {
-		return res, err
-	}
 	a := &flinkAttempt{
-		job: &job, log: log, res: &res, token: hex.EncodeToString(token),
-		coord: make(chan coordMsg), schemas: map[string][]byte{}, segReady: make(chan struct{}), doneCh: make(chan struct{}),
+		job: &job, log: log, res: &res,
+		coord: make(chan coordMsg), schemas: map[string][]byte{}, evolved: map[string][]byte{}, segReady: make(chan struct{}), doneCh: make(chan struct{}),
 		held: &coordinatorState{reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metricOption{}},
 	}
-	unregister := job.Bridge.Register(a.token, a)
-	defer unregister()
+	defer func() {
+		if a.dep != nil {
+			a.dep.unregister()
+		}
+	}()
 	defer a.end()
 	defer func() {
 		if a.w != nil {
@@ -193,9 +199,10 @@ func (a *flinkAttempt) run(ctx context.Context) error {
 			}
 			prevSeg = seg
 		case errors.As(err, &changed):
-			a.log.Info("a stream's schema changed; deploying the Flink job again", "stream", changed.stream)
+			a.log.Info("a stream's schema changed; deploying the Flink job again", "streams", changed.streams())
 			a.mu.Lock()
-			a.schemas[changed.stream] = changed.schema
+			maps.Copy(a.schemas, changed.schemas)
+			maps.Copy(a.evolved, changed.schemas)
 			a.mu.Unlock()
 			hello, prevSeg = nil, nil
 			if err := a.fjob.Cancel(ctx); err != nil {
@@ -264,6 +271,9 @@ func (a *flinkAttempt) deploy(ctx context.Context) (*flinkSegment, error) {
 	if err := a.job.Flink.CancelAll(ctx); err != nil {
 		return nil, fmt.Errorf("runner: cancel the pipeline's Flink jobs: %w", err)
 	}
+	if err := a.newDeployment(); err != nil {
+		return nil, err
+	}
 	head, prev, err := a.claim(ctx)
 	if err != nil {
 		return nil, err
@@ -305,7 +315,7 @@ func (a *flinkAttempt) deploy(ctx context.Context) (*flinkSegment, error) {
 		RestoreFrom:        from,
 		Bridge:             a.job.Bridge.Address(),
 		Fingerprint:        a.job.Bridge.Fingerprint(),
-		Token:              a.token,
+		Token:              a.dep.token,
 		CheckpointInterval: a.job.Settings.CommitInterval,
 	})
 	if err != nil {
@@ -688,14 +698,51 @@ func (a *flinkAttempt) end() {
 	a.segReady = make(chan struct{})
 }
 
+// flinkDeployment serves the bridge to one deploy's job, under a token of its
+// own. A job being cancelled can still be calling, and if it reached the
+// segment of the job deployed after it, it would take a reader's place, or
+// have that job's restart reported.
+type flinkDeployment struct {
+	bridgev1.UnimplementedBridgeServiceServer
+
+	a          *flinkAttempt
+	token      string
+	unregister func()
+}
+
+// newDeployment replaces the deployment the bridge serves. From here on, the
+// jobs before can't reach a segment.
+func (a *flinkAttempt) newDeployment() error {
+	token := make([]byte, 24)
+	if _, err := rand.Read(token); err != nil {
+		return err
+	}
+	d := &flinkDeployment{a: a, token: hex.EncodeToString(token)}
+	d.unregister = a.job.Bridge.Register(d.token, d)
+	a.mu.Lock()
+	old := a.dep
+	a.dep = d
+	a.call = 0
+	close(a.segReady)
+	a.segReady = make(chan struct{})
+	a.mu.Unlock()
+	if old != nil {
+		old.unregister()
+	}
+	return nil
+}
+
+var errReplaced = status.Error(codes.Unavailable, "runner: the attempt ended, or deployed another job")
+
 // segment waits for a segment that takes new calls.
-func (a *flinkAttempt) segment(ctx context.Context) (*flinkSegment, error) {
+func (d *flinkDeployment) segment(ctx context.Context) (*flinkSegment, error) {
+	a := d.a
 	for {
 		a.mu.Lock()
-		seg, ready, ended := a.seg, a.segReady, a.ended
+		seg, ready, ended, replaced := a.seg, a.segReady, a.ended, a.dep != d
 		a.mu.Unlock()
-		if ended {
-			return nil, status.Error(codes.Unavailable, "runner: the attempt ended")
+		if ended || replaced {
+			return nil, errReplaced
 		}
 		if seg != nil && seg.open() {
 			return seg, nil
@@ -716,7 +763,8 @@ func (a *flinkAttempt) currentCall() uint64 {
 
 // Describe gives the streams' schemas the job is deployed with, and the
 // outputs'.
-func (a *flinkAttempt) Describe(context.Context, *bridgev1.DescribeRequest) (*bridgev1.DescribeResponse, error) {
+func (d *flinkDeployment) Describe(context.Context, *bridgev1.DescribeRequest) (*bridgev1.DescribeResponse, error) {
+	a := d.a
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	res := &bridgev1.DescribeResponse{Pipeline: a.job.Pipeline}
@@ -735,7 +783,8 @@ func (a *flinkAttempt) Describe(context.Context, *bridgev1.DescribeRequest) (*br
 
 // Coordinate hands the enumerator's messages to the attempt, or to its
 // segment's coordinator, and acks each once it's taken.
-func (a *flinkAttempt) Coordinate(st grpc.BidiStreamingServer[bridgev1.CoordinateRequest, bridgev1.CoordinateResponse]) error {
+func (d *flinkDeployment) Coordinate(st grpc.BidiStreamingServer[bridgev1.CoordinateRequest, bridgev1.CoordinateResponse]) error {
+	a := d.a
 	ctx := st.Context()
 	a.mu.Lock()
 	a.calls++
@@ -762,8 +811,14 @@ func (a *flinkAttempt) Coordinate(st grpc.BidiStreamingServer[bridgev1.Coordinat
 		}
 		if req.GetHello() != nil {
 			a.mu.Lock()
-			a.call = call
+			replaced := a.dep != d
+			if !replaced {
+				a.call = call
+			}
 			a.mu.Unlock()
+			if replaced {
+				return errReplaced
+			}
 		}
 		m := coordMsg{call: call, req: req, reply: make(chan error, 1)}
 		if !deliver(m) {
@@ -791,12 +846,12 @@ func (a *flinkAttempt) Coordinate(st grpc.BidiStreamingServer[bridgev1.Coordinat
 }
 
 // Read serves a split from the segment that takes it.
-func (a *flinkAttempt) Read(req *bridgev1.ReadRequest, st grpc.ServerStreamingServer[bridgev1.ReadResponse]) error {
-	if !slices.ContainsFunc(a.job.Streams, func(s Stream) bool { return s.Name == req.GetStream() }) {
+func (d *flinkDeployment) Read(req *bridgev1.ReadRequest, st grpc.ServerStreamingServer[bridgev1.ReadResponse]) error {
+	if !slices.ContainsFunc(d.a.job.Streams, func(s Stream) bool { return s.Name == req.GetStream() }) {
 		return status.Errorf(codes.NotFound, "runner: the pipeline has no stream %q", req.GetStream())
 	}
 	for {
-		seg, err := a.segment(st.Context())
+		seg, err := d.segment(st.Context())
 		if err != nil {
 			return err
 		}
@@ -808,7 +863,8 @@ func (a *flinkAttempt) Read(req *bridgev1.ReadRequest, st grpc.ServerStreamingSe
 
 // Write takes a sink subtask's batches and barriers into the segment that
 // takes it.
-func (a *flinkAttempt) Write(st grpc.BidiStreamingServer[bridgev1.WriteRequest, bridgev1.WriteResponse]) error {
+func (d *flinkDeployment) Write(st grpc.BidiStreamingServer[bridgev1.WriteRequest, bridgev1.WriteResponse]) error {
+	a := d.a
 	req, err := st.Recv()
 	if err != nil {
 		return err
@@ -824,7 +880,7 @@ func (a *flinkAttempt) Write(st grpc.BidiStreamingServer[bridgev1.WriteRequest, 
 		return status.Errorf(codes.InvalidArgument, "runner: subtask %d of %d", h.GetSubtask(), h.GetParallelism())
 	}
 	for {
-		seg, err := a.segment(st.Context())
+		seg, err := d.segment(st.Context())
 		if err != nil {
 			return err
 		}

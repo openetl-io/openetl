@@ -139,7 +139,8 @@ type Plan struct {
 	QuarantineInfinity bool
 	// Each stream's read start, in microseconds since the Unix epoch.
 	ReadStarts map[string]int64
-	// From the restored checkpoint, as Ready reported them.
+	// What each stream's schema starts as: the restored checkpoint's, as
+	// Ready reported them, or one a Flink job's batches have changed it to.
 	Schemas   map[string][]byte
 	Snapshots []checkpoint.Snapshot
 	// out carries FrameSchema frames. An empty batch establishes its
