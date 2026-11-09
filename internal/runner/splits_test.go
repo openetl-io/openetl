@@ -508,7 +508,16 @@ func TestAContinuousReadDoesntContinueABoundedOnesCompletedSplits(t *testing.T) 
 				Dataflow:    runner.Passthrough{Convert: columnless},
 				Settings:    delivery.Settings{Require: delivery.ExactlyOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
 				Drain:       drain,
-				OnCommit:    func(uint64) { once.Do(func() { close(drain) }) },
+				// a's commit can come before b has got anywhere.
+				OnCommit: func(uint64) {
+					rec, err := log.Latest(ctx)
+					if err != nil {
+						return
+					}
+					if got := rec.Splits("s"); len(got) == 2 && len(got[1].State) > 0 {
+						once.Do(func() { close(drain) })
+					}
+				},
 			})
 			if !errors.Is(err, runner.ErrDrained) {
 				t.Fatalf("attempt %s: %v, want drained", owner, err)

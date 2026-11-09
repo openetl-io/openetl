@@ -542,18 +542,24 @@ func TestFinishedWorkflowsAreCollected(t *testing.T) {
 	c := &counted{}
 	workflows, steps := c.register(waitLong)
 	run(t, b, workflows, steps)
-	start := func(id string) {
-		if _, err := b.Start(t.Context(), orchestration.StartOptions{ID: id, Workflow: waitLong, Input: ""}); err != nil {
+	start := func(id string) orchestration.Run {
+		r, err := b.Start(t.Context(), orchestration.StartOptions{ID: id, Workflow: waitLong, Input: ""})
+		if err != nil {
 			t.Fatal(err)
 		}
+		return r
 	}
-	start("ended")
+	ended := start("ended")
 	start("running")
 	eventually(t, 30*time.Second, "both to start", func() bool { return c.get(&c.before) == 2 })
 	if err := b.Send(t.Context(), "ended", orchestration.Message{Kind: "go"}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, "one to end", func() bool { return c.get(&c.after) == 1 })
+	// Its last step's side effect comes before it's recorded as finished,
+	// which is what Collect goes by.
+	if err := ended.Get(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
 	conn, err := pgx.Connect(t.Context(), o.DatabaseURL)
 	if err != nil {
 		t.Fatal(err)
