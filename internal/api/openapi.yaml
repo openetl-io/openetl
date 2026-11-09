@@ -4646,6 +4646,15 @@ components:
                     type: string
                     description: 'For every stream that doesn''t say. Unset: refuse.'
                     format: enum
+                tables:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: |-
+                        Streams' names in the destination, by stream, exactly as written: a
+                         table, or what the destination has instead, such as a topic. A stream
+                         left out goes by its own name, through naming. Not with a transform,
+                         whose outputs name their tables.
         PipelineOverride:
             type: object
             properties:
@@ -4900,12 +4909,6 @@ components:
                     type: string
                     description: Overrides destination.type_changes for this stream.
                     format: enum
-                table:
-                    type: string
-                    description: |-
-                        Its name in the destination, exactly as written: a table, or what the
-                         destination has instead, such as a topic. Unset: the stream's own name,
-                         by destination.naming. Not for a transform's inputs.
         PipelineVersion:
             type: object
             properties:
@@ -5517,7 +5520,9 @@ components:
                     description: Paused on its own, so syncs skip it.
                 table:
                     type: string
-                    description: 'PipelineStream.table; empty: its name, by destination.naming.'
+                    description: |-
+                        Its entry in destination.tables; empty: its name, through
+                         destination.naming.
         StreamSchema:
             type: object
             properties:

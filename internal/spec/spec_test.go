@@ -377,24 +377,30 @@ func TestParseConnectorSource(t *testing.T) {
 	}
 }
 
-func TestStreamTable(t *testing.T) {
-	doc := func(streams string) []byte {
-		return []byte("apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source:\n    ref: s\n    streams:\n" +
-			streams + "  destination: {ref: d}\n")
+func TestDestinationTables(t *testing.T) {
+	doc := func(streams, tables string) []byte {
+		return []byte("apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source:\n    ref: s\n" +
+			streams + "  destination:\n    ref: d\n    tables: " + tables + "\n")
 	}
-	d, err := Parse(doc("      - {name: orders, table: Fct-Orders}\n      - {name: users}\n"))
+	const two = "    streams:\n      - {name: a}\n      - {name: b}\n"
+	d, err := Parse(doc(two, "{a: Fct-A}"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := d.Pipeline.GetSource().GetStreams(); got[0].GetTable() != "Fct-Orders" || got[1].GetTable() != "" {
-		t.Errorf("streams = %v", got)
+	if got := d.Pipeline.GetDestination().GetTables(); len(got) != 1 || got["a"] != "Fct-A" {
+		t.Errorf("tables = %v", got)
 	}
-	for name, c := range map[string]struct{ streams, want string }{
-		"two streams, one table":    {"      - {name: a, table: t}\n      - {name: b, table: t}\n", "same table"},
-		"another stream's own name": {"      - {name: a, table: b}\n      - {name: b}\n", "same table"},
-		"reserved":                  {"      - {name: a, table: _openetl_loads}\n", "its own records"},
+	if _, err := Parse(doc("", "{anything: t}")); err != nil {
+		t.Errorf("a pipeline of every stream, checked by the plan: %v", err)
+	}
+	for name, c := range map[string]struct{ streams, tables, want string }{
+		"two streams, one table":    {two, "{a: t, b: t}", "same table"},
+		"another stream's own name": {two, "{a: b}", "same table"},
+		"reserved":                  {two, "{a: _openetl_loads}", "its own records"},
+		"not in source.streams":     {two, "{c: t}", "doesn't list"},
+		"no table":                  {two, `{a: ""}`, "both need a name"},
 	} {
-		if _, err := Parse(doc(c.streams)); err == nil || !strings.Contains(err.Error(), c.want) {
+		if _, err := Parse(doc(c.streams, c.tables)); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

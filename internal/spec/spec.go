@@ -5,11 +5,11 @@ package spec
 
 import (
 	"bytes"
-	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
 	"slices"
@@ -307,12 +307,13 @@ type pipelineYAML struct {
 		Streams []streamYAML `yaml:"streams"`
 	} `yaml:"source"`
 	Destination struct {
-		Ref         string `yaml:"ref"`
-		Write       string `yaml:"write"`
-		Namespace   string `yaml:"namespace"`
-		Naming      string `yaml:"naming"`
-		Deletes     string `yaml:"deletes"`
-		TypeChanges string `yaml:"typeChanges"`
+		Ref         string            `yaml:"ref"`
+		Write       string            `yaml:"write"`
+		Namespace   string            `yaml:"namespace"`
+		Tables      map[string]string `yaml:"tables"`
+		Naming      string            `yaml:"naming"`
+		Deletes     string            `yaml:"deletes"`
+		TypeChanges string            `yaml:"typeChanges"`
 	} `yaml:"destination"`
 	SchemaPolicy string        `yaml:"schemaPolicy"`
 	Delivery     *deliveryYAML `yaml:"delivery"`
@@ -353,7 +354,6 @@ type streamYAML struct {
 	Name        string `yaml:"name"`
 	Sync        string `yaml:"sync"`
 	Cursor      string `yaml:"cursor"`
-	Table       string `yaml:"table"`
 	Timestamps  string `yaml:"timestamps"`
 	Require     string `yaml:"require"`
 	Collapse    *bool  `yaml:"collapse"`
@@ -581,18 +581,12 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	}
 	p.Source = &apiv1.PipelineSource{Ref: y.Source.Ref}
 	seen := map[string]bool{}
-	landing := map[string]string{}
 	for i, s := range y.Source.Streams {
 		if s.Name == "" || seen[s.Name] {
 			return nil, fmt.Errorf("source.streams[%d]: missing or repeated name %q", i, s.Name)
 		}
 		seen[s.Name] = true
-		lands := cmp.Or(s.Table, s.Name)
-		if other, ok := landing[lands]; ok {
-			return nil, fmt.Errorf("source.streams[%d]: streams %q and %q would land in the same table, %q", i, other, s.Name, lands)
-		}
-		landing[lands] = s.Name
-		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor, Collapse: s.Collapse, Table: s.Table}
+		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor, Collapse: s.Collapse}
 		if st.Sync, err = enum(apiv1.SyncMode_value, "SYNC_MODE_", "sync", s.Sync, apiv1.SyncMode_SYNC_MODE_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
 		}
@@ -602,10 +596,6 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		switch {
 		case spark && st.Timestamps == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND:
 			return nil, fmt.Errorf("source.streams[%d].timestamps: Spark keeps only microseconds, so a Spark transform's inputs can't keep nanoseconds", i)
-		case (spark || flink) && s.Table != "":
-			return nil, fmt.Errorf("source.streams[%d].table: a transform's inputs aren't written to the destination; its outputs name their tables", i)
-		case slices.Contains(reservedTables, s.Table):
-			return nil, fmt.Errorf("source.streams[%d].table: %q is where OpenETL keeps its own records", i, s.Table)
 		case (spark || flink) && s.Collapse != nil:
 			return nil, fmt.Errorf("source.streams[%d].collapse: a transform's inputs aren't written to the destination, and its outputs aren't collapsed", i)
 		}
@@ -656,6 +646,9 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		p.Source.Streams = append(p.Source.Streams, st)
 	}
 	p.Destination = &apiv1.PipelineDestination{Ref: y.Destination.Ref, Namespace: y.Destination.Namespace}
+	if p.Destination.Tables, err = parseTables(y.Destination.Tables, p.Source.GetStreams(), spark || flink); err != nil {
+		return nil, err
+	}
 	if p.Destination.Write, err = enum(apiv1.WriteMode_value, "WRITE_MODE_", "destination.write", y.Destination.Write, apiv1.WriteMode_WRITE_MODE_UNSPECIFIED); err != nil {
 		return nil, err
 	}
@@ -908,6 +901,40 @@ func parseDelivery(y *deliveryYAML) (*apiv1.Delivery, error) {
 // reservedTables are the destination's tables that hold OpenETL's own
 // records. The engine refuses them too.
 var reservedTables = []string{"_openetl", "_openetl_fence", "_openetl_loads"}
+
+// parseTables checks destination.tables as far as it can without the
+// source's catalog, which the plan checks it against. streams is
+// source.streams; empty means every stream the source offers.
+func parseTables(tables map[string]string, streams []*apiv1.PipelineStream, transformed bool) (map[string]string, error) {
+	if len(tables) == 0 {
+		return nil, nil
+	}
+	if transformed {
+		return nil, errors.New("destination.tables: a transform's outputs name their tables")
+	}
+	landing := map[string]string{}
+	for _, s := range streams {
+		if tables[s.GetName()] == "" {
+			landing[s.GetName()] = s.GetName()
+		}
+	}
+	for _, stream := range slices.Sorted(maps.Keys(tables)) {
+		table := tables[stream]
+		switch {
+		case stream == "" || table == "":
+			return nil, fmt.Errorf("destination.tables: %q to %q: a stream and its table both need a name", stream, table)
+		case slices.Contains(reservedTables, table):
+			return nil, fmt.Errorf("destination.tables.%s: %q is where OpenETL keeps its own records", stream, table)
+		case len(streams) > 0 && !slices.ContainsFunc(streams, func(s *apiv1.PipelineStream) bool { return s.GetName() == stream }):
+			return nil, fmt.Errorf("destination.tables.%s: source.streams doesn't list that stream", stream)
+		}
+		if other, ok := landing[table]; ok {
+			return nil, fmt.Errorf("destination.tables: streams %q and %q would land in the same table, %q", other, stream, table)
+		}
+		landing[table] = stream
+	}
+	return tables, nil
+}
 
 func enum[E ~int32](values map[string]int32, prefix, field, v string, def E) (E, error) {
 	if v == "" {

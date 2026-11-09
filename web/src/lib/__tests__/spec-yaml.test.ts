@@ -27,10 +27,10 @@ describe("pipelineYAML", () => {
   });
 
   it("spells enums of the files the spec imports too", () => {
-    const spec = create(PipelineSpecSchema, { source: { ref: "shop", streams: [{ name: "orders", sync: SyncMode.FULL_REFRESH, table: "fct_orders" }] } });
+    const spec = create(PipelineSpecSchema, { source: { ref: "shop", streams: [{ name: "orders", sync: SyncMode.FULL_REFRESH }] }, destination: { ref: "dw", tables: { orders: "fct_orders" } } });
     const y = pipelineYAML("shop", "default", spec);
     expect(y).toContain("sync: full_refresh");
-    expect(y).toContain("table: fct_orders");
+    expect(y).toContain("orders: fct_orders");
   });
 
   it("formats durations", () => {

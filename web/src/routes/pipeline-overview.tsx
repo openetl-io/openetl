@@ -96,7 +96,7 @@ export function Overview({
     };
     for (const s of plan.data?.plan?.streams ?? []) Object.assign(get(s.name), { level: s.level, reason: s.reason, write: s.write });
     for (const w of plan.data?.plan?.warnings ?? []) if (w.stream) get(w.stream).warning = w.message;
-    for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor, table: s.table });
+    for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor });
     for (const s of pipeline.pausedStreams) get(s.stream).paused = true;
     for (const s of last?.streams ?? [])
       Object.assign(get(s.name), { rows: s.rows, quarantined: s.quarantinedRows, held: s.heldColumns, collapsed: s.collapsedRows });
@@ -109,7 +109,10 @@ export function Overview({
       r.schemaKey = schemaKey(s);
     }
     // Until the source has been discovered the plan has no streams, but the spec still says how they're written.
-    for (const r of m.values()) r.write ||= spec?.destination?.write;
+    for (const r of m.values()) {
+      r.write ||= spec?.destination?.write;
+      r.table = spec?.destination?.tables[r.name];
+    }
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [plan.data, spec, last, schemas.data, pipeline.pausedStreams]);
 

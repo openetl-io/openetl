@@ -294,7 +294,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 	}
 	if cat == nil {
 		deletesIgnored(WriteMode(spec) == destination.Merge)
-		problems := append(delivery.Problems(caps, settings, nil), tableProblems(spec, caps)...)
+		problems := append(delivery.Problems(caps, settings, nil), tableProblems(spec, caps, nil)...)
 		if m := WriteMode(spec); m != 0 {
 			if err := delivery.ModeProblem(caps, m); err != nil {
 				problems = append(problems, err)
@@ -314,7 +314,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		}
 		return nil, problems, warnings
 	}
-	problems := tableProblems(spec, caps)
+	var problems []error
 	type selected struct {
 		cs *apiv1.CatalogStream
 		ps *apiv1.PipelineStream
@@ -333,6 +333,11 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		}
 		streams = append(streams, selected{cs: cat.GetStreams()[i], ps: ps})
 	}
+	names := make([]string, len(streams))
+	for i, s := range streams {
+		names[i] = s.cs.GetName()
+	}
+	problems = append(problems, tableProblems(spec, caps, names)...)
 
 	var plans []*apiv1.StreamPlan
 	var ds []delivery.Stream
@@ -381,7 +386,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
 		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
-			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: s.ps.GetTable()})
+			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: spec.GetDestination().GetTables()[name]})
 	}
 	if spec.GetTransform() != nil {
 		for _, o := range Outputs(spec, caps, inputs) {
@@ -403,12 +408,23 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 	return plans, problems, warnings
 }
 
-// tableProblems fails a stream's table that's too long for the destination.
-func tableProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities) []error {
+// tableProblems fails what destination.tables can't do: a table too long for
+// the destination and, given the streams the pipeline reads (nil if that isn't
+// known), a stream that isn't one of them, or a table that's another stream's
+// own name.
+func tableProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities, read []string) []error {
+	tables := spec.GetDestination().GetTables()
 	var out []error
-	for _, s := range spec.GetSource().GetStreams() {
-		if limit := caps.MaxIdentifierLength; limit > 0 && len(s.GetTable()) > limit {
-			out = append(out, fmt.Errorf("stream %q: table %q is longer than the destination's %d bytes", s.GetName(), s.GetTable(), limit))
+	for _, stream := range slices.Sorted(maps.Keys(tables)) {
+		table := tables[stream]
+		if limit := caps.MaxIdentifierLength; limit > 0 && len(table) > limit {
+			out = append(out, fmt.Errorf("stream %q: table %q is longer than the destination's %d bytes", stream, table, limit))
+		}
+		if read != nil && !slices.Contains(read, stream) {
+			out = append(out, fmt.Errorf("destination.tables names stream %q, which the pipeline doesn't read", stream))
+		}
+		if table != stream && tables[table] == "" && slices.Contains(read, table) {
+			out = append(out, fmt.Errorf("streams %q and %q would land in the same table, %q", stream, table, table))
 		}
 	}
 	return out
@@ -416,17 +432,19 @@ func tableProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities) []er
 
 // TableChanges warns of each stream a new version gives another table: what
 // it delivered stays where it is, and the new table starts with what's read
-// next.
+// next. A stream the version before didn't read has delivered nothing.
 func TableChanges(before, after *apiv1.PipelineSpec) []*apiv1.PlanWarning {
-	was := map[string]string{}
-	for _, s := range before.GetSource().GetStreams() {
-		was[s.GetName()] = s.GetTable()
-	}
+	was, now := before.GetDestination().GetTables(), after.GetDestination().GetTables()
+	listed := before.GetSource().GetStreams()
+	all := map[string]string{}
+	maps.Copy(all, was)
+	maps.Copy(all, now)
 	var out []*apiv1.PlanWarning
-	for _, s := range after.GetSource().GetStreams() {
-		if t, ok := was[s.GetName()]; ok && t != s.GetTable() {
-			out = append(out, &apiv1.PlanWarning{Stream: s.GetName(), Message: fmt.Sprintf(
-				"its table changes: what it delivered stays in the old table, and the new one starts with what's read next; openetl reset --stream %s reads it all again", s.GetName())})
+	for _, stream := range slices.Sorted(maps.Keys(all)) {
+		read := len(listed) == 0 || slices.ContainsFunc(listed, func(s *apiv1.PipelineStream) bool { return s.GetName() == stream })
+		if read && was[stream] != now[stream] {
+			out = append(out, &apiv1.PlanWarning{Stream: stream, Message: fmt.Sprintf(
+				"its table changes: what it delivered stays in the old table, and the new one starts with what's read next; openetl reset --stream %s reads it all again", stream)})
 		}
 	}
 	return out
