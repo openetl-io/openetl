@@ -86,8 +86,11 @@ type flinkSegment struct {
 	inFlight        int              // barriers placed whose every stream isn't out yet
 	known           map[string][]byte
 	deployedSchemas map[string]*arrow.Schema
-	sinks           map[sinkKey]bool
-	outRows         map[string]uint64
+	// Each stream's newest schema among the batches queued for the readers
+	// before the job was deployed.
+	queuedSchemas map[string]*arrow.Schema
+	sinks         map[sinkKey]bool
+	outRows       map[string]uint64
 
 	// The loop's own.
 	jobID       string
@@ -187,6 +190,7 @@ type segEvent struct {
 	err         error
 	job         string
 	jobDone     chan error
+	changed     map[string][]byte
 }
 
 type flinkTask struct {
@@ -203,7 +207,7 @@ func newFlinkSegment(a *flinkAttempt, restored *checkpoint.Record, learn bool) *
 		streams: map[string]Stream{}, outputs: map[string]Stream{},
 		ended: make(chan struct{}), learned: make(chan struct{}),
 		toSecond: make(chan Frame, 16), ev: make(chan segEvent, 64), tasks: make(chan flinkTask, 2),
-		queues: map[string]*readQueue{}, cutC: map[uint64]int64{}, out: map[uint64]int{}, known: map[string][]byte{},
+		queues: map[string]*readQueue{}, cutC: map[uint64]int64{}, out: map[uint64]int{}, known: map[string][]byte{}, queuedSchemas: map[string]*arrow.Schema{},
 		sinks: map[sinkKey]bool{}, outRows: map[string]uint64{},
 		readers: map[string]bool{}, parallelism: map[string]int32{},
 		cuts: map[int64]*flinkCut{}, byK: map[uint64]*flinkCut{}, epochs: map[uint64]*flinkEpoch{}, byC: map[int64]uint64{}, aborted: map[int64]bool{},
@@ -296,6 +300,9 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 			}
 		}
 	}
+	a.mu.Lock()
+	maps.Copy(schemas, a.evolved)
+	a.mu.Unlock()
 	splits, err := job.readSplits(ctx, restored, nil)
 	if err != nil {
 		return err
@@ -405,12 +412,23 @@ func (s *flinkSegment) open() bool {
 	return !s.closing
 }
 
-// deployed tells the segment the job is running, as jobID.
+// deployed tells the segment the job is running, as jobID. The job can't
+// read a batch of another schema than it was deployed with, so those queued
+// while it was deployed change the streams' schemas now.
 func (s *flinkSegment) deployed(jobID string) {
 	s.mu.Lock()
 	s.deployedSchemas = decodeAll(s.a.schemasCopy())
+	var changed map[string][]byte
+	for name, sc := range s.queuedSchemas {
+		if d := s.deployedSchemas[name]; d == nil || !sameSchema(d, sc) {
+			if changed == nil {
+				changed = map[string][]byte{}
+			}
+			changed[name] = s.known[name]
+		}
+	}
 	s.mu.Unlock()
-	s.event(segEvent{kind: segDeployed, job: jobID, jobDone: s.a.jobDone})
+	s.event(segEvent{kind: segDeployed, job: jobID, jobDone: s.a.jobDone, changed: changed})
 }
 
 func (a *flinkAttempt) schemasCopy() map[string][]byte {
@@ -508,11 +526,11 @@ func (s *flinkSegment) feed(ctx context.Context, from <-chan Frame) error {
 		}
 		switch f.Kind {
 		case FrameSchema:
-			if err := s.schema(f.Stream, f.Schema, nil); err != nil {
+			if err := s.schema(f.Stream, f.Schema, nil, false); err != nil {
 				return err
 			}
 		case FrameBatch:
-			err := s.schema(f.Stream, nil, f.Batch.Schema())
+			err := s.schema(f.Stream, nil, f.Batch.Schema(), f.Batch.NumRows() > 0)
 			if err != nil || f.Batch.NumRows() == 0 {
 				f.Batch.Release()
 				if err != nil {
@@ -556,9 +574,11 @@ func (s *flinkSegment) feed(ctx context.Context, from <-chan Frame) error {
 	}
 }
 
-// schema learns a stream's schema, from raw or sc, or checks it against the
-// one the job was deployed with.
-func (s *flinkSegment) schema(stream string, raw []byte, sc *arrow.Schema) error {
+// schema learns a stream's schema, from raw or sc, or, for a batch with rows,
+// checks it against the one the job was deployed with. A schema without rows
+// changes nothing the job reads: a primer's is the stream's declared columns,
+// which may come after the job was deployed for more.
+func (s *flinkSegment) schema(stream string, raw []byte, sc *arrow.Schema, rows bool) error {
 	var err error
 	if sc == nil {
 		if sc, err = decodeSchema(raw); err != nil {
@@ -578,9 +598,12 @@ func (s *flinkSegment) schema(stream string, raw []byte, sc *arrow.Schema) error
 		if !learned && len(s.known) == len(s.streams) {
 			close(s.learned)
 		}
+		if rows {
+			s.queuedSchemas[stream] = sc
+		}
 		return nil
 	}
-	if d := s.deployedSchemas[stream]; d != nil && sameSchema(d, sc) {
+	if d := s.deployedSchemas[stream]; !rows || (d != nil && sameSchema(d, sc)) {
 		return nil
 	}
 	if raw == nil {
@@ -588,7 +611,7 @@ func (s *flinkSegment) schema(stream string, raw []byte, sc *arrow.Schema) error
 			return err
 		}
 	}
-	return &schemaChanged{stream: stream, schema: raw}
+	return &schemaChanged{schemas: map[string][]byte{stream: raw}}
 }
 
 func encodeSchema(sc *arrow.Schema) ([]byte, error) {
@@ -800,6 +823,9 @@ func (s *flinkSegment) loop(ctx context.Context) (err error) {
 		case ev := <-s.ev:
 			if ev.kind == segDeployed {
 				s.jobID, jobDone = ev.job, ev.jobDone
+				if len(ev.changed) > 0 {
+					return &schemaChanged{schemas: ev.changed}
+				}
 				if !s.learn {
 					s.helloSeen = true
 				}

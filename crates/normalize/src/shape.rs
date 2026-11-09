@@ -1364,6 +1364,62 @@ mod tests {
         assert_eq!(n.batch.schema(), schema);
     }
 
+    /// A Flink job is deployed again at the schema its rows reached, and reads
+    /// nothing else, so a shaper started from it must report that schema
+    /// unchanged: for a primer of the declared columns, and for the same rows.
+    #[test]
+    fn a_schema_rows_reached_is_kept_by_a_primer_and_by_the_same_rows() {
+        let declared = Arc::new(Schema::new(vec![
+            Field::new("_offset", DataType::Int64, false),
+            Field::new(
+                "_at",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                false,
+            ),
+            Field::new("_key", DataType::Utf8, true),
+            Field::new("_headers", DataType::Utf8, true).with_metadata(HashMap::from([(
+                EXTENSION_NAME_KEY.to_owned(),
+                "arrow.json".to_owned(),
+            )])),
+        ]));
+        let make = |restored| {
+            Shaper::new(
+                Naming::default(),
+                "t".into(),
+                Identity {
+                    cursor: Some("_offset".into()),
+                    ..identity()
+                },
+                Policy::AllowAll,
+                restored,
+                Some(declared.clone()),
+                TypeOptions::default(),
+            )
+            .unwrap()
+        };
+        let row = r#"{"id": 1, "v": 1, "pad": "ab", "_offset": 0,
+            "_at": "2026-11-09T16:26:10Z", "_key": "1", "_headers": null}"#;
+
+        let mut first = make(None);
+        let primer = first
+            .batch(&RecordBatch::new_empty(declared.clone()))
+            .unwrap();
+        assert!(primer.schema_changed);
+        let reached = rows(&mut first, &[row]);
+        assert!(reached.schema_changed);
+        let reached = reached.batch.schema();
+        assert_ne!(reached, primer.batch.schema());
+
+        let mut again = make(Some(reached.clone()));
+        let primer = again
+            .batch(&RecordBatch::new_empty(declared.clone()))
+            .unwrap();
+        assert!(!primer.schema_changed);
+        let n = rows(&mut again, &[row]);
+        assert!(!n.schema_changed);
+        assert_eq!(n.batch.schema(), reached);
+    }
+
     #[test]
     fn restored_names_and_ids_never_change() {
         let mut first = shaper(None);

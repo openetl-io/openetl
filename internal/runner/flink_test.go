@@ -16,11 +16,15 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
+	bridgev1 "github.com/openetl-io/openetl/gen/openetl/bridge/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/flinktest"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -211,6 +215,9 @@ type flinkCase struct {
 	faults   flinktest.Faults
 	lost     bool
 	attempts int // runner attempts, each cut off partway, before the one that drains
+	// See flinktest.Cluster.
+	deployDelay time.Duration
+	lateCalls   bool
 }
 
 func runFlinkCase(t *testing.T, c flinkCase) (*exactDest, *checkpoint.Log, *flinktest.Cluster) {
@@ -219,6 +226,7 @@ func runFlinkCase(t *testing.T, c flinkCase) (*exactDest, *checkpoint.Log, *flin
 	bridge := flinktest.NewBridge()
 	cluster := flinktest.NewCluster(bridge)
 	cluster.Faults = c.faults
+	cluster.DeployDelay, cluster.LateCalls = c.deployDelay, c.lateCalls
 	cluster.Logf = t.Logf
 	dest := newExactDest()
 	dest.lost = c.lost
@@ -363,6 +371,196 @@ func (p *primerFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner
 		}
 	}()
 	return p.Passthrough.Run(ctx, plan, mid, out)
+}
+
+var wideSchema = arrow.NewSchema([]arrow.Field{
+	{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+	{Name: "x", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+}, nil)
+
+func wideRows(_ string, rows []json.RawMessage) (arrow.RecordBatch, error) {
+	b := array.NewRecordBuilder(memory.DefaultAllocator, wideSchema)
+	defer b.Release()
+	for _, r := range rows {
+		var v struct{ ID int64 }
+		if err := json.Unmarshal(r, &v); err != nil {
+			return nil, err
+		}
+		b.Field(0).(*array.Int64Builder).Append(v.ID)
+		b.Field(1).(*array.Int64Builder).Append(v.ID)
+	}
+	return b.NewRecordBatch(), nil
+}
+
+func ipcSchema(t *testing.T, sc *arrow.Schema) []byte {
+	t.Helper()
+	b := array.NewRecordBuilder(memory.DefaultAllocator, sc)
+	defer b.Release()
+	rec := b.NewRecordBatch()
+	defer rec.Release()
+	raw, err := arrowipc.EncodeBatch(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// flinkSchemaFlow reports schemas as the engine does. A stream starts from the
+// plan's schema, if it has one. Without one, its primer reports its declared
+// columns (idSchema), and its first rows add x. Primers wait for hold, and
+// rows as long again, so after a deploy that's quicker.
+type flinkSchemaFlow struct {
+	runner.Passthrough
+	t    *testing.T
+	hold time.Duration
+
+	mu sync.Mutex
+	// A run started from a schema without x, which only a primer gives.
+	startedNarrow bool
+}
+
+func (f *flinkSchemaFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+	if !plan.ReportSchemas {
+		return f.Passthrough.Run(ctx, plan, in, out)
+	}
+	seeded := map[string]bool{}
+	for name, raw := range plan.Schemas {
+		rec, err := arrowipc.DecodeBatch(raw, memory.DefaultAllocator)
+		if err != nil {
+			return err
+		}
+		if rec.Schema().Equal(wideSchema) {
+			seeded[name] = true
+		} else {
+			f.mu.Lock()
+			f.startedNarrow = true
+			f.mu.Unlock()
+		}
+		rec.Release()
+	}
+	mid, fromMid := make(chan runner.Frame), make(chan runner.Frame)
+	report := func(stream string, sc *arrow.Schema) bool {
+		select {
+		case out <- runner.Frame{Kind: runner.FrameSchema, Stream: stream, Schema: ipcSchema(f.t, sc)}:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	go func() {
+		defer close(mid)
+		time.Sleep(f.hold)
+		rows := false
+		for {
+			select {
+			case fr, ok := <-in:
+				if !ok {
+					return
+				}
+				if fr.Kind == runner.FrameBatch && fr.Batch.NumRows() == 0 {
+					if !seeded[fr.Stream] && !report(fr.Stream, idSchema) {
+						return
+					}
+					fr.Batch.Release()
+					continue
+				}
+				if !rows {
+					rows = true
+					time.Sleep(f.hold)
+				}
+				select {
+				case mid <- fr:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		defer close(out)
+		for fr := range fromMid {
+			if fr.Kind == runner.FrameBatch && !seeded[fr.Stream] {
+				seeded[fr.Stream] = true
+				if !report(fr.Stream, wideSchema) {
+					return
+				}
+			}
+			select {
+			case out <- fr:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return f.Passthrough.Run(ctx, plan, mid, fromMid)
+}
+
+func describedColumns(t *testing.T, res *bridgev1.DescribeResponse) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for _, s := range res.GetStreams() {
+		rec, err := arrowipc.DecodeBatch(s.GetArrow(), memory.DefaultAllocator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[s.GetName()] = len(rec.Schema().Fields())
+		rec.Release()
+	}
+	return out
+}
+
+// A stream's report of its declared columns can reach the runner after a job
+// was deployed for the columns its rows have. It's no change, or the job would
+// be deployed again and again, between the two.
+func TestFlinkDeploysOnceForEachStreamsRealSchema(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		flow := &flinkSchemaFlow{Passthrough: runner.Passthrough{Convert: wideRows}, t: t, hold: 20 * time.Millisecond}
+		_, _, cluster := runFlinkCase(t, flinkCase{streams: []string{"a", "b"}, rows: 60, flow: flow})
+		if n := cluster.Deploys(); n > 3 {
+			t.Errorf("deployed %d times, for two streams that each change once", n)
+		}
+		if got := describedColumns(t, cluster.Described()); got["a"] != 2 || got["b"] != 2 {
+			t.Errorf("the last job was described %v columns", got)
+		}
+		if flow.startedNarrow {
+			t.Errorf("a first dataflow started from a primer's columns")
+		}
+	})
+}
+
+// Rows queued while a job is deployed for fewer columns would fail its
+// readers. Every stream they changed is deployed for at once.
+func TestFlinkRowsQueuedDuringADeployChangeItsSchemas(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		flow := &flinkSchemaFlow{Passthrough: runner.Passthrough{Convert: wideRows}, t: t, hold: 20 * time.Millisecond}
+		_, _, cluster := runFlinkCase(t, flinkCase{streams: []string{"a", "b"}, rows: 60, flow: flow, deployDelay: 200 * time.Millisecond})
+		if n := cluster.Deploys(); n != 2 {
+			t.Errorf("deployed %d times; the first job's streams changed together", n)
+		}
+		if got := describedColumns(t, cluster.Described()); got["a"] != 2 || got["b"] != 2 {
+			t.Errorf("the last job was described %v columns", got)
+		}
+	})
+}
+
+// A cancelled job's enumerator or reader can still call the bridge. It must
+// be refused, not end the attempt or take the next job's place.
+func TestFlinkACancelledJobsCallsDontReachTheNextJob(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		flow := &flinkSchemaFlow{Passthrough: runner.Passthrough{Convert: wideRows}, t: t, hold: 20 * time.Millisecond}
+		_, _, cluster := runFlinkCase(t, flinkCase{streams: []string{"a", "b"}, rows: 60, flow: flow, lateCalls: true})
+		errs := cluster.LateCallErrors()
+		if len(errs) == 0 {
+			t.Fatal("no job was deployed after another, so nothing called late")
+		}
+		for _, err := range errs {
+			if status.Code(err) != codes.Unavailable {
+				t.Errorf("a cancelled job's call: %v", err)
+			}
+		}
+	})
 }
 
 func TestFlinkTaskFailuresRestoreInPlace(t *testing.T) {
