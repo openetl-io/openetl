@@ -270,7 +270,15 @@ type envelope struct {
 // execer is a pool or a transaction.
 type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
+
+// An ID's lock, held for a transaction: shared to send it a message, and
+// exclusive to hand its mailbox to its next generation.
+const (
+	lockIDShared    = `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`
+	lockIDExclusive = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
+)
 
 // generationID is the row of an ID's nth generation.
 func generationID(id string, n int) string {
@@ -284,8 +292,12 @@ func generationID(id string, n int) string {
 // workflow that starts again or continues gets a row of its own, and only IDs
 // that have have a row here.
 func (b *Backend) generation(ctx context.Context, id string) (int, error) {
+	return generationOf(ctx, b.pool, id)
+}
+
+func generationOf(ctx context.Context, q execer, id string) (int, error) {
 	var n int
-	err := b.pool.QueryRow(ctx, `SELECT generation FROM openetl.generations WHERE id = $1`, id).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT generation FROM openetl.generations WHERE id = $1`, id).Scan(&n)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 1, nil
 	}
@@ -455,19 +467,26 @@ func FailureOf(err error) error {
 }
 
 func (b *Backend) Send(ctx context.Context, workflowID string, m orchestration.Message) error {
-	n, err := b.generation(ctx, workflowID)
-	if err != nil {
-		return err
-	}
-	return b.send(ctx, generationID(workflowID, n), m)
+	return b.send(ctx, workflowID, m)
 }
 
-// send ignores a row that doesn't exist. One that has ended takes the message
-// and never reads it.
-func (b *Backend) send(ctx context.Context, row string, m orchestration.Message, opts ...dbos.SendOption) error {
+// send puts m in the mailbox of the ID's newest generation, and ignores an ID
+// with no row. The ID's lock keeps that generation from handing its mailbox on
+// between being found and m arriving. One that has ended for any other reason
+// takes the message and never reads it.
+func (b *Backend) send(ctx context.Context, id string, m orchestration.Message, opts ...dbos.SendOption) error {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	err := dbos.Send(b.with(ctx), row, m, mailbox, opts...)
+	err := pgx.BeginFunc(ctx, b.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, lockIDShared, id); err != nil {
+			return err
+		}
+		n, err := generationOf(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		return dbos.Send(b.with(ctx), generationID(id, n), m, mailbox, append(opts, dbos.WithSendTransaction(tx))...)
+	})
 	if errors.Is(err, dbos.ErrNonExistentWorkflow) {
 		return nil
 	}
@@ -477,21 +496,16 @@ func (b *Backend) send(ctx context.Context, row string, m orchestration.Message,
 // SendWithStart isn't atomic: a crash between the two loses the message, and
 // a workflow that has just started looks at everything a message would say.
 func (b *Backend) SendWithStart(ctx context.Context, o orchestration.StartOptions, m orchestration.Message) error {
-	row, err := b.start(ctx, o)
-	if err != nil {
+	if _, err := b.start(ctx, o); err != nil {
 		return err
 	}
-	return b.send(ctx, row, m)
+	return b.send(ctx, o.ID, m)
 }
 
 // Cancel doesn't use DBOS's cancelling, after which a workflow can't run a
 // step. The idempotency key makes it tell each generation once.
 func (b *Backend) Cancel(ctx context.Context, workflowID string) error {
-	n, err := b.generation(ctx, workflowID)
-	if err != nil {
-		return err
-	}
-	return b.send(ctx, generationID(workflowID, n), orchestration.Message{Kind: orchestration.Stop}, dbos.WithIdempotencyKey(orchestration.Stop))
+	return b.send(ctx, workflowID, orchestration.Message{Kind: orchestration.Stop}, dbos.WithIdempotencyKey(orchestration.Stop))
 }
 
 func (b *Backend) ListRunning(ctx context.Context, workflow string) ([]orchestration.RunningWorkflow, error) {

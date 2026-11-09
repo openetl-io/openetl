@@ -272,6 +272,46 @@ func TestContinuing(t *testing.T) {
 	}
 }
 
+// Messages sent while a workflow continues again and again all reach it, once
+// each, in the order they were sent.
+func TestMessagesSentAcrossContinues(t *testing.T) {
+	b, _ := open(t)
+	const generations, messages = 12, 300
+	wf := orchestration.NewWorkflow("continues-often", func(ctx orchestration.Context, n int) (string, error) {
+		if n < generations {
+			return "", ctx.Continue(n + 1)
+		}
+		got := make([]string, 0, messages)
+		for len(got) < messages {
+			m, _ := ctx.Receive(orchestration.Forever)
+			got = append(got, m.Kind)
+		}
+		return strings.Join(got, ","), nil
+	})
+	run(t, b, []orchestration.Workflow{wf}, nil)
+	r, err := b.Start(t.Context(), orchestration.StartOptions{ID: "continuing-often", Workflow: wf.Name, Input: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make([]string, messages)
+	for i := range want {
+		want[i] = strconv.Itoa(i)
+		if err := b.Send(t.Context(), "continuing-often", orchestration.Message{Kind: want[i]}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	var out string
+	if err := r.Get(ctx, &out); err != nil {
+		t.Fatalf("no result, so a message is lost: %v", err)
+	}
+	if out != strings.Join(want, ",") {
+		t.Errorf("received %s", out)
+	}
+}
+
 // An ID that has ended can start again, and what's sent goes to the new one.
 func TestAnEndedIDStartsAgain(t *testing.T) {
 	b, _ := open(t)
