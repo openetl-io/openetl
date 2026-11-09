@@ -136,6 +136,9 @@ message StreamPlan {
   // Unset: the stream holds nothing.
   HoldPlan holds = 11;
   Routing routing = 12;
+  // Its name in the destination, exactly as written. Empty: from its own
+  // name, by the job's naming.
+  string table = 13;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and

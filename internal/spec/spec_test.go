@@ -376,3 +376,26 @@ func TestParseConnectorSource(t *testing.T) {
 		t.Error("a connector source in a workspace parsed")
 	}
 }
+
+func TestStreamTable(t *testing.T) {
+	doc := func(streams string) []byte {
+		return []byte("apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source:\n    ref: s\n    streams:\n" +
+			streams + "  destination: {ref: d}\n")
+	}
+	d, err := Parse(doc("      - {name: orders, table: Fct-Orders}\n      - {name: users}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Pipeline.GetSource().GetStreams(); got[0].GetTable() != "Fct-Orders" || got[1].GetTable() != "" {
+		t.Errorf("streams = %v", got)
+	}
+	for name, c := range map[string]struct{ streams, want string }{
+		"two streams, one table":    {"      - {name: a, table: t}\n      - {name: b, table: t}\n", "same table"},
+		"another stream's own name": {"      - {name: a, table: b}\n      - {name: b}\n", "same table"},
+		"reserved":                  {"      - {name: a, table: _openetl_loads}\n", "its own records"},
+	} {
+		if _, err := Parse(doc(c.streams)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

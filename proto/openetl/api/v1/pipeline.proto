@@ -513,6 +513,10 @@ message PipelineStream {
   repeated ColumnGroup groups = 10;
   // Overrides destination.type_changes for this stream.
   TypeChanges type_changes = 11;
+  // Its name in the destination, exactly as written: a table, or what the
+  // destination has instead, such as a topic. Unset: the stream's own name,
+  // by destination.naming. Not for a transform's inputs.
+  string table = 12;
 }
 
 // Whether a destination changes a column's type itself when the stream's
@@ -874,6 +878,8 @@ message StreamPlan {
   bool type_changes = 7;
   // Paused on its own, so syncs skip it.
   bool paused = 8;
+  // PipelineStream.table; empty: its name, by destination.naming.
+  string table = 9;
 }
 
 // StreamSchema is a version of a stream's schema, as the destination has it.

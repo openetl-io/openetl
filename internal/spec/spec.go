@@ -5,6 +5,7 @@ package spec
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -352,6 +353,7 @@ type streamYAML struct {
 	Name        string `yaml:"name"`
 	Sync        string `yaml:"sync"`
 	Cursor      string `yaml:"cursor"`
+	Table       string `yaml:"table"`
 	Timestamps  string `yaml:"timestamps"`
 	Require     string `yaml:"require"`
 	Collapse    *bool  `yaml:"collapse"`
@@ -579,12 +581,18 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	}
 	p.Source = &apiv1.PipelineSource{Ref: y.Source.Ref}
 	seen := map[string]bool{}
+	landing := map[string]string{}
 	for i, s := range y.Source.Streams {
 		if s.Name == "" || seen[s.Name] {
 			return nil, fmt.Errorf("source.streams[%d]: missing or repeated name %q", i, s.Name)
 		}
 		seen[s.Name] = true
-		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor, Collapse: s.Collapse}
+		lands := cmp.Or(s.Table, s.Name)
+		if other, ok := landing[lands]; ok {
+			return nil, fmt.Errorf("source.streams[%d]: streams %q and %q would land in the same table, %q", i, other, s.Name, lands)
+		}
+		landing[lands] = s.Name
+		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor, Collapse: s.Collapse, Table: s.Table}
 		if st.Sync, err = enum(apiv1.SyncMode_value, "SYNC_MODE_", "sync", s.Sync, apiv1.SyncMode_SYNC_MODE_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
 		}
@@ -594,6 +602,10 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		switch {
 		case spark && st.Timestamps == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND:
 			return nil, fmt.Errorf("source.streams[%d].timestamps: Spark keeps only microseconds, so a Spark transform's inputs can't keep nanoseconds", i)
+		case (spark || flink) && s.Table != "":
+			return nil, fmt.Errorf("source.streams[%d].table: a transform's inputs aren't written to the destination; its outputs name their tables", i)
+		case slices.Contains(reservedTables, s.Table):
+			return nil, fmt.Errorf("source.streams[%d].table: %q is where OpenETL keeps its own records", i, s.Table)
 		case (spark || flink) && s.Collapse != nil:
 			return nil, fmt.Errorf("source.streams[%d].collapse: a transform's inputs aren't written to the destination, and its outputs aren't collapsed", i)
 		}
@@ -893,6 +905,10 @@ func parseDelivery(y *deliveryYAML) (*apiv1.Delivery, error) {
 
 // enum maps a lowercase value such as "full_refresh" to its proto enum. An
 // empty value gives def.
+// reservedTables are the destination's tables that hold OpenETL's own
+// records. The engine refuses them too.
+var reservedTables = []string{"_openetl", "_openetl_fence", "_openetl_loads"}
+
 func enum[E ~int32](values map[string]int32, prefix, field, v string, def E) (E, error) {
 	if v == "" {
 		return def, nil

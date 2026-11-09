@@ -65,6 +65,8 @@ type Stream struct {
 	Holds *StreamHolds
 	// Where the source splits it, every record of a key is in one split.
 	SplitsByKey bool
+	// Its name in the destination, exactly; empty: from Name, by the naming.
+	Table string
 }
 
 func (s Stream) delivery() delivery.Stream {

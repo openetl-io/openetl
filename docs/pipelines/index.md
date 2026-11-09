@@ -216,6 +216,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | `source.streams` | The streams to copy, each by `name` as `openetl discover` lists it, with the settings below | Every stream the source offers |
 | `sync` | How the stream is read: `full_refresh`, `incremental`, `cdc` or `stream` | The first way the source says it reads the stream; in a continuous pipeline, the first whose reads don't end |
 | `cursor` | The column an incremental read goes by, such as `updated_at` | The source's cursor for the stream, if it names one |
+| `table` | The stream's name in the destination, exactly as written: a table, or what the destination has instead, such as a topic | The stream's name, by `destination.naming` |
 | `columns.NAME.type` | For a column the source declares as a decimal, deliver it as `string` (the source's text) or `float64` (a double, which can lose digits) instead | The decimal |
 | `timestamps` | `microsecond`, or `nanosecond` for a destination that keeps them | `microsecond`; finer values are truncated |
 | `require` | This stream's lowest acceptable delivery guarantee, overriding `delivery.require` | The pipeline's |

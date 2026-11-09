@@ -401,7 +401,11 @@ func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
 			if st.GetPaused() {
 				reason += "; paused, so syncs skip it"
 			}
-			fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\n", st.GetName(), strings.ToLower(strings.TrimPrefix(st.GetWrite().String(), "WRITE_MODE_")),
+			name := st.GetName()
+			if t := st.GetTable(); t != "" {
+				name += " -> " + t
+			}
+			fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\n", name, strings.ToLower(strings.TrimPrefix(st.GetWrite().String(), "WRITE_MODE_")),
 				strings.ToLower(strings.TrimPrefix(st.GetLevel().String(), "DELIVERY_LEVEL_")), reason)
 		}
 		_ = tw.Flush()

@@ -40,6 +40,7 @@ export const levelLabel: Record<DeliveryLevel, string> = {
 type Row = GraphStream & {
   mode?: SyncMode;
   write?: WriteMode;
+  table?: string;
   cursor?: string;
   reason?: string;
   warning?: string;
@@ -95,7 +96,7 @@ export function Overview({
     };
     for (const s of plan.data?.plan?.streams ?? []) Object.assign(get(s.name), { level: s.level, reason: s.reason, write: s.write });
     for (const w of plan.data?.plan?.warnings ?? []) if (w.stream) get(w.stream).warning = w.message;
-    for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor });
+    for (const s of spec?.source?.streams ?? []) Object.assign(get(s.name), { mode: s.sync, cursor: s.cursor, table: s.table });
     for (const s of pipeline.pausedStreams) get(s.stream).paused = true;
     for (const s of last?.streams ?? [])
       Object.assign(get(s.name), { rows: s.rows, quarantined: s.quarantinedRows, held: s.heldColumns, collapsed: s.collapsedRows });
@@ -244,6 +245,7 @@ function StreamsTable({
         cell: ({ row }) => (
           <span className="inline-flex items-center gap-2">
             <span className="font-medium">{row.original.name}</span>
+            {row.original.table && <span className="font-mono text-[0.8125rem] text-muted-foreground">→ {row.original.table}</span>}
             {row.original.paused && (
               <Badge variant="outline" className="font-normal">
                 Paused

@@ -286,7 +286,19 @@ impl Plan {
             })
             .collect();
         let mut namer = Namer::new(naming, &RESERVED_TABLES);
-        for (name, schema) in names.iter().zip(&restored) {
+        // A table the pipeline names comes first, and replaces a restored one.
+        for s in &req.streams {
+            if !s.table.is_empty() && !namer.keep(&s.name, &s.table) {
+                return Err(JobError::config(format!(
+                    "stream {}: table {:?} is reserved, or another stream's",
+                    s.name, s.table
+                )));
+            }
+        }
+        for ((name, schema), s) in names.iter().zip(&restored).zip(&req.streams) {
+            if !s.table.is_empty() {
+                continue;
+            }
             if let Some(table) = schema.as_ref().and_then(|s| s.metadata().get(TABLE_KEY))
                 && !namer.keep(name, table)
             {
@@ -724,6 +736,26 @@ pub(crate) mod tests {
             HashMap::from([(TABLE_KEY.to_owned(), "_openetl_loads".to_owned())]),
         );
         req.streams[0].restored_schema = crate::ipc::encode_schema(&taken).unwrap();
+        assert!(Plan::from_request(req).is_err());
+    }
+
+    #[test]
+    fn a_named_table_is_used_as_written_and_replaces_a_restored_one() {
+        let mut req = request(&["orders", "Users"]);
+        req.streams[0].table = "Fct-Orders".to_owned();
+        let restored = arrow_schema::Schema::new(Vec::<arrow_schema::Field>::new())
+            .with_metadata(HashMap::from([(TABLE_KEY.to_owned(), "orders".to_owned())]));
+        req.streams[0].restored_schema = crate::ipc::encode_schema(&restored).unwrap();
+        let p = Plan::from_request(req).unwrap();
+        assert_eq!(p.tables, vec!["Fct-Orders", "users"]);
+
+        let mut req = request(&["a", "b"]);
+        req.streams[0].table = "same".to_owned();
+        req.streams[1].table = "same".to_owned();
+        assert!(Plan::from_request(req).is_err());
+
+        let mut req = request(&["a"]);
+        req.streams[0].table = "_openetl_loads".to_owned();
         assert!(Plan::from_request(req).is_err());
     }
 

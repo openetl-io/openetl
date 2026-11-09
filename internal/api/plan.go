@@ -156,6 +156,7 @@ func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*a
 		if out.Changes, err = plan.Diff(before, p.v.pins()); err != nil {
 			return nil, err
 		}
+		out.Warnings = plan.TableChanges(before.Spec, p.v.spec)
 	}
 	unrunnable, notes, err := s.checkRunners(ctx, q, p.v)
 	if err != nil {

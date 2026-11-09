@@ -422,3 +422,35 @@ func TestHoldProblem(t *testing.T) {
 		t.Error("Holds")
 	}
 }
+
+func TestTableProblems(t *testing.T) {
+	spec := &apiv1.PipelineSpec{Source: &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{
+		{Name: "orders", Table: "a_long_table_name"}, {Name: "users"},
+	}}}
+	if got := tableProblems(spec, destination.Capabilities{MaxIdentifierLength: 63}); len(got) != 0 {
+		t.Errorf("within the limit: %v", got)
+	}
+	if got := tableProblems(spec, destination.Capabilities{}); len(got) != 0 {
+		t.Errorf("no limit: %v", got)
+	}
+	if got := tableProblems(spec, destination.Capabilities{MaxIdentifierLength: 5}); len(got) != 1 {
+		t.Errorf("past the limit: %v", got)
+	}
+}
+
+func TestTableChanges(t *testing.T) {
+	streams := func(s ...*apiv1.PipelineStream) *apiv1.PipelineSpec {
+		return &apiv1.PipelineSpec{Source: &apiv1.PipelineSource{Streams: s}}
+	}
+	before := streams(&apiv1.PipelineStream{Name: "orders", Table: "fct_orders"}, &apiv1.PipelineStream{Name: "users"})
+	if got := TableChanges(before, before); len(got) != 0 {
+		t.Errorf("no change: %v", got)
+	}
+	got := TableChanges(before, streams(&apiv1.PipelineStream{Name: "orders", Table: "orders_v2"}, &apiv1.PipelineStream{Name: "users"}, &apiv1.PipelineStream{Name: "new", Table: "t"}))
+	if len(got) != 1 || got[0].GetStream() != "orders" || !strings.Contains(got[0].GetMessage(), "reset --stream orders") {
+		t.Errorf("a changed table: %v", got)
+	}
+	if got := TableChanges(before, streams(&apiv1.PipelineStream{Name: "orders"}, &apiv1.PipelineStream{Name: "users"})); len(got) != 1 {
+		t.Errorf("a table taken away: %v", got)
+	}
+}

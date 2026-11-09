@@ -4900,6 +4900,12 @@ components:
                     type: string
                     description: Overrides destination.type_changes for this stream.
                     format: enum
+                table:
+                    type: string
+                    description: |-
+                        Its name in the destination, exactly as written: a table, or what the
+                         destination has instead, such as a topic. Unset: the stream's own name,
+                         by destination.naming. Not for a transform's inputs.
         PipelineVersion:
             type: object
             properties:
@@ -5509,6 +5515,9 @@ components:
                 paused:
                     type: boolean
                     description: Paused on its own, so syncs skip it.
+                table:
+                    type: string
+                    description: 'PipelineStream.table; empty: its name, by destination.naming.'
         StreamSchema:
             type: object
             properties:

@@ -644,8 +644,11 @@ type StreamPlan struct {
 	// _openetl_unchanged.
 	Changelog bool `protobuf:"varint,10,opt,name=changelog,proto3" json:"changelog,omitempty"`
 	// Unset: the stream holds nothing.
-	Holds         *HoldPlan `protobuf:"bytes,11,opt,name=holds,proto3" json:"holds,omitempty"`
-	Routing       Routing   `protobuf:"varint,12,opt,name=routing,proto3,enum=openetl.engine.v1.Routing" json:"routing,omitempty"`
+	Holds   *HoldPlan `protobuf:"bytes,11,opt,name=holds,proto3" json:"holds,omitempty"`
+	Routing Routing   `protobuf:"varint,12,opt,name=routing,proto3,enum=openetl.engine.v1.Routing" json:"routing,omitempty"`
+	// Its name in the destination, exactly as written. Empty: from its own
+	// name, by the job's naming.
+	Table         string `protobuf:"bytes,13,opt,name=table,proto3" json:"table,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -762,6 +765,13 @@ func (x *StreamPlan) GetRouting() Routing {
 		return x.Routing
 	}
 	return Routing_ROUTING_UNSPECIFIED
+}
+
+func (x *StreamPlan) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
@@ -2858,7 +2868,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
-	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xe8\x03\n" +
+	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xfe\x03\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
@@ -2874,7 +2884,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\tchangelog\x18\n" +
 	" \x01(\bR\tchangelog\x121\n" +
 	"\x05holds\x18\v \x01(\v2\x1b.openetl.engine.v1.HoldPlanR\x05holds\x124\n" +
-	"\arouting\x18\f \x01(\x0e2\x1a.openetl.engine.v1.RoutingR\arouting\"\xe3\x03\n" +
+	"\arouting\x18\f \x01(\x0e2\x1a.openetl.engine.v1.RoutingR\arouting\x12\x14\n" +
+	"\x05table\x18\r \x01(\tR\x05table\"\xe3\x03\n" +
 	"\bHoldPlan\x12\x14\n" +
 	"\x05cells\x18\x01 \x01(\bR\x05cells\x12+\n" +
 	"\x04held\x18\x02 \x01(\v2\x17.openetl.engine.v1.HeldR\x04held\x12B\n" +

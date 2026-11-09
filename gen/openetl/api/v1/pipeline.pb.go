@@ -2938,7 +2938,11 @@ type PipelineStream struct {
 	// Columns held together, by source name: holding one holds the rest.
 	Groups []*ColumnGroup `protobuf:"bytes,10,rep,name=groups,proto3" json:"groups,omitempty"`
 	// Overrides destination.type_changes for this stream.
-	TypeChanges   TypeChanges `protobuf:"varint,11,opt,name=type_changes,json=typeChanges,proto3,enum=openetl.api.v1.TypeChanges" json:"type_changes,omitempty"`
+	TypeChanges TypeChanges `protobuf:"varint,11,opt,name=type_changes,json=typeChanges,proto3,enum=openetl.api.v1.TypeChanges" json:"type_changes,omitempty"`
+	// Its name in the destination, exactly as written: a table, or what the
+	// destination has instead, such as a topic. Unset: the stream's own name,
+	// by destination.naming. Not for a transform's inputs.
+	Table         string `protobuf:"bytes,12,opt,name=table,proto3" json:"table,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3048,6 +3052,13 @@ func (x *PipelineStream) GetTypeChanges() TypeChanges {
 		return x.TypeChanges
 	}
 	return TypeChanges_TYPE_CHANGES_UNSPECIFIED
+}
+
+func (x *PipelineStream) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
 }
 
 type Held struct {
@@ -4977,7 +4988,9 @@ type StreamPlan struct {
 	// widens, rather than refusing it.
 	TypeChanges bool `protobuf:"varint,7,opt,name=type_changes,json=typeChanges,proto3" json:"type_changes,omitempty"`
 	// Paused on its own, so syncs skip it.
-	Paused        bool `protobuf:"varint,8,opt,name=paused,proto3" json:"paused,omitempty"`
+	Paused bool `protobuf:"varint,8,opt,name=paused,proto3" json:"paused,omitempty"`
+	// PipelineStream.table; empty: its name, by destination.naming.
+	Table         string `protobuf:"bytes,9,opt,name=table,proto3" json:"table,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5066,6 +5079,13 @@ func (x *StreamPlan) GetPaused() bool {
 		return x.Paused
 	}
 	return false
+}
+
+func (x *StreamPlan) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
 }
 
 // StreamSchema is a version of a stream's schema, as the destination has it.
@@ -6627,7 +6647,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\atrigger\"\\\n" +
 	"\x0ePipelineSource\x12\x10\n" +
 	"\x03ref\x18\x01 \x01(\tR\x03ref\x128\n" +
-	"\astreams\x18\x02 \x03(\v2\x1e.openetl.api.v1.PipelineStreamR\astreams\"\x93\x05\n" +
+	"\astreams\x18\x02 \x03(\v2\x1e.openetl.api.v1.PipelineStreamR\astreams\"\xa9\x05\n" +
 	"\x0ePipelineStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\x04sync\x18\x02 \x01(\x0e2\x18.openetl.api.v1.SyncModeR\x04sync\x12\x16\n" +
@@ -6644,7 +6664,8 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x04held\x18\t \x01(\v2\x14.openetl.api.v1.HeldR\x04held\x123\n" +
 	"\x06groups\x18\n" +
 	" \x03(\v2\x1b.openetl.api.v1.ColumnGroupR\x06groups\x12>\n" +
-	"\ftype_changes\x18\v \x01(\x0e2\x1b.openetl.api.v1.TypeChangesR\vtypeChanges\x1aZ\n" +
+	"\ftype_changes\x18\v \x01(\x0e2\x1b.openetl.api.v1.TypeChangesR\vtypeChanges\x12\x14\n" +
+	"\x05table\x18\f \x01(\tR\x05table\x1aZ\n" +
 	"\fColumnsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x124\n" +
 	"\x05value\x18\x02 \x01(\v2\x1e.openetl.api.v1.PipelineColumnR\x05value:\x028\x01B\v\n" +
@@ -6757,7 +6778,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"PlanChange\x12\x14\n" +
 	"\x05field\x18\x01 \x01(\tR\x05field\x12\x16\n" +
 	"\x06before\x18\x02 \x01(\tR\x06before\x12\x14\n" +
-	"\x05after\x18\x03 \x01(\tR\x05after\"\x8d\x02\n" +
+	"\x05after\x18\x03 \x01(\tR\x05after\"\xa3\x02\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
@@ -6767,7 +6788,8 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\bcollapse\x18\x05 \x01(\bR\bcollapse\x12/\n" +
 	"\x05write\x18\x06 \x01(\x0e2\x19.openetl.api.v1.WriteModeR\x05write\x12!\n" +
 	"\ftype_changes\x18\a \x01(\bR\vtypeChanges\x12\x16\n" +
-	"\x06paused\x18\b \x01(\bR\x06paused\"\xb1\x02\n" +
+	"\x06paused\x18\b \x01(\bR\x06paused\x12\x14\n" +
+	"\x05table\x18\t \x01(\tR\x05table\"\xb1\x02\n" +
 	"\fStreamSchema\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x05R\aversion\x12\x14\n" +
