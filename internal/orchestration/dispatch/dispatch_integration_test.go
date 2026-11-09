@@ -138,6 +138,33 @@ func (f *fixture) tick() {
 	}
 }
 
+// What f.move puts in the past. Each fails the test unless it finds its row
+// in the state the test needs.
+const (
+	missStart    = "UPDATE dispatches SET start_deadline = now() - interval '1 hour' WHERE id = $1 AND state = 'placed'"
+	endLease     = "UPDATE dispatches SET lease_deadline = now() - interval '1 hour' WHERE id = $1 AND state = 'running'"
+	lapseReports = "UPDATE runners SET report_time = now() - interval '1 hour' WHERE id = $1"
+)
+
+// move passes a deadline without waiting for it, so that a test can leave the
+// others long and a stalled machine can't run them out.
+func (f *fixture) move(statement, id string) {
+	f.t.Helper()
+	ctx := f.t.Context()
+	conn, err := pgx.Connect(ctx, f.url)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	tag, err := conn.Exec(ctx, statement, id)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if tag.RowsAffected() != 1 {
+		f.t.Fatalf("%s: %s changed %d rows", id, statement, tag.RowsAffected())
+	}
+}
+
 func (f *fixture) status(id string) contract.WorkStatus {
 	f.t.Helper()
 	st, err := f.d.Status(f.t.Context(), contract.WorkRef{OrgID: f.org.String(), ID: id})
@@ -197,10 +224,11 @@ func TestAttemptPlacedPolledReportedFinished(t *testing.T) {
 // place; the next placement finds another runner, and the first can't start it
 // late.
 func TestAttemptNotStartedInTimeIsPlacedAgain(t *testing.T) {
-	f := setup(t, Options{StartTimeout: 50 * time.Millisecond, ReportLapse: 80 * time.Millisecond})
+	f := setup(t, Options{})
 	f.report("dead", resources.M)
 	f.attempt("a")
-	time.Sleep(100 * time.Millisecond)
+	f.move(missStart, "a")
+	f.move(lapseReports, "dead")
 	f.tick()
 	if got := f.poll("dead", 0, 0); len(got) != 0 {
 		t.Fatalf("a late start: %v", got)
@@ -234,21 +262,20 @@ func TestLeaseEnds(t *testing.T) {
 	f.report("r", resources.M)
 	if err := f.d.Enqueue(ctx, contract.WorkInput{
 		OrgID: f.org.String(), DataPlane: "default", ID: "a", WorkflowID: "wf", Kind: contract.RunSyncAttempt, Input: map[string]string{},
-		Size: resources.S, Heartbeat: time.Second, Timeout: time.Hour,
+		Size: resources.S, Heartbeat: time.Hour, Timeout: time.Hour,
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	f.poll("r", 0, 0)
 	// A report keeps it past its first deadline.
-	time.Sleep(600 * time.Millisecond)
+	f.move(endLease, "a")
 	f.report("r", resources.M, "a")
-	time.Sleep(600 * time.Millisecond)
 	f.tick()
 	if st := f.status("a"); st.Done {
 		t.Fatalf("the report didn't extend the lease: %+v", st)
 	}
 	// Without another, it ends.
-	time.Sleep(time.Second)
+	f.move(endLease, "a")
 	f.tick()
 	st := f.status("a")
 	if !st.Done || st.Outcome.Code != errs.Transient.String() || st.Outcome.NonRetryable {
