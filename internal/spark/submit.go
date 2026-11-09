@@ -92,7 +92,7 @@ func New(ctx context.Context, spec *apiv1.SparkClusterSpec, conf map[string]stri
 		if ns == "" {
 			ns = "default"
 		}
-		return &kubernetes{submit: sub, namespace: ns}, nil
+		return &kubernetes{submit: sub, namespace: ns, client: driverClient(master, conf)}, nil
 	case master == "yarn":
 		rm, err := resourceManager()
 		if err != nil {

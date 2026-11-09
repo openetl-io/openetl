@@ -378,6 +378,9 @@ func (t *Transform) wait(ctx context.Context, e destination.Epoch) (*doneDoc, er
 			case err != nil:
 				t.log.Warn("checking the Spark transform's application failed", "submission", t.id, "err", err)
 			case st.Done:
+				if st.Failed {
+					LogDriver(ctx, t.sub, t.id, t.app)
+				}
 				// Look for its files once more, written as it ended.
 				ended = &st
 				continue
@@ -486,6 +489,9 @@ func (t *Transform) Stop(ctx context.Context) error {
 	for time.Now().Before(deadline) {
 		if st, err := t.sub.Status(ctx, t.id); err == nil && st.Done {
 			t.log.Info("the Spark transform's application ended", "submission", t.id, "state", st.State)
+			if st.Failed {
+				LogDriver(ctx, t.sub, t.id, t.app)
+			}
 			return nil
 		}
 		select {

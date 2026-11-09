@@ -192,6 +192,7 @@ func standaloneUI(master, ui string) string {
 type kubernetes struct {
 	*submit
 	namespace string
+	client    apiClient
 }
 
 var (
