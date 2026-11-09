@@ -68,10 +68,10 @@ type slot struct {
 	mu       sync.Mutex
 	cur      *runner
 	started  int
-	// A launcher's pods' latest engine for each pipeline, and the process
-	// group of each launcher it has run.
-	engines map[string]int
-	groups  []int
+	// For each pipeline, a launcher's pods' latest engine and latest pod; and
+	// the process group of each launcher it has run.
+	engines, pods map[string]int
+	groups        []int
 }
 
 func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, book *faultBook) *chaosPool {
@@ -82,7 +82,7 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 		t.Fatal(err)
 	}
 	for i := range cfg.runners {
-		s := &slot{i: cfg.first + i, pool: p, launcher: i < cfg.launchers, engines: map[string]int{}, results: startAPIFilter(t, env.apiURL)}
+		s := &slot{i: cfg.first + i, pool: p, launcher: i < cfg.launchers, engines: map[string]int{}, pods: map[string]int{}, results: startAPIFilter(t, env.apiURL)}
 		s.api = startProxy(t, strings.TrimPrefix(s.results.url(), "http://"))
 		if cfg.bucket != "" {
 			s.s3 = startS3Proxy(t, s, target)
@@ -206,7 +206,7 @@ func (s *slot) start() (*runner, error) {
 }
 
 // follow keeps what a launcher and its pods write until the last of them has
-// gone, and notes each pipeline's latest engine.
+// gone, and notes each pipeline's latest engine and pod.
 func (s *slot) follow(r *runner, logs *os.File) {
 	defer func() { _ = logs.Close() }()
 	br := bufio.NewReader(logs)
@@ -217,6 +217,12 @@ func (s *slot) follow(r *runner, logs *os.File) {
 			pid, _ := strconv.Atoi(m[2])
 			s.mu.Lock()
 			s.engines[m[1]] = pid
+			s.mu.Unlock()
+		}
+		if m := podStarted.FindStringSubmatch(line); m != nil {
+			pid, _ := strconv.Atoi(m[1])
+			s.mu.Lock()
+			s.pods[m[2]] = pid
 			s.mu.Unlock()
 		}
 		if err != nil {
@@ -263,14 +269,13 @@ func (s *slot) signal(sig syscall.Signal) bool {
 	return true
 }
 
-// stop sends sig to what runs the pipeline, whose engine is engine: the slot's
-// runner, or a launcher's pod, and with SIGKILL waits for it to die. It reports
-// whether there was one.
-func (s *slot) stop(pipeline string, engine int, sig syscall.Signal) bool {
+// stop sends sig to what runs the pipeline: the slot's runner, or a launcher's
+// pod, and with SIGKILL waits for it to die. It reports whether there was one.
+func (s *slot) stop(pipeline string, sig syscall.Signal) bool {
 	if !s.launcher {
 		return s.signal(sig)
 	}
-	pod := enginePod(engine)
+	pod := s.pod(pipeline)
 	if pod == 0 {
 		return false
 	}
@@ -290,7 +295,7 @@ func (s *slot) stop(pipeline string, engine int, sig syscall.Signal) bool {
 
 // crash kills what's writing the pipeline's checkpoints through this slot.
 func (s *slot) crash(pipeline string) {
-	if !s.stop(pipeline, s.engine(pipeline), syscall.SIGKILL) {
+	if !s.stop(pipeline, syscall.SIGKILL) {
 		s.pool.book.count(pipeline, "crash with nothing to kill")
 	}
 }
@@ -306,19 +311,15 @@ func (s *slot) killLauncher() bool {
 	return true
 }
 
-// enginePod is the PID of the pod that started the engine, or 0 if it has
-// gone. A dead pod's engine belongs to init or a subreaper for a moment, so
-// the parent has to be openetld.
-func enginePod(engine int) int {
-	if engine <= 0 {
-		return 0
-	}
-	out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(engine)).Output()
-	if err != nil {
-		return 0
-	}
-	pod, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil || pod <= 1 {
+// pod is the PID of the pipeline's latest pod on this slot's launcher, or 0
+// if it has gone. It can't be found through the engine, which may have exited
+// at the end of a sync while its pod still runs. The name guards against a
+// reused PID.
+func (s *slot) pod(pipeline string) int {
+	s.mu.Lock()
+	pod := s.pods[pipeline]
+	s.mu.Unlock()
+	if pod <= 0 {
 		return 0
 	}
 	name, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pod)).Output()
@@ -328,7 +329,10 @@ func enginePod(engine int) int {
 	return pod
 }
 
-var engineReady = regexp.MustCompile(`msg="engine ready" .*pipeline=(\S+) .* pid=(\d+)`)
+var (
+	engineReady = regexp.MustCompile(`msg="engine ready" .*pipeline=(\S+) .* pid=(\d+)`)
+	podStarted  = regexp.MustCompile(`msg="runner running one attempt" .*id=\S+:(\d+) attempt=(?:sync|stream)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
+)
 
 // engine is the PID of the engine the slot's runner, or one of its launcher's
 // pods, last started for pipeline, or 0.
@@ -352,11 +356,11 @@ func (s *slot) engine(pipeline string) int {
 }
 
 // children are the PIDs of the child processes, whose names start with prefix,
-// of what runs the engine: the slot's runner, or a launcher's pod.
-func (s *slot) children(engine int, prefix string) []int {
+// of what runs the pipeline: the slot's runner, or a launcher's pod.
+func (s *slot) children(pipeline, prefix string) []int {
 	parent := 0
 	if s.launcher {
-		parent = enginePod(engine)
+		parent = s.pod(pipeline)
 	} else if r := s.runner(); r != nil {
 		parent = r.cmd.Process.Pid
 	}

@@ -701,15 +701,15 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 		}
 		switch e.fault {
 		case faultKill:
-			done = sl.stop(pipeline, engine, syscall.SIGKILL)
+			done = sl.stop(pipeline, syscall.SIGKILL)
 		case faultDrain:
-			done = sl.stop(pipeline, engine, syscall.SIGTERM)
+			done = sl.stop(pipeline, syscall.SIGTERM)
 		case faultEngine:
 			done = kill(engine)
 		case faultLauncher:
 			done = sl.killLauncher()
 		case faultSource, faultDestination:
-			pids := sl.children(engine, strings.TrimPrefix(e.fault, "kill ")+"-")
+			pids := sl.children(pipeline, strings.TrimPrefix(e.fault, "kill ")+"-")
 			done = len(pids) > 0 && kill(pids[rng.IntN(len(pids))])
 		case faultPartition:
 			d := 5*time.Second + upTo(rng, 15*time.Second)
