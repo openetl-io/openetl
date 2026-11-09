@@ -67,7 +67,7 @@ func (s *Store) Listen(ctx context.Context, channel string, notify func(payload 
 // partitions for this month and the next and the checkpoint mirror's for
 // today and tomorrow. Concurrent callers wait on a session lock.
 func (s *Store) Migrate(ctx context.Context) error {
-	if err := s.migrate(ctx, 0); err != nil {
+	if err := s.migrate(ctx); err != nil {
 		return err
 	}
 	now := time.Now()
@@ -77,8 +77,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return s.EnsureMirrorPartitions(ctx, now)
 }
 
-// migrate applies pending migrations up to version, or every one if it's 0.
-func (s *Store) migrate(ctx context.Context, version int64) error {
+func (s *Store) migrate(ctx context.Context) error {
 	sqlDB := stdlib.OpenDBFromPool(s.pool)
 	defer func() { _ = sqlDB.Close() }()
 	locker, err := lock.NewPostgresSessionLocker()
@@ -93,12 +92,7 @@ func (s *Store) migrate(ctx context.Context, version int64) error {
 	if err != nil {
 		return fmt.Errorf("store: migrations: %w", err)
 	}
-	if version == 0 {
-		_, err = p.Up(ctx)
-	} else {
-		_, err = p.UpTo(ctx, version)
-	}
-	if err != nil {
+	if _, err := p.Up(ctx); err != nil {
 		return fmt.Errorf("store: migrate: %w", err)
 	}
 	return nil

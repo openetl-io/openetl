@@ -327,9 +327,8 @@ func TestCreatingAPartitionGivesUpBehindAnOpenReader(t *testing.T) {
 	}
 }
 
-// Migration 15 partitions the audit log by month and keeps its entries. A
-// month's partition is created when an entry first needs it, and goes once
-// the whole month is before the cutoff.
+// A month's partition of the audit log is created when an entry first needs
+// it, and goes once the whole month is before the cutoff.
 func TestAuditLogPartitions(t *testing.T) {
 	ctx := t.Context()
 	url := storetest.NewDatabase(t)
@@ -338,23 +337,17 @@ func TestAuditLogPartitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.MigrateTo(ctx, 14); err != nil {
+	if err := s.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	org := uuid.New()
 	entry := func(at time.Time) db.InsertAuditEntryParams {
 		return db.InsertAuditEntryParams{OrgID: org, ID: uuid.Must(uuid.NewV7()), Time: at, Actor: "principals/a", Method: "m", Resources: []string{"r"}, Details: []byte("{}")}
 	}
-	for _, at := range []time.Time{time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 30, 23, 59, 0, 0, time.UTC), time.Now()} {
-		if err := s.InsertAuditEntry(ctx, entry(at)); err != nil {
+	for _, at := range []time.Time{time.Date(2025, 1, 10, 0, 0, 0, 0, time.FixedZone("x", -5*3600)), time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 30, 23, 59, 0, 0, time.UTC), time.Now()} {
+		if err := s.WriteAuditEntry(ctx, entry(at)); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.WriteAuditEntry(ctx, entry(time.Date(2025, 1, 10, 0, 0, 0, 0, time.FixedZone("x", -5*3600)))); err != nil {
-		t.Fatal(err)
 	}
 	if got, err := s.ListAuditEntries(ctx, db.ListAuditEntriesParams{OrgID: org, MaxRows: 10}); err != nil || len(got) != 4 {
 		t.Fatalf("%d entries, %v", len(got), err)
@@ -393,7 +386,7 @@ func TestAuditLogPartitions(t *testing.T) {
 	if want := []string{"audit_log_202501", "audit_log_202608", "audit_log_202609"}; !slices.Equal(dropped, want) {
 		t.Fatalf("dropped %v, want %v", dropped, want)
 	}
-	if got := partitions(); got[0] != "audit_log_202610" || got[len(got)-1] != month(next) {
+	if got := partitions(); got[0] != month(now) || got[len(got)-1] != month(next) {
 		t.Errorf("partitions left %v", got)
 	}
 	if got, err := s.ListAuditEntries(ctx, db.ListAuditEntriesParams{OrgID: org, MaxRows: 10}); err != nil || len(got) != 1 {
@@ -401,10 +394,9 @@ func TestAuditLogPartitions(t *testing.T) {
 	}
 }
 
-// Migration 11 pins what pipeline versions from before it ran: their
-// sources' and destinations' current configs, and their dbt projects'
-// current bundles. Versions whose source is gone go.
-func TestPinnedVersionsMigration(t *testing.T) {
+// A secret holds a sealed value or a reference, and only a sealed value needs
+// the org's data key.
+func TestASecretHoldsAValueOrAReference(t *testing.T) {
 	ctx := t.Context()
 	url := storetest.NewDatabase(t)
 	s, err := store.Open(ctx, url)
@@ -412,68 +404,7 @@ func TestPinnedVersionsMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.MigrateTo(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	conn, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = conn.Close(context.Background()) }()
-	org, ws, src, gone, dst, pipeline := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	args := pgx.NamedArgs{"org": org, "ws": ws, "src": src, "gone": gone, "dst": dst, "pipeline": pipeline, "dp": "dp-" + org.String()}
-	for _, q := range []string{
-		`INSERT INTO orgs (id, name) VALUES (@org, 'o')`,
-		`INSERT INTO workspaces (org_id, id, name) VALUES (@org, @ws, 'default')`,
-		`INSERT INTO data_planes (org_id, id) VALUES (@org, @dp)`,
-		`INSERT INTO sources (org_id, workspace_id, id, name, spec, version, revision, connector_digest, secrets)
-			VALUES (@org, @ws, @src, 'src', '{"connector": "faker"}', 's1', 1, '', '{}')`,
-		`INSERT INTO sources (org_id, workspace_id, id, name, spec, version, revision) VALUES (@org, @ws, @gone, 'gone', '{}', 'g1', 1)`,
-		`INSERT INTO destinations (org_id, workspace_id, id, name, spec, version, revision, connector_digest, secrets)
-			VALUES (@org, @ws, @dst, 'dst', '{"connector": "postgres"}', 'd1', 1, 'sha256:c', '{dsn}')`,
-		`INSERT INTO artifacts (org_id, digest, media_type, content) VALUES (@org, 'sha256:b', 'x', '')`,
-		`INSERT INTO dbt_projects (org_id, workspace_id, id, name, digest, revision) VALUES (@org, @ws, gen_random_uuid(), 'proj', 'sha256:b', 1)`,
-		`INSERT INTO pipelines (org_id, workspace_id, id, name, source_id, destination_id, data_plane_id, version, revision)
-			VALUES (@org, @ws, @pipeline, 'p', @src, @dst, @dp, 'v2', 2)`,
-		`INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id)
-			VALUES (@org, @pipeline, 'v1', '{}', @gone, @dst, @dp)`,
-		`INSERT INTO pipeline_versions (org_id, pipeline_id, version, spec, source_id, destination_id, data_plane_id)
-			VALUES (@org, @pipeline, 'v2', '{"postSync": [{"dbt": {"project": "proj"}}, {"dbt": {"project": "proj", "command": "DBT_COMMAND_TEST"}}]}', @src, @dst, @dp)`,
-		`DELETE FROM sources WHERE id = @gone`,
-	} {
-		if _, err := conn.Exec(ctx, q, args); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
 	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	v, err := s.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: org, PipelineID: pipeline, Version: "v2"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(v.SourceSpec) != `{"connector": "faker"}` || v.DestinationConnector != "sha256:c" || !slices.Equal(v.DestinationSecrets, []string{"dsn"}) {
-		t.Errorf("v2 pins %+v", v)
-	}
-	if string(v.Dbt) != `{"proj": "sha256:b"}` {
-		t.Errorf("v2 pins dbt %s", v.Dbt)
-	}
-	if _, err := s.GetPipelineVersion(ctx, db.GetPipelineVersionParams{OrgID: org, PipelineID: pipeline, Version: "v1"}); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("v1, whose source is gone: %v", err)
-	}
-}
-
-// Migration 12: a secret holds a sealed value or a reference, and only a
-// sealed value needs the org's data key.
-func TestSecretRefsMigration(t *testing.T) {
-	ctx := t.Context()
-	url := storetest.NewDatabase(t)
-	s, err := store.Open(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.MigrateTo(ctx, 11); err != nil {
 		t.Fatal(err)
 	}
 	conn, err := pgx.Connect(ctx, url)
@@ -497,9 +428,6 @@ func TestSecretRefsMigration(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
 	r, err := s.GetSecret(ctx, db.GetSecretParams{OrgID: org, WorkspaceID: ws, Name: "sealed"})
 	if err != nil || string(r.Ciphertext) != "c" || r.Ref != nil {
 		t.Errorf("the sealed secret: %+v, %v", r, err)
@@ -518,10 +446,9 @@ func TestSecretRefsMigration(t *testing.T) {
 	}
 }
 
-// Migration 24 makes connector versions packages: a source and a
-// destination of one name and version become one version with two roles,
-// and bare names become openetl's.
-func TestConnectorPackagesMigration(t *testing.T) {
+// A connector version is one package version, with an artifact for each of
+// its roles.
+func TestAConnectorVersionHasAnArtifactPerRole(t *testing.T) {
 	ctx := t.Context()
 	url := storetest.NewDatabase(t)
 	s, err := store.Open(ctx, url)
@@ -529,7 +456,7 @@ func TestConnectorPackagesMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.MigrateTo(ctx, 23); err != nil {
+	if err := s.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	conn, err := pgx.Connect(ctx, url)
@@ -541,17 +468,17 @@ func TestConnectorPackagesMigration(t *testing.T) {
 	for _, q := range []string{
 		`INSERT INTO orgs (id, name) VALUES (@org, 'o')`,
 		`INSERT INTO artifacts (org_id, digest, media_type, content) VALUES (@org, 'sha256:s', 'x', ''), (@org, 'sha256:d', 'x', ''), (@org, 'sha256:k', 'x', '')`,
-		`INSERT INTO connector_versions (org_id, kind, name, version, digest, provenance, author, create_time)
-			VALUES (@org, 'destination', 'postgres', '0.1.0', 'sha256:d', 'cli:d', 'Late', now()),
-			       (@org, 'source', 'postgres', '0.1.0', 'sha256:s', 'cli:s', 'Early', now() - interval '1 hour'),
-			       (@org, 'source', 'kafka', '0.2.0', 'sha256:k', 'cli:k', '', now())`,
+		`INSERT INTO connector_versions (org_id, name, version, provenance, author)
+			VALUES (@org, 'openetl/postgres', '0.1.0', 'cli:s', 'Early'),
+			       (@org, 'openetl/kafka', '0.2.0', 'cli:k', '')`,
+		`INSERT INTO connector_roles (org_id, name, version, role, digest)
+			VALUES (@org, 'openetl/postgres', '0.1.0', 'source', 'sha256:s'),
+			       (@org, 'openetl/postgres', '0.1.0', 'destination', 'sha256:d'),
+			       (@org, 'openetl/kafka', '0.2.0', 'source', 'sha256:k')`,
 	} {
 		if _, err := conn.Exec(ctx, q, pgx.NamedArgs{"org": org}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
 	}
 	pg, err := s.GetConnectorVersion(ctx, db.GetConnectorVersionParams{OrgID: org, Name: "openetl/postgres", Version: "0.1.0"})
 	if err != nil || pg.Author != "Early" || pg.Provenance != "cli:s" {
