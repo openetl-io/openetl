@@ -45,10 +45,23 @@ tools: $(BIN)/.tools ## Build the pinned developer tools into bin/
 hooks: ## Check what each commit touches before it's made
 	git config core.hooksPath .githooks
 
+# The default store is a folder, which compose's Spark and Flink can't read.
+# STORE=s3 keeps it on compose's S3, which both can, in the bucket DEV_BUCKET,
+# with S3A's jars for Spark, and the runner's spark-submit and bridge for them.
+DEV_BUCKET ?= openetl-dev
+ifeq ($(STORE),s3)
+DEV_DEPS := spark-s3a
+DEV_ENV := OPENETL_CHECKPOINTS='s3://$(DEV_BUCKET)?endpoint=http%3A%2F%2F127.0.0.1%3A8333' \
+	OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit \
+	OPENETL_BRIDGE_LISTEN=0.0.0.0:7710 OPENETL_BRIDGE_ADVERTISE=host.docker.internal:7710
+DEV_SETUP := curl -sS -o /dev/null -X PUT http://127.0.0.1:8333/$(DEV_BUCKET)
+endif
+
 .PHONY: dev
-dev: deps-up connectors web ## Start compose deps and run openetld dev, with the UI
+dev: $(DEV_DEPS) deps-up connectors web ## Start compose deps and run openetld dev, with the UI; STORE=s3 keeps the store where compose's Spark and Flink can read it
 	cargo build -p openetl-engine
-	go run ./cmd/openetld dev --engine $(CURDIR)/target/debug/openetl-engine --connectors $(CURDIR)/bin/connectors --web $(CURDIR)/web/dist
+	$(DEV_SETUP)
+	$(DEV_ENV) go run ./cmd/openetld dev --engine $(CURDIR)/target/debug/openetl-engine --connectors $(CURDIR)/bin/connectors --web $(CURDIR)/web/dist
 
 # The UI. pnpm installs web/'s dependencies, protoc-gen-es among them.
 web/node_modules/.modules.yaml: web/package.json web/pnpm-lock.yaml
@@ -68,6 +81,25 @@ deps-up: ## Start local dependencies (Postgres, S3, GCS, Azure, Kafka, Kinesis, 
 	docker compose -f deploy/compose/dev.yml $(if $(or $(TEMPORAL),$(findstring temporal,$(DEPS))),--profile temporal) up -d --wait $(DEPS) $(if $(and $(TEMPORAL),$(DEPS)),temporal)
 deps-down: ## Stop local dependencies
 	docker compose -f deploy/compose/dev.yml --profile temporal down
+
+# Hadoop's S3A for compose's Spark, whose image has Hadoop 3.3.4, by SHA-256.
+# They go in the share, where the Spark containers load them as they start.
+SPARK_S3A_JARS := \
+	53f9ae03c681a30a50aa17524bd9790ab596b28481858e54efd989a826ed3a4a=org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar \
+	873fe7cf495126619997bec21c44de5d992544aea7e632fdc77adb1a0915bae5=com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar
+.PHONY: spark-s3a
+spark-s3a: ## Download Hadoop's S3A jars for compose's Spark (about 280 MB), which make dev STORE=s3 needs
+	@mkdir -p $(OPENETL_SPARK_SHARE)/s3a
+	@new=; for j in $(SPARK_S3A_JARS); do \
+		sum=$${j%%=*}; path=$${j#*=}; file=$(OPENETL_SPARK_SHARE)/s3a/$${path##*/}; \
+		echo "$$sum  $$file" | shasum -a 256 --check --status 2>/dev/null && continue; \
+		echo "downloading $${path##*/}"; \
+		curl -fsSL -o "$$file.tmp" "https://repo1.maven.org/maven2/$$path" && \
+		echo "$$sum  $$file.tmp" | shasum -a 256 --check --status && mv "$$file.tmp" "$$file" || \
+			{ rm -f "$$file.tmp"; echo "$${path##*/}: the download failed or its checksum differs"; exit 1; }; \
+		new=1; \
+	done; \
+	if [ -n "$$new" ]; then docker compose -f deploy/compose/dev.yml restart --no-deps spark-master spark-worker; fi
 
 # The kubeconfig is the cluster's own, so the current kubectl context is
 # never touched.

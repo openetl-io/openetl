@@ -24,7 +24,7 @@ Runners reach the control plane only through the API, so they can run anywhere t
 ## What you need
 
 - **Postgres** for the metadata database: pipelines, versions, syncs, secrets (encrypted), users and audit. On the default orchestrator, the orchestrators also keep their workflows in a second database on the same server, named after the first with `_dbos`, which they create if the user may.
-- **Object storage** for checkpoints and staging: an S3 bucket (or one on an S3-compatible store), a GCS bucket or an Azure Blob Storage container. A local directory works when everything runs on one machine.
+- **Object storage** for checkpoints and staging: an S3 bucket (or one on an S3-compatible store), a GCS bucket or an Azure Blob Storage container. A local directory works only when every runner, and any Spark or Flink cluster, sees it at the same path. Containers on the same machine don't unless it's mounted in them.
 - **`openetld`, `openetl-engine` and the connectors.** A runner looks for the engine next to `openetld`, then on its `PATH`, and for connectors in `connectors/` next to `openetld`. `openetld`'s image holds all three, with the CLI and the console. No image or binary has been released, so build them from source: [CONTRIBUTING.md](../../CONTRIBUTING.md) has how, and the [Compose guide](./compose.md#before-you-start) how to build the image.
 
 ## The settings every installation sets

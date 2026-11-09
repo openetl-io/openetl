@@ -27,6 +27,8 @@ make deps-down         # stop what deps-up started
 
 `make help` lists the rest. `make deps-up` and `make dev` start every dependency unless `DEPS` names some, such as `DEPS="postgres s3"`.
 
+`make dev` keeps its store in the folder `.openetl/checkpoints`, which compose's Spark and Flink containers can't read. To run Spark steps and Flink transforms on them, use `make dev STORE=s3`: the store goes in the bucket `openetl-dev` on compose's S3, which both can read, Spark gets Hadoop's S3A jars (a one-time download of about 280 MB, into `.openetl/spark/s3a`), and the runner gets `deploy/compose/spark-submit` and a bridge for Flink. Your clusters are `spark://spark-master:7077`, with the UI at `http://127.0.0.1:8090`, and `http://localhost:8091`. A pipeline's checkpoints stay in the store it ran on. To carry them over when you change store, stop `openetld` and copy the folder with `aws s3 sync`, leaving out `*.lock`, `*.attrs` and `.tmp-*`, which only the folder store has.
+
 `openetld dev` runs the server, an orchestrator and a runner in one process, and asks no one to sign in while it listens only on a loopback address. `openetld server` writes the owner's API key to `.openetl/admin.key` when it creates the org, and `openetl principal password-link` gives a user a link to set a password for the UI.
 
 ## Repository layout

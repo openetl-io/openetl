@@ -173,12 +173,22 @@ services:
   # path in both, so a runner whose store is below it hands Spark file:// URIs
   # it can read, without S3A. They run as root: a directory store's
   # directories are the runner's user's alone (0750).
+  #
+  # A runner whose store is on S3 hands it s3a:// URIs, which need make
+  # spark-s3a's jars in the share. Without them the classpath entry adds
+  # nothing, so only that setup downloads them. The Worker fetches a job's jar
+  # itself, so S3A's settings are the cluster's, in core-site.xml.
   spark-master:
     image: apache/spark:3.5.8
     user: root
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master"]
     # The UI, through which runners watch and kill drivers.
     ports: ["8090:8080"]
+    environment: &spark-env
+      SPARK_DIST_CLASSPATH: ${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}/s3a/*
+      HADOOP_CONF_DIR: /etc/hadoop
+    configs: &spark-configs
+      - { source: spark-core-site, target: /etc/hadoop/core-site.xml }
     volumes: ["${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}:${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}"]
     healthcheck:
       # The master binds 7077 to spark-master's address, and its UI to all.
@@ -191,8 +201,10 @@ services:
     user: root
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
     environment:
+      <<: *spark-env
       SPARK_WORKER_CORES: "2"
       SPARK_WORKER_MEMORY: 2g
+    configs: *spark-configs
     volumes: ["${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}:${OPENETL_SPARK_SHARE:-/tmp/openetl-spark}"]
     depends_on:
       spark-master:
@@ -236,6 +248,18 @@ services:
     depends_on:
       flink-jobmanager:
         condition: service_healthy
+
+configs:
+  # S3A's settings for compose's S3, as Spark reaches it inside this network.
+  spark-core-site:
+    content: |
+      <configuration>
+        <property><name>fs.s3a.endpoint</name><value>http://s3:8333</value></property>
+        <property><name>fs.s3a.path.style.access</name><value>true</value></property>
+        <property><name>fs.s3a.connection.ssl.enabled</name><value>false</value></property>
+        <property><name>fs.s3a.access.key</name><value>any</value></property>
+        <property><name>fs.s3a.secret.key</name><value>any</value></property>
+      </configuration>
 
 volumes:
   postgres:
