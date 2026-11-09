@@ -190,6 +190,7 @@ func catalogPackage(r db.GetCatalogPackageRow) *apiv1.CatalogPackage {
 			p.AppliedVersion = v
 		}
 	}
+	p.UpdateAvailable = p.AppliedVersion != "" && spec.CompareVersions(p.Version, p.AppliedVersion) > 0
 	return p
 }
 

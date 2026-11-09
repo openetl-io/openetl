@@ -389,9 +389,11 @@ type CatalogPackage struct {
 	AppliedVersion string `protobuf:"bytes,17,opt,name=applied_version,json=appliedVersion,proto3" json:"applied_version,omitempty"`
 	// Applied by the org, from a file or by a reference, and listed by no
 	// connected source.
-	Manual        bool `protobuf:"varint,18,opt,name=manual,proto3" json:"manual,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Manual bool `protobuf:"varint,18,opt,name=manual,proto3" json:"manual,omitempty"`
+	// The listed version is later than the highest the org has applied.
+	UpdateAvailable bool `protobuf:"varint,19,opt,name=update_available,json=updateAvailable,proto3" json:"update_available,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CatalogPackage) Reset() {
@@ -546,6 +548,13 @@ func (x *CatalogPackage) GetAppliedVersion() string {
 func (x *CatalogPackage) GetManual() bool {
 	if x != nil {
 		return x.Manual
+	}
+	return false
+}
+
+func (x *CatalogPackage) GetUpdateAvailable() bool {
+	if x != nil {
+		return x.UpdateAvailable
 	}
 	return false
 }
@@ -971,7 +980,7 @@ const file_openetl_api_v1_connector_proto_rawDesc = "" +
 	"\asources\x18\x01 \x03(\v2\x1f.openetl.api.v1.ConnectorSourceR\asources\"2\n" +
 	"\x1cDeleteConnectorSourceRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"\x1f\n" +
-	"\x1dDeleteConnectorSourceResponse\"\xe3\x03\n" +
+	"\x1dDeleteConnectorSourceResponse\"\x8e\x04\n" +
 	"\x0eCatalogPackage\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x18\n" +
@@ -993,7 +1002,8 @@ const file_openetl_api_v1_connector_proto_rawDesc = "" +
 	"\bofficial\x18\x0f \x01(\bR\bofficial\x12\x1a\n" +
 	"\bimpostor\x18\x10 \x01(\bR\bimpostor\x12'\n" +
 	"\x0fapplied_version\x18\x11 \x01(\tR\x0eappliedVersion\x12\x16\n" +
-	"\x06manual\x18\x12 \x01(\bR\x06manual\"\xa1\x01\n" +
+	"\x06manual\x18\x12 \x01(\bR\x06manual\x12)\n" +
+	"\x10update_available\x18\x13 \x01(\bR\x0fupdateAvailable\"\xa1\x01\n" +
 	"\vConfigField\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x14\n" +

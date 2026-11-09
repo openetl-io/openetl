@@ -35,6 +35,9 @@ Refreshing lists what's available. It does not install a version or change a pip
 
 A package you've applied that no connected source lists, from a file or by a reference, is in the catalog too, marked **Manually installed**, at the highest version you've applied. It has no apply command there, and OpenETL can't say whether a newer version exists.
 
+A package whose listed version is later than the highest you've applied is marked **Update available** in the console, and `(update available)` in the catalog's `APPLIED` column. Applying the new version doesn't change a pipeline already pinned to an older one.
+
+
 Use the apply command shown by the catalog, or a reference from the connector's author. These are alternative forms; replace the capitals with your package's location and version:
 
 ```sh

@@ -13,7 +13,7 @@ import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { QueryError } from "@/components/query-error";
 import { ConnectorService, type CatalogPackage } from "@/gen/openetl/api/v1/connector_pb";
-import { failingSources, packageSource, packageText, roleLabel, sortPackages, sourceId } from "@/lib/catalog";
+import { failingSources, packageSource, packageText, roleLabel, sortPackages, sourceLabel } from "@/lib/catalog";
 import { useListFilter } from "@/lib/list-filter";
 
 const route = getRouteApi("/_app/workspaces/$workspace/connectors");
@@ -61,7 +61,7 @@ function Catalog() {
         <Alert className="[&>svg]:text-degraded">
           <TriangleAlert />
           <AlertTitle>
-            {failing.length === 1 ? `The ${sourceId(failing[0]!.name)} source failed to list` : `${failing.length} sources failed to list`}
+            {failing.length === 1 ? `The ${sourceLabel(failing[0]!.name)} source failed to list` : `${failing.length} sources failed to list`}
           </AlertTitle>
           <AlertDescription>
             <p>

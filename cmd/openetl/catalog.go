@@ -96,8 +96,11 @@ func printCatalog(out io.Writer, pkgs []*apiv1.CatalogPackage, sources []*apiv1.
 			name += " (manually installed)"
 		}
 		applied := p.GetAppliedVersion()
-		if applied == "" {
+		switch {
+		case applied == "":
 			applied = "-"
+		case p.GetUpdateAvailable():
+			applied += " (update available)"
 		}
 		source, apply := "-", "-"
 		if !p.GetManual() {

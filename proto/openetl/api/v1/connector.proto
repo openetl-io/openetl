@@ -121,6 +121,8 @@ message CatalogPackage {
   // Applied by the org, from a file or by a reference, and listed by no
   // connected source.
   bool manual = 18;
+  // The listed version is later than the highest the org has applied.
+  bool update_available = 19;
 }
 
 // ConfigField is a top-level field of a role's config, from its JSON

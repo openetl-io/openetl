@@ -92,6 +92,7 @@ export const catalogPackages: CatalogPackage[] = defs.map((d) =>
     name: `catalog/${d.source}/${d.package}`,
     source: `connectorSources/${d.source}`,
     official: d.source === "official" && d.package.startsWith("openetl/"),
+    updateAvailable: !!d.appliedVersion && d.appliedVersion !== d.version,
     author: d.author ?? (d.source === "official" ? "OpenETL" : ""),
     repository: d.repository ?? (d.source === "official" ? "https://github.com/openetl-io/openetl-connectors" : d.source === "acme" ? acme : ""),
     reference: d.reference ?? `${url(d.source)}/${d.package.split("/")[1]}:${d.version}`,

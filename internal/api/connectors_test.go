@@ -6,6 +6,27 @@ import (
 	"github.com/openetl-io/openetl/internal/store/db"
 )
 
+func TestCatalogPackageUpdateAvailable(t *testing.T) {
+	for _, c := range []struct {
+		listed  string
+		applied []string
+		want    bool
+	}{
+		{"1.0.0", nil, false},
+		{"1.0.0", []string{"1.0.0"}, false},
+		{"1.1.0", []string{"1.0.0"}, true},
+		{"1.10.0", []string{"1.9.0", "1.2.0"}, true},
+		{"1.0.0", []string{"1.1.0"}, false},
+		{"1.1.0", []string{"1.1.0-rc.1"}, true},
+		{"1.0.0", []string{"1.1.0-rc.1"}, false},
+	} {
+		p := catalogPackage(db.GetCatalogPackageRow{Package: "acme/x", Source: "s", Version: c.listed, Applied: c.applied})
+		if p.GetUpdateAvailable() != c.want {
+			t.Errorf("%s listed, %v applied: update available %v", c.listed, c.applied, p.GetUpdateAvailable())
+		}
+	}
+}
+
 func TestPickVersion(t *testing.T) {
 	rows := []db.ListConnectorRolesRow{
 		{Version: "0.9.0", Digest: "sha256:09"},

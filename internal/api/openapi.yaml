@@ -2984,6 +2984,9 @@ components:
                     description: |-
                         Applied by the org, from a file or by a reference, and listed by no
                          connected source.
+                updateAvailable:
+                    type: boolean
+                    description: The listed version is later than the highest the org has applied.
             description: |-
                 CatalogPackage is a package as its source's index or releases describe it:
                  what its publisher says, until it's applied.

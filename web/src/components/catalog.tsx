@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@connectrpc/connect-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { BadgeCheck, Check, CircleCheck, ExternalLink, KeyRound, PackagePlus, TriangleAlert } from "lucide-react";
+import { BadgeCheck, Check, CircleArrowUp, CircleCheck, ExternalLink, KeyRound, PackagePlus, TriangleAlert } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,11 +18,11 @@ import { ErrorNote } from "@/components/empty";
 import { QueryError } from "@/components/query-error";
 import { RelativeTime } from "@/components/relative-time";
 import { type CatalogPackage, type CatalogRole, ConnectorService, type ConnectorSource } from "@/gen/openetl/api/v1/connector_pb";
-import { appliedState, applyCommand, manualLabel, roleLabel, sourceId } from "@/lib/catalog";
+import { appliedState, applyCommand, manualLabel, roleLabel, sourceLabel } from "@/lib/catalog";
 import { dateOf, relative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-/** Official, not official, manually installed, and which version the org has applied. */
+/** Official, not official, manually installed, which version the org has applied, and whether a later one is listed. */
 export function PackageBadges({ pkg, className }: { pkg: CatalogPackage; className?: string }) {
   const applied = appliedState(pkg);
   if (!pkg.official && !pkg.impostor && !pkg.manual && applied === "none") return null;
@@ -50,6 +50,12 @@ export function PackageBadges({ pkg, className }: { pkg: CatalogPackage; classNa
         <Badge variant="outline" className={cn(applied === "current" && "border-healthy/40")}>
           {applied === "current" ? <CircleCheck className="text-healthy" aria-hidden /> : <Check aria-hidden />}
           Applied {pkg.appliedVersion}
+        </Badge>
+      )}
+      {pkg.updateAvailable && (
+        <Badge variant="outline" className="border-running/40">
+          <CircleArrowUp className="text-running" aria-hidden />
+          Update available
         </Badge>
       )}
     </span>
@@ -240,7 +246,7 @@ export function PackageSheet({ pkg, onClose }: { pkg?: CatalogPackage; onClose: 
                   <TriangleAlert />
                   <AlertTitle>Not an official connector</AlertTitle>
                   <AlertDescription>
-                    Its name is under openetl/, which only the official connectors use, and the {sourceId(pkg.source)} source lists it, so applying it is
+                    Its name is under openetl/, which only the official connectors use, and the {sourceLabel(pkg.source)} source lists it, so applying it is
                     refused.
                   </AlertDescription>
                 </Alert>
@@ -262,7 +268,7 @@ export function PackageSheet({ pkg, onClose }: { pkg?: CatalogPackage; onClose: 
                   <RoleBadges roles={pkg.roles} />
                 </DescriptionItem>
                 <DescriptionItem label="Listed by">
-                  {pkg.manual ? <span className="text-muted-foreground">No connected source</span> : sourceId(pkg.source)}
+                  {pkg.manual ? <span className="text-muted-foreground">No connected source</span> : sourceLabel(pkg.source)}
                 </DescriptionItem>
                 {pkg.repository && (
                   <DescriptionItem label="Repository" className="sm:col-span-2">
@@ -280,7 +286,7 @@ export function PackageSheet({ pkg, onClose }: { pkg?: CatalogPackage; onClose: 
                 <Section title="Apply">
                   <p className="text-sm text-muted-foreground">
                     {appliedState(pkg) === "current"
-                      ? "The org has applied this version. Sources and destinations name it as "
+                      ? "The org has applied it. Sources and destinations name it as "
                       : "Applying it makes the version available to sources and destinations, which name it as "}
                     <code className="font-mono text-[0.8125rem] text-foreground">{pkg.package.replace(/^openetl\//, "")}</code>.
                   </p>
@@ -312,11 +318,11 @@ export function SourcesTable({ sources, loading }: { sources: ConnectorSource[];
     () => [
       {
         id: "name",
-        accessorFn: (s) => sourceId(s.name),
+        accessorFn: (s) => sourceLabel(s.name),
         header: ({ column }) => <SortHeader column={column} title="Source" />,
         cell: ({ row }) => (
           <span className="inline-flex items-center gap-2">
-            <span className="font-medium">{sourceId(row.original.name)}</span>
+            <span className="font-medium">{sourceLabel(row.original.name)}</span>
             {row.original.official && (
               <Badge variant="secondary">
                 <BadgeCheck className="text-running" aria-hidden />
@@ -368,7 +374,7 @@ export function SourcesTable({ sources, loading }: { sources: ConnectorSource[];
           return (
             <ErrorNote
               key={s.name}
-              title={`${sourceId(s.name)} failed to list${t ? ` ${relative(t)}` : ""}; it keeps its last listing`}
+              title={`${sourceLabel(s.name)} failed to list${t ? ` ${relative(t)}` : ""}; it keeps its last listing`}
               message={s.error}
             />
           );
