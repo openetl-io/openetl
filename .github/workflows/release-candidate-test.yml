@@ -1,0 +1,48 @@
+name: release-candidate-test
+
+# Temporary, and removed before this branch merges: dispatching a workflow
+# needs it on main, so this runs the new ones from their branch, on a throwaway
+# version. A commit message with discard-test-candidate discards it instead.
+on:
+  push:
+    branches: [release-candidate-flow]
+
+permissions: {}
+
+jobs:
+  candidate:
+    if: ${{ !contains(github.event.head_commit.message, 'discard-test-candidate') }}
+    uses: ./.github/workflows/release-candidate.yml
+    permissions:
+      contents: write
+      packages: write
+    with:
+      version: 0.0.1-alpha.1
+      replace: true
+
+  private:
+    needs: candidate
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    steps:
+      - name: Every candidate package is private
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate '/orgs/openetl-io/packages?package_type=container' \
+            --jq '.[] | select(.name | startswith("candidates/")) | "\(.name) \(.visibility) \(.repository.full_name // "unlinked")"' | tee packages.txt
+          test -s packages.txt
+          if grep -v ' private ' packages.txt; then
+            echo "::error::a candidate package isn't private"
+            exit 1
+          fi
+
+  discard:
+    if: ${{ contains(github.event.head_commit.message, 'discard-test-candidate') }}
+    uses: ./.github/workflows/release-discard.yml
+    permissions:
+      contents: write
+      packages: write
+    with:
+      version: 0.0.1-alpha.1
