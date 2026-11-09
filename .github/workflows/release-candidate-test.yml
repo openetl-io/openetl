@@ -19,7 +19,7 @@ jobs:
       contents: write
       packages: write
     with:
-      version: 0.0.1-alpha.3
+      version: 0.0.1-alpha.4
       replace: true
 
   private:
@@ -28,9 +28,9 @@ jobs:
     steps:
       - name: An anonymous pull is refused
         run: |
-          r=candidates/0.0.1-alpha.3/openetl
+          r=candidates/0.0.1-alpha.4/openetl
           t=$(curl -s "https://ghcr.io/token?scope=repository:openetl-io/$r:pull&service=ghcr.io" | jq -r '.token // ""')
-          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" -H 'Accept: application/vnd.oci.image.index.v1+json' "https://ghcr.io/v2/openetl-io/$r/manifests/0.0.1-alpha.3")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" -H 'Accept: application/vnd.oci.image.index.v1+json' "https://ghcr.io/v2/openetl-io/$r/manifests/0.0.1-alpha.4")
           echo "$r: $code"
           [ "$code" != 200 ]
 
