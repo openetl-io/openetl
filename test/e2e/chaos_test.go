@@ -7,7 +7,9 @@ package e2e
 // and the object store fails, then checks that every row landed once. Runners die at the commit protocol's crash points too,
 // injected by their object-store proxies. Some runs into Postgres add a
 // column mid-run, which block holds, and release it at random times. Some
-// runs are rescaled through the API, up and down, at random times.
+// runs are rescaled through the API, up and down, at random times. Some run
+// their attempts in pods, started as processes by pod launchers, where these
+// faults reach the pod, and launchers die while their pods go on.
 //
 //	make chaos CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'
 //	go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/0042-' -chaos.seed=7   # one run again
@@ -81,6 +83,8 @@ type chaosConfig struct {
 	size string
 	// How often it's rescaled through the API while it writes.
 	rescales int
+	// It goes to the data plane of pod launchers.
+	pods bool
 }
 
 // The faults a run can draw besides crash points.
@@ -96,7 +100,11 @@ const (
 	faultTaskManager = "kill Flink TaskManager"
 	faultJobManager  = "kill Flink JobManager"
 	faultRescale     = "rescale"
+	faultLauncher    = "kill launcher"
 )
+
+// What the report calls faults that reached a pod rather than a runner.
+var podFaults = map[string]string{faultKill: "kill pod", faultDrain: "drain pod"}
 
 func drawConfig(seed uint64, i int) chaosConfig {
 	rng := rand.New(rand.NewPCG(seed, uint64(i)))
@@ -176,6 +184,18 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	if c.transform == "" && rng.IntN(3) == 0 {
 		c.rescales = 1 + rng.IntN(2)
 	}
+	// Half the runs without a transform are large enough for pods. A pod takes
+	// its launcher's flags, so a Flink bridge's port would clash, and Spark's
+	// runners keep their checkpoints in a directory of their own.
+	if c.transform == "" && rng.IntN(2) == 0 {
+		c.pods = true
+		if c.size == "" {
+			c.size = pick("m", "l")
+		}
+		if rng.IntN(2) == 0 {
+			c.faults = append(c.faults, faultLauncher)
+		}
+	}
 	return c
 }
 
@@ -190,6 +210,9 @@ func (c chaosConfig) name() string {
 	}
 	if c.holds {
 		name += "-holds"
+	}
+	if c.pods {
+		name += "-pods"
 	}
 	return name
 }
@@ -264,6 +287,10 @@ type chaosSuite struct {
 	// Set up when compose runs them. Spark's runs go to a pool of their own.
 	flink, spark *transformSetup
 	sparkPool    *chaosPool
+	// The data plane of pod launchers, with a runner for jobs too small for a
+	// pod or rescaled to one that is.
+	podPool  *chaosPool
+	podPlane string
 	// Runs with a transform wait for one of these. The compose Spark worker
 	// fits one application, and the Flink TaskManager four slots.
 	sparkRuns, flinkRuns chan struct{}
@@ -303,6 +330,8 @@ type runResult struct {
 	resumes []time.Duration
 	settle  time.Duration
 	changes int
+	// Its attempts that ran in pods.
+	inPods int
 }
 
 func TestChaos(t *testing.T) {
@@ -362,6 +391,7 @@ func TestChaosChecks(t *testing.T) {
 	kinds = append(kinds,
 		chaosConfig{source: "cdc", continuous: true, write: "append", dest: "postgres", holds: true},
 		chaosConfig{source: "incremental", write: "merge", dest: "postgres", holds: true})
+	kinds = append(kinds, chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", size: "m", pods: true})
 	for i, c := range kinds {
 		plants := []string{plantLoss, plantExtra}
 		if c.holds {
@@ -412,14 +442,20 @@ func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 	if s.spark != nil {
 		s.sparkPool = s.startSparkPool(ctx, t, runners)
 	}
+	var token string
+	s.podPlane, token = placementPlane(t)
+	s.podPool = startPool(ctx, t, poolConfig{runners: 3, launchers: 2, first: runners + 2, bucket: bucket, dataPlane: s.podPlane, token: token}, *chaosLogs, s.book)
 	t.Cleanup(stop)
 	return s
 }
 
 // poolFor is the pool whose runners run c's pipeline.
 func (s *chaosSuite) poolFor(c chaosConfig) *chaosPool {
-	if c.transform == "spark" {
+	switch {
+	case c.transform == "spark":
 		return s.sparkPool
+	case c.pods:
+		return s.podPool
 	}
 	return s.pool
 }
@@ -457,6 +493,9 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		}
 		src, dst, pipeSource, pipeDest := w.docs()
 		transform, dataPlane := s.transformSpec(c)
+		if c.pods {
+			dataPlane = s.podPlane
+		}
 		apply(t,
 			fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
 			fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
@@ -539,7 +578,13 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	}
 	res.settle = time.Since(start)
 	s.pg.do(func() { res.changes = w.changes(t) })
+	if c.pods {
+		s.pg.do(func() { res.inPods = attemptsInPods(t, name) })
+	}
 	if c.plant != "" {
+		if c.pods && res.inPods == 0 {
+			t.Errorf("no attempt of %s ran in a pod", name)
+		}
 		if extra > 0 || missing > 0 {
 			t.Fatalf("before the plant: %d missing, %d extra: %s", missing, extra, detail)
 		}
@@ -564,6 +609,18 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	if res.failed != "" {
 		t.Errorf("%s\nconfig: %s\nrerun: go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/%04d-' -chaos.seed=%d", res.failed, c, c.i, c.seed)
 	}
+}
+
+// attemptsInPods is how many of the pipeline's attempts were placed on a pod
+// launcher.
+func attemptsInPods(t *testing.T, pipeline string) int {
+	t.Helper()
+	n, err := query[int](t, `SELECT count(*) FROM dispatches d JOIN attempts a ON a.org_id = d.org_id AND a.id = d.id
+		JOIN pipelines p ON p.org_id = a.org_id AND p.id = a.pipeline_id WHERE p.name = $1 AND d.launcher IS NOT NULL`, pipeline)
+	if err != nil {
+		t.Logf("counting %s's attempts in pods: %v", pipeline, err)
+	}
+	return n
 }
 
 // releaseHolds releases the pipeline's holds as they show up, each at a
@@ -638,16 +695,21 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 			s.book.count(pipeline, "missed "+e.fault)
 			continue
 		}
-		done := true
+		done, what := true, e.fault
+		if name, ok := podFaults[e.fault]; ok && sl.launcher {
+			what = name
+		}
 		switch e.fault {
 		case faultKill:
-			done = sl.signal(syscall.SIGKILL)
+			done = sl.stop(pipeline, engine, syscall.SIGKILL)
 		case faultDrain:
-			done = sl.signal(syscall.SIGTERM)
+			done = sl.stop(pipeline, engine, syscall.SIGTERM)
 		case faultEngine:
 			done = kill(engine)
+		case faultLauncher:
+			done = sl.killLauncher()
 		case faultSource, faultDestination:
-			pids := sl.children(strings.TrimPrefix(e.fault, "kill ") + "-")
+			pids := sl.children(engine, strings.TrimPrefix(e.fault, "kill ")+"-")
 			done = len(pids) > 0 && kill(pids[rng.IntN(len(pids))])
 		case faultPartition:
 			d := 5*time.Second + upTo(rng, 15*time.Second)
@@ -656,9 +718,9 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 			sl.results.dropFor(5*time.Second + upTo(rng, 15*time.Second))
 		}
 		if done {
-			s.book.count(pipeline, e.fault)
+			s.book.count(pipeline, what)
 		} else {
-			s.book.count(pipeline, "missed "+e.fault)
+			s.book.count(pipeline, "missed "+what)
 		}
 	}
 }
@@ -872,9 +934,13 @@ func (s *chaosSuite) report(t *testing.T, seed uint64) {
 	faults := map[string]int{}
 	var resumes, settles []time.Duration
 	var failed []string
-	changes := 0
+	changes, podRuns, inPods := 0, 0, 0
 	for _, r := range s.results {
 		changes += r.changes
+		if r.c.pods {
+			podRuns++
+			inPods += r.inPods
+		}
 		n := byName[r.c.name()]
 		n[0]++
 		if r.failed != "" {
@@ -898,9 +964,9 @@ func (s *chaosSuite) report(t *testing.T, seed uint64) {
 		fmt.Fprintf(&b, "  %-30s %d\n", k, faults[k])
 	}
 	started := 0
-	slots := s.pool.slots
+	slots := append(slices.Clone(s.pool.slots), s.podPool.slots...)
 	if s.sparkPool != nil {
-		slots = append(slices.Clone(slots), s.sparkPool.slots...)
+		slots = append(slots, s.sparkPool.slots...)
 	}
 	for _, sl := range slots {
 		sl.mu.Lock()
@@ -908,6 +974,11 @@ func (s *chaosSuite) report(t *testing.T, seed uint64) {
 		sl.mu.Unlock()
 	}
 	fmt.Fprintf(&b, "changes checked: %d\nrunners started: %d in %d slots\n", changes, started, len(slots))
+	fmt.Fprintf(&b, "attempts in pods: %d across %d runs\n", inPods, podRuns)
+	// One run can miss its pods, if both launchers are down when it's placed.
+	if podRuns > 0 && inPods == 0 {
+		t.Errorf("none of the %d runs for pods had an attempt in a pod", podRuns)
+	}
 	fmt.Fprintf(&b, "continuous jobs resuming after their runner was killed: %s\n", quantiles(resumes))
 	fmt.Fprintf(&b, "settling after the writes stopped: %s\n", quantiles(settles))
 	if len(failed) > 0 {

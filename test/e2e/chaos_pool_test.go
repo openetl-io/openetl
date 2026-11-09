@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"fmt"
@@ -39,6 +40,9 @@ type chaosPool struct {
 
 type poolConfig struct {
 	runners int
+	// How many of the slots run a pod launcher: jobs of m and up run in pods
+	// of their own, started as processes, and the other slots take the rest.
+	launchers int
 	// The first slot's index. Indices are unique across a suite's pools.
 	first int
 	// Checkpoints go to bucket, through each slot's proxy, or else to the
@@ -58,10 +62,16 @@ type slot struct {
 	// Drops its results, between the two.
 	results *apiFilter
 	// The port the runner's bridge listens on, or 0.
-	bridge  int
-	mu      sync.Mutex
-	cur     *runner
-	started int
+	bridge int
+	// It runs a pod launcher.
+	launcher bool
+	mu       sync.Mutex
+	cur      *runner
+	started  int
+	// A launcher's pods' latest engine for each pipeline, and the process
+	// group of each launcher it has run.
+	engines map[string]int
+	groups  []int
 }
 
 func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, book *faultBook) *chaosPool {
@@ -72,7 +82,7 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 		t.Fatal(err)
 	}
 	for i := range cfg.runners {
-		s := &slot{i: cfg.first + i, pool: p, results: startAPIFilter(t, env.apiURL)}
+		s := &slot{i: cfg.first + i, pool: p, launcher: i < cfg.launchers, engines: map[string]int{}, results: startAPIFilter(t, env.apiURL)}
 		s.api = startProxy(t, strings.TrimPrefix(s.results.url(), "http://"))
 		if cfg.bucket != "" {
 			s.s3 = startS3Proxy(t, s, target)
@@ -119,12 +129,20 @@ func (s *slot) supervise(ctx context.Context) {
 			s.mu.Lock()
 			s.cur = nil
 			s.mu.Unlock()
-			s.save(r)
+			if !s.launcher {
+				s.save(r)
+			}
 		}
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Second + upTo(rng, 4*time.Second)):
 		}
+	}
+	// The pods of launchers that were killed are still running.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, g := range s.groups {
+		_ = syscall.Kill(-g, syscall.SIGKILL)
 	}
 }
 
@@ -145,11 +163,29 @@ func (s *slot) start() (*runner, error) {
 	if cfg.sparkSubmit != "" {
 		args = append(args, "--spark-submit", cfg.sparkSubmit)
 	}
+	if s.launcher {
+		args = append(args, "--launcher", "process", "--pod-min-size", "m")
+	}
 	cmd := exec.Command(env.openetld, args...)
 	cmd.Env = append(os.Environ(), "OPENETL_RUNNER_TOKEN="+cfg.token)
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
+	var logs *os.File
+	if s.launcher {
+		// A pipe of exec's would keep Wait going until the last pod a killed
+		// launcher left had ended, and closing it would end them by SIGPIPE.
+		out, in, err := os.Pipe()
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = in.Close() }()
+		logs = out
+		cmd.Stdout, cmd.Stderr, cmd.SysProcAttr = in, in, &syscall.SysProcAttr{Setpgid: true}
+	}
 	if err := cmd.Start(); err != nil {
+		if logs != nil {
+			_ = logs.Close()
+		}
 		return nil, err
 	}
 	go func() {
@@ -159,8 +195,35 @@ func (s *slot) start() (*runner, error) {
 	s.mu.Lock()
 	s.cur = r
 	s.started++
+	if logs != nil {
+		s.groups = append(s.groups, cmd.Process.Pid)
+	}
 	s.mu.Unlock()
+	if logs != nil {
+		s.pool.wg.Go(func() { s.follow(r, logs) })
+	}
 	return r, nil
+}
+
+// follow keeps what a launcher and its pods write until the last of them has
+// gone, and notes each pipeline's latest engine.
+func (s *slot) follow(r *runner, logs *os.File) {
+	defer func() { _ = logs.Close() }()
+	br := bufio.NewReader(logs)
+	for {
+		line, err := br.ReadString('\n')
+		_, _ = r.out.Write([]byte(line))
+		if m := engineReady.FindStringSubmatch(line); m != nil {
+			pid, _ := strconv.Atoi(m[2])
+			s.mu.Lock()
+			s.engines[m[1]] = pid
+			s.mu.Unlock()
+		}
+		if err != nil {
+			s.save(r)
+			return
+		}
+	}
 }
 
 // save writes a runner's output to the logs directory, if there is one.
@@ -200,11 +263,81 @@ func (s *slot) signal(sig syscall.Signal) bool {
 	return true
 }
 
+// stop sends sig to what runs the pipeline, whose engine is engine: the slot's
+// runner, or a launcher's pod, and with SIGKILL waits for it to die. It reports
+// whether there was one.
+func (s *slot) stop(pipeline string, engine int, sig syscall.Signal) bool {
+	if !s.launcher {
+		return s.signal(sig)
+	}
+	pod := enginePod(engine)
+	if pod == 0 {
+		return false
+	}
+	if sig == syscall.SIGKILL {
+		s.pool.book.podDied(pipeline)
+	}
+	if syscall.Kill(pod, sig) != nil {
+		return false
+	}
+	if sig == syscall.SIGKILL {
+		for deadline := time.Now().Add(2 * time.Second); syscall.Kill(pod, 0) == nil && time.Now().Before(deadline); {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	return true
+}
+
+// crash kills what's writing the pipeline's checkpoints through this slot.
+func (s *slot) crash(pipeline string) {
+	if !s.stop(pipeline, s.engine(pipeline), syscall.SIGKILL) {
+		s.pool.book.count(pipeline, "crash with nothing to kill")
+	}
+}
+
+// killLauncher kills the slot's launcher and leaves its pods running, as when
+// a launcher's own pod dies on Kubernetes.
+func (s *slot) killLauncher() bool {
+	r := s.runner()
+	if !s.launcher || r == nil || r.cmd.Process.Kill() != nil {
+		return false
+	}
+	<-r.done
+	return true
+}
+
+// enginePod is the PID of the pod that started the engine, or 0 if it has
+// gone. A dead pod's engine belongs to init or a subreaper for a moment, so
+// the parent has to be openetld.
+func enginePod(engine int) int {
+	if engine <= 0 {
+		return 0
+	}
+	out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(engine)).Output()
+	if err != nil {
+		return 0
+	}
+	pod, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || pod <= 1 {
+		return 0
+	}
+	name, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pod)).Output()
+	if err != nil || filepath.Base(strings.TrimSpace(string(name))) != "openetld" {
+		return 0
+	}
+	return pod
+}
+
 var engineReady = regexp.MustCompile(`msg="engine ready" .*pipeline=(\S+) .* pid=(\d+)`)
 
-// engine is the PID of the engine the slot's runner last started for
-// pipeline, or 0.
+// engine is the PID of the engine the slot's runner, or one of its launcher's
+// pods, last started for pipeline, or 0.
 func (s *slot) engine(pipeline string) int {
+	if s.launcher {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.engines[pipeline]
+	}
 	r := s.runner()
 	if r == nil {
 		return 0
@@ -218,14 +351,19 @@ func (s *slot) engine(pipeline string) int {
 	return pid
 }
 
-// children are the PIDs of the slot's runner's child processes whose names
-// start with prefix.
-func (s *slot) children(prefix string) []int {
-	r := s.runner()
-	if r == nil {
+// children are the PIDs of the child processes, whose names start with prefix,
+// of what runs the engine: the slot's runner, or a launcher's pod.
+func (s *slot) children(engine int, prefix string) []int {
+	parent := 0
+	if s.launcher {
+		parent = enginePod(engine)
+	} else if r := s.runner(); r != nil {
+		parent = r.cmd.Process.Pid
+	}
+	if parent == 0 {
 		return nil
 	}
-	out, _ := exec.Command("pgrep", "-P", strconv.Itoa(r.cmd.Process.Pid), "^"+prefix).Output()
+	out, _ := exec.Command("pgrep", "-P", strconv.Itoa(parent), "^"+prefix).Output()
 	var pids []int
 	for _, f := range strings.Fields(string(out)) {
 		if pid, err := strconv.Atoi(f); err == nil {
@@ -301,7 +439,7 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch act.kind {
 	case actKillBefore:
-		p.slot.signal(syscall.SIGKILL)
+		p.slot.crash(pipeline)
 		panic(http.ErrAbortHandler)
 	case actStatus:
 		w.Header().Set("Content-Type", "application/xml")
@@ -321,13 +459,13 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case act.kind == actKillAfter && ok:
-		p.slot.signal(syscall.SIGKILL)
+		p.slot.crash(pipeline)
 		panic(http.ErrAbortHandler)
 	case act.kind == actDrop:
 		_, _ = io.Copy(io.Discard, res.Body)
 		panic(http.ErrAbortHandler)
 	case act.kind == actKillLater && ok:
-		time.AfterFunc(act.later, func() { p.slot.signal(syscall.SIGKILL) })
+		time.AfterFunc(act.later, func() { p.slot.crash(pipeline) })
 	}
 	for k, vs := range res.Header {
 		w.Header()[k] = vs
