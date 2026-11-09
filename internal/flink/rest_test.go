@@ -34,6 +34,8 @@ type fakeREST struct {
 	exception string
 	// Requests without this bearer token are refused.
 	token string
+	// What the cluster refuses a job's submission with, as a 400.
+	refusal string
 }
 
 func newFakeREST(t *testing.T) (*fakeREST, *httptest.Server) {
@@ -80,6 +82,11 @@ func (f *fakeREST) serve(w http.ResponseWriter, r *http.Request) {
 		f.jars[id] = hdr.Filename
 		reply(map[string]string{"filename": "/tmp/flink-web/upload/" + id, "status": "success"})
 	case len(parts) == 3 && parts[0] == "jars" && parts[2] == "run":
+		if f.refusal != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			reply(map[string]any{"errors": []string{f.refusal}})
+			return
+		}
 		if _, ok := f.jars[parts[1]]; !ok {
 			w.WriteHeader(http.StatusBadRequest)
 			reply(map[string]any{"errors": []string{"Jar file does not exist"}})
@@ -189,6 +196,25 @@ func TestRESTDeploy(t *testing.T) {
 	}
 	if _, err := c.Deploy(t.Context(), runner.FlinkDeploy{Generation: 4}); err != nil || f.uploads != 1 || len(f.runs) != 2 {
 		t.Errorf("err = %v, uploads = %d, runs = %d", err, f.uploads, len(f.runs))
+	}
+}
+
+// A refused submission is the job's to fix and isn't tried again, unless the
+// cluster ran out of memory serving it.
+func TestRESTSubmissionRefused(t *testing.T) {
+	for _, tt := range []struct {
+		refusal string
+		want    errs.Code
+	}{
+		{"org.apache.flink.client.program.ProgramInvocationException: The main method caused an error", errs.ConfigInvalid},
+		{"org.apache.flink.runtime.rest.handler.RestHandlerException: Could not execute application.\nCaused by: java.lang.OutOfMemoryError: Metaspace", errs.Transient},
+	} {
+		f, srv := newFakeREST(t)
+		f.refusal = tt.refusal
+		c, _ := newTestCluster(t, srv.URL, nil)
+		if _, err := c.Deploy(t.Context(), runner.FlinkDeploy{Generation: 1}); errs.CodeOf(err) != tt.want {
+			t.Errorf("%s: err = %v, want %v", tt.refusal, err, tt.want)
+		}
 	}
 }
 
