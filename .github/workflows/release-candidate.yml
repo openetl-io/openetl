@@ -81,17 +81,14 @@ jobs:
 
   engine:
     needs: prepare
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     strategy:
       matrix:
         include:
-          # zigbuild links against glibc 2.28, so the engine runs on older Linux too.
-          - { platform: linux_amd64, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, cargo: zigbuild, suffix: ".2.28" }
-          - { platform: linux_arm64, runner: ubuntu-latest, target: aarch64-unknown-linux-gnu, cargo: zigbuild, suffix: ".2.28" }
-          - { platform: darwin_amd64, runner: macos-latest, target: x86_64-apple-darwin, cargo: build, suffix: "" }
-          - { platform: darwin_arm64, runner: macos-latest, target: aarch64-apple-darwin, cargo: build, suffix: "" }
+          - { platform: linux_amd64, target: x86_64-unknown-linux-gnu }
+          - { platform: linux_arm64, target: aarch64-unknown-linux-gnu }
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -104,17 +101,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: ${{ matrix.target }}
-      - if: matrix.cargo == 'zigbuild'
-        run: |
+      - run: |
           python3 -m venv "$RUNNER_TEMP/zig"
           "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild==0.24.1 ziglang==0.17.1
           echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+      # Linked against glibc 2.28, so the engine runs on older Linux too.
       - env:
           OPENETL_VERSION: ${{ needs.prepare.outputs.version }}
-          CARGO_SUBCOMMAND: ${{ matrix.cargo }}
           TARGET: ${{ matrix.target }}
-          SUFFIX: ${{ matrix.suffix }}
-        run: cargo "$CARGO_SUBCOMMAND" --locked --release -p openetl-engine --target "$TARGET$SUFFIX"
+        run: cargo zigbuild --locked --release -p openetl-engine --target "$TARGET.2.28"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: engine-${{ matrix.platform }}
@@ -195,7 +190,7 @@ jobs:
           # The descriptors name the tags and URLs that publishing makes.
           GOWORK=$PWD/../bin/connectors.work GOFLAGS="'-ldflags=-s -w'" ../bin/openetl connector package \
             $(dirname */openetl-connector.yaml) \
-            --version "$VERSION" --out "$out" --platforms linux/amd64,linux/arm64,darwin/amd64,darwin/arm64
+            --version "$VERSION" --out "$out" --platforms linux/amd64,linux/arm64
           ls -l "$out"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -285,7 +280,7 @@ jobs:
           go run ./internal/notices -out build/candidate/notices/THIRD-PARTY-NOTICES.txt \
             -connectors openetl-connectors -connectors-work "$PWD/bin/connectors.work"
           # An asset is NAME-ROLE-OS-ARCH; its bundle names it as the role's command, ROLE-NAME.
-          for platform in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+          for platform in linux_amd64 linux_arm64; do
             os=${platform%_*} arch=${platform#*_}
             bundle=build/bundle/$platform
             mkdir -p "$bundle"

@@ -57,7 +57,7 @@ make deps-down         # stop what deps-up started
 
 A release is built once, tested as built, and then promoted, so what's tested is what ships.
 
-**Build a candidate.** `gh workflow run release-candidate.yml -f version=0.1.0-alpha -f commit=SHA -f connectors=SHA` builds that commit with the version in it: archives for Linux and macOS on amd64 and arm64, the multi-arch image, the connectors, and the Spark and Flink libraries, with checksums, SBOMs and third-party notices. The files go on a draft GitHub release, which makes no tag until it's published, and the image and connector packages go to the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. `candidate.json` on the draft records the commits and digests. A version has one candidate at a time: `-f replace=true` discards the last one first.
+**Build a candidate.** `gh workflow run release-candidate.yml -f version=0.1.0-alpha -f commit=SHA -f connectors=SHA` builds that commit with the version in it: archives for Linux on amd64 and arm64, the multi-arch image, the connectors, and the Spark and Flink libraries, with checksums, SBOMs and third-party notices. The files go on a draft GitHub release, which makes no tag until it's published, and the image and connector packages go to the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. `candidate.json` on the draft records the commits and digests. A version has one candidate at a time: `-f replace=true` discards the last one first.
 
 **Test those files.** `gh workflow run e2e.yml -f candidate=VERSION`, and `chaos.yml` the same way, run the suites on the candidate's binaries, at the commit it was built from. On another machine:
 

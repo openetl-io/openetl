@@ -10,7 +10,7 @@ builds:
     main: ./cmd/openetld
     binary: openetld
     env: [CGO_ENABLED=0]
-    goos: [linux, darwin]
+    goos: [linux]
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags:

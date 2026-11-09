@@ -31,10 +31,10 @@ import (
 // A file at a package's root that carries its terms.
 var licenseFile = regexp.MustCompile(`(?i)^(licen[cs]e|copying|notice|unlicense|copyright)([-._].*)?$`)
 
-// The binaries' targets. A dependency can be on one platform only.
+// The binaries' targets. A dependency can be on one architecture only.
 var (
-	goOSes      = []string{"linux", "darwin"}
-	rustTargets = []string{"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"}
+	goArches    = []string{"amd64", "arm64"}
+	rustTargets = []string{"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"}
 )
 
 // component is one third-party package. dir is where its license files are;
@@ -100,9 +100,9 @@ func output(ctx context.Context, dir string, env []string, name string, args ...
 }
 
 func goModules(ctx context.Context, found map[string]component, dir string, env []string, patterns ...string) error {
-	for _, goos := range goOSes {
+	for _, arch := range goArches {
 		args := append([]string{"list", "-deps", "-json=Module"}, patterns...)
-		b, err := output(ctx, dir, append(env, "GOOS="+goos, "CGO_ENABLED=0"), "go", args...)
+		b, err := output(ctx, dir, append(env, "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0"), "go", args...)
 		if err != nil {
 			return err
 		}

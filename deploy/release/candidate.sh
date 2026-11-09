@@ -26,8 +26,8 @@ is_draft() {
 }
 
 fetch() {
-  local version=$1 dir=$2 os arch
-  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  local version=$1 dir=$2 arch
+  [ "$(uname -s)" = Linux ] || die "candidates are built for Linux only"
   case $(uname -m) in
     x86_64 | amd64) arch=amd64 ;;
     aarch64 | arm64) arch=arm64 ;;
@@ -36,7 +36,7 @@ fetch() {
   [ "$(is_draft "$version")" = true ] || die "v$version has no draft release"
   mkdir -p "$dir"
   gh release download "v$version" -R "$repo" -D "$dir" --clobber \
-    -p "openetl_${version}_${os}_${arch}.tar.gz" -p "connectors_${version}_${os}_${arch}.tar.gz" \
+    -p "openetl_${version}_linux_${arch}.tar.gz" -p "connectors_${version}_linux_${arch}.tar.gz" \
     -p 'openetl-*.jar' -p checksums.txt -p candidate.json
   (
     cd "$dir"
