@@ -123,6 +123,12 @@ message ConfiguredStream {
   // The splits to read, with their states; empty: the whole stream, from
   // state.
   repeated Split splits = 5;
+  // The columns this run declared, by the catalog's names. A column outside
+  // them has no declared type, so a source that sends values as text for
+  // the platform to parse fails the read, retryably, instead of sending
+  // one; the next attempt discovers and declares it. Empty: the request
+  // doesn't say.
+  repeated string columns = 6;
 }
 
 // Split is one of a stream's splits. The whole stream has the empty ID. IDs

@@ -71,6 +71,19 @@ func (s Stream) delivery() delivery.Stream {
 	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse, Transformed: s.Transformed}
 }
 
+// columns names the columns of Schema; nil without one.
+func (s Stream) columns() []string {
+	if s.Schema == nil {
+		return nil
+	}
+	fields := s.Schema.Fields()
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.Name
+	}
+	return names
+}
+
 // Declared is Schema with Overrides applied.
 func (s Stream) Declared() *arrow.Schema {
 	if s.Schema == nil || len(s.Overrides) == 0 {
@@ -933,7 +946,7 @@ func (j *Job) readRequest(splits map[string][]checkpoint.SplitState, done map[st
 		if done[s.Name] {
 			continue
 		}
-		cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField}
+		cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Columns: s.columns()}
 		if ss := splits[s.Name]; len(ss) == 1 && ss[0].ID == checkpoint.WholeStream {
 			cs.State = ss[0].State
 		} else {
