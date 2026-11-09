@@ -127,6 +127,11 @@ linters:
       - path: internal/api/signin\.go
         linters: [gosec]
         text: "G124:"
+      # A release's third-party notices are for everyone who gets it, and the
+      # image runs as a user that doesn't own them.
+      - path: internal/notices/main\.go
+        linters: [gosec]
+        text: "G306:"
       # The kit's container runs as another user, which may map to any host
       # uid, so the socket it's given must be open to everyone.
       - path: sdk/go/conformance/container\.go

@@ -86,7 +86,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(*out, text, 0o600)
+	return os.WriteFile(*out, text, 0o644)
 }
 
 // output runs a command in dir and returns its standard output.
