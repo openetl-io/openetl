@@ -72,7 +72,9 @@ func (cl *client) do(ctx context.Context, method, p string, body io.Reader, cont
 		return errs.New(errs.ConfigInvalid, "flink: %s %s: %s", method, redactURL(&u), res.Status)
 	case res.StatusCode >= 400:
 		code := errs.Transient
-		if res.StatusCode == http.StatusBadRequest {
+		// A 400 is the request's fault, unless the cluster ran out of memory
+		// serving it, which goes away when the cluster is restarted.
+		if res.StatusCode == http.StatusBadRequest && !bytes.Contains(b, []byte("OutOfMemoryError")) {
 			code = errs.ConfigInvalid
 		}
 		return errs.New(code, "flink: %s %s: %s: %s", method, redactURL(&u), res.Status, restErrors(b))

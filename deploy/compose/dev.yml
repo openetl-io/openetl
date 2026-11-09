@@ -201,7 +201,9 @@ services:
   # 8091. Checkpoints and savepoints go to the S3 store through Hadoop's S3
   # filesystem, and jobs reach a runner on the host, for its bridge, at
   # host.docker.internal. Failover and retained checkpoints are the cluster's
-  # own settings, which runners need as set here.
+  # own settings, which runners need as set here. Each submission loads the
+  # job's classes into the JobManager, so a long run of them needs more
+  # metaspace than the default; the process grows by as much, for the same heap.
   flink-jobmanager:
     image: flink:1.20.5
     command: jobmanager
@@ -211,6 +213,8 @@ services:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         jobmanager.execution.failover-strategy: full
+        jobmanager.memory.process.size: 2400m
+        jobmanager.memory.jvm-metaspace.size: 1g
         execution.checkpointing.num-retained: 2
         taskmanager.numberOfTaskSlots: 4
         s3.endpoint: http://s3:8333
