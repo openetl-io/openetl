@@ -147,6 +147,8 @@ go build -o bin/ ./cmd/source-greetings
 
 For Arrow batches, exact replay, splits or CDC, implement `source.Source` and `destination.Destination` yourself. The official connectors in [openetl-connectors](https://github.com/openetl-io/openetl-connectors) do: each `cmd/<executable>/main.go` there hands one to `sdk.Serve`.
 
+An emitter's methods can return before what they accepted has been sent, so a failure to send can come back from a later call or when `Read` ends. They keep none of your memory, except the batch `Records` takes. `Records` releases that batch for you, and if it returns an error, the batch is still yours to release.
+
 ## Try it with the CLI
 
 `openetl connector` runs a connector the way a runner does, with nothing else running: no running OpenETL installation. Build the CLI from a checkout of OpenETL, as in the [quickstart](../get-started/quickstart.md#3-build-the-cli).

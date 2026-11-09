@@ -156,11 +156,16 @@ func SplitDeclared(s *arrow.Schema) (*arrow.Schema, arrow.DataType) {
 
 // Emitter receives what a source reads. Its methods block under
 // backpressure, and fail once the read is cancelled; Read returns that error.
-// Those that take a stream emit on the whole stream, as Split(stream,
+// What a call accepts may still be on its way when it returns, so a failure
+// to deliver it can come back from a later call or from Read's end. They
+// keep none of the caller's memory, but for the batch Records takes. Those
+// that take a stream emit on the whole stream, as Split(stream,
 // WholeStream)'s do.
 type Emitter interface {
 	// Rows sends JSON objects on the raw lane.
 	Rows(stream string, rows []json.RawMessage) error
+	// Records takes the batch and releases it, unless it returns an error,
+	// when the batch is still the caller's.
 	Records(stream string, batch arrow.RecordBatch) error
 	// ResumePoint says stream can restart from state after everything emitted
 	// for it so far.
