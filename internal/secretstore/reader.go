@@ -1,6 +1,7 @@
 package secretstore
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -80,13 +81,16 @@ func (r *Reader) Close() error {
 	return err
 }
 
-// field is b, or the named field of the JSON object b holds: a string's
-// text, or any other value's JSON.
+// field is b without one line ending at its end, as openetl secret set reads
+// a value, or the named field of the JSON object b holds: a string's text,
+// or any other value's JSON.
 func field(b []byte, name string) (string, error) {
 	if name == "" {
 		if !utf8.Valid(b) {
 			return "", errors.New("the value isn't UTF-8 text; name a field of a JSON value, or store it as text")
 		}
+		b = bytes.TrimSuffix(b, []byte("\n"))
+		b = bytes.TrimSuffix(b, []byte("\r"))
 		return string(b), nil
 	}
 	var obj map[string]json.RawMessage

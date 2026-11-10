@@ -17,7 +17,7 @@ Other connectors are installed separately and have their own versions and releas
 
 ## faker
 
-A source of generated rows. It offers two streams, `users` and `purchases`, of `count` rows each. Row `i` of a stream depends only on `seed` and `i`, so every read with the same config yields the same rows, and a resumed read yields exactly the rows after its resume point.
+A source of generated rows. It provides two streams, `users` and `purchases`, with `count` rows each. Row `i` depends only on `seed` and `i`. Reads with the same configuration return the same rows. A resumed read returns exactly the rows after its resume point.
 
 ### Config
 
@@ -87,7 +87,7 @@ spec:
 
 ## stdout
 
-A destination that prints each row to the standard output of the process that runs the sync, as a line of JSON holding the stream's name and the row. Trimmed to two of the row's columns, a line looks like this:
+A destination that prints rows to the sync process's standard output. Each JSON line contains the stream name and row data. This example shows only two row columns:
 
 ```json
 {"stream":"users","record":{"id":1,"name":"Margaret Turing"}}
@@ -132,7 +132,7 @@ spec:
 
 ## parquet
 
-A destination that writes each stream as Parquet files into a directory on the machine that runs the sync's job. The data engine writes the files, compressed with Snappy, in row groups of up to 128 MiB, and starts a new file when a stream's schema changes.
+A destination that writes each stream as Parquet files on the machine running the job. The data engine uses Snappy compression and row groups of up to 128 MiB. A schema change starts a new file.
 
 ### Config
 
