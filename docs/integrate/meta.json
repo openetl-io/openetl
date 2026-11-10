@@ -2,5 +2,5 @@
   "title": "Integrate",
   "description": "Connect dbt, Spark, Flink, the API, webhooks and your monitoring",
   "icon": "Cable",
-  "pages": ["index", "webhooks"]
+  "pages": ["index", "dbt", "spark", "flink", "webhooks"]
 }

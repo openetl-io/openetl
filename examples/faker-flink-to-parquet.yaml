@@ -1,0 +1,49 @@
+# Build examples/flink-transform and replace the code URI and SHA-256 before
+# applying. docs/integrate/flink.md describes the bridge and storage setup.
+apiVersion: openetl.io/v1alpha1
+kind: FlinkCluster
+metadata:
+  name: example-flink
+spec:
+  rest:
+    url: http://flink-jobmanager:8081
+---
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: flink-data
+spec:
+  connector: faker
+  config:
+    seed: 42
+    endless: true
+    batchSize: 100
+    delay: 1s
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: flink-files
+spec:
+  connector: parquet
+  config:
+    url: file:///tmp/openetl-flink-output
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: faker-flink-to-parquet
+spec:
+  mode: continuous
+  source: { ref: flink-data }
+  destination: { ref: flink-files }
+  delivery:
+    commit: { interval: 10s }
+  transform:
+    flink:
+      cluster: example-flink
+      parallelism: 1
+      code:
+        jar: https://artifacts.example.com/flink-transform-0.1.0.jar
+        sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        class: io.openetl.examples.ForwardStreams

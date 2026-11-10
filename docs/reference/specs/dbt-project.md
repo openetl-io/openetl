@@ -3,7 +3,7 @@ title: dbt project
 description: The required project input and bundle format of a DbtProject document.
 ---
 
-A `DbtProject` stores the files a scheduled pipeline runs after a sync. A pipeline names it in `postSync[].dbt.project`. [dbt after a sync](../../integrate/index.md#dbt-after-a-sync) covers the adapter, generated connection profile and execution.
+A `DbtProject` stores the files a scheduled pipeline runs after a sync. A pipeline names it in `postSync[].dbt.project`. [Run dbt after a sync](../../integrate/dbt.md) covers the adapter, generated connection profile and execution.
 
 ## The document
 

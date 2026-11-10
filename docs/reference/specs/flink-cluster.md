@@ -3,7 +3,7 @@ title: Flink cluster
 description: Every field of a FlinkCluster document, including target choices, credentials and resource defaults.
 ---
 
-A `FlinkCluster` names where runners deploy continuous pipelines' Flink 1.20 jobs. It does not install Flink or its Kubernetes Operator. [Transforms on Flink](../../integrate/index.md#transforms-on-flink) covers the job contract, runner bridge and storage requirements.
+A `FlinkCluster` names where runners deploy continuous pipelines' Flink 1.20 jobs. It does not install Flink or its Kubernetes Operator. [Transform a stream with Flink](../../integrate/flink.md) covers the job contract, runner bridge and storage requirements.
 
 ## The document
 
