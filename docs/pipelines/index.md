@@ -67,6 +67,8 @@ openetl secret delete local-postgres-dsn
 
 `list` shows what uses each secret, and `delete` deletes only a secret that no source or destination names. `openetl secret`, with no command, lists the cloud stores `--ref` takes.
 
+`set` drops one line ending from the end of a value it reads, and runners do the same with a value in a cloud store that's text, so a file saved by an editor or written by `echo` works as is. A field of a JSON value is used exactly as it is.
+
 ## Plan, then apply
 
 `openetl plan -f FILE` sends the documents to the API, which checks them and works out what applying them would do, without changing anything. Here's a second pipeline from the quickstart's `faker` source, into Parquet files on local disk with the built-in `parquet` connector, at 06:00 every day:
