@@ -3,7 +3,7 @@ title: Spark cluster
 description: Every field of a SparkCluster document, with required target choices and configuration defaults.
 ---
 
-A `SparkCluster` names a cluster on which runners submit Spark applications. It does not create the cluster. Pipelines use it for a scheduled transform or a post-sync step. [Transforms on Spark](../../integrate/index.md#transforms-on-spark) covers the application contract and storage requirements.
+A `SparkCluster` names a cluster on which runners submit Spark applications. It does not create the cluster. Pipelines use it for a scheduled transform or a post-sync step. [Transform data with Spark](../../integrate/spark.md) covers the application contract and storage requirements.
 
 ## The document
 

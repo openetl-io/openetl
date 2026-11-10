@@ -180,7 +180,7 @@ The destination changes an existing column's type only when `typeChanges` permit
 
 ## Transforms
 
-A transform is your own code between the source and the destination: Spark in a scheduled pipeline, Flink in a continuous one. The source's streams are its inputs, and its outputs are what the destination gets. [Integrate](../../integrate/index.md) covers writing one.
+A transform is your own code between the source and the destination: Spark in a scheduled pipeline, Flink in a continuous one. The source's streams are its inputs, and its outputs are what the destination gets. The [Spark](../../integrate/spark.md) and [Flink](../../integrate/flink.md) guides cover writing and running one.
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|

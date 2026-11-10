@@ -65,7 +65,7 @@ openetl secret list
 openetl secret delete local-postgres-dsn
 ```
 
-`list` shows what uses each secret, and `delete` deletes only a secret that no source or destination names. `openetl secret`, with no command, lists the cloud stores `--ref` takes.
+`list` shows current resources that use each secret. `delete` refuses a secret used by a current source, destination, webhook, Spark cluster, Flink cluster or pipeline. Check private connector sources separately. [Manage connection secrets](../self-host/secrets.md) covers cloud references, credential replacement and deletion.
 
 `set` drops one line ending from the end of a value it reads, and runners do the same with a value in a cloud store that's text, so a file saved by an editor or written by `echo` works as is. A field of a JSON value is used exactly as it is.
 
