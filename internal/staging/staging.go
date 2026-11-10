@@ -112,9 +112,12 @@ func Open(ctx context.Context, location, org, pipeline string, o Options) (*Area
 		_ = a.bucket.Close()
 		return nil, err
 	}
-	if u, err := url.Parse(location); err == nil && u.Scheme == "s3" && objectstore.S3Anonymous() {
-		prefix := objectstore.Prefix(u) + rel + "/"
-		a.unsigned = func(p string) string { return objectstore.S3ObjectURL(u, prefix+p) }
+	if u, err := url.Parse(location); err == nil && u.Scheme == "s3" {
+		// objectstore.Open has checked anonymous= already.
+		if anonymous, _ := objectstore.S3Anonymous(u); anonymous {
+			prefix := objectstore.Prefix(u) + rel + "/"
+			a.unsigned = func(p string) string { return objectstore.S3ObjectURL(u, prefix+p) }
+		}
 	}
 	a.ctx = context.WithoutCancel(ctx)
 	go a.writeCursors()

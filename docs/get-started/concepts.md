@@ -3,13 +3,13 @@ title: Concepts
 description: The words OpenETL uses, what each one means, and how they fit together.
 ---
 
-OpenETL has a small vocabulary. This page explains each word once, and the rest of the docs, the console and the CLI use them the same way.
+This page defines the terms used in the documentation, console and CLI.
 
 ## Sources and destinations
 
-A **source** is a configured connection that pipelines read from. A **destination** is a configured connection that pipelines write to. Each names a connector and holds the config that connector needs to reach your system.
+A **source** is a configured connection that pipelines read from. A **destination** is a configured connection that pipelines write to. Each connection specifies a connector and the configuration it needs to reach your system.
 
-Each one holds the details of how to reach it: the server, the database, the account. Passwords and keys aren't written into it. It names a **secret** instead, which OpenETL stores encrypted.
+Connection details include the server, database and account. Passwords and keys use a **secret** reference instead of a value in the configuration. OpenETL encrypts stored secret values.
 
 ## Connectors
 
@@ -17,72 +17,84 @@ A **connector** implements how to read from or write to a system. It can provide
 
 Official connectors live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Anyone can [build and maintain a connector](../build-connectors/index.md), including a community project or an organization's private connector. Each connector has its own versions and releases, separate from OpenETL's. A few [built-in connectors](../reference/built-in-connectors.md) for trying pipelines out ship with OpenETL itself.
 
-A **connector package** distributes one or both roles as a version you can install. A **connector source** is a registry namespace or repository whose packages the connector catalog lists; it isn't a pipeline's data source. [Choose and manage connectors](../pipelines/connectors.md) explains how to install a package and select a version.
+A **connector package** distributes one or both roles as a version you can install. A **connector source** is a registry namespace or repository used to list packages in the connector catalog. It is separate from a pipeline's data source. [Choose and manage connectors](../pipelines/connectors.md) explains how to install a package and select a version.
 
 ## Pipelines and streams
 
 A **pipeline** copies data from one source to one destination.
 
-A source offers **streams**: for example, tables in a database or topics in an event system. Each stream lands as one table, one set of files or one topic in the destination. A pipeline copies every stream its source offers unless it names the ones it wants.
+A source offers **streams**, such as database tables or event topics. Each stream writes to one table, one set of files or one topic in the destination. A pipeline copies all available streams unless its definition selects specific streams.
 
-How a stream is read is its **sync mode**:
+A stream's **sync mode** specifies how to read it:
 
 - **Full refresh** reads the whole table every time.
-- **Incremental** reads the rows whose cursor, a column such as `updated_at`, has moved on since the last read.
+- **Incremental** selects rows using a **cursor**, such as an `updated_at` column. Later reads include rows at the saved cursor value again.
 - **CDC** (change data capture) reads every insert, update and delete from the database's own log of changes.
-- **Stream** reads the records an event stream has had since the last read.
+- **Stream** reads event records from the saved position.
 
-How a stream is written is its **write mode**:
+A stream's **write mode** specifies how to write it:
 
-- **Append** adds what was read to what the destination has.
-- **Overwrite** replaces what the destination has with what was read.
-- **Merge** updates each row by its primary key, so the destination holds the latest version of every row.
+- **Append** adds records to the destination.
+- **Overwrite** replaces the destination's existing data with the data read during the sync.
+- **Merge** uses the primary key to insert or update each row. The destination keeps the latest version of each row.
 
 ## Syncs, schedules and continuous pipelines
 
-A **scheduled** pipeline copies in **syncs**. A sync reads what's new, writes it, and stops. The pipeline's **schedule** says when the next one starts: every hour, or at the times a cron expression gives. You can also start one by hand, with **Sync now** in the console.
+A **scheduled** pipeline copies data in **syncs**. A sync reads the selected data, writes it and stops. The pipeline's **schedule** specifies an interval or cron expression for starting syncs. You can also select **Sync now** in the console to start a sync manually.
 
-A **continuous** pipeline doesn't stop. It keeps reading and commits what it has read as it goes, so changes land within seconds or minutes of being made, depending on the destination. Its streams are ones that never end: tables read by CDC, and event streams. Those can run on a schedule too, and moving a pipeline from one to the other is a change to its `mode`.
+A **continuous** pipeline keeps reading and commits data at intervals. Its streams must support reads without an end, such as CDC or event streams. These streams can also run on a schedule. The pipeline's `mode` selects scheduled or continuous operation.
 
 ## Checkpoints
 
-As a pipeline commits data, it records how far it has read in a **checkpoint**. If a machine fails or a sync is stopped, the next run picks up from the last checkpoint instead of starting over.
+When a pipeline commits data, it records its read positions in a **checkpoint**. After a machine failure or stopped sync, the next run resumes from the last checkpoint.
+
+An **epoch** is the group of records between two checkpoints. A sync can commit several epochs before it finishes.
 
 ## Delivery guarantees
 
-A **delivery guarantee** says whether a change could reach the destination twice, such as after a crash and a retry. OpenETL works it out for each stream, from what the source and the destination can each promise:
+A **delivery guarantee** describes whether retries can produce duplicate changes in the destination. OpenETL determines the guarantee for each stream from its source and destination capabilities, write mode and primary key:
 
-- **Exactly once:** each change lands once, crash or not.
-- **Effectively once:** a change can be written again, but onto the same row, so the destination ends up as if it were written once. This is what merge gives when the source may send a change again.
-- **At least once:** a change can land twice. Every row carries an `_openetl_id`, so whoever reads the data can drop the repeats.
+- **Exactly once:** each change is committed once, including after a failure and retry.
+- **Effectively once:** a change can be written again, but merge updates the same row. The final row is the same as if the change were written once.
+- **At least once:** retries can write duplicate changes. Each row has an `_openetl_id` that readers can use to remove duplicates.
 
-A pipeline asks for exactly once unless it says otherwise, and a pipeline whose streams can't all have the guarantee it asks for doesn't run. `openetl plan` shows each stream's guarantee and the reason for it before you apply the pipeline, when the control plane knows what the destination can do: it learns that from the connector's package.
+A pipeline requires exactly-once delivery by default. OpenETL refuses to run it if any stream cannot meet the required guarantee.
+
+`openetl plan` shows each stream's guarantee and its reason when the control plane has the necessary stream and connector information. The source catalog describes the streams. The destination connector's package describes its capabilities. Otherwise, the plan explains what it cannot check, and the runner checks before the sync.
 
 ## Schema changes and holds
 
-Sources change: a column is added, or a number column starts holding bigger numbers. The pipeline's **schema policy** decides what happens. By default, new columns are added to the destination, and when a column's type gets wider, the stream's type widens with it. A whole-number column that has held a value past ±2^53 (9,007,199,254,740,992) doesn't widen to a floating-point number if decimals arrive, since that would round it: it becomes text, which loses nothing.
+The **schema** describes a stream's columns and types. The pipeline's **schema policy** controls how OpenETL handles new columns and type changes. By default, new columns are added to the destination. A stream's type can widen to represent larger values.
 
-By default, OpenETL does not change the type of a column you already have in your destination, because that can rewrite or lock a table other people use. When a stream's column widens and the destination's column can't take the new values, the destination refuses. The pipeline then **holds** that column back where it can, keeping on delivering the rest of each row, or stops the stream; either way it says what change to the destination would let the values in. Once the change is made, **releasing** the hold patches the held values in. **Discarding** it drops them, and the column stays as it is.
+An integer column that has contained a value beyond ±2^53 (9,007,199,254,740,992) widens to text if fractional values arrive. Conversion to floating point could round those integers. Text preserves their values.
 
-A pipeline can allow its destination to change column types itself, for every stream or only some.
+By default, OpenETL does not change an existing destination column's type. That operation can rewrite or lock a table. A pipeline can permit type changes for all streams or selected streams.
+
+If the destination refuses a type change, OpenETL **holds** the affected values where supported, or stops the stream. A hold saves values while the pipeline continues to deliver the rest of the row. It explains the destination change needed to accept those values.
+
+After that change, **releasing** the hold writes the saved values into the destination on the next run. **Discarding** the hold deletes the saved values and leaves the destination column's type unchanged. See [Handle schema changes and holds](../pipelines/schema-changes.md) for the procedure.
+
+**Quarantine** saves a row or cell whose value does not fit its column's type. Row quarantine excludes the whole row from delivery. Cell quarantine holds only the affected cell where the destination supports later repair.
 
 ## Incidents
 
-An **incident** opens on a pipeline when something needs attention: a sync failed, a password stopped working, a column is held, a continuous pipeline fell behind its source. Each one says what happened and what to do about it, and records what OpenETL did itself, such as pausing a pipeline whose syncs would only fail the same way again. Most incidents close by themselves once the pipeline makes progress again; you can also resolve one by hand.
+An **incident** records a condition that needs attention. Examples include a failed sync, rejected credentials, a held column or a continuous pipeline falling behind its source. Each incident explains what happened, gives recovery steps and records automatic actions.
+
+**Heal** is OpenETL's response to incidents. Depending on the pipeline's policy, it can take recovery actions, propose them, or remain off. For example, it can pause a pipeline when retries would repeat the same failure. Most incidents resolve when the pipeline makes progress again. You can also resolve an incident manually.
 
 ## Versions
 
-Every change you apply to a pipeline makes a new **version** of it, and each sync runs exactly one version. Applying a pipeline as it was before makes that version current again.
+Each applied change to a pipeline creates a **version**. Each sync runs one version. Applying an earlier definition makes that version current again.
 
 ## Where it runs
 
 OpenETL has two halves:
 
 - The **control plane** serves the API and the console, keeps the pipelines, and decides what runs when and where.
-- **Runners** do the copying. Each run starts the connectors as programs of their own, with OpenETL's data engine between them. Runners can be anywhere that can reach the control plane and your systems; together they're a **data plane**.
+- **Runners** execute jobs that copy data. Each run starts the connectors as separate programs, with OpenETL's data engine between them. A **data plane** groups runners that can reach the API and your data systems.
 
 On a laptop, `openetld dev` runs both halves in one process. [Self-host](../self-host/index.md) covers running them on servers.
 
 ## Workspaces
 
-Pipelines, sources, destinations and secrets belong to a **workspace**, whose name appears in the console's addresses and in the API's. An installation has one workspace, named `default`.
+Pipelines, sources, destinations and secrets belong to a **workspace**. Its name appears in console and API addresses. An installation has one workspace, named `default`.

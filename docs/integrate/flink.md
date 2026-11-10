@@ -95,7 +95,7 @@ OpenETL reads every selected input stream, including streams your application do
 
 ## Publish and configure the pipeline
 
-Put the application jar at an `https://`, `s3://` or `s3a://` URI that the runner can read. Calculate its digest:
+Put the application jar at an `https://`, `s3://` or `s3a://` URI that the runner can read. The runner reads an `s3://` URI with the same credentials and query parameters as its own bucket. See [Buckets](../self-host/index.md#buckets). Calculate the jar's digest:
 
 ```sh
 shasum -a 256 examples/flink-transform/target/flink-transform-0.1.0.jar

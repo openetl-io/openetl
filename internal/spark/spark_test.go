@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,6 +88,24 @@ func TestStageCode(t *testing.T) {
 	// spark-submit runs a .py file as Python, and anything else as a jar.
 	if py, err := a.StageCode(t.Context(), srv.URL+"/jobs/enrich?token=x", sum(jar), true, srv.Client()); err != nil || py != "code/"+sum(jar)+"/enrich.py" {
 		t.Errorf("a Python file's copy is %q, %v", py, err)
+	}
+}
+
+func TestStageCodeFromAnotherRegion(t *testing.T) {
+	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Amz-Bucket-Region", "ap-southeast-2")
+		w.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer s3.Close()
+	a, err := Open(t.Context(), t.TempDir(), "org", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = a.Close() }()
+	uri := "s3://jobs/a.jar?anonymous=true&region=us-east-1&endpoint=" + url.QueryEscape(s3.URL)
+	_, err = a.StageCode(t.Context(), uri, strings.Repeat("0", 64), false, http.DefaultClient)
+	if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "region=ap-southeast-2") {
+		t.Errorf("code in another region's bucket: %v", err)
 	}
 }
 

@@ -62,7 +62,7 @@ An attempt can process an epoch again after recovery. Keep external side effects
 
 ## Publish the application and configure the pipeline
 
-Put the jar at an `https://`, `s3://` or `s3a://` URI that the runner can read. Calculate its digest:
+Put the jar at an `https://`, `s3://` or `s3a://` URI that the runner can read. The runner reads an `s3://` URI with the same credentials and query parameters as its own bucket. See [Buckets](../self-host/index.md#buckets). Calculate the jar's digest:
 
 ```sh
 shasum -a 256 examples/spark-transform/target/spark-transform-0.1.0.jar

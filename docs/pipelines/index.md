@@ -3,7 +3,7 @@ title: Pipelines as code
 description: How pipelines are written as YAML, planned and applied with the CLI, versioned, and run day to day.
 ---
 
-A pipeline is a YAML document that you keep in git like any other code. You write it, run `openetl plan` to see what applying it would change and how each stream would be delivered, and run `openetl apply` to make the change. This page covers that loop, the documents involved, and the pipeline spec's fields at a glance.
+A pipeline is a YAML document that you can version in git. Use `openetl plan` to review changes and stream delivery guarantees. Use `openetl apply` to create or update the resources. This guide explains the workflow, resource documents and common pipeline settings.
 
 If you haven't yet, run the [quickstart](../get-started/quickstart.md) first: this page builds on its `faker` source and `local-postgres` destination. [Concepts](../get-started/concepts.md) explains the words used here.
 
@@ -42,7 +42,9 @@ A file can hold several documents, separated by `---`, and `-f` can be given mor
 | `Connector`, `DeclarativeSource` | A version of a connector, or of a source written in YAML | [Build a connector](../build-connectors/index.md) |
 | `ConnectorSource` | A registry or repository whose connector packages the console lists | [Build a connector](../build-connectors/index.md) |
 
-A `Source` or `Destination` names a connector, such as `postgres`, and holds that connector's `config`. What the config takes is up to the connector: its own documentation lists it, and `openetl connector spec TARGET` prints any connector's spec, which includes its config's JSON Schema. A connector name without a version, such as `postgres`, may pin a newer version each time you apply it, and the plan warns about that; `postgres@1` keeps to major version 1.
+A `Source` or `Destination` specifies a connector and its `config`. The connector's documentation defines the configuration fields. `openetl connector spec TARGET` prints the connector's specification, including its configuration JSON Schema.
+
+An unversioned name such as `postgres` can select a newer installed version each time you apply the connection. The plan warns about this. `postgres@1` restricts selection to major version 1. Pin an exact version or digest when the deployment requires a specific release.
 
 [Choose and manage connectors](./connectors.md) covers installing official, community and private packages, selecting versions, and upgrading them independently of OpenETL.
 
@@ -55,7 +57,7 @@ config:
   dsn: { secret: local-postgres-dsn }
 ```
 
-Store secrets with the CLI. `set` reads the value from stdin or from `--from-file`, or with `--ref` points the secret at a cloud secret store, which runners read with their own cloud identity:
+Store secrets with the CLI. `set` reads a value from standard input or `--from-file`. With `--ref`, it stores a reference to a cloud secret store. Runners resolve that reference with their cloud identity:
 
 ```sh
 echo postgres://openetl:openetl@localhost:5432/openetl | openetl secret set local-postgres-dsn
@@ -64,6 +66,8 @@ openetl secret delete local-postgres-dsn
 ```
 
 `list` shows current resources that use each secret. `delete` refuses a secret used by a current source, destination, webhook, Spark cluster, Flink cluster or pipeline. Check private connector sources separately. [Manage connection secrets](../self-host/secrets.md) covers cloud references, credential replacement and deletion.
+
+`set` drops one line ending from the end of a value it reads, and runners do the same with a value in a cloud store that's text, so a file saved by an editor or written by `echo` works as is. A field of a JSON value is used exactly as it is.
 
 ## Plan, then apply
 
@@ -106,7 +110,7 @@ workspaces/default/pipelines/faker-to-parquet (version known after apply)
 
 The plan has two parts:
 
-- **A line per document**: whether it would be created, updated or unchanged, and its version. A pipeline the file doesn't define, but that uses a source or destination the file changes, gets a line too, ending "which uses what changed": it gets a new version as well.
+- **A line per document** shows its planned state and version. Pipelines affected by a source or destination change also get new versions, even if the file does not define them. Their lines end with "which uses what changed".
 - **A section per pipeline**, which can have:
   - `changes`: each field that changes, as `field: before -> after`.
   - `job size`: how much CPU and memory its jobs get, what set that, and the pool of runners it runs in.
@@ -115,7 +119,10 @@ The plan has two parts:
   - `warnings`: what's allowed but worth a second look.
   - `notes`: what the plan couldn't check, and why.
 
-The streams section needs two things the control plane may not have. It reads the source's streams from the source's latest catalog, which `openetl discover NAME` refreshes; until a source has been discovered, the plan checks only the delivery settings. And it needs to know what the destination can do, which it learns from the connector's package; for a connector it has no package for, such as the quickstart's local build of Postgres, a note says the runner checks the guarantees before each sync instead.
+The streams section requires two sources of information:
+
+- **The source catalog.** `openetl discover NAME` refreshes it. Until discovery completes, the plan checks only delivery settings.
+- **Destination capabilities.** The connector package declares them. For a local executable without a package, the plan explains that the runner checks guarantees before each sync.
 
 A plan with problems looks like this one, for the same pipeline made continuous:
 
@@ -137,11 +144,13 @@ When the plan is what you want, apply the same files:
 openetl apply -f faker-to-parquet.yaml
 ```
 
-Either every document in an apply is applied or none is. Apply prints the same lines as the plan, with "created", "updated" or "unchanged", followed by any warnings. A new scheduled pipeline starts its first sync straight away; a changed one waits for its schedule or for `openetl sync`. `openetl apply --dry-run` checks the documents the way `apply` does without changing anything, and without printing the plan.
+An apply stores all documents together or stores none. Its output identifies each resource as "created", "updated" or "unchanged", followed by warnings. A new scheduled pipeline starts its first sync immediately. An updated pipeline waits for its schedule or a manual `openetl sync`.
+
+`openetl apply --dry-run` performs apply validation without storing changes. It does not print the plan; use `openetl plan` to review the planned changes.
 
 ## Versions
 
-Every document you apply is stored as an immutable version, named by a hash of its content. A pipeline's version pins the versions of its source and destination, and of its dbt projects, so changing a source gives every pipeline that uses it a new version. Each sync runs exactly one version.
+Each applied document is stored as an immutable version identified by its content hash. A pipeline version pins its source, destination and dbt project versions. Changing a source therefore creates a new version of every pipeline that uses it. Each sync runs one version.
 
 ```sh
 openetl versions faker-to-postgres
@@ -153,7 +162,7 @@ edab40da6d76c1aba235c7cd81c5618db8af2206c759539c5baea80a584560b3           2026-
 9e052e7e6881672dbdcfcc4356f04f592bdfbd9777622e2d2a877eb1530db134  *        2026-11-08 12:28:23  cli:examples/faker-to-postgres.yaml#3
 ```
 
-The provenance says where a version came from: here, the third document of a file applied with the CLI. Because versions are named by their content, applying a pipeline as it was before makes that earlier version current again; reverting the commit in git and applying is a rollback.
+Provenance identifies the origin of a version. Here, it is the third document in a file applied with the CLI. Versions are identified by content. To restore an earlier pipeline definition, revert its git commit and apply the file. This does not undo changes already written to the destination.
 
 ## The pipeline spec at a glance
 
@@ -262,7 +271,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 
 ## Continuous pipelines
 
-A continuous pipeline has `mode: continuous` and no `schedule`. It runs one job that keeps reading and commits as it goes, every 10 seconds unless the destination or `delivery.commit.interval` sets another interval:
+A continuous pipeline has `mode: continuous` and no `schedule`. Its job keeps reading and commits at intervals. The default is 10 seconds unless the destination or `delivery.commit.interval` specifies another value:
 
 ```yaml
 apiVersion: openetl.io/v1alpha1
@@ -283,18 +292,18 @@ Its streams must be read in a way that never ends: `cdc` from a database, or `st
 
 ## Delivery guarantees in practice
 
-Every pipeline requires `exactly_once` unless `delivery.require`, or a stream's `require`, says otherwise, and a pipeline doesn't run while any stream's guarantee is below what it requires. Each stream's guarantee comes from what the source and the destination can each promise; the plan's streams section gives it and the reason.
+The default requirement is `exactly_once`. Set `delivery.require` to change it for the pipeline, or a stream's `require` to change it for that stream. OpenETL refuses to run a pipeline if any stream falls below its requirement. The plan lists each stream's guarantee and reason.
 
-Some destinations can't promise more than at least once: a stream that only delivers records and waits for them to be acknowledged, can deliver one twice after a retry. A pipeline into one says so:
+Deliver-and-acknowledge destinations can repeat a record after a retry. They provide at-least-once delivery. A pipeline using such a destination must accept that guarantee:
 
 ```yaml
 delivery:
   require: at_least_once
 ```
 
-Under `at_least_once`, rows can land again, and nothing removes the repeats. For example, an incremental read starts at the highest cursor value the last read saw, so rows with that value are read again on every sync; under a higher guarantee a destination that can drops them when it applies the sync, and under `at_least_once` they land again. A retry after a crash can land rows a second time too.
+Under `at_least_once`, repeated changes remain as duplicate rows. For example, an incremental read includes rows at the previous highest cursor value again. With a higher guarantee, a capable destination removes duplicates during apply. With `at_least_once`, it writes them again. Recovery after a failure can also produce duplicates.
 
-So when you read a stream delivered at least once, keep one row per `_openetl_id`. Every row has one, made from the stream, the row's primary key (or its whole content when it has none) and its `_openetl_seq`, so a repeat of the same version of a row has the same ID. In Postgres:
+When reading a stream delivered at least once, keep one row per `_openetl_id`. This ID combines the stream, primary key and `_openetl_seq`. Without a primary key, it uses the row's whole content instead. Repeated reads of the same version produce the same ID. In Postgres:
 
 ```sql
 select distinct on (_openetl_id) *
@@ -310,7 +319,7 @@ from faker.users
 order by id, _openetl_seq desc;
 ```
 
-[Delivery guarantees](./delivery.md) covers what decides each stream's guarantee, every reason the plan gives, streams without a primary key, and reading a stream delivered at least once.
+[Delivery guarantees](./delivery.md) explains guarantee selection, plan reasons and streams without primary keys. It also shows how to read data delivered at least once.
 
 ## Day to day
 

@@ -31,7 +31,12 @@ const hunter2 = `{"user": "shop", "password": "hunter2", "port": 5432, "none": n
 func TestField(t *testing.T) {
 	for _, tc := range []struct{ value, field, want, err string }{
 		{"plain", "", "plain", ""},
+		{"plain\n", "", "plain", ""},
+		{"plain\r\n", "", "plain", ""},
+		{"two lines\n\n", "", "two lines\n", ""},
+		{"-----BEGIN KEY-----\nabc\n-----END KEY-----\n", "", "-----BEGIN KEY-----\nabc\n-----END KEY-----", ""},
 		{hunter2, "", hunter2, ""},
+		{`{"dsn": "postgres://h\n"}`, "dsn", "postgres://h\n", ""},
 		{hunter2, "password", "hunter2", ""},
 		{hunter2, "port", "5432", ""},
 		{hunter2, "nope", "", `has no field "nope"`},

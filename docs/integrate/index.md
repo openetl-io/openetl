@@ -3,7 +3,7 @@ title: Integrate
 description: Connect OpenETL to dbt, Spark, Flink, your own code and your monitoring, and read what it writes.
 ---
 
-This section is for people who know another system well and want it to work with OpenETL. Each part says what OpenETL sends or expects, and shows the least setup that works. The YAML documents here are applied like any other, with `openetl plan` and `openetl apply`; [Pipelines](../pipelines/index.md) covers that loop.
+This section explains how to connect OpenETL to other systems. Each integration describes the data OpenETL sends or expects and the configuration required on each side. Review YAML changes with `openetl plan`, then apply them with `openetl apply`. [Pipelines](../pipelines/index.md) explains this workflow.
 
 | Your task | Integration | When it runs |
 |---|---|---|
@@ -72,9 +72,10 @@ openetl webhook test ops-alerts
   | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident opens, gets worse, or is resolved |
   | `webhook.test` | `openetl webhook test` sends one |
 
-- **What's sent.** A `POST` with a JSON body, laid out as [Standard Webhooks](https://www.standardwebhooks.com) says: `type`, `timestamp`, and the event's `data`, which names resources as the API does, such as `workspaces/default/pipelines/faker-to-postgres`. [Platform events](../reference/events.md) lists every field of each type's `data`.
-- **Signatures.** Each delivery carries the headers `webhook-id`, the event's ID, `webhook-timestamp` and `webhook-signature`, an HMAC-SHA256 under each of the webhook's keys. Any Standard Webhooks library verifies them. Naming two secrets lets you add a new key before removing the old one.
-- **Retries.** A `2xx` answer within 15 seconds is a delivery. No answer, a `408`, a `429` or a `5xx` is tried again for about a day, honoring `Retry-After`; another status fails the delivery. Redirects aren't followed. A delivery can arrive more than once, so drop repeats by `webhook-id`. An endpoint that answers `410 Gone`, or fails every delivery for 3 days with no day without a failure, has its webhook disabled; `openetl webhook enable` turns it back on.
+- **Payload.** OpenETL sends a `POST` with a JSON body containing `type`, `timestamp` and `data`, following [Standard Webhooks](https://www.standardwebhooks.com). Resource names use the API format, such as `workspaces/default/pipelines/faker-to-postgres`. [Platform events](../reference/events.md) lists the fields in each event's `data`.
+- **Signatures.** Deliveries include `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. `webhook-id` identifies the event. `webhook-signature` contains an HMAC-SHA256 signature for each configured key. Verify deliveries with a Standard Webhooks library. To rotate a key, configure both secrets before removing the old one.
+- **Retries.** A `2xx` response within 15 seconds completes delivery. Missing responses, `408`, `429` and `5xx` responses trigger retries for about a day, honoring `Retry-After`. Other statuses fail delivery. Redirects are not followed. Use `webhook-id` to remove duplicate deliveries.
+- **Automatic disabling.** A `410 Gone` response disables the webhook. Repeated failures for 3 days also disable it. A successful delivery or a gap of at least 24 hours between failures resets this period. After correcting the receiver, use `openetl webhook enable` to enable it again.
 - **Deliveries.** `openetl webhook deliveries ops-alerts` lists the last 7 days' deliveries, with each one's state, status and error.
 - **Which addresses.** The server sends webhooks to public addresses only, unless its `--egress-allow` setting names the private networks it may reach as well.
 
@@ -89,7 +90,11 @@ Everything the CLI and the console do goes through OpenETL's API, served by `ope
 - **REST**, with JSON, under `/v1`, such as `GET /v1/workspaces/default/pipelines`. The server serves its OpenAPI description at `/openapi.yaml`.
 - **Connect, gRPC and gRPC-Web**, from the protos in [`proto/openetl/api/v1`](../../proto/openetl/api/v1), such as `openetl.api.v1.PipelineService/ListPipelines`.
 
-Every call sends an API key as `Authorization: Bearer KEY`. Give each integration a service account of its own, with the least role it needs: `viewer` reads, `operator` also syncs, pauses and resumes pipelines, and `editor` also applies and deletes.
+Send an API key in the `Authorization: Bearer KEY` header. Give each integration a separate service account with the minimum required role:
+
+- `viewer` reads resources.
+- `operator` can also start syncs and pause or resume pipelines.
+- `editor` can also apply and delete resources.
 
 ```sh
 openetl principal create reporting
@@ -98,7 +103,9 @@ openetl key create --out reporting.key reporting
 curl -H "Authorization: Bearer $(cat reporting.key)" http://localhost:8080/v1/workspaces/default/pipelines
 ```
 
-Responses use the protos' JSON form, which isn't quite the YAML you apply: enums are spelled in full (`PIPELINE_MODE_SCHEDULED`) and durations in seconds (`3600s`). Sources, destinations, pipelines and the other kinds are created and changed through `ApplyService` (`POST /v1/workspaces/default:apply`), which takes the same documents `openetl apply` sends.
+Responses use protobuf JSON. Enum values use their full names, such as `PIPELINE_MODE_SCHEDULED`. Durations use seconds, such as `3600s`.
+
+Use `ApplyService` (`POST /v1/workspaces/default:apply`) to create or update sources, destinations, pipelines and other resources. It accepts the same documents sent by `openetl apply`.
 
 ## Metrics and traces
 

@@ -85,7 +85,9 @@ docker compose exec -T postgres pg_restore --exit-on-error \
   -U openetl -d openetl_dbos < backup/openetl_dbos.dump
 ```
 
-Restore the two application volumes before starting their services:
+Restore both application volumes before starting their services. Use the same image as the backup for recovery; upgrade separately after verification.
+
+Existing schedules and continuous pipelines can start as soon as the restored control plane runs. Complete storage and destination checks before the final `docker compose up` command:
 
 ```sh
 docker compose run --rm --no-deps -T --entrypoint tar runner \
@@ -94,8 +96,6 @@ docker compose run --rm --no-deps -T --entrypoint tar server \
   -C /var/lib/openetl -xzf - < backup/server.tar.gz
 docker compose up -d --wait
 ```
-
-Use the same compatible version for recovery first; perform an upgrade separately after verification. Existing schedules and continuous pipelines can start once the restored control plane is running, so complete the storage and destination checks before this last command.
 
 ## Verify the recovery
 
@@ -118,7 +118,7 @@ A continuous pipeline resumes its job rather than starting a scheduled sync. Che
 
 ## Other backends and storage
 
-For checkpoints in an object store, back up the pipeline objects while all its runners and job pods are stopped, and restore the same paths before starting them. The store includes staging and held values as well as checkpoint records. Changing `OPENETL_CHECKPOINTS` does not move existing state.
+For object-store checkpoints, stop all runners and job pods before backing up pipeline objects. Restore those objects at the same paths before restarting the runners. The store includes staging and held values as well as checkpoint records. Changing `OPENETL_CHECKPOINTS` does not move existing state.
 
 With a custom DBOS URL, back up and restore that database too, even when it lives on another server. With Temporal, the separate workflow state belongs to your Temporal deployment; its backup and recovery must be planned alongside OpenETL's metadata and checkpoint storage. Restoring metadata alone does not restore Temporal's workflow history. Keep the selected orchestration backend unchanged during recovery.
 

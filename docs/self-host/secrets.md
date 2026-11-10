@@ -63,7 +63,7 @@ OpenETL accepts these reference forms:
 
 For AWS, an ARN supplies its region. Without an ARN or `region`, the runner's AWS configuration must supply the region. For Azure, `VAULT` can be a vault name or a Key Vault hostname in a supported Azure cloud.
 
-Every form accepts `field` to select one top-level field of a JSON object. It does not select nested paths. A string field becomes its text value. Other non-null fields become JSON text. A missing or null field fails the read. Without `field`, the value must be UTF-8 text.
+Every form accepts `field` to select one top-level field of a JSON object. It does not select nested paths. A string field becomes its text value. Other non-null fields become JSON text. A missing or null field fails the read. Without `field`, the value must be UTF-8 text. The runner removes one final newline and its preceding carriage return from that text, as the CLI does. A field's value is used without changes.
 
 The runner uses the AWS SDK's default credentials, Google's application default credentials, or Azure's default credential. It needs permission to read the selected secret version and any required decryption permissions.
 
