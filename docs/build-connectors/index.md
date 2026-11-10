@@ -38,6 +38,8 @@ The runner sets these environment variables before starting the connector. It th
 | `OPENETL_CONNECTOR_ROLE` | `source` or `destination`, for an executable that has both |
 | `OPENETL_WATCH_STDIN` | `1`: exit when stdin closes |
 
+The runner also sets `GOMAXPROCS` and `GOMEMLIMIT` from the job's size. From its own environment, the runner passes only `PATH`, `HOME`, `TMPDIR`, `TZ`, `LANG`, `SSL_CERT_FILE` and `SSL_CERT_DIR`. A connector does not get the runner's cloud credentials, such as AWS keys or the token of an EKS pod's IAM role. If your connector calls a cloud service, take its credentials in the connector's config. Mark them `"x-secret": true` in the config's JSON Schema.
+
 The Go SDK, in [`sdk/go`](../../sdk/go), does all of that in `sdk.Serve`, and its packages `source` and `destination` describe the contract in Go.
 
 ### A source
