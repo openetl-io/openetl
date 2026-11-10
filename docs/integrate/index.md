@@ -202,6 +202,8 @@ openetl webhook test ops-alerts
 
 The [Webhook reference](../reference/specs/webhook.md) lists required fields and filter defaults.
 
+[Receive and verify webhooks](./webhooks.md) provides signature verification code, receiver checks, delivery recovery and signing-key rotation steps.
+
 ## The API
 
 Everything the CLI and the console do goes through OpenETL's API, served by `openetld server`. The same API is served four ways:

@@ -101,6 +101,8 @@ Every command that calls the API sends the API key in `OPENETL_API_KEY`, or else
 
 The commands and their help are in [`cmd/openetl`](../../cmd/openetl).
 
+[Pipeline CLI commands](./pipeline-cli.md) lists the arguments, flags and defaults for applying, inspecting and operating pipelines. [Manage connection secrets](../self-host/secrets.md) covers stored values and cloud-secret references.
+
 ## openetld
 
 `openetld` runs OpenETL's server side, in one of these roles:
