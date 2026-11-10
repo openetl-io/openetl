@@ -51,7 +51,7 @@ hooks: ## Check what each commit touches before it's made
 DEV_BUCKET ?= openetl-dev
 ifeq ($(STORE),s3)
 DEV_DEPS := spark-s3a
-DEV_ENV := OPENETL_CHECKPOINTS='s3://$(DEV_BUCKET)?endpoint=http%3A%2F%2F127.0.0.1%3A8333' \
+DEV_ENV := OPENETL_CHECKPOINTS='s3://$(DEV_BUCKET)?anonymous=true&endpoint=http%3A%2F%2F127.0.0.1%3A8333' \
 	OPENETL_SPARK_SUBMIT=$(CURDIR)/deploy/compose/spark-submit \
 	OPENETL_BRIDGE_LISTEN=0.0.0.0:7710 OPENETL_BRIDGE_ADVERTISE=host.docker.internal:7710
 DEV_SETUP := curl -sS -o /dev/null -X PUT http://127.0.0.1:8333/$(DEV_BUCKET)

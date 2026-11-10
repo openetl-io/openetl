@@ -41,8 +41,8 @@ func TestQuarantineInObjectStorage(t *testing.T) {
 	}{
 		{"s3", func(t *testing.T, bucket string) string {
 			endpoint := cmp.Or(os.Getenv("OPENETL_TEST_S3_ENDPOINT"), "http://127.0.0.1:8333")
-			storage := "s3://" + bucket + "?endpoint=" + url.QueryEscape(endpoint)
-			c, err := objectstore.S3Client(mustParse(t, storage))
+			storage := "s3://" + bucket + "?anonymous=true&endpoint=" + url.QueryEscape(endpoint)
+			c, err := objectstore.S3Client(t.Context(), mustParse(t, storage))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -193,9 +193,9 @@ func testStore(t *testing.T) (store, bucket string) {
 	t.Helper()
 	endpoint := cmp.Or(os.Getenv("OPENETL_TEST_S3_ENDPOINT"), "http://127.0.0.1:8333")
 	bucket = "openetl-test-flink-" + strings.ToLower(rand.Text())[:12]
-	store = "s3://" + bucket + "?endpoint=" + url.QueryEscape(endpoint)
+	store = "s3://" + bucket + "?anonymous=true&endpoint=" + url.QueryEscape(endpoint)
 	u, _ := url.Parse(store)
-	s3c, err := objectstore.S3Client(u)
+	s3c, err := objectstore.S3Client(t.Context(), u)
 	if err != nil {
 		t.Fatal(err)
 	}

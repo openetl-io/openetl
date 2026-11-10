@@ -92,7 +92,7 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 		}
 		p.slots = append(p.slots, s)
 	}
-	p.store = "s3://" + cfg.bucket + "?endpoint="
+	p.store = "s3://" + cfg.bucket + "?anonymous=true&endpoint="
 	for _, s := range p.slots {
 		p.wg.Go(func() { s.supervise(ctx) })
 	}

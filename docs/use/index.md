@@ -3,7 +3,7 @@ title: Use the console
 description: A tour of OpenETL's console, for checking whether your data is fresh, what each sync did, and what needs attention.
 ---
 
-The console is OpenETL's web app. It shows every pipeline, how fresh the data it delivers is, what each sync did, and anything that needs someone's attention. Anyone with an account can look around; what you can change depends on your [role](#what-your-role-lets-you-do).
+The console is OpenETL's web app. Use it to check pipeline health, data freshness, sync results and incidents. Your [role](#what-your-role-lets-you-do) determines which resources you can view or change.
 
 If a word on this page is new, [Concepts](../get-started/concepts.md) explains it in a few lines.
 
@@ -13,11 +13,12 @@ Whoever runs OpenETL gives you two things: the console's address, and a link to 
 
 1. Open the link. The page is **Set your password**.
 2. Choose a password of 15 to 256 characters. It can't be your email or a common password.
-3. Tick **Keep me signed in on this device** if you want to stay signed in, and press **Set password and sign in**.
+3. If you want a persistent session, select **Keep me signed in on this device**.
+4. Select **Set password and sign in**.
 
 A link works once. If the page says the link has expired or was already used, ask an admin for a new one.
 
-After that, the console's address shows **Sign in to OpenETL**: your **Email** and **Password**, then **Sign in**.
+For later visits, open the console address. On **Sign in to OpenETL**, enter your **Email** and **Password**. Select **Sign in**.
 
 Your name is at the bottom of the sidebar. Its menu shows your roles, and has:
 
@@ -27,7 +28,7 @@ Your name is at the bottom of the sidebar. Its menu shows your roles, and has:
 - **Sign out**.
 
 > [!NOTE]
-> A banner that says **Sign-in is off** means this OpenETL asks no one to sign in, and everyone who can reach it is an owner. That's how `openetld dev` runs on a laptop; a shared installation shouldn't.
+> With **Sign-in is off**, anyone who can reach the console has owner access. This is the default for local development with `openetld dev`.
 
 ## Find your way around
 
@@ -38,7 +39,7 @@ The sidebar has:
 - Under **Connections**: **Sources**, **Destinations**, **dbt projects**, **Clusters** and **Connectors**.
 - Under **Settings**: **Webhooks**, **Secrets**, **Access** and **Audit log**, which only admins can read.
 
-**Search**, at the top, or ⌘K on a Mac and Ctrl+K elsewhere, jumps to any pipeline or page. It also switches the theme and the row density, and signs you out.
+Select **Search** to find a pipeline or page. The keyboard shortcut is ⌘K on macOS or Ctrl+K elsewhere. The search menu also provides theme, row density and sign-out actions.
 
 ## Pipelines
 
@@ -47,10 +48,10 @@ The sidebar has:
 | Column | What it shows |
 |---|---|
 | **Pipeline** | Its name. Open it for its page. |
-| **Status** | How its latest sync went, from the table below. A count of failed attempts shows while a sync is retrying, and a count of open incidents when it has any. |
+| **Status** | The latest sync result, as defined below. During retries, it includes the failed-attempt count. Open incidents also have a count. |
 | **Source**, **Destination** | Where it reads from and writes to. |
 | **Schedule** | How often it syncs: **Every 1h**, a cron expression, **Continuous**, or **On demand** when it only syncs when someone starts one. |
-| **Freshness** | When its data last changed: when its last successful sync ended, or for a continuous pipeline, when it last committed. For a pipeline that syncs every so often, it's highlighted once it's older than two of those intervals. |
+| **Freshness** | The latest successful sync's end time, or the latest commit time for a continuous pipeline. An interval-based pipeline is highlighted after two intervals without a successful sync. |
 | **Last sync** | How many rows its latest sync copied. |
 
 A pipeline's status is its latest sync's, unless it's paused:
@@ -81,20 +82,20 @@ Below that, a strip shows its latest syncs, oldest on the left. Each one's color
 
 ### Sync now, Pause and Resume
 
-- **Sync now** starts a sync straight away. It's greyed out while a sync is running, and isn't there while the pipeline is paused. Continuous pipelines don't have it, as they never stop.
-- **Pause** stops a pipeline's scheduled syncs; a sync that's running carries on. Pausing a continuous pipeline stops it.
-- **Resume** starts its schedule again.
+- **Sync now** starts a sync immediately. It is disabled while a sync is running and hidden while the pipeline is paused. Continuous pipelines do not have this action.
+- **Pause** prevents future scheduled syncs. An active scheduled sync continues. For a continuous pipeline, it stops the running job.
+- **Resume** enables scheduled starts again. For a continuous pipeline, it restarts the job from its last checkpoint.
 
 These buttons show only if your role may use them.
 
 ### Overview
 
-**Overview** starts with anything wrong: the pipeline's open incidents, a sync that's retrying after failed attempts, or a last sync that failed, with a link to read its log.
+**Overview** first shows open incidents, retries after failed attempts and the latest failed sync. It links to the failed sync's log.
 
 **Not as the spec says** follows when the pipeline runs differently from how it was set up, until someone undoes it:
 
-- A stream marked **Paused** is skipped by syncs, which keep its place for when it's resumed. It says why, and links to the incident if heal paused it. **Resume stream** starts syncing it again.
-- An entry marked **Changed by heal** is a setting heal changed, such as how often syncs start after the source kept limiting them, next to what the pipeline's definition has. **Use the spec's** goes back to the definition's value. The header's **Schedule** shows heal's interval while it applies.
+- A **Paused** stream is skipped while its saved position is retained. The entry explains why and links to the incident if heal paused it. **Resume stream** enables reads again.
+- **Changed by heal** identifies a setting changed by automatic recovery. It shows the active value beside the pipeline definition's value. **Use the spec's** restores the definition's value. While a schedule override applies, the header's **Schedule** shows that interval.
 
 A diagram then shows the source, each stream, the destination, and any step that runs after each sync, such as a dbt project. The **Streams** table has a row for each stream:
 
@@ -112,7 +113,7 @@ A diagram then shows the source, each stream, the destination, and any step that
 
 Messages above the table say what's wrong with the pipeline's plan, what to look out for, and what the plan couldn't check.
 
-When the pipeline holds anything back, **Holds** comes last, with an entry for each column. Each says whether the whole column or some of its cells are held, since when, and why, and what state it's in:
+If the pipeline holds values, **Holds** lists each affected column. Entries identify whole-column or individual-cell holds, their start time, reason and current state:
 
 | State | Meaning |
 |---|---|
@@ -122,27 +123,27 @@ When the pipeline holds anything back, **Holds** comes last, with an entry for e
 | **Release refused** | The last release didn't clear it, and won't be tried again until it's released again. |
 | **Discarded** | Its values were dropped. The column stays as the destination has it. |
 
-Under **To clear it**, each entry lists the ways out, likeliest first: the change to make to the destination, if there is one, and the command that releases or discards the hold.
+**To clear it** lists the available recovery choices in recommended order. These include a destination repair, where applicable, and commands to release or discard the hold.
 
 ### Syncs
 
-**Syncs** lists every sync, newest first, with its **Status**, when it **Started**, how long it **Took**, its **Rows**, which **Version** of the pipeline it ran, and its **Error** if it failed. **Load older syncs** goes further back.
+**Syncs** lists syncs from newest to oldest. Each row shows **Status**, **Started**, **Took**, **Rows**, **Version** and any **Error**. Select **Load older syncs** to view earlier results.
 
 ### Schemas
 
-**Schemas** shows each stream's columns, with their **Type**, whether they allow nulls, and the source's name for any column that was renamed on the way. Every time a stream's columns change, it gets a new version, `v1`, `v2` and so on. Pick a version to see its columns, with each one marked **Added**, **Removed** or **Changed** against the version before it.
+**Schemas** shows each stream's columns, **Type** and whether null values are allowed. Renamed columns also show their source names. Column changes create schema versions: `v1`, `v2` and later versions. Select a version to compare it with the previous one. Columns are marked **Added**, **Removed** or **Changed**.
 
 ### Checkpoints
 
-**Checkpoints** lists every commit the pipeline's syncs made over the last 30 days, newest first: when it was committed, how many rows it committed, and each stream's rows, along with anything quarantined, held or collapsed. Most people won't need it; it's there to show exactly what landed when.
+**Checkpoints** lists commits from the last 30 days, newest first. Each entry shows its time, total rows and rows per stream, including quarantined, held or collapsed data. Use this tab to check which records were committed and when.
 
 ### Versions
 
-**Versions** lists every version of the pipeline, marking the **Current** one. Each shows the file it was **Applied from**, the versions of its source, destination and Spark or Flink clusters, and the whole pipeline as YAML, with **Copy YAML**. Applying an earlier version's YAML makes it current again.
+**Versions** lists pipeline versions and marks the **Current** version. Each entry shows its **Applied from** file and the versions of its source, destination and Spark or Flink clusters. **Copy YAML** copies the complete definition. Applying an earlier definition makes that version current again.
 
 ## A sync's page
 
-Open a sync from the strip or from **Syncs**. The top shows its status, when it **Started**, how long it **Took** (or has been **Running for**), its **Rows**, the pipeline's **Version**, where it ran (its **Data plane**), its **Size**, and the CPU and memory it **Used**. Each stream's rows follow, and **Why it failed** if it did.
+Open a sync from the strip or **Syncs** tab. The header shows its status, **Started** time, **Took** duration and **Rows**. For active syncs, **Running for** shows elapsed time. It also shows the pipeline **Version**, **Data plane**, **Size**, and CPU and memory **Used**. Stream row counts follow the header. Failed syncs include **Why it failed**.
 
 A sync that needed more than one attempt lists them under **Attempts**, each with what it failed with.
 
@@ -150,7 +151,7 @@ A sync that needed more than one attempt lists them under **Attempts**, each wit
 
 ## Incidents
 
-An incident opens on a pipeline when something needs attention. **Incidents** lists every pipeline's, open ones first, with a summary, **Severity**, **State**, **Kind**, how many times it was **Seen**, and when it was **Last seen**. Filter by **State**, **Severity**, **Pipeline** or **Kind**.
+An incident records a condition that needs attention. **Incidents** lists incidents across pipelines, with open incidents first. Each entry shows a summary, **Severity**, **State**, **Kind**, **Seen** count and **Last seen** time. Filter by **State**, **Severity**, **Pipeline** or **Kind**.
 
 There are two severities:
 
@@ -173,14 +174,21 @@ And these kinds:
 | **Held** | A stream is holding a column, or some of its cells, back. |
 | **Checkpoint corrupt** | The checkpoint the pipeline would carry on from can't be read, or the pipeline restarted from the one before it. |
 
-An incident's page has **What happened**, with a link to the sync's log; **Next steps**, which says what to do; **Heal**, what OpenETL did about it itself or proposes; and **Details**. Some incidents pause their pipeline, when syncing again would only fail the same way. Others change how it runs:
+An incident page has four sections:
+
+- **What happened** describes the condition and links to the sync log.
+- **Next steps** gives recovery instructions.
+- **Heal** records automatic actions or proposed actions.
+- **Details** provides additional diagnostic information.
+
+Some incidents pause the pipeline because another sync would repeat the failure. Others change how it runs:
 
 - **Quarantine** pauses the stream, so it holds back no more rows while the others carry on. A stream that can't stop on its own, such as one read with CDC, isn't paused, and **Next steps** says why. A stream that's the pipeline's only one pauses the pipeline. **Next steps** names the file the held-back rows are in, each with the reason it didn't fit.
-- **Rate limited**, once 3 syncs in a row have failed this way, makes the source send requests more slowly, where it can, or syncs start less often. It does it again after every 3 more.
+- **Rate limited** reduces request rate where supported, or increases the sync interval, after 3 consecutive rate-limit failures. It repeats the adjustment after every 3 further failures.
 
 What they changed shows under **Not as the spec says** on the pipeline's **Overview**, where you can undo it. A pipeline's definition decides how far heal goes: it can propose these actions without taking them, or take none.
 
-Most incidents resolve themselves once the pipeline makes progress again. When you fixed something in a way OpenETL can't see, **Resolve** closes it by hand, with an optional **Comment** that's kept with the resolution. If it happens again, a new incident opens. A **Lagging** incident you resolve while the pipeline is still behind opens again at its next checkpoint.
+Most incidents resolve automatically when the pipeline makes progress. If you repaired a condition that OpenETL cannot detect, select **Resolve** to close the incident. An optional **Comment** records the repair. If the condition recurs, a new incident opens. A **Lagging** incident reopens at the next checkpoint if the pipeline is still behind.
 
 For a pipeline that waits, fails repeatedly or stops delivering fresh data, follow [Troubleshoot a pipeline](../pipelines/troubleshooting.md). [Handle schema changes and holds](../pipelines/schema-changes.md) shows a complete hold and release.
 
@@ -188,7 +196,7 @@ For a pipeline that waits, fails repeatedly or stops delivering fresh data, foll
 
 - **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values.
 - **dbt projects** lists the dbt projects that run after pipelines' syncs, and under **Run after**, the pipelines each one runs after.
-- **Clusters** lists the Spark and Flink clusters that pipelines' transforms run on, on its **Spark** and **Flink** tabs, with what each **Runs on** (such as **spark-submit**, **EMR on EC2** or **Kubernetes**) and the pipelines it's **Used by**. A cluster's page shows its **Settings**, with what applies to any that aren't set, the **Pipelines** that use it and whether each **Runs** it as a transform or after each sync, and the properties or configuration it gives every job. Settings name secrets, and never show their values.
+- **Clusters** has **Spark** and **Flink** tabs. Each entry shows what the cluster **Runs on**, such as **spark-submit**, **EMR on EC2** or **Kubernetes**. **Used by** lists its pipelines. Open a cluster to inspect **Settings**, defaults, job configuration and **Pipelines**. **Runs** identifies use as a transform or after a sync. Secret settings show references without their values.
 - **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, and the command that applies it, which makes it available to sources and destinations. A catalog source is a package registry or repository, separate from a pipeline's data source.
 
 Connectors can be official, community maintained or private to your organization. Each has its own versions and releases, separate from OpenETL. Use a package's **Docs** link for its setup, supported modes and limits. An administrator manages installation and upgrades; [Choose and manage connectors](../pipelines/connectors.md) gives the CLI steps.

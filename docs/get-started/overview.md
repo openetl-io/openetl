@@ -3,12 +3,12 @@ title: What is OpenETL?
 description: What OpenETL does, who it's for, and how connectors link your systems.
 ---
 
-OpenETL keeps copies of your data where people need them. It reads through source connectors from the systems where data is made, and writes through destination connectors into the systems where it's used, such as a warehouse, a data lake or another stream. It keeps those copies up to date, on a schedule or continuously, and tells you when something needs attention.
+OpenETL copies data between your systems. Source connectors read data from databases and event streams. Destination connectors write that data into warehouses, data lakes and other streams. Pipelines keep the copies up to date, on a schedule or continuously. OpenETL reports failures and other conditions that need attention.
 
-It's open source, under Apache 2.0, and you run it on your own machines or your own cloud account, so your data doesn't pass through anyone else's.
+OpenETL is open source under Apache 2.0. You run it on your own machines or in your own cloud account.
 
 > [!NOTE]
-> OpenETL is pre-alpha. Nothing has been released yet, and pipelines' format and the API can still change between versions.
+> OpenETL is pre-alpha. There are no releases. The pipeline format and API can change.
 
 ## Connect your systems
 
@@ -20,17 +20,17 @@ For setup, permissions, config and limits, read the documentation for the connec
 
 ## What it does for you
 
-- **Copies on a schedule or continuously.** A pipeline can run every hour, at set times, or without stopping, landing changes within seconds or minutes.
-- **Says how far you can trust each table.** For every stream, OpenETL works out whether a change could ever land twice, and refuses to run a pipeline that would deliver less than it asks for.
-- **Recovers by itself, and says when it can't.** When a machine fails or a sync is stopped, the next try picks up from the last checkpoint. When retrying won't help, such as when a password is refused, OpenETL pauses the pipeline, opens an incident, and says what to change.
-- **Doesn't change your tables behind your back.** New columns are added, but an existing column's type is never changed unless the pipeline allows it. When values stop fitting, OpenETL holds them back and says what to change.
-- **Shows what's going on.** The console shows each pipeline's syncs, how fresh its data is, how its tables' schemas changed, and any incident open on it. Metrics and traces go to your monitoring over OpenTelemetry, and events go to your own endpoints as webhooks.
-- **Shapes data on the way.** dbt can run after each sync. Spark and Flink jobs on your own clusters can transform data between the source and the destination.
-- **Lives in git.** Pipelines are YAML files. `openetl plan` shows what a change would do before `openetl apply` makes it, so changes can be reviewed like code.
+- **Runs on a schedule or continuously.** A pipeline can copy data at set times or keep reading changes without stopping.
+- **Checks delivery guarantees.** OpenETL determines whether each stream can receive duplicate changes. It refuses to run a pipeline that cannot meet its required guarantee.
+- **Recovers from failures.** After a machine failure, the next attempt resumes from the last checkpoint. If retries cannot resolve the error, OpenETL opens an incident with recovery steps. Some incidents also pause the pipeline.
+- **Controls schema changes.** New columns are added by default. An existing destination column's type changes only if the pipeline permits it. Otherwise, OpenETL holds the affected values where supported, or stops the stream.
+- **Reports pipeline health.** The console shows sync results, data freshness, schema changes and incidents. OpenETL exports metrics and traces through OpenTelemetry. Webhooks send events to your endpoints.
+- **Transforms data.** dbt can run after each sync. Spark and Flink jobs on your clusters can transform data between the source and destination.
+- **Keeps definitions in git.** Pipelines are YAML files. Use `openetl plan` to review a change before `openetl apply` makes it.
 
 ## Who uses it
 
-- **People who depend on the data,** such as analysts and product managers, use the console to see whether their tables are fresh and why one isn't. [Use the console](../use/index.md) is for them.
+- **Analysts, product managers and other data users** check freshness and diagnose stale tables in the console. Start with [Use the console](../use/index.md).
 - **Data and analytics engineers** write and review pipelines. Start with [Pipelines](../pipelines/index.md).
 - **Platform engineers** install and run OpenETL for everyone else. Start with [Self-host](../self-host/index.md).
 - **Developers** connect it to other tools, or write connectors for systems they need: [Integrate](../integrate/index.md) and [Build a connector](../build-connectors/index.md).

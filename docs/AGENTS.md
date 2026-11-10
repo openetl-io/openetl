@@ -70,6 +70,21 @@ Keep to one kind of page at a time: a tutorial walks through something that work
 - Units are spelled out or standard: 15 minutes, 8 vCPUs, 16 GiB. Durations in YAML are Go durations (`90s`, `1h`).
 - No filler or sales words: easy, simple, just, simply, powerful, seamless.
 
+### Simplified Technical English
+
+Use the writing principles in [ASD-STE100](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf) for reader-facing prose. Keep software terms, identifiers and console labels exact. These guidelines adapt the standard to OpenETL; they do not establish full compliance with its dictionary.
+
+- Give one instruction per sentence. Start instructions with a command verb: "Open", "Select", "Run" or "Check".
+- Keep instruction sentences to 20 words or fewer and descriptive sentences to 25 words or fewer. Split longer sentences at a change of action or topic. Do not remove articles or necessary details to meet a word limit.
+- State a condition before the action it controls: "If the pipeline is paused, resume it."
+- Name the component that acts. Use "The runner reads the token" instead of "The token is read".
+- Use one term for one meaning. Use "write" or "commit" when describing delivery; avoid figurative terms such as "land".
+- Write complete words instead of contractions: "does not", "cannot" and "it is".
+- Keep each paragraph about one subject, with no more than six sentences. Use a list for separate conditions or choices.
+- Put prerequisites before a procedure. State the expected result after the action and explain how to check it.
+- Put a warning before the command that can delete data or interrupt service. State the consequence explicitly. Notes give information; they do not contain required steps.
+- Keep commands, configuration fields, protocol values and quoted output unchanged during a prose edit. Change them only after checking their source and running the revised example.
+
 ## Checking a change
 
 `go test ./test/docs` checks the rules a machine can: every page's frontmatter, no `# H1`, no raw HTML, alt text on images, links that resolve with anchors that exist, a `meta.json` in every folder that lists each of its pages, a row on the resource spec pages for every field `internal/spec` reads, example documents there that parse, and generated pages that match their sources. `make test` runs it, and so does CI when `docs/` changes.

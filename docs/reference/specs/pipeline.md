@@ -54,7 +54,7 @@ In `spec`:
 - A field the spec doesn't have is refused, and so is a value of the wrong type.
 - Enum values are lowercase, as in `merge`.
 - A duration is a Go duration, such as `90s`, `15m` or `1h30m`.
-- A byte count is a whole number of bytes, or a number with a unit: `KB`, `MB`, `GB` and `TB` are powers of 1,000, and `KiB`, `MiB`, `GiB` and `TiB` powers of 1,024, as in `256MB` or `64MiB`.
+- A byte count is an integer number of bytes or a number with a unit, such as `256MB` or `64MiB`. `KB`, `MB`, `GB` and `TB` use powers of 1,000. `KiB`, `MiB`, `GiB` and `TiB` use powers of 1,024.
 - A delivery guarantee is `at_least_once`, `effectively_once` or `exactly_once`. [Concepts](../../get-started/concepts.md#delivery-guarantees) explains each.
 - A secret reference is `{ secret: NAME }`, naming a secret in the same workspace.
 - Some defaults depend on the source's streams and the destination's connector. `openetl plan` shows what they come to: each stream's write mode and guarantee, and the job size.
@@ -120,7 +120,11 @@ When a job size is an object rather than a preset, both `cpu` and `memory` are r
 | `source.streams[].columns.NAME.held` | `null`, `value` or `last` | No | The stream's `held` | What this column's held cells show, as the stream's `held` |
 | `source.streams[].columns.NAME.heldValue` | any value | Yes with this column's `held: value` | The stream's `heldValue` | As the stream's `heldValue`, for this column |
 
-How a stream holds is the plan's to check. `quarantine: cell`, `held`, `heldValue` and `groups`, on the stream or on a column, need a stream with a primary key and a destination that patches the stream's write mode; `last` needs merge and a destination that keeps the last value. A transform's inputs set none of these, nor `quarantine`, `collapse` or `typeChanges`.
+The plan checks hold requirements:
+
+- Cell quarantine and the `held`, `heldValue` and `groups` settings require a primary key. The destination must support patching for the selected write mode. These requirements also apply to column-level settings.
+- `held: last` additionally requires merge writes and destination support for preserving the last value.
+- Transform inputs cannot set `quarantine`, `held`, `heldValue`, `groups`, `collapse` or `typeChanges`.
 
 ## Destination
 
@@ -150,7 +154,18 @@ How a stream holds is the plan's to check. `quarantine: cell`, `held`, `heldValu
 | `block` | Held, or fails the sync | Held, or fails the sync | Held, or fails the sync |
 | `ignore_new` | Dropped | Values cast to the column's type | Values cast to the column's type |
 
-A type widens when every old value fits the new type: an int16 to an int32, an int64, a float32 or a float64; an int32 to an int64 or a float64; an int64 or a float32 to a float64; an integer or a decimal to a decimal that holds it; and anything to a string. Where a column's type widens, the destination changes it only if `typeChanges` allows; otherwise the destination refuses, and the column is held or the stream stops. Under `ignore_new`, a value that doesn't fit the column's type is quarantined, as `quarantine` says. In a continuous pipeline, what fails a sync fails its job.
+Widening lets a column represent a broader range of values. Numeric widening includes these conversions:
+
+| Source type | Wider types |
+|---|---|
+| `int16` | `int32`, `int64`, `float32`, `float64` |
+| `int32` | `int64`, `float64` |
+| `int64`, `float32` | `float64` |
+| Integer or decimal | A decimal with sufficient precision and scale |
+
+Any type can widen to a string. To prevent integer rounding, a column that has contained values beyond ±2^53 widens to text instead of floating point.
+
+The destination changes an existing column's type only when `typeChanges` permits it. Otherwise, it refuses the change, and OpenETL holds the column or stops the stream. Under `ignore_new`, values that do not fit the existing type are quarantined according to `quarantine`. In a continuous pipeline, an error that would fail a scheduled sync fails the running job.
 
 ## Delivery
 
@@ -198,7 +213,30 @@ A transform is your own code between the source and the destination: Spark in a 
 | `transform.flink.outputs[].write` | `append`, `overwrite` or `merge` | No | As `transform.spark.outputs[].write` | As `transform.spark.outputs[].write` |
 | `transform.flink.outputs[].require` | delivery guarantee | No | As `transform.spark.outputs[].require` | As `transform.spark.outputs[].require` |
 
-The runner sets these Flink options itself, so `transform.flink.conf` can't: `parallelism.default`, `pipeline.name`, `execution.runtime-mode`, `execution.target`, `jobmanager.execution.failover-strategy`, `kubernetes.cluster-id`, `kubernetes.namespace`, `yarn.application.name` and `yarn.tags`, and any whose name starts with `execution.checkpointing.`, `state.checkpoints.`, `state.savepoints.`, `execution.state-recovery.`, `execution.savepoint`, `restart-strategy`, `high-availability`, `kubernetes.operator.`, `openetl.` or `$internal.`.
+The runner controls these Flink options. `transform.flink.conf` cannot override them:
+
+- `parallelism.default`
+- `pipeline.name`
+- `execution.runtime-mode`
+- `execution.target`
+- `jobmanager.execution.failover-strategy`
+- `kubernetes.cluster-id`
+- `kubernetes.namespace`
+- `yarn.application.name`
+- `yarn.tags`
+
+It also rejects names starting with these prefixes:
+
+- `execution.checkpointing.`
+- `state.checkpoints.`
+- `state.savepoints.`
+- `execution.state-recovery.`
+- `execution.savepoint`
+- `restart-strategy`
+- `high-availability`
+- `kubernetes.operator.`
+- `openetl.`
+- `$internal.`
 
 A Flink transform's inputs must each replay exactly from a resume point, since its checkpoints restore them; the plan says which don't.
 
@@ -225,7 +263,7 @@ A Flink transform's inputs must each replay exactly from a resume point, since i
 
 ## Access to the data plane's storage
 
-A transform or step reaches the pipeline's own part of the data plane's object storage with the cluster's own identity, which reaches every pipeline's, unless the pipeline gives it one of its own.
+A transform or step uses the cluster's identity to access pipeline storage by default. That identity can access every pipeline's storage prefix. `sparkAccess` and `flinkAccess` provide credentials or a runtime role for the pipeline's applications instead.
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|

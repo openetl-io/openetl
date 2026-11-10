@@ -3,19 +3,19 @@ title: Your first pipeline
 description: Copy tables from your own Postgres database into another, from checking the connection to the first sync.
 ---
 
-In this guide you copy two tables from a Postgres database into another Postgres database, once an hour, with the official Postgres connector. You give OpenETL a user on each database, store the connections as secrets, check that OpenETL reaches both, look at the source's tables, then plan and apply the pipeline. The whole pipeline is [`examples/postgres-to-postgres.yaml`](../../examples/postgres-to-postgres.yaml).
+This tutorial copies two tables between Postgres databases once an hour, using the official Postgres connector. You configure database access, store connection secrets, check the connections and discover the source tables. You then plan and apply the pipeline. The complete definition is in [`examples/postgres-to-postgres.yaml`](../../examples/postgres-to-postgres.yaml).
 
-The database permissions, config and behavior shown here belong to this connector. For another connector or release, follow its own documentation and [choose and manage connectors](./connectors.md) before using the same check, discover, plan and apply workflow.
+The database permissions, configuration and behavior in this tutorial are specific to the [Postgres connector](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md). For another connector or release, follow its documentation. [Choose and manage connectors](./connectors.md) explains installation and version selection. The connection checks, discovery, plan and apply workflow also apply to other connectors.
 
 ## Before you start
 
 You need:
 
-- OpenETL running with the official connectors, and the `openetl` CLI, as the [quickstart](../get-started/quickstart.md) leaves you. Run the `openetl` commands from the same directory as there, where the CLI finds its API key.
-- A database to read from and one to write into, which can be on the same server. Here they're called `app` and `warehouse`. The runner connects to both, so they must be reachable from where it runs: with `openetld dev`, that's your own computer.
+- OpenETL, the official connectors and the `openetl` CLI, configured as in the [quickstart](../get-started/quickstart.md). Run CLI commands from that repository directory so the CLI can find its API key.
+- A source database named `app` and a destination database named `warehouse`. They can use the same server. Both must be reachable from the runner. With `openetld dev`, the runner runs on your computer.
 - `psql`, as a user who may create roles and grant privileges on both databases.
 
-This guide uses three tables in `app`. To follow it exactly, make `app` an empty database and create them:
+Start with an empty `app` database. Connect to it with `psql`. Create these three example tables:
 
 ```sql
 create table customers (
@@ -50,7 +50,7 @@ insert into countries (code, name) values
 
 ## 1. Give OpenETL a user on each database
 
-OpenETL needs to read `app` and to create tables in `warehouse`, and nothing more. In `psql`, connected to `app`, make a user that can read the tables of `public`, including ones created later:
+For this example, OpenETL needs read access to `app` and permission to create a schema in `warehouse`. Connect to `app` with `psql`. Create a user with read access to the `public` tables:
 
 ```sql
 create role openetl_reader login password 'PASSWORD';
@@ -59,9 +59,9 @@ grant select on all tables in schema public to openetl_reader;
 alter default privileges in schema public grant select on tables to openetl_reader;
 ```
 
-`alter default privileges` covers the tables that the user running it creates later; run it as the user that creates your tables.
+Run `alter default privileges` as the role that creates your tables. It grants access to future tables created by that role.
 
-Connected to `warehouse`, make a user that can create a schema:
+Connect to `warehouse`. Create a user with permission to create a schema:
 
 ```sql
 create role openetl_writer login password 'PASSWORD';
@@ -72,7 +72,7 @@ On its first sync, the pipeline creates a schema named `app` in `warehouse`, and
 
 ## 2. Store the connections as secrets
 
-A config names a secret instead of holding a password. Store each database's connection URL:
+Connection configuration references a secret instead of including its password. Replace `HOST` and `PASSWORD` with your connection details. Store each database's connection URL:
 
 ```sh
 echo 'postgres://openetl_reader:PASSWORD@HOST:5432/app' | openetl secret set app-db-dsn
@@ -115,7 +115,7 @@ spec:
 - The source `app-db` offers each table of `app`'s `public` schema as a stream.
 - The destination `warehouse` writes each stream into a table of the same name in its `app` schema, which it creates if it's missing.
 
-The [Postgres connector's page](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) lists the rest of their config. Apply the file, which stores both, asks a runner to connect to each, and starts nothing:
+The [Postgres connector's page](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) lists all configuration fields. Apply the file. OpenETL stores both documents and asks a runner to connect to each. It does not start a sync:
 
 ```sh
 openetl apply -f app-db.yaml
@@ -126,6 +126,8 @@ created workspaces/default/sources/app-db (version 5e1d0feeafb7)
 created workspaces/default/destinations/warehouse (version f9aec669685a)
 checked source app-db, destination warehouse
 ```
+
+This stores the source and destination. It does not start a sync because no pipeline exists yet.
 
 ## 4. Check both connections
 
@@ -141,13 +143,13 @@ workspaces/default/sources/app-db passed its check (version 5e1d0feeafb7)
 workspaces/default/destinations/warehouse passed its check (version f9aec669685a)
 ```
 
-A check that fails names what's missing. For example, with the destination's `schema` left at its default, `public`, the check fails on Postgres 15 and later, where only the database's owner may create tables in `public`:
+A failed check identifies the missing requirement. For example, the default destination schema is `public`. On a default Postgres 15 or later installation, `openetl_writer` lacks permission to create tables there:
 
 ```text
 openetl: workspaces/default/destinations/warehouse failed its check: PERMISSION_DENIED: postgres: no CREATE on schema "public"
 ```
 
-Fix the user's privileges or the config, apply again if you changed the file, and check again.
+Correct the database privileges or connection configuration. If you changed `app-db.yaml`, apply it again. Repeat both connection checks before continuing.
 
 ## 5. Look at the source's streams
 
@@ -174,9 +176,14 @@ orders (exact; key id)
   updated_at   timestamp[us, tz=UTC]  nullable
 ```
 
-Each table is a stream, with its columns and the types they arrive as. `key` is the table's primary key, which the destination merges on. `exact` says how the source replays the stream: a read resumed from a checkpoint yields exactly the rows after it, none of them twice. No stream names a cursor column, so an incremental read needs the pipeline to name one. A column is `nullable` where a read can give it nulls. These tables can be read with `cdc`, where a deleted row carries only its key, so every column but the key is `nullable`, even where the table says `not null`.
+Each table appears as a stream with its columns and delivery types:
 
-`discover` also stores this list, which plans read.
+- `key` identifies the primary key used for merge writes.
+- `exact` means a read resumed from a checkpoint returns exactly the subsequent rows, without repeats. Incremental reads override this replay behavior.
+- No stream declares a cursor column. The pipeline must select one for an incremental read.
+- `nullable` means the connector can return null for that column. CDC deletes contain only the key, so other columns can be nullable even if the source declares `not null`.
+
+`discover` stores this catalog for later plans.
 
 ## 6. Write the pipeline
 
@@ -207,9 +214,9 @@ spec:
 - `schedule` starts a sync every hour. [Schedules](./schedules.md) covers cron expressions and time zones.
 - `streams` lists the tables to copy, so `countries` isn't copied. Without `streams`, the pipeline copies every stream the source offers.
 - `customers` is read whole on every sync (`full_refresh`).
-- `orders` is read by its `updated_at` column (`incremental`): each sync reads the rows whose `updated_at` is at or above the highest value the last sync saw. Your application has to set `updated_at` on every change, rows whose `updated_at` is null aren't read, and deleted rows aren't seen. To see deletes, read the table with `cdc`, which the Postgres connector's page explains.
+- `orders` uses `incremental` reads with the `updated_at` cursor. Each sync reads values at or above the highest cursor value from the previous sync. Your application must set `updated_at` on every change. Null cursor values and deleted rows are not read. To capture deletes, use `cdc` as described in the Postgres connector documentation.
 - `write: merge` keeps one row per primary key in the destination, the latest version of the source's row.
-- `delivery.require` is the lowest [delivery guarantee](./delivery.md) the pipeline accepts. An incremental read reads the rows at the cursor's last value again, and merging them in again changes nothing, so `orders` is delivered effectively once. A pipeline requires exactly once unless it says otherwise, and without this line `openetl apply` refuses it:
+- `delivery.require` sets the minimum [delivery guarantee](./delivery.md). Incremental reads repeat rows at the previous cursor value. Merge writes update the same rows, so `orders` receives effectively-once delivery. The default requirement is exactly once. Without `require: effectively_once`, `openetl apply` refuses this pipeline:
 
   ```text
   openetl: failed_precondition: the plan fails, so nothing was applied:
@@ -238,7 +245,7 @@ workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
     orders     merge  effectively_once  superset replay, written with merge
 ```
 
-The source and destination are unchanged, and the pipeline would be created. Each stream has the write mode it gets, its [delivery guarantee](./delivery.md) and why. A guarantee below `delivery.require` would be listed under `problems`, and `openetl apply` would refuse the pipeline, as in the previous step.
+The plan leaves the source and destination unchanged and creates the pipeline. It lists each stream's write mode, [delivery guarantee](./delivery.md) and reason. A guarantee below `delivery.require` appears under `problems`. Such a problem prevents `openetl apply` from applying the file.
 
 ## 8. Apply
 
@@ -253,7 +260,7 @@ created workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
 checked source app-db, destination warehouse
 ```
 
-A new pipeline starts its first sync straight away. List its syncs:
+A new pipeline starts its first sync immediately. List its syncs:
 
 ```sh
 openetl syncs app-db-to-warehouse
@@ -290,7 +297,7 @@ select table_name from information_schema.tables where table_schema = 'app' orde
 (4 rows)
 ```
 
-`customers` and `orders` are the copies. The connector keeps `_openetl_fence` and `_openetl_loads` to commit each sync exactly once: leave them as they are.
+`customers` and `orders` contain the copied data. The connector uses `_openetl_fence` and `_openetl_loads` for exactly-once commits. Do not modify these tables.
 
 ```sql
 select id, customer_id, amount, status, updated_at, _openetl_op, _openetl_deleted from app.orders order by id;
@@ -340,7 +347,14 @@ SYNC                                  STATE      STARTED              TOOK  ROWS
 01a1bafe-9b3b-7003-a556-ed9689a1d1db  succeeded  2026-11-08 17:20:10  1s    7     1e56f1b4d3be6980b640291057e775781df8344060d443736c26b0b69f1c045d  2026-11-08 17:20:10  -
 ```
 
-This sync copied six rows: the three customers again, since `customers` is read whole, and three orders: 103, which changed, 105, which is new, and 104, read again because its `updated_at` was the highest the last sync saw. The destination has one row for each order, each the latest version:
+This sync copied six rows:
+
+- Three customers, because `customers` uses full refresh.
+- Order 103, which changed.
+- Order 105, which is new.
+- Order 104, because its `updated_at` equals the previous sync's highest cursor value.
+
+The destination keeps one row per order, with the latest values:
 
 ```sql
 select id, status, updated_at from app.orders order by id;

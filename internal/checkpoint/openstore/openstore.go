@@ -40,7 +40,7 @@ func Open(ctx context.Context, location string) (checkpoint.Store, error) {
 	var s checkpoint.Store
 	switch u.Scheme {
 	case "s3":
-		c, err := objectstore.S3Client(u)
+		c, err := objectstore.S3Client(ctx, u)
 		if err != nil {
 			return nil, err
 		}

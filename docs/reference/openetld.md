@@ -81,7 +81,7 @@ Where a runner keeps checkpoints and its cache, the programs it runs, the pool i
 
 | Flag | Variable | Default | What it sets |
 |---|---|---|---|
-| `--checkpoints` | `OPENETL_CHECKPOINTS` |  | checkpoint store, which a runner needs (openetld dev: .openetl/checkpoints): a directory, which every runner and any Spark or Flink cluster must see at the same path, so a container needs it mounted, s3://bucket?region=…&endpoint=…, gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it; the kubernetes launcher needs a bucket |
+| `--checkpoints` | `OPENETL_CHECKPOINTS` |  | checkpoint store, which a runner needs (openetld dev: .openetl/checkpoints): a directory, which every runner and any Spark or Flink cluster must see at the same path, so a container needs it mounted, s3://bucket (with region=… to name the bucket's region rather than ask S3, endpoint=… for another S3-compatible store, and anonymous=true for unsigned requests), gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it; the kubernetes launcher needs a bucket |
 | `--engine` | `OPENETL_ENGINE` |  | openetl-engine executable (default: next to openetld, then on PATH) |
 | `--connectors` | `OPENETL_CONNECTORS` |  | directory of external connector executables, named source-NAME and destination-NAME (default: connectors/ next to openetld) |
 | `--cache` | `OPENETL_CACHE` | `.openetl/cache` | where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables |

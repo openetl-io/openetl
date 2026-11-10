@@ -11,7 +11,15 @@ Official connectors live in [openetl-connectors](https://github.com/openetl-io/o
 
 In the console, open **Connections**, then **Connectors**. The **Catalog** lists packages from the registries and repositories connected to your installation. Open a package and follow its **Docs** link for setup instructions and limits.
 
-Check that the version you want provides the role your pipeline needs, supports the systems and versions you use, and offers the read or write modes and delivery capabilities you require. Also check its OpenETL compatibility requirements and the operating systems and architectures it distributes binaries for. Two connectors for the same system can have different capabilities.
+Check these requirements before selecting a version:
+
+- The source or destination role your pipeline needs.
+- Supported systems and system versions.
+- Required sync modes, write modes and delivery capabilities.
+- Compatible OpenETL versions.
+- Executables for your runners' operating systems and architectures.
+
+Connectors for the same system can have different capabilities.
 
 The docs site's **Connectors** section lists official packages. For community and private connectors, use the documentation their authors provide. Connector docs follow the connector's release; selecting an OpenETL docs version does not select a connector version.
 
@@ -115,7 +123,7 @@ spec:
   secret: connector-registry-token
 ```
 
-Here `secret` is a secret's name, not the `{ secret: NAME }` object used in a data connection's config. A short name means a secret in the `default` workspace. The secret must store its value in OpenETL: a reference to an external secret store cannot be used here, because the control plane needs the credential too.
+Here `secret` takes a secret name. Data connection configuration instead uses the `{ secret: NAME }` object. A short name selects the `default` workspace. The secret value must be stored in OpenETL because the control plane also needs it. External secret-store references cannot be used for catalog credentials.
 
 Apply the file with `openetl connector apply -f connector-source.yaml`. The control plane uses this credential to list packages and resolve references, and runners use it to fetch artifacts under the source's URL. When several sources cover a URL, the most specific URL supplies the credential. For a private GitHub repository, change the URL to `https://github.com/OWNER/REPO`, keep `secret`, and omit `username`.
 
@@ -132,7 +140,7 @@ An OpenETL upgrade and a connector upgrade are separate choices. Matching versio
 
 Installing a version alone leaves existing pipelines on their resolved package. Reapplying a connection with an unversioned, major or minor reference can move it to a newer installed release even if the YAML did not change. Pin exact versions to make that choice explicit.
 
-To return to an older connector, restore the earlier connection config and version reference, then plan and apply again. Check the connector's state compatibility first: reverting YAML does not undo changes already made to the destination or make an older connector understand newer checkpoint state.
+Before returning to an older connector, check its checkpoint-state compatibility. Restoring YAML does not undo destination changes or convert checkpoint state for an older connector. Restore the earlier connection configuration and version reference. Review the plan before applying it.
 
 ## Local development builds
 

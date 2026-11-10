@@ -1,19 +1,19 @@
 # OpenETL
 
-OpenETL moves data from where it's made to where it's used. It copies tables, changes and events from databases and streams into warehouses, lakes and other streams, on a schedule or continuously, and lands each change once wherever the destination can promise that.
+OpenETL copies tables, changes and events from databases and event streams into warehouses, data lakes and other streams. Pipelines run on a schedule or continuously. OpenETL checks each stream's delivery guarantee and can commit each change exactly once when the connectors support it.
 
-You run it yourself. It's open source, under Apache 2.0.
+You run OpenETL on your own infrastructure. It is open source under Apache 2.0.
 
 > [!NOTE]
-> OpenETL is pre-alpha: nothing has been released yet, and pipelines' format and the API can still change.
+> OpenETL is pre-alpha. There are no releases. The pipeline format and API can change.
 
 ## What you can do with it
 
 - **Connect your systems** with source and destination connectors. Use an official connector, one maintained by the community, or one your organization builds for its own systems.
 - **Choose how often:** the same pipeline runs every hour, every day, or continuously.
-- **Trust what lands:** OpenETL works out, stream by stream, whether a change could ever arrive twice, and won't run a pipeline that would get less than it asks for.
+- **Set delivery requirements:** OpenETL checks whether each stream can receive duplicate changes. It refuses to run a pipeline that cannot meet its required guarantee.
 - **Shape the data** with dbt after each sync, or on your own Spark and Flink clusters.
-- **See what's happening** in the console: how fresh each table is, what failed and what to do about it. Metrics and traces go to anything that speaks OpenTelemetry.
+- **Monitor pipelines** in the console. Check data freshness, failures and recovery steps. Export metrics and traces through OpenTelemetry.
 - **Keep pipelines in git** as YAML, and review a plan of each change before you apply it.
 
 ## Get started
@@ -27,9 +27,9 @@ cd openetl
 make dev DEPS=postgres
 ```
 
-The first run takes a few minutes to build. Then the console is at [localhost:8080](http://localhost:8080).
+The first build takes a few minutes. When the log shows `API serving`, open the console at [localhost:8080](http://localhost:8080).
 
-This example uses the official Postgres connector built by `make dev`. In a second terminal, in the same directory, create a pipeline that copies generated rows into that Postgres:
+This example uses the official [Postgres connector](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) built by `make dev`. Open a second terminal in the same directory. Create a pipeline that copies generated rows into Postgres:
 
 ```sh
 go build -o bin/ ./cmd/openetl && export PATH="$PWD/bin:$PATH"
@@ -37,7 +37,7 @@ echo postgres://openetl:openetl@localhost:5432/openetl | openetl secret set loca
 openetl apply -f examples/faker-to-postgres.yaml
 ```
 
-Its first sync starts straight away. Open **Pipelines** in the console to see it land. The [quickstart](docs/get-started/quickstart.md) explains each step and what to try next.
+The first sync starts immediately. Open **Pipelines** in the console to check its result. The [quickstart](docs/get-started/quickstart.md) explains each step, verifies the copied data and shows how to stop the services.
 
 ## Documentation
 

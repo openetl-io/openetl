@@ -427,7 +427,7 @@ func TestChaosChecks(t *testing.T) {
 func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 	t.Helper()
 	bucket := "chaos-" + strings.TrimPrefix(unique("x"), "x-")
-	c, err := objectstore.S3Client(mustParse(t, "s3://"+bucket+"?endpoint="+s3Endpoint()))
+	c, err := objectstore.S3Client(t.Context(), mustParse(t, "s3://"+bucket+"?anonymous=true&endpoint="+s3Endpoint()))
 	if err != nil {
 		t.Fatal(err)
 	}

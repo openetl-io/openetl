@@ -1,22 +1,22 @@
 ---
 title: Reading from the start again
-description: Read a pipeline's streams again from the start, restart it from an earlier checkpoint, and keep a paused pipeline's source from discarding what it hasn't read.
+description: Reset stream positions, recover from an unreadable checkpoint, and monitor source retention while a pipeline is stopped.
 ---
 
-A pipeline carries on each sync from where the last one committed: a source log position, an event stream offset, or an incremental stream's cursor. This page covers what to do when it can't, and how OpenETL watches a source's retention while a pipeline isn't running.
+A pipeline resumes each sync from its last committed position. This can be a source log position, event stream offset or incremental cursor. This guide explains how to reset positions, recover from checkpoint errors and monitor retention while the pipeline is stopped.
 
 ## Read streams again from the start
 
-`openetl reset` drops the positions of a pipeline's streams, so its next sync, or a continuous pipeline's run, reads them as it would a new stream's. The source connector decides how a new read starts, such as taking a new snapshot or starting at a configured event offset. Check its documentation for setup, retained history and the config that controls the starting position.
+`openetl reset` removes saved stream positions. The next sync or continuous run reads the affected streams as new streams. The source connector determines the starting point, such as a new snapshot or a configured event offset. Before resetting, check the connector's documentation for retention requirements and starting-position configuration.
 
 ```sh
 openetl reset orders-to-warehouse                  # every stream
 openetl reset --stream public.orders orders-to-warehouse
 ```
 
-A continuous pipeline's run restarts at a checkpoint to take it. A paused pipeline takes it once you resume it, and a stream paused on its own reads from the start once you resume the stream.
+A continuous pipeline restarts at a checkpoint to apply the reset. A paused pipeline applies it after you resume the pipeline. A separately paused stream applies it after you resume that stream.
 
-What reaches the destination already stays there:
+A reset does not directly delete destination data. The next write depends on the write mode:
 
 | Write mode | What a reset does |
 |---|---|
@@ -24,13 +24,15 @@ What reaches the destination already stays there:
 | `append` | Adds the rows again. |
 | `overwrite` | Replaces the table, as every full refresh does. |
 
-A stream read with CDC gets the rows as they are now, not the changes made in between, so a stream appended as a log of changes has a gap.
+After a CDC reset, a new snapshot contains current rows. It does not recover intermediate changes. An appended change log therefore has a gap.
 
 A pipeline with a Flink transform can't be reset, since Flink keeps state of its own; delete it and apply it again.
 
 ### After a lost position
 
-When the source no longer has a pipeline's position, such as after a failover or when retention removes records the pipeline hasn't read, the sync fails with `POSITION_LOST`. A **Position lost** incident opens and pauses the pipeline. Read again from the start and resume it:
+If the source no longer retains a saved position, the sync fails with `POSITION_LOST`. This can happen after failover or when unread data expires. A **Position lost** incident opens and pauses the pipeline.
+
+Check the reset consequences above and the connector's recovery instructions. Reset the affected positions. Resume the pipeline:
 
 ```sh
 openetl reset orders-to-warehouse
@@ -41,9 +43,9 @@ If the connector shares a source position across streams, follow its recovery in
 
 ## When the latest checkpoint can't be read
 
-Each commit writes a checkpoint record to the data plane's storage under `_checkpoints`. If the one the pipeline would carry on from is missing or damaged, an attempt restarts from the record before it. That record's epoch, the data between the two checkpoints, was delivered already, so it's delivered again:
+Each commit writes a checkpoint record under `_checkpoints` in the data plane's storage. If the latest record is missing or damaged, recovery can use the preceding record. This reads an already delivered **epoch**, the data between two checkpoints, again. The pipeline's policy and delivery guarantees determine whether recovery is automatic:
 
-- With `heal.mode` `auto_safe`, the default, or `auto`, the attempt restarts by itself where that can't lower a stream's [delivery guarantee](./delivery.md): streams written with `merge`, deduped at apply, or delivered at least once anyway. A **Checkpoint corrupt** incident records that it did, and resolves once the pipeline commits again.
+- With `heal.mode: auto_safe` (the default) or `auto`, recovery is automatic only where it preserves each stream's [delivery guarantee](./delivery.md). This includes merge writes, deduplication at apply and streams already delivered at least once. A **Checkpoint corrupt** incident records the recovery and resolves after the next commit.
 - Otherwise the sync fails with `CHECKPOINT_CORRUPT`, the incident pauses the pipeline, and its error says why the attempt didn't restart. To restart anyway, accepting that streams written with `append` and not deduped get the epoch's rows twice:
 
   ```sh
@@ -51,8 +53,12 @@ Each commit writes a checkpoint record to the data plane's storage under `_check
   openetl resume orders-to-warehouse
   ```
 
-A pipeline with a Flink transform doesn't restart from an earlier checkpoint, since Flink's own checkpoint goes with the latest; delete it and apply it again.
+A Flink transform cannot restart from an earlier OpenETL checkpoint because its state corresponds to the latest checkpoint. Recovery requires deleting and applying the pipeline again. This creates a new pipeline; check the source starting position and destination effects before proceeding.
 
 ## Retention while a pipeline isn't running
 
-A source may keep unread data only for a limited time or up to a storage limit. The connector's documentation describes the system's retention settings. A running read reports how much of that retention it has used when the connector supports retention reporting. When a pipeline hasn't reported for 15 minutes and no sync is running, as when it's paused or between syncs, OpenETL asks its source on a runner of its data plane every 15 minutes, without reading, if the connector declares that capability. At half of the source's retention a **Retention at risk** incident opens, critical at 80%, and it resolves under 40%. Resume the pipeline, or sync it more often, before the source discards what it hasn't read.
+A source can limit retained data by time or size. Its connector documentation describes the retention settings. If supported, an active read reports how much retention the pipeline has used.
+
+For a stopped pipeline, OpenETL checks retention when no sync is running and no report has arrived for 15 minutes. It checks every 15 minutes through a runner in the pipeline's data plane, without reading records. The connector must declare support for this check.
+
+A **Retention at risk** incident opens at 50% retention usage. It becomes critical at 80% and resolves below 40%. Resume the pipeline or increase sync frequency before the source discards unread data.

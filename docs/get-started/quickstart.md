@@ -1,11 +1,11 @@
 ---
 title: Quickstart
-description: Run OpenETL on your computer, copy generated rows into Postgres, and see what happened in the console and in the database.
+description: Run OpenETL locally, copy generated rows into Postgres, and verify the result in the console and database.
 ---
 
-In this quickstart you run OpenETL on your own computer, create a pipeline that copies generated rows into a Postgres database, and look at the result in the console and in the database. It takes about 15 minutes, most of it the first build.
+In this tutorial, you run OpenETL locally and copy generated rows into Postgres. You then verify the result in the console and database. Allow about 15 minutes, mainly for the first build.
 
-This is one worked example using the official Postgres connector. Its [setup and config documentation](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) lives with its code in `openetl-connectors`; the steps below build it from a local checkout. For other systems, use the [connector your pipeline needs](../pipelines/connectors.md) and its documentation.
+This example uses the official Postgres connector. Its [setup and configuration documentation](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) is in `openetl-connectors`. These steps build the connector from a local checkout. For other systems, [choose a connector](../pipelines/connectors.md) and follow its documentation.
 
 ## What you need
 
@@ -19,7 +19,7 @@ Until the first release, OpenETL runs from source. You need:
 
 ## 1. Start OpenETL
 
-Clone OpenETL and its official connectors next to each other, and start it:
+Clone both repositories into the same parent directory. Start OpenETL from its repository directory:
 
 ```sh
 git clone https://github.com/openetl-io/openetl
@@ -30,36 +30,36 @@ make dev DEPS=postgres
 
 `make dev` does four things:
 
-1. Starts Postgres in Docker. OpenETL keeps its own records there, and this quickstart copies data into it too.
+1. Starts Postgres in Docker. It stores OpenETL's metadata and the data copied by this example.
 2. Builds the connectors from `openetl-connectors`, the console, and OpenETL's data engine.
-3. Runs `openetld dev`, which is the whole of OpenETL in one process: the API, the console, the scheduler and a runner that does the copying.
+3. Runs `openetld dev`. This process provides the API, console, scheduler and runner.
 4. Writes an API key for you to `.openetl/admin.key`, which the CLI reads.
 
-When the log says `API serving`, it's ready. Leave it running.
+When the log shows `API serving`, OpenETL is ready. Leave this process running.
 
 > [!NOTE]
-> The log may warn that the connector source `official` failed to list. No connector packages have been published to it, and this quickstart doesn't need them.
+> The log can report that the `official` connector source failed to list packages. This tutorial uses local connector executables and does not need published packages.
 
 ## 2. Open the console
 
 Go to [localhost:8080](http://localhost:8080). There are no pipelines yet.
 
-The banner says sign-in is off: `openetld dev` lets anyone who can reach it act as an owner, and it listens only on your own computer. A real installation asks people to sign in; see [Self-host](../self-host/index.md).
+The **Sign-in is off** banner appears because `openetld dev` permits owner access without authentication. It listens only on your computer. For a shared installation with sign-in, see [Self-host](../self-host/index.md).
 
 ## 3. Build the CLI
 
-Open a second terminal in the same `openetl` directory, build the `openetl` command, and put it on your `PATH`:
+Open a second terminal in the same `openetl` directory. Build the CLI and add its directory to `PATH`:
 
 ```sh
 go build -o bin/ ./cmd/openetl
 export PATH="$PWD/bin:$PATH"
 ```
 
-Run the commands that follow from this directory: that's where the CLI finds `.openetl/admin.key`.
+Run all subsequent commands from this directory. The CLI reads its API key from `.openetl/admin.key` here.
 
 ## 4. Store a secret
 
-The pipeline writes into the Postgres that `make dev` started. Store its address as a secret named `local-postgres-dsn`, so the pipeline can name the secret instead of holding the password:
+The pipeline writes to the Postgres database started by `make dev`. Store its connection URL as the `local-postgres-dsn` secret. The pipeline references this secret instead of including the password:
 
 ```sh
 echo postgres://openetl:openetl@localhost:5432/openetl | openetl secret set local-postgres-dsn
@@ -106,9 +106,9 @@ spec:
     namespace: faker
 ```
 
-- The **source** `faker` uses the built-in `faker` connector, which makes up the same 1,000 users and 1,000 purchases every time.
-- The **destination** `local-postgres` uses the Postgres connector, and reads its connection string from the secret you stored.
-- The **pipeline** `faker-to-postgres` copies every stream the source offers into the destination's `faker` schema, once an hour.
+- The **source** `faker` uses the built-in `faker` connector. It generates the same 1,000 users and 1,000 purchases on each read.
+- The **destination** `local-postgres` uses the Postgres connector. It reads its connection string from the secret you stored.
+- The **pipeline** `faker-to-postgres` copies all source streams into the destination's `faker` schema once an hour.
 
 [Concepts](./concepts.md) explains each of these words.
 
@@ -131,7 +131,9 @@ workspaces/default/pipelines/faker-to-postgres (version known after apply)
     source "faker" hasn't been discovered, so the plan checks only the delivery settings (openetl discover faker)
 ```
 
-Nothing has changed yet. The note says the plan doesn't know the source's streams yet, so it can't say how each will be delivered. Once the source exists, `openetl discover faker` lists them and stores the list, and from then on plans show each stream's [delivery guarantee](./concepts.md#delivery-guarantees).
+The plan does not apply changes. In this output, the source has not been discovered, so the plan cannot check its individual streams.
+
+After applying the source, `openetl discover faker` lists and stores its streams. Later plans can use this catalog to check [delivery guarantees](./concepts.md#delivery-guarantees). They also need the destination capabilities from its connector package. For a local connector executable without a package, the runner checks the guarantees before each sync.
 
 Apply it:
 
@@ -146,11 +148,11 @@ created workspaces/default/pipelines/faker-to-postgres (version 9e052e7e6881)
 checked source faker, destination local-postgres
 ```
 
-A new pipeline starts its first sync straight away.
+A new pipeline starts its first sync immediately.
 
 ## 7. Watch it in the console
 
-In the console, open **Pipelines**, then **faker-to-postgres**. Its page shows:
+In the console, open **Pipelines**. Select **faker-to-postgres**. Its page shows:
 
 - whether it's **Healthy**, its schedule, and when it last succeeded;
 - a strip of its latest syncs, and the buttons **Sync now** and **Pause**;
@@ -166,7 +168,7 @@ openetl logs faker-to-postgres
 
 ## 8. Look at the data
 
-Query the tables the pipeline made, with the `psql` inside the Postgres container:
+Wait until the first sync succeeds. Query the copied table with `psql` inside the Postgres container:
 
 ```sh
 docker compose -f deploy/compose/dev.yml exec postgres \
@@ -181,30 +183,30 @@ docker compose -f deploy/compose/dev.yml exec postgres \
   3 | Alan Lamport    | Alan.Lamport.3@example.com    | insert      | 2026-11-08 06:58:24.84168+00
 ```
 
-Besides the source's columns, every row carries four that OpenETL adds:
+OpenETL adds these four columns to each row:
 
 | Column | What it holds |
 |---|---|
-| `_openetl_id` | The ID of this version of the row: the same change gets the same ID however often it's read, so a repeat can be dropped |
+| `_openetl_id` | A stable ID for this version of the row. Repeated reads of the same change produce the same ID for deduplication. |
 | `_openetl_op` | Whether the change was an `insert`, an `update` or a `delete` |
-| `_openetl_seq` | Where this version of the row comes in the source's order, so a later change always wins |
+| `_openetl_seq` | The position of this version in the source's order. It lets the destination distinguish later changes. |
 | `_openetl_synced_at` | When OpenETL wrote it |
 
-The schema also has two tables, `_openetl_fence` and `_openetl_loads`, that the Postgres connector keeps to commit each sync exactly once. Leave them as they are.
+The Postgres connector also creates `_openetl_fence` and `_openetl_loads` to commit syncs exactly once. Do not modify these tables.
 
 ## 9. Sync again
 
-Press **Sync now** in the console, or:
+Select **Sync now** in the console, or run this command:
 
 ```sh
 openetl sync faker-to-postgres
 ```
 
-`faker.users` still has 1,000 rows. The source reads the whole table every time, so by default each sync replaces what the destination has rather than adding to it.
+After the sync succeeds, `faker.users` still has 1,000 rows. The source uses full refresh. By default, each sync replaces the destination data.
 
 ## 10. Change the pipeline
 
-Open `examples/faker-to-postgres.yaml`, change `count: 1000` to `count: 2000`, and plan again:
+In `examples/faker-to-postgres.yaml`, change `count: 1000` to `count: 2000`. Review the plan:
 
 ```sh
 openetl plan -f examples/faker-to-postgres.yaml
@@ -216,32 +218,34 @@ would be unchanged workspaces/default/destinations/local-postgres (version 23229
 would be updated workspaces/default/pipelines/faker-to-postgres (version edab40da6d76)
 ```
 
-The source's config changed, so the pipeline gets a new version too. Apply it, sync, and the table has 2,000 rows:
+The source configuration changed, so the pipeline also gets a new version. Apply the change. Start another sync:
 
 ```sh
 openetl apply -f examples/faker-to-postgres.yaml
 openetl sync faker-to-postgres
 ```
 
-`openetl versions faker-to-postgres`, or the pipeline's **Versions** tab, lists both versions. Changing `count` back and applying again makes the first version current again.
+After the sync succeeds, `faker.users` has 2,000 rows. The pipeline's **Versions** tab and `openetl versions faker-to-postgres` list both versions. Restoring the original `count` and applying again makes the first version current.
 
 ## Clean up
 
-Stop `openetld dev` with Ctrl-C, and stop Postgres:
+Stop `openetld dev` with Ctrl-C. Stop Postgres:
 
 ```sh
 make deps-down
 ```
 
-Postgres keeps its data in a Docker volume, so the next `make dev` finds your pipeline where you left it. To start from nothing instead, delete the volumes and OpenETL's local files:
+Postgres retains its data in a Docker volume. The next `make dev` uses your existing pipeline.
+
+To remove the stored data, delete the volumes and OpenETL's local files:
+
+> [!WARNING]
+> These commands delete all data in the Compose stack's volumes and the local `.openetl` directory. This includes data outside this tutorial.
 
 ```sh
 docker compose -f deploy/compose/dev.yml down --volumes
 rm -rf .openetl
 ```
-
-> [!WARNING]
-> That deletes everything the compose stack's containers stored, not only this quickstart's data.
 
 ## Next
 

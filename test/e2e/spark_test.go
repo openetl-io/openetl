@@ -55,8 +55,8 @@ func codeInS3(t *testing.T, path string) (string, string) {
 		t.Fatal(err)
 	}
 	bucket := unique("spark-code")
-	endpoint := "?endpoint=" + url.QueryEscape(s3Endpoint())
-	c, err := objectstore.S3Client(mustParse(t, "s3://"+bucket+endpoint))
+	endpoint := "?anonymous=true&endpoint=" + url.QueryEscape(s3Endpoint())
+	c, err := objectstore.S3Client(t.Context(), mustParse(t, "s3://"+bucket+endpoint))
 	if err != nil {
 		t.Fatal(err)
 	}

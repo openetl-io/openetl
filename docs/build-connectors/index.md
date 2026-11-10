@@ -3,11 +3,11 @@ title: Build a connector
 description: What a connector is to OpenETL, the kinds you can write, and how to build, test, package and publish one.
 ---
 
-A connector is the program that reads from or writes to one kind of system. OpenETL starts it, hands it its config, moves records between it and the data engine, and decides when to commit. Write one for a system you need to connect, such as an internal API, or for behavior an existing connector doesn't provide.
+A connector reads from or writes to a system. OpenETL starts the connector, supplies its configuration and moves records between it and the data engine. OpenETL decides when to commit; the destination connector implements the commit. Write a connector to support another system or behavior.
 
 You can maintain it in your own repository, release it on your own schedule, and distribute it publicly or privately. The official connectors in [openetl-connectors](https://github.com/openetl-io/openetl-connectors) use the same protocol and tooling; your connector needs nothing from that repository.
 
-This page covers the kinds of connector, the contract a source and a destination each keep, and the loop of building, testing, packaging and publishing one with the `openetl` CLI.
+This guide defines source and destination contracts, then builds an example source in Go. It also explains local testing, conformance checks, packaging and publication with the `openetl` CLI.
 
 ## Three kinds of connector
 
@@ -17,7 +17,7 @@ This page covers the kinds of connector, the contract a source and a destination
 | Declarative source | A YAML document of `kind: DeclarativeSource` that describes an HTTP API as data, with CEL expressions. The runner runs it: every request goes through OpenETL's host services, and a resume point follows every page. Sources only. | Anyone, without compiling anything |
 | External | An executable that serves the connector protocol, `openetl.connector.v1` over gRPC on a Unix socket. The runner starts it as a process of its own for each attempt, and for each check or discovery. | Anyone, in any language; Go has an SDK |
 
-A source or destination names its connector, such as `connector: acme/greetings`. OpenETL looks for a built-in connector of that name first, then for a declarative source or a package version applied to the org, then for an executable in the runner's connectors directory.
+A source or destination selects its connector by name, such as `connector: acme/greetings`. OpenETL checks for a built-in connector first. It then checks for an applied declarative source or package version. Finally, it checks the runner's local connectors directory for an executable.
 
 `openetl connector schema manifest` prints the JSON Schema of a declarative source's document, for your editor; the schema is [`internal/declarative/manifest.schema.json`](../../internal/declarative/manifest.schema.json).
 
@@ -25,9 +25,11 @@ The rest of this page is about external connectors.
 
 ## The contract
 
-The protocol is in [`proto/openetl/connector/v1`](../../proto/openetl/connector/v1). Every connector serves `ConnectorService` (`Spec`, `Check`, and `Setup` and `Teardown` for those that need them), and a source serves `SourceService` or a destination `DestinationService` beside it. The runner serves `HostService` to every connector it starts: HTTP requests with retries, rate limits and auth, secrets, logs and a key-value store.
+The protocol is defined in [`proto/openetl/connector/v1`](../../proto/openetl/connector/v1). Every connector serves `ConnectorService`, including `Spec` and `Check`. Connectors that need lifecycle operations also implement `Setup` or `Teardown`. Sources additionally serve `SourceService`; destinations serve `DestinationService`.
 
-The runner starts a connector with these variables set, and waits up to 10 seconds for a line on stdout that is exactly `ready`. Anything printed before it, as a library might at startup, goes to the connector's log:
+The runner provides `HostService` to each connector it starts. This service supplies HTTP requests with retries, rate limits and authentication, plus secrets, logs and a key-value store.
+
+The runner sets these environment variables before starting the connector. It then waits up to 10 seconds for an exact `ready` line on standard output. Earlier output goes to the connector's log:
 
 | Variable | What it holds |
 |---|---|
@@ -42,10 +44,28 @@ The Go SDK, in [`sdk/go`](../../sdk/go), does all of that in `sdk.Serve`, and it
 
 A source discovers its streams and reads them.
 
-- **Discover** returns a catalog: each stream's name, primary key, cursor field, how it can be read (full refresh, incremental, CDC or stream), and its **replay**. A stream is exact when reading again from a resume point yields exactly the records after it, as a change log or an ordered event partition can, and superset when records can repeat, as they do when reading from a cursor's last value. Replay is half of what sets a stream's [delivery guarantee](../get-started/concepts.md#delivery-guarantees); the destination is the other. A stream read with `stream` that has a primary key needs a cursor field that differs between a key's events, such as an offset, or the pipeline to name one: without one each event of a key would get the same `_openetl_id` and be dropped as a repeat, so OpenETL refuses the plan.
-- **Read** emits records, as JSON objects or Arrow batches, and marks **resume points**: places in a stream it can restart from, each with a state it gets back when it does. OpenETL commits only at the resume points a source emits. A bounded stream ends with **Complete**, whose state is where the next sync starts.
-- Each stream in a read's request lists the `columns` the run declared. OpenETL parses a text column as its declared type, so a column outside the list has none. A source that sends values as text for OpenETL to parse fails the read with a transient error when it finds such a column, and the next attempt's Discover declares it.
-- A source can also check its config (`Check`), acknowledge upstream what's committed (`Committed`, for event offsets or a replication position, a checkpoint behind), divide streams into splits that are read concurrently (`Splits`, `Resplit`), say how much of what it keeps for a pipeline a checkpoint's positions have used while the pipeline isn't running (`Retention`, set with `Retention: true` in `sdk.Connector`; OpenETL asks every 15 minutes and opens a **Retention at risk** incident from the answer), and prepare and remove what it keeps upstream for a pipeline (`Setup` and `Teardown`, below).
+`Discover` returns a catalog. For each stream, declare its name, primary key, cursor field, supported sync modes and replay behavior:
+
+- **Exact** replay returns exactly the records after a resume point.
+- **Superset** replay can repeat records, such as rows at an incremental cursor's previous value.
+
+Replay behavior and destination capabilities determine the stream's [delivery guarantee](../get-started/concepts.md#delivery-guarantees).
+
+For `stream` mode with a primary key, declare a cursor that distinguishes events for the same key, such as an offset. The pipeline can also select this cursor. Without it, those events would share an `_openetl_id`, so OpenETL rejects the plan.
+
+`Read` emits JSON objects or Arrow batches. It marks **resume points**, each with state that lets a later read resume at that position. A bounded stream ends with `Complete`; its state becomes the next sync's starting state. Commits normally align to resume points. A [forced barrier](../pipelines/delivery.md#reading-a-stream-delivered-at-least-once) is permitted only when replay preserves the required delivery guarantee.
+
+Each read request lists the declared `columns`. If the source sends text values for OpenETL to parse, those columns need declared types. If a new column appears, fail the read with a transient error. The next attempt's discovery can declare its type before reading again.
+
+Sources can also implement these operations:
+
+| Operation | Contract |
+|---|---|
+| `Check` | Validate the connection configuration. |
+| `Committed` | Acknowledge upstream offsets or replication positions. Notifications are one checkpoint behind. |
+| `Splits`, `Resplit` | Divide streams into concurrent reads. |
+| `Retention` | Report retention usage for saved positions while the pipeline is stopped. Set `Retention: true` in `sdk.Connector` to enable checks every 15 minutes. Reports can open a **Retention at risk** incident. |
+| `Setup`, `Teardown` | Create or remove source resources for a pipeline, as described below. |
 
 ### A destination
 
@@ -58,9 +78,9 @@ A destination declares its **capabilities**, and opens a writer for each writer 
 A writer's calls are the commit protocol:
 
 1. **Write** adds batches to an epoch.
-2. **PreCommit** makes the lane's part of the epoch durable but not visible, and returns a committable: a few kilobytes that say what it staged. OpenETL stores every lane's committable in the epoch's checkpoint record.
-3. **Commit** runs once that record is written. It makes the epoch visible with a marker per stream, behind the destination's fence, and must be idempotent.
-4. **Recover** runs when an attempt starts. It raises the fence to the attempt's generation, so older attempts can no longer commit, and says whether the epoch the checkpoint log points to was applied, applied it now, or is lost.
+2. **PreCommit** makes the lane's epoch data durable and returns a **committable**, a small description of the staged data. OpenETL stores each lane's committable in the checkpoint record. For stage-and-apply and transactional destinations, the data remains invisible until commit. Deliver-and-acknowledge destinations have already delivered their records.
+3. **Commit** runs after the checkpoint record is written. For stage-and-apply destinations, it makes the epoch visible with stream markers protected by the destination's fence. It must be idempotent.
+4. **Recover** runs when an attempt starts. It raises the fence to the attempt's generation, preventing older attempts from committing. It reports whether the recorded epoch was already applied, was applied during recovery, or is lost.
 
 A reply to **PreCommit** or **Commit** names the epoch of the request it answers, and each request gets one reply. OpenETL fails the attempt on a reply for another epoch, or one it didn't ask for. `sdk.Serve` does this for you.
 
@@ -68,9 +88,15 @@ The commit is the destination's own: its staging, markers, fence and catalog liv
 
 ### Setup and teardown
 
-A source or destination that keeps something for each pipeline, such as a replication slot or staging tables, sets `setup` in its spec (`Setup: true` in `sdk.Connector`) and serves `Setup`, `Teardown` or both. OpenETL calls `Setup` before each attempt that reads or writes for a pipeline, and `Teardown` once the pipeline is deleted, each with the config and the pipeline's ID. A `Teardown` that fails is tried again for up to 7 days, and after that OpenETL records a `pipeline.teardown_failed` event and stops. Both must be idempotent: preparing what's there, or removing what's gone, isn't an error. Without `setup`, OpenETL calls neither. In Go, implement `source.Setupper` or `source.Teardowner`, and `destination.Setupper` or `destination.Teardowner`.
+Connectors that maintain pipeline-specific resources, such as replication slots or staging tables, declare `setup` in their spec. In Go, set `Setup: true` in `sdk.Connector`. Implement `Setup`, `Teardown` or both.
 
-A destination never changes the type of a column it already has unless the pipeline allows it. When a stream's column widens and the pipeline doesn't allow the change, the destination refuses it with a `RefusedColumn`: the column, the reason, the types, and a `Fix`, a statement a person can run to make the change, such as an `ALTER TABLE`. OpenETL holds the column, or stops the stream, and shows the fix. New columns still land.
+OpenETL calls `Setup` before each attempt and `Teardown` after pipeline deletion. Both receive the connection configuration and pipeline ID. Both must be idempotent: existing resources or already removed resources must not cause an error. Without `setup`, OpenETL calls neither operation.
+
+Failed teardown operations retry for up to 7 days. After that, OpenETL records `pipeline.teardown_failed` and stops retrying. In Go, implement the applicable `source.Setupper`, `source.Teardowner`, `destination.Setupper` or `destination.Teardowner` interfaces.
+
+A destination must not change an existing column's type unless the pipeline permits it. This applies to target columns, staging columns and other columns that become user data. Refuse an unpermitted type change with `RefusedColumn`. Include the column, reason, types and a `Fix` statement or repair step, such as `ALTER TABLE`.
+
+OpenETL holds the affected column where supported, or stops the stream. It shows the repair to the user. New columns can still be added.
 
 ## Write a source in Go
 
@@ -142,13 +168,17 @@ go mod tidy
 go build -o bin/ ./cmd/source-greetings
 ```
 
-`sdk.Full` declares a stream read whole on every sync. `sdk.Incremental` declares one read from a cursor onwards, and `sdk.Resumable` one that keeps its own state; `sdk.Paginate` marks a resume point after each page of an API. Streams declared this way are superset: a retry can repeat records, and whether they land twice depends on the destination, which can drop repeats by their `_openetl_id`.
+`sdk.Full` declares a full-refresh stream. `sdk.Incremental` declares a stream read from a cursor, and `sdk.Resumable` declares one with its own saved state. `sdk.Paginate` marks a resume point after each API page.
 
-`sdk.Ordered`, like `ordered: true` in a declarative source's `incremental`, says the API returns a stream's records sorted by its cursor, oldest first, so the cursor's floor moves after every page. A cursor lower than one before it fails the read with `CONTRACT_CHANGED`, because the floor may already be past records the read hasn't reached. Equal cursors are fine. If you see that error, the API doesn't sort by that field: remove the option, and the floor moves only when the stream completes.
+These stream helpers declare superset replay. Retries can repeat records. The destination determines whether repeated records produce duplicate writes, using `_openetl_id` where supported.
+
+`sdk.Ordered` declares that the API returns records in ascending cursor order. It corresponds to `ordered: true` in a declarative source's `incremental` settings. With this declaration, the saved cursor floor advances after every page.
+
+A cursor below a previous value fails the read with `CONTRACT_CHANGED`. The floor might already have advanced past unread records. Equal cursor values are permitted. If the API does not guarantee this ordering, remove the option. The floor then advances only when the stream completes.
 
 For Arrow batches, exact replay, splits or CDC, implement `source.Source` and `destination.Destination` yourself. The official connectors in [openetl-connectors](https://github.com/openetl-io/openetl-connectors) do: each `cmd/<executable>/main.go` there hands one to `sdk.Serve`.
 
-An emitter's methods can return before what they accepted has been sent, so a failure to send can come back from a later call or when `Read` ends. They keep none of your memory, except the batch `Records` takes. `Records` releases that batch for you, and if it returns an error, the batch is still yours to release.
+Emitter methods can return before transmission completes. A transmission failure can therefore appear in a later call or when `Read` ends. Emitters do not retain caller memory, except for batches passed to `Records`. After a successful `Records` call, the emitter owns and releases the batch. If `Records` returns an error, the caller must release it.
 
 ## Try it with the CLI
 
@@ -206,7 +236,7 @@ Connectors run as trusted code: `egress` says what yours means to reach, and Ope
 
 ## Test it with the conformance kit
 
-The conformance kit, in [`sdk/go/conformance`](../../sdk/go/conformance), drives a connector over the protocol the way OpenETL does, and checks what the protocol promises: the spec, check, discovery, reads and resuming from resume points for a source; commits, recovery after a crash at each step of the commit, fencing, write modes, schema changes, types, refusing type changes, holds and writer lanes for a destination. It knows nothing of the connector's language.
+The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications, connection checks, discovery, reads and resumption. Destination checks cover commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes.
 
 Run it from the CLI:
 
@@ -271,7 +301,11 @@ openetl connector package --version 0.1.0
 acme/greetings 0.1.0: dist/greetings.connector.yaml
 ```
 
-`package` builds each role for every platform (Linux and macOS, on amd64 and arm64, unless the file says otherwise) into `dist/`, as `greetings-source-linux-amd64` and the like, runs the one for this machine to read its spec, and writes the **descriptor**, `dist/greetings.connector.yaml`. The descriptor names each platform's executable by URL and digest; by default the URLs are the assets of the GitHub release of the version's tag, here `v0.1.0`, and `--tag` takes the tag instead of `--version`. Upload what `dist/` holds as that release's assets, or push it to an OCI registry with `openetl connector publish oci://REGISTRY/NAMESPACE`.
+`package` builds each role into `dist/`, with names such as `greetings-source-linux-amd64`. The default targets are Linux and macOS on amd64 and arm64; the package file can override them. It runs the executable for the local platform to read its spec. It then writes the **descriptor**, `dist/greetings.connector.yaml`.
+
+The descriptor lists each platform's executable URL and digest. By default, URLs point to GitHub release assets for the version's tag, here `v0.1.0`. `--tag` accepts a release tag instead of `--version`.
+
+Upload the contents of `dist/` as GitHub release assets. Alternatively, publish them to an OCI registry with `openetl connector publish oci://REGISTRY/NAMESPACE`.
 
 An org then applies a version, by reference or from the descriptor:
 
@@ -306,6 +340,8 @@ The CLI reads Docker's registry credentials when publishing or running a package
 
 ## Document it
 
-Write your connector's page where its code lives, and put its address in `docs` in `openetl-connector.yaml`. The descriptor carries it, and the console's **Connectors** catalog links to it as **Docs**. A good page says what the connector reads or writes, what it needs upstream (an account, permissions, settings), its config, how its types map, the delivery guarantee its streams get, and its limits.
+Keep connector documentation in the connector's repository. Set `docs` in `openetl-connector.yaml` to its URL. The descriptor includes this URL, and the console catalog shows it as **Docs**.
+
+Document the supported systems and versions, account permissions, required settings, configuration fields, type mappings, delivery guarantees and limits. Include verification and recovery steps where the connector requires them.
 
 The config's JSON Schema is the reference for its fields, so give every property a `description`. The official connectors' pages live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors), next to their code.

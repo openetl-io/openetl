@@ -3,7 +3,7 @@ title: Reference
 description: Where to look up every resource, command, setting, API, event and schema, and the source in the code each one comes from.
 ---
 
-This section is for looking things up. Each entry below says where its full reference is at this commit: a page here, a program's own help, or a file in the repository. Where a file is named, it's the source of truth, and the help and the docs follow it.
+This section links to the resource, command, setting and protocol references for this commit. Each entry identifies its documentation page, command help or source file. Source files define the behavior described by the documentation.
 
 ## Resource documents
 
@@ -39,7 +39,7 @@ spec:
 | `DeclarativeSource` | `openetl.io/v1alpha1` | The org | A version of a declarative source: its manifest |
 | `ConnectorSource` | `openetl.io/v1alpha1` | The org | An OCI registry namespace or a GitHub repository whose connector packages the catalog lists |
 
-`Connector` and `DeclarativeSource` documents also need `metadata.version`, a semantic version such as `1.2.0` with no build metadata (`+…`), and their names may have an owner, as in `acme/billing`. A `Connector` descriptor at `openetl.io/v1alpha1` is still read, as a package with one role.
+`Connector` and `DeclarativeSource` also require `metadata.version`. Use a semantic version such as `1.2.0`, without build metadata (`+…`). Their names can include an owner, such as `acme/billing`. OpenETL also accepts `openetl.io/v1alpha1` connector descriptors as packages with one role.
 
 [Pipeline](./specs/pipeline.md), [Source](./specs/source.md) and [Destination](./specs/destination.md) list every field of those kinds' documents. The fields of each `spec` are defined by the messages in [`proto/openetl/api/v1`](../../proto/openetl/api/v1), whose comments describe them, and read from YAML by [`internal/spec`](../../internal/spec). The [examples](../../examples) are working documents of each common kind. A `Connector` descriptor's fields are in [Connector descriptor](./connector-descriptor.md), and a `DeclarativeSource` manifest's in [Declarative source manifest](./manifest.md).
 
@@ -97,7 +97,14 @@ spec:
 
 `TARGET` is an executable, a descriptor, a manifest, or a package version by reference: `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`.
 
-Every command that calls the API sends the API key in `OPENETL_API_KEY`, or else the one in the file `--api-key-file` names (`OPENETL_API_KEY_FILE`, default `.openetl/admin.key`), to the API at `--api-url` (`OPENETL_API_URL`, default `http://localhost:8080`).
+Commands that call the API use these connection settings:
+
+| Setting | Flag | Environment variable | Default |
+|---|---|---|---|
+| API URL | `--api-url` | `OPENETL_API_URL` | `http://localhost:8080` |
+| API key file | `--api-key-file` | `OPENETL_API_KEY_FILE` | `.openetl/admin.key` |
+
+`OPENETL_API_KEY` supplies the key directly and takes precedence over the key file. The key is sent in the `Authorization: Bearer KEY` header.
 
 The commands and their help are in [`cmd/openetl`](../../cmd/openetl).
 
@@ -114,7 +121,7 @@ The commands and their help are in [`cmd/openetl`](../../cmd/openetl).
 
 `openetld bootstrap-key` gives the admin service account a new owner key, in `--bootstrap-key-file`, for when every owner key is lost.
 
-Every setting is a flag and an environment variable: `--database-url` is also `OPENETL_DATABASE_URL`. A flag overrides the variable, and the variable overrides the default. Every role takes every setting, and uses the ones that concern it. `openetld ROLE -h` lists them all with their variables and defaults. A runner's token can also come from `OPENETL_RUNNER_TOKEN`, which has no flag.
+Settings have flag and environment variable forms. For example, `--database-url` corresponds to `OPENETL_DATABASE_URL`. A flag overrides the environment variable, which overrides the default. Each role accepts all settings but uses only those relevant to that role. `openetld ROLE -h` lists settings, variables and defaults. The runner token can also use `OPENETL_RUNNER_TOKEN`, which has no corresponding flag.
 
 [openetld settings](./openetld.md) lists every setting with its flag, variable and default, and the `OTEL_*` variables that set up traces and metrics.
 
@@ -178,7 +185,7 @@ OpenETL records these events, and [webhooks](../../examples/webhook.yaml) delive
 
 ## The connector protocol
 
-External connectors serve the connector protocol, defined in [`proto/openetl/connector/v1`](../../proto/openetl/connector/v1): what a source and a destination serve, the services the host offers them, and the errors they return. The Go SDK in [`sdk/go`](../../sdk/go) implements it. [Build a connector](../build-connectors/index.md) explains it.
+External connectors implement the protocol in [`proto/openetl/connector/v1`](../../proto/openetl/connector/v1). It defines source and destination operations, host services and error types. The [Go SDK](../../sdk/go) implements this protocol. [Build a connector](../build-connectors/index.md) explains the contracts and development workflow.
 
 ## Built-in connectors
 

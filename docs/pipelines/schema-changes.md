@@ -22,7 +22,15 @@ Use the [pipeline reference](../reference/specs/pipeline.md#schema) for each pol
 
 This example uses the [official Postgres connector](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md), with a source and destination on a disposable database. Its SQL and column types are specific to that connector. Other connectors provide their own type mappings, requirements and repair steps.
 
-You need OpenETL and the CLI running, the connector available to the runner, a Postgres database reachable by that runner, and an account that can create the two example schemas and alter their tables. Use an editor or owner API key for the hold operations. Do not use existing schemas named `docs_source` or `docs_target` for this example.
+Before starting, prepare these requirements:
+
+- A running OpenETL installation and a configured CLI.
+- The Postgres connector available to the runner.
+- A disposable Postgres database reachable by the runner.
+- A database account that can create schemas and alter their tables.
+- An API key with the `editor` role or higher for hold operations.
+
+The example creates `docs_source` and `docs_target`. Do not use a database that already contains schemas with those names.
 
 ### Create the source table and pipeline
 
@@ -107,7 +115,9 @@ openetl holds schema-demo
 
 A release first becomes **Pending**. The pipeline applies it on its next run; it does not patch the destination during the CLI request. A continuous pipeline restarts its run to take the release. If a pipeline or stream is paused, resume it so the release can run.
 
-After the sync succeeds, query the destination again. `amount` is now `2147483648`, and the hold is cleared. If the release is refused, inspect the new reason, make the remaining repair, and release it again; a refused release is not retried until you request another one.
+After the sync succeeds, query the destination again. `amount` is now `2147483648`, and the hold is cleared.
+
+If the release is refused, inspect its reason. Complete the remaining repair. Request release again. A refused release does not retry automatically.
 
 ## Choose another way out
 

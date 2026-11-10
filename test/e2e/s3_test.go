@@ -63,7 +63,7 @@ func s3Dest(t *testing.T) (string, *blob.Bucket) {
 	}
 	_ = res.Body.Close()
 	prefix := strings.ToLower(rand.Text())[:10]
-	b, err := objectstore.Open(t.Context(), "s3://s3-destination/"+prefix+"?endpoint="+url.QueryEscape(s3Endpoint()))
+	b, err := objectstore.Open(t.Context(), "s3://s3-destination/"+prefix+"?anonymous=true&endpoint="+url.QueryEscape(s3Endpoint()))
 	if err != nil {
 		t.Fatal(err)
 	}
