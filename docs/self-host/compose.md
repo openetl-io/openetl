@@ -169,7 +169,7 @@ Connectors run in the runner's container, where `localhost` is the container its
 
 ## Checkpoints in a bucket
 
-Runners keep checkpoints, which say where each pipeline resumes from, and staging in `.openetl/checkpoints` in the volume `runner`. To keep them in S3, GCS or Azure Blob Storage instead, set `OPENETL_CHECKPOINTS` in `.env`, such as `s3://my-bucket?region=eu-west-1`, with the bucket's credentials (`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for S3), before the first sync. Runners don't move checkpoints from one store to another.
+Runners keep checkpoints, which say where each pipeline resumes from, and staging in `.openetl/checkpoints` in the volume `runner`. To keep them in S3, GCS or Azure Blob Storage instead, set `OPENETL_CHECKPOINTS` in `.env`, such as `s3://my-bucket`, before the first sync. For S3, put `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env` too, or run the stack on an EC2 instance whose instance profile can use the bucket, with the instance's metadata hop limit at 2 so that containers reach it; [Buckets](./index.md#buckets) has the rest. Runners don't move checkpoints from one store to another.
 
 ## More runners
 

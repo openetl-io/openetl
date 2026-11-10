@@ -288,6 +288,9 @@ func fetch(ctx context.Context, engine, uri string, client *http.Client) (io.Rea
 		r, err := b.NewReader(ctx, key, nil)
 		if err != nil {
 			_ = b.Close()
+			if region, ok := objectstore.S3WrongRegion(err); ok {
+				return nil, errs.New(errs.ConfigInvalid, "%s: read %s: the bucket is in %s: set region=%s in the URI, or leave region out", engine, redact(uri), region, region)
+			}
 			code := errs.Transient
 			if gcerrors.Code(err) == gcerrors.NotFound {
 				code = errs.ConfigInvalid

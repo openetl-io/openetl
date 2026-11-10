@@ -184,8 +184,8 @@ func TestFlinkOnKubernetes(t *testing.T) {
 	lib := flinkLib(t)
 	name := unique("flinkkube")
 	bucket := strings.ReplaceAll(name, "_", "-")
-	store := "s3://" + bucket + "?endpoint=" + url.QueryEscape(s3Endpoint())
-	c, err := objectstore.S3Client(mustParse(t, store))
+	store := "s3://" + bucket + "?anonymous=true&endpoint=" + url.QueryEscape(s3Endpoint())
+	c, err := objectstore.S3Client(t.Context(), mustParse(t, store))
 	if err != nil {
 		t.Fatal(err)
 	}

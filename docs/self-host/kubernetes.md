@@ -26,7 +26,7 @@ Postgres and object storage aren't included: point OpenETL at your own.
 
 ## Install
 
-1. Set `OPENETL_CHECKPOINTS` in `config.yaml` to your bucket, such as `s3://my-bucket?region=eu-west-1`.
+1. Set `OPENETL_CHECKPOINTS` in `config.yaml` to your bucket, such as `s3://my-bucket`. On EKS, runners and job pods can use the bucket through IAM roles for service accounts or Pod Identity, with no keys; [Buckets](./index.md#buckets) has the order runners look for credentials in.
 
 2. Create the namespace, and the Secret the server and orchestrators read:
 

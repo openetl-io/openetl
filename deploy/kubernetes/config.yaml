@@ -13,7 +13,7 @@ data:
   # Where runners and pods keep checkpoints and staging: s3://, gs:// or
   # azblob://, with its credentials in the Secret openetl-runner or from the
   # pods' workload identity.
-  OPENETL_CHECKPOINTS: s3://openetl-checkpoints?region=us-east-1
+  OPENETL_CHECKPOINTS: s3://openetl-checkpoints
   OPENETL_LOG_FORMAT: json
   # Every openetld serves its metrics for Prometheus on port 9464.
   OTEL_METRICS_EXPORTER: prometheus

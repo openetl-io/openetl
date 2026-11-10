@@ -21,12 +21,12 @@ import (
 func TestRunAttemptIntoAStagedDestinationOnS3(t *testing.T) {
 	endpoint := cmp.Or(os.Getenv("OPENETL_TEST_S3_ENDPOINT"), "http://127.0.0.1:8333")
 	name := "openetl-test-" + strings.ToLower(rand.Text())[:16]
-	loc := "s3://" + name + "/base?endpoint=" + url.QueryEscape(endpoint)
+	loc := "s3://" + name + "/base?anonymous=true&endpoint=" + url.QueryEscape(endpoint)
 	u, err := url.Parse(loc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := objectstore.S3Client(u)
+	c, err := objectstore.S3Client(t.Context(), u)
 	if err != nil {
 		t.Fatal(err)
 	}

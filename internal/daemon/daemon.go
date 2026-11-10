@@ -47,6 +47,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 	"github.com/openetl-io/openetl/internal/pkgcatalog"
 	"github.com/openetl-io/openetl/internal/platform/config"
+	"github.com/openetl-io/openetl/internal/platform/objectstore"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/platform/temporalx"
 	dpactivities "github.com/openetl-io/openetl/internal/runner/activities"
@@ -474,11 +475,15 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err := checkCheckpoints(cfg); err != nil {
 		return err
 	}
+	cfg.Checkpoints = objectstore.Resolve(ctx, cfg.Checkpoints)
 	cps, err := openstore.Open(ctx, cfg.Checkpoints)
 	if err != nil {
 		return err
 	}
 	if err := checkpoint.Probe(ctx, cps, ""); err != nil {
+		if region, ok := objectstore.S3WrongRegion(err); ok {
+			return fmt.Errorf("daemon: the checkpoint store's bucket is in %s: set region=%s in its URL, or leave region out: %w", region, region, err)
+		}
 		return fmt.Errorf("daemon: the checkpoint store fails the conditional-write probe, so the runner won't start: %w", err)
 	}
 	allow, err := netguard.ParsePrefixes(cfg.EgressAllow)
