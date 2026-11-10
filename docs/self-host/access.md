@@ -122,4 +122,4 @@ An administrator can read **Settings**, **Audit log**, or run:
 openetl audit list
 ```
 
-The log records changes and runner reads of secrets, with the acting principal or runner credential. For an unexpected denial, use `openetl whoami --workspace default` to inspect the current identity's permissions, then check whether its role is bound to the org or the workspace the request names.
+The log records changes and runner reads of secrets, with the acting principal or runner credential. If a request is unexpectedly denied, inspect the current identity with `openetl whoami --workspace default`. Check whether its role applies to the organization or the requested workspace.

@@ -3,9 +3,9 @@ title: OpenETL documentation
 description: Guides and reference for using, running, integrating and extending OpenETL.
 ---
 
-OpenETL copies data from databases and event streams into warehouses, lakes and other streams, on a schedule or continuously, and tells you how far you can trust what lands. These docs are for everyone who works with it, whatever part they play.
+OpenETL copies data from databases and event streams into warehouses, data lakes and other streams. Pipelines run on a schedule or continuously. OpenETL checks each stream's delivery guarantee before it runs.
 
-New here? Read [What is OpenETL?](./get-started/overview.md), then run the [quickstart](./get-started/quickstart.md) on your own computer.
+Start with [What is OpenETL?](./get-started/overview.md). Then follow the [quickstart](./get-started/quickstart.md) to run a pipeline on your computer.
 
 ## Find your way
 
@@ -22,7 +22,9 @@ New here? Read [What is OpenETL?](./get-started/overview.md), then run the [quic
 | Look up a field, a command or a setting | [Reference](./reference/index.md) |
 | Know how it works inside | [Internals](./internals/index.md) |
 
-[Choose and manage connectors](./pipelines/connectors.md) covers official, community and private connectors, which have their own versions and release cadence. Each connector's documentation describes its setup, config, supported modes and limits. Official connector pages appear under Connectors on the docs site and live with their code in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Other authors host their own documentation; the console links to the package's **Docs**.
+[Choose and manage connectors](./pipelines/connectors.md) covers official, community and private connectors. Each connector has its own versions and release schedule. Its documentation describes setup, configuration, supported modes and limits.
+
+Official connector pages appear under Connectors on the docs site. Their source files are in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). For other packages, use the **Docs** link in the console.
 
 > [!NOTE]
-> OpenETL is pre-alpha. Nothing has been released yet, and pipelines' format and the API can still change between versions.
+> OpenETL is pre-alpha. There are no releases. The pipeline format and API can change.
