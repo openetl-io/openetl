@@ -20,13 +20,20 @@ The manifests do not include Postgres or object storage. Configure those service
 ## Before you start
 
 - **Postgres** for metadata. The default DBOS backend stores workflows in a second database, named after the metadata database with `_dbos` appended. Orchestrators create it if their database user has permission. Otherwise, create it yourself or specify another database with `OPENETL_DBOS_DATABASE_URL`. Do not connect through a transaction pooler.
-- **A bucket** in S3, GCS or Azure Blob Storage for checkpoints and staging. Runners and job pods need read and write access to it, through a workload identity or keys in the Secret `openetl-runner`.
+- **A bucket** in S3, GCS or Azure Blob Storage for checkpoints and staging. Runners, job pods and the pod launcher need read and write access to it, through a workload identity or keys in the Secret `openetl-runner`.
 - **OpenETL's image** in a registry reachable by the cluster. There are no released images. Clone [openetl-connectors](https://github.com/openetl-io/openetl-connectors) beside this repository. Build with `make engine-linux image IMAGE=REGISTRY/openetl:TAG`, then push the image to your registry. Set that image under `images` in `kustomization.yaml`. The [Compose guide](./compose.md#before-you-start) explains the build prerequisites. On Linux, `cargo build -p openetl-engine` can replace `make engine-linux`.
 - **kubectl** 1.27 or later.
 
 ## Install
 
-1. Set `OPENETL_CHECKPOINTS` in `config.yaml` to your bucket, such as `s3://my-bucket`. On EKS, runners and job pods can use the bucket through an IAM role for a service account or through Pod Identity, without keys. [Buckets](./index.md#buckets) gives the order in which runners look for credentials.
+1. Set `OPENETL_CHECKPOINTS` in `config.yaml` to your bucket, such as `s3://my-bucket`. [Buckets](./index.md#buckets) gives the order in which runners look for credentials.
+
+   On EKS, runners, job pods and the launcher can use the bucket through an IAM role for a service account or through Pod Identity, without keys. Give the role to two service accounts in the `openetl` namespace:
+
+   - `default`, which runners, job pods, the server and the orchestrators use.
+   - `openetl-launcher`, which the launcher uses. The launcher checks the bucket when it starts, and does not start without access.
+
+   This role is not available to connectors. [Credentials for connectors](#credentials-for-connectors) explains what to do.
 
 2. Create the namespace, and the Secret the server and orchestrators read:
 
@@ -67,6 +74,12 @@ The manifests do not include Postgres or object storage. Configure those service
 To expose the API outside the cluster, configure an Ingress or load balancer for the `openetl-server` Service. Set `OPENETL_PUBLIC_URL` in `config.yaml` to the public console URL.
 
 Every component serves Prometheus metrics on port 9464, and its pods carry the `prometheus.io/scrape` and `prometheus.io/port` annotations.
+
+## Credentials for connectors
+
+A runner does not pass its environment variables to the connectors it starts, except a few such as `PATH` and `HOME`. So a connector does not get the IAM role that an IAM role for a service account or Pod Identity gives the pod. On EKS, a connector that calls AWS needs an access key in its own config. Store the secret access key with `openetl secret set`, and refer to it with `{ secret: NAME }`. Each connector's documentation names its key fields.
+
+[Connectors are trusted code](./index.md#connectors-are-trusted-code) lists what a connector gets from the runner.
 
 ## How jobs are placed
 

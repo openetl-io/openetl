@@ -52,6 +52,8 @@ A runner, and the engine that it starts, use the first S3 credentials that they 
 
 The runner also reads AWS profiles (`AWS_PROFILE`). The engine does not read profiles. If a runner uses a profile, also give it keys or a role.
 
+These credentials are for the runner and the engine only. Connectors do not get them, as [Connectors are trusted code](#connectors-are-trusted-code) explains.
+
 When a runner starts, it asks S3 for the region of the bucket. To change how runners reach the bucket, add these query parameters to its URL:
 
 | Parameter | What it does |
@@ -69,6 +71,14 @@ GCS buckets use the Google application default credentials. Azure containers use
 A connector runs as a separate program under the runner's user account, without a sandbox. It has the runner's file and network access, including access to cloud metadata addresses. `OPENETL_EGRESS_ALLOW` does not restrict sockets opened directly by a connector.
 
 A connector can access the secrets for the sources and destinations it runs. OpenETL does not restrict where the connector sends those values. The descriptor's `egress` field declares intended destinations but is not enforced.
+
+A connector does not get the runner's environment variables, except `PATH`, `HOME`, `TMPDIR`, `TZ`, `LANG`, `SSL_CERT_FILE` and `SSL_CERT_DIR`. So it does not get credentials that the runner reads from its environment:
+
+- AWS keys in `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+- The token of an EKS IAM role for a service account, or of EKS Pod Identity.
+- An ECS task role.
+
+A connector that calls a cloud service needs credentials in its own config, such as an access key stored as a secret. On EC2, a connector can also get the instance profile's role through the instance metadata service.
 
 Install only connectors you trust. Give runners only the credentials and network access their pipelines need.
 
