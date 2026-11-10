@@ -36,23 +36,12 @@ jobs:
 
   discard:
     if: ${{ contains(github.event.head_commit.message, 'discard-test-candidate') }}
+    strategy:
+      matrix:
+        version: [0.0.1-alpha.2, 0.0.1-alpha.3]
     uses: ./.github/workflows/release-discard.yml
     permissions:
       contents: write
       packages: write
     with:
-      version: 0.0.1-alpha.1
-
-  # The first trials' connector packages, from before they moved.
-  leftovers:
-    if: ${{ contains(github.event.head_commit.message, 'discard-test-candidate') }}
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    steps:
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for p in postgres kafka kinesis iceberg s3 index; do
-            gh api -X DELETE "/orgs/openetl-io/packages/container/candidates%2F0.0.1-alpha.1%2Fconnectors%2F$p" && echo "deleted $p"
-          done
+      version: ${{ matrix.version }}
