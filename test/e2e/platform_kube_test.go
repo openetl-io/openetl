@@ -79,7 +79,7 @@ func platformOnKube(t *testing.T, capacity resources.Size) *platform {
 	})
 
 	bucket := unique("platform")
-	c, err := objectstore.S3Client(mustParse(t, "s3://"+bucket+"?endpoint="+url.QueryEscape(s3Endpoint())))
+	c, err := objectstore.S3Client(t.Context(), mustParse(t, "s3://"+bucket+"?anonymous=true&endpoint="+url.QueryEscape(s3Endpoint())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func platformOnKube(t *testing.T, capacity resources.Size) *platform {
 		t.Fatalf("create bucket: %v", err)
 	}
 	t.Cleanup(func() { dropBucket(t, c, bucket) })
-	store := "s3://" + bucket + "?endpoint=" + url.QueryEscape("http://"+net.JoinHostPort(k.host, "8333"))
+	store := "s3://" + bucket + "?anonymous=true&endpoint=" + url.QueryEscape("http://"+net.JoinHostPort(k.host, "8333"))
 	dsn, err := url.Parse(env.dbURL)
 	if err != nil {
 		t.Fatal(err)

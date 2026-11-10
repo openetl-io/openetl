@@ -6,16 +6,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"gocloud.dev/blob"
 	"gocloud.dev/blob/azureblob"
 	"gocloud.dev/blob/fileblob"
@@ -71,7 +77,7 @@ func Prefix(u *url.URL) string {
 func openBucket(ctx context.Context, u *url.URL) (*blob.Bucket, error) {
 	switch u.Scheme {
 	case "s3":
-		c, err := S3Client(u)
+		c, err := S3Client(ctx, u)
 		if err != nil {
 			return nil, err
 		}
@@ -101,33 +107,156 @@ func openDir(dir string) (*blob.Bucket, error) {
 	return b, nil
 }
 
-// S3Client returns a client for s3://bucket?region=…&endpoint=…. The region
-// defaults to us-east-1, and an endpoint implies path-style addressing.
-// Credentials come from AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and
-// AWS_SESSION_TOKEN; without them requests are anonymous.
-func S3Client(u *url.URL) (*s3.Client, error) {
+// S3Client returns a client for s3://bucket?region=…&endpoint=…&anonymous=true.
+// An endpoint implies path-style addressing. Without a region the client
+// uses the bucket's, which S3 is asked for once per bucket and process; with
+// an endpoint, or if S3 doesn't say, it uses AWS_REGION, AWS_DEFAULT_REGION
+// or the profile's region, and else us-east-1.
+//
+// Requests are signed with AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and
+// AWS_SESSION_TOKEN when they're set, and otherwise with whatever AWS's
+// default credential chain finds: a profile, a web identity (EKS IRSA), the
+// container's role (ECS, EKS Pod Identity) or the instance's. anonymous=true
+// sends them unsigned.
+func S3Client(ctx context.Context, u *url.URL) (*s3.Client, error) {
 	if u.Scheme != "s3" || u.Host == "" {
 		return nil, fmt.Errorf("objectstore: %q is not s3://bucket", u.Redacted())
 	}
-	q := u.Query()
-	opts := s3.Options{Region: q.Get("region"), Credentials: aws.AnonymousCredentials{}}
-	if opts.Region == "" {
-		opts.Region = "us-east-1"
+	anonymous, err := S3Anonymous(u)
+	if err != nil {
+		return nil, err
 	}
+	q := u.Query()
+	opts := s3.Options{Region: q.Get("region")}
 	if ep := q.Get("endpoint"); ep != "" {
 		opts.BaseEndpoint = aws.String(ep)
 		opts.UsePathStyle = true
 	}
-	if !S3Anonymous() {
+	switch {
+	case anonymous:
+		opts.Credentials = aws.AnonymousCredentials{}
+	case os.Getenv("AWS_ACCESS_KEY_ID") != "":
 		creds := aws.Credentials{AccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"), SessionToken: os.Getenv("AWS_SESSION_TOKEN")}
 		opts.Credentials = aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) { return creds, nil })
+	default:
+		cfg, err := awsConfig()
+		if err != nil {
+			return nil, fmt.Errorf("objectstore: load the AWS config: %w", err)
+		}
+		opts.Credentials = chainCredentials{cfg.Credentials}
+	}
+	if opts.Region == "" {
+		opts.Region = configuredRegion()
+		if opts.BaseEndpoint == nil {
+			if r, ok := bucketRegion(ctx, u.Host, opts.Region); ok {
+				opts.Region = r
+			}
+		}
 	}
 	return s3.New(opts), nil
 }
 
-// S3Anonymous reports whether S3Client's clients send their requests
+// Resolve returns location with the region of the S3 bucket it names, for
+// an s3:// URL with neither a region nor an endpoint, so that processes it's
+// handed to, like the engine, needn't find it. Other locations, and a bucket
+// S3 gives no region for, come back as they are.
+func Resolve(ctx context.Context, location string) string {
+	u, err := url.Parse(location)
+	if err != nil || u.Scheme != "s3" || u.Host == "" {
+		return location
+	}
+	q := u.Query()
+	if q.Get("region") != "" || q.Get("endpoint") != "" {
+		return location
+	}
+	r, ok := bucketRegion(ctx, u.Host, configuredRegion())
+	if !ok {
+		return location
+	}
+	q.Set("region", r)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// S3Anonymous reports whether S3Client's clients for u send their requests
 // unsigned, so they can't presign URLs either.
-func S3Anonymous() bool { return os.Getenv("AWS_ACCESS_KEY_ID") == "" }
+func S3Anonymous(u *url.URL) (bool, error) {
+	v := u.Query().Get("anonymous")
+	if v == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("objectstore: %q: anonymous=%s is neither true nor false", u.Redacted(), v)
+	}
+	return b, nil
+}
+
+// S3WrongRegion returns the region S3 says a bucket is in when err is its
+// answer to a request sent to another region's endpoint.
+func S3WrongRegion(err error) (string, bool) {
+	re, ok := errors.AsType[*smithyhttp.ResponseError](err)
+	if !ok || re.Response == nil || re.Response.StatusCode != http.StatusMovedPermanently {
+		return "", false
+	}
+	r := re.Response.Header.Get("X-Amz-Bucket-Region")
+	return r, r != ""
+}
+
+var awsConfig = sync.OnceValues(loadAWSConfig)
+
+func loadAWSConfig() (aws.Config, error) { return config.LoadDefaultConfig(context.Background()) }
+
+// configuredRegion is the AWS config's region, from the environment or the
+// profile, or us-east-1.
+func configuredRegion() string {
+	cfg, _ := awsConfig()
+	return cmp.Or(os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"), cfg.Region, "us-east-1")
+}
+
+// chainCredentials says what to set when the default chain finds none.
+type chainCredentials struct{ aws.CredentialsProvider }
+
+func (c chainCredentials) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	creds, err := c.CredentialsProvider.Retrieve(ctx)
+	if err != nil {
+		return creds, fmt.Errorf("objectstore: no AWS credentials: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, give the process an IAM role, or add anonymous=true to the s3:// URL of a store that takes unsigned requests: %w", err)
+	}
+	return creds, nil
+}
+
+var (
+	bucketRegions sync.Map
+	// S3's endpoint to ask for a bucket's region; empty for AWS's. For tests.
+	regionEndpoint string
+)
+
+// bucketRegion asks S3, unsigned, which region bucket is in, at hint's
+// endpoint. S3 answers for any bucket that exists, even one it refuses
+// access to.
+func bucketRegion(ctx context.Context, bucket, hint string) (string, bool) {
+	if r, ok := bucketRegions.Load(bucket); ok {
+		return r.(string), true
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	opts := s3.Options{Region: hint, Credentials: aws.AnonymousCredentials{}, UsePathStyle: true}
+	if regionEndpoint != "" {
+		opts.BaseEndpoint = aws.String(regionEndpoint)
+	}
+	out, err := s3.New(opts).HeadBucket(ctx, &s3.HeadBucketInput{Bucket: &bucket})
+	var r string
+	if err == nil {
+		r = aws.ToString(out.BucketRegion)
+	} else if re, ok := errors.AsType[*smithyhttp.ResponseError](err); ok && re.Response != nil {
+		r = re.Response.Header.Get("X-Amz-Bucket-Region")
+	}
+	if r == "" {
+		return "", false
+	}
+	bucketRegions.Store(bucket, r)
+	return r, true
+}
 
 // S3ObjectURL is the unsigned URL of key in the bucket u names, as
 // S3Client addresses it: path-style below an endpoint, and virtual-hosted on
@@ -141,7 +270,7 @@ func S3ObjectURL(u *url.URL, key string) string {
 			return base.String()
 		}
 	}
-	region := cmp.Or(q.Get("region"), "us-east-1")
+	region := cmp.Or(q.Get("region"), configuredRegion())
 	return (&url.URL{Scheme: "https", Host: u.Host + ".s3." + region + ".amazonaws.com", Path: "/" + key}).String()
 }
 

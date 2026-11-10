@@ -57,8 +57,8 @@ func kubeForPods(t *testing.T) *podsOnKube {
 	plane, token := placementPlane(t)
 
 	bucket := strings.ReplaceAll(unique("pods"), "_", "-")
-	store := "s3://" + bucket + "?endpoint=" + url.QueryEscape(s3Endpoint())
-	c, err := objectstore.S3Client(mustParse(t, store))
+	store := "s3://" + bucket + "?anonymous=true&endpoint=" + url.QueryEscape(s3Endpoint())
+	c, err := objectstore.S3Client(t.Context(), mustParse(t, store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func kubeForPods(t *testing.T) *podsOnKube {
 		_ = client.CoreV1().Secrets(k.namespace).Delete(context.Background(), secret, metav1.DeleteOptions{})
 	})
 
-	podStore := "s3://" + bucket + "?endpoint=" + url.QueryEscape("http://"+net.JoinHostPort(k.host, "8333"))
+	podStore := "s3://" + bucket + "?anonymous=true&endpoint=" + url.QueryEscape("http://"+net.JoinHostPort(k.host, "8333"))
 	template := filepath.Join(t.TempDir(), "pod.yaml")
 	if err := os.WriteFile(template, fmt.Appendf(nil, `apiVersion: v1
 kind: Pod

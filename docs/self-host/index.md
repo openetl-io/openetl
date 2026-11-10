@@ -38,10 +38,31 @@ Each `openetld` flag has an environment variable equivalent. `openetld ROLE -h` 
 | `OPENETL_PUBLIC_URL` | Servers | The URL people open the console at. Password links start with it, and an `https://` URL makes the session cookie secure. |
 | `OPENETL_API_URL` | Runners | The API's URL, as runners reach it. |
 | `OPENETL_RUNNER_TOKEN` | Runners | The token runners authenticate with, which `openetl dataplane token create` makes. `OPENETL_RUNNER_TOKEN_FILE` names a file holding it instead. |
-| `OPENETL_CHECKPOINTS` | Runners | Where checkpoints and staging go, such as `s3://my-bucket?region=eu-west-1`. Required: a runner won't start without it. A directory works only when every runner is on one machine, and the Kubernetes launcher needs a bucket. |
+| `OPENETL_CHECKPOINTS` | Runners | Where checkpoints and staging go, such as `s3://my-bucket`. Required: a runner does not start without it. A directory works only when every runner is on one machine, and the Kubernetes launcher needs a bucket. [Buckets](#buckets) tells how runners reach the bucket. |
 | `OPENETL_ORCHESTRATOR` | Servers and orchestrators | `dbos`, the default, or `temporal`. |
 
 OpenETL permits outbound HTTP requests to public addresses and the network ranges listed in `OPENETL_EGRESS_ALLOW`. This restriction covers webhooks, registry downloads and connector requests made through OpenETL's HTTP service.
+
+## Buckets
+
+A runner, and the engine that it starts, use the first S3 credentials that they find:
+
+1. `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. For temporary keys, also set `AWS_SESSION_TOKEN`.
+2. The role that AWS gives the process: an EKS IAM role for a service account, EKS Pod Identity, an ECS task role or an EC2 instance profile.
+
+The runner also reads AWS profiles (`AWS_PROFILE`). The engine does not read profiles. If a runner uses a profile, also give it keys or a role.
+
+When a runner starts, it asks S3 for the region of the bucket. To change how runners reach the bucket, add these query parameters to its URL:
+
+| Parameter | What it does |
+|---|---|
+| `region=REGION` | Names the region of the bucket, so the runner does not ask S3. Use it if runners cannot reach the public S3 endpoints. |
+| `endpoint=URL` | Points at an S3-compatible store instead of AWS, with path-style addressing. Without `region`, the region is `AWS_REGION`, or `us-east-1` if `AWS_REGION` is not set. |
+| `anonymous=true` | Sends unsigned requests, for a store that accepts them, such as a development store. |
+
+For example: `s3://openetl?endpoint=http://seaweedfs:8333&anonymous=true`.
+
+GCS buckets use the Google application default credentials. Azure containers use `AZURE_STORAGE_KEY` if it is set. Otherwise, they use the Azure default credential chain.
 
 ## Connectors are trusted code
 

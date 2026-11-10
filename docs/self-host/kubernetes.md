@@ -26,7 +26,7 @@ The manifests do not include Postgres or object storage. Configure those service
 
 ## Install
 
-1. Set `OPENETL_CHECKPOINTS` in `config.yaml` to your bucket, such as `s3://my-bucket?region=eu-west-1`.
+1. Set `OPENETL_CHECKPOINTS` in `config.yaml` to your bucket, such as `s3://my-bucket`. On EKS, runners and job pods can use the bucket through an IAM role for a service account or through Pod Identity, without keys. [Buckets](./index.md#buckets) gives the order in which runners look for credentials.
 
 2. Create the namespace, and the Secret the server and orchestrators read:
 
