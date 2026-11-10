@@ -1,27 +1,34 @@
 ---
 title: Delivery guarantees
-description: What each delivery guarantee promises, what decides a stream's, and how to read a stream that may hold a row twice.
+description: Understand delivery guarantees, review their requirements, and remove duplicate changes when reading data.
 ---
 
-Every stream of a pipeline has a delivery guarantee: what OpenETL promises about a row landing twice after a retry or a second read. This page covers what each guarantee promises, what decides a stream's, how `openetl plan` shows it, and how to read a stream delivered at least once. [Concepts](../get-started/concepts.md#delivery-guarantees) has the short version.
+Each stream has a delivery guarantee that describes whether retries or repeated reads can produce duplicate changes. This page explains the guarantees, how OpenETL selects them and how to interpret a plan. It also shows queries for reading data delivered at least once. [Concepts](../get-started/concepts.md#delivery-guarantees) provides an introduction.
 
-The examples read two tables of a Postgres source, `shop-db`: `orders`, with a primary key `id` and an `updated_at` column, and `page_views`, which has no primary key. They write into a Postgres destination, `warehouse`. These worked examples use the [official Postgres connector](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md). Check your connector version's documentation and capabilities; OpenETL computes guarantees from those capabilities rather than from the system's name.
+The examples use the [official Postgres connector](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md). The source `shop-db` has two tables: `orders` and `page_views`. `orders` has a primary key `id` and an `updated_at` cursor column. `page_views` has no primary key. Both write to the `warehouse` destination.
+
+Check the capabilities documented for your connector version. OpenETL determines guarantees from those capabilities, rather than from the system's name.
 
 ## The three guarantees
 
-A row that the source inserts, then updates twice, has three **versions**. Each version has its own `_openetl_seq`, where it comes in the source's order, and its own `_openetl_id`. A guarantee is about the same version landing more than once:
+A row inserted and then updated twice has three **versions**. Each version has an `_openetl_seq` that identifies its source order and an `_openetl_id` that identifies the change. A delivery guarantee concerns repeated writes of the same version:
 
 | Guarantee | What can happen | What you do when reading |
 |---|---|---|
-| `exactly_once` | Each version lands once, through crashes and retries. | Nothing. |
-| `effectively_once` | A version can be written again, but onto the row it was written to before, so the table ends up as if it were written once. The row's `_openetl_synced_at` moves when that happens. | Nothing. Don't read `_openetl_synced_at` as when the row last changed. |
-| `at_least_once` | A version can land twice, as two rows with the same `_openetl_id`. | Keep one row per `_openetl_id`: see [reading a stream delivered at least once](#reading-a-stream-delivered-at-least-once). |
+| `exactly_once` | Each version is committed once, including after failures and retries. | No deduplication is required. |
+| `effectively_once` | A repeated version updates the same row. The final row is equivalent to one write, but `_openetl_synced_at` changes with each write. | No deduplication is required. Do not use `_openetl_synced_at` as the source change time. |
+| `at_least_once` | Duplicate rows can contain the same version and `_openetl_id`. | Keep one row per `_openetl_id`. See [reading a stream delivered at least once](#reading-a-stream-delivered-at-least-once). |
 
-A stream written with append keeps every version as a row of its own under any guarantee, so an updated row is in the table once for each version. That's append, not a repeat: [read its latest versions](#reading-a-stream-delivered-at-least-once) by primary key.
+Append writes store each version as a separate row under every guarantee. Different versions of the same source row are separate changes. To select only the latest version, [group by primary key](#reading-a-stream-delivered-at-least-once).
 
 ## What decides a stream's guarantee
 
-**The source: how a stream replays.** A stream read again from a point the source can resume from either yields exactly the rows after that point, which is **exact** replay, or may yield some of them again, which is **superset** replay. Which a stream does is up to its source, and reads from a database's log of changes (`cdc`) or of an event stream (`stream`) usually replay exactly. An incremental read is always superset: each read starts at the highest cursor value the last read saw, so it reads the rows with that value again. `openetl discover` shows what the source declares for each stream:
+**Source replay** describes the records returned after resuming a read:
+
+- **Exact** replay returns exactly the records after the saved position.
+- **Superset** replay can return previously read records as well.
+
+The source connector declares its replay behavior. CDC and event streams usually provide exact replay. Incremental reads always use superset replay: they include rows at the previous highest cursor value again. `openetl discover` shows the source's declaration for each stream:
 
 ```sh
 openetl discover shop-db
@@ -42,7 +49,7 @@ page_views (exact)
 
 **The destination: how it commits.** A destination makes each commit visible in one of three ways:
 
-- It stages what was read and applies it in one step (**stage and apply**). An exact stream gets `exactly_once`. A superset stream written with merge gets `effectively_once`, since a repeated version is written onto its own row again. A superset stream written with append or overwrite gets `at_least_once`, unless the destination can also skip rows whose `_openetl_id` its table already has: then it gets `exactly_once`, by **deduping at apply**.
+- It stages records and applies them in one step (**stage and apply**). Exact replay gives `exactly_once`. Superset replay with merge gives `effectively_once`, because repeated versions update the same row. Superset replay with append or overwrite gives `at_least_once` unless the destination can skip existing `_openetl_id` values. That capability gives `exactly_once` through **deduplication at apply** when the stream requires more than at least once.
 - It writes each commit in a transaction (**transactional stream**). An exact stream gets `exactly_once`, and a superset stream `at_least_once`.
 - It delivers records as they're read and waits for each to be acknowledged (**deliver and acknowledge**). A delivery can be retried and land twice, so every stream gets `at_least_once`.
 
@@ -50,7 +57,7 @@ page_views (exact)
 
 ## What a pipeline requires
 
-`delivery.require` is the lowest guarantee any stream may have, and it's `exactly_once` unless the pipeline says otherwise. A stream's own `require` overrides it for that stream. Deduping costs an index on `_openetl_id` and a lookup for each row, so OpenETL dedupes only a stream that requires more than at least once.
+`delivery.require` sets the minimum guarantee for the pipeline. The default is `exactly_once`. A stream's `require` overrides that requirement for the stream. Deduplication needs an index on `_openetl_id` and a lookup for each row. OpenETL enables it only when the stream requires more than at least once.
 
 Here's an incremental read written with merge:
 
@@ -126,15 +133,21 @@ Or write with append, the default, which Postgres dedupes at apply, for this str
 
 ## Commits, as a reader sees them
 
-A sync reads its streams and commits what it has read as it goes: every `delivery.commit.interval` (5 minutes in a scheduled pipeline), whenever `delivery.commit.maxBytes` have been read since the last commit (`256MB` by default), and when the read ends. What a sync has read but not yet committed isn't in the destination at all. With `delivery.commit.scope: pipeline`, the default where the destination can, each commit makes every stream's rows visible together; with `stream`, each stream commits on its own.
+A sync reads and commits data in epochs. A commit is requested when any of these conditions occurs:
 
-A sync that fails partway keeps what it committed, and its retry, or the next sync, carries on from its last commit. So a table can hold the first part of a sync that failed. A stream written with overwrite is the exception: its table is replaced only once its read ends, so until then readers see the table as it was.
+- `delivery.commit.interval` elapses. The scheduled-pipeline default is 5 minutes.
+- The data read since the last commit reaches `delivery.commit.maxBytes`. The default is `256MB`.
+- The read ends.
+
+Uncommitted data is not visible in the destination. With `delivery.commit.scope: pipeline`, a commit makes all streams' rows visible together. This is the default when supported by the destination. With `stream`, each stream commits separately.
+
+A failed sync retains its committed data. The retry or next sync resumes from the last commit. Readers can therefore see part of a failed sync. For overwrite writes, the table is replaced only when the read ends. Until then, readers see the previous table.
 
 A continuous pipeline commits every 10 seconds, unless the destination or `delivery.commit.interval` says otherwise. [The reference](../reference/specs/pipeline.md) has every `delivery` field.
 
 ## Streams without a primary key
 
-A row without a primary key gets an `_openetl_id` made from its whole content. So a repeat and a second row the source holds with the same content get the same ID, and nothing can tell them apart. `collapse` says what to do about it. For a stream that replays a superset, such as one read incrementally, into a destination that dedupes at apply:
+Without a primary key, a row's identity depends on its whole content. A repeated read and a separate identical source row can therefore have the same `_openetl_id`. OpenETL cannot distinguish them. `collapse` controls whether to combine identical rows. The following choices apply to superset replay into a destination that supports deduplication at apply:
 
 | `collapse` | `require` | What lands | What it costs |
 |---|---|---|---|
@@ -180,15 +193,17 @@ workspaces/default/pipelines/shop-orders (version b88880ab7505)
     page_views: it has no primary key and doesn't collapse, so every row lands: both copies of a row the source holds twice, and repeats, such as the lookback window each sync reads again. Readers can dedupe on _openetl_id. collapse: true collapses rows with the same content within each epoch, and with require: exactly_once against the target too, so repeats never land.
 ```
 
-A stream without a primary key that replays exactly, such as a full refresh of a table without one, keeps every row by default. Under a guarantee above at least once, OpenETL commits it only at points the source can resume from, and a source can't resume partway through a table it can't order, so nothing of that stream is committed until its read ends: a large table holds back every commit, and what's staged for it grows by its size meanwhile. With `collapse: true`, OpenETL may commit partway through it instead, and after a crash, rows with the same content collapse into one for the rest of that retry. The plan's warning says so.
+Exact replay without a primary key preserves every row by default. For a guarantee above at least once, OpenETL commits only at positions the source can resume from. If the source cannot order the table, it cannot provide a resume point before the read ends. A large table can therefore delay commits and require staging space for the whole table.
+
+With `collapse: true`, OpenETL can commit before the read ends. After a failure, identical rows collapse into one for the rest of the retry. The plan warns about this behavior.
 
 ## Reading a stream delivered at least once
 
 Under `at_least_once`, nothing removes repeats. They come from three places:
 
-- **An incremental read's last cursor value.** Each read starts at the highest cursor value the last read saw, so the rows with that value land again on every sync.
+- **The previous incremental cursor value.** Each read includes rows at the previous highest cursor value. Those rows are written again on each sync.
 - **A retried delivery** to a destination that delivers and acknowledges.
-- **A read again after a crash.** OpenETL commits at points the source can resume from exactly. When the source offers none for `delivery.resumePointTimeout` (`1m`), OpenETL commits without one, a **forced barrier**, but only where the stream keeps its required guarantee even if it's read again. After a crash, a stream restored from a forced barrier is read again from its last resume point. Under a higher guarantee, the rows it reads again are deduped, collapsed or merged onto their own rows; under `at_least_once`, they land again.
+- **A repeated read after a failure.** OpenETL normally commits at source resume points. After `delivery.resumePointTimeout` (`1m`) without one, it can commit using a **forced barrier**. This is permitted only if replay preserves the required guarantee. Recovery resumes from the last source resume point and reads some records again. Higher guarantees require deduplication, collapse or merge; `at_least_once` permits duplicate rows.
 
 Here is the `orders` table after three syncs of a pipeline that requires `at_least_once`. The table has 100 orders, 11 of which share the highest `updated_at`; between the second and third syncs, order 5 was updated:
 
@@ -234,8 +249,12 @@ order by id, _openetl_seq desc;
 
 ### Which commits were read again
 
-A pipeline's **Checkpoints** tab in the console lists every commit of the last 30 days, newest first, by **Epoch**, with each stream's rows. A lightning icon marks a forced barrier. A stream read again after a restore from one shows the guarantee it got in that commit, such as **at least once**, where that's below its planned one: that commit's rows may repeat rows an earlier commit wrote. Hover over it for the planned guarantee.
+The **Checkpoints** tab lists commits from the last 30 days, newest first. Each entry shows its **Epoch** and per-stream row counts. A lightning icon marks a forced barrier.
+
+After recovery from a forced barrier, an entry can show a guarantee below the planned level, such as **at least once**. Its rows can include changes written by earlier commits. Hover over the guarantee to see the planned level.
 
 ## When the plan can't tell
 
-The plan works out guarantees from the source's latest catalog, which `openetl discover` refreshes, and from what the destination can do, which the control plane learns from the destination connector's package. For a connector it has no package for, such as one a runner runs from a local directory, the plan has a note instead, the console's **Delivery** column says **Checked when it syncs**, and the runner checks the guarantees before each sync. [Package and publish](../build-connectors/index.md#package-and-publish) covers packages, and `openetl connector apply` applies one.
+The plan needs the source's latest catalog and the destination connector's capabilities. `openetl discover` refreshes the catalog. The destination connector's package supplies its capabilities.
+
+For a local executable without a package, the plan reports that it cannot check guarantees in advance. The console's **Delivery** column shows **Checked when it syncs**. The runner checks before each sync. [Package and publish](../build-connectors/index.md#package-and-publish) explains connector packages; `openetl connector apply` installs them.
