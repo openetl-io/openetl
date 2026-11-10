@@ -1,0 +1,44 @@
+# Build examples/spark-transform and replace the code URI and SHA-256 before
+# applying. docs/integrate/spark.md describes cluster and storage setup.
+apiVersion: openetl.io/v1alpha1
+kind: SparkCluster
+metadata:
+  name: example-spark
+spec:
+  submit:
+    master: spark://spark-master:7077
+---
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: spark-data
+spec:
+  connector: faker
+  config:
+    seed: 42
+    count: 100
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: spark-files
+spec:
+  connector: parquet
+  config:
+    url: file:///tmp/openetl-spark-output
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: faker-spark-to-parquet
+spec:
+  schedule: { every: 1h }
+  source: { ref: spark-data }
+  destination: { ref: spark-files }
+  transform:
+    spark:
+      cluster: example-spark
+      code:
+        jar: https://artifacts.example.com/spark-transform-0.1.0.jar
+        sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        class: io.openetl.examples.AddEpoch

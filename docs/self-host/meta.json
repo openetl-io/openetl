@@ -7,6 +7,7 @@
     "compose",
     "kubernetes",
     "access",
+    "secrets",
     "monitoring",
     "backup-and-restore"
   ]

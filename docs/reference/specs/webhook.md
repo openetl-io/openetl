@@ -3,7 +3,7 @@ title: Webhook
 description: Every field of a Webhook document, including required signing secrets and optional pipeline filters.
 ---
 
-A `Webhook` sends selected platform events to your HTTP endpoint. It belongs to a workspace. [Events and webhooks](../../integrate/index.md#events-and-webhooks) covers receiver setup, signatures and retries.
+A `Webhook` sends selected platform events to your HTTP endpoint. It belongs to a workspace. [Events and webhooks](../../integrate/index.md#events-and-webhooks) covers resource setup. [Receive and verify webhooks](../../integrate/webhooks.md) covers signatures, retries and key rotation.
 
 ## The document
 
@@ -24,7 +24,7 @@ Fields that aren't listed are refused. **Required** applies within the containin
 | `url` | HTTP or HTTPS URL | Yes | — | The receiving endpoint. It must have a host and no username or password in the URL. |
 | `events` | nonempty list of strings | Yes | — | Event types or globs, such as `sync.failed`, `schema.*` or `*`. See [platform events](../index.md#platform-events). |
 | `pipelines` | list of names | No | All pipelines and workspace events | Send only events for these pipeline names. Names follow the same rules as `metadata.name`. |
-| `secrets` | list of secret names | Yes | — | One to three distinct secrets in the same workspace. Each holds a signing key: `whsec_` followed by base64 key material. All configured keys sign each delivery, allowing rotation. |
+| `secrets` | list of secret names | Yes | — | One to three distinct secrets in the same workspace. Each holds a signing key: `whsec_` followed by standard base64 encoding of 24 to 64 key bytes. Cloud-secret references are not supported. All configured keys sign each delivery, allowing rotation. |
 
 The secrets must exist when you apply. Outbound requests are subject to the server's [network settings](../../self-host/index.md#the-settings-every-installation-sets). A receiver must verify the signature and deduplicate by `webhook-id`.
 

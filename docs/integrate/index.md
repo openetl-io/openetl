@@ -5,168 +5,32 @@ description: Connect OpenETL to dbt, Spark, Flink, your own code and your monito
 
 This section explains how to connect OpenETL to other systems. Each integration describes the data OpenETL sends or expects and the configuration required on each side. Review YAML changes with `openetl plan`, then apply them with `openetl apply`. [Pipelines](../pipelines/index.md) explains this workflow.
 
+| Your task | Integration | When it runs |
+|---|---|---|
+| Build or test models against the loaded Postgres tables | [dbt](./dbt.md) | After a scheduled sync commits. |
+| Transform batches before they reach the destination | [Spark transform](./spark.md) | Once per epoch of a scheduled sync. |
+| Run an application against completed destination tables | [Spark post-sync step](./spark.md#run-a-spark-application-after-a-sync) | After a scheduled sync commits. |
+| Apply a streaming job with checkpointed state | [Flink](./flink.md) | During a continuous pipeline's run. |
+
 ## dbt after a sync
 
-A scheduled pipeline can run a dbt project after each sync, against the database the sync wrote to. dbt steps run against Postgres destinations only.
+Use a dbt step to build or test models after a scheduled sync commits its copied data. The runner executes the project against the pipeline's Postgres destination. A failed step fails the sync but leaves the copied data committed.
 
-The project is a `DbtProject` document, and the pipeline names it in `postSync`. From [`examples/faker-to-postgres-dbt.yaml`](../../examples/faker-to-postgres-dbt.yaml), with its comments left out:
-
-```yaml
-apiVersion: openetl.io/v1alpha1
-kind: DbtProject
-metadata:
-  name: faker-dbt
-spec:
-  path: dbt
----
-apiVersion: openetl.io/v1alpha1
-kind: Pipeline
-metadata:
-  name: faker-to-postgres-dbt
-spec:
-  schedule: { every: 1h }
-  source: { ref: faker }
-  destination:
-    ref: local-postgres
-    namespace: faker
-  postSync:
-    - dbt: { project: faker-dbt, schema: faker_marts }
-```
-
-- **The project.** `path` specifies the project directory relative to the YAML file. `openetl apply` packages and uploads it, excluding hidden files, `target/`, `logs/` and `profiles.yml`. Runners do not run `dbt deps`. Include required packages in `dbt_packages/`, which is uploaded. The maximum archive size is 16 MiB.
-- **The step.** `command` is `build`, the default, `run` or `test`. `select` and `exclude` are dbt's `--select` and `--exclude`. `schema` is the schema dbt builds into; by default, the one the pipeline writes to.
-- **The connection.** The runner creates `profiles.yml` with one profile for the pipeline's destination. Its name matches `profile` in `dbt_project.yml`. The runner passes credentials through environment variables. `OPENETL_NAMESPACE` identifies the schema written by the pipeline. Use it in source definitions, as in [`examples/dbt/models/sources.yml`](../../examples/dbt/models/sources.yml):
-
-  ```yaml
-  sources:
-    - name: faker
-      schema: "{{ env_var('OPENETL_NAMESPACE') }}"
-      tables:
-        - name: users
-        - name: purchases
-  ```
-
-- **When it runs.** Steps run in order after the sync commits its data. A failed step fails the sync and prevents later steps from running. The committed data remains in the destination. Each sync uses the project version selected when the sync started.
-- **Where it runs.** Runners execute `dbt` from `PATH` or the path specified by `--dbt` (`OPENETL_DBT`). Install the `dbt-postgres` adapter on each runner that executes these steps.
-
-The [dbt project reference](../reference/specs/dbt-project.md) distinguishes the CLI's `path` input from the API's required `bundle`.
+[Run dbt after a sync](./dbt.md) covers runner installation, project packaging, generated profiles, schema selection, verification and recovery. The guide uses the complete [dbt example](../../examples/faker-to-postgres-dbt.yaml).
 
 ## Transforms on Spark
 
-A scheduled pipeline can run Spark code between its source and destination on your Spark cluster. Each commit covers a group of records called an **epoch**. For each epoch, your code receives one DataFrame per input stream and returns one DataFrame per output. OpenETL writes the outputs as destination streams.
+Use Spark to transform each epoch of a scheduled sync before the destination receives it. Your application returns one DataFrame per output stream. Each call sees one epoch, so cross-stream joins and aggregates do not automatically cover the entire sync.
 
-```yaml
-apiVersion: openetl.io/v1alpha1
-kind: SparkCluster
-metadata:
-  name: analytics
-spec:
-  submit:
-    master: spark://spark-master:7077
----
-apiVersion: openetl.io/v1alpha1
-kind: Pipeline
-metadata:
-  name: faker-spend
-spec:
-  schedule: { every: 1h }
-  source: { ref: faker }
-  destination: { ref: local-postgres, namespace: faker_spend }
-  transform:
-    spark:
-      cluster: analytics
-      code:
-        jar: s3://my-bucket/jobs/spend.jar
-        sha256: SHA256
-        class: com.example.Spend
-      outputs:
-        - name: spend_per_user
-          primaryKey: [user_id]
-```
+Use a Spark post-sync step when the application needs to read the completed destination tables. Both operations run on a cluster that you provide.
 
-- **The cluster.** A `SparkCluster` selects either `submit` or `emr`. `submit` uses `spark-submit` in cluster deploy mode. Targets are a standalone master (`spark://HOST:PORT`), YARN (`yarn`) or Kubernetes (`k8s://https://HOST:PORT`). Runners need Spark 3.5's `spark-submit` on `PATH` or at the path specified by `--spark-submit`. `emr` adds steps to an EMR on EC2 cluster selected by `clusterId` or `clusterName`, in `region`.
-- **The code.** `code` specifies a jar or Python file at an accessible `s3://` or `https://` URI. Supply its hexadecimal SHA-256 digest, which `shasum -a 256 spend.jar` prints. The runner reads an `s3://` URI with the same credentials and query parameters as its own bucket. See [Buckets](../self-host/index.md#buckets). The runner verifies the digest and copies the artifact to the cluster. A standalone master requires a jar because it cannot run Python in cluster deploy mode.
-- **The outputs.** `outputs` names each returned stream and its `primaryKey`. It can also specify the `write` mode and required delivery guarantee through `require`. Without `outputs`, each input stream is also an output with the same name.
-- **Storage.** The cluster reads epoch inputs and writes results under the pipeline's `_spark/` prefix in the data plane's store. Use S3 or a directory mounted at the same path on the runner and cluster. `sparkAccess` supplies application-specific S3 credentials or an EMR runtime role. Otherwise, the application uses the cluster identity, which can reach every pipeline's prefix.
-
-### Spark submission diagnostics
-
-On a standalone master, OpenETL reads the driver ID from `spark-submit` output at `INFO` level. Keep the submission client's log level at `INFO`. If submission exits without that line, the step fails without retrying. A driver might still be running. Check the master's UI before submitting again.
-
-On Kubernetes, a failed driver's sync log includes its last 100 log lines, up to 64 KiB. Property values are masked when their names contain `secret`, `password`, `token` or `access.key`.
-
-The runner uses the kubeconfig or service account found by `spark-submit` to read driver logs. Those credentials must match the API server in `master` and permit `get` on `pods/log` in the application namespace. If log retrieval fails, the sync log records the reason. This does not change the step's result.
-
-### Write a Spark transform
-
-Your code uses [openetl-spark](../../libs/openetl-spark), built for Spark 3.5. In Java, a class implements `io.openetl.spark.Transform`, and `class` names it:
-
-```java
-Map<String, Dataset<Row>> apply(SparkSession spark, Map<String, Dataset<Row>> inputs, EpochContext ctx);
-```
-
-In Python, the file is the application, and hands its function to `openetl_spark.run`:
-
-```python
-import openetl_spark
-
-def transform(spark, inputs, ctx):
-    return {"spend_per_user": inputs["purchases"].groupBy("user_id").sum("amount")}
-
-if __name__ == "__main__":
-    openetl_spark.run(transform)
-```
-
-Each call receives one epoch. A join across streams cannot match rows from different epochs. Inputs include the [metadata columns](#reading-what-openetl-writes); outputs retain the columns your code preserves.
-
-The library is not published to a package repository. `make spark-lib` builds the jar. The Python package is in `libs/openetl-spark/python`.
-
-A `SparkCluster` can also run an application after a sync, as a `postSync` step, `spark: { cluster, code, args, conf }`. openetl-spark's `SyncContext` tells that application what the sync wrote.
-
-The [Spark cluster reference](../reference/specs/spark-cluster.md) lists every target field, its requirements and defaults.
+[Transform data with Spark](./spark.md) covers building a Java application, Python support, cluster submission, shared storage, output contracts and failure diagnosis. Start with the buildable [Spark example project](../../examples/spark-transform) and its [pipeline document](../../examples/faker-spark-to-parquet.yaml).
 
 ## Transforms on Flink
 
-A continuous pipeline can run your Flink job between its source and its destination, on your own Flink cluster. The job reads each stream as a `DataStream` and writes its outputs back to OpenETL, which commits them to the destination. The job's checkpoints are the pipeline's.
+Use Flink to transform a continuous pipeline. The job exchanges rows with its runner through an authenticated bridge. OpenETL coordinates Flink checkpoints with destination commits. Inputs must replay exactly from a saved position.
 
-```yaml
-apiVersion: openetl.io/v1alpha1
-kind: FlinkCluster
-metadata:
-  name: streaming
-spec:
-  rest:
-    url: http://flink-jobmanager:8081
----
-apiVersion: openetl.io/v1alpha1
-kind: Pipeline
-metadata:
-  name: payments-scored
-spec:
-  mode: continuous
-  source: { ref: payments }
-  destination: { ref: local-postgres, namespace: payments }
-  transform:
-    flink:
-      cluster: streaming
-      code:
-        jar: s3://my-bucket/jobs/score.jar
-        sha256: SHA256
-        class: com.example.Score
-      outputs:
-        - name: scored_payments
-```
-
-- **The cluster.** A `FlinkCluster` selects one target. `kubernetes` creates a `FlinkDeployment` through the Flink Kubernetes Operator in application mode. `rest` uses a standalone session cluster's REST API. `emr` submits a YARN step on EMR on EC2. Cluster-level `conf` applies to every job.
-- **The code.** `code` specifies a jar at an `s3://` or `https://` URI and its SHA-256 digest. Supply the main `class` unless the jar manifest declares it. Job-level `parallelism` and `conf` configure that job.
-- **The runner's bridge.** The job reads and writes through its pipeline's runner. Set `--bridge-listen`, such as `:7710`, to enable the bridge. Set `--bridge-advertise` to an address that reaches that specific runner. Do not use a load balancer address. A runner without a configured bridge cannot run Flink pipelines.
-- **Storage.** Use S3 or a directory mounted at the same path on the runner and cluster. Job code, checkpoints and savepoints use the pipeline's `_flink/` prefix. `flinkAccess` supplies credentials or an EMR runtime role.
-
-Build the job with [openetl-flink](../../libs/openetl-flink) for Flink 1.20. `OpenEtl.fromArgs` reads the arguments supplied by the runner. `stream` returns a `DataStream<RowData>` for an input stream, and `sink` writes an output. The input's `_openetl_op` becomes its `RowKind`.
-
-OpenETL reads every pipeline stream, including streams the job does not use. The library is not published to a package repository. `make flink-lib` builds the jar.
-
-The [Flink cluster reference](../reference/specs/flink-cluster.md) lists required target choices, authentication and resource defaults.
+[Transform a stream with Flink](./flink.md) covers building the job, session-cluster requirements, bridge routing, storage, row types and state recovery. Start with the buildable [Flink example project](../../examples/flink-transform) and its [pipeline document](../../examples/faker-flink-to-parquet.yaml).
 
 ## Events and webhooks
 
@@ -216,6 +80,8 @@ openetl webhook test ops-alerts
 - **Which addresses.** The server sends webhooks to public addresses only, unless its `--egress-allow` setting names the private networks it may reach as well.
 
 The [Webhook reference](../reference/specs/webhook.md) lists required fields and filter defaults.
+
+[Receive and verify webhooks](./webhooks.md) provides signature verification code, receiver checks, delivery recovery and signing-key rotation steps.
 
 ## The API
 

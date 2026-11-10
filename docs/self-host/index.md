@@ -126,6 +126,7 @@ By default, logs use JSON on standard error. `OPENETL_LOG_FORMAT` and `OPENETL_L
 ## Operating the installation
 
 - [Manage access and credentials](./access.md): users, scoped service accounts, key and runner-token rotation, and offboarding.
+- [Manage connection secrets](./secrets.md): stored credentials, cloud-secret references, replacement and deletion.
 - [Back up and restore](./backup-and-restore.md): the complete state inventory, a stopped Compose backup, and verification after recovery.
 
 ## Install
