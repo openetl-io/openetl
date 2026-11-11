@@ -1,14 +1,16 @@
 name: release
 
 # Releases a tag that's already pushed, vVERSION such as v0.1.0-alpha, on a
-# commit in main. It builds the tag's commit with VERSION in it, as
-# release-candidate does, and then, by `publish`:
+# commit in main or in its release line's branch, release-X.Y. It builds the
+# tag's commit with VERSION in it, as release-candidate does, and then, by
+# `publish`:
 #
 #   public   pushes the image to ghcr.io/OWNER/openetl:VERSION and puts the
 #            files on a draft release of the tag; then, in the job that alone
 #            may sign, signs the image and checksums.txt with keyless cosign,
 #            tags the Go SDK sdk/go/vVERSION on the same commit, and publishes
-#            the release.
+#            the release. Then it points release-X.Y at the release (see the
+#            branch job) and has the docs site build again.
 #   private  pushes the image to the private ghcr.io/OWNER/candidates/VERSION/
 #            openetl and puts the files on a draft release of the tag. Nothing
 #            is signed, as keyless signatures go to a public log.
@@ -50,6 +52,7 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
+      branch: ${{ steps.resolve.outputs.branch }}
     steps:
       - name: The tag names a version
         env:
@@ -65,11 +68,19 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           commit=$(git rev-parse HEAD)
-          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$commit" --jq .status)
-          case $status in identical | behind) ;; *) echo "::error::$TAG ($commit) isn't a commit in main"; exit 1 ;; esac
+          version=${TAG#v}
+          branch=release-$(cut -d. -f1-2 <<< "$version")
+          # Whether the commit is in branch $1; a branch that doesn't exist has none.
+          has() {
+            case $(gh api "repos/$GITHUB_REPOSITORY/compare/$1...$commit" --jq .status 2>/dev/null || true) in
+              identical | behind) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          has main || has "$branch" || { echo "::error::$TAG ($commit) isn't a commit in main or $branch"; exit 1; }
           draft=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
           [ "$draft" != false ] || { echo "::error::$TAG is already released"; exit 1; }
-          { echo "version=${TAG#v}"; echo "commit=$commit"; } >> "$GITHUB_OUTPUT"
+          { echo "version=$version"; echo "commit=$commit"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
 
   engine:
     needs: prepare
@@ -381,3 +392,53 @@ jobs:
             echo "::warning::$IMAGE is private: make it public in https://github.com/orgs/$GITHUB_REPOSITORY_OWNER/packages/container/openetl/settings"
             echo "**$IMAGE is private:** make it public in [its settings](https://github.com/orgs/$GITHUB_REPOSITORY_OWNER/packages/container/openetl/settings)." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  # Points the release line's branch, release-X.Y, at the release: the docs
+  # site builds the line's docs from it, and fixes to them are backported to
+  # it (CONTRIBUTING.md). A new line's branch is made, with the label that
+  # backports to it. A release on the branch leaves it where it is. A release
+  # cut from main moves it forward, or, when it has commits since that main's
+  # release doesn't (backports, which came from main), starts it again at the
+  # release; the summary says where it was.
+  branch:
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    env:
+      TAG: ${{ inputs.tag }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+      BRANCH: ${{ needs.prepare.outputs.branch }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Point the release line's branch at the release
+        run: |
+          repo=repos/$GITHUB_REPOSITORY
+          if ! at=$(gh api "$repo/git/ref/heads/$BRANCH" --jq .object.sha 2>/dev/null); then
+            gh api "$repo/git/refs" -f "ref=refs/heads/$BRANCH" -f "sha=$COMMIT" > /dev/null
+            echo "Made \`$BRANCH\` at $TAG." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          case $(gh api "$repo/compare/$at...$COMMIT" --jq .status) in
+            identical | behind) ;;
+            ahead)
+              gh api -X PATCH "$repo/git/refs/heads/$BRANCH" -f "sha=$COMMIT" -F force=false > /dev/null
+              echo "Moved \`$BRANCH\` forward to $TAG." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              gh api -X PATCH "$repo/git/refs/heads/$BRANCH" -f "sha=$COMMIT" -F force=true > /dev/null
+              echo "Started \`$BRANCH\` again at $TAG. It was at $at." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+      - name: The label that backports to it
+        run: gh label create "backport $BRANCH" -R "$GITHUB_REPOSITORY" --color 0e8a16 --description "Backport to $BRANCH once merged" --force
+
+  # The docs site builds again, to show the release: from its branch, or from
+  # its tag if the branch job failed.
+  docs-site:
+    needs: [publish, branch]
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    uses: ./.github/workflows/docs-site.yml
+    secrets:
+      DOCS_SITE_TOKEN: ${{ secrets.DOCS_SITE_TOKEN }}

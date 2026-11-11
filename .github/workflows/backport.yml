@@ -1,0 +1,58 @@
+name: backport
+
+# Backports a merged pull request to a release line's branch. Label a pull
+# request `backport release-X.Y`, before it's merged or after, and once it's
+# merged this opens a pull request of it against release-X.Y: what merging it
+# put on its base branch, cherry-picked with -x, with its title and the
+# branch's name after it. Where that doesn't apply cleanly, it comments on the
+# pull request with the commands to backport it by hand. CONTRIBUTING.md has
+# when to backport.
+#
+# It runs on pull_request_target, with a token that can write, so it never
+# runs the pull request's code: it only cherry-picks commits merging it made.
+#
+# GitHub starts no workflow for a push or pull request made with a workflow's
+# own token, so CI would run on the backport only once it's merged, and
+# opening one needs "Allow GitHub Actions to create pull requests" in the
+# repository's Actions settings. The secret BACKPORT_TOKEN, a fine-grained
+# token with Contents and Pull requests: write on this repository, is used
+# instead when it's set. Without either, the backport's branch is pushed, and
+# the comment links to opening its pull request.
+on:
+  pull_request_target:
+    types: [closed, labeled]
+
+permissions: {}
+
+jobs:
+  backport:
+    if: >-
+      github.event.pull_request.merged &&
+      (github.event.action == 'closed' || startsWith(github.event.label.name, 'backport '))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: backport-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          token: ${{ secrets.BACKPORT_TOKEN || github.token }}
+      - name: Backport to each release branch it's labelled for
+        env:
+          GH_TOKEN: ${{ secrets.BACKPORT_TOKEN || github.token }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+          COMMITS: ${{ github.event.pull_request.commits }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          deploy/release/backport.sh

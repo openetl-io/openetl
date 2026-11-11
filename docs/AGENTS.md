@@ -2,7 +2,7 @@
 
 For people and coding agents. [The repository's AGENTS.md](../AGENTS.md) applies here too.
 
-This folder is OpenETL's documentation. The docs site, in [docs-web](https://github.com/openetl-io/docs-web), is built with Fumadocs from this folder at `main` and at each release tag, so a release's docs are this folder as it was at its tag. The same files are read on GitHub, so every page has to read well in both places.
+This folder is OpenETL's documentation. The docs site, in [docs-web](https://github.com/openetl-io/docs-web), is built with Fumadocs from this folder at `main`, as `next`, and for each release line at its branch, `release-X.Y`, under the name of the line's newest release. The branch holds that release and the fixes to its docs since, so a release's docs are this folder as it was at its tag, with those fixes. A fix to a release's docs goes to `main` and is backported to the branch: [CONTRIBUTING.md](../CONTRIBUTING.md#backports) has when and how. The same files are read on GitHub, so every page has to read well in both places.
 
 Pages about one connector live with that connector: the official ones in [openetl-connectors](https://github.com/openetl-io/openetl-connectors), whose packages the site lists under Connectors. This folder covers OpenETL itself, and the connectors built into it (`faker`, `stdout` and `parquet`) in the reference.
 

@@ -27,7 +27,7 @@ For people and coding agents. [README.md](README.md) has what OpenETL is, [CONTR
 
 ## Docs
 
-- `docs/` is the documentation the docs site is built from, at `main` and at each release tag, so what it says ships with the code it describes. [docs/AGENTS.md](docs/AGENTS.md) has who each section is for, the format and the style.
+- `docs/` is the documentation the docs site is built from, at `main` and, for each release line, at its branch `release-X.Y`, which holds the line's newest release and fixes to its docs since, so what it says ships with the code it describes. A fix to a release's docs goes to `main` and is backported to its branch: [CONTRIBUTING.md](CONTRIBUTING.md#backports) has how. [docs/AGENTS.md](docs/AGENTS.md) has who each section is for, the format and the style.
 - **A change and its docs land together.** A pull request that changes what someone using, running or integrating OpenETL sees (a command, a flag, a setting, a field of a spec, an event, a metric, the API, the console, a default, an error people act on) updates `docs/` in the same pull request. So does one that changes the connector protocol or the SDK, in `docs/build-connectors`.
 - **No page about one connector here.** An official connector's page is its package's `README.md` in openetl-connectors; this repository documents only the connectors built into `openetld`.
 - **The README is the front door.** It stays short and welcoming: what OpenETL does, how to try it, and where the docs for each kind of reader start. Layout, make targets and anything else for contributors go in CONTRIBUTING.md.
