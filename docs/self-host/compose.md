@@ -63,7 +63,7 @@ Runners store checkpoints and staging in the `runner` volume. The default stack 
 
    On first start, the server creates the organization and writes an owner API key to `.openetl/admin.key` in the `server` volume. The `runner-token` service uses this key to create a runner token, then exits successfully. Its `Exited (0)` state is expected.
 
-   The volumes are `openetl_postgres`, `openetl_server` and `openetl_runner`, named after the Compose project `openetl`. If volumes from an earlier installation exist, the stack uses them with the new `.env`. Then the server restarts, and `docker compose logs server` shows `password authentication failed`. Use the earlier `.env`, or remove the earlier installation as [Stop and remove](#stop-and-remove) shows.
+   If `docker compose up -d` fails with `dependency failed to start`, an earlier installation on this machine can be the cause. [An earlier installation on this machine](#an-earlier-installation-on-this-machine) shows how to continue it, run beside it, or delete it.
 
 4. Make yourself a user who can sign in to the console, as an owner:
 
@@ -87,6 +87,66 @@ Runners store checkpoints and staging in the `runner` volume. The default stack 
 export OPENETL_API_URL=http://localhost:8080
 export OPENETL_API_KEY="$(docker compose exec -T server cat .openetl/admin.key)"
 ```
+
+## An earlier installation on this machine
+
+Compose names the volumes after the project, `openetl`: `openetl_postgres`, `openetl_server` and `openetl_runner`. The project name comes from `compose.yml`, not from the directory. So a stack in a new directory uses the volumes of an earlier installation on the same machine, such as the [quickstart](../get-started/quickstart.md)'s.
+
+The `postgres` volume keeps the earlier installation's password. If the new `.env` has another `POSTGRES_PASSWORD`, the server cannot connect to Postgres, and `docker compose up -d` fails:
+
+```text
+dependency failed to start: container openetl-server-1 is unhealthy
+```
+
+`docker compose logs server` then shows `password authentication failed for user "openetl"`. To list the volumes of an earlier installation, run:
+
+```sh
+docker volume ls --filter name=openetl_
+```
+
+Then do one of the procedures that follow.
+
+### Continue the earlier installation
+
+1. Copy the earlier installation's `.env` into this directory, in place of the new one.
+2. Run `docker compose up -d`.
+
+The earlier `POSTGRES_PASSWORD` opens the database, and the earlier `OPENETL_SECRETS_KEY` reads the stored secrets. The earlier pipelines, secrets and checkpoints stay. If you do not have the earlier `.env`, OpenETL cannot read the stored secrets. Then use one of the other procedures.
+
+### Run a second installation beside it
+
+Give the new installation a project name of its own. Compose then makes new volumes for it, and keeps the earlier ones.
+
+1. Add this line to the new `.env`. Replace `openetl-2` with a name of your choice:
+
+   ```sh
+   COMPOSE_PROJECT_NAME=openetl-2
+   ```
+
+2. If the earlier installation runs at the same time, also give the new one another port:
+
+   ```sh
+   OPENETL_PORT=127.0.0.1:8081
+   OPENETL_PUBLIC_URL=http://localhost:8081
+   ```
+
+3. Run `docker compose up -d`.
+
+The new installation's volumes are `openetl-2_postgres`, `openetl-2_server` and `openetl-2_runner`, and its network is `openetl-2_default`. If you changed the port, set `OPENETL_API_URL=http://localhost:8081` for the CLI.
+
+### Delete the earlier installation
+
+> [!WARNING]
+> These commands delete the earlier installation's database, owner key, checkpoints and staging files. You cannot recover them, except from a backup.
+
+In this directory, remove the earlier installation's containers and volumes. Then start the new stack:
+
+```sh
+docker compose down -v
+docker compose up -d
+```
+
+`docker compose down -v` acts on the project `openetl`. It removes that project's containers and volumes, also if they came from another directory. It does not change an installation that has another project name.
 
 ## Check that it works
 

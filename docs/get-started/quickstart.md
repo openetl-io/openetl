@@ -54,7 +54,7 @@ EOF
 chmod 600 .env
 ```
 
-If an earlier OpenETL stack ran on this computer, remove it first, as [Clean up](#clean-up) shows. Its volumes keep the earlier password, and the new server cannot start with them.
+If OpenETL ran on this computer before, its volumes can stop the new stack from starting. [An earlier installation on this machine](../self-host/compose.md#an-earlier-installation-on-this-machine) shows how to continue that installation, run beside it, or delete it.
 
 Start the services. The first start downloads the images, which can take a few minutes:
 
