@@ -293,7 +293,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		}
 	}
 	if cat == nil {
-		deletesIgnored(WriteMode(spec) == destination.Merge)
+		deletesIgnored(mayMerge(spec, caps))
 		problems := append(delivery.Problems(caps, settings, nil), tableProblems(spec, caps, nil)...)
 		if m := WriteMode(spec); m != 0 {
 			if err := delivery.ModeProblem(caps, m); err != nil {
@@ -406,6 +406,31 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		warnings = append(warnings, &apiv1.PlanWarning{Stream: w.Stream, Message: w.Message})
 	}
 	return plans, problems, warnings
+}
+
+// mayMerge reports whether, without the source's catalog, a stream may be
+// written with merge: the spec or a transform's output sets merge, or with no
+// mode set, a stream may be keyed and read with cdc into a destination that
+// merges.
+func mayMerge(spec *apiv1.PipelineSpec, caps destination.Capabilities) bool {
+	outputs := spec.GetTransform().GetSpark().GetOutputs()
+	if f := spec.GetTransform().GetFlink(); f != nil {
+		outputs = f.GetOutputs()
+	}
+	if slices.ContainsFunc(outputs, func(o *apiv1.TransformOutput) bool { return o.GetWrite() == apiv1.WriteMode_WRITE_MODE_MERGE }) {
+		return true
+	}
+	if m := WriteMode(spec); m != 0 {
+		return m == destination.Merge
+	}
+	if !caps.SupportsMode(destination.Merge) {
+		return false
+	}
+	streams := spec.GetSource().GetStreams()
+	return spec.GetTransform() != nil || len(streams) == 0 || slices.ContainsFunc(streams, func(ps *apiv1.PipelineStream) bool {
+		read := ReadMode(spec, nil, ps)
+		return read == apiv1.SyncMode_SYNC_MODE_UNSPECIFIED || read == apiv1.SyncMode_SYNC_MODE_CDC
+	})
 }
 
 // tableProblems fails what destination.tables can't do: a table too long for

@@ -484,6 +484,9 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		if region, ok := objectstore.S3WrongRegion(err); ok {
 			return fmt.Errorf("daemon: the checkpoint store's bucket is in %s: set region=%s in its URL, or leave region out: %w", region, region, err)
 		}
+		if _, ok := errors.AsType[*objectstore.CredentialsError](err); ok {
+			return fmt.Errorf("daemon: the runner has no AWS credentials for the checkpoint store's bucket, so it won't start: %w", err)
+		}
 		return fmt.Errorf("daemon: the checkpoint store fails the conditional-write probe, so the runner won't start: %w", err)
 	}
 	allow, err := netguard.ParsePrefixes(cfg.EgressAllow)

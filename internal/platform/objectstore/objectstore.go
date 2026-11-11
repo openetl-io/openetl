@@ -20,7 +20,11 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
+	"github.com/aws/aws-sdk-go-v2/credentials/endpointcreds"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"gocloud.dev/blob"
 	"gocloud.dev/blob/azureblob"
@@ -214,15 +218,49 @@ func configuredRegion() string {
 	return cmp.Or(os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"), cfg.Region, "us-east-1")
 }
 
-// chainCredentials says what to set when the default chain finds none.
+// chainCredentials says what failed when the default chain's provider gives
+// no credentials, and what to set.
 type chainCredentials struct{ aws.CredentialsProvider }
 
 func (c chainCredentials) Retrieve(ctx context.Context) (aws.Credentials, error) {
 	creds, err := c.CredentialsProvider.Retrieve(ctx)
 	if err != nil {
-		return creds, fmt.Errorf("objectstore: no AWS credentials: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, give the process an IAM role, or add anonymous=true to the s3:// URL of a store that takes unsigned requests: %w", err)
+		return creds, &CredentialsError{problem: credentialsProblem(c.CredentialsProvider, err), err: err}
 	}
 	return creds, nil
+}
+
+// CredentialsError is in the error of a request that an S3Client's client
+// couldn't sign, as the default chain gave it no AWS credentials.
+type CredentialsError struct {
+	problem string
+	err     error
+}
+
+func (e *CredentialsError) Error() string { return "objectstore: " + e.problem + ": " + e.err.Error() }
+
+func (e *CredentialsError) Unwrap() error { return e.err }
+
+const credentialsToSet = "set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, give the process an IAM role, or add anonymous=true to the s3:// URL of a store that takes unsigned requests"
+
+// credentialsProblem names the source that p, a provider the default chain
+// chose, failed to get credentials from.
+func credentialsProblem(p aws.CredentialsProvider, err error) string {
+	var refused smithy.APIError
+	var status interface{ HTTPStatusCode() int }
+	switch {
+	case aws.IsCredentialsProvider(p, (*stscreds.WebIdentityRoleProvider)(nil)) && errors.As(err, &refused):
+		return "STS refused the web identity token for the role: on EKS, check that IAM has an OIDC provider for the cluster's issuer, and that the role's trust policy allows the service account"
+	case aws.IsCredentialsProvider(p, (*stscreds.WebIdentityRoleProvider)(nil)):
+		return "no credentials for the web identity role"
+	case aws.IsCredentialsProvider(p, (*endpointcreds.Provider)(nil)):
+		return "the container credentials endpoint gave no credentials: on EKS, check the service account's Pod Identity association, and that the Pod Identity agent runs on the node"
+	case aws.IsCredentialsProvider(p, (*ec2rolecreds.Provider)(nil)) && errors.As(err, &status) && status.HTTPStatusCode() == http.StatusNotFound:
+		return "no AWS credentials, and the EC2 instance has no IAM role: " + credentialsToSet
+	case aws.IsCredentialsProvider(p, (*ec2rolecreds.Provider)(nil)):
+		return "no AWS credentials: " + credentialsToSet + "; in a container on EC2, the instance's role needs an instance metadata hop limit of 2 or more (HttpPutResponseHopLimit)"
+	}
+	return "no AWS credentials from the AWS profile"
 }
 
 var (
