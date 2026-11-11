@@ -10,7 +10,7 @@ name: release
 #            may sign, signs the image and checksums.txt with keyless cosign,
 #            tags the Go SDK sdk/go/vVERSION on the same commit, and publishes
 #            the release. Then it points release-X.Y at the release (see the
-#            branch job) and has the docs site build again.
+#            branch job).
 #   private  pushes the image to the private ghcr.io/OWNER/candidates/VERSION/
 #            openetl and puts the files on a draft release of the tag. Nothing
 #            is signed, as keyless signatures go to a public log.
@@ -433,12 +433,3 @@ jobs:
           esac
       - name: The label that backports to it
         run: gh label create "backport $BRANCH" -R "$GITHUB_REPOSITORY" --color 0e8a16 --description "Backport to $BRANCH once merged" --force
-
-  # The docs site builds again, to show the release: from its branch, or from
-  # its tag if the branch job failed.
-  docs-site:
-    needs: [publish, branch]
-    if: ${{ !cancelled() && needs.publish.result == 'success' }}
-    uses: ./.github/workflows/docs-site.yml
-    secrets:
-      DOCS_SITE_TOKEN: ${{ secrets.DOCS_SITE_TOKEN }}

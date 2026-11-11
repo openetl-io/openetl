@@ -75,7 +75,7 @@ The connectors `make dev` builds are local executables in `bin/connectors`, whic
 | `crates/` | `openetl-engine`, the Rust data engine, and its libraries |
 | `libs/` | `openetl-spark` and `openetl-flink`: what runs on your Spark and Flink clusters |
 | `web/` | The UI: React and TypeScript, a client of the API only |
-| `deploy/` | Local dependencies in Docker Compose, `openetld`'s image, manifests for Kubernetes, and the scripts for release candidates and backports |
+| `deploy/` | Local dependencies in Docker Compose, `openetld`'s image, manifests for Kubernetes, and the release candidate script |
 | `install.sh` | The CLI's installer, which the docs fetch from `main` and pipe to `sh`; `test/install` runs it against a release it serves |
 | `docs/` | The documentation, which the docs site is built from |
 | `test/` | `sim`, a seeded simulation of the commit protocol under crashes, timeouts and zombie attempts; `e2e`, whole-stack scenarios and the chaos suite; `bench` |
@@ -100,7 +100,7 @@ gh workflow run release.yml -f tag=v0.1.0-alpha -f publish=public
 
 It builds the tag's commit with the version in it: the bundle's archives for Linux on amd64 and arm64 (`openetld`, the CLI, the engine and the console), the CLI's own archives for Linux and macOS, the multi-arch image, and the Spark and Flink jars and the Python wheel, with checksums, SBOMs and third-party notices. The image holds no connectors, only the default that points at their registry. `publish` says what happens to them:
 
-- `public` pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and publishes a release of the tag with the files. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign first, and tags the Go SDK `sdk/go/vVERSION` on the same commit. Then it points the release line's branch at the release, and the docs site builds again. GHCR creates a package private: after the first public release, make `ghcr.io/openetl-io/openetl` public in its settings, once. Then run the [quickstart](docs/get-started/quickstart.md) as written, which installs the release from GitHub and GHCR.
+- `public` pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and publishes a release of the tag with the files. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign first, and tags the Go SDK `sdk/go/vVERSION` on the same commit. Then it points the release line's branch at the release. GHCR creates a package private: after the first public release, make `ghcr.io/openetl-io/openetl` public in its settings, once. Then run the [quickstart](docs/get-started/quickstart.md) as written, which installs the release from GitHub and GHCR.
 - `private` puts the files on a draft release of the tag and the image in the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. Nothing is signed, as keyless signatures go to a public log. `gh workflow run release-discard.yml -f version=VERSION` removes both.
 - `skip` builds and checks everything, and pushes nothing.
 
@@ -132,10 +132,9 @@ A fix goes to `main` first. When it also fixes a release line, label its pull re
 
 Backport a change to `docs/` that corrects or completes what a release does: a wrong command, output or default, a missing step, a limit the release has. Don't backport docs for what only `main` does, or a change that describes code the release doesn't have. A fix to text that `main` no longer has is a pull request to the release branch alone.
 
-Two secrets connect this to the docs site. Without them, it still works, more slowly:
+The workflow pushes a backport with the deploy key in the secret `BACKPORT_DEPLOY_KEY`, which has write access, so CI runs on it: GitHub starts no workflow for what a workflow's own token pushes. It opens the pull request with its own token, which **Allow GitHub Actions to create and approve pull requests**, in the repository's Actions settings, permits. Without the key, CI runs on a backport once it's merged; without the setting, the workflow comments with a link to open the pull request.
 
-- `DOCS_SITE_TOKEN`, a fine-grained token with Contents: write on `openetl-io/docs-web`, lets the `docs-site` workflow have the site build when `docs/`, `internal/api/openapi.yaml` or a JSON Schema changes on `main` or a release branch, and after a release. Without it, the site picks changes up in its nightly build.
-- `BACKPORT_TOKEN`, a fine-grained token with Contents and Pull requests: write on this repository, opens backports. GitHub starts no workflow for what a workflow's own token pushes, so without it CI runs on a backport only once it's merged, and opening the pull request needs **Allow GitHub Actions to create pull requests** in the repository's Actions settings. Without either, the workflow pushes the backport's branch and comments with a link to open its pull request.
+The docs site checks this repository every 15 minutes, and builds when what it reads has changed: `docs/`, `internal/api/openapi.yaml` or a JSON Schema on `main` or a release branch, or a published release.
 
 ## Pull requests
 
