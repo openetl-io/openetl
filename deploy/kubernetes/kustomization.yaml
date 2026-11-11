@@ -16,7 +16,8 @@ resources:
 #   - keda
 #   - karpenter
 images:
-  # openetld's image, from make image; kustomize edit set image
-  # openetl=REGISTRY/openetl:TAG sets yours.
+  # openetld's image: the release's, or yours from make image, which
+  # kustomize edit set image openetl=REGISTRY/openetl:TAG sets.
   - name: openetl
-    newTag: dev
+    newName: ghcr.io/openetl-io/openetl
+    newTag: 0.1.0-alpha

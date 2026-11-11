@@ -60,7 +60,7 @@ config:
 Store secrets with the CLI. `set` reads a value from standard input or `--from-file`. With `--ref`, it stores a reference to a cloud secret store. Runners resolve that reference with their cloud identity:
 
 ```sh
-echo postgres://openetl:openetl@localhost:5432/openetl | openetl secret set local-postgres-dsn
+echo postgres://postgres:quickstart@quickstart-postgres:5432/postgres | openetl secret set local-postgres-dsn
 openetl secret list
 openetl secret delete local-postgres-dsn
 ```
@@ -71,7 +71,7 @@ openetl secret delete local-postgres-dsn
 
 ## Plan, then apply
 
-`openetl plan -f FILE` sends the documents to the API, which checks them and works out what applying them would do, without changing anything. Here's a second pipeline from the quickstart's `faker` source, into Parquet files on local disk with the built-in `parquet` connector, at 06:00 every day:
+`openetl plan -f FILE` sends the documents to the API, which checks them and works out what applying them would do, without changing anything. Here's a second pipeline from the quickstart's `faker` source, into Parquet files on the runner's disk with the built-in `parquet` connector, at 06:00 every day:
 
 ```yaml
 apiVersion: openetl.io/v1alpha1

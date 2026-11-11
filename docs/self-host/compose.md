@@ -19,35 +19,33 @@ Runners store checkpoints and staging in the `runner` volume. The default stack 
 
 - **Docker with Compose** 2.24 or later. Use a Linux machine for a shared installation. Docker Desktop or OrbStack on macOS is suitable for evaluation.
 - **Job capacity.** A runner reserves 0.5 vCPU and 512 MiB for itself. The remaining machine capacity is available to jobs. Sizes range from `xs` (0.5 vCPU, 1 GiB) to `xl` (8 vCPUs, 16 GiB). The pipeline's `spec.resources` selects the size, or OpenETL selects it automatically.
-- **OpenETL's image.** There are no released images. Clone this repository and [openetl-connectors](https://github.com/openetl-io/openetl-connectors) into the same parent directory. Install Go, pnpm and Docker. Build the image from the OpenETL repository:
-
-  ```sh
-  make engine-linux image
-  ```
-
-  `make engine-linux` builds the Linux engine in a Rust container. `make image` packages it with `openetld`, the CLI, console and official connectors in `openetl:dev`.
-
-  Build caches use about 1 GB in the Docker volumes `openetl-engine-target` and `openetl-cargo-registry`. These caches can be removed with `docker volume rm` after the build.
-
-  To use the image on another machine, transfer it with `docker save openetl:dev | ssh HOST docker load`. Alternatively, build with `make image IMAGE=REGISTRY/openetl:TAG`, then push that image to your registry. Set `OPENETL_IMAGE` in `.env` to the image name used on the target machine.
+- **Network access to `ghcr.io`.** Docker pulls OpenETL's image, `ghcr.io/openetl-io/openetl:0.1.0-alpha`, for `linux/amd64` or `linux/arm64`. The image holds `openetld`, the `openetl` CLI, `openetl-engine` and the console. It holds no external connectors: runners download each connector package that you install.
+- **The `openetl` CLI** on the computer you work from, if it is not this machine. [Install the CLI](../get-started/install.md) shows how.
 
 ## Install
 
-Run these in `deploy/compose`, or in a directory of its own that holds a copy of `compose.yml`.
-
-1. Write `.env`, beside `compose.yml`, with a password for Postgres and the key that encrypts the secrets pipelines use:
+1. Make a directory for the installation. Download the release's Compose file into it:
 
    ```sh
-   umask 077
-   cat > .env <<EOF
+   mkdir openetl && cd openetl
+   curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/v0.1.0-alpha/deploy/compose/compose.yml
+   ```
+
+   Run all the commands on this page in this directory.
+
+2. Write `.env`, beside `compose.yml`. It names the image, a password for Postgres and the key that encrypts the secrets pipelines use:
+
+   ```sh
+   (umask 077 && cat > .env) <<EOF
+   OPENETL_IMAGE=ghcr.io/openetl-io/openetl:0.1.0-alpha
    POSTGRES_PASSWORD=$(openssl rand -hex 16)
    OPENETL_SECRETS_KEY=base64key://$(openssl rand -base64 32 | tr '+/' '-_')
    EOF
    ```
 
-   Keep a copy of `.env` somewhere safe. Without `OPENETL_SECRETS_KEY`, the secrets OpenETL holds can't be read.
+   The parentheses keep `umask 077` to this command, so only you can read `.env`. Keep a copy of `.env` in a safe place. Without `OPENETL_SECRETS_KEY`, OpenETL cannot read the secrets that it holds.
 
-2. Start the stack. Check the service states:
+3. Start the stack. Check the service states:
 
    ```sh
    docker compose up -d
@@ -65,7 +63,9 @@ Run these in `deploy/compose`, or in a directory of its own that holds a copy of
 
    On first start, the server creates the organization and writes an owner API key to `.openetl/admin.key` in the `server` volume. The `runner-token` service uses this key to create a runner token, then exits successfully. Its `Exited (0)` state is expected.
 
-3. Make yourself a user who can sign in to the console, as an owner:
+   The volumes are `openetl_postgres`, `openetl_server` and `openetl_runner`, named after the Compose project `openetl`. If volumes from an earlier installation exist, the stack uses them with the new `.env`. Then the server restarts, and `docker compose logs server` shows `password authentication failed`. Use the earlier `.env`, or remove the earlier installation as [Stop and remove](#stop-and-remove) shows.
+
+4. Make yourself a user who can sign in to the console, as an owner:
 
    ```sh
    docker compose exec server openetl principal create --user --email YOU@EXAMPLE.COM --password-link YOUR-NAME
@@ -150,7 +150,7 @@ Every `openetld` service reads `.env`. Use it for [installation settings](./inde
 |---|---|---|
 | `POSTGRES_PASSWORD` | required | The password of the Postgres user `openetl` |
 | `OPENETL_SECRETS_KEY` | required | The key that encrypts secrets: `base64key://`, or a KMS key (`awskms://`, `gcpkms://`, `azurekeyvault://`) |
-| `OPENETL_IMAGE` | `openetl:dev` | The image every `openetld` runs |
+| `OPENETL_IMAGE` | `ghcr.io/openetl-io/openetl:0.1.0-alpha` | The image every `openetld` runs |
 | `OPENETL_PORT` | `127.0.0.1:8080` | Where the machine publishes the API and the console, as `ADDRESS:PORT` |
 | `OPENETL_PUBLIC_URL` | `http://localhost:8080` | The URL people open the console at, which password links start with |
 
@@ -175,6 +175,15 @@ OPENETL_PUBLIC_URL=https://openetl.example.com
 An `https` URL also makes the console's session cookie `Secure`. To publish the port on every address instead, on a network you trust, set `OPENETL_PORT=8080`.
 
 ## Sources and destinations
+
+The image has the built-in connectors only. Install the other connectors that your pipelines need, such as the official Postgres connector:
+
+```sh
+docker compose exec server openetl connector catalog
+docker compose exec server openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres:0.1.0-alpha
+```
+
+`catalog` lists the official connectors, with the command that installs each one. The runner downloads a connector's executable from its registry the first time that a job needs it. The runner container must have network access to that registry. [Choose and manage connectors](../pipelines/connectors.md) covers versions, private registries and upgrades.
 
 Connectors run inside the runner container. There, `localhost` refers to that container. Use addresses reachable from the container. For a database on the host, use the host's address or `host.docker.internal` on Docker Desktop and OrbStack. Keep pipeline data separate from the stack's metadata database.
 
@@ -208,7 +217,24 @@ Before returning to DBOS, remove its old workflows while the control plane is st
 
 ## Upgrade
 
-Build or pull the new image. If its name changed, update `OPENETL_IMAGE` in `.env`. Run `docker compose up -d` to replace containers whose image changed.
+Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases page](https://github.com/openetl-io/openetl/releases) list what changed. In the alpha, the pipeline format and the API can change between releases.
+
+1. Read the notes of each release between your version and the new one.
+2. Make a backup, as [Back up](#back-up) describes.
+3. Download the new release's `compose.yml`, which can change between releases. Replace `VERSION`:
+
+   ```sh
+   curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/vVERSION/deploy/compose/compose.yml
+   ```
+
+4. In `.env`, set `OPENETL_IMAGE=ghcr.io/openetl-io/openetl:VERSION`.
+5. Replace the containers whose image changed:
+
+   ```sh
+   docker compose up -d
+   ```
+
+6. Upgrade the CLI on your computer to the same version, as [Install the CLI](../get-started/install.md#upgrade) shows.
 
 The new orchestrator resumes existing workflows. Runners stop jobs at a checkpoint before exiting, with up to 2 minutes for a sync or 10 minutes for a stream. Jobs are then placed again and resume from their checkpoints. The Compose file allows runners 11 minutes to stop.
 
@@ -223,4 +249,6 @@ A newer version can write a checkpoint format that older runners cannot read. An
 `docker compose stop` stops the stack, and `docker compose down` removes its containers too. Both keep the volumes, and `docker compose up -d` starts it again where it was.
 
 > [!CAUTION]
-> `docker compose down -v` also deletes the volumes: the database, the owner key and the checkpoints.
+> `docker compose down -v` also deletes the volumes: the database, the owner key and the checkpoints. You cannot recover the installation after this command, except from a backup.
+
+To remove the installation and all its data, run `docker compose down -v`. Then delete the directory, which holds `.env`.

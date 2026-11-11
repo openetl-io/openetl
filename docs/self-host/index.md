@@ -25,7 +25,34 @@ Runners communicate with the control plane through the API. They can run in the 
 
 - **Postgres** stores pipelines, versions, syncs, encrypted secrets, users and audit records. The default DBOS backend stores workflows in a second database on the same server. Its name is the metadata database name with `_dbos` appended. Orchestrators create it if the database user has permission.
 - **Object storage** for checkpoints and staging: an S3 bucket (or one on an S3-compatible store), a GCS bucket or an Azure Blob Storage container. A local directory works only if every runner, and every Spark or Flink cluster, sees it at the same path. A container on the same machine sees the directory only if it is mounted in the container.
-- **`openetld`, `openetl-engine` and the connectors.** A runner searches for the engine beside `openetld`, then on `PATH`. It searches for local connectors in `connectors/` beside `openetld`. The container image includes these components, the CLI and the console. There are no released images or binaries. Build from source using [CONTRIBUTING.md](../../CONTRIBUTING.md) or the [Compose image instructions](./compose.md#before-you-start).
+- **`openetld` and `openetl-engine`.** A runner searches for the engine beside `openetld`, then on `PATH`. The release's image includes both, the CLI and the console. [Releases](#releases) lists what each release has.
+- **The connectors** that your pipelines use. Runners download the packages that you install. A runner also searches for local connector executables in `connectors/` beside `openetld`.
+
+## Releases
+
+Each release of OpenETL has a version, such as `0.1.0-alpha`, and a git tag, such as `v0.1.0-alpha`. OpenETL is in alpha: the pipeline format and the API can change between releases. The [releases page](https://github.com/openetl-io/openetl/releases) has each release's notes and files:
+
+| File | What it holds |
+|---|---|
+| `ghcr.io/openetl-io/openetl:VERSION` | The image, for `linux/amd64` and `linux/arm64`: `openetld`, the `openetl` CLI, `openetl-engine` and the console. It holds no external connectors. |
+| `openetl_VERSION_linux_ARCH.tar.gz` | The same programs and the console's files, for Linux on `amd64` or `arm64`, to run without containers |
+| `openetl-cli_VERSION_OS_ARCH.tar.gz` | The `openetl` CLI alone, for macOS and Linux. [Install the CLI](../get-started/install.md) installs it. |
+| `openetl-spark-VERSION.jar`, `openetl-flink-VERSION.jar`, `openetl_spark-*.whl` | The libraries for [Spark](../integrate/spark.md) and [Flink](../integrate/flink.md) transforms |
+| `*.sbom.json` | A software bill of materials, in SPDX JSON, for each archive and for the image on each platform |
+| `checksums.txt` | The SHA-256 of each file |
+| `checksums.txt.sigstore.json` | The signature of `checksums.txt` |
+
+The official connectors have releases of their own, in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Their packages are in the registry `oci://ghcr.io/openetl-io/openetl-connectors`.
+
+The release workflow signs the image and `checksums.txt` with [Sigstore](https://www.sigstore.dev) keyless signing. To check the image's signature with cosign 3 or later, run:
+
+```sh
+cosign verify ghcr.io/openetl-io/openetl:0.1.0-alpha \
+  --certificate-identity-regexp '^https://github\.com/openetl-io/openetl/\.github/workflows/release\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+[Check the signature](../get-started/install.md#check-the-signature) shows the same check for `checksums.txt`.
 
 ## The settings every installation sets
 
@@ -88,7 +115,7 @@ Install only connectors you trust. Give runners only the credentials and network
 
 ## Install and upgrade connectors
 
-External connector packages have their own release cadence. Use the versions your pipelines need, whether maintained by OpenETL, the community or your organization. The source-build image described here includes official connector executables as a development convenience; those executables are not the set of systems the engine can connect.
+External connector packages have their own release cadence. Use the versions your pipelines need, whether maintained by OpenETL, the community or your organization. The release's image includes only the [built-in connectors](../reference/built-in-connectors.md). Install every other connector as a package.
 
 [Choose and manage connectors](../pipelines/connectors.md) covers applying packages, private registry credentials and controlled upgrades. A runner downloads the applied package's executable for its operating system and architecture. Keep the engine's storage and network requirements separate from each connector's requirements for reaching your data systems.
 
@@ -148,4 +175,4 @@ By default, logs use JSON on standard error. `OPENETL_LOG_FORMAT` and `OPENETL_L
 - [With Docker Compose](./compose.md), on one machine: an API server with the console, an orchestrator, runners and Postgres.
 - [On Kubernetes](./kubernetes.md): manifests for API servers, orchestrators, shared runners and a pod launcher. The guide includes KEDA runner scaling and Karpenter node scaling.
 
-These docs have no guide for other platforms. There, run the same roles as processes or containers, with the settings above.
+These docs have no guide for other platforms. There, run the same roles as processes or containers, with the settings above. The release's Linux archives hold the programs for that.

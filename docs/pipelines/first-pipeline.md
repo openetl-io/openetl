@@ -11,9 +11,18 @@ The database permissions, configuration and behavior in this tutorial are specif
 
 You need:
 
-- OpenETL, the official connectors and the `openetl` CLI, configured as in the [quickstart](../get-started/quickstart.md). Run CLI commands from that repository directory so the CLI can find its API key.
-- A source database named `app` and a destination database named `warehouse`. They can use the same server. Both must be reachable from the runner. With `openetld dev`, the runner runs on your computer.
+- OpenETL with the Postgres connector installed, and the `openetl` CLI, as in the [quickstart](../get-started/quickstart.md). Run CLI commands in the quickstart's directory, so that the CLI finds its API key. For another installation, set its URL and key as [Connect to an installation](../get-started/install.md#connect-to-an-installation) shows.
+- A source database named `app` and a destination database named `warehouse`. They can use the same server. Both must be reachable from the runner. In the quickstart's Compose stack, the runner runs in a container. For a database on your computer, use `host.docker.internal` as its host with Docker Desktop or OrbStack.
 - `psql`, as a user who may create roles and grant privileges on both databases.
+
+To use the quickstart's database server, `quickstart-postgres`, create both databases in it:
+
+```sh
+docker exec quickstart-postgres createdb -U postgres app
+docker exec quickstart-postgres createdb -U postgres warehouse
+```
+
+Then `HOST` in this tutorial is `quickstart-postgres`. Open `psql` on a database with `docker exec -it quickstart-postgres psql -U postgres -d app`, or with `-d warehouse`.
 
 Start with an empty `app` database. Connect to it with `psql`. Create these three example tables:
 

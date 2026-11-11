@@ -5,7 +5,7 @@ OpenETL copies tables, changes and events from databases and event streams into 
 You run OpenETL on your own infrastructure. It is open source under Apache 2.0.
 
 > [!NOTE]
-> OpenETL is pre-alpha. There are no releases. The pipeline format and API can change.
+> OpenETL is in alpha. The pipeline format and the API can change between releases.
 
 ## What you can do with it
 
@@ -18,26 +18,28 @@ You run OpenETL on your own infrastructure. It is open source under Apache 2.0.
 
 ## Get started
 
-Until the first release, you run OpenETL from source. You need Git, [Go](https://go.dev/dl/) 1.26, [Rust](https://rustup.rs), [Node](https://nodejs.org) 22 with [pnpm](https://pnpm.io/installation), and [Docker](https://docs.docker.com/get-started/get-docker/).
+You need macOS or Linux, and [Docker](https://docs.docker.com/get-started/get-docker/) with Compose. Install the `openetl` CLI:
 
 ```sh
-git clone https://github.com/openetl-io/openetl
-git clone https://github.com/openetl-io/openetl-connectors
-cd openetl
-make dev DEPS=postgres
+curl -fsSL https://raw.githubusercontent.com/openetl-io/openetl/main/install.sh | sh
 ```
 
-The first build takes a few minutes. When the log shows `API serving`, open the console at [localhost:8080](http://localhost:8080).
-
-This example uses the official [Postgres connector](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) built by `make dev`. Open a second terminal in the same directory. Create a pipeline that copies generated rows into Postgres:
+Start OpenETL 0.1.0-alpha with Docker Compose, in a new directory:
 
 ```sh
-go build -o bin/ ./cmd/openetl && export PATH="$PWD/bin:$PATH"
-echo postgres://openetl:openetl@localhost:5432/openetl | openetl secret set local-postgres-dsn
-openetl apply -f examples/faker-to-postgres.yaml
+mkdir openetl && cd openetl
+curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/v0.1.0-alpha/deploy/compose/compose.yml
+cat > .env <<EOF
+OPENETL_IMAGE=ghcr.io/openetl-io/openetl:0.1.0-alpha
+POSTGRES_PASSWORD=$(openssl rand -hex 16)
+OPENETL_SECRETS_KEY=base64key://$(openssl rand -base64 32 | tr '+/' '-_')
+EOF
+docker compose up -d
 ```
 
-The first sync starts immediately. Open **Pipelines** in the console to check its result. The [quickstart](docs/get-started/quickstart.md) explains each step, verifies the copied data and shows how to stop the services.
+The console is at [localhost:8080](http://localhost:8080). The [quickstart](docs/get-started/quickstart.md) continues from here: it signs you in, installs a connector, and copies generated rows into Postgres.
+
+To run OpenETL for your team, follow [Self-host](docs/self-host/index.md). To build OpenETL from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 

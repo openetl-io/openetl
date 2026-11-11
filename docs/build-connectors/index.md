@@ -112,11 +112,11 @@ OpenETL holds the affected column where supported, or stops the stream. It shows
 
 The SDK's `sdk.Source` declares a source from streams and the functions that read them. Here is a source with one stream, `greetings`, that makes up as many rows as its config asks for.
 
-Make a module, and take the SDK from `main`, since it has no tagged version:
+Make a module, and add the SDK of the OpenETL release that you build for. Each release tags the SDK as `sdk/go/vVERSION`, so Go resolves the release's version:
 
 ```sh
 go mod init example.com/greetings
-go get github.com/openetl-io/openetl/sdk/go@main
+go get github.com/openetl-io/openetl/sdk/go@v0.1.0-alpha
 ```
 
 Write `cmd/source-greetings/main.go`:
@@ -192,7 +192,7 @@ Emitter methods can return before transmission completes. A transmission failure
 
 ## Try it with the CLI
 
-`openetl connector` runs a connector the way a runner does, with nothing else running: no running OpenETL installation. Build the CLI from a checkout of OpenETL, as in the [quickstart](../get-started/quickstart.md#3-build-the-cli).
+`openetl connector` runs a connector the way a runner does, with nothing else running: no running OpenETL installation. [Install the CLI](../get-started/install.md) if you do not have it.
 
 Print its spec, as the runner sees it:
 

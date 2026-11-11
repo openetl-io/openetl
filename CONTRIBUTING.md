@@ -31,6 +31,31 @@ make deps-down         # stop what deps-up started
 
 `openetld dev` runs the server, an orchestrator and a runner in one process, and asks no one to sign in while it listens only on a loopback address. `openetld server` writes the owner's API key to `.openetl/admin.key` when it creates the org, and `openetl principal password-link` gives a user a link to set a password for the UI.
 
+## Run it from source
+
+The [quickstart](docs/get-started/quickstart.md) runs a release. To run this checkout instead, with the connectors built from `../openetl-connectors`:
+
+```sh
+make dev DEPS=postgres
+```
+
+When the log shows `API serving`, the console is at `http://localhost:8080`, with sign-in off. In a second terminal in this directory, build the CLI and run the quickstart's pipeline. The CLI finds the key that `make dev` wrote in `.openetl/admin.key`:
+
+```sh
+go build -o bin/ ./cmd/openetl && export PATH="$PWD/bin:$PATH"
+echo postgres://openetl:openetl@localhost:5432/openetl | openetl secret set local-postgres-dsn
+openetl apply -f examples/faker-to-postgres.yaml
+```
+
+The connectors `make dev` builds are local executables in `bin/connectors`, which a runner uses for a connector name that has no package applied. `docker compose -f deploy/compose/dev.yml exec postgres psql -U openetl` opens the database. `make deps-down` stops Postgres, and keeps its volume.
+
+## Build the image
+
+`make engine-linux image` builds `openetld`'s image from this checkout as `openetl:dev`: the Linux engine in a Rust container, then `openetld`, the CLI, the console and the official connectors built from `../openetl-connectors`. Unlike a release's image, it holds those connectors. Its build caches use about 1 GB in the Docker volumes `openetl-engine-target` and `openetl-cargo-registry`. On Linux, `cargo build -p openetl-engine` can replace `make engine-linux`.
+
+- **Compose:** set `OPENETL_IMAGE=openetl:dev` in `.env` beside `deploy/compose/compose.yml`. To use the image on another machine, `docker save openetl:dev | ssh HOST docker load`.
+- **Kubernetes:** `make engine-linux image IMAGE=REGISTRY/openetl:TAG`, push it, and set it in your kustomization's `images`.
+
 ## Repository layout
 
 | Path | What it holds |
@@ -51,6 +76,7 @@ make deps-down         # stop what deps-up started
 | `libs/` | `openetl-spark` and `openetl-flink`: what runs on your Spark and Flink clusters |
 | `web/` | The UI: React and TypeScript, a client of the API only |
 | `deploy/` | Local dependencies in Docker Compose, `openetld`'s image, manifests for Kubernetes, and the release candidate script |
+| `install.sh` | The CLI's installer, which the docs fetch from `main` and pipe to `sh`; `test/install` runs it against a release it serves |
 | `docs/` | The documentation, which the docs site is built from |
 | `test/` | `sim`, a seeded simulation of the commit protocol under crashes, timeouts and zombie attempts; `e2e`, whole-stack scenarios and the chaos suite; `bench` |
 | `examples/` | Pipelines to try |
@@ -58,6 +84,12 @@ make deps-down         # stop what deps-up started
 ## Releasing
 
 OpenETL and its official connectors are released separately, from their own repositories, and in the alpha they share a version. A release is a tag, `vVERSION` such as `v0.1.0-alpha`, on a commit in `main`, which the `release` workflow then builds and publishes. A candidate tests a commit before it's tagged.
+
+**Set the version** in a pull request before the tag. The docs, `install.sh`'s default, `deploy/compose/compose.yml`'s image and `deploy/kubernetes/kustomization.yaml`'s `newTag` name the release that users install. `go test ./test/docs -run TestReleaseVersion` fails until they all name the same one:
+
+```sh
+grep -rln 0.1.0-alpha README.md docs install.sh deploy
+```
 
 **Release.** Push the tag, then run the workflow with it:
 
@@ -68,7 +100,7 @@ gh workflow run release.yml -f tag=v0.1.0-alpha -f publish=public
 
 It builds the tag's commit with the version in it: the bundle's archives for Linux on amd64 and arm64 (`openetld`, the CLI, the engine and the console), the CLI's own archives for Linux and macOS, the multi-arch image, and the Spark and Flink jars and the Python wheel, with checksums, SBOMs and third-party notices. The image holds no connectors, only the default that points at their registry. `publish` says what happens to them:
 
-- `public` pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and publishes a release of the tag with the files. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign first, and tags the Go SDK `sdk/go/vVERSION` on the same commit. GHCR creates a package private: after the first public release, make `ghcr.io/openetl-io/openetl` public in its settings, once.
+- `public` pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and publishes a release of the tag with the files. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign first, and tags the Go SDK `sdk/go/vVERSION` on the same commit. GHCR creates a package private: after the first public release, make `ghcr.io/openetl-io/openetl` public in its settings, once. Then run the [quickstart](docs/get-started/quickstart.md) as written, which installs the release from GitHub and GHCR.
 - `private` puts the files on a draft release of the tag and the image in the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. Nothing is signed, as keyless signatures go to a public log. `gh workflow run release-discard.yml -f version=VERSION` removes both.
 - `skip` builds and checks everything, and pushes nothing.
 

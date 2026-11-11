@@ -144,6 +144,6 @@ Before returning to an older connector, check its checkpoint-state compatibility
 
 ## Local development builds
 
-When no package versions are applied for an unversioned external connector name, a runner falls back to an executable in its connectors directory. This is how the quickstart uses the connectors built by `make dev`. These executables have no package version pinned by OpenETL; replacing one changes what that runner executes.
+When no package versions are applied for an unversioned external connector name, a runner falls back to an executable in its connectors directory. `make dev` uses this to run the connectors that it builds from source, as [CONTRIBUTING.md](../../CONTRIBUTING.md#run-it-from-source) describes. These executables have no package version pinned by OpenETL; replacing one changes what that runner executes.
 
 Use applied packages for deployments where you need versioned artifacts. [Use it in OpenETL](../build-connectors/index.md#use-it-in-openetl) describes the local executable names, and [Connectors are trusted code](../self-host/index.md#connectors-are-trusted-code) explains how connectors run.
