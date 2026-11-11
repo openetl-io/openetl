@@ -48,7 +48,9 @@ OpenETL permits outbound HTTP requests to public addresses and the network range
 A runner, and the engine that it starts, use the first S3 credentials that they find:
 
 1. `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. For temporary keys, also set `AWS_SESSION_TOKEN`.
-2. The role that AWS gives the process: an EKS IAM role for a service account, EKS Pod Identity, an ECS task role or an EC2 instance profile.
+2. The role that AWS gives the process: an EKS IAM role for a service account, EKS Pod Identity, an ECS task role or an EC2 instance profile. A container on EC2 can use the instance profile only if the instance metadata hop limit is 2 or more.
+
+If a runner cannot get credentials from the source that it finds, it does not start. Its error names that source and what to check.
 
 The runner also reads AWS profiles (`AWS_PROFILE`). The engine does not read profiles. If a runner uses a profile, also give it keys or a role.
 

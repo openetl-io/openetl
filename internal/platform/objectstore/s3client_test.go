@@ -1,16 +1,20 @@
 package objectstore_test
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/checkpoint/openstore"
 	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
@@ -158,21 +162,13 @@ func TestS3ClientSigns(t *testing.T) {
 		t.Errorf("anonymous=true: Authorization = %q", a)
 	}
 
-	// No keys, and nothing else for the default chain to find.
-	t.Setenv("AWS_ACCESS_KEY_ID", "")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
-	t.Setenv("AWS_PROFILE", "")
-	t.Setenv("AWS_CONFIG_FILE", t.TempDir()+"/config")
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", t.TempDir()+"/credentials")
-	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "")
-	t.Setenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "")
-	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "")
+	noAWSCredentials(t)
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 	objectstore.ReloadAWSConfig(t)
 	n := f.count()
 	err := get(loc)
-	if err == nil || !strings.Contains(err.Error(), "anonymous=true") {
-		t.Errorf("no credentials: err = %v, want one that says what to set", err)
+	if err == nil || !strings.Contains(err.Error(), "anonymous=true") || !strings.Contains(err.Error(), "hop limit of 2") {
+		t.Errorf("no credentials: err = %v, want one that says what to set, and the hop limit a container on EC2 needs", err)
 	}
 	if f.count() != n {
 		t.Error("sent a request without the credentials it needed")
@@ -180,6 +176,89 @@ func TestS3ClientSigns(t *testing.T) {
 
 	if _, err := objectstore.S3Client(t.Context(), mustURL(t, loc+"&anonymous=maybe")); err == nil {
 		t.Error("took anonymous=maybe")
+	}
+}
+
+// noAWSCredentials leaves the default chain nothing to find, but EC2's
+// instance metadata.
+func noAWSCredentials(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+		"AWS_EC2_METADATA_DISABLED", "AWS_EC2_METADATA_SERVICE_ENDPOINT", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("AWS_CONFIG_FILE", t.TempDir()+"/config")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", t.TempDir()+"/credentials")
+}
+
+// Each source the default chain can pick says what failed when it gives no
+// credentials.
+func TestS3ClientCredentialsErrors(t *testing.T) {
+	t.Setenv("AWS_REGION", "us-east-1")
+	_, s3srv := newFakeS3(t, "us-east-1")
+	answer := func(status int, body string) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, body)
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	sts := answer(http.StatusBadRequest, `<ErrorResponse><Error><Type>Sender</Type><Code>AccessDenied</Code>`+
+		`<Message>Not authorized to perform sts:AssumeRoleWithWebIdentity</Message></Error><RequestId>r</RequestId></ErrorResponse>`)
+	token := t.TempDir() + "/token"
+	if err := os.WriteFile(token, []byte("eyJ.token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && r.URL.Path == "/latest/api/token" {
+			w.Header().Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "21600")
+			_, _ = io.WriteString(w, "imds-token")
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(imds.Close)
+
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want []string
+	}{
+		{"STS refuses the web identity token", map[string]string{"AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/runner", "AWS_WEB_IDENTITY_TOKEN_FILE": token, "AWS_ENDPOINT_URL_STS": sts},
+			[]string{"objectstore: STS refused the web identity token for the role: on EKS, check that IAM has an OIDC provider", "AccessDenied"}},
+		{"no web identity token", map[string]string{"AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/runner", "AWS_WEB_IDENTITY_TOKEN_FILE": t.TempDir() + "/gone", "AWS_ENDPOINT_URL_STS": sts},
+			[]string{"objectstore: no credentials for the web identity role: ", "unable to read file"}},
+		{"Pod Identity gives none", map[string]string{"AWS_CONTAINER_CREDENTIALS_FULL_URI": answer(http.StatusBadRequest, `{"code":"AccessDeniedException","message":"no association"}`)},
+			[]string{"objectstore: the container credentials endpoint gave no credentials: on EKS, check the service account's Pod Identity association", "no association"}},
+		{"an EC2 instance without a role", map[string]string{"AWS_EC2_METADATA_SERVICE_ENDPOINT": imds.URL},
+			[]string{"objectstore: no AWS credentials, and the EC2 instance has no IAM role: set AWS_ACCESS_KEY_ID", "StatusCode: 404"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			noAWSCredentials(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			objectstore.ReloadAWSConfig(t)
+			// What a runner checks as it starts.
+			store, err := openstore.Open(t.Context(), "s3://near?endpoint="+url.QueryEscape(s3srv.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = checkpoint.Probe(t.Context(), store, "")
+			if err == nil {
+				t.Fatal("the probe passed without credentials")
+			}
+			if _, ok := errors.AsType[*objectstore.CredentialsError](err); !ok {
+				t.Errorf("err = %v, not a CredentialsError", err)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("err = %v\nwant it to say %q", err, w)
+				}
+			}
+		})
 	}
 }
 
