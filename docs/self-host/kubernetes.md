@@ -96,6 +96,14 @@ The manifests do not include Postgres or object storage. Configure those service
      --from-literal=OPENETL_RUNNER_TOKEN="$(cat runner.token)"
    ```
 
+7. List the official connectors. On a new installation, the catalog can be empty for up to 16 minutes. This command lists the official registry now:
+
+   ```sh
+   openetl connector catalog --refresh
+   ```
+
+   The output lists each official connector and the command that installs it.
+
 To expose the API outside the cluster, configure an Ingress or load balancer for the `openetl-server` Service. Set `OPENETL_PUBLIC_URL` in your ConfigMap patch to the public console URL, then apply again.
 
 Install the connectors that your pipelines need with `openetl connector apply`. `openetl connector catalog` lists the official ones, with the command that installs each. [Choose and manage connectors](../pipelines/connectors.md) covers versions and private registries.
