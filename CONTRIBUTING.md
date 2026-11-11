@@ -83,7 +83,7 @@ The connectors `make dev` builds are local executables in `bin/connectors`, whic
 
 ## Releasing
 
-OpenETL and its official connectors are released separately, from their own repositories, and in the alpha they share a version. A release is a tag, `vVERSION` such as `v0.1.0-alpha`, on a commit in `main`, which the `release` workflow then builds and publishes. A candidate tests a commit before it's tagged.
+OpenETL and its official connectors are released separately, from their own repositories, and in the alpha they share a version. A release is a tag, `vVERSION` such as `v0.1.0-alpha`, which the `release` workflow then builds and publishes. It's on a commit in `main`, or in its release line's branch for a patch to a line that `main` has moved past (see [Release branches](#release-branches)). A candidate tests a commit before it's tagged.
 
 **Set the version** in a pull request before the tag. The docs, `install.sh`'s default, `deploy/compose/compose.yml`'s image and `deploy/kubernetes/kustomization.yaml`'s `newTag` name the release that users install. `go test ./test/docs -run TestReleaseVersion` fails until they all name the same one:
 
@@ -100,7 +100,7 @@ gh workflow run release.yml -f tag=v0.1.0-alpha -f publish=public
 
 It builds the tag's commit with the version in it: the bundle's archives for Linux on amd64 and arm64 (`openetld`, the CLI, the engine and the console), the CLI's own archives for Linux and macOS, the multi-arch image, and the Spark and Flink jars and the Python wheel, with checksums, SBOMs and third-party notices. The image holds no connectors, only the default that points at their registry. `publish` says what happens to them:
 
-- `public` pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and publishes a release of the tag with the files. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign first, and tags the Go SDK `sdk/go/vVERSION` on the same commit. GHCR creates a package private: after the first public release, make `ghcr.io/openetl-io/openetl` public in its settings, once. Then run the [quickstart](docs/get-started/quickstart.md) as written, which installs the release from GitHub and GHCR.
+- `public` pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and publishes a release of the tag with the files. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign first, and tags the Go SDK `sdk/go/vVERSION` on the same commit. Then it points the release line's branch at the release. GHCR creates a package private: after the first public release, make `ghcr.io/openetl-io/openetl` public in its settings, once. Then run the [quickstart](docs/get-started/quickstart.md) as written, which installs the release from GitHub and GHCR.
 - `private` puts the files on a draft release of the tag and the image in the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. Nothing is signed, as keyless signatures go to a public log. `gh workflow run release-discard.yml -f version=VERSION` removes both.
 - `skip` builds and checks everything, and pushes nothing.
 
@@ -121,6 +121,20 @@ make chaos CANDIDATE=bin/candidate CONNECTOR_VERSION=VERSION CONNECTOR_REGISTRY_
 The suites run the candidate's binaries, connect the registry as the official source, apply each connector from it and let runners download them. `gh workflow run e2e.yml -f candidate=VERSION`, and `chaos.yml` the same way, run on the candidate's binaries at the commit it was built from, with connectors built from source, as a workflow's token can't read another repository's private packages.
 
 **Discard a candidate** with `gh workflow run release-discard.yml -f version=VERSION`, which deletes its packages and its draft and refuses a version that's been published.
+
+### Release branches
+
+Each release line, such as 0.1, has a branch, `release-0.1`, which holds the line's newest release and the fixes to it since. The [docs site](https://github.com/openetl-io/docs-web) builds the line's docs from it, under the newest release's name, so a fix to a release's docs reaches readers without a release. Publishing a release points its line's branch at it: it makes the branch of a new line, with the label that backports to it, and moves the branch of a line released from `main` to the release. A branch that has commits the release doesn't, which were backported from `main`, starts again at the release, and the run's summary says where it was. A patch to a line that `main` has moved past is a pull request to the line's branch, set to its version there, and tagged on it.
+
+### Backports
+
+A fix goes to `main` first. When it also fixes a release line, label its pull request `backport release-X.Y`, for each line, before it's merged or after. The `backport` workflow then opens a pull request of it against `release-X.Y`. Where it doesn't apply cleanly, the workflow comments with the commands to backport it by hand.
+
+Backport a change to `docs/` that corrects or completes what a release does: a wrong command, output or default, a missing step, a limit the release has. Don't backport docs for what only `main` does, or a change that describes code the release doesn't have. A fix to text that `main` no longer has is a pull request to the release branch alone.
+
+The workflow pushes a backport with the deploy key in the secret `BACKPORT_DEPLOY_KEY`, which has write access, so CI runs on it: GitHub starts no workflow for what a workflow's own token pushes. It opens the pull request with its own token, which **Allow GitHub Actions to create and approve pull requests**, in the repository's Actions settings, permits. Without the key, CI runs on a backport once it's merged; without the setting, the workflow comments with a link to open the pull request.
+
+The docs site checks this repository every 15 minutes, and builds when what it reads has changed: `docs/`, `internal/api/openapi.yaml` or a JSON Schema on `main` or a release branch, or a published release.
 
 ## Pull requests
 
