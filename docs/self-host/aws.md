@@ -125,7 +125,7 @@ To give a destination named `lake` a role:
 
    Give the role's permission policy the access that the connector needs, and no more.
 
-4. Name the role in the destination, under `aws`. This example uses the [Iceberg connector](https://github.com/openetl-io/openetl-connectors/blob/main/iceberg/README.md) with AWS Glue. Its config has no access keys:
+4. Name the role in the destination, under `aws`. This example uses the [S3 connector](https://github.com/openetl-io/openetl-connectors/blob/main/s3/README.md). Its config has no access keys:
 
    ```yaml
    apiVersion: openetl.io/v1alpha1
@@ -133,12 +133,10 @@ To give a destination named `lake` a role:
    metadata:
      name: lake
    spec:
-     connector: iceberg
+     connector: s3
      config:
-       catalog: glue
+       url: s3://my-lake/files
        region: ap-southeast-2
-       warehouse: s3://my-lake/iceberg
-       namespace: raw
      aws:
        role: arn:aws:iam::222222222222:role/openetl-lake
    ```
@@ -152,7 +150,13 @@ To give a destination named `lake` a role:
    openetl check destination lake
    ```
 
-   The check runs on a runner, which assumes the role first. If AWS refuses the role, the check fails and names the runner's identity and the policies to fix.
+   The check runs on a runner, which assumes the role first. If the check passes, it prints:
+
+   ```text
+   workspaces/default/destinations/lake passed its check (version 98fc31616b56)
+   ```
+
+   If AWS refuses the role, the check fails and names the runner's identity and the policies to fix.
 
 A connector that runs inside `openetld` cannot take a role. Apply refuses `aws` for a built-in connector, and a runner refuses it for a declarative source.
 
