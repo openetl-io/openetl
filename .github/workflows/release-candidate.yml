@@ -230,7 +230,7 @@ jobs:
             modes=$(tar -tvzf "$archive")
             grep -q '^-rw-r--r-- .*/THIRD-PARTY-NOTICES.txt$' <<<"$modes" || { echo "::error::$archive's notices aren't readable by everyone"; exit 1; }
           done
-          binary() { jq -r --arg name "$1" '.[] | select(.type == "Binary" and .name == $name and .goos == "linux" and .goarch == "amd64") | .path' dist/artifacts.json; }
+          binary() { jq -r --arg id "$1" '.[] | select(.type == "Binary" and .extra.ID == $id and .goos == "linux" and .goarch == "amd64") | .path' dist/artifacts.json; }
           test "$("$(binary openetld)" version)" = "$VERSION"
           test "$("$(binary openetl)" version)" = "$VERSION"
           test "$(build/engine/linux_amd64/openetl-engine --version)" = "openetl-engine $VERSION"
@@ -239,7 +239,7 @@ jobs:
         run: deploy/release/candidate.sh discard "$VERSION"
       - name: The image, by digest in the private namespace
         run: |
-          binary() { jq -r --arg name "$1" --arg arch "$2" '.[] | select(.type == "Binary" and .name == $name and .goos == "linux" and .goarch == $arch) | .path' dist/artifacts.json; }
+          binary() { jq -r --arg id "$1" --arg arch "$2" '.[] | select(.type == "Binary" and .extra.ID == $id and .goos == "linux" and .goarch == $arch) | .path' dist/artifacts.json; }
           digests=()
           for arch in amd64 arm64; do
             context=build/image/$arch

@@ -57,11 +57,26 @@ make deps-down         # stop what deps-up started
 
 ## Releasing
 
-A release is built once, tested as built, and then promoted, so what's tested is what ships. OpenETL and its official connectors are released separately, and in the alpha they share a version.
+OpenETL and its official connectors are released separately, from their own repositories, and in the alpha they share a version. A release is a tag, `vVERSION` such as `v0.1.0-alpha`, on a commit in `main`, which the `release` workflow then builds and publishes. A candidate tests a commit before it's tagged.
 
-**Build the connectors' candidate** from [openetl-connectors](https://github.com/openetl-io/openetl-connectors), with its `release-candidate` workflow: they go to `ghcr.io/openetl-io/openetl-connectors`, private until published, with a draft release per package.
+**Release.** Push the tag, then run the workflow with it:
 
-**Build OpenETL's candidate.** `gh workflow run release-candidate.yml -f version=0.1.0-alpha -f commit=SHA` builds that commit with the version in it: archives for Linux on amd64 and arm64, the multi-arch image, and the Spark and Flink libraries, with checksums, SBOMs and third-party notices. The image holds no connectors, only the default that points at their registry. The files go on a draft GitHub release, which makes no tag until it's published, and the image goes to the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. `candidate.json` on the draft records the commit and digest. A version has one candidate at a time: `-f replace=true` discards the last one first.
+```sh
+git tag v0.1.0-alpha && git push origin v0.1.0-alpha
+gh workflow run release.yml -f tag=v0.1.0-alpha -f publish=public
+```
+
+It builds the tag's commit with the version in it: the bundle's archives for Linux on amd64 and arm64 (`openetld`, the CLI, the engine and the console), the CLI's own archives for Linux and macOS, the multi-arch image, and the Spark and Flink jars and the Python wheel, with checksums, SBOMs and third-party notices. The image holds no connectors, only the default that points at their registry. `publish` says what happens to them:
+
+- `public` pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and publishes a release of the tag with the files. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign first, and tags the Go SDK `sdk/go/vVERSION` on the same commit. GHCR creates a package private: after the first public release, make `ghcr.io/openetl-io/openetl` public in its settings, once.
+- `private` puts the files on a draft release of the tag and the image in the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. Nothing is signed, as keyless signatures go to a public log. `gh workflow run release-discard.yml -f version=VERSION` removes both.
+- `skip` builds and checks everything, and pushes nothing.
+
+Running it again replaces the tag's draft. It refuses a tag that's already released.
+
+**The connectors** are tagged and released the same way from [openetl-connectors](https://github.com/openetl-io/openetl-connectors), with its own `release` workflow, which builds them with this repository's CLI and SDK at the same tag.
+
+**Build a candidate** of a commit that isn't tagged yet. `gh workflow run release-candidate.yml -f version=0.1.0-alpha -f commit=SHA` builds the same files, puts them on a draft GitHub release, which makes no tag until it's published, and puts the image in `ghcr.io/openetl-io/candidates/VERSION/`. `candidate.json` on the draft records the commit and digest. A version has one candidate at a time: `-f replace=true` discards the last one first.
 
 **Test those files, as a user runs them.** On a machine with the compose stack, signed in with `gh` to an account that can see the drafts:
 
