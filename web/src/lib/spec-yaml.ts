@@ -6,8 +6,11 @@ import { file_openetl_api_v1_pipeline, PipelineSpecSchema, type PipelineSpec } f
 // lowercase without their prefix, and durations as Go spells them.
 
 const enumNames = new Map<string, string>();
-for (const e of file_openetl_api_v1_pipeline.enums) {
-  for (const v of e.values) enumNames.set(v.name, v.localName.toLowerCase());
+// The spec uses enums of the files it imports too, such as SyncMode.
+for (const file of [file_openetl_api_v1_pipeline, ...file_openetl_api_v1_pipeline.dependencies]) {
+  for (const e of file.enums) {
+    for (const v of e.values) enumNames.set(v.name, v.localName.toLowerCase());
+  }
 }
 const durationKeys = new Set(["every", "jitter", "interval", "resumePointTimeout"]);
 

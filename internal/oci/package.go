@@ -361,26 +361,42 @@ func (c *Client) ListIndex(ctx context.Context, ns Ref, known map[string]Card) (
 	return out, nil
 }
 
+// unindexedListLimit bounds reading a registry's repository list, so a
+// registry that serves it oddly can't use up the time for listing the index.
+const unindexedListLimit = 30 * time.Second
+
+var errPastNamespace = errors.New("past the namespace")
+
 // ListUnindexed lists the packages below ns that its index doesn't, where
 // the registry lists its repositories: each at its highest version, with a
 // card from its manifest's annotations. indexed holds the index's packages'
 // short names. It returns nothing, and no error, where the registry doesn't
-// list repositories.
+// list repositories, which the OCI distribution spec doesn't ask of one.
 func (c *Client) ListUnindexed(ctx context.Context, ns Ref, indexed map[string]bool, known map[string]Card) []Card {
 	reg, err := c.Registry(ns)
 	if err != nil {
 		return nil
 	}
+	listing, cancel := context.WithTimeout(ctx, unindexedListLimit)
+	defer cancel()
+	// A registry can list everything it hosts, as GHCR does for a token, so
+	// this starts at ns and stops past it: the names are sorted. A name before
+	// ns means the registry ignored where to start.
+	prefix := ns.Repository + "/"
 	var repos []string
-	err = reg.Repositories(ctx, "", func(page []string) error {
+	err = reg.Repositories(listing, prefix, func(page []string) error {
 		for _, r := range page {
-			if rest, ok := strings.CutPrefix(r, ns.Repository+"/"); ok && !strings.Contains(rest, "/") && rest != IndexName && !indexed[rest] {
+			rest, ok := strings.CutPrefix(r, prefix)
+			switch {
+			case !ok && r > prefix:
+				return errPastNamespace
+			case ok && !strings.Contains(rest, "/") && rest != IndexName && !indexed[rest]:
 				repos = append(repos, rest)
 			}
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errPastNamespace) {
 		return nil
 	}
 	var out []Card

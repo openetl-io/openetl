@@ -24,7 +24,7 @@ Runners communicate with the control plane through the API. They can run in the 
 ## What you need
 
 - **Postgres** stores pipelines, versions, syncs, encrypted secrets, users and audit records. The default DBOS backend stores workflows in a second database on the same server. Its name is the metadata database name with `_dbos` appended. Orchestrators create it if the database user has permission.
-- **Object storage** for checkpoints and staging: an S3 bucket (or one on an S3-compatible store), a GCS bucket or an Azure Blob Storage container. A local directory works when everything runs on one machine.
+- **Object storage** for checkpoints and staging: an S3 bucket (or one on an S3-compatible store), a GCS bucket or an Azure Blob Storage container. A local directory works only if every runner, and every Spark or Flink cluster, sees it at the same path. A container on the same machine sees the directory only if it is mounted in the container.
 - **`openetld`, `openetl-engine` and the connectors.** A runner searches for the engine beside `openetld`, then on `PATH`. It searches for local connectors in `connectors/` beside `openetld`. The container image includes these components, the CLI and the console. There are no released images or binaries. Build from source using [CONTRIBUTING.md](../../CONTRIBUTING.md) or the [Compose image instructions](./compose.md#before-you-start).
 
 ## The settings every installation sets

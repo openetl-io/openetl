@@ -6,7 +6,7 @@
 
   <groupId>io.openetl</groupId>
   <artifactId>openetl-spark</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>${revision}</version>
   <name>openetl-spark</name>
   <description>Spark applications' side of openetl: the sync's context for post-sync steps, and the driver of a pipeline's transform.</description>
   <url>https://github.com/openetl-io/openetl</url>
@@ -18,6 +18,8 @@
   </licenses>
 
   <properties>
+    <!-- A release passes -Drevision=VERSION. -->
+    <revision>0.1.0-SNAPSHOT</revision>
     <!-- Java, against Spark's Java API, so one jar serves Spark 3.5's Scala
          2.12 and 2.13 builds, on Java 8 and later. -->
     <maven.compiler.release>8</maven.compiler.release>

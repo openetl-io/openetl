@@ -1,0 +1,71 @@
+# The Go binaries and the archives of a release or a candidate. The release
+# and release-candidate workflows build what's outside Go into build/ first,
+# and run this with --skip=publish,announce,validate, so it pushes and tags
+# nothing. The bundle is Linux only; the CLI alone is for Linux and macOS.
+version: 2
+project_name: openetl
+
+builds:
+  - &binary
+    id: openetld
+    main: ./cmd/openetld
+    binary: openetld
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/openetl-io/openetl/internal/platform/telemetry.release={{ .Version }}
+  - <<: *binary
+    id: openetl
+    main: ./cmd/openetl
+    binary: openetl
+  - <<: *binary
+    id: openetl-cli
+    main: ./cmd/openetl
+    binary: openetl
+    goos: [linux, darwin]
+
+archives:
+  - id: openetl
+    ids: [openetld, openetl]
+    name_template: openetl_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - NOTICE
+      - src: build/candidate/notices/THIRD-PARTY-NOTICES.txt
+        strip_parent: true
+      - src: build/engine/{{ .Os }}_{{ .Arch }}/openetl-engine
+        strip_parent: true
+      - src: web/dist/*.*
+        dst: web
+        strip_parent: true
+      - src: web/dist/assets/*
+        dst: web/assets
+        strip_parent: true
+  - id: openetl-cli
+    ids: [openetl-cli]
+    name_template: openetl-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - NOTICE
+      - src: build/candidate/notices/THIRD-PARTY-NOTICES.txt
+        strip_parent: true
+
+sboms:
+  - artifacts: archive
+
+checksum:
+  name_template: checksums.txt
+  extra_files:
+    - glob: build/candidate/assets/*
+
+changelog:
+  disable: true
+
+release:
+  disable: true

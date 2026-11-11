@@ -1,0 +1,383 @@
+name: release
+
+# Releases a tag that's already pushed, vVERSION such as v0.1.0-alpha, on a
+# commit in main. It builds the tag's commit with VERSION in it, as
+# release-candidate does, and then, by `publish`:
+#
+#   public   pushes the image to ghcr.io/OWNER/openetl:VERSION and puts the
+#            files on a draft release of the tag; then, in the job that alone
+#            may sign, signs the image and checksums.txt with keyless cosign,
+#            tags the Go SDK sdk/go/vVERSION on the same commit, and publishes
+#            the release.
+#   private  pushes the image to the private ghcr.io/OWNER/candidates/VERSION/
+#            openetl and puts the files on a draft release of the tag. Nothing
+#            is signed, as keyless signatures go to a public log.
+#            release-discard VERSION removes both.
+#   skip     builds and checks everything, and pushes and uploads nothing.
+#
+# Running it again replaces the tag's draft; it refuses a tag that's released.
+# GHCR creates a package private: make ghcr.io/OWNER/openetl public in its
+# settings once, after its first public release. Actions are pinned by commit.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to release, pushed first, such as v0.1.0-alpha
+        required: true
+        type: string
+      publish:
+        description: "public: a signed, published release; private: a draft and a private image; skip: build and check only"
+        type: choice
+        options: [public, private, skip]
+        default: public
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    # Only a token that can write sees a draft.
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - name: The tag names a version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::$TAG isn't a tag such as v0.1.0-alpha"; exit 1; }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$commit" --jq .status)
+          case $status in identical | behind) ;; *) echo "::error::$TAG ($commit) isn't a commit in main"; exit 1 ;; esac
+          draft=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          [ "$draft" != false ] || { echo "::error::$TAG is already released"; exit 1; }
+          { echo "version=${TAG#v}"; echo "commit=$commit"; } >> "$GITHUB_OUTPUT"
+
+  engine:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - { platform: linux_amd64, target: x86_64-unknown-linux-gnu }
+          - { platform: linux_arm64, target: aarch64-unknown-linux-gnu }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: ${{ matrix.target }}
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild==0.24.1 ziglang==0.17.1
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+      # Linked against glibc 2.28, so the engine runs on older Linux too.
+      - env:
+          OPENETL_VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: cargo zigbuild --locked --release -p openetl-engine --target "$TARGET.2.28"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: engine-${{ matrix.platform }}
+          path: target/${{ matrix.target }}/release/openetl-engine
+          if-no-files-found: error
+          retention-days: 1
+
+  libs:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.m2
+          key: maven-libs-${{ hashFiles('libs/**/pom.xml') }}
+          restore-keys: maven-libs-
+      - name: The jars and the wheel
+        run: |
+          for lib in spark flink; do
+            mkdir -p "libs/openetl-$lib/java/src/main/resources/META-INF"
+            cp LICENSE NOTICE "libs/openetl-$lib/java/src/main/resources/META-INF/"
+          done
+          make spark-lib MAVEN_FLAGS="-DskipTests -Drevision=$VERSION"
+          make flink-lib MAVEN_FLAGS="-DskipTests -Prelease -Drevision=$VERSION"
+          mkdir -p out
+          cp "libs/openetl-spark/java/target/openetl-spark-$VERSION.jar" "libs/openetl-flink/java/target/openetl-flink-$VERSION.jar" out/
+          sed -i "s/^version = .*/version = \"$VERSION\"/" libs/openetl-spark/python/pyproject.toml
+          cp LICENSE NOTICE libs/openetl-spark/python/
+          python3 -m pip wheel --no-deps -w out libs/openetl-spark/python
+          ls -l out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: libs
+          path: out/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Builds and checks everything, and in public and private pushes the image
+  # and puts the files on a draft. It can't sign.
+  assemble:
+    needs: [prepare, engine, libs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: write # to delete this run's intermediate builds
+      contents: write
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      digest: ${{ steps.image.outputs.digest }}
+    env:
+      TAG: ${{ inputs.tag }}
+      PUBLISH: ${{ inputs.publish }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-release-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-release-${{ github.job }}-
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: inputs.publish != 'skip'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: engine-*
+          path: build/engine
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: libs
+          path: build/candidate/assets
+      - name: The console and the notices
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web build
+          for d in build/engine/engine-*; do
+            mv "$d" "build/engine/${d##*/engine-}"
+          done
+          chmod 755 build/engine/*/openetl-engine
+          rustup show active-toolchain || rustup toolchain install
+          cargo fetch --locked
+          mkdir -p build/candidate/notices
+          go run ./internal/notices -out build/candidate/notices/THIRD-PARTY-NOTICES.txt
+      - name: The binaries, archives, checksums and SBOMs
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: v2.20.0
+          args: release --clean --skip=publish,announce,validate
+        env:
+          GORELEASER_CURRENT_TAG: ${{ inputs.tag }}
+      - name: Each binary says its version, and each archive has what it should
+        run: |
+          want=$(find web/dist -type f | wc -l)
+          for archive in dist/openetl_*.tar.gz; do
+            listing=$(tar -tzf "$archive")
+            got=$(grep -c '/web/.*[^/]$' <<<"$listing")
+            [ "$got" = "$want" ] || { echo "::error::$archive has $got of the console's $want files"; exit 1; }
+            grep -q '/web/index.html$' <<<"$listing"
+            grep -q '/web/assets/' <<<"$listing"
+            modes=$(tar -tvzf "$archive")
+            grep -q '^-rw-r--r-- .*/THIRD-PARTY-NOTICES.txt$' <<<"$modes" || { echo "::error::$archive's notices aren't readable by everyone"; exit 1; }
+          done
+          for platform in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            archive=dist/openetl-cli_${VERSION}_$platform.tar.gz
+            listing=$(tar -tzf "$archive")
+            for f in openetl LICENSE NOTICE THIRD-PARTY-NOTICES.txt; do
+              grep -q "/$f\$" <<<"$listing" || { echo "::error::$archive has no $f"; exit 1; }
+            done
+            ! grep -q '/openetld$' <<<"$listing" || { echo "::error::$archive has openetld"; exit 1; }
+          done
+          binary() { jq -r --arg id "$1" '.[] | select(.type == "Binary" and .extra.ID == $id and .goos == "linux" and .goarch == "amd64") | .path' dist/artifacts.json; }
+          test "$("$(binary openetld)" version)" = "$VERSION"
+          test "$("$(binary openetl)" version)" = "$VERSION"
+          test "$("$(binary openetl-cli)" version)" = "$VERSION"
+          test "$(build/engine/linux_amd64/openetl-engine --version)" = "openetl-engine $VERSION"
+      - name: The image
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          case $PUBLISH in
+            public) image=ghcr.io/$OWNER/openetl ;;
+            private) image=ghcr.io/$OWNER/candidates/$VERSION/openetl ;;
+            skip) image=openetl ;;
+          esac
+          binary() { jq -r --arg id "$1" --arg arch "$2" '.[] | select(.type == "Binary" and .extra.ID == $id and .goos == "linux" and .goarch == $arch) | .path' dist/artifacts.json; }
+          digests=()
+          for arch in amd64 arm64; do
+            context=build/image/$arch
+            mkdir -p "$context/connectors"
+            cp "$(binary openetld "$arch")" "$(binary openetl "$arch")" "build/engine/linux_$arch/openetl-engine" LICENSE NOTICE build/candidate/notices/THIRD-PARTY-NOTICES.txt "$context/"
+            cp -R web/dist "$context/web"
+            output=type=cacheonly
+            [ "$PUBLISH" = skip ] || output="type=image,name=$image,push-by-digest=true,name-canonical=true,push=true"
+            docker buildx build --platform "linux/$arch" --provenance=false -f deploy/image/Dockerfile \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.version=$VERSION" --label "org.opencontainers.image.revision=$COMMIT" \
+              --label "org.opencontainers.image.licenses=Apache-2.0" \
+              --label "org.opencontainers.image.description=OpenETL: openetld, the openetl CLI, the engine and the console" \
+              --metadata-file "build/image-$arch.json" --output "$output" "$context"
+            [ "$PUBLISH" = skip ] || digests+=("$image@$(jq -r '."containerimage.digest"' "build/image-$arch.json")")
+          done
+          if [ "$PUBLISH" = skip ]; then
+            echo "Built the image for amd64 and arm64; pushed nothing." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker buildx imagetools create -t "$image:$VERSION" "${digests[@]}"
+          digest=$(docker buildx imagetools inspect "$image:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          for arch in amd64 arm64; do
+            syft "registry:$image:$VERSION" --platform "linux/$arch" -o "spdx-json=build/candidate/assets/openetl-image_${VERSION}_linux_${arch}.sbom.json"
+          done
+          { echo "image=$image"; echo "digest=$digest"; } >> "$GITHUB_OUTPUT"
+          echo "Image: \`$image:$VERSION@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: The draft release
+        if: inputs.publish != 'skip'
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          if [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)" = true ]; then
+            gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes
+          fi
+          title=$TAG
+          [ "$PUBLISH" = public ] || title="$TAG (private)"
+          cat > build/notes.md <<EOF
+          OpenETL $VERSION, from commit $COMMIT.
+
+          - **Image:** \`$IMAGE:$VERSION\` (\`$IMAGE@$DIGEST\`), for linux/amd64 and linux/arm64. It holds no connectors; it installs them from \`oci://ghcr.io/$GITHUB_REPOSITORY_OWNER/openetl-connectors\`.
+          - **openetl_${VERSION}_linux_\*.tar.gz:** \`openetld\`, the \`openetl\` CLI, \`openetl-engine\` and the console, for Linux.
+          - **openetl-cli_${VERSION}_\*.tar.gz:** the \`openetl\` CLI alone, for Linux and macOS.
+          - **openetl-spark and openetl-flink:** the jars for Spark and Flink transforms, and \`openetl_spark\`'s wheel for Python ones.
+          - **Go SDK:** \`go get github.com/$GITHUB_REPOSITORY/sdk/go@$TAG\`.
+
+          \`checksums.txt\` lists every file's SHA-256. In a published release, it and the image are signed with keyless cosign by this repository's release workflow.
+          EOF
+          prerelease=()
+          [[ "$VERSION" != *-* ]] || prerelease=(--prerelease)
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --verify-tag "${prerelease[@]}" \
+            --title "$title" --notes-file build/notes.md \
+            dist/*.tar.gz dist/*.sbom.json dist/checksums.txt build/candidate/assets/*
+          echo "Draft: $(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
+      # A public repository's artifacts can be downloaded by anyone signed in.
+      - name: Delete this run's intermediate builds
+        if: always()
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --jq '.artifacts[].id' |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"; done
+
+  # The only job that can sign, in the release environment.
+  publish:
+    if: inputs.publish == 'public'
+    needs: [prepare, assemble]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+      IMAGE: ${{ needs.assemble.outputs.image }}
+      DIGEST: ${{ needs.assemble.outputs.digest }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Sign the image and checksums.txt
+        run: |
+          cosign sign --yes "$IMAGE@$DIGEST"
+          mkdir -p sig
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p checksums.txt -D sig
+          cosign sign-blob --yes --bundle sig/checksums.txt.sigstore.json sig/checksums.txt
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber sig/checksums.txt.sigstore.json
+      - name: Tag the Go SDK
+        run: |
+          sdk=sdk/go/$TAG
+          if at=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$sdk" --jq .object.sha 2>/dev/null); then
+            [ "$at" = "$COMMIT" ] || { echo "::error::$sdk is already on $at, not $COMMIT"; exit 1; }
+          else
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$sdk" -f "sha=$COMMIT" > /dev/null
+          fi
+      - name: Publish the release
+        run: |
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
+          echo "Released: $(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Anyone can pull the image
+        env:
+          REPOSITORY: ${{ github.repository_owner }}/openetl
+        run: |
+          t=$(curl -s "https://ghcr.io/token?scope=repository:$REPOSITORY:pull&service=ghcr.io" | jq -r '.token // ""')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' "https://ghcr.io/v2/$REPOSITORY/manifests/$VERSION")
+          if [ "$code" != 200 ]; then
+            echo "::warning::$IMAGE is private: make it public in https://github.com/orgs/$GITHUB_REPOSITORY_OWNER/packages/container/openetl/settings"
+            echo "**$IMAGE is private:** make it public in [its settings](https://github.com/orgs/$GITHUB_REPOSITORY_OWNER/packages/container/openetl/settings)." >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -115,7 +115,7 @@ func TestPipeline(t *testing.T) {
 			streams:  "logs at_least_once superset replay, no primary key, and not collapsed",
 			problems: []string{`delivery.require: stream "logs" gets at_least_once`}},
 		{name: "named streams", cat: catalog, caps: warehouse, spec: `{"source": {"streams": [{"name": "orders"}, {"name": "gone"}]}}`,
-			streams: "orders exactly_once exact replay", problems: []string{`the source has no stream "gone"`}},
+			streams: "orders exactly_once exact replay", problems: []string{`the source has no stream "gone" in its latest catalog; if it's new, openetl discover refreshes that`}},
 		{name: "at least once", cat: catalog, caps: parquet, spec: `{"delivery": {"require": "DELIVERY_LEVEL_AT_LEAST_ONCE"}}`,
 			streams: "orders exactly_once exact replay; events at_least_once superset replay, and the destination can't dedupe; logs at_least_once superset replay, and the destination can't dedupe"},
 		{name: "overrides", cat: catalog, caps: warehouse,
@@ -420,5 +420,49 @@ func TestHoldProblem(t *testing.T) {
 	}
 	if !Holds(takes, destination.Merge, true) || Holds(takes, destination.Merge, false) || Holds(destination.Capabilities{}, destination.Merge, true) {
 		t.Error("Holds")
+	}
+}
+
+func TestTableProblems(t *testing.T) {
+	spec := &apiv1.PipelineSpec{Destination: &apiv1.PipelineDestination{Tables: map[string]string{"orders": "a_long_table_name"}}}
+	if got := tableProblems(spec, destination.Capabilities{MaxIdentifierLength: 63}, []string{"orders", "users"}); len(got) != 0 {
+		t.Errorf("within the limit: %v", got)
+	}
+	if got := tableProblems(spec, destination.Capabilities{}, nil); len(got) != 0 {
+		t.Errorf("no limit, no catalog: %v", got)
+	}
+	if got := tableProblems(spec, destination.Capabilities{MaxIdentifierLength: 5}, nil); len(got) != 1 {
+		t.Errorf("past the limit: %v", got)
+	}
+	if got := tableProblems(spec, destination.Capabilities{}, []string{"users"}); len(got) != 1 {
+		t.Errorf("a stream the pipeline doesn't read: %v", got)
+	}
+	taken := &apiv1.PipelineSpec{Destination: &apiv1.PipelineDestination{Tables: map[string]string{"orders": "users"}}}
+	if got := tableProblems(taken, destination.Capabilities{}, []string{"orders", "users"}); len(got) != 1 {
+		t.Errorf("another stream's own name: %v", got)
+	}
+}
+
+func TestTableChanges(t *testing.T) {
+	spec := func(tables map[string]string, streams ...string) *apiv1.PipelineSpec {
+		s := &apiv1.PipelineSpec{Source: &apiv1.PipelineSource{}, Destination: &apiv1.PipelineDestination{Tables: tables}}
+		for _, n := range streams {
+			s.Source.Streams = append(s.Source.Streams, &apiv1.PipelineStream{Name: n})
+		}
+		return s
+	}
+	before := spec(map[string]string{"orders": "fct_orders"}, "orders", "users")
+	if got := TableChanges(before, before); len(got) != 0 {
+		t.Errorf("no change: %v", got)
+	}
+	got := TableChanges(before, spec(map[string]string{"orders": "orders_v2", "new": "t"}, "orders", "users", "new"))
+	if len(got) != 1 || got[0].GetStream() != "orders" || !strings.Contains(got[0].GetMessage(), "reset --stream orders") {
+		t.Errorf("a changed table, and a table for a new stream: %v", got)
+	}
+	if got := TableChanges(before, spec(nil, "orders", "users")); len(got) != 1 {
+		t.Errorf("a table taken away: %v", got)
+	}
+	if got := TableChanges(spec(nil), spec(map[string]string{"orders": "t"})); len(got) != 1 {
+		t.Errorf("a table for a stream a pipeline of every stream was reading: %v", got)
 	}
 }

@@ -45,6 +45,6 @@ Apply a connector source with `openetl connector apply -f FILE`. Only an `admin`
 
 Connecting or refreshing a catalog source does not install its packages or upgrade pipelines. Apply a package version separately, then select it in a `Source` or `Destination`. If a source fails to list, the catalog keeps its last successful listing and records the error, shown under **Sources** in the console's **Connectors** page.
 
-OpenETL creates the source `official`, pointing at `oci://ghcr.io/openetl-io/connectors`, when it creates the org. Its URL cannot be changed; `openetl connector catalog --delete-source official` disconnects it to stop listing its packages.
+OpenETL creates the source `official`, pointing at `oci://ghcr.io/openetl-io/openetl-connectors`, when it creates the org, and which the console shows as OpenETL. Its URL cannot be changed; `openetl connector catalog --delete-source official` disconnects it to stop listing its packages.
 
 [Choose and manage connectors](../../pipelines/connectors.md) shows installation and private registry setup. The fields are read by [`internal/spec`](../../../internal/spec/spec.go) and defined in [`proto/openetl/api/v1/connector.proto`](../../../proto/openetl/api/v1/connector.proto).

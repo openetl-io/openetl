@@ -276,6 +276,7 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 			SoftDeletes:          s.Mode == destination.Merge && s.Deletes != destination.HardDelete,
 			Changelog:            s.Read == source.CDC,
 			Holds:                holdPlan(plan.Holds[s.Name]),
+			Table:                s.Table,
 		})
 		if plan.KeyGrouped[s.Name] {
 			req.Streams[i].Routing = enginev1.Routing_ROUTING_KEY_GROUP

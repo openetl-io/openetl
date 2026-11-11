@@ -74,6 +74,16 @@ JOIN connector_sources s ON s.org_id = c.org_id AND s.name = c.source
 WHERE c.org_id = @org_id
 ORDER BY c.package, c.source;
 
+-- name: ListManualConnectorVersions :many
+-- Every applied version of the packages no connected source lists, with its
+-- roles.
+SELECT v.*,
+    (SELECT coalesce(array_agg(r.role ORDER BY r.role), '{}')::text[] FROM connector_roles r
+     WHERE r.org_id = v.org_id AND r.name = v.name AND r.version = v.version) AS roles
+FROM connector_versions v
+WHERE v.org_id = @org_id AND NOT EXISTS (SELECT 1 FROM connector_catalog c WHERE c.org_id = v.org_id AND c.package = v.name)
+ORDER BY v.name, v.version;
+
 -- name: GetCatalogPackage :one
 SELECT c.*, s.official AS official_source,
     (SELECT coalesce(array_agg(v.version), '{}')::text[] FROM connector_versions v WHERE v.org_id = c.org_id AND v.name = c.package) AS applied

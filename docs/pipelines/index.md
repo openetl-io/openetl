@@ -121,7 +121,7 @@ The plan has two parts:
 
 The streams section requires two sources of information:
 
-- **The source catalog.** `openetl discover NAME` refreshes it. Until discovery completes, the plan checks only delivery settings.
+- **The source catalog.** `openetl apply` and `openetl discover NAME` refresh it. Until discovery completes, the plan checks only delivery settings.
 - **Destination capabilities.** The connector package declares them. For a local executable without a package, the plan explains that the runner checks guarantees before each sync.
 
 A plan with problems looks like this one, for the same pipeline made continuous:
@@ -144,7 +144,11 @@ When the plan is what you want, apply the same files:
 openetl apply -f faker-to-parquet.yaml
 ```
 
-An apply stores all documents together or stores none. Its output identifies each resource as "created", "updated" or "unchanged", followed by warnings. A new scheduled pipeline starts its first sync immediately. An updated pipeline waits for its schedule or a manual `openetl sync`.
+An apply stores all documents together or stores none. Its output identifies each resource as "created", "updated" or "unchanged", followed by warnings.
+
+After the apply, a runner checks each source and destination that changed or that a changed pipeline uses. The runner also discovers those sources. The output shows `checked` with their names. A failed check only gives a warning: the applied documents stay, and a new pipeline still starts. To skip the checks, use `--no-check`. To run the checks for a pipeline at any time, use `openetl check pipeline NAME`.
+
+A new scheduled pipeline starts its first sync immediately. An updated pipeline waits for its schedule or a manual `openetl sync`.
 
 `openetl apply --dry-run` performs apply validation without storing changes. It does not print the plan; use `openetl plan` to review the planned changes.
 
@@ -240,6 +244,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 |---|---|---|
 | `destination.ref` | The `Destination` to write to | Required |
 | `destination.namespace` | The schema or dataset to write into | |
+| `destination.tables` | Streams' names in the destination, by stream, such as `orders: fct_orders`, exactly as written: a table, or what the destination has instead, such as a topic | Each stream's own name, through `destination.naming` |
 | `destination.write` | `append`, `overwrite` or `merge` | Where the destination can: `overwrite` for a full refresh, `merge` for a keyed stream read with CDC, `append` otherwise |
 | `destination.deletes` | How merge applies a delete: `soft` keeps the row with `_openetl_deleted` set to true, `hard` removes it | `soft` |
 | `destination.naming` | `normalized`: lowercase, with anything outside `a-z`, `0-9` and `_` replaced; `source`: names as the source has them, quoted | `normalized` |
@@ -326,7 +331,7 @@ order by id, _openetl_seq desc;
 | Command | What it does |
 |---|---|
 | `openetl plan -f FILE` | Show what applying the documents would change, and each pipeline's plan |
-| `openetl apply -f FILE` | Create or update the documents' resources |
+| `openetl apply -f FILE` | Create or update the documents' resources, then check what changed on a runner; `--no-check` skips that |
 | `openetl sync NAME` | Start a sync of a scheduled pipeline now; it fails if the pipeline is paused or a sync is running |
 | `openetl pause NAME` | Stop a pipeline's scheduled syncs; a sync that's running carries on. A continuous pipeline's job stops. `--stream STREAM` stops only that stream, which syncs skip ([Pause one stream](./schedules.md#pause-one-stream)) |
 | `openetl resume NAME` | Start its scheduled syncs, or its job, again; `--stream STREAM` resumes a stream paused on its own |
@@ -339,6 +344,7 @@ order by id, _openetl_seq desc;
 | `openetl versions NAME` | List its versions, newest first |
 | `openetl rescale --size SIZE NAME` | Size its jobs until its next version; a running job restarts at a checkpoint. `--size auto` gives the spec back its say |
 | `openetl check source NAME`, `openetl check destination NAME` | Check that a runner can reach the source or destination with its config |
+| `openetl check pipeline NAME` | Check its source and destination, refresh the source's catalog and print its plan; fails if any of that finds a problem |
 | `openetl discover NAME` | List a source's streams and their columns, and refresh the catalog plans read |
 | `openetl holds NAME` | List the columns and cells the pipeline holds back, why, and the ways to clear each |
 | `openetl holds release NAME STREAM COLUMN` | Patch a hold's values in on the pipeline's next run; `--new-version`, before the names, sends a column held whole to a new column, `COLUMN__v2`, instead |

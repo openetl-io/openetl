@@ -33,8 +33,16 @@ Help is written to standard error. Successful commands return exit status 0. Err
 |---|---|---|---|---|
 | `-f` | repeatable path | Yes | None | A YAML or JSON file. Use `-` for standard input. Files can contain multiple documents separated by `---`. |
 | `--dry-run` | boolean | No | `false` | Validate without applying. Available on `apply` only. |
+| `--no-check` | boolean | No | `false` | Do not check what the apply changed. Available on `apply` only. |
 
 Neither command accepts positional arguments. A document's `metadata.workspace` takes precedence over `--workspace`. Organization resources do not belong to a workspace.
+
+After `apply` changes resources, it asks a runner to check them:
+
+- Each source and destination that the apply created or updated.
+- The source and destination of each pipeline that the apply created or updated, on the pipeline's data plane.
+
+`apply` discovers each source that passes its check, which refreshes the catalog that plans read. Then it prints the problems in the changed pipelines' plans. A failed check or a plan problem prints a warning and does not change the exit status, because the applied resources stay. The checks stop after 2 minutes. `--dry-run` and `--no-check` skip them.
 
 `plan` returns an error if a pipeline that would be created or changed has plan problems. Its output can also show problems on unchanged pipelines. See [Plan, then apply](../pipelines/index.md#plan-then-apply) for the review procedure.
 
@@ -122,10 +130,11 @@ Release and discard do not change destination data during the CLI request. See [
 |---|---|
 | `openetl check source SOURCE` | Ask a runner to check a source connection. |
 | `openetl check destination DESTINATION` | Ask a runner to check a destination connection. |
+| `openetl check pipeline PIPELINE` | Ask a runner to check the pipeline's source and destination, discover the source's streams, and then print the pipeline's plan. |
 | `openetl discover SOURCE` | Ask a runner to list a source's streams and columns. |
 
 | Flag | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `--data-plane` | string | No | The server's default data plane | The data plane whose runner performs the operation. |
+| `--data-plane` | string | No | The server's default data plane. For `check pipeline`, the pipeline's data plane. | The data plane whose runner performs the operation. |
 
-Put flags before `source` or `destination` for `check`. These commands use connections already applied to the API. To test a connector locally with a config file, use the [connector CLI](./index.md#the-openetl-cli).
+Put flags before `source`, `destination` or `pipeline` for `check`. `check pipeline` returns an error if a check fails or the plan has problems. These commands use connections already applied to the API. To test a connector locally with a config file, use the [connector CLI](./index.md#the-openetl-cli).

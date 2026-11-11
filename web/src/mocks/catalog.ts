@@ -12,15 +12,16 @@ import {
 } from "@/gen/openetl/api/v1/connector_pb";
 
 // The connector catalog: the official namespace, a GitHub repository of a
-// third party's, and a private registry that fails to list, with an
-// openetl/ package it shouldn't have.
+// third party's, a private registry that fails to list, with an openetl/
+// package it shouldn't have, and a package applied by hand that no source
+// lists.
 
 const now = Date.now();
 const ago = (m: number) => timestampFromMs(Math.round(now - m * 60_000));
 const simpleIcon = (slug: string) => `https://cdn.simpleicons.org/${slug}`;
 const svg = (body: string) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">${body}</svg>`)}`;
 
-const official = "oci://ghcr.io/openetl-io/connectors";
+const official = "oci://ghcr.io/openetl-io/openetl-connectors";
 const acme = "https://github.com/acme/openetl-connectors";
 const internal = "oci://registry.internal:5000/data/connectors";
 
@@ -91,9 +92,25 @@ export const catalogPackages: CatalogPackage[] = defs.map((d) =>
     name: `catalog/${d.source}/${d.package}`,
     source: `connectorSources/${d.source}`,
     official: d.source === "official" && d.package.startsWith("openetl/"),
+    updateAvailable: !!d.appliedVersion && d.appliedVersion !== d.version,
     author: d.author ?? (d.source === "official" ? "OpenETL" : ""),
     repository: d.repository ?? (d.source === "official" ? "https://github.com/openetl-io/openetl-connectors" : d.source === "acme" ? acme : ""),
     reference: d.reference ?? `${url(d.source)}/${d.package.split("/")[1]}:${d.version}`,
+  }),
+);
+
+catalogPackages.push(
+  create(CatalogPackageSchema, {
+    name: "catalog/-/finance/netsuite",
+    package: "finance/netsuite",
+    title: "NetSuite",
+    version: "3.2.0",
+    appliedVersion: "3.2.0",
+    manual: true,
+    roles: ["source"],
+    author: "finance-eng",
+    description: "Saved searches and records from NetSuite's SuiteTalk API.",
+    tags: ["finance", "saas"],
   }),
 );
 

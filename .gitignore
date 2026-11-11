@@ -28,6 +28,10 @@ node_modules/
 /web/dist/
 *.tsbuildinfo
 
+# A release candidate's build
+/dist/
+/build/
+
 # Local state from `openetld dev` and the compose stack
 /.openetl/
 

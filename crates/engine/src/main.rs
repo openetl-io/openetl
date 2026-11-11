@@ -37,7 +37,11 @@ use tracing_subscriber::{EnvFilter, Layer as _};
 #[global_allocator]
 static ALLOCATOR: memory::Counting = memory::Counting;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The version a release build was made for, or the crate's.
+const VERSION: &str = match option_env!("OPENETL_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 const USAGE: &str = "usage: openetl-engine --version
        openetl-engine serve --control PATH --data PATH [--watch-stdin] [--threads N]";
 /// How long in-flight RPCs get to finish once shutdown starts.

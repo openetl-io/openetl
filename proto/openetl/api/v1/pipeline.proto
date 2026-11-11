@@ -598,6 +598,11 @@ message PipelineDestination {
   DeleteMode deletes = 5;
   // For every stream that doesn't say. Unset: refuse.
   TypeChanges type_changes = 6;
+  // Streams' names in the destination, by stream, exactly as written: a
+  // table, or what the destination has instead, such as a topic. A stream
+  // left out goes by its own name, through naming. Not with a transform,
+  // whose outputs name their tables.
+  map<string, string> tables = 7;
 }
 
 enum DeleteMode {
@@ -874,6 +879,9 @@ message StreamPlan {
   bool type_changes = 7;
   // Paused on its own, so syncs skip it.
   bool paused = 8;
+  // Its entry in destination.tables; empty: its name, through
+  // destination.naming.
+  string table = 9;
 }
 
 // StreamSchema is a version of a stream's schema, as the destination has it.

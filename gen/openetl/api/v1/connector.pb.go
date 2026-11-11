@@ -354,9 +354,9 @@ func (*DeleteConnectorSourceResponse) Descriptor() ([]byte, []int) {
 // what its publisher says, until it's applied.
 type CatalogPackage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// catalog/{source}/{owner}/{name}
+	// catalog/{source}/{owner}/{name}, or catalog/-/{owner}/{name} if manual.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// connectorSources/{source}
+	// connectorSources/{source}; empty if manual.
 	Source string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
 	// owner/name
 	Package string `protobuf:"bytes,3,opt,name=package,proto3" json:"package,omitempty"`
@@ -378,7 +378,7 @@ type CatalogPackage struct {
 	// without one.
 	Logo string `protobuf:"bytes,13,opt,name=logo,proto3" json:"logo,omitempty"`
 	// What openetl connector apply takes: oci://…:VERSION or
-	// github.com/OWNER/REPO[/PACKAGE]@VERSION.
+	// github.com/OWNER/REPO[/PACKAGE]@VERSION. Empty if manual.
 	Reference string `protobuf:"bytes,14,opt,name=reference,proto3" json:"reference,omitempty"`
 	// Listed from the official source under the reserved openetl owner.
 	Official bool `protobuf:"varint,15,opt,name=official,proto3" json:"official,omitempty"`
@@ -387,8 +387,13 @@ type CatalogPackage struct {
 	Impostor bool `protobuf:"varint,16,opt,name=impostor,proto3" json:"impostor,omitempty"`
 	// The highest version the org has applied; empty if none.
 	AppliedVersion string `protobuf:"bytes,17,opt,name=applied_version,json=appliedVersion,proto3" json:"applied_version,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Applied by the org, from a file or by a reference, and listed by no
+	// connected source.
+	Manual bool `protobuf:"varint,18,opt,name=manual,proto3" json:"manual,omitempty"`
+	// The listed version is later than the highest the org has applied.
+	UpdateAvailable bool `protobuf:"varint,19,opt,name=update_available,json=updateAvailable,proto3" json:"update_available,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CatalogPackage) Reset() {
@@ -538,6 +543,20 @@ func (x *CatalogPackage) GetAppliedVersion() string {
 		return x.AppliedVersion
 	}
 	return ""
+}
+
+func (x *CatalogPackage) GetManual() bool {
+	if x != nil {
+		return x.Manual
+	}
+	return false
+}
+
+func (x *CatalogPackage) GetUpdateAvailable() bool {
+	if x != nil {
+		return x.UpdateAvailable
+	}
+	return false
 }
 
 // ConfigField is a top-level field of a role's config, from its JSON
@@ -961,7 +980,7 @@ const file_openetl_api_v1_connector_proto_rawDesc = "" +
 	"\asources\x18\x01 \x03(\v2\x1f.openetl.api.v1.ConnectorSourceR\asources\"2\n" +
 	"\x1cDeleteConnectorSourceRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"\x1f\n" +
-	"\x1dDeleteConnectorSourceResponse\"\xcb\x03\n" +
+	"\x1dDeleteConnectorSourceResponse\"\x8e\x04\n" +
 	"\x0eCatalogPackage\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x18\n" +
@@ -982,7 +1001,9 @@ const file_openetl_api_v1_connector_proto_rawDesc = "" +
 	"\treference\x18\x0e \x01(\tR\treference\x12\x1a\n" +
 	"\bofficial\x18\x0f \x01(\bR\bofficial\x12\x1a\n" +
 	"\bimpostor\x18\x10 \x01(\bR\bimpostor\x12'\n" +
-	"\x0fapplied_version\x18\x11 \x01(\tR\x0eappliedVersion\"\xa1\x01\n" +
+	"\x0fapplied_version\x18\x11 \x01(\tR\x0eappliedVersion\x12\x16\n" +
+	"\x06manual\x18\x12 \x01(\bR\x06manual\x12)\n" +
+	"\x10update_available\x18\x13 \x01(\bR\x0fupdateAvailable\"\xa1\x01\n" +
 	"\vConfigField\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x14\n" +

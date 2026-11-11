@@ -97,8 +97,15 @@ func configured(signal string) bool {
 	return false
 }
 
-// Version is the main module's version, or "(devel)".
+// release is the version a release build was made for, set by the linker.
+var release string
+
+// Version is the version a release build was made for, or else the main
+// module's version, or "(devel)".
 func Version() string {
+	if release != "" {
+		return release
+	}
 	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" {
 		return bi.Main.Version
 	}

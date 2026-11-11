@@ -3,11 +3,14 @@ package oci
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -28,8 +31,8 @@ func testRegistry(t *testing.T) (*Client, Ref) {
 
 func TestParse(t *testing.T) {
 	for in, want := range map[string]Ref{
-		"oci://ghcr.io/openetl-io/connectors":                        {Registry: "ghcr.io", Repository: "openetl-io/connectors"},
-		"oci://ghcr.io/openetl-io/connectors/postgres:0.2.0":         {Registry: "ghcr.io", Repository: "openetl-io/connectors/postgres", Tag: "0.2.0"},
+		"oci://ghcr.io/openetl-io/openetl-connectors":                {Registry: "ghcr.io", Repository: "openetl-io/openetl-connectors"},
+		"oci://ghcr.io/openetl-io/openetl-connectors/postgres:0.2.0": {Registry: "ghcr.io", Repository: "openetl-io/openetl-connectors/postgres", Tag: "0.2.0"},
 		"oci://localhost:5000/a/b":                                   {Registry: "localhost:5000", Repository: "a/b"},
 		"oci://localhost:5000/a/b@sha256:" + strings.Repeat("a", 64): {Registry: "localhost:5000", Repository: "a/b", Digest: "sha256:" + strings.Repeat("a", 64)},
 	} {
@@ -198,6 +201,56 @@ func testPushPullAndIndex(t *testing.T, c *Client, ns Ref) {
 	}
 	if cards, err := c.ListIndex(ctx, ns.Child("nothing"), nil); err != nil || len(cards) != 0 {
 		t.Errorf("a namespace without an index: %v, %v", cards, err)
+	}
+}
+
+// A registry that lists everything it hosts, sorted, is read from ns to just
+// past it, and one that ignores where to start is still read only that far.
+func TestListUnindexedReadsOnlyTheNamespace(t *testing.T) {
+	everything := []string{"aaa/first", "acme/connectors-other/x", "acme/connectors/index", "acme/connectors/kafka", "acme/connectors/nested/x", "acme/zzz", "zzz/last"}
+	for _, honoursLast := range []bool{true, false} {
+		inner := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
+		var requests []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v2/_catalog" {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			last := r.URL.Query().Get("last")
+			requests = append(requests, last)
+			names := everything
+			if honoursLast || strings.HasPrefix(last, "page:") {
+				start := strings.TrimPrefix(last, "page:")
+				names = names[sort.SearchStrings(names, start):]
+				if start != "" && len(names) > 0 && names[0] == start {
+					names = names[1:]
+				}
+			}
+			page := names[:min(2, len(names))]
+			if len(names) > len(page) {
+				w.Header().Set("Link", fmt.Sprintf("</v2/_catalog?last=page:%s>; rel=\"next\"", page[len(page)-1]))
+			}
+			_ = json.NewEncoder(w).Encode(map[string][]string{"repositories": page})
+		}))
+		defer srv.Close()
+		ns, _ := Parse(Scheme + strings.TrimPrefix(srv.URL, "http://") + "/acme/connectors")
+		c := &Client{HTTP: srv.Client()}
+		v := Version{Name: "acme/kafka", Version: "1.0.0", Descriptor: []byte("{}"), Annotations: map[string]string{AnnotationName: "acme/kafka"}}
+		if _, err := c.Push(t.Context(), ns.Child("kafka"), v); err != nil {
+			t.Fatal(err)
+		}
+		un := c.ListUnindexed(t.Context(), ns, nil, nil)
+		if len(un) != 1 || un[0].Name != "acme/kafka" {
+			t.Errorf("honoursLast=%v: unindexed: %+v", honoursLast, un)
+		}
+		if requests[0] != "acme/connectors/" {
+			t.Errorf("honoursLast=%v: the first listing started at %q", honoursLast, requests[0])
+		}
+		for _, last := range requests {
+			if strings.HasPrefix(last, "page:acme/zzz") || strings.HasPrefix(last, "page:zzz") {
+				t.Errorf("honoursLast=%v: read on past the namespace: %q", honoursLast, requests)
+			}
+		}
 	}
 }
 

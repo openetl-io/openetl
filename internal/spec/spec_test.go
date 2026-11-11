@@ -376,3 +376,32 @@ func TestParseConnectorSource(t *testing.T) {
 		t.Error("a connector source in a workspace parsed")
 	}
 }
+
+func TestDestinationTables(t *testing.T) {
+	doc := func(streams, tables string) []byte {
+		return []byte("apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source:\n    ref: s\n" +
+			streams + "  destination:\n    ref: d\n    tables: " + tables + "\n")
+	}
+	const two = "    streams:\n      - {name: a}\n      - {name: b}\n"
+	d, err := Parse(doc(two, "{a: Fct-A}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Pipeline.GetDestination().GetTables(); len(got) != 1 || got["a"] != "Fct-A" {
+		t.Errorf("tables = %v", got)
+	}
+	if _, err := Parse(doc("", "{anything: t}")); err != nil {
+		t.Errorf("a pipeline of every stream, checked by the plan: %v", err)
+	}
+	for name, c := range map[string]struct{ streams, tables, want string }{
+		"two streams, one table":    {two, "{a: t, b: t}", "same table"},
+		"another stream's own name": {two, "{a: b}", "same table"},
+		"reserved":                  {two, "{a: _openetl_loads}", "its own records"},
+		"not in source.streams":     {two, "{c: t}", "doesn't list"},
+		"no table":                  {two, `{a: ""}`, "both need a name"},
+	} {
+		if _, err := Parse(doc(c.streams, c.tables)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

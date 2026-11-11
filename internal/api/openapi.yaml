@@ -121,7 +121,8 @@ paths:
                 - ConnectorService
             description: |-
                 Each package of every connected source, at its highest version, as its
-                 source last listed it.
+                 source last listed it, and each package the org applied that no source
+                 lists, at its highest applied version.
             operationId: ConnectorService_ListCatalog
             responses:
                 "200":
@@ -2923,10 +2924,10 @@ components:
             properties:
                 name:
                     type: string
-                    description: catalog/{source}/{owner}/{name}
+                    description: catalog/{source}/{owner}/{name}, or catalog/-/{owner}/{name} if manual.
                 source:
                     type: string
-                    description: connectorSources/{source}
+                    description: connectorSources/{source}; empty if manual.
                 package:
                     type: string
                     description: owner/name
@@ -2966,7 +2967,7 @@ components:
                     type: string
                     description: |-
                         What openetl connector apply takes: oci://…:VERSION or
-                         github.com/OWNER/REPO[/PACKAGE]@VERSION.
+                         github.com/OWNER/REPO[/PACKAGE]@VERSION. Empty if manual.
                 official:
                     type: boolean
                     description: Listed from the official source under the reserved openetl owner.
@@ -2978,6 +2979,14 @@ components:
                 appliedVersion:
                     type: string
                     description: The highest version the org has applied; empty if none.
+                manual:
+                    type: boolean
+                    description: |-
+                        Applied by the org, from a file or by a reference, and listed by no
+                         connected source.
+                updateAvailable:
+                    type: boolean
+                    description: The listed version is later than the highest the org has applied.
             description: |-
                 CatalogPackage is a package as its source's index or releases describe it:
                  what its publisher says, until it's applied.
@@ -4637,6 +4646,15 @@ components:
                     type: string
                     description: 'For every stream that doesn''t say. Unset: refuse.'
                     format: enum
+                tables:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: |-
+                        Streams' names in the destination, by stream, exactly as written: a
+                         table, or what the destination has instead, such as a topic. A stream
+                         left out goes by its own name, through naming. Not with a transform,
+                         whose outputs name their tables.
         PipelineOverride:
             type: object
             properties:
@@ -5500,6 +5518,11 @@ components:
                 paused:
                     type: boolean
                     description: Paused on its own, so syncs skip it.
+                table:
+                    type: string
+                    description: |-
+                        Its entry in destination.tables; empty: its name, through
+                         destination.naming.
         StreamSchema:
             type: object
             properties:

@@ -1,0 +1,41 @@
+name: candidate-files
+
+# A release candidate's files for a run's test jobs, as the artifact
+# candidate-files. A job of its own, as only a token that can write sees a
+# draft, and the jobs running the suites shouldn't hold one.
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+    outputs:
+      commit:
+        description: The commit the candidate was built from
+        value: ${{ jobs.files.outputs.commit }}
+
+permissions: {}
+
+jobs:
+  files:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.fetch.outputs.commit }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          deploy/release/candidate.sh fetch "$VERSION" candidate-files
+          echo "commit=$(jq -r .commit candidate-files/candidate.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-files
+          path: candidate-files
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1

@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY openetld openetl-engine openetl /opt/openetl/
 COPY connectors/ /opt/openetl/connectors/
 COPY web/ /opt/openetl/web/
+# A release's image carries THIRD-PARTY-NOTICES.txt too.
+COPY LICENSE NOTICE THIRD-PARTY-NOTICES* /opt/openetl/
 ENV PATH=/opt/openetl:$PATH
 USER 65532:65532
 WORKDIR /var/lib/openetl

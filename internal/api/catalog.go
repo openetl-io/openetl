@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/connectorhost/external"
 	"github.com/openetl-io/openetl/internal/oci"
 	"github.com/openetl-io/openetl/internal/pkgcatalog"
@@ -188,6 +190,7 @@ func catalogPackage(r db.GetCatalogPackageRow) *apiv1.CatalogPackage {
 			p.AppliedVersion = v
 		}
 	}
+	p.UpdateAvailable = p.AppliedVersion != "" && spec.CompareVersions(p.Version, p.AppliedVersion) > 0
 	return p
 }
 
@@ -200,13 +203,88 @@ func (s *Server) ListCatalog(ctx context.Context, _ *connect.Request[apiv1.ListC
 	for _, r := range rows {
 		out.Packages = append(out.Packages, catalogPackage(db.GetCatalogPackageRow(r)))
 	}
+	manual, err := s.manualPackages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out.Packages = append(out.Packages, manual...)
+	return connect.NewResponse(out), nil
+}
+
+// manualSource stands for the source in the name of a package no connected
+// source lists. No source can have this name.
+const manualSource = "-"
+
+// manualPackages are the packages the org has applied that no connected
+// source lists, each at its highest applied version, sorted by name.
+func (s *Server) manualPackages(ctx context.Context) ([]*apiv1.CatalogPackage, error) {
+	rows, err := s.Store.ListManualConnectorVersions(ctx, s.Tenant.Org)
+	if err != nil {
+		return nil, err
+	}
+	var out []*apiv1.CatalogPackage
+	highest := map[string]int{}
+	for _, r := range rows {
+		i, seen := highest[r.Name]
+		if seen && !oci.Newer(r.Version, out[i].GetVersion()) {
+			continue
+		}
+		_, short := spec.SplitName(r.Name)
+		p := &apiv1.CatalogPackage{
+			Name: "catalog/" + manualSource + "/" + r.Name, Package: r.Name, Title: cmp.Or(r.Title, short), Version: r.Version, Author: r.Author,
+			Description: r.Description, License: r.License, Repository: r.Repository, Docs: r.Docs, Roles: r.Roles, Tags: r.Tags,
+			AppliedVersion: r.Version, Manual: true,
+		}
+		if r.LogoDigest != nil {
+			p.Logo = pkgcatalog.LogoPath(*r.LogoDigest)
+		}
+		if seen {
+			out[i] = p
+			continue
+		}
+		highest[r.Name] = len(out)
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// manualCatalogPackage is a manual package with its roles' config fields,
+// from what the org applied.
+func (s *Server) manualCatalogPackage(ctx context.Context, name string) (*connect.Response[apiv1.GetCatalogPackageResponse], error) {
+	manual, err := s.manualPackages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(manual, func(p *apiv1.CatalogPackage) bool { return p.GetPackage() == name })
+	if i < 0 {
+		return nil, notFound("catalog/%s/%s isn't in the catalog", manualSource, name)
+	}
+	out := &apiv1.GetCatalogPackageResponse{Package: manual[i]}
+	roles, err := s.Store.ListVersionRoles(ctx, db.ListVersionRolesParams{OrgID: s.Tenant.Org, Name: name, Version: manual[i].GetVersion()})
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range roles {
+		a, err := s.Store.GetArtifact(ctx, db.GetArtifactParams{OrgID: s.Tenant.Org, Digest: r.Digest})
+		if err != nil {
+			return nil, err
+		}
+		v, err := connectorhost.ParseVersion(a.Content)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s's %s: %w", name, manual[i].GetVersion(), r.Role, err)
+		}
+		out.Roles = append(out.Roles, &apiv1.CatalogRole{Role: r.Role, Config: configFields(v.Roles[r.Role].Role)})
+	}
 	return connect.NewResponse(out), nil
 }
 
 func (s *Server) GetCatalogPackage(ctx context.Context, req *connect.Request[apiv1.GetCatalogPackageRequest]) (*connect.Response[apiv1.GetCatalogPackageResponse], error) {
 	parts := strings.Split(req.Msg.GetName(), "/")
-	if len(parts) != 4 || parts[0] != "catalog" || !spec.ValidName(parts[1]) || !spec.ValidPackageName(parts[2]+"/"+parts[3]) {
+	if len(parts) != 4 || parts[0] != "catalog" || (parts[1] != manualSource && !spec.ValidName(parts[1])) || !spec.ValidPackageName(parts[2]+"/"+parts[3]) {
 		return nil, invalid("name %q isn't catalog/{source}/{owner}/{name}", req.Msg.GetName())
+	}
+	if parts[1] == manualSource {
+		return s.manualCatalogPackage(ctx, parts[2]+"/"+parts[3])
 	}
 	r, err := s.Store.GetCatalogPackage(ctx, db.GetCatalogPackageParams{OrgID: s.Tenant.Org, Source: parts[1], Package: parts[2] + "/" + parts[3]})
 	if errors.Is(err, pgx.ErrNoRows) {

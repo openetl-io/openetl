@@ -145,6 +145,7 @@ openetl apply -f examples/faker-to-postgres.yaml
 created workspaces/default/sources/faker (version b6c77e6b0617)
 created workspaces/default/destinations/local-postgres (version 2322957661cf)
 created workspaces/default/pipelines/faker-to-postgres (version 9e052e7e6881)
+checked source faker, destination local-postgres
 ```
 
 A new pipeline starts its first sync immediately.

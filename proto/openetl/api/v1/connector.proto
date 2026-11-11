@@ -19,7 +19,8 @@ service ConnectorService {
     option (google.api.http) = {delete: "/v1/{name=connectorSources/*}"};
   }
   // Each package of every connected source, at its highest version, as its
-  // source last listed it.
+  // source last listed it, and each package the org applied that no source
+  // lists, at its highest applied version.
   rpc ListCatalog(ListCatalogRequest) returns (ListCatalogResponse) {
     option (google.api.http) = {get: "/v1/catalog"};
   }
@@ -84,9 +85,9 @@ message DeleteConnectorSourceResponse {}
 // CatalogPackage is a package as its source's index or releases describe it:
 // what its publisher says, until it's applied.
 message CatalogPackage {
-  // catalog/{source}/{owner}/{name}
+  // catalog/{source}/{owner}/{name}, or catalog/-/{owner}/{name} if manual.
   string name = 1;
-  // connectorSources/{source}
+  // connectorSources/{source}; empty if manual.
   string source = 2;
   // owner/name
   string package = 3;
@@ -108,7 +109,7 @@ message CatalogPackage {
   // without one.
   string logo = 13;
   // What openetl connector apply takes: oci://…:VERSION or
-  // github.com/OWNER/REPO[/PACKAGE]@VERSION.
+  // github.com/OWNER/REPO[/PACKAGE]@VERSION. Empty if manual.
   string reference = 14;
   // Listed from the official source under the reserved openetl owner.
   bool official = 15;
@@ -117,6 +118,11 @@ message CatalogPackage {
   bool impostor = 16;
   // The highest version the org has applied; empty if none.
   string applied_version = 17;
+  // Applied by the org, from a file or by a reference, and listed by no
+  // connected source.
+  bool manual = 18;
+  // The listed version is later than the highest the org has applied.
+  bool update_available = 19;
 }
 
 // ConfigField is a top-level field of a role's config, from its JSON

@@ -119,6 +119,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 			Deletes:              deletes,
 			AllowTypeChanges:     plan.TypeChanges(p, ps),
 			SplitsByKey:          cs.SplitsByKey,
+			Table:                p.GetDestination().GetTables()[cs.Name],
 		}
 		if ps != nil {
 			s.Collapse = ps.Collapse

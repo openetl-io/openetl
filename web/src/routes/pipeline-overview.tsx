@@ -40,6 +40,7 @@ export const levelLabel: Record<DeliveryLevel, string> = {
 type Row = GraphStream & {
   mode?: SyncMode;
   write?: WriteMode;
+  table?: string;
   cursor?: string;
   reason?: string;
   warning?: string;
@@ -106,6 +107,11 @@ export function Overview({
       if (r.schemaKey && r.schemaKey !== schemaKey(s)) continue;
       r.schema = Math.max(r.schema ?? 0, s.version);
       r.schemaKey = schemaKey(s);
+    }
+    // Until the source has been discovered the plan has no streams, but the spec still says how they're written.
+    for (const r of m.values()) {
+      r.write ||= spec?.destination?.write;
+      r.table = spec?.destination?.tables[r.name];
     }
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [plan.data, spec, last, schemas.data, pipeline.pausedStreams]);
@@ -242,6 +248,7 @@ function StreamsTable({
         cell: ({ row }) => (
           <span className="inline-flex items-center gap-2">
             <span className="font-medium">{row.original.name}</span>
+            {row.original.table && <span className="font-mono text-[0.8125rem] text-muted-foreground">→ {row.original.table}</span>}
             {row.original.paused && (
               <Badge variant="outline" className="font-normal">
                 Paused
@@ -268,7 +275,7 @@ function StreamsTable({
       {
         id: "write",
         header: "Write",
-        cell: ({ row }) => <span className="text-muted-foreground">{enumLabel(WriteMode[row.original.write ?? 0]) || "Unknown"}</span>,
+        cell: ({ row }) => <span className="text-muted-foreground">{enumLabel(WriteMode[row.original.write ?? 0]) || "Destination default"}</span>,
         meta: { className: "hidden lg:table-cell" },
       },
       {
