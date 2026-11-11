@@ -40,6 +40,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/kinesis v1.56.9
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.6
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.50.8
+	github.com/aws/aws-sdk-go-v2/service/sts v1.51.6
 	github.com/aws/smithy-go v1.28.7
 	github.com/dbos-inc/dbos-transact-golang v1.8.0
 	github.com/google/uuid v1.6.0
@@ -116,7 +117,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/signin v1.12.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.39.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.51.6 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

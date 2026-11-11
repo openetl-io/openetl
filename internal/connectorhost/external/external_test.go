@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +23,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/util"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -245,6 +250,111 @@ func TestConnectorsDontInheritTheEnvironment(t *testing.T) {
 	}
 	if slices.Contains(names, "AWS_SECRET_ACCESS_KEY") || !slices.Contains(names, "OPENETL_CONNECTOR_ADDR") || !slices.Contains(names, "OPENETL_CONNECTOR_ROLE") {
 		t.Fatalf("the connector's environment: %v", names)
+	}
+}
+
+// What the AWS SDK's default chain finds in a connector's process: nothing
+// of the runner's unless it inherits, and a role's alone when it has one.
+func TestConnectorsAWSCredentials(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".aws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := "[default]\naws_access_key_id = PROFILEKEY\naws_secret_access_key = secret\n"
+	if err := os.WriteFile(filepath.Join(home, ".aws", "credentials"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	role := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "lease-token" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"AccessKeyId": "ROLEKEY", "SecretAccessKey": "s", "Token": "t", "Expiration": %q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	}))
+	defer role.Close()
+	found := func(a AWS) string {
+		t.Helper()
+		src := NewSource(exe("source-env"), nil, Options{AWS: a})
+		defer func() { _ = src.Close() }()
+		var out collect
+		if err := src.Read(t.Context(), source.ReadRequest{Streams: []source.ConfiguredStream{{Name: "env"}}}, &out); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range out.raw {
+			var v struct{ Name, Value string }
+			if err := json.Unmarshal(r, &v); err != nil {
+				t.Fatal(err)
+			}
+			if v.Name == "aws-default-chain" {
+				return v.Value
+			}
+		}
+		t.Fatal("the connector didn't say what the chain found")
+		return ""
+	}
+
+	if got := found(AWS{}); !strings.HasPrefix(got, "error: ") {
+		t.Errorf("none, with a profile in HOME: the chain found %s", got)
+	}
+	t.Setenv("AWS_ACCESS_KEY_ID", "RUNNERKEY")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	if got := found(AWS{}); !strings.HasPrefix(got, "error: ") {
+		t.Errorf("none, with keys in the runner's environment: the chain found %s", got)
+	}
+	if got := found(AWS{Inherit: true}); got != "RUNNERKEY" {
+		t.Errorf("inherit: the chain found %s, want the runner's keys", got)
+	}
+	if got := found(AWS{Inherit: true, URL: role.URL, Token: "lease-token"}); got != "ROLEKEY" {
+		t.Errorf("a role, where the runner's would be inherited: the chain found %s, want the role's", got)
+	}
+	if got := found(AWS{URL: role.URL, Token: "another"}); !strings.HasPrefix(got, "error: ") {
+		t.Errorf("a role, with the wrong token: the chain found %s", got)
+	}
+}
+
+// AWS_EC2_METADATA_DISABLED is what keeps the chain off EC2's instance
+// metadata, which a connector can reach wherever the runner can.
+func TestNoAWSSkipsInstanceMetadata(t *testing.T) {
+	imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut:
+			w.Header().Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "21600")
+			_, _ = io.WriteString(w, "token")
+		case strings.HasSuffix(r.URL.Path, "/security-credentials/"):
+			_, _ = io.WriteString(w, "instance-role")
+		default:
+			_, _ = fmt.Fprintf(w, `{"Code": "Success", "AccessKeyId": "IMDSKEY", "SecretAccessKey": "s", "Token": "t", "Expiration": %q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+		}
+	}))
+	defer imds.Close()
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "AWS_") {
+			t.Setenv(name, "")
+		}
+	}
+	t.Setenv("AWS_EC2_METADATA_SERVICE_ENDPOINT", imds.URL)
+	retrieve := func() string {
+		t.Helper()
+		cfg, err := awsconfig.LoadDefaultConfig(t.Context(), awsconfig.WithRegion("us-east-1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		creds, err := cfg.Credentials.Retrieve(t.Context())
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		return creds.AccessKeyID
+	}
+	if got := retrieve(); got != "IMDSKEY" {
+		t.Fatalf("the fake instance metadata gave %s", got)
+	}
+	for _, kv := range (AWS{}).env(t.TempDir()) {
+		name, value, _ := strings.Cut(kv, "=")
+		t.Setenv(name, value)
+	}
+	if got := retrieve(); !strings.HasPrefix(got, "error: ") {
+		t.Errorf("none: the chain found %s in instance metadata", got)
 	}
 }
 

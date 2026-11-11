@@ -221,6 +221,32 @@ func TestParseConnector(t *testing.T) {
 	}
 }
 
+func TestParseAWSAccess(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Destination\nmetadata: {name: lake}\nspec:\n  connector: iceberg\n  config: {}\n"
+	doc, err := Parse([]byte(header + "  aws:\n    role: arn:aws:iam::222222222222:role/teams/openetl-lake\n    externalId: lake-7f3a\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := doc.Connector.GetAws(); a.GetRole() != "arn:aws:iam::222222222222:role/teams/openetl-lake" || a.GetExternalId() != "lake-7f3a" {
+		t.Errorf("aws = %v", a)
+	}
+	if doc, err := Parse([]byte(header + "  aws: {role: 'arn:aws-cn:iam::222222222222:role/lake'}\n")); err != nil || doc.Connector.GetAws().GetExternalId() != "" {
+		t.Errorf("a role in another partition, without an external ID: %v, %v", doc, err)
+	}
+	for name, aws := range map[string]string{
+		"no role":            "  aws: {externalId: abc}\n",
+		"a user, not a role": "  aws: {role: 'arn:aws:iam::222222222222:user/lake'}\n",
+		"no account":         "  aws: {role: 'arn:aws:iam:::role/lake'}\n",
+		"short external ID":  "  aws: {role: 'arn:aws:iam::222222222222:role/lake', externalId: a}\n",
+		"external ID chars":  "  aws: {role: 'arn:aws:iam::222222222222:role/lake', externalId: 'a b'}\n",
+		"unknown field":      "  aws: {role: 'arn:aws:iam::222222222222:role/lake', region: ap-southeast-2}\n",
+	} {
+		if _, err := Parse([]byte(header + aws)); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\n"
 	base := "spec:\n  schedule: {every: 1m}\n  source: {ref: s}\n  destination: {ref: d}\n"

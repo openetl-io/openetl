@@ -108,6 +108,22 @@ func (q *Queries) GetWorkspace(ctx context.Context, arg GetWorkspaceParams) (Get
 	return i, err
 }
 
+const getWorkspaceName = `-- name: GetWorkspaceName :one
+SELECT name FROM workspaces WHERE org_id = $1 AND id = $2
+`
+
+type GetWorkspaceNameParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+func (q *Queries) GetWorkspaceName(ctx context.Context, arg GetWorkspaceNameParams) (string, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceName, arg.OrgID, arg.ID)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
 const listOrgs = `-- name: ListOrgs :many
 SELECT id FROM orgs ORDER BY id
 `

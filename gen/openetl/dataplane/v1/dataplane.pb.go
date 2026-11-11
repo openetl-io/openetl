@@ -125,9 +125,15 @@ type GetSyncSpecResponse struct {
 	// Set: a person allowed a restart from the checkpoint before the latest,
 	// if the latest can't be read, whatever it does to delivery guarantees.
 	// The ID of their approval, which ReportRewind returns.
-	Rewind        string `protobuf:"bytes,21,opt,name=rewind,proto3" json:"rewind,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Rewind string `protobuf:"bytes,21,opt,name=rewind,proto3" json:"rewind,omitempty"`
+	// The names the runner tags the AWS sessions of the source's and the
+	// destination's aws roles with.
+	Workspace       string `protobuf:"bytes,22,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	PipelineName    string `protobuf:"bytes,23,opt,name=pipeline_name,json=pipelineName,proto3" json:"pipeline_name,omitempty"`
+	SourceName      string `protobuf:"bytes,24,opt,name=source_name,json=sourceName,proto3" json:"source_name,omitempty"`
+	DestinationName string `protobuf:"bytes,25,opt,name=destination_name,json=destinationName,proto3" json:"destination_name,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GetSyncSpecResponse) Reset() {
@@ -303,6 +309,34 @@ func (x *GetSyncSpecResponse) GetResets() []*Reset {
 func (x *GetSyncSpecResponse) GetRewind() string {
 	if x != nil {
 		return x.Rewind
+	}
+	return ""
+}
+
+func (x *GetSyncSpecResponse) GetWorkspace() string {
+	if x != nil {
+		return x.Workspace
+	}
+	return ""
+}
+
+func (x *GetSyncSpecResponse) GetPipelineName() string {
+	if x != nil {
+		return x.PipelineName
+	}
+	return ""
+}
+
+func (x *GetSyncSpecResponse) GetSourceName() string {
+	if x != nil {
+		return x.SourceName
+	}
+	return ""
+}
+
+func (x *GetSyncSpecResponse) GetDestinationName() string {
+	if x != nil {
+		return x.DestinationName
 	}
 	return ""
 }
@@ -1407,7 +1441,11 @@ type GetConnectorConfigResponse struct {
 	// As GetSyncSpecResponse's source_connector.
 	Connector string `protobuf:"bytes,4,opt,name=connector,proto3" json:"connector,omitempty"`
 	// As GetSyncSpecResponse's source_secrets.
-	Secrets       []*ExternalSecret `protobuf:"bytes,5,rep,name=secrets,proto3" json:"secrets,omitempty"`
+	Secrets []*ExternalSecret `protobuf:"bytes,5,rep,name=secrets,proto3" json:"secrets,omitempty"`
+	// The source's or destination's name and its workspace's, which the
+	// runner tags the AWS session of its aws role with.
+	Workspace     string `protobuf:"bytes,6,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	Name          string `protobuf:"bytes,7,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1475,6 +1513,20 @@ func (x *GetConnectorConfigResponse) GetSecrets() []*ExternalSecret {
 		return x.Secrets
 	}
 	return nil
+}
+
+func (x *GetConnectorConfigResponse) GetWorkspace() string {
+	if x != nil {
+		return x.Workspace
+	}
+	return ""
+}
+
+func (x *GetConnectorConfigResponse) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
 }
 
 type GetFetchCredentialRequest struct {
@@ -3215,7 +3267,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x12GetSyncSpecRequest\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion\"\x8e\v\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\"\x9d\f\n" +
 	"\x13GetSyncSpecResponse\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x1f\n" +
 	"\vpipeline_id\x18\x02 \x01(\tR\n" +
@@ -3241,7 +3293,12 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x0epaused_streams\x18\x12 \x03(\tR\rpausedStreams\x12(\n" +
 	"\x10rate_limit_scale\x18\x13 \x01(\x01R\x0erateLimitScale\x123\n" +
 	"\x06resets\x18\x14 \x03(\v2\x1b.openetl.dataplane.v1.ResetR\x06resets\x12\x16\n" +
-	"\x06rewind\x18\x15 \x01(\tR\x06rewind\x1aj\n" +
+	"\x06rewind\x18\x15 \x01(\tR\x06rewind\x12\x1c\n" +
+	"\tworkspace\x18\x16 \x01(\tR\tworkspace\x12#\n" +
+	"\rpipeline_name\x18\x17 \x01(\tR\fpipelineName\x12\x1f\n" +
+	"\vsource_name\x18\x18 \x01(\tR\n" +
+	"sourceName\x12)\n" +
+	"\x10destination_name\x18\x19 \x01(\tR\x0fdestinationName\x1aj\n" +
 	"\x12SparkClustersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12>\n" +
 	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedSparkClusterR\x05value:\x028\x01\x1aj\n" +
@@ -3352,13 +3409,15 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\tsource_id\x18\x01 \x01(\tH\x00R\bsourceId\x12'\n" +
 	"\x0edestination_id\x18\x02 \x01(\tH\x00R\rdestinationId\x12!\n" +
 	"\foperation_id\x18\x03 \x01(\tR\voperationIdB\v\n" +
-	"\tconnector\"\xe4\x01\n" +
+	"\tconnector\"\x96\x02\n" +
 	"\x1aGetConnectorConfigResponse\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x127\n" +
 	"\x06config\x18\x03 \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\x06config\x12\x1c\n" +
 	"\tconnector\x18\x04 \x01(\tR\tconnector\x12>\n" +
-	"\asecrets\x18\x05 \x03(\v2$.openetl.dataplane.v1.ExternalSecretR\asecrets\"-\n" +
+	"\asecrets\x18\x05 \x03(\v2$.openetl.dataplane.v1.ExternalSecretR\asecrets\x12\x1c\n" +
+	"\tworkspace\x18\x06 \x01(\tR\tworkspace\x12\x12\n" +
+	"\x04name\x18\a \x01(\tR\x04name\"-\n" +
 	"\x19GetFetchCredentialRequest\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\"l\n" +
 	"\x1aGetFetchCredentialResponse\x12\x16\n" +

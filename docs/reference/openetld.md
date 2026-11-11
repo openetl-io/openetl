@@ -75,6 +75,15 @@ What connectors, registries and webhooks may reach, and where connector packages
 | `--registry-plain-http` | `OPENETL_REGISTRY_PLAIN_HTTP` |  | comma-separated registry hosts, host:port, reached over plain HTTP besides loopback ones |
 | `--github-api` | `OPENETL_GITHUB_API` |  | GitHub's REST API, for connector sources and releases (default: https://api.github.com) |
 
+## AWS credentials for connectors
+
+The IAM roles a runner may assume for connectors, and what a connector gets when its source or destination names no role. [Run on AWS](../self-host/aws.md) explains both.
+
+| Flag | Variable | Default | What it sets |
+|---|---|---|---|
+| `--aws-assume-roles` | `OPENETL_AWS_ASSUME_ROLES` |  | comma-separated IAM role ARNs, where \* matches any characters, that a source or destination may name in aws.role; the runner assumes the role with its own AWS credentials and gives the connector that role's credentials only; empty: none |
+| `--connector-aws-credentials` | `OPENETL_CONNECTOR_AWS_CREDENTIALS` | `none` | the AWS credentials a connector gets from the runner when its source or destination names no aws.role: none, or inherit, which passes the runner's AWS\_ variables and leaves EC2's instance metadata reachable, so the connector has all of the runner's AWS access, every pipeline's checkpoints included |
+
 ## Runners
 
 Where a runner keeps checkpoints and its cache, the programs it runs, the pool it serves, the room it has, and its token.

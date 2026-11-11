@@ -120,6 +120,20 @@ message ConnectorConfig {
   string connector = 1;
   // Secret fields hold secret references, never values.
   google.protobuf.Struct config = 2;
+  // A role the runner assumes for the connector, whose credentials are the
+  // only AWS credentials the connector gets from the runner. Unset: none.
+  AWSAccess aws = 3;
+}
+
+// AWSAccess is an IAM role that a runner assumes with its own AWS
+// credentials, if its OPENETL_AWS_ASSUME_ROLES allows the role. Each session
+// is tagged with the workspace, the source's or destination's name, and the
+// pipeline's for a sync, so the role's trust policy can require them.
+message AWSAccess {
+  // The role's ARN.
+  string role = 1;
+  // The ExternalId the role's trust policy requires. Empty: none is sent.
+  string external_id = 2;
 }
 
 message GetSourceRequest {

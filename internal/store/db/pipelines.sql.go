@@ -232,10 +232,12 @@ SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.key_groups, v.dbt,
     sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
     sv.secrets AS source_secrets, dv.secrets AS destination_secrets, v.secrets AS access_secrets,
-    p.workspace_id, p.name AS pipeline, w.name AS workspace
+    p.workspace_id, p.name AS pipeline, w.name AS workspace, s.name AS source, d.name AS destination
 FROM pipeline_versions v
 JOIN pipelines p ON p.org_id = v.org_id AND p.id = v.pipeline_id
 JOIN workspaces w ON w.org_id = p.org_id AND w.id = p.workspace_id
+JOIN sources s ON s.org_id = v.org_id AND s.id = v.source_id
+JOIN destinations d ON d.org_id = v.org_id AND d.id = v.destination_id
 JOIN source_versions sv ON sv.org_id = v.org_id AND sv.source_id = v.source_id AND sv.version = v.source_version
 JOIN destination_versions dv ON dv.org_id = v.org_id AND dv.destination_id = v.destination_id AND dv.version = v.destination_version
 WHERE v.org_id = $1 AND v.pipeline_id = $2 AND v.version = $3
@@ -267,6 +269,8 @@ type GetSyncSpecRow struct {
 	WorkspaceID          uuid.UUID
 	Pipeline             string
 	Workspace            string
+	Source               string
+	Destination          string
 }
 
 func (q *Queries) GetSyncSpec(ctx context.Context, arg GetSyncSpecParams) (GetSyncSpecRow, error) {
@@ -292,6 +296,8 @@ func (q *Queries) GetSyncSpec(ctx context.Context, arg GetSyncSpecParams) (GetSy
 		&i.WorkspaceID,
 		&i.Pipeline,
 		&i.Workspace,
+		&i.Source,
+		&i.Destination,
 	)
 	return i, err
 }

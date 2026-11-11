@@ -33,7 +33,7 @@ The manifests do not include Postgres or object storage. Configure those service
    - `default`, which runners, job pods, the server and the orchestrators use.
    - `openetl-launcher`, which the launcher uses. The launcher checks the bucket when it starts, and does not start without access.
 
-   This role is not available to connectors. [Credentials for connectors](#credentials-for-connectors) explains what to do.
+   [Run on AWS](./aws.md#on-eks) shows the commands for both. By default, connectors do not get this role. [Credentials for connectors](#credentials-for-connectors) explains what to do.
 
 2. Create the namespace, and the Secret the server and orchestrators read:
 
@@ -77,7 +77,7 @@ Every component serves Prometheus metrics on port 9464, and its pods carry the `
 
 ## Credentials for connectors
 
-A runner does not pass its environment variables to the connectors it starts, except a few such as `PATH` and `HOME`. So a connector does not get the IAM role that an IAM role for a service account or Pod Identity gives the pod. On EKS, a connector that calls AWS needs an access key in its own config. Store the secret access key with `openetl secret set`, and refer to it with `{ secret: NAME }`. Each connector's documentation names its key fields.
+By default, a connector does not get the role that IRSA or Pod Identity gives the pod. Give a source or destination its own role with `aws.role`, which the runner assumes for its connector. Set the roles that runners may assume in `OPENETL_AWS_ASSUME_ROLES`, in `config.yaml`. [Run on AWS](./aws.md#credentials-for-connectors) explains the setup, the other ways, and what OpenETL can and cannot block.
 
 [Connectors are trusted code](./index.md#connectors-are-trusted-code) lists what a connector gets from the runner.
 

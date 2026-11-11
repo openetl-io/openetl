@@ -180,7 +180,7 @@ Connectors run inside the runner container. There, `localhost` refers to that co
 
 ## Checkpoints in a bucket
 
-Runners keep checkpoints and staging in `.openetl/checkpoints` on the `runner` volume. To use S3, GCS or Azure Blob Storage, configure storage before the first sync. Set `OPENETL_CHECKPOINTS` in `.env` to the bucket URL, such as `s3://my-bucket`. For S3, put `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env`. On EC2, you can use the instance profile instead. Set the instance metadata hop limit to 2, so that containers can reach the instance profile. [Buckets](./index.md#buckets) gives the other options. Changing the setting does not move existing checkpoints.
+Runners keep checkpoints and staging in `.openetl/checkpoints` on the `runner` volume. To use S3, GCS or Azure Blob Storage, configure storage before the first sync. Set `OPENETL_CHECKPOINTS` in `.env` to the bucket URL, such as `s3://my-bucket`. For S3, put `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env`. On EC2, you can use the instance profile instead. Set the instance metadata hop limit to 2, so that containers can reach the instance profile. [Run on AWS](./aws.md#on-ec2) shows the steps, and [Buckets](./index.md#buckets) gives the other options. Changing the setting does not move existing checkpoints.
 
 ## More runners
 

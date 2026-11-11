@@ -343,6 +343,9 @@ func (s *Server) applyConnector(ctx context.Context, q *db.Queries, doc *spec.Do
 	if v != nil {
 		connector = v.Digest
 	}
+	if doc.Connector.GetAws() != nil && connectorhost.Builtin(kind, name) {
+		return nil, invalid("%s %s: aws applies only to connectors that run as their own process, and %s is built into openetld", kind, doc.Name, name)
+	}
 	b, err := s.bind(kind, name, v, doc.Connector.GetConfig())
 	if err != nil {
 		return nil, err

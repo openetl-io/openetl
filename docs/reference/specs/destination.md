@@ -36,6 +36,9 @@ A field the document doesn't have is refused.
 |---|---|---|---|---|
 | `connector` | connector reference | Yes | — | The connector to write with, and which of its versions. A reference is read as a [Source's](./source.md#connector-references) is, and with no versions applied, the runner looks for an executable named `destination-NAME`. |
 | `config` | object | Depends on the connector's config schema | None | The connector's config. Its fields are the connector's own: its spec's JSON Schema defines them, which `openetl connector spec TARGET` prints. A config never holds a secret's value: a field holds `{ secret: NAME }` instead, naming a secret in the same workspace, which must exist when you apply. Where the connector's spec marks a field as secret, the config must name a secret for it. |
+| `aws` | object | No | None | An IAM role that the runner assumes for the connector, with the runner's own AWS credentials. The connector then gets that role's credentials and no other AWS credentials from the runner. The runner must allow the role in `OPENETL_AWS_ASSUME_ROLES`. A built-in connector cannot take a role. [Run on AWS](../../self-host/aws.md#roles-for-sources-and-destinations) explains the setup. |
+| `aws.role` | string | Yes, in `aws` | — | The role's ARN, such as `arn:aws:iam::123456789012:role/openetl-lake`. The runner tags each session with `openetl:workspace`, `openetl:destination` (this destination's name) and, during a sync, `openetl:pipeline`. |
+| `aws.externalId` | string | No | None | The `ExternalId` that the role's trust policy requires: 2 to 1224 letters, digits and the characters `_+=,.@:/-`. |
 
 The built-in destinations, `stdout` and `parquet` (also `openetl/stdout` and `openetl/parquet`), have no versions, so their references take none. [Built-in connectors](../built-in-connectors.md) has their configs.
 

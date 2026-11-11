@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/openetl-io/openetl/internal/connectorhost/external"
 )
 
 func TestConnectorsDirectory(t *testing.T) {
@@ -37,5 +39,20 @@ func TestConnectorsDirectory(t *testing.T) {
 	}
 	if !Builtin("source", "faker") || !Builtin("source", "openetl/faker") || Builtin("source", "acme/faker") || Builtin("destination", "faker") {
 		t.Error("built-ins")
+	}
+}
+
+// A connector inside openetld has the runner's credentials, so it can't take
+// a role's.
+func TestBuiltinsTakeNoAWSRole(t *testing.T) {
+	env := Env{AWS: map[string]external.AWS{"source": {URL: "http://127.0.0.1:1/x", Token: "t"}, "destination": {URL: "http://127.0.0.1:1/y", Token: "t"}}}
+	if _, err := NewSource("faker", []byte(`{}`), env); err == nil || !strings.Contains(err.Error(), "source connector faker runs inside openetld, so it can't take an aws role") {
+		t.Errorf("faker with a role: %v", err)
+	}
+	if _, err := NewDestination("stdout", []byte(`{}`), env); err == nil || !strings.Contains(err.Error(), "runs inside openetld") {
+		t.Errorf("stdout with a role: %v", err)
+	}
+	if _, err := NewSource("faker", []byte(`{}`), Env{InheritAWS: true}); err != nil {
+		t.Errorf("faker without a role: %v", err)
 	}
 }

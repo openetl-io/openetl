@@ -281,6 +281,32 @@ func strict(content []byte, v any) error {
 type connectorYAML struct {
 	Connector string         `yaml:"connector"`
 	Config    map[string]any `yaml:"config"`
+	AWS       *awsAccessYAML `yaml:"aws"`
+}
+
+type awsAccessYAML struct {
+	Role       string `yaml:"role"`
+	ExternalID string `yaml:"externalId"`
+}
+
+var (
+	// An IAM role's ARN, in any partition, with its path.
+	roleARN = regexp.MustCompile(`^arn:aws(-[a-z]+)*:iam::[0-9]{12}:role/[\w+=,.@/-]{1,512}$`)
+	// The characters STS takes in an ExternalId, which is 2 to 1224 long.
+	externalID = regexp.MustCompile(`^[\w+=,.@:/-]+$`)
+)
+
+func parseAWSAccess(y *awsAccessYAML) (*apiv1.AWSAccess, error) {
+	if y == nil {
+		return nil, nil
+	}
+	if !roleARN.MatchString(y.Role) {
+		return nil, fmt.Errorf("aws.role: %q isn't an IAM role's ARN, such as arn:aws:iam::123456789012:role/NAME", y.Role)
+	}
+	if y.ExternalID != "" && (len(y.ExternalID) < 2 || len(y.ExternalID) > 1224 || !externalID.MatchString(y.ExternalID)) {
+		return nil, errors.New("aws.externalId: STS takes 2 to 1224 letters, digits and the characters _+=,.@:/-")
+	}
+	return &apiv1.AWSAccess{Role: y.Role, ExternalId: y.ExternalID}, nil
 }
 
 func parseConnector(b []byte) (*apiv1.ConnectorConfig, error) {
@@ -295,7 +321,11 @@ func parseConnector(b []byte) (*apiv1.ConnectorConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	return &apiv1.ConnectorConfig{Connector: c.Connector, Config: cfg}, nil
+	aws, err := parseAWSAccess(c.AWS)
+	if err != nil {
+		return nil, err
+	}
+	return &apiv1.ConnectorConfig{Connector: c.Connector, Config: cfg, Aws: aws}, nil
 }
 
 type pipelineYAML struct {

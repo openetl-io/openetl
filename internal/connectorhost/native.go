@@ -64,6 +64,11 @@ type Env struct {
 	Size resources.Size
 	// Multiplies the rate limits a declarative source declares; 0: 1.
 	RateLimitScale float64
+	// The AWS credentials external connectors find, by role (source or
+	// destination): a role's, which the runner assumed for that one. Else
+	// the runner's own if InheritAWS, or else none.
+	AWS        map[string]external.AWS
+	InheritAWS bool
 }
 
 // NewSource binds a source connector to its config, a JSON object. It does
@@ -72,17 +77,23 @@ func NewSource(connector string, config []byte, env Env) (source.Source, error) 
 	if !Builtin("source", connector) {
 		full := spec.FullName(connector)
 		if m := env.Manifests[full]; m != nil {
+			if err := env.inProcess("source", connector); err != nil {
+				return nil, err
+			}
 			return declarativeSource(m, config, env)
 		}
 		if x, ok := env.Externals["source/"+full]; ok {
 			if err := external.ValidateConfig(connector, x.Spec.GetConfigSchema(), config); err != nil {
 				return nil, err
 			}
-			return external.NewSource(x.Executable, config, env.external(x.Spec)), nil
+			return external.NewSource(x.Executable, config, env.external("source", x.Spec)), nil
 		}
 		if exe := env.executable("source", connector); exe != "" {
-			return external.NewSource(exe, config, env.external(nil)), nil
+			return external.NewSource(exe, config, env.external("source", nil)), nil
 		}
+	}
+	if err := env.inProcess("source", connector); err != nil {
+		return nil, err
 	}
 	f, err := lookup(sources, "source", connector, env)
 	if err != nil {
@@ -133,8 +144,19 @@ func ExecutablePath(role, name string) string {
 	return filepath.Join(owner, role+"-"+short)
 }
 
-func (e Env) external(spec *protocolv1.SpecResponse) external.Options {
-	return external.Options{Egress: e.Egress, Logger: e.Logger, Spec: spec, Meter: e.Meter, Size: e.Size}
+func (e Env) external(role string, spec *protocolv1.SpecResponse) external.Options {
+	aws := e.AWS[role]
+	aws.Inherit = e.InheritAWS
+	return external.Options{Egress: e.Egress, Logger: e.Logger, Spec: spec, Meter: e.Meter, Size: e.Size, AWS: aws}
+}
+
+// inProcess refuses a role's credentials for a connector that runs inside
+// openetld, which has the runner's.
+func (e Env) inProcess(role, connector string) error {
+	if e.AWS[role].URL == "" {
+		return nil
+	}
+	return errs.New(errs.ConfigInvalid, "%s connector %s runs inside openetld, so it can't take an aws role", role, connector)
 }
 
 // externals lists the external connectors of a kind, by name.
@@ -232,11 +254,14 @@ func NewDestination(connector string, config []byte, env Env) (destination.Desti
 			if err := external.ValidateConfig(connector, x.Spec.GetConfigSchema(), config); err != nil {
 				return nil, err
 			}
-			return external.NewDestination(x.Executable, config, env.external(x.Spec)), nil
+			return external.NewDestination(x.Executable, config, env.external("destination", x.Spec)), nil
 		}
 		if exe := env.executable("destination", connector); exe != "" {
-			return external.NewDestination(exe, config, env.external(nil)), nil
+			return external.NewDestination(exe, config, env.external("destination", nil)), nil
 		}
+	}
+	if err := env.inProcess("destination", connector); err != nil {
+		return nil, err
 	}
 	f, err := lookup(destinations, "destination", connector, env)
 	if err != nil {

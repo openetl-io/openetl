@@ -6,6 +6,7 @@
     "index",
     "compose",
     "kubernetes",
+    "aws",
     "access",
     "secrets",
     "monitoring",

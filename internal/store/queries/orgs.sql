@@ -11,6 +11,9 @@ ON CONFLICT (org_id, name) DO NOTHING;
 -- name: GetWorkspace :one
 SELECT id, name FROM workspaces WHERE org_id = @org_id AND name = @name;
 
+-- name: GetWorkspaceName :one
+SELECT name FROM workspaces WHERE org_id = @org_id AND id = @id;
+
 -- name: CreateDataPlane :exec
 INSERT INTO data_planes (id, org_id) VALUES (@id, @org_id) ON CONFLICT (id) DO NOTHING;
 
