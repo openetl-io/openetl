@@ -27,6 +27,7 @@ import (
 	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
 	"github.com/openetl-io/openetl/internal/api"
 	"github.com/openetl-io/openetl/internal/auth"
+	"github.com/openetl-io/openetl/internal/awsroles"
 	"github.com/openetl-io/openetl/internal/bridge"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/checkpoint/openstore"
@@ -493,7 +494,13 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("daemon: --egress-allow: %w", err)
 	}
-	connectors := connectorhost.Env{Egress: netguard.Policy{Allow: allow}, Connectors: connectorsDir(cfg), Logger: log.With("component", "connector")}
+	connectors := connectorhost.Env{Egress: netguard.Policy{Allow: allow}, Connectors: connectorsDir(cfg), Logger: log.With("component", "connector"),
+		InheritAWS: cfg.ConnectorAWSCredentials == "inherit"}
+	roles, err := awsroles.New(cfg.AWSAssumeRoles)
+	if err != nil {
+		return fmt.Errorf("daemon: --aws-assume-roles: %w", err)
+	}
+	defer func() { _ = roles.Close() }()
 	token := cfg.RunnerToken
 	if cfg.TokenFile != "" {
 		if token, err = auth.ReadKeyFile(cfg.TokenFile); err != nil {
@@ -537,6 +544,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		Secrets:     stores,
 		Logs:        cps,
 		HTTP:        (&netguard.Policy{Allow: allow}).Client(),
+		AWSRoles:    roles,
 	}
 	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Secrets: stores, Executable: cfg.Dbt, Logger: log, Logs: cps}
 	sparkSteps := &dpactivities.Spark{
@@ -555,7 +563,8 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	connectorOps := &dpactivities.Ops{
 		API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores, Storage: cfg.Checkpoints, Checkpoints: cps,
-		Flink: flink.Options{Logger: log.With("component", "flink"), HTTP: (&netguard.Policy{Allow: allow}).Client()},
+		Flink:    flink.Options{Logger: log.With("component", "flink"), HTTP: (&netguard.Policy{Allow: allow}).Client()},
+		AWSRoles: roles,
 	}
 	every, err := time.ParseDuration(cfg.ReportInterval)
 	if cfg.ReportInterval != "" && (err != nil || every <= 0) {

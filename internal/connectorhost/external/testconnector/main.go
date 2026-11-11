@@ -18,6 +18,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/google/uuid"
 
 	"github.com/openetl-io/openetl/connectors/native/faker"
@@ -121,14 +123,16 @@ func (crash) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) e
 	return nil
 }
 
-// env emits the names of its environment variables, one row each.
+// env emits its environment variables, one row each, and a row named
+// aws-default-chain with the access key ID that the AWS SDK's default
+// credential chain finds, or its error.
 type env struct{}
 
 func (env) Discover(context.Context) (source.Catalog, error) {
 	return source.Catalog{Streams: []source.CatalogStream{{Name: "env"}}}, nil
 }
 
-func (env) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) error {
+func (env) Read(ctx context.Context, _ source.ReadRequest, out source.Emitter) error {
 	var rows []json.RawMessage
 	for _, kv := range os.Environ() {
 		name, value, _ := strings.Cut(kv, "=")
@@ -138,6 +142,24 @@ func (env) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) err
 		}
 		rows = append(rows, b)
 	}
+	found := "error: "
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion("us-east-1"))
+	if err == nil {
+		var creds aws.Credentials
+		if creds, err = cfg.Credentials.Retrieve(ctx); err == nil {
+			found = creds.AccessKeyID
+		}
+	}
+	if err != nil {
+		found += err.Error()
+	}
+	b, err := json.Marshal(map[string]string{"name": "aws-default-chain", "value": found})
+	if err != nil {
+		return err
+	}
+	rows = append(rows, b)
 	if err := out.Rows("env", rows); err != nil {
 		return err
 	}

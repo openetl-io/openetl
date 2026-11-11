@@ -3,6 +3,7 @@ package activities
 import (
 	"context"
 	"errors"
+	"maps"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -10,8 +11,10 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/awsroles"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/connectorhost/external"
 	"github.com/openetl-io/openetl/internal/flink"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -38,6 +41,9 @@ type Ops struct {
 	Checkpoints checkpoint.Store
 	// How TeardownFlink reaches Flink clusters.
 	Flink flink.Options
+	// Assumes the aws roles that sources and destinations name. Nil: none
+	// can be.
+	AWSRoles *awsroles.Broker
 }
 
 // CheckConnector checks a source or destination. A failed check is a result,
@@ -48,8 +54,8 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 		return contract.ConnectorOpResult{}, err
 	}
 	res := contract.ConnectorOpResult{Version: cfg.GetVersion()}
-	sd, dd := opDigests(in, cfg.GetConnector())
-	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
+	env, release, err := a.opEnv(ctx, in, cfg)
+	defer release()
 	if err == nil {
 		err = readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets())
 	}
@@ -60,6 +66,22 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 		res.Code, res.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
 	}
 	return res, nil
+}
+
+// opEnv is what an op's connector gets: its version's env, and the aws role
+// its config names, leased until release.
+func (a *Ops) opEnv(ctx context.Context, in contract.ConnectorOpInput, cfg *dataplanev1.GetConnectorConfigResponse) (connectorhost.Env, func(), error) {
+	sd, dd := opDigests(in, cfg.GetConnector())
+	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
+	if err != nil {
+		return env, func() {}, err
+	}
+	role := "destination"
+	if in.SourceID != "" {
+		role = "source"
+	}
+	release, err := leaseAWS(ctx, a.AWSRoles, &env, cfg.GetWorkspace(), "", awsConnection{role, cfg.GetName(), cfg.GetConfig().GetAws()})
+	return env, release, err
 }
 
 // opDigests are an op's connector version digest as the source's or the
@@ -115,8 +137,8 @@ func (a *Ops) DiscoverSource(ctx context.Context, in contract.ConnectorOpInput) 
 	if err != nil {
 		return res, err
 	}
-	sd, dd := opDigests(in, cfg.GetConnector())
-	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
+	env, release, err := a.opEnv(ctx, in, cfg)
+	defer release()
 	if err != nil {
 		return res, err
 	}
@@ -166,8 +188,8 @@ func (a *Ops) teardown(ctx context.Context, in contract.ConnectorOpInput) (contr
 	if err != nil {
 		return res, err
 	}
-	sd, dd := opDigests(in, cfg.GetConnector())
-	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
+	env, release, err := a.opEnv(ctx, in, cfg)
+	defer release()
 	if err != nil {
 		return res, err
 	}
@@ -218,8 +240,8 @@ func (a *Ops) ProbeRetention(ctx context.Context, in contract.ConnectorOpInput) 
 	if err != nil {
 		return res, err
 	}
-	sd, dd := opDigests(in, cfg.GetConnector())
-	env, err := connectorEnv(ctx, a.Connectors, a.Versions, sd, dd)
+	env, release, err := a.opEnv(ctx, in, cfg)
+	defer release()
 	if err != nil {
 		return res, err
 	}
@@ -330,6 +352,46 @@ func catalogProto(cat source.Catalog) *apiv1.Catalog {
 
 // connectorEnv is env with the source's and the destination's connector
 // versions added, by digest; an empty digest adds nothing.
+// awsConnection is a source or destination, for leaseAWS.
+type awsConnection struct {
+	role, name string
+	access     *apiv1.AWSAccess
+}
+
+// leaseAWS assumes the aws roles that conns name for their connectors in
+// env, tagging each session with the workspace and the pipeline, until
+// release.
+func leaseAWS(ctx context.Context, b *awsroles.Broker, env *connectorhost.Env, workspace, pipeline string, conns ...awsConnection) (release func(), err error) {
+	var leases []*awsroles.Lease
+	release = func() {
+		for _, l := range leases {
+			l.Close()
+		}
+	}
+	got := maps.Clone(env.AWS)
+	for _, c := range conns {
+		if c.access == nil {
+			continue
+		}
+		if b == nil {
+			release()
+			return func() {}, errs.New(errs.ConfigInvalid, "%s %s names an aws role, and this runner can't assume roles", c.role, c.name)
+		}
+		l, err := b.Lease(ctx, c.access, awsroles.Session{Workspace: workspace, Kind: c.role, Name: c.name, Pipeline: pipeline})
+		if err != nil {
+			release()
+			return func() {}, err
+		}
+		leases = append(leases, l)
+		if got == nil {
+			got = map[string]external.AWS{}
+		}
+		got[c.role] = external.AWS{URL: l.URL, Token: l.Token}
+	}
+	env.AWS = got
+	return release, nil
+}
+
 func connectorEnv(ctx context.Context, env connectorhost.Env, versions *connectorhost.Fetcher, source, destination string) (connectorhost.Env, error) {
 	for _, r := range []struct{ role, digest string }{{"source", source}, {"destination", destination}} {
 		if r.digest == "" {

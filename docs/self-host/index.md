@@ -54,7 +54,7 @@ If a runner cannot get credentials from the source that it finds, it does not st
 
 The runner also reads AWS profiles (`AWS_PROFILE`). The engine does not read profiles. If a runner uses a profile, also give it keys or a role.
 
-These credentials are for the runner and the engine only. Connectors do not get them, as [Connectors are trusted code](#connectors-are-trusted-code) explains.
+These credentials are for the runner and the engine. By default, connectors do not get them. [Run on AWS](./aws.md) explains roles on EC2 and EKS, and how a connector gets AWS access.
 
 When a runner starts, it asks S3 for the region of the bucket. To change how runners reach the bucket, add these query parameters to its URL:
 
@@ -80,7 +80,9 @@ A connector does not get the runner's environment variables, except `PATH`, `HOM
 - The token of an EKS IAM role for a service account, or of EKS Pod Identity.
 - An ECS task role.
 
-A connector that calls a cloud service needs credentials in its own config, such as an access key stored as a secret. On EC2, a connector can also get the instance profile's role through the instance metadata service.
+By default, the runner also stops the AWS SDKs in a connector from using EC2's instance metadata. A connector gets AWS credentials as [Credentials for connectors](./aws.md#credentials-for-connectors) explains: a role for its source or destination, the runner's own credentials, or keys in its config. For other clouds, a connector needs credentials in its own config, such as a key stored as a secret.
+
+A connector that looks for the runner's credentials on purpose may still find them. [What OpenETL can block](./aws.md#what-openetl-can-block) lists the cases.
 
 Install only connectors you trust. Give runners only the credentials and network access their pipelines need.
 

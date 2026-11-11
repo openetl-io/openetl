@@ -198,3 +198,16 @@ spec:
 		t.Errorf("%d overrides left, %v", n, err)
 	}
 }
+
+// The runner gets the names it tags its AWS sessions with.
+func TestSyncSpecNames(t *testing.T) {
+	e := newHoldsEnv(t)
+	spec, err := e.runner.GetSyncSpec(t.Context(), connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := spec.Msg
+	if got := []string{m.GetWorkspace(), m.GetPipelineName(), m.GetSourceName(), m.GetDestinationName()}; strings.Join(got, ",") != "default,orders,src,dst" {
+		t.Errorf("workspace, pipeline, source and destination = %v", got)
+	}
+}

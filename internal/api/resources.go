@@ -603,6 +603,11 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 
 		SourceConnector:      row.SourceConnector,
 		DestinationConnector: row.DestinationConnector,
+
+		Workspace:       row.Workspace,
+		PipelineName:    row.Pipeline,
+		SourceName:      row.Source,
+		DestinationName: row.Destination,
 	}
 	if err := protojson.Unmarshal(row.PipelineSpec, res.Pipeline); err != nil {
 		return nil, err

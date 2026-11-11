@@ -50,6 +50,11 @@ var groups = []group{
 		[]string{"egress-allow", "official-connectors", "registry-plain-http", "github-api"},
 	},
 	{
+		"AWS credentials for connectors",
+		"The IAM roles a runner may assume for connectors, and what a connector gets when its source or destination names no role. [Run on AWS](../self-host/aws.md) explains both.",
+		[]string{"aws-assume-roles", "connector-aws-credentials"},
+	},
+	{
 		"Runners",
 		"Where a runner keeps checkpoints and its cache, the programs it runs, the pool it serves, the room it has, and its token.",
 		[]string{"checkpoints", "engine", "connectors", "cache", "dbt", "spark-submit", "bridge-listen", "bridge-advertise", "pool", "capacity", "reserve", "cgroup-root", "report-interval", "token-file", config.RunnerTokenEnv},

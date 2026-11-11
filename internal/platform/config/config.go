@@ -47,6 +47,12 @@ type Config struct {
 	// CIDR prefixes, comma-separated, that connectors, registries and
 	// webhooks may reach besides public addresses.
 	EgressAllow string
+	// IAM role ARNs, comma-separated, where * matches any characters, that
+	// a source or destination's aws.role may name. Empty: none.
+	AWSAssumeRoles string
+	// The AWS credentials a connector gets from the runner when its source
+	// or destination names no aws.role: none, or inherit, the runner's own.
+	ConnectorAWSCredentials string
 	// The official connectors' registry namespace, which a new org's
 	// catalog lists. Empty: none.
 	OfficialConnectors string
@@ -170,6 +176,8 @@ var options = []option{
 	{"report-interval", "OPENETL_REPORT_INTERVAL", "10s", "how often this runner reports what it runs to the API, as a Go duration; keep it well under its work's heartbeat timeouts", func(c *Config) *string { return &c.ReportInterval }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},
 	{"egress-allow", "OPENETL_EGRESS_ALLOW", "", "comma-separated CIDR prefixes connectors, registries and webhooks may reach besides public addresses, such as a hybrid data plane's own networks", func(c *Config) *string { return &c.EgressAllow }},
+	{"aws-assume-roles", "OPENETL_AWS_ASSUME_ROLES", "", "comma-separated IAM role ARNs, where * matches any characters, that a source or destination may name in aws.role; the runner assumes the role with its own AWS credentials and gives the connector that role's credentials only; empty: none", func(c *Config) *string { return &c.AWSAssumeRoles }},
+	{"connector-aws-credentials", "OPENETL_CONNECTOR_AWS_CREDENTIALS", "none", "the AWS credentials a connector gets from the runner when its source or destination names no aws.role: none, or inherit, which passes the runner's AWS_ variables and leaves EC2's instance metadata reachable, so the connector has all of the runner's AWS access, every pipeline's checkpoints included", func(c *Config) *string { return &c.ConnectorAWSCredentials }},
 	{"official-connectors", "OPENETL_OFFICIAL_CONNECTORS", "oci://ghcr.io/openetl-io/openetl-connectors", "the official connectors' registry namespace, connected as a source of the catalog when the org is created; empty: none", func(c *Config) *string { return &c.OfficialConnectors }},
 	{"registry-plain-http", "OPENETL_REGISTRY_PLAIN_HTTP", "", "comma-separated registry hosts, host:port, reached over plain HTTP besides loopback ones", func(c *Config) *string { return &c.RegistryPlainHTTP }},
 	{"github-api", "OPENETL_GITHUB_API", "", "GitHub's REST API, for connector sources and releases (default: https://api.github.com)", func(c *Config) *string { return &c.GitHubAPI }},
@@ -289,6 +297,9 @@ func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config,
 	c.RunnerToken = os.Getenv(RunnerTokenEnv)
 	if c.AuditRetentionDays < 0 {
 		return c, fmt.Errorf("config: audit-retention-days is %d; it can't be negative", c.AuditRetentionDays)
+	}
+	if c.ConnectorAWSCredentials != "none" && c.ConnectorAWSCredentials != "inherit" {
+		return c, fmt.Errorf("config: connector-aws-credentials is %q; it must be none or inherit", c.ConnectorAWSCredentials)
 	}
 	if c.Auth != "password" && c.Auth != "none" {
 		return c, fmt.Errorf("config: auth is %q; it must be password or none", c.Auth)

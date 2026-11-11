@@ -23,6 +23,7 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/gen/openetl/dataplane/v1/dataplanev1connect"
+	"github.com/openetl-io/openetl/internal/awsroles"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
@@ -65,6 +66,9 @@ type Sync struct {
 	// Reaches Flink clusters' REST APIs, and fetches https:// code. Nil: a
 	// default client.
 	HTTP *http.Client
+	// Assumes the aws roles that sources and destinations name. Nil: none
+	// can be.
+	AWSRoles *awsroles.Broker
 }
 
 // RunSyncAttempt runs one attempt of a sync. When it's asked to stop, or the
@@ -201,6 +205,12 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 		return out, err
 	}
 	env, err := connectorEnv(ctx, a.Connectors, a.Versions, spec.GetSourceConnector(), spec.GetDestinationConnector())
+	if err != nil {
+		return out, err
+	}
+	release, err := leaseAWS(ctx, a.AWSRoles, &env, spec.GetWorkspace(), spec.GetPipelineName(),
+		awsConnection{"source", spec.GetSourceName(), spec.GetSource().GetAws()}, awsConnection{"destination", spec.GetDestinationName(), spec.GetDestination().GetAws()})
+	defer release()
 	if err != nil {
 		return out, err
 	}

@@ -2782,6 +2782,20 @@ paths:
                                 $ref: '#/components/schemas/Status'
 components:
     schemas:
+        AWSAccess:
+            type: object
+            properties:
+                role:
+                    type: string
+                    description: The role's ARN.
+                externalId:
+                    type: string
+                    description: 'The ExternalId the role''s trust policy requires. Empty: none is sent.'
+            description: |-
+                AWSAccess is an IAM role that a runner assumes with its own AWS
+                 credentials, if its OPENETL_AWS_ASSUME_ROLES allows the role. Each session
+                 is tagged with the workspace, the source's or destination's name, and the
+                 pipeline's for a sync, so the role's trust policy can require them.
         AppliedResource:
             type: object
             properties:
@@ -3241,6 +3255,12 @@ components:
                 config:
                     type: object
                     description: Secret fields hold secret references, never values.
+                aws:
+                    allOf:
+                        - $ref: '#/components/schemas/AWSAccess'
+                    description: |-
+                        A role the runner assumes for the connector, whose credentials are the
+                         only AWS credentials the connector gets from the runner. Unset: none.
             description: ConnectorConfig is the spec of a Source or Destination document.
         ConnectorSource:
             type: object

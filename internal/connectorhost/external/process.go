@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -49,8 +50,39 @@ const (
 )
 
 // The runner's environment holds its own credentials, so a connector gets
-// only these.
+// only these, and what AWS says.
 var passEnv = []string{"PATH", "HOME", "TMPDIR", "TZ", "LANG", "SSL_CERT_FILE", "SSL_CERT_DIR"}
+
+// AWS is what the AWS SDKs' default credential chain finds in a connector's
+// process. The zero value finds nothing: no runner variables, no profiles
+// in HOME, and no EC2 instance metadata. That holds for code that looks
+// through the chain, not for code that looks for the runner's credentials
+// on purpose, which runs as the runner's user.
+type AWS struct {
+	// The runner's own: every AWS_ variable, and EC2's instance metadata.
+	Inherit bool
+	// A role's credentials, served at URL to requests that carry Token, in
+	// place of anything else.
+	URL, Token string
+}
+
+func (a AWS) env(dir string) []string {
+	if a.Inherit && a.URL == "" {
+		var out []string
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, "AWS_") {
+				out = append(out, kv)
+			}
+		}
+		return out
+	}
+	none := filepath.Join(dir, "no-aws-config")
+	out := []string{"AWS_EC2_METADATA_DISABLED=true", "AWS_CONFIG_FILE=" + none, "AWS_SHARED_CREDENTIALS_FILE=" + none}
+	if a.URL != "" {
+		out = append(out, "AWS_CONTAINER_CREDENTIALS_FULL_URI="+a.URL, "AWS_CONTAINER_AUTHORIZATION_TOKEN="+a.Token)
+	}
+	return out
+}
 
 // Options is what a connector's process gets from the runner.
 type Options struct {
@@ -67,6 +99,8 @@ type Options struct {
 	Size resources.Size
 	// Serves a staged destination's files and cursors (SetStaging).
 	Staging hostservices.Staging
+	// The AWS credentials the process finds; the zero value: none.
+	AWS AWS
 }
 
 // process is one running connector.
@@ -111,7 +145,7 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 		_ = os.RemoveAll(dir)
 		return nil, errs.Wrap(errs.Internal, err, "connector: host services socket")
 	}
-	if err := p.run(ctx, exe, kind, socket, hostSocket, opts.Size); err != nil {
+	if err := p.run(ctx, exe, kind, socket, hostSocket, opts); err != nil {
 		_ = hostLn.Close()
 		return nil, err
 	}
@@ -179,7 +213,7 @@ func ReadSpec(ctx context.Context, exe string, kind protocolv1.ConnectorKind, op
 }
 
 // run starts the executable and connects to it once it's ready.
-func (p *process) run(ctx context.Context, exe string, kind protocolv1.ConnectorKind, socket, hostSocket string, size resources.Size) error {
+func (p *process) run(ctx context.Context, exe string, kind protocolv1.ConnectorKind, socket, hostSocket string, opts Options) error {
 	// close stops it, not ctx's end.
 	p.cmd = exec.CommandContext(context.WithoutCancel(ctx), exe)
 	for _, k := range passEnv {
@@ -191,7 +225,8 @@ func (p *process) run(ctx context.Context, exe string, kind protocolv1.Connector
 	if kind != protocolv1.ConnectorKind_CONNECTOR_KIND_UNSPECIFIED {
 		p.cmd.Env = append(p.cmd.Env, sdk.EnvRole+"="+connspec.RoleOf(&protocolv1.SpecResponse{Kind: kind}))
 	}
-	p.cmd.Env = append(p.cmd.Env, size.ConnectorEnv()...)
+	p.cmd.Env = append(p.cmd.Env, opts.Size.ConnectorEnv()...)
+	p.cmd.Env = append(p.cmd.Env, opts.AWS.env(p.dir)...)
 	p.meter.Confine(p.cmd)
 	stdin, err1 := p.cmd.StdinPipe()
 	stdout, err2 := p.cmd.StdoutPipe()

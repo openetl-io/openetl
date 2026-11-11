@@ -40,6 +40,14 @@ The runner sets these environment variables before starting the connector. It th
 
 The runner also sets `GOMAXPROCS` and `GOMEMLIMIT` from the job's size. From its own environment, the runner passes only `PATH`, `HOME`, `TMPDIR`, `TZ`, `LANG`, `SSL_CERT_FILE` and `SSL_CERT_DIR`. A connector does not get the runner's cloud credentials, such as AWS keys or the token of an EKS pod's IAM role. If your connector calls a cloud service, take its credentials in the connector's config. Mark them `"x-secret": true` in the config's JSON Schema.
 
+If your connector calls AWS, also use the AWS SDK's default credential chain when its config has no keys. The runner sets the chain's variables:
+
+- **By default**, `AWS_EC2_METADATA_DISABLED`, `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE`, so that the chain finds nothing of the runner's.
+- **If the source or destination names a role** (`aws.role`), also `AWS_CONTAINER_CREDENTIALS_FULL_URI` and `AWS_CONTAINER_AUTHORIZATION_TOKEN`. The chain then finds the role's credentials, which the runner serves on `127.0.0.1` and renews.
+- **If the runner's `OPENETL_CONNECTOR_AWS_CREDENTIALS` is `inherit`**, the runner's own `AWS_` variables instead.
+
+[Run on AWS](../self-host/aws.md#credentials-for-connectors) explains these from the operator's side.
+
 The Go SDK, in [`sdk/go`](../../sdk/go), does all of that in `sdk.Serve`, and its packages `source` and `destination` describe the contract in Go.
 
 ### A source
