@@ -49,10 +49,11 @@ spec:
 
 ## The openetl CLI
 
-`openetl` is the command-line client of the API. Run `openetl` for its commands, and `openetl COMMAND -h` for a command's flags.
+`openetl` is the command-line client of the API. [Install the CLI](../get-started/install.md) shows how to install it. Run `openetl` for its commands, and `openetl COMMAND -h` for a command's flags.
 
 | Command | What it does |
 |---|---|
+| `version` | Prints the CLI's version, such as `0.1.0-alpha` |
 | `apply -f FILE` | Creates or updates the resources in `FILE`, of any kind in the table above |
 | `plan -f FILE` | Shows what `apply` would change, and how each pipeline would sync |
 | `pause NAME` | Stops a pipeline's scheduled syncs |

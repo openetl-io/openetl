@@ -28,18 +28,33 @@ For S3, the cluster needs its S3A filesystem dependencies and read, write, list 
 
 Use the cluster's identity or the pipeline's `sparkAccess`. The latter can supply S3A keys for the bucket or an EMR runtime role. See [storage access fields](../reference/specs/pipeline.md#access-to-the-data-planes-storage).
 
+## Get the library
+
+Your application depends on `openetl-spark`. Use the version of your OpenETL installation. Each release has the jar, `openetl-spark-VERSION.jar`, as a release file. The jar is not in a Maven repository. Download it, and install it in your local Maven repository:
+
+```sh
+curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/openetl-spark-0.1.0-alpha.jar
+mvn install:install-file -Dfile=openetl-spark-0.1.0-alpha.jar \
+  -DgroupId=io.openetl -DartifactId=openetl-spark -Dversion=0.1.0-alpha -Dpackaging=jar
+```
+
+Your project then depends on `io.openetl:openetl-spark:0.1.0-alpha`, and on Spark with `provided` scope. The release's `checksums.txt` has the jar's SHA-256. [Install by hand](../get-started/install.md#install-by-hand) shows how to check a file against it.
+
 ## Build the example transform
 
 [`examples/spark-transform`](../../examples/spark-transform) is a Maven project that adds `transform_epoch` to every input stream. It preserves each stream's name, rows and metadata columns.
 
-Install the library from this checkout, then package the example:
+Get the release's source, and package the example with the library that you installed:
 
 ```sh
-mvn -f libs/openetl-spark/java/pom.xml install
-mvn -f examples/spark-transform/pom.xml package
+git clone --depth 1 --branch v0.1.0-alpha https://github.com/openetl-io/openetl
+cd openetl
+mvn -f examples/spark-transform/pom.xml package -Dopenetl.version=0.1.0-alpha
 ```
 
-The application jar is `examples/spark-transform/target/spark-transform-0.1.0.jar`. It includes `openetl-spark`. Spark itself has `provided` scope and comes from the cluster. The library is not published to a package repository.
+The application jar is `examples/spark-transform/target/spark-transform-0.1.0.jar`. It includes `openetl-spark`. Spark itself has `provided` scope and comes from the cluster.
+
+To build the library from the checkout instead, run `mvn -f libs/openetl-spark/java/pom.xml install`. Then package the example without `-Dopenetl.version`.
 
 The [`AddEpoch` class](../../examples/spark-transform/src/main/java/io/openetl/examples/AddEpoch.java) implements `io.openetl.spark.Transform`. OpenETL's driver instantiates the class and calls its `apply` method. The class needs a public no-argument constructor.
 
@@ -109,6 +124,12 @@ Use the application's driver ID and cluster UI to inspect its execution. OpenETL
 ## Use Python instead of Java
 
 Python transforms run on YARN, Kubernetes or EMR, where Python cluster deploy mode is supported. Install [`openetl-spark`'s Python package](../../libs/openetl-spark/python) in the application environment and make it available to the driver and executors. PySpark comes from the cluster.
+
+Each release has the package as a wheel. Python's version rules write `0.1.0-alpha` as `0.1.0a0`:
+
+```sh
+pip install https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/openetl_spark-0.1.0a0-py3-none-any.whl
+```
 
 Your Python file defines `transform(spark, inputs, ctx)` and calls `openetl_spark.run(transform)` from its main entry point. It returns a dictionary of output DataFrames. The same epoch and output rules apply as in Java.
 

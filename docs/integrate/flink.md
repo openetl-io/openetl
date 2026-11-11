@@ -62,18 +62,35 @@ For a session cluster, configure its filesystem plugins and S3 credentials when 
 
 The runner still needs its own storage access. Credentials available to the runner do not automatically become the cluster's credentials.
 
+## Get the library
+
+Your application depends on `openetl-flink`. Use the version of your OpenETL installation. Each release has the jar, `openetl-flink-VERSION.jar`, as a release file. The jar is not in a Maven repository. Download it, and install it in your local Maven repository:
+
+```sh
+curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/openetl-flink-0.1.0-alpha.jar
+mvn install:install-file -Dfile=openetl-flink-0.1.0-alpha.jar \
+  -DgroupId=io.openetl -DartifactId=openetl-flink -Dversion=0.1.0-alpha -Dpackaging=jar
+```
+
+Your project then depends on `io.openetl:openetl-flink:0.1.0-alpha`, and on Flink's runtime with `provided` scope. The release's `checksums.txt` has the jar's SHA-256. [Install by hand](../get-started/install.md#install-by-hand) shows how to check a file against it.
+
+The release's jar holds its own dependencies, relocated. Do not add them to your project: [`examples/flink-transform`'s `pom.xml`](../../examples/flink-transform/pom.xml) excludes them.
+
 ## Build a job
 
 [`examples/flink-transform`](../../examples/flink-transform) is a Maven project that forwards each input stream to an output of the same name. It exercises the bridge and checkpoint contract without changing rows.
 
-From the repository root:
+Get the release's source, and package the example with the library that you installed:
 
 ```sh
-mvn -f libs/openetl-flink/java/pom.xml install
-mvn -f examples/flink-transform/pom.xml package
+git clone --depth 1 --branch v0.1.0-alpha https://github.com/openetl-io/openetl
+cd openetl
+mvn -f examples/flink-transform/pom.xml package -Dopenetl.version=0.1.0-alpha
 ```
 
-The application jar is `examples/flink-transform/target/flink-transform-0.1.0.jar`. It includes `openetl-flink` and its relocated dependencies. Flink runtime dependencies have `provided` scope and come from the cluster. The library is not published to a package repository.
+The application jar is `examples/flink-transform/target/flink-transform-0.1.0.jar`. It includes `openetl-flink` and its relocated dependencies. Flink runtime dependencies have `provided` scope and come from the cluster.
+
+To build the library from the checkout instead, run `mvn -f libs/openetl-flink/java/pom.xml install`. Then package the example without `-Dopenetl.version`.
 
 The [`ForwardStreams` class](../../examples/flink-transform/src/main/java/io/openetl/examples/ForwardStreams.java) creates an execution environment, then calls:
 

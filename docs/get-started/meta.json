@@ -1,6 +1,6 @@
 {
   "title": "Get started",
-  "description": "What OpenETL is, a first pipeline, and the words it uses",
+  "description": "What OpenETL is, a first pipeline, the CLI, and the words it uses",
   "icon": "Rocket",
-  "pages": ["overview", "quickstart", "concepts"]
+  "pages": ["overview", "quickstart", "install", "concepts"]
 }

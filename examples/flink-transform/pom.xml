@@ -9,12 +9,14 @@
   <properties>
     <maven.compiler.release>11</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- The openetl-flink to build against: a release's, such as 0.1.0-alpha, or this checkout's. -->
+    <openetl.version>0.1.0-SNAPSHOT</openetl.version>
   </properties>
   <dependencies>
     <dependency>
       <groupId>io.openetl</groupId>
       <artifactId>openetl-flink</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <version>${openetl.version}</version>
       <exclusions>
         <exclusion><groupId>*</groupId><artifactId>*</artifactId></exclusion>
       </exclusions>

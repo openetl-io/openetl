@@ -3,7 +3,7 @@ title: Install on Kubernetes
 description: Run OpenETL's API servers, orchestrators, runners and pod launcher on a Kubernetes cluster, and scale them with KEDA and Karpenter.
 ---
 
-The manifests in [`deploy/kubernetes`](../../deploy/kubernetes) install OpenETL on Kubernetes through `kubectl apply -k`. Run these commands from the repository root. The manifests provide these components:
+The manifests in [`deploy/kubernetes`](../../deploy/kubernetes) install OpenETL on Kubernetes through `kubectl apply -k`. You use them from the release's tag, as the base of a kustomization of your own. The manifests provide these components:
 
 | File | What it runs |
 |---|---|
@@ -21,21 +21,46 @@ The manifests do not include Postgres or object storage. Configure those service
 
 - **Postgres** for metadata. The default DBOS backend stores workflows in a second database, named after the metadata database with `_dbos` appended. Orchestrators create it if their database user has permission. Otherwise, create it yourself or specify another database with `OPENETL_DBOS_DATABASE_URL`. Do not connect through a transaction pooler.
 - **A bucket** in S3, GCS or Azure Blob Storage for checkpoints and staging. Runners, job pods and the pod launcher need read and write access to it, through a workload identity or keys in the Secret `openetl-runner`.
-- **OpenETL's image** in a registry reachable by the cluster. There are no released images. Clone [openetl-connectors](https://github.com/openetl-io/openetl-connectors) beside this repository. Build with `make engine-linux image IMAGE=REGISTRY/openetl:TAG`, then push the image to your registry. Set that image under `images` in `kustomization.yaml`. The [Compose guide](./compose.md#before-you-start) explains the build prerequisites. On Linux, `cargo build -p openetl-engine` can replace `make engine-linux`.
-- **kubectl** 1.27 or later.
+- **Network access to `ghcr.io`** from the cluster's nodes and runners. Nodes pull OpenETL's image, `ghcr.io/openetl-io/openetl:0.1.0-alpha`, for `linux/amd64` or `linux/arm64`. Runners download the connector packages that you install. The image holds no external connectors.
+- **kubectl** 1.27 or later, and **git**, which kubectl uses to read the manifests from GitHub.
+- **The `openetl` CLI** on your computer, as [Install the CLI](../get-started/install.md) shows.
 
 ## Install
 
-1. Set `OPENETL_CHECKPOINTS` in `config.yaml` to your bucket, such as `s3://my-bucket`. [Buckets](./index.md#buckets) gives the order in which runners look for credentials.
+1. Make a directory for your installation's kustomization. In it, write `kustomization.yaml`. Replace `BUCKET` with your bucket's URL, such as `s3://my-bucket`:
 
-   On EKS, runners, job pods and the launcher can use the bucket through an IAM role for a service account or through Pod Identity, without keys. Give the role to two service accounts in the `openetl` namespace:
+   ```yaml
+   apiVersion: kustomize.config.k8s.io/v1beta1
+   kind: Kustomization
+   namespace: openetl
+   resources:
+     - https://github.com/openetl-io/openetl//deploy/kubernetes?ref=v0.1.0-alpha
+   images:
+     - name: openetl
+       newName: ghcr.io/openetl-io/openetl
+       newTag: 0.1.0-alpha
+   patches:
+     - patch: |
+         apiVersion: v1
+         kind: ConfigMap
+         metadata:
+           name: openetl
+         data:
+           OPENETL_CHECKPOINTS: BUCKET
+   ```
+
+   The resource is the release's manifests, at the tag `v0.1.0-alpha`. The image is the same release's. The patch changes the ConfigMap `openetl`, which every component reads. Add your other settings to its `data`, such as `OPENETL_PUBLIC_URL`. [Buckets](./index.md#buckets) gives the order in which runners look for credentials.
+
+   To check what you are about to apply, run `kubectl kustomize .` in the directory. It prints the manifests and changes nothing.
+
+2. Give runners access to the bucket. On EKS, runners, job pods and the launcher can use the bucket through an IAM role for a service account or through Pod Identity, without keys. Give the role to two service accounts in the `openetl` namespace:
 
    - `default`, which runners, job pods, the server and the orchestrators use.
    - `openetl-launcher`, which the launcher uses. The launcher checks the bucket when it starts, and does not start without access.
 
-   [Run on AWS](./aws.md#on-eks) shows the commands for both. By default, connectors do not get this role. [Credentials for connectors](#credentials-for-connectors) explains what to do.
+   [Run on AWS](./aws.md#on-eks) shows the commands for both. The service account `openetl-launcher` exists after step 4. If you annotate service accounts for IRSA, do it after that step. By default, connectors do not get this role. [Credentials for connectors](#credentials-for-connectors) explains what to do.
 
-2. Create the namespace, and the Secret the server and orchestrators read:
+3. Create the namespace, and the Secret the server and orchestrators read:
 
    ```sh
    kubectl create namespace openetl
@@ -46,22 +71,22 @@ The manifests do not include Postgres or object storage. Configure those service
 
    `OPENETL_SECRETS_KEY` encrypts pipeline secrets. Keep a backup of this key; stored secrets cannot be decrypted without it. A KMS key is also supported (`awskms://`, `gcpkms://`, `azurekeyvault://`).
 
-3. Apply the manifests and wait for the server:
+4. In your kustomization's directory, apply the manifests and wait for the server:
 
    ```sh
-   kubectl apply -k deploy/kubernetes
+   kubectl apply -k .
    kubectl -n openetl rollout status deploy/openetl-server
    ```
 
-   Runners and the launcher wait for their Secret, made in step 5.
+   Runners and the launcher wait for their Secret, made in step 6.
 
-4. Create an owner key. This command writes and prints a new key in the server pod selected by `kubectl`:
+5. Create an owner key. This command writes and prints a new key in the server pod selected by `kubectl`:
 
    ```sh
    kubectl -n openetl exec deploy/openetl-server -- sh -c 'openetld bootstrap-key 2>/dev/null && cat .openetl/admin.key'
    ```
 
-5. Replace `OWNER_KEY` with the key from step 4. Create a runner token and the `openetl-runner` Secret. If the pods have no workload identity, also add bucket credentials to this Secret:
+6. Replace `OWNER_KEY` with the key from step 5. Create a runner token and the `openetl-runner` Secret. If the pods have no workload identity, also add bucket credentials to this Secret:
 
    ```sh
    kubectl -n openetl port-forward svc/openetl-server 8080 &
@@ -71,13 +96,15 @@ The manifests do not include Postgres or object storage. Configure those service
      --from-literal=OPENETL_RUNNER_TOKEN="$(cat runner.token)"
    ```
 
-To expose the API outside the cluster, configure an Ingress or load balancer for the `openetl-server` Service. Set `OPENETL_PUBLIC_URL` in `config.yaml` to the public console URL.
+To expose the API outside the cluster, configure an Ingress or load balancer for the `openetl-server` Service. Set `OPENETL_PUBLIC_URL` in your ConfigMap patch to the public console URL, then apply again.
+
+Install the connectors that your pipelines need with `openetl connector apply`. `openetl connector catalog` lists the official ones, with the command that installs each. [Choose and manage connectors](../pipelines/connectors.md) covers versions and private registries.
 
 Every component serves Prometheus metrics on port 9464, and its pods carry the `prometheus.io/scrape` and `prometheus.io/port` annotations.
 
 ## Credentials for connectors
 
-By default, a connector does not get the role that IRSA or Pod Identity gives the pod. Give a source or destination its own role with `aws.role`, which the runner assumes for its connector. Set the roles that runners may assume in `OPENETL_AWS_ASSUME_ROLES`, in `config.yaml`. [Run on AWS](./aws.md#credentials-for-connectors) explains the setup, the other ways, and what OpenETL can and cannot block.
+By default, a connector does not get the role that IRSA or Pod Identity gives the pod. Give a source or destination its own role with `aws.role`, which the runner assumes for its connector. Set the roles that runners may assume in `OPENETL_AWS_ASSUME_ROLES`, in your ConfigMap patch. [Run on AWS](./aws.md#credentials-for-connectors) explains the setup, the other ways, and what OpenETL can and cannot block.
 
 [Connectors are trusted code](./index.md#connectors-are-trusted-code) lists what a connector gets from the runner.
 
@@ -90,7 +117,7 @@ Each job has a size, from `xs` (0.5 vCPU, 1 GiB) to `xl` (8 vCPUs, 16 GiB), whic
 
 Jobs wait until capacity is available. Before stopping, a runner finishes jobs at a checkpoint. It allows up to 2 minutes for a sync and 10 minutes for a stream. Its termination grace period covers that time. Jobs are then placed again.
 
-A pod's spec comes from the PodTemplate `openetl-attempt-default`, to which the launcher adds the job, labels, resources and node constraints. The launcher reads the template when it starts, so restart it after changing the template (`kubectl -n openetl rollout restart deploy/openetl-launcher-default`).
+A pod's spec comes from the PodTemplate `openetl-attempt-default`, to which the launcher adds the job, labels, resources and node constraints. To change it, add a patch for the PodTemplate to your kustomization. The launcher reads the template when it starts, so restart it after you apply the change (`kubectl -n openetl rollout restart deploy/openetl-launcher-default`).
 
 ### Spot nodes
 
@@ -102,7 +129,7 @@ To prohibit stream pods on spot nodes, set `OPENETL_POD_STREAM_SPOT=avoid` on th
 
 Karpenter requests a non-spot node before relaxing the default preference. The Cluster Autoscaler does not consider that preference when selecting a node group. With the Cluster Autoscaler, use `avoid` when streams must never run on spot.
 
-To add a pool, copy `runner-default.yaml` and `launcher-default.yaml` with another name and `OPENETL_POOL`, and point pipelines at it with `spec.resources.pool`. A pool with only a launcher runs every job in pods.
+To add a pool, download [`runner-default.yaml`](../../deploy/kubernetes/runner-default.yaml) and [`launcher-default.yaml`](../../deploy/kubernetes/launcher-default.yaml) from the release's tag into your kustomization's directory. Change their names, the pool's label and `OPENETL_POOL`, and add both files to `resources`. Point pipelines at the pool with `spec.resources.pool`. A pool with only a launcher runs every job in pods.
 
 ## Scaling
 
@@ -110,8 +137,26 @@ To add a pool, copy `runner-default.yaml` and `launcher-default.yaml` with anoth
 
 The `keda` component scales shared runners in the `default` pool using orchestrator placement metrics. It compares running and pending job demand with each runner's available CPU and memory. Jobs assigned to separate pods are excluded. This requires [KEDA](https://keda.sh) 2.x and Prometheus scraping the annotated pods.
 
-1. In `keda/runner-default.yaml`, set `serverAddress` to your Prometheus. If you change the runners' size, change both `threshold`s to match their room.
-2. Uncomment `components` in `kustomization.yaml`, with `keda` only, and apply.
+1. Add the component, and a patch that sets `serverAddress` to your Prometheus, to your `kustomization.yaml`:
+
+   ```yaml
+   components:
+     - https://github.com/openetl-io/openetl//deploy/kubernetes/keda?ref=v0.1.0-alpha
+   patches:
+     - target:
+         kind: ScaledObject
+         name: openetl-runner-default
+       patch: |
+         - op: replace
+           path: /spec/triggers/0/metadata/serverAddress
+           value: http://prometheus.monitoring.svc:9090
+         - op: replace
+           path: /spec/triggers/1/metadata/serverAddress
+           value: http://prometheus.monitoring.svc:9090
+   ```
+
+   Put this patch in the same `patches` list as the ConfigMap's. If you change the runners' size, also replace both triggers' `threshold` (`/spec/triggers/0/metadata/threshold` and `/spec/triggers/1/metadata/threshold`) to match their room.
+2. Apply with `kubectl apply -k .`.
 
 The queries, for scaling with something else:
 
@@ -131,7 +176,13 @@ KEDA keeps at least one shared runner. Without one, a pool with a launcher sends
 - `openetl-attempts`, for job pods, on spot or on-demand instances. Consolidation leaves stream pods alone, and sync pods on spot finish at a checkpoint on an interruption notice and are placed again.
 - `openetl-runners`, for shared runners, on-demand only, removed only when empty.
 
-Apply the node pools with `kubectl apply -f deploy/kubernetes/karpenter/nodepools.yaml`. Add `karpenter` to `components` in `kustomization.yaml`. This gives runners and job pods the node selector and toleration for their pool.
+Apply the node pools:
+
+```sh
+kubectl apply -f https://raw.githubusercontent.com/openetl-io/openetl/v0.1.0-alpha/deploy/kubernetes/karpenter/nodepools.yaml
+```
+
+Then add `https://github.com/openetl-io/openetl//deploy/kubernetes/karpenter?ref=v0.1.0-alpha` to `components` in your `kustomization.yaml`, and apply. This gives runners and job pods the node selector and toleration for their pool.
 
 A runner pool used only for scheduled syncs can also use spot instances. If the cluster can add only spot instances, allow spot in `openetl-runners`. Streams on those runners have the same interruption behavior as [stream pods on spot](#spot-nodes).
 
@@ -143,10 +194,32 @@ API servers and orchestrators hold no state but the database, so a plain Horizon
 
 ## Temporal
 
-To run workflows on Temporal instead of DBOS, set `OPENETL_ORCHESTRATOR: temporal`, `OPENETL_TEMPORAL_ADDRESS` and `OPENETL_TEMPORAL_NAMESPACE` in `config.yaml` before the first install. Changing an installation's orchestrator later isn't supported; [changing it later](./index.md#changing-it-later) has the steps for when there's no other way.
+To run workflows on Temporal instead of DBOS, set `OPENETL_ORCHESTRATOR: temporal`, `OPENETL_TEMPORAL_ADDRESS` and `OPENETL_TEMPORAL_NAMESPACE` in your ConfigMap patch before the first install. OpenETL does not support a change of an installation's orchestrator later. [Changing it later](./index.md#changing-it-later) gives the steps for when there is no other way.
 
 ## Upgrading
 
-Change the image in `kustomization.yaml`. Apply the manifests. New orchestrators resume existing workflows, and syncs resume from their checkpoints. Old runners checkpoint their jobs before stopping, then those jobs are placed again. Existing job pods finish with the image they started with.
+Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases page](https://github.com/openetl-io/openetl/releases) list what changed. In the alpha, the pipeline format and the API can change between releases.
+
+1. Read the notes of each release between your version and the new one.
+2. Back up the metadata database and keep a copy of `OPENETL_SECRETS_KEY`. [Back up and restore](./backup-and-restore.md) lists what an installation's state is.
+3. In your `kustomization.yaml`, change `ref=v0.1.0-alpha` in every URL and `newTag` to the new version.
+4. Check the change with `kubectl kustomize .`, then apply it with `kubectl apply -k .`.
+5. Upgrade the CLI to the same version, as [Install the CLI](../get-started/install.md#upgrade) shows.
+
+New orchestrators resume existing workflows, and syncs resume from their checkpoints. Old runners checkpoint their jobs before stopping, then those jobs are placed again. Existing job pods finish with the image they started with.
 
 A newer version can write a checkpoint format that older runners cannot read. An older runner refuses that pipeline with `CONFIG_INVALID`. If this occurs after a downgrade, run the affected pipelines with the newer version.
+
+## Uninstall
+
+> [!WARNING]
+> Deleting the namespace deletes the Secret `openetl`, with `OPENETL_SECRETS_KEY`. Without a copy of that key, nobody can read the secrets that the metadata database holds.
+
+In your kustomization's directory, delete the manifests, then the namespace with its Secrets and any job pods that remain:
+
+```sh
+kubectl delete -k .
+kubectl delete namespace openetl
+```
+
+If you applied the Karpenter node pools, delete them with `kubectl delete -f` and the same URL. The metadata database, the DBOS database and the bucket are outside the cluster. Delete them separately when you no longer need their data.
