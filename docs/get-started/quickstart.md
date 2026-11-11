@@ -133,7 +133,7 @@ openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres:0.1
 ```
 
 ```text
-created connectors/openetl/postgres/versions/0.1.0-alpha (version sha256:0555a)
+created connectors/openetl/postgres/versions/0.1.0-alpha (version sha256:93636)
 ```
 
 `openetl connector catalog` lists the official connectors and the command that installs each one. In the console, **Connections**, then **Connectors**, shows the same catalog.
@@ -207,7 +207,7 @@ openetl plan -f faker-to-postgres.yaml
 
 ```text
 would be created workspaces/default/sources/faker (version b6c77e6b0617)
-would be created workspaces/default/destinations/local-postgres (version 8eebba53b6dd)
+would be created workspaces/default/destinations/local-postgres (version a1e5d4fde373)
 would be created workspaces/default/pipelines/faker-to-postgres (version known after apply)
 
 workspaces/default/pipelines/faker-to-postgres (version known after apply)
@@ -231,8 +231,8 @@ openetl apply -f faker-to-postgres.yaml
 
 ```text
 created workspaces/default/sources/faker (version b6c77e6b0617)
-created workspaces/default/destinations/local-postgres (version 8eebba53b6dd)
-created workspaces/default/pipelines/faker-to-postgres (version e50b018b35c2)
+created workspaces/default/destinations/local-postgres (version a1e5d4fde373)
+created workspaces/default/pipelines/faker-to-postgres (version 60a7c76ede3e)
 
 warnings for workspaces/default/pipelines/faker-to-postgres:
   destination "local-postgres" names connector postgres without a version, so applying it again may pin a newer one; postgres@MAJOR keeps to one major version
@@ -306,10 +306,10 @@ openetl plan -f faker-to-postgres.yaml
 
 ```text
 would be updated workspaces/default/sources/faker (version 0eec602529fe)
-would be unchanged workspaces/default/destinations/local-postgres (version 8eebba53b6dd)
-would be updated workspaces/default/pipelines/faker-to-postgres (version 841e1403a898)
+would be unchanged workspaces/default/destinations/local-postgres (version a1e5d4fde373)
+would be updated workspaces/default/pipelines/faker-to-postgres (version f7b79cd0024a)
 
-workspaces/default/pipelines/faker-to-postgres (version 841e1403a898)
+workspaces/default/pipelines/faker-to-postgres (version f7b79cd0024a)
   changes:
     source.version: "b6c77e6b06170e5af61938ee22e3bf14cb8a5a43c40fb28b2d574ed5a92b5173" -> "0eec602529fedf3d8b95b4e646c06a0337e0e58c0099132fcd9d285dfbb7f3bb"
   job size: xs (0.5 vCPU, 1 GiB), from its recent peaks, in pool default
