@@ -210,6 +210,18 @@ jobs:
           cargo fetch --locked
           mkdir -p build/candidate/notices
           go run ./internal/notices -out build/candidate/notices/THIRD-PARTY-NOTICES.txt
+      # The committed files run edge; these run the release.
+      - name: The Compose file and the Kubernetes manifest, with the release's image
+        run: |
+          image=ghcr.io/openetl-io/openetl
+          sed "s|$image:edge}|$image:$VERSION}|" deploy/compose/compose.yml > build/candidate/assets/compose.yml
+          grep -q "$image:$VERSION}" build/candidate/assets/compose.yml
+          kube=$(mktemp -d)
+          cp -R deploy/kubernetes/. "$kube/"
+          sed -i "s|^    newTag: edge\$|    newTag: $VERSION|" "$kube/kustomization.yaml"
+          kubectl kustomize "$kube" > build/candidate/assets/kubernetes.yaml
+          grep -q "image: $image:$VERSION\$" build/candidate/assets/kubernetes.yaml
+          ! grep -n ':edge' build/candidate/assets/compose.yml build/candidate/assets/kubernetes.yaml
       - name: The binaries, archives, checksums and SBOMs
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:

@@ -56,6 +56,7 @@ Keep to one kind of page at a time: a tutorial walks through something that work
   ```
 
   The kinds are `NOTE`, `TIP`, `IMPORTANT`, `WARNING` and `CAUTION`.
+- **The release's version** is `{{version}}`, without the `v`: `ghcr.io/openetl-io/openetl:{{version}}`, and `v{{version}}` where the tag is meant, as in a download URL. The docs site writes the version in its place: for `next`, the newest release, prereleases included, and for a release line, the line's newest release. GitHub shows `{{version}}` as written. Never write a release's number where a reader installs or downloads it: the tag is the only place a version lives, and `go test ./test/docs` fails on a pinned one. A version given as an example, such as "a version, such as `0.1.0-alpha`", is fine.
 - **Code blocks** always name their language: `sh`, `yaml`, `json`, `go`, `sql`, and `text` for output. Commands have no prompt, and output goes in a `text` block of its own after them. Write placeholders in capitals, as the CLI's usage does: `openetl connector apply oci://REGISTRY/REPOSITORY:VERSION`.
 - **Diagrams** are `mermaid` code blocks, which GitHub and the site both draw. Keep them small.
 - **Images** go in `docs/images/`, as SVG or PNG, with alt text that says what the image shows. Show the console in a screenshot only where words can't carry it, since every change to the UI makes one stale: take it from `pnpm dev:mock` in `web/`, 1280 pixels wide.
@@ -87,6 +88,6 @@ Use the writing principles in [ASD-STE100](https://www.asd-ste100.org/assets/fil
 
 ## Checking a change
 
-`go test ./test/docs` checks the rules a machine can: every page's frontmatter, no `# H1`, no raw HTML, alt text on images, links that resolve with anchors that exist, a `meta.json` in every folder that lists each of its pages, a row on the resource spec pages for every field `internal/spec` reads, example documents there that parse, and generated pages that match their sources. `make test` runs it, and so does CI when `docs/` changes.
+`go test ./test/docs` checks the rules a machine can: every page's frontmatter, no `# H1`, no raw HTML, alt text on images, links that resolve with anchors that exist, a `meta.json` in every folder that lists each of its pages, a row on the resource spec pages for every field `internal/spec` reads, example documents there that parse, generated pages that match their sources, and no release's number where `{{version}}` belongs, in the docs, the README, `install.sh`, `deploy/` and `examples/`. `make test` runs it, and so does CI when `docs/` changes.
 
 The rest is yours: look at every page you changed as GitHub renders it, read it once as its section's reader would, and run every command and snippet you added or changed.

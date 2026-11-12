@@ -19,25 +19,24 @@ Runners store checkpoints and staging in the `runner` volume. The default stack 
 
 - **Docker with Compose** 2.24 or later. Use a Linux machine for a shared installation. Docker Desktop or OrbStack on macOS is suitable for evaluation.
 - **Job capacity.** A runner reserves 0.5 vCPU and 512 MiB for itself. The remaining machine capacity is available to jobs. Sizes range from `xs` (0.5 vCPU, 1 GiB) to `xl` (8 vCPUs, 16 GiB). The pipeline's `spec.resources` selects the size, or OpenETL selects it automatically.
-- **Network access to `ghcr.io`.** Docker pulls OpenETL's image, `ghcr.io/openetl-io/openetl:0.1.0-alpha`, for `linux/amd64` or `linux/arm64`. The image holds `openetld`, the `openetl` CLI, `openetl-engine` and the console. It holds no external connectors: runners download each connector package that you install.
+- **Network access to `ghcr.io`.** Docker pulls OpenETL's image, `ghcr.io/openetl-io/openetl:{{version}}`, for `linux/amd64` or `linux/arm64`. The image holds `openetld`, the `openetl` CLI, `openetl-engine` and the console. It holds no external connectors: runners download each connector package that you install.
 - **The `openetl` CLI** on the computer you work from, if it is not this machine. [Install the CLI](../get-started/install.md) shows how.
 
 ## Install
 
-1. Make a directory for the installation. Download the release's Compose file into it:
+1. Make a directory for the installation. Download the release's Compose file into it. The file runs the release's image:
 
    ```sh
    mkdir openetl && cd openetl
-   curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/v0.1.0-alpha/deploy/compose/compose.yml
+   curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v{{version}}/compose.yml
    ```
 
    Run all the commands on this page in this directory.
 
-2. Write `.env`, beside `compose.yml`. It names the image, a password for Postgres and the key that encrypts the secrets pipelines use:
+2. Write `.env`, beside `compose.yml`. It holds a password for Postgres and the key that encrypts the secrets pipelines use:
 
    ```sh
    (umask 077 && cat > .env) <<EOF
-   OPENETL_IMAGE=ghcr.io/openetl-io/openetl:0.1.0-alpha
    POSTGRES_PASSWORD=$(openssl rand -hex 16)
    OPENETL_SECRETS_KEY=base64key://$(openssl rand -base64 32 | tr '+/' '-_')
    EOF
@@ -210,7 +209,7 @@ Every `openetld` service reads `.env`. Use it for [installation settings](./inde
 |---|---|---|
 | `POSTGRES_PASSWORD` | required | The password of the Postgres user `openetl` |
 | `OPENETL_SECRETS_KEY` | required | The key that encrypts secrets: `base64key://`, or a KMS key (`awskms://`, `gcpkms://`, `azurekeyvault://`) |
-| `OPENETL_IMAGE` | `ghcr.io/openetl-io/openetl:0.1.0-alpha` | The image every `openetld` runs |
+| `OPENETL_IMAGE` | The release's image, such as `ghcr.io/openetl-io/openetl:{{version}}` | The image every `openetld` runs |
 | `OPENETL_PORT` | `127.0.0.1:8080` | Where the machine publishes the API and the console, as `ADDRESS:PORT` |
 | `OPENETL_PUBLIC_URL` | `http://localhost:8080` | The URL people open the console at, which password links start with |
 
@@ -281,13 +280,13 @@ Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases pa
 
 1. Read the notes of each release between your version and the new one.
 2. Make a backup, as [Back up](#back-up) describes.
-3. Download the new release's `compose.yml`, which can change between releases. Replace `VERSION`:
+3. Download the new release's `compose.yml`, which can change between releases and runs the new release's image. Replace `VERSION`:
 
    ```sh
-   curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/vVERSION/deploy/compose/compose.yml
+   curl -fsSLO https://github.com/openetl-io/openetl/releases/download/vVERSION/compose.yml
    ```
 
-4. In `.env`, set `OPENETL_IMAGE=ghcr.io/openetl-io/openetl:VERSION`.
+4. If `.env` sets `OPENETL_IMAGE`, remove that line, or set it to `ghcr.io/openetl-io/openetl:VERSION`. Installations of 0.1.0-alpha set it.
 5. Replace the containers whose image changed:
 
    ```sh

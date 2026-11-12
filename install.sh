@@ -8,18 +8,19 @@
 # It reads these from the environment:
 #
 #   OPENETL_VERSION       the release to install, such as 0.1.0-alpha
-#                         (default: the release the docs beside this file
-#                         describe, which test/docs checks)
+#                         (default: the newest release, prereleases included)
 #   OPENETL_INSTALL_DIR   where openetl goes (default: $HOME/.local/bin)
 #   OPENETL_DOWNLOAD_URL  where the releases' files are, by tag, for a mirror
 #                         (default: GitHub's)
+#   OPENETL_RELEASES_URL  the list of releases, newest first, in the form of
+#                         GitHub's API, which the default version comes from
+#                         (default: GitHub's)
 set -eu
 
-version=${OPENETL_VERSION:-0.1.0-alpha}
-version=${version#v}
 dir=${OPENETL_INSTALL_DIR:-$HOME/.local/bin}
 base=${OPENETL_DOWNLOAD_URL:-https://github.com/openetl-io/openetl/releases/download}
 base=${base%/}
+releases=${OPENETL_RELEASES_URL:-https://api.github.com/repos/openetl-io/openetl/releases}
 
 fail() {
 	echo "install.sh: $*" >&2
@@ -46,6 +47,21 @@ elif command -v shasum >/dev/null 2>&1; then
 else
 	fail "neither sha256sum nor shasum is installed"
 fi
+
+# The newest release is the list's first that isn't a draft and whose tag is
+# vX.Y.Z, with a suffix or not. GitHub's releases/latest would skip
+# prereleases. In each release, tag_name comes before draft.
+version=${OPENETL_VERSION:-}
+if [ -z "$version" ]; then
+	list=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$releases?per_page=100") ||
+		fail "cannot list the releases at $releases; set OPENETL_VERSION to the release to install"
+	version=$(printf '%s\n' "$list" | awk '
+		/"tag_name": *"/ { tag = $0; sub(/^.*"tag_name": *"/, "", tag); sub(/".*$/, "", tag) }
+		/"draft": *(true|false)/ { if ($0 ~ /false/ && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+/) { print tag; exit } tag = "" }
+	')
+	[ -n "$version" ] || fail "$releases lists no release; set OPENETL_VERSION to the release to install"
+fi
+version=${version#v}
 
 name=openetl-cli_${version}_${os}_${arch}
 url=$base/v$version

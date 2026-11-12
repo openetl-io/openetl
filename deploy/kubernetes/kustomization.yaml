@@ -16,8 +16,10 @@ resources:
 #   - keda
 #   - karpenter
 images:
-  # openetld's image: the release's, or yours from make image, which
-  # kustomize edit set image openetl=REGISTRY/openetl:TAG sets.
+  # openetld's image: edge, built from main, or yours from make image,
+  # which kustomize edit set image openetl=REGISTRY/openetl:TAG sets. A
+  # kustomization with this one as a resource sets the release's tag; each
+  # release's kubernetes.yaml is this, built with it.
   - name: openetl
     newName: ghcr.io/openetl-io/openetl
-    newTag: 0.1.0-alpha
+    newTag: edge

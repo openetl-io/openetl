@@ -67,12 +67,12 @@ The runner still needs its own storage access. Credentials available to the runn
 Your application depends on `openetl-flink`. Use the version of your OpenETL installation. Each release has the jar, `openetl-flink-VERSION.jar`, as a release file. The jar is not in a Maven repository. Download it, and install it in your local Maven repository:
 
 ```sh
-curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/openetl-flink-0.1.0-alpha.jar
-mvn install:install-file -Dfile=openetl-flink-0.1.0-alpha.jar \
-  -DgroupId=io.openetl -DartifactId=openetl-flink -Dversion=0.1.0-alpha -Dpackaging=jar
+curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v{{version}}/openetl-flink-{{version}}.jar
+mvn install:install-file -Dfile=openetl-flink-{{version}}.jar \
+  -DgroupId=io.openetl -DartifactId=openetl-flink -Dversion={{version}} -Dpackaging=jar
 ```
 
-Your project then depends on `io.openetl:openetl-flink:0.1.0-alpha`, and on Flink's runtime with `provided` scope. The release's `checksums.txt` has the jar's SHA-256. [Install by hand](../get-started/install.md#install-by-hand) shows how to check a file against it.
+Your project then depends on `io.openetl:openetl-flink:{{version}}`, and on Flink's runtime with `provided` scope. The release's `checksums.txt` has the jar's SHA-256. [Install by hand](../get-started/install.md#install-by-hand) shows how to check a file against it.
 
 The release's jar holds its own dependencies, relocated. Do not add them to your project: [`examples/flink-transform`'s `pom.xml`](../../examples/flink-transform/pom.xml) excludes them.
 
@@ -83,9 +83,9 @@ The release's jar holds its own dependencies, relocated. Do not add them to your
 Get the release's source, and package the example with the library that you installed:
 
 ```sh
-git clone --depth 1 --branch v0.1.0-alpha https://github.com/openetl-io/openetl
+git clone --depth 1 --branch v{{version}} https://github.com/openetl-io/openetl
 cd openetl
-mvn -f examples/flink-transform/pom.xml package -Dopenetl.version=0.1.0-alpha
+mvn -f examples/flink-transform/pom.xml package -Dopenetl.version={{version}}
 ```
 
 The application jar is `examples/flink-transform/target/flink-transform-0.1.0.jar`. It includes `openetl-flink` and its relocated dependencies. Flink runtime dependencies have `provided` scope and come from the cluster.

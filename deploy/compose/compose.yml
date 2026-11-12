@@ -1,6 +1,8 @@
 # OpenETL on one machine: Postgres, the API server with the console, an
-# orchestrator and a runner, all from openetld's image: the release's by
-# default, or OPENETL_IMAGE, such as openetl:dev from make image.
+# orchestrator and a runner, all from openetld's image: OPENETL_IMAGE, such
+# as openetl:dev from make image, or else the default below. In the
+# repository that's edge, built from main; each release has a copy of this
+# file, compose.yml, whose default is the release's image.
 # docs/self-host/compose.md is the guide. From this directory:
 #
 #   docker compose up -d
@@ -12,7 +14,7 @@
 name: openetl
 
 x-openetl: &openetl
-  image: ${OPENETL_IMAGE:-ghcr.io/openetl-io/openetl:0.1.0-alpha}
+  image: ${OPENETL_IMAGE:-ghcr.io/openetl-io/openetl:edge}
   restart: unless-stopped
   env_file:
     - path: .env

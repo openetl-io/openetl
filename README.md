@@ -24,13 +24,12 @@ You need macOS or Linux, and [Docker](https://docs.docker.com/get-started/get-do
 curl -fsSL https://raw.githubusercontent.com/openetl-io/openetl/main/install.sh | sh
 ```
 
-Start OpenETL 0.1.0-alpha with Docker Compose, in a new directory:
+It installs the newest release, and shows a line to add to your shell's profile if `openetl` is not on your `PATH`. Start the same release with Docker Compose, in a new directory:
 
 ```sh
 mkdir openetl && cd openetl
-curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/v0.1.0-alpha/deploy/compose/compose.yml
+curl -fsSLO "https://github.com/openetl-io/openetl/releases/download/v$(openetl version)/compose.yml"
 cat > .env <<EOF
-OPENETL_IMAGE=ghcr.io/openetl-io/openetl:0.1.0-alpha
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 OPENETL_SECRETS_KEY=base64key://$(openssl rand -base64 32 | tr '+/' '-_')
 EOF

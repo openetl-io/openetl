@@ -8,7 +8,7 @@ OpenETL copies data between your systems. Source connectors read data from datab
 OpenETL is open source under Apache 2.0. You run it on your own machines or in your own cloud account.
 
 > [!NOTE]
-> OpenETL is in alpha. The current release is 0.1.0-alpha. The pipeline format and the API can change between releases.
+> OpenETL is in alpha. The current release is {{version}}. The pipeline format and the API can change between releases.
 
 ## Connect your systems
 

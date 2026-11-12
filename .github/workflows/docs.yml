@@ -8,8 +8,12 @@ on:
     paths:
       - "docs/**"
       - "test/docs/**"
+      - "test/install/**"
       - "README.md"
       - "CONTRIBUTING.md"
+      - "install.sh"
+      - "deploy/**"
+      - "examples/**"
       - ".github/workflows/docs.yml"
   workflow_call:
 
@@ -29,4 +33,4 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - run: go test ./test/docs
+      - run: go test ./test/docs ./test/install

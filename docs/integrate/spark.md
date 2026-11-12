@@ -33,12 +33,12 @@ Use the cluster's identity or the pipeline's `sparkAccess`. The latter can suppl
 Your application depends on `openetl-spark`. Use the version of your OpenETL installation. Each release has the jar, `openetl-spark-VERSION.jar`, as a release file. The jar is not in a Maven repository. Download it, and install it in your local Maven repository:
 
 ```sh
-curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/openetl-spark-0.1.0-alpha.jar
-mvn install:install-file -Dfile=openetl-spark-0.1.0-alpha.jar \
-  -DgroupId=io.openetl -DartifactId=openetl-spark -Dversion=0.1.0-alpha -Dpackaging=jar
+curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v{{version}}/openetl-spark-{{version}}.jar
+mvn install:install-file -Dfile=openetl-spark-{{version}}.jar \
+  -DgroupId=io.openetl -DartifactId=openetl-spark -Dversion={{version}} -Dpackaging=jar
 ```
 
-Your project then depends on `io.openetl:openetl-spark:0.1.0-alpha`, and on Spark with `provided` scope. The release's `checksums.txt` has the jar's SHA-256. [Install by hand](../get-started/install.md#install-by-hand) shows how to check a file against it.
+Your project then depends on `io.openetl:openetl-spark:{{version}}`, and on Spark with `provided` scope. The release's `checksums.txt` has the jar's SHA-256. [Install by hand](../get-started/install.md#install-by-hand) shows how to check a file against it.
 
 ## Build the example transform
 
@@ -47,9 +47,9 @@ Your project then depends on `io.openetl:openetl-spark:0.1.0-alpha`, and on Spar
 Get the release's source, and package the example with the library that you installed:
 
 ```sh
-git clone --depth 1 --branch v0.1.0-alpha https://github.com/openetl-io/openetl
+git clone --depth 1 --branch v{{version}} https://github.com/openetl-io/openetl
 cd openetl
-mvn -f examples/spark-transform/pom.xml package -Dopenetl.version=0.1.0-alpha
+mvn -f examples/spark-transform/pom.xml package -Dopenetl.version={{version}}
 ```
 
 The application jar is `examples/spark-transform/target/spark-transform-0.1.0.jar`. It includes `openetl-spark`. Spark itself has `provided` scope and comes from the cluster.
@@ -125,10 +125,10 @@ Use the application's driver ID and cluster UI to inspect its execution. OpenETL
 
 Python transforms run on YARN, Kubernetes or EMR, where Python cluster deploy mode is supported. Install [`openetl-spark`'s Python package](../../libs/openetl-spark/python) in the application environment and make it available to the driver and executors. PySpark comes from the cluster.
 
-Each release has the package as a wheel. Python's version rules write `0.1.0-alpha` as `0.1.0a0`:
+Each release has the package as a wheel, `openetl_spark-PYVERSION-py3-none-any.whl`. `PYVERSION` is the release's version as Python's version rules write it: `0.1.0a1` for `0.1.0-alpha.1`, `0.2.0b2` for `0.2.0-beta.2`, `0.2.0rc1` for `0.2.0-rc.1`, and `0.2.0` for `0.2.0`. Replace `PYVERSION`:
 
 ```sh
-pip install https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/openetl_spark-0.1.0a0-py3-none-any.whl
+pip install https://github.com/openetl-io/openetl/releases/download/v{{version}}/openetl_spark-PYVERSION-py3-none-any.whl
 ```
 
 Your Python file defines `transform(spark, inputs, ctx)` and calls `openetl_spark.run(transform)` from its main entry point. It returns a dictionary of output DataFrames. The same epoch and output rules apply as in Java.

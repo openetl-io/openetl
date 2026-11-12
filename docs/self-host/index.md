@@ -37,6 +37,8 @@ Each release of OpenETL has a version, such as `0.1.0-alpha`, and a git tag, suc
 | `ghcr.io/openetl-io/openetl:VERSION` | The image, for `linux/amd64` and `linux/arm64`: `openetld`, the `openetl` CLI, `openetl-engine` and the console. It holds no external connectors. |
 | `openetl_VERSION_linux_ARCH.tar.gz` | The same programs and the console's files, for Linux on `amd64` or `arm64`, to run without containers |
 | `openetl-cli_VERSION_OS_ARCH.tar.gz` | The `openetl` CLI alone, for macOS and Linux. [Install the CLI](../get-started/install.md) installs it. |
+| `compose.yml` | The Compose file of [Install with Docker Compose](./compose.md), which runs the release's image |
+| `kubernetes.yaml` | The manifests of [Install on Kubernetes](./kubernetes.md), built with the release's image, for `kubectl apply -f` |
 | `openetl-spark-VERSION.jar`, `openetl-flink-VERSION.jar`, `openetl_spark-*.whl` | The libraries for [Spark](../integrate/spark.md) and [Flink](../integrate/flink.md) transforms |
 | `*.sbom.json` | A software bill of materials, in SPDX JSON, for each archive and for the image on each platform |
 | `checksums.txt` | The SHA-256 of each file |
@@ -47,7 +49,7 @@ The official connectors have releases of their own, in [openetl-connectors](http
 The release workflow signs the image and `checksums.txt` with [Sigstore](https://www.sigstore.dev) keyless signing. To check the image's signature with cosign 3 or later, run:
 
 ```sh
-cosign verify ghcr.io/openetl-io/openetl:0.1.0-alpha \
+cosign verify ghcr.io/openetl-io/openetl:{{version}} \
   --certificate-identity-regexp '^https://github\.com/openetl-io/openetl/\.github/workflows/release\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
