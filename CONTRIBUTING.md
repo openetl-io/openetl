@@ -75,7 +75,7 @@ The connectors `make dev` builds are local executables in `bin/connectors`, whic
 | `crates/` | `openetl-engine`, the Rust data engine, and its libraries |
 | `libs/` | `openetl-spark` and `openetl-flink`: what runs on your Spark and Flink clusters |
 | `web/` | The UI: React and TypeScript, a client of the API only |
-| `deploy/` | Local dependencies in Docker Compose, `openetld`'s image, manifests for Kubernetes, and the release candidate script |
+| `deploy/` | Local dependencies in Docker Compose, the Compose file for installations, `openetld`'s image, and manifests for Kubernetes |
 | `install.sh` | The CLI's installer, which the docs fetch from `main` and pipe to `sh`; `test/install` runs it against a release it serves |
 | `docs/` | The documentation, which the docs site is built from |
 | `test/` | `sim`, a seeded simulation of the commit protocol under crashes, timeouts and zombie attempts; `e2e`, whole-stack scenarios and the chaos suite; `bench` |
@@ -83,48 +83,50 @@ The connectors `make dev` builds are local executables in `bin/connectors`, whic
 
 ## Releasing
 
-OpenETL and its official connectors are released separately, from their own repositories, and in the alpha they share a version. A release is a tag, `vVERSION` such as `v0.1.0-alpha`, which the `release` workflow then builds and publishes. It's on a commit in `main`, or in its release line's branch for a patch to a line that `main` has moved past (see [Release branches](#release-branches)). A candidate tests a commit before it's tagged.
+OpenETL and its official connectors are released separately, from their own repositories, and each official connector has a version of its own. OpenETL's versions are semantic. A release is a tag on a commit in `main`: `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N` or `vX.Y.Z-rc.N` for a prerelease, and `vX.Y.Z` for a stable release. A patch to a stable line that `main` has moved past is the one exception: it's tagged on the line's branch (see [Release branches](#release-branches)).
 
 **Nothing names the version before the tag.** The tag is the only place a version lives: the binaries take it when they're built, and no committed file names the release that users install. `install.sh` installs the newest release, the first in the release list, and `OPENETL_VERSION` picks another. `deploy/compose/compose.yml` and `deploy/kubernetes` run `edge`, the image built from `main`, and the release attaches copies of them that run its own image. The docs write `{{version}}`, which the [docs site](https://github.com/openetl-io/docs-web) fills in ([docs/AGENTS.md](docs/AGENTS.md)). `go test ./test/docs` fails on a pinned release in the docs, the README, `install.sh`, `deploy/` or `examples/`.
 
-**Release.** Push the tag, then run the workflow with it:
+**Release.** Push the tag:
 
 ```sh
 git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1
-gh workflow run release.yml -f tag=v0.1.0-alpha.1 -f publish=public
 ```
 
-It builds the tag's commit with the version in it: the bundle's archives for Linux on amd64 and arm64 (`openetld`, the CLI, the engine and the console), the CLI's own archives for Linux and macOS, the multi-arch image, the Spark and Flink jars and the Python wheel, and `compose.yml` and `kubernetes.yaml` with the release's image, with checksums, SBOMs and third-party notices. The image holds no connectors, only the default that points at their registry. `publish` says what happens to them:
+The `release` workflow runs on it. First it checks three things: the tag's commit is in `main`, or in the line's branch for a patch; `nightly` ran every suite on that commit and passed; and the tag isn't released already. Then it builds the commit with the version in it: the bundle's archives for Linux on amd64 and arm64 (`openetld`, the CLI, the engine and the console), the CLI's own archives for Linux and macOS, the multi-arch image, the Spark and Flink jars and the Python wheel, and `compose.yml` and `kubernetes.yaml` with the release's image, with checksums, SBOMs and third-party notices. The image holds no connectors, only the default that points at their registry. It pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and puts the files on a draft release, whose notes list the files and then the pull requests since the last release, or since the last stable release for a stable one. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign, and publishes the release, as a prerelease when the tag has a suffix.
 
-- `public` pushes the image to `ghcr.io/openetl-io/openetl:VERSION` and publishes a release of the tag with the files. A job in the `release` environment signs the image and `checksums.txt` with keyless cosign first, and tags the Go SDK `sdk/go/vVERSION` on the same commit. Then it points the release line's branch at the release. GHCR creates a package private: after the first public release, make `ghcr.io/openetl-io/openetl` public in its settings, once. Then run the [quickstart](docs/get-started/quickstart.md) as written, which installs the release from GitHub and GHCR.
-- `private` puts the files on a draft release of the tag and the image in the private `ghcr.io/openetl-io/candidates/VERSION/` namespace. Nothing is signed, as keyless signatures go to a public log. `gh workflow run release-discard.yml -f version=VERSION` removes both.
-- `skip` builds and checks everything, and pushes nothing.
-
-Running it again replaces the tag's draft. It refuses a tag that's already released.
-
-**The connectors** are tagged and released the same way from [openetl-connectors](https://github.com/openetl-io/openetl-connectors), with its own `release` workflow, which builds them with this repository's CLI and SDK at the same tag.
-
-**Build a candidate** of a commit that isn't tagged yet. `gh workflow run release-candidate.yml -f version=0.1.0-alpha -f commit=SHA` builds the same files, puts them on a draft GitHub release, which makes no tag until it's published, and puts the image in `ghcr.io/openetl-io/candidates/VERSION/`. `candidate.json` on the draft records the commit and digest. A version has one candidate at a time: `-f replace=true` discards the last one first.
-
-**Test those files, as a user runs them.** On a machine with the compose stack, signed in with `gh` to an account that can see the drafts:
+`nightly` runs each night on `main`'s head. To release a commit it hasn't run on, run every suite on the tag, and once that passes, run the release's failed jobs again:
 
 ```sh
-deploy/release/candidate.sh fetch VERSION bin/candidate
-deploy/release/candidate.sh unpack bin/candidate
-make chaos CANDIDATE=bin/candidate CONNECTOR_VERSION=VERSION CONNECTOR_REGISTRY_USER=USER CONNECTOR_REGISTRY_TOKEN=TOKEN
+gh workflow run nightly.yml --ref v0.1.0-alpha.1 -f suites=all
+gh run rerun RUN_ID --failed
 ```
 
-The suites run the candidate's binaries, connect the registry as the official source, apply each connector from it and let runners download them. `gh workflow run e2e.yml -f candidate=VERSION`, and `chaos.yml` the same way, run on the candidate's binaries at the commit it was built from, with connectors built from source, as a workflow's token can't read another repository's private packages.
+A release that failed later runs again the same way, and replaces the tag's draft. **A dry run,** `gh workflow run release.yml --ref REF` on any branch or tag, builds and checks everything for the ref's head, reports what would stop a release of it, and pushes and publishes nothing.
 
-**Discard a candidate** with `gh workflow run release-discard.yml -f version=VERSION`, which deletes its packages and its draft and refuses a version that's been published.
+**A prerelease is the release candidate.** Test it as users run it, from its image and files. A stable release, `vX.Y.Z`, is a tag on the commit of a release candidate, `vX.Y.Z-rc.N`, that passed the gates: the chaos suite's 1,000 runs (`chaos.yml`, or `make chaos` on a machine of your own) and the tests on AWS. They gate only that step.
+
+**The Go SDK** has versions of its own, which follow the connector protocol rather than OpenETL's releases. Tag it on a commit in `main` when it changes, `sdk/go/vX.Y.Z`, and connectors require it by that version:
+
+```sh
+git tag sdk/go/v0.2.0 && git push origin sdk/go/v0.2.0
+```
+
+**The connectors** are released from [openetl-connectors](https://github.com/openetl-io/openetl-connectors), each package with tags of its own, `PACKAGE/vX.Y.Z`. A change across both repositories lands here first, without breaking what the connectors use, and then the connectors move to the new SDK.
 
 ### Release branches
 
-Each release line, such as 0.1, has a branch, `release-0.1`, which holds the line's newest release and the fixes to it since. The [docs site](https://github.com/openetl-io/docs-web) builds the line's docs from it, under the newest release's name, so a fix to a release's docs reaches readers without a release. Publishing a release points its line's branch at it: it makes the branch of a new line, with the label that backports to it, and moves the branch of a line released from `main` to the release. A branch that has commits the release doesn't, which were backported from `main`, starts again at the release, and the run's summary says where it was. A patch to a line that `main` has moved past is a pull request to the line's branch, and is tagged on it.
+All work is on `main`, and every prerelease and stable release is a tag on it. Only the newest stable line gets fixes, as patch releases on its branch, `release-X.Y`. The branch is made the first time the line needs a fix, from the line's first release:
+
+```sh
+git push origin v0.2.0:refs/heads/release-0.2
+```
+
+The fix goes to `main` first. Then a pull request against `release-0.2` cherry-picks it (`git cherry-pick -x COMMIT`). Once that's merged, tag the patch, `v0.2.1`, on `release-0.2`.
 
 ### Backports
 
-A fix goes to `main` first. When it also fixes a release line, label its pull request `backport release-X.Y`, for each line, before it's merged or after. The `backport` workflow then opens a pull request of it against `release-X.Y`. Where it doesn't apply cleanly, the workflow comments with the commands to backport it by hand.
+A fix goes to `main` first. When it also fixes a release line, label its pull request `backport release-X.Y`, before it's merged or after; make the label, once, when you make the branch. The `backport` workflow then opens a pull request of it against `release-X.Y`. Where it doesn't apply cleanly, the workflow comments with the commands to backport it by hand.
 
 Backport a change to `docs/` that corrects or completes what a release does: a wrong command, output or default, a missing step, a limit the release has. Don't backport docs for what only `main` does, or a change that describes code the release doesn't have. A fix to text that `main` no longer has is a pull request to the release branch alone.
 

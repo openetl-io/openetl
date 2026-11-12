@@ -1,7 +1,7 @@
-# The Go binaries and the archives of a release or a candidate. The release
-# and release-candidate workflows build what's outside Go into build/ first,
-# and run this with --skip=publish,announce,validate, so it pushes and tags
-# nothing. The bundle is Linux only; the CLI alone is for Linux and macOS.
+# The Go binaries and the archives of a release. The release workflow builds
+# what's outside Go into build/ first, and runs this with
+# --skip=publish,announce,validate, so it pushes and tags nothing. The bundle
+# is Linux only; the CLI alone is for Linux and macOS.
 version: 2
 project_name: openetl
 
@@ -35,7 +35,7 @@ archives:
     files:
       - LICENSE
       - NOTICE
-      - src: build/candidate/notices/THIRD-PARTY-NOTICES.txt
+      - src: build/release/notices/THIRD-PARTY-NOTICES.txt
         strip_parent: true
       - src: build/engine/{{ .Os }}_{{ .Arch }}/openetl-engine
         strip_parent: true
@@ -53,7 +53,7 @@ archives:
     files:
       - LICENSE
       - NOTICE
-      - src: build/candidate/notices/THIRD-PARTY-NOTICES.txt
+      - src: build/release/notices/THIRD-PARTY-NOTICES.txt
         strip_parent: true
 
 sboms:
@@ -62,7 +62,7 @@ sboms:
 checksum:
   name_template: checksums.txt
   extra_files:
-    - glob: build/candidate/assets/*
+    - glob: build/release/assets/*
 
 changelog:
   disable: true
