@@ -1,8 +1,11 @@
 name: chaos
 
-# On demand: gh workflow run chaos.yml --ref <branch> -f runs=100 -f shards=4.
+# On demand, for a release candidate on its way to a stable release:
+#
+#   gh workflow run chaos.yml --ref <branch or tag> -f runs=100 -f shards="[1, 2, 3, 4]"
+#
 # Each shard runs its share of the runs, from a seed of its own, against a
-# compose stack of its own.
+# compose stack of its own. nightly.yml calls it for a short run.
 on:
   workflow_dispatch:
     inputs:
@@ -23,13 +26,36 @@ on:
         type: choice
         options: [dbos, temporal]
         default: dbos
+      timeout:
+        description: How long each shard's runs may take, as a Go duration
+        default: 290m
+  workflow_call:
+    inputs:
+      runs:
+        type: string
+        default: "50"
+      shards:
+        type: string
+        default: "[1, 2]"
+      parallel:
+        type: string
+        default: "3"
+      flags:
+        type: string
+        default: ""
+      orchestrator:
+        type: string
+        default: dbos
+      timeout:
+        type: string
+        default: 290m
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: chaos-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   chaos:
@@ -52,49 +78,36 @@ jobs:
           repository: openetl-io/openetl-connectors
           ref: main
           path: openetl-connectors
-          ssh-key: ${{ secrets.CONNECTORS_DEPLOY_KEY }}
-      # openetl-connectors' branch of this one's name, when it has one, so a
-      # change across both repositories is checked whole.
-      - name: Connectors of the same branch
-        working-directory: openetl-connectors
-        env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: |
-          if git fetch --depth=1 origin "refs/heads/$BRANCH"; then
-            git checkout --detach FETCH_HEAD
-          else
-            echo "openetl-connectors has no branch $BRANCH, so main"
-          fi
-      - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: false
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: go-${{ github.job }}-
-      - uses: actions/cache@v6
-        with:
-          path: ~/.m2
-          key: maven-${{ github.job }}-${{ hashFiles('libs/**/pom.xml') }}
-          restore-keys: maven-${{ github.job }}-
       - name: Start Postgres, S3, Kafka, Iceberg's catalog, Spark and Flink, and Temporal if it's what's tested
         env:
           TEMPORAL: ${{ inputs.orchestrator == 'temporal' && '1' || '' }}
         run: |
           tail --pid="$(cat "$RUNNER_TEMP/free-disk.pid")" -f /dev/null
           (set +e; make deps-up DEPS="postgres s3 kafka iceberg spark-master spark-worker flink-jobmanager flink-taskmanager"; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
-      - name: Build the engine, the connectors, openetl-spark and openetl-flink
+      - id: engine
+        uses: ./.github/actions/engine
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      # e2e's caches: the same connectors and tests.
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-e2e-${{ hashFiles('go.sum', 'openetl-connectors/go.sum') }}
+          restore-keys: go-e2e-
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.m2
+          key: maven-e2e-${{ hashFiles('libs/**/pom.xml') }}
+          restore-keys: maven-e2e-
+      - name: Build the connectors, openetl-spark and openetl-flink
         run: |
           make connectors CONNECTORS_SRC=openetl-connectors
           make spark-lib MAVEN_FLAGS=-DskipTests
           make flink-lib MAVEN_FLAGS=-DskipTests
-          cargo build -p openetl-engine
       - name: Wait for the services
         timeout-minutes: 10
         run: |
@@ -105,10 +118,13 @@ jobs:
         env:
           OPENETL_CHAOS_REPORT: ${{ runner.temp }}/chaos-report.txt
           OPENETL_TEST_ORCHESTRATOR: ${{ inputs.orchestrator }}
+          ENGINE: ${{ steps.engine.outputs.path }}
+          TIMEOUT: ${{ inputs.timeout }}
+          FLAGS: -chaos.runs=${{ inputs.runs }} -chaos.parallel=${{ inputs.parallel }} -chaos.seed=${{ matrix.seed }} ${{ inputs.flags }}
         run: |
           mkdir -p "$RUNNER_TEMP/chaos-logs"
-          make chaos CONNECTORS_SRC=openetl-connectors CHAOS_TIMEOUT=290m \
-            CHAOS_FLAGS="-chaos.runs=${{ inputs.runs }} -chaos.parallel=${{ inputs.parallel }} -chaos.seed=${{ matrix.seed }} -chaos.logs=$RUNNER_TEMP/chaos-logs ${{ inputs.flags }}"
+          make chaos CONNECTORS_SRC=openetl-connectors SUITE_ENGINE="$ENGINE" CHAOS_TIMEOUT="$TIMEOUT" \
+            CHAOS_FLAGS="$FLAGS -chaos.logs=$RUNNER_TEMP/chaos-logs"
       - name: Report
         if: always()
         run: cat "$RUNNER_TEMP/chaos-report.txt" >> "$GITHUB_STEP_SUMMARY" || true

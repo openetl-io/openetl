@@ -134,6 +134,31 @@ The workflow pushes a backport with the deploy key in the secret `BACKPORT_DEPLO
 
 The docs site checks this repository every 15 minutes, and builds when what it reads has changed: `docs/`, `internal/api/openapi.yaml` or a JSON Schema on `main` or a release branch, or a published release.
 
+## CI
+
+`ci` runs on every pull request, and on every push to `main` or a release branch. It runs the checks for the paths the change touches:
+
+- Go: generated code that's up to date, buf, golangci-lint and workflowcheck; the unit tests; and the commit-protocol simulation's fixed seeds.
+- Rust: rustfmt, clippy and the tests; the runner/engine contract, against the engine; and cargo-deny, when dependencies change.
+- The connector protocol: `buf breaking` on `proto/openetl/connector` fails, unless the change adds the protocol's next version, a new `proto/openetl/connector/vN`.
+- The UI, the Spark and Flink libraries, and `go test ./test/docs ./test/install`.
+- One end-to-end test, a scheduled sync into Postgres through the whole stack.
+
+A job named `ci` waits for the others. It fails when any of them failed or was cancelled, and passes when they passed or the paths skipped them; it's the one check a merge requires. A change to `ci.yml` or `.github/actions` runs every check.
+
+The engine is built once for each hash of `crates/`, `proto/`, `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml`, by a run on `main`, and other runs restore it from the cache: a change that touches no Rust compiles none. Caches are saved on `main` only, and pull requests restore them.
+
+`nightly` runs the heavy suites each night on `main`'s head: the integration tests, every end-to-end test on DBOS and on Temporal, the Kubernetes tests in kind, a short chaos run and cargo-deny's advisories. A red run opens an issue labeled `nightly`, or comments on the open one, and a green run closes it. To check a risky change before it merges, run the suites on its branch. A run on a branch opens no issue:
+
+```sh
+gh workflow run nightly.yml --ref BRANCH
+gh workflow run nightly.yml --ref BRANCH -f suites="e2e-temporal kind"
+```
+
+With no `suites`, it runs every suite but chaos. `suites` names them, separated by spaces: `integration`, `e2e-dbos`, `e2e-temporal`, `kind`, `chaos` and `deny`, or `all`. `chaos.yml` runs the chaos suite at any size, on demand: `gh workflow run chaos.yml --ref BRANCH -f runs=100 -f shards="[1, 2, 3, 4]"`.
+
+**Edge.** Once `ci` passes on `main`, for a change to what goes in the image, CI pushes `ghcr.io/openetl-io/openetl:edge`: the image built from `main`, for `linux/amd64` and `linux/arm64`, unsigned, laid out as a release's image is, with the CLI at `/opt/openetl/openetl`. The run keeps the CLI for Linux and macOS as its artifact `openetl-cli` for 7 days. A newer commit's publish cancels an older one's. `deploy/compose/compose.yml` and `deploy/kubernetes` run edge, and so do the connectors' CI and nightly tests. Each Sunday, `nightly` deletes the image's untagged versions that are older than 14 days and that no tagged image holds.
+
 ## Pull requests
 
-Work on a branch and open a pull request against `main`. Before you do, run `make lint` and `make test`; CI runs them too, along with the integration and end-to-end tests when a change needs them. A change to what someone using, running or integrating OpenETL sees updates the docs in the same pull request.
+Work on a branch and open a pull request against `main`. Before you do, run `make lint` and `make test`. A change to what someone using, running or integrating OpenETL sees updates the docs in the same pull request.

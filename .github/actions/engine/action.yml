@@ -1,0 +1,65 @@
+name: engine
+description: >-
+  A release build of openetl-engine for Linux, made once for each hash of
+  crates/, proto/, Cargo.toml, Cargo.lock and rust-toolchain.toml: restored
+  from the cache that runs on main save, or else built here, and saved when
+  this runs on main. It's left at build/engine/linux_ARCH/openetl-engine.
+  Linked against glibc 2.28, as a release's is.
+
+inputs:
+  arch:
+    description: amd64 or arm64
+    default: amd64
+
+outputs:
+  path:
+    description: The engine's absolute path
+    value: ${{ steps.where.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - id: where
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+      run: |
+        case $ARCH in
+          amd64) target=x86_64-unknown-linux-gnu ;;
+          arm64) target=aarch64-unknown-linux-gnu ;;
+          *) echo "::error::$ARCH isn't amd64 or arm64"; exit 1 ;;
+        esac
+        { echo "target=$target"; echo "path=$GITHUB_WORKSPACE/build/engine/linux_$ARCH/openetl-engine"; } >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache/restore@v6
+      with:
+        path: build/engine/linux_${{ inputs.arch }}/openetl-engine
+        key: engine-linux_${{ inputs.arch }}-${{ hashFiles('crates/**', 'proto/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TARGET: ${{ steps.where.outputs.target }}
+      run: |
+        rustup show active-toolchain || rustup toolchain install
+        rustup target add "$TARGET"
+        python3 -m venv "$RUNNER_TEMP/zig"
+        "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild==0.24.1 ziglang==0.17.1
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ steps.where.outputs.target }}
+        save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TARGET: ${{ steps.where.outputs.target }}
+        ENGINE: ${{ steps.where.outputs.path }}
+      run: |
+        PATH="$RUNNER_TEMP/zig/bin:$PATH" cargo zigbuild --locked --release -p openetl-engine --target "$TARGET.2.28"
+        mkdir -p "$(dirname "$ENGINE")"
+        cp "target/$TARGET/release/openetl-engine" "$ENGINE"
+    - if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      uses: actions/cache/save@v6
+      with:
+        path: build/engine/linux_${{ inputs.arch }}/openetl-engine
+        key: ${{ steps.cache.outputs.cache-primary-key }}

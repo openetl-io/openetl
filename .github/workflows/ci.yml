@@ -1,0 +1,523 @@
+name: ci
+
+# Every pull request, and every push to main or a release branch: the checks
+# for what the change touches, by path, and one end-to-end test, behind one
+# job named ci, which is the check a merge requires. A change to this file
+# runs everything. Caches are saved on main only, and pull requests restore
+# them. The engine comes from .github/actions/engine, built once per hash of
+# the Rust sources, so a change that touches no Rust compiles none.
+#
+# Once ci passes on main, edge pushes ghcr.io/OWNER/openetl:edge, the one
+# moving tag, unsigned, and keeps the CLI as this run's artifact openetl-cli
+# for 7 days. A newer commit's edge cancels an older one's. nightly.yml runs
+# the heavier suites.
+on:
+  pull_request:
+  push:
+    branches: [main, "release-[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # What the change touches: the files between the pull request's base and
+  # its merge commit, or between a push's old head and new one.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.paths.outputs.go }}
+      rust: ${{ steps.paths.outputs.rust }}
+      deny: ${{ steps.paths.outputs.deny }}
+      web: ${{ steps.paths.outputs.web }}
+      docs: ${{ steps.paths.outputs.docs }}
+      spark: ${{ steps.paths.outputs.spark }}
+      flink: ${{ steps.paths.outputs.flink }}
+      protocol: ${{ steps.paths.outputs.protocol }}
+      e2e: ${{ steps.paths.outputs.e2e }}
+      image: ${{ steps.paths.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: paths
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          files=
+          if [ -n "$BASE" ] && [ "$BASE" != 0000000000000000000000000000000000000000 ] &&
+            git fetch --quiet --no-tags --depth=1 origin "$BASE"; then
+            files=$(git diff --name-only "$BASE" HEAD)
+          fi
+          all=false
+          if [ -z "$files" ] || grep -qE '^\.github/(workflows/ci\.yml|actions/)' <<<"$files"; then
+            all=true
+          fi
+          echo "$files"
+          area() {
+            if [ "$all" = true ] || grep -qE "$2" <<<"$files"; then echo "$1=true"; else echo "$1=false"; fi | tee -a "$GITHUB_OUTPUT"
+          }
+          area go '^(cmd|connectors|examples|gen|internal|proto|sdk/go|test|tools)/|^(go\.(mod|sum|work|work\.sum)|buf\.[a-z.]+|\.golangci\.yml|Makefile|web/package\.json|web/pnpm-lock\.yaml|docs/reference/.*)$'
+          area rust '^(crates|proto|internal/engineclient)/|^(Cargo\.(toml|lock)|rust-toolchain\.toml|clippy\.toml)$'
+          area deny '(^|/)Cargo\.(toml|lock)$|^deny\.toml$'
+          area web '^web/'
+          area docs '^(docs|test/docs|test/install|deploy|examples)/|^(README\.md|CONTRIBUTING\.md|AGENTS\.md|install\.sh)$'
+          area spark '^libs/openetl-spark/'
+          area flink '^(libs/openetl-flink|proto/openetl/bridge)/'
+          area protocol '^proto/openetl/connector/'
+          area e2e '^(cmd|connectors|crates|internal|proto|sdk/go|test/e2e)/|^(go\.(mod|sum|work)|Cargo\.(toml|lock)|rust-toolchain\.toml|deploy/compose/dev\.yml)$'
+          area image '^(cmd|connectors|crates|gen|internal|proto|sdk/go|web|deploy/image)/|^(go\.(mod|sum|work)|Cargo\.(toml|lock)|rust-toolchain\.toml)$'
+
+  # Generated code, buf, golangci-lint and workflowcheck.
+  go-lint:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: go-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ github.job }}-
+      # protoc-gen-es, for the UI's clients.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: make tools
+      - name: Generated code is up to date
+        run: |
+          make generate
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::make generate changed files; run it and commit the result"
+            exit 1
+          fi
+      - name: Lint
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          buf lint
+          buf format --diff --exit-code
+          for m in . sdk/go; do (cd "$m" && golangci-lint run ./...); done
+          workflowcheck ./internal/orchestration/...
+      - if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
+  # Unit tests, the SDK on its own, and the commit-protocol simulation.
+  go-test:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: go-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ github.job }}-
+      # The simulation runs below, without the race detector, which made it
+      # the slowest package.
+      - name: Unit tests
+        run: |
+          mapfile -t packages < <(go list ./... ./sdk/go/... | grep -v '/test/sim$')
+          go test -race "${packages[@]}"
+      - name: The SDK builds without the workspace
+        working-directory: sdk/go
+        run: GOWORK=off go build ./...
+      - name: Commit-protocol simulation (fixed seeds)
+        run: go test -count=1 ./test/sim -seeds=200
+      - if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
+  # A break in the connector protocol fails, unless the change adds the next
+  # version of it, a new proto/openetl/connector/vN.
+  protocol:
+    needs: changes
+    if: needs.changes.outputs.protocol == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Breaking changes to the connector protocol
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then
+            echo "No commit to compare with."
+            exit 0
+          fi
+          GOWORK=off go build -modfile=tools/go.mod -o bin/ github.com/bufbuild/buf/cmd/buf
+          git fetch --quiet --no-tags --depth=1 origin "$BASE"
+          # The protocol's files alone on each side, which import only
+          # well-known types, compared by buf.yaml's rules.
+          work=$RUNNER_TEMP/protocol
+          for side in head base; do
+            mkdir -p "$work/$side/openetl"
+            printf 'version: v2\nbreaking:\n  use: [FILE]\n' > "$work/$side/buf.yaml"
+          done
+          cp -R proto/openetl/connector "$work/head/openetl/"
+          mkdir "$work/src"
+          git archive "$BASE" proto/openetl/connector | tar -x -C "$work/src"
+          [ ! -d "$work/src/proto/openetl/connector" ] || cp -R "$work/src/proto/openetl/connector" "$work/base/openetl/"
+          if bin/buf breaking "$work/head" --against "$work/base"; then
+            exit 0
+          fi
+          versions() { find "$1/openetl/connector" -mindepth 1 -maxdepth 1 -type d -name 'v[0-9]*' -exec basename {} \; | sort; }
+          added=$(comm -13 <(versions "$work/base") <(versions "$work/head"))
+          if [ -n "$added" ]; then
+            echo "::notice::The connector protocol breaks, with a new version: $added"
+            exit 0
+          fi
+          echo "::error::This breaks the connector protocol. Keep the change compatible, or add the protocol's next version, proto/openetl/connector/vN."
+          exit 1
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  deny:
+    needs: changes
+    if: needs.changes.outputs.deny == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check --hide-inclusion-graph
+
+  # The Linux engine, for amd64, and on main for arm64 too, which edge needs.
+  engine:
+    needs: changes
+    if: >-
+      needs.changes.outputs.rust == 'true' || needs.changes.outputs.e2e == 'true' ||
+      (needs.changes.outputs.image == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: ${{ fromJSON(github.ref == 'refs/heads/main' && github.event_name == 'push' && '["amd64", "arm64"]' || '["amd64"]') }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: engine
+        uses: ./.github/actions/engine
+        with:
+          arch: ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-linux_${{ matrix.arch }}
+          path: ${{ steps.engine.outputs.path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # The runner/engine contract, against this change's engine.
+  contract:
+    needs: [changes, engine]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-go-test-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-go-test-
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-linux_amd64
+          path: ${{ runner.temp }}/engine
+      - name: Runner/engine contract tests
+        run: |
+          chmod 755 "$RUNNER_TEMP/engine/openetl-engine"
+          OPENETL_ENGINE="$RUNNER_TEMP/engine/openetl-engine" go test -race -count=1 ./internal/engineclient/...
+
+  # One scheduled sync, from the built-in faker into Postgres through the
+  # official Postgres connector, built from openetl-connectors' main. The
+  # other end-to-end tests are nightly's.
+  e2e:
+    needs: [changes, engine]
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: openetl-io/openetl-connectors
+          ref: main
+          path: openetl-connectors
+      - name: Start Postgres
+        run: (set +e; make deps-up DEPS=postgres; echo $? > "$RUNNER_TEMP/deps.status") > "$RUNNER_TEMP/deps.log" 2>&1 &
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: go-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ github.job }}-${{ hashFiles('go.sum', 'openetl-connectors/go.sum') }}
+          restore-keys: go-${{ github.job }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-linux_amd64
+          path: ${{ runner.temp }}/engine
+      - name: The Postgres connector and the test
+        run: |
+          chmod 755 "$RUNNER_TEMP/engine/openetl-engine"
+          make connectors-work CONNECTORS_SRC=openetl-connectors
+          mkdir -p bin/connectors
+          (cd openetl-connectors && GOWORK="$PWD/../bin/connectors.work" go build -o ../bin/connectors/ ./cmd/source-postgres ./cmd/destination-postgres)
+          go test -tags e2e -c -o "$RUNNER_TEMP/e2e.test" ./test/e2e
+      - name: Wait for Postgres
+        timeout-minutes: 5
+        run: |
+          until [ -f "$RUNNER_TEMP/deps.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/deps.log"
+          exit "$(cat "$RUNNER_TEMP/deps.status")"
+      - name: A scheduled sync through the whole stack
+        working-directory: test/e2e
+        env:
+          OPENETL_CONNECTORS: ${{ github.workspace }}/bin/connectors
+        run: OPENETL_ENGINE="$RUNNER_TEMP/engine/openetl-engine" "$RUNNER_TEMP/e2e.test" -test.run '^TestScheduledSync$' -test.count=1 -test.timeout=10m -test.v
+      - if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  # Frontmatter, links, generated pages, no pinned release, and install.sh.
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./test/docs ./test/install
+
+  spark-lib:
+    needs: changes
+    if: needs.changes.outputs.spark == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.m2
+          key: maven-${{ github.job }}-${{ hashFiles('libs/**/pom.xml') }}
+          restore-keys: maven-${{ github.job }}-
+      - run: make spark-lib
+      - if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.maven-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.m2
+          key: ${{ steps.maven-cache.outputs.cache-primary-key }}
+
+  flink-lib:
+    needs: changes
+    if: needs.changes.outputs.flink == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.m2
+          key: maven-${{ github.job }}-${{ hashFiles('libs/**/pom.xml') }}
+          restore-keys: maven-${{ github.job }}-
+      - run: make flink-lib
+      - if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.maven-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.m2
+          key: ${{ steps.maven-cache.outputs.cache-primary-key }}
+
+  # The required check. It fails when a job failed or was cancelled, and
+  # passes when the paths skipped a job.
+  ci:
+    if: always()
+    needs: [changes, go-lint, go-test, protocol, rust, deny, engine, contract, e2e, web, docs, spark-lib, flink-lib]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          ! jq -e 'any(.[]; .result != "success" and .result != "skipped")' <<<"$NEEDS" > /dev/null
+
+  edge:
+    needs: [changes, ci]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' && needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: edge
+      cancel-in-progress: true
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/openetl
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-go-test-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-go-test-
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: engine-linux_*
+          path: build/engine
+      - run: |
+          for d in build/engine/engine-linux_*; do
+            mv "$d" "build/engine/${d##*/engine-}"
+          done
+          chmod 755 build/engine/*/openetl-engine
+          ls -l build/engine/*
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: The console, openetld and the CLI
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web build
+          for platform in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            out=build/bin/${platform/\//_}
+            mkdir -p "$out"
+            GOOS=${platform%/*} GOARCH=${platform#*/} CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$out/" ./cmd/openetl
+            [ "${platform%/*}" != linux ] || GOOS=linux GOARCH=${platform#*/} CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$out/" ./cmd/openetld
+          done
+          mkdir -p build/cli
+          for d in build/bin/*; do
+            cp "$d/openetl" "build/cli/openetl_${d##*/}"
+          done
+      - name: The image, ghcr.io/OWNER/openetl:edge
+        run: |
+          digests=()
+          for arch in amd64 arm64; do
+            context=build/image/$arch
+            mkdir -p "$context/connectors"
+            cp "build/bin/linux_$arch/openetld" "build/bin/linux_$arch/openetl" "build/engine/linux_$arch/openetl-engine" LICENSE NOTICE "$context/"
+            cp -R web/dist "$context/web"
+            docker buildx build --platform "linux/$arch" --provenance=false -f deploy/image/Dockerfile \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.version=edge" --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.licenses=Apache-2.0" \
+              --label "org.opencontainers.image.description=OpenETL, built from main: openetld, the openetl CLI, the engine and the console" \
+              --metadata-file "build/image-$arch.json" \
+              --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" "$context"
+            digests+=("$IMAGE@$(jq -r '."containerimage.digest"' "build/image-$arch.json")")
+          done
+          docker buildx imagetools create -t "$IMAGE:edge" "${digests[@]}"
+          echo "Edge: \`$IMAGE:edge\`, $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openetl-cli
+          path: build/cli/*
+          if-no-files-found: error
+          retention-days: 7
