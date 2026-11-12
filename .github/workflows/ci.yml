@@ -11,6 +11,10 @@ name: ci
 # moving tag, unsigned, and keeps the CLI as this run's artifact openetl-cli
 # for 7 days. A newer commit's edge cancels an older one's. nightly.yml runs
 # the heavier suites.
+#
+# A push that changes what the docs site reads (docs/, the OpenAPI document
+# and the JSON Schemas) calls the site's deploy hook, the URL in the secret
+# CLOUDFLARE_DEPLOY_HOOK; without the secret, docs-site does nothing.
 on:
   pull_request:
   push:
@@ -43,6 +47,7 @@ jobs:
       protocol: ${{ steps.paths.outputs.protocol }}
       e2e: ${{ steps.paths.outputs.e2e }}
       image: ${{ steps.paths.outputs.image }}
+      site: ${{ steps.paths.outputs.site }}
     steps:
       - uses: actions/checkout@v5
       - id: paths
@@ -72,6 +77,7 @@ jobs:
           area protocol '^proto/openetl/connector/'
           area e2e '^(cmd|connectors|crates|internal|proto|sdk/go|test/e2e)/|^(go\.(mod|sum|work)|Cargo\.(toml|lock)|rust-toolchain\.toml|deploy/compose/dev\.yml)$'
           area image '^(cmd|connectors|crates|gen|internal|proto|sdk/go|web|deploy/image)/|^(go\.(mod|sum|work)|Cargo\.(toml|lock)|rust-toolchain\.toml)$'
+          area site '^docs/|^internal/(api/openapi\.yaml|spec/connector\.schema\.json|connectorpkg/openetl-connector\.schema\.json|declarative/manifest\.schema\.json|events/event\.schema\.json)$'
 
   # Generated code, buf, golangci-lint and workflowcheck.
   go-lint:
@@ -428,6 +434,22 @@ jobs:
         run: |
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           ! jq -e 'any(.[]; .result != "success" and .result != "skipped")' <<<"$NEEDS" > /dev/null
+
+  # The docs site builds from main and the release branches.
+  docs-site:
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.site == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Have the docs site build again
+        env:
+          HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "No CLOUDFLARE_DEPLOY_HOOK, so the docs site wasn't told."
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK" > /dev/null
 
   edge:
     needs: [changes, ci]

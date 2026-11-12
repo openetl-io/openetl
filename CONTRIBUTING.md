@@ -124,15 +124,19 @@ git push origin v0.2.0:refs/heads/release-0.2
 
 The fix goes to `main` first. Then a pull request against `release-0.2` cherry-picks it (`git cherry-pick -x COMMIT`). Once that's merged, tag the patch, `v0.2.1`, on `release-0.2`.
 
-### Backports
+### Fixes to the docs
 
-A fix goes to `main` first. When it also fixes a release line, label its pull request `backport release-X.Y`, before it's merged or after; make the label, once, when you make the branch. The `backport` workflow then opens a pull request of it against `release-X.Y`. Where it doesn't apply cleanly, the workflow comments with the commands to backport it by hand.
+The [docs site](https://github.com/openetl-io/docs-web) has two versions of `docs/`. `next` is `main`. `stable` is the newest stable line: its branch `release-X.Y` if there is one, and otherwise its tag `vX.Y.0`. A prerelease has no docs of its own: `next` describes it. Until the first stable release, the site shows `next` first.
 
-Backport a change to `docs/` that corrects or completes what a release does: a wrong command, output or default, a missing step, a limit the release has. Don't backport docs for what only `main` does, or a change that describes code the release doesn't have. A fix to text that `main` no longer has is a pull request to the release branch alone.
+A fix to the docs needs no release:
 
-The workflow pushes a backport with the deploy key in the secret `BACKPORT_DEPLOY_KEY`, which has write access, so CI runs on it: GitHub starts no workflow for what a workflow's own token pushes. It opens the pull request with its own token, which **Allow GitHub Actions to create and approve pull requests**, in the repository's Actions settings, permits. Without the key, CI runs on a backport once it's merged; without the setting, the workflow comments with a link to open the pull request.
+- **For `next` and the prereleases,** it's a pull request to `main`.
+- **For `stable`,** it goes to `main` first, and then to the line's branch, made from `vX.Y.0` if it doesn't exist yet, as [Release branches](#release-branches) shows. A pull request against `release-X.Y` cherry-picks it (`git cherry-pick -x COMMIT`).
+- **Where `main`'s page has changed already** for something the stable release doesn't do, the fix is a pull request to `release-X.Y` alone.
 
-The docs site checks this repository every 15 minutes, and builds when what it reads has changed: `docs/`, `internal/api/openapi.yaml` or a JSON Schema on `main` or a release branch, or a published release.
+Fix in `stable` what corrects or completes what the release does: a wrong command, output or default, a missing step, a limit the release has. Don't take docs for what only `main` does to a release branch.
+
+A push to `main` or a release branch that changes what the site reads (`docs/`, `internal/api/openapi.yaml` or a JSON Schema the site publishes) calls the site's deploy hook, and so does a published release, which changes the site's `{{version}}`, its `stable` docs and its changelog. The hook's URL is the secret `CLOUDFLARE_DEPLOY_HOOK`; without it, nothing is called, and the site has the change the next time it builds.
 
 ## CI
 
