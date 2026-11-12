@@ -1,8 +1,9 @@
 name: release
 
 # A release is a pushed tag: vX.Y.Z, or vX.Y.Z-alpha.N, -beta.N or -rc.N,
-# which is a prerelease. The tag's commit must be in main, or in its line's
-# branch release-X.Y for a patch, and nightly must have run every suite on it
+# which is a prerelease. The tag's commit must be in main for vX.Y.0 and its
+# prereleases, and in the line's branch release-X.Y for a patch, vX.Y.Z with
+# Z > 0; and nightly must have run every suite on it
 # and passed: a run titled "nightly (all)", which a scheduled run is and
 # `gh workflow run nightly.yml --ref TAG -f suites=all` makes. Then this
 # builds the commit with the version in it, pushes the image to
@@ -85,8 +86,11 @@ jobs:
               *) return 1 ;;
             esac
           }
-          line=release-$(cut -d. -f1-2 <<< "$version")
-          has main || has "$line" || refuse "$COMMIT isn't a commit in main or $line"
+          # vX.Y.0 and its prereleases are tagged on main, and a patch on
+          # its line's branch, which the docs site reads a stable line from.
+          branch=main
+          [ "$(cut -d. -f3 <<< "${version%%-*}")" = 0 ] || branch=release-$(cut -d. -f1-2 <<< "$version")
+          has "$branch" || refuse "$COMMIT isn't a commit in $branch, where ${tag:-a release of $version} is tagged"
           passed=$(gh run list -R "$GITHUB_REPOSITORY" -w nightly.yml -c "$COMMIT" -s success -L 100 \
             --json displayTitle -q '[.[] | select(.displayTitle == "nightly (all)")] | length' 2>/dev/null || echo 0)
           [ "$passed" != 0 ] || refuse "nightly hasn't run every suite on $COMMIT and passed. Run it with gh workflow run nightly.yml --ref ${tag:-REF} -f suites=all, and once it passes, re-run this run's failed jobs"
