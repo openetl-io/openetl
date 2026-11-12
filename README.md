@@ -1,5 +1,7 @@
 # OpenETL
 
+[![OpenETL — Move more data. Use less compute. Open-source data movement, batch and streaming, on your infrastructure.](.github/assets/readme-header.svg)](https://openetl.io)
+
 OpenETL copies tables, changes and events from databases and event streams into warehouses, data lakes and other streams. Pipelines run on a schedule or continuously. OpenETL checks each stream's delivery guarantee and can commit each change exactly once when the connectors support it.
 
 You run OpenETL on your own infrastructure. It is open source under Apache 2.0.

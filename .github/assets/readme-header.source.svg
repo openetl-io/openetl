@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title description">
+  <title id="title">OpenETL — Move more data. Use less compute.</title>
+  <desc id="description">Open-source data movement. Batch and streaming on your infrastructure. The OpenETL ring sends three orange streams of data toward their destinations.</desc>
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#d7cfc1"/>
+    </pattern>
+    <clipPath id="artwork"><rect x="728" y="24" width="528" height="368" rx="8"/></clipPath>
+    <g id="mark" fill-rule="evenodd">
+      <path d="M38 256A150 150 0 1 0 338 256A150 150 0 1 0 38 256ZM98 256A90 90 0 1 0 278 256A90 90 0 1 0 98 256Z"/>
+      <path d="M188 106H444A30 30 0 0 1 444 166H188ZM308 226H412A30 30 0 0 1 412 286H308ZM188 346H444A30 30 0 0 1 444 406H188Z"/>
+    </g>
+  </defs>
+  <rect width="1280" height="480" rx="12" fill="#f5f3ec"/>
+  <rect x="0.5" y="0.5" width="1279" height="479" rx="11.5" fill="none" stroke="#ded8cd"/>
+  <g fill="#292622">
+    <use href="#mark" transform="translate(59 36) scale(.108)"/>
+    <text x="124" y="77" font-family="Manrope" font-size="31" font-weight="750" letter-spacing="-1.2">OpenETL</text>
+  </g>
+  <g font-family="Barlow Condensed" font-size="82" font-weight="600" letter-spacing="-1">
+    <text x="64" y="202" fill="#292622">MOVE MORE DATA.</text>
+    <text x="64" y="284" fill="#c74724">USE LESS COMPUTE.</text>
+  </g>
+  <g font-family="Manrope" fill="#60594f">
+    <text x="66" y="336" font-size="22" font-weight="600">Open-source data movement.</text>
+    <text x="66" y="368" font-size="20" font-weight="450">Batch and streaming. On your infrastructure.</text>
+  </g>
+  <g clip-path="url(#artwork)">
+    <rect x="728" y="24" width="528" height="368" fill="url(#grid)"/>
+    <circle cx="994" cy="218" r="165" fill="#ece7dc"/>
+    <g fill="none" stroke="#c8beb0" stroke-width="2">
+      <path d="M742 104H774Q794 104 794 124V174Q794 194 814 194H851"/>
+      <path d="M734 242H851"/>
+      <path d="M750 346H774Q794 346 794 326V310Q794 290 814 290H851"/>
+      <path d="M1080 146H1152Q1176 146 1176 122V104H1228"/>
+      <path d="M1080 242H1236"/>
+      <path d="M1080 338H1152Q1176 338 1176 362H1228"/>
+    </g>
+    <g fill="#292622">
+      <rect x="734" y="96" width="16" height="16" rx="3"/>
+      <rect x="726" y="234" width="16" height="16" rx="3"/>
+      <rect x="742" y="338" width="16" height="16" rx="3"/>
+    </g>
+    <use href="#mark" fill="#d5c4af" transform="translate(830 46) scale(.8)"/>
+    <use href="#mark" fill="#df542e" transform="translate(818 34) scale(.8)"/>
+    <g fill="#f5f3ec">
+      <rect x="1075" y="132" width="6" height="22" rx="2"/>
+      <rect x="1105" y="132" width="6" height="22" rx="2"/>
+      <rect x="1075" y="324" width="6" height="22" rx="2"/>
+      <rect x="1105" y="324" width="6" height="22" rx="2"/>
+    </g>
+    <g fill="#df542e">
+      <rect x="1208" y="96" width="16" height="16" rx="3"/>
+      <rect x="1184" y="234" width="16" height="16" rx="3"/>
+      <rect x="1208" y="354" width="16" height="16" rx="3"/>
+    </g>
+    <g fill="none" stroke="#8c7e6b" stroke-width="1.5" stroke-linecap="round">
+      <path d="M1218 64H1238V84M1218 394H1238V374"/>
+      <path d="M756 58V46H768"/>
+    </g>
+  </g>
+  <path d="M64 416H1216" stroke="#d3cbbe"/>
+  <g font-family="Manrope" font-size="15" font-weight="650" letter-spacing="1.8" fill="#60594f">
+    <text x="64" y="451">OPEN SOURCE</text>
+    <circle cx="220" cy="445" r="2" fill="#c74724"/>
+    <text x="240" y="451">SELF-HOSTED</text>
+    <text x="1086" y="451" letter-spacing="0">openetl.io</text>
+  </g>
+  <path d="M1198 439H1208V449M1208 439L1198 449" fill="none" stroke="#c74724" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
