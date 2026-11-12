@@ -145,7 +145,7 @@ func setup(m *testing.M) (int, error) {
 	if err := os.Mkdir(env.noConnectors, 0o750); err != nil {
 		return 0, err
 	}
-	// A release candidate's, or else one built here.
+	// One built already, or else one built here.
 	if env.openetld = os.Getenv("OPENETL_OPENETLD"); env.openetld == "" {
 		env.openetld = filepath.Join(dir, "openetld")
 		if out, err := exec.CommandContext(ctx, "go", "build", "-o", env.openetld, "github.com/openetl-io/openetl/cmd/openetld").CombinedOutput(); err != nil {

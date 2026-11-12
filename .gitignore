@@ -28,7 +28,7 @@ node_modules/
 /web/dist/
 *.tsbuildinfo
 
-# A release candidate's build
+# A release's build
 /dist/
 /build/
 

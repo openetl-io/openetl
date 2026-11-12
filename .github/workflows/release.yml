@@ -1,42 +1,32 @@
 name: release
 
-# Releases a tag that's already pushed, vVERSION such as v0.1.0-alpha, on a
-# commit in main or in its release line's branch, release-X.Y. It builds the
-# tag's commit with VERSION in it, as release-candidate does, and then, by
-# `publish`:
+# A release is a pushed tag: vX.Y.Z, or vX.Y.Z-alpha.N, -beta.N or -rc.N,
+# which is a prerelease. The tag's commit must be in main for vX.Y.0 and its
+# prereleases, and in the line's branch release-X.Y for a patch, vX.Y.Z with
+# Z > 0; and nightly must have run every suite on it
+# and passed: a run titled "nightly (all)", which a scheduled run is and
+# `gh workflow run nightly.yml --ref TAG -f suites=all` makes. Then this
+# builds the commit with the version in it, pushes the image to
+# ghcr.io/OWNER/openetl:VERSION, puts the files on a draft release with
+# generated notes, and, in the job that alone may sign, signs the image and
+# checksums.txt with keyless cosign and publishes the release.
 #
-#   public   pushes the image to ghcr.io/OWNER/openetl:VERSION and puts the
-#            files on a draft release of the tag; then, in the job that alone
-#            may sign, signs the image and checksums.txt with keyless cosign,
-#            tags the Go SDK sdk/go/vVERSION on the same commit, and publishes
-#            the release. Then it points release-X.Y at the release (see the
-#            branch job).
-#   private  pushes the image to the private ghcr.io/OWNER/candidates/VERSION/
-#            openetl and puts the files on a draft release of the tag. Nothing
-#            is signed, as keyless signatures go to a public log.
-#            release-discard VERSION removes both.
-#   skip     builds and checks everything, and pushes and uploads nothing.
+# Dispatched, on any branch or tag, it's a dry run: it builds and checks
+# everything for the ref's head, reports the release's checks without failing
+# on them, and pushes and publishes nothing. A tag's dry run has the tag's
+# version; any other ref's has 0.0.0-dev.
 #
-# Running it again replaces the tag's draft; it refuses a tag that's released.
-# GHCR creates a package private: make ghcr.io/OWNER/openetl public in its
-# settings once, after its first public release. Actions are pinned by commit.
+# A failed run is run again with "Re-run failed jobs": it replaces the tag's
+# draft, and refuses a tag that's released. Actions are pinned by commit.
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: The tag to release, pushed first, such as v0.1.0-alpha
-        required: true
-        type: string
-      publish:
-        description: "public: a signed, published release; private: a draft and a private image; skip: build and check only"
-        type: choice
-        options: [public, private, skip]
-        default: public
 
 permissions: {}
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 defaults:
@@ -46,41 +36,69 @@ defaults:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    # Only a token that can write sees a draft.
     permissions:
-      contents: write
+      actions: read # nightly's runs
+      contents: write # only a token that can write sees a draft
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
-      branch: ${{ steps.resolve.outputs.branch }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
-      - name: The tag names a version
-        env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::$TAG isn't a tag such as v0.1.0-alpha"; exit 1; }
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          ref: refs/tags/${{ inputs.tag }}
-      - id: resolve
+      - name: The tag, its commit and the release's checks
+        id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
+          COMMIT: ${{ github.sha }}
         run: |
-          commit=$(git rev-parse HEAD)
-          version=${TAG#v}
-          branch=release-$(cut -d. -f1-2 <<< "$version")
+          release='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$'
+          publish=false
+          version=0.0.0-dev
+          if [ "$EVENT" = push ]; then
+            publish=true
+            tag=$GITHUB_REF_NAME
+            [[ "$tag" =~ $release ]] || { echo "::error::$tag isn't a release's tag: vX.Y.Z, or vX.Y.Z-alpha.N, -beta.N or -rc.N"; exit 1; }
+            version=${tag#v}
+          elif [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" =~ $release ]]; then
+            tag=$GITHUB_REF_NAME
+            version=${tag#v}
+          fi
+          prerelease=false
+          [[ "$version" != *-* ]] || prerelease=true
+          { echo "version=$version"; echo "commit=$COMMIT"; echo "publish=$publish"; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
+          echo "Version $version, from $COMMIT; prerelease: $prerelease; publish: $publish." >> "$GITHUB_STEP_SUMMARY"
+
+          # A dry run reports what would stop a release, and goes on.
+          failed=0
+          refuse() {
+            if [ "$publish" = true ]; then
+              echo "::error::$1"
+              failed=1
+            else
+              echo "::warning::A release of this commit would stop here: $1"
+            fi
+          }
           # Whether the commit is in branch $1; a branch that doesn't exist has none.
           has() {
-            case $(gh api "repos/$GITHUB_REPOSITORY/compare/$1...$commit" --jq .status 2>/dev/null || true) in
+            case $(gh api "repos/$GITHUB_REPOSITORY/compare/$1...$COMMIT" --jq .status 2>/dev/null || true) in
               identical | behind) return 0 ;;
               *) return 1 ;;
             esac
           }
-          has main || has "$branch" || { echo "::error::$TAG ($commit) isn't a commit in main or $branch"; exit 1; }
-          draft=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
-          [ "$draft" != false ] || { echo "::error::$TAG is already released"; exit 1; }
-          { echo "version=$version"; echo "commit=$commit"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
+          # vX.Y.0 and its prereleases are tagged on main, and a patch on
+          # its line's branch, which the docs site reads a stable line from.
+          branch=main
+          [ "$(cut -d. -f3 <<< "${version%%-*}")" = 0 ] || branch=release-$(cut -d. -f1-2 <<< "$version")
+          has "$branch" || refuse "$COMMIT isn't a commit in $branch, where ${tag:-a release of $version} is tagged"
+          passed=$(gh run list -R "$GITHUB_REPOSITORY" -w nightly.yml -c "$COMMIT" -s success -L 100 \
+            --json displayTitle -q '[.[] | select(.displayTitle == "nightly (all)")] | length' 2>/dev/null || echo 0)
+          [ "$passed" != 0 ] || refuse "nightly hasn't run every suite on $COMMIT and passed. Run it with gh workflow run nightly.yml --ref ${tag:-REF} -f suites=all, and once it passes, re-run this run's failed jobs"
+          if [ -n "${tag:-}" ]; then
+            draft=$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+            [ "$draft" != false ] || refuse "$tag is already released"
+          fi
+          exit "$failed"
 
   engine:
     needs: prepare
@@ -157,8 +175,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Builds and checks everything, and in public and private pushes the image
-  # and puts the files on a draft. It can't sign.
+  # Builds and checks everything, and for a pushed tag pushes the image and
+  # puts the files on a draft. It can't sign.
   assemble:
     needs: [prepare, engine, libs]
     runs-on: ubuntu-latest
@@ -171,8 +189,9 @@ jobs:
       image: ${{ steps.image.outputs.image }}
       digest: ${{ steps.image.outputs.digest }}
     env:
-      TAG: ${{ inputs.tag }}
-      PUBLISH: ${{ inputs.publish }}
+      TAG: ${{ github.ref_name }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
       VERSION: ${{ needs.prepare.outputs.version }}
       COMMIT: ${{ needs.prepare.outputs.commit }}
       GH_TOKEN: ${{ github.token }}
@@ -180,6 +199,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.prepare.outputs.commit }}
+          # The tags, for the previous stable release.
+          fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
@@ -204,7 +225,7 @@ jobs:
         with:
           platforms: arm64
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - if: inputs.publish != 'skip'
+      - if: needs.prepare.outputs.publish == 'true'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
@@ -217,7 +238,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: libs
-          path: build/candidate/assets
+          path: build/release/assets
       - name: The console and the notices
         run: |
           pnpm --dir web install --frozen-lockfile
@@ -228,20 +249,20 @@ jobs:
           chmod 755 build/engine/*/openetl-engine
           rustup show active-toolchain || rustup toolchain install
           cargo fetch --locked
-          mkdir -p build/candidate/notices
-          go run ./internal/notices -out build/candidate/notices/THIRD-PARTY-NOTICES.txt
+          mkdir -p build/release/notices
+          go run ./internal/notices -out build/release/notices/THIRD-PARTY-NOTICES.txt
       # The committed files run edge; these run the release.
       - name: The Compose file and the Kubernetes manifest, with the release's image
         run: |
           image=ghcr.io/openetl-io/openetl
-          sed "s|$image:edge}|$image:$VERSION}|" deploy/compose/compose.yml > build/candidate/assets/compose.yml
-          grep -q "$image:$VERSION}" build/candidate/assets/compose.yml
+          sed "s|$image:edge}|$image:$VERSION}|" deploy/compose/compose.yml > build/release/assets/compose.yml
+          grep -q "$image:$VERSION}" build/release/assets/compose.yml
           kube=$(mktemp -d)
           cp -R deploy/kubernetes/. "$kube/"
           sed -i "s|^    newTag: edge\$|    newTag: $VERSION|" "$kube/kustomization.yaml"
-          kubectl kustomize "$kube" > build/candidate/assets/kubernetes.yaml
-          grep -q "image: $image:$VERSION\$" build/candidate/assets/kubernetes.yaml
-          ! grep -n ':edge' build/candidate/assets/compose.yml build/candidate/assets/kubernetes.yaml
+          kubectl kustomize "$kube" > build/release/assets/kubernetes.yaml
+          grep -q "image: $image:$VERSION\$" build/release/assets/kubernetes.yaml
+          ! grep -n ':edge' build/release/assets/compose.yml build/release/assets/kubernetes.yaml
       - name: The binaries, archives, checksums and SBOMs
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
@@ -249,7 +270,7 @@ jobs:
           version: v2.20.0
           args: release --clean --skip=publish,announce,validate
         env:
-          GORELEASER_CURRENT_TAG: ${{ inputs.tag }}
+          GORELEASER_CURRENT_TAG: v${{ needs.prepare.outputs.version }}
       - name: Each binary says its version, and each archive has what it should
         run: |
           want=$(find web/dist -type f | wc -l)
@@ -280,41 +301,39 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
         run: |
-          case $PUBLISH in
-            public) image=ghcr.io/$OWNER/openetl ;;
-            private) image=ghcr.io/$OWNER/candidates/$VERSION/openetl ;;
-            skip) image=openetl ;;
-          esac
+          image=ghcr.io/$OWNER/openetl
           binary() { jq -r --arg id "$1" --arg arch "$2" '.[] | select(.type == "Binary" and .extra.ID == $id and .goos == "linux" and .goarch == $arch) | .path' dist/artifacts.json; }
           digests=()
           for arch in amd64 arm64; do
             context=build/image/$arch
             mkdir -p "$context/connectors"
-            cp "$(binary openetld "$arch")" "$(binary openetl "$arch")" "build/engine/linux_$arch/openetl-engine" LICENSE NOTICE build/candidate/notices/THIRD-PARTY-NOTICES.txt "$context/"
+            cp "$(binary openetld "$arch")" "$(binary openetl "$arch")" "build/engine/linux_$arch/openetl-engine" LICENSE NOTICE build/release/notices/THIRD-PARTY-NOTICES.txt "$context/"
             cp -R web/dist "$context/web"
             output=type=cacheonly
-            [ "$PUBLISH" = skip ] || output="type=image,name=$image,push-by-digest=true,name-canonical=true,push=true"
+            [ "$PUBLISH" != true ] || output="type=image,name=$image,push-by-digest=true,name-canonical=true,push=true"
             docker buildx build --platform "linux/$arch" --provenance=false -f deploy/image/Dockerfile \
               --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
               --label "org.opencontainers.image.version=$VERSION" --label "org.opencontainers.image.revision=$COMMIT" \
               --label "org.opencontainers.image.licenses=Apache-2.0" \
               --label "org.opencontainers.image.description=OpenETL: openetld, the openetl CLI, the engine and the console" \
               --metadata-file "build/image-$arch.json" --output "$output" "$context"
-            [ "$PUBLISH" = skip ] || digests+=("$image@$(jq -r '."containerimage.digest"' "build/image-$arch.json")")
+            [ "$PUBLISH" != true ] || digests+=("$image@$(jq -r '."containerimage.digest"' "build/image-$arch.json")")
           done
-          if [ "$PUBLISH" = skip ]; then
+          if [ "$PUBLISH" != true ]; then
             echo "Built the image for amd64 and arm64; pushed nothing." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           docker buildx imagetools create -t "$image:$VERSION" "${digests[@]}"
           digest=$(docker buildx imagetools inspect "$image:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
           for arch in amd64 arm64; do
-            syft "registry:$image:$VERSION" --platform "linux/$arch" -o "spdx-json=build/candidate/assets/openetl-image_${VERSION}_linux_${arch}.sbom.json"
+            syft "registry:$image:$VERSION" --platform "linux/$arch" -o "spdx-json=build/release/assets/openetl-image_${VERSION}_linux_${arch}.sbom.json"
           done
           { echo "image=$image"; echo "digest=$digest"; } >> "$GITHUB_OUTPUT"
           echo "Image: \`$image:$VERSION@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+      # The files first, then the changes since the last release, which
+      # GitHub generates; for a stable release, since the last stable one.
       - name: The draft release
-        if: inputs.publish != 'skip'
+        if: needs.prepare.outputs.publish == 'true'
         env:
           IMAGE: ${{ steps.image.outputs.image }}
           DIGEST: ${{ steps.image.outputs.digest }}
@@ -322,8 +341,6 @@ jobs:
           if [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)" = true ]; then
             gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes
           fi
-          title=$TAG
-          [ "$PUBLISH" = public ] || title="$TAG (private)"
           cat > build/notes.md <<EOF
           OpenETL $VERSION, from commit $COMMIT.
 
@@ -332,15 +349,19 @@ jobs:
           - **openetl-cli_${VERSION}_\*.tar.gz:** the \`openetl\` CLI alone, for Linux and macOS.
           - **compose.yml** and **kubernetes.yaml:** \`deploy/compose/compose.yml\` and \`deploy/kubernetes\`'s manifests, with this release's image.
           - **openetl-spark and openetl-flink:** the jars for Spark and Flink transforms, and \`openetl_spark\`'s wheel for Python ones.
-          - **Go SDK:** \`go get github.com/$GITHUB_REPOSITORY/sdk/go@$TAG\`.
 
-          \`checksums.txt\` lists every file's SHA-256. In a published release, it and the image are signed with keyless cosign by this repository's release workflow.
+          \`checksums.txt\` lists every file's SHA-256. It and the image are signed with keyless cosign by this repository's release workflow.
           EOF
-          prerelease=()
-          [[ "$VERSION" != *-* ]] || prerelease=(--prerelease)
-          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --verify-tag "${prerelease[@]}" \
-            --title "$title" --notes-file build/notes.md \
-            dist/*.tar.gz dist/*.sbom.json dist/checksums.txt build/candidate/assets/*
+          flags=()
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease)
+          else
+            previous=$({ git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; echo "$TAG"; } | sort -uV | grep -B1 -x "$TAG" | head -1)
+            [ "$previous" = "$TAG" ] || flags+=(--notes-start-tag "$previous")
+          fi
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --verify-tag "${flags[@]}" \
+            --title "$TAG" --notes-file build/notes.md --generate-notes \
+            dist/*.tar.gz dist/*.sbom.json dist/checksums.txt build/release/assets/*
           echo "Draft: $(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
       # A public repository's artifacts can be downloaded by anyone signed in.
       - name: Delete this run's intermediate builds
@@ -351,7 +372,7 @@ jobs:
 
   # The only job that can sign, in the release environment.
   publish:
-    if: inputs.publish == 'public'
+    if: needs.prepare.outputs.publish == 'true'
     needs: [prepare, assemble]
     runs-on: ubuntu-latest
     environment: release
@@ -360,9 +381,8 @@ jobs:
       packages: write
       id-token: write
     env:
-      TAG: ${{ inputs.tag }}
+      TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.prepare.outputs.version }}
-      COMMIT: ${{ needs.prepare.outputs.commit }}
       IMAGE: ${{ needs.assemble.outputs.image }}
       DIGEST: ${{ needs.assemble.outputs.digest }}
       GH_TOKEN: ${{ github.token }}
@@ -382,14 +402,6 @@ jobs:
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p checksums.txt -D sig
           cosign sign-blob --yes --bundle sig/checksums.txt.sigstore.json sig/checksums.txt
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber sig/checksums.txt.sigstore.json
-      - name: Tag the Go SDK
-        run: |
-          sdk=sdk/go/$TAG
-          if at=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$sdk" --jq .object.sha 2>/dev/null); then
-            [ "$at" = "$COMMIT" ] || { echo "::error::$sdk is already on $at, not $COMMIT"; exit 1; }
-          else
-            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$sdk" -f "sha=$COMMIT" > /dev/null
-          fi
       - name: Publish the release
         run: |
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
@@ -405,44 +417,3 @@ jobs:
             echo "::warning::$IMAGE is private: make it public in https://github.com/orgs/$GITHUB_REPOSITORY_OWNER/packages/container/openetl/settings"
             echo "**$IMAGE is private:** make it public in [its settings](https://github.com/orgs/$GITHUB_REPOSITORY_OWNER/packages/container/openetl/settings)." >> "$GITHUB_STEP_SUMMARY"
           fi
-
-  # Points the release line's branch, release-X.Y, at the release: the docs
-  # site builds the line's docs from it, and fixes to them are backported to
-  # it (CONTRIBUTING.md). A new line's branch is made, with the label that
-  # backports to it. A release on the branch leaves it where it is. A release
-  # cut from main moves it forward, or, when it has commits since that main's
-  # release doesn't (backports, which came from main), starts it again at the
-  # release; the summary says where it was.
-  branch:
-    needs: [prepare, publish]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      issues: write
-    env:
-      TAG: ${{ inputs.tag }}
-      COMMIT: ${{ needs.prepare.outputs.commit }}
-      BRANCH: ${{ needs.prepare.outputs.branch }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Point the release line's branch at the release
-        run: |
-          repo=repos/$GITHUB_REPOSITORY
-          if ! at=$(gh api "$repo/git/ref/heads/$BRANCH" --jq .object.sha 2>/dev/null); then
-            gh api "$repo/git/refs" -f "ref=refs/heads/$BRANCH" -f "sha=$COMMIT" > /dev/null
-            echo "Made \`$BRANCH\` at $TAG." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          case $(gh api "$repo/compare/$at...$COMMIT" --jq .status) in
-            identical | behind) ;;
-            ahead)
-              gh api -X PATCH "$repo/git/refs/heads/$BRANCH" -f "sha=$COMMIT" -F force=false > /dev/null
-              echo "Moved \`$BRANCH\` forward to $TAG." >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            *)
-              gh api -X PATCH "$repo/git/refs/heads/$BRANCH" -f "sha=$COMMIT" -F force=true > /dev/null
-              echo "Started \`$BRANCH\` again at $TAG. It was at $at." >> "$GITHUB_STEP_SUMMARY"
-              ;;
-          esac
-      - name: The label that backports to it
-        run: gh label create "backport $BRANCH" -R "$GITHUB_REPOSITORY" --color 0e8a16 --description "Backport to $BRANCH once merged" --force
