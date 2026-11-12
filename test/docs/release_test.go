@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -8,63 +9,77 @@ import (
 	"testing"
 )
 
-// The release the docs install: install.sh's default, which every pinned
-// reference to a release of this repository in docs/, the README and the
-// deploy files' defaults must name, so that a release changes them together.
-var (
-	installDefault = regexp.MustCompile(`(?m)^version=\$\{OPENETL_VERSION:-([^}]+)\}$`)
-	releaseRefs    = []*regexp.Regexp{
-		regexp.MustCompile(`ghcr\.io/openetl-io/openetl:(` + version + `)`),
-		regexp.MustCompile(`github(?:usercontent)?\.com/openetl-io/openetl/(?:releases/download/)?v(` + version + `)/`),
-		regexp.MustCompile(`openetl-io/openetl//deploy/[a-z/]+\?ref=v(` + version + `)`),
-		regexp.MustCompile(`openetl/sdk/go@v(` + version + `)`),
-		regexp.MustCompile(`openetl-(?:spark|flink)-(` + version + `?)\.jar`),
-		regexp.MustCompile(`newTag: (` + version + `)`),
-		regexp.MustCompile(`OPENETL_VERSION=v?(` + version + `)`),
-	}
-)
+// A release's version lives only in its tag. These name a release of this
+// repository; docs pages write {{version}} instead, which the docs site fills
+// in, and the release's own files are stamped when it's built.
+var releaseRefs = []*regexp.Regexp{
+	regexp.MustCompile(`ghcr\.io/openetl-io/openetl:` + version),
+	regexp.MustCompile(`github(?:usercontent)?\.com/openetl-io/openetl/(?:releases/download/)?v` + version),
+	regexp.MustCompile(`(?i)\bopenetl ` + version),
+	regexp.MustCompile(`release is ` + version),
+	regexp.MustCompile(`openetl-io/openetl//deploy/[a-z/]+\?ref=v` + version),
+	regexp.MustCompile(`openetl/sdk/go@v` + version),
+	regexp.MustCompile(`openetl[-_](?:spark|flink)-` + version + `[.-]`),
+	regexp.MustCompile(`newTag: ` + version),
+	regexp.MustCompile(`OPENETL_VERSION(?:=|:-)v?` + version),
+	regexp.MustCompile(`--branch v` + version),
+	regexp.MustCompile(`-Dopenetl\.version=` + version),
+}
 
 // A version's characters, as semantic versions have them.
 const version = `[0-9][0-9A-Za-z.+-]*`
 
-func TestReleaseVersion(t *testing.T) {
-	script, err := os.ReadFile("../../install.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := installDefault.FindSubmatch(script)
-	if m == nil {
-		t.Fatal("install.sh has no line version=${OPENETL_VERSION:-VERSION}")
-	}
-	want := string(m[1])
-	files := []string{"../../README.md", "../../deploy/compose/compose.yml", "../../deploy/kubernetes/kustomization.yaml"}
-	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".md") {
-			files = append(files, path)
+// What users install from, and where it's described.
+var releaseFiles = []string{"../../README.md", "../../CONTRIBUTING.md", "../../install.sh", "../../deploy", "../../examples", root}
+
+func TestNoPinnedRelease(t *testing.T) {
+	walk(t, func(path string, line int, text string) {
+		for _, re := range releaseRefs {
+			for _, m := range re.FindAllString(text, -1) {
+				t.Errorf("%s:%d: %q names a release; write {{version}} in docs, and leave other files without one", path, line, m)
+			}
 		}
-		return err
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := 0
-	for _, f := range files {
-		b, err := os.ReadFile(f)
+}
+
+var placeholder = regexp.MustCompile(`\{\{[^{}]*[Vv]ersion[^{}]*\}\}`)
+
+// The site fills in {{version}} exactly, and leaves {{ version }} or
+// {{.Version}} as they are.
+func TestVersionPlaceholder(t *testing.T) {
+	walk(t, func(path string, line int, text string) {
+		for _, m := range placeholder.FindAllString(text, -1) {
+			if m != "{{version}}" {
+				t.Errorf("%s:%d: %q: the docs site fills in {{version}} only", path, line, m)
+			}
+		}
+	})
+}
+
+// walk calls f with each line of the text files in releaseFiles.
+func walk(t *testing.T, f func(path string, line int, text string)) {
+	t.Helper()
+	for _, top := range releaseFiles {
+		err := filepath.WalkDir(top, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			switch filepath.Ext(path) {
+			case ".md", ".sh", ".yml", ".yaml", ".json", ".xml", ".toml", ".py", "":
+			default:
+				return nil
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for i, text := range strings.Split(string(b), "\n") {
+				f(path, i+1, text)
+			}
+			return nil
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i, line := range strings.Split(string(b), "\n") {
-			for _, re := range releaseRefs {
-				for _, m := range re.FindAllStringSubmatch(line, -1) {
-					found++
-					if m[1] != want {
-						t.Errorf("%s:%d: %q names release %s, and install.sh installs %s", f, i+1, m[0], m[1], want)
-					}
-				}
-			}
-		}
-	}
-	if found == 0 {
-		t.Error("no page names a release; the docs should say how to install one")
 	}
 }

@@ -16,14 +16,14 @@ curl -fsSL https://raw.githubusercontent.com/openetl-io/openetl/main/install.sh 
 ```
 
 ```text
-Downloading openetl 0.1.0-alpha for darwin/arm64 from https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha
-Installed openetl 0.1.0-alpha at /Users/alex/.local/bin/openetl
+Downloading openetl {{version}} for darwin/arm64 from https://github.com/openetl-io/openetl/releases/download/v{{version}}
+Installed openetl {{version}} at /Users/alex/.local/bin/openetl
 ```
 
 The script does these steps:
 
 1. It finds your operating system and processor.
-2. It downloads the CLI and `checksums.txt` from the OpenETL 0.1.0-alpha release on GitHub.
+2. It finds the newest release on GitHub, and downloads the CLI and `checksums.txt` from that release. The newest release can be an alpha, beta or release candidate.
 3. It compares the SHA-256 of the download with `checksums.txt`. If they are different, it stops and installs nothing.
 4. It puts `openetl` in `~/.local/bin`, and replaces an earlier `openetl` there.
 
@@ -36,7 +36,7 @@ openetl version
 ```
 
 ```text
-0.1.0-alpha
+{{version}}
 ```
 
 To read the script before you run it, download it first:
@@ -53,9 +53,10 @@ The script reads these environment variables:
 
 | Variable | Default | What it sets |
 |---|---|---|
-| `OPENETL_VERSION` | `0.1.0-alpha` | The release to install, such as `0.1.0-alpha` or `v0.1.0-alpha` |
+| `OPENETL_VERSION` | The newest release | The release to install, such as `{{version}}` or `v{{version}}` |
 | `OPENETL_INSTALL_DIR` | `$HOME/.local/bin` | The directory for `openetl`. The script creates it if it does not exist. |
 | `OPENETL_DOWNLOAD_URL` | `https://github.com/openetl-io/openetl/releases/download` | Where to download from. A mirror must have the same paths: `vVERSION/FILE`. |
+| `OPENETL_RELEASES_URL` | `https://api.github.com/repos/openetl-io/openetl/releases` | The list of releases that the newest release comes from, in the format of GitHub's API. If the script cannot reach it, set `OPENETL_VERSION`. |
 
 Put a variable before `sh`. For example, this command installs into `~/bin`:
 
@@ -70,18 +71,18 @@ Use this procedure if you cannot run a script from the internet. Replace `OS` wi
 1. Download the archive and `checksums.txt` from the release:
 
    ```sh
-   curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/openetl-cli_0.1.0-alpha_OS_ARCH.tar.gz
-   curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/checksums.txt
+   curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v{{version}}/openetl-cli_{{version}}_OS_ARCH.tar.gz
+   curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v{{version}}/checksums.txt
    ```
 
 2. Check the archive's SHA-256:
 
    ```sh
-   grep ' openetl-cli_0.1.0-alpha_OS_ARCH.tar.gz$' checksums.txt | shasum -a 256 -c
+   grep ' openetl-cli_{{version}}_OS_ARCH.tar.gz$' checksums.txt | shasum -a 256 -c
    ```
 
    ```text
-   openetl-cli_0.1.0-alpha_OS_ARCH.tar.gz: OK
+   openetl-cli_{{version}}_OS_ARCH.tar.gz: OK
    ```
 
    If the output does not show `OK`, delete the archive and do not use it. On Linux, `sha256sum -c` does the same check.
@@ -89,8 +90,8 @@ Use this procedure if you cannot run a script from the internet. Replace `OS` wi
 3. Extract the archive, and move `openetl` to a directory on your `PATH`:
 
    ```sh
-   tar -xzf openetl-cli_0.1.0-alpha_OS_ARCH.tar.gz
-   mv openetl-cli_0.1.0-alpha_OS_ARCH/openetl ~/.local/bin/
+   tar -xzf openetl-cli_{{version}}_OS_ARCH.tar.gz
+   mv openetl-cli_{{version}}_OS_ARCH/openetl ~/.local/bin/
    ```
 
 The archive also holds `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES.txt`.
@@ -100,7 +101,7 @@ The archive also holds `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES.txt`.
 The release workflow signs `checksums.txt` with [Sigstore](https://www.sigstore.dev) keyless signing. The signature shows that the file comes from this repository's release workflow. To check it, install [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3 or later. Then, in the directory that holds `checksums.txt`, run:
 
 ```sh
-curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v0.1.0-alpha/checksums.txt.sigstore.json
+curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v{{version}}/checksums.txt.sigstore.json
 cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
   --certificate-identity-regexp '^https://github\.com/openetl-io/openetl/\.github/workflows/release\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
@@ -130,10 +131,10 @@ Each command also takes `--api-url` and `--api-key-file`. [The openetl CLI](../r
 
 Use a CLI of the same version as the installation that it calls. The pipeline format and the API can change between alpha releases.
 
-To change the version, run the install command again with `OPENETL_VERSION`:
+To install the newest release, run the install command again. To install another version, set `OPENETL_VERSION` to it, such as `{{version}}`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/openetl-io/openetl/main/install.sh | OPENETL_VERSION=0.1.0-alpha sh
+curl -fsSL https://raw.githubusercontent.com/openetl-io/openetl/main/install.sh | OPENETL_VERSION={{version}} sh
 ```
 
 The [releases page](https://github.com/openetl-io/openetl/releases) lists each version and its changes.

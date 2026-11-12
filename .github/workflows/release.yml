@@ -230,6 +230,18 @@ jobs:
           cargo fetch --locked
           mkdir -p build/candidate/notices
           go run ./internal/notices -out build/candidate/notices/THIRD-PARTY-NOTICES.txt
+      # The committed files run edge; these run the release.
+      - name: The Compose file and the Kubernetes manifest, with the release's image
+        run: |
+          image=ghcr.io/openetl-io/openetl
+          sed "s|$image:edge}|$image:$VERSION}|" deploy/compose/compose.yml > build/candidate/assets/compose.yml
+          grep -q "$image:$VERSION}" build/candidate/assets/compose.yml
+          kube=$(mktemp -d)
+          cp -R deploy/kubernetes/. "$kube/"
+          sed -i "s|^    newTag: edge\$|    newTag: $VERSION|" "$kube/kustomization.yaml"
+          kubectl kustomize "$kube" > build/candidate/assets/kubernetes.yaml
+          grep -q "image: $image:$VERSION\$" build/candidate/assets/kubernetes.yaml
+          ! grep -n ':edge' build/candidate/assets/compose.yml build/candidate/assets/kubernetes.yaml
       - name: The binaries, archives, checksums and SBOMs
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
@@ -318,6 +330,7 @@ jobs:
           - **Image:** \`$IMAGE:$VERSION\` (\`$IMAGE@$DIGEST\`), for linux/amd64 and linux/arm64. It holds no connectors; it installs them from \`oci://ghcr.io/$GITHUB_REPOSITORY_OWNER/openetl-connectors\`.
           - **openetl_${VERSION}_linux_\*.tar.gz:** \`openetld\`, the \`openetl\` CLI, \`openetl-engine\` and the console, for Linux.
           - **openetl-cli_${VERSION}_\*.tar.gz:** the \`openetl\` CLI alone, for Linux and macOS.
+          - **compose.yml** and **kubernetes.yaml:** \`deploy/compose/compose.yml\` and \`deploy/kubernetes\`'s manifests, with this release's image.
           - **openetl-spark and openetl-flink:** the jars for Spark and Flink transforms, and \`openetl_spark\`'s wheel for Python ones.
           - **Go SDK:** \`go get github.com/$GITHUB_REPOSITORY/sdk/go@$TAG\`.
 

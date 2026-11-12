@@ -27,4 +27,4 @@ Start with [What is OpenETL?](./get-started/overview.md). Then follow the [quick
 Official connector pages appear under Connectors on the docs site. Their source files are in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). For other packages, use the **Docs** link in the console.
 
 > [!NOTE]
-> OpenETL is in alpha. The current release is 0.1.0-alpha. The pipeline format and the API can change between releases.
+> OpenETL is in alpha. The current release is {{version}}. The pipeline format and the API can change between releases.

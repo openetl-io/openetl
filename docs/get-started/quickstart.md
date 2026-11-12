@@ -3,7 +3,7 @@ title: Quickstart
 description: Run the OpenETL release on your computer with Docker Compose, copy generated rows into Postgres, and check the result in the console and the database.
 ---
 
-In this tutorial, you run OpenETL 0.1.0-alpha on your computer with Docker Compose. You copy generated rows into a Postgres database, then check the result in the console and the database. Allow about 15 minutes.
+In this tutorial, you run OpenETL {{version}} on your computer with Docker Compose. You copy generated rows into a Postgres database, then check the result in the console and the database. Allow about 15 minutes.
 
 This example uses the official Postgres connector. Its [setup and configuration documentation](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) is in `openetl-connectors`. For other systems, [choose a connector](../pipelines/connectors.md) and follow its documentation.
 
@@ -31,23 +31,22 @@ openetl version
 ```
 
 ```text
-0.1.0-alpha
+{{version}}
 ```
 
 ## 2. Start OpenETL
 
-Make a directory for OpenETL, and download its Compose file from the release:
+Make a directory for OpenETL, and download its Compose file from the release. The file runs the release's image:
 
 ```sh
 mkdir openetl && cd openetl
-curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/v0.1.0-alpha/deploy/compose/compose.yml
+curl -fsSLO https://github.com/openetl-io/openetl/releases/download/v{{version}}/compose.yml
 ```
 
-Write the settings file, `.env`. It names the release's image, a Postgres password, and the key that encrypts the secrets you store:
+Write the settings file, `.env`. It holds a Postgres password and the key that encrypts the secrets you store:
 
 ```sh
 cat > .env <<EOF
-OPENETL_IMAGE=ghcr.io/openetl-io/openetl:0.1.0-alpha
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 OPENETL_SECRETS_KEY=base64key://$(openssl rand -base64 32 | tr '+/' '-_')
 EOF
@@ -153,7 +152,7 @@ created workspaces/default/secrets/local-postgres-dsn
 Download the example pipeline:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/v0.1.0-alpha/examples/faker-to-postgres.yaml
+curl -fsSLO https://raw.githubusercontent.com/openetl-io/openetl/v{{version}}/examples/faker-to-postgres.yaml
 ```
 
 The file, [`examples/faker-to-postgres.yaml`](../../examples/faker-to-postgres.yaml), holds three documents:

@@ -116,7 +116,7 @@ Make a module, and add the SDK of the OpenETL release that you build for. Each r
 
 ```sh
 go mod init example.com/greetings
-go get github.com/openetl-io/openetl/sdk/go@v0.1.0-alpha
+go get github.com/openetl-io/openetl/sdk/go@v{{version}}
 ```
 
 Write `cmd/source-greetings/main.go`:

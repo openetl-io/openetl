@@ -8,18 +8,19 @@
 # It reads these from the environment:
 #
 #   OPENETL_VERSION       the release to install, such as 0.1.0-alpha
-#                         (default: the release the docs beside this file
-#                         describe, which test/docs checks)
+#                         (default: the newest release, prereleases included)
 #   OPENETL_INSTALL_DIR   where openetl goes (default: $HOME/.local/bin)
 #   OPENETL_DOWNLOAD_URL  where the releases' files are, by tag, for a mirror
 #                         (default: GitHub's)
+#   OPENETL_RELEASES_URL  the list of releases, newest first, in the form of
+#                         GitHub's API, which the default version comes from
+#                         (default: GitHub's)
 set -eu
 
-version=${OPENETL_VERSION:-0.1.0-alpha}
-version=${version#v}
 dir=${OPENETL_INSTALL_DIR:-$HOME/.local/bin}
 base=${OPENETL_DOWNLOAD_URL:-https://github.com/openetl-io/openetl/releases/download}
 base=${base%/}
+releases=${OPENETL_RELEASES_URL:-https://api.github.com/repos/openetl-io/openetl/releases}
 
 fail() {
 	echo "install.sh: $*" >&2
@@ -46,6 +47,17 @@ elif command -v shasum >/dev/null 2>&1; then
 else
 	fail "neither sha256sum nor shasum is installed"
 fi
+
+# The newest release is the list's first entry. GitHub's releases/latest
+# would skip prereleases.
+version=${OPENETL_VERSION:-}
+if [ -z "$version" ]; then
+	list=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$releases?per_page=1") ||
+		fail "cannot list the releases at $releases; set OPENETL_VERSION to the release to install"
+	version=$(printf '%s\n' "$list" | sed -n 's/^.*"tag_name": *"\([^"]*\)".*$/\1/p' | head -n 1)
+	[ -n "$version" ] || fail "$releases lists no release; set OPENETL_VERSION to the release to install"
+fi
+version=${version#v}
 
 name=openetl-cli_${version}_${os}_${arch}
 url=$base/v$version

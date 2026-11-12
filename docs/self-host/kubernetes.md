@@ -21,7 +21,7 @@ The manifests do not include Postgres or object storage. Configure those service
 
 - **Postgres** for metadata. The default DBOS backend stores workflows in a second database, named after the metadata database with `_dbos` appended. Orchestrators create it if their database user has permission. Otherwise, create it yourself or specify another database with `OPENETL_DBOS_DATABASE_URL`. Do not connect through a transaction pooler.
 - **A bucket** in S3, GCS or Azure Blob Storage for checkpoints and staging. Runners, job pods and the pod launcher need read and write access to it, through a workload identity or keys in the Secret `openetl-runner`.
-- **Network access to `ghcr.io`** from the cluster's nodes and runners. Nodes pull OpenETL's image, `ghcr.io/openetl-io/openetl:0.1.0-alpha`, for `linux/amd64` or `linux/arm64`. Runners download the connector packages that you install. The image holds no external connectors.
+- **Network access to `ghcr.io`** from the cluster's nodes and runners. Nodes pull OpenETL's image, `ghcr.io/openetl-io/openetl:{{version}}`, for `linux/amd64` or `linux/arm64`. Runners download the connector packages that you install. The image holds no external connectors.
 - **kubectl** 1.27 or later, and **git**, which kubectl uses to read the manifests from GitHub.
 - **The `openetl` CLI** on your computer, as [Install the CLI](../get-started/install.md) shows.
 
@@ -34,11 +34,11 @@ The manifests do not include Postgres or object storage. Configure those service
    kind: Kustomization
    namespace: openetl
    resources:
-     - https://github.com/openetl-io/openetl//deploy/kubernetes?ref=v0.1.0-alpha
+     - https://github.com/openetl-io/openetl//deploy/kubernetes?ref=v{{version}}
    images:
      - name: openetl
        newName: ghcr.io/openetl-io/openetl
-       newTag: 0.1.0-alpha
+       newTag: {{version}}
    patches:
      - patch: |
          apiVersion: v1
@@ -49,7 +49,7 @@ The manifests do not include Postgres or object storage. Configure those service
            OPENETL_CHECKPOINTS: BUCKET
    ```
 
-   The resource is the release's manifests, at the tag `v0.1.0-alpha`. The image is the same release's. The patch changes the ConfigMap `openetl`, which every component reads. Add your other settings to its `data`, such as `OPENETL_PUBLIC_URL`. [Buckets](./index.md#buckets) gives the order in which runners look for credentials.
+   The resource is the release's manifests, at the tag `v{{version}}`. `images` sets the same release's image: without it, the manifests run `edge`, the image built from `main`. The patch changes the ConfigMap `openetl`, which every component reads. Add your other settings to its `data`, such as `OPENETL_PUBLIC_URL`. [Buckets](./index.md#buckets) gives the order in which runners look for credentials.
 
    To check what you are about to apply, run `kubectl kustomize .` in the directory. It prints the manifests and changes nothing.
 
@@ -149,7 +149,7 @@ The `keda` component scales shared runners in the `default` pool using orchestra
 
    ```yaml
    components:
-     - https://github.com/openetl-io/openetl//deploy/kubernetes/keda?ref=v0.1.0-alpha
+     - https://github.com/openetl-io/openetl//deploy/kubernetes/keda?ref=v{{version}}
    patches:
      - target:
          kind: ScaledObject
@@ -187,10 +187,10 @@ KEDA keeps at least one shared runner. Without one, a pool with a launcher sends
 Apply the node pools:
 
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/openetl-io/openetl/v0.1.0-alpha/deploy/kubernetes/karpenter/nodepools.yaml
+kubectl apply -f https://raw.githubusercontent.com/openetl-io/openetl/v{{version}}/deploy/kubernetes/karpenter/nodepools.yaml
 ```
 
-Then add `https://github.com/openetl-io/openetl//deploy/kubernetes/karpenter?ref=v0.1.0-alpha` to `components` in your `kustomization.yaml`, and apply. This gives runners and job pods the node selector and toleration for their pool.
+Then add `https://github.com/openetl-io/openetl//deploy/kubernetes/karpenter?ref=v{{version}}` to `components` in your `kustomization.yaml`, and apply. This gives runners and job pods the node selector and toleration for their pool.
 
 A runner pool used only for scheduled syncs can also use spot instances. If the cluster can add only spot instances, allow spot in `openetl-runners`. Streams on those runners have the same interruption behavior as [stream pods on spot](#spot-nodes).
 
@@ -210,7 +210,7 @@ Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases pa
 
 1. Read the notes of each release between your version and the new one.
 2. Back up the metadata database and keep a copy of `OPENETL_SECRETS_KEY`. [Back up and restore](./backup-and-restore.md) lists what an installation's state is.
-3. In your `kustomization.yaml`, change `ref=v0.1.0-alpha` in every URL and `newTag` to the new version.
+3. In your `kustomization.yaml`, change the version in `ref=vVERSION` in every URL, and `newTag`, to the new version.
 4. Check the change with `kubectl kustomize .`, then apply it with `kubectl apply -k .`.
 5. Upgrade the CLI to the same version, as [Install the CLI](../get-started/install.md#upgrade) shows.
 
