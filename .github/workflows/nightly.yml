@@ -72,12 +72,14 @@ jobs:
             fi
           fi
           [ "$SUITES" != all ] || SUITES=$known
-          for s in $SUITES; do
-            grep -qw -- "$s" <<<"$known" || { echo "::error::$s isn't a suite: $known, or all"; exit 1; }
+          read -ra asked <<<"$SUITES"
+          for s in "${asked[@]}"; do
+            [[ " $known " == *" $s "* ]] || { echo "::error::$s isn't a suite: $known, or all"; exit 1; }
           done
+          SUITES="${asked[*]}"
           engine=false
           for s in $known; do
-            if grep -qw -- "$s" <<<"$SUITES"; then
+            if [[ " $SUITES " == *" $s "* ]]; then
               echo "$s=true" >> "$GITHUB_OUTPUT"
               [ "$s" = deny ] || engine=true
             else
