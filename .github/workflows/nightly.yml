@@ -249,9 +249,10 @@ jobs:
           k -n openetl get events --sort-by=.lastTimestamp | tail -50
           for p in $(k -n openetl get pods -o name); do k -n openetl logs "$p" --tail 100; done
 
-  # A short run of the chaos suite, from a seed of the night's own.
+  # A short run of the chaos suite, from a seed of the night's own. After
+  # engine, whose cache it restores.
   chaos:
-    needs: plan
+    needs: [plan, engine]
     if: needs.plan.outputs.chaos == 'true'
     uses: ./.github/workflows/chaos.yml
     with:
