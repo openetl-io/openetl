@@ -163,9 +163,12 @@ type Document struct {
 	Origin  string `protobuf:"bytes,1,opt,name=origin,proto3" json:"origin,omitempty"`
 	Content []byte `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
 	// A connector version the API fetches, in place of content:
-	// oci://REGISTRY/REPOSITORY:VERSION or @sha256:…, or
-	// github.com/OWNER/REPO[/PACKAGE]@VERSION. The manifest's digest or the
-	// release's URL is its provenance.
+	// oci://REGISTRY/REPOSITORY[:VERSION] or @sha256:…, or
+	// github.com/OWNER/REPO[/PACKAGE][@VERSION]. Without a version, the newest
+	// version that the connected source covering the reference offers: its
+	// highest stable version, or its highest prerelease when it has no stable
+	// one; the applied resource's name has the version. The manifest's digest
+	// or the release's URL is its provenance.
 	Reference     string `protobuf:"bytes,3,opt,name=reference,proto3" json:"reference,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

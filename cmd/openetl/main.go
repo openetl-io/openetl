@@ -23,6 +23,7 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/openetl-io/openetl/internal/auth"
+	"github.com/openetl-io/openetl/internal/pkgref"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/platform/telemetry"
 )
@@ -225,12 +226,12 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 	if mode == applyConnectors {
 		refs = fs.Args()
 		for _, r := range refs {
-			if !strings.HasPrefix(r, "oci://") && !strings.HasPrefix(r, "github.com/") {
-				return fmt.Errorf("%q isn't a reference: oci://REGISTRY/REPOSITORY:VERSION or github.com/OWNER/REPO[/PACKAGE]@VERSION", r)
+			if !pkgref.Is(r) {
+				return fmt.Errorf("%q isn't a reference: oci://REGISTRY/REPOSITORY[:VERSION] or github.com/OWNER/REPO[/PACKAGE][@VERSION]", r)
 			}
 		}
 		if len(paths) == 0 && len(refs) == 0 {
-			return errors.New("connector apply takes -f FILE, or references such as oci://ghcr.io/openetl-io/openetl-connectors/postgres:0.2.0")
+			return errors.New("connector apply takes -f FILE, or references such as oci://ghcr.io/openetl-io/openetl-connectors/postgres")
 		}
 	} else if len(paths) == 0 || fs.NArg() > 0 {
 		return fmt.Errorf("%s takes one or more -f FILE, and no arguments", strings.TrimPrefix(cmd, "openetl "))
@@ -278,8 +279,13 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 		}
 		return action
 	}
-	for _, r := range res.Msg.GetResources() {
-		fmt.Fprintf(out, "%s %s (%s)\n", verb(r), r.GetName(), versionText(r.GetVersion()))
+	for i, r := range res.Msg.GetResources() {
+		fmt.Fprintf(out, "%s %s (%s)", verb(r), r.GetName(), versionText(r.GetVersion()))
+		// Resources are in the documents' order, which starts with refs.
+		if i < len(refs) && pkgref.Unversioned(refs[i]) {
+			fmt.Fprintf(out, ", the newest version of %s", refs[i])
+		}
+		fmt.Fprintln(out)
 	}
 	for _, r := range res.Msg.GetDependents() {
 		fmt.Fprintf(out, "%s %s (%s), which uses what changed\n", verb(r), r.GetName(), versionText(r.GetVersion()))

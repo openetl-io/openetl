@@ -37,8 +37,11 @@ Commands:
             or a package version publish pushed to a registry
   apply (-f FILE | REFERENCE...)
             apply connector versions: descriptors and manifests in FILE, or
-            oci://REGISTRY/REPOSITORY:VERSION and
-            github.com/OWNER/REPO[/PACKAGE]@VERSION references
+            oci://REGISTRY/REPOSITORY[:VERSION] and
+            github.com/OWNER/REPO[/PACKAGE][@VERSION] references; without a
+            version, the newest that the connected source covering the
+            reference offers: its highest stable version, or its highest
+            prerelease when it has no stable one
   catalog [--refresh]
             list the packages of the connected sources of connectors, with
             the reference to apply each by, and the packages applied that no

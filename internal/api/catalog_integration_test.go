@@ -246,6 +246,20 @@ func TestCatalog(t *testing.T) {
 		t.Errorf("applied version %q", a)
 	}
 
+	// Without a version, a reference takes the newest version that the
+	// connected source covering it offers.
+	ap, err = applier.Apply(ctx, connect.NewRequest(&apiv1.ApplyRequest{Documents: []*apiv1.Document{{Reference: repo.String()}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := ap.Msg.GetResources()[0]; r.GetName() != "connectors/openetl/postgres/versions/1.0.0" || r.GetAction() != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED {
+		t.Errorf("applied without a version %v", r)
+	}
+	elsewhere := oci.Ref{Registry: repo.Registry, Repository: "elsewhere/postgres"}.String()
+	if _, err := applier.Apply(ctx, connect.NewRequest(&apiv1.ApplyRequest{Documents: []*apiv1.Document{{Reference: elsewhere}}})); err == nil || !strings.Contains(err.Error(), "no connected source covers it") {
+		t.Errorf("a reference without a version that no source covers: %v", err)
+	}
+
 	// A GitHub repository, with a token.
 	if _, err := apiv1connect.NewSecretServiceClient(http.DefaultClient, ts.URL).UpdateSecret(ctx, connect.NewRequest(&apiv1.UpdateSecretRequest{
 		Secret: &apiv1.Secret{Name: "workspaces/default/secrets/gh", Value: "tok"}, AllowMissing: true,

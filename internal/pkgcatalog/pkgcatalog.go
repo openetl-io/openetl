@@ -159,12 +159,30 @@ func (c *Catalog) GitHub(ctx context.Context, repository string) (*github.Client
 type Resolved = pkgref.Resolved
 
 // Resolve fetches the connector version a reference names:
-// oci://REGISTRY/REPOSITORY:VERSION or @sha256:…, or
-// github.com/OWNER/REPO[/PACKAGE]@VERSION, with the connected sources'
-// credentials. A package under the reserved openetl owner must come from
-// where the official packages are published.
+// oci://REGISTRY/REPOSITORY[:VERSION] or @sha256:…, or
+// github.com/OWNER/REPO[/PACKAGE][@VERSION], with the connected sources'
+// credentials. A reference without a version takes the newest version that
+// the connected source covering it offers, as pkgref.Newest chooses it. A
+// package under the reserved openetl owner must come from where the
+// official packages are published.
 func (c *Catalog) Resolve(ctx context.Context, reference string) (*Resolved, error) {
-	return pkgref.Resolver{OCI: c.OCI(), GitHub: c.GitHub, Official: c.Official}.Resolve(ctx, reference)
+	return pkgref.Resolver{OCI: c.OCI(), GitHub: c.GitHub, Official: c.Official, Source: c.covering}.Resolve(ctx, reference)
+}
+
+// covering is the name of the connected source with the longest URL that
+// covers url, or empty.
+func (c *Catalog) covering(ctx context.Context, url string) (string, error) {
+	sources, err := c.Queries.ListConnectorSources(ctx, c.Org)
+	if err != nil {
+		return "", err
+	}
+	name, longest := "", 0
+	for _, s := range sources {
+		if Covers(s.Url, url) && len(s.Url) > longest {
+			name, longest = s.Name, len(s.Url)
+		}
+	}
+	return name, nil
 }
 
 // Logo is a logo's content.

@@ -43,7 +43,7 @@ Connector sources belong to the org and are shared across workspaces. They have 
 
 Apply a connector source with `openetl connector apply -f FILE`. Only an `admin` or `owner` can apply it. `openetl connector catalog` lists packages; `openetl connector catalog --refresh` refreshes the listing and requires `operator` or above.
 
-Connecting or refreshing a catalog source does not install its packages or upgrade pipelines. Apply a package version separately, then select it in a `Source` or `Destination`. If a source fails to list, the catalog keeps its last successful listing and records the error, shown under **Sources** in the console's **Connectors** page.
+Connecting or refreshing a catalog source does not install its packages or upgrade pipelines. Apply a package version separately, then select it in a `Source` or `Destination`. A reference without a version, such as `oci://REGISTRY/NAMESPACE/PACKAGE`, applies the newest version that the source covering it offers. If a source fails to list, the catalog keeps its last successful listing and records the error, shown under **Sources** in the console's **Connectors** page.
 
 OpenETL creates the source `official`, pointing at `oci://ghcr.io/openetl-io/openetl-connectors`, when it creates the org, and which the console shows as OpenETL. Its URL cannot be changed; `openetl connector catalog --delete-source official` disconnects it to stop listing its packages.
 
