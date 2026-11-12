@@ -453,7 +453,9 @@ jobs:
 
   edge:
     needs: [changes, ci]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' && needs.changes.outputs.image == 'true'
+    # !cancelled(): without a status function, a job is skipped when any job
+    # before it was, and the path filter skips some of ci's on most pushes.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.result == 'success' && needs.changes.outputs.image == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
