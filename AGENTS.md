@@ -5,7 +5,7 @@ For people and coding agents. [README.md](README.md) has what OpenETL is, [CONTR
 ## Before a commit
 
 - `make hooks` once: the pre-commit hook runs gofmt and golangci-lint on the Go packages a commit touches, rustfmt and clippy when Rust changes, `tsc -b` when `web/` does, and buf on protos.
-- `make lint` and `make test` before a pull request; CI runs them too.
+- `make lint` and `make test` before a pull request. CI runs the checks for what a change touches, and its `ci` check must pass to merge.
 - Work on a branch from `main` and open a pull request; nothing is pushed to `main` directly.
 
 ## Code
@@ -36,6 +36,7 @@ For people and coding agents. [README.md](README.md) has what OpenETL is, [CONTR
 ## Tests
 
 - `make test` needs no Docker. `-tags integration` tests (`make test-integration`) need `make deps-up`; `-tags e2e` tests (`make e2e`) also need the connectors (`make connectors`) and build the engine. `make deps-down` when you're done.
+- CI runs one end-to-end test. `nightly` runs the integration tests, every end-to-end test on both orchestrators, kind and a short chaos run; before merging a change that needs them, run them on its branch: `gh workflow run nightly.yml --ref BRANCH`.
 - `test/e2e` runs one test at a time: no `t.Parallel()` outside the chaos suite, and no shards or matrix. Its heartbeats are short, so don't build or run anything heavy while it runs locally: a stall ends a lease and adds an attempt, which looks like a regression.
 - `test/sim` is a seeded simulation of the commit protocol. `make sim SEEDS=n` runs more seeds, and `go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v` one, with its trace.
 - A second `openetld` against the compose stack takes work from any other in the same Temporal namespace. On Temporal, give a scratch run its own namespace and database; on DBOS, the default, its own `--database-url` is enough.

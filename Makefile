@@ -234,12 +234,19 @@ sim: ## Commit-protocol simulation; SEEDS=n runs n seeds per sink kind
 bench-boundary: engine connectors ## Runner/engine boundary benchmark
 	go run ./test/bench/boundary -engine $(CURDIR)/target/release/openetl-engine -connectors $(BIN)/connectors $(BENCH_FLAGS)
 
-# What make e2e and make chaos run: the engine built here, and the official
-# connectors built from CONNECTORS_SRC, or with CONNECTOR_VERSION=V that
-# version of each from CONNECTOR_REGISTRY, as a user installs them, with
+# What make e2e, e2e-kube and chaos run: the engine built here, or
+# SUITE_ENGINE, an openetl-engine built already, such as CI's; and the
+# official connectors built from CONNECTORS_SRC, or with CONNECTOR_VERSION=V
+# that version of each from CONNECTOR_REGISTRY, as a user installs them, with
 # CONNECTOR_REGISTRY_USER and CONNECTOR_REGISTRY_TOKEN if it's private.
+ifdef SUITE_ENGINE
+SUITE_BUILD :=
+SUITE_ENGINE_BIN := $(abspath $(SUITE_ENGINE))
+else
 SUITE_BUILD := suite-engine
-SUITE_ENV := OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine \
+SUITE_ENGINE_BIN := $(CURDIR)/target/debug/openetl-engine
+endif
+SUITE_ENV := OPENETL_ENGINE=$(SUITE_ENGINE_BIN) \
 	OPENETL_SPARK_LIB=$(CURDIR)/libs/openetl-spark/java/target OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target
 CONNECTOR_REGISTRY ?= oci://ghcr.io/openetl-io/openetl-connectors
 ifdef CONNECTOR_VERSION
@@ -265,9 +272,8 @@ e2e: $(SUITE_BUILD) ## Full-stack scenarios against the compose deps; CONNECTOR_
 # openetld's image in the cluster (make image kind-load), for attempts' pods;
 # without it, their test skips.
 .PHONY: e2e-kube
-e2e-kube: connectors ## Flink on the Kubernetes operator, PySpark on Spark on Kubernetes, attempts in pods, and deploy/kubernetes with KEDA, in kind
-	cargo build -p openetl-engine
-	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine OPENETL_CONNECTORS=$(BIN)/connectors \
+e2e-kube: connectors $(filter suite-engine,$(SUITE_BUILD)) ## Flink on the Kubernetes operator, PySpark on Spark on Kubernetes, attempts in pods, and deploy/kubernetes with KEDA, in kind
+	OPENETL_ENGINE=$(SUITE_ENGINE_BIN) OPENETL_CONNECTORS=$(BIN)/connectors \
 	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
 	OPENETL_E2E_KUBECONFIG=$(KIND_KUBECONFIG) OPENETL_E2E_KUBE_HOST=$(KIND_HOST) OPENETL_E2E_KUBE_IMAGE=$(KIND_IMAGE) \
 	OPENETL_SPARK_SHARE=$(OPENETL_SPARK_SHARE) OPENETL_E2E_KUBE_SPARK_SUBMIT=$(CURDIR)/deploy/kind/spark-submit \
