@@ -56,6 +56,23 @@ openetl connector apply -f PACKAGE.connector.yaml
 
 For a GitHub repository with one package, omit `/PACKAGE`. A descriptor file is produced by the author's packaging command; it describes a release and where to fetch its artifacts.
 
+You can leave out the version of a reference to a package that a connected catalog source covers: `oci://REGISTRY/NAMESPACE/PACKAGE` or `github.com/OWNER/REPO/PACKAGE`. OpenETL then lists the versions that the source offers for the package, and applies the newest:
+
+- The highest stable version, in semantic-version order. A stable version wins over a higher prerelease.
+- If the package has no stable version, the highest prerelease.
+
+For a registry, the versions are the package repository's tags that are semantic versions. For a GitHub repository, they are the releases tagged `PACKAGE/vVERSION`, or `vVERSION` for a repository with one package, that have the package's descriptor. Draft releases are left out. The command's output names the version it applied:
+
+```sh
+openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres
+```
+
+```text
+created connectors/openetl/postgres/versions/0.1.0-alpha (version sha256:93636), the newest version of oci://ghcr.io/openetl-io/openetl-connectors/postgres
+```
+
+The apply fails if no connected source covers the reference, or if the source offers no version of the package. A reference with a version applies that version, whether or not a source covers it. To apply the same version on every installation, give the version.
+
 Applying a connector makes that package version available to the org, across workspaces. It does not create a data source, a destination or a pipeline. Runners fetch the selected executable when they need it.
 
 ## Select a version in a connection

@@ -42,6 +42,23 @@ func TestNoPinnedRelease(t *testing.T) {
 	})
 }
 
+// An official connector's version, which goes stale as the connector is
+// released on its own. A reference without one applies the newest.
+var connectorRefs = []*regexp.Regexp{
+	regexp.MustCompile(`ghcr\.io/openetl-io/openetl-connectors/[a-z0-9-]+:` + version),
+	regexp.MustCompile(`github\.com/openetl-io/openetl-connectors(?:/[a-z0-9-]+)?@` + version),
+}
+
+func TestNoPinnedConnector(t *testing.T) {
+	walk(t, func(path string, line int, text string) {
+		for _, re := range connectorRefs {
+			for _, m := range re.FindAllString(text, -1) {
+				t.Errorf("%s:%d: %q pins a connector's version; leave it out, and connector apply takes the newest", path, line, m)
+			}
+		}
+	})
+}
+
 var placeholder = regexp.MustCompile(`\{\{[^{}]*[Vv]ersion[^{}]*\}\}`)
 
 // The site fills in {{version}} exactly, and leaves {{ version }} or

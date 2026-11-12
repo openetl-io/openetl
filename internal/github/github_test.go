@@ -39,9 +39,27 @@ func TestParse(t *testing.T) {
 	if r, _ := ParseRef("github.com/acme/conn@1.2.0"); r.Tag() != "v1.2.0" {
 		t.Errorf("tag %s", r.Tag())
 	}
-	for _, bad := range []string{"github.com/acme@1", "github.com/acme/conn", "github.com/acme/conn/Pg@1", "gitlab.com/a/b@1"} {
+	for _, bad := range []string{"github.com/acme@1", "github.com/acme/conn", "github.com/acme/conn/Pg@1", "gitlab.com/a/b@1", "github.com/acme/conn@"} {
 		if _, ok := ParseRef(bad); ok {
 			t.Errorf("ParseRef(%s) took it", bad)
+		}
+	}
+	for in, want := range map[string]Ref{
+		"github.com/acme/conn":          {Owner: "acme", Repo: "conn"},
+		"github.com/acme/conn/postgres": {Owner: "acme", Repo: "conn", Package: "postgres"},
+		"github.com/acme/conn@1.2.0":    {Owner: "acme", Repo: "conn", Version: "1.2.0"},
+	} {
+		got, ok := ParsePackageRef(in)
+		if !ok || got != want || got.String() != in {
+			t.Errorf("ParsePackageRef(%s) = %+v, %v", in, got, ok)
+		}
+	}
+	if r, _ := ParsePackageRef("github.com/acme/conn/postgres"); r.TagPrefix() != "postgres/v" {
+		t.Errorf("tag prefix %s", r.TagPrefix())
+	}
+	for _, bad := range []string{"github.com/acme", "github.com/acme/conn@", "github.com/acme/conn/Pg"} {
+		if _, ok := ParsePackageRef(bad); ok {
+			t.Errorf("ParsePackageRef(%s) took it", bad)
 		}
 	}
 }

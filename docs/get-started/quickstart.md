@@ -128,12 +128,14 @@ The runner runs in a container on the same network. It reaches this database by 
 Install the Postgres connector from the official connector registry:
 
 ```sh
-openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres:0.1.0-alpha
+openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres
 ```
 
 ```text
-created connectors/openetl/postgres/versions/0.1.0-alpha (version sha256:93636)
+created connectors/openetl/postgres/versions/0.1.0-alpha (version sha256:93636), the newest version of oci://ghcr.io/openetl-io/openetl-connectors/postgres
 ```
+
+The command installs the newest version of the connector. The output names that version, which can be newer than this example's.
 
 `openetl connector catalog` lists the official connectors and the command that installs each one. In the console, **Connections**, then **Connectors**, shows the same catalog.
 

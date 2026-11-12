@@ -165,7 +165,7 @@ func (c *Client) do(ctx context.Context, u, accept string) (*http.Response, erro
 var (
 	repoURL  = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})$`)
 	assetURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})/releases/download/(.+)/([^/]+)$`)
-	refPat   = regexp.MustCompile(`^github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})(/([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?))?@([^@/\s]+)$`)
+	refPat   = regexp.MustCompile(`^github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})(/([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?))?(@([^@/\s]+))?$`)
 )
 
 // ParseRepo reads https://github.com/OWNER/REPO.
@@ -203,25 +203,39 @@ type Ref struct {
 
 // ParseRef reads github.com/OWNER/REPO[/PACKAGE]@VERSION.
 func ParseRef(s string) (Ref, bool) {
+	r, ok := ParsePackageRef(s)
+	return r, ok && r.Version != ""
+}
+
+// ParsePackageRef reads github.com/OWNER/REPO[/PACKAGE][@VERSION]: without
+// a version, Version is empty.
+func ParsePackageRef(s string) (Ref, bool) {
 	m := refPat.FindStringSubmatch(s)
 	if m == nil {
 		return Ref{}, false
 	}
-	return Ref{Owner: m[1], Repo: m[2], Package: m[4], Version: m[6]}, true
+	return Ref{Owner: m[1], Repo: m[2], Package: m[4], Version: m[7]}, true
 }
 
 // Tag is the release's git tag.
-func (r Ref) Tag() string {
+func (r Ref) Tag() string { return r.TagPrefix() + r.Version }
+
+// TagPrefix is what the package's release tags start with, before the
+// version: PACKAGE/v, or v.
+func (r Ref) TagPrefix() string {
 	if r.Package == "" {
-		return "v" + r.Version
+		return "v"
 	}
-	return r.Package + "/v" + r.Version
+	return r.Package + "/v"
 }
 
 func (r Ref) String() string {
 	s := "github.com/" + r.Owner + "/" + r.Repo
 	if r.Package != "" {
 		s += "/" + r.Package
+	}
+	if r.Version == "" {
+		return s
 	}
 	return s + "@" + r.Version
 }

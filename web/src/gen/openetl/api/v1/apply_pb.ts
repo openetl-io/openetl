@@ -81,9 +81,12 @@ export type Document = Message<"openetl.api.v1.Document"> & {
 
   /**
    * A connector version the API fetches, in place of content:
-   * oci://REGISTRY/REPOSITORY:VERSION or @sha256:…, or
-   * github.com/OWNER/REPO[/PACKAGE]@VERSION. The manifest's digest or the
-   * release's URL is its provenance.
+   * oci://REGISTRY/REPOSITORY[:VERSION] or @sha256:…, or
+   * github.com/OWNER/REPO[/PACKAGE][@VERSION]. Without a version, the newest
+   * version that the connected source covering the reference offers: its
+   * highest stable version, or its highest prerelease when it has no stable
+   * one; the applied resource's name has the version. The manifest's digest
+   * or the release's URL is its provenance.
    *
    * @generated from field: string reference = 3;
    */

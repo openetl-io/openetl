@@ -1,13 +1,15 @@
 // Package pkgref fetches the connector version a reference names:
-// oci://REGISTRY/REPOSITORY:VERSION or @sha256:…, or
-// github.com/OWNER/REPO[/PACKAGE]@VERSION. The API resolves them for Apply,
+// oci://REGISTRY/REPOSITORY[:VERSION] or @sha256:…, or
+// github.com/OWNER/REPO[/PACKAGE][@VERSION]. The API resolves them for Apply,
 // and the CLI for the commands that run a connector.
 package pkgref
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/openetl-io/openetl/internal/github"
@@ -47,12 +49,24 @@ type Resolver struct {
 	// Where official packages may come from. Empty: OfficialURL and
 	// OfficialRepository.
 	Official []string
+	// The name of the connected source that covers location, an
+	// unversioned reference's Location; empty when none does. Nil: every
+	// reference names its version.
+	Source func(ctx context.Context, location string) (string, error)
 }
 
-// Resolve fetches the connector version reference names. A package under
-// the reserved openetl owner must come from where the official packages are
-// published.
+// Resolve fetches the connector version reference names. A reference
+// without a version takes the newest version that the connected source
+// covering it offers, as Newest chooses it. A package under the reserved
+// openetl owner must come from where the official packages are published.
 func (r Resolver) Resolve(ctx context.Context, reference string) (*Resolved, error) {
+	if Unversioned(reference) {
+		v, err := r.newest(ctx, reference)
+		if err != nil {
+			return nil, err
+		}
+		reference = WithVersion(reference, v)
+	}
 	var out *Resolved
 	var where string
 	switch {
@@ -60,9 +74,6 @@ func (r Resolver) Resolve(ctx context.Context, reference string) (*Resolved, err
 		ref, err := oci.Parse(reference)
 		if err != nil {
 			return nil, err
-		}
-		if ref.Reference() == "" {
-			return nil, fmt.Errorf("%s names no version: add :VERSION or @sha256:…", reference)
 		}
 		p, err := r.OCI.Pull(ctx, ref)
 		if err != nil {
@@ -73,7 +84,7 @@ func (r Resolver) Resolve(ctx context.Context, reference string) (*Resolved, err
 	case strings.HasPrefix(reference, "github.com/"):
 		ref, ok := github.ParseRef(reference)
 		if !ok {
-			return nil, fmt.Errorf("%q isn't github.com/OWNER/REPO[/PACKAGE]@VERSION", reference)
+			return nil, fmt.Errorf("%q isn't github.com/OWNER/REPO[/PACKAGE][@VERSION]", reference)
 		}
 		gh, err := r.GitHub(ctx, ref.Repository())
 		if err != nil {
@@ -105,6 +116,126 @@ func (r Resolver) Resolve(ctx context.Context, reference string) (*Resolved, err
 	}
 	if owner, _ := spec.SplitName(doc.Name); owner == spec.OfficialOwner && !r.official(where) {
 		return nil, fmt.Errorf("%s names %s, and the %s owner is reserved for the official connectors, which aren't published there", reference, doc.Name, spec.OfficialOwner)
+	}
+	return out, nil
+}
+
+// releasePages bounds a GitHub repository's listing: 1,000 releases.
+const releasePages = 10
+
+// ErrNoVersion is Newest's error when no version is a candidate.
+var ErrNoVersion = errors.New("no version to choose")
+
+// Newest is the version a reference without one takes, among a package's
+// versions: the highest stable version by semantic-version order, or the
+// highest prerelease when none is stable. Strings that aren't semantic
+// versions are left out.
+func Newest(versions []string) (string, error) {
+	best := ""
+	for _, v := range versions {
+		if spec.ValidVersion(v) && oci.Newer(v, best) {
+			best = v
+		}
+	}
+	if best == "" {
+		return "", ErrNoVersion
+	}
+	return best, nil
+}
+
+// Unversioned reports whether reference names a package without a version:
+// oci://REGISTRY/REPOSITORY, or github.com/OWNER/REPO[/PACKAGE].
+func Unversioned(reference string) bool {
+	if r, err := oci.Parse(reference); err == nil {
+		return r.Reference() == ""
+	}
+	r, ok := github.ParsePackageRef(reference)
+	return ok && r.Version == ""
+}
+
+// Location is where an unversioned reference's package is published: its
+// oci:// repository, or its https://github.com/OWNER/REPO.
+func Location(reference string) string {
+	if r, err := oci.Parse(reference); err == nil {
+		return r.Repo().String()
+	}
+	r, _ := github.ParsePackageRef(reference)
+	return r.Repository()
+}
+
+// newest is the version an unversioned reference takes: the newest that the
+// connected source covering it offers.
+func (r Resolver) newest(ctx context.Context, reference string) (string, error) {
+	add := "@VERSION"
+	if strings.HasPrefix(reference, oci.Scheme) {
+		add = ":VERSION or @sha256:…"
+	}
+	if r.Source == nil {
+		return "", fmt.Errorf("%s names no version: add %s", reference, add)
+	}
+	source, err := r.Source(ctx, Location(reference))
+	if err != nil {
+		return "", err
+	}
+	if source == "" {
+		return "", fmt.Errorf("%s names no version, and no connected source covers it: add %s, or connect its registry namespace or repository with a ConnectorSource", reference, add)
+	}
+	versions, err := r.Versions(ctx, reference)
+	if err != nil {
+		return "", err
+	}
+	v, err := Newest(versions)
+	if errors.Is(err, ErrNoVersion) {
+		return "", fmt.Errorf("%s names no version, and connector source %s offers none of it", reference, source)
+	}
+	return v, err
+}
+
+// WithVersion is an unversioned reference at version.
+func WithVersion(reference, version string) string {
+	if r, err := oci.Parse(reference); err == nil {
+		return r.At(version).String()
+	}
+	r, _ := github.ParsePackageRef(reference)
+	r.Version = version
+	return r.String()
+}
+
+// Versions lists the versions of the package an unversioned reference
+// names: its repository's tags that are semantic versions, or the
+// releases whose tags are the package's and that have its descriptor.
+func (r Resolver) Versions(ctx context.Context, reference string) ([]string, error) {
+	if ref, err := oci.Parse(reference); err == nil {
+		tags, err := r.OCI.Tags(ctx, ref.Repo())
+		if oci.NotFound(err) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return slices.DeleteFunc(tags, func(t string) bool { return !spec.ValidVersion(t) }), nil
+	}
+	ref, ok := github.ParsePackageRef(reference)
+	if !ok {
+		return nil, fmt.Errorf("%q isn't oci://REGISTRY/REPOSITORY or github.com/OWNER/REPO[/PACKAGE]", reference)
+	}
+	gh, err := r.GitHub(ctx, ref.Repository())
+	if err != nil {
+		return nil, err
+	}
+	releases, err := gh.Releases(ctx, ref.Owner, ref.Repo, releasePages)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, rel := range releases {
+		v, ok := strings.CutPrefix(rel.TagName, ref.TagPrefix())
+		if !ok || rel.Draft || !spec.ValidVersion(v) {
+			continue
+		}
+		if _, err := descriptorAsset(&rel, ref.Package); err == nil {
+			out = append(out, v)
+		}
 	}
 	return out, nil
 }

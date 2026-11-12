@@ -87,7 +87,7 @@ spec:
 | `package` | Builds each directory's `openetl-connector.yaml` for every platform, and writes its executables and descriptor, for a release |
 | `publish oci://REGISTRY/NAMESPACE` | Pushes what `package` wrote to an OCI registry, and lists it in the namespace's index |
 | `validate` | Checks each directory's `openetl-connector.yaml` without building, or with `--artifact`, a package version in a registry |
-| `apply` | Applies connector versions: descriptors and manifests in a file, or `oci://` and `github.com/` references |
+| `apply` | Applies connector versions: descriptors and manifests in a file, or `oci://REGISTRY/REPOSITORY[:VERSION]` and `github.com/OWNER/REPO[/PACKAGE][@VERSION]` references. A reference without a version applies the newest version that the connected source covering it offers: the highest stable version, or the highest prerelease if there is no stable one. It fails if no connected source covers the reference. See [Choose and manage connectors](../pipelines/connectors.md#list-and-install-packages) |
 | `catalog` | Lists the packages of the connected connector sources, with the reference to apply each by |
 | `spec TARGET` | Prints a connector's spec |
 | `check --config FILE TARGET` | Checks that a connector reaches its upstream with a config |

@@ -239,10 +239,10 @@ The image has the built-in connectors only. Install the other connectors that yo
 
 ```sh
 docker compose exec server openetl connector catalog
-docker compose exec server openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres:0.1.0-alpha
+docker compose exec server openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres
 ```
 
-`catalog` lists the official connectors, with the command that installs each one. The runner downloads a connector's executable from its registry the first time that a job needs it. The runner container must have network access to that registry. [Choose and manage connectors](../pipelines/connectors.md) covers versions, private registries and upgrades.
+`catalog` lists the official connectors, with the command that installs each one. Without a version, `apply` installs the connector's newest version, and its output names that version. The runner downloads a connector's executable from its registry the first time that a job needs it. The runner container must have network access to that registry. [Choose and manage connectors](../pipelines/connectors.md) covers versions, private registries and upgrades.
 
 Connectors run inside the runner container. There, `localhost` refers to that container. Use addresses reachable from the container. For a database on the host, use the host's address or `host.docker.internal` on Docker Desktop and OrbStack. Keep pipeline data separate from the stack's metadata database.
 

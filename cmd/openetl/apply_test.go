@@ -106,6 +106,56 @@ workspaces/default/pipelines/shop-to-dw (version fedcba987654)
 	}
 }
 
+type fakeConnectorApply struct {
+	apiv1connect.UnimplementedApplyServiceHandler
+	refs *[]string
+}
+
+// Apply applies each reference as the version it names, or 0.2.0.
+func (f fakeConnectorApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyRequest]) (*connect.Response[apiv1.ApplyResponse], error) {
+	out := &apiv1.ApplyResponse{}
+	for _, d := range req.Msg.GetDocuments() {
+		*f.refs = append(*f.refs, d.GetReference())
+		v := "0.2.0"
+		if i := strings.LastIndexAny(d.GetReference(), ":@"); i > len("oci:") {
+			v = d.GetReference()[i+1:]
+		}
+		out.Resources = append(out.Resources, &apiv1.AppliedResource{
+			Kind: "Connector", Name: "connectors/openetl/postgres/versions/" + v, Action: apiv1.ApplyAction_APPLY_ACTION_CREATED, Version: "sha256:93636aaaaaaa",
+		})
+	}
+	return connect.NewResponse(out), nil
+}
+
+// openetl connector apply sends references as they're given, and says which
+// version a reference without one took; one with a version is applied as it
+// is.
+func TestConnectorApplyUnversioned(t *testing.T) {
+	var refs []string
+	mux := http.NewServeMux()
+	mux.Handle(apiv1connect.NewApplyServiceHandler(fakeConnectorApply{refs: &refs}))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	t.Setenv("OPENETL_API_KEY", "oetl_test")
+	const unversioned = "oci://ghcr.io/openetl-io/openetl-connectors/postgres"
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"connector", "apply", "--api-url", srv.URL, unversioned, unversioned + ":0.1.0", "github.com/acme/conn/postgres"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(refs, " "); got != unversioned+" "+unversioned+":0.1.0 github.com/acme/conn/postgres" {
+		t.Errorf("sent %s", got)
+	}
+	want := "created connectors/openetl/postgres/versions/0.2.0 (version sha256:93636), the newest version of " + unversioned + "\n" +
+		"created connectors/openetl/postgres/versions/0.1.0 (version sha256:93636)\n" +
+		"created connectors/openetl/postgres/versions/0.2.0 (version sha256:93636), the newest version of github.com/acme/conn/postgres\n"
+	if out.String() != want {
+		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
+	}
+	if err := run(t.Context(), []string{"connector", "apply", "--api-url", srv.URL, "ghcr.io/openetl-io/openetl-connectors/postgres"}, &out); err == nil || !strings.Contains(err.Error(), "isn't a reference") {
+		t.Errorf("a reference without its scheme: %v", err)
+	}
+}
+
 // A fake of what the checks after an apply call: a source that passes, a
 // destination whose check the test sets, and a pipeline that uses both.
 type fakeChecks struct {
