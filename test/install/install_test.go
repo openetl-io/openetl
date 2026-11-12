@@ -136,7 +136,8 @@ func install(t *testing.T, url, version, dir string, env ...string) (string, err
 
 // release serves a release with tag holding archive, a CLI that prints the
 // version, and its checksums.txt; and a list of releases, as GitHub's API
-// gives it, at releases, with tag first, and an empty one at releases-empty.
+// gives it, at releases, where tag is the first that's neither a draft nor
+// another tag's, and an empty one at releases-empty.
 // checksum is the archive's line in checksums.txt: "" for its SHA-256, "none"
 // for no line.
 func release(t *testing.T, tag, archive, checksum string) string {
@@ -168,13 +169,26 @@ func release(t *testing.T, tag, archive, checksum string) string {
 	}
 	list := `[
   {
-    "html_url": "https://github.com/openetl-io/openetl/releases/tag/` + tag + `",
-    "tag_name": "` + tag + `",
-    "body": "Not \"tag_name\": \"v0.0.1\"",
+    "tag_name": "v99.0.0-alpha.1",
+    "draft": true,
     "prerelease": true
   },
   {
+    "tag_name": "sdk/go/v99.0.0",
+    "draft": false,
+    "prerelease": false
+  },
+  {
+    "html_url": "https://github.com/openetl-io/openetl/releases/tag/` + tag + `",
+    "author": {"login": "someone"},
+    "tag_name": "` + tag + `",
+    "draft": false,
+    "prerelease": true,
+    "body": "Not \"tag_name\": \"v0.0.1\", \"draft\": false"
+  },
+  {
     "tag_name": "v9.9.8",
+    "draft": false,
     "prerelease": false
   }
 ]

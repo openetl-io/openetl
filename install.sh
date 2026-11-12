@@ -48,13 +48,17 @@ else
 	fail "neither sha256sum nor shasum is installed"
 fi
 
-# The newest release is the list's first entry. GitHub's releases/latest
-# would skip prereleases.
+# The newest release is the list's first that isn't a draft and whose tag is
+# vX.Y.Z, with a suffix or not. GitHub's releases/latest would skip
+# prereleases. In each release, tag_name comes before draft.
 version=${OPENETL_VERSION:-}
 if [ -z "$version" ]; then
-	list=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$releases?per_page=1") ||
+	list=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$releases?per_page=100") ||
 		fail "cannot list the releases at $releases; set OPENETL_VERSION to the release to install"
-	version=$(printf '%s\n' "$list" | sed -n 's/^.*"tag_name": *"\([^"]*\)".*$/\1/p' | head -n 1)
+	version=$(printf '%s\n' "$list" | awk '
+		/"tag_name": *"/ { tag = $0; sub(/^.*"tag_name": *"/, "", tag); sub(/".*$/, "", tag) }
+		/"draft": *(true|false)/ { if ($0 ~ /false/ && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+/) { print tag; exit } tag = "" }
+	')
 	[ -n "$version" ] || fail "$releases lists no release; set OPENETL_VERSION to the release to install"
 fi
 version=${version#v}

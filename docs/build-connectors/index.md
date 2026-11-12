@@ -112,11 +112,11 @@ OpenETL holds the affected column where supported, or stops the stream. It shows
 
 The SDK's `sdk.Source` declares a source from streams and the functions that read them. Here is a source with one stream, `greetings`, that makes up as many rows as its config asks for.
 
-Make a module, and add the SDK of the OpenETL release that you build for. Each release tags the SDK as `sdk/go/vVERSION`, so Go resolves the release's version:
+Make a module, and add the SDK. Its versions are tagged `sdk/go/vVERSION`, and `@latest` resolves the newest:
 
 ```sh
 go mod init example.com/greetings
-go get github.com/openetl-io/openetl/sdk/go@v{{version}}
+go get github.com/openetl-io/openetl/sdk/go@latest
 ```
 
 Write `cmd/source-greetings/main.go`:
