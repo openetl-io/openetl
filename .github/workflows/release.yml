@@ -9,7 +9,8 @@ name: release
 # builds the commit with the version in it, pushes the image to
 # ghcr.io/OWNER/openetl:VERSION, puts the files on a draft release with
 # generated notes, and, in the job that alone may sign, signs the image and
-# checksums.txt with keyless cosign and publishes the release.
+# checksums.txt with keyless cosign and publishes the release. Then it calls
+# the docs site's deploy hook, CLOUDFLARE_DEPLOY_HOOK, if the secret is set.
 #
 # Dispatched, on any branch or tag, it's a dry run: it builds and checks
 # everything for the ref's head, reports the release's checks without failing
@@ -406,6 +407,17 @@ jobs:
         run: |
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
           echo "Released: $(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
+      # The release changes the docs site's {{version}}, its stable docs and
+      # its changelog.
+      - name: Have the docs site build again
+        env:
+          HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "No CLOUDFLARE_DEPLOY_HOOK, so the docs site wasn't told."
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK" > /dev/null || echo "::warning::The docs site's deploy hook failed; the site has the release once it builds again."
       - name: Anyone can pull the image
         env:
           REPOSITORY: ${{ github.repository_owner }}/openetl
