@@ -58,22 +58,39 @@ fn main() {
     });
 }
 
+/// Each run starts at another depth of the stack. Raw rows' speed moves by
+/// up to a fifth with where the stack sits against the heap, and any change
+/// to the call chain moves it, so runs at one depth measure that placement
+/// as much as the code.
 fn report(name: &str, runs: usize, rows: usize, mut f: impl FnMut()) {
     f();
     let mut ns: Vec<f64> = (0..runs.max(1))
-        .map(|_| {
+        .map(|i| {
             let start = Instant::now();
-            f();
+            at_depth(i * 7 % 64, &mut f);
             start.elapsed().as_nanos() as f64 / rows as f64
         })
         .collect();
+    let mean = ns.iter().sum::<f64>() / ns.len() as f64;
     ns.sort_by(f64::total_cmp);
     println!(
-        "{name:<14} median {:>8.1} ns/row   fastest {:>8.1} ns/row   ({} runs of {rows} rows)",
+        "{name:<14} median {:>8.1} ns/row   mean {:>8.1}   fastest {:>8.1}   ({} runs of {rows} rows)",
         ns[ns.len() / 2],
+        mean,
         ns[0],
         ns.len(),
     );
+}
+
+/// Calls `f` `n` frames further down the stack.
+#[inline(never)]
+fn at_depth(n: usize, f: &mut dyn FnMut()) {
+    let frame = [0u8; 16];
+    black_box(&frame);
+    match n {
+        0 => f(),
+        n => at_depth(n - 1, f),
+    }
 }
 
 fn shaper() -> Shaper {
