@@ -361,3 +361,19 @@ plan
 INSERT INTO x SELECT public.orders.id FROM public.orders AS o
 ----
 error bind 1:22 there's no column public.orders.id; there's o.id
+
+# A wildcard's qualifier matches the whole name as SQL folds it: a quoted
+# part exactly. A column's qualifier is matched by its last part.
+plan
+INSERT INTO x SELECT "Public".orders.* FROM public.orders
+----
+error bind 1:1 Invalid qualifier Public.orders
+
+plan
+INSERT INTO x SELECT "public".orders.* FROM public.orders
+----
+statement 1:1 x row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null, status Utf8
+  reads public.orders: id, status

@@ -1223,7 +1223,7 @@ impl<'a> Check<'a> {
 /// `source.customers.*`.
 fn unqualify(s: &mut ast::Select, written: &[ast::Ident], alias: &ast::Ident) {
     let fits = |p: &[ast::Ident]| {
-        p.len() == written.len() && p.iter().zip(written).all(|(a, b)| same(&a.value, &b.value))
+        p.len() == written.len() && p.iter().zip(written).all(|(a, b)| fold(a) == fold(b))
     };
     for item in &mut s.projection {
         if let ast::SelectItem::QualifiedWildcard(
