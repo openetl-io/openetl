@@ -50,6 +50,8 @@ pub struct Plan {
     pub replays: Vec<Option<ReplayPlan>>,
     /// Where held values go; set if any stream holds.
     pub held_url: Option<String>,
+    /// The job's SQL. StartJob doesn't carry it yet, so only tests set it.
+    pub transform: Option<std::sync::Arc<crate::transform::Transforms>>,
 }
 
 /// Held values to patch in, a chunk after each of the stream's barriers.
@@ -484,6 +486,7 @@ impl Plan {
             holds: holds_,
             replays,
             held_url,
+            transform: None,
         })
     }
 }
