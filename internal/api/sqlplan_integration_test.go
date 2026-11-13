@@ -51,8 +51,8 @@ func TestApplyKeepsSQLPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	cat, err := protojson.Marshal(&apiv1.Catalog{Streams: []*apiv1.CatalogStream{
-		{Name: "users", PrimaryKey: []string{"id"}, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}, Columns: []*apiv1.CatalogColumn{{Name: "id", Type: "int64"}}},
-		{Name: "purchases", PrimaryKey: []string{"id"}, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}, Columns: []*apiv1.CatalogColumn{{Name: "id", Type: "int64"}}},
+		{Name: "users", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}, Columns: []*apiv1.CatalogColumn{{Name: "id", Type: "int64"}}},
+		{Name: "purchases", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}, Columns: []*apiv1.CatalogColumn{{Name: "id", Type: "int64"}}},
 	}})
 	if err != nil {
 		t.Fatal(err)
