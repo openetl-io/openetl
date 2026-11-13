@@ -18,7 +18,7 @@ const OPS: [&str; 3] = ["insert", "update", "delete"];
 
 /// One batch's control columns, row for row with its records.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct Control {
+pub struct Control {
     /// Utf8; a null is an insert.
     pub op: Option<ArrayRef>,
     pub seq: Option<ArrayRef>,
@@ -28,7 +28,7 @@ pub(crate) struct Control {
 
 impl Control {
     /// Takes the control columns out of a batch.
-    pub fn split(batch: &RecordBatch) -> Result<(RecordBatch, Control), Error> {
+    pub(crate) fn split(batch: &RecordBatch) -> Result<(RecordBatch, Control), Error> {
         let schema = batch.schema();
         if !schema
             .fields()
@@ -108,7 +108,7 @@ impl Control {
     }
 
     /// Keeps the rows where `keep` is true.
-    pub fn filter(&self, keep: &BooleanArray) -> Result<Control, Error> {
+    pub(crate) fn filter(&self, keep: &BooleanArray) -> Result<Control, Error> {
         let f = |a: &Option<ArrayRef>| -> Result<Option<ArrayRef>, Error> {
             Ok(match a {
                 Some(a) => Some(arrow_select::filter::filter(a, keep)?),
@@ -123,7 +123,7 @@ impl Control {
     }
 
     /// Without the rows in `gone`, out of `n`.
-    pub fn without(
+    pub(crate) fn without(
         &self,
         n: usize,
         gone: &std::collections::HashSet<usize>,
