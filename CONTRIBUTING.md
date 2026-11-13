@@ -61,12 +61,12 @@ The connectors `make dev` builds are local executables in `bin/connectors`, whic
 | Path | What it holds |
 |---|---|
 | `cmd/openetld`, `cmd/openetl` | The daemon (roles `server`, `orchestrator` and `runner`, or `dev` for all three) and the CLI |
-| `proto/openetl` | The protocols: `connector/v1` (what connectors speak, including host services), `engine/v1` (runner to engine), `dataplane/v1` (runners to the API) and `api/v1` (the API) |
+| `proto/openetl` | The protocols: `connector/v1` (what connectors speak, including host services), `engine/v1` (runner to engine), `attempt/v1` (an attempt's workers to its coordinator, across pods), `dataplane/v1` (runners to the API) and `api/v1` (the API) |
 | `gen/`, `sdk/go/protocol/v1`, `web/src/gen`, `internal/api/openapi.yaml` | Generated from `proto/` by `make generate`, and committed |
 | `docs/reference/openetld.md`, `connector-file.md`, `connector-descriptor.md`, `manifest.md`, `events.md` | Generated from `internal/platform/config` and the four JSON Schemas by `make generate` (`go run ./internal/refdocs`), and committed |
 | `internal/api` | The API server |
 | `internal/orchestration` | Workflows, written against one interface with a DBOS and a Temporal backend, and placement and dispatch to runners |
-| `internal/runner` | Runners: attempts, the checkpoint coordinator, and pod launchers |
+| `internal/runner` | Runners: attempts, the checkpoint coordinator, the attempt protocol's two ends (`attempt`), and pod launchers |
 | `internal/checkpoint` | The checkpoint log |
 | `internal/delivery` | Each stream's delivery guarantee, worked out from the destination, the source's replay behavior, the write mode, the primary key and the level the pipeline requires |
 | `internal/store` | The metadata store on Postgres: migrations, and queries, from which sqlc generates `internal/store/db` |
