@@ -47,8 +47,9 @@ import (
 // A barrier flows in band from the splits through the exchange. Each lane
 // aligns it across every sender of the attempt, snapshots the key groups that
 // changed, and stages its epoch; each worker sends its share of the epoch;
-// the coordinator writes the record, with a watermark per split, and commits,
-// and the workers acknowledge the record before upstream. Any lost pod or
+// the coordinator writes the record, with a watermark per split, and asks
+// workers to commit it, and the workers acknowledge the record before
+// upstream. Any lost pod or
 // broken exchange fails the attempt, and the next one restores every worker
 // from the record under a new generation, on as many workers and lanes as
 // its seed says.
@@ -64,7 +65,14 @@ import (
 //     after a restore, along the records, or on an exchange; nor does a
 //     keyed operator's across a restore;
 //   - generation: nothing an older generation's pods sent, staged or wrote
-//     is committed.
+//     is committed, nor committed after a newer generation settled it;
+//   - visibility: nothing of an epoch is visible before HEAD moves to its
+//     record.
+//
+// The destination is stage and apply, or Kafka-like, whose writers may
+// stage or not; the coordinator never commits (workers_commit_test.go). In
+// a third of the seeds the transform is the row-wise statement alone, with
+// no keyed operator and no exchange.
 //
 // No row is behind its own split's watermark, so none is late, and the
 // output doesn't depend on how the splits interleave.
@@ -149,6 +157,16 @@ type wCfg struct {
 	runners int
 	reuse   bool
 	broken  string
+	// The destination (workers_commit_test.go): "staged" or "txn"; which
+	// writer lanes stage, "all", "none", or "mixed" by stageMask's bit of
+	// the lane; and whether the transform has its keyed operator, and the
+	// exchange. The ticks a transaction may stay open, how many of the
+	// commit's messages may be lost or delayed, and how many faults go to
+	// the steps of commits and their recovery.
+	dest, staging                       string
+	stageMask                           int
+	exchange                            bool
+	txnTimeout, msgFaults, commitFaults int
 }
 
 func (c wCfg) String() string {
@@ -166,13 +184,22 @@ func (c wCfg) String() string {
 	}
 	fmt.Fprintf(&b, " size=%d delay=%d page=%d faults=%d pauses=%d net=%d zombies=%d slowConnects=%d slowWrites=%d keep=%d scope=%d runners=%d reuse=%v",
 		c.size, c.delay, c.page, c.faults, c.pauses, c.netFaults, c.zombies, c.slowConnects, c.slowWrites, c.keep, c.scope, c.runners, c.reuse)
+	fmt.Fprintf(&b, " dest=%s exchange=%v msgFaults=%d commitFaults=%d", c.dest, c.exchange, c.msgFaults, c.commitFaults)
+	if c.dest == "txn" {
+		fmt.Fprintf(&b, " staging=%s txnTimeout=%d", c.staging, c.txnTimeout)
+		if c.staging == "mixed" {
+			fmt.Fprintf(&b, " stageMask=%06b", c.stageMask)
+		}
+	}
 	if c.broken != "" {
 		fmt.Fprintf(&b, " broken=%s", c.broken)
 	}
 	return b.String()
 }
 
-func randomWorkersCfg(rng *rand.Rand, broken string) wCfg {
+// randomWorkersCfg takes the destination's settings from a stream of their
+// own, dest.
+func randomWorkersCfg(rng, dest *rand.Rand, broken string) wCfg {
 	c := wCfg{
 		size: 3 + int64(rng.IntN(10)), delay: int64(rng.IntN(5)), page: 1 + rng.IntN(4),
 		faults: rng.IntN(9), pauses: rng.IntN(3), netFaults: rng.IntN(4), zombies: rng.IntN(3), slowConnects: rng.IntN(3), slowWrites: rng.IntN(3),
@@ -209,6 +236,7 @@ func randomWorkersCfg(rng *rand.Rand, broken string) wCfg {
 		}
 		c.splits, c.resumeAt, c.avail = append(c.splits, evs), append(c.resumeAt, at), append(c.avail, avail)
 	}
+	randomShape(&c, dest)
 	return c
 }
 
@@ -456,6 +484,11 @@ type wModel struct {
 	tick  int
 	store *checkpoint.MemStore
 	wh    *warehouse
+	// The txn destination's broker; the records HEAD has moved to; and by
+	// committable, the newest generation that settled it.
+	broker  *wBroker
+	headed  map[checkpoint.RecordRef]bool
+	decided map[wMarker]uint64
 	// By split: positions below this were acknowledged, and are gone.
 	trimmed  []int
 	attempts []*wAttempt
@@ -463,8 +496,8 @@ type wModel struct {
 	pods    map[string]*wWorker
 	nextPod int
 
-	faults, pauses, netFaults, zombies, slowConnects, slowWrites int
-	// Writes in flight, which land at their tick.
+	faults, pauses, netFaults, zombies, slowConnects, slowWrites, msgFaults, commitFaults int
+	// Writes and messages in flight, which land at their tick.
 	later []wLater
 
 	trace, steps []string
@@ -501,9 +534,10 @@ type wAttempt struct {
 
 func newWorkersModel(seed uint64, broken string) *wModel {
 	rng := rand.New(rand.NewPCG(seed, uint64(len("workers"))))
-	cfg := randomWorkersCfg(rng, broken)
+	cfg := randomWorkersCfg(rng, rand.New(rand.NewPCG(seed, wDestStream)), broken)
 	return &wModel{
 		cfg: cfg, rng: rng, store: checkpoint.NewMemStore(), wh: newWarehouse(true),
+		broker: newTxnBroker(), headed: map[checkpoint.RecordRef]bool{}, decided: map[wMarker]uint64{}, msgFaults: cfg.msgFaults, commitFaults: cfg.commitFaults,
 		trimmed: make([]int, len(cfg.splits)), pods: map[string]*wWorker{},
 		faults: cfg.faults, pauses: cfg.pauses, netFaults: cfg.netFaults, zombies: cfg.zombies, slowConnects: cfg.slowConnects, slowWrites: cfg.slowWrites,
 		stats: map[string]int{}, marks: map[[2]int]int64{},
@@ -562,6 +596,22 @@ func (m *wModel) anyLive() bool {
 	return false
 }
 
+// livePods names the pods still up, with their phases.
+func (m *wModel) livePods() string {
+	var out []string
+	for _, a := range m.attempts {
+		if a.co.live() {
+			out = append(out, fmt.Sprintf("%s in phase %d", a.co.name(), a.co.phase))
+		}
+		for _, w := range a.workers {
+			if w.live() {
+				out = append(out, fmt.Sprintf("%s in phase %d", w.name(), w.phase))
+			}
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
 func (m *wModel) enabled() []wAction {
 	var acts []wAction
 	for _, a := range m.attempts {
@@ -574,6 +624,10 @@ func (m *wModel) enabled() []wAction {
 }
 
 func (m *wModel) decide(a wAction) decision {
+	if m.commitFaults > 0 && m.commitStep(a) && m.rng.IntN(100) < wCommitFaultPct {
+		m.commitFaults--
+		return []decision{failBefore, unknownOutcome, crashBefore, crashAfter}[m.rng.IntN(4)]
+	}
 	if m.faults == 0 || m.rng.IntN(100) >= faultPct {
 		return proceed
 	}
@@ -618,7 +672,7 @@ func (m *wModel) run() error {
 		case m.newest().co.succeeded() && !m.anyLive():
 			return nil
 		case step > wMaxSteps || m.tick > wMaxTicks:
-			return fmt.Errorf("stuck: %d steps, %d ticks, %d attempts", step, m.tick, len(m.attempts))
+			return fmt.Errorf("stuck: %d steps, %d ticks, %d attempts; live: %s", step, m.tick, len(m.attempts), m.livePods())
 		}
 		acts := m.enabled()
 		r := m.rng.IntN(1000)
@@ -662,6 +716,7 @@ func (m *wModel) advance() {
 		}
 		return l.at <= m.tick
 	})
+	m.expireTxns()
 	for _, a := range m.attempts {
 		a.co.resume()
 		for _, w := range a.workers {
@@ -851,7 +906,17 @@ func (m *wModel) applyEpoch(gen uint64, st warehouseStaged, streams []stagedStre
 		}
 	}
 	m.wh.mu.Unlock()
-	err := m.wh.applyTx(gen, st, streams, map[string]uint64{})
+	if !m.headed[checkpoint.RecordRef{Epoch: st.N, Generation: st.Gen}] {
+		m.problem("visibility", "epoch %d-g%d is applied, though HEAD never moved to its record", st.N, st.Gen)
+	}
+	applier, fence := gen, m.wh.fence
+	if m.cfg.broken == "apply-unfenced" {
+		applier = max(gen, fence)
+	}
+	err := m.wh.applyTx(applier, st, streams, map[string]uint64{})
+	if err == nil && gen < fence {
+		m.problem("generation", "a worker of generation %d applied epoch %d-g%d after generation %d raised the fence", gen, st.N, st.Gen, fence)
+	}
 	if errors.Is(err, errStagingMissing) {
 		m.problem("record", "epoch %d-g%d: %v", st.N, st.Gen, err)
 	}
@@ -862,11 +927,11 @@ func (m *wModel) applyEpoch(gen uint64, st warehouseStaged, streams []stagedStre
 // can need, as checkpoint.Session.Prune does: records more than keep back
 // along the chain, and older generations' records of epochs after from;
 // and snapshot files of older generations no record it keeps names.
-func (m *wModel) prune(gen uint64, from *wRecord) error {
+func (m *wModel) prune(gen uint64, from *wRecord, keep int) error {
 	ctx := context.Background()
 	kept, named := map[string]bool{}, map[string]bool{}
 	floor := uint64(0)
-	for r, i := from, 0; r != nil && i < m.cfg.keep; i++ {
+	for r, i := from, 0; r != nil && i < keep; i++ {
 		kept[wRecordKey(r.ref())] = true
 		for _, s := range r.Snapshots {
 			named[s.URL] = true
@@ -928,15 +993,19 @@ type coPhase uint8
 const (
 	coClaim coPhase = iota
 	coLoad
-	coRecover
 	coPrune
 	coLaunch
 	coRun
 	coCreate
 	coSwap
-	coApply
 	coAck
 	coPruneRun
+	// Waiting for the workers to settle the destination from the restored
+	// record; moving HEAD back over a lost epoch; and asking workers to
+	// commit the record's epoch.
+	coSettle
+	coRewind
+	coCommit
 )
 
 type wCoord struct {
@@ -964,10 +1033,13 @@ type wCoord struct {
 	epoch, next uint64
 	shares      map[int]*wShare
 	rec         *wRecord
-	// With scope stream: how many streams of rec are applied.
-	applied    int
-	ackPrev    *wRecord
-	sincePrune int
+	ackPrev     *wRecord
+	sincePrune  int
+	// Each worker's results of settling; and for rec's commit, when each
+	// worker was last asked, and which answered.
+	settled  map[int][]string
+	asked    map[int]int
+	answered map[int]bool
 }
 
 func (c *wCoord) name() string    { return fmt.Sprintf("a%d.co", c.a.n) }
@@ -984,6 +1056,14 @@ func (c *wCoord) failf(f string, args ...any) { c.fail(fmt.Errorf(f, args...)) }
 
 func (c *wCoord) kill() {
 	c.dead = true
+	switch {
+	case c.phase == coCommit && len(c.asked) == 0, c.phase == coSwap && c.m.headed[c.rec.ref()]:
+		c.m.stats["coordinators killed after the record, before asking for its commit"]++
+	case c.phase == coCommit && len(c.asked) < len(c.committers()):
+		c.m.stats["coordinators killed between commit requests"]++
+	case c.phase == coAck:
+		c.m.stats["coordinators killed after every commit, before acknowledging"]++
+	}
 	c.m.tracef("%s killed", c.name())
 	c.m.killed(c.gen, "coordinators")
 }
@@ -1048,8 +1128,6 @@ func (c *wCoord) actions(acts *[]wAction) {
 		add("claim", aCall, c.claim)
 	case coLoad:
 		add("load", aCall, c.load)
-	case coRecover:
-		add("recover", aCall, c.recover)
 	case coPrune, coPruneRun:
 		add("prune", aCall, c.prune)
 	case coLaunch:
@@ -1062,10 +1140,17 @@ func (c *wCoord) actions(acts *[]wAction) {
 		add("record.create", aCall, c.create)
 	case coSwap:
 		add("record.swap", aCall, c.swap)
-	case coApply:
-		add("apply", aCall, c.apply)
 	case coAck:
 		add("ack", aCall, c.ack)
+	case coRewind:
+		add("rewind", aCall, c.rewind)
+	case coCommit:
+		for _, i := range c.committers() {
+			at, asked := c.asked[i]
+			if !c.answered[i] && (!asked || c.m.tick-at >= wReqTimeout && c.m.cfg.broken != "ack-before-commits") {
+				add(fmt.Sprintf("request commit w%d", i), aCall, func(d decision) { c.requestCommit(d, i) })
+			}
+		}
 	}
 	for _, from := range c.inbox.senders() {
 		add("recv "+from.name(), aLocal, func(d decision) { c.recv(d, from) })
@@ -1122,34 +1207,30 @@ func (c *wCoord) doClaim() error {
 func (c *wCoord) load(d decision) {
 	var rec *wRecord
 	ok, err := c.m.call(c.kill, d, func() (err error) { rec, err = c.m.readRecord(c.head.Record); return err })
-	if !ok || err != nil {
+	switch {
+	case ok && errors.Is(err, checkpoint.ErrNotFound):
+		// A newer generation's retention deleted it: this one was replaced.
+		c.fail(err)
+		return
+	case !ok || err != nil:
 		return
 	}
 	c.restored = rec
 	c.m.tracef("%s restores from %v", c.name(), rec)
-	c.phase = coRecover
-}
-
-func (c *wCoord) recover(d decision) {
-	ok, err := c.m.call(c.kill, d, func() error { return c.m.recoverDest(c.gen, c.restored) })
-	switch {
-	case !ok:
-	case errors.Is(err, destination.ErrFenced):
-		c.fail(err)
-	case err == nil:
-		c.phase = coPrune
-	case !errors.Is(err, errTransient) && !errors.Is(err, errTimeout):
-		c.m.tracef("%s: recover: %v", c.name(), err)
-	}
+	// Its workers recover the destination: the coordinator never writes to
+	// it.
+	c.phase = coPrune
 }
 
 // prune is best effort: a failure leaves the rest to a later one.
 func (c *wCoord) prune(d decision) {
-	from := c.restored
+	from, keep := c.restored, c.m.cfg.keep
 	if c.phase == coPruneRun {
 		from = c.rec
+	} else if c.m.cfg.broken == "prune-to-head" {
+		keep = 1
 	}
-	if ok, _ := c.m.call(c.kill, d, func() error { return c.m.prune(c.gen, from) }); !ok {
+	if ok, _ := c.m.call(c.kill, d, func() error { return c.m.prune(c.gen, from, keep) }); !ok {
 		return
 	}
 	if c.phase == coPrune {
@@ -1164,10 +1245,6 @@ func (c *wCoord) prune(d decision) {
 func (c *wCoord) launch(d decision) {
 	if d == crashBefore {
 		c.kill()
-		return
-	}
-	if c.restored.final() {
-		c.succeed()
 		return
 	}
 	m := c.m
@@ -1185,6 +1262,29 @@ func (c *wCoord) launch(d decision) {
 		c.a.workers = append(c.a.workers, w)
 	}
 	m.tracef("%s launched %v", c.name(), c.lay)
+	c.phase, c.settled = coSettle, map[int][]string{}
+}
+
+// assignment is the message that assigns a worker its work.
+func (c *wCoord) assignment() wMsg {
+	peers := make([]string, len(c.a.workers))
+	for i, w := range c.a.workers {
+		peers[i] = w.addr
+	}
+	return wMsg{kind: "assign", attempt: c.a.n, gen: c.gen, lay: c.lay, peers: peers, restored: c.restored}
+}
+
+// assignAll assigns every worker its work, once they settled the
+// destination; or ends the attempt, if the restored record is the read's
+// end.
+func (c *wCoord) assignAll() {
+	if c.restored.final() {
+		c.succeed()
+		return
+	}
+	for _, w := range c.a.workers {
+		w.send(c.assignment())
+	}
 	c.phase = coRun
 }
 
@@ -1196,7 +1296,9 @@ func (c *wCoord) requestBarrier(d decision) {
 		}
 		return nil
 	})
-	if !ok || err != nil {
+	// A request whose outcome is unknown may have landed, and its shares come
+	// back: it counts as made. Asking again is harmless.
+	if !ok || err != nil && !errors.Is(err, errTimeout) {
 		return
 	}
 	c.m.tracef("%s requested barrier %d", c.name(), e)
@@ -1222,13 +1324,15 @@ func (c *wCoord) recv(d decision, from *wWorker) {
 			return
 		}
 		c.joined[msg.worker], c.beats[msg.worker] = true, c.m.tick
-		peers := make([]string, len(c.a.workers))
-		for i, w := range c.a.workers {
-			peers[i] = w.addr
+		if c.phase == coSettle {
+			from.send(c.settleMsg(msg.worker))
 		}
-		from.send(wMsg{kind: "assign", attempt: c.a.n, gen: c.gen, lay: c.lay, peers: peers, restored: c.restored})
 	case "share":
 		c.takeShare(msg.share)
+	case "settled":
+		c.takeSettled(msg.worker, msg.results)
+	case "committed":
+		c.takeCommitted(msg.worker, msg.epoch)
 	case "failed":
 		c.failf("worker %d failed: %s", msg.worker, msg.reason)
 	}
@@ -1304,27 +1408,11 @@ func (c *wCoord) create(d decision) {
 // swap moves HEAD to the record, as checkpoint.Session.Commit does. HEAD
 // fences an older generation.
 func (c *wCoord) swap(d decision) {
-	ctx := context.Background()
 	ref := c.rec.ref()
 	next := checkpoint.Head{Generation: c.gen, Owner: c.owner(), Record: &ref, Previous: c.rec.Previous, First: c.rec.Previous == nil}
 	var fenced error
-	ok, err := c.m.call(c.kill, d, func() error {
-		nv, err := c.m.store.Swap(ctx, wHeadKey, must(json.Marshal(next)), c.ver)
-		if err == nil {
-			c.head, c.ver = next, nv
-			return nil
-		}
-		cur, v, rerr := c.m.readHead()
-		switch {
-		case rerr != nil:
-			return rerr
-		case sameHead(cur, next):
-			c.head, c.ver = next, v
-			return nil
-		case cur.Generation != c.gen || cur.Owner != c.owner():
-			fenced = fmt.Errorf("%w: HEAD is generation %d, this is %d", checkpoint.ErrFenced, cur.Generation, c.gen)
-			return fenced
-		}
+	ok, err := c.m.call(c.kill, d, func() (err error) {
+		fenced, err = c.swapHead(next)
 		return err
 	})
 	switch {
@@ -1335,42 +1423,34 @@ func (c *wCoord) swap(d decision) {
 	case err == nil:
 		c.m.tracef("%s moved HEAD to %v: %v", c.name(), c.rec, c.rec.Splits)
 		c.m.onRecord(c.rec)
-		c.applied, c.phase = 0, coApply
+		c.phase, c.asked, c.answered = coCommit, map[int]int{}, map[int]bool{}
 	}
 }
 
-func (c *wCoord) apply(d decision) {
-	st, err := mergeStaged(stagedOf(c.rec.Committables))
-	if err != nil {
-		c.fail(err)
-		return
-	}
-	streams := st.Streams
-	if c.m.cfg.scope == destination.ScopeStream && len(streams) > 0 {
-		streams = streams[c.applied : c.applied+1]
-	}
-	ok, err := c.m.call(c.kill, d, func() error { return c.m.applyEpoch(c.gen, st, streams) })
-	switch {
-	case !ok:
-		return
-	case errors.Is(err, destination.ErrFenced):
-		c.m.stats["coordinators fenced by the destination"]++
-		c.fail(err)
-		return
-	case errors.Is(err, errStagingMissing):
-		c.fail(err)
-		return
-	case err != nil:
-		return
-	}
-	if c.m.cfg.scope == destination.ScopeStream && len(st.Streams) > 0 {
-		if c.applied++; c.applied < len(st.Streams) {
-			return
+// swapHead moves HEAD to next, as checkpoint.Session does: on a failed
+// swap it reads HEAD, which says whether the swap landed, or whether this
+// coordinator was fenced.
+func (c *wCoord) swapHead(next checkpoint.Head) (fenced, err error) {
+	nv, err := c.m.store.Swap(context.Background(), wHeadKey, must(json.Marshal(next)), c.ver)
+	if err == nil {
+		c.head, c.ver = next, nv
+		if next.Record != nil {
+			c.m.headed[*next.Record] = true
 		}
+		return nil, nil
 	}
-	c.m.committed[c.gen] = c.rec.Epoch
-	c.m.tracef("%s committed epoch %d", c.name(), c.rec.Epoch)
-	c.phase = coAck
+	cur, v, rerr := c.m.readHead()
+	switch {
+	case rerr != nil:
+		return nil, rerr
+	case sameHead(cur, next):
+		c.head, c.ver = next, v
+		return nil, nil
+	case cur.Generation != c.gen || cur.Owner != c.owner():
+		fenced = fmt.Errorf("%w: HEAD is generation %d, this is %d", checkpoint.ErrFenced, cur.Generation, c.gen)
+		return fenced, fenced
+	}
+	return nil, err
 }
 
 // ack has the workers acknowledge upstream what the record before this one
@@ -1418,6 +1498,14 @@ type wMsg struct {
 	reason  string
 	// An acknowledgement's: the committed record's splits.
 	splits []wSplit
+	// A commit request's on the staged destination: the record's
+	// committables. A settle's: whether to settle the staged destination.
+	committables [][]byte
+	recover      bool
+	// A settle's: the txn destination's committables a worker settles, and
+	// what became of each.
+	tasks   []wTxnStaged
+	results []string
 	// An assignment's.
 	lay      wLayout
 	peers    []string
@@ -1466,6 +1554,7 @@ func (b *wInbox) pop(w *wWorker) wMsg {
 func runWorkers(seed uint64, broken string) seedResult {
 	m := newWorkersModel(seed, broken)
 	res := seedResult{config: "workers " + m.cfg.String(), stats: m.stats}
+	m.stats["shape: "+m.shape()]++
 	err := m.run()
 	res.trace = strings.Join(lastN(m.trace, 400), "\n")
 	res.steps = m.steps
