@@ -387,7 +387,7 @@ fn list_item(item: &str) -> Option<Field> {
         Some(ty) => (ty, true),
         None => (rest, false),
     };
-    Some(Field::new(name, data_type(ty).ok()?, nullable))
+    Some(field(name, ty).ok()?.with_nullable(nullable))
 }
 
 /// The name [`field`] reads back as the field's type.
@@ -441,7 +441,7 @@ fn data_type_name(t: &DataType) -> String {
 
 fn item_name(f: &Field) -> String {
     let nullable = if f.is_nullable() { ", nullable" } else { "" };
-    format!("{}: {}{nullable}", f.name(), data_type_name(f.data_type()))
+    format!("{}: {}{nullable}", f.name(), type_name(f))
 }
 
 #[cfg(test)]
@@ -487,6 +487,7 @@ mod tests {
             "list<item: int64, nullable>",
             "list<item: utf8>",
             "list<item: timestamp[us, tz=UTC], nullable>",
+            "list<item: extension<arrow.uuid>, nullable>",
             "extension<arrow.uuid>",
             "extension<arrow.json>",
         ] {

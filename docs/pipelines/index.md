@@ -186,7 +186,7 @@ workspaces/default/pipelines/shop-to-parquet (version known after apply)
 
 The `transform.sql` section has:
 
-- **A line per statement:** where its `INSERT` is in the SQL, as line and column; the output it writes; its class; its output's primary key; whether its rows are exchanged between lanes; and the streams and views it reads. `row_wise` is the only class that runs. An output without a primary key can only be appended to.
+- **A line per statement:** where its `INSERT` is in the SQL, as line and column; the output it writes; its class; its output's primary key; whether its rows are exchanged between lanes; and the streams and views it reads. Only `row_wise` statements plan; a statement of another class is a problem. Runners do not run SQL transforms: a sync of the pipeline fails with `CONFIG_INVALID`, even when its plan has no problems. An output without a primary key can only be appended to.
 - **The columns of each output,** with their types.
 - **The streams that pass through:** the source's streams that no statement writes. They reach the destination as they would without a transform.
 - **The streams that are not delivered,** when `transform.passthrough` is `none`.

@@ -4,9 +4,11 @@ package api_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"slices"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -16,6 +18,7 @@ import (
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/sqlplan"
+	"github.com/openetl-io/openetl/internal/store"
 	"github.com/openetl-io/openetl/internal/store/db"
 )
 
@@ -105,6 +108,52 @@ spec:
 	}
 	var raw []byte
 	if err := e.conn.QueryRow(ctx, "SELECT sql_plan FROM pipeline_versions WHERE version = $1", version).Scan(&raw); err != nil || raw == nil {
-		t.Errorf("stored %s: %v", raw, err)
+		t.Fatalf("stored %s: %v", raw, err)
+	}
+
+	// A version that has a plan keeps it.
+	p, err := q.GetPipeline(ctx, db.GetPipelineParams{OrgID: e.tenant.Org, WorkspaceID: e.tenant.Workspace, Name: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetPipelineVersionSQLPlan(ctx, db.SetPipelineVersionSQLPlanParams{OrgID: e.tenant.Org, PipelineID: p.ID, Version: version, SqlPlan: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	var again []byte
+	if err := e.conn.QueryRow(ctx, "SELECT sql_plan FROM pipeline_versions WHERE version = $1", version).Scan(&again); err != nil || string(again) != string(raw) {
+		t.Errorf("replaced %s with %s: %v", raw, again, err)
+	}
+
+	// A stream the catalog declares no columns for is planned with its schema
+	// in the newest mirrored checkpoint, though a newer version is recorded.
+	for i, cols := range []string{`[{"name":"id","type":"int64","nullable":true}]`, `[{"name":"id","type":"utf8","nullable":true},{"name":"extra","type":"utf8","nullable":true}]`} {
+		if _, err := q.AddStreamSchema(ctx, db.AddStreamSchemaParams{OrgID: e.tenant.Org, PipelineID: p.ID, Stream: "users", Digest: fmt.Sprint("d", i), TableName: "users",
+			Columns: []byte(cols), ArrowSchema: []byte{}, Generation: 1, Epoch: int64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := store.Open(ctx, e.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.MirrorCheckpoint(ctx, db.InsertMirroredCheckpointParams{OrgID: e.tenant.Org, PipelineID: p.ID, Epoch: 3, Generation: 1, RunID: "r",
+		CommitTime: time.Now(), Streams: []byte(`[{"name":"users","rows":1,"schema_digest":"d0"}]`)}); err != nil {
+		t.Fatal(err)
+	}
+	columnless, err := protojson.Marshal(&apiv1.Catalog{Streams: []*apiv1.CatalogStream{{Name: "users", PrimaryKey: []string{"id"}, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.UpsertSourceCatalog(ctx, db.UpsertSourceCatalogParams{OrgID: e.tenant.Org, SourceID: src.ID, Digest: "d2", SourceVersion: src.Version, Catalog: columnless}); err != nil {
+		t.Fatal(err)
+	}
+	planner.sent = nil
+	if _, err := pc.GetPipelinePlan(ctx, connect.NewRequest(&apiv1.GetPipelinePlanRequest{Name: name})); err != nil {
+		t.Fatal(err)
+	}
+	if len(planner.sent) != 1 || len(planner.sent[0].Request.Streams) != 1 ||
+		!slices.Equal(planner.sent[0].Request.Streams[0].Columns, []sqlplan.Column{{Name: "id", Type: "int64"}}) {
+		t.Errorf("sent %+v", planner.sent)
 	}
 }

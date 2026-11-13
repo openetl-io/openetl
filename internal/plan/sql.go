@@ -144,9 +144,9 @@ func sqlOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlp
 			o.Exact = o.Exact && in.Replay == source.Exact
 			refresh = refresh && in.Read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH
 			cdc = cdc || in.Read == apiv1.SyncMode_SYNC_MODE_CDC
-			if st.Replaces && in.Name == st.Output {
-				o.Require = Level(in.Spec.GetRequire())
-			}
+		}
+		if i := slices.IndexFunc(inputs, func(in Input) bool { return in.Name == st.Output }); st.Replaces && i >= 0 {
+			o.Require = Level(inputs[i].Spec.GetRequire())
 		}
 		switch {
 		case WriteMode(spec) != 0:

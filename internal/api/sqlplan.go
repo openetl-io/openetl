@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -92,9 +93,14 @@ func (s *Server) planSQLWith(ctx context.Context, p *planned, cat *apiv1.Catalog
 	return &answer, nil
 }
 
-// inputSchemas are the newest schemas of the pipeline's source streams in its
-// schema history, under the source's column names and without metadata
-// columns, by stream.
+// metadataColumns are the columns the engine adds to a stream. A source's
+// column of one of these names is renamed, and keeps its own as its source
+// name.
+var metadataColumns = []string{"_openetl_id", "_openetl_op", "_openetl_seq", "_openetl_synced_at", "_openetl_deleted", "_openetl_unchanged", "_openetl_held"}
+
+// inputSchemas are the schemas of the pipeline's source streams in its
+// schema history, by stream: each one's in the newest mirrored checkpoint,
+// or its newest version where that checkpoint doesn't name it.
 func (s *Server) inputSchemas(ctx context.Context, q *db.Queries, pipeline uuid.UUID) (map[string][]sqlplan.Column, error) {
 	rows, err := q.LatestStreamSchemas(ctx, db.LatestStreamSchemasParams{OrgID: s.Tenant.Org, PipelineID: pipeline})
 	if err != nil {
@@ -102,23 +108,32 @@ func (s *Server) inputSchemas(ctx context.Context, q *db.Queries, pipeline uuid.
 	}
 	out := map[string][]sqlplan.Column{}
 	for _, r := range rows {
-		var cols []streamschema.Column
-		if err := json.Unmarshal(r.Columns, &cols); err != nil {
+		if out[r.Stream], err = inputColumns(r.Columns); err != nil {
 			return nil, err
-		}
-		for _, c := range cols {
-			name := cmp.Or(c.Source, c.Name)
-			if strings.HasPrefix(name, "_openetl_") {
-				continue
-			}
-			out[r.Stream] = append(out[r.Stream], sqlplan.Column{Name: name, Type: c.Type})
 		}
 	}
 	return out, nil
 }
 
+// inputColumns are a recorded schema's columns, as a statement reads them:
+// under the source's names, without the metadata columns.
+func inputColumns(raw []byte) ([]sqlplan.Column, error) {
+	var cols []streamschema.Column
+	if err := json.Unmarshal(raw, &cols); err != nil {
+		return nil, err
+	}
+	var out []sqlplan.Column
+	for _, c := range cols {
+		if c.Source == "" && slices.Contains(metadataColumns, c.Name) {
+			continue
+		}
+		out = append(out, sqlplan.Column{Name: cmp.Or(c.Source, c.Name), Type: c.Type})
+	}
+	return out, nil
+}
+
 // storeSQLPlan keeps what planning a new version's transform.sql gave with
-// the version.
+// the version. A version that has one keeps it.
 func (s *Server) storeSQLPlan(ctx context.Context, q *db.Queries, p *planned) error {
 	if p.sqlPlan == nil || p.action == apiv1.ApplyAction_APPLY_ACTION_UNCHANGED {
 		return nil

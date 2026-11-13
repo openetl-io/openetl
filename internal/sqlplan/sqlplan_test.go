@@ -1,6 +1,9 @@
 package sqlplan
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestMentions(t *testing.T) {
 	sql := `INSERT INTO contacts SELECT id FROM Public.Customers JOIN "HR.EMPLOYEES" ON true`
@@ -27,5 +30,13 @@ func TestErrorSaysWhere(t *testing.T) {
 	}
 	if got := (Error{Kind: "unsupported", Message: "a transform writes at least one output"}).Error(); got != "transform.sql: a transform writes at least one output" {
 		t.Error(got)
+	}
+}
+
+// A request without streams leaves them out, which the engine reads as none.
+func TestRequestWithoutStreams(t *testing.T) {
+	b, err := json.Marshal(Request{SQL: "INSERT INTO x SELECT 1 AS one FROM missing"})
+	if err != nil || string(b) != `{"sql":"INSERT INTO x SELECT 1 AS one FROM missing"}` {
+		t.Errorf("%s, %v", b, err)
 	}
 }

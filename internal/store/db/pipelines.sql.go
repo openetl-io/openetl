@@ -696,7 +696,7 @@ func (q *Queries) SetPipelinePaused(ctx context.Context, arg SetPipelinePausedPa
 
 const setPipelineVersionSQLPlan = `-- name: SetPipelineVersionSQLPlan :exec
 UPDATE pipeline_versions SET sql_plan = $1
-WHERE org_id = $2 AND pipeline_id = $3 AND version = $4
+WHERE org_id = $2 AND pipeline_id = $3 AND version = $4 AND sql_plan IS NULL
 `
 
 type SetPipelineVersionSQLPlanParams struct {
@@ -706,6 +706,7 @@ type SetPipelineVersionSQLPlanParams struct {
 	Version    string
 }
 
+// A version that has a plan keeps it.
 func (q *Queries) SetPipelineVersionSQLPlan(ctx context.Context, arg SetPipelineVersionSQLPlanParams) error {
 	_, err := q.db.Exec(ctx, setPipelineVersionSQLPlan,
 		arg.SqlPlan,

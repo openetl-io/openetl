@@ -134,3 +134,16 @@ func TestSQLPlanRoundTrip(t *testing.T) {
 		t.Errorf("none: %v, %v", got, err)
 	}
 }
+
+// A recorded schema gives a statement the source's names, without the
+// metadata columns; a source's own column of such a name was renamed, and
+// stays.
+func TestInputColumns(t *testing.T) {
+	got, err := inputColumns([]byte(`[{"name":"id","type":"int64"},{"name":"full_name","type":"utf8","source":"Full Name"},` +
+		`{"name":"_openetl_id_2","type":"utf8","source":"_openetl_id"},{"name":"_openetl_custom","type":"bool"},` +
+		`{"name":"_openetl_id","type":"fixed_size_binary[16]"},{"name":"_openetl_synced_at","type":"timestamp[us, tz=UTC]"}]`))
+	want := []sqlplan.Column{{Name: "id", Type: "int64"}, {Name: "Full Name", Type: "utf8"}, {Name: "_openetl_id", Type: "utf8"}, {Name: "_openetl_custom", Type: "bool"}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("%v, %v", got, err)
+	}
+}

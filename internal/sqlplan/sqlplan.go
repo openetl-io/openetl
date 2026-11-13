@@ -12,7 +12,7 @@ import (
 // Request is what the engine plans.
 type Request struct {
 	SQL     string   `json:"sql"`
-	Streams []Stream `json:"streams"`
+	Streams []Stream `json:"streams,omitempty"`
 }
 
 // Stream is a source's stream that statements may read.

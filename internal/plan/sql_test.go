@@ -34,9 +34,21 @@ func sqlSpec(sql string, passthrough apiv1.Passthrough, tables map[string]string
 func twoAnswers() *sqlplan.Answer {
 	return &sqlplan.Answer{Statements: []sqlplan.Statement{
 		{At: sqlplan.Position{Line: 1, Column: 1}, Output: "customers", Replaces: true, Class: "row_wise", Tier: 1, Inputs: []string{"customers"},
-			Columns: []sqlplan.Field{{Name: "id", Type: "int64", Nullable: true}, {Name: "email", Type: "utf8", Nullable: true}}, Key: []string{"id"}, ArrowSchema: []byte("schema")},
+			Columns: []sqlplan.Field{{Name: "id", Type: "int64", Nullable: true}, {Name: "email", Type: "utf8", Nullable: true}, {Name: "created_at", Type: "timestamp[us, tz=UTC]", Nullable: true}},
+			Key:     []string{"id"}, ArrowSchema: []byte("schema")},
 		{At: sqlplan.Position{Line: 4, Column: 1}, Output: "contacts", Class: "row_wise", Tier: 1, Inputs: []string{"customers"},
-			Columns: []sqlplan.Field{{Name: "customer_id", Type: "int64", Nullable: true}}},
+			Columns: []sqlplan.Field{{Name: "customer_id", Type: "int64", Nullable: true}, {Name: "contact_email", Type: "utf8", Nullable: true}}, Key: []string{"customer_id"}},
+	}}
+}
+
+// What the engine answers for statements that drop customers' key, and that
+// replace customers with a projection of orders.
+func otherAnswers() *sqlplan.Answer {
+	return &sqlplan.Answer{Statements: []sqlplan.Statement{
+		{At: sqlplan.Position{Line: 1, Column: 1}, Output: "shifted", Class: "row_wise", Tier: 1, Inputs: []string{"customers"},
+			Columns: []sqlplan.Field{{Name: "id", Type: "int64", Nullable: true}}},
+		{At: sqlplan.Position{Line: 2, Column: 1}, Output: "customers", Replaces: true, Class: "row_wise", Tier: 1, Inputs: []string{"orders"},
+			Columns: []sqlplan.Field{{Name: "id", Type: "int64", Nullable: true}}, Key: []string{"id"}},
 	}}
 }
 
@@ -81,7 +93,7 @@ func TestPipelineSQL(t *testing.T) {
 	for _, p := range plans {
 		got = append(got, p.GetName()+" "+p.GetWrite().String()+" "+p.GetTable())
 	}
-	want := []string{"orders WRITE_MODE_MERGE ", "customers WRITE_MODE_MERGE dim_customers", "contacts WRITE_MODE_APPEND contact_list"}
+	want := []string{"orders WRITE_MODE_MERGE ", "customers WRITE_MODE_MERGE dim_customers", "contacts WRITE_MODE_MERGE contact_list"}
 	if !slices.Equal(got, want) {
 		t.Errorf("plans %q", got)
 	}
@@ -109,20 +121,20 @@ func TestPipelineSQL(t *testing.T) {
 		t.Errorf("transform %v", tp)
 	}
 
-	// A replacing output takes its stream's require; an output without a key
-	// can't be merged.
-	strict := sqlSpec(twoStatements, 0, nil,
-		&apiv1.PipelineStream{Name: "customers", Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE})
+	// A replacing output takes its stream's require, whether or not its
+	// statement reads that stream; an output without a key can't be merged.
+	strict := sqlSpec("INSERT INTO shifted SELECT id + 1 AS id FROM customers;\nINSERT INTO customers SELECT id FROM orders", 0, nil,
+		&apiv1.PipelineStream{Name: "customers", Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE}, &apiv1.PipelineStream{Name: "orders"})
 	strict.Destination.Write = apiv1.WriteMode_WRITE_MODE_MERGE
-	superset := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{proto.CloneOf(sqlCatalog.GetStreams()[0])}}
-	superset.Streams[0].Replay = apiv1.Replay_REPLAY_SUPERSET
-	_, problems, _ = PipelineSQL(strict, superset, warehouse, twoAnswers())
+	superset := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{proto.CloneOf(sqlCatalog.GetStreams()[0]), proto.CloneOf(sqlCatalog.GetStreams()[1])}}
+	superset.Streams[1].Replay = apiv1.Replay_REPLAY_SUPERSET
+	_, problems, _ = PipelineSQL(strict, superset, warehouse, otherAnswers())
 	var msgs []string
 	for _, p := range problems {
 		msgs = append(msgs, p.Error())
 	}
 	all := strings.Join(msgs, "\n")
-	if len(msgs) != 2 || !strings.Contains(all, `destination.write: merge needs a primary key, and stream "contacts" has none`) ||
+	if len(msgs) != 2 || !strings.Contains(all, `destination.write: merge needs a primary key, and stream "shifted" has none`) ||
 		!strings.Contains(all, `source.streams[customers].require: stream "customers" gets effectively_once`) {
 		t.Errorf("problems %q", msgs)
 	}

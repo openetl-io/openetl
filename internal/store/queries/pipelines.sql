@@ -30,9 +30,10 @@ VALUES (@org_id, @pipeline_id, @version, @spec, @source_id, @destination_id, @da
     (SELECT key_groups FROM pipelines WHERE org_id = @org_id AND id = @pipeline_id))
 ON CONFLICT (org_id, pipeline_id, version) DO NOTHING;
 
+-- A version that has a plan keeps it.
 -- name: SetPipelineVersionSQLPlan :exec
 UPDATE pipeline_versions SET sql_plan = @sql_plan
-WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND version = @version;
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND version = @version AND sql_plan IS NULL;
 
 -- name: GetPipelineVersion :one
 SELECT * FROM pipeline_versions WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND version = @version;

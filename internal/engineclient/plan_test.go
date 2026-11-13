@@ -69,6 +69,10 @@ func TestPlanErrors(t *testing.T) {
 	if len(a.Statements) != 0 || len(a.Errors) != 1 || a.Errors[0].Kind != "later_tier" || a.Errors[0].Tier != 2 || a.Errors[0].At == nil || a.Errors[0].At.Line != 3 {
 		t.Errorf("%+v", a)
 	}
+	a, err = Plan(t.Context(), opts, sqlplan.Request{SQL: "INSERT INTO x SELECT 1 AS one FROM missing"})
+	if err != nil || len(a.Errors) != 1 || a.Errors[0].Kind != "name" {
+		t.Errorf("no streams: %+v, %v", a, err)
+	}
 	_, err = Plan(t.Context(), opts, sqlplan.Request{SQL: "INSERT INTO x SELECT * FROM s", Streams: []sqlplan.Stream{{Name: "s", Columns: []sqlplan.Column{{Name: "a", Type: "string"}}}}})
 	var e *errs.Error
 	if !errors.As(err, &e) || e.Code != errs.ConfigInvalid || !strings.Contains(err.Error(), "stream s column a") {
