@@ -70,6 +70,7 @@ apiVersion: openetl.io/v1alpha1
 kind: Pipeline
 metadata: { name: shop }
 spec:
+  schedule: { every: 1h }
   source: { ref: shop }
   destination: { ref: files }
   transform:
