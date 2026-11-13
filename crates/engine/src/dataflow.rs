@@ -37,6 +37,7 @@ use crate::ipc;
 use crate::plan::{Plan, Sink};
 use crate::replay::Replayer;
 use crate::staging::Staging;
+use crate::transform::Stage;
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
 
@@ -451,6 +452,8 @@ struct LaneStream {
     cells: BTreeMap<String, CellHolds>,
     /// Lane 0 replays released holds.
     replay: Option<Replayer>,
+    /// The statement that replaces the stream's rows.
+    stage: Option<Stage>,
 }
 
 impl LaneStream {
@@ -575,6 +578,11 @@ where
             (0, Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
             _ => None,
         };
+        let stage = plan.transform.as_ref().and_then(|t| {
+            let name = &plan.streams[s];
+            t.replacing(name)
+                .map(|i| Stage::new(t.clone(), i, name, plan.changelog[s]))
+        });
         let o = flow.owners[s].lock();
         streams.push(LaneStream {
             stream: s,
@@ -585,6 +593,7 @@ where
             quarantined: (Vec::new(), 0),
             cells: BTreeMap::new(),
             replay,
+            stage,
         });
     }
     let protocol = |msg: String| JobError::internal(format!("edge {id}: {msg}"));
@@ -766,8 +775,16 @@ async fn shaped(lane: &Lane, ls: &mut LaneStream, n: Shaped, c: &Counters) -> Re
     for v in &n.versioned {
         tracing::warn!(stream = %lane.flow.plan.streams[stream], "{v}");
     }
-    if n.schema_changed {
-        let change = schema_change(stream, &n.batch)?;
+    let (batch, schema_changed) = match &mut ls.stage {
+        Some(stage) => {
+            let shaper = &ls.shaper;
+            let a = stage.apply(&n.batch, || shaper.key_columns())?;
+            (a.batch, a.schema_changed)
+        }
+        None => (n.batch, n.schema_changed),
+    };
+    if schema_changed {
+        let change = schema_change(stream, &batch)?;
         lane.all(stream, || match &change {
             Out::SchemaChange(s, p) => Out::SchemaChange(*s, p.clone()),
             _ => unreachable!(),
@@ -785,12 +802,13 @@ async fn shaped(lane: &Lane, ls: &mut LaneStream, n: Shaped, c: &Counters) -> Re
     for b in n.held {
         lane.send(Out::Held(stream, b)).await?;
     }
-    if n.batch.num_rows() > 0 {
-        let key = match lane.routed(stream) {
-            true => ls.shaper.key_columns(),
-            false => Vec::new(),
+    if batch.num_rows() > 0 {
+        let key = match (lane.routed(stream), &ls.stage) {
+            (false, _) => Vec::new(),
+            (true, Some(stage)) => stage.key().unwrap_or_default().to_vec(),
+            (true, None) => ls.shaper.key_columns(),
         };
-        lane.rows(stream, &key, n.batch).await?;
+        lane.rows(stream, &key, batch).await?;
     }
     Ok(())
 }
@@ -1969,6 +1987,7 @@ mod tests {
                     quarantined: (Vec::new(), 0),
                     cells: BTreeMap::new(),
                     replay: None,
+                    stage: None,
                 }
             })
             .collect();
@@ -2705,5 +2724,122 @@ mod tests {
         put(&mut h.to_engine, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
         let (err, _) = failure(h).await;
         assert!(err.message.contains("after the end"));
+    }
+
+    /// The two statements of the docs' example. A lane runs the first, which
+    /// replaces customers; the second is a group window, which writes a
+    /// stream of its own.
+    const SHOP: &str = "
+        INSERT INTO customers
+        SELECT id, lower(email) AS email, 'eu' AS region, created_at
+        FROM customers;
+
+        INSERT INTO revenue_by_minute
+        SELECT window_start, region, sum(amount) AS revenue, count(*) AS orders
+        FROM orders
+        GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
+    ";
+
+    fn decoded(frames: &[frame::Frame], stream: u32) -> Vec<RecordBatch> {
+        frames
+            .iter()
+            .filter(|f| f.kind == FrameKind::Batch && f.stream == stream)
+            .map(|f| ipc::decode_batch(f.payload.clone()).unwrap())
+            .collect()
+    }
+
+    fn strings(b: &RecordBatch, name: &str) -> Vec<String> {
+        let c = b.column(b.schema().index_of(name).unwrap());
+        c.as_string::<i32>()
+            .iter()
+            .flatten()
+            .map(String::from)
+            .collect()
+    }
+
+    fn start_sql(streams: &[&str], sql: &str) -> Harness {
+        let mut plan = Plan::from_request(request(streams)).unwrap();
+        plan.transform = Some(Arc::new(sql.parse().unwrap()));
+        let (to_engine, engine_in) = duplex(1 << 16);
+        let (engine_out, from_engine) = duplex(1 << 16);
+        let (tx, events) = mpsc::channel(64);
+        let job = tokio::spawn(run(
+            Arc::new(plan),
+            vec![BufReader::new(engine_in)],
+            vec![engine_out],
+            tx,
+        ));
+        Harness {
+            to_engine,
+            from_engine: BufReader::new(from_engine),
+            events,
+            job,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_row_wise_statement_replaces_its_streams_rows() {
+        let mut h = start_sql(&["customers", "orders"], SHOP);
+        let w = &mut h.to_engine;
+        let first = [
+            r#"{"id": 1, "email": "A@X.io", "name": "a", "created_at": "2026-11-13T10:00:01Z"}"#,
+            r#"{"id": 2, "email": "b@Y.io", "name": "b", "created_at": "2026-11-13T10:00:02Z"}"#,
+        ];
+        put(w, FrameKind::Rows, 0, rows(&first)).await;
+        let order = r#"{"id": 9, "region": "EU", "amount": 1.5}"#;
+        put(w, FrameKind::Rows, 1, rows(&[order])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        // A column the statement doesn't read binds it again, and changes
+        // nothing it gives.
+        let second = r#"{"id": 3, "email": "C@Z.io", "vip": true}"#;
+        put(w, FrameKind::Rows, 0, rows(&[second])).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        // The outbound edge lists orders, then customers.
+        let customers = decoded(&frames, 1);
+        assert_eq!(customers.len(), 2);
+        let schema = customers[0].schema();
+        let names: Vec<_> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(&names[..4], ["id", "email", "region", "created_at"]);
+        assert!(
+            names[4..].iter().all(|n| n.starts_with("_openetl_")),
+            "{names:?}"
+        );
+        assert_eq!(strings(&customers[0], "email"), ["a@x.io", "b@y.io"]);
+        assert_eq!(strings(&customers[0], "region"), ["eu", "eu"]);
+        assert_eq!(strings(&customers[1], "email"), ["c@z.io"]);
+        assert_eq!(customers[1].schema(), schema);
+        let changes = frames
+            .iter()
+            .filter(|f| f.kind == FrameKind::SchemaChange && f.stream == 1)
+            .count();
+        assert_eq!(changes, 1);
+
+        let orders = decoded(&frames, 0);
+        assert_eq!(strings(&orders[0], "region"), ["EU"]);
+        assert_eq!(ready(&mut h.events).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_statement_that_does_not_bind_fails_the_job() {
+        let mut h = start_sql(
+            &["customers"],
+            "INSERT INTO customers SELECT id, nope FROM customers",
+        );
+        put(
+            &mut h.to_engine,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"id": 1}"#]),
+        )
+        .await;
+        let (err, _) = failure(h).await;
+        assert_eq!(err.code, ErrorCode::ConfigInvalid);
+        assert!(err.message.contains("line 1, column 34"), "{}", err.message);
     }
 }
