@@ -381,6 +381,10 @@ type wCursor struct {
 	maxSeen int64
 	// The last barrier it placed.
 	placed uint64
+	// The tick it ran out of rows to read, or -1; and, with idle splits
+	// left out of the lane's watermark, whether it's idle.
+	quiet int
+	idle  bool
 }
 
 type wConn struct {
@@ -414,23 +418,27 @@ type wLane struct {
 	rr         int
 	cur        uint64
 	sentWM     int64
+	idleSent   bool
 	outs       map[int]*wConn
 	at         map[uint64][]wSplit
 	readerPast uint64
-	// The keyed operator: its senders' watermarks and its own, its state and
+	// The keyed operator: its senders' watermarks and its own, the least its
+	// own may be once every sender's is in after a restore, its state and
 	// the groups changed since the last snapshot, the file holding each
 	// group's state, and the senders whose barrier for kcur arrived.
-	ins       []*wConn
-	senderWM  map[int]int64
-	opWM      int64
-	state     map[int]map[wKey]*wAcc
-	dirty     map[int]bool
-	files     map[int]string
-	kcur      uint64
-	aligned   map[int]bool
-	snapDue   bool
-	snaps     map[uint64][]checkpoint.Snapshot
-	keyedPast uint64
+	ins        []*wConn
+	senderWM   map[int]int64
+	senderIdle map[int]bool
+	opWM       int64
+	opFloor    int64
+	state      map[int]map[wKey]*wAcc
+	dirty      map[int]bool
+	files      map[int]string
+	kcur       uint64
+	aligned    map[int]bool
+	snapDue    bool
+	snaps      map[uint64][]checkpoint.Snapshot
+	keyedPast  uint64
 	// The writer: rows by epoch and stream, and committables.
 	buf          map[uint64]map[string][]row
 	staged       map[uint64][]byte
@@ -492,10 +500,19 @@ func (l *wLane) restore(d decision) {
 	e := rec.epoch()
 	l.cur, l.kcur = e+1, e+1
 	l.readerPast, l.keyedPast, l.precommitted = e, e, e
-	l.sentWM, l.opWM, l.senderWM, l.aligned = wNoMark, wNoMark, map[int]int64{}, map[int]bool{}
+	l.sentWM, l.opWM, l.senderWM, l.senderIdle, l.aligned = wNoMark, wNoMark, map[int]int64{}, map[int]bool{}, map[int]bool{}
+	l.opFloor = wNoMark
+	if rec != nil {
+		for _, o := range m.opMarks[rec.ref()] {
+			if o.kg.Last >= l.kg.First && o.kg.First <= l.kg.Last {
+				l.opFloor = max(l.opFloor, o.wm)
+			}
+		}
+	}
 	for _, c := range l.splits {
 		sp := rec.split(c.split)
 		c.pos, c.complete, c.wm, c.floor, c.maxSeen, c.placed = sp.Pos, sp.Complete, sp.Watermark, sp.Watermark, wNoMark, e
+		c.quiet, c.idle = -1, false
 		if m.cfg.broken == "watermark-not-restored" && !c.complete {
 			c.wm = wNoMark
 		}
@@ -545,16 +562,63 @@ func (l *wLane) actions(acts *[]wAction) {
 	}
 }
 
-// readable is the next split to read a page of, in turn: one that neither
-// completed nor waits at the barrier it placed for the lane's others.
+// readable is the next split to read a page of, in turn: one with a row
+// that has arrived, that waits at no barrier it placed for the lane's
+// others.
 func (l *wLane) readable() *wCursor {
 	for i := range l.splits {
 		c := l.splits[(l.rr+i)%len(l.splits)]
-		if !c.complete && c.placed < l.cur {
+		if !c.complete && c.placed < l.cur && l.arrived(c, c.pos) {
 			return c
 		}
 	}
 	return nil
+}
+
+func (l *wLane) arrived(c *wCursor, i int) bool {
+	m := l.w.m
+	return m.cfg.rate == 0 || m.cfg.avail[c.split][i] <= m.tick
+}
+
+// idle advances the watermark of each split that has had nothing to read
+// for the idle timeout, as an event of the split, so never past a barrier
+// it placed. It advances to what no row still to come is behind: the tick's
+// event time, less the delay.
+func (w *wWorker) idle() {
+	m := w.m
+	if !w.live() || w.paused() || w.phase != wwRun || m.cfg.rate == 0 {
+		return
+	}
+	for _, l := range w.lanes {
+		for _, c := range l.splits {
+			held := c.placed >= l.cur && m.cfg.broken != "idle-advances-held"
+			if c.complete || held || l.arrived(c, c.pos) {
+				c.quiet = -1
+				continue
+			}
+			if c.quiet < 0 {
+				c.quiet = m.tick
+			}
+			if m.tick-c.quiet < m.cfg.idleTicks {
+				continue
+			}
+			if m.cfg.broken == "idle-excluded" {
+				if !c.idle {
+					c.idle = true
+					m.tracef("%s: split %d is idle", l.name(), c.split)
+					l.sendMark()
+				}
+				continue
+			}
+			if wm := int64(m.tick)*m.cfg.rate - m.cfg.delay; wm > c.wm {
+				c.wm = wm
+				m.stats["idle splits advanced"]++
+				m.tracef("%s: split %d is idle, at %d", l.name(), c.split, wm)
+				m.observeMark(l, c)
+				l.sendMark()
+			}
+		}
+	}
 }
 
 func (l *wLane) atResumePoint(c *wCursor) bool {
@@ -598,7 +662,11 @@ func (l *wLane) read(d decision) {
 	c := l.readable()
 	l.rr++
 	evs := m.cfg.splits[c.split]
-	end := min(c.pos+m.cfg.page, len(evs))
+	end := c.pos + 1
+	for end < min(c.pos+m.cfg.page, len(evs)) && l.arrived(c, end) {
+		end++
+	}
+	c.quiet, c.idle = -1, false
 	routed := map[int][]wRow{}
 	for _, e := range evs[c.pos:end] {
 		c.maxSeen = max(c.maxSeen, e.T)
@@ -624,10 +692,25 @@ func (l *wLane) read(d decision) {
 
 // sendMark sends the lane's watermark, the least of its splits', once it
 // has gone up.
+// With idle splits left out, a lane whose splits are all idle says so
+// instead, and its receivers leave it out until it says it's active again.
 func (l *wLane) sendMark() {
-	wm := int64(wEndMark)
+	wm, active := int64(wEndMark), len(l.splits) == 0
 	for _, c := range l.splits {
-		wm = min(wm, c.wm)
+		if !c.idle {
+			wm, active = min(wm, c.wm), true
+		}
+	}
+	switch {
+	case !active && !l.idleSent:
+		l.idleSent = true
+		l.push(wFrame{kind: 'i'})
+		return
+	case !active:
+		return
+	case l.idleSent:
+		l.idleSent = false
+		l.push(wFrame{kind: 'a'})
 	}
 	if wm > l.sentWM {
 		l.sentWM = wm
@@ -715,6 +798,9 @@ func (l *wLane) take(d decision, c *wConn) {
 		}
 	case 'w':
 		l.mark(c, f.mark)
+	case 'i', 'a':
+		l.senderIdle[s] = f.kind == 'i'
+		l.advance()
 	case 'b':
 		if f.epoch != l.kcur {
 			m.problem("record", "%s: barrier %d from %s arrived in epoch %d", l.name(), f.epoch, c.from.name(), l.kcur)
@@ -788,13 +874,32 @@ func (l *wLane) mark(c *wConn, wm int64) {
 		return
 	}
 	l.senderWM[s] = wm
-	op := int64(wEndMark)
+	l.advance()
+}
+
+// advance moves the operator's watermark to the least of its senders',
+// leaving out those that said they're idle, and closes the windows it
+// passes. It never goes back.
+func (l *wLane) advance() {
+	m := l.w.m
+	op, all, active := int64(wEndMark), true, false
 	for _, s := range l.senders() {
 		x, ok := l.senderWM[s]
 		if !ok {
-			x = wNoMark
+			x, all = wNoMark, false
 		}
-		op = min(op, x)
+		if !l.senderIdle[s] {
+			op, active = min(op, x), true
+		}
+	}
+	if !active {
+		return
+	}
+	if all && l.opFloor != wNoMark {
+		if op < l.opFloor {
+			m.problem("watermark", "%s: the operator's watermark is %d once every sender's is in, below %d at the barrier it restored", l.name(), op, l.opFloor)
+		}
+		l.opFloor = wNoMark
 	}
 	if m.cfg.broken == "watermark-max" {
 		op = wNoMark
@@ -881,6 +986,8 @@ func (l *wLane) snapshot(d decision) {
 	}
 	l.snaps[e] = snaps
 	m.snapped[w.gen] = max(m.snapped[w.gen], e)
+	at := checkpoint.RecordRef{Epoch: e, Generation: w.gen}
+	m.opMarks[at] = append(m.opMarks[at], wOpMark{l.kg, l.opWM})
 	l.dirty, l.aligned, l.snapDue = map[int]bool{}, map[int]bool{}, false
 	l.keyedPast, l.kcur = e, e+1
 }

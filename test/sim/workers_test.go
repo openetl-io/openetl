@@ -38,13 +38,20 @@ import (
 // stages what it emits. A row whose window has closed is late, and goes to
 // late as the design quarantines it.
 //
+// A split's watermark is the latest event time it has read less a delay.
+// In half the seeds rows arrive over time, and a split with nothing to read
+// for a while is idle: its watermark advances to the tick's event time less
+// the delay, as an event of the split, so never past a barrier it placed. A
+// lane sends the least of its splits' watermarks through the exchange.
+//
 // A barrier flows in band from the splits through the exchange. Each lane
 // aligns it across every sender of the attempt, snapshots the key groups that
 // changed, and stages its epoch; each worker sends its share of the epoch;
-// the coordinator writes the record, with a watermark per split, and commits.
-// Any lost pod or broken exchange fails the attempt, and the next one
-// restores every worker from the record under a new generation, on as many
-// workers and lanes as its seed says.
+// the coordinator writes the record, with a watermark per split, and commits,
+// and the workers acknowledge the record before upstream. Any lost pod or
+// broken exchange fails the attempt, and the next one restores every worker
+// from the record under a new generation, on as many workers and lanes as
+// its seed says.
 //
 // The model's contract, checked on every seed:
 //   - exactly-once: each row the filter keeps lands once in filtered, and its
@@ -54,7 +61,8 @@ import (
 //     committed epochs emitted the fold of the rows before the record's
 //     positions;
 //   - watermark: a split's watermark never goes back, within an attempt,
-//     after a restore, along the records, or on an exchange;
+//     after a restore, along the records, or on an exchange; nor does a
+//     keyed operator's across a restore;
 //   - generation: nothing an older generation's pods sent, staged or wrote
 //     is committed.
 //
@@ -124,6 +132,12 @@ type wCfg struct {
 	pauses      int
 	netFaults   int
 	zombies     int
+	// Rows arriving over time: event time per tick, the tick each row of
+	// each split arrives at, and the ticks a split with nothing to read waits
+	// before it's idle. Rate 0: every row is there from the start.
+	rate      int64
+	avail     [][]int
+	idleTicks int
 	// Workers that stall before connecting to their peers, long enough for
 	// their attempt to fail; and snapshot writes that land ticks after their
 	// caller timed out and wrote again, whatever became of it.
@@ -146,7 +160,11 @@ func (c wCfg) String() string {
 		}
 		fmt.Fprint(&b, len(s))
 	}
-	fmt.Fprintf(&b, "] size=%d delay=%d page=%d faults=%d pauses=%d net=%d zombies=%d slowConnects=%d slowWrites=%d keep=%d scope=%d runners=%d reuse=%v",
+	b.WriteString("]")
+	if c.rate > 0 {
+		fmt.Fprintf(&b, " arriving=%d/tick idle=%d", c.rate, c.idleTicks)
+	}
+	fmt.Fprintf(&b, " size=%d delay=%d page=%d faults=%d pauses=%d net=%d zombies=%d slowConnects=%d slowWrites=%d keep=%d scope=%d runners=%d reuse=%v",
 		c.size, c.delay, c.page, c.faults, c.pauses, c.netFaults, c.zombies, c.slowConnects, c.slowWrites, c.keep, c.scope, c.runners, c.reuse)
 	if c.broken != "" {
 		fmt.Fprintf(&b, " broken=%s", c.broken)
@@ -164,21 +182,32 @@ func randomWorkersCfg(rng *rand.Rand, broken string) wCfg {
 		c.scope = destination.ScopeStream
 	}
 	keys := 2 + rng.IntN(12)
+	if rng.IntN(2) == 0 {
+		c.rate, c.idleTicks = 1+int64(rng.IntN(4)), 1+rng.IntN(3)
+	}
 	for s := range 1 + rng.IntN(4) {
 		n := 3 + rng.IntN(25)
 		// Event times run ahead by up to 3 a row, each up to delay behind:
-		// no row is behind its split's watermark, maxSeen - delay.
+		// no row is behind its split's watermark, maxSeen - delay. Arriving
+		// over time, a row is readable from the tick its clock reaches, and
+		// some splits go quiet for a while.
 		clock := int64(rng.IntN(10))
-		evs := make([]wEvent, n)
+		evs, avail := make([]wEvent, n), make([]int, n+1)
 		for i := range evs {
 			clock += int64(rng.IntN(4))
+			if c.rate > 0 && rng.IntN(6) == 0 {
+				clock += c.rate * int64(c.idleTicks+1+rng.IntN(4))
+			}
 			evs[i] = wEvent{ID: fmt.Sprintf("s%d.%d", s, i), Key: fmt.Sprintf("k%d", rng.IntN(keys)), T: clock - rng.Int64N(c.delay+1), V: int64(rng.IntN(100))}
+			if c.rate > 0 {
+				avail[i] = int(clock / c.rate)
+			}
 		}
 		at := make([]bool, n+1)
 		for i := range at {
 			at[i] = i == n || rng.IntN(100) < 60
 		}
-		c.splits, c.resumeAt = append(c.splits, evs), append(c.resumeAt, at)
+		c.splits, c.resumeAt, c.avail = append(c.splits, evs), append(c.resumeAt, at), append(c.avail, avail)
 	}
 	return c
 }
@@ -450,6 +479,13 @@ type wModel struct {
 	// committed; and how many lanes its layout had.
 	snapped, committed map[uint64]uint64
 	lanesOf            map[uint64]int
+	// Each keyed lane's watermark at each snapshot, by its key groups.
+	opMarks map[checkpoint.RecordRef][]wOpMark
+}
+
+type wOpMark struct {
+	kg checkpoint.KeyGroupRange
+	wm int64
 }
 
 type wLater struct {
@@ -472,6 +508,7 @@ func newWorkersModel(seed uint64, broken string) *wModel {
 		faults: cfg.faults, pauses: cfg.pauses, netFaults: cfg.netFaults, zombies: cfg.zombies, slowConnects: cfg.slowConnects, slowWrites: cfg.slowWrites,
 		stats: map[string]int{}, marks: map[[2]int]int64{},
 		snapped: map[uint64]uint64{}, committed: map[uint64]uint64{}, lanesOf: map[uint64]int{},
+		opMarks: map[checkpoint.RecordRef][]wOpMark{},
 	}
 }
 
@@ -634,6 +671,7 @@ func (m *wModel) advance() {
 	for _, a := range m.attempts {
 		for _, w := range a.workers {
 			w.beat()
+			w.idle()
 		}
 	}
 	for _, a := range m.attempts {

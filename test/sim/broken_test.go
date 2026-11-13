@@ -18,6 +18,8 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"senders-by-connection", "restore", "a keyed lane aligns barriers and takes its watermark across the senders it has connections from, not every lane of the attempt"},
 	{"prune-by-epoch", "restore", "retention deletes snapshot files of epochs before the oldest record kept, though a kept record names them for key groups that didn't change"},
 	{"ack-read-positions", "exactly-once", "workers acknowledge upstream where they've read to, not the committed record's positions"},
+	{"idle-excluded", "watermark", "an idle split is left out of its lane's watermark, and a lane whose splits are all idle out of its receivers', as Flink does; the record keeps each split's own"},
+	{"idle-advances-held", "watermark", "an idle split's watermark advances on a timer, also while it waits at a barrier it placed"},
 }
 
 // TestBroken shows each invariant of the workers kind catches a protocol
