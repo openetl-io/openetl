@@ -7,10 +7,13 @@
 // must replace. The spark kind puts a Spark transform before one of the
 // other sinks, and checks the runner keeps the transform's contract. The
 // flink kind runs a continuous pipeline with a fake Flink job before one of
-// them, and checks the records against what the job did.
+// them, and checks the records against what the job did. The workers kind
+// is a model of what isn't built yet: a SQL transform on several workers
+// under a coordinator, with an exchange by key group (workers_test.go).
 //
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace
+//	go test ./test/sim -run 'TestSimulation/workers' -broken=unaligned -seed=3 -v   # a broken variant
 package sim
 
 import (
@@ -44,8 +47,9 @@ var (
 // across tables. spark is one of the others with a Spark transform before
 // it, whose outputs take their inputs' names and settings; flink is the
 // same with a Flink job, in a continuous pipeline. holds is the warehouse
-// taking holds, as Postgres does.
-var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark", "flink", "holds"}
+// taking holds, as Postgres does. workers is the model of workers and
+// exchanges, which runs no runner.
+var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark", "flink", "holds", "workers"}
 
 // The sinks a transform goes before.
 var transformedKinds = sinkKinds[:5]
@@ -69,7 +73,11 @@ func TestSimulation(t *testing.T) {
 					t.Logf("%s seed %d: %s\n%s", kind, seed, res.config, res.trace)
 				}
 				if res.failure != "" {
-					t.Fatalf("%s seed %d: %s\nrerun: go test ./test/sim -run 'TestSimulation/%s$' -seed=%d -v", kind, seed, res.failure, kind, seed)
+					rerun := fmt.Sprintf("go test ./test/sim -run 'TestSimulation/%s$' -seed=%d -v", kind, seed)
+					if kind == "workers" && *brokenFlag != "" {
+						rerun += " -broken=" + *brokenFlag
+					}
+					t.Fatalf("%s seed %d: %s\nrerun: %s", kind, seed, res.failure, rerun)
 				}
 			}
 			t.Logf("%s, %d seeds: %v", kind, last-first+1, stats)
@@ -356,9 +364,14 @@ type seedResult struct {
 	config, trace, failure string
 	stats                  map[string]int
 	steps                  []string
+	// The workers kind's broken invariants, each under its name.
+	problems []string
 }
 
 func runSeed(kind string, seed uint64) (res seedResult) {
+	if kind == "workers" {
+		return runWorkers(seed, *brokenFlag)
+	}
 	rng := rand.New(rand.NewPCG(seed, uint64(len(kind))))
 	cfg := randomConfig(rng, kind)
 	w := &world{
