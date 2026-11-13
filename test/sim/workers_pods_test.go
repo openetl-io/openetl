@@ -55,13 +55,20 @@ type wWorker struct {
 	// of each; its producers' epochs; the committables of epochs it shared,
 	// and the rows in them, until committed; the epochs it was asked to
 	// commit, and those it has.
-	tasks     []wTxnStaged
-	results   []string
-	producers map[wTxnID]uint64
-	pending   map[uint64][]wTxnStaged
-	rows      map[wMarker]map[string][]row
-	due       []uint64
-	done      map[uint64]bool
+	tasks      []wTxnStaged
+	results    []string
+	settleRec  *wRecord
+	settleLay  wLayout
+	recovering bool
+	producers  map[wTxnID]uint64
+	pending    map[uint64][]wTxnStaged
+	rows       map[wMarker]map[string][]row
+	due        []uint64
+	done       map[uint64]bool
+	// The staged destination's: the committables of each epoch it was asked
+	// to apply, and with scope stream how many streams it has.
+	toApply        map[uint64][][]byte
+	appliedStreams map[uint64]int
 }
 
 func (w *wWorker) name() string   { return fmt.Sprintf("a%d.w%d", w.a.n, w.idx) }
@@ -152,11 +159,7 @@ func (w *wWorker) actions(acts *[]wAction) {
 	case wwJoin:
 		add("join", aCall, w.join)
 	case wwSettle:
-		for i, t := range w.tasks {
-			if w.results[i] == "" {
-				add("settle "+t.marker().String(), aCall, func(d decision) { w.settle(d, i) })
-			}
-		}
+		w.settleActions(add)
 	case wwOpen:
 		add("open producers", aCall, w.open)
 	case wwRestore:
@@ -216,7 +219,7 @@ func (w *wWorker) recv(d decision) {
 	switch msg.kind {
 	case "settle":
 		if w.phase <= wwJoined && msg.gen == w.gen {
-			w.startSettle(msg.tasks)
+			w.startSettle(msg)
 		}
 	case "assign":
 		if (w.phase <= wwJoined || w.phase == wwSettled) && msg.gen == w.gen {
@@ -224,7 +227,7 @@ func (w *wWorker) recv(d decision) {
 		}
 	case "commit":
 		if msg.gen == w.gen {
-			w.commitRequested(msg.epoch)
+			w.commitRequested(msg)
 		}
 	case "barrier":
 		if msg.gen == w.gen {
@@ -272,6 +275,7 @@ func (w *wWorker) assign(msg wMsg) {
 	w.lay, w.peers, w.restored = msg.lay, msg.peers, msg.restored
 	w.lastAck, w.connected = w.m.tick, map[int]bool{}
 	w.pending, w.rows, w.done = map[uint64][]wTxnStaged{}, map[wMarker]map[string][]row{}, map[uint64]bool{}
+	w.toApply, w.appliedStreams = map[uint64][][]byte{}, map[uint64]int{}
 	e := w.restored.epoch()
 	w.barrier, w.shared = e, e
 	for i, spec := range w.lay.lanes {
@@ -736,6 +740,9 @@ func (l *wLane) read(d decision) {
 			continue
 		}
 		l.emit(l.cur, "filtered", row{ID: e.ID, Seq: e.T, Key: e.Key, Value: string(must(json.Marshal(wContrib{ID: e.ID, Gen: l.w.gen})))})
+		if !m.cfg.exchange {
+			continue
+		}
 		to := l.w.lay.owner(keyGroupOf(e.Key))
 		routed[to] = append(routed[to], wRow{wEvent: e, Gen: l.w.gen})
 	}

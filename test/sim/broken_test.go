@@ -22,7 +22,7 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"idle-excluded", "watermark", "an idle split is left out of its lane's watermark, and a lane whose splits are all idle out of its receivers', as Flink does; the record keeps each split's own"},
 	{"snapshot-unwaited", "restore", "a lane goes on, and its worker sends its share, before its snapshot file is written"},
 	{"idle-advances-held", "watermark", "an idle split's watermark advances on a timer, also while it waits at a barrier it placed"},
-	// The txn destination's (txnVariants).
+	// Commits and recovery (workers_commit_test.go, variantShapes).
 	{"ack-before-commits", "exactly-once", "the coordinator acknowledges an epoch once it has asked every worker to commit, before they answer"},
 	{"answer-on-receipt", "exactly-once", "a worker answers a commit request when it takes it, before it commits"},
 	{"commit-before-record", "visibility", "a worker commits its transactions once it sent its share, without a request"},
@@ -30,7 +30,15 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"single-runner-recovery", "exactly-once", "recovery keeps a single runner's rule: it fences each recorded transaction and rolls back to the record before if any marker is missing"},
 	{"stale-worker-commits", "generation", "a worker whose producer was fenced starts a new one, and commits its epoch again from what it holds"},
 	{"ids-by-generation", "generation", "transactional IDs carry the attempt's generation, so the next attempt's producers never fence an earlier one's"},
-	{"resume-prepared", "exactly-once", "with no staged copy, recovery commits the transaction the record names, kept prepared as Kafka's two-phase commit lets it, and rolls back if it's gone; a stale worker's producers still abort it when they start"},
+	{"resume-prepared", "exactly-once", "with no staging, recovery commits the transaction the record names, kept prepared as Kafka's two-phase commit lets it, and rolls back if it's gone; a stale worker's producers still abort it when they start"},
+	{"apply-unfenced", "generation", "a worker's apply doesn't check the destination's fence, so a stale generation's worker applies after a newer one recovered"},
+	{"replay-staged-lane", "exactly-once", "recovery redoes from the source a lane that staged, before looking for its marker"},
+	{"unstaged-lost-as-applied", "exactly-once", "recovery takes a lane that staged nothing and whose marker is missing as applied"},
+	{"staging-unfenced", "generation", "recovery commits a lane's staging under a producer of its own, without fencing the recorded one"},
+	{"redo-by-new-layout", "exactly-once", "a redo from the source reads the splits and key groups the new attempt's lane of that number has, not those the committable names"},
+	{"replay-own-watermarks", "exactly-once", "a redo from the source closes the windows its own read's watermarks close, not the record's"},
+	{"prune-to-head", "restore", "recovery's retention keeps only the record HEAD names, before the epoch is settled"},
+	{"replay-not-exact", "exactly-once", "the source's replay of a range returns a row twice"},
 }
 
 // TestBroken shows each invariant of the workers kind catches a protocol
