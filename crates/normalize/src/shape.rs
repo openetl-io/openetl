@@ -20,9 +20,10 @@ use crate::hold::{
 };
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
+use crate::typed::{Typed, Typer, input_rows, remap};
 use crate::{
-    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, Normalizer, Rejected, TypeOptions,
-    UUID_EXTENSION, coerce,
+    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, Rejected, TypeOptions, UUID_EXTENSION,
+    coerce,
 };
 
 #[derive(Debug)]
@@ -71,7 +72,10 @@ struct Holds {
 
 /// One stream's schema as the destination sees it: columns under their
 /// destination names, then the metadata columns, with the table in the
-/// schema's metadata.
+/// schema's metadata. Normalization is in two halves:
+/// [`Shaper::type_rows`] and [`Shaper::type_batch`] parse and type, and
+/// [`Shaper::shape`] names, adds the metadata columns and holds. Whatever
+/// runs between them sees the source's names and logical types.
 #[derive(Debug)]
 pub struct Shaper {
     namer: Namer,
@@ -81,7 +85,8 @@ pub struct Shaper {
     /// Under source names.
     declared: Option<SchemaRef>,
     types: TypeOptions,
-    norm: Option<Normalizer>,
+    /// The first half.
+    typer: Typer,
     evolver: Evolver,
     current: Option<SchemaRef>,
     /// current matches the evolver's schema.
@@ -143,11 +148,11 @@ impl Shaper {
         Ok(Self {
             namer,
             table,
+            typer: Typer::new(identity.clone(), declared.clone(), types),
             identity,
             policy,
             declared,
             types,
-            norm: None,
             evolver,
             current: restored,
             fresh: false,
@@ -168,7 +173,7 @@ impl Shaper {
             policy: self.policy,
             declared: self.declared.clone(),
             types: self.types,
-            norm: None,
+            typer: self.typer.fork(),
             evolver: self.evolver.clone(),
             current: self.current.clone(),
             fresh: self.fresh,
@@ -285,6 +290,7 @@ impl Shaper {
             rules.cells = true;
         }
         self.evolver.rules = Some(rules);
+        self.typer.hold_cells = config.cells.then(|| h.unholdable.clone());
         h.config = config;
         self.holds = Some(h);
         self.fresh = false;
@@ -355,6 +361,7 @@ impl Shaper {
     /// For a changelog stream (CDC).
     pub fn with_changelog(mut self, on: bool) -> Self {
         self.changelog = on;
+        self.typer.changelog = on;
         self
     }
 
@@ -390,7 +397,7 @@ impl Shaper {
             .field_with_name("_openetl_seq")
             .ok()
             .map(|f| f.data_type().clone());
-        self.shape(&c.batch, seq.as_ref());
+        self.schema_for(&c.batch, seq.as_ref());
         Ok(true)
     }
 
@@ -423,7 +430,7 @@ impl Shaper {
                 .ok()
                 .map(|f| f.data_type().clone());
             let empty = RecordBatch::new_empty(Arc::new(self.evolver.schema()));
-            self.shape(&empty, seq.as_ref());
+            self.schema_for(&empty, seq.as_ref());
         }
         Ok(changed)
     }
@@ -433,115 +440,63 @@ impl Shaper {
     pub fn seal(&mut self) -> bool {
         let before = self.evolver.established();
         self.evolver.establish();
-        if self.policy == Policy::IgnoreNew
-            && self.evolver.established()
-            && let Some(n) = self.norm.as_mut()
-        {
-            n.freeze();
+        if self.policy == Policy::IgnoreNew && self.evolver.established() {
+            self.typer.freeze();
         }
         self.evolver.established() != before
     }
 
-    /// Converts raw rows. On error, the schema is unchanged.
+    /// Converts raw rows: both halves. On error, the schema is unchanged.
     pub fn rows<'a, I>(&mut self, rows: I) -> Result<Shaped, Error>
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
-        if self.norm.is_none() {
-            let declared = self.declared.as_deref();
-            let live = self.evolver.live();
-            let mut n = match live.fields().is_empty() {
-                true => Normalizer::new(declared)?,
-                false => Normalizer::with_schema(&live, declared)?,
-            };
-            n.identify(self.identity.clone());
-            n.infinity(self.types.infinity);
-            if let Some(h) = self.holds.as_ref().filter(|h| h.config.cells) {
-                n.hold_cells(h.unholdable.clone());
-            }
-            if self.policy == Policy::IgnoreNew && self.evolver.established() {
-                n.freeze();
-            }
-            self.norm = Some(n);
-        }
-        let Some(norm) = self.norm.as_mut() else {
-            return Err(Error::Restored(String::new()));
-        };
-        let n = norm.push(rows)?;
-        let ids = n.ids.ok_or_else(|| Error::Restored(String::new()))?;
-        let mut rejected = n.rejected;
-        self.claim_pending(&n.batch.schema());
-        let c = self.evolver.conform(&n.batch)?;
-        rejected.extend(c.failed.iter().map(|(i, reason)| Rejected {
-            row: n.rows[*i],
-            reason: reason.clone(),
-        }));
-        rejected.sort_by_key(|r| r.row);
-        self.finish(c, ids, Control::default(), rejected, n.cells)
+        let typed = self.type_rows(rows)?;
+        self.shape(typed)
     }
 
-    /// Gives a typed batch its logical and declared types, conforms it to the
-    /// stream's schema, renames its columns and adds the metadata columns,
-    /// with a changelog stream's op, seq and unchanged columns from its
-    /// control columns.
+    /// Converts a typed batch: both halves.
     pub fn batch(&mut self, batch: &RecordBatch) -> Result<Shaped, Error> {
-        let (batch, control) = Control::split(batch)?;
-        let batch = &batch;
-        if self.changelog && (control.op.is_none() || control.seq.is_none()) {
-            return Err(Error::Declared(
-                "a changelog stream's batch has no op or seq control column".into(),
-            ));
-        }
-        let (typed, all) = coerce::conform_cells(batch, self.declared.as_deref(), self.types)?;
-        let schema = batch.schema();
-        let hold = self.holds.as_ref().filter(|h| h.config.cells);
-        let mut first: HashMap<usize, String> = HashMap::new();
-        let mut cells = Vec::new();
-        for (row, col, reason) in all {
-            let name = schema.field(col).name();
-            match hold {
-                Some(h) if !h.unholdable.contains(name) => cells.push(HeldCell {
-                    row,
-                    column: name.clone(),
-                    reason,
-                    raw: coerce::cell_text(batch.column(col), row).unwrap_or_default(),
-                }),
-                _ => {
-                    first.entry(row).or_insert(reason);
-                }
-            }
-        }
-        let mut failed: Vec<(usize, String)> = first.into_iter().collect();
-        failed.sort_by_key(|(r, _)| *r);
-        let gone: HashSet<usize> = failed.iter().map(|(r, _)| *r).collect();
-        let typed = match gone.is_empty() {
-            true => typed,
-            false => {
-                let keep = BooleanArray::from_iter(
-                    (0..batch.num_rows()).map(|r| Some(!gone.contains(&r))),
-                );
-                arrow_select::filter::filter_record_batch(&typed, &keep)?
-            }
-        };
-        let cells = remap(cells, batch.num_rows(), &gone);
-        let control = control.without(batch.num_rows(), &gone)?;
-        let ids = self.identity.typed(&typed, control.seq.as_ref())?;
-        self.claim_pending(&typed.schema());
-        let c = self.evolver.conform(&typed)?;
-        let mut rejected: Vec<Rejected> = failed
-            .iter()
-            .map(|(row, reason)| Rejected {
-                row: *row,
-                reason: reason.clone(),
-            })
-            .collect();
+        let typed = self.type_batch(batch)?;
+        self.shape(typed)
+    }
+
+    /// The first half for raw rows: parses them and infers their types,
+    /// which only widen, rejecting rows whose declared columns don't fit.
+    pub fn type_rows<'a, I>(&mut self, rows: I) -> Result<Typed, Error>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let frozen = self.policy == Policy::IgnoreNew && self.evolver.established();
+        let evolver = &self.evolver;
+        self.typer.rows(rows, || evolver.live(), frozen)
+    }
+
+    /// The first half for a typed batch: gives it its logical and declared
+    /// types, and splits off a changelog stream's control columns.
+    pub fn type_batch(&self, batch: &RecordBatch) -> Result<Typed, Error> {
+        self.typer.batch(batch)
+    }
+
+    /// The second half: conforms a batch to the stream's schema under its
+    /// policy, renames its columns, adds the metadata columns, with a
+    /// changelog stream's op, seq and unchanged columns from its control
+    /// columns, and holds what the stream holds.
+    pub fn shape(&mut self, typed: Typed) -> Result<Shaped, Error> {
+        let Typed {
+            batch,
+            ids,
+            control,
+            cells,
+            mut rejected,
+            rows,
+        } = typed;
+        self.claim_pending(&batch.schema());
+        let c = self.evolver.conform(&batch)?;
         if !c.failed.is_empty() {
-            let gone: HashSet<usize> = failed.iter().map(|(r, _)| *r).collect();
-            let kept: Vec<usize> = (0..batch.num_rows())
-                .filter(|r| !gone.contains(r))
-                .collect();
+            let rows = input_rows(rows, &rejected, batch.num_rows());
             rejected.extend(c.failed.iter().map(|(i, reason)| Rejected {
-                row: kept[*i],
+                row: rows[*i],
                 reason: reason.clone(),
             }));
             rejected.sort_by_key(|r| r.row);
@@ -582,7 +537,7 @@ impl Shaper {
             {
                 s.clone()
             }
-            _ => self.shape(&c.batch, seq),
+            _ => self.schema_for(&c.batch, seq),
         };
         let unchanged = self.unchanged(&c.batch, &control)?;
         let lists = self.held_lists(c.batch.num_rows(), unchanged.as_ref(), &cells);
@@ -1003,7 +958,7 @@ impl Shaper {
 
     /// The destination schema for a batch under source names. `seq` is the
     /// type of its seq control column.
-    fn shape(&mut self, batch: &RecordBatch, seq: Option<&DataType>) -> SchemaRef {
+    fn schema_for(&mut self, batch: &RecordBatch, seq: Option<&DataType>) -> SchemaRef {
         let source = batch.schema();
         let renamed = self.namer.rename(&source);
         let last = |src: &str| {
@@ -1217,29 +1172,6 @@ fn held_type() -> DataType {
 
 fn kind(k: &str) -> HashMap<String, String> {
     HashMap::from([(HOLD_KIND_KEY.to_owned(), k.to_owned())])
-}
-
-/// Cells by their rows among `n`, renumbered once the rows in `gone` are
-/// left out, and dropped with them.
-fn remap(cells: Vec<HeldCell>, n: usize, gone: &HashSet<usize>) -> Vec<HeldCell> {
-    if gone.is_empty() {
-        return cells;
-    }
-    let mut row_of = vec![None; n];
-    let mut k = 0;
-    for (r, slot) in row_of.iter_mut().enumerate() {
-        if !gone.contains(&r) {
-            *slot = Some(k);
-            k += 1;
-        }
-    }
-    cells
-        .into_iter()
-        .filter_map(|mut c| {
-            c.row = row_of[c.row]?;
-            Some(c)
-        })
-        .collect()
 }
 
 /// A held value, JSON text, as a one-row array of the field's type; None if
@@ -1695,6 +1627,56 @@ mod tests {
         assert!(matches!(s.batch(&b), Err(Error::Declared(_))));
         b = change_batch(&[None], &[1], vec![Some("a")]);
         assert!(s.batch(&b).is_ok());
+    }
+
+    #[test]
+    fn rows_rejected_by_either_half_keep_their_input_rows() {
+        let declared = Arc::new(Schema::new(vec![Field::new("d", DataType::Int64, true)]));
+        let new = |restored| {
+            Shaper::new(
+                Naming::default(),
+                "users".into(),
+                identity(),
+                Policy::IgnoreNew,
+                restored,
+                Some(declared.clone()),
+                TypeOptions::default(),
+            )
+            .unwrap()
+        };
+        let mut first = new(None);
+        rows(&mut first, &[r#"{"x": 1, "d": 1}"#]);
+        let restored = first.schema();
+
+        // Row 1's d doesn't fit its declared type, and row 2's x doesn't fit
+        // the established int64.
+        let mut s = new(restored.clone());
+        let n = rows(
+            &mut s,
+            &[
+                r#"{"x": 1, "d": 1}"#,
+                r#"{"x": 2, "d": "a"}"#,
+                r#"{"x": 2.5, "d": 3}"#,
+                r#"{"x": 3, "d": 4}"#,
+            ],
+        );
+        let rejected: Vec<usize> = n.rejected.iter().map(|r| r.row).collect();
+        assert_eq!(rejected, [1, 2]);
+        assert_eq!(n.batch.num_rows(), 2);
+
+        let mut s = new(restored);
+        let b = RecordBatch::try_from_iter(vec![
+            (
+                "x",
+                Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0, 2.5, 3.0])) as ArrayRef,
+            ),
+            ("d", Arc::new(StringArray::from(vec!["1", "a", "3", "4"]))),
+        ])
+        .unwrap();
+        let n = s.batch(&b).unwrap();
+        let rejected: Vec<usize> = n.rejected.iter().map(|r| r.row).collect();
+        assert_eq!(rejected, [1, 2]);
+        assert_eq!(n.batch.num_rows(), 2);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Raw rows to Arrow. A [`Normalizer`] infers one stream's schema from the
 //! JSON objects it sees, and only ever widens it; declared columns keep
 //! their types. A [`Shaper`] gives a stream's columns their destination
-//! names, on either lane.
+//! names, on either lane, in two halves with a [`Typed`] batch between them.
 
 mod coerce;
 mod control;
@@ -11,13 +11,15 @@ mod ids;
 pub mod keygroup;
 pub mod naming;
 mod shape;
+mod typed;
 
 pub use coerce::{Infinity, check_declared, render_row};
-pub use control::CONTROL_KEY;
+pub use control::{CONTROL_KEY, Control};
 pub use evolve::{BIG_INTS_KEY, Policy, VERSIONS_KEY, widens};
 pub use ids::Identity;
 pub use keygroup::{KEY_GROUP_HASH, by_key_group, key_groups};
 pub use shape::{Shaped, Shaper};
+pub use typed::Typed;
 
 use coerce::Target;
 

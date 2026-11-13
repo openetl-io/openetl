@@ -16,6 +16,7 @@ mod plan;
 mod quarantine;
 mod replay;
 mod service;
+mod stage;
 mod staging;
 mod store;
 mod telemetry;

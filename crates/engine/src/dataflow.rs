@@ -1,9 +1,11 @@
 //! The dataflow. Each lane reads its inbound edge and normalizes what it
-//! carries, raw rows to Arrow, on a task of its own, and hands it to a writer
-//! lane: its own, or for a stream routed by key group, the one owning each
-//! row's group. Each writer lane aligns the lanes feeding it, and writes to a
-//! runner sink, with barriers in band, or to a Parquet or staged sink, which
-//! stages each epoch and reports it in EpochReady.
+//! carries, raw rows to Arrow, on a task of its own: it parses and types,
+//! runs each stream's stage, then names, adds metadata columns and holds. It
+//! hands the result to a writer lane: its own, or for a stream routed by key
+//! group, the one owning each row's group. Each writer lane aligns the lanes
+//! feeding it, and writes to a runner sink, with barriers in band, or to a
+//! Parquet or staged sink, which stages each epoch and reports it in
+//! EpochReady.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
@@ -16,7 +18,9 @@ use std::time::{Duration, Instant};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use openetl_formats::ParquetStaging;
-use openetl_normalize::{Error as NormalizeError, Shaped, Shaper, by_key_group, logical_type};
+use openetl_normalize::{
+    Error as NormalizeError, Shaped, Shaper, Typed, by_key_group, logical_type,
+};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
     Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, LaneMetrics,
@@ -36,6 +40,7 @@ use crate::frame;
 use crate::ipc;
 use crate::plan::{Plan, Sink};
 use crate::replay::Replayer;
+use crate::stage::Stage;
 use crate::staging::Staging;
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
@@ -442,6 +447,8 @@ where
 struct LaneStream {
     stream: usize,
     shaper: Shaper,
+    /// Between the shaper's two halves.
+    stage: Stage,
     version: u64,
     next_epoch: u64,
     ended: bool,
@@ -463,15 +470,16 @@ impl LaneStream {
         }
     }
 
-    /// Shapes with the owner's latest schema, and publishes what that changes.
+    /// Types with `f`, runs the stage and shapes, with the owner's latest
+    /// schema, and publishes what that changes.
     fn shape(
         &mut self,
         owner: &Owner,
-        f: impl Fn(&mut Shaper) -> Result<Shaped, NormalizeError>,
+        f: impl Fn(&mut Shaper) -> Result<Typed, NormalizeError>,
     ) -> Result<Shaped, NormalizeError> {
         loop {
             self.catch_up(owner);
-            let out = f(&mut self.shaper);
+            let out = f(&mut self.shaper).and_then(|t| self.shaper.shape(self.stage.apply(t)));
             let changed = self.shaper.take_changed();
             if out.is_err() {
                 if owner.version.load(Ordering::Acquire) == self.version {
@@ -579,6 +587,7 @@ where
         streams.push(LaneStream {
             stream: s,
             shaper: o.shaper.fork(),
+            stage: Stage::default(),
             version: o.version,
             next_epoch: plan.first_epoch,
             ended: false,
@@ -636,7 +645,7 @@ where
                     .rows_in
                     .fetch_add(rows.rows.len() as u64, Ordering::Relaxed);
                 let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = rows.rows.len())
-                    .in_scope(|| ls.shape(owner, |sh| sh.rows(rows.rows.iter().map(Vec::as_slice))))
+                    .in_scope(|| ls.shape(owner, |sh| sh.type_rows(rows.rows.iter().map(Vec::as_slice))))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| String::from_utf8_lossy(&rows.rows[row]).into_owned();
                 hold(plan, stream, &n.rejected, record, &mut ls.quarantined, c)?;
@@ -654,7 +663,7 @@ where
                     continue;
                 }
                 let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = batch.num_rows())
-                    .in_scope(|| ls.shape(owner, |sh| sh.batch(&batch)))
+                    .in_scope(|| ls.shape(owner, |sh| sh.type_batch(&batch)))
                     .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| openetl_normalize::render_row(&batch, row);
                 hold(plan, stream, &n.rejected, record, &mut ls.quarantined, c)?;
@@ -1963,6 +1972,7 @@ mod tests {
                 LaneStream {
                     stream: 0,
                     shaper: o.shaper.fork(),
+                    stage: Stage::default(),
                     version: o.version,
                     next_epoch: 1,
                     ended: false,
@@ -1977,7 +1987,7 @@ mod tests {
             .collect();
         for round in 0..20 {
             for ls in &mut lanes {
-                ls.shape(&owner, |sh| sh.rows(rows.iter().map(|r| r.as_bytes())))
+                ls.shape(&owner, |sh| sh.type_rows(rows.iter().map(|r| r.as_bytes())))
                     .unwrap();
             }
             if round == 0 {
