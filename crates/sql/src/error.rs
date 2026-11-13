@@ -173,9 +173,12 @@ fn not_found(field: &datafusion_common::Column, valid: &[datafusion_common::Colu
     if let Some(other) = valid.iter().find(|c| c.name == *name) {
         return format!("there's no column {field}; there's {other}");
     }
-    if let Some(other) = valid.iter().find(|c| c.name.eq_ignore_ascii_case(name)) {
+    if let Some(other) = valid
+        .iter()
+        .find(|c| c.name.to_lowercase() == name.to_lowercase())
+    {
         return format!(
-            "there's no column {name}: names fold to lower case unless quoted, so write \"{}\"",
+            "there's no column \"{name}\": a quoted name matches exactly, so write \"{}\", or the name unquoted",
             other.name
         );
     }
