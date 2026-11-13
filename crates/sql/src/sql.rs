@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::ops::ControlFlow;
 
-use datafusion_sql::sqlparser::ast::helpers::attached_token::AttachedToken;
+use datafusion_expr::LogicalPlan;
 use datafusion_sql::sqlparser::ast::{self, Spanned};
 use datafusion_sql::sqlparser::dialect::PostgreSqlDialect;
 use datafusion_sql::sqlparser::parser::Parser;
@@ -135,19 +135,17 @@ impl Sql {
                     notes.append(&mut check.notes);
                     let mut defined = Defined {
                         name: name.clone(),
-                        ident: ident.clone(),
-                        query,
                         reads: check.views.clone(),
                         inputs: check.inputs.clone(),
                         nondeterministic: lineage,
                         key: Vec::new(),
-                        planned: false,
+                        plan: None,
                     };
                     if check.errors.is_empty() && check.views_planned() {
-                        match check.lower(&defined.query, at) {
-                            Ok(l) => {
+                        match check.lower(&query, at) {
+                            Ok((l, plan)) => {
                                 defined.key = l.key.clone();
-                                defined.planned = true;
+                                defined.plan = Some(plan);
                                 planned_views.push(View {
                                     name: name.clone(),
                                     at,
@@ -171,7 +169,7 @@ impl Sql {
                     notes.append(&mut check.notes);
                     if check.errors.is_empty() && check.views_planned() {
                         match check.lower(&query, *at) {
-                            Ok(l) => {
+                            Ok((l, _)) => {
                                 if let Some((output, replaces)) = output {
                                     statements.push(Statement {
                                         at: *at,
@@ -488,17 +486,15 @@ fn ambiguous(parts: &[ast::Ident], streams: &[&str]) -> String {
 #[derive(Debug)]
 struct Defined {
     name: String,
-    ident: ast::Ident,
-    /// With its names resolved.
-    query: ast::Query,
     /// The views it reads, directly or not, by index.
     reads: BTreeSet<usize>,
     inputs: Vec<String>,
     nondeterministic: HashSet<String>,
     key: Vec<String>,
-    /// Whether it planned. A statement that reads one that didn't isn't
-    /// planned either.
-    planned: bool,
+    /// What binding gave, which is inlined into each plan that reads it.
+    /// `None` if it didn't plan, and then what reads it isn't planned
+    /// either.
+    plan: Option<LogicalPlan>,
 }
 
 /// The names of a query's output columns that a function that isn't
@@ -584,6 +580,9 @@ struct Check<'a> {
     views: BTreeSet<usize>,
     /// The outermost SELECT, to say where it gives a column or loses a key.
     top: Option<Top>,
+    /// A name FROM read under more than one part, and the alias it was
+    /// given, for the SELECT that reads it to qualify its columns by.
+    qualified_as: Option<(Vec<ast::Ident>, ast::Ident)>,
 }
 
 struct Top {
@@ -613,6 +612,7 @@ impl<'a> Check<'a> {
             inputs: Vec::new(),
             views: BTreeSet::new(),
             top: None,
+            qualified_as: None,
         }
     }
 
@@ -643,7 +643,7 @@ impl<'a> Check<'a> {
     }
 
     fn views_planned(&self) -> bool {
-        self.views.iter().all(|&v| self.defined[v].planned)
+        self.views.iter().all(|&v| self.defined[v].plan.is_some())
     }
 
     fn query(&mut self, q: &mut ast::Query, top: bool) -> Lineage {
@@ -730,6 +730,9 @@ impl<'a> Check<'a> {
                     self.later_tier(Class::Join, j.relation.span(), "a join");
                 }
                 (from, from_key) = self.relation(&mut first.relation);
+                if let Some((written, alias)) = self.qualified_as.take() {
+                    unqualify(s, &written, &alias);
+                }
             }
         }
 
@@ -1047,7 +1050,7 @@ impl<'a> Check<'a> {
                     }
                 }
                 rewrite(name, alias, &d.name, &written_as);
-                let key = d.planned.then(|| d.key.clone());
+                let key = d.plan.is_some().then(|| d.key.clone());
                 return (d.nondeterministic.clone(), key);
             }
             if self.later.contains(&folded.as_str()) {
@@ -1074,6 +1077,9 @@ impl<'a> Check<'a> {
                 }
                 if !self.inputs.contains(&stream) {
                     self.inputs.push(stream.clone());
+                }
+                if alias.is_none() && parts.len() > 1 {
+                    self.qualified_as = Some((parts.clone(), written_as.clone()));
                 }
                 rewrite(name, alias, &stream, &written_as);
                 let key = self.catalog.get(&stream).map(|s| s.key.clone());
@@ -1110,44 +1116,26 @@ impl<'a> Check<'a> {
 
     /// Binds the query with the views it reads inlined, lowers it, and
     /// refuses it if it loses a changelog's key.
-    fn lower(&mut self, query: &ast::Query, at: Position) -> Result<lower::Lowered, Error> {
-        let mut query = query.clone();
-        if !self.views.is_empty() {
-            query.with = Some(ast::With {
-                with_token: AttachedToken::empty(),
-                recursive: false,
-                cte_tables: self
-                    .views
-                    .iter()
-                    .map(|&v| {
-                        let d = &self.defined[v];
-                        ast::Cte {
-                            alias: ast::TableAlias {
-                                explicit: false,
-                                name: ast::Ident {
-                                    value: d.name.clone(),
-                                    quote_style: Some('"'),
-                                    span: d.ident.span,
-                                },
-                                columns: Vec::new(),
-                                at: None,
-                            },
-                            query: Box::new(d.query.clone()),
-                            from: None,
-                            materialized: None,
-                            closing_paren_token: AttachedToken::empty(),
-                        }
-                    })
-                    .collect(),
-            });
-        }
+    fn lower(
+        &mut self,
+        query: &ast::Query,
+        at: Position,
+    ) -> Result<(lower::Lowered, LogicalPlan), Error> {
+        let views: Vec<(&str, &LogicalPlan)> = self
+            .views
+            .iter()
+            .filter_map(|&v| {
+                let d = &self.defined[v];
+                d.plan.as_ref().map(|p| (d.name.as_str(), p))
+            })
+            .collect();
         let column = |name: &str| self.column(name).unwrap_or(at);
-        let plan = bind::plan(&query, self.catalog, at, &column)?;
+        let plan = bind::plan(query, self.catalog, &views, at, &column)?;
         let lowered = lower::row_wise(&plan, self.catalog, at)?;
         if lowered.loses_changelog_key {
             return Err(self.changelog_key(&lowered));
         }
-        Ok(lowered)
+        Ok((lowered, plan))
     }
 
     /// Where the outermost SELECT gives a column, by name.
@@ -1228,6 +1216,37 @@ impl<'a> Check<'a> {
             ),
         )
     }
+}
+
+/// Qualifies a SELECT's columns and wildcards by `alias` where they're
+/// qualified by the whole name FROM read, as `public.orders.id` or
+/// `source.customers.*`.
+fn unqualify(s: &mut ast::Select, written: &[ast::Ident], alias: &ast::Ident) {
+    let fits = |p: &[ast::Ident]| {
+        p.len() == written.len() && p.iter().zip(written).all(|(a, b)| same(&a.value, &b.value))
+    };
+    for item in &mut s.projection {
+        if let ast::SelectItem::QualifiedWildcard(
+            ast::SelectItemQualifiedWildcardKind::ObjectName(n),
+            _,
+        ) = item
+            && idents(n).is_ok_and(|p| fits(&p))
+        {
+            *n = ast::ObjectName(vec![ast::ObjectNamePart::Identifier(alias.clone())]);
+        }
+    }
+    let mut replace = |e: &mut ast::Expr| {
+        if let ast::Expr::CompoundIdentifier(p) = e
+            && p.len() > written.len()
+            && fits(&p[..written.len()])
+        {
+            let rest = p.split_off(written.len());
+            *p = std::iter::once(alias.clone()).chain(rest).collect();
+        }
+        ControlFlow::<()>::Continue(())
+    };
+    let _ = ast::visit_expressions_mut(&mut s.projection, &mut replace);
+    let _ = ast::visit_expressions_mut(&mut s.selection, &mut replace);
 }
 
 /// Points a name at what it resolved to, keeping the name it was written

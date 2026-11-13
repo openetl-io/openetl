@@ -246,3 +246,46 @@ CREATE VIEW o AS SELECT customer_id, status FROM orders;
 INSERT INTO x SELECT * FROM o
 ----
 error changelog_key 1:18 orders is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it
+
+# A key passed through under two names is followed under both.
+plan
+CREATE VIEW twice AS SELECT id AS a, id AS b, status FROM orders;
+INSERT INTO x SELECT b AS id, status FROM twice WHERE a > 0
+----
+view 1:13 twice
+  inputs orders
+  key a
+  schema a Int64 not null, b Int64 not null, status Utf8
+statement 2:1 x row_wise
+  inputs orders
+  views twice
+  key id
+  schema id Int64 not null, status Utf8
+  reads orders changelog: id, status
+  project a := orders.id, b := orders.id, status
+  filter twice.a > Int64(0)
+  project id := twice.b, status
+
+# Readers see a view's columns with the types the view gives.
+stream events
+  user_id int64
+  tags list<utf8>
+  scores list<int64>
+
+plan
+CREATE VIEW sizes AS SELECT user_id, cardinality(tags) AS a, cardinality(scores) AS b FROM events;
+INSERT INTO x SELECT user_id, a - b AS d FROM sizes WHERE a - b < a
+----
+view 1:13 sizes
+  inputs events
+  key 
+  schema user_id Int64, a Int64, b Int64
+statement 2:1 x row_wise
+  inputs events
+  views sizes
+  key 
+  schema user_id Int64, d Int64
+  reads events: user_id, tags, scores
+  project user_id, a := CAST(cardinality(events.tags) AS Int64), b := CAST(cardinality(events.scores) AS Int64)
+  filter sizes.a - sizes.b < sizes.a
+  project user_id, d := sizes.a - sizes.b

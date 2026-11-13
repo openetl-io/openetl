@@ -131,29 +131,38 @@ fn unnest(u: &datafusion_expr::logical_plan::Unnest, at: Position) -> Result<Unn
 
 /// Where the key's columns end up, by name, when each passes through every
 /// projection unchanged; nothing if any of them doesn't, or rows multiply.
+/// A column passed through under several names is followed under each, and
+/// ends up under the first the output has.
 fn follow(key: &[String], steps: &[Step]) -> Vec<String> {
-    let mut names = key.to_vec();
+    let mut names: Vec<Vec<String>> = key.iter().map(|k| vec![k.clone()]).collect();
     for s in steps {
         match s {
             Step::Filter(_) => {}
             Step::Unnest(_) => return Vec::new(),
             Step::Project(p) => {
-                let mut next = Vec::with_capacity(names.len());
-                for n in &names {
-                    match p
+                for n in &mut names {
+                    let next: Vec<String> = p
                         .columns
                         .iter()
-                        .find(|c| c.expr.column() == Some(n.as_str()))
-                    {
-                        Some(c) => next.push(c.name.clone()),
-                        None => return Vec::new(),
+                        .filter(|c| {
+                            c.expr
+                                .column()
+                                .is_some_and(|from| n.iter().any(|m| m == from))
+                        })
+                        .map(|c| c.name.clone())
+                        .collect();
+                    if next.is_empty() {
+                        return Vec::new();
                     }
+                    *n = next;
                 }
-                names = next;
             }
         }
     }
     names
+        .into_iter()
+        .filter_map(|n| n.into_iter().next())
+        .collect()
 }
 
 fn internal(at: Position, what: &str) -> Error {

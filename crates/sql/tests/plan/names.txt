@@ -326,3 +326,38 @@ plan
 INSERT INTO x SELECT id FROM destination.orders
 ----
 error name 1:30 destination. names an output, and FROM reads a source's stream or a view: write FROM orders, or FROM "destination.orders" for the stream destination.orders
+
+reset
+
+stream customers key(id)
+  id int64 not null
+  email utf8
+
+stream public.orders key(id)
+  id int64 not null
+  status utf8
+
+# Columns and wildcards qualified by the whole name FROM read.
+plan
+INSERT INTO x SELECT source.customers.* FROM source.customers
+----
+statement 1:1 x row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8
+  reads customers: id, email
+
+plan
+INSERT INTO x SELECT public.orders.id, orders.status FROM public.orders WHERE public.orders.id > 1
+----
+statement 1:1 x row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null, status Utf8
+  reads public.orders: id, status
+  filter orders.id > Int64(1)
+
+plan
+INSERT INTO x SELECT public.orders.id FROM public.orders AS o
+----
+error bind 1:22 there's no column public.orders.id; there's o.id

@@ -1,7 +1,8 @@
-//! Binding a query, whose stream names are already resolved, against the
-//! catalog with our functions; then type coercion and a few of DataFusion's
-//! logical rewrites.
+//! Binding a query, whose stream and view names are already resolved,
+//! against the catalog and the views planned before it, with our functions;
+//! then type coercion and a few of DataFusion's logical rewrites.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, SchemaRef};
@@ -40,19 +41,39 @@ impl TableSource for Source {
     }
 }
 
+/// A view as DataFusion sees it: its plan, which binding inlines into the
+/// plan that reads it.
+struct ViewSource(LogicalPlan);
+
+impl TableSource for ViewSource {
+    fn schema(&self) -> SchemaRef {
+        self.0.schema().inner().clone()
+    }
+
+    fn get_logical_plan(&self) -> Option<Cow<'_, LogicalPlan>> {
+        Some(Cow::Borrowed(&self.0))
+    }
+}
+
 struct Provider<'a> {
     catalog: &'a Catalog,
+    views: &'a [(&'a str, &'a LogicalPlan)],
     options: ConfigOptions,
 }
 
 impl ContextProvider for Provider<'_> {
-    /// Names reach here resolved, as a stream's whole name.
+    /// Names reach here resolved: a view's name, or a stream's whole name. No
+    /// view has a stream's name.
     fn get_table_source(&self, name: TableReference) -> Result<Arc<dyn TableSource>> {
+        if !matches!(name, TableReference::Bare { .. }) {
+            return plan_err!("no stream {name}");
+        }
+        if let Some((_, plan)) = self.views.iter().find(|(v, _)| *v == name.table()) {
+            return Ok(Arc::new(ViewSource((*plan).clone())));
+        }
         match self.catalog.get(name.table()) {
-            Some(s) if matches!(name, TableReference::Bare { .. }) => {
-                Ok(Arc::new(Source(s.schema.clone())))
-            }
-            _ => plan_err!("no stream {name}"),
+            Some(s) => Ok(Arc::new(Source(s.schema.clone()))),
+            None => plan_err!("no stream {name}"),
         }
     }
 
@@ -109,11 +130,13 @@ impl ContextProvider for Provider<'_> {
 pub(crate) fn plan(
     query: &ast::Query,
     catalog: &Catalog,
+    views: &[(&str, &LogicalPlan)],
     at: Position,
     column: &dyn Fn(&str) -> Position,
 ) -> Result<LogicalPlan, Error> {
     let p = Provider {
         catalog,
+        views,
         options: options(),
     };
     let bind = |e| Error::datafusion(ErrorKind::Bind, at, &e);
