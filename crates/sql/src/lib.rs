@@ -2,9 +2,10 @@
 //! of the streams they read, to a plan of OpenETL's own, whose expressions
 //! evaluate on Arrow batches.
 //!
-//! DataFusion parses, binds, types, optimizes and evaluates expressions.
-//! None of its types are in this crate's API, and nothing it plans is kept:
-//! a plan is made again from the SQL text and the streams' schemas.
+//! sqlparser parses; DataFusion binds, coerces types, optimizes and evaluates
+//! expressions. None of its types are in this crate's API, and nothing it
+//! plans is kept: a plan is made again from the SQL text and the streams'
+//! schemas.
 
 mod bind;
 mod expr;
@@ -416,13 +417,20 @@ fn object_name(n: &ast::ObjectName) -> String {
         .join(".")
 }
 
-/// The tables a query names in FROM, its joins and subqueries.
+/// The streams a query names in FROM, its joins and subqueries, but not its
+/// own WITH's names.
 fn inputs(query: &ast::Query) -> Vec<String> {
     use std::ops::ControlFlow;
+    let ctes: Vec<String> = query
+        .with
+        .iter()
+        .flat_map(|w| &w.cte_tables)
+        .map(|c| c.alias.name.value.to_lowercase())
+        .collect();
     let mut names = Vec::new();
     let _ = ast::visit_relations(query, |r: &ast::ObjectName| {
         let n = object_name(r);
-        if !names.contains(&n) {
+        if !names.contains(&n) && !ctes.contains(&n) {
             names.push(n);
         }
         ControlFlow::<()>::Continue(())
@@ -675,6 +683,30 @@ mod tests {
             s.schema.field_with_name("t").unwrap().data_type(),
             &DataType::Utf8
         );
+    }
+
+    /// A view inlined into its reader is a WITH, which DataFusion plans as a
+    /// subquery alias: one row-wise statement, keyed through both.
+    #[test]
+    fn a_with_lowers_to_one_row_wise_statement() {
+        let sql = Sql::parse(
+            "INSERT INTO active
+             WITH cleaned AS (SELECT id, lower(email) AS email FROM customers WHERE id > 1)
+             SELECT id AS customer, email FROM cleaned WHERE email LIKE '%@x.io'",
+        )
+        .unwrap();
+        assert_eq!(sql.inputs(0), ["customers"]);
+        let s = sql.bind(0, &shop()).unwrap();
+        assert_eq!(s.class, Class::RowWise);
+        assert_eq!(s.key, ["customer"]);
+        let Operator::RowWise(op) = &s.operator else {
+            panic!("not row-wise")
+        };
+        let out = op
+            .eval(&customers(&[1, 2, 3], &["a@x.io", "B@X.io", "c@y.io"]), &[])
+            .unwrap();
+        let email: Vec<_> = out.column(1).as_string::<i32>().iter().flatten().collect();
+        assert_eq!(email, ["b@x.io"]);
     }
 
     fn refused(sql: &str) -> Error {

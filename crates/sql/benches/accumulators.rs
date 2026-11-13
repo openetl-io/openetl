@@ -304,13 +304,19 @@ impl Ours {
     fn snapshot(&mut self, only_changed: bool) -> Vec<ArrayRef> {
         if !only_changed {
             self.changed.fill(0);
-            let nulls = || Some(NullBuffer::new(BooleanBuffer::from(self.seen.as_slice())));
+            let nulls = NullBuffer::new(BooleanBuffer::from(self.seen.as_slice()));
             return vec![
                 Arc::new(Int64Array::from_iter_values(0..self.count.len() as i64)),
                 Arc::new(Int64Array::from(self.count.clone())),
-                Arc::new(Int64Array::new(self.sum.clone().into(), nulls())),
-                Arc::new(Int64Array::new(self.min.clone().into(), nulls())),
-                Arc::new(Int64Array::new(self.max.clone().into(), nulls())),
+                Arc::new(Int64Array::new(
+                    self.sum.clone().into(),
+                    Some(nulls.clone()),
+                )),
+                Arc::new(Int64Array::new(
+                    self.min.clone().into(),
+                    Some(nulls.clone()),
+                )),
+                Arc::new(Int64Array::new(self.max.clone().into(), Some(nulls))),
                 Arc::new(Float64Array::from(self.fsum.clone())),
             ];
         }
