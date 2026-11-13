@@ -857,34 +857,39 @@ impl<'a> Check<'a> {
 
         let mut lineage = Lineage::new();
         let mut columns: Vec<String> = Vec::new();
-        // Each output column's name, and whether a wildcard gave it.
-        let mut named: Vec<(String, bool)> = Vec::new();
-        for item in &s.projection {
-            let given = match item {
-                ast::SelectItem::UnnamedExpr(ast::Expr::Identifier(i)) => vec![fold(i)],
+        // Each output column's name, and the wildcard that gave it, by item.
+        // A wildcard's own columns aren't compared with each other: they're
+        // what FROM reads, as it reads them.
+        let mut named: Vec<(String, Option<usize>)> = Vec::new();
+        for (n, item) in s.projection.iter().enumerate() {
+            let (given, wildcard) = match item {
+                ast::SelectItem::UnnamedExpr(ast::Expr::Identifier(i)) => (vec![fold(i)], None),
                 ast::SelectItem::UnnamedExpr(ast::Expr::CompoundIdentifier(p)) => {
-                    p.last().map(fold).into_iter().collect()
+                    (p.last().map(fold).into_iter().collect(), None)
                 }
-                ast::SelectItem::ExprWithAlias { alias, .. } => vec![fold(alias)],
+                ast::SelectItem::ExprWithAlias { alias, .. } => (vec![fold(alias)], None),
                 ast::SelectItem::Wildcard(_) | ast::SelectItem::QualifiedWildcard(..) => {
-                    named.extend(read.columns.iter().map(|c| (c.clone(), true)));
-                    columns.extend(read.columns.iter().cloned());
-                    continue;
+                    (read.columns.clone(), Some(n))
                 }
-                _ => Vec::new(),
+                _ => (Vec::new(), None),
             };
             for name in given {
-                if named.iter().any(|(n, _)| same(n, &name)) {
+                let taken = named
+                    .iter()
+                    .any(|(m, w)| same(m, &name) && (wildcard.is_none() || *w != wildcard));
+                if taken {
                     let at = self.at(item.span());
-                    self.errors.push(Error::at(
-                        ErrorKind::Bind,
-                        at,
-                        format!(
+                    let message = match wildcard {
+                        Some(_) => format!(
+                            "* gives a column {name}, and there's already one: name the other one differently with AS"
+                        ),
+                        None => format!(
                             "there's already a column {name}: give this one another name with AS"
                         ),
-                    ));
+                    };
+                    self.errors.push(Error::at(ErrorKind::Bind, at, message));
                 }
-                named.push((name.clone(), false));
+                named.push((name.clone(), wildcard));
                 columns.push(name);
             }
         }

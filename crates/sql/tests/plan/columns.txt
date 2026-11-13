@@ -88,6 +88,8 @@ statement 1:1 x row_wise
   filter mixed.ID IS NOT NULL
   project id, upper_id := mixed.ID, Name
 
+# A wildcard gives the columns as FROM reads them, even two that differ only
+# by case, as the stream would land without a transform.
 plan
 INSERT INTO x SELECT * FROM mixed
 ----
@@ -107,6 +109,11 @@ plan
 INSERT INTO x SELECT *, upper(last_name) AS last_name FROM hr.employees
 ----
 error bind 1:25 there's already a column last_name: give this one another name with AS
+
+plan
+INSERT INTO x SELECT upper(last_name) AS last_name, * FROM hr.employees
+----
+error bind 1:53 * gives a column LAST_NAME, and there's already one: name the other one differently with AS
 
 # Through views and subqueries, which name their columns by the same rule.
 plan
