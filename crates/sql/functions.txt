@@ -1,0 +1,130 @@
+# The functions SQL transforms can call, with their aliases. Written from
+# crates/sql/src/functions.rs by `OPENETL_SQL_REWRITE=1 cargo test -p openetl-sql`;
+# a test fails when the two differ.
+abs
+acos
+acosh
+array_append (array_push_back, list_append, list_push_back)
+array_concat (array_cat, list_cat, list_concat)
+array_distinct (list_distinct)
+array_element (array_extract, list_element, list_extract)
+array_has (array_contains, list_contains, list_has)
+array_has_all (list_has_all)
+array_has_any (arrays_overlap, list_has_any)
+array_length (list_length)
+array_position (array_indexof, list_indexof, list_position)
+array_prepend (array_push_front, list_prepend, list_push_front)
+array_remove (list_remove)
+array_reverse (list_reverse)
+array_slice (list_slice)
+array_sort (list_sort)
+array_to_string (array_join, list_join, list_to_string)
+ascii
+asin
+asinh
+atan
+atan2
+atanh
+bit_length
+btrim (trim)
+cardinality
+cbrt
+ceil
+character_length (char_length, length)
+chr
+coalesce
+concat
+concat_ws
+contains
+cos
+cosh
+cot
+current_date not deterministic
+date_bin
+date_part (datepart)
+date_trunc (datetrunc)
+decode
+degrees
+digest
+encode
+ends_with
+exp
+factorial
+find_in_set
+flatten
+floor
+from_unixtime
+gcd
+get_field
+greatest
+initcap
+isnan
+iszero
+lcm
+least
+left
+levenshtein
+ln
+log
+log10
+log2
+lower
+lpad
+ltrim
+make_array (make_list)
+make_date
+md5
+named_struct
+nanvl
+now (current_timestamp) not deterministic
+nullif
+nvl (ifnull)
+nvl2
+octet_length
+overlay
+pi
+power (pow)
+radians
+random (rand) not deterministic
+regexp_count
+regexp_instr
+regexp_like
+regexp_match
+regexp_replace
+repeat
+replace
+reverse
+right
+round
+rpad
+rtrim
+sha224
+sha256
+sha384
+sha512
+signum
+sin
+sinh
+split_part
+sqrt
+starts_with
+string_to_array (string_to_list)
+strpos (instr, position)
+struct (row)
+substr (substring)
+substr_index (substring_index)
+tan
+tanh
+to_char (date_format)
+to_date
+to_hex
+to_timestamp
+to_timestamp_micros
+to_timestamp_millis
+to_timestamp_nanos
+to_timestamp_seconds
+to_unixtime
+translate
+trunc
+upper
+uuid not deterministic

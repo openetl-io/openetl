@@ -1,0 +1,287 @@
+# Row-wise statements: projections, renames, functions, filters, UNNEST, and
+# the keys they keep or drop.
+
+stream customers key(id)
+  id int64 not null
+  email utf8
+  name utf8
+  created_at timestamp
+
+stream orders key(id)
+  id int64 not null
+  region utf8
+  amount decimal(12, 2)
+  created_at timestamp
+
+stream events
+  user_id int64
+  tags list<utf8>
+  scores list<int64>
+
+# The first statement of the docs' example replaces customers.
+plan
+INSERT INTO customers
+SELECT id, lower(email) AS email, 'eu' AS region, created_at
+FROM customers
+----
+statement 1:1 customers replaces row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8, region Utf8 not null, created_at Timestamp(µs, "UTC")
+  reads customers: id, email, created_at
+  project id, email := lower(customers.email), region := Utf8("eu"), created_at
+
+# A rename keeps the key; the optimizer reads only what's used.
+plan
+INSERT INTO contacts SELECT id AS customer_id, email AS contact_email FROM customers
+----
+statement 1:1 contacts row_wise
+  inputs customers
+  key customer_id
+  schema customer_id Int64 not null, contact_email Utf8
+  reads customers: id, email
+  project customer_id := customers.id, contact_email := customers.email
+
+plan
+INSERT INTO customers SELECT * FROM customers
+----
+statement 1:1 customers replaces row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8, name Utf8, created_at Timestamp(µs, "UTC")
+  reads customers: id, email, name, created_at
+
+# An expression over a key column drops the key.
+plan
+INSERT INTO shifted SELECT id + 1 AS id, email FROM customers
+----
+statement 1:1 shifted row_wise
+  inputs customers
+  key 
+  schema id Int64 not null, email Utf8
+  reads customers: id, email
+  project id := customers.id + Int64(1), email
+
+# A key column that isn't selected drops the key.
+plan
+INSERT INTO emails SELECT email FROM customers
+----
+statement 1:1 emails row_wise
+  inputs customers
+  key 
+  schema email Utf8
+  reads customers: email
+
+plan
+INSERT INTO big_orders
+SELECT id, region, amount * 100 AS cents FROM orders WHERE amount > 10 AND region IS NOT NULL
+----
+statement 1:1 big_orders row_wise
+  inputs orders
+  key id
+  schema id Int64 not null, region Utf8, cents Decimal128(33, 2)
+  reads orders: id, region, amount
+  filter orders.amount > Decimal128(10.00,12,2) AND orders.region IS NOT NULL
+  project id, region, cents := orders.amount * Decimal128(100,20,0)
+
+plan
+INSERT INTO labelled
+SELECT id,
+  CASE WHEN amount >= 100 THEN 'big' ELSE 'small' END AS size,
+  CAST(amount AS DOUBLE) AS amount_f,
+  coalesce(region, 'none') AS region
+FROM orders
+----
+statement 1:1 labelled row_wise
+  inputs orders
+  key id
+  schema id Int64 not null, size Utf8 not null, amount_f Float64, region Utf8 not null
+  reads orders: id, region, amount
+  project id, size := CASE WHEN orders.amount >= Decimal128(100.00,12,2) THEN Utf8("big") ELSE Utf8("small") END, amount_f := CAST(orders.amount AS Float64), region := CASE WHEN orders.region IS NOT NULL THEN orders.region ELSE Utf8("none") END
+
+plan
+INSERT INTO hashed
+SELECT id, md5(email) AS h, sha256(email) AS s, regexp_replace(email, '@.*', '') AS local,
+  date_trunc('minute', created_at) AS minute, EXTRACT(year FROM created_at) AS year,
+  substring(name FROM 1 FOR 3) AS initials, position('@' IN email) AS at_sign,
+  trim(both ' ' FROM name) AS trimmed, upper(name) || '!' AS shout
+FROM customers
+----
+statement 1:1 hashed row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, h Utf8, s Binary, local Utf8, minute Timestamp(µs, "UTC"), year Int32, initials Utf8, at_sign Int32, trimmed Utf8, shout Utf8
+  reads customers: id, email, name, created_at
+  project id, h := CAST(md5(customers.email) AS Utf8), s := sha256(customers.email), local := regexp_replace(customers.email, Utf8("@.*"), Utf8("")), minute := date_trunc(Utf8("minute"), customers.created_at), year := date_part(Utf8("YEAR"), customers.created_at), initials := substr(customers.name, Int64(1), Int64(3)), at_sign := strpos(customers.email, Utf8("@")), trimmed := btrim(customers.name, Utf8(" ")), shout := upper(customers.name) || Utf8("!")
+
+# A filter that's always true goes; one that's always false stays.
+plan
+INSERT INTO all_customers SELECT id FROM customers WHERE 1 = 1
+----
+statement 1:1 all_customers row_wise
+  inputs customers
+  key id
+  schema id Int64 not null
+  reads customers: id
+
+plan
+INSERT INTO no_customers SELECT id FROM customers WHERE 1 = 0
+----
+statement 1:1 no_customers row_wise
+  inputs customers
+  key id
+  schema id Int64 not null
+  reads customers: id
+  filter Boolean(false)
+
+plan
+INSERT INTO stamped SELECT id, now() AS seen_at, current_date AS seen_on, CURRENT_TIMESTAMP AS ts FROM customers
+----
+statement 1:1 stamped row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, seen_at Timestamp(µs, "UTC"), seen_on Date32, ts Timestamp(µs, "UTC")
+  reads customers: id
+  project id, seen_at := now(), seen_on := current_date(), ts := now()
+
+# UNNEST multiplies rows, so it drops the key.
+plan
+INSERT INTO tags SELECT user_id, unnest(tags) AS tag FROM events
+----
+statement 1:1 tags row_wise
+  inputs events
+  key 
+  schema user_id Int64, tag Utf8
+  reads events: user_id, tags
+  project user_id, __unnest_placeholder(events.tags) := events.tags
+  unnest lists [1] sources [0, 1]: user_id, __unnest_placeholder(events.tags,depth=1)
+  project user_id, tag := __unnest_placeholder(events.tags,depth=1)
+
+plan
+INSERT INTO pairs SELECT user_id, unnest(tags) AS tag, unnest(scores) AS score FROM events
+----
+statement 1:1 pairs row_wise
+  inputs events
+  key 
+  schema user_id Int64, tag Utf8, score Int64
+  reads events: user_id, tags, scores
+  project user_id, __unnest_placeholder(events.tags) := events.tags, __unnest_placeholder(events.scores) := events.scores
+  unnest lists [1, 2] sources [0, 1, 2]: user_id, __unnest_placeholder(events.tags,depth=1), __unnest_placeholder(events.scores,depth=1)
+  project user_id, tag := __unnest_placeholder(events.tags,depth=1), score := __unnest_placeholder(events.scores,depth=1)
+
+plan
+INSERT INTO tagged_customers SELECT id, unnest(string_to_array(name, ' ')) AS word FROM customers
+----
+statement 1:1 tagged_customers row_wise
+  inputs customers
+  key 
+  schema id Int64 not null, word Utf8
+  reads customers: id, name
+  project id, __unnest_placeholder(string_to_array(customers.name,Utf8(" "))) := string_to_array(customers.name, Utf8(" "))
+  unnest lists [1] sources [0, 1]: id, __unnest_placeholder(string_to_array(customers.name,Utf8(" ")),depth=1)
+  project id, word := __unnest_placeholder(string_to_array(customers.name,Utf8(" ")),depth=1)
+
+# Lists and their syntax.
+plan
+INSERT INTO firsts SELECT user_id, tags[1] AS first_tag, cardinality(tags) AS n, array_has(tags, 'x') AS has_x FROM events
+----
+statement 1:1 firsts row_wise
+  inputs events
+  key 
+  schema user_id Int64, first_tag Utf8, n Int64, has_x Boolean
+  reads events: user_id, tags
+  project user_id, first_tag := array_element(events.tags, Int64(1)), n := CAST(cardinality(events.tags) AS Int64), has_x := array_has(events.tags, Utf8("x"))
+
+# A derived table is read like a view.
+plan
+INSERT INTO active
+SELECT customer, email FROM (SELECT id AS customer, lower(email) AS email FROM customers WHERE id > 1) AS c
+WHERE email LIKE '%@x.io'
+----
+statement 1:1 active row_wise
+  inputs customers
+  key customer
+  schema customer Int64 not null, email Utf8
+  reads customers: id, email
+  filter customers.id > Int64(1)
+  project customer := customers.id, email := lower(customers.email)
+  filter c.email LIKE Utf8("%@x.io")
+
+# Qualified columns, by the stream's name or an alias.
+plan
+INSERT INTO q SELECT customers.id, customers.email FROM customers WHERE customers.id > 0
+----
+statement 1:1 q row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8
+  reads customers: id, email
+  filter customers.id > Int64(0)
+
+plan
+INSERT INTO q SELECT c.id, c.email FROM customers AS c WHERE c.id > 0
+----
+statement 1:1 q row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8
+  reads customers: id, email
+  filter c.id > Int64(0)
+
+# Once aliased, the stream's own name doesn't qualify its columns, as in
+# Postgres.
+plan
+INSERT INTO q SELECT customers.id FROM customers AS c
+----
+error bind 1:22 there's no column customers.id; there's c.id
+
+# unnest_outer keeps a row for a null or empty list.
+plan
+INSERT INTO tags SELECT user_id, unnest_outer(tags) AS tag FROM events
+----
+statement 1:1 tags row_wise
+  inputs events
+  key 
+  schema user_id Int64, tag Utf8
+  reads events: user_id, tags
+  project user_id, __unnest_placeholder(events.tags) := events.tags
+  unnest outer lists [1] sources [0, 1]: user_id, __unnest_placeholder(events.tags,depth=1)
+  project user_id, tag := __unnest_placeholder(events.tags,depth=1)
+
+# Types an output can't hold as they are become ones it can: Utf8View,
+# unsigned integers, seconds.
+plan
+INSERT INTO typed SELECT id, CAST(id AS VARCHAR) AS t, from_unixtime(id) AS at, to_timestamp(name) AS parsed, octet_length(email) AS bytes FROM customers
+----
+statement 1:1 typed row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, t Utf8 not null, at Timestamp(µs), parsed Timestamp(ns), bytes Int32
+  reads customers: id, email, name
+  project id, t := CAST(customers.id AS Utf8), at := CAST(from_unixtime(customers.id) AS Timestamp(µs)), parsed := to_timestamp(customers.name), bytes := octet_length(customers.email)
+
+plan
+INSERT INTO x SELECT *, id FROM customers
+----
+error bind 1:1 Projections require unique expression names but the expression "customers.id" at position 0 and "customers.id" at position 4 have the same name. Consider aliasing ("AS") one of them.
+
+stream "my stream" key(id)
+  id int64 not null
+
+plan
+INSERT INTO "my stream" SELECT id FROM "my stream"
+----
+statement 1:1 my stream replaces row_wise
+  inputs my stream
+  key id
+  schema id Int64 not null
+  reads my stream: id
+
+plan
+INSERT INTO x SELECT id FROM source."my stream"
+----
+statement 1:1 x row_wise
+  inputs my stream
+  key id
+  schema id Int64 not null
+  reads my stream: id

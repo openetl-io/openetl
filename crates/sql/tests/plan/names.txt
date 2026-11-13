@@ -1,0 +1,401 @@
+# A stream's name is its whole name: a dotted path is joined and matched
+# against it, unquoted parts without regard to case, quoted ones exactly.
+# source. and destination. are optional qualifiers.
+
+stream customers key(id)
+  id int64 not null
+  email utf8
+
+stream public.orders key(id)
+  id int64 not null
+  status utf8
+
+stream HR.EMPLOYEES key(EMPLOYEE_ID)
+  EMPLOYEE_ID int64 not null
+  LAST_NAME utf8
+
+stream cat.db.events
+  user_id int64
+
+plan
+INSERT INTO orders SELECT id, upper(status) AS status FROM public.orders
+----
+statement 1:1 orders row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null, status Utf8
+  reads public.orders: id, status
+  project id, status := upper(orders.status)
+
+plan
+INSERT INTO orders SELECT id FROM source.public.orders
+----
+statement 1:1 orders row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null
+  reads public.orders: id
+
+plan
+INSERT INTO orders SELECT id FROM "public.orders"
+----
+statement 1:1 orders row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null
+  reads public.orders: id
+
+plan
+INSERT INTO orders SELECT id FROM source."public.orders"
+----
+statement 1:1 orders row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null
+  reads public.orders: id
+
+plan
+INSERT INTO orders SELECT id FROM PUBLIC.Orders
+----
+statement 1:1 orders row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null
+  reads public.orders: id
+
+# A quoted part matches exactly.
+plan
+INSERT INTO orders SELECT id FROM "Public".orders
+----
+error name 1:35 there's no stream or view "Public".orders
+
+# Columns fold to lower case unless quoted, as in Postgres.
+plan
+INSERT INTO employees SELECT "EMPLOYEE_ID" AS id, "LAST_NAME" AS name FROM hr.employees
+----
+statement 1:1 employees row_wise
+  inputs HR.EMPLOYEES
+  key id
+  schema id Int64 not null, name Utf8
+  reads HR.EMPLOYEES: EMPLOYEE_ID, LAST_NAME
+  project id := employees.EMPLOYEE_ID, name := employees.LAST_NAME
+
+plan
+INSERT INTO employees SELECT employee_id FROM HR.EMPLOYEES
+----
+error bind 1:30 there's no column employee_id: names fold to lower case unless quoted, so write "EMPLOYEE_ID"
+
+plan
+INSERT INTO e SELECT user_id FROM cat.db.events
+----
+statement 1:1 e row_wise
+  inputs cat.db.events
+  key 
+  schema user_id Int64
+  reads cat.db.events: user_id
+
+plan
+INSERT INTO e SELECT user_id FROM db.events
+----
+error name 1:35 there's no stream or view db.events
+
+plan
+INSERT INTO e SELECT o.id FROM public.orders o
+----
+statement 1:1 e row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null
+  reads public.orders: id
+
+plan
+INSERT INTO e SELECT orders.id FROM public.orders
+----
+statement 1:1 e row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null
+  reads public.orders: id
+
+# An output that has a source stream's name replaces it, at whatever depth.
+plan
+INSERT INTO public.orders SELECT id, status FROM public.orders
+----
+statement 1:1 public.orders replaces row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null, status Utf8
+  reads public.orders: id, status
+
+plan
+INSERT INTO destination."public.orders" SELECT id, status FROM source.public.orders
+----
+statement 1:1 public.orders replaces row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null, status Utf8
+  reads public.orders: id, status
+
+plan
+INSERT INTO destination.customers SELECT * FROM source.customers
+----
+statement 1:1 customers replaces row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8
+  reads customers: id, email
+
+plan
+INSERT INTO NewOutput SELECT id FROM customers
+----
+statement 1:1 newoutput row_wise
+  inputs customers
+  key id
+  schema id Int64 not null
+  reads customers: id
+
+plan
+INSERT INTO "NewOutput" SELECT id FROM customers
+----
+statement 1:1 NewOutput row_wise
+  inputs customers
+  key id
+  schema id Int64 not null
+  reads customers: id
+
+plan
+INSERT INTO a.b SELECT id FROM customers
+----
+error name 1:13 a.b isn't a source's stream, and a new output's name is one identifier: quote it, as "a.b", if it has dots
+
+plan
+INSERT INTO "a.b" SELECT id FROM customers
+----
+statement 1:1 a.b row_wise
+  inputs customers
+  key id
+  schema id Int64 not null
+  reads customers: id
+
+plan
+INSERT INTO source.customers SELECT id FROM customers
+----
+error name 1:13 source. names a source's stream, which INSERT INTO doesn't write: write INSERT INTO customers or INSERT INTO destination.customers
+
+plan
+INSERT INTO x SELECT id FROM destination.customers
+----
+error name 1:30 destination. names an output, and FROM reads a source's stream or a view: write FROM customers
+
+plan
+INSERT INTO x SELECT id FROM nope
+----
+error name 1:30 there's no stream or view nope
+
+plan
+INSERT INTO x SELECT id FROM source.nope.orders
+----
+error name 1:30 there's no stream or view nope.orders
+
+# FROM never reads an output, even one written earlier.
+plan
+INSERT INTO cleaned SELECT id FROM customers;
+INSERT INTO x SELECT id FROM cleaned
+----
+error name 2:30 cleaned is an output, and FROM reads a source's stream or a view: name the SELECT that writes it with CREATE VIEW, and read that
+
+# It does read the source's stream that an output replaces.
+plan
+INSERT INTO customers SELECT id, lower(email) AS email FROM customers;
+INSERT INTO emails SELECT email FROM customers
+----
+statement 1:1 customers replaces row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8
+  reads customers: id, email
+  project id, email := lower(customers.email)
+statement 2:1 emails row_wise
+  inputs customers
+  key 
+  schema email Utf8
+  reads customers: email
+
+plan
+INSERT INTO x SELECT id FROM customers;
+INSERT INTO X SELECT id FROM customers
+----
+error name 2:13 x is written by an earlier statement: one statement writes each output
+
+reset
+
+# Two streams that differ only by case need quotes.
+
+stream Orders
+  id int64
+
+stream orders
+  id int64
+
+plan
+INSERT INTO x SELECT id FROM orders
+----
+error name 1:30 orders fits the streams Orders and orders, which differ only by case: quote the name to pick one
+
+plan
+INSERT INTO x SELECT id FROM "Orders"
+----
+statement 1:1 x row_wise
+  inputs Orders
+  key 
+  schema id Int64
+  reads Orders: id
+
+plan
+INSERT INTO orders SELECT id FROM "orders"
+----
+error name 1:13 orders fits the streams Orders and orders, which differ only by case: quote the name to pick one
+
+reset
+
+# A source schema called source: the qualifier wins, the quoted whole name
+# reaches the stream, and the plan says so when both readings exist.
+
+stream source.orders
+  id int64
+
+stream orders
+  id int64
+  total int64
+
+stream source.items
+  sku utf8
+
+plan
+INSERT INTO x SELECT id FROM source.orders
+----
+statement 1:1 x row_wise
+  inputs orders
+  key 
+  schema id Int64
+  reads orders: id
+note 1:30 source. is a qualifier here, so this reads the stream orders; the stream source.orders is read as FROM "source.orders"
+
+plan
+INSERT INTO x SELECT id FROM "source.orders"
+----
+statement 1:1 x row_wise
+  inputs source.orders
+  key 
+  schema id Int64
+  reads source.orders: id
+
+plan
+INSERT INTO x SELECT id FROM source.source.orders
+----
+statement 1:1 x row_wise
+  inputs source.orders
+  key 
+  schema id Int64
+  reads source.orders: id
+
+plan
+INSERT INTO x SELECT sku FROM source.items
+----
+error name 1:31 source. is a qualifier here, and the source has no stream items: write FROM "source.items" for the stream source.items
+
+reset
+
+stream destination.orders
+  id int64
+
+stream orders
+  id int64
+
+plan
+INSERT INTO destination.orders SELECT id FROM "destination.orders"
+----
+statement 1:1 orders replaces row_wise
+  inputs destination.orders
+  key 
+  schema id Int64
+  reads destination.orders: id
+note 1:13 destination. is a qualifier here, so this writes orders; the source's stream destination.orders is written as INSERT INTO "destination.orders"
+
+plan
+INSERT INTO x SELECT id FROM destination.orders
+----
+error name 1:30 destination. names an output, and FROM reads a source's stream or a view: write FROM orders, or FROM "destination.orders" for the stream destination.orders
+
+reset
+
+stream customers key(id)
+  id int64 not null
+  email utf8
+
+stream public.orders key(id)
+  id int64 not null
+  status utf8
+
+# Columns and wildcards qualified by the whole name FROM read.
+plan
+INSERT INTO x SELECT source.customers.* FROM source.customers
+----
+statement 1:1 x row_wise
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8
+  reads customers: id, email
+
+plan
+INSERT INTO x SELECT public.orders.id, orders.status FROM public.orders WHERE public.orders.id > 1
+----
+statement 1:1 x row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null, status Utf8
+  reads public.orders: id, status
+  filter orders.id > Int64(1)
+
+plan
+INSERT INTO x SELECT public.orders.id FROM public.orders AS o
+----
+error bind 1:22 there's no column public.orders.id; there's o.id
+
+# A wildcard's qualifier matches the whole name as SQL folds it: a quoted
+# part exactly.
+plan
+INSERT INTO x SELECT "Public".orders.* FROM public.orders
+----
+error bind 1:1 Invalid qualifier Public.orders
+
+plan
+INSERT INTO x SELECT "public".orders.* FROM public.orders
+----
+statement 1:1 x row_wise
+  inputs public.orders
+  key id
+  schema id Int64 not null, status Utf8
+  reads public.orders: id, status
+
+# A column's qualifier is the alias, or the whole name FROM read where it
+# has none; a longer qualifier that ends in the alias is refused.
+plan
+INSERT INTO x SELECT "Public".orders.id FROM public.orders
+----
+error name 1:22 "Public".orders isn't what FROM reads: qualify the column by orders or public.orders
+
+plan
+INSERT INTO x SELECT nope.orders.id FROM public.orders
+----
+error name 1:22 nope.orders isn't what FROM reads: qualify the column by orders or public.orders
+
+plan
+INSERT INTO x SELECT public.o.id FROM public.orders AS o
+----
+error name 1:22 public.o isn't what FROM reads: qualify the column by o
+
+plan
+INSERT INTO x SELECT source.customers.id FROM customers
+----
+error name 1:22 source.customers isn't what FROM reads: qualify the column by customers

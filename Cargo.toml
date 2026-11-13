@@ -12,20 +12,29 @@ publish = false
 openetl-formats = { path = "crates/formats" }
 openetl-normalize = { path = "crates/normalize" }
 openetl-proto = { path = "crates/proto" }
-arrow-array = "60.1.0"
-arrow-buffer = "60.1.0"
-arrow-cast = { version = "60.1.0", default-features = false }
-arrow-ipc = "60.1.0"
-arrow-schema = "60.1.0"
-arrow-select = "60.1.0"
+# Arrow and Parquet follow DataFusion's major version, so the engine has one Arrow.
+arrow-array = "59.3.2"
+arrow-buffer = "59.3.2"
+arrow-cast = { version = "59.3.2", default-features = false }
+arrow-ipc = "59.3.2"
+arrow-schema = "59.3.2"
+arrow-select = "59.3.2"
 base64 = "0.22.1"
 bytes = "1.12.1"
+# Only crates/sql uses DataFusion: its planner, optimizer, expressions and functions, not its execution.
+datafusion-common = { version = "55.2.0", default-features = false }
+datafusion-expr = { version = "55.2.0", default-features = false }
+datafusion-functions = { version = "55.2.0", default-features = false, features = ["crypto_expressions", "datetime_expressions", "encoding_expressions", "math_expressions", "regex_expressions", "string_expressions", "unicode_expressions"] }
+datafusion-functions-nested = { version = "55.2.0", default-features = false }
+datafusion-optimizer = { version = "55.2.0", default-features = false }
+datafusion-physical-expr = { version = "55.2.0", default-features = false }
+datafusion-sql = { version = "55.2.0", default-features = false, features = ["unicode_expressions"] }
 mimalloc = { version = "0.1.52", default-features = false, features = ["v2"] }
 opentelemetry = { version = "0.33.0", default-features = false, features = ["trace"] }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
 object_store = { version = "0.14.2", default-features = false, features = ["aws", "azure", "fs", "gcp"] }
-parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap", "object_store"] }
+parquet = { version = "59.3.2", default-features = false, features = ["arrow", "snap", "async"] }
 prost = "0.14.4"
 prost-types = "0.14.4"
 serde = { version = "1.0.229", features = ["derive"] }
