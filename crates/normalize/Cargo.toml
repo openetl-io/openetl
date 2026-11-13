@@ -18,5 +18,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 twox-hash.workspace = true
 
+[dev-dependencies]
+mimalloc.workspace = true
+
+[[bench]]
+name = "shape"
+harness = false
+
 [lints]
 workspace = true
