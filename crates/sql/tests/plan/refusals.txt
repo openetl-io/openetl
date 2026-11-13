@@ -1,0 +1,334 @@
+# What's refused, each where it's written: later tiers' statements,
+# functions that aren't deterministic in keys, a changelog's key, and SQL
+# transforms don't run.
+
+stream orders key(id)
+  id int64 not null
+  region utf8
+  amount decimal(12, 2)
+  created_at timestamp
+
+stream customers key(id)
+  id int64 not null
+  email utf8
+
+stream cdc key(id) changelog
+  id int64 not null
+  name utf8
+  tags list<utf8>
+
+stream cdc2 key(tenant, id) changelog
+  tenant utf8 not null
+  id int64 not null
+  name utf8
+
+# Group windows: tier 2.
+plan
+INSERT INTO revenue_by_minute
+SELECT window_start, region, sum(amount) AS revenue, count(*) AS orders
+FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), region
+----
+error later_tier group_window 4:10 a group window: transforms don't run group windows yet (tier 2)
+
+plan
+INSERT INTO x SELECT count(*) AS n FROM orders
+GROUP BY hop(created_at, INTERVAL '1 minute', INTERVAL '5 minutes')
+----
+error later_tier group_window 2:10 a group window: transforms don't run group windows yet (tier 2)
+
+# Over: tier 3.
+plan
+INSERT INTO running
+SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total FROM orders
+----
+error later_tier over 2:12 OVER: transforms don't run window functions yet (tier 3)
+
+plan
+INSERT INTO firsts SELECT id, row_number() OVER (PARTITION BY region ORDER BY created_at) AS n FROM orders
+----
+error later_tier over 1:31 OVER: transforms don't run window functions yet (tier 3)
+
+plan
+INSERT INTO x SELECT id, rank() AS r FROM orders
+----
+error later_tier over 1:26 a window function: transforms don't run window functions yet (tier 3)
+
+# Joins: tier 4.
+plan
+INSERT INTO x SELECT o.id, c.email FROM orders o JOIN customers c ON o.id = c.id
+----
+error later_tier join 1:55 a join: transforms don't run joins yet (tier 4)
+
+plan
+INSERT INTO x SELECT o.id FROM orders o, customers c
+----
+error later_tier join 1:42 reading two relations: transforms don't run joins yet (tier 4)
+
+plan
+INSERT INTO x SELECT id FROM orders WHERE id IN (SELECT id FROM customers)
+----
+error later_tier join 1:43 a subquery: transforms don't run joins yet (tier 4)
+
+# Updating aggregates and DISTINCT: tier 5.
+plan
+INSERT INTO x SELECT region, count(*) AS n FROM orders GROUP BY region
+----
+error later_tier updating 1:65 GROUP BY without a window: transforms don't run updating statements yet (tier 5)
+
+plan
+INSERT INTO x SELECT count(*) AS n FROM orders
+----
+error later_tier updating 1:22 an aggregate without a window: transforms don't run updating statements yet (tier 5)
+
+plan
+INSERT INTO x SELECT DISTINCT region FROM orders
+----
+error later_tier updating 1:15 DISTINCT: transforms don't run updating statements yet (tier 5)
+
+# Several later tiers in one statement: one error each.
+plan
+INSERT INTO x
+SELECT o.region, count(*) AS n FROM orders o JOIN customers c ON o.id = c.id
+GROUP BY o.region
+----
+error later_tier join 2:51 a join: transforms don't run joins yet (tier 4)
+error later_tier updating 3:10 GROUP BY without a window: transforms don't run updating statements yet (tier 5)
+
+# A function that isn't deterministic can't feed a key or a window, here
+# or through a view. It's refused as well as the later tier.
+plan
+INSERT INTO x SELECT count(*) AS n FROM orders GROUP BY tumble(now(), INTERVAL '1 minute')
+----
+error later_tier group_window 1:57 a group window: transforms don't run group windows yet (tier 2)
+error not_deterministic 1:64 now() isn't deterministic, so it can't feed a group's key
+
+plan
+INSERT INTO x SELECT count(*) AS n FROM orders GROUP BY random() > 0.5
+----
+error later_tier updating 1:57 GROUP BY without a window: transforms don't run updating statements yet (tier 5)
+error not_deterministic 1:57 random() isn't deterministic, so it can't feed a group's key
+
+plan
+CREATE VIEW stamped AS SELECT id, region, now() AS seen_at FROM orders;
+INSERT INTO x SELECT count(*) AS n FROM stamped GROUP BY tumble(seen_at, INTERVAL '1 minute')
+----
+error later_tier group_window 2:58 a group window: transforms don't run group windows yet (tier 2)
+error not_deterministic 2:65 seen_at isn't deterministic, so it can't feed a group's key
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY uuid()) AS total FROM orders
+----
+error later_tier over 1:26 OVER: transforms don't run window functions yet (tier 3)
+error not_deterministic 1:57 uuid() isn't deterministic, so it can't feed a window's partition
+
+# Clauses a stream has no use for.
+plan
+INSERT INTO x SELECT id FROM orders ORDER BY id
+----
+error unsupported 1:46 a stream has no order, so ORDER BY is refused
+
+plan
+INSERT INTO x SELECT id FROM orders LIMIT 10
+----
+error unsupported 1:43 a stream has no end, so LIMIT and OFFSET are refused
+
+plan
+INSERT INTO x SELECT id FROM orders UNION ALL SELECT id FROM customers
+----
+error unsupported 1:47 UNION, INTERSECT and EXCEPT aren't supported
+
+plan
+INSERT INTO x WITH o AS (SELECT id FROM orders) SELECT id FROM o
+----
+error unsupported 1:15 WITH isn't supported: name the query with CREATE VIEW, before the statements that read it
+
+plan
+INSERT INTO x SELECT 1 AS one
+----
+error unsupported 1:15 a SELECT reads a stream or a view: it needs a FROM
+
+plan
+INSERT INTO x VALUES (1)
+----
+error unsupported 1:22 a statement reads a stream or a view, not VALUES
+
+plan
+INSERT INTO x (id) SELECT id FROM orders
+----
+error unsupported 1:1 INSERT INTO takes an output's name and a SELECT, without a list of columns: the SELECT names the output's columns
+
+plan
+INSERT INTO x SELECT u FROM orders, UNNEST(ARRAY[1, 2]) AS u
+----
+error later_tier join 1:50 reading two relations: transforms don't run joins yet (tier 4)
+
+plan
+INSERT INTO x SELECT id FROM orders ON CONFLICT DO NOTHING
+----
+error unsupported 1:1 INSERT INTO takes an output's name and a SELECT, without ON CONFLICT
+
+# A computed column needs a name.
+plan
+INSERT INTO x SELECT id, lower(region) FROM orders
+----
+error unsupported 1:26 name this column: lower(region) AS name
+
+plan
+INSERT INTO x SELECT id, amount + 1 FROM orders
+----
+error unsupported 1:26 name this column: amount + 1 AS name
+
+# Statements other than INSERT and CREATE VIEW.
+plan
+SELECT id FROM orders
+----
+error unsupported 1:1 a SELECT on its own writes nothing: write INSERT INTO output SELECT …, or name it with CREATE VIEW
+
+plan
+DELETE FROM orders WHERE id = 1
+----
+error unsupported 1:1 a transform's statements are INSERT INTO … SELECT and CREATE VIEW … AS SELECT, not DELETE FROM
+
+plan
+CREATE TABLE t (id INT)
+----
+error unsupported 1:14 a transform's statements are INSERT INTO … SELECT and CREATE VIEW … AS SELECT, not CREATE TABLE
+
+plan
+CREATE VIEW v AS SELECT id FROM orders
+----
+error unsupported a transform writes at least one output, with INSERT INTO … SELECT
+
+plan
+-- nothing at all
+----
+error unsupported a transform writes at least one output, with INSERT INTO … SELECT
+
+# Text that isn't SQL.
+plan
+INSERT INTO x SELEKT id FROM orders
+----
+error syntax 1:22 Expected: SELECT, VALUES, or a subquery in the query body, found: id
+
+plan
+INSERT INTO x SELECT id FROM orders WHERE
+----
+error syntax Expected: an expression, found: EOF
+
+# Binding: columns, functions and types.
+plan
+INSERT INTO x
+SELECT id, nope FROM orders
+----
+error bind 2:12 there's no column nope; there are id, region, amount, created_at
+
+plan
+INSERT INTO x SELECT id, no_such_function(region) AS r FROM orders
+----
+error bind 1:26 no_such_function isn't a function transforms can call
+
+plan
+INSERT INTO x SELECT id, region + 1 AS r FROM orders
+----
+error bind 1:26 expressions have incompatible types (has type Utf8; has type Int64)
+
+plan
+INSERT INTO x SELECT id, make_map('a', id) AS m FROM orders
+----
+error bind 1:1 map isn't a function transforms can call
+
+plan
+INSERT INTO x SELECT id, arrow_typeof(id) AS t FROM orders
+----
+error bind 1:26 arrow_typeof isn't a function transforms can call
+
+plan
+INSERT INTO x SELECT id, NULL AS nothing FROM orders
+----
+error bind 1:26 column nothing is Null, which an output can't hold: CAST it to a type it can
+
+plan
+INSERT INTO x SELECT id, named_struct('a', id) AS s FROM orders
+----
+error bind 1:26 column s is Struct("a": Int64), which an output can't hold: CAST it to a type it can
+
+plan
+INSERT INTO x SELECT id, id AS id FROM orders
+----
+error bind 1:26 there's already a column id: give this one another name with AS
+
+# A changelog stream's key passes through every statement unchanged,
+# renamed or not.
+plan
+INSERT INTO x SELECT id AS person, upper(name) AS name FROM cdc WHERE name IS NOT NULL
+----
+statement 1:1 x row_wise
+  inputs cdc
+  key person
+  schema person Int64 not null, name Utf8
+  reads cdc changelog: id, name
+  filter cdc.name IS NOT NULL
+  project person := cdc.id, name := upper(cdc.name)
+
+plan
+INSERT INTO x SELECT name FROM cdc
+----
+error changelog_key 1:15 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it
+
+plan
+INSERT INTO x SELECT id + 1 AS id, name FROM cdc
+----
+error changelog_key 1:22 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this changes it
+
+plan
+INSERT INTO x SELECT CAST(id AS VARCHAR) AS id, name FROM cdc
+----
+error changelog_key 1:27 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this changes it
+
+plan
+INSERT INTO x SELECT id, unnest(tags) AS tag FROM cdc
+----
+error changelog_key 1:26 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this multiplies the rows of it
+
+plan
+INSERT INTO x SELECT tenant, name FROM cdc2
+----
+error changelog_key 1:15 cdc2 is a changelog, so what reads it keeps its key (tenant, id) unchanged, renamed or not; this drops it
+
+plan
+INSERT INTO x SELECT id, tenant AS t, name FROM cdc2
+----
+statement 1:1 x row_wise
+  inputs cdc2
+  key t, id
+  schema id Int64 not null, t Utf8 not null, name Utf8
+  reads cdc2 changelog: tenant, id, name
+  project id, t := cdc2.tenant, name
+
+plan
+INSERT INTO x SELECT * FROM (SELECT name FROM cdc) AS s
+----
+error changelog_key 1:15 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it
+
+plan
+INSERT INTO cdc SELECT * FROM cdc WHERE name LIKE 'a%'
+----
+statement 1:1 cdc replaces row_wise
+  inputs cdc
+  key id
+  schema id Int64 not null, name Utf8, tags List(Utf8)
+  reads cdc changelog: id, name, tags
+  filter cdc.name LIKE Utf8("a%")
+
+plan
+INSERT INTO x SELECT count(*) AS n FROM (SELECT now() AS t FROM orders) AS s
+GROUP BY tumble(t, INTERVAL '1 minute')
+----
+error later_tier group_window 2:10 a group window: transforms don't run group windows yet (tier 2)
+error not_deterministic 2:17 t isn't deterministic, so it can't feed a group's key
+
+plan
+INSERT INTO x SELECT id FROM cdc WHERE id IN (SELECT id FROM cdc2)
+----
+error later_tier join 1:40 a subquery: transforms don't run joins yet (tier 4)

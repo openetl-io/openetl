@@ -1,0 +1,25 @@
+[package]
+name = "openetl-sql"
+description = "SQL transforms: statements and the streams they read, planned into OpenETL's own plan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+datafusion-common.workspace = true
+datafusion-expr.workspace = true
+datafusion-functions.workspace = true
+datafusion-functions-nested.workspace = true
+datafusion-optimizer.workspace = true
+datafusion-physical-expr.workspace = true
+datafusion-sql.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+arrow-select.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,248 @@
+# Views name a result later statements read. They're inlined into each
+# reader, so keys pass through them by the same rule.
+
+stream customers key(id)
+  id int64 not null
+  email utf8
+  country utf8
+
+stream orders key(id) changelog
+  id int64 not null
+  customer_id int64
+  status utf8
+
+plan
+CREATE VIEW cleaned AS SELECT id, lower(email) AS email, country FROM customers WHERE email IS NOT NULL;
+INSERT INTO eu SELECT id AS customer, email FROM cleaned WHERE country = 'EU';
+INSERT INTO us SELECT id, email FROM cleaned WHERE country = 'US'
+----
+view 1:13 cleaned
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8, country Utf8
+statement 2:1 eu row_wise
+  inputs customers
+  views cleaned
+  key customer
+  schema customer Int64 not null, email Utf8
+  reads customers: id, email, country
+  filter customers.email IS NOT NULL
+  project id, email := lower(customers.email), country
+  filter cleaned.country = Utf8("EU")
+  project customer := cleaned.id, email
+statement 3:1 us row_wise
+  inputs customers
+  views cleaned
+  key id
+  schema id Int64 not null, email Utf8
+  reads customers: id, email, country
+  filter customers.email IS NOT NULL
+  project id, email := lower(customers.email), country
+  filter cleaned.country = Utf8("US")
+  project id, email
+
+# A view that reads a view, and a view no statement reads.
+plan
+CREATE VIEW a AS SELECT id, email FROM customers;
+CREATE VIEW b AS SELECT id AS customer_id, upper(email) AS email FROM a;
+CREATE VIEW unused AS SELECT id FROM customers;
+INSERT INTO out SELECT customer_id, email FROM b WHERE customer_id > 10
+----
+view 1:13 a
+  inputs customers
+  key id
+  schema id Int64 not null, email Utf8
+view 2:13 b
+  inputs customers
+  key customer_id
+  schema customer_id Int64 not null, email Utf8
+view 3:13 unused
+  inputs customers
+  key id
+  schema id Int64 not null
+statement 4:1 out row_wise
+  inputs customers
+  views a, b
+  key customer_id
+  schema customer_id Int64 not null, email Utf8
+  reads customers: id, email
+  project customer_id := a.id, email := upper(a.email)
+  filter b.customer_id > Int64(10)
+
+plan
+CREATE VIEW Cleaned AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM CLEANED
+----
+view 1:13 cleaned
+  inputs customers
+  key id
+  schema id Int64 not null
+statement 2:1 x row_wise
+  inputs customers
+  views cleaned
+  key id
+  schema id Int64 not null
+  reads customers: id
+
+plan
+CREATE VIEW "Cleaned" AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM "Cleaned"
+----
+view 1:13 Cleaned
+  inputs customers
+  key id
+  schema id Int64 not null
+statement 2:1 x row_wise
+  inputs customers
+  views Cleaned
+  key id
+  schema id Int64 not null
+  reads customers: id
+
+plan
+CREATE VIEW "Cleaned" AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM cleaned
+----
+error name 2:30 there's no stream or view cleaned
+
+# A view doesn't land: only what a statement inserts does.
+plan
+CREATE VIEW v AS SELECT id FROM customers;
+INSERT INTO v2 SELECT * FROM v
+----
+view 1:13 v
+  inputs customers
+  key id
+  schema id Int64 not null
+statement 2:1 v2 row_wise
+  inputs customers
+  views v
+  key id
+  schema id Int64 not null
+  reads customers: id
+
+# A view is defined before what reads it.
+plan
+INSERT INTO x SELECT id FROM later;
+CREATE VIEW later AS SELECT id FROM customers
+----
+error name 1:30 view later is defined after this statement: define a view before the statements that read it
+
+# Its name can't be a stream's, an output's or another view's.
+plan
+CREATE VIEW customers AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM customers
+----
+error name 1:13 view customers has a source stream's name: a view needs a name of its own
+
+plan
+CREATE VIEW Orders AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM customers
+----
+error name 1:13 view orders has a source stream's name: a view needs a name of its own
+
+plan
+CREATE VIEW x AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM customers
+----
+error name 1:13 view x has an output's name: a view needs a name of its own
+
+plan
+CREATE VIEW v AS SELECT id FROM customers;
+CREATE VIEW V AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM v
+----
+error name 2:13 there's already a view v
+
+# Views take no qualifier.
+plan
+CREATE VIEW v AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM source.v
+----
+error name 2:30 v is a view, and views take no qualifier: write FROM v
+
+plan
+CREATE VIEW public.v AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM customers
+----
+error name 1:13 a view's name is one identifier, never qualified: quote it, as "public.v", if it has dots
+
+plan
+CREATE VIEW v AS SELECT id FROM source.customers;
+INSERT INTO x SELECT id FROM v
+----
+view 1:13 v
+  inputs customers
+  key id
+  schema id Int64 not null
+statement 2:1 x row_wise
+  inputs customers
+  views v
+  key id
+  schema id Int64 not null
+  reads customers: id
+
+# A view over an aggregate, or of any later tier, is refused.
+plan
+CREATE VIEW totals AS SELECT country, count(*) AS n FROM customers GROUP BY country;
+INSERT INTO x SELECT * FROM totals
+----
+error later_tier updating 1:77 GROUP BY without a window: transforms don't run updating statements yet (tier 5)
+
+# A view that doesn't plan: its readers give no errors of their own for it.
+plan
+CREATE VIEW broken AS SELECT nope FROM customers;
+INSERT INTO x SELECT * FROM broken;
+INSERT INTO y SELECT id FROM customers
+----
+error bind 1:30 there's no column nope; there are id, email, country
+
+plan
+CREATE OR REPLACE VIEW v AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM v
+----
+error unsupported 1:24 CREATE VIEW takes a name and AS SELECT, and nothing else: the SELECT names the view's columns
+
+plan
+CREATE VIEW v (a) AS SELECT id FROM customers;
+INSERT INTO x SELECT a FROM v
+----
+error unsupported 1:13 CREATE VIEW takes a name and AS SELECT, and nothing else: the SELECT names the view's columns
+
+plan
+CREATE MATERIALIZED VIEW v AS SELECT id FROM customers;
+INSERT INTO x SELECT id FROM v
+----
+error unsupported 1:26 CREATE VIEW takes a name and AS SELECT, and nothing else: the SELECT names the view's columns
+
+# Keys through views on a changelog: a view that keeps the key, renamed, is
+# read as the stream is.
+plan
+CREATE VIEW open_orders AS SELECT id AS order_id, customer_id, status FROM orders WHERE status <> 'closed';
+INSERT INTO open SELECT order_id, upper(status) AS status FROM open_orders
+----
+view 1:13 open_orders
+  inputs orders
+  key order_id
+  schema order_id Int64 not null, customer_id Int64, status Utf8
+statement 2:1 open row_wise
+  inputs orders
+  views open_orders
+  key order_id
+  schema order_id Int64 not null, status Utf8
+  reads orders changelog: id, status
+  filter orders.status != Utf8("closed")
+  project order_id := orders.id, status
+  project order_id, status := upper(open_orders.status)
+
+plan
+CREATE VIEW o AS SELECT id, status FROM orders;
+INSERT INTO x SELECT status FROM o
+----
+error changelog_key 2:15 orders is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it
+
+plan
+CREATE VIEW o AS SELECT customer_id, status FROM orders;
+INSERT INTO x SELECT * FROM o
+----
+error changelog_key 1:18 orders is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it
