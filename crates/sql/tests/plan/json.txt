@@ -1,0 +1,91 @@
+# JSON paths: the functions of datafusion-functions-json, and its -> and ->>
+# operators, on strings that hold JSON. What they give on a missing path, a
+# string that isn't JSON and a null is in tests/eval.rs.
+
+stream events key(id)
+  id int64 not null
+  doc utf8
+
+plan
+INSERT INTO x SELECT id, doc->>'name' AS name, doc->'user'->>'email' AS email FROM events WHERE doc->>'status' = 'active'
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, name Utf8, email Utf8
+  reads events: id, doc
+  filter json_as_text(events.doc, Utf8("status")) = Utf8("active")
+  project id, name := json_as_text(events.doc, Utf8("name")), email := json_as_text(events.doc, Utf8("user"), Utf8("email"))
+
+# -> gives a JSON value of any type, which an output can't hold as it is: a
+# cast takes the getter of that type.
+plan
+INSERT INTO x SELECT id, doc->'n' AS n FROM events
+----
+error bind 1:26 column n is a JSON value whose type differs by row, which an output can't hold: use ->> for its text, or CAST it to a type
+
+plan
+INSERT INTO x SELECT id, CAST(doc->'n' AS BIGINT) AS n, (doc->'ok')::boolean AS ok, CAST(doc->'f' AS DOUBLE) AS f FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, n Int64, ok Boolean, f Float64
+  reads events: id, doc
+  project id, n := json_get_int(events.doc, Utf8("n")), ok := json_get_bool(events.doc, Utf8("ok")), f := json_get_float(events.doc, Utf8("f"))
+
+plan
+INSERT INTO x SELECT id,
+  json_get_str(doc, 'name') AS name,
+  json_get_int(doc, 'n') AS n,
+  json_get_float(doc, 'f') AS f,
+  json_get_bool(doc, 'ok') AS ok,
+  json_get_json(doc, 'user') AS user_json,
+  json_get_array(doc, 'tags') AS tags,
+  json_as_text(doc, 'name') AS name_text,
+  json_contains(doc, 'name') AS has_name,
+  json_length(doc) AS length,
+  json_object_keys(doc) AS keys,
+  json_union_to_text(json_get(doc, 'n')) AS n_text,
+  json_union_to_text(json_from_scalar(id)) AS id_json
+FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, name Utf8, n Int64, f Float64, ok Boolean, user_json Utf8, tags List(Utf8), name_text Utf8, has_name Boolean, length Int64, keys List(Utf8), n_text Utf8, id_json Utf8
+  reads events: id, doc
+  project id, name := json_get_str(events.doc, Utf8("name")), n := json_get_int(events.doc, Utf8("n")), f := json_get_float(events.doc, Utf8("f")), ok := json_get_bool(events.doc, Utf8("ok")), user_json := json_get_json(events.doc, Utf8("user")), tags := CAST(json_get_array(events.doc, Utf8("tags")) AS List(Utf8)), name_text := json_as_text(events.doc, Utf8("name")), has_name := json_contains(events.doc, Utf8("name")), length := CAST(json_length(events.doc) AS Int64), keys := json_object_keys(events.doc), n_text := CAST(json_union_to_text(json_get(events.doc, Utf8("n"))) AS Utf8), id_json := CAST(json_union_to_text(json_from_scalar(events.id)) AS Utf8)
+
+plan
+INSERT INTO x SELECT id, json_get_str(doc, 'items', 0, 'sku') AS first_sku FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, first_sku Utf8
+  reads events: id, doc
+  project id, first_sku := json_get_str(events.doc, Utf8("items"), Int64(0), Utf8("sku"))
+
+plan
+INSERT INTO x SELECT id FROM events WHERE doc ? 'deleted'
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null
+  reads events: id, doc
+  filter json_contains(events.doc, Utf8("deleted"))
+  project id
+
+plan
+INSERT INTO x SELECT id, unnest(json_get_array(doc, 'tags')) AS tag FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key 
+  schema id Int64 not null, tag Utf8
+  reads events: id, doc
+  project id, __unnest_placeholder(json_get_array(events.doc,Utf8("tags"))) := json_get_array(events.doc, Utf8("tags"))
+  unnest lists [1] sources [0, 1]: id, __unnest_placeholder(json_get_array(events.doc,Utf8("tags")),depth=1)
+  project id, tag := __unnest_placeholder(json_get_array(events.doc,Utf8("tags")),depth=1)

@@ -25,6 +25,7 @@ bytes = "1.12.1"
 datafusion-common = { version = "55.2.0", default-features = false }
 datafusion-expr = { version = "55.2.0", default-features = false }
 datafusion-functions = { version = "55.2.0", default-features = false, features = ["crypto_expressions", "datetime_expressions", "encoding_expressions", "math_expressions", "regex_expressions", "string_expressions", "unicode_expressions"] }
+datafusion-functions-json = { version = "0.55.6", default-features = false }
 datafusion-functions-nested = { version = "55.2.0", default-features = false }
 datafusion-optimizer = { version = "55.2.0", default-features = false }
 datafusion-physical-expr = { version = "55.2.0", default-features = false }

@@ -229,6 +229,52 @@ fn statements_bind_again_when_a_schema_changes() {
 }
 
 #[test]
+fn json_paths_give_null_for_a_missing_path_a_string_that_isnt_json_and_null() {
+    let schema: SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("doc", DataType::Utf8, true),
+    ]));
+    let mut c = Catalog::new();
+    c.insert(
+        "events",
+        Stream {
+            schema: schema.clone(),
+            key: vec!["id".into()],
+            changelog: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let s = plan_one(
+        "INSERT INTO x SELECT id, doc->>'name' AS name, json_get_int(doc, 'n') AS n,
+         doc->'user'->>'email' AS email, json_contains(doc, 'n') AS has_n FROM events",
+        &c,
+    );
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                Some(r#"{"name": "a", "n": 7, "user": {"email": "e@x.io"}}"#),
+                Some(r#"{"other": 1}"#),
+                Some("not json"),
+                None,
+            ])),
+        ],
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let out = run(row_wise(&s), &batch);
+    assert_eq!(strings(&out, "name"), [Some("a".into()), None, None, None]);
+    assert_eq!(
+        strings(&out, "email"),
+        [Some("e@x.io".into()), None, None, None]
+    );
+    let n: Vec<Option<i64>> = out.column(2).as_primitive::<Int64Type>().iter().collect();
+    assert_eq!(n, [Some(7), None, None, None]);
+    let has_n: Vec<Option<bool>> = out.column(4).as_boolean().iter().collect();
+    assert_eq!(has_n, [Some(true), Some(false), Some(false), Some(false)]);
+}
+
+#[test]
 fn the_catalog_refuses_a_name_twice_and_a_key_it_lacks() {
     let mut c = customers(fields());
     let stream = |key: &str| Stream {

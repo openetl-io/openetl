@@ -1,26 +1,33 @@
 //! The functions statements can call: a curated part of DataFusion's library,
-//! and `now()`, `current_timestamp` and `current_date` of our own. Each is
-//! constructed by name here, so a binary links only these. `functions.txt`
-//! records the list, and a test fails when the two differ.
+//! the JSON functions of `datafusion-functions-json`, and `now()`,
+//! `current_timestamp` and `current_date` of our own. Each is constructed by
+//! name here, so a binary links only these. `functions.txt` records the
+//! list, and a test fails when the two differ.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_schema::{DataType, TimeUnit};
-use datafusion_common::{Result, ScalarValue, exec_err};
+use datafusion_common::{Result, ScalarValue, exec_err, plan_err};
+use datafusion_expr::expr_rewriter::FunctionRewrite;
 use datafusion_expr::planner::ExprPlanner;
+use datafusion_expr::registry::FunctionRegistry;
 use datafusion_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    AggregateUDF, ColumnarValue, HigherOrderUDF, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl,
+    Signature, Volatility, WindowUDF,
 };
 
 pub(crate) struct Functions {
     /// By name and by alias.
     pub(crate) scalars: HashMap<String, Arc<ScalarUDF>>,
     /// Syntax that plans to functions, such as `EXTRACT`, `POSITION`,
-    /// `SUBSTRING`, `OVERLAY`, `a[i]` and `s['field']`. What it reaches must
-    /// be in `scalars` too, or binding refuses it.
+    /// `SUBSTRING`, `OVERLAY`, `a[i]`, `s['field']` and JSON's `->` and
+    /// `->>`. What it reaches must be in `scalars` too, or binding refuses it.
     pub(crate) planners: Vec<Arc<dyn ExprPlanner>>,
+    /// Rewrites of calls that type coercion applies, such as a cast of
+    /// `json_get` to the getter of that type.
+    pub(crate) rewrites: Vec<Arc<dyn FunctionRewrite + Send + Sync>>,
 }
 
 impl Functions {
@@ -44,15 +51,104 @@ pub(crate) static FUNCTIONS: LazyLock<Functions> = LazyLock::new(|| {
         }
         scalars.insert(f.name().to_owned(), f);
     }
-    let planners: Vec<Arc<dyn ExprPlanner>> = vec![
+    let json = json();
+    for f in json.udfs {
+        for a in f.aliases() {
+            scalars.insert(a.clone(), f.clone());
+        }
+        scalars.insert(f.name().to_owned(), f);
+    }
+    let mut planners: Vec<Arc<dyn ExprPlanner>> = vec![
         Arc::new(datafusion_functions::core::planner::CoreFunctionPlanner::default()),
         Arc::new(datafusion_functions_nested::planner::NestedFunctionPlanner),
         Arc::new(datafusion_functions_nested::planner::FieldAccessPlanner),
         Arc::new(datafusion_functions::datetime::planner::DatetimeFunctionPlanner),
         Arc::new(datafusion_functions::unicode::planner::UnicodeFunctionPlanner),
     ];
-    Functions { scalars, planners }
+    planners.extend(json.planners);
+    Functions {
+        scalars,
+        planners,
+        rewrites: json.rewrites,
+    }
 });
+
+/// What `datafusion-functions-json` registers: its functions, the planner of
+/// its operators and the rewrite of casts of `json_get`.
+#[derive(Default)]
+struct Json {
+    udfs: Vec<Arc<ScalarUDF>>,
+    planners: Vec<Arc<dyn ExprPlanner>>,
+    rewrites: Vec<Arc<dyn FunctionRewrite + Send + Sync>>,
+}
+
+fn json() -> Json {
+    let mut json = Json::default();
+    // It only fails where a registry refuses what it registers, which this
+    // one doesn't; it would then expose fewer functions, which the recorded
+    // list catches.
+    let _ = datafusion_functions_json::register_all(&mut json);
+    json
+}
+
+impl FunctionRegistry for Json {
+    fn udfs(&self) -> HashSet<String> {
+        self.udfs.iter().map(|f| f.name().to_owned()).collect()
+    }
+
+    fn higher_order_function_names(&self) -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn udafs(&self) -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn udwfs(&self) -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn udf(&self, name: &str) -> Result<Arc<ScalarUDF>> {
+        match self.udfs.iter().find(|f| f.name() == name) {
+            Some(f) => Ok(f.clone()),
+            None => plan_err!("no function {name}"),
+        }
+    }
+
+    fn higher_order_function(&self, name: &str) -> Result<Arc<HigherOrderUDF>> {
+        plan_err!("no function {name}")
+    }
+
+    fn udaf(&self, name: &str) -> Result<Arc<AggregateUDF>> {
+        plan_err!("no aggregate {name}")
+    }
+
+    fn udwf(&self, name: &str) -> Result<Arc<WindowUDF>> {
+        plan_err!("no window function {name}")
+    }
+
+    fn register_udf(&mut self, udf: Arc<ScalarUDF>) -> Result<Option<Arc<ScalarUDF>>> {
+        self.udfs.push(udf);
+        Ok(None)
+    }
+
+    fn register_function_rewrite(
+        &mut self,
+        rewrite: Arc<dyn FunctionRewrite + Send + Sync>,
+    ) -> Result<()> {
+        self.rewrites.push(rewrite);
+        Ok(())
+    }
+
+    fn expr_planners(&self) -> Vec<Arc<dyn ExprPlanner>> {
+        self.planners.clone()
+    }
+
+    fn register_expr_planner(&mut self, planner: Arc<dyn ExprPlanner>) -> Result<()> {
+        self.planners.push(planner);
+        Ok(())
+    }
+}
 
 fn curated() -> Vec<Arc<ScalarUDF>> {
     use datafusion_functions::{core, crypto, datetime, encoding, math, regex, string, unicode};
@@ -298,7 +394,12 @@ mod tests {
         let mut out = String::new();
         for (name, f) in byname {
             out.push_str(&name);
-            let mut aliases = f.aliases().to_vec();
+            let mut aliases: Vec<&str> = f
+                .aliases()
+                .iter()
+                .map(String::as_str)
+                .filter(|a| *a != name)
+                .collect();
             aliases.sort();
             if !aliases.is_empty() {
                 out.push_str(&format!(" ({})", aliases.join(", ")));

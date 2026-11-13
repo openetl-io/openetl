@@ -143,7 +143,11 @@ pub(crate) fn plan(
     let plan = SqlToRel::new(&p)
         .sql_statement_to_plan(ast::Statement::Query(Box::new(query.clone())))
         .map_err(bind)?;
-    let plan = Analyzer::new()
+    let mut analyzer = Analyzer::new();
+    for r in &FUNCTIONS.rewrites {
+        analyzer.add_function_rewrite(r.clone());
+    }
+    let plan = analyzer
         .execute_and_check(plan, &p.options, |_, _| {})
         .map_err(bind)?;
     unexposed(&plan, at)?;
@@ -177,15 +181,18 @@ fn logical(
                 exprs.push(Expr::Cast(Cast::new(Box::new(c), t)).alias(f.name()));
             }
             None => {
-                return Err(Error::at(
-                    ErrorKind::Bind,
-                    column(f.name()),
-                    format!(
-                        "column {} is {}, which an output can't hold: CAST it to a type it can",
-                        f.name(),
-                        f.data_type()
+                let message = match f.data_type() {
+                    DataType::Union(..) => format!(
+                        "column {} is a JSON value whose type differs by row, which an output can't hold: \
+                         use ->> for its text, or CAST it to a type",
+                        f.name()
                     ),
-                ));
+                    t => format!(
+                        "column {} is {t}, which an output can't hold: CAST it to a type it can",
+                        f.name()
+                    ),
+                };
+                return Err(Error::at(ErrorKind::Bind, column(f.name()), message));
             }
         }
     }
