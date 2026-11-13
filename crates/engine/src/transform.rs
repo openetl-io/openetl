@@ -2,10 +2,12 @@
 //! reads, and which outputs each stream feeds. Nothing planned outlives the
 //! job: every attempt plans again from the SQL and the streams' schemas.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use arrow_schema::{Field, Schema, SchemaRef};
+use openetl_normalize::VERSIONS_KEY;
+use openetl_normalize::naming::{METADATA_COLUMNS, source_names};
 use openetl_proto::engine::v1::{ExpectedOutput, StreamPlan, Transform as TransformPlan};
 use openetl_sql::{Catalog, Operator, Position, RowWise, Sql, Stream};
 
@@ -44,10 +46,11 @@ impl Input {
         };
         let restored = match s.restored_schema.is_empty() {
             true => None,
-            false => Some(
-                ipc::decode_schema(&s.restored_schema)
-                    .map_err(|e| bad("restored", e.to_string()))?,
-            ),
+            false => {
+                let r = ipc::decode_schema(&s.restored_schema)
+                    .map_err(|e| bad("restored", e.to_string()))?;
+                Some(as_read(&r))
+            }
         };
         let schema = match (restored, declared) {
             (None, d) => d,
@@ -76,6 +79,42 @@ impl Input {
             changelog: s.changelog,
         })
     }
+}
+
+/// A stream's recorded schema as statements read it. One recorded before
+/// the pipeline had a transform is as the destination got it: its columns
+/// go back to their source names and current versions, and the metadata
+/// columns go.
+pub fn as_read(schema: &Schema) -> SchemaRef {
+    let names = source_names(schema).unwrap_or_default();
+    let versions: BTreeMap<String, u32> = schema
+        .metadata()
+        .get(VERSIONS_KEY)
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default();
+    let mut superseded = BTreeSet::new();
+    let mut current = HashMap::new();
+    for (s, &k) in &versions {
+        superseded.insert(s.clone());
+        for j in 2..k {
+            superseded.insert(format!("{s}__v{j}"));
+        }
+        current.insert(format!("{s}__v{k}"), s.clone());
+    }
+    let fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .filter(|f| !METADATA_COLUMNS.contains(&f.name().as_str()))
+        .filter_map(|f| {
+            let name = names.get(f.name()).unwrap_or(f.name());
+            if superseded.contains(name) {
+                return None;
+            }
+            let name = current.get(name).unwrap_or(name);
+            Some(f.as_ref().clone().with_name(name))
+        })
+        .collect();
+    Arc::new(Schema::new(fields))
 }
 
 /// One `INSERT INTO`, planned.
@@ -457,6 +496,37 @@ mod tests {
         let gone = Arc::new(Schema::new(vec![Field::new("email", DataType::Utf8, true)]));
         let e = t.again(0, gone).unwrap_err();
         assert_eq!(e.code, openetl_proto::connector::v1::ErrorCode::SchemaDrift);
+    }
+
+    /// A schema recorded before the pipeline had a transform is as the
+    /// destination got it.
+    #[test]
+    fn a_schema_the_destination_got_reads_as_the_source_sent_it() {
+        let shaped = Schema::new(vec![
+            Field::new("user_id", DataType::Int64, false),
+            Field::new("x", DataType::Int64, true),
+            Field::new("x__v2", DataType::Utf8, true),
+            Field::new("_openetl_id", DataType::FixedSizeBinary(16), false),
+            Field::new("_openetl_op", DataType::Utf8, false),
+        ])
+        .with_metadata(HashMap::from([
+            (
+                openetl_normalize::naming::SOURCE_NAMES_KEY.to_owned(),
+                r#"{"user_id":"UserId"}"#.to_owned(),
+            ),
+            (VERSIONS_KEY.to_owned(), r#"{"x":2}"#.to_owned()),
+        ]));
+        let read = as_read(&shaped);
+        let fields: Vec<(&str, &DataType)> = read
+            .fields()
+            .iter()
+            .map(|f| (f.name().as_str(), f.data_type()))
+            .collect();
+        assert_eq!(
+            fields,
+            [("UserId", &DataType::Int64), ("x", &DataType::Utf8)]
+        );
+        assert!(read.metadata().is_empty());
     }
 
     #[test]

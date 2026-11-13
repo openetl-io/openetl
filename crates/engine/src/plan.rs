@@ -597,10 +597,11 @@ fn input_plan(s: &StreamPlan, infinity: Infinity) -> Result<InputPlan, JobError>
     };
     let restored = match s.restored_schema.is_empty() {
         true => None,
-        false => Some(
-            ipc::decode_schema(&s.restored_schema)
-                .map_err(|e| bad("restored schema", e.to_string()))?,
-        ),
+        false => {
+            let r = ipc::decode_schema(&s.restored_schema)
+                .map_err(|e| bad("restored schema", e.to_string()))?;
+            Some(crate::transform::as_read(&r))
+        }
     };
     Ok(InputPlan {
         name: s.name.clone(),

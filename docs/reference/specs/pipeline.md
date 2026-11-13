@@ -353,7 +353,7 @@ The engine plans the statements each time a sync or a continuous pipeline's job 
 
 - It runs row-wise statements: projections and renames, literals, casts, `CASE`, scalar functions, `WHERE` and `UNNEST`, and `CREATE VIEW` over them. Each statement runs on every lane of the job.
 - It refuses other statements, such as aggregates, `GROUP BY`, window functions, joins, `DISTINCT`, `ORDER BY` and `LIMIT`. The sync, or the continuous pipeline's job, fails with `CONFIG_INVALID`. The message gives the position of each statement it refuses, as `LINE:COLUMN`.
-- A statement reads only streams whose source declares their columns, as a database source does. If a statement reads a stream whose columns the source infers from its rows, such as `faker`'s, the sync fails with `CONFIG_INVALID`. Such a stream can still pass through.
+- A statement reads only streams whose columns are known when the sync starts: the source declares them, as a database source does, or an earlier sync of the pipeline recorded them. If a statement reads a stream whose columns the source infers from its rows, such as `faker`'s, and no sync has recorded them, the sync fails with `CONFIG_INVALID`. Such a stream can still pass through. A column that an earlier sync recorded and the source no longer sends is null.
 - `openetl plan` does not read the statements: it shows each stream as it would be without a transform.
 
 An output's primary key is its stream's, if each key column passes through unchanged, renamed or not. Otherwise the output has no primary key, and is appended or overwritten. If `destination.write` is `merge`, each statement must keep its stream's primary key.

@@ -2,15 +2,43 @@ package activities
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"slices"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
+
+// planSQL plans a SQL transform's statements against the streams they read.
+type planSQL func(ctx context.Context, sql string, streams []runner.Stream) ([]runner.ExpectedOutput, error)
+
+// withRestored plans with p against each stream's declared schema and the
+// one HEAD's record has, without claiming the pipeline: a column the source
+// no longer declares is still in the stream, as nulls. A record that can't
+// be read is the attempt's to rewind from or fail on.
+func withRestored(p runner.SQLPlanner, log *checkpoint.Log) planSQL {
+	return func(ctx context.Context, sql string, streams []runner.Stream) ([]runner.ExpectedOutput, error) {
+		rec, err := log.Latest(ctx)
+		if err != nil && !errors.Is(err, checkpoint.ErrUnreadable) {
+			return nil, err
+		}
+		var schemas map[string][]byte
+		if rec != nil {
+			schemas = make(map[string][]byte, len(rec.Streams))
+			for name, st := range rec.Streams {
+				if st.Schema != nil {
+					schemas[name] = st.Schema
+				}
+			}
+		}
+		return p.PlanSQL(ctx, sql, streams, schemas)
+	}
+}
 
 // sqlOutputs plans a SQL transform's statements against the streams they
 // read, and gives the destination's streams: each statement's output, in
@@ -18,12 +46,12 @@ import (
 // passthrough is none. An output is written as a stream would be that is
 // read as its stream is and has its key.
 func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Capabilities, deletes destination.DeleteMode,
-	planner runner.SQLPlanner, streams []runner.Stream, inputs []plan.Input) (*runner.SQLTransform, []runner.Stream, error) {
+	planner planSQL, streams []runner.Stream, inputs []plan.Input) (*runner.SQLTransform, []runner.Stream, error) {
 	t := p.GetTransform().GetSql()
 	if planner == nil {
 		return nil, nil, errs.New(errs.ConfigInvalid, "transform.sql: this runner can't plan SQL")
 	}
-	planned, err := planner.PlanSQL(ctx, t.GetSql(), streams)
+	planned, err := planner(ctx, t.GetSql(), streams)
 	if err != nil {
 		return nil, nil, err
 	}

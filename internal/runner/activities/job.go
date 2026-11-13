@@ -25,7 +25,7 @@ import (
 // transform's statements are planned with planner. The caller sets the
 // attempt's owner, log and dataflow, and closes the connectors, even after
 // an error.
-func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env, planner runner.SQLPlanner) (runner.Job, error) {
+func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env, planner planSQL) (runner.Job, error) {
 	p := spec.GetPipeline()
 	env.RateLimitScale = spec.GetRateLimitScale()
 	srcCfg, err := protojson.Marshal(spec.GetSource().GetConfig())

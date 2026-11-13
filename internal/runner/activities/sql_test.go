@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
@@ -19,18 +20,52 @@ import (
 // planner gives outputs, or an error, as the engine's planning would, and
 // keeps what it was asked.
 type planner struct {
-	outputs []runner.ExpectedOutput
-	err     error
-	sql     string
-	streams []string
+	outputs  []runner.ExpectedOutput
+	err      error
+	sql      string
+	streams  []string
+	restored map[string][]byte
 }
 
-func (p *planner) PlanSQL(_ context.Context, sql string, streams []runner.Stream) ([]runner.ExpectedOutput, error) {
-	p.sql = sql
+func (p *planner) PlanSQL(_ context.Context, sql string, streams []runner.Stream, restored map[string][]byte) ([]runner.ExpectedOutput, error) {
+	p.sql, p.restored = sql, restored
 	for _, s := range streams {
 		p.streams = append(p.streams, s.Name)
 	}
 	return p.outputs, p.err
+}
+
+// plan is p planning with a pipeline that has no checkpoint yet.
+func (p *planner) plan() planSQL {
+	if p == nil {
+		return nil
+	}
+	return withRestored(p, checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"))
+}
+
+// A resumed pipeline's planning reads the streams' schemas HEAD's record
+// has, without claiming the pipeline.
+func TestPlanningReadsTheRecordedSchemas(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	put := func(key, data string) {
+		if _, err := store.Create(t.Context(), "org/p/_checkpoints/"+key, []byte(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("HEAD", `{"format":1,"generation":1,"owner":"old","record":{"epoch":2,"generation":1},"first":true}`)
+	put("00000000000000000002-g00000000000000000001.json",
+		`{"epoch":2,"generation":1,"streams":{"users":{"schema":"c2NoZW1h","rows":1},"purchases":{"rows":1}},"key_groups":256,"committables":[null],"created_at":"2026-11-01T00:00:00Z"}`)
+	pl := plannedEmails()
+	if _, err := withRestored(pl, checkpoint.NewLog(store, "org", "p"))(t.Context(), emails, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(pl.restored) != 1 || string(pl.restored["users"]) != "schema" {
+		t.Errorf("restored: %q", pl.restored)
+	}
+	pl = plannedEmails()
+	if _, err := pl.plan()(t.Context(), emails, nil); err != nil || pl.restored != nil {
+		t.Errorf("without a checkpoint: %v, %q", err, pl.restored)
+	}
 }
 
 // sqlSpec reads faker's users and purchases into stdout through sql.
@@ -62,7 +97,7 @@ func plannedEmails() *planner {
 func TestBuildJobPlansSQL(t *testing.T) {
 	pl := plannedEmails()
 	job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_UNSPECIFIED,
-		&apiv1.PipelineDestination{Tables: map[string]string{"emails": "user_emails"}}), connectorhost.Env{}, pl)
+		&apiv1.PipelineDestination{Tables: map[string]string{"emails": "user_emails"}}), connectorhost.Env{}, pl.plan())
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
 	if err != nil {
@@ -96,7 +131,7 @@ func TestBuildJobPlansSQL(t *testing.T) {
 }
 
 func TestBuildJobPassesNothingThroughWithPassthroughNone(t *testing.T) {
-	job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_NONE, nil), connectorhost.Env{}, plannedEmails())
+	job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_NONE, nil), connectorhost.Env{}, plannedEmails().plan())
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
 	if err != nil {
@@ -121,7 +156,7 @@ func TestBuildJobRefusesSQLThatDoesntPlan(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_ALL, c.dst), connectorhost.Env{}, c.pl)
+			job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_ALL, c.dst), connectorhost.Env{}, c.pl.plan())
 			defer connectorhost.Close(job.Source)
 			defer connectorhost.Close(job.Destination)
 			if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), c.want) {

@@ -14,8 +14,8 @@ import (
 var _ runner.SQLPlanner = (*Dataflow)(nil)
 
 // PlanSQL plans a SQL transform's statements against the streams they read,
-// with their declared schemas, in an engine of its own.
-func (d *Dataflow) PlanSQL(ctx context.Context, sql string, streams []runner.Stream) ([]runner.ExpectedOutput, error) {
+// with their declared and restored schemas, in an engine of its own.
+func (d *Dataflow) PlanSQL(ctx context.Context, sql string, streams []runner.Stream, restored map[string][]byte) ([]runner.ExpectedOutput, error) {
 	opts := d.Options
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -30,6 +30,7 @@ func (d *Dataflow) PlanSQL(ctx context.Context, sql string, streams []runner.Str
 			Name:                 s.Name,
 			PrimaryKey:           s.PrimaryKey,
 			ArrowSchema:          declared,
+			RestoredSchema:       restored[s.Name],
 			NanosecondTimestamps: s.NanosecondTimestamps,
 			Changelog:            s.Read == source.CDC,
 		})

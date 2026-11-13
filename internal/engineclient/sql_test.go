@@ -10,6 +10,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 )
 
 // users is a stream whose source declares its columns.
@@ -28,7 +29,7 @@ const contacts = "INSERT INTO contacts\nSELECT id AS uid, lower(email) AS addres
 
 func TestPlanSQLGivesEachStatementsOutput(t *testing.T) {
 	df := &Dataflow{Options: options(t, nil)}
-	got, err := df.PlanSQL(testContext(t), contacts, []runner.Stream{users()})
+	got, err := df.PlanSQL(testContext(t), contacts, []runner.Stream{users()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,15 +40,37 @@ func TestPlanSQLGivesEachStatementsOutput(t *testing.T) {
 		t.Errorf("address: %v", f)
 	}
 
-	_, err = df.PlanSQL(testContext(t), "INSERT INTO n\nSELECT count(*) AS n FROM users", []runner.Stream{users()})
+	_, err = df.PlanSQL(testContext(t), "INSERT INTO n\nSELECT count(*) AS n FROM users", []runner.Stream{users()}, nil)
 	if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "transform.sql: 2:") {
 		t.Errorf("an aggregate: %v", err)
 	}
 	inferred := users()
 	inferred.Schema = nil
-	_, err = df.PlanSQL(testContext(t), contacts, []runner.Stream{inferred})
+	_, err = df.PlanSQL(testContext(t), contacts, []runner.Stream{inferred}, nil)
 	if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "stream users has no known columns") {
 		t.Errorf("a stream without declared columns: %v", err)
+	}
+}
+
+// A column the source no longer declares, which the stream's restored
+// schema still has, plans: the stream sees it as nulls.
+func TestPlanSQLReadsTheRestoredSchemas(t *testing.T) {
+	df := &Dataflow{Options: options(t, nil)}
+	in := users()
+	in.Schema = arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	restored, err := arrowipc.EncodeSchema(users().Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := df.PlanSQL(testContext(t), contacts, []runner.Stream{in}, nil); errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Fatalf("without the restored schema: %v", err)
+	}
+	got, err := df.PlanSQL(testContext(t), contacts, []runner.Stream{in}, map[string][]byte{"users": restored})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Schema.Field(1).Name != "address" {
+		t.Errorf("outputs: %+v", got)
 	}
 }
 
@@ -57,7 +80,7 @@ func TestEngineRunsSQL(t *testing.T) {
 	ctx := testContext(t)
 	df := &Dataflow{Options: options(t, nil)}
 	in := users()
-	expected, err := df.PlanSQL(ctx, contacts, []runner.Stream{in})
+	expected, err := df.PlanSQL(ctx, contacts, []runner.Stream{in}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
