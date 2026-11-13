@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -56,37 +55,31 @@ func TestSQLTransformRenamesAndFilters(t *testing.T) {
 		t.Fatalf("sync %s: %s", status, stats)
 	}
 	checkParquet(t, dir, 900, "customers")
-	ids, addresses := contactRows(t, dir)
-	if len(ids) != 600 {
-		t.Errorf("contacts: %d distinct customer_ids, want the 600 active customers", len(ids))
+	addresses, rows := contactRows(t, dir)
+	if rows != 600 || len(addresses) != 600 {
+		t.Errorf("contacts: %d rows of %d customers, want each of the 600 active ones once", rows, len(addresses))
 	}
-	for id := range ids {
-		if id%3 == 0 {
+	for id := int64(1); id <= 900; id++ {
+		a, ok := addresses[id]
+		switch {
+		case id%3 == 0 && ok:
 			t.Errorf("contacts has inactive customer %d", id)
-			break
+		case id%3 != 0 && a != fmt.Sprintf("user%d@example.com", id):
+			t.Errorf("customer %d's address is %q", id, a)
 		}
-	}
-	for _, a := range addresses {
-		if a != strings.ToLower(a) {
-			t.Errorf("address %q isn't lower case", a)
-			break
-		}
-	}
-	if len(addresses) != 600 {
-		t.Errorf("contacts: %d rows, want 600", len(addresses))
 	}
 }
 
-// contactRows reads the contacts output's committed files: each
-// customer_id, and every address.
-func contactRows(t *testing.T, dir string) (map[int64]bool, []string) {
+// contactRows reads the contacts output's committed files: each row's
+// address by its customer_id, and how many rows there are.
+func contactRows(t *testing.T, dir string) (map[int64]string, int) {
 	t.Helper()
 	names, err := filepath.Glob(filepath.Join(dir, "contacts", "*.parquet"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids := map[int64]bool{}
-	var addresses []string
+	addresses := map[int64]string{}
+	rows := 0
 	for _, name := range names {
 		f, err := os.Open(name)
 		if err != nil {
@@ -97,17 +90,22 @@ func contactRows(t *testing.T, dir string) (map[int64]bool, []string) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Row i of one column is row i of the other, whatever their chunks.
+		var ids []int64
 		for _, chunk := range tbl.Column(tbl.Schema().FieldIndices("customer_id")[0]).Data().Chunks() {
 			for i := range chunk.Len() {
-				ids[chunk.(*array.Int64).Value(i)] = true
+				ids = append(ids, chunk.(*array.Int64).Value(i))
 			}
 		}
+		j := 0
 		for _, chunk := range tbl.Column(tbl.Schema().FieldIndices("address")[0]).Data().Chunks() {
 			for i := range chunk.Len() {
-				addresses = append(addresses, chunk.(*array.String).Value(i))
+				addresses[ids[j]] = chunk.(*array.String).Value(i)
+				j++
 			}
 		}
+		rows += len(ids)
 		tbl.Release()
 	}
-	return ids, addresses
+	return addresses, rows
 }
