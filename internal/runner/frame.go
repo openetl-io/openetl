@@ -68,14 +68,14 @@ type Ready struct {
 	// Each stream's schema at its barrier, as an Arrow IPC stream holding
 	// only the schema. With a transform, its inputs'.
 	Schemas map[string][]byte
-	// With a transform, its outputs' schemas, as Schemas, and the rows each
-	// output had.
+	// With a transform, its outputs' schemas, as Schemas, and from one the
+	// runner runs, the rows each output had.
 	OutputSchemas map[string][]byte
 	OutputRows    map[string]uint64
-	// Where columns are held whole: each stream's schema as the destination
-	// gets it, as Schemas.
+	// Where columns are held whole: each of the destination's streams'
+	// schema as the destination gets it, as Schemas.
 	Delivered map[string][]byte
-	// The streams that hold, at their barriers.
+	// The destination's streams that hold, at their barriers.
 	Holds map[string]*ReadyHolds
 }
 
@@ -129,6 +129,12 @@ type Plan struct {
 	// The first barrier's epoch.
 	FirstEpoch uint64
 	Streams    []Stream
+	// SQL the engine runs between the normalizer's halves; nil for none.
+	// With it, Streams are its inputs, Outputs the destination's streams, and
+	// OutputSchemas what each output's schema starts as, as Schemas.
+	SQL           *SQLTransform
+	Outputs       []Stream
+	OutputSchemas map[string][]byte
 	// Zero: out feeds the destination's Writer.
 	Sink   SinkPlan
 	Naming Naming
@@ -148,13 +154,14 @@ type Plan struct {
 	ReportSchemas bool
 	// Where held values go; empty: nothing is held.
 	HeldURL string
-	// How streams hold; those that hold nothing are missing.
+	// How the destination's streams hold; those that hold nothing are
+	// missing.
 	Holds map[string]*HoldPlan
 	// The attempt's lanes and writer lanes, at most as many; 0
 	// is one. A stream's frames go from lane i to writer lane i mod
-	// WriterLanes, or for one in KeyGrouped, each row to the writer lane
-	// owning its key's group: writer lane w owns the w-th of WriterLanes
-	// contiguous ranges of the KeyGroups.
+	// WriterLanes, or for one of the destination's streams in KeyGrouped,
+	// each row to the writer lane owning its key's group: writer lane w owns
+	// the w-th of WriterLanes contiguous ranges of the KeyGroups.
 	Lanes, WriterLanes int
 	KeyGroups          int
 	KeyGrouped         map[string]bool

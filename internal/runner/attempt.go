@@ -175,6 +175,9 @@ type Job struct {
 	// the destination's streams.
 	Transform Transform
 	Outputs   []Stream
+	// SQL the engine runs; nil for none. With it, Streams are its inputs,
+	// and Outputs, which it needs, the destination's streams.
+	SQL *SQLTransform
 	// The user's Flink job between the source and the destination of a
 	// continuous pipeline; nil for none. With one, Outputs are the
 	// destination's streams, and Bridge serves the job.
@@ -309,7 +312,7 @@ func (j *Job) writerLanes() int {
 func (j *Job) keyGroups() int { return cmp.Or(j.KeyGroups, checkpoint.KeyGroups) }
 
 // transformed: the user's code runs between the source and the destination.
-func (j *Job) transformed() bool { return j.Transform != nil || j.Flink != nil }
+func (j *Job) transformed() bool { return j.Transform != nil || j.Flink != nil || j.SQL != nil }
 
 // sinkStreams are the destination's streams.
 func (j *Job) sinkStreams() []Stream {
@@ -503,7 +506,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 				schemas[name] = st.Delivered
 			}
 		}
-		if job.Transform != nil {
+		if job.transformed() {
 			schemas = outputSchemas(head)
 		}
 		// A redone epoch needs its schemas in place, and can't change.
@@ -578,8 +581,10 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if restored != nil && len(restored.Files) > 0 {
 		c.lastStaged = destination.Epoch{Generation: restored.Generation, N: restored.Epoch}
 	}
-	if job.Transform != nil {
+	if job.transformed() {
 		c.outputSchemas = outputSchemas(restored)
+	}
+	if job.Transform != nil {
 		// Stopped even if it didn't start: a submission whose outcome is
 		// unknown may be running.
 		defer func() {
@@ -771,7 +776,7 @@ func (j *Job) canForce() map[string]bool {
 	canForce := make(map[string]bool, len(j.Streams))
 	for _, s := range j.Streams {
 		canForce[s.Name] = delivery.CanForce(caps, s.delivery(), j.Settings.Require)
-		if j.Transform != nil || j.Flink != nil {
+		if j.transformed() {
 			canForce[s.Name] = outputsCanForce
 		}
 	}
@@ -1049,7 +1054,11 @@ func (j *Job) validate() error {
 		return errs.New(errs.ConfigInvalid, "runner: a transform runs in a scheduled pipeline's syncs")
 	case j.Flink != nil && (!j.Continuous || j.Transform != nil || j.Bridge == nil || len(j.Outputs) == 0):
 		return errs.New(errs.ConfigInvalid, "runner: a Flink job runs in a continuous pipeline, with a bridge and outputs, and without a Spark transform")
-	case j.Flink == nil && j.Transform == nil && len(j.Outputs) > 0:
+	case j.SQL != nil && len(j.Outputs) == 0:
+		return errs.New(errs.ConfigInvalid, "runner: the SQL transform has no outputs")
+	case j.SQL != nil && (j.Transform != nil || j.Flink != nil):
+		return errs.New(errs.ConfigInvalid, "runner: a pipeline has one transform, and this one has SQL and Spark or Flink")
+	case !j.transformed() && len(j.Outputs) > 0:
 		return errors.New("runner: outputs without a transform")
 	case j.lanes() > 1 && j.transformed():
 		return errs.New(errs.ConfigInvalid, "runner: a transform runs on one lane")
@@ -1265,6 +1274,9 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		ReadStarts:         c.readStarts,
 		Schemas:            schemas,
 	}
+	if c.job.SQL != nil {
+		plan.SQL, plan.Outputs, plan.OutputSchemas = c.job.SQL, c.job.Outputs, c.outputSchemas
+	}
 	if len(c.holdPlans) > 0 {
 		plan.HeldURL, plan.Holds = c.job.HeldURL, c.holdPlans
 	}
@@ -1296,7 +1308,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		}
 	}
 	var sinkEnds readEnder = ends
-	if c.job.Transform != nil {
+	if c.job.transformed() {
 		// An output's read starts with its inputs' first, and ends with
 		// their last.
 		var first time.Time

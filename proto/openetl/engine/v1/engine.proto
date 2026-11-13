@@ -40,7 +40,8 @@ message StartJobRequest {
   Naming naming = 10;
   // Where records the engine can't take are kept: file:// and an absolute
   // path, or s3://bucket/prefix with region and endpoint as query
-  // parameters. Empty: such a record fails the job.
+  // parameters. Empty: such a record fails the job. A transform's outputs'
+  // are below its _outputs, apart from the streams'.
   string quarantine_url = 11;
   // How changes to a stream's established schema are taken. A stream's
   // schema is established once restored, or once it crosses a barrier.
@@ -66,6 +67,37 @@ message StartJobRequest {
   // The pipeline's key groups, a power of two. Writer lane w owns the w-th
   // of writer_lanes contiguous ranges of them. Zero: 256.
   uint32 key_groups = 18;
+  // A transform's outputs, which the destination gets in place of streams.
+  // Empty without a transform: the streams are the outputs.
+  repeated StreamPlan outputs = 19;
+  // Unset: none, and outputs is empty.
+  Transform transform = 20;
+}
+
+// Transform is SQL between the normalizer's two halves. Its statements read
+// the streams, parsed and typed, under their source names, and write
+// outputs, which are named, given metadata columns and held as a stream
+// without a transform is. An output no statement writes is the stream of its
+// name, passed through.
+message Transform {
+  // INSERT INTO output SELECT … statements.
+  string sql = 1;
+  // The outputs the statements write, as planning gave them for the
+  // pipeline's version.
+  repeated ExpectedOutput expected_outputs = 2;
+  // The stateful operators' IDs, as planning gave them for the pipeline's
+  // version, and as StateSnapshot.operator names them. A plan with other IDs
+  // fails the job with CONFIG_INVALID.
+  repeated string operators = 3;
+}
+
+message ExpectedOutput {
+  string name = 1;
+  // An Arrow IPC stream holding only the schema: the statement's columns,
+  // with logical types.
+  bytes arrow_schema = 2;
+  // Empty: it has none, and can only be appended.
+  repeated string primary_key = 3;
 }
 
 // Routing is how a stream's rows reach writer lanes.
@@ -106,6 +138,10 @@ message Naming {
   uint32 max_length = 2;
 }
 
+// StreamPlan is a stream the engine reads, or a transform's output. An
+// output's arrow_schema, cursor_field and read_start_micros are unset. With a
+// transform, the destination's settings, soft_deletes, holds, routing and
+// table, are its outputs', and a stream's are unset.
 message StreamPlan {
   string name = 1;
   Lane lane = 2;
@@ -114,7 +150,7 @@ message StreamPlan {
   // from the rows.
   bytes arrow_schema = 4;
   // The stream's schema in the restored checkpoint, as EpochReady reported
-  // it. Inference continues from it.
+  // it, an output's in output_schemas. Inference continues from it.
   bytes restored_schema = 5;
   // The column whose value orders a record's versions, and becomes its
   // _openetl_seq. Empty: read_start_micros is.
@@ -263,7 +299,8 @@ enum Lane {
 message Edge {
   string id = 1;
   EdgeDirection direction = 2;
-  // A frame's stream index points into this list.
+  // A frame's stream index points into this list. An edge from the engine
+  // carries the destination's streams: a transform's outputs.
   repeated string streams = 3;
   // Inbound, its lane; outbound, its writer lane. Every lane passes every
   // stream's barriers.
@@ -344,7 +381,9 @@ message EventsResponse {
   }
 }
 
-// EpochReady says the engine's part of the epoch is durable.
+// EpochReady says the engine's part of the epoch is durable. Its staged
+// files, holds and delivered schemas are the destination's streams': with a
+// transform, its outputs'.
 message EpochReady {
   openetl.connector.v1.Epoch epoch = 1;
   // An engine sink's committables, one per writer lane; empty with a runner
@@ -352,7 +391,9 @@ message EpochReady {
   repeated bytes staged = 2;
   repeated StateSnapshot snapshots = 3;
   // Each stream's schema at its barrier, as an Arrow IPC stream holding only
-  // the schema. Streams without one yet are missing.
+  // the schema. Streams without one yet are missing. With a transform, a
+  // stream's is as its statements read it: source names and logical types,
+  // without metadata columns.
   map<string, bytes> schemas = 4;
   // Records quarantined in the epoch, one file per stream that had any.
   repeated QuarantineFile quarantine = 5;
@@ -365,6 +406,10 @@ message EpochReady {
   // stream's because columns are held: those stay at the type the
   // destination took, or are left out if it took none.
   map<string, bytes> delivered = 8;
+  // A transform's outputs' schemas at their barriers, as a stream's is
+  // without a transform: destination names and metadata columns. Empty
+  // without a transform.
+  map<string, bytes> output_schemas = 9;
 }
 
 // StreamHolds is a stream's holds at its barrier.
@@ -398,6 +443,8 @@ message QuarantineFile {
   string stream = 1;
   string url = 2;
   uint64 rows = 3;
+  // stream is one of a transform's outputs.
+  bool output = 4;
 }
 
 // StateSnapshot is an operator's state for a range of key groups, which

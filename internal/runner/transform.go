@@ -49,6 +49,29 @@ type TransformInput struct {
 // Transform.URL that holds its inputs.
 const TransformInputs = "in"
 
+// SQLTransform is SQL the engine runs between the normalizer's halves. Its
+// statements read the job's streams and write its outputs. An output no
+// statement writes is the stream of its name, passed through.
+type SQLTransform struct {
+	// INSERT INTO output SELECT … statements.
+	SQL string
+	// The outputs the statements write, as planning gave them for the
+	// pipeline's version.
+	Expected []ExpectedOutput
+	// The stateful operators' IDs, as planning gave them for the pipeline's
+	// version, and as checkpoint.Snapshot.Operator names them.
+	Operators []string
+}
+
+// ExpectedOutput is an output a statement writes, as planning gave it.
+type ExpectedOutput struct {
+	Name string
+	// The statement's columns, with logical types.
+	Schema *arrow.Schema
+	// Nil: it has none, and can only be appended.
+	PrimaryKey []string
+}
+
 // Metadata columns the second dataflow computes again, so it drops an
 // output's.
 var recomputed = []string{"_openetl_id", "_openetl_synced_at", "_openetl_deleted"}
