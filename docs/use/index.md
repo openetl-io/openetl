@@ -71,7 +71,7 @@ A pipeline's status is its latest sync's, unless it's paused:
 The top of a pipeline's page has its status, and:
 
 - **Source** and **Destination**, with the schema it writes into.
-- **Transform**, if its data goes through Spark or Flink on the way: which, and the cluster it runs on.
+- **Transform**, if its data goes through Spark or Flink on the way: which, and the cluster it runs on. A pipeline with SQL statements shows **SQL**.
 - **Schedule**, or **Paused**.
 - **Last success**, or **Last commit** for a continuous pipeline, which is its freshness.
 - **Behind source**, for a continuous pipeline: how far its reading was behind the source at its latest commit.

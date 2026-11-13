@@ -26,6 +26,9 @@ import (
 // connectors, even after an error.
 func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env) (runner.Job, error) {
 	p := spec.GetPipeline()
+	if p.GetTransform().GetSql() != nil {
+		return runner.Job{}, errs.New(errs.ConfigInvalid, "transform.sql: this runner can't run a SQL transform")
+	}
 	env.RateLimitScale = spec.GetRateLimitScale()
 	srcCfg, err := protojson.Marshal(spec.GetSource().GetConfig())
 	if err != nil {

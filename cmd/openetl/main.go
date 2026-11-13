@@ -261,6 +261,9 @@ func runApplyDocuments(ctx context.Context, cmd string, args []string, out io.Wr
 			if err := bundleDbtProject(d, base); err != nil {
 				return err
 			}
+			if err := inlineSQL(d, base); err != nil {
+				return err
+			}
 		}
 		req.Documents = append(req.Documents, docs...)
 	}

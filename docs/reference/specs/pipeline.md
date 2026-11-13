@@ -114,6 +114,9 @@ When a job size is an object rather than a preset, both `cpu` and `memory` are r
 | `source.streams[].heldValue` | any value | Yes with `held: value` | None | With `held: value`, what held cells show; with `held: last`, what they show in rows the destination doesn't have yet. A value of the column's delivered type. Set alone, it means `held: value`. `held: null` takes none. |
 | `source.streams[].groups` | list of lists of column names | No | None | Columns held together, by their source names: holding one holds the rest. Each group has two columns or more. |
 | `source.streams[].typeChanges` | `refuse` or `allow` | No | `destination.typeChanges` | `destination.typeChanges` for this stream alone |
+| `source.streams[].eventTime` | column name | No | None: a row's time is when the engine reads it | The column that holds a row's event time, for a SQL transform's statements. It needs `transform.sql`. A column that the source's latest catalog doesn't list for the stream is a problem in the plan. |
+| `source.streams[].watermark` | object | No | `delay: 0s` | How far behind the latest event time the stream's watermark stays. It needs `eventTime`. |
+| `source.streams[].watermark.delay` | duration, 0 or more | No | `0s` | The watermark trails the latest event time read from the stream by this much. |
 | `source.streams[].columns` | map of column names to objects | No | None | Settings for single columns, by their source names |
 | `source.streams[].columns.NAME` | object | No | None | One column's settings. It sets a `type`, a `held` or a `heldValue`, or more than one. |
 | `source.streams[].columns.NAME.type` | `string` or `float64` | No | The decimal | For a column the source declares as a decimal: `string` delivers the source's text for the value, NaN included; `float64` delivers a double, which can lose digits, and keeps NaN and infinities. Setting it on any other column is a problem in the plan. |
@@ -124,7 +127,7 @@ The plan checks hold requirements:
 
 - Cell quarantine and the `held`, `heldValue` and `groups` settings require a primary key. The destination must support patching for the selected write mode. These requirements also apply to column-level settings.
 - `held: last` additionally requires merge writes and destination support for preserving the last value.
-- Transform inputs cannot set `quarantine`, `held`, `heldValue`, `groups`, `collapse` or `typeChanges`.
+- The streams of a pipeline with a transform cannot set `quarantine`, `held`, `heldValue`, `groups`, `collapse` or `typeChanges`, and their columns cannot set `held` or `heldValue`.
 
 ## Destination
 
@@ -133,7 +136,7 @@ The plan checks hold requirements:
 | `destination` | object | Yes | — | Where and how to write |
 | `destination.ref` | name | Yes | — | The `Destination` to write to, by its name in the same workspace |
 | `destination.namespace` | string | No | The destination's default | The schema or dataset to write into |
-| `destination.tables` | map of stream names to names | No | Each stream's own name, through `destination.naming` | Streams' names in the destination, exactly as written: a table, or what the destination has instead, such as a topic. A stream left out goes by its own name. Two streams can't share one, and it can't be used with a transform, whose outputs name their tables. Changing one on a running pipeline leaves what was delivered in the old table, and the new one starts with what's read next; `openetl reset --stream` reads it all again. |
+| `destination.tables` | map of stream names to names | No | Each stream's own name, through `destination.naming` | Streams' names in the destination, exactly as written: a table, or what the destination has instead, such as a topic. A stream left out goes by its own name. Two streams can't share one. It can't be used with a Spark or Flink transform, whose outputs name their tables. With a SQL transform, it can also name the outputs that statements write, and the plan checks only each table's length. Changing one on a running pipeline leaves what was delivered in the old table, and the new one starts with what's read next; `openetl reset --stream` reads it all again. |
 | `destination.write` | `append`, `overwrite` or `merge` | No | For each stream, where the destination has the mode: `overwrite` for a stream read with `full_refresh`, and `merge` for a stream with a primary key read with `cdc`; `append` otherwise | How every stream is written. `merge` needs streams with a primary key, and `overwrite` streams read with `full_refresh`. |
 | `destination.deletes` | `soft` or `hard` | No | `soft` | How merge applies a delete. `soft` keeps the row, with `_openetl_deleted` true and its other columns as they were; `hard` removes it. Other write modes don't apply deletes, and the plan warns. |
 | `destination.naming` | `normalized` or `source` | No | `normalized` | How tables and columns are named. `normalized` names are lowercase, with anything outside `a-z`, `0-9` and `_` replaced; `source` names are the source's, quoted. |
@@ -181,12 +184,17 @@ The destination changes an existing column's type only when `typeChanges` permit
 
 ## Transforms
 
-A transform is your own code between the source and the destination: Spark in a scheduled pipeline, Flink in a continuous one. The source's streams are its inputs, and its outputs are what the destination gets. The [Spark](../../integrate/spark.md) and [Flink](../../integrate/flink.md) guides cover writing and running one.
+A transform sits between the source and the destination. The source's streams are its inputs, and its outputs are what the destination gets. A pipeline has at most one transform: SQL statements, or your own code, which is Spark in a scheduled pipeline and Flink in a continuous one. The [Spark](../../integrate/spark.md) and [Flink](../../integrate/flink.md) guides cover writing and running your own code.
+
+> [!IMPORTANT]
+> Runners do not run SQL transforms. A sync of a pipeline with `transform.sql`, or a continuous pipeline's job, fails with `CONFIG_INVALID`. `openetl plan` does not read the statements: it shows each stream as it would be without a transform.
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `transform` | object | No | None | One of `spark` and `flink` |
-| `transform.spark` | object | One of `spark` or `flink`, when `transform` is set | None | Runs your openetl-spark `Transform` on each epoch of a sync, on a Spark cluster. Scheduled pipelines only. |
+| `transform` | object | No | None | One of `sql`, `spark` and `flink` |
+| `transform.sql` | string, or `{ file: PATH }` | One of `sql`, `spark` or `flink`, when `transform` is set | None | The transform's SQL statements, as text. Each `INSERT INTO OUTPUT SELECT …` statement writes an output, and the statements read the source's streams as tables. With `{ file: PATH }`, `openetl apply` and `openetl plan` read the file, at a path relative to the file that names it, and send its text in place of the path. Other clients, such as the API, send the text. A pipeline version holds the text. Scheduled and continuous pipelines. |
+| `transform.passthrough` | `all` or `none` | No | `all` | Which of the streams that no statement writes reach the destination: `all` of them, as without a transform, or `none`. Only with `sql`. |
+| `transform.spark` | object | One of `sql`, `spark` or `flink`, when `transform` is set | None | Runs your openetl-spark `Transform` on each epoch of a sync, on a Spark cluster. Scheduled pipelines only. |
 | `transform.spark.cluster` | name | Yes | — | A `SparkCluster` in the same workspace |
 | `transform.spark.code` | object | Yes | — | The code: one of `jar` and `python`, and its `sha256`. The runner checks the file and gives the cluster its own copy. |
 | `transform.spark.code.jar` | URI | One of `jar` or `python` | None | A jar, at an `s3://`, `s3a://` or `https://` URI the runner can read |
@@ -199,7 +207,7 @@ A transform is your own code between the source and the destination: Spark in a 
 | `transform.spark.outputs[].primaryKey` | list of column names | No | The primary key of the input stream with the output's name, if there is one | The output's primary key |
 | `transform.spark.outputs[].write` | `append`, `overwrite` or `merge` | No | `destination.write`; without it, `overwrite` when every input is read with `full_refresh`, and `merge` when the input stream with the output's name is read with `cdc` and the output has a primary key, where the destination has the mode; `append` otherwise | How the output is written. `overwrite` needs every input read with `full_refresh`, and `merge` a primary key. |
 | `transform.spark.outputs[].require` | delivery guarantee | No | The `require` of the input stream with the output's name, then `delivery.require` | The lowest guarantee the output may have |
-| `transform.flink` | object | One of `spark` or `flink`, when `transform` is set | None | Runs your Flink job, built with openetl-flink, between a continuous pipeline's source and destination, on a Flink cluster. The job's checkpoints are the pipeline's. Continuous pipelines only. |
+| `transform.flink` | object | One of `sql`, `spark` or `flink`, when `transform` is set | None | Runs your Flink job, built with openetl-flink, between a continuous pipeline's source and destination, on a Flink cluster. The job's checkpoints are the pipeline's. Continuous pipelines only. |
 | `transform.flink.cluster` | name | Yes | — | A `FlinkCluster` in the same workspace |
 | `transform.flink.code` | object | Yes | — | The job's jar and its `sha256`. The runner checks the file and gives the cluster its own copy. |
 | `transform.flink.code.jar` | URI | Yes | — | A jar, at an `s3://`, `s3a://` or `https://` URI the runner can read |
@@ -311,3 +319,31 @@ spec:
       accessKeyId: { secret: lake-flink-key-id }
       secretAccessKey: { secret: lake-flink-key }
 ```
+
+## A SQL transform
+
+The fields of a SQL transform go in `transform` and in each stream's settings. Runners do not run this pipeline: see [Transforms](#transforms).
+
+```yaml
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: shop
+spec:
+  mode: continuous
+  source:
+    ref: shop-db
+    streams:
+      - name: orders
+        eventTime: created_at
+        watermark: { delay: 5s }
+      - name: customers
+  destination: { ref: lake }
+  transform:
+    sql: |
+      INSERT INTO customers
+      SELECT id, lower(email) AS email, created_at
+      FROM customers;
+```
+
+To keep the statements in a file of their own, write `sql: { file: transforms/shop.sql }`, with a path relative to the pipeline's file.

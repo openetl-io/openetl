@@ -322,7 +322,30 @@ message Transform {
   oneof engine {
     SparkTransform spark = 1;
     FlinkTransform flink = 2;
+    SqlTransform sql = 3;
   }
+}
+
+// SqlTransform is SQL the engine runs between the source and the
+// destination, in a scheduled or a continuous pipeline. Its statements read
+// the source's streams and write outputs, which are the destination's
+// streams. A stream no statement writes passes through, unless passthrough
+// is none.
+message SqlTransform {
+  // INSERT INTO output SELECT … and CREATE VIEW statements. The text itself:
+  // a file the spec names is read by the CLI, which sends its text here.
+  string sql = 1;
+  Passthrough passthrough = 2;
+}
+
+// Which streams that no statement writes reach the destination.
+enum Passthrough {
+  // All of them.
+  PASSTHROUGH_UNSPECIFIED = 0;
+  // All of them, as a stream without a transform does.
+  PASSTHROUGH_ALL = 1;
+  // None: only what statements write.
+  PASSTHROUGH_NONE = 2;
 }
 
 // SparkTransform runs the user's openetl-spark Transform on each epoch of a
@@ -513,6 +536,19 @@ message PipelineStream {
   repeated ColumnGroup groups = 10;
   // Overrides destination.type_changes for this stream.
   TypeChanges type_changes = 11;
+  // The column that holds a row's event time, for a SQL transform. Unset:
+  // a row's time is when the engine read it.
+  string event_time = 12;
+  // How far event time may run behind before a window closes. Only with
+  // event_time.
+  Watermark watermark = 13;
+}
+
+// Watermark says how late a stream's rows may arrive in event time.
+message Watermark {
+  // The watermark trails the latest event time seen by this much. Unset:
+  // zero.
+  google.protobuf.Duration delay = 1;
 }
 
 // Whether a destination changes a column's type itself when the stream's

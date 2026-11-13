@@ -10,8 +10,8 @@ import (
 	"github.com/openetl-io/openetl/internal/spec"
 )
 
-// Every example parses, with its dbt projects bundled, and its built-in
-// connectors accept their configs.
+// Every example parses, with its dbt projects bundled and its SQL files read,
+// and its built-in connectors accept their configs.
 func TestExamples(t *testing.T) {
 	files, err := filepath.Glob("../../examples/*.yaml")
 	if err != nil || len(files) == 0 {
@@ -24,6 +24,9 @@ func TestExamples(t *testing.T) {
 		}
 		for _, d := range docs {
 			if err := bundleDbtProject(d, filepath.Dir(f)); err != nil {
+				t.Fatal(err)
+			}
+			if err := inlineSQL(d, filepath.Dir(f)); err != nil {
 				t.Fatal(err)
 			}
 			doc, err := spec.Parse(d.GetContent())

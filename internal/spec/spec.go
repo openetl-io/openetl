@@ -355,8 +355,11 @@ type pipelineYAML struct {
 		Mode string `yaml:"mode"`
 	} `yaml:"heal"`
 	Transform *struct {
-		Spark *sparkTransformYAML `yaml:"spark"`
-		Flink *flinkTransformYAML `yaml:"flink"`
+		// Text, or {file: PATH}, which the CLI reads.
+		SQL         yaml.Node           `yaml:"sql"`
+		Passthrough string              `yaml:"passthrough"`
+		Spark       *sparkTransformYAML `yaml:"spark"`
+		Flink       *flinkTransformYAML `yaml:"flink"`
 	} `yaml:"transform"`
 	Resources   *jobResourcesYAML `yaml:"resources"`
 	SparkAccess *sparkAccessYAML  `yaml:"sparkAccess"`
@@ -389,8 +392,10 @@ type streamYAML struct {
 	Collapse    *bool  `yaml:"collapse"`
 	Quarantine  string `yaml:"quarantine"`
 	heldYAML    `yaml:",inline"`
-	Groups      [][]string `yaml:"groups"`
-	TypeChanges string     `yaml:"typeChanges"`
+	Groups      [][]string     `yaml:"groups"`
+	TypeChanges string         `yaml:"typeChanges"`
+	EventTime   string         `yaml:"eventTime"`
+	Watermark   *watermarkYAML `yaml:"watermark"`
 	Columns     map[string]struct {
 		Type     string `yaml:"type"`
 		heldYAML `yaml:",inline"`
@@ -591,8 +596,10 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		return nil, errors.New("postSync: steps run after a sync, and a continuous pipeline has no syncs")
 	case !continuous && (y.Schedule == nil || (y.Schedule.Every == "") == (y.Schedule.Cron == "")):
 		return nil, errors.New("schedule needs one of every or cron")
-	case y.Transform != nil && (y.Transform.Spark == nil) == (y.Transform.Flink == nil):
-		return nil, errors.New("transform needs one of spark and flink")
+	case y.Transform != nil && transforms(y.Transform.SQL.Kind != 0, y.Transform.Spark != nil, y.Transform.Flink != nil) != 1:
+		return nil, errors.New("transform needs one of sql, spark and flink: a pipeline has one transform")
+	case y.Transform != nil && y.Transform.Passthrough != "" && y.Transform.SQL.Kind == 0:
+		return nil, errors.New("transform.passthrough: only a SQL transform passes streams through; a Spark or Flink transform's outputs are the ones it lists")
 	case y.Transform != nil && y.Transform.Spark != nil && continuous:
 		return nil, errors.New("transform.spark: a Spark transform runs in a scheduled pipeline's syncs, and a continuous pipeline has none")
 	case y.Transform != nil && y.Transform.Flink != nil && !continuous:
@@ -600,6 +607,7 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 	}
 	spark := y.Transform != nil && y.Transform.Spark != nil
 	flink := y.Transform != nil && y.Transform.Flink != nil
+	sql := y.Transform != nil && y.Transform.SQL.Kind != 0
 	if y.Schedule != nil {
 		if p.Schedule, err = parseSchedule(y.Schedule); err != nil {
 			return nil, err
@@ -628,6 +636,8 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, fmt.Errorf("source.streams[%d].timestamps: Spark keeps only microseconds, so a Spark transform's inputs can't keep nanoseconds", i)
 		case (spark || flink) && s.Collapse != nil:
 			return nil, fmt.Errorf("source.streams[%d].collapse: a transform's inputs aren't written to the destination, and its outputs aren't collapsed", i)
+		case sql && s.Collapse != nil:
+			return nil, fmt.Errorf("source.streams[%d].collapse: with a SQL transform, neither streams nor outputs are collapsed", i)
 		}
 		if st.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", "require", s.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
@@ -642,8 +652,14 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		if st.TypeChanges, err = enum(apiv1.TypeChanges_value, "TYPE_CHANGES_", at+".typeChanges", s.TypeChanges, apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED); err != nil {
 			return nil, err
 		}
-		if (spark || flink) && st.TypeChanges != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED {
+		switch {
+		case (spark || flink) && st.TypeChanges != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED:
 			return nil, fmt.Errorf("%s.typeChanges: a transform's inputs aren't written to the destination; destination.typeChanges says what its outputs' columns may do", at)
+		case sql && st.TypeChanges != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED:
+			return nil, fmt.Errorf("%s.typeChanges: with a SQL transform, destination.typeChanges says what every stream's and output's columns may do", at)
+		}
+		if err := parseEventTime(at, s, sql, st); err != nil {
+			return nil, err
 		}
 		for j, g := range s.Groups {
 			if len(g) < 2 || slices.Contains(g, "") {
@@ -670,13 +686,19 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			}
 			st.Columns[name] = col
 		}
-		if holds && (spark || flink) {
-			return nil, fmt.Errorf("%s: a transform's inputs can't be held", at)
+		if holds && (spark || flink || sql) {
+			return nil, fmt.Errorf("%s: a transform's inputs can't be held: no quarantine, held, heldValue or groups, here or in its columns", at)
 		}
 		p.Source.Streams = append(p.Source.Streams, st)
 	}
 	p.Destination = &apiv1.PipelineDestination{Ref: y.Destination.Ref, Namespace: y.Destination.Namespace}
-	if p.Destination.Tables, err = parseTables(y.Destination.Tables, p.Source.GetStreams(), spark || flink); err != nil {
+	// A SQL transform's tables are its outputs', which aren't known until
+	// its statements are planned.
+	listed := p.Source.GetStreams()
+	if sql {
+		listed = nil
+	}
+	if p.Destination.Tables, err = parseTables(y.Destination.Tables, listed, spark || flink); err != nil {
 		return nil, err
 	}
 	if p.Destination.Write, err = enum(apiv1.WriteMode_value, "WRITE_MODE_", "destination.write", y.Destination.Write, apiv1.WriteMode_WRITE_MODE_UNSPECIFIED); err != nil {
@@ -715,6 +737,13 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		if p.Heal.Mode, err = enum(apiv1.HealMode_value, "HEAL_MODE_", "heal.mode", y.Heal.Mode, apiv1.HealMode_HEAL_MODE_UNSPECIFIED); err != nil {
 			return nil, err
 		}
+	}
+	if sql {
+		t, err := parseSQLTransform(&y.Transform.SQL, y.Transform.Passthrough)
+		if err != nil {
+			return nil, err
+		}
+		p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: t}}
 	}
 	if spark {
 		t, err := parseSparkTransform(y.Transform.Spark)
@@ -769,6 +798,17 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		}
 	}
 	return p, nil
+}
+
+// transforms counts the transforms a spec sets.
+func transforms(set ...bool) int {
+	n := 0
+	for _, s := range set {
+		if s {
+			n++
+		}
+	}
+	return n
 }
 
 type dbtProjectYAML struct {
