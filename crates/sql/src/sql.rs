@@ -580,8 +580,9 @@ struct Check<'a> {
     views: BTreeSet<usize>,
     /// The outermost SELECT, to say where it gives a column or loses a key.
     top: Option<Top>,
-    /// A name FROM read under more than one part, and the alias it was
-    /// given, for the SELECT that reads it to qualify its columns by.
+    /// The stream or view FROM read: the name it was written with where it
+    /// has no alias of its own (empty otherwise), and what qualifies its
+    /// columns, for the SELECT that reads it.
     qualified_as: Option<(Vec<ast::Ident>, ast::Ident)>,
 }
 
@@ -731,7 +732,10 @@ impl<'a> Check<'a> {
                 }
                 (from, from_key) = self.relation(&mut first.relation);
                 if let Some((written, alias)) = self.qualified_as.take() {
-                    unqualify(s, &written, &alias);
+                    for (span, m) in unqualify(s, &written, &alias) {
+                        let at = self.at(span);
+                        self.errors.push(Error::at(ErrorKind::Name, at, m));
+                    }
                 }
             }
         }
@@ -1049,6 +1053,7 @@ impl<'a> Check<'a> {
                         self.inputs.push(i.clone());
                     }
                 }
+                self.qualified_as = Some(qualifiers(&parts, alias, &written_as));
                 rewrite(name, alias, &d.name, &written_as);
                 let key = d.plan.is_some().then(|| d.key.clone());
                 return (d.nondeterministic.clone(), key);
@@ -1078,9 +1083,7 @@ impl<'a> Check<'a> {
                 if !self.inputs.contains(&stream) {
                     self.inputs.push(stream.clone());
                 }
-                if alias.is_none() && parts.len() > 1 {
-                    self.qualified_as = Some((parts.clone(), written_as.clone()));
-                }
+                self.qualified_as = Some(qualifiers(&parts, alias, &written_as));
                 rewrite(name, alias, &stream, &written_as);
                 let key = self.catalog.get(&stream).map(|s| s.key.clone());
                 (Lineage::new(), key)
@@ -1218,12 +1221,26 @@ impl<'a> Check<'a> {
     }
 }
 
+/// What qualifies the columns of a name FROM read: its alias, or else the
+/// name as written and its last part.
+fn qualifiers(
+    parts: &[ast::Ident],
+    alias: &Option<ast::TableAlias>,
+    written_as: &ast::Ident,
+) -> (Vec<ast::Ident>, ast::Ident) {
+    match alias {
+        Some(a) => (Vec::new(), a.name.clone()),
+        None => (parts.to_vec(), written_as.clone()),
+    }
+}
+
 /// Qualifies a SELECT's columns and wildcards by `alias` where they're
 /// qualified by the whole name FROM read, as `public.orders.id` or
-/// `source.customers.*`.
-fn unqualify(s: &mut ast::Select, written: &[ast::Ident], alias: &ast::Ident) {
+/// `source.customers.*`. Gives where a column's qualifier ends in the alias
+/// but is longer, as `nope.orders.id`, which binding would otherwise take.
+fn unqualify(s: &mut ast::Select, from: &[ast::Ident], alias: &ast::Ident) -> Vec<(Span, String)> {
     let fits = |p: &[ast::Ident]| {
-        p.len() == written.len() && p.iter().zip(written).all(|(a, b)| fold(a) == fold(b))
+        p.len() == from.len() && p.iter().zip(from).all(|(a, b)| fold(a) == fold(b))
     };
     for item in &mut s.projection {
         if let ast::SelectItem::QualifiedWildcard(
@@ -1235,18 +1252,31 @@ fn unqualify(s: &mut ast::Select, written: &[ast::Ident], alias: &ast::Ident) {
             *n = ast::ObjectName(vec![ast::ObjectNamePart::Identifier(alias.clone())]);
         }
     }
+    let mut refused = Vec::new();
     let mut replace = |e: &mut ast::Expr| {
-        if let ast::Expr::CompoundIdentifier(p) = e
-            && p.len() > written.len()
-            && fits(&p[..written.len()])
-        {
-            let rest = p.split_off(written.len());
-            *p = std::iter::once(alias.clone()).chain(rest).collect();
+        let span = e.span();
+        if let ast::Expr::CompoundIdentifier(p) = e {
+            if !from.is_empty() && p.len() > from.len() && fits(&p[..from.len()]) {
+                let rest = p.split_off(from.len());
+                *p = std::iter::once(alias.clone()).chain(rest).collect();
+            } else if p.len() > 2 && fold(&p[p.len() - 2]) == fold(alias) {
+                let qualifier = written(&p[..p.len() - 1]);
+                let m = if from.len() < 2 {
+                    format!("{qualifier} isn't what FROM reads: qualify the column by {alias}")
+                } else {
+                    format!(
+                        "{qualifier} isn't what FROM reads: qualify the column by {alias} or {}",
+                        written(from)
+                    )
+                };
+                refused.push((span, m));
+            }
         }
         ControlFlow::<()>::Continue(())
     };
     let _ = ast::visit_expressions_mut(&mut s.projection, &mut replace);
     let _ = ast::visit_expressions_mut(&mut s.selection, &mut replace);
+    refused
 }
 
 /// Points a name at what it resolved to, keeping the name it was written

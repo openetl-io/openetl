@@ -363,7 +363,7 @@ INSERT INTO x SELECT public.orders.id FROM public.orders AS o
 error bind 1:22 there's no column public.orders.id; there's o.id
 
 # A wildcard's qualifier matches the whole name as SQL folds it: a quoted
-# part exactly. A column's qualifier is matched by its last part.
+# part exactly.
 plan
 INSERT INTO x SELECT "Public".orders.* FROM public.orders
 ----
@@ -377,3 +377,25 @@ statement 1:1 x row_wise
   key id
   schema id Int64 not null, status Utf8
   reads public.orders: id, status
+
+# A column's qualifier is the alias, or the whole name FROM read where it
+# has none; a longer qualifier that ends in the alias is refused.
+plan
+INSERT INTO x SELECT "Public".orders.id FROM public.orders
+----
+error name 1:22 "Public".orders isn't what FROM reads: qualify the column by orders or public.orders
+
+plan
+INSERT INTO x SELECT nope.orders.id FROM public.orders
+----
+error name 1:22 nope.orders isn't what FROM reads: qualify the column by orders or public.orders
+
+plan
+INSERT INTO x SELECT public.o.id FROM public.orders AS o
+----
+error name 1:22 public.o isn't what FROM reads: qualify the column by o
+
+plan
+INSERT INTO x SELECT source.customers.id FROM customers
+----
+error name 1:22 source.customers isn't what FROM reads: qualify the column by customers
