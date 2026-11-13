@@ -1,0 +1,36 @@
+[package]
+name = "openetl-sql"
+description = "SQL transforms: statements and stream schemas to OpenETL's plan, and its expressions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+arrow-select.workspace = true
+datafusion-common.workspace = true
+datafusion-expr.workspace = true
+datafusion-functions.workspace = true
+datafusion-functions-aggregate.workspace = true
+datafusion-functions-nested.workspace = true
+datafusion-optimizer.workspace = true
+datafusion-physical-expr.workspace = true
+datafusion-sql.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+arrow-buffer.workspace = true
+arrow-ipc.workspace = true
+
+[[bench]]
+name = "rowwise"
+harness = false
+
+[[bench]]
+name = "accumulators"
+harness = false
+
+[lints]
+workspace = true
