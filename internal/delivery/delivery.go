@@ -76,6 +76,9 @@ type Stream struct {
 	// A transform's engine, as the spec names it, for messages; empty:
 	// spark.
 	Engine string
+	// A SQL transform's output: the stream its statement reads, whose
+	// settings it takes.
+	From string
 }
 
 // settled fills in the stream's require and collapse.
@@ -196,7 +199,7 @@ func Problems(caps destination.Capabilities, s Settings, streams []Stream) []err
 	for _, st := range streams {
 		if st.Mode == destination.Merge && !st.Keyed {
 			field := "destination.write"
-			if st.Transformed {
+			if st.Transformed && st.From == "" {
 				field = fmt.Sprintf("transform.%s.outputs[%s].write", cmp.Or(st.Engine, "spark"), st.Name)
 			}
 			fails = append(fails, fmt.Errorf("%s: merge needs a primary key, and stream %q has none", field, st.Name))
@@ -208,6 +211,8 @@ func Problems(caps destination.Capabilities, s Settings, streams []Stream) []err
 		}
 		field := "delivery.require"
 		switch {
+		case st.Require != 0 && st.From != "":
+			field = fmt.Sprintf("source.streams[%s].require", st.From)
 		case st.Require != 0 && st.Transformed:
 			field = fmt.Sprintf("transform.%s.outputs[%s].require", cmp.Or(st.Engine, "spark"), st.Name)
 		case st.Require != 0:

@@ -136,7 +136,7 @@ The plan checks hold requirements:
 | `destination` | object | Yes | — | Where and how to write |
 | `destination.ref` | name | Yes | — | The `Destination` to write to, by its name in the same workspace |
 | `destination.namespace` | string | No | The destination's default | The schema or dataset to write into |
-| `destination.tables` | map of stream names to names | No | Each stream's own name, through `destination.naming` | Streams' names in the destination, exactly as written: a table, or what the destination has instead, such as a topic. A stream left out goes by its own name. Two streams can't share one. It can't be used with a Spark or Flink transform, whose outputs name their tables. With a SQL transform, it can also name the outputs that statements write, and the plan checks only each table's length. Changing one on a running pipeline leaves what was delivered in the old table, and the new one starts with what's read next; `openetl reset --stream` reads it all again. |
+| `destination.tables` | map of stream names to names | No | Each stream's own name, through `destination.naming` | Streams' names in the destination, exactly as written: a table, or what the destination has instead, such as a topic. A stream left out goes by its own name. Two streams can't share one. It can't be used with a Spark or Flink transform, whose outputs name their tables. With a SQL transform, it can also name the outputs that statements write, and the plan checks only each table's length. A sync fails with `CONFIG_INVALID` if it names a stream that is neither an output nor passes through. Changing one on a running pipeline leaves what was delivered in the old table, and the new one starts with what's read next; `openetl reset --stream` reads it all again. |
 | `destination.write` | `append`, `overwrite` or `merge` | No | For each stream, where the destination has the mode: `overwrite` for a stream read with `full_refresh`, and `merge` for a stream with a primary key read with `cdc`; `append` otherwise | How every stream is written. `merge` needs streams with a primary key, and `overwrite` streams read with `full_refresh`. |
 | `destination.deletes` | `soft` or `hard` | No | `soft` | How merge applies a delete. `soft` keeps the row, with `_openetl_deleted` true and its other columns as they were; `hard` removes it. Other write modes don't apply deletes, and the plan warns. |
 | `destination.naming` | `normalized` or `source` | No | `normalized` | How tables and columns are named. `normalized` names are lowercase, with anything outside `a-z`, `0-9` and `_` replaced; `source` names are the source's, quoted. |
@@ -186,8 +186,7 @@ The destination changes an existing column's type only when `typeChanges` permit
 
 A transform sits between the source and the destination. The source's streams are its inputs, and its outputs are what the destination gets. A pipeline has at most one transform: SQL statements, or your own code, which is Spark in a scheduled pipeline and Flink in a continuous one. The [Spark](../../integrate/spark.md) and [Flink](../../integrate/flink.md) guides cover writing and running your own code.
 
-> [!IMPORTANT]
-> Runners do not run SQL transforms. A sync of a pipeline with `transform.sql`, or a continuous pipeline's job, fails with `CONFIG_INVALID`. `openetl plan` does not read the statements: it shows each stream as it would be without a transform.
+[A SQL transform](#a-sql-transform) says which statements run, and what they do to keys, changelogs and errors.
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
@@ -322,7 +321,7 @@ spec:
 
 ## A SQL transform
 
-The fields of a SQL transform go in `transform` and in each stream's settings. Runners do not run this pipeline: see [Transforms](#transforms).
+A SQL transform runs in the engine, after each stream's rows are typed and before they are written. Its statements read each stream under its source column names, with logical types. Each output gets destination names and metadata columns, as a stream does without a transform. The fields of a SQL transform go in `transform` and in each stream's settings. [`examples/postgres-to-parquet-sql.yaml`](../../../examples/postgres-to-parquet-sql.yaml) is a complete pipeline.
 
 ```yaml
 apiVersion: openetl.io/v1alpha1
@@ -347,3 +346,27 @@ spec:
 ```
 
 To keep the statements in a file of their own, write `sql: { file: transforms/shop.sql }`, with a path relative to the pipeline's file.
+
+### Statements that run
+
+The engine plans the statements each time a sync or a continuous pipeline's job starts.
+
+- It runs row-wise statements: projections and renames, literals, casts, `CASE`, scalar functions, `WHERE` and `UNNEST`, and `CREATE VIEW` over them. Each statement runs on every lane of the job.
+- It refuses other statements, such as aggregates, `GROUP BY`, window functions, joins, `DISTINCT`, `ORDER BY` and `LIMIT`. The sync, or the continuous pipeline's job, fails with `CONFIG_INVALID`. The message gives the position of each statement it refuses, as `LINE:COLUMN`.
+- A statement reads only streams whose source declares their columns, as a database source does. If a statement reads a stream whose columns the source infers from its rows, such as `faker`'s, the sync fails with `CONFIG_INVALID`. Such a stream can still pass through.
+- `openetl plan` does not read the statements: it shows each stream as it would be without a transform.
+
+An output's primary key is its stream's, if each key column passes through unchanged, renamed or not. Otherwise the output has no primary key, and is appended or overwritten. If `destination.write` is `merge`, each statement must keep its stream's primary key.
+
+On a changelog stream, such as one read with `cdc`:
+
+- A statement must keep the stream's primary key, and cannot use `UNNEST`.
+- A delete passes as a delete of its key.
+- An insert or update that fails the `WHERE` becomes a delete of its key. A merge applies the delete whether the table has the row or not, so a row that leaves the filter leaves the table.
+- If an update does not send a column, an output column that depends only on columns it did not send keeps the value it has. If a `WHERE`, or an output column, depends on such a column and on a column the update sent, the statement cannot evaluate the row.
+
+The engine quarantines a row that a statement cannot evaluate, such as a value that a cast cannot convert, as one of the output's records, as it quarantines a row whose value does not fit its type. It writes the rest of the batch.
+
+Each output row keeps the `_openetl_id` of the row it comes from. Each row that `UNNEST` gives gets an `_openetl_id` of its own.
+
+If a stream's schema changes during a sync, the engine plans the statements that read it again. A new column reaches an output only through `*`. An output's schema changes under `schemaPolicy`, as a stream's does. A change that a statement cannot take, or one that would change an output's primary key, fails the sync with `SCHEMA_DRIFT`. Outputs do not hold columns.

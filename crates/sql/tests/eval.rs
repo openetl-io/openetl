@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int64Type, TimestampMicrosecondType};
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -53,7 +54,7 @@ fn run(op: &RowWise, batch: &RecordBatch) -> RecordBatch {
                     .unwrap_or_else(|e| panic!("{e}"))
             }
             Step::Project(p) => p.eval(&current).unwrap_or_else(|e| panic!("{e}")),
-            Step::Unnest(_) => panic!("no unnest here"),
+            Step::Unnest(u) => u.eval(&current).unwrap_or_else(|e| panic!("{e}")).batch,
         };
     }
     current
@@ -258,5 +259,194 @@ fn errors_come_in_the_order_of_their_positions() {
         e.to_string(),
         "1:22: there's no column nope; there are id, email, name\n\
          2:49: a stream has no order, so ORDER BY is refused"
+    );
+}
+
+fn events() -> Catalog {
+    let list = |t| DataType::List(Arc::new(Field::new_list_field(t, true)));
+    let mut c = Catalog::new();
+    c.insert(
+        "events",
+        Stream {
+            schema: Arc::new(Schema::new(vec![
+                Field::new("user_id", DataType::Int64, true),
+                Field::new("tags", list(DataType::Utf8), true),
+                Field::new("scores", list(DataType::Int64), true),
+            ])),
+            key: Vec::new(),
+            changelog: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    c
+}
+
+/// Rows of user_id, tags and scores; None is a null list.
+type Event<'a> = (i64, Option<&'a [&'a str]>, Option<&'a [i64]>);
+
+fn event_batch(rows: &[Event]) -> RecordBatch {
+    let mut tags = ListBuilder::new(StringBuilder::new());
+    let mut scores = ListBuilder::new(Int64Builder::new());
+    for (_, t, s) in rows {
+        match t {
+            Some(t) => {
+                for v in *t {
+                    tags.values().append_value(v);
+                }
+                tags.append(true);
+            }
+            None => tags.append_null(),
+        }
+        match s {
+            Some(s) => {
+                for v in *s {
+                    scores.values().append_value(*v);
+                }
+                scores.append(true);
+            }
+            None => scores.append_null(),
+        }
+    }
+    let ids: Int64Array = rows.iter().map(|r| Some(r.0)).collect();
+    let tags = tags.finish();
+    let scores = scores.finish();
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("user_id", DataType::Int64, true),
+            Field::new("tags", tags.data_type().clone(), true),
+            Field::new("scores", scores.data_type().clone(), true),
+        ])),
+        vec![Arc::new(ids) as ArrayRef, Arc::new(tags), Arc::new(scores)],
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn ints(b: &RecordBatch, column: &str) -> Vec<Option<i64>> {
+    let i = b
+        .schema()
+        .index_of(column)
+        .unwrap_or_else(|e| panic!("{e}"));
+    b.column(i).as_primitive::<Int64Type>().iter().collect()
+}
+
+/// The UNNEST step of a statement's steps, run on the steps before it.
+fn unnested(sql: &str, batch: &RecordBatch) -> openetl_sql::Unnested {
+    let s = plan_one(sql, &events());
+    let op = row_wise(&s);
+    let mut current = op.input(batch).unwrap_or_else(|e| panic!("{e}"));
+    for step in &op.steps {
+        match step {
+            Step::Project(p) => current = p.eval(&current).unwrap_or_else(|e| panic!("{e}")),
+            Step::Unnest(u) => return u.eval(&current).unwrap_or_else(|e| panic!("{e}")),
+            Step::Filter(_) => panic!("no filter here"),
+        }
+    }
+    panic!("no UNNEST in {sql}")
+}
+
+#[test]
+fn unnest_gives_a_row_per_element_and_none_for_an_empty_or_null_list() {
+    let b = event_batch(&[
+        (1, Some(&["a", "b"]), None),
+        (2, Some(&[]), None),
+        (3, None, None),
+        (4, Some(&["c"]), None),
+    ]);
+    let u = unnested(
+        "INSERT INTO t SELECT user_id, unnest(tags) AS tag FROM events",
+        &b,
+    );
+    assert_eq!(u.rows, [0, 0, 3]);
+    assert_eq!(u.ordinals, [0, 1, 0]);
+    assert_eq!(ints(&u.batch, "user_id"), [Some(1), Some(1), Some(4)]);
+    let tag = u.batch.column(1).as_string::<i32>();
+    assert_eq!(
+        tag.iter().collect::<Vec<_>>(),
+        [Some("a"), Some("b"), Some("c")]
+    );
+}
+
+#[test]
+fn unnest_outer_keeps_a_row_of_nulls_for_an_empty_or_null_list() {
+    let b = event_batch(&[
+        (1, Some(&[]), None),
+        (2, None, None),
+        (3, Some(&["c"]), None),
+    ]);
+    let u = unnested(
+        "INSERT INTO t SELECT user_id, unnest_outer(tags) AS tag FROM events",
+        &b,
+    );
+    assert_eq!(u.rows, [0, 1, 2]);
+    let tag = u.batch.column(1).as_string::<i32>();
+    assert_eq!(tag.iter().collect::<Vec<_>>(), [None, None, Some("c")]);
+}
+
+#[test]
+fn several_lists_give_as_many_rows_as_the_longest_with_nulls_past_the_shorter() {
+    let b = event_batch(&[
+        (1, Some(&["a", "b", "c"]), Some(&[10])),
+        (2, None, Some(&[20, 21])),
+        (3, Some(&[]), Some(&[])),
+    ]);
+    let u = unnested(
+        "INSERT INTO t SELECT user_id, unnest(tags) AS tag, unnest(scores) AS score FROM events",
+        &b,
+    );
+    assert_eq!(u.rows, [0, 0, 0, 1, 1]);
+    assert_eq!(u.ordinals, [0, 1, 2, 0, 1]);
+    let tag = u.batch.column(1).as_string::<i32>();
+    assert_eq!(
+        tag.iter().collect::<Vec<_>>(),
+        [Some("a"), Some("b"), Some("c"), None, None]
+    );
+    assert_eq!(
+        ints(&u.batch, &u.batch.schema().field(2).name().clone()),
+        [Some(10), None, None, Some(20), Some(21)]
+    );
+}
+
+#[test]
+fn unnest_reads_a_sliced_batch() {
+    let b = event_batch(&[(1, Some(&["a"]), None), (2, Some(&["b", "c"]), None)]).slice(1, 1);
+    let u = unnested(
+        "INSERT INTO t SELECT user_id, unnest(tags) AS tag FROM events",
+        &b,
+    );
+    assert_eq!(u.rows, [0, 0]);
+    let tag = u.batch.column(1).as_string::<i32>();
+    assert_eq!(tag.iter().collect::<Vec<_>>(), [Some("b"), Some("c")]);
+}
+
+#[test]
+fn an_expression_says_which_columns_it_reads() {
+    let c = customers(fields());
+    let s = plan_one(
+        "INSERT INTO x SELECT id, lower(email) || name AS label, 'eu' AS region FROM customers WHERE name IS NOT NULL",
+        &c,
+    );
+    let op = row_wise(&s);
+    let reads: Vec<&str> = op
+        .reads
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect();
+    let name = |i: usize| reads[i];
+    let mut seen = Vec::new();
+    for step in &op.steps {
+        match step {
+            Step::Filter(p) => seen.push(p.inputs().iter().map(|&i| name(i)).collect::<Vec<_>>()),
+            Step::Project(p) => {
+                for c in &p.columns {
+                    seen.push(c.expr.inputs().iter().map(|&i| name(i)).collect());
+                }
+            }
+            Step::Unnest(_) => {}
+        }
+    }
+    assert_eq!(
+        seen,
+        [vec!["name"], vec!["id"], vec!["email", "name"], vec![]]
     );
 }

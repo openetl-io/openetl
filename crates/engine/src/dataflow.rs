@@ -1,8 +1,11 @@
 //! The dataflow. Each lane reads its inbound edge and normalizes what it
 //! carries, raw rows to Arrow, on a task of its own: it parses and types,
-//! runs each stream's stage, then names, adds metadata columns and holds. It
-//! hands the result to a writer lane: its own, or for a stream routed by key
-//! group, the one owning each row's group. Each writer lane aligns the lanes
+//! then names, adds metadata columns and holds. With a SQL transform, the
+//! streams it reads are typed, and each of their batches goes through every
+//! statement that reads it, and to the output it is if it passes through,
+//! before each output's batch is named, given metadata columns and held. A
+//! lane hands what it shaped to a writer lane: its own, or for a stream
+//! routed by key group, the one owning each row's group. Each writer lane aligns the lanes
 //! feeding it, and writes to a runner sink, with barriers in band, or to a
 //! Parquet or staged sink, which stages each epoch and reports it in
 //! EpochReady.
@@ -19,7 +22,8 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use openetl_formats::ParquetStaging;
 use openetl_normalize::{
-    Error as NormalizeError, Shaped, Shaper, Typed, by_key_group, logical_type,
+    Error as NormalizeError, Policy, Rejected, Shaped, Shaper, Typed, by_key_group, logical_type,
+    naming::Naming, widens,
 };
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
@@ -38,10 +42,11 @@ use tracing::{Instrument as _, Span, debug_span, info_span};
 use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
-use crate::plan::{Plan, Sink};
+use crate::plan::{InputPlan, Plan, Sink};
 use crate::replay::Replayer;
-use crate::stage::Stage;
+use crate::stage::{Applied, Stage, pushed_rows};
 use crate::staging::Staging;
+use crate::transform::Route;
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
 
@@ -291,11 +296,132 @@ impl Owner {
     }
 }
 
+/// A stream a transform reads, whatever its lanes: what its rows are typed
+/// by, and its schema as its statements read it, which each lane widens.
+struct InputOwner {
+    shaper: Shaper,
+    state: Mutex<InputState>,
+}
+
+#[derive(Default)]
+struct InputState {
+    schema: Option<SchemaRef>,
+    /// By epoch, until it's ready.
+    crossings: BTreeMap<u64, InputCrossing>,
+    ended: usize,
+    at_end: Option<SchemaRef>,
+}
+
+/// What a stream's lanes did in an epoch, as they pass its barrier.
+#[derive(Default)]
+struct InputCrossing {
+    lanes: usize,
+    quarantine: Vec<QuarantineFile>,
+    /// The stream's schema, once every lane has passed it.
+    at: Option<Option<SchemaRef>>,
+}
+
+impl InputOwner {
+    fn new(input: &InputPlan) -> Result<Self, JobError> {
+        let shaper = Shaper::new(
+            Naming {
+                keep_source: true,
+                max_len: 0,
+            },
+            String::new(),
+            input.identity.clone(),
+            Policy::AllowAll,
+            input.restored.clone(),
+            input.declared.clone(),
+            input.types,
+        )
+        .map_err(|e| JobError::config(format!("stream {}: {e}", input.name)))?
+        .with_changelog(input.changelog);
+        Ok(Self {
+            shaper,
+            state: Mutex::new(InputState {
+                schema: input.restored.clone(),
+                ..InputState::default()
+            }),
+        })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, InputState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A lane typed a batch at `schema`: columns it adds join the stream's,
+    /// and a type that holds the stream's replaces it.
+    fn observe(&self, schema: &SchemaRef) {
+        let mut st = self.lock();
+        let Some(old) = &st.schema else {
+            st.schema = Some(schema.clone());
+            return;
+        };
+        let mut fields: Vec<arrow_schema::Field> = Vec::with_capacity(old.fields().len());
+        let mut changed = false;
+        for f in old.fields() {
+            match schema.field_with_name(f.name()) {
+                Ok(g) if g.data_type() != f.data_type() && !widens(g, f) => {
+                    fields.push(g.clone());
+                    changed = true;
+                }
+                _ => fields.push(f.as_ref().clone()),
+            }
+        }
+        for g in schema.fields() {
+            if old.field_with_name(g.name()).is_err() {
+                fields.push(g.as_ref().clone());
+                changed = true;
+            }
+        }
+        if changed {
+            st.schema = Some(Arc::new(arrow_schema::Schema::new(fields)));
+        }
+    }
+
+    fn cross(&self, lanes: usize, n: u64, q: Option<QuarantineFile>) {
+        let mut st = self.lock();
+        let schema = st.schema.clone();
+        let c = st.crossings.entry(n).or_default();
+        c.lanes += 1;
+        c.quarantine.extend(q);
+        if c.lanes == lanes {
+            c.at = Some(schema);
+        }
+    }
+
+    fn end(&self, lanes: usize) {
+        let mut st = self.lock();
+        st.ended += 1;
+        if st.ended == lanes {
+            st.at_end = st.schema.clone();
+        }
+    }
+
+    /// The stream's schema in ready epoch n, and what it quarantined in it.
+    fn take(&self, n: u64) -> (Option<SchemaRef>, Vec<QuarantineFile>) {
+        let mut st = self.lock();
+        match st.crossings.remove(&n) {
+            Some(InputCrossing {
+                quarantine,
+                at: Some(schema),
+                ..
+            }) => (schema, quarantine),
+            _ => (st.at_end.clone(), Vec::new()),
+        }
+    }
+}
+
 /// What every lane and writer lane of a job share.
 struct Flow {
     plan: Arc<Plan>,
     owners: Vec<Owner>,
     counters: Vec<Counters>,
+    /// With a transform, the streams it reads, which `owners` and
+    /// `counters` don't count.
+    inputs: Vec<InputOwner>,
+    input_counters: Vec<Counters>,
     lanes: Vec<LaneClock>,
     start: Instant,
     /// Held across sending epochs, so they go out in order.
@@ -304,22 +430,39 @@ struct Flow {
 }
 
 impl Flow {
+    /// Each stream's counts. A transform's input and an output of the same
+    /// name are one stream: rows in are the input's, and rows out the
+    /// output's.
     fn metrics(&self) -> EventsResponse {
-        let streams = self
+        let load = |name: &str, c: &Counters| StreamMetrics {
+            stream: name.to_owned(),
+            rows_in: c.rows_in.load(Ordering::Relaxed),
+            bytes_in: c.bytes_in.load(Ordering::Relaxed),
+            rows_out: c.rows_out.load(Ordering::Relaxed),
+            bytes_out: c.bytes_out.load(Ordering::Relaxed),
+            rows_quarantined: c.rows_quarantined.load(Ordering::Relaxed),
+            cells_held: c.cells_held.load(Ordering::Relaxed),
+        };
+        let mut streams: Vec<StreamMetrics> = self
             .plan
             .streams
             .iter()
             .zip(&self.counters)
-            .map(|(name, c)| StreamMetrics {
-                stream: name.clone(),
-                rows_in: c.rows_in.load(Ordering::Relaxed),
-                bytes_in: c.bytes_in.load(Ordering::Relaxed),
-                rows_out: c.rows_out.load(Ordering::Relaxed),
-                bytes_out: c.bytes_out.load(Ordering::Relaxed),
-                rows_quarantined: c.rows_quarantined.load(Ordering::Relaxed),
-                cells_held: c.cells_held.load(Ordering::Relaxed),
-            })
+            .map(|(name, c)| load(name, c))
             .collect();
+        if let Some(t) = &self.plan.transform {
+            for (input, c) in t.inputs.iter().zip(&self.input_counters) {
+                let m = load(&input.name, c);
+                match streams.iter_mut().find(|s| s.stream == m.stream) {
+                    Some(s) => {
+                        s.rows_in += m.rows_in;
+                        s.bytes_in += m.bytes_in;
+                        s.rows_quarantined += m.rows_quarantined;
+                    }
+                    None => streams.push(m),
+                }
+            }
+        }
         EventsResponse {
             event: Some(events_response::Event::Metrics(Metrics {
                 streams,
@@ -356,8 +499,23 @@ where
             return Err(e);
         }
     };
+    let inputs: Result<Vec<_>, _> = plan
+        .transform
+        .iter()
+        .flat_map(|t| t.inputs.iter())
+        .map(InputOwner::new)
+        .collect();
+    let inputs = match inputs {
+        Ok(i) => i,
+        Err(e) => {
+            report(&events, &e).await;
+            return Err(e);
+        }
+    };
     let flow = Arc::new(Flow {
         counters: plan.streams.iter().map(|_| Counters::default()).collect(),
+        input_counters: inputs.iter().map(|_| Counters::default()).collect(),
+        inputs,
         lanes: inbound.iter().map(|_| LaneClock::new()).collect(),
         start: Instant::now(),
         owners,
@@ -443,15 +601,11 @@ where
     res
 }
 
-/// One lane's copy of a stream.
+/// One lane's copy of a stream the destination gets.
 struct LaneStream {
     stream: usize,
     shaper: Shaper,
-    /// Between the shaper's two halves.
-    stage: Stage,
     version: u64,
-    next_epoch: u64,
-    ended: bool,
     /// Quarantined lines since its last barrier, and how many.
     quarantined: (Vec<u8>, u64),
     /// Held cells since its last barrier, by column.
@@ -470,8 +624,8 @@ impl LaneStream {
         }
     }
 
-    /// Types with `f`, runs the stage and shapes, with the owner's latest
-    /// schema, and publishes what that changes.
+    /// Types with `f` and shapes, with the owner's latest schema, and
+    /// publishes what that changes.
     fn shape(
         &mut self,
         owner: &Owner,
@@ -479,7 +633,7 @@ impl LaneStream {
     ) -> Result<Shaped, NormalizeError> {
         loop {
             self.catch_up(owner);
-            let out = f(&mut self.shaper).and_then(|t| self.shaper.shape(self.stage.apply(t)));
+            let out = f(&mut self.shaper).and_then(|t| self.shaper.shape(t));
             let changed = self.shaper.take_changed();
             if out.is_err() {
                 if owner.version.load(Ordering::Acquire) == self.version {
@@ -501,6 +655,32 @@ impl LaneStream {
             return out;
         }
     }
+}
+
+/// One lane's copy of a stream it reads.
+struct LaneInput {
+    next_epoch: u64,
+    ended: bool,
+    kind: Kind,
+}
+
+enum Kind {
+    /// Without a transform, the stream is the destination's, and one shaper
+    /// types and shapes it.
+    Own(Box<LaneStream>),
+    Transformed(Box<Transformed>),
+}
+
+/// A lane's copy of a stream a transform reads.
+struct Transformed {
+    input: usize,
+    typer: Shaper,
+    /// Quarantined lines since its last barrier, and how many.
+    quarantined: (Vec<u8>, u64),
+    /// The schema the lane last told the stream's owner of.
+    seen: Option<SchemaRef>,
+    /// The outputs it feeds.
+    outputs: Vec<(Stage, LaneStream)>,
 }
 
 /// A lane, with a sender to each writer lane.
@@ -577,23 +757,49 @@ where
     let flow = lane.flow.clone();
     let plan = &flow.plan;
     let id = &plan.inbound[lane.lane].id;
-    let mut streams = Vec::with_capacity(plan.inbound[lane.lane].streams.len());
-    for &s in &plan.inbound[lane.lane].streams {
-        let replay = match (lane.lane, &plan.replays[s], &plan.held_url) {
-            (0, Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
-            _ => None,
-        };
+    let lane_stream = |s: usize| {
         let o = flow.owners[s].lock();
-        streams.push(LaneStream {
+        LaneStream {
             stream: s,
             shaper: o.shaper.fork(),
-            stage: Stage::default(),
             version: o.version,
-            next_epoch: plan.first_epoch,
-            ended: false,
             quarantined: (Vec::new(), 0),
             cells: BTreeMap::new(),
-            replay,
+            replay: None,
+        }
+    };
+    let mut streams = Vec::with_capacity(plan.inbound[lane.lane].streams.len());
+    for &s in &plan.inbound[lane.lane].streams {
+        let kind = match &plan.transform {
+            None => {
+                let mut ls = lane_stream(s);
+                ls.replay = match (lane.lane, &plan.replays[s], &plan.held_url) {
+                    (0, Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
+                    _ => None,
+                };
+                Kind::Own(Box::new(ls))
+            }
+            Some(t) => Kind::Transformed(Box::new(Transformed {
+                input: s,
+                typer: flow.inputs[s].shaper.fork(),
+                quarantined: (Vec::new(), 0),
+                seen: None,
+                outputs: t.routes[s]
+                    .iter()
+                    .map(|&(o, route)| {
+                        let stage = match route {
+                            Route::Pass => Stage::Identity,
+                            Route::Statement(i) => Stage::statement(&t.sql, i),
+                        };
+                        (stage, lane_stream(o))
+                    })
+                    .collect(),
+            })),
+        };
+        streams.push(LaneInput {
+            next_epoch: plan.first_epoch,
+            ended: false,
+            kind,
         });
     }
     let protocol = |msg: String| JobError::internal(format!("edge {id}: {msg}"));
@@ -616,20 +822,23 @@ where
             Err(e) => return Err(JobError::runner_gone(format!("edge {id}: {e}"))),
         };
         let local = f.stream as usize;
-        let Some(ls) = streams.get_mut(local) else {
+        let Some(li) = streams.get_mut(local) else {
             return Err(protocol(format!(
                 "frame for stream {local}, which the edge doesn't carry"
             )));
         };
-        let stream = ls.stream;
-        if ls.ended {
-            return Err(protocol(format!(
-                "frame after the end of stream {}",
-                plan.streams[stream]
-            )));
+        let input = plan.inbound[lane.lane].streams[local];
+        let name = match &plan.transform {
+            Some(t) => &t.inputs[input].name,
+            None => &plan.streams[input],
+        };
+        if li.ended {
+            return Err(protocol(format!("frame after the end of stream {name}")));
         }
-        let owner = &flow.owners[stream];
-        let c = &flow.counters[stream];
+        let c = match plan.transform {
+            Some(_) => &flow.input_counters[input],
+            None => &flow.counters[input],
+        };
         c.bytes_in
             .fetch_add(f.payload.len() as u64, Ordering::Relaxed);
         match f.kind {
@@ -644,12 +853,28 @@ where
                 flow.lanes[lane.lane]
                     .rows_in
                     .fetch_add(rows.rows.len() as u64, Ordering::Relaxed);
-                let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = rows.rows.len())
-                    .in_scope(|| ls.shape(owner, |sh| sh.type_rows(rows.rows.iter().map(Vec::as_slice))))
-                    .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| String::from_utf8_lossy(&rows.rows[row]).into_owned();
-                hold(plan, stream, &n.rejected, record, &mut ls.quarantined, c)?;
-                shaped(&lane, ls, n, c).await?;
+                let span = debug_span!("batch", openetl.stream = %name, rows = rows.rows.len());
+                match &mut li.kind {
+                    Kind::Own(ls) => {
+                        let owner = &flow.owners[input];
+                        let n = span
+                            .in_scope(|| {
+                                ls.shape(owner, |sh| {
+                                    sh.type_rows(rows.rows.iter().map(Vec::as_slice))
+                                })
+                            })
+                            .map_err(|e| shape_error(name, e))?;
+                        hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
+                        shaped(&lane, ls, n, c).await?;
+                    }
+                    Kind::Transformed(t) => {
+                        let typed = span
+                            .in_scope(|| t.typer.type_rows(rows.rows.iter().map(Vec::as_slice)))
+                            .map_err(|e| shape_error(name, e))?;
+                        transform(&lane, t, typed, &record, c).await?;
+                    }
+                }
             }
             FrameKind::Batch => {
                 let batch = ipc::decode_batch(f.payload).map_err(|e| protocol(e.to_string()))?;
@@ -659,74 +884,146 @@ where
                     .rows_in
                     .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
                 if plan.passthrough {
-                    lane.send(Out::Batch(stream, batch)).await?;
+                    lane.send(Out::Batch(input, batch)).await?;
                     continue;
                 }
-                let n = debug_span!("batch", openetl.stream = %plan.streams[stream], rows = batch.num_rows())
-                    .in_scope(|| ls.shape(owner, |sh| sh.type_batch(&batch)))
-                    .map_err(|e| shape_error(&plan.streams[stream], e))?;
                 let record = |row: usize| openetl_normalize::render_row(&batch, row);
-                hold(plan, stream, &n.rejected, record, &mut ls.quarantined, c)?;
-                shaped(&lane, ls, n, c).await?;
+                let span = debug_span!("batch", openetl.stream = %name, rows = batch.num_rows());
+                match &mut li.kind {
+                    Kind::Own(ls) => {
+                        let owner = &flow.owners[input];
+                        let n = span
+                            .in_scope(|| ls.shape(owner, |sh| sh.type_batch(&batch)))
+                            .map_err(|e| shape_error(name, e))?;
+                        hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
+                        shaped(&lane, ls, n, c).await?;
+                    }
+                    Kind::Transformed(t) => {
+                        let typed = span
+                            .in_scope(|| t.typer.type_batch(&batch))
+                            .map_err(|e| shape_error(name, e))?;
+                        transform(&lane, t, typed, &record, c).await?;
+                    }
+                }
             }
             FrameKind::Barrier => {
                 let epoch = Barrier::decode(f.payload.as_slice())
                     .map_err(|e| protocol(e.to_string()))?
                     .epoch
                     .unwrap_or_default();
-                if epoch.generation != plan.generation || epoch.n != ls.next_epoch {
+                if epoch.generation != plan.generation || epoch.n != li.next_epoch {
                     return Err(protocol(format!(
-                        "stream {} crossed barrier ({}, {}) while in ({}, {})",
-                        plan.streams[stream],
-                        epoch.generation,
-                        epoch.n,
-                        plan.generation,
-                        ls.next_epoch
+                        "stream {name} crossed barrier ({}, {}) while in ({}, {})",
+                        epoch.generation, epoch.n, plan.generation, li.next_epoch
                     )));
                 }
-                ls.next_epoch += 1;
-                let (lines, rows) = std::mem::take(&mut ls.quarantined);
-                let q = match &plan.quarantine {
-                    Some(q) if rows > 0 => Some(QuarantineFile {
-                        stream: plan.streams[stream].clone(),
-                        url: q
-                            .put(
-                                epoch.generation,
-                                epoch.n,
-                                &plan.streams[stream],
-                                lane.lane,
-                                lines,
+                li.next_epoch += 1;
+                match &mut li.kind {
+                    Kind::Own(ls) => {
+                        let q = quarantine_file(
+                            plan.quarantine.as_deref(),
+                            epoch,
+                            name,
+                            &lane,
+                            &mut ls.quarantined,
+                            false,
+                        )
+                        .await?;
+                        let replayed = ls.replay.as_ref().map(Replayer::progress);
+                        let owner = &flow.owners[input];
+                        owner.cross(
+                            plan,
+                            input,
+                            epoch.n,
+                            q,
+                            std::mem::take(&mut ls.cells),
+                            replayed,
+                        )?;
+                        lane.all(input, || Out::Barrier(input, epoch)).await?;
+                        if ls.replay.is_some() {
+                            ls.catch_up(owner);
+                            replay(&lane, ls).await?;
+                        }
+                    }
+                    Kind::Transformed(t) => {
+                        let q = quarantine_file(
+                            plan.quarantine.as_deref(),
+                            epoch,
+                            name,
+                            &lane,
+                            &mut t.quarantined,
+                            false,
+                        )
+                        .await?;
+                        flow.inputs[input].cross(plan.inbound.len(), epoch.n, q);
+                        let outputs_q = plan
+                            .transform
+                            .as_ref()
+                            .and_then(|t| t.quarantine.as_deref());
+                        for (_, ls) in &mut t.outputs {
+                            let s = ls.stream;
+                            let q = quarantine_file(
+                                outputs_q,
+                                epoch,
+                                &plan.streams[s],
+                                &lane,
+                                &mut ls.quarantined,
+                                true,
                             )
-                            .await?,
-                        rows,
-                        output: false,
-                    }),
-                    _ => None,
-                };
-                let replayed = ls.replay.as_ref().map(Replayer::progress);
-                owner.cross(
-                    plan,
-                    stream,
-                    epoch.n,
-                    q,
-                    std::mem::take(&mut ls.cells),
-                    replayed,
-                )?;
-                lane.all(stream, || Out::Barrier(stream, epoch)).await?;
-                if ls.replay.is_some() {
-                    ls.catch_up(owner);
-                    replay(&lane, ls).await?;
+                            .await?;
+                            flow.owners[s].cross(
+                                plan,
+                                s,
+                                epoch.n,
+                                q,
+                                std::mem::take(&mut ls.cells),
+                                None,
+                            )?;
+                            lane.all(s, || Out::Barrier(s, epoch)).await?;
+                        }
+                    }
                 }
             }
             FrameKind::SchemaChange => {
                 let payload = f.payload;
-                lane.all(stream, || Out::SchemaChange(stream, payload.clone()))
-                    .await?;
+                match &li.kind {
+                    Kind::Own(_) => {
+                        lane.all(input, || Out::SchemaChange(input, payload.clone()))
+                            .await?;
+                    }
+                    // It's the stream's, so it's an output's only where the
+                    // stream passes through.
+                    Kind::Transformed(t) => {
+                        let passed: Vec<usize> = t
+                            .outputs
+                            .iter()
+                            .filter(|(stage, _)| matches!(stage, Stage::Identity))
+                            .map(|(_, ls)| ls.stream)
+                            .collect();
+                        for s in passed {
+                            lane.all(s, || Out::SchemaChange(s, payload.clone()))
+                                .await?;
+                        }
+                    }
+                }
             }
             FrameKind::EndOfStream => {
-                ls.ended = true;
-                owner.end(plan, stream)?;
-                lane.all(stream, || Out::End(stream)).await?;
+                li.ended = true;
+                match &li.kind {
+                    Kind::Own(_) => {
+                        flow.owners[input].end(plan, input)?;
+                        lane.all(input, || Out::End(input)).await?;
+                    }
+                    Kind::Transformed(t) => {
+                        flow.inputs[input].end(plan.inbound.len());
+                        let outputs: Vec<usize> =
+                            t.outputs.iter().map(|(_, ls)| ls.stream).collect();
+                        for s in outputs {
+                            flow.owners[s].end(plan, s)?;
+                            lane.all(s, || Out::End(s)).await?;
+                        }
+                    }
+                }
             }
             k @ (FrameKind::Hello | FrameKind::Unspecified | FrameKind::Patch) => {
                 return Err(protocol(format!("unexpected {} frame", k.as_str_name())));
@@ -735,12 +1032,103 @@ where
     }
 }
 
+/// Writes a stream's quarantined lines for the epoch whose barrier it just
+/// passed, if it has any, and describes the file.
+async fn quarantine_file(
+    q: Option<&crate::quarantine::Quarantine>,
+    epoch: Epoch,
+    stream: &str,
+    lane: &Lane,
+    held: &mut (Vec<u8>, u64),
+    output: bool,
+) -> Result<Option<QuarantineFile>, JobError> {
+    let (lines, rows) = std::mem::take(held);
+    let Some(q) = q.filter(|_| rows > 0) else {
+        return Ok(None);
+    };
+    let url = q
+        .put(epoch.generation, epoch.n, stream, lane.lane, lines)
+        .await?;
+    Ok(Some(QuarantineFile {
+        stream: stream.to_owned(),
+        url,
+        rows,
+        output,
+    }))
+}
+
+/// Runs a batch of a stream a transform reads through each of the outputs
+/// it feeds. What the stream, a statement or an output's second half can't
+/// take is quarantined, the stream's apart from each output's.
+async fn transform(
+    lane: &Lane,
+    t: &mut Transformed,
+    typed: Typed,
+    record: &(dyn Fn(usize) -> String + Sync),
+    c: &Counters,
+) -> Result<(), JobError> {
+    let flow = &lane.flow;
+    let plan = &flow.plan;
+    let Some(job) = &plan.transform else {
+        return Err(JobError::internal(
+            "a transformed stream without a transform",
+        ));
+    };
+    let input = &job.inputs[t.input];
+    hold(
+        plan,
+        &input.name,
+        &typed.rejected,
+        record,
+        &mut t.quarantined,
+        c,
+    )?;
+    let schema = typed.batch.schema();
+    if t.seen
+        .as_ref()
+        .is_none_or(|s| !Arc::ptr_eq(s, &schema) && **s != *schema)
+    {
+        flow.inputs[t.input].observe(&schema);
+        t.seen = Some(schema);
+    }
+    let pushed = pushed_rows(&typed);
+    let cursor = input.identity.cursor.as_deref();
+    for (stage, ls) in &mut t.outputs {
+        let s = ls.stream;
+        let name = &plan.streams[s];
+        let oc = &flow.counters[s];
+        let Applied { typed: out, failed } = stage.apply(&typed, &pushed, cursor)?;
+        let failed: Vec<Rejected> = failed
+            .into_iter()
+            .map(|(row, reason)| Rejected { row, reason })
+            .collect();
+        hold(plan, name, &failed, record, &mut ls.quarantined, oc)?;
+        let n = ls
+            .shape(&flow.owners[s], |_| Ok(copy(&out)))
+            .map_err(|e| shape_error(name, e))?;
+        hold(plan, name, &n.rejected, record, &mut ls.quarantined, oc)?;
+        shaped(lane, ls, n, oc).await?;
+    }
+    Ok(())
+}
+
+fn copy(t: &Typed) -> Typed {
+    Typed {
+        batch: t.batch.clone(),
+        ids: t.ids.clone(),
+        control: t.control.clone(),
+        cells: t.cells.clone(),
+        rejected: t.rejected.clone(),
+        rows: t.rows.clone(),
+    }
+}
+
 /// Adds rejected rows to the stream's quarantine for the epoch, or fails the
 /// job if it has no quarantine.
 fn hold(
     plan: &Plan,
-    stream: usize,
-    rejected: &[openetl_normalize::Rejected],
+    stream: &str,
+    rejected: &[Rejected],
     record: impl Fn(usize) -> String,
     held: &mut (Vec<u8>, u64),
     c: &Counters,
@@ -751,13 +1139,13 @@ fn hold(
     if plan.quarantine.is_none() {
         return Err(JobError::new(
             ErrorCode::DataInvalid,
-            format!("stream {}: {}", plan.streams[stream], first.reason),
+            format!("stream {stream}: {}", first.reason),
         ));
     }
     let (lines, count) = held;
     for r in rejected {
         let line = serde_json::json!({
-            "stream": plan.streams[stream],
+            "stream": stream,
             "reason": r.reason,
             "record": record(r.row),
         });
@@ -1193,15 +1581,28 @@ impl Flow {
             by_stream.entry(s.stream).or_default().extend(s.files);
         }
         let mut schemas = HashMap::new();
+        let mut output_schemas = HashMap::new();
         let mut delivered = HashMap::new();
         let mut holds = HashMap::new();
         let mut quarantine = Vec::new();
+        if let Some(t) = &plan.transform {
+            for (input, owner) in t.inputs.iter().zip(&self.inputs) {
+                let (schema, q) = owner.take(n);
+                quarantine.extend(q);
+                if let Some(sc) = &schema {
+                    schemas.insert(input.name.clone(), encode(sc)?);
+                }
+            }
+        }
         for (s, owner) in self.owners.iter().enumerate() {
             let (at, q) = owner.take(n);
             quarantine.extend(q);
             let name = &plan.streams[s];
             if let Some(sc) = &at.schema {
-                schemas.insert(name.clone(), encode(sc)?);
+                match plan.transform {
+                    Some(_) => output_schemas.insert(name.clone(), encode(sc)?),
+                    None => schemas.insert(name.clone(), encode(sc)?),
+                };
             }
             if let Some(d) = &at.delivered {
                 delivered.insert(name.clone(), encode(d)?);
@@ -1224,7 +1625,7 @@ impl Flow {
                 files,
                 holds,
                 delivered,
-                output_schemas: HashMap::new(),
+                output_schemas,
             })),
         })
     }
@@ -1974,10 +2375,7 @@ mod tests {
                 LaneStream {
                     stream: 0,
                     shaper: o.shaper.fork(),
-                    stage: Stage::default(),
                     version: o.version,
-                    next_epoch: 1,
-                    ended: false,
                     quarantined: (Vec::new(), 0),
                     cells: BTreeMap::new(),
                     replay: None,
@@ -2723,5 +3121,355 @@ mod tests {
         put(&mut h.to_engine, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
         let (err, _) = failure(h).await;
         assert!(err.message.contains("after the end"));
+    }
+
+    /// The transform of plan::tests::transform_request with other SQL and
+    /// outputs, each keyed as given; no outputs are expected.
+    fn sql_request(
+        sql: &str,
+        outputs: &[(&str, &[&str])],
+    ) -> openetl_proto::engine::v1::StartJobRequest {
+        let mut req = crate::plan::tests::transform_request();
+        let t = req.transform.as_mut().unwrap();
+        t.sql = sql.into();
+        t.expected_outputs.clear();
+        req.outputs = outputs
+            .iter()
+            .map(|(name, key)| openetl_proto::engine::v1::StreamPlan {
+                name: name.to_string(),
+                primary_key: key.iter().map(|k| k.to_string()).collect(),
+                ..Default::default()
+            })
+            .collect();
+        req.edges[1].streams = outputs.iter().map(|(name, _)| name.to_string()).collect();
+        req
+    }
+
+    fn batches(frames: &[frame::Frame], stream: u32) -> Vec<RecordBatch> {
+        frames
+            .iter()
+            .filter(|f| f.kind == FrameKind::Batch && f.stream == stream)
+            .map(|f| ipc::decode_batch(f.payload.clone()).unwrap())
+            .collect()
+    }
+
+    fn column_strings(b: &RecordBatch, name: &str) -> Vec<Option<String>> {
+        b.column_by_name(name)
+            .unwrap()
+            .as_string::<i32>()
+            .iter()
+            .map(|v| v.map(str::to_owned))
+            .collect()
+    }
+
+    fn column_ints(b: &RecordBatch, name: &str) -> Vec<Option<i64>> {
+        b.column_by_name(name)
+            .unwrap()
+            .as_primitive::<arrow_array::types::Int64Type>()
+            .iter()
+            .collect()
+    }
+
+    fn field_names(encoded: &[u8]) -> Vec<String> {
+        ipc::decode_schema(encoded)
+            .unwrap()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect()
+    }
+
+    /// Statements read typed rows under source names, and outputs get
+    /// destination names and metadata columns; a stream no statement
+    /// writes passes through. Each epoch reports the streams' schemas as
+    /// the statements read them, and the outputs' apart.
+    #[tokio::test]
+    async fn statements_write_outputs_and_streams_pass_through() {
+        let mut req = crate::plan::tests::transform_request();
+        req.transform.as_mut().unwrap().sql =
+            "INSERT INTO a SELECT id, lower(email) AS email FROM a WHERE id > 1; INSERT INTO c SELECT id FROM b".into();
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        put(
+            w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"id": 1, "email": "A"}"#, r#"{"id": 2, "email": "B"}"#]),
+        )
+        .await;
+        put(w, FrameKind::Rows, 1, rows(&[r#"{"id": 5, "email": "X"}"#])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+
+        // The outbound edge carries c, b and a.
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let a = batches(&frames, 2);
+        assert_eq!(a.len(), 1);
+        assert_eq!(column_ints(&a[0], "id"), [Some(2)]);
+        assert_eq!(column_strings(&a[0], "email"), [Some("b".into())]);
+        assert_eq!(
+            column_strings(&a[0], "_openetl_op"),
+            [Some("insert".into())]
+        );
+        let b = batches(&frames, 1);
+        assert_eq!(column_strings(&b[0], "email"), [Some("X".into())]);
+        let c = batches(&frames, 0);
+        assert_eq!(column_ints(&c[0], "id"), [Some(5)]);
+        // c's rows keep b's IDs, and the sequence b's cursor gives.
+        assert_eq!(
+            c[0].column_by_name("_openetl_id"),
+            b[0].column_by_name("_openetl_id")
+        );
+        assert_eq!(column_ints(&c[0], "_openetl_seq"), [Some(5)]);
+
+        let ready = ready(&mut h.events).await;
+        assert_eq!(ready.len(), 1);
+        let r = &ready[0];
+        let mut inputs: Vec<&String> = r.schemas.keys().collect();
+        inputs.sort();
+        assert_eq!(inputs, ["a", "b"]);
+        assert_eq!(field_names(&r.schemas["a"]), ["id", "email"]);
+        let mut outputs: Vec<&String> = r.output_schemas.keys().collect();
+        outputs.sort();
+        assert_eq!(outputs, ["a", "b", "c"]);
+        let c = ipc::decode_schema(&r.output_schemas["c"]).unwrap();
+        assert!(c.field_with_name("_openetl_id").is_ok());
+        assert_eq!(
+            c.metadata().get(naming::TABLE_KEY).map(String::as_str),
+            Some("t_c")
+        );
+    }
+
+    /// A batch of a changelog: id, status, and op and seq control columns.
+    fn changelog_batch(rows: &[(i64, Option<&str>, &str)]) -> Vec<u8> {
+        use arrow_array::{Int64Array, StringArray};
+        let control = |kind: &str| {
+            HashMap::from([(openetl_normalize::CONTROL_KEY.to_owned(), kind.to_owned())])
+        };
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int64, false),
+            arrow_schema::Field::new("email", DataType::Utf8, true),
+            arrow_schema::Field::new("op", DataType::Utf8, false).with_metadata(control("op")),
+            arrow_schema::Field::new("seq", DataType::Int64, false).with_metadata(control("seq")),
+        ]));
+        let b = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(rows.iter().map(|r| Some(r.0)).collect::<Int64Array>()),
+                Arc::new(rows.iter().map(|r| r.1).collect::<StringArray>()),
+                Arc::new(rows.iter().map(|r| Some(r.2)).collect::<StringArray>()),
+                Arc::new(Int64Array::from_iter_values(
+                    (0..rows.len()).map(|i| i64::try_from(i).unwrap()),
+                )),
+            ],
+        )
+        .unwrap();
+        ipc::encode_batch(&b).unwrap()
+    }
+
+    /// On a changelog, deletes pass with their key, and an update the
+    /// filter drops becomes a delete of its key.
+    #[tokio::test]
+    async fn a_changelogs_deletes_pass_and_filtered_rows_become_deletes() {
+        let mut req = sql_request(
+            "INSERT INTO a SELECT id, upper(email) AS email FROM a WHERE email <> 'void'",
+            &[("a", &["id"])],
+        );
+        req.streams[0].changelog = true;
+        req.outputs[0].changelog = true;
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        put(
+            w,
+            FrameKind::Batch,
+            0,
+            changelog_batch(&[
+                (1, Some("new"), "insert"),
+                (2, Some("void"), "update"),
+                (3, None, "delete"),
+            ]),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let a = batches(&frames, 0);
+        assert_eq!(column_ints(&a[0], "id"), [Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            column_strings(&a[0], "_openetl_op"),
+            [
+                Some("insert".into()),
+                Some("delete".into()),
+                Some("delete".into())
+            ]
+        );
+        assert_eq!(
+            column_strings(&a[0], "email"),
+            [Some("NEW".into()), None, None]
+        );
+        assert_eq!(
+            column_ints(&a[0], "_openetl_seq"),
+            [Some(0), Some(1), Some(2)]
+        );
+        assert!(a[0].column_by_name("_openetl_unchanged").is_some());
+    }
+
+    /// A row a statement can't evaluate is quarantined under the output's
+    /// name, apart from the streams', and the rest land.
+    #[tokio::test]
+    async fn rows_a_statement_cant_evaluate_are_quarantined_as_the_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = sql_request(
+            "INSERT INTO c SELECT id, CAST(email AS BIGINT) AS n FROM b",
+            &[("c", &["id"])],
+        );
+        req.quarantine_url = format!("file://{}", dir.path().display());
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        put(
+            w,
+            FrameKind::Rows,
+            1,
+            rows(&[r#"{"id": 1, "email": "12"}"#, r#"{"id": 2, "email": "x"}"#]),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let c = batches(&frames, 0);
+        assert_eq!(column_ints(&c[0], "n"), [Some(12)]);
+        let ready = ready(&mut h.events).await;
+        let q = &ready[0].quarantine;
+        assert_eq!(q.len(), 1);
+        assert_eq!(
+            (q[0].stream.as_str(), q[0].rows, q[0].output),
+            ("c", 1, true)
+        );
+        assert!(q[0].url.ends_with("/_outputs/1/1/c.jsonl"), "{}", q[0].url);
+        let text = std::fs::read_to_string(dir.path().join("_outputs/1/1/c.jsonl")).unwrap();
+        let line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(line["stream"], "c");
+        assert_eq!(line["record"], r#"{"id": 2, "email": "x"}"#);
+        assert!(
+            line["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("transform.sql 1:1, writing c: "),
+            "{}",
+            line["reason"]
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_quarantine_a_row_a_statement_cant_evaluate_fails_the_job() {
+        let mut h = start_with(sql_request(
+            "INSERT INTO c SELECT id, CAST(email AS BIGINT) AS n FROM b",
+            &[("c", &["id"])],
+        ));
+        put(
+            &mut h.to_engine,
+            FrameKind::Rows,
+            1,
+            rows(&[r#"{"id": 2, "email": "x"}"#]),
+        )
+        .await;
+        let (err, status) = failure(h).await;
+        assert_eq!(err.code, ErrorCode::DataInvalid, "{}", err.message);
+        assert!(
+            status.message().contains("stream c: transform.sql 1:1"),
+            "{}",
+            status.message()
+        );
+    }
+
+    /// A column the stream gains mid-run reaches an output through `*`.
+    #[tokio::test]
+    async fn a_new_column_reaches_star_mid_run() {
+        let mut h = start_with(sql_request(
+            "INSERT INTO everything SELECT * FROM a",
+            &[("everything", &["id"])],
+        ));
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Rows, 0, rows(&[r#"{"id": 1, "email": "a"}"#])).await;
+        put(
+            w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"id": 2, "email": "b", "extra": "z"}"#]),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let out = batches(&frames, 0);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].column_by_name("extra").is_none());
+        assert_eq!(column_strings(&out[1], "extra"), [Some("z".into())]);
+        let ready = ready(&mut h.events).await;
+        assert!(field_names(&ready[0].output_schemas["everything"]).contains(&"extra".into()));
+        assert!(field_names(&ready[0].schemas["a"]).contains(&"extra".into()));
+    }
+
+    /// Statements run in every lane, and each writer lane aligns the lanes
+    /// feeding it on the outputs' barriers.
+    #[tokio::test]
+    async fn statements_run_in_every_lane() {
+        let mut req = sql_request(
+            "INSERT INTO ids SELECT id AS uid FROM a WHERE id % 2 = 0",
+            &[("ids", &["uid"]), ("b", &["id"])],
+        );
+        req.lanes = 2;
+        req.writer_lanes = 2;
+        let out = req.edges.pop().unwrap();
+        let inbound = req.edges.pop().unwrap();
+        for l in 0..2 {
+            let mut e = inbound.clone();
+            e.id = format!("in-{l}");
+            e.lane = l;
+            req.edges.push(e);
+            let mut e = out.clone();
+            e.id = format!("out-{l}");
+            e.lane = l;
+            req.edges.push(e);
+        }
+        let mut h = start_lanes(req);
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            let rows_of: Vec<String> = (0..4)
+                .map(|i| format!(r#"{{"id": {}, "email": "e"}}"#, l * 10 + i))
+                .collect();
+            let refs: Vec<&str> = rows_of.iter().map(String::as_str).collect();
+            put(w, FrameKind::Rows, 0, rows(&refs)).await;
+            put(w, FrameKind::Rows, 1, rows(&[r#"{"id": 7, "email": "e"}"#])).await;
+            put(w, FrameKind::Barrier, 0, barrier(1)).await;
+            put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        }
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        let mut uids: Vec<Option<i64>> = Vec::new();
+        for (w, frames) in outs.iter().enumerate() {
+            let ids = batches(frames, 0);
+            assert_eq!(ids.len(), 1, "writer lane {w}");
+            uids.extend(column_ints(&ids[0], "uid"));
+            assert_eq!(batches(frames, 1).len(), 1, "writer lane {w}");
+        }
+        uids.sort();
+        assert_eq!(uids, [Some(0), Some(2), Some(10), Some(12)]);
+        assert_eq!(ready.len(), 1);
     }
 }

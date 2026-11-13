@@ -70,6 +70,16 @@ type ExpectedOutput struct {
 	Schema *arrow.Schema
 	// Nil: it has none, and can only be appended.
 	PrimaryKey []string
+	// The stream the statement reads.
+	Input string
+}
+
+// SQLPlanner plans a SQL transform's statements against the streams they
+// read, as the engine does when the job starts, and gives the outputs they
+// write, in the order they're written. SQL the engine refuses fails it with
+// ConfigInvalid, with the positions in the SQL.
+type SQLPlanner interface {
+	PlanSQL(ctx context.Context, sql string, streams []Stream) ([]ExpectedOutput, error)
 }
 
 // Metadata columns the second dataflow computes again, so it drops an

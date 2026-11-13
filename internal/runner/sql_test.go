@@ -295,3 +295,25 @@ func TestSQLNeedsOutputsAndNoOtherTransform(t *testing.T) {
 		t.Errorf("SQL and Spark: %v", err)
 	}
 }
+
+// A SQL transform runs on as many lanes as a pipeline without one, unlike
+// Spark's and Flink's.
+func TestSQLRunsOnSeveralLanes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		flow := &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}
+		dst := &transformDest{}
+		j := sqlJob(checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), "a1", flow, dst, map[string]int{"a": 3, "b": 2})
+		j.Lanes = 4
+		if _, err := runner.RunAttempt(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		if p := flow.plans[0]; p.Lanes != 2 {
+			t.Errorf("lanes %d, want one per stream's split", p.Lanes)
+		}
+		if dst.rows["a"] != 3 || dst.rows["c"] != 2 {
+			t.Errorf("rows written: %v", dst.rows)
+		}
+	})
+}

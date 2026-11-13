@@ -13,6 +13,10 @@
 //! is the length `u32::MAX` alone. Raw rows encode values as JSON text, with
 //! object keys sorted, before inference, so a column widened between two
 //! reads doesn't change an ID.
+//!
+//! A SQL transform's output row has its source row's ID, except a row
+//! `UNNEST` gives: the k-th from its source row has the hash of
+//! `openetl.id.v1`, `0x03`, the source row's ID and k, a little-endian u64.
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::ByteArrayType;
@@ -32,6 +36,7 @@ use twox_hash::XxHash3_128;
 const VERSION: &[u8] = b"openetl.id.v1";
 const KEYED: u8 = 1;
 const UNKEYED: u8 = 2;
+const ELEMENT: u8 = 3;
 const NULL: u32 = u32::MAX;
 
 /// What a stream's record IDs and sequence come from. Column names are the
@@ -150,6 +155,33 @@ impl Identity {
         }
         FixedSizeBinaryArray::try_new(16, ids.into(), None)
     }
+}
+
+/// The IDs of rows that `UNNEST` gives: each from the source row of `ids` at
+/// `rows[i]`, the `ordinals[i]`-th of that row's.
+pub fn element_ids(
+    ids: &FixedSizeBinaryArray,
+    rows: &[usize],
+    ordinals: &[usize],
+) -> Result<FixedSizeBinaryArray, ArrowError> {
+    let source: Vec<Option<&[u8]>> = ids.iter().collect();
+    let mut buf = Vec::with_capacity(VERSION.len() + 1 + 16 + 8);
+    let mut out = Vec::with_capacity(rows.len() * 16);
+    for (&row, &k) in rows.iter().zip(ordinals) {
+        let Some(Some(id)) = source.get(row) else {
+            return Err(ArrowError::InvalidArgumentError(format!(
+                "row {row} of {} record IDs has none",
+                ids.len()
+            )));
+        };
+        buf.clear();
+        buf.extend_from_slice(VERSION);
+        buf.push(ELEMENT);
+        buf.extend_from_slice(id);
+        buf.extend_from_slice(&(k as u64).to_le_bytes());
+        out.extend_from_slice(&uuid(&buf));
+    }
+    FixedSizeBinaryArray::try_new(16, out.into(), None)
 }
 
 fn part(buf: &mut Vec<u8>, bytes: Option<&[u8]>) {

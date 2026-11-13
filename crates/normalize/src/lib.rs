@@ -13,10 +13,10 @@ pub mod naming;
 mod shape;
 mod typed;
 
-pub use coerce::{Infinity, check_declared, render_row};
+pub use coerce::{Infinity, check_declared, nanoseconds, render_row};
 pub use control::{CONTROL_KEY, Control};
 pub use evolve::{BIG_INTS_KEY, Policy, VERSIONS_KEY, widens};
-pub use ids::Identity;
+pub use ids::{Identity, element_ids};
 pub use keygroup::{KEY_GROUP_HASH, by_key_group, key_groups};
 pub use shape::{Shaped, Shaper};
 pub use typed::Typed;

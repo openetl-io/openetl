@@ -131,7 +131,7 @@ pub fn check_declared(schema: &Schema) -> Result<(), Error> {
 }
 
 /// `schema` with its timestamps in nanoseconds.
-pub(crate) fn nanoseconds(schema: &Schema) -> SchemaRef {
+pub fn nanoseconds(schema: &Schema) -> SchemaRef {
     let fields: Vec<Field> = schema
         .fields()
         .iter()

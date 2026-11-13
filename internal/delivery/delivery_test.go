@@ -325,6 +325,12 @@ func TestTransformed(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "transform.spark.outputs[out].require") {
 		t.Errorf("err = %v", err)
 	}
+	// A SQL transform's output takes the require of the stream it reads.
+	err = Check(postgres, Settings{Require: ExactlyOnce, Scope: destination.ScopeStream},
+		[]Stream{{Name: "out", Replay: source.Superset, Mode: destination.Append, Keyed: true, Require: ExactlyOnce, Transformed: true, From: "users"}})
+	if err == nil || !strings.Contains(err.Error(), "source.streams[users].require: stream \"out\"") {
+		t.Errorf("err = %v", err)
+	}
 	if w := Warnings(postgres, Settings{Require: ExactlyOnce}, []Stream{{Name: "out", Replay: source.Superset, Mode: destination.Append, Transformed: true}}); len(w) != 0 {
 		t.Errorf("warnings = %v", w)
 	}

@@ -217,7 +217,9 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	env.Logger = log.With("component", "connector")
 	meter, size := worker.From(ctx).Meter, worker.From(ctx).Size
 	env.Meter, env.Size = meter, size
-	job, err := buildJob(ctx, spec, env)
+	planner := a.Engine
+	planner.Logger = log.With("component", "engine")
+	job, err := buildJob(ctx, spec, env, &engineclient.Dataflow{Options: planner})
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
 	if err != nil {

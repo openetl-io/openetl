@@ -1,0 +1,138 @@
+package activities
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+
+	"google.golang.org/protobuf/types/known/structpb"
+
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
+	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/sdk/go/destination"
+)
+
+// planner gives outputs, or an error, as the engine's planning would, and
+// keeps what it was asked.
+type planner struct {
+	outputs []runner.ExpectedOutput
+	err     error
+	sql     string
+	streams []string
+}
+
+func (p *planner) PlanSQL(_ context.Context, sql string, streams []runner.Stream) ([]runner.ExpectedOutput, error) {
+	p.sql = sql
+	for _, s := range streams {
+		p.streams = append(p.streams, s.Name)
+	}
+	return p.outputs, p.err
+}
+
+// sqlSpec reads faker's users and purchases into stdout through sql.
+func sqlSpec(t *testing.T, sql string, passthrough apiv1.Passthrough, dst *apiv1.PipelineDestination) *dataplanev1.GetSyncSpecResponse {
+	t.Helper()
+	cfg, err := structpb.NewStruct(map[string]any{"count": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &dataplanev1.GetSyncSpecResponse{
+		PipelineId:  "p",
+		Source:      &apiv1.ConnectorConfig{Connector: "faker", Config: cfg},
+		Destination: &apiv1.ConnectorConfig{Connector: "stdout"},
+		Pipeline: &apiv1.PipelineSpec{
+			Destination: dst,
+			Transform:   &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: passthrough}}},
+		},
+	}
+}
+
+const emails = "INSERT INTO emails SELECT id AS uid, email FROM users"
+
+func plannedEmails() *planner {
+	return &planner{outputs: []runner.ExpectedOutput{{Name: "emails", PrimaryKey: []string{"uid"}, Input: "users"}}}
+}
+
+// A SQL job's outputs are its statements', then the streams no statement
+// writes; each is written as a stream read like its input, with its key.
+func TestBuildJobPlansSQL(t *testing.T) {
+	pl := plannedEmails()
+	job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_UNSPECIFIED,
+		&apiv1.PipelineDestination{Tables: map[string]string{"emails": "user_emails"}}), connectorhost.Env{}, pl)
+	defer connectorhost.Close(job.Source)
+	defer connectorhost.Close(job.Destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pl.sql != emails || !slices.Equal(pl.streams, []string{"users", "purchases"}) {
+		t.Errorf("planned %q against %v", pl.sql, pl.streams)
+	}
+	if job.SQL == nil || job.SQL.SQL != emails || len(job.SQL.Expected) != 1 || job.Transform != nil {
+		t.Fatalf("the job's SQL: %+v", job.SQL)
+	}
+	var names []string
+	for _, o := range job.Outputs {
+		names = append(names, o.Name)
+		if !o.Transformed || o.Mode == 0 {
+			t.Errorf("output %s: %+v", o.Name, o)
+		}
+	}
+	if !slices.Equal(names, []string{"emails", "users", "purchases"}) {
+		t.Errorf("outputs %v", names)
+	}
+	if o := job.Outputs[0]; !slices.Equal(o.PrimaryKey, []string{"uid"}) || o.Table != "user_emails" {
+		t.Errorf("emails: %+v", o)
+	}
+	if o := job.Outputs[1]; !slices.Equal(o.PrimaryKey, []string{"id"}) {
+		t.Errorf("users: %+v", o)
+	}
+	if len(job.Streams) != 2 || job.Streams[0].Mode != destination.Append || job.Streams[0].Transformed {
+		t.Errorf("streams: %+v", job.Streams)
+	}
+}
+
+func TestBuildJobPassesNothingThroughWithPassthroughNone(t *testing.T) {
+	job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_NONE, nil), connectorhost.Env{}, plannedEmails())
+	defer connectorhost.Close(job.Source)
+	defer connectorhost.Close(job.Destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(job.Outputs) != 1 || job.Outputs[0].Name != "emails" {
+		t.Errorf("outputs: %+v", job.Outputs)
+	}
+}
+
+func TestBuildJobRefusesSQLThatDoesntPlan(t *testing.T) {
+	cases := []struct {
+		name string
+		pl   *planner
+		dst  *apiv1.PipelineDestination
+		want string
+	}{
+		{"planning", &planner{err: errs.New(errs.ConfigInvalid, "transform.sql: 1:8: there's no column nope")}, nil, "1:8"},
+		{"merge without a key", &planner{outputs: []runner.ExpectedOutput{{Name: "e", Input: "users"}}},
+			&apiv1.PipelineDestination{Write: apiv1.WriteMode_WRITE_MODE_MERGE}, "needs a primary key"},
+		{"a table for no output", plannedEmails(), &apiv1.PipelineDestination{Tables: map[string]string{"nope": "t"}}, `names "nope"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_ALL, c.dst), connectorhost.Env{}, c.pl)
+			defer connectorhost.Close(job.Source)
+			defer connectorhost.Close(job.Destination)
+			if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v, want %q", err, c.want)
+			}
+		})
+	}
+	job, err := buildJob(t.Context(), sqlSpec(t, emails, 0, nil), connectorhost.Env{}, nil)
+	defer connectorhost.Close(job.Source)
+	defer connectorhost.Close(job.Destination)
+	if errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Errorf("without a planner: %v", err)
+	}
+}

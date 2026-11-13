@@ -31,6 +31,15 @@ impl Quarantine {
         })
     }
 
+    /// The same store, with files below `dir` of this one's.
+    pub fn below(&self, dir: &str) -> Self {
+        Self {
+            store: self.store.clone(),
+            prefix: Path::from_iter(self.prefix.parts().chain(Path::from(dir).parts())),
+            base: format!("{}/{dir}", self.base.trim_end_matches('/')),
+        }
+    }
+
     /// Writes one stream's lines for an epoch, and returns the file's URL.
     pub async fn put(
         &self,
@@ -69,6 +78,13 @@ mod tests {
         assert!(url.ends_with("/q/2/7/a%2Fb.3.jsonl"), "{url}");
         let file = dir.path().join("q/2/7/a%2Fb.jsonl");
         assert_eq!(std::fs::read(file).unwrap(), b"{}\n");
+        let url = q
+            .below("_outputs")
+            .put(2, 7, "c", 0, b"{}\n".to_vec())
+            .await
+            .unwrap();
+        assert!(url.ends_with("/q/_outputs/2/7/c.jsonl"), "{url}");
+        assert!(dir.path().join("q/_outputs/2/7/c.jsonl").exists());
     }
 
     #[test]

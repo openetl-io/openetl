@@ -19,11 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EngineService_StartJob_FullMethodName = "/openetl.engine.v1.EngineService/StartJob"
-	EngineService_Recover_FullMethodName  = "/openetl.engine.v1.EngineService/Recover"
-	EngineService_Events_FullMethodName   = "/openetl.engine.v1.EngineService/Events"
-	EngineService_Commit_FullMethodName   = "/openetl.engine.v1.EngineService/Commit"
-	EngineService_Stop_FullMethodName     = "/openetl.engine.v1.EngineService/Stop"
+	EngineService_StartJob_FullMethodName    = "/openetl.engine.v1.EngineService/StartJob"
+	EngineService_Recover_FullMethodName     = "/openetl.engine.v1.EngineService/Recover"
+	EngineService_Events_FullMethodName      = "/openetl.engine.v1.EngineService/Events"
+	EngineService_Commit_FullMethodName      = "/openetl.engine.v1.EngineService/Commit"
+	EngineService_Stop_FullMethodName        = "/openetl.engine.v1.EngineService/Stop"
+	EngineService_PlanOutputs_FullMethodName = "/openetl.engine.v1.EngineService/PlanOutputs"
 )
 
 // EngineServiceClient is the client API for EngineService service.
@@ -46,6 +47,11 @@ type EngineServiceClient interface {
 	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
 	// Ends the job without draining, and the process exits.
 	Stop(ctx context.Context, in *StopRequest, opts ...grpc.CallOption) (*StopResponse, error)
+	// Plans a transform's SQL against the streams it reads, as StartJob
+	// does, and gives the outputs its statements write. SQL that StartJob
+	// would refuse fails it the same way. For an attempt, which opens the
+	// destination with its outputs before it starts the job.
+	PlanOutputs(ctx context.Context, in *PlanOutputsRequest, opts ...grpc.CallOption) (*PlanOutputsResponse, error)
 }
 
 type engineServiceClient struct {
@@ -115,6 +121,16 @@ func (c *engineServiceClient) Stop(ctx context.Context, in *StopRequest, opts ..
 	return out, nil
 }
 
+func (c *engineServiceClient) PlanOutputs(ctx context.Context, in *PlanOutputsRequest, opts ...grpc.CallOption) (*PlanOutputsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlanOutputsResponse)
+	err := c.cc.Invoke(ctx, EngineService_PlanOutputs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // EngineServiceServer is the server API for EngineService service.
 // All implementations must embed UnimplementedEngineServiceServer
 // for forward compatibility.
@@ -135,6 +151,11 @@ type EngineServiceServer interface {
 	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
 	// Ends the job without draining, and the process exits.
 	Stop(context.Context, *StopRequest) (*StopResponse, error)
+	// Plans a transform's SQL against the streams it reads, as StartJob
+	// does, and gives the outputs its statements write. SQL that StartJob
+	// would refuse fails it the same way. For an attempt, which opens the
+	// destination with its outputs before it starts the job.
+	PlanOutputs(context.Context, *PlanOutputsRequest) (*PlanOutputsResponse, error)
 	mustEmbedUnimplementedEngineServiceServer()
 }
 
@@ -159,6 +180,9 @@ func (UnimplementedEngineServiceServer) Commit(context.Context, *CommitRequest) 
 }
 func (UnimplementedEngineServiceServer) Stop(context.Context, *StopRequest) (*StopResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Stop not implemented")
+}
+func (UnimplementedEngineServiceServer) PlanOutputs(context.Context, *PlanOutputsRequest) (*PlanOutputsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PlanOutputs not implemented")
 }
 func (UnimplementedEngineServiceServer) mustEmbedUnimplementedEngineServiceServer() {}
 func (UnimplementedEngineServiceServer) testEmbeddedByValue()                       {}
@@ -264,6 +288,24 @@ func _EngineService_Stop_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EngineService_PlanOutputs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlanOutputsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EngineServiceServer).PlanOutputs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EngineService_PlanOutputs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EngineServiceServer).PlanOutputs(ctx, req.(*PlanOutputsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // EngineService_ServiceDesc is the grpc.ServiceDesc for EngineService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -286,6 +328,10 @@ var EngineService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Stop",
 			Handler:    _EngineService_Stop_Handler,
+		},
+		{
+			MethodName: "PlanOutputs",
+			Handler:    _EngineService_PlanOutputs_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

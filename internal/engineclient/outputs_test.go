@@ -2,7 +2,6 @@ package engineclient
 
 import (
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -10,7 +9,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
-	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -192,16 +190,5 @@ func TestReadyKeepsOutputsApart(t *testing.T) {
 	}
 	if r.OutputSchemas != nil || !slices.Equal(r.Schemas["a"], in) {
 		t.Errorf("without outputs: schemas %v, outputs' %v", r.Schemas, r.OutputSchemas)
-	}
-}
-
-// The engine checks a transform, and doesn't run one yet.
-func TestEngineRefusesSQL(t *testing.T) {
-	p := plan("a")
-	p.Outputs = []runner.Stream{{Name: "b", Transformed: true}}
-	p.SQL = &runner.SQLTransform{SQL: "INSERT INTO b SELECT * FROM a", Expected: []runner.ExpectedOutput{{Name: "b"}}}
-	_, err := run(testContext(t), &Dataflow{Options: options(t, nil)}, p)
-	if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "doesn't run") {
-		t.Fatalf("err = %v", err)
 	}
 }

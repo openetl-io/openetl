@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use openetl_proto::engine::v1::engine_service_server::EngineService;
 use openetl_proto::engine::v1::{
-    CommitRequest, CommitResponse, EventsRequest, EventsResponse, FrameKind, Hello, RecoverRequest,
-    RecoverResponse, StartJobRequest, StartJobResponse, StopRequest, StopResponse,
+    CommitRequest, CommitResponse, EventsRequest, EventsResponse, FrameKind, Hello,
+    PlanOutputsRequest, PlanOutputsResponse, PlannedOutput, RecoverRequest, RecoverResponse,
+    StartJobRequest, StartJobResponse, StopRequest, StopResponse,
 };
 use prost::Message;
 use tokio::io::BufReader;
@@ -25,6 +26,7 @@ use crate::error::JobError;
 use crate::frame;
 use crate::plan::{Plan, Sink};
 use crate::telemetry;
+use crate::transform::{Input, Transform};
 
 /// How long the runner has to connect every edge after StartJob.
 const EDGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -263,9 +265,88 @@ impl EngineService for Control {
         Err(no_engine_sink())
     }
 
+    async fn plan_outputs(
+        &self,
+        req: Request<PlanOutputsRequest>,
+    ) -> Result<Response<PlanOutputsResponse>, Status> {
+        plan_outputs(req.into_inner())
+            .map(Response::new)
+            .map_err(|e| e.to_status())
+    }
+
     async fn stop(&self, _: Request<StopRequest>) -> Result<Response<StopResponse>, Status> {
         info!("stop requested");
         self.0.shutdown.cancel();
         Ok(Response::new(StopResponse {}))
+    }
+}
+
+fn plan_outputs(req: PlanOutputsRequest) -> Result<PlanOutputsResponse, JobError> {
+    let inputs = req
+        .streams
+        .iter()
+        .map(Input::of)
+        .collect::<Result<Vec<_>, _>>()?;
+    let t = Transform::plan(&req.sql, inputs)?;
+    let outputs = t
+        .expected()?
+        .into_iter()
+        .zip(&t.statements)
+        .map(|(output, s)| PlannedOutput {
+            output: Some(output),
+            input: t.inputs[s.input].name.clone(),
+        })
+        .collect();
+    Ok(PlanOutputsResponse { outputs })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::ipc;
+
+    #[test]
+    fn planning_gives_each_statements_output_and_the_stream_it_reads() {
+        let req = crate::plan::tests::transform_request();
+        let out = plan_outputs(PlanOutputsRequest {
+            streams: req.streams.clone(),
+            sql: "INSERT INTO a SELECT id, lower(email) AS email FROM a;\nINSERT INTO c SELECT id AS uid FROM b"
+                .into(),
+        })
+        .unwrap();
+        let got: Vec<(String, Vec<String>, String)> = out
+            .outputs
+            .iter()
+            .map(|p| {
+                let o = p.output.as_ref().unwrap();
+                (o.name.clone(), o.primary_key.clone(), p.input.clone())
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a".into(), vec!["id".into()], "a".into()),
+                ("c".into(), vec!["uid".into()], "b".into()),
+            ]
+        );
+        let schema =
+            ipc::decode_schema(&out.outputs[1].output.as_ref().unwrap().arrow_schema).unwrap();
+        assert_eq!(schema.field(0).name(), "uid");
+
+        let e = plan_outputs(PlanOutputsRequest {
+            streams: req.streams,
+            sql: "INSERT INTO c\nSELECT nope FROM b".into(),
+        })
+        .unwrap_err();
+        assert_eq!(
+            e.code,
+            openetl_proto::connector::v1::ErrorCode::ConfigInvalid
+        );
+        assert!(
+            e.message.starts_with("transform.sql: 2:8: "),
+            "{}",
+            e.message
+        );
     }
 }

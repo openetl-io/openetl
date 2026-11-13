@@ -18,6 +18,7 @@ pub struct Expr {
     display: String,
     data_type: DataType,
     column: Option<String>,
+    inputs: Vec<usize>,
     deterministic: bool,
     physical: Arc<dyn PhysicalExpr>,
 }
@@ -53,6 +54,12 @@ impl Expr {
             }
             Ok(TreeNodeRecursion::Continue)
         });
+        let mut inputs = Vec::new();
+        for c in inner.column_refs() {
+            inputs.push(input.index_of_column(c).map_err(bind)?);
+        }
+        inputs.sort_unstable();
+        inputs.dedup();
         let physical = datafusion_physical_expr::create_physical_expr(
             &inner,
             input,
@@ -65,6 +72,7 @@ impl Expr {
             display: inner.to_string(),
             data_type,
             column,
+            inputs,
             deterministic,
             physical,
         })
@@ -73,6 +81,11 @@ impl Expr {
     /// The input column it passes through unchanged, if that's all it does.
     pub fn column(&self) -> Option<&str> {
         self.column.as_deref()
+    }
+
+    /// The columns of its step's input it reads, by index, in order.
+    pub fn inputs(&self) -> &[usize] {
+        &self.inputs
     }
 
     pub fn data_type(&self) -> &DataType {
