@@ -20,7 +20,13 @@ const (
 	wwStart wwPhase = iota
 	wwJoin
 	wwJoined
+	// The txn destination's: settling the restored record's committables,
+	// and waiting for the assignment once it has.
+	wwSettle
+	wwSettled
 	wwRestore
+	// The txn destination's: starting its producers.
+	wwOpen
 	wwConnect
 	wwRun
 )
@@ -45,12 +51,27 @@ type wWorker struct {
 	inbox            []wMsg
 	barrier, shared  uint64
 	slowed           bool
+	// The txn destination's: the committables it settles, and what became
+	// of each; its producers' epochs; the committables of epochs it shared,
+	// and the rows in them, until committed; the epochs it was asked to
+	// commit, and those it has.
+	tasks     []wTxnStaged
+	results   []string
+	producers map[wTxnID]uint64
+	pending   map[uint64][]wTxnStaged
+	rows      map[wMarker]map[string][]row
+	due       []uint64
+	done      map[uint64]bool
 }
 
 func (w *wWorker) name() string   { return fmt.Sprintf("a%d.w%d", w.a.n, w.idx) }
 func (w *wWorker) live() bool     { return !w.dead && !w.stopped }
 func (w *wWorker) paused() bool   { return w.m.tick < w.pausedUntil }
 func (w *wWorker) assigned() bool { return w.phase >= wwRestore }
+
+// answered says its coordinator answered its join, with work to settle
+// or its assignment.
+func (w *wWorker) answered() bool { return w.phase >= wwSettle }
 func (w *wWorker) pause(until int) {
 	w.pausedUntil = until
 	w.m.stats["workers paused"]++
@@ -64,6 +85,9 @@ func (w *wWorker) send(msg wMsg) {
 
 func (w *wWorker) kill() {
 	w.dead = true
+	if len(w.due) > 0 {
+		w.m.stats["workers killed with a commit to make"]++
+	}
 	w.m.tracef("%s killed", w.name())
 	w.m.killed(w.gen, "workers")
 }
@@ -94,7 +118,7 @@ func (w *wWorker) resume() {
 // beat sends a heartbeat on the attempt protocol, which the runner routes
 // by the attempt's ID; an answer acknowledges it.
 func (w *wWorker) beat() {
-	if !w.live() || w.paused() || !w.assigned() {
+	if !w.live() || w.paused() || !w.answered() {
 		return
 	}
 	co := w.m.attempts[w.a.n-1].co
@@ -108,9 +132,9 @@ func (w *wWorker) beat() {
 func (w *wWorker) watch() {
 	switch {
 	case !w.live() || w.paused():
-	case !w.assigned() && w.m.tick-w.started > wJoinTimeout+wTimeout:
+	case !w.answered() && w.m.tick-w.started > wJoinTimeout+wTimeout:
 		w.stop("never assigned")
-	case w.assigned() && w.m.tick-w.lastAck > wTimeout:
+	case w.answered() && w.m.tick-w.lastAck > wTimeout:
 		w.stop("lost its coordinator")
 	}
 }
@@ -127,6 +151,14 @@ func (w *wWorker) actions(acts *[]wAction) {
 		add("start", aLocal, w.start)
 	case wwJoin:
 		add("join", aCall, w.join)
+	case wwSettle:
+		for i, t := range w.tasks {
+			if w.results[i] == "" {
+				add("settle "+t.marker().String(), aCall, func(d decision) { w.settle(d, i) })
+			}
+		}
+	case wwOpen:
+		add("open producers", aCall, w.open)
 	case wwRestore:
 		for _, l := range w.lanes {
 			if !l.restored {
@@ -145,6 +177,9 @@ func (w *wWorker) actions(acts *[]wAction) {
 		}
 		if w.shareReady() {
 			add("share", aCall, w.share)
+		}
+		for _, e := range w.due {
+			add(fmt.Sprintf("commit %d", e), aCall, func(d decision) { w.commit(d, e) })
 		}
 	}
 	if len(w.inbox) > 0 {
@@ -179,9 +214,17 @@ func (w *wWorker) recv(d decision) {
 	msg := w.inbox[0]
 	w.inbox = w.inbox[1:]
 	switch msg.kind {
-	case "assign":
+	case "settle":
 		if w.phase <= wwJoined && msg.gen == w.gen {
+			w.startSettle(msg.tasks)
+		}
+	case "assign":
+		if (w.phase <= wwJoined || w.phase == wwSettled) && msg.gen == w.gen {
 			w.assign(msg)
+		}
+	case "commit":
+		if msg.gen == w.gen {
+			w.commitRequested(msg.epoch)
 		}
 	case "barrier":
 		if msg.gen == w.gen {
@@ -228,6 +271,7 @@ func (w *wWorker) ack(msg wMsg) {
 func (w *wWorker) assign(msg wMsg) {
 	w.lay, w.peers, w.restored = msg.lay, msg.peers, msg.restored
 	w.lastAck, w.connected = w.m.tick, map[int]bool{}
+	w.pending, w.rows, w.done = map[uint64][]wTxnStaged{}, map[wMarker]map[string][]row{}, map[uint64]bool{}
 	e := w.restored.epoch()
 	w.barrier, w.shared = e, e
 	for i, spec := range w.lay.lanes {
@@ -255,6 +299,14 @@ func (w *wWorker) afterRestore() {
 			a.outs[b.idx], b.ins = c, append(b.ins, c)
 		}
 	}
+	if w.m.txn() {
+		w.phase = wwOpen
+		return
+	}
+	w.toConnect()
+}
+
+func (w *wWorker) toConnect() {
 	w.phase = wwConnect
 	w.maybeRun()
 }
@@ -360,6 +412,16 @@ func (w *wWorker) share(d decision) {
 		return
 	}
 	w.shared = e
+	if w.m.txn() {
+		for _, l := range w.lanes {
+			var st wTxnStaged
+			_ = json.Unmarshal(l.staged[e], &st)
+			w.pending[e] = append(w.pending[e], st)
+		}
+		if w.m.cfg.broken == "commit-before-record" {
+			w.due = append(w.due, e)
+		}
+	}
 	for _, l := range w.lanes {
 		delete(l.at, e)
 		delete(l.staged, e)
@@ -1005,6 +1067,10 @@ func (l *wLane) snapshot(d decision) {
 // generation, epoch, stream and lane, and makes the lane's committable.
 func (l *wLane) stage(d decision) {
 	w, m := l.w, l.w.m
+	if m.txn() {
+		l.stageTxn(d)
+		return
+	}
 	e := l.precommitted + 1
 	st := warehouseStaged{Gen: w.gen, N: e, Lane: l.idx}
 	for _, s := range wStreams {

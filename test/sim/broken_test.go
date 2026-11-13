@@ -22,6 +22,15 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"idle-excluded", "watermark", "an idle split is left out of its lane's watermark, and a lane whose splits are all idle out of its receivers', as Flink does; the record keeps each split's own"},
 	{"snapshot-unwaited", "restore", "a lane goes on, and its worker sends its share, before its snapshot file is written"},
 	{"idle-advances-held", "watermark", "an idle split's watermark advances on a timer, also while it waits at a barrier it placed"},
+	// The txn destination's (txnVariants).
+	{"ack-before-commits", "exactly-once", "the coordinator acknowledges an epoch once it has asked every worker to commit, before they answer"},
+	{"answer-on-receipt", "exactly-once", "a worker answers a commit request when it takes it, before it commits"},
+	{"commit-before-record", "visibility", "a worker commits its transactions once it sent its share, without a request"},
+	{"recovery-skips-uncommitted", "exactly-once", "each worker of the next attempt settles the recorded committables of the lanes it runs, so a lane it doesn't have is skipped"},
+	{"single-runner-recovery", "exactly-once", "recovery keeps a single runner's rule: it fences each recorded transaction and rolls back to the record before if any marker is missing"},
+	{"stale-worker-commits", "generation", "a worker whose producer was fenced starts a new one, and commits its epoch again from what it holds"},
+	{"ids-by-generation", "generation", "transactional IDs carry the attempt's generation, so the next attempt's producers never fence an earlier one's"},
+	{"resume-prepared", "exactly-once", "with no staged copy, recovery commits the transaction the record names, kept prepared as Kafka's two-phase commit lets it, and rolls back if it's gone; a stale worker's producers still abort it when they start"},
 }
 
 // TestBroken shows each invariant of the workers kind catches a protocol
