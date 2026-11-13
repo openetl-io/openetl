@@ -83,7 +83,11 @@ statement 1:1 employees row_wise
 plan
 INSERT INTO employees SELECT employee_id FROM HR.EMPLOYEES
 ----
-error bind 1:30 there's no column employee_id: names fold to lower case unless quoted, so write "EMPLOYEE_ID"
+statement 1:1 employees row_wise
+  inputs HR.EMPLOYEES
+  key EMPLOYEE_ID
+  schema EMPLOYEE_ID Int64 not null
+  reads HR.EMPLOYEES: EMPLOYEE_ID
 
 plan
 INSERT INTO e SELECT user_id FROM cat.db.events

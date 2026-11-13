@@ -263,7 +263,7 @@ statement 1:1 typed row_wise
 plan
 INSERT INTO x SELECT *, id FROM customers
 ----
-error bind 1:1 Projections require unique expression names but the expression "customers.id" at position 0 and "customers.id" at position 4 have the same name. Consider aliasing ("AS") one of them.
+error bind 1:25 there's already a column id: give this one another name with AS
 
 stream "my stream" key(id)
   id int64 not null

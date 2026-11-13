@@ -1,0 +1,158 @@
+# Column names: an unquoted name matches a column without regard to case
+# when exactly one column fits; a quoted name matches exactly. A column that
+# passes through keeps its own spelling; a name given with AS folds to lower
+# case unless quoted.
+
+stream HR.EMPLOYEES key(EMPLOYEE_ID) changelog
+  EMPLOYEE_ID int64 not null
+  LAST_NAME utf8
+  Hire_Date timestamp
+
+stream mixed
+  id int64
+  ID utf8
+  Name utf8
+
+plan
+INSERT INTO employees SELECT employee_id, last_name, HIRE_DATE FROM hr.employees
+----
+statement 1:1 employees row_wise
+  inputs HR.EMPLOYEES
+  key EMPLOYEE_ID
+  schema EMPLOYEE_ID Int64 not null, LAST_NAME Utf8, Hire_Date Timestamp(µs, "UTC")
+  reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME, Hire_Date
+
+plan
+INSERT INTO employees SELECT Employee_Id AS Id, last_name AS Surname, hire_date AS "HiredOn" FROM hr.employees WHERE Last_Name IS NOT NULL
+----
+statement 1:1 employees row_wise
+  inputs HR.EMPLOYEES
+  key id
+  schema id Int64 not null, surname Utf8, HiredOn Timestamp(µs, "UTC")
+  reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME, Hire_Date
+  filter employees.LAST_NAME IS NOT NULL
+  project id := employees.EMPLOYEE_ID, surname := employees.LAST_NAME, HiredOn := employees.Hire_Date
+
+plan
+INSERT INTO employees SELECT "EMPLOYEE_ID", "LAST_NAME" FROM hr.employees
+----
+statement 1:1 employees row_wise
+  inputs HR.EMPLOYEES
+  key EMPLOYEE_ID
+  schema EMPLOYEE_ID Int64 not null, LAST_NAME Utf8
+  reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME
+
+# A quoted name in another case doesn't match.
+plan
+INSERT INTO employees SELECT "employee_id" FROM hr.employees
+----
+error bind 1:30 there's no column "employee_id": a quoted name matches exactly, so write "EMPLOYEE_ID", or the name unquoted
+
+plan
+INSERT INTO employees SELECT employees.employee_id, EMPLOYEES.last_name FROM hr.employees
+----
+statement 1:1 employees row_wise
+  inputs HR.EMPLOYEES
+  key EMPLOYEE_ID
+  schema EMPLOYEE_ID Int64 not null, LAST_NAME Utf8
+  reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME
+
+plan
+INSERT INTO employees SELECT e.employee_id, E.LAST_NAME FROM hr.employees AS e
+----
+statement 1:1 employees row_wise
+  inputs HR.EMPLOYEES
+  key EMPLOYEE_ID
+  schema EMPLOYEE_ID Int64 not null, LAST_NAME Utf8
+  reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME
+
+# Two columns that differ only by case need quotes.
+plan
+INSERT INTO x SELECT id FROM mixed
+----
+error name 1:22 id fits the columns "id" and "ID", which differ only by case: quote the name to pick one
+
+plan
+INSERT INTO x SELECT m.ID FROM mixed AS m
+----
+error name 1:24 ID fits the columns "id" and "ID", which differ only by case: quote the name to pick one
+
+plan
+INSERT INTO x SELECT "id", "ID" AS upper_id, name FROM mixed WHERE "ID" IS NOT NULL
+----
+statement 1:1 x row_wise
+  inputs mixed
+  key 
+  schema id Int64, upper_id Utf8, Name Utf8
+  reads mixed: id, ID, Name
+  filter mixed.ID IS NOT NULL
+  project id, upper_id := mixed.ID, Name
+
+plan
+INSERT INTO x SELECT * FROM mixed
+----
+statement 1:1 x row_wise
+  inputs mixed
+  key 
+  schema id Int64, ID Utf8, Name Utf8
+  reads mixed: id, ID, Name
+
+# Output names are unique without regard to case.
+plan
+INSERT INTO x SELECT employee_id, last_name AS Employee_ID FROM hr.employees
+----
+error bind 1:35 there's already a column employee_id: give this one another name with AS
+
+plan
+INSERT INTO x SELECT *, upper(last_name) AS last_name FROM hr.employees
+----
+error bind 1:25 there's already a column last_name: give this one another name with AS
+
+# Through views and subqueries, which name their columns by the same rule.
+plan
+CREATE VIEW staff AS SELECT employee_id, last_name AS Surname FROM hr.employees;
+INSERT INTO x SELECT EMPLOYEE_ID, SURNAME FROM staff WHERE surname <> ''
+----
+view 1:13 staff
+  inputs HR.EMPLOYEES
+  key EMPLOYEE_ID
+  schema EMPLOYEE_ID Int64 not null, surname Utf8
+statement 2:1 x row_wise
+  inputs HR.EMPLOYEES
+  views staff
+  key EMPLOYEE_ID
+  schema EMPLOYEE_ID Int64 not null, surname Utf8
+  reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME
+  project EMPLOYEE_ID, surname := employees.LAST_NAME
+  filter staff.surname != Utf8("")
+
+plan
+INSERT INTO x SELECT EMPLOYEE_ID, LAST FROM (SELECT employee_id, last_name AS last FROM hr.employees) AS t
+----
+statement 1:1 x row_wise
+  inputs HR.EMPLOYEES
+  key EMPLOYEE_ID
+  schema EMPLOYEE_ID Int64 not null, last Utf8
+  reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME
+  project EMPLOYEE_ID, last := employees.LAST_NAME
+
+plan
+INSERT INTO x SELECT a, B FROM hr.employees AS e(a, b, c)
+----
+statement 1:1 x row_wise
+  inputs HR.EMPLOYEES
+  key a
+  schema a Int64 not null, b Utf8
+  reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME
+  project a := HR.EMPLOYEES.EMPLOYEE_ID, b := HR.EMPLOYEES.LAST_NAME
+
+# A changelog's key is found whatever case it's written in.
+plan
+INSERT INTO x SELECT employee_id + 1 AS employee_id, last_name FROM hr.employees
+----
+error changelog_key 1:22 HR.EMPLOYEES is a changelog, so what reads it keeps its key (EMPLOYEE_ID) unchanged, renamed or not; this changes it
+
+plan
+INSERT INTO x SELECT last_name FROM hr.employees
+----
+error changelog_key 1:15 HR.EMPLOYEES is a changelog, so what reads it keeps its key (EMPLOYEE_ID) unchanged, renamed or not; this drops it
