@@ -11,8 +11,23 @@ import (
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
 )
+
+func TestBuildJobRefusesSQL(t *testing.T) {
+	_, err := buildJob(t.Context(), &dataplanev1.GetSyncSpecResponse{
+		PipelineId:  "p",
+		Source:      &apiv1.ConnectorConfig{Connector: "faker"},
+		Destination: &apiv1.ConnectorConfig{Connector: "stdout"},
+		Pipeline: &apiv1.PipelineSpec{
+			Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "INSERT INTO a SELECT * FROM users"}}},
+		},
+	}, connectorhost.Env{})
+	if errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Errorf("a SQL transform: %v", err)
+	}
+}
 
 func TestBuildJobTakesTypeSettings(t *testing.T) {
 	cfg, err := structpb.NewStruct(map[string]any{"count": 1})

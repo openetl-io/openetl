@@ -98,7 +98,8 @@ export function PipelinePage() {
                 {spec?.destination?.namespace && <span className="text-muted-foreground">schema {spec.destination.namespace}</span>}
               </span>
             </DescriptionItem>
-            {spec?.transform?.engine.case && (
+            {spec?.transform?.engine.case === "sql" && <DescriptionItem label="Transform">SQL</DescriptionItem>}
+            {(spec?.transform?.engine.case === "spark" || spec?.transform?.engine.case === "flink") && (
               <DescriptionItem label="Transform">
                 {spec.transform.engine.case === "spark" ? "Spark" : "Flink"} on{" "}
                 <ResourceLink name={clusterName(workspace, spec.transform.engine.case, spec.transform.engine.value.cluster)} />

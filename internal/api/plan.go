@@ -163,6 +163,9 @@ func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*a
 		return nil, err
 	}
 	out.Problems, out.Notes = unrunnable, notes
+	if p.v.spec.GetTransform().GetSql() != nil {
+		out.Notes = append(out.Notes, "the plan doesn't read transform.sql's statements, so it shows each stream as it lands without a transform; runners refuse to run a SQL transform")
+	}
 	if err := s.planJob(ctx, q, p, out); err != nil {
 		return nil, err
 	}

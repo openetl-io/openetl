@@ -267,7 +267,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | Field | What it does |
 |---|---|
 | `postSync` | Steps that run, in order, after each sync's data is committed: `dbt` (a `DbtProject`, with `command` `build`, `run` or `test`, `select`, `exclude` and `schema`) or `spark` (your own Spark application). A step that fails fails the sync. Scheduled pipelines only; see [`examples/faker-to-postgres-dbt.yaml`](../../examples/faker-to-postgres-dbt.yaml) |
-| `transform` | Your own code between the source and the destination: `spark` in a scheduled pipeline, `flink` in a continuous one |
+| `transform` | What changes the data between the source and the destination: your own code, `spark` in a scheduled pipeline or `flink` in a continuous one; or `sql` statements, which runners do not run ([reference](../reference/specs/pipeline.md#transforms)) |
 | `sparkAccess`, `flinkAccess` | How the pipeline's Spark or Flink code reaches its part of the data plane's storage; unset, the cluster's own identity |
 
 [Integrate](../integrate/index.md) covers dbt, Spark and Flink.
@@ -293,7 +293,7 @@ spec:
   destination: { ref: warehouse, namespace: shop }
 ```
 
-Its streams must be read in a way that never ends: `cdc` from a database, or `stream` from an event stream such as a topic. The plan fails a stream read any other way. A continuous pipeline has no syncs, so it has no `postSync` steps, and its transform, if any, is Flink. Pausing it stops its job; resuming starts it again from its last checkpoint.
+Its streams must be read in a way that never ends: `cdc` from a database, or `stream` from an event stream such as a topic. The plan fails a stream read any other way. A continuous pipeline has no syncs, so it has no `postSync` steps and no Spark transform. Pausing it stops its job; resuming starts it again from its last checkpoint.
 
 ## Delivery guarantees in practice
 

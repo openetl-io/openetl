@@ -457,6 +457,32 @@ func TestTableProblems(t *testing.T) {
 	}
 }
 
+func TestSQLTransform(t *testing.T) {
+	cat := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
+		{Name: "orders", PrimaryKey: []string{"id"}, Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_CDC},
+			Columns: []*apiv1.CatalogColumn{{Name: "id", Type: "int64"}, {Name: "created_at", Type: "timestamp[us, tz=UTC]"}}},
+		{Name: "events", CursorField: "at", Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
+	}}
+	sql := func(streams ...*apiv1.PipelineStream) *apiv1.PipelineSpec {
+		return &apiv1.PipelineSpec{
+			Delivery:    &apiv1.Delivery{Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE},
+			Source:      &apiv1.PipelineSource{Streams: streams},
+			Destination: &apiv1.PipelineDestination{Tables: map[string]string{"revenue_by_minute": "revenue"}},
+			Transform:   &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "INSERT INTO revenue_by_minute SELECT 1 FROM orders"}}},
+		}
+	}
+	// Until its statements are planned, each stream is planned as it lands
+	// without a transform, and destination.tables may name an output.
+	plans, problems, _ := Pipeline(sql(&apiv1.PipelineStream{Name: "orders", EventTime: "created_at"}, &apiv1.PipelineStream{Name: "events", EventTime: "at"}), cat, warehouse)
+	if len(problems) != 0 || len(plans) != 2 || plans[0].GetName() != "orders" || plans[0].GetWrite() != apiv1.WriteMode_WRITE_MODE_MERGE {
+		t.Errorf("plans = %v, problems = %v", plans, problems)
+	}
+	_, problems, _ = Pipeline(sql(&apiv1.PipelineStream{Name: "orders", EventTime: "placed_at"}), cat, warehouse)
+	if len(problems) != 1 || !strings.Contains(problems[0].Error(), `eventTime names column "placed_at"`) {
+		t.Errorf("problems = %v", problems)
+	}
+}
+
 func TestTableChanges(t *testing.T) {
 	spec := func(tables map[string]string, streams ...string) *apiv1.PipelineSpec {
 		s := &apiv1.PipelineSpec{Source: &apiv1.PipelineSource{}, Destination: &apiv1.PipelineDestination{Tables: tables}}

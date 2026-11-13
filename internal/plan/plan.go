@@ -170,6 +170,25 @@ func typeChangeWarnings(p *apiv1.PipelineSpec) []*apiv1.PlanWarning {
 		"A database may rewrite the table to do it, and lock it meanwhile"}}
 }
 
+// ownCode reports whether the pipeline runs a Spark or Flink transform,
+// whose outputs it lists. Until a SQL transform's statements are planned,
+// the plan shows its streams as they land without one.
+func ownCode(p *apiv1.PipelineSpec) bool {
+	return p.GetTransform().GetSpark() != nil || p.GetTransform().GetFlink() != nil
+}
+
+// eventTimeProblem fails a stream whose eventTime isn't one of the columns
+// the catalog lists for it. A stream the catalog lists no columns for
+// passes.
+func eventTimeProblem(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream) error {
+	column := ps.GetEventTime()
+	if column == "" || len(cs.GetColumns()) == 0 ||
+		slices.ContainsFunc(cs.GetColumns(), func(c *apiv1.CatalogColumn) bool { return c.GetName() == column }) {
+		return nil
+	}
+	return fmt.Errorf("stream %q: eventTime names column %q, which the source's latest catalog doesn't have; if it's new, openetl discover refreshes that", cs.GetName(), column)
+}
+
 func Continuous(p *apiv1.PipelineSpec) bool {
 	return p.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS
 }
@@ -337,7 +356,18 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 	for i, s := range streams {
 		names[i] = s.cs.GetName()
 	}
-	problems = append(problems, tableProblems(spec, caps, names)...)
+	if spec.GetTransform().GetSql() != nil {
+		// destination.tables names outputs too, which only planning the
+		// statements gives.
+		problems = append(problems, tableProblems(spec, caps, nil)...)
+	} else {
+		problems = append(problems, tableProblems(spec, caps, names)...)
+	}
+	for _, s := range streams {
+		if err := eventTimeProblem(s.cs, s.ps); err != nil {
+			problems = append(problems, err)
+		}
+	}
 
 	var plans []*apiv1.StreamPlan
 	var ds []delivery.Stream
@@ -361,7 +391,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		if err := CursorProblem(name, read, len(s.cs.GetPrimaryKey()) > 0, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField())); err != nil {
 			problems = append(problems, err)
 		}
-		if spec.GetTransform() != nil {
+		if ownCode(spec) {
 			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read), Spec: s.ps}
 			inputs = append(inputs, in)
 			for _, err := range []error{ReadProblem(spec, name, read), InputProblem(spec, in)} {
@@ -388,7 +418,7 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
 			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: spec.GetDestination().GetTables()[name]})
 	}
-	if spec.GetTransform() != nil {
+	if ownCode(spec) {
 		for _, o := range Outputs(spec, caps, inputs) {
 			if err := OutputProblem(o, inputs); err != nil {
 				problems = append(problems, err)

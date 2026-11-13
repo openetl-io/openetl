@@ -4932,6 +4932,17 @@ components:
                     type: string
                     description: Overrides destination.type_changes for this stream.
                     format: enum
+                eventTime:
+                    type: string
+                    description: |-
+                        The column that holds a row's event time, for a SQL transform. Unset:
+                         a row's time is when the engine read it.
+                watermark:
+                    allOf:
+                        - $ref: '#/components/schemas/Watermark'
+                    description: |-
+                        How far event time may run behind before a window closes. Only with
+                         event_time.
         PipelineVersion:
             type: object
             properties:
@@ -5482,6 +5493,27 @@ components:
             description: |-
                 SparkTransform runs the user's openetl-spark Transform on each epoch of a
                  sync, on a Spark cluster. Its outputs are the destination's streams.
+        SqlTransform:
+            type: object
+            properties:
+                sql:
+                    type: string
+                    description: |-
+                        INSERT INTO output SELECT … and CREATE VIEW statements. The text itself:
+                         a file the spec names is read by the CLI, which sends its text here.
+                passthrough:
+                    enum:
+                        - PASSTHROUGH_UNSPECIFIED
+                        - PASSTHROUGH_ALL
+                        - PASSTHROUGH_NONE
+                    type: string
+                    format: enum
+            description: |-
+                SqlTransform is SQL the engine runs between the source and the
+                 destination, in a scheduled or a continuous pipeline. Its statements read
+                 the source's streams and write outputs, which are the destination's
+                 streams. A stream no statement writes passes through, unless passthrough
+                 is none.
         Status:
             type: object
             properties:
@@ -5741,6 +5773,8 @@ components:
                     $ref: '#/components/schemas/SparkTransform'
                 flink:
                     $ref: '#/components/schemas/FlinkTransform'
+                sql:
+                    $ref: '#/components/schemas/SqlTransform'
         TransformOutput:
             type: object
             properties:
@@ -5811,6 +5845,16 @@ components:
                     description: How long it has been running.
                     format: double
             description: Usage is what an attempt has used so far.
+        Watermark:
+            type: object
+            properties:
+                delay:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: |-
+                        The watermark trails the latest event time seen by this much. Unset:
+                         zero.
+            description: Watermark says how late a stream's rows may arrive in event time.
         Webhook:
             type: object
             properties:
