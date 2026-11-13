@@ -857,41 +857,42 @@ impl<'a> Check<'a> {
 
         let mut lineage = Lineage::new();
         let mut columns: Vec<String> = Vec::new();
-        // Each output column's name, and the wildcard that gave it, by item.
-        // A wildcard's own columns aren't compared with each other: they're
-        // what FROM reads, as it reads them.
-        let mut named: Vec<(String, Option<usize>)> = Vec::new();
-        for (n, item) in s.projection.iter().enumerate() {
+        // The output's names so far, in lower case. A wildcard's own columns
+        // aren't compared with each other: they're what FROM reads, as it
+        // reads them.
+        let mut earlier: HashSet<String> = HashSet::new();
+        for item in &s.projection {
             let (given, wildcard) = match item {
-                ast::SelectItem::UnnamedExpr(ast::Expr::Identifier(i)) => (vec![fold(i)], None),
+                ast::SelectItem::UnnamedExpr(ast::Expr::Identifier(i)) => (vec![fold(i)], false),
                 ast::SelectItem::UnnamedExpr(ast::Expr::CompoundIdentifier(p)) => {
-                    (p.last().map(fold).into_iter().collect(), None)
+                    (p.last().map(fold).into_iter().collect(), false)
                 }
-                ast::SelectItem::ExprWithAlias { alias, .. } => (vec![fold(alias)], None),
+                ast::SelectItem::ExprWithAlias { alias, .. } => (vec![fold(alias)], false),
                 ast::SelectItem::Wildcard(_) | ast::SelectItem::QualifiedWildcard(..) => {
-                    (read.columns.clone(), Some(n))
+                    (read.columns.clone(), true)
                 }
-                _ => (Vec::new(), None),
+                _ => (Vec::new(), false),
             };
+            let mut these = Vec::with_capacity(given.len());
             for name in given {
-                let taken = named
-                    .iter()
-                    .any(|(m, w)| same(m, &name) && (wildcard.is_none() || *w != wildcard));
-                if taken {
+                let lowered = name.to_lowercase();
+                if earlier.contains(&lowered) {
                     let at = self.at(item.span());
-                    let message = match wildcard {
-                        Some(_) => format!(
+                    let message = if wildcard {
+                        format!(
                             "* gives a column {name}, and there's already one: name the other one differently with AS"
-                        ),
-                        None => format!(
+                        )
+                    } else {
+                        format!(
                             "there's already a column {name}: give this one another name with AS"
-                        ),
+                        )
                     };
                     self.errors.push(Error::at(ErrorKind::Bind, at, message));
                 }
-                named.push((name.clone(), wildcard));
+                these.push(lowered);
                 columns.push(name);
             }
+            earlier.extend(these);
         }
         for (n, item) in s.projection.iter().enumerate() {
             match item {
