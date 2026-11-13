@@ -691,7 +691,7 @@ func (m *wModel) advance() {
 // runner finds by the attempt's ID. Without one there, the runner refuses it.
 func (m *wModel) route(w *wWorker, msg wMsg) {
 	co := m.attempts[w.a.n-1].co
-	if m.cfg.broken == "any-generation" {
+	if m.cfg.broken == "runners-any-attempt" {
 		// The runner hands it to whichever coordinator runs there now.
 		for _, a := range slices.Backward(m.attempts) {
 			if a.co.runner == w.runner && a.co.live() {
@@ -1211,7 +1211,7 @@ func (c *wCoord) recv(d decision, from *wWorker) {
 		return
 	}
 	msg := c.inbox.pop(from)
-	if (msg.attempt != c.a.n || msg.gen != c.gen) && c.m.cfg.broken != "any-generation" {
+	if (msg.attempt != c.a.n || msg.gen != c.gen) && c.m.cfg.broken != "runners-any-attempt" {
 		c.m.stats["stale messages refused"]++
 		from.send(wMsg{kind: "refused", reason: fmt.Sprintf("%s is generation %d", c.name(), c.gen)})
 		return

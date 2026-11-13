@@ -12,13 +12,15 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"watermark-max", "aggregate", "a keyed operator's watermark is the greatest of its senders', not the least"},
 	{"unaligned", "restore", "a keyed lane takes a sender's frames past its barrier before every sender's has arrived"},
 	{"watermark-not-restored", "watermark", "a restore starts each split's watermark over, not from the record"},
-	{"any-generation", "generation", "engines take exchange connections, and runners and coordinators messages, of any attempt and generation"},
+	{"engines-any-generation", "generation", "an engine takes an exchange connection of any attempt and generation"},
+	{"runners-any-attempt", "generation", "a runner hands a worker's message to the coordinator it runs now, which takes it whatever its attempt and generation"},
 	{"names-without-generation", "generation", "snapshot files are named by epoch, operator and key groups, without the generation"},
 	{"names-by-group", "restore", "snapshot files are named by operator and key groups only"},
 	{"senders-by-connection", "restore", "a keyed lane aligns barriers and takes its watermark across the senders it has connections from, not every lane of the attempt"},
 	{"prune-by-epoch", "restore", "retention deletes snapshot files of epochs before the oldest record kept, though a kept record names them for key groups that didn't change"},
 	{"ack-read-positions", "exactly-once", "workers acknowledge upstream where they've read to, not the committed record's positions"},
 	{"idle-excluded", "watermark", "an idle split is left out of its lane's watermark, and a lane whose splits are all idle out of its receivers', as Flink does; the record keeps each split's own"},
+	{"snapshot-unwaited", "restore", "a lane goes on, and its worker sends its share, before its snapshot file is written"},
 	{"idle-advances-held", "watermark", "an idle split's watermark advances on a timer, also while it waits at a barrier it placed"},
 }
 

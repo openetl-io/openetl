@@ -32,19 +32,19 @@ type wWorker struct {
 	addr   string
 	runner string
 	// From the pod's spec, as its attempt and index are.
-	gen                   uint64
-	phase                 wwPhase
-	dead, stopped         bool
-	pausedAt, pausedUntil int
-	started, lastAck      int
-	lay                   wLayout
-	peers                 []string
-	restored              *wRecord
-	lanes                 []*wLane
-	connected             map[int]bool
-	inbox                 []wMsg
-	barrier, shared       uint64
-	slowed                bool
+	gen              uint64
+	phase            wwPhase
+	dead, stopped    bool
+	pausedUntil      int
+	started, lastAck int
+	lay              wLayout
+	peers            []string
+	restored         *wRecord
+	lanes            []*wLane
+	connected        map[int]bool
+	inbox            []wMsg
+	barrier, shared  uint64
+	slowed           bool
 }
 
 func (w *wWorker) name() string   { return fmt.Sprintf("a%d.w%d", w.a.n, w.idx) }
@@ -52,7 +52,7 @@ func (w *wWorker) live() bool     { return !w.dead && !w.stopped }
 func (w *wWorker) paused() bool   { return w.m.tick < w.pausedUntil }
 func (w *wWorker) assigned() bool { return w.phase >= wwRestore }
 func (w *wWorker) pause(until int) {
-	w.pausedAt, w.pausedUntil = w.m.tick, until
+	w.pausedUntil = until
 	w.m.stats["workers paused"]++
 }
 
@@ -289,7 +289,7 @@ func (w *wWorker) connect(d decision, peer int) {
 		if p == nil || !p.live() || !p.assigned() {
 			return errNoPod
 		}
-		if (p.a != w.a || p.gen != w.gen) && m.cfg.broken != "any-generation" {
+		if (p.a != w.a || p.gen != w.gen) && m.cfg.broken != "engines-any-generation" {
 			refused = fmt.Errorf("%w by %s at %s: it's generation %d, not %d", errRefuse, p.name(), addr, p.gen, w.gen)
 			return refused
 		}
@@ -954,10 +954,19 @@ func (l *wLane) snapshot(d decision) {
 		return
 	}
 	ok, err := m.call(w.kill, d, func() error {
-		if url == "" {
-			return nil
+		switch {
+		case url == "":
+		case m.cfg.broken == "snapshot-unwaited":
+			// The pod writes it in the background, a tick on, if it's still up.
+			m.later = append(m.later, wLater{m.tick + 1, func() {
+				if w.live() {
+					_ = m.putState(url, f)
+				}
+			}})
+		default:
+			return m.putState(url, f)
 		}
-		return m.putState(url, f)
+		return nil
 	})
 	if !ok || err != nil {
 		return
