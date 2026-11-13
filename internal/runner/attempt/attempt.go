@@ -110,8 +110,10 @@ type Coordinator interface {
 	// for the worker to join, and then for its answer, whose error says if
 	// the commit failed. The record is of an epoch Shares returned, or, to
 	// settle the restored one, of an earlier generation, which may be asked
-	// before the assignment. A request is idempotent: asking again, as
-	// after a failed answer or a ctx that ended, sends it again.
+	// before the assignment. Any worker may be asked for any of the record's
+	// committables, whichever worker staged them. A request is idempotent:
+	// asking again, as after a failed answer or a ctx that ended, sends it
+	// again.
 	Commit(ctx context.Context, worker int, c *attemptv1.Commit) (*protocolv1.WriteCommitted, error)
 	// Done is closed once the attempt is over: it failed, or End ended it.
 	Done() <-chan struct{}

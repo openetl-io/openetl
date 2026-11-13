@@ -181,38 +181,107 @@ func TestAnEpochFromBarrierToPositions(t *testing.T) {
 	})
 }
 
+func TestOneWorkerAppliesEveryWorkersCommittables(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		c, ws := start2(t, Options{})
+		if err := c.Barrier(testFirst); err != nil {
+			t.Fatal(err)
+		}
+		var sent []*attemptv1.Share
+		for i, w := range ws {
+			request(t, w)
+			sent = append(sent, shareOf(testFirst, i, false))
+			if err := w.Share(sent[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := c.Shares(ctx, testFirst); err != nil {
+			t.Fatal(err)
+		}
+		// Worker 1 applies both writer lanes' staging, worker 0's too.
+		apply := commitOf(epoch(testFirst), 2)
+		apply.Commit.Staged = [][]byte{sent[0].GetCommittables()[0].GetStaged(), sent[1].GetCommittables()[0].GetStaged()}
+		answered := commitAsync(t, c, 1, apply)
+		if got := request(t, ws[1]).GetCommit(); !proto.Equal(got, apply) {
+			t.Fatalf("commit: %v, want %v", got, apply)
+		}
+		synctest.Wait()
+		if err := c.Acknowledge(&attemptv1.Positions{Epoch: epoch(testFirst)}); err == nil {
+			t.Fatal("positions before the apply was answered")
+		}
+		if err := ws[1].Committed(committedOf(apply, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if a := within(t, answered, time.Hour, "the answer"); a.GetError() != nil {
+			t.Fatalf("answer: %v", a)
+		}
+		if err := c.Acknowledge(&attemptv1.Positions{Epoch: epoch(testFirst)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.End(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range ws {
+			_ = w.Close()
+		}
+	})
+}
+
 func TestARestoredEpochIsSettledBeforeTheAssignment(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
 		c := newCoordinator(testAttemptOf(2), Options{}, func() {})
 		// The record restored is an earlier attempt's, of three writer
-		// lanes; worker 1 settles the third's.
-		settle := commitOf(epochOf(testGen-1, testFirst-1), 3, 2)
-		answered := commitAsync(t, c, 1, settle)
+		// lanes, none of which this attempt's workers staged: worker 0
+		// applies them all, and worker 1 settles the third's on its own,
+		// before either is joined or assigned.
+		restored := epochOf(testGen-1, testFirst-1)
+		whole, third := commitOf(restored, 3), commitOf(restored, 3, 2)
+		applied, settled := commitAsync(t, c, 0, whole), commitAsync(t, c, 1, third)
 		synctest.Wait()
-		w1 := joinPipe(c, target(1), Options{})
-		if got := request(t, w1).GetCommit(); !proto.Equal(got, settle) {
-			t.Fatalf("settle: %v", got)
+		ws := []*worker{joinPipe(c, target(0), Options{}), joinPipe(c, target(1), Options{})}
+		for i, req := range []*attemptv1.Commit{whole, third} {
+			if got := request(t, ws[i]).GetCommit(); !proto.Equal(got, req) {
+				t.Fatalf("worker %d's commit: %v, want %v", i, got, req)
+			}
 		}
-		if err := w1.Committed(committedOf(settle, nil)); err != nil {
+		if err := ws[1].Committed(committedOf(third, nil)); err != nil {
 			t.Fatal(err)
 		}
-		within(t, answered, time.Hour, "the answer")
-		w0 := joinPipe(c, target(0), Options{})
+		within(t, settled, time.Hour, "worker 1's answer")
+		// Worker 0's apply fails, and is asked again.
+		if err := ws[0].Committed(committedOf(whole, &protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_DESTINATION_UNAVAILABLE})); err != nil {
+			t.Fatal(err)
+		}
+		within(t, applied, time.Hour, "worker 0's answer")
 		if err := c.Assign(ctx, layout(2)); err != nil {
 			t.Fatal(err)
 		}
-		for _, w := range []*worker{w0, w1} {
+		for _, w := range ws {
 			if request(t, w).GetAssignment() == nil {
 				t.Fatal("no assignment")
 			}
+		}
+		positions := &attemptv1.Positions{Epoch: restored}
+		if err := c.Acknowledge(positions); err == nil {
+			t.Fatal("positions of the restored record before it was settled")
+		}
+		applied = commitAsync(t, c, 0, whole)
+		request(t, ws[0])
+		if err := ws[0].Committed(committedOf(whole, nil)); err != nil {
+			t.Fatal(err)
+		}
+		within(t, applied, time.Hour, "worker 0's answer")
+		if err := c.Acknowledge(positions); err != nil {
+			t.Fatal(err)
 		}
 		for name, req := range map[string]*attemptv1.Commit{
 			"past the restored record":  commitOf(epochOf(testGen-1, testFirst), 3, 2),
 			"of a later generation":     commitOf(epochOf(testGen+1, 1), 3, 2),
 			"of no epoch":               commitOf(epochOf(testGen-1, 0), 3, 2),
-			"of a writer lane it lacks": commitOf(epochOf(testGen-1, testFirst-1), 3, 3),
-			"of a writer lane twice":    commitOf(epochOf(testGen-1, testFirst-1), 3, 1, 1),
+			"of a writer lane it lacks": commitOf(restored, 3, 3),
+			"of a writer lane twice":    commitOf(restored, 3, 1, 1),
 		} {
 			if _, err := c.Commit(ctx, 0, req); err == nil {
 				t.Fatalf("a commit %s", name)
@@ -221,8 +290,9 @@ func TestARestoredEpochIsSettledBeforeTheAssignment(t *testing.T) {
 		if err := c.End(ctx, nil); err != nil {
 			t.Fatal(err)
 		}
-		_ = w0.Close()
-		_ = w1.Close()
+		for _, w := range ws {
+			_ = w.Close()
+		}
 	})
 }
 

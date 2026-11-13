@@ -170,10 +170,12 @@ message Committable {
 // Commit asks the worker to commit what a record names, at the
 // coordinator's word: once the record is written. The record is this
 // attempt's, or, to settle an epoch the attempt restored, an earlier
-// generation's, so any worker may be asked, before its assignment too. A
-// request is idempotent: the coordinator may send it again until it's
-// answered, and the worker answers once the commit has happened, never on
-// receipt, and again each time it's asked again.
+// generation's, so any worker may be asked, before its assignment too. The
+// committables are the record's, whichever worker staged them, and one
+// worker may be asked for all of them. A request is idempotent: the
+// coordinator may send it again until it's answered, and the worker answers
+// once the commit has happened, never on receipt, and again each time it's
+// asked again.
 message Commit {
   // The record's epoch, and every writer lane's committable as the record
   // holds them.
