@@ -44,6 +44,8 @@ After `apply` changes resources, it asks a runner to check them:
 
 `apply` discovers each source that passes its check, which refreshes the catalog that plans read. Then it prints the problems in the changed pipelines' plans. A failed check or a plan problem prints a warning and does not change the exit status, because the applied resources stay. The checks stop after 2 minutes. `--dry-run` and `--no-check` skip them.
 
+For a pipeline with `transform.sql`, `plan` and `apply` send the statements to a runner of the pipeline's data plane and wait up to 30 seconds for one to take them. Without a runner, the plan has a note instead of the statements' plan.
+
 `plan` returns an error if a pipeline that would be created or changed has plan problems. Its output can also show problems on unchanged pipelines. See [Plan, then apply](../pipelines/index.md#plan-then-apply) for the review procedure.
 
 ## Pause, resume and sync

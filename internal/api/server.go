@@ -49,6 +49,9 @@ type Server struct {
 	Ops       OpRunner
 	// Reads syncs' logs on their data planes. Nil: they can't be read.
 	Logs LogReader
+	// Plans pipelines' transform.sql on their data planes. Nil: the plan
+	// says it couldn't.
+	Planner SQLPlanner
 	// Hands workflows' work to runners, and takes their reports and results.
 	Dispatch *dispatch.Dispatcher
 	// For pipelines and connector operations that name none.

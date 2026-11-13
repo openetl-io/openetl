@@ -12,6 +12,7 @@ publish = false
 openetl-formats = { path = "crates/formats" }
 openetl-normalize = { path = "crates/normalize" }
 openetl-proto = { path = "crates/proto" }
+openetl-sql = { path = "crates/sql" }
 # Arrow and Parquet follow DataFusion's major version, so the engine has one Arrow.
 arrow-array = "59.3.2"
 arrow-buffer = "59.3.2"

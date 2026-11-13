@@ -457,6 +457,7 @@ type PipelineVersion struct {
 	Secrets            []string
 	FlinkClusters      []byte
 	KeyGroups          int32
+	SqlPlan            []byte
 }
 
 type Principal struct {

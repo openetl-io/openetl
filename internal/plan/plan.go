@@ -14,6 +14,7 @@ import (
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -171,8 +172,7 @@ func typeChangeWarnings(p *apiv1.PipelineSpec) []*apiv1.PlanWarning {
 }
 
 // ownCode reports whether the pipeline runs a Spark or Flink transform,
-// whose outputs it lists. Until a SQL transform's statements are planned,
-// the plan shows its streams as they land without one.
+// whose outputs it lists.
 func ownCode(p *apiv1.PipelineSpec) bool {
 	return p.GetTransform().GetSpark() != nil || p.GetTransform().GetFlink() != nil
 }
@@ -304,6 +304,15 @@ var levels = map[delivery.Level]apiv1.DeliveryLevel{
 // would fail and what the plan warns about. Without a catalog, it checks
 // only the settings.
 func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities) ([]*apiv1.StreamPlan, []error, []*apiv1.PlanWarning) {
+	return PipelineSQL(spec, cat, caps, nil)
+}
+
+// PipelineSQL is Pipeline for a pipeline with transform.sql, given what
+// planning its statements gave. The destination's streams are then the
+// statements' outputs and the source's streams that pass through. Without an
+// answer, as when the statements have errors or couldn't be planned, it
+// checks the streams only as inputs, and plans none.
+func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, answer *sqlplan.Answer) ([]*apiv1.StreamPlan, []error, []*apiv1.PlanWarning) {
 	settings := Settings(spec, caps)
 	warnings := typeChangeWarnings(spec)
 	deletesIgnored := func(merges bool) {
@@ -356,11 +365,24 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 	for i, s := range streams {
 		names[i] = s.cs.GetName()
 	}
-	if spec.GetTransform().GetSql() != nil {
-		// destination.tables names outputs too, which only planning the
+	sql := spec.GetTransform().GetSql() != nil
+	switch {
+	case sql && answer == nil:
+		// destination.tables names outputs, which only planning the
 		// statements gives.
 		problems = append(problems, tableProblems(spec, caps, nil)...)
-	} else {
+	case sql:
+		var delivered []string
+		for _, name := range names {
+			if lands(spec, answer, name) {
+				delivered = append(delivered, name)
+			}
+		}
+		for _, st := range answer.Statements {
+			delivered = append(delivered, st.Output)
+		}
+		problems = append(problems, tableProblems(spec, caps, delivered)...)
+	default:
 		problems = append(problems, tableProblems(spec, caps, names)...)
 	}
 	for _, s := range streams {
@@ -391,9 +413,12 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 		if err := CursorProblem(name, read, len(s.cs.GetPrimaryKey()) > 0, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField())); err != nil {
 			problems = append(problems, err)
 		}
-		if ownCode(spec) {
+		if ownCode(spec) || sql {
 			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read), Spec: s.ps}
 			inputs = append(inputs, in)
+		}
+		if ownCode(spec) || sql && (answer == nil || !lands(spec, answer, name)) {
+			in := inputs[len(inputs)-1]
 			for _, err := range []error{ReadProblem(spec, name, read), InputProblem(spec, in)} {
 				if err != nil {
 					problems = append(problems, err)
@@ -430,6 +455,20 @@ func Pipeline(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Cap
 			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, nil)})
 		}
 	}
+	if sql && answer != nil {
+		outs, reads := sqlOutputs(spec, caps, answer, inputs)
+		for i, o := range outs {
+			if err := OutputProblem(o, reads[i]); err != nil {
+				problems = append(problems, err)
+			}
+			merges = merges || o.Mode == destination.Merge
+			d := o.Delivery()
+			ds = append(ds, d)
+			p := delivery.PlanStream(caps, d, settings.Require)
+			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, nil),
+				Table: spec.GetDestination().GetTables()[o.Name]})
+		}
+	}
 	deletesIgnored(merges || len(streams) == 0 && WriteMode(spec) == destination.Merge)
 	problems = append(problems, delivery.Problems(caps, settings, ds)...)
 	for _, w := range delivery.Warnings(caps, settings, ds) {
@@ -464,9 +503,11 @@ func mayMerge(spec *apiv1.PipelineSpec, caps destination.Capabilities) bool {
 }
 
 // tableProblems fails what destination.tables can't do: a table too long for
-// the destination and, given the streams the pipeline reads (nil if that isn't
-// known), a stream that isn't one of them, or a table that's another stream's
-// own name.
+// the destination and, given the streams the destination gets (nil if that
+// isn't known), a stream that isn't one of them, or a table that's another
+// stream's own name. Without a transform, the destination gets the streams
+// the pipeline reads; with transform.sql, its outputs and the streams that
+// pass through.
 func tableProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities, read []string) []error {
 	tables := spec.GetDestination().GetTables()
 	var out []error
@@ -475,7 +516,11 @@ func tableProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities, read
 		if limit := caps.MaxIdentifierLength; limit > 0 && len(table) > limit {
 			out = append(out, fmt.Errorf("stream %q: table %q is longer than the destination's %d bytes", stream, table, limit))
 		}
-		if read != nil && !slices.Contains(read, stream) {
+		switch {
+		case read == nil || slices.Contains(read, stream):
+		case spec.GetTransform().GetSql() != nil:
+			out = append(out, fmt.Errorf("destination.tables names stream %q, which is neither an output of transform.sql nor a stream that passes through", stream))
+		default:
 			out = append(out, fmt.Errorf("destination.tables names stream %q, which the pipeline doesn't read", stream))
 		}
 		if table != stream && tables[table] == "" && slices.Contains(read, table) {

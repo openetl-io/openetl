@@ -30,7 +30,7 @@ type Output struct {
 	Require delivery.Level
 	// Every input's replay is exact.
 	Exact bool
-	// spark or flink.
+	// spark, flink or sql.
 	Engine string
 }
 

@@ -53,6 +53,9 @@ func pipelineVersion(ws string, p db.Pipeline, r db.ListPipelineVersionsRow) (*a
 		return nil, err
 	}
 	var err error
+	if out.SqlPlan, err = sqlPlanOf(r.SqlPlan); err != nil {
+		return nil, err
+	}
 	if out.Source, err = pinnedConfig(ws, "sources", r.SourceName, r.SourceVersion, r.SourceSpec, r.SourceConnector); err != nil {
 		return nil, err
 	}

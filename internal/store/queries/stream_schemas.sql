@@ -29,3 +29,9 @@ LIMIT @max_rows;
 -- name: StreamSchemaVersions :many
 SELECT stream, digest, version FROM stream_schemas
 WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND NOT output;
+
+-- The newest schema of each of the pipeline's source streams.
+-- name: LatestStreamSchemas :many
+SELECT DISTINCT ON (stream) stream, columns FROM stream_schemas
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND NOT output
+ORDER BY stream, version DESC;

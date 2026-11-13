@@ -92,6 +92,43 @@ func (q *Queries) GetStreamSchemaColumns(ctx context.Context, arg GetStreamSchem
 	return columns, err
 }
 
+const latestStreamSchemas = `-- name: LatestStreamSchemas :many
+SELECT DISTINCT ON (stream) stream, columns FROM stream_schemas
+WHERE org_id = $1 AND pipeline_id = $2 AND NOT output
+ORDER BY stream, version DESC
+`
+
+type LatestStreamSchemasParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+type LatestStreamSchemasRow struct {
+	Stream  string
+	Columns []byte
+}
+
+// The newest schema of each of the pipeline's source streams.
+func (q *Queries) LatestStreamSchemas(ctx context.Context, arg LatestStreamSchemasParams) ([]LatestStreamSchemasRow, error) {
+	rows, err := q.db.Query(ctx, latestStreamSchemas, arg.OrgID, arg.PipelineID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LatestStreamSchemasRow
+	for rows.Next() {
+		var i LatestStreamSchemasRow
+		if err := rows.Scan(&i.Stream, &i.Columns); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStreamSchemas = `-- name: ListStreamSchemas :many
 SELECT output, stream, version, digest, "table", columns, generation, epoch, create_time
 FROM stream_schemas

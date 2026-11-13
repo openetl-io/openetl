@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/openetl-io/openetl/internal/platform/resources"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 )
 
 const (
@@ -18,6 +19,7 @@ const (
 	CatalogRefreshWorkflow   = "CatalogRefreshWorkflow"
 	ReadLogsWorkflow         = "ReadLogsWorkflow"
 	RetentionProbeWorkflow   = "RetentionProbeWorkflow"
+	PlanSQLWorkflow          = "PlanSQLWorkflow"
 
 	// Steps on the control plane.
 	StartSync            = "StartSync"
@@ -42,6 +44,7 @@ const (
 	TeardownFlink       = "TeardownFlink"
 	ReadLogs            = "ReadLogs"
 	ProbeRetention      = "ProbeRetention"
+	PlanSQL             = "PlanSQL"
 )
 
 // Kinds of light operation, which runners take a fixed number of at a time,
@@ -236,6 +239,14 @@ const OpTimeout = 15 * time.Minute
 // LogsPickup is how long a log read waits for a runner of its data plane.
 const LogsPickup = 15 * time.Second
 
+// PlanPickup is how long planning a SQL transform waits for a runner of its
+// data plane, and PlanTimeout how long it may take in all. A plan or an
+// apply waits for it.
+const (
+	PlanPickup  = 30 * time.Second
+	PlanTimeout = 2 * time.Minute
+)
+
 func SyncWorkflowID(pipelineID string) string { return "sync/" + pipelineID }
 
 func ScheduleID(pipelineID string) string { return "schedule/" + pipelineID }
@@ -250,6 +261,8 @@ const RefreshMessage = "refresh"
 func OpWorkflowID(id string) string { return "op/" + id }
 
 func LogsWorkflowID(id string) string { return "logs/" + id }
+
+func PlanWorkflowID(id string) string { return "plan/" + id }
 
 type SyncInput struct {
 	OrgID      string
@@ -571,6 +584,14 @@ type LogLine struct {
 	Task string
 	// A JSON object.
 	Text string
+}
+
+// PlanSQLInput is a SQL transform to plan on a runner of the data plane,
+// whose engine plans it. Its result is a sqlplan.Answer.
+type PlanSQLInput struct {
+	OrgID     string
+	DataPlane string
+	Request   sqlplan.Request
 }
 
 type ConnectorOpResult struct {

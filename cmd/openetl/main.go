@@ -399,6 +399,9 @@ func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
 	if j := p.GetJob(); j != nil {
 		fmt.Fprintf(out, "  job size: %s, %s, in pool %s\n", sizeText(j.GetSize()), reasonText(j.GetReason()), j.GetPool())
 	}
+	if t := p.GetTransform(); t != nil {
+		printTransform(out, t)
+	}
 	if len(p.GetStreams()) > 0 {
 		fmt.Fprintln(out, "  streams:")
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
@@ -439,6 +442,62 @@ func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
 				fmt.Fprintf(out, "    %s\n", item)
 			}
 		}
+	}
+}
+
+// printTransform prints a SQL transform's plan: a line per statement, then
+// its views, its outputs' columns, and which of the source's streams reach
+// the destination as they are.
+func printTransform(out io.Writer, t *apiv1.TransformPlan) {
+	fmt.Fprintln(out, "  transform.sql:")
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	for _, st := range t.GetStatements() {
+		key := "no key, so append only"
+		if len(st.GetPrimaryKey()) > 0 {
+			key = "key " + strings.Join(st.GetPrimaryKey(), ", ")
+		}
+		exchange := "no exchange"
+		if len(st.GetExchange()) > 0 {
+			exchange = "exchange by " + strings.Join(st.GetExchange(), ", ")
+		}
+		reads := "reads " + strings.Join(st.GetInputs(), ", ")
+		if len(st.GetViews()) > 0 {
+			reads += " through view " + strings.Join(st.GetViews(), ", ")
+		}
+		if st.GetReplaces() {
+			reads += "; replaces stream " + st.GetOutput()
+		}
+		if st.GetOperator() != "" {
+			reads += "; operator " + st.GetOperator()
+		}
+		fmt.Fprintf(tw, "    %d:%d\tINSERT INTO %s\t%s\t%s\t%s\t%s\n", st.GetLine(), st.GetColumn(), st.GetOutput(), st.GetClass(), key, exchange, reads)
+	}
+	_ = tw.Flush()
+	for _, v := range t.GetViews() {
+		fmt.Fprintf(out, "    view %s, at %d:%d, reads %s\n", v.GetName(), v.GetLine(), v.GetColumn(), strings.Join(v.GetInputs(), ", "))
+	}
+	for _, st := range t.GetStatements() {
+		cols := make([]string, 0, len(st.GetColumns()))
+		for _, c := range st.GetColumns() {
+			col := c.GetName() + " " + c.GetType()
+			if !c.GetNullable() {
+				col += " not null"
+			}
+			cols = append(cols, col)
+		}
+		fmt.Fprintf(out, "    output %s: %s\n", st.GetOutput(), strings.Join(cols, ", "))
+	}
+	if len(t.GetPassedThrough()) > 0 {
+		fmt.Fprintf(out, "    passed through: %s\n", strings.Join(t.GetPassedThrough(), ", "))
+	}
+	var dropped []string
+	for _, name := range t.GetWithheld() {
+		if !slices.ContainsFunc(t.GetStatements(), func(st *apiv1.StatementPlan) bool { return st.GetReplaces() && st.GetOutput() == name }) {
+			dropped = append(dropped, name)
+		}
+	}
+	if len(dropped) > 0 {
+		fmt.Fprintf(out, "    not delivered, as passthrough is none: %s\n", strings.Join(dropped, ", "))
 	}
 }
 

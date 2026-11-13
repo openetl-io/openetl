@@ -123,6 +123,9 @@ message GetSyncSpecResponse {
   string pipeline_name = 23;
   string source_name = 24;
   string destination_name = 25;
+  // What planning the version's transform.sql gave when it was made; unset
+  // without transform.sql, or if it couldn't be planned then.
+  openetl.api.v1.SqlPlan sql_plan = 26;
 }
 
 message Reset {
