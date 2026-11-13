@@ -723,7 +723,12 @@ mod tests {
     }
 
     fn record_ids(n: usize) -> FixedSizeBinaryArray {
-        FixedSizeBinaryArray::try_from_iter((0..n).map(|i| [u8::try_from(i).unwrap(); 16])).unwrap()
+        FixedSizeBinaryArray::try_from_iter((0..n).map(|i| {
+            let mut id = [0u8; 16];
+            id[..8].copy_from_slice(&u64::try_from(i).unwrap().to_le_bytes());
+            id
+        }))
+        .unwrap()
     }
 
     fn typed(batch: RecordBatch, control: Control) -> Typed {
