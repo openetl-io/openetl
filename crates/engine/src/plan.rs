@@ -246,6 +246,7 @@ impl Plan {
                 })?)
             });
         }
+        check_transform(&req, &index)?;
         let names: Vec<String> = req.streams.iter().map(|s| s.name.clone()).collect();
         let quarantine = match req.quarantine_url.as_str() {
             "" => None,
@@ -488,6 +489,80 @@ impl Plan {
     }
 }
 
+/// Checks a job's outputs and transform against each other and its streams.
+/// A job without them passes; one with them fails, since this engine doesn't
+/// run SQL.
+fn check_transform(req: &StartJobRequest, streams: &HashMap<&str, usize>) -> Result<(), JobError> {
+    let t = match (&req.transform, req.outputs.is_empty()) {
+        (None, true) => return Ok(()),
+        (None, false) => return Err(JobError::config("the job has outputs and no transform")),
+        (Some(_), true) => return Err(JobError::config("the transform has no outputs")),
+        (Some(t), false) => t,
+    };
+    if t.sql.trim().is_empty() {
+        return Err(JobError::config("the transform has no SQL"));
+    }
+    for s in &req.streams {
+        if s.soft_deletes || s.holds.is_some() || s.routing != 0 || !s.table.is_empty() {
+            return Err(JobError::config(format!(
+                "stream {} is a transform's input, and has the destination's settings, \
+                 which are its outputs'",
+                s.name
+            )));
+        }
+    }
+    let mut outputs = HashSet::new();
+    for o in &req.outputs {
+        if o.name.is_empty() || !outputs.insert(o.name.as_str()) {
+            return Err(JobError::config(format!(
+                "output name {:?} is empty or repeated",
+                o.name
+            )));
+        }
+        if !o.arrow_schema.is_empty() || !o.cursor_field.is_empty() || o.read_start_micros != 0 {
+            return Err(JobError::config(format!(
+                "output {} has a declared schema, a cursor or a read start, which only streams have",
+                o.name
+            )));
+        }
+    }
+    let mut expected = HashSet::new();
+    for e in &t.expected_outputs {
+        if !outputs.contains(e.name.as_str()) || !expected.insert(e.name.as_str()) {
+            return Err(JobError::config(format!(
+                "expected output {:?} isn't an output, or is repeated",
+                e.name
+            )));
+        }
+        if !e.arrow_schema.is_empty() {
+            ipc::decode_schema(&e.arrow_schema).map_err(|err| {
+                JobError::config(format!("expected output {}: schema: {err}", e.name))
+            })?;
+        }
+    }
+    if let Some(o) = req
+        .outputs
+        .iter()
+        .find(|o| !expected.contains(o.name.as_str()) && !streams.contains_key(o.name.as_str()))
+    {
+        return Err(JobError::config(format!(
+            "output {} is neither written by a statement nor a stream passed through",
+            o.name
+        )));
+    }
+    let mut operators = HashSet::new();
+    for id in &t.operators {
+        if id.is_empty() || !operators.insert(id.as_str()) {
+            return Err(JobError::config(format!(
+                "operator ID {id:?} is empty or repeated"
+            )));
+        }
+    }
+    Err(JobError::config(
+        "the job has a SQL transform, which this engine doesn't run",
+    ))
+}
+
 fn why(c: Option<&openetl_proto::engine::v1::HoldCause>) -> Why {
     use openetl_proto::engine::v1::hold_cause::Kind;
     let Some(c) = c else { return Why::Unknown };
@@ -506,8 +581,10 @@ fn why(c: Option<&openetl_proto::engine::v1::HoldCause>) -> Why {
 pub(crate) mod tests {
     use super::*;
     use openetl_proto::engine::v1::{
-        DiscardSink, Edge, ParquetSink, RunnerSink, SinkPlan, StagedSink, StateSnapshot, StreamPlan,
+        DiscardSink, Edge, ExpectedOutput, ParquetSink, RunnerSink, SinkPlan, StagedSink,
+        StateSnapshot, StreamPlan, Transform,
     };
+    use prost::Message as _;
 
     fn edge(id: &str, dir: EdgeDirection, streams: &[&str]) -> Edge {
         Edge {
@@ -553,6 +630,8 @@ pub(crate) mod tests {
             lanes: 0,
             writer_lanes: 0,
             key_groups: 0,
+            outputs: Vec::new(),
+            transform: None,
         }
     }
 
@@ -795,6 +874,119 @@ pub(crate) mod tests {
         req.edges
             .push(edge("out", EdgeDirection::FromEngine, &["a", "b"]));
         assert!(Plan::from_request(req).is_err());
+    }
+
+    /// Streams a and b, where a statement writes a's replacement, a, and c,
+    /// and b passes through.
+    fn transform_request() -> StartJobRequest {
+        let mut req = request(&["a", "b"]);
+        let schema = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "id",
+            arrow_schema::DataType::Int64,
+            false,
+        )]);
+        req.outputs = ["a", "b", "c"]
+            .iter()
+            .map(|o| StreamPlan {
+                name: o.to_string(),
+                table: format!("t_{o}"),
+                ..Default::default()
+            })
+            .collect();
+        req.transform = Some(Transform {
+            sql: "INSERT INTO a SELECT id FROM a; INSERT INTO c SELECT id FROM b".into(),
+            expected_outputs: ["a", "c"]
+                .iter()
+                .map(|o| ExpectedOutput {
+                    name: o.to_string(),
+                    arrow_schema: crate::ipc::encode_schema(&schema).unwrap(),
+                    primary_key: vec!["id".into()],
+                })
+                .collect(),
+            operators: vec!["op-1".into()],
+        });
+        req
+    }
+
+    #[test]
+    fn a_transform_is_checked_and_refused() {
+        let refused = |req: StartJobRequest, what: &str| {
+            let e = Plan::from_request(req).unwrap_err();
+            assert_eq!(
+                e.code,
+                openetl_proto::connector::v1::ErrorCode::ConfigInvalid
+            );
+            assert!(e.message.contains(what), "{} lacks {what:?}", e.message);
+        };
+        refused(transform_request(), "this engine doesn't run");
+        let cases: Vec<(&str, Mutation)> = vec![
+            ("outputs and no transform", Box::new(|r| r.transform = None)),
+            ("has no outputs", Box::new(|r| r.outputs.clear())),
+            (
+                "has no SQL",
+                Box::new(|r| r.transform.as_mut().unwrap().sql = " ".into()),
+            ),
+            (
+                "stream a is a transform's input",
+                Box::new(|r| r.streams[0].table = "t".into()),
+            ),
+            (
+                "stream b is a transform's input",
+                Box::new(|r| {
+                    r.streams[1].primary_key = vec!["id".into()];
+                    r.streams[1].routing = Routing::KeyGroup as i32;
+                }),
+            ),
+            (
+                "expected output \"d\" isn't an output",
+                Box::new(|r| r.transform.as_mut().unwrap().expected_outputs[1].name = "d".into()),
+            ),
+            (
+                "expected output \"a\" isn't an output, or is repeated",
+                Box::new(|r| r.transform.as_mut().unwrap().expected_outputs[1].name = "a".into()),
+            ),
+            (
+                "expected output a: schema",
+                Box::new(|r| {
+                    r.transform.as_mut().unwrap().expected_outputs[0].arrow_schema = vec![1]
+                }),
+            ),
+            (
+                "output name \"b\" is empty or repeated",
+                Box::new(|r| r.outputs[2].name = "b".into()),
+            ),
+            (
+                "output c has a declared schema",
+                Box::new(|r| r.outputs[2].cursor_field = "id".into()),
+            ),
+            (
+                "output c is neither written by a statement nor a stream",
+                Box::new(|r| {
+                    r.transform.as_mut().unwrap().expected_outputs.pop();
+                }),
+            ),
+            (
+                "operator ID \"op-1\" is empty or repeated",
+                Box::new(|r| r.transform.as_mut().unwrap().operators.push("op-1".into())),
+            ),
+        ];
+        for (what, mutate) in cases {
+            let mut req = transform_request();
+            mutate(&mut req);
+            refused(req, what);
+        }
+    }
+
+    /// A request from a runner that predates outputs: the streams are what
+    /// the destination gets, as before.
+    #[test]
+    fn without_outputs_the_streams_are_the_destinations() {
+        let bytes = request(&["a", "b"]).encode_to_vec();
+        let req = StartJobRequest::decode(bytes.as_slice()).unwrap();
+        assert!(req.outputs.is_empty() && req.transform.is_none());
+        let p = Plan::from_request(req).unwrap();
+        assert_eq!(p.streams, vec!["a", "b"]);
+        assert_eq!(p.tables, vec!["a", "b"]);
     }
 
     type Mutation = Box<dyn Fn(&mut StartJobRequest)>;

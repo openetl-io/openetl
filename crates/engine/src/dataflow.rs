@@ -690,6 +690,7 @@ where
                             )
                             .await?,
                         rows,
+                        output: false,
                     }),
                     _ => None,
                 };
@@ -1214,6 +1215,7 @@ impl Flow {
                 files,
                 holds,
                 delivered,
+                output_schemas: HashMap::new(),
             })),
         })
     }
@@ -2097,6 +2099,9 @@ mod tests {
                 vec![("a".into(), vec![T::Float64]), ("b".into(), vec![T::Utf8])],
             ]
         );
+        // Without a transform, the streams are the outputs, as a runner that
+        // predates outputs reads them.
+        assert!(ready.iter().all(|r| r.output_schemas.is_empty()));
     }
 
     #[tokio::test]
@@ -2276,7 +2281,10 @@ mod tests {
         assert_eq!(ready.len(), 1);
         let q = &ready[0].quarantine;
         assert_eq!(q.len(), 1);
-        assert_eq!((q[0].stream.as_str(), q[0].rows), ("a", 1));
+        assert_eq!(
+            (q[0].stream.as_str(), q[0].rows, q[0].output),
+            ("a", 1, false)
+        );
         assert!(q[0].url.ends_with("/1/1/a.jsonl"), "{}", q[0].url);
         let text = std::fs::read_to_string(dir.path().join("1/1/a.jsonl")).unwrap();
         let line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();

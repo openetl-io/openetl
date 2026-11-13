@@ -71,9 +71,13 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		d.started(p)
 	}
 
-	req, names, index, err := startRequest(plan)
+	req, names, sinkNames, err := startRequest(plan)
 	if err != nil {
 		return err
+	}
+	index := make(map[string]uint32, len(names))
+	for i, n := range names {
+		index[n] = ints.Uint32(i)
 	}
 	req.Passthrough = d.Options.Passthrough
 	if s := d.Options.Size; s != (resources.Size{}) {
@@ -90,40 +94,10 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	}
 	engineSink := plan.Sink != runner.SinkPlan{}
 	onReady := func(r *enginev1.EpochReady) error {
-		ready := &runner.Ready{Schemas: r.GetSchemas()}
-		if engineSink {
-			ready.Lanes = make([]runner.LaneReady, max(plan.WriterLanes, 1))
-			for w, st := range r.GetStaged() {
-				if w >= len(ready.Lanes) {
-					return errs.New(errs.Internal, "engineclient: the engine staged %d writer lanes of %d", len(r.GetStaged()), len(ready.Lanes))
-				}
-				ready.Lanes[w].Staged = st
-			}
+		ready, err := readyOf(r, plan)
+		if err != nil {
+			return err
 		}
-		for _, st := range r.GetFiles() {
-			if int(st.GetLane()) >= len(ready.Lanes) {
-				return errs.New(errs.Internal, "engineclient: the engine staged %s on writer lane %d of %d", st.GetStream(), st.GetLane(), len(ready.Lanes))
-			}
-			lane := &ready.Lanes[st.GetLane()]
-			if lane.Files == nil {
-				lane.Files = map[string][]destination.StagedFile{}
-			}
-			for _, f := range st.GetFiles() {
-				lane.Files[st.GetStream()] = append(lane.Files[st.GetStream()], destination.StagedFile{Path: f.GetPath(), Rows: f.GetRows(), Bytes: f.GetBytes()})
-			}
-		}
-		for _, s := range r.GetSnapshots() {
-			snap := checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()}
-			if kg := s.GetKeyGroups(); kg != nil {
-				snap.KeyGroups = &checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}
-			}
-			ready.Snapshots = append(ready.Snapshots, snap)
-		}
-		for _, q := range r.GetQuarantine() {
-			ready.Quarantine = append(ready.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), URL: q.GetUrl(), Rows: q.GetRows()})
-		}
-		ready.Delivered = r.GetDelivered()
-		ready.Holds = readyHolds(r.GetHolds())
 		f := runner.Frame{Kind: runner.FrameReady, Epoch: r.GetEpoch().GetN(), Ready: ready}
 		select {
 		case out <- f:
@@ -189,7 +163,7 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	g.Go(func() error { return splitLanes(gctx, in, lanes) })
 	for w, conn := range fromEngine {
 		g.Go(func() error {
-			return readEdge(gctx, conn, w, plan.Generation, names, alloc, plan.ReportSchemas, out)
+			return readEdge(gctx, conn, w, plan.Generation, sinkNames, alloc, plan.ReportSchemas, out)
 		})
 	}
 	g.Go(func() error {
@@ -239,10 +213,11 @@ func (p *process) explain(ctx context.Context, err error) error {
 	return errs.Wrap(errs.Internal, err, "engineclient: control call")
 }
 
-func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[string]uint32, error) {
-	names := make([]string, len(plan.Streams))
-	index := make(map[string]uint32, len(plan.Streams))
-	req := &enginev1.StartJobRequest{
+// startRequest is the plan's StartJobRequest, with the streams on the edges
+// into the engine and those on the edges from it, the destination's.
+func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkNames []string, err error) {
+	names = make([]string, len(plan.Streams))
+	req = &enginev1.StartJobRequest{
 		Pipeline:   plan.Pipeline,
 		Job:        plan.Owner,
 		Generation: plan.Generation,
@@ -258,28 +233,26 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		WriterLanes:        ints.Uint32(plan.WriterLanes),
 		KeyGroups:          ints.Uint32(plan.KeyGroups),
 	}
+	sql := plan.SQL != nil
 	for i, s := range plan.Streams {
 		names[i] = s.Name
-		index[s.Name] = uint32(i)
 		declared, err := encodeSchema(s.Declared())
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("engineclient: %s declared schema: %w", s.Name, err)
 		}
-		req.Streams = append(req.Streams, &enginev1.StreamPlan{
-			Name:                 s.Name,
-			PrimaryKey:           s.PrimaryKey,
-			ArrowSchema:          declared,
-			CursorField:          s.CursorField,
-			ReadStartMicros:      plan.ReadStarts[s.Name],
-			RestoredSchema:       plan.Schemas[s.Name],
-			NanosecondTimestamps: s.NanosecondTimestamps,
-			SoftDeletes:          s.Mode == destination.Merge && s.Deletes != destination.HardDelete,
-			Changelog:            s.Read == source.CDC,
-			Holds:                holdPlan(plan.Holds[s.Name]),
-			Table:                s.Table,
-		})
-		if plan.KeyGrouped[s.Name] {
-			req.Streams[i].Routing = enginev1.Routing_ROUTING_KEY_GROUP
+		sp := streamPlan(plan, s, plan.Schemas[s.Name], !sql)
+		sp.ArrowSchema, sp.CursorField, sp.ReadStartMicros = declared, s.CursorField, plan.ReadStarts[s.Name]
+		req.Streams = append(req.Streams, sp)
+	}
+	sinkNames = names
+	if sql {
+		sinkNames = make([]string, len(plan.Outputs))
+		for i, o := range plan.Outputs {
+			sinkNames[i] = o.Name
+			req.Outputs = append(req.Outputs, streamPlan(plan, o, plan.OutputSchemas[o.Name], true))
+		}
+		if req.Transform, err = transform(plan.SQL); err != nil {
+			return nil, nil, nil, err
 		}
 	}
 	for _, s := range plan.Snapshots {
@@ -301,10 +274,86 @@ func startRequest(plan runner.Plan) (*enginev1.StartJobRequest, []string, map[st
 		req.Sink = &enginev1.SinkPlan{Sink: &enginev1.SinkPlan_Discard{Discard: &enginev1.DiscardSink{}}}
 	default:
 		for w := range max(plan.WriterLanes, 1) {
-			req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge(w), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: names, Lane: uint32(w)})
+			req.Edges = append(req.Edges, &enginev1.Edge{Id: outEdge(w), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_FROM_ENGINE, Streams: sinkNames, Lane: uint32(w)})
 		}
 	}
-	return req, names, index, nil
+	return req, names, sinkNames, nil
+}
+
+// streamPlan is s's StreamPlan, without what only a stream the engine reads
+// has: a declared schema, a cursor and a read start. Only the destination's
+// streams get the destination's settings.
+func streamPlan(plan runner.Plan, s runner.Stream, restored []byte, sink bool) *enginev1.StreamPlan {
+	sp := &enginev1.StreamPlan{
+		Name:                 s.Name,
+		PrimaryKey:           s.PrimaryKey,
+		RestoredSchema:       restored,
+		NanosecondTimestamps: s.NanosecondTimestamps,
+		Changelog:            s.Read == source.CDC,
+	}
+	if sink {
+		sp.SoftDeletes = s.Mode == destination.Merge && s.Deletes != destination.HardDelete
+		sp.Holds = holdPlan(plan.Holds[s.Name])
+		sp.Table = s.Table
+		if plan.KeyGrouped[s.Name] {
+			sp.Routing = enginev1.Routing_ROUTING_KEY_GROUP
+		}
+	}
+	return sp
+}
+
+func transform(t *runner.SQLTransform) (*enginev1.Transform, error) {
+	out := &enginev1.Transform{Sql: t.SQL, Operators: t.Operators}
+	for _, e := range t.Expected {
+		schema, err := encodeSchema(e.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("engineclient: expected output %s's schema: %w", e.Name, err)
+		}
+		out.ExpectedOutputs = append(out.ExpectedOutputs, &enginev1.ExpectedOutput{Name: e.Name, ArrowSchema: schema, PrimaryKey: e.PrimaryKey})
+	}
+	return out, nil
+}
+
+// readyOf is the engine's report of an epoch, as the runner records it.
+func readyOf(r *enginev1.EpochReady, plan runner.Plan) (*runner.Ready, error) {
+	ready := &runner.Ready{Schemas: r.GetSchemas()}
+	if plan.Sink != (runner.SinkPlan{}) {
+		ready.Lanes = make([]runner.LaneReady, max(plan.WriterLanes, 1))
+		for w, st := range r.GetStaged() {
+			if w >= len(ready.Lanes) {
+				return nil, errs.New(errs.Internal, "engineclient: the engine staged %d writer lanes of %d", len(r.GetStaged()), len(ready.Lanes))
+			}
+			ready.Lanes[w].Staged = st
+		}
+	}
+	for _, st := range r.GetFiles() {
+		if int(st.GetLane()) >= len(ready.Lanes) {
+			return nil, errs.New(errs.Internal, "engineclient: the engine staged %s on writer lane %d of %d", st.GetStream(), st.GetLane(), len(ready.Lanes))
+		}
+		lane := &ready.Lanes[st.GetLane()]
+		if lane.Files == nil {
+			lane.Files = map[string][]destination.StagedFile{}
+		}
+		for _, f := range st.GetFiles() {
+			lane.Files[st.GetStream()] = append(lane.Files[st.GetStream()], destination.StagedFile{Path: f.GetPath(), Rows: f.GetRows(), Bytes: f.GetBytes()})
+		}
+	}
+	for _, s := range r.GetSnapshots() {
+		snap := checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()}
+		if kg := s.GetKeyGroups(); kg != nil {
+			snap.KeyGroups = &checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}
+		}
+		ready.Snapshots = append(ready.Snapshots, snap)
+	}
+	for _, q := range r.GetQuarantine() {
+		ready.Quarantine = append(ready.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), Output: q.GetOutput(), URL: q.GetUrl(), Rows: q.GetRows()})
+	}
+	if s := r.GetOutputSchemas(); len(s) > 0 {
+		ready.OutputSchemas = s
+	}
+	ready.Delivered = r.GetDelivered()
+	ready.Holds = readyHolds(r.GetHolds())
+	return ready, nil
 }
 
 var heldModes = map[runner.HeldMode]enginev1.HeldMode{
