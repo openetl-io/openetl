@@ -21,6 +21,10 @@ use openetl_normalize::{
     UUID_EXTENSION,
 };
 
+/// The engine's allocator.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const BATCH_ROWS: usize = 100_000;
 const RAW_ROWS: usize = 10_000;
 

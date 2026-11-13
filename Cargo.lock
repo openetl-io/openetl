@@ -1525,6 +1525,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "base64 0.22.1",
+ "mimalloc",
  "serde",
  "serde_json",
  "thiserror",
