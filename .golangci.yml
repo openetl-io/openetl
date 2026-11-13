@@ -71,8 +71,10 @@ linters:
               desc: workflow code must be deterministic
             - pkg: sync
               desc: workflow code must be deterministic
+        # The attempt protocol carries a worker's EpochReady to its
+        # coordinator.
         only-engineclient-talks-to-the-engine:
-          files: ["$all", "!**/internal/engineclient/**"]
+          files: ["$all", "!**/internal/engineclient/**", "!**/internal/runner/attempt/**"]
           deny:
             - pkg: github.com/openetl-io/openetl/gen/openetl/engine
               desc: only internal/engineclient may use the engine protocol

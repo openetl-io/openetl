@@ -12,3 +12,4 @@ inputs:
       - proto/openetl/connector
       - proto/openetl/engine
       - proto/openetl/bridge
+      - proto/openetl/attempt

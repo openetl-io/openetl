@@ -1,0 +1,209 @@
+syntax = "proto3";
+
+package openetl.attempt.v1;
+
+import "openetl/connector/v1/destination.proto";
+import "openetl/connector/v1/errors.proto";
+import "openetl/connector/v1/source.proto";
+import "openetl/engine/v1/engine.proto";
+
+option go_package = "github.com/openetl-io/openetl/gen/openetl/attempt/v1;attemptv1";
+
+// AttemptService is served by the runner that coordinates an attempt to the
+// attempt's workers, each a runner in a pod of its own. Over TLS with a
+// certificate the coordinating runner makes, which is the only one its
+// workers trust there. Every call carries the attempt's token as
+// "authorization: Bearer TOKEN"; a call with no token, or one of no attempt
+// the runner coordinates, ends with UNAUTHENTICATED.
+//
+// A worker opens one call and sends Join; the coordinator's first heartbeat
+// says it's taken. The worker gets its Assignment once every worker has
+// joined. Then the coordinator asks for barriers, the worker sends its share
+// of each epoch, and the coordinator asks workers to commit what a written
+// record names and sends them the committed record's positions. Each end
+// sends a Heartbeat every few seconds, and takes the other as lost once it
+// hears nothing for longer than a timeout.
+//
+// A call is never resumed: a broken call, a lost worker, a worker's Failure
+// or anything out of the protocol fails the attempt. The coordinator sends
+// End to the workers it can still reach, and ends a lost worker's call with
+// ABORTED. A worker that loses its coordinator stops. The next attempt
+// claims a new generation and restores every worker from the record.
+service AttemptService {
+  rpc Attend(stream AttendRequest) returns (stream AttendResponse);
+}
+
+// AttendRequest is a worker's message.
+message AttendRequest {
+  oneof message {
+    // The first, and only the first. A call that starts with anything else
+    // ends with INVALID_ARGUMENT.
+    Join join = 1;
+    Share share = 2;
+    Committed committed = 3;
+    Heartbeat heartbeat = 4;
+    // The worker failed and stops, which fails the attempt. Its last
+    // message.
+    openetl.connector.v1.Error failure = 5;
+  }
+}
+
+// AttendResponse is the coordinator's message.
+message AttendResponse {
+  oneof message {
+    // Once every worker has joined. Only commits of an earlier generation's
+    // epoch come before it.
+    Assignment assignment = 1;
+    Barrier barrier = 2;
+    Positions positions = 3;
+    Commit commit = 4;
+    Heartbeat heartbeat = 5;
+    // Its last message. The worker stops and closes its side, and the
+    // coordinator ends the call.
+    End end = 6;
+  }
+}
+
+// Join is what the worker's pod was launched as. A join of another attempt
+// or generation than the coordinator's, or after the attempt is over, ends
+// the call with FAILED_PRECONDITION, and the attempt goes on without it. A
+// worker that joins twice, or past the attempt's workers, is refused as
+// well, and fails the attempt.
+message Join {
+  // The attempt's ID.
+  string attempt = 1;
+  uint64 generation = 2;
+  // From 0 to the attempt's workers less one.
+  uint32 worker = 3;
+  // Where other workers' engines reach this worker's, as host:port; empty:
+  // nowhere.
+  string address = 4;
+}
+
+// Assignment is the attempt's layout, the same for every worker, which
+// finds its own part by its index. Nothing durable names lanes or workers,
+// so each attempt chooses them again. A worker's engine numbers its own
+// lanes and writer lanes from 0 in the order they're listed here, as its
+// EpochReady does.
+message Assignment {
+  // The first barrier requested: one past the restored record's epoch.
+  uint64 first_epoch = 1;
+  // The record the attempt restored, as the checkpoint log holds it; empty
+  // for none.
+  bytes restored = 2;
+  // The pipeline's key groups.
+  uint32 key_groups = 3;
+  // Every worker's address, worker i's at i, as it joined with.
+  repeated string workers = 4;
+  // Every lane of the attempt, lane i at i. They're every sender an
+  // exchange has: a lane aligns barriers on, and takes its watermark over,
+  // each of them, connected yet or not.
+  repeated Lane lanes = 5;
+  // Every writer lane of the attempt, writer lane w at w, whose committable
+  // is the record's w-th.
+  repeated Lane writer_lanes = 6;
+  // Which lane reads each split, and from where.
+  repeated SplitAssignment splits = 7;
+}
+
+message Lane {
+  uint32 worker = 1;
+  // Unset: all of them.
+  openetl.engine.v1.KeyGroupRange key_groups = 2;
+}
+
+message SplitAssignment {
+  // The split as the restored record has it, or as its read starts.
+  SplitPosition split = 1;
+  uint32 lane = 2;
+}
+
+// SplitPosition is a split where a barrier is, as a record keeps it.
+message SplitPosition {
+  string stream = 1;
+  // Its ID, and its state at the barrier: where a restore reads it from.
+  openetl.connector.v1.Split split = 2;
+  // Its read ended, and the state is where its next sync starts.
+  bool complete = 3;
+  // The barrier was placed without a resume point.
+  bool forced = 4;
+  // It read rows again in the epoch, after a restore from a forced barrier.
+  bool reread = 5;
+  // Its watermark at the barrier, in microseconds since the Unix epoch;
+  // unset: it has none.
+  optional int64 watermark = 6;
+}
+
+// Barrier asks the worker's sources to place barrier N on every split it
+// reads. Barriers come in order, from Assignment.first_epoch.
+message Barrier {
+  openetl.connector.v1.Epoch epoch = 1;
+}
+
+// Share is the worker's part of an epoch, sent once barrier N has passed
+// every lane of the worker and its snapshot files and staging are durable.
+// Shares come in the order of their barriers, one each.
+message Share {
+  openetl.connector.v1.Epoch epoch = 1;
+  // Every split its lanes read, at the barrier, splits the epoch added
+  // included.
+  repeated SplitPosition positions = 2;
+  // Rows its sources emitted in the epoch, by stream, quarantined ones
+  // included.
+  map<string, uint64> rows = 3;
+  // One for each of its writer lanes.
+  repeated Committable committables = 4;
+  // What its engine reported for the epoch.
+  openetl.engine.v1.EpochReady ready = 5;
+}
+
+message Committable {
+  // Of the attempt's writer lanes.
+  uint32 writer_lane = 1;
+  // As openetl.connector.v1.WriteStaged's, or an engine sink's.
+  bytes staged = 2;
+  // Only this worker can commit it, such as a transaction open in its
+  // writer's producer.
+  bool local = 3;
+}
+
+// Commit asks the worker to commit what a record names, at the
+// coordinator's word: once the record is written. The record is this
+// attempt's, or, to settle an epoch the attempt restored, an earlier
+// generation's, so any worker may be asked, before its assignment too. A
+// request is idempotent: the coordinator may send it again until it's
+// answered, and the worker answers once the commit has happened, never on
+// receipt, and again each time it's asked again.
+message Commit {
+  // The record's epoch, and every writer lane's committable as the record
+  // holds them.
+  openetl.connector.v1.WriteCommit commit = 1;
+  // The writer lanes, of the record's, whose committables the worker
+  // commits; empty: all of them.
+  repeated uint32 writer_lanes = 2;
+}
+
+// Committed answers a Commit, naming its epoch and writer lanes.
+message Committed {
+  // Its error is set if the commit failed, and the coordinator may ask
+  // again.
+  openetl.connector.v1.WriteCommitted committed = 1;
+  repeated uint32 writer_lanes = 2;
+}
+
+// Positions are a committed record's splits: the only positions a worker
+// acknowledges to its sources, for the splits it reads. They come in the
+// order of their records, which may be one an earlier attempt committed,
+// once every commit the record named is answered.
+message Positions {
+  // The record's.
+  openetl.connector.v1.Epoch epoch = 1;
+  repeated SplitPosition splits = 2;
+}
+
+message Heartbeat {}
+
+message End {
+  // Why the attempt failed; unset: it finished.
+  openetl.connector.v1.Error error = 1;
+}
