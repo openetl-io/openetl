@@ -91,6 +91,22 @@ type wShape struct {
 }
 
 var variantShapes = map[string]wShape{
+	// The exchange's and the keyed operator's.
+	"silent-exchange":          {exchange: "on"},
+	"watermark-max":            {exchange: "on"},
+	"unaligned":                {exchange: "on"},
+	"watermark-not-restored":   {exchange: "on"},
+	"engines-any-generation":   {exchange: "on"},
+	"runners-any-attempt":      {exchange: "on"},
+	"names-without-generation": {exchange: "on"},
+	"names-by-group":           {exchange: "on"},
+	"senders-by-connection":    {exchange: "on"},
+	"prune-by-epoch":           {exchange: "on"},
+	"ack-read-positions":       {exchange: "on"},
+	"idle-excluded":            {exchange: "on"},
+	"snapshot-unwaited":        {exchange: "on"},
+	"idle-advances-held":       {exchange: "on"},
+	// Commits' and recovery's.
 	"ack-before-commits":         {dest: "txn"},
 	"answer-on-receipt":          {dest: "txn"},
 	"commit-before-record":       {dest: "txn"},
