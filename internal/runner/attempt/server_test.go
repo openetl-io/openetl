@@ -182,3 +182,20 @@ func TestJoinsTheServerRefuses(t *testing.T) {
 		t.Fatalf("a join after the attempt ended: %v", err)
 	}
 }
+
+func TestClosingTheServerEndsItsAttempts(t *testing.T) {
+	s := listen(t)
+	c, err := s.Open(testAttemptOf(1), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if !isDone(c.Done()) || errs.CodeOf(c.Err()) != errs.Transient {
+		t.Fatalf("the attempt after Close: %v", c.Err())
+	}
+	other := testAttemptOf(1)
+	other.Token = "another"
+	if _, err := s.Open(other, Options{}); err == nil {
+		t.Fatal("an attempt opened after Close")
+	}
+}

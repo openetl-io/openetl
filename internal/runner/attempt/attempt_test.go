@@ -23,8 +23,8 @@ import (
 // start2 opens a two-worker attempt and assigns it layout(2).
 func start2(t *testing.T, opts Options) (*coordinator, []*worker) {
 	t.Helper()
-	c := newCoordinator(testAttemptOf(2), opts, func() {})
-	ws := []*worker{joinPipe(c, target(0), opts), joinPipe(c, target(1), opts)}
+	c := coordinatorFor(t, testAttemptOf(2), opts)
+	ws := []*worker{joinPipe(t, c, target(0), opts), joinPipe(t, c, target(1), opts)}
 	if err := c.Assign(t.Context(), layout(2)); err != nil {
 		t.Fatal(err)
 	}
@@ -52,17 +52,28 @@ func request(t *testing.T, w *worker) *attemptv1.AttendResponse {
 	}
 }
 
-// commitAsync asks worker for req, and hands on the answer.
+// commitAsync asks worker for req, and hands on the answer, or nil if
+// Commit failed.
 func commitAsync(t *testing.T, c *coordinator, worker int, req *attemptv1.Commit) <-chan *protocolv1.WriteCommitted {
 	ch := make(chan *protocolv1.WriteCommitted, 1)
 	go func() {
 		a, err := c.Commit(t.Context(), worker, req)
 		if err != nil {
-			t.Error(err)
+			a = nil
 		}
 		ch <- a
 	}()
 	return ch
+}
+
+// answer waits for commitAsync's answer.
+func answer(t *testing.T, ch <-chan *protocolv1.WriteCommitted) *protocolv1.WriteCommitted {
+	t.Helper()
+	a := within(t, ch, time.Hour, "the commit's answer")
+	if a == nil {
+		t.Fatal("Commit failed")
+	}
+	return a
 }
 
 func TestAnEpochFromBarrierToPositions(t *testing.T) {
@@ -117,7 +128,7 @@ func TestAnEpochFromBarrierToPositions(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, ch := range []<-chan *protocolv1.WriteCommitted{answered, again} {
-			if a := within(t, ch, time.Hour, "the answer"); !proto.Equal(a, failure.GetCommitted()) {
+			if a := answer(t, ch); !proto.Equal(a, failure.GetCommitted()) {
 				t.Fatalf("answer: %v", a)
 			}
 		}
@@ -131,11 +142,11 @@ func TestAnEpochFromBarrierToPositions(t *testing.T) {
 		if err := ws[0].Committed(done); err != nil {
 			t.Fatal(err)
 		}
-		if a := within(t, answered, time.Hour, "the answer"); !proto.Equal(a, done.GetCommitted()) {
+		if a := answer(t, answered); !proto.Equal(a, done.GetCommitted()) {
 			t.Fatalf("answer: %v", a)
 		}
 		// Asked again once it's committed, the worker's side answers again.
-		if a := within(t, commitAsync(t, c, 0, commit), time.Hour, "the answer again"); !proto.Equal(a, done.GetCommitted()) {
+		if a := answer(t, commitAsync(t, c, 0, commit)); !proto.Equal(a, done.GetCommitted()) {
 			t.Fatalf("answer again: %v", a)
 		}
 
@@ -213,7 +224,7 @@ func TestOneWorkerAppliesEveryWorkersCommittables(t *testing.T) {
 		if err := ws[1].Committed(committedOf(apply, nil)); err != nil {
 			t.Fatal(err)
 		}
-		if a := within(t, answered, time.Hour, "the answer"); a.GetError() != nil {
+		if a := answer(t, answered); a.GetError() != nil {
 			t.Fatalf("answer: %v", a)
 		}
 		if err := c.Acknowledge(&attemptv1.Positions{Epoch: epoch(testFirst)}); err != nil {
@@ -231,7 +242,7 @@ func TestOneWorkerAppliesEveryWorkersCommittables(t *testing.T) {
 func TestARestoredEpochIsSettledBeforeTheAssignment(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
-		c := newCoordinator(testAttemptOf(2), Options{}, func() {})
+		c := coordinatorFor(t, testAttemptOf(2), Options{})
 		// The record restored is an earlier attempt's, of three writer
 		// lanes, none of which this attempt's workers staged: worker 0
 		// applies them all, and worker 1 settles the third's on its own,
@@ -240,7 +251,7 @@ func TestARestoredEpochIsSettledBeforeTheAssignment(t *testing.T) {
 		whole, third := commitOf(restored, 3), commitOf(restored, 3, 2)
 		applied, settled := commitAsync(t, c, 0, whole), commitAsync(t, c, 1, third)
 		synctest.Wait()
-		ws := []*worker{joinPipe(c, target(0), Options{}), joinPipe(c, target(1), Options{})}
+		ws := []*worker{joinPipe(t, c, target(0), Options{}), joinPipe(t, c, target(1), Options{})}
 		for i, req := range []*attemptv1.Commit{whole, third} {
 			if got := request(t, ws[i]).GetCommit(); !proto.Equal(got, req) {
 				t.Fatalf("worker %d's commit: %v, want %v", i, got, req)
@@ -249,12 +260,12 @@ func TestARestoredEpochIsSettledBeforeTheAssignment(t *testing.T) {
 		if err := ws[1].Committed(committedOf(third, nil)); err != nil {
 			t.Fatal(err)
 		}
-		within(t, settled, time.Hour, "worker 1's answer")
+		answer(t, settled)
 		// Worker 0's apply fails, and is asked again.
 		if err := ws[0].Committed(committedOf(whole, &protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_DESTINATION_UNAVAILABLE})); err != nil {
 			t.Fatal(err)
 		}
-		within(t, applied, time.Hour, "worker 0's answer")
+		answer(t, applied)
 		if err := c.Assign(ctx, layout(2)); err != nil {
 			t.Fatal(err)
 		}
@@ -272,7 +283,7 @@ func TestARestoredEpochIsSettledBeforeTheAssignment(t *testing.T) {
 		if err := ws[0].Committed(committedOf(whole, nil)); err != nil {
 			t.Fatal(err)
 		}
-		within(t, applied, time.Hour, "worker 0's answer")
+		answer(t, applied)
 		if err := c.Acknowledge(positions); err != nil {
 			t.Fatal(err)
 		}
@@ -298,12 +309,12 @@ func TestARestoredEpochIsSettledBeforeTheAssignment(t *testing.T) {
 
 func TestAnotherAttemptOrGenerationIsRefused(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		c := newCoordinator(testAttemptOf(1), Options{}, func() {})
+		c := coordinatorFor(t, testAttemptOf(1), Options{})
 		for _, tg := range []Target{
 			{Attempt: "attempt-0", Generation: testGen},
 			{Attempt: testAttempt, Generation: testGen - 1},
 		} {
-			w := joinPipe(c, tg, Options{})
+			w := joinPipe(t, c, tg, Options{})
 			within(t, w.Done(), time.Hour, "the refusal")
 			if err := w.Err(); !errors.Is(err, ErrRefused) || errs.CodeOf(err) != errs.Fenced {
 				t.Fatalf("%v: %v", tg, err)
@@ -314,7 +325,7 @@ func TestAnotherAttemptOrGenerationIsRefused(t *testing.T) {
 		if isDone(c.Done()) {
 			t.Fatalf("a stale worker failed the attempt: %v", c.Err())
 		}
-		w := joinPipe(c, target(0), Options{})
+		w := joinPipe(t, c, target(0), Options{})
 		if err := c.Assign(t.Context(), layout(1)); err != nil {
 			t.Fatal(err)
 		}
@@ -332,10 +343,10 @@ func TestAWorkerThatJoinsTwiceFailsTheAttempt(t *testing.T) {
 	for _, again := range []int{0, 2} {
 		t.Run(fmt.Sprintf("as worker %d", again), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				c := newCoordinator(testAttemptOf(2), Options{}, func() {})
-				w0 := joinPipe(c, target(0), Options{})
+				c := coordinatorFor(t, testAttemptOf(2), Options{})
+				w0 := joinPipe(t, c, target(0), Options{})
 				synctest.Wait()
-				dup := joinPipe(c, target(again), Options{})
+				dup := joinPipe(t, c, target(again), Options{})
 				within(t, dup.Done(), time.Hour, "the refusal")
 				if !errors.Is(dup.Err(), ErrRefused) {
 					t.Fatalf("worker %d again: %v", again, dup.Err())
@@ -358,8 +369,8 @@ func TestAWorkerThatJoinsTwiceFailsTheAttempt(t *testing.T) {
 func TestAWorkerThatNeverJoinsFailsTheAttempt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		opts := Options{JoinTimeout: time.Minute}
-		c := newCoordinator(testAttemptOf(2), opts, func() {})
-		w0 := joinPipe(c, target(0), opts)
+		c := coordinatorFor(t, testAttemptOf(2), opts)
+		w0 := joinPipe(t, c, target(0), opts)
 		assigned := make(chan error, 1)
 		go func() { assigned <- c.Assign(t.Context(), layout(2)) }()
 		time.Sleep(time.Minute - time.Second)
@@ -386,9 +397,9 @@ func TestAWorkerThatNeverJoinsFailsTheAttempt(t *testing.T) {
 func TestAWorkerLostMidEpochFailsTheAttempt(t *testing.T) {
 	t.Run("silent", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			c := newCoordinator(testAttemptOf(2), Options{}, func() {})
-			w0 := joinPipe(c, target(0), Options{})
-			r1 := raw(c)
+			c := coordinatorFor(t, testAttemptOf(2), Options{})
+			w0 := joinPipe(t, c, target(0), Options{})
+			r1 := raw(t, c)
 			r1.join(t, target(1))
 			synctest.Wait()
 			from := time.Now()
@@ -516,8 +527,8 @@ func TestAShareOutOfTheProtocolFailsTheAttempt(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				c := newCoordinator(testAttemptOf(1), Options{}, func() {})
-				r := raw(c)
+				c := coordinatorFor(t, testAttemptOf(1), Options{})
+				r := raw(t, c)
 				r.join(t, target(0))
 				if err := c.Assign(t.Context(), layout(1)); err != nil {
 					t.Fatal(err)
@@ -543,10 +554,10 @@ func TestAShareOutOfTheProtocolFailsTheAttempt(t *testing.T) {
 
 func TestADuplicateShareFailsTheAttempt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		c := newCoordinator(testAttemptOf(2), Options{}, func() {})
-		r := raw(c)
+		c := coordinatorFor(t, testAttemptOf(2), Options{})
+		r := raw(t, c)
 		r.join(t, target(0))
-		w1 := joinPipe(c, target(1), Options{})
+		w1 := joinPipe(t, c, target(1), Options{})
 		if err := c.Assign(t.Context(), layout(2)); err != nil {
 			t.Fatal(err)
 		}
@@ -623,7 +634,7 @@ func TestACoordinatorLost(t *testing.T) {
 	}
 	t.Run("silent", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			r, w := rawStart(target(0), Options{})
+			r, w := rawStart(t, target(0), Options{})
 			assign(t, r, w)
 			from := time.Now()
 			time.Sleep(DefaultTimeout - time.Millisecond)
@@ -644,7 +655,7 @@ func TestACoordinatorLost(t *testing.T) {
 	})
 	t.Run("call broken", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			r, w := rawStart(target(0), Options{})
+			r, w := rawStart(t, target(0), Options{})
 			assign(t, r, w)
 			r.p.end(errors.New("connection reset"))
 			within(t, w.Done(), time.Second, "the worker's end")
@@ -657,7 +668,7 @@ func TestACoordinatorLost(t *testing.T) {
 	t.Run("never assigns", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			opts := Options{JoinTimeout: time.Minute}
-			r, w := rawStart(target(0), opts)
+			r, w := rawStart(t, target(0), opts)
 			r.next(t)
 			beat := &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Heartbeat{Heartbeat: &attemptv1.Heartbeat{}}}
 			beating := make(chan struct{})
@@ -718,7 +729,7 @@ func TestACoordinatorOutOfTheProtocol(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				r, w := rawStart(target(0), Options{})
+				r, w := rawStart(t, target(0), Options{})
 				r.next(t)
 				if tc.assigned {
 					r.send(t, msg(assignment))
@@ -740,7 +751,7 @@ func TestACoordinatorOutOfTheProtocol(t *testing.T) {
 
 func TestTheWorkerKeepsTheProtocol(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		r, w := rawStart(target(0), Options{})
+		r, w := rawStart(t, target(0), Options{})
 		r.next(t)
 		if err := w.Share(shareOf(testFirst, 0, false)); err == nil {
 			t.Fatal("a share before the assignment")
@@ -831,7 +842,7 @@ func TestTheWorkerKeepsTheProtocol(t *testing.T) {
 func TestTheCoordinatorKeepsTheProtocol(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
-		c := newCoordinator(testAttemptOf(2), Options{}, func() {})
+		c := coordinatorFor(t, testAttemptOf(2), Options{})
 		if err := c.Barrier(testFirst); err == nil {
 			t.Fatal("a barrier before the assignment")
 		}
@@ -840,7 +851,7 @@ func TestTheCoordinatorKeepsTheProtocol(t *testing.T) {
 		if err := c.Assign(ctx, bad); err == nil {
 			t.Fatal("an assignment to a third worker")
 		}
-		ws := []*worker{joinPipe(c, target(0), Options{}), joinPipe(c, target(1), Options{})}
+		ws := []*worker{joinPipe(t, c, target(0), Options{}), joinPipe(t, c, target(1), Options{})}
 		if err := c.Assign(ctx, layout(2)); err != nil {
 			t.Fatal(err)
 		}
@@ -918,6 +929,95 @@ func TestTheCoordinatorKeepsTheProtocol(t *testing.T) {
 		synctest.Wait()
 		if isDone(c.Done()) {
 			t.Fatalf("misuse failed the attempt: %v", c.Err())
+		}
+		if err := c.End(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range ws {
+			_ = w.Close()
+		}
+	})
+}
+
+func TestAJoinDeadlineThatFiresAtOnce(t *testing.T) {
+	for range 2000 {
+		c := newCoordinator(testAttemptOf(1), Options{JoinTimeout: time.Nanosecond}, func() {})
+		<-c.Done()
+		if !errors.Is(c.Err(), ErrLost) {
+			t.Fatalf("attempt: %v", c.Err())
+		}
+	}
+}
+
+func TestAWorkerTalkingPastTheEndIsCutOff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := coordinatorFor(t, testAttemptOf(1), Options{})
+		r := raw(t, c)
+		r.join(t, target(0))
+		synctest.Wait()
+		stop := make(chan struct{})
+		talked := make(chan struct{})
+		go func() {
+			defer close(talked)
+			for {
+				select {
+				case <-stop:
+					return
+				case <-time.After(DefaultHeartbeat):
+					_ = workerEnd{r.p}.Send(workerHeartbeat)
+				}
+			}
+		}()
+		ended := make(chan error, 1)
+		go func() { ended <- c.End(t.Context(), nil) }()
+		err := within(t, ended, 2*DefaultTimeout, "End")
+		close(stop)
+		<-talked
+		r.p.hangUp()
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestACommitAskedAgainAfterItsPositions(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		c, ws := start2(t, Options{})
+		if err := c.Barrier(testFirst); err != nil {
+			t.Fatal(err)
+		}
+		for i, w := range ws {
+			request(t, w)
+			if err := w.Share(shareOf(testFirst, i, i == 0)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := c.Shares(ctx, testFirst); err != nil {
+			t.Fatal(err)
+		}
+		commit := commitOf(epoch(testFirst), 2, 0)
+		answered := commitAsync(t, c, 0, commit)
+		request(t, ws[0])
+		if err := ws[0].Committed(committedOf(commit, nil)); err != nil {
+			t.Fatal(err)
+		}
+		answer(t, answered)
+		if err := c.Acknowledge(&attemptv1.Positions{Epoch: epoch(testFirst)}); err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range ws {
+			request(t, w)
+		}
+		// The worker's side answers it as committed, and its caller doesn't
+		// see it again.
+		if a := answer(t, commitAsync(t, c, 0, commit)); a.GetError() != nil || a.GetEpoch().GetN() != testFirst {
+			t.Fatalf("answer again: %v", a)
+		}
+		select {
+		case m := <-ws[0].Requests():
+			t.Fatalf("the commit reached the worker's caller again: %v", m)
+		default:
 		}
 		if err := c.End(ctx, nil); err != nil {
 			t.Fatal(err)

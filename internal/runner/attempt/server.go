@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	attemptv1 "github.com/openetl-io/openetl/gen/openetl/attempt/v1"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 )
 
 const (
@@ -55,6 +56,7 @@ type Server struct {
 
 	mu       sync.RWMutex
 	attempts map[string]*coordinator
+	closed   bool
 }
 
 func Listen(ctx context.Context, cfg ListenConfig) (*Server, error) {
@@ -104,6 +106,9 @@ func (s *Server) Open(a Attempt, opts Options) (Coordinator, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errors.New("attempt: the attempt server is closed")
+	}
 	if s.attempts[a.Token] != nil {
 		return nil, errors.New("attempt: another attempt has the token")
 	}
@@ -119,9 +124,22 @@ func (s *Server) Open(a Attempt, opts Options) (Coordinator, error) {
 	return c, nil
 }
 
-// Close stops the server, ending every call, which fails every attempt it
-// serves.
-func (s *Server) Close() { s.grpc.Stop() }
+// Close stops the server: it fails every attempt it serves, ends every
+// call, and opens no more.
+func (s *Server) Close() {
+	s.mu.Lock()
+	s.closed = true
+	open := make([]*coordinator, 0, len(s.attempts))
+	for _, c := range s.attempts {
+		open = append(open, c)
+	}
+	s.mu.Unlock()
+	// After s.mu: finishing unregisters, which takes it.
+	for _, c := range open {
+		c.finish(errs.New(errs.Transient, "attempt: the attempt server closed"))
+	}
+	s.grpc.Stop()
+}
 
 type coordinatorKey struct{}
 

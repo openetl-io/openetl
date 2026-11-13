@@ -84,7 +84,10 @@ func newCoordinator(a Attempt, opts Options, unregister func()) *coordinator {
 		members: make([]*member, a.Workers), allJoined: make(chan struct{}),
 		shares: map[uint64][]*attemptv1.Share{}, changed: make(chan struct{}), done: make(chan struct{}),
 	}
+	// joinDeadline takes c.mu, so it can't see joinTimer unset.
+	c.mu.Lock()
 	c.joinTimer = time.AfterFunc(opts.joinTimeout(), c.joinDeadline)
+	c.mu.Unlock()
 	return c
 }
 
@@ -120,8 +123,9 @@ func (c *coordinator) finish(err error) {
 			m.out.close()
 		}
 	}
+	joinTimer := c.joinTimer
 	c.mu.Unlock()
-	c.joinTimer.Stop()
+	joinTimer.Stop()
 	c.unregister()
 }
 
@@ -222,8 +226,15 @@ func (c *coordinator) serve(st coordinatorStream) error {
 		}
 		return err
 	}
+	// Once the attempt is over, the worker has a timeout to close its side,
+	// however much it still sends.
+	over, closeBy := c.done, (<-chan time.Time)(nil)
 	for {
 		select {
+		case <-over:
+			over, closeBy = nil, time.After(c.opts.timeout())
+		case <-closeBy:
+			return quit(status.Error(codes.DeadlineExceeded, fmt.Sprintf("attempt: %s didn't end its call within %s of the attempt's end", who, c.opts.timeout())))
 		case r := <-in:
 			switch {
 			case r.err == nil:

@@ -1,6 +1,7 @@
 package attempt
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -116,10 +117,25 @@ func connect(c *coordinator) *pipe {
 	return p
 }
 
-// joinPipe starts a worker's part over a call to c.
-func joinPipe(c *coordinator, t Target, opts Options) *worker {
+// coordinatorFor opens a, and ends it once the test is over, whatever the
+// test's outcome, so no goroutine outlives a synctest bubble.
+func coordinatorFor(t *testing.T, a Attempt, opts Options) *coordinator {
+	c := newCoordinator(a, opts, func() {})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		defer cancel()
+		_ = c.End(ctx, nil)
+	})
+	return c
+}
+
+// joinPipe starts a worker's part over a call to c, and closes it once the
+// test is over.
+func joinPipe(t *testing.T, c *coordinator, tg Target, opts Options) *worker {
 	p := connect(c)
-	return start(workerEnd{p}, p.hangUp, t, opts)
+	w := start(workerEnd{p}, p.hangUp, tg, opts)
+	t.Cleanup(func() { _ = w.Close() })
+	return w
 }
 
 // rawWorker is a worker that sends what a test says, and keeps what the
@@ -131,8 +147,9 @@ type rawWorker struct {
 	err chan error
 }
 
-func raw(c *coordinator) *rawWorker {
+func raw(t *testing.T, c *coordinator) *rawWorker {
 	p := connect(c)
+	t.Cleanup(p.hangUp)
 	r := &rawWorker{p: p, msgs: make(chan *attemptv1.AttendResponse, 64), err: make(chan error, 1)}
 	go func() {
 		for {
@@ -192,7 +209,7 @@ type rawCoordinator struct {
 }
 
 // rawStart starts a worker's part over a call to a rawCoordinator.
-func rawStart(t Target, opts Options) (*rawCoordinator, *worker) {
+func rawStart(t *testing.T, tg Target, opts Options) (*rawCoordinator, *worker) {
 	p := newPipe()
 	r := &rawCoordinator{p: p, msgs: make(chan *attemptv1.AttendRequest, 64), err: make(chan error, 1)}
 	go func() {
@@ -208,7 +225,10 @@ func rawStart(t Target, opts Options) (*rawCoordinator, *worker) {
 			}
 		}
 	}()
-	return r, start(workerEnd{p}, p.hangUp, t, opts)
+	w := start(workerEnd{p}, p.hangUp, tg, opts)
+	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() { p.end(nil) })
+	return r, w
 }
 
 func (r *rawCoordinator) send(t *testing.T, m *attemptv1.AttendResponse) {

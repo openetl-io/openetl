@@ -329,13 +329,26 @@ func (w *worker) askedToCommit(msg *attemptv1.AttendResponse, req *attemptv1.Com
 	}
 	key := commitKey(e, req.GetWriterLanes())
 	switch c := w.commits[key]; {
-	case c == nil:
+	case c != nil && c.answer != nil:
+		w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Committed{Committed: c.answer}})
+	case c != nil:
+	case atOrBefore(e, w.acked):
+		// Positions came after every commit up to them succeeded, so it's
+		// committed; its answer, and what it counted, are gone.
+		w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Committed{Committed: &attemptv1.Committed{
+			Committed: &protocolv1.WriteCommitted{Epoch: e}, WriterLanes: req.GetWriterLanes(),
+		}}})
+	default:
 		w.commits[key] = &workerCommit{epoch: e}
 		w.enqueue(msg)
-	case c.answer != nil:
-		w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Committed{Committed: c.answer}})
 	}
 	return nil
+}
+
+// atOrBefore says whether epoch e is at or before epoch of, which may be
+// nil.
+func atOrBefore(e, of *protocolv1.Epoch) bool {
+	return of != nil && (e.GetGeneration() < of.GetGeneration() || e.GetGeneration() == of.GetGeneration() && e.GetN() <= of.GetN())
 }
 
 // enqueue queues a request for Requests; w.mu is held.

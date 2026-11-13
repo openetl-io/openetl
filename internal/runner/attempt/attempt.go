@@ -131,9 +131,9 @@ type Coordinator interface {
 type Worker interface {
 	// Requests are the coordinator's assignment, barriers, positions and
 	// commits, in the order it sent them. It's closed once Done is. A
-	// commit asked for again is answered again by the worker's side
-	// itself once Committed answered it, and isn't repeated here while it
-	// waits for that answer.
+	// commit comes here once: asked again, it waits for the answer it's
+	// waiting for, or the worker's side answers it as committed itself,
+	// once Committed has or once positions have covered its epoch.
 	Requests() <-chan *attemptv1.AttendResponse
 	// Share sends the worker's share of the next epoch, once its barrier
 	// was requested, the worker's lanes have passed it, and its snapshot
