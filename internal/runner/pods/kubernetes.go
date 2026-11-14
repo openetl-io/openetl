@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -213,13 +214,16 @@ func (k *Kubernetes) create(ctx context.Context, p *corev1.Pod) error {
 	if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	there, err := pods.Get(ctx, p.Name, metav1.GetOptions{})
-	switch {
-	case apierrors.IsNotFound(err):
-		return fmt.Errorf("pods: pod %s went while it was made", p.Name)
-	case err != nil:
+	// List, which the launcher's Role has, rather than get, which it needn't.
+	l, err := pods.List(ctx, metav1.ListOptions{FieldSelector: "metadata.name=" + p.Name})
+	if err != nil {
 		return err
-	case there.DeletionTimestamp != nil:
+	}
+	i := slices.IndexFunc(l.Items, func(there corev1.Pod) bool { return there.Name == p.Name })
+	switch {
+	case i < 0:
+		return fmt.Errorf("pods: pod %s went while it was made", p.Name)
+	case l.Items[i].DeletionTimestamp != nil:
 		return fmt.Errorf("pods: pod %s is still being deleted", p.Name)
 	}
 	return nil

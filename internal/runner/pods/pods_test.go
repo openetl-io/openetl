@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"sigs.k8s.io/yaml"
 
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -448,6 +449,13 @@ func TestLaunchWorkersAllOrNone(t *testing.T) {
 	if made := placement4(); len(made) != 4 {
 		t.Fatalf("pods %+v, want the coordinator's and its 3 workers'", made)
 	}
+	// All of it with what the shipped launcher's Role allows on pods.
+	allowed := launcherPodVerbs(t)
+	for _, a := range c.Actions() {
+		if a.GetResource().Resource == "pods" && !allowed[a.GetVerb()] {
+			t.Errorf("the launcher would %s pods, which its Role doesn't allow (%v)", a.GetVerb(), allowed)
+		}
+	}
 
 	// A worker's pod that ended well has no failure; one that failed has.
 	for _, tc := range []struct {
@@ -480,6 +488,37 @@ func TestLaunchWorkersAllOrNone(t *testing.T) {
 			}
 		}
 	}
+}
+
+// launcherPodVerbs are the verbs on pods of the Role that
+// deploy/kubernetes gives the launcher.
+func launcherPodVerbs(t *testing.T) map[string]bool {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "kubernetes", "launcher-default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verbs := map[string]bool{}
+	for _, doc := range strings.Split(string(b), "\n---\n") {
+		var role struct {
+			Kind  string
+			Rules []struct{ Resources, Verbs []string }
+		}
+		if err := yaml.Unmarshal([]byte(doc), &role); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range role.Rules {
+			if role.Kind == "Role" && slices.Contains(r.Resources, "pods") {
+				for _, v := range r.Verbs {
+					verbs[v] = true
+				}
+			}
+		}
+	}
+	if len(verbs) == 0 {
+		t.Fatal("no Role in launcher-default.yaml gives verbs on pods")
+	}
+	return verbs
 }
 
 // The process launcher starts a process for each worker, with which one it
