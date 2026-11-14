@@ -79,8 +79,8 @@ type Role struct {
 		Hint   string `yaml:"hint"`
 	} `yaml:"resources"`
 	State *struct {
-		Version uint32 `yaml:"version"`
-		Reads   uint32 `yaml:"reads"`
+		Version uint32 `yaml:"version" min:"1"`
+		Reads   uint32 `yaml:"reads" min:"1"`
 	} `yaml:"state"`
 }
 
@@ -197,6 +197,11 @@ func Parse(b []byte) (*File, error) {
 	if err := yaml.Unmarshal(b, &doc); err != nil {
 		return nil, err
 	}
+	// Before the schema, whose error doesn't give the value.
+	var f File
+	if err := spec.CheckIntegers(b, &f); err != nil {
+		return nil, err
+	}
 	j, err := json.Marshal(doc)
 	if err != nil {
 		return nil, err
@@ -212,7 +217,6 @@ func Parse(b []byte) (*File, error) {
 	if err := sch.Validate(inst); err != nil {
 		return nil, err
 	}
-	var f File
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil {

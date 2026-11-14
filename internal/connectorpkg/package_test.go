@@ -101,6 +101,40 @@ func TestParseFile(t *testing.T) {
 	}
 }
 
+// A state's version and reads take whole numbers from 1 to 4294967295, 1.0
+// included, and anything else is refused, naming the field and the value.
+func TestFileIntegers(t *testing.T) {
+	for _, field := range []string{"version", "reads"} {
+		file := func(v string) string {
+			state := "{version: 4294967295, reads: " + v + "}"
+			if field == "version" {
+				state = "{version: " + v + ", reads: 1}"
+			}
+			return "name: acme/x\nrepository: https://example.com/x\nroles:\n  source:\n    build: {go: ./cmd}\n    state: " + state + "\n"
+		}
+		for v, want := range map[string]uint32{"1": 1, "1.0": 1, "1e1": 10, "4294967295": 4294967295, "4294967295.0": 4294967295} {
+			f, err := Parse([]byte(file(v)))
+			if err != nil {
+				t.Errorf("%s %s: %v", field, v, err)
+				continue
+			}
+			got := f.Roles["source"].State.Version
+			if field == "reads" {
+				got = f.Roles["source"].State.Reads
+			}
+			if got != want {
+				t.Errorf("%s %s read as %d, want %d", field, v, got, want)
+			}
+		}
+		for _, v := range []string{"1.9", "0.5", "0", "-1", "-1.5", "4294967296", "99999999999999999999", "two"} {
+			_, err := Parse([]byte(file(v)))
+			if want := "roles.source.state." + field + `: "` + v + `" isn't a whole number from 1 to 4294967295`; err == nil || err.Error() != want {
+				t.Errorf("%s %s: %v, want %q", field, v, err, want)
+			}
+		}
+	}
+}
+
 func TestPackage(t *testing.T) {
 	f, err := Load("testdata/files")
 	if err != nil {

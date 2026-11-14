@@ -102,8 +102,8 @@
           "required": ["version", "reads"],
           "additionalProperties": false,
           "properties": {
-            "version": { "description": "The version of the state the role writes.", "type": "integer", "minimum": 1 },
-            "reads": { "description": "The oldest version of the state the role can resume from.", "type": "integer", "minimum": 1 }
+            "version": { "description": "The version of the state the role writes.", "type": "integer", "minimum": 1, "maximum": 4294967295 },
+            "reads": { "description": "The oldest version of the state the role can resume from.", "type": "integer", "minimum": 1, "maximum": 4294967295 }
           }
         }
       }

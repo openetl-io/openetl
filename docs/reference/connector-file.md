@@ -91,8 +91,8 @@ The version of the checkpoint state the role writes, and the oldest it can resum
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `version` | integer | Yes | The version of the state the role writes. Is at least 1. |
-| `reads` | integer | Yes | The oldest version of the state the role can resume from. Is at least 1. |
+| `version` | integer | Yes | The version of the state the role writes. Is from 1 to 4294967295. |
+| `reads` | integer | Yes | The oldest version of the state the role can resume from. Is from 1 to 4294967295. |
 
 ## Types
 
