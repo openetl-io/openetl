@@ -334,24 +334,31 @@ func (parsingApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyReq
 	return connect.NewResponse(&apiv1.ApplyResponse{}), nil
 }
 
-// A worker count that isn't a whole number is refused, by openetl plan and
-// openetl apply alike, naming the field and the value.
-func TestPlanAndApplyRefuseFractionalWorkers(t *testing.T) {
+// An integer field given a number that isn't whole, such as a worker count
+// or a Flink job's parallelism, is refused by openetl plan and openetl apply
+// alike, naming the field and the value.
+func TestPlanAndApplyRefuseFractions(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewApplyServiceHandler(parsingApply{}))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	t.Setenv("OPENETL_API_KEY", "oetl_test")
-	file := filepath.Join(t.TempDir(), "p.yaml")
-	doc := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source: {ref: s}\n  destination: {ref: d}\n  resources: {workers: 1.9}\n"
-	if err := os.WriteFile(file, []byte(doc), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, cmd := range []string{"plan", "apply"} {
-		var out bytes.Buffer
-		err := run(t.Context(), []string{cmd, "--api-url", srv.URL, "-f", file}, &out)
-		if err == nil || !strings.Contains(err.Error(), `resources.workers: "1.9" isn't a whole number from 1 to 64`) {
-			t.Errorf("openetl %s: %v, want workers 1.9 refused", cmd, err)
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n"
+	for doc, want := range map[string]string{
+		header + "  schedule: {every: 1h}\n  source: {ref: s}\n  destination: {ref: d}\n  resources: {workers: 1.9}\n": `resources.workers: "1.9" isn't a whole number from 1 to 64`,
+		header + "  mode: continuous\n  source: {ref: s, streams: [{name: payments}]}\n  destination: {ref: d}\n" +
+			"  transform: {flink: {cluster: fl, code: {jar: 's3://j/a.jar', sha256: " + strings.Repeat("cd", 32) + "}, parallelism: 2.5}}\n": `transform.flink.parallelism: "2.5" isn't a whole number from 0 to 2147483647`,
+	} {
+		file := filepath.Join(t.TempDir(), "p.yaml")
+		if err := os.WriteFile(file, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, cmd := range []string{"plan", "apply"} {
+			var out bytes.Buffer
+			err := run(t.Context(), []string{cmd, "--api-url", srv.URL, "-f", file}, &out)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("openetl %s: %v, want %q", cmd, err, want)
+			}
 		}
 	}
 }

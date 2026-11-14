@@ -52,6 +52,7 @@ spec:
 In `spec`:
 
 - A field the spec doesn't have is refused, and so is a value of the wrong type.
+- An integer field takes a whole number in its range, such as `4`, `4.0` or `0x10`. A number with a fraction, such as `1.9`, is refused, and so is one outside the range. The error names the field, the value and the range: `resources.workers: "1.9" isn't a whole number from 1 to 64`.
 - Enum values are lowercase, as in `merge`.
 - A duration is a Go duration, such as `90s`, `15m` or `1h30m`.
 - A byte count is an integer number of bytes or a number with a unit, such as `256MB` or `64MiB`. `KB`, `MB`, `GB` and `TB` use powers of 1,000. `KiB`, `MiB`, `GiB` and `TiB` use powers of 1,024.

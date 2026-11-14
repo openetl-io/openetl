@@ -153,7 +153,7 @@ func TestParseResources(t *testing.T) {
 	if w := doc.Pipeline.GetResources().GetWorkers(); w != 4 {
 		t.Errorf("workers %d, want 4", w)
 	}
-	for _, bad := range []string{"0", "-1", "65", "two", "1.9", "2.0", "1e1", "[2]", "{n: 2}", `"2"`} {
+	for _, bad := range []string{"0", "-1", "65", "two", "1.9", "6.5e1", "[2]", "{n: 2}", `"2"`} {
 		_, err := Parse([]byte(header + "  resources: {workers: " + bad + "}\n"))
 		if err == nil || !strings.Contains(err.Error(), "resources.workers:") || !strings.Contains(err.Error(), "isn't a whole number from 1 to 64") {
 			t.Errorf("workers %s: %v, want it refused", bad, err)
