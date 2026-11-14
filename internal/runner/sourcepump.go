@@ -200,10 +200,11 @@ type sourcePump struct {
 }
 
 // splitRead is where a split's rows of an epoch went: the lane, or laneAll,
-// and where its part of the epoch began.
+// where its part of the epoch began, and how many rows it had.
 type splitRead struct {
 	lane int
 	from []byte
+	rows uint64
 }
 
 var (
@@ -737,7 +738,7 @@ func (p *sourcePump) place(name string, sp *splitPos, forced bool) error {
 		if st.inTurn {
 			lane = laneAll
 		}
-		p.splitLanes[checkpoint.SplitRef{Stream: name, ID: sp.id}] = splitRead{lane: lane, from: sp.from}
+		p.splitLanes[checkpoint.SplitRef{Stream: name, ID: sp.id}] = splitRead{lane: lane, from: sp.from, rows: sp.rows}
 	}
 	sp.rows, sp.reread, sp.from = 0, false, sp.resume
 	p.unplaced--

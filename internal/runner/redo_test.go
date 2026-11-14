@@ -590,6 +590,79 @@ func TestARedoOnAnyLayout(t *testing.T) {
 	}
 }
 
+// A keyed stream's lane, its rows grouped by the key of the attempt that
+// wrote it, isn't written again under another key: the attempt fails with
+// CONFIG_INVALID, saying what changed, and commits nothing of the lane.
+func TestARedoUnderAnotherKeyIsRefused(t *testing.T) {
+	for _, n := range []int{0, 2} {
+		t.Run(fmt.Sprintf("workers=%d", n), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			s := newTxnStore(t)
+			p := txnPool(t, s, ranges(6, 100, 5))
+			p.change = func(j *runner.Job) { j.Streams[0].PrimaryKey = []string{"id"} }
+			head := p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+			// A key of the same column hashes its rows to other groups.
+			p.change = func(j *runner.Job) { j.Streams[0].PrimaryKey = []string{"id", "id"} }
+			j := p.job("a2", p.source(), txnDest{s: s})
+			if n > 0 {
+				j = p.workers("a2", n)
+			}
+			_, err := runner.RunAttempt(ctx, j)
+			if n > 0 {
+				p.wait("a2")
+			}
+			if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(fmt.Sprint(err), "(id) until the epoch is settled") {
+				t.Fatalf("the attempt ended with %v (%s)", err, errs.CodeOf(err))
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.marked[laneMark{head.Generation, head.Epoch, 0}] {
+				t.Error("lane 0 was committed")
+			}
+		})
+	}
+}
+
+// A worker settling when the attempt fails stops: its redo, which would
+// otherwise go on to its end, ends with the attempt.
+func TestASettlingWorkerStopsWithTheAttempt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	s := newTxnStore(t)
+	p := txnPool(t, s, ranges(6, 100, 5))
+	p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+	// Worker 0's redo of lane 0 waits until it's stopped; worker 1 is
+	// lost meanwhile, which fails the attempt.
+	var once sync.Once
+	s.mu.Lock()
+	s.writing = func(ctx context.Context, gen uint64, lane int, e destination.Epoch) error {
+		if gen != 2 || lane != 0 || e.Generation != 1 {
+			return nil
+		}
+		once.Do(func() { p.kill("a2", 1) })
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	s.mu.Unlock()
+	if _, err := runner.RunAttempt(ctx, p.workers("a2", 2)); err == nil {
+		t.Fatal("the attempt went on without its worker")
+	}
+	p.mu.Lock()
+	done, n := p.done["a2"], len(p.cancels["a2"])
+	p.mu.Unlock()
+	for range n {
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Error("a worker finished an attempt that failed")
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatal("the settling worker went on after the attempt failed")
+		}
+	}
+}
+
 // A source whose read ends before the position the record has fails the
 // redo, and the attempt, with POSITION_LOST, and commits nothing of the
 // lane.

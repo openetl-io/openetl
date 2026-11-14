@@ -213,6 +213,10 @@ message SplitRef {
   // before, or as the split was added or its read started. Empty: its
   // beginning.
   bytes from = 4;
+  // The rows the split emitted in the epoch, to every writer lane.
+  uint64 rows = 5;
+  // With key_groups: the stream's primary key, whose groups they are.
+  repeated string key = 6;
 }
 
 // Commit asks the worker to commit what a record names, at the

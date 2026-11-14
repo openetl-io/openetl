@@ -114,6 +114,20 @@ func (p *workerPart) report(m *resources.Meter) error {
 }
 
 func (p *workerPart) run(ctx context.Context) error {
+	// Calls before the assignment, settling and its redos among them, stop
+	// once the attempt has failed: their answers would reach nobody. What
+	// they open lives as long, so a finished attempt's last commits go on.
+	calls, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() {
+		select {
+		case <-p.w.Done():
+			if p.w.Err() != nil {
+				stop()
+			}
+		case <-calls.Done():
+		}
+	}()
 	defer func() {
 		for i, w := range p.ws {
 			if err := w.Close(context.WithoutCancel(ctx)); err != nil {
@@ -137,11 +151,11 @@ func (p *workerPart) run(ctx context.Context) error {
 		}
 		switch x := req.GetMessage().(type) {
 		case *attemptv1.AttendResponse_Call:
-			if err := p.call(ctx, x.Call); err != nil {
+			if err := p.call(calls, x.Call); err != nil {
 				return err
 			}
 		case *attemptv1.AttendResponse_Commit:
-			if err := p.commit(ctx, x.Commit); err != nil {
+			if err := p.commit(calls, x.Commit); err != nil {
 				return err
 			}
 		case *attemptv1.AttendResponse_Assignment:
@@ -718,16 +732,20 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 		return cmpRefs(a, b)
 	})
 	writers, local := len(p.ws), p.job.Destination.Capabilities().LaneCommits
+	keys := map[string][]string{}
+	for _, st := range p.job.sinkStreams() {
+		keys[st.Name] = st.PrimaryKey
+	}
 	for k, gw := range p.global {
 		c := &attemptv1.Committable{WriterLane: ints.Uint32(gw), Staged: e.descs[k], Local: local}
 		for _, ref := range refs {
 			read := e.splitLanes[ref]
 			lane := read.lane
-			r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from}
+			r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from, Rows: read.rows}
 			switch {
 			case plan.KeyGrouped[ref.Stream]:
 				first, last := writerKeyGroups(plan, k)
-				r.KeyGroups = attempt.KeyGroups(first, last)
+				r.KeyGroups, r.Key = attempt.KeyGroups(first, last), keys[ref.Stream]
 			case lane == laneAll:
 			case lane < 0 || lane%writers != k:
 				continue

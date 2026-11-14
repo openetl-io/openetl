@@ -379,7 +379,7 @@ func splitStateOf(p *attemptv1.SplitPosition) checkpoint.SplitState {
 func coverageOf(refs []*attemptv1.SplitRef) checkpoint.Coverage {
 	var c checkpoint.Coverage
 	for _, r := range refs {
-		cs := checkpoint.CoveredSplit{Stream: r.GetStream(), ID: r.GetSplit(), From: r.GetFrom()}
+		cs := checkpoint.CoveredSplit{Stream: r.GetStream(), ID: r.GetSplit(), From: r.GetFrom(), Rows: r.GetRows(), Key: r.GetKey()}
 		if kg := r.GetKeyGroups(); kg != nil {
 			cs.KeyGroups = &checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}
 		}

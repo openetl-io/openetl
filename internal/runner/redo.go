@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -122,27 +123,35 @@ func (j *Job) applyRecorded(ctx context.Context, w destination.Writer, applied m
 }
 
 // redoRead is a covered split read again: from where its part of the epoch
-// began, to where the record has it.
+// began, to where the record has it, and the rows it emitted on the way; 0
+// if not known.
 type redoRead struct {
 	stream, id string
 	from       []byte
 	to         checkpoint.SplitState
+	rows       uint64
 }
 
 // redoReads are what committable c of rec holds, read again: its splits,
 // but those whose part of the epoch was empty, and of each stream the key
-// groups whose rows it holds, where not all.
-func (j *Job) redoReads(rec *checkpoint.Record, c checkpoint.Coverage) ([]redoRead, map[string]checkpoint.KeyGroupRange, error) {
+// groups whose rows it holds, where not all. A stream grouped by another
+// key than the pipeline's now can't be read again as the epoch had it.
+func (j *Job) redoReads(rec *checkpoint.Record, i int) ([]redoRead, map[string]checkpoint.KeyGroupRange, error) {
 	var reads []redoRead
 	ranges := map[string]checkpoint.KeyGroupRange{}
 	whole := map[string]bool{}
-	for _, cs := range c.Splits {
-		if !slices.ContainsFunc(j.Streams, func(s Stream) bool { return s.Name == cs.Stream }) {
-			return nil, nil, errs.New(errs.ConfigInvalid, "runner: epoch %d holds rows of stream %q, which the pipeline no longer reads", rec.Epoch, cs.Stream)
+	for _, cs := range rec.Coverage[i].Splits {
+		k := slices.IndexFunc(j.Streams, func(s Stream) bool { return s.Name == cs.Stream })
+		if k < 0 {
+			return nil, nil, errs.New(errs.ConfigInvalid, "runner: epoch %d holds rows of stream %q, which the pipeline no longer reads, so writer lane %d's part can't be written again: read the stream again until the epoch is settled", rec.Epoch, cs.Stream, i)
+		}
+		if key := j.Streams[k].PrimaryKey; cs.KeyGroups != nil && !slices.Equal(cs.Key, key) {
+			return nil, nil, errs.New(errs.ConfigInvalid, "runner: epoch %d split stream %q between writer lanes by its primary key %s, and the pipeline now keys it by %s, so writer lane %d's part can't be written again as it was: apply the pipeline with the key %s until the epoch is settled, then change it",
+				rec.Epoch, cs.Stream, keyName(cs.Key), keyName(key), i, keyName(cs.Key))
 		}
 		splits := rec.Splits(cs.Stream)
-		k := slices.IndexFunc(splits, func(sp checkpoint.SplitState) bool { return sp.ID == cs.ID })
-		if k < 0 {
+		at := slices.IndexFunc(splits, func(sp checkpoint.SplitState) bool { return sp.ID == cs.ID })
+		if at < 0 {
 			return nil, nil, errs.New(errs.CheckpointCorrupt, "runner: epoch %d's record holds rows of %s, and has no position for it", rec.Epoch, splitName(cs.Stream, cs.ID))
 		}
 		r, ranged := ranges[cs.Stream]
@@ -154,15 +163,23 @@ func (j *Job) redoReads(rec *checkpoint.Record, c checkpoint.Coverage) ([]redoRe
 		default:
 			ranges[cs.Stream] = *cs.KeyGroups
 		}
-		to := splits[k]
+		to := splits[at]
 		if !to.Complete && bytes.Equal(cs.From, to.State) {
 			// No resume point since: what it emitted after one is read again
 			// from the record.
 			continue
 		}
-		reads = append(reads, redoRead{stream: cs.Stream, id: cs.ID, from: cs.From, to: to})
+		reads = append(reads, redoRead{stream: cs.Stream, id: cs.ID, from: cs.From, to: to, rows: cs.Rows})
 	}
 	return reads, ranges, nil
+}
+
+// keyName is a primary key as a message names it.
+func keyName(key []string) string {
+	if len(key) == 0 {
+		return "(none)"
+	}
+	return "(" + strings.Join(key, ", ") + ")"
 }
 
 // redo reads committable i's part of rec's epoch again from the source, as
@@ -178,7 +195,7 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec *c
 	if kg := rec.KeyGroupCount(); kg != j.keyGroups() {
 		return errs.New(errs.ConfigInvalid, "runner: the record has %d key groups, and the pipeline %d", kg, j.keyGroups())
 	}
-	reads, ranges, err := j.redoReads(rec, rec.Coverage[i])
+	reads, ranges, err := j.redoReads(rec, i)
 	if err != nil {
 		return err
 	}
@@ -308,6 +325,8 @@ type redoEmitter struct {
 	read redoRead
 	out  chan<- Frame
 	mu   sync.Mutex
+	// The rows passed on so far.
+	rows uint64
 	// It reached the position, or failed to.
 	done bool
 	err  error
@@ -353,25 +372,44 @@ func (e *redoEmitter) open(mine bool) bool {
 	return mine && !e.done
 }
 
-func (e *redoEmitter) send(f Frame) error {
+// send passes f on, with its rows. As the ordinary read's emitter does, it
+// keeps what the source handed it, and leaves a batch the source's when it
+// fails.
+func (e *redoEmitter) send(f Frame, rows uint64) error {
 	f.Stream = e.read.stream
-	return send(e.ctx, e.out, f)
+	select {
+	case e.out <- f:
+	case <-e.ctx.Done():
+		return e.ctx.Err()
+	}
+	e.mu.Lock()
+	e.rows += rows
+	e.mu.Unlock()
+	return nil
 }
 
 // at takes a resume point or the split's completion, and ends the read
-// there if it's the record's position.
+// there if it's the record's position: the resume point it has, or, for a
+// split that completed in the epoch, a completion whose next read starts at
+// the same state. Fewer rows on the way than the epoch had are a loss, but
+// where its barrier was forced: rows after its last resume point are read
+// again anyway.
 func (e *redoEmitter) at(mine, complete bool, state []byte) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	to := e.read.to
+	to, name := e.read.to, splitName(e.read.stream, e.read.id)
+	const need = "a redo needs a source that replays the same rows and resume points from a position"
 	switch {
 	case !mine || e.done:
 		return
-	case to.Complete && complete, !to.Complete && !complete && bytes.Equal(state, to.State):
-	case complete:
-		e.err = errs.New(errs.PositionLost, "runner: %s completed again before the position the record has for it: a redo needs a source that replays the same rows and resume points from a position", splitName(e.read.stream, e.read.id))
-	default:
+	case to.Complete && complete && !bytes.Equal(state, to.State):
+		e.err = errs.New(errs.PositionLost, "runner: %s completed again at another state than the epoch's: %s", name, need)
+	case complete && !to.Complete:
+		e.err = errs.New(errs.PositionLost, "runner: %s completed again before the position the record has for it: %s", name, need)
+	case !complete && (to.Complete || !bytes.Equal(state, to.State)):
 		return
+	case e.read.rows > 0 && !to.Forced && e.rows < e.read.rows:
+		e.err = errs.New(errs.PositionLost, "runner: %s returned %d rows again up to the position the record has for it, where the epoch had %d: %s", name, e.rows, e.read.rows, need)
 	}
 	e.done = true
 	e.stop()
@@ -389,7 +427,7 @@ func (s redoSplit) Rows(rows []json.RawMessage) error {
 	if !s.e.open(s.mine) {
 		return nil
 	}
-	return s.e.send(Frame{Kind: FrameRows, Rows: rows})
+	return s.e.send(Frame{Kind: FrameRows, Rows: rows}, uint64(len(rows)))
 }
 
 func (s redoSplit) Records(batch arrow.RecordBatch) error {
@@ -397,14 +435,14 @@ func (s redoSplit) Records(batch arrow.RecordBatch) error {
 		batch.Release()
 		return nil
 	}
-	return s.e.send(Frame{Kind: FrameBatch, Batch: batch})
+	return s.e.send(Frame{Kind: FrameBatch, Batch: batch}, ints.Uint64(max(batch.NumRows(), 0)))
 }
 
 func (s redoSplit) Forward(batch arrowipc.Encoded) error {
 	if !s.e.open(s.mine) {
 		return nil
 	}
-	return s.e.send(Frame{Kind: FrameBatch, IPC: batch.Bytes})
+	return s.e.send(Frame{Kind: FrameBatch, IPC: batch.Bytes}, ints.Uint64(max(batch.Rows, 0)))
 }
 
 func (s redoSplit) ResumePoint(state []byte, _ ...source.Split) error {

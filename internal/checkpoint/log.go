@@ -356,6 +356,11 @@ type CoveredSplit struct {
 	// before, or as it joined the stream or its read started. Nil: its
 	// beginning. The record's state of the split is where it ended.
 	From []byte `json:"from,omitempty"`
+	// The rows the split emitted in the epoch, to every writer lane; 0 if
+	// not known.
+	Rows uint64 `json:"rows,omitempty"`
+	// With KeyGroups: the stream's primary key, whose groups they are.
+	Key []string `json:"key,omitempty"`
 }
 
 // SplitRef names one of a stream's splits.
