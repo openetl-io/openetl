@@ -77,9 +77,12 @@ type Statement struct {
 	ArrowSchema []byte `json:"arrow_schema"`
 	// The output's primary key; empty if it has none.
 	Key []string `json:"key"`
-	// The columns its rows are exchanged by; nil where it runs in the lane
-	// that read them.
-	Exchange []string `json:"exchange"`
+	// What its operator needs of its input: the columns whose equal values
+	// must be on one lane; nil for nothing.
+	Need []string `json:"need"`
+	// The input's columns that reach the output unchanged, each with its
+	// name there.
+	Passes map[string]string `json:"passes"`
 	// Its stateful operator's ID; empty for none.
 	Operator string `json:"operator"`
 }

@@ -64,11 +64,16 @@ message StartJobRequest {
   // inbound edge. Zero: one.
   uint32 lanes = 16;
   // Its writer lanes, at most lanes: a writer of the destination each, or a
-  // part of an engine sink's files. Lane i goes to writer lane i mod
-  // writer_lanes where it runs straight. Zero: one.
+  // part of an engine sink's files. Zero: one.
   uint32 writer_lanes = 17;
-  // The pipeline's key groups, a power of two. Writer lane w owns the w-th
-  // of writer_lanes contiguous ranges of them. Zero: 256.
+  // The pipeline's key groups, a power of two, at least lanes. Writer lane w
+  // owns the w-th of writer_lanes contiguous ranges of them. Each writer
+  // lane's range is cut again among the lanes that feed it, a contiguous
+  // run of them in lane order: each writer lane gets one lane, and the
+  // others go one at a time to the writer lane with the most key groups per
+  // lane, the first of those that tie. A stream's rows go from a lane to the
+  // writer lane whose range holds the lane's, unless it has an exchange.
+  // Zero: 256.
   uint32 key_groups = 18;
   // A transform's outputs, which the destination gets in place of streams.
   // Empty without a transform: the streams are the outputs.
@@ -114,16 +119,15 @@ message ExpectedOutput {
   repeated string primary_key = 3;
 }
 
-// Routing is how a stream's rows reach writer lanes.
-enum Routing {
-  // Straight.
-  ROUTING_UNSPECIFIED = 0;
-  // From each lane to its writer lane.
-  ROUTING_STRAIGHT = 1;
-  // To the writer lane owning the key group of each row's primary key
-  // (openetl.kg.v1), so a key's rows meet: a keyed stream whose splits don't
-  // partition it by key.
-  ROUTING_KEY_GROUP = 2;
+// Exchange sends each of a stream's rows to the writer lane owning the key
+// group (openetl.kg.v1) of its values of columns, where the stream's
+// partitioning doesn't meet what the writer needs: every row of a primary
+// key on one writer lane, as for a keyed stream whose splits don't
+// partition it by key.
+message Exchange {
+  // Of the stream's primary key, named as the stream names them: a
+  // partitioning by a subset of the key meets the writer's need.
+  repeated string columns = 1;
 }
 
 enum SchemaPolicy {
@@ -154,7 +158,7 @@ message Naming {
 
 // StreamPlan is a stream the engine reads, or a transform's output. An
 // output's arrow_schema, cursor_field and read_start_micros are unset. With a
-// transform, the destination's settings, soft_deletes, holds, routing and
+// transform, the destination's settings, soft_deletes, holds, exchange and
 // table, are its outputs', and a stream's are unset.
 message StreamPlan {
   string name = 1;
@@ -185,7 +189,9 @@ message StreamPlan {
   bool changelog = 10;
   // Unset: the stream holds nothing.
   HoldPlan holds = 11;
-  Routing routing = 12;
+  // Where its rows are exchanged before the writer; unset: nowhere, and
+  // each lane's rows go to its writer lane.
+  Exchange exchange = 12;
   // Its name in the destination, exactly as written. Empty: from its own
   // name, by the job's naming.
   string table = 13;

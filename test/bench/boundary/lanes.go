@@ -19,6 +19,7 @@ import (
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/enginesink"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -177,7 +178,8 @@ func measureLanes(ctx context.Context, conn *pgx.Conn, bin string, counts []int)
 			}
 			var streams []runner.Stream
 			for _, s := range cat.Streams {
-				streams = append(streams, runner.Stream{Name: s.Name, Replay: s.Replay, Mode: destination.Append, PrimaryKey: s.PrimaryKey, SplitsByKey: s.SplitsByKey, Schema: s.Schema})
+				streams = append(streams, runner.Stream{Name: s.Name, Replay: s.Replay, Mode: destination.Append, PrimaryKey: s.PrimaryKey,
+					Partitioning: plan.SourcePartitioning(s.PrimaryKey, s.SplitsByKey, false), Schema: s.Schema})
 			}
 			return lanesAttempt(ctx, name, src, streams, dst, flow, ns, n)
 		}

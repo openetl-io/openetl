@@ -66,9 +66,19 @@ The runner sits between the connectors and the engine. Its source pump is the so
 - sets aside the records it can't take, with a reason, as JSON lines under the pipeline's `_quarantine/` in object storage;
 - applies the pipeline's schema policy, gives tables and columns their destination names, which never change once given, and adds the metadata columns, `_openetl_id` among them;
 - holds back the columns and cells the destination can't take, and keeps their values for a later release;
-- routes rows by key group to writer lanes, which write to the runner, with barriers in band, or stage Parquet files, for a destination that loads them and for the built-in `parquet` destination.
+- hands the rows to writer lanes, which write to the runner, with barriers in band, or stage Parquet files, for a destination that loads them and for the built-in `parquet` destination.
 
 The runner's sink pumps hand each writer lane's batches to the destination connector's writer.
+
+### Partitioning and exchanges
+
+[`internal/plan`](../../internal/plan) plans each stream's path from its source to the destination's writer. Each edge of the path has a partitioning: how its rows are spread over the lanes of the operator it feeds. A source's stream is split by its primary key where the catalog says that its splits partition it by key (`splits_by_key`), unless it is read with `cdc`, and is unpartitioned otherwise. Each operator states what it needs of its input. The writer of a keyed stream needs its primary key, so that one writer lane gets all of a key's rows. A statement's need comes from the engine's plan of it (`need`), and a row-wise statement needs nothing.
+
+An exchange by key group is placed only before an operator whose need its input does not meet. A partitioning by columns `K` meets a need for columns `J` when `K` is a subset of `J`. So an operator that exchanged rows by its keys `k` feeds a writer that needs `(window_start, k)` with no second exchange. A statement keeps a partitioning while its columns pass through unchanged, renamed or not (`passes` in the engine's plan of it); otherwise its output is unpartitioned. A destination with one writer lane takes every lane's rows, which meets every need.
+
+The same plan gives `openetl plan` its `partitioning` section, and the runner the exchanges of each attempt (`StreamPlan.exchange` in `StartJob`). With one writer lane, the runner sends none. The engine sends each row of a stream with an exchange to the writer lane that owns the key group (`openetl.kg.v1`) of its values of the exchange's columns, which must be of the stream's primary key.
+
+Lanes and writer lanes own contiguous ranges of the pipeline's key groups, picked together ([`crates/engine/src/layout.rs`](../../crates/engine/src/layout.rs), and `plan.NewLayout` for the runner). Writer lane `w` owns the `w`-th of the writer lanes' equal ranges. Each writer lane's range is cut again among the lanes that feed it, in lane order: each writer lane gets one lane, and each other lane goes to the writer lane with the most key groups per lane. A lane without an exchange writes to the writer lane whose range holds its own. An attempt has no more lanes than key groups.
 
 ## Checkpoints
 
@@ -105,7 +115,7 @@ An attempt can run on several runners: one runner coordinates it, and the others
 - All the splits of these streams go to one worker:
   - a stream written with overwrite;
   - a stream that the attempt does not read;
-  - a keyed stream whose splits do not keep a key's rows together.
+  - a keyed stream whose splits do not keep a key's rows together: one whose path has an exchange, which runs inside one engine.
 - A worker sends its share of each epoch when its part is durable. The share holds its splits' positions, its rows, its committables and what its engine reported. The coordinator merges the shares into one record. The record also has each committable's coverage: the splits whose rows it holds, where each split's part of the epoch began, how many rows the split had, and the key groups of those rows with the key that grouped them.
 - After the record, the first worker applies schemas and commits at the coordinator's request. A destination with lane commits (`DestinationCapabilities.lane_commits`) is different: each worker commits its own writer lanes, each with its own committable. The coordinator then sends the record's positions to the workers. Each worker acknowledges only the positions of its own splits, one checkpoint behind.
 - Each stream's schema has one owner, the coordinator. An engine whose lane changes a schema proposes the change from the version that it has. Integers past ±2^53 in a column are such a change too, because a later float then makes the column text. Every engine shapes by the versions that the coordinator accepts.

@@ -317,6 +317,9 @@ workspaces/default/pipelines/faker-to-postgres (version f7b79cd0024a)
   streams:
     users      overwrite  exactly_once  exact replay
     purchases  overwrite  exactly_once  exact replay
+  partitioning:
+    users      unpartitioned -> exchange by key group on id -> writer, needs id
+    purchases  unpartitioned -> exchange by key group on id -> writer, needs id
   warnings:
     destination "local-postgres" names connector postgres without a version, so applying it again may pin a newer one; postgres@MAJOR keeps to one major version
   notes:

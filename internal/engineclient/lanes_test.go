@@ -14,6 +14,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	partition "github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -191,7 +192,8 @@ func TestLanesThroughTheEngine(t *testing.T) {
 			dest := &laneDest{lanes: c.writer, slow: time.Millisecond, staged: map[uint64]map[int][]int64{}, byLane: map[int64]int{}, ends: map[string]uint64{}}
 			stream := runner.Stream{Name: "s", Replay: source.Exact, Mode: destination.Overwrite}
 			if c.keyed {
-				stream.PrimaryKey, stream.SplitsByKey = []string{"id"}, c.byKey
+				stream.PrimaryKey = []string{"id"}
+				stream.Partitioning = partition.SourcePartitioning(stream.PrimaryKey, c.byKey, false)
 			}
 			opts := options(t, nil)
 			res, err := runner.RunAttempt(ctx, runner.Job{

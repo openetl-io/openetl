@@ -15,6 +15,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -157,16 +158,17 @@ type Plan struct {
 	// How the destination's streams hold; those that hold nothing are
 	// missing.
 	Holds map[string]*HoldPlan
-	// The attempt's lanes and writer lanes, at most as many; 0
-	// is one. A stream's frames go from lane i to writer lane i mod
-	// WriterLanes, or for one of the destination's streams in KeyGrouped,
-	// each row to the writer lane owning its key's group: writer lane w owns
-	// the w-th of WriterLanes contiguous ranges of the KeyGroups.
+	// The attempt's lanes and writer lanes, at most as many; 0 is one. The
+	// lanes and writer lanes own the KeyGroups as plan.NewLayout lays them
+	// out. A stream's frames go from a lane to the writer lane whose range
+	// holds the lane's, or for one of the destination's streams in
+	// Exchanges, each row to the writer lane owning the key group of its
+	// values of those columns, which are of its primary key.
 	Lanes, WriterLanes int
 	KeyGroups          int
-	KeyGrouped         map[string]bool
+	Exchanges          map[string][]string
 	// A redo's: of the destination's streams named, only the rows whose
-	// key's group is in the range, by the hash KeyGrouped routes by; others
+	// key's group is in the range, by the hash Exchanges route by; others
 	// pass whole.
 	KeyGroupRanges map[string]checkpoint.KeyGroupRange
 	// A worker's: where its streams' schemas are decided, for an engine
@@ -199,9 +201,26 @@ type SchemaUpdate struct {
 func (p Plan) lanes() int       { return max(p.Lanes, 1) }
 func (p Plan) writerLanes() int { return max(p.WriterLanes, 1) }
 
+func (p Plan) keyGroups() int { return cmp.Or(p.KeyGroups, checkpoint.KeyGroups) }
+
 // WriterLane is the writer lane that owns key group g.
 func (p Plan) WriterLane(g int) int {
-	return g * p.writerLanes() / cmp.Or(p.KeyGroups, checkpoint.KeyGroups)
+	return g * p.writerLanes() / p.keyGroups()
+}
+
+// layout is the key groups the plan's lanes and writer lanes own.
+func (p Plan) layout() (plan.Layout, error) {
+	return plan.NewLayout(p.keyGroups(), p.lanes(), p.writerLanes())
+}
+
+// writerOf is each lane's writer lane; nil for a plan no layout fits, which
+// a dataflow refuses.
+func (p Plan) writerOf() []int {
+	l, err := p.layout()
+	if err != nil {
+		return nil
+	}
+	return l.WriterOf
 }
 
 // SchemaPolicy is how the dataflow takes changes to a stream's established
@@ -298,6 +317,10 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 	if writers > lanes {
 		return fmt.Errorf("runner: %d writer lanes for %d lanes", writers, lanes)
 	}
+	layout, err := plan.layout()
+	if err != nil {
+		return err
+	}
 	streams := map[string]*Stream{}
 	feeds := map[string][][]int{} // by stream and writer lane: the lanes feeding it
 	pass := map[string][]*passLane{}
@@ -309,7 +332,7 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 		for w := range writers {
 			pass[s.Name][w] = &passLane{epoch: plan.FirstEpoch, queues: map[int][]passItem{}}
 			for l := range lanes {
-				if plan.KeyGrouped[s.Name] || l%writers == w {
+				if plan.Exchanges[s.Name] != nil || layout.WriterOf[l] == w {
 					feeds[s.Name][w] = append(feeds[s.Name][w], l)
 				}
 			}
@@ -467,8 +490,8 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 		case f.Kind != FrameBatch:
 			release(f)
 			return fmt.Errorf("runner: unexpected frame kind %d into the dataflow", f.Kind)
-		case plan.KeyGrouped[s.Name]:
-			parts, err := byWriterLane(plan, s.PrimaryKey, f.Batch)
+		case plan.Exchanges[s.Name] != nil:
+			parts, err := byWriterLane(plan, plan.Exchanges[s.Name], f.Batch)
 			f.Batch.Release()
 			if err != nil {
 				return fmt.Errorf("runner: route %s: %w", f.Stream, err)
@@ -477,7 +500,7 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 				to[w] = Frame{Kind: FrameBatch, Stream: f.Stream, Batch: b}
 			}
 		default:
-			to[lane%writers] = f
+			to[layout.WriterOf[lane]] = f
 		}
 		for _, w := range slices.Sorted(maps.Keys(to)) {
 			g := to[w]

@@ -101,6 +101,8 @@ The workers read the source's splits between them. Each attempt reads all the sp
 - a keyed stream read with `cdc`;
 - a stream written with `overwrite`.
 
+The first two are the streams with an exchange in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). An exchange moves rows between the lanes of one worker only.
+
 The plan warns about each one, in this form:
 
 ```text
