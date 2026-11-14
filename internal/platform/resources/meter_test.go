@@ -87,6 +87,14 @@ func TestMeterOfWorkers(t *testing.T) {
 	if l := m.Lanes(); l != (Lanes{Count: 5, Limit: 5, Busy: 2, Idle: 2, Rows: 13}) {
 		t.Errorf("lanes = %+v", l)
 	}
+	// A reading older than one taken doesn't lower the figures.
+	m.SetRemote(1, Remote{Usage: Usage{CPU: 1, Memory: 200}, Lanes: Lanes{Count: 3, Limit: 3, Idle: 1, Rows: 6}, Rows: 6, Bytes: 60})
+	if rows, bytes := m.Progress(); rows != 13 || bytes != 130 {
+		t.Errorf("progress = %d rows, %d bytes after an older reading, want 13 and 130", rows, bytes)
+	}
+	if u := m.Usage(); u.Memory != 300 {
+		t.Errorf("usage = %+v after an older reading, want worker 1's 300 bytes kept", u)
+	}
 	m.SetRemote(2, Remote{Lanes: Lanes{Count: 1}})
 	if l := m.Lanes(); l.Count != 6 || l.Limit != 0 {
 		t.Errorf("lanes = %+v, want no limit once a worker has none", l)

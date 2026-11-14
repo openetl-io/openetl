@@ -80,8 +80,7 @@ func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
 		for _, de := range demands {
 			attrs := metric.WithAttributes(attribute.String("data_plane", de.dataPlane), attribute.String("pool", de.pool),
 				attribute.String("size", de.size.Name()), attribute.String("runs_on", de.runsOn()))
-			total := de.total()
-			cpu, mem := float64(de.attempts*total.CPU)/1000, float64(de.attempts*total.Memory)
+			cpu, mem := float64(de.held.CPU)/1000, float64(de.held.Memory)
 			if de.pending {
 				o.ObserveFloat64(cpuPending, cpu, attrs)
 				o.ObserveFloat64(memPending, mem, attrs)
@@ -124,22 +123,12 @@ func (d *Dispatcher) readMetrics(ctx context.Context) ([]db.PlacementCapacityRow
 	return capacity, demands, nil
 }
 
+// demandKey is a gauge's series: its attributes. An attempt on workers counts
+// under its workers' size.
 type demandKey struct {
 	dataPlane, pool string
 	size            resources.Size
-	// An attempt on workers: how many, each of size, and its coordinator's.
-	workers      int
-	coordinator  resources.Size
-	pending, pod bool
-}
-
-// total is what each attempt holds: its workers' and its coordinator's, or
-// its size.
-func (k demandKey) total() resources.Size {
-	if k.workers <= 0 {
-		return k.size
-	}
-	return k.size.Times(k.workers).Add(k.coordinator)
+	pending, pod    bool
 }
 
 // demand is the attempts of a data plane, pool and size that are placed or
@@ -147,6 +136,9 @@ func (k demandKey) total() resources.Size {
 type demand struct {
 	demandKey
 	attempts int64
+	// What they hold between them: an attempt on workers, its workers' and
+	// its coordinator's.
+	held resources.Size
 	// How long the oldest has waited, if they wait.
 	oldest float64
 }
@@ -167,9 +159,12 @@ func sumDemand(rows []db.PlacementDemandRow, runners func(dataPlane string) ([]R
 	at := map[demandKey]int{}
 	var out []demand
 	for _, r := range rows {
-		k := demandKey{dataPlane: r.DataPlaneID, pool: r.Pool, size: resources.Size{CPU: r.SizeCpu, Memory: r.SizeMemory}, pending: r.State == "pending", pod: r.Pod,
-			workers: int(r.Workers), coordinator: resources.Size{CPU: r.CoordinatorCpu, Memory: r.CoordinatorMemory}}
-		if k.pending && k.workers > 0 {
+		k := demandKey{dataPlane: r.DataPlaneID, pool: r.Pool, size: resources.Size{CPU: r.SizeCpu, Memory: r.SizeMemory}, pending: r.State == "pending", pod: r.Pod}
+		each := k.size
+		if r.Workers > 0 {
+			each = k.size.Times(int(r.Workers)).Add(resources.Size{CPU: r.CoordinatorCpu, Memory: r.CoordinatorMemory})
+		}
+		if k.pending && r.Workers > 0 {
 			k.pod = true
 		} else if k.pending {
 			rs, ok := planes[k.dataPlane]
@@ -188,6 +183,7 @@ func sumDemand(rows []db.PlacementDemandRow, runners func(dataPlane string) ([]R
 			out = append(out, demand{demandKey: k})
 		}
 		out[i].attempts += r.Attempts
+		out[i].held = out[i].held.Add(each.Times(int(r.Attempts)))
 		if k.pending {
 			out[i].oldest = max(out[i].oldest, r.OldestSeconds)
 		}

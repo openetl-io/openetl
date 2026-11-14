@@ -1383,7 +1383,8 @@ UPDATE dispatches SET
     state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
     outcome = CASE WHEN cancel THEN $1::jsonb ELSE outcome END,
     finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
-    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL,
+    worker_target = NULL
 WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND runner = $5 AND state = 'running' AND light = ''
 `
 
@@ -1396,7 +1397,8 @@ type ReplaceRunningParams struct {
 }
 
 // A runner with no room for what was placed on it: it's placed again, unless
-// it's been cancelled, which finishes it.
+// it's been cancelled, which finishes it. Its workers join the next
+// coordinator, once it says where.
 func (q *Queries) ReplaceRunning(ctx context.Context, arg ReplaceRunningParams) (int64, error) {
 	result, err := q.db.Exec(ctx, replaceRunning,
 		arg.Cancelled,

@@ -1320,6 +1320,21 @@ func TestAttemptOnWorkers(t *testing.T) {
 	if err := conn.QueryRow(ctx, "SELECT workers, worker_target FROM dispatches WHERE org_id = $1 AND id = $2", f.org, "first").Scan(&workers, &stored); err != nil || workers != 0 || stored != nil {
 		t.Fatalf("first has %d workers and target %s (%v), want none", workers, stored, err)
 	}
+
+	// A coordinator with no room places its attempt again: the next
+	// placement's workers don't get where the last coordinator was.
+	if !f.claimAs("coordinator-2", launched[1]) {
+		t.Fatal("second's coordinator didn't get it")
+	}
+	if ok, err := f.d.OpenWorkers(ctx, f.org, "default", "coordinator-2", "second", &dataplanev1.WorkerTarget{Address: "10.0.0.8:7720", Token: "t", Generation: 4, Owner: "o"}); err != nil || !ok {
+		t.Fatalf("open: %v (%v)", ok, err)
+	}
+	if ok, err := f.d.Result(ctx, f.org, "default", "coordinator-2", "second", contract.WorkOutcome{}, true, nil); err != nil || !ok {
+		t.Fatalf("no room: %v (%v)", ok, err)
+	}
+	if err := conn.QueryRow(ctx, "SELECT workers, worker_target FROM dispatches WHERE org_id = $1 AND id = $2", f.org, "second").Scan(&workers, &stored); err != nil || workers != 2 || stored != nil {
+		t.Fatalf("second has %d workers and target %s (%v), want 2 and none", workers, stored, err)
+	}
 }
 
 // A pod that doesn't start in time is replaced: the attempt is placed again,

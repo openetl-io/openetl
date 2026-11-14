@@ -242,12 +242,14 @@ SELECT EXISTS (
 
 -- name: ReplaceRunning :execrows
 -- A runner with no room for what was placed on it: it's placed again, unless
--- it's been cancelled, which finishes it.
+-- it's been cancelled, which finishes it. Its workers join the next
+-- coordinator, once it says where.
 UPDATE dispatches SET
     state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
     outcome = CASE WHEN cancel THEN sqlc.arg(cancelled)::jsonb ELSE outcome END,
     finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
-    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL,
+    worker_target = NULL
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runner = @runner AND state = 'running' AND light = '';
 
 -- name: FinishDispatch :exec

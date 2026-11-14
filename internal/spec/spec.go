@@ -457,7 +457,9 @@ type jobResourcesYAML struct {
 	Max          yaml.Node `yaml:"max"`
 	FinishWithin string    `yaml:"finishWithin"`
 	Pool         string    `yaml:"pool"`
-	Workers      *int      `yaml:"workers"`
+	// A node, so a value that isn't a whole number is refused rather than
+	// truncated.
+	Workers yaml.Node `yaml:"workers"`
 }
 
 // MaxWorkers is the most workers resources.workers may ask for.
@@ -489,11 +491,15 @@ func parseJobResources(y *jobResourcesYAML, continuous bool) (*apiv1.JobResource
 	case r.Size != nil && r.Max != nil && !size.Fits(hi):
 		return nil, fmt.Errorf("resources.size, %s, is larger than resources.max, %s", size, hi)
 	}
-	if w := y.Workers; w != nil {
-		if *w < 1 || *w > MaxWorkers {
-			return nil, fmt.Errorf("resources.workers: %d isn't from 1 to %d", *w, MaxWorkers)
+	if n := y.Workers; n.Kind != 0 {
+		w, err := strconv.ParseInt(n.Value, 10, 32)
+		switch {
+		case n.Kind != yaml.ScalarNode:
+			return nil, fmt.Errorf("resources.workers: isn't a whole number from 1 to %d", MaxWorkers)
+		case n.ShortTag() != "!!int" || err != nil || w < 1 || w > MaxWorkers:
+			return nil, fmt.Errorf("resources.workers: %q isn't a whole number from 1 to %d", n.Value, MaxWorkers)
 		}
-		r.Workers = uint32(*w)
+		r.Workers = uint32(w)
 	}
 	if y.FinishWithin != "" {
 		if continuous {

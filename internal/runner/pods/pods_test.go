@@ -413,6 +413,42 @@ func TestLaunchWorkersAllOrNone(t *testing.T) {
 		}
 	}
 
+	// A pod of a launch that failed, still being deleted when the launch is
+	// tried again, fails that launch too, which leaves no pod of it; once
+	// it's gone, the next makes them all.
+	l.Placement = 4
+	terminating := k.WorkerPod(l, 2)
+	terminating.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	terminating.Finalizers = []string{"test"}
+	if _, err := c.CoreV1().Pods("etl").Create(t.Context(), terminating, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Launch(t.Context(), l); errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "still being deleted") {
+		t.Fatalf("got %v, want a transient failure for the pod being deleted", err)
+	}
+	placement4 := func() []Pod {
+		got, _ := k.Pods(t.Context())
+		var out []Pod
+		for _, p := range got {
+			if p.Placement == 4 {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	if left := placement4(); len(left) != 1 || left[0].Worker != 2 {
+		t.Fatalf("pods %+v, want only the one being deleted", left)
+	}
+	if err := c.CoreV1().Pods("etl").Delete(t.Context(), terminating.Name, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Launch(t.Context(), l); err != nil {
+		t.Fatal(err)
+	}
+	if made := placement4(); len(made) != 4 {
+		t.Fatalf("pods %+v, want the coordinator's and its 3 workers'", made)
+	}
+
 	// A worker's pod that ended well has no failure; one that failed has.
 	for _, tc := range []struct {
 		worker int
@@ -432,12 +468,13 @@ func TestLaunchWorkersAllOrNone(t *testing.T) {
 	}
 	got, _ = k.Pods(t.Context())
 	for _, p := range got {
-		switch p.Worker {
-		case 1:
+		switch {
+		case p.Placement != 2:
+		case p.Worker == 1:
 			if !p.Ended || p.Failure != nil {
 				t.Errorf("worker 1 ended well: %+v", p)
 			}
-		case 2:
+		case p.Worker == 2:
 			if !p.Ended || errs.CodeOf(p.Failure) != errs.ResourceExhausted {
 				t.Errorf("worker 2 went over its memory: %+v", p)
 			}

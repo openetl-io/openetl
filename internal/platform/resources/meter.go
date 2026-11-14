@@ -68,8 +68,10 @@ type Remote struct {
 }
 
 // SetRemote records what worker i of the attempt has used and moved so far.
-// Once any has, the attempt's usage is its largest worker's, for the size
-// is each worker's, and its rows, bytes and lanes are every worker's.
+// Each figure only grows, so a reading older than one taken keeps the
+// newer's. Once any worker has reported, the attempt's usage is its largest
+// worker's, for the size is each worker's, and its rows, bytes and lanes
+// are every worker's.
 func (m *Meter) SetRemote(i int, r Remote) {
 	if m == nil {
 		return
@@ -79,6 +81,11 @@ func (m *Meter) SetRemote(i int, r Remote) {
 	if m.remote == nil {
 		m.remote = map[int]Remote{}
 	}
+	was := m.remote[i]
+	u, l := &r.Usage, &r.Lanes
+	u.CPU, u.Memory, u.RunnerCPU, u.RunnerMemory = max(u.CPU, was.Usage.CPU), max(u.Memory, was.Usage.Memory), max(u.RunnerCPU, was.Usage.RunnerCPU), max(u.RunnerMemory, was.Usage.RunnerMemory)
+	l.Busy, l.Backpressured, l.Idle, l.Rows = max(l.Busy, was.Lanes.Busy), max(l.Backpressured, was.Lanes.Backpressured), max(l.Idle, was.Lanes.Idle), max(l.Rows, was.Lanes.Rows)
+	r.Rows, r.Bytes = max(r.Rows, was.Rows), max(r.Bytes, was.Bytes)
 	m.remote[i] = r
 }
 

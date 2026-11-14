@@ -39,11 +39,11 @@ func TestDemandByWhereItRuns(t *testing.T) {
 		return demandKey{dataPlane: dataPlane, pool: "default", size: size, pending: pending, pod: pod}
 	}
 	want := []demand{
-		{key("a", resources.S, false, false), 3, 0},
-		{key("a", resources.L, false, true), 1, 0},
-		{key("a", resources.S, true, false), 3, 7},
-		{key("a", resources.L, true, true), 2, 9},
-		{key("b", resources.L, true, false), 1, 4},
+		{key("a", resources.S, false, false), 3, resources.S.Times(3), 0},
+		{key("a", resources.L, false, true), 1, resources.L, 0},
+		{key("a", resources.S, true, false), 3, resources.S.Times(3), 7},
+		{key("a", resources.L, true, true), 2, resources.L.Times(2), 9},
+		{key("b", resources.L, true, false), 1, resources.L, 4},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)
@@ -55,16 +55,24 @@ func TestDemandByWhereItRuns(t *testing.T) {
 		t.Errorf("runs on %q and %q", got[1].runsOn(), got[0].runsOn())
 	}
 
-	// An attempt on workers goes to pods, and counts its workers and its
-	// coordinator.
-	gang := demandRow("b", resources.S, "pending", false, 2, 3)
-	gang.Workers, gang.CoordinatorCpu, gang.CoordinatorMemory = 3, resources.XS.CPU, resources.XS.Memory
-	got, err = sumDemand([]db.PlacementDemandRow{gang}, func(string) ([]Runner, error) { return planes["b"], nil })
+	// Attempts on workers go to pods, and count their workers and their
+	// coordinators; those of other counts of workers add up in one series
+	// with an attempt of the same size on its own pod.
+	gang := func(workers int32, attempts int64, oldest float64) db.PlacementDemandRow {
+		r := demandRow("b", resources.S, "pending", false, attempts, oldest)
+		r.Workers, r.CoordinatorCpu, r.CoordinatorMemory = workers, resources.XS.CPU, resources.XS.Memory
+		return r
+	}
+	alone := demandRow("b", resources.S, "pending", true, 1, 1)
+	got, err = sumDemand([]db.PlacementDemandRow{gang(3, 2, 3), gang(2, 1, 8), alone}, func(string) ([]Runner, error) {
+		return []Runner{launcher("pods", Pods{Min: resources.XS})}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || !got[0].pod || got[0].attempts != 2 || got[0].total() != resources.S.Times(3).Add(resources.XS) {
-		t.Fatalf("got %+v, want 2 attempts on pods, each holding 3.5 vCPUs", got)
+	held := resources.S.Times(3).Add(resources.XS).Times(2).Add(resources.S.Times(2).Add(resources.XS)).Add(resources.S)
+	if len(got) != 1 || !got[0].pod || got[0].attempts != 4 || got[0].held != held || got[0].oldest != 8 {
+		t.Fatalf("got %+v, want one series of 4 attempts holding %s, the oldest 8 s", got, held)
 	}
 
 	failed := errors.New("no")

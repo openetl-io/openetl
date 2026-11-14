@@ -91,6 +91,16 @@ type workerPart struct {
 	mine    map[checkpoint.SplitRef]bool
 	unread  map[string]bool
 	schemas *schemaRelay
+	// Held from reading the meter to sending what it read, so the
+	// coordinator gets readings in order.
+	reporting sync.Mutex
+}
+
+// report tells the coordinator what m says now.
+func (p *workerPart) report(m *resources.Meter) error {
+	p.reporting.Lock()
+	defer p.reporting.Unlock()
+	return p.w.Report(usageOf(m))
 }
 
 func (p *workerPart) run(ctx context.Context) error {
@@ -469,7 +479,7 @@ func (p *workerPart) reportUsage(ctx context.Context, m *resources.Meter) {
 		case <-ctx.Done():
 			return
 		}
-		if err := p.w.Report(usageOf(m)); err != nil {
+		if err := p.report(m); err != nil {
 			return
 		}
 	}
@@ -605,7 +615,7 @@ func (p *workerPart) loop(ctx context.Context, a *attemptv1.Assignment, plan Pla
 			// placed, pre-committed on every writer lane, and ready.
 			for e := epochs[next]; e != nil && e.placed && e.staged == len(p.ws) && e.ready != nil; e = epochs[next] {
 				if m := p.job.Meter; m != nil {
-					if err := p.w.Report(usageOf(m)); err != nil {
+					if err := p.report(m); err != nil {
 						return err
 					}
 				}

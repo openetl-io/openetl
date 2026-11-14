@@ -179,15 +179,18 @@ func checkTemplate(p *corev1.Pod) error {
 // one can't be made, it deletes those it made.
 func (k *Kubernetes) Launch(ctx context.Context, l Launch) error {
 	var made []string
+	// None of them has a coordinator to join until the last is made, so
+	// they go at once.
+	now := int64(0)
 	for _, worker := range l.pods() {
 		p := k.WorkerPod(l, worker)
-		_, err := k.Client.CoreV1().Pods(k.Namespace).Create(ctx, p, metav1.CreateOptions{})
-		if err == nil || apierrors.IsAlreadyExists(err) {
+		err := k.create(ctx, p)
+		if err == nil {
 			made = append(made, p.Name)
 			continue
 		}
 		for _, name := range made {
-			if derr := k.Client.CoreV1().Pods(k.Namespace).Delete(ctx, name, metav1.DeleteOptions{}); derr != nil && !apierrors.IsNotFound(derr) {
+			if derr := k.Client.CoreV1().Pods(k.Namespace).Delete(ctx, name, metav1.DeleteOptions{GracePeriodSeconds: &now}); derr != nil && !apierrors.IsNotFound(derr) {
 				err = errors.Join(err, derr)
 			}
 		}
@@ -197,6 +200,27 @@ func (k *Kubernetes) Launch(ctx context.Context, l Launch) error {
 			return errs.Wrap(errs.ConfigInvalid, err, "pods: make the attempt's pod in namespace "+k.Namespace)
 		}
 		return errs.Wrap(errs.Transient, err, "pods: make the attempt's pod in namespace "+k.Namespace)
+	}
+	return nil
+}
+
+// create makes p. One that's there already counts, unless it's being
+// deleted, as a launch that failed leaves it: it would be gone from the
+// attempt's pods. That fails, so a later launch starts once it's gone.
+func (k *Kubernetes) create(ctx context.Context, p *corev1.Pod) error {
+	pods := k.Client.CoreV1().Pods(k.Namespace)
+	_, err := pods.Create(ctx, p, metav1.CreateOptions{})
+	if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	there, err := pods.Get(ctx, p.Name, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return fmt.Errorf("pods: pod %s went while it was made", p.Name)
+	case err != nil:
+		return err
+	case there.DeletionTimestamp != nil:
+		return fmt.Errorf("pods: pod %s is still being deleted", p.Name)
 	}
 	return nil
 }
