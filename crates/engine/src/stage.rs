@@ -9,7 +9,7 @@
 //! own, derived from its source row's. A row the statement can't evaluate
 //! is the caller's to quarantine.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use arrow_array::builder::{ListBuilder, StringBuilder};
@@ -118,6 +118,9 @@ struct Deps {
     filters: BTreeSet<usize>,
     /// By output column.
     columns: Vec<BTreeSet<usize>>,
+    /// By step, then by the column it gives; empty for a step that isn't a
+    /// projection.
+    steps: Vec<Vec<BTreeSet<usize>>>,
 }
 
 impl Deps {
@@ -126,6 +129,7 @@ impl Deps {
             .map(|i| BTreeSet::from([i]))
             .collect();
         let mut filters = BTreeSet::new();
+        let mut steps = Vec::with_capacity(op.steps.len());
         let of = |cur: &[BTreeSet<usize>], inputs: &[usize]| -> BTreeSet<usize> {
             inputs
                 .iter()
@@ -136,13 +140,17 @@ impl Deps {
         };
         for step in &op.steps {
             match step {
-                Step::Filter(p) => filters.extend(of(&cur, p.inputs())),
+                Step::Filter(p) => {
+                    filters.extend(of(&cur, p.inputs()));
+                    steps.push(Vec::new());
+                }
                 Step::Project(p) => {
                     cur = p
                         .columns
                         .iter()
                         .map(|c| of(&cur, c.expr.inputs()))
                         .collect();
+                    steps.push(cur.clone());
                 }
                 Step::Unnest(u) => {
                     cur = u
@@ -150,14 +158,24 @@ impl Deps {
                         .iter()
                         .map(|&s| cur.get(s).cloned().unwrap_or_default())
                         .collect();
+                    steps.push(Vec::new());
                 }
             }
         }
         Self {
             filters,
             columns: cur,
+            steps,
         }
     }
+}
+
+/// What an update didn't send, as the statement reads it.
+struct Unsent {
+    /// The columns the statement reads that it didn't send, by index.
+    reads: BTreeSet<usize>,
+    /// The output columns it leaves unchanged.
+    unchanged: Vec<String>,
 }
 
 /// The output of running a statement's steps on some rows.
@@ -265,7 +283,7 @@ impl Bound {
         cursor: Option<&str>,
     ) -> Result<Applied, JobError> {
         let all: Vec<usize> = (0..input.num_rows()).collect();
-        let (ran, failed) = self.run_rows(&input, &typed.ids, &all)?;
+        let (ran, failed) = self.run_rows(&input, &typed.ids, &all, &BTreeSet::new())?;
         let seq = match (
             &typed.control.seq,
             cursor.and_then(|c| typed.batch.column_by_name(c)),
@@ -308,28 +326,31 @@ impl Bound {
             Some(o) => o.as_string::<i32>().iter().collect(),
             None => vec![None; n],
         };
-        let unsent: Vec<Option<ArrayRef>> = match &typed.control.unchanged {
+        let lists: Vec<Option<ArrayRef>> = match &typed.control.unchanged {
             Some(u) => u.as_list::<i32>().iter().collect(),
             None => vec![None; n],
         };
         let op = |r: usize| ops.get(r).copied().flatten();
         let mut failed = Vec::new();
         let mut unchanged: Vec<Option<Vec<String>>> = vec![None; n];
-        let mut live = Vec::with_capacity(n);
+        // The rows to run, by the columns the statement reads that their
+        // update didn't send.
+        let mut runs: BTreeMap<BTreeSet<usize>, Vec<usize>> = BTreeMap::new();
         let mut dead = vec![false; n];
         for (r, u) in unchanged.iter_mut().enumerate() {
             if op(r) == Some("delete") {
                 continue;
             }
-            let names = unsent
+            let names = lists
                 .get(r)
                 .cloned()
                 .flatten()
                 .filter(|_| op(r) == Some("update"));
             match self.unchanged(names) {
-                Ok(names) => {
-                    *u = names;
-                    live.push(r);
+                Ok(None) => runs.entry(BTreeSet::new()).or_default().push(r),
+                Ok(Some(unsent)) => {
+                    *u = Some(unsent.unchanged);
+                    runs.entry(unsent.reads).or_default().push(r);
                 }
                 Err(why) => {
                     failed.push((r, why));
@@ -337,19 +358,24 @@ impl Bound {
                 }
             }
         }
-        let (ran, more) = self.run_rows(&input, &typed.ids, &live)?;
-        for (r, why) in more {
-            dead[r] = true;
-            failed.push((r, why));
+        // Each row that passes: its run, and its row in the run's output.
+        let mut passed = vec![None; n];
+        let mut parts = Vec::with_capacity(runs.len());
+        for (unsent, rows) in &runs {
+            let (ran, more) = self.run_rows(&input, &typed.ids, rows, unsent)?;
+            for (r, why) in more {
+                dead[r] = true;
+                failed.push((r, why));
+            }
+            for (i, &r) in ran.rows.iter().enumerate() {
+                passed[r] = Some((parts.len(), i));
+            }
+            parts.push(self.output(&ran.batch)?);
         }
         failed.sort_by_key(|(r, _)| *r);
 
         // Rows that pass, then deletes of the rest's keys, interleaved in
         // the order they came.
-        let mut passed = vec![None; n];
-        for (i, &r) in ran.rows.iter().enumerate() {
-            passed[r] = Some(i);
-        }
         let deleted: Vec<usize> = (0..n)
             .filter(|&r| !dead[r] && passed[r].is_none())
             .collect();
@@ -360,19 +386,19 @@ impl Bound {
         for r in (0..n).filter(|&r| !dead[r]) {
             rows.push(r);
             match passed[r] {
-                Some(i) => order.push((0, i)),
+                Some(at) => order.push(at),
                 None => {
-                    order.push((1, d));
+                    order.push((parts.len(), d));
                     d += 1;
                 }
             }
         }
-        let projected = self.output(&ran.batch)?;
-        let mut columns = Vec::with_capacity(self.schema.fields().len());
-        for (c, k) in projected.columns().iter().zip(&keys) {
-            let parts: [&dyn Array; 2] = [c.as_ref(), k.as_ref()];
+        let mut columns = Vec::with_capacity(keys.len());
+        for (c, k) in keys.iter().enumerate() {
+            let mut arrays: Vec<&dyn Array> = parts.iter().map(|p| p.column(c).as_ref()).collect();
+            arrays.push(k.as_ref());
             columns.push(
-                arrow_select::interleave::interleave(&parts, &order)
+                arrow_select::interleave::interleave(&arrays, &order)
                     .map_err(|e| JobError::internal(e.to_string()))?,
             );
         }
@@ -429,11 +455,11 @@ impl Bound {
         })
     }
 
-    /// The output columns an update leaves unchanged, from `names`, the
-    /// columns it didn't send: those that depend only on such columns. An
-    /// update whose filter, or one of whose output columns, depends on both
-    /// kinds can't be evaluated.
-    fn unchanged(&self, names: Option<ArrayRef>) -> Result<Option<Vec<String>>, String> {
+    /// What an update that didn't send `names` leaves unchanged: the output
+    /// columns that depend only on such columns. An update whose filter, or
+    /// one of whose output columns, depends on both kinds can't be
+    /// evaluated.
+    fn unchanged(&self, names: Option<ArrayRef>) -> Result<Option<Unsent>, String> {
         let Some(names) = names else {
             return Ok(None);
         };
@@ -470,7 +496,10 @@ impl Bound {
             }
             out.push(self.names[c].clone());
         }
-        Ok(Some(out))
+        Ok(Some(Unsent {
+            reads: unsent,
+            unchanged: out,
+        }))
     }
 
     /// Each output column for deletes of `rows`' keys: the key's columns'
@@ -508,13 +537,15 @@ impl Bound {
         Ok(out)
     }
 
-    /// Runs the steps on `rows` of `input`. If a batch fails, each row runs
-    /// on its own, and those that fail are left out, with why.
+    /// Runs the steps on `rows` of `input`, which didn't send `unsent`. If
+    /// a batch fails, each row runs on its own, and those that fail are left
+    /// out, with why.
     fn run_rows(
         &self,
         input: &RecordBatch,
         ids: &FixedSizeBinaryArray,
         rows: &[usize],
+        unsent: &BTreeSet<usize>,
     ) -> Result<(Ran, Vec<(usize, String)>), JobError> {
         let (some, some_ids) = match rows.len() == input.num_rows() {
             true => (input.clone(), ids.clone()),
@@ -526,14 +557,14 @@ impl Bound {
             ),
         };
         let mut failed = Vec::new();
-        let ok: Vec<usize> = match self.run(some.clone(), some_ids.clone()) {
+        let ok: Vec<usize> = match self.run(some.clone(), some_ids.clone(), unsent) {
             Ok(mut ran) => {
                 ran.rows = ran.rows.iter().map(|&r| rows[r]).collect();
                 return Ok((ran, failed));
             }
             Err(_) => (0..rows.len())
                 .filter(
-                    |&i| match self.run(some.slice(i, 1), some_ids.slice(i, 1)) {
+                    |&i| match self.run(some.slice(i, 1), some_ids.slice(i, 1), unsent) {
                         Ok(_) => true,
                         Err(e) => {
                             failed.push((rows[i], self.reason(&e.message)));
@@ -548,18 +579,22 @@ impl Bound {
             .as_fixed_size_binary()
             .clone();
         let mut ran = self
-            .run(kept, kept_ids)
+            .run(kept, kept_ids, unsent)
             .map_err(|e| JobError::new(ErrorCode::DataInvalid, self.reason(&e.message)))?;
         ran.rows = ran.rows.iter().map(|&r| rows[ok[r]]).collect();
         Ok((ran, failed))
     }
 
     /// The steps, on every row of `batch`: filters drop rows, and `UNNEST`
-    /// gives several, with IDs of their own.
+    /// gives several, with IDs of their own. `unsent` are the columns the
+    /// statement reads, by index, that the rows' update didn't send: a
+    /// column that depends only on them is null, not evaluated, since the
+    /// destination keeps its value.
     fn run(
         &self,
         batch: RecordBatch,
         ids: FixedSizeBinaryArray,
+        unsent: &BTreeSet<usize>,
     ) -> Result<Ran, openetl_sql::Error> {
         let eval = |e: arrow_schema::ArrowError| openetl_sql::Error {
             kind: openetl_sql::ErrorKind::Eval,
@@ -569,7 +604,7 @@ impl Bound {
         let mut cur = batch;
         let mut rows: Vec<usize> = (0..cur.num_rows()).collect();
         let mut ids = ids;
-        for step in &self.op.steps {
+        for (step, deps) in self.op.steps.iter().zip(&self.deps.steps) {
             match step {
                 Step::Filter(p) => {
                     let keep = p.eval_predicate(&cur)?;
@@ -587,7 +622,22 @@ impl Bound {
                         .filter_map(|(&r, k)| k.then_some(r))
                         .collect();
                 }
-                Step::Project(p) => cur = p.eval(&cur)?,
+                Step::Project(p) if unsent.is_empty() => cur = p.eval(&cur)?,
+                Step::Project(p) => {
+                    let mut columns = Vec::with_capacity(p.columns.len());
+                    for ((c, f), d) in p.columns.iter().zip(p.schema.fields()).zip(deps) {
+                        columns.push(match !d.is_empty() && d.is_subset(unsent) {
+                            true => new_null_array(f.data_type(), cur.num_rows()),
+                            false => c.expr.eval(&cur)?,
+                        });
+                    }
+                    cur = RecordBatch::try_new_with_options(
+                        nullable(&p.schema),
+                        columns,
+                        &RecordBatchOptions::new().with_row_count(Some(cur.num_rows())),
+                    )
+                    .map_err(eval)?;
+                }
                 Step::Unnest(u) => {
                     let un = u.eval(&cur)?;
                     ids = element_ids(&ids, &un.rows, &un.ordinals).map_err(eval)?;
@@ -1041,6 +1091,54 @@ mod tests {
             .unwrap();
         assert!(out.failed.is_empty(), "{:?}", out.failed);
         assert_eq!(out.typed.batch.column(1).null_count(), 2);
+    }
+
+    /// An output column that depends only on columns an update didn't
+    /// send isn't evaluated: the destination keeps its value. Such updates
+    /// keep their place among the batch's other rows.
+    #[test]
+    fn an_update_doesnt_evaluate_what_it_leaves_unchanged() {
+        let mut st = stage(
+            "INSERT INTO a SELECT id, CAST(coalesce(email, 'x') AS BIGINT) AS n, name FROM a",
+            true,
+        );
+        let t = typed(
+            batch(&[
+                (1, None, Some("n1")),
+                (2, Some("12"), Some("n2")),
+                (3, None, Some("n3")),
+                (4, None, None),
+            ]),
+            control(
+                &["update", "update", "update", "delete"],
+                &[Some(&["email"]), None, Some(&["email"]), None],
+            ),
+        );
+        let out = st.apply(&t, &[0, 1, 2, 3], None).unwrap();
+        assert!(out.failed.is_empty(), "{:?}", out.failed);
+        let b = &out.typed.batch;
+        assert_eq!(ints(b, "id"), [Some(1), Some(2), Some(3), Some(4)]);
+        assert_eq!(ints(b, "n"), [None, Some(12), None, None]);
+        assert_eq!(
+            strs(b.column(2)),
+            [
+                Some("n1".into()),
+                Some("n2".into()),
+                Some("n3".into()),
+                None
+            ]
+        );
+        assert_eq!(
+            strs(out.typed.control.op.as_ref().unwrap()),
+            some(&["update", "update", "update", "delete"])
+        );
+        assert_eq!(out.typed.ids, t.ids);
+        let unchanged = out.typed.control.unchanged.unwrap();
+        let lists: Vec<Option<ArrayRef>> = unchanged.as_list::<i32>().iter().collect();
+        assert_eq!(strs(lists[0].as_ref().unwrap()), some(&["n"]));
+        assert!(lists[1].is_none());
+        assert_eq!(strs(lists[2].as_ref().unwrap()), some(&["n"]));
+        assert!(lists[3].is_none());
     }
 
     #[test]

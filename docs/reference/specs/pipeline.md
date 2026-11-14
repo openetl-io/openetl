@@ -363,7 +363,7 @@ On a changelog stream, such as one read with `cdc`:
 - A statement must keep the stream's primary key, and cannot use `UNNEST`.
 - A delete passes as a delete of its key.
 - An insert or update that fails the `WHERE` becomes a delete of its key. A merge applies the delete whether the table has the row or not, so a row that leaves the filter leaves the table.
-- If an update does not send a column, an output column that depends only on columns it did not send keeps the value it has. If a `WHERE`, or an output column, depends on such a column and on a column the update sent, the statement cannot evaluate the row.
+- If an update does not send a column, an output column that depends only on columns it did not send keeps the value it has, and the statement does not evaluate it. If a `WHERE`, or an output column, depends on such a column and on a column the update sent, the statement cannot evaluate the row.
 
 The engine quarantines a row that a statement cannot evaluate, such as a value that a cast cannot convert, as one of the output's records, as it quarantines a row whose value does not fit its type. It writes the rest of the batch.
 
