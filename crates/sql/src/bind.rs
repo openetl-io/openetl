@@ -143,7 +143,11 @@ pub(crate) fn plan(
     let plan = SqlToRel::new(&p)
         .sql_statement_to_plan(ast::Statement::Query(Box::new(query.clone())))
         .map_err(bind)?;
-    let plan = Analyzer::new()
+    let mut analyzer = Analyzer::new();
+    for r in &FUNCTIONS.rewrites {
+        analyzer.add_function_rewrite(r.clone());
+    }
+    let plan = analyzer
         .execute_and_check(plan, &p.options, |_, _| {})
         .map_err(bind)?;
     unexposed(&plan, at)?;
@@ -160,7 +164,8 @@ pub(crate) fn plan(
 }
 
 /// Casts the plan's columns to logical types where they aren't, and refuses
-/// a column no logical type holds.
+/// a column no logical type holds. `json_get`'s value of any type becomes
+/// its JSON text, in a JSON column.
 fn logical(
     plan: LogicalPlan,
     at: Position,
@@ -170,6 +175,11 @@ fn logical(
     let mut cast = false;
     for (qualifier, f) in plan.schema().iter() {
         let c = Expr::Column(datafusion_common::Column::new(qualifier.cloned(), f.name()));
+        if crate::json::is_union(f.data_type()) {
+            cast = true;
+            exprs.push(crate::json::text(c).alias(f.name()));
+            continue;
+        }
         match crate::types::output(f.data_type()) {
             Some(t) if t == *f.data_type() => exprs.push(c),
             Some(t) => {

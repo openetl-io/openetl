@@ -1,0 +1,234 @@
+# JSON paths: our own functions under datafusion-functions-json's names, and
+# its operators. They read JSON columns and plain strings alike. Cases with
+# a literal document are folded when planned, so they show what a call gives;
+# tests/eval.rs evaluates the others on batches.
+
+stream events key(id)
+  id int64 not null
+  doc json
+  raw utf8
+  field utf8
+  pos int64
+  day date
+
+# ->> is json_as_text, ? is json_contains, and a chain of -> is one call.
+plan
+INSERT INTO x
+SELECT id, doc->>'name' AS name, doc->'user'->>'email' AS email, doc->'items'->0->>'sku' AS first_sku
+FROM events
+WHERE doc->>'status' = 'active' AND doc ? 'user'
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, name Utf8, email Utf8, first_sku Utf8
+  reads events: id, doc
+  filter json_as_text(events.doc, Utf8("status")) = Utf8("active") AND json_contains(events.doc, Utf8("user"))
+  project id, name := json_as_text(events.doc, Utf8("name")), email := json_as_text(events.doc, Utf8("user"), Utf8("email")), first_sku := json_as_text(events.doc, Utf8("items"), Int64(0), Utf8("sku"))
+
+# -> is json_get, whose value can be of any JSON type. An output column holds
+# it as JSON text, exactly as the document writes it.
+plan
+INSERT INTO x SELECT id, doc->'user' AS "user", json_get(raw, 'a', -1) AS last_a FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, user Utf8 (json), last_a Utf8 (json)
+  reads events: id, doc, raw
+  project id, user := json_union_to_text(events.doc, Utf8("user")), last_a := json_union_to_text(events.raw, Utf8("a"), Int64(-1))
+
+# A view's column holds it the same way, and what reads the view reads JSON.
+plan
+CREATE VIEW users AS SELECT id, doc->'user' AS u FROM events;
+INSERT INTO x SELECT id, u, u->>'email' AS email FROM users
+----
+view 1:13 users
+  inputs events
+  key id
+  schema id Int64 not null, u Utf8 (json)
+statement 2:1 x row_wise
+  inputs events
+  views users
+  key id
+  schema id Int64 not null, u Utf8 (json), email Utf8
+  reads events: id, doc
+  project id, u := json_union_to_text(events.doc, Utf8("user"))
+  project id, u, email := json_as_text(users.u, Utf8("email"))
+
+# #> and #>> take the path as a list; json_get and the others take a list
+# too, and steps that differ by row.
+plan
+INSERT INTO x SELECT id,
+  doc #> ARRAY['user', 'emails'] AS emails,
+  doc #>> ARRAY['user', 'emails', '0'] AS first_email,
+  json_get_str(doc, ARRAY['user'], 'name') AS user_name,
+  json_get_json(doc, field, pos) AS picked
+FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, emails Utf8 (json), first_email Utf8, user_name Utf8, picked Utf8 (json)
+  reads events: id, doc, field, pos
+  project id, emails := json_union_to_text(events.doc, List([user, emails])), first_email := json_as_text(events.doc, List([user, emails, 0])), user_name := json_get_str(events.doc, List([user]), Utf8("name")), picked := json_get_json(events.doc, events.field, events.pos)
+
+# A cast of json_get's value reads it with the getter of that type, so a
+# value of another type is null; a cast to a string type is ->>'s text.
+plan
+INSERT INTO x SELECT id,
+  CAST(doc->'n' AS BIGINT) AS n,
+  (doc->'n')::int AS n32,
+  TRY_CAST(doc->'n' AS SMALLINT) AS n16,
+  (doc->'ok')::boolean AS ok,
+  CAST(doc->'f' AS DOUBLE) AS f,
+  CAST(doc->'f' AS DECIMAL(10, 2)) AS d,
+  CAST(json_get(doc, 'name') AS TEXT) AS name
+FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, n Int64, n32 Int32, n16 Int16, ok Boolean, f Float64, d Decimal128(10, 2), name Utf8
+  reads events: id, doc
+  project id, n := json_get_int(events.doc, Utf8("n")), n32 := CAST(json_get_int(events.doc, Utf8("n")) AS Int32), n16 := TRY_CAST(json_get_int(events.doc, Utf8("n")) AS Int16), ok := json_get_bool(events.doc, Utf8("ok")), f := json_get_float(events.doc, Utf8("f")), d := CAST(json_get_float(events.doc, Utf8("f")) AS Decimal128(10, 2)), name := json_as_text(events.doc, Utf8("name"))
+
+# json_get's value compares as the member of the other side's type, and is
+# null for a JSON null and a missing path.
+plan
+INSERT INTO x SELECT id FROM events WHERE doc->'status' = 'active' AND doc->'deleted' IS NULL
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null
+  reads events: id, doc
+  filter CAST(json_get(events.doc, Utf8("status")) AS Utf8) = Utf8("active") AND json_get(events.doc, Utf8("deleted")) IS NULL
+  project id
+
+# Each function, under its name or alias. Calls on json_get's value are one
+# call with the whole path.
+plan
+INSERT INTO x SELECT id,
+  json_get_str(doc, 'name') AS name,
+  json_get_int(doc, 'n') AS n,
+  json_get_float(doc, 'f') AS f,
+  json_get_bool(doc, 'ok') AS ok,
+  json_get_json(doc, 'user') AS user_json,
+  json_get_array(doc, 'tags') AS tags,
+  json_as_text(doc, 'name') AS name_text,
+  json_contains(doc, 'name') AS has_name,
+  json_length(doc) AS length,
+  json_len(doc, 'tags') AS tag_count,
+  json_object_keys(doc) AS keys,
+  json_keys(doc, 'user') AS user_keys,
+  json_get_str(json_get(doc, 'user'), 'name') AS user_name,
+  json_union_to_text(json_get(doc, 'n')) AS n_text,
+  json_union_to_text(json_from_scalar(id)) AS id_json,
+  scalar_to_json(raw) AS raw_json
+FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, name Utf8, n Int64, f Float64, ok Boolean, user_json Utf8 (json), tags List(Utf8), name_text Utf8, has_name Boolean not null, length Int64, tag_count Int64, keys List(Utf8), user_keys List(Utf8), user_name Utf8, n_text Utf8 (json), id_json Utf8 (json), raw_json Utf8 (json)
+  reads events: id, doc, raw
+  project id, name := json_get_str(events.doc, Utf8("name")), n := json_get_int(events.doc, Utf8("n")), f := json_get_float(events.doc, Utf8("f")), ok := json_get_bool(events.doc, Utf8("ok")), user_json := json_get_json(events.doc, Utf8("user")), tags := CAST(json_get_array(events.doc, Utf8("tags")) AS List(Utf8)), name_text := json_as_text(events.doc, Utf8("name")), has_name := json_contains(events.doc, Utf8("name")), length := CAST(json_length(events.doc) AS Int64), tag_count := CAST(json_length(events.doc, Utf8("tags")) AS Int64), keys := json_object_keys(events.doc), user_keys := json_object_keys(events.doc, Utf8("user")), user_name := json_get_str(events.doc, Utf8("user"), Utf8("name")), n_text := json_union_to_text(events.doc, Utf8("n")), id_json := json_union_to_text(json_from_scalar(events.id)), raw_json := json_union_to_text(json_from_scalar(events.raw))
+
+plan
+INSERT INTO x SELECT id, unnest(json_get_array(doc, 'tags')) AS tag FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key 
+  schema id Int64 not null, tag Utf8
+  reads events: id, doc
+  project id, __unnest_placeholder(json_get_array(events.doc,Utf8("tags"))) := json_get_array(events.doc, Utf8("tags"))
+  unnest lists [1] sources [0, 1]: id, __unnest_placeholder(json_get_array(events.doc,Utf8("tags")),depth=1)
+  project id, tag := __unnest_placeholder(json_get_array(events.doc,Utf8("tags")),depth=1)
+
+# A column's name matches without regard to case; a key matches exactly.
+plan
+INSERT INTO x SELECT ID, json_get_str(DOC, 'Name') AS name, Doc->>'name' AS lower_name FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, name Utf8, lower_name Utf8
+  reads events: id, doc
+  project id, name := json_get_str(events.doc, Utf8("Name")), lower_name := json_as_text(events.doc, Utf8("name"))
+
+# What calls give, folded from literal documents: nested paths, indexes from
+# either end, a key that spells an index, the last of a key that's there
+# twice, values of another type, missing paths, nulls and text that isn't
+# JSON.
+plan
+INSERT INTO x SELECT id,
+  json_get_int('{"a": {"b": [1, 2, 3]}}', 'a', 'b', -1) AS last,
+  json_get_int('{"a": [1, 2]}', 'a', '1') AS key_index,
+  json_get_int('{"a": [1, 2]}', 'a', 2) AS past_end,
+  json_get_int('{"k": 1, "k": 2}', 'k') AS twice,
+  json_get_int('{"a": 7.0}', 'a') AS integral,
+  json_get_int('{"a": 7.5}', 'a') AS fraction,
+  json_get_int('{"a": "42"}', 'a') AS numeric_string,
+  json_get_int('{"a": true}', 'a') AS bool_as_int,
+  json_get_float('{"a": 1}', 'a') AS int_as_float,
+  json_get_bool('{"a": "false"}', 'a') AS bool_string,
+  json_get_str('{"a": 1}', 'a') AS int_as_str,
+  json_get_str('{"a": "caf\u00e9"}', 'a') AS escaped,
+  json_as_text('{"a": null}', 'a') AS null_text,
+  json_as_text('{"a": [1, 2]}', 'a') AS array_text,
+  json_get_str('{"a": 1}', 'b') AS missing,
+  json_get_str('{"a": "x"}', NULL) AS null_step,
+  json_get_str(NULL, 'a') AS null_doc,
+  json_get_str('{"a": "x"', 'a') AS truncated,
+  json_get_str('not json', 'a') AS not_json,
+  json_contains('{"a": null}', 'a') AS has_null,
+  json_contains('[1, 2]', 1) AS has_index,
+  json_contains('not json', 'a') AS invalid_has,
+  json_contains(NULL, 'a') AS null_has,
+  json_length('"abc"') AS string_length
+FROM events
+----
+statement 1:1 x row_wise
+  inputs events
+  key id
+  schema id Int64 not null, last Int64 not null, key_index Int64 not null, past_end Int64, twice Int64 not null, integral Int64 not null, fraction Int64, numeric_string Int64 not null, bool_as_int Int64, int_as_float Float64 not null, bool_string Boolean not null, int_as_str Utf8, escaped Utf8 not null, null_text Utf8, array_text Utf8 not null, missing Utf8, null_step Utf8, null_doc Utf8, truncated Utf8, not_json Utf8, has_null Boolean not null, has_index Boolean not null, invalid_has Boolean not null, null_has Boolean not null, string_length Int64
+  reads events: id
+  project id, last := Int64(3), key_index := Int64(2), past_end := Int64(NULL), twice := Int64(2), integral := Int64(7), fraction := Int64(NULL), numeric_string := Int64(42), bool_as_int := Int64(NULL), int_as_float := Float64(1), bool_string := Boolean(false), int_as_str := Utf8(NULL), escaped := Utf8("café"), null_text := Utf8(NULL), array_text := Utf8("[1, 2]"), missing := Utf8(NULL), null_step := Utf8(NULL), null_doc := Utf8(NULL), truncated := Utf8(NULL), not_json := Utf8(NULL), has_null := Boolean(true), has_index := Boolean(true), invalid_has := Boolean(false), null_has := Boolean(false), string_length := Int64(NULL)
+
+# Arguments of the wrong type are refused.
+plan
+INSERT INTO x SELECT id, json_get_int(id, 'a') AS n FROM events
+----
+error bind 1:1 json_get_int takes JSON as a string, not Int64
+
+plan
+INSERT INTO x SELECT id, json_get_int(doc, 1.5) AS n FROM events
+----
+error bind 1:1 json_get_int takes a path of keys and indexes, not Float64
+
+plan
+INSERT INTO x SELECT id, doc->day AS d FROM events
+----
+error bind 1:1 json_get, -> and #> take a path of keys and indexes, not Date32
+
+plan
+INSERT INTO x SELECT id FROM events WHERE id ? 'a'
+----
+error bind 1:1 json_contains and ? take JSON as a string, not Int64
+
+plan
+INSERT INTO x SELECT id, json_from_scalar(day) AS d FROM events
+----
+error bind 1:1 json_from_scalar takes a boolean, a number or a string, not Date32
+
+plan
+INSERT INTO x SELECT id, json_from_scalar(id, raw) AS d FROM events
+----
+error bind 1:1 json_from_scalar takes one argument, not 2
+
+plan
+INSERT INTO x SELECT id, json_get_str() AS d FROM events
+----
+error bind 1:1 json_get_str takes JSON, then the keys and indexes of a path

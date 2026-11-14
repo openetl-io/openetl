@@ -1,7 +1,7 @@
 //! The functions statements can call: a curated part of DataFusion's library,
-//! and `now()`, `current_timestamp` and `current_date` of our own. Each is
-//! constructed by name here, so a binary links only these. `functions.txt`
-//! records the list, and a test fails when the two differ.
+//! and of our own `now()`, `current_timestamp`, `current_date` and the JSON
+//! functions. Each is constructed by name here, so a binary links only these.
+//! `functions.txt` records the list, and a test fails when the two differ.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_schema::{DataType, TimeUnit};
 use datafusion_common::{Result, ScalarValue, exec_err};
+use datafusion_expr::expr_rewriter::FunctionRewrite;
 use datafusion_expr::planner::ExprPlanner;
 use datafusion_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
@@ -18,9 +19,12 @@ pub(crate) struct Functions {
     /// By name and by alias.
     pub(crate) scalars: HashMap<String, Arc<ScalarUDF>>,
     /// Syntax that plans to functions, such as `EXTRACT`, `POSITION`,
-    /// `SUBSTRING`, `OVERLAY`, `a[i]` and `s['field']`. What it reaches must
-    /// be in `scalars` too, or binding refuses it.
+    /// `SUBSTRING`, `OVERLAY`, `a[i]`, `s['field']` and JSON's `->`. What it
+    /// reaches must be in `scalars` too, or binding refuses it.
     pub(crate) planners: Vec<Arc<dyn ExprPlanner>>,
+    /// Rewrites of calls, before type coercion, such as a cast of
+    /// `json_get`'s value to the getter of that type.
+    pub(crate) rewrites: Vec<Arc<dyn FunctionRewrite + Send + Sync>>,
 }
 
 impl Functions {
@@ -38,7 +42,7 @@ impl Functions {
 
 pub(crate) static FUNCTIONS: LazyLock<Functions> = LazyLock::new(|| {
     let mut scalars = HashMap::new();
-    for f in curated() {
+    for f in curated().into_iter().chain(crate::json::functions()) {
         for a in f.aliases() {
             scalars.insert(a.clone(), f.clone());
         }
@@ -50,8 +54,13 @@ pub(crate) static FUNCTIONS: LazyLock<Functions> = LazyLock::new(|| {
         Arc::new(datafusion_functions_nested::planner::FieldAccessPlanner),
         Arc::new(datafusion_functions::datetime::planner::DatetimeFunctionPlanner),
         Arc::new(datafusion_functions::unicode::planner::UnicodeFunctionPlanner),
+        Arc::new(crate::json::Operators),
     ];
-    Functions { scalars, planners }
+    Functions {
+        scalars,
+        planners,
+        rewrites: vec![Arc::new(crate::json::Rewrites)],
+    }
 });
 
 fn curated() -> Vec<Arc<ScalarUDF>> {

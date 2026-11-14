@@ -20,10 +20,12 @@
 //!
 //! `stream` adds a stream to the catalog the cases after it plan against,
 //! with a column per indented line; a name with spaces or quotes is written
-//! in double quotes. `reset` empties the catalog. `plan` gives SQL, then
-//! `----` and what planning gives. Run with `OPENETL_SQL_REWRITE=1` to write
-//! what each case gives into its file.
+//! in double quotes, and a `json` column is a string the engine marks as
+//! JSON, as a schema shows with `(json)`. `reset` empties the catalog.
+//! `plan` gives SQL, then `----` and what planning gives. Run with
+//! `OPENETL_SQL_REWRITE=1` to write what each case gives into its file.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -147,7 +149,11 @@ fn stream(catalog: &mut Catalog, lines: &[&str]) -> Result<(), String> {
             Some(t) => (t, false),
             None => (rest, true),
         };
-        fields.push(Field::new(column, data_type(ty.trim())?, nullable));
+        let field = match ty.trim() {
+            "json" => Field::new(column, DataType::Utf8, nullable).with_metadata(json()),
+            t => Field::new(column, data_type(t)?, nullable),
+        };
+        fields.push(field);
     }
     let schema: SchemaRef = Arc::new(Schema::new(fields));
     catalog
@@ -227,12 +233,27 @@ fn data_type(t: &str) -> Result<DataType, String> {
     })
 }
 
+/// What marks a string column as JSON, as the engine marks one.
+fn json() -> HashMap<String, String> {
+    HashMap::from([
+        (EXTENSION_NAME.to_owned(), "arrow.json".to_owned()),
+        ("ARROW:extension:metadata".to_owned(), String::new()),
+    ])
+}
+
+const EXTENSION_NAME: &str = "ARROW:extension:name";
+
+/// A column's name and type, and ` (json)` where it holds JSON.
 fn schema(s: &SchemaRef) -> String {
     s.fields()
         .iter()
         .map(|f| {
             let null = if f.is_nullable() { "" } else { " not null" };
-            format!("{} {}{null}", f.name(), f.data_type())
+            let json = match f.metadata().get(EXTENSION_NAME) {
+                Some(e) if e == "arrow.json" => " (json)",
+                _ => "",
+            };
+            format!("{} {}{json}{null}", f.name(), f.data_type())
         })
         .collect::<Vec<_>>()
         .join(", ")

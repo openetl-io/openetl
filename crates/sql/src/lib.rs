@@ -20,6 +20,7 @@ mod catalog;
 mod error;
 mod expr;
 mod functions;
+mod json;
 mod lower;
 mod plan;
 mod sql;
