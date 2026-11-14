@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +45,10 @@ type txnStore struct {
 	// Called before a commit applies, by a writer of generation gen; an
 	// error fails it. After: once it applied.
 	before, after func(gen uint64, m laneMark) error
+	// Called as a writer of generation gen and lane settles a committable,
+	// and as it writes epoch e; an error fails it.
+	settling func(ctx context.Context, gen uint64, lane int) error
+	writing  func(ctx context.Context, gen uint64, lane int, e destination.Epoch) error
 	// Set: no writer of a later generation writes before every lane of
 	// this epoch is settled.
 	settleFirst *destination.Epoch
@@ -125,8 +130,16 @@ type txnCommittable struct {
 
 func (c txnCommittable) mark() laneMark { return laneMark{c.Gen, c.N, c.Lane} }
 
-func (w *txnWriter) Write(_ context.Context, e destination.Epoch, _ string, b arrow.RecordBatch) error {
+func (w *txnWriter) Write(ctx context.Context, e destination.Epoch, _ string, b arrow.RecordBatch) error {
 	s := w.s
+	s.mu.Lock()
+	writing := s.writing
+	s.mu.Unlock()
+	if writing != nil {
+		if err := writing(ctx, w.gen, w.lane, e); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if f := s.settleFirst; f != nil && e.Generation > f.Generation {
@@ -218,12 +231,20 @@ func (s *txnStore) commit(c txnCommittable, writer bool) error {
 	return nil
 }
 
-func (w *txnWriter) Recover(_ context.Context, _ uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
+func (w *txnWriter) Recover(ctx context.Context, _ uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
 	if e.IsZero() {
 		return destination.Applied, nil
 	}
 	if len(staged) != 1 {
 		return w.recoverAll(staged)
+	}
+	w.s.mu.Lock()
+	settling := w.s.settling
+	w.s.mu.Unlock()
+	if settling != nil {
+		if err := settling(ctx, w.gen, w.lane); err != nil {
+			return 0, err
+		}
 	}
 	var c txnCommittable
 	if err := json.Unmarshal(staged[0], &c); err != nil {
@@ -598,6 +619,50 @@ func TestARedoShortOfItsPosition(t *testing.T) {
 			if s.marked[laneMark{head.Generation, head.Epoch, 0}] {
 				t.Error("lane 0 was committed")
 			}
+		})
+	}
+}
+
+// A worker stopped while it settles a committable, or redoes one, fails the
+// attempt as transient, as one stopped in any other call does.
+func TestAWorkerStoppedWhileItSettlesFailsTheAttemptAsTransient(t *testing.T) {
+	for _, redoing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("redoing=%v", redoing), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			s := newTxnStore(t)
+			p := txnPool(t, s, ranges(6, 100, 5))
+			p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+			// Attempt a2's worker 0 settles lane 0 and is stopped there; the
+			// other worker's lanes go on.
+			var once sync.Once
+			stop := func(ctx context.Context) error {
+				once.Do(func() { p.kill("a2", 0) })
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			s.mu.Lock()
+			if redoing {
+				s.writing = func(ctx context.Context, gen uint64, lane int, e destination.Epoch) error {
+					if gen == 2 && lane == 0 && e.Generation == 1 {
+						return stop(ctx)
+					}
+					return nil
+				}
+			} else {
+				s.settling = func(ctx context.Context, gen uint64, lane int) error {
+					if gen == 2 && lane == 0 {
+						return stop(ctx)
+					}
+					return nil
+				}
+			}
+			s.mu.Unlock()
+			_, err := runner.RunAttempt(ctx, p.workers("a2", 2))
+			if errs.CodeOf(err) != errs.Transient || !strings.Contains(fmt.Sprint(err), "stopped") {
+				t.Fatalf("the attempt failed with %v (%s), want the stopped worker's transient", err, errs.CodeOf(err))
+			}
+			p.wait("a2")
 		})
 	}
 }
