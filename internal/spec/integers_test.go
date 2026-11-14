@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"encoding/json"
+	"math/big"
 	"reflect"
 	"slices"
 	"strconv"
@@ -280,4 +281,118 @@ func TestIntegerText(t *testing.T) {
 			t.Errorf("parallelism %s: %v, want 0 taken", v, err)
 		}
 	}
+}
+
+// A key is read as yaml.v3 reads it, through an alias or as !!binary, so
+// the value of a key that names an integer field is checked.
+func TestIntegerKeys(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  destination: {ref: d}\n"
+	for name, spec := range map[string]string{
+		"alias":           "  source: {ref: &k workers}\n  resources: {*k : 1.9}\n",
+		"binary":          "  source: {ref: s}\n  resources: {!!binary d29ya2Vycw==: 1.9}\n",
+		"merged alias":    "  source: {ref: &k workers}\n  resources: {<<: {*k : 1.9}}\n",
+		"non-specific <<": "  source: {ref: s}\n  resources: {! <<: {workers: 1.9}}\n",
+	} {
+		if _, err := Parse([]byte(header + spec)); err == nil || !strings.Contains(err.Error(), `resources.workers: "1.9" isn't a whole number`) {
+			t.Errorf("%s: %v, want 1.9 refused", name, err)
+		}
+	}
+	// A key of the mapping wins over a merged one under the identity
+	// yaml.v3 gives each.
+	doc, err := Parse([]byte(header + "  source: {ref: &k workers}\n  resources: {*k : 4, <<: {workers: 65}}\n"))
+	if err != nil || doc.Pipeline.GetResources().GetWorkers() != 4 {
+		t.Errorf("an alias key over a merged one: %v, %v", doc, err)
+	}
+}
+
+// Extreme numbers neither panic nor run long, and are refused or read as
+// their digits say.
+func TestIntegerExtremes(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source: {ref: s}\n  destination: {ref: d}\n"
+	long := strings.Repeat("9", 100000)
+	for _, v := range []string{
+		"!!float 1.1e-9223372036854775808", "!!float 1.1e9223372036854775807", "!!float 1e-9223372036854775809",
+		"!!float 1e99999999999999999999999", "1.1e-9223372036854775808", "0.1e9223372036854775807",
+		"1." + long, long, "-" + long, "1e" + long, "1e-" + long, "+1_0.5", "!!int 2.0", "! 1.9", "!!str 4", "!!float .5_0e1",
+	} {
+		done := make(chan error, 1)
+		go func() {
+			_, err := Parse([]byte(header + "  resources: {workers: " + v + "}\n"))
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "resources.workers: ") {
+				t.Errorf("%.40s: %v, want it refused", v, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%.40s runs long", v)
+		}
+	}
+	for v, want := range map[string]string{
+		"0e-9223372036854775808": "0", "-0.000e9223372036854775807": "0", "0." + strings.Repeat("0", 1000) + "e9223372036854775807": "0",
+		"0." + strings.Repeat("0", 1000) + "4e1004": "4000", "4" + strings.Repeat("0", 1000) + "e-1000": "4",
+		"-12_3.4_5e2": "-12345", "0x_1F": "31", "-0b101": "-5", "0o17": "15", "1e9223372036854775807": "10000000000000000000000000000000000000000",
+	} {
+		x, ok := number(v, false)
+		if !ok || x.String() != want {
+			t.Errorf("number(%.40s) = %v, %v, want %s", v, x, ok, want)
+		}
+	}
+}
+
+// FuzzNumber checks number against big.Rat on the text yaml.v3 reads as a
+// float, and that it never panics.
+func FuzzNumber(f *testing.F) {
+	for _, s := range []string{"1", "1.0", "1e1", "1.9", "-1", "0x10", "1_0", ".5", "5.", "+.5e1", "1.1e-9223372036854775808",
+		"1e9223372036854775807", "-1e-9223372036854775808", "0.1e2", "-0e-5", "123456789012345678901234567890", "1.0000000000000001", "9e40", "1e-40"} {
+		f.Add(s)
+	}
+	limit := new(big.Int).Exp(big.NewInt(10), big.NewInt(40), nil)
+	f.Fuzz(func(t *testing.T, s string) {
+		if len(s) > 1000 {
+			return
+		}
+		x, ok := number(s, false)
+		plain := s
+		if !strings.HasPrefix(s, ".") {
+			plain = strings.ReplaceAll(s, "_", "")
+		}
+		if _, err := strconv.ParseInt(plain, 0, 64); err == nil {
+			return
+		}
+		if _, err := strconv.ParseUint(plain, 0, 64); err == nil {
+			return
+		}
+		if !yamlFloat.MatchString(plain) {
+			if ok {
+				t.Errorf("number(%q) = %v, which isn't a YAML number", s, x)
+			}
+			return
+		}
+		// big.Rat would build 10^e; past 100 only the size is checked.
+		if _, exp, _ := strings.Cut(strings.ToLower(plain), "e"); exp != "" {
+			if e, err := strconv.Atoi(exp); err != nil || e > 100 || e < -100 {
+				return
+			}
+		}
+		r, rok := new(big.Rat).SetString(plain)
+		if !rok {
+			t.Fatalf("big.Rat can't read %q", plain)
+		}
+		switch {
+		case !r.IsInt():
+			if ok {
+				t.Errorf("number(%q) = %v, want a fraction", s, x)
+			}
+		case !ok:
+			t.Errorf("number(%q) refused, want %v", s, r.Num())
+		case new(big.Int).Abs(r.Num()).Cmp(limit) < 0:
+			if x.Cmp(r.Num()) != 0 {
+				t.Errorf("number(%q) = %v, want %v", s, x, r.Num())
+			}
+		case new(big.Int).Abs(x).Cmp(limit) < 0 || x.Sign() != r.Num().Sign():
+			t.Errorf("number(%q) = %v, want ±10^40 or beyond", s, x)
+		}
+	})
 }

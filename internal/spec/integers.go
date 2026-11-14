@@ -83,8 +83,8 @@ func (c *integerCheck) check(n *yaml.Node, t reflect.Type, path string, b bounds
 		}
 		return nil
 	case reflect.Map:
-		for _, e := range entries(n) {
-			if err := c.check(e.v, t.Elem(), join(path, e.k.Value), bounds{}); err != nil {
+		for _, e := range entries(n, t.Key()) {
+			if err := c.check(e.v, t.Elem(), join(path, fmt.Sprint(e.key)), bounds{}); err != nil {
 				return err
 			}
 		}
@@ -92,8 +92,9 @@ func (c *integerCheck) check(n *yaml.Node, t reflect.Type, path string, b bounds
 	}
 	fields := map[string]reflect.StructField{}
 	structFields(t, fields)
-	for _, e := range entries(n) {
-		f, ok := fields[e.k.Value]
+	for _, e := range entries(n, stringType) {
+		name, _ := e.key.(string)
+		f, ok := fields[name]
 		if !ok {
 			continue
 		}
@@ -101,28 +102,35 @@ func (c *integerCheck) check(n *yaml.Node, t reflect.Type, path string, b bounds
 		if err != nil {
 			return err
 		}
-		if err := c.check(e.v, f.Type, join(path, e.k.Value), fb); err != nil {
+		if err := c.check(e.v, f.Type, join(path, name), fb); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-type entry struct{ k, v *yaml.Node }
+type entry struct {
+	key any
+	v   *yaml.Node
+}
 
-// entries are the keys and values yaml.v3 decodes of n, a mapping: its own,
-// then those of the mappings its merge key names that no earlier one set,
-// as a merge list's earlier mappings win over its later ones. Only n's last
-// merge key counts, as in yaml.v3.
-func entries(n *yaml.Node) []entry {
+var stringType = reflect.TypeFor[string]()
+
+// entries are the keys and values yaml.v3 decodes of n, a mapping, with
+// each key decoded as a keyType, as yaml.v3 decodes it, through an alias or
+// a tag: n's own, then those of the mappings its merge key names that no
+// earlier one set, as a merge list's earlier mappings win over its later
+// ones. Only n's last merge key counts. A key that isn't a scalar, which
+// yaml.v3 refuses, is left out.
+func entries(n *yaml.Node, keyType reflect.Type) []entry {
 	var out []entry
-	mergeEntries(n, nil, map[*yaml.Node]bool{}, &out)
+	mergeEntries(n, keyType, nil, map[*yaml.Node]bool{}, &out)
 	return out
 }
 
-// mergeEntries adds n's entries that set doesn't hold to out; a nil set
-// takes every key of n. A mapping already seen adds nothing new.
-func mergeEntries(n *yaml.Node, set map[string]bool, seen map[*yaml.Node]bool, out *[]entry) {
+// mergeEntries adds n's entries whose keys set doesn't hold to out; a nil
+// set takes every key of n. A mapping already seen adds nothing new.
+func mergeEntries(n *yaml.Node, keyType reflect.Type, set map[string]bool, seen map[*yaml.Node]bool, out *[]entry) {
 	if n.Kind == yaml.AliasNode && n.Alias != nil {
 		n = n.Alias
 	}
@@ -133,38 +141,72 @@ func mergeEntries(n *yaml.Node, set map[string]bool, seen map[*yaml.Node]bool, o
 	var merge *yaml.Node
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		k, v := n.Content[i], n.Content[i+1]
-		if k.Kind == yaml.ScalarNode && k.Value == "<<" && k.ShortTag() == "!!merge" {
+		if isMerge(k) {
 			merge = v
 			continue
 		}
+		key, ok := decodeKey(k, keyType)
+		if !ok {
+			continue
+		}
 		if set != nil {
-			if set[k.Value] {
+			if set[keyID(key)] {
 				continue
 			}
-			set[k.Value] = true
+			set[keyID(key)] = true
 		}
-		*out = append(*out, entry{k, v})
+		*out = append(*out, entry{key, v})
 	}
 	if merge == nil {
 		return
 	}
 	if set == nil {
+		// As yaml.v3 does, n's keys decoded as any.
 		set = map[string]bool{}
 		for i := 0; i < len(n.Content); i += 2 {
-			set[n.Content[i].Value] = true
+			if key, ok := decodeKey(n.Content[i], nil); ok {
+				set[keyID(key)] = true
+			}
 		}
 	}
 	if merge.Kind == yaml.AliasNode && merge.Alias != nil {
 		merge = merge.Alias
 	}
 	if merge.Kind != yaml.SequenceNode {
-		mergeEntries(merge, set, seen, out)
+		mergeEntries(merge, keyType, set, seen, out)
 		return
 	}
 	for _, m := range merge.Content {
-		mergeEntries(m, set, seen, out)
+		mergeEntries(m, keyType, set, seen, out)
 	}
 }
+
+func isMerge(k *yaml.Node) bool {
+	return k.Kind == yaml.ScalarNode && k.Value == "<<" && (k.Tag == "" || k.Tag == "!" || k.Tag == "!!merge")
+}
+
+// decodeKey is k decoded as a keyType, or as any if keyType is nil; false
+// if k isn't a scalar or an alias of one, or doesn't decode.
+func decodeKey(k *yaml.Node, keyType reflect.Type) (any, bool) {
+	if k.Kind == yaml.AliasNode && k.Alias != nil && k.Alias.Kind == yaml.ScalarNode {
+		k = k.Alias
+	}
+	if k.Kind != yaml.ScalarNode {
+		return nil, false
+	}
+	if keyType == nil {
+		var v any
+		return v, k.Decode(&v) == nil
+	}
+	v := reflect.New(keyType)
+	if k.Decode(v.Interface()) != nil {
+		return nil, false
+	}
+	return v.Elem().Interface(), true
+}
+
+// keyID is equal for two keys yaml.v3's merge counts as the same.
+func keyID(key any) string { return fmt.Sprintf("%T\x00%v", key, key) }
 
 // structFields are the fields yaml.v3 reads of t, by key, inline ones
 // included.
@@ -224,14 +266,15 @@ func integer(n *yaml.Node, t reflect.Type, path string, b bounds) error {
 	if n.Kind != yaml.ScalarNode {
 		return refuse()
 	}
-	switch n.ShortTag() {
+	tag := n.ShortTag()
+	switch tag {
 	case "!!null":
 		return nil
 	case "!!int", "!!float":
 	default:
 		return refuse()
 	}
-	x, ok := number(n.Value)
+	x, ok := number(n.Value, tag == "!!int")
 	if !ok {
 		return refuse()
 	}
@@ -241,47 +284,55 @@ func integer(n *yaml.Node, t reflect.Type, path string, b bounds) error {
 	return nil
 }
 
-// yamlFloat is the text yaml.v3 reads as a float, once it drops underscores.
+// yamlFloat is the text yaml.v3 reads as a float.
 var yamlFloat = regexp.MustCompile(`^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$`)
 
-// number is s, the text of a YAML integer or float, as an integer, decided
-// from its digits rather than from a float64, which would round
-// 1.0000000000000001 to 1. ok is false if it has a fraction, or isn't a
-// number. A number with more digits than any field holds comes back as
-// ±10^40, out of every range.
-func number(s string) (x *big.Int, ok bool) {
-	s = strings.ReplaceAll(s, "_", "")
+// number is s, the text of a YAML integer or, unless intOnly, a float, as
+// an integer, decided from its digits rather than from a float64, which
+// would round 1.0000000000000001 to 1. ok is false if it has a fraction, or
+// isn't such a number. A number with more digits than any field holds comes
+// back as ±10^40 or beyond, out of every range.
+func number(s string, intOnly bool) (x *big.Int, ok bool) {
+	if !strings.HasPrefix(s, ".") {
+		// yaml.v3 drops underscores but from a float that starts with a dot.
+		s = strings.ReplaceAll(s, "_", "")
+	}
 	if i, err := strconv.ParseInt(s, 0, 64); err == nil {
 		return big.NewInt(i), true
 	}
 	if u, err := strconv.ParseUint(s, 0, 64); err == nil {
 		return new(big.Int).SetUint64(u), true
 	}
-	if !yamlFloat.MatchString(s) {
+	if intOnly || !yamlFloat.MatchString(s) {
 		return nil, false
 	}
 	neg := s[0] == '-'
-	s = strings.TrimLeft(s, "+-")
-	mantissa, exp, _ := strings.Cut(strings.ToLower(s), "e")
+	mantissa, exp, _ := strings.Cut(strings.ToLower(strings.TrimLeft(s, "+-")), "e")
 	whole, frac, _ := strings.Cut(mantissa, ".")
+	// An exponent beyond ±(len(s)+64) leaves a nonzero number above 10^64
+	// or below 1 either way, so it's held there before any arithmetic.
+	limit := len(s) + 64
 	e := 0
 	if exp != "" {
-		var err error
-		if e, err = strconv.Atoi(exp); err != nil {
-			// Beyond an int: far beyond any field, or far below 1.
-			e = 1 << 30
-			if exp[0] == '-' {
-				e = -e
-			}
+		expNeg := exp[0] == '-'
+		digits := strings.TrimLeft(strings.TrimLeft(exp, "+-"), "0")
+		switch v, err := strconv.Atoi(digits); {
+		case digits == "":
+		case len(digits) > 9 || err != nil || v > limit:
+			e = limit
+		default:
+			e = v
+		}
+		if expNeg {
+			e = -e
 		}
 	}
 	digits := strings.TrimLeft(whole+frac, "0")
 	if digits == "" {
 		return big.NewInt(0), true
 	}
-	scale := e - len(frac)
 	trimmed := strings.TrimRight(digits, "0")
-	scale += len(digits) - len(trimmed)
+	scale := e - len(frac) + len(digits) - len(trimmed)
 	switch {
 	case scale < 0:
 		return nil, false
