@@ -160,6 +160,11 @@ impl Evolver {
         self.established
     }
 
+    /// Changes don't follow the policy until the next establish.
+    pub fn unestablish(&mut self) {
+        self.established = false;
+    }
+
     pub fn versions(&self) -> &BTreeMap<String, u32> {
         &self.versions
     }

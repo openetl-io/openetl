@@ -18,6 +18,7 @@ mod ipc;
 mod memory;
 mod plan;
 mod quarantine;
+mod remote;
 mod replay;
 mod service;
 mod sqlplan;

@@ -92,6 +92,11 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	if err != nil {
 		return p.explain(ctx, err)
 	}
+	if plan.SchemaOwner != nil {
+		if err := relaySchemas(evCtx, p.client, plan.SchemaOwner, names, p.log); err != nil {
+			return p.explain(ctx, err)
+		}
+	}
 	engineSink := plan.Sink != runner.SinkPlan{}
 	onReady := func(r *enginev1.EpochReady) error {
 		ready, err := readyOf(r, plan)
@@ -199,6 +204,53 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	return dataErr
 }
 
+// relaySchemas opens the engine's Schemas call, and relays its proposals to
+// owner and owner's versions to it, by the request's stream index, until
+// ctx ends.
+func relaySchemas(ctx context.Context, client enginev1.EngineServiceClient, owner runner.SchemaOwner, names []string, log *slog.Logger) error {
+	st, err := client.Schemas(ctx)
+	if err != nil {
+		return err
+	}
+	index := make(map[string]uint32, len(names))
+	for i, n := range names {
+		index[n] = ints.Uint32(i)
+	}
+	go func() {
+		for {
+			p, err := st.Recv()
+			if err != nil {
+				return
+			}
+			if int(p.GetStream()) >= len(names) {
+				log.Warn("the engine proposed a schema of a stream it doesn't have", "stream", p.GetStream())
+				return
+			}
+			if err := owner.Propose(names[p.GetStream()], p.GetBase(), p.GetArrowSchema()); err != nil {
+				log.Warn("proposing a schema failed", "stream", names[p.GetStream()], "err", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case u := <-owner.Updates():
+				i, ok := index[u.Stream]
+				if !ok {
+					continue
+				}
+				if err := st.Send(&enginev1.SchemasRequest{Stream: i, Version: u.Version, ArrowSchema: u.Schema}); err != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return nil
+}
+
 // explain turns a failed control call into the engine's error, or its exit.
 func (p *process) explain(ctx context.Context, err error) error {
 	if e := fromStatus(err); e != nil {
@@ -232,6 +284,8 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 		Lanes:              ints.Uint32(plan.Lanes),
 		WriterLanes:        ints.Uint32(plan.WriterLanes),
 		KeyGroups:          ints.Uint32(plan.KeyGroups),
+		RemoteSchemas:      plan.SchemaOwner != nil,
+		FirstLane:          ints.Uint32(plan.FirstLane),
 	}
 	sql := plan.SQL != nil
 	for i, s := range plan.Streams {

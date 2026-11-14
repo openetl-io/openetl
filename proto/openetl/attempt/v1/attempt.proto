@@ -17,12 +17,17 @@ option go_package = "github.com/openetl-io/openetl/gen/openetl/attempt/v1;attemp
 // the runner coordinates, ends with UNAUTHENTICATED.
 //
 // A worker opens one call and sends Join; the coordinator's first heartbeat
-// says it's taken. The worker gets its Assignment once every worker has
-// joined. Then the coordinator asks for barriers, the worker sends its share
-// of each epoch, and the coordinator asks workers to commit what a written
-// record names and sends them the committed record's positions. Each end
-// sends a Heartbeat every few seconds, and takes the other as lost once it
-// hears nothing for longer than a timeout.
+// says it's taken. The coordinator, which runs no connector and holds no
+// destination credentials, calls a worker for what needs them: settling the
+// restored epoch, a read's splits, applying schemas. The worker gets its
+// Assignment once every worker has joined and the restored epoch is
+// settled. Then the coordinator asks for barriers, the worker signals what
+// its read does and sends its share of each epoch, and the coordinator asks
+// workers to commit what a written record names and sends them the
+// committed record's positions. The coordinator owns each stream's schema:
+// a worker's engine proposes a change, and every worker gets the schema the
+// coordinator takes. Each end sends a Heartbeat every few seconds, and takes
+// the other as lost once it hears nothing for longer than a timeout.
 //
 // A call is never resumed: a broken call, a lost worker, a worker's Failure
 // or anything out of the protocol fails the attempt. The coordinator sends
@@ -45,6 +50,12 @@ message AttendRequest {
     // The worker failed and stops, which fails the attempt. Its last
     // message.
     openetl.connector.v1.Error failure = 5;
+    // Answers a Call, once.
+    Answer answer = 6;
+    // After the assignment.
+    Signal signal = 7;
+    // After the assignment.
+    SchemaProposal schema_proposal = 8;
   }
 }
 
@@ -61,6 +72,10 @@ message AttendResponse {
     // Its last message. The worker stops and closes its side, and the
     // coordinator ends the call.
     End end = 6;
+    // Before the assignment too.
+    Call call = 7;
+    // After the assignment.
+    StreamSchema schema = 8;
   }
 }
 
@@ -102,8 +117,21 @@ message Assignment {
   // Every writer lane of the attempt, writer lane w at w, whose committable
   // is the record's w-th.
   repeated Lane writer_lanes = 6;
-  // Which lane reads each split, and from where.
+  // Which lane reads each split, and from where. A split the attempt adds
+  // is read by the worker that read the split it came from.
   repeated SplitAssignment splits = 7;
+  // The streams a record that may be restored was forced on, which the
+  // destination's writers deduplicate.
+  repeated string forced = 8;
+  // When each stream's current read started, in microseconds since the Unix
+  // epoch; streams the attempt doesn't read are missing.
+  map<string, int64> read_starts = 9;
+  // Streams that completed earlier in the sync, which the attempt doesn't
+  // read.
+  repeated string done = 10;
+  // The bytes a worker's sources emit in an epoch before it signals it's
+  // full; 0: no threshold.
+  uint64 max_bytes = 11;
 }
 
 message Lane {
@@ -138,6 +166,8 @@ message SplitPosition {
 // reads. Barriers come in order, from Assignment.first_epoch.
 message Barrier {
   openetl.connector.v1.Epoch epoch = 1;
+  // As Assignment.max_bytes, from this barrier on; 0: unchanged.
+  uint64 max_bytes = 2;
 }
 
 // Share is the worker's part of an epoch, sent once barrier N has passed
@@ -165,6 +195,17 @@ message Committable {
   // Only this worker can commit it, such as a transaction open in its
   // writer's producer.
   bool local = 3;
+  // What it holds: the splits whose rows its writer lane got in the epoch,
+  // in this attempt's layout.
+  repeated SplitRef splits = 4;
+}
+
+message SplitRef {
+  string stream = 1;
+  // Empty: the whole stream.
+  string split = 2;
+  // The key groups of the split's rows it holds; unset: all of them.
+  openetl.engine.v1.KeyGroupRange key_groups = 3;
 }
 
 // Commit asks the worker to commit what a record names, at the
@@ -208,4 +249,107 @@ message Heartbeat {}
 message End {
   // Why the attempt failed; unset: it finished.
   openetl.connector.v1.Error error = 1;
+}
+
+// Call asks one worker for what needs a connector or the destination's
+// credentials, which the coordinator doesn't have. The worker answers each
+// once, with an Answer of its ID.
+message Call {
+  // Unique in the attempt.
+  uint64 id = 1;
+  oneof call {
+    Recover recover = 2;
+    SplitRead split_read = 3;
+    openetl.connector.v1.WriteApplySchema apply_schema = 4;
+  }
+}
+
+message Answer {
+  uint64 id = 1;
+  // Set if the call failed.
+  openetl.connector.v1.Error error = 2;
+  oneof answer {
+    openetl.connector.v1.WriteRecovered recovered = 3;
+    ReadSplits read_splits = 4;
+    openetl.connector.v1.WriteSchemaApplied schema_applied = 5;
+  }
+}
+
+// Recover raises the destination's fence to the attempt's generation and
+// settles the epoch the attempt restores, on the writer of the attempt's
+// first writer lane, which the worker opens for it and keeps: it makes
+// visible what the record's committables staged and isn't, as a single
+// runner's recovery does. Before the assignment, once.
+message Recover {
+  // The record HEAD points to, as the checkpoint log holds it; empty: none,
+  // and only the fence is raised.
+  bytes record = 1;
+  // As Assignment.forced.
+  repeated string forced = 2;
+}
+
+// SplitRead asks for the splits of the streams whose read starts.
+message SplitRead {
+  repeated EndedRead streams = 1;
+}
+
+message EndedRead {
+  string stream = 1;
+  // Where each of its last read's splits ended; unset for a stream never
+  // read.
+  optional openetl.connector.v1.Splits ended = 2;
+}
+
+message ReadSplits {
+  // By stream.
+  map<string, openetl.connector.v1.Splits> splits = 1;
+  // The source splits a running split's remainder.
+  bool resplits = 2;
+}
+
+// Signal is what the worker's read did since barrier `after`, the last it
+// was asked for, or since the assignment.
+message Signal {
+  uint64 after = 1;
+  oneof signal {
+    // Every split the worker reads placed the barrier.
+    Placed placed = 2;
+    // Its sources emitted, once per barrier.
+    Emitted emitted = 3;
+    // Its epoch reached its byte threshold, once per barrier.
+    Full full = 4;
+    // Its read ended, once.
+    ReadDone read_done = 5;
+  }
+}
+
+message Placed {}
+
+message Emitted {}
+
+message Full {}
+
+message ReadDone {
+  // Its sources emitted after barrier `after`.
+  bool active = 1;
+}
+
+// SchemaProposal is a change one of the worker's engine's lanes made to one
+// of the destination's streams' schema, from version `base` of it. The
+// coordinator takes it if it holds version base, and sends every worker the
+// stream's new schema; otherwise it sends the proposer the one it holds.
+message SchemaProposal {
+  string stream = 1;
+  uint64 base = 2;
+  // An Arrow IPC stream holding only the schema.
+  bytes arrow_schema = 3;
+}
+
+// StreamSchema is the schema the coordinator holds for a stream, version 0
+// being the restored record's.
+message StreamSchema {
+  string stream = 1;
+  uint64 version = 2;
+  // As SchemaProposal's.
+  bytes arrow_schema = 3;
 }

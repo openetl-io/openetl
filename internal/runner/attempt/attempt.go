@@ -96,8 +96,9 @@ type Coordinator interface {
 	// assignment, its workers set to the addresses they joined with.
 	Assign(ctx context.Context, a *attemptv1.Assignment) error
 	// Barrier asks every worker to place barrier n: the assignment's first
-	// epoch, then each next one.
-	Barrier(n uint64) error
+	// epoch, then each next one. maxBytes is each worker's byte threshold
+	// from then on; 0 leaves it.
+	Barrier(n, maxBytes uint64) error
 	// Shares waits for every worker's share of epoch n, the one after the
 	// last it returned, and returns them by worker.
 	Shares(ctx context.Context, n uint64) ([]*attemptv1.Share, error)
@@ -115,6 +116,16 @@ type Coordinator interface {
 	// asking again, as after a failed answer or a ctx that ended, sends it
 	// again.
 	Commit(ctx context.Context, worker int, c *attemptv1.Commit) (*protocolv1.WriteCommitted, error)
+	// Call asks a worker for what needs a connector, waiting for it to join
+	// and then for its answer, whose error says if the call failed. Before
+	// the assignment too. Its ID is Call's to set.
+	Call(ctx context.Context, worker int, c *attemptv1.Call) (*attemptv1.Answer, error)
+	// Inbox has the workers' signals and schema proposals, each worker's in
+	// the order it sent them.
+	Inbox() <-chan From
+	// Schema sends a stream's schema to a worker, or with worker -1 to
+	// every worker, after the assignment.
+	Schema(worker int, s *attemptv1.StreamSchema) error
 	// Done is closed once the attempt is over: it failed, or End ended it.
 	Done() <-chan struct{}
 	// Err is why the attempt failed; nil while it runs, or once End ended
@@ -129,8 +140,9 @@ type Coordinator interface {
 // Worker is a worker's side of its attempt, from Join. Its methods may be
 // called from any goroutine.
 type Worker interface {
-	// Requests are the coordinator's assignment, barriers, positions and
-	// commits, in the order it sent them. It's closed once Done is. A
+	// Requests are the coordinator's assignment, barriers, positions,
+	// commits, calls and schemas, in the order it sent them. It's closed
+	// once Done is. A
 	// commit comes here once: asked again, it waits for the answer it's
 	// waiting for, or the worker's side answers it as committed itself,
 	// once Committed has or once positions have covered its epoch.
@@ -143,6 +155,14 @@ type Worker interface {
 	// Committed answers a commit from Requests once it has happened, or
 	// failed, naming its epoch and writer lanes.
 	Committed(c *attemptv1.Committed) error
+	// Answer answers a call from Requests, once.
+	Answer(a *attemptv1.Answer) error
+	// Signal tells the coordinator what the worker's read did since a
+	// barrier, after the assignment.
+	Signal(s *attemptv1.Signal) error
+	// Propose offers a change to a stream's schema, after the assignment.
+	// The coordinator's schemas come in Requests.
+	Propose(p *attemptv1.SchemaProposal) error
 	// Fail tells the coordinator the worker failed, which fails the
 	// attempt, and ends the worker's part in it.
 	Fail(err error)
@@ -153,6 +173,13 @@ type Worker interface {
 	// Close ends the worker's part, as Fail does if it isn't over, and
 	// waits for its call to end.
 	Close() error
+}
+
+// From is a worker's signal or schema proposal; one is set.
+type From struct {
+	Worker   int
+	Signal   *attemptv1.Signal
+	Proposal *attemptv1.SchemaProposal
 }
 
 // Target is where a worker joins, and what as, from its pod's spec.

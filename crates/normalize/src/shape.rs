@@ -435,6 +435,18 @@ impl Shaper {
         Ok(changed)
     }
 
+    /// Whether the schema policy applies: the stream has a schema, restored
+    /// or sealed at a barrier.
+    pub fn sealed(&self) -> bool {
+        self.evolver.established()
+    }
+
+    /// The schema policy doesn't apply until the next seal, as for a shaper
+    /// restored from another's schema before its stream crossed a barrier.
+    pub fn unseal(&mut self) {
+        self.evolver.unestablish();
+    }
+
     /// Called at each barrier: from now on, the schema policy applies. True
     /// if it didn't before.
     pub fn seal(&mut self) -> bool {

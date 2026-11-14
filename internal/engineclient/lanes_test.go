@@ -27,6 +27,8 @@ type laneSource struct {
 	// which holds every barrier back, so a lane far ahead of it has to wait.
 	straggle bool
 	others   sync.WaitGroup
+	// Set: the rows of the split of this ID have a column the others lack.
+	extra string
 }
 
 func (s *laneSource) Splits(_ context.Context, _ source.ConfiguredStream, _ []source.Split) ([]source.Split, error) {
@@ -50,6 +52,9 @@ func (s *laneSource) Read(ctx context.Context, req source.ReadRequest, out sourc
 			rows := make([]json.RawMessage, s.rows)
 			for r := range rows {
 				rows[r] = fmt.Appendf(nil, `{"id": %d}`, split*1_000_000_000+c*1_000_000+r)
+				if sp.ID == s.extra {
+					rows[r] = fmt.Appendf(nil, `{"id": %d, "extra": "x"}`, split*1_000_000_000+c*1_000_000+r)
+				}
 			}
 			if err := e.Rows(rows); err != nil {
 				return err

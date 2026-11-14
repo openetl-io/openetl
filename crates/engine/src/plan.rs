@@ -11,6 +11,7 @@ use openetl_proto::engine::v1::{
 use crate::error::JobError;
 use crate::ipc;
 use crate::quarantine::Quarantine;
+use crate::remote::Remote;
 use crate::transform::{Input, Route, Transform};
 
 /// A validated StartJobRequest. Its streams are the destination's: with a
@@ -54,6 +55,11 @@ pub struct Plan {
     pub held_url: Option<String>,
     /// A SQL transform, whose inputs the inbound edges carry.
     pub transform: Option<TransformJob>,
+    /// Where each stream's schema is decided, when several engines run the
+    /// attempt; None: here.
+    pub remote: Option<std::sync::Arc<Remote>>,
+    /// The attempt's index of the first lane, which names quarantine files.
+    pub first_lane: usize,
 }
 
 /// A job's SQL transform: the streams it reads, which the inbound edges
@@ -521,8 +527,17 @@ impl Plan {
                 return Err(JobError::config("only a runner sink takes holds"));
             }
         }
+        if req.remote_schemas && (transform.is_some() || held_url.is_some()) {
+            return Err(JobError::config(
+                "a job whose schemas are decided outside the engine has no transform and holds nothing",
+            ));
+        }
 
         Ok(Plan {
+            remote: req
+                .remote_schemas
+                .then(|| std::sync::Arc::new(Remote::new(names.len()))),
+            first_lane: req.first_lane as usize,
             generation: req.generation,
             first_epoch: req.first_epoch,
             streams: names,
@@ -753,6 +768,8 @@ pub(crate) mod tests {
             key_groups: 0,
             outputs: Vec::new(),
             transform: None,
+            remote_schemas: false,
+            first_lane: 0,
         }
     }
 

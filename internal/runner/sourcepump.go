@@ -189,6 +189,11 @@ type sourcePump struct {
 	emitted atomic.Uint64
 	// Nil: progress is dropped.
 	progress *Progress
+	// A worker's: it reports its first emit after each barrier requested,
+	// and the lanes of the splits each epoch got rows from.
+	worker     bool
+	emitTold   bool
+	splitLanes map[checkpoint.SplitRef]int
 }
 
 var (
@@ -378,6 +383,12 @@ func (p *sourcePump) handle(e emit) error {
 		return p.finish()
 	}
 	p.emitted.Add(1)
+	if p.worker && !p.emitTold {
+		p.emitTold = true
+		if err := p.notify(event{kind: evEmitted, epoch: p.requested}); err != nil {
+			return err
+		}
+	}
 	return p.route(e)
 }
 
@@ -593,6 +604,9 @@ func (p *sourcePump) request(n uint64) error {
 	p.splits = make(map[string][]checkpoint.SplitState, len(p.order))
 	p.rows = make(map[string]uint64, len(p.order))
 	p.bytes, p.thresholdSent = 0, false
+	if p.worker {
+		p.emitTold, p.splitLanes = false, map[checkpoint.SplitRef]int{}
+	}
 	for _, st := range p.streams {
 		for _, sp := range st.splits {
 			sp.placed, sp.later = false, false
@@ -629,6 +643,10 @@ func (p *sourcePump) request(n uint64) error {
 		if err := p.placeFreeLanes(name); err != nil {
 			return err
 		}
+	}
+	// A worker may have no splits to place.
+	if p.worker && p.pending != 0 && p.unplaced == 0 {
+		return p.placed()
 	}
 	if p.pending != 0 && p.forceAfter > 0 {
 		p.forceTimer = time.NewTimer(p.forceAfter)
@@ -704,6 +722,13 @@ func (p *sourcePump) place(name string, sp *splitPos, forced bool) error {
 	sp.forced = sp.forced || forced
 	p.splits[name] = append(p.splits[name], checkpoint.SplitState{ID: sp.id, State: sp.resume, Complete: sp.complete && !sp.forced, Forced: sp.forced, Reread: sp.reread})
 	p.rows[name] += sp.rows
+	if p.worker && sp.rows > 0 {
+		lane := sp.lane
+		if st.inTurn {
+			lane = laneAll
+		}
+		p.splitLanes[checkpoint.SplitRef{Stream: name, ID: sp.id}] = lane
+	}
 	sp.rows, sp.reread = 0, false
 	p.unplaced--
 	n := p.pending
@@ -730,11 +755,16 @@ func (p *sourcePump) place(name string, sp *splitPos, forced bool) error {
 	if p.unplaced > 0 || p.pending != n {
 		return nil
 	}
+	return p.placed()
+}
+
+// placed reports the pending barrier placed on every split.
+func (p *sourcePump) placed() error {
 	splits := p.splits
 	for name, ss := range splits {
 		slices.SortStableFunc(ss, func(a, b checkpoint.SplitState) int { return p.joined(name, a.ID) - p.joined(name, b.ID) })
 	}
-	ev := event{kind: evPlaced, epoch: n, splits: splits, rows: p.rows}
+	ev := event{kind: evPlaced, epoch: p.pending, splits: splits, rows: p.rows, splitLanes: p.splitLanes}
 	p.pending = 0
 	if p.forceTimer != nil {
 		p.forceTimer.Stop()
