@@ -1,5 +1,6 @@
-use arrow_array::{RecordBatch, RecordBatchOptions};
-use arrow_schema::SchemaRef;
+use arrow_array::cast::AsArray;
+use arrow_array::{Array, ArrayRef, RecordBatch, RecordBatchOptions, UInt64Array};
+use arrow_schema::{DataType, SchemaRef};
 
 use crate::{Error, Expr, Note, Position};
 
@@ -206,6 +207,154 @@ pub struct Unnest {
     pub outer: bool,
     /// What it gives.
     pub schema: SchemaRef,
+}
+
+/// What [`Unnest::eval`] gives.
+#[derive(Debug)]
+pub struct Unnested {
+    pub batch: RecordBatch,
+    /// Each row's row of the input.
+    pub rows: Vec<usize>,
+    /// Each row's place among its input row's: the index into its lists.
+    pub ordinals: Vec<usize>,
+}
+
+/// A list column's elements, and where each row's start and how many it has.
+struct Elements {
+    values: ArrayRef,
+    starts: Vec<usize>,
+    lens: Vec<usize>,
+}
+
+impl Elements {
+    fn of(a: &ArrayRef) -> Result<Self, Error> {
+        let n = a.len();
+        let (values, mut starts, mut lens) = match a.data_type() {
+            DataType::List(_) => {
+                let l = a.as_list::<i32>();
+                let o = l.offsets();
+                let (s, n): (Vec<usize>, Vec<usize>) = o
+                    .windows(2)
+                    .map(|w| {
+                        (
+                            w[0].unsigned_abs() as usize,
+                            (w[1] - w[0]).unsigned_abs() as usize,
+                        )
+                    })
+                    .unzip();
+                (l.values().clone(), s, n)
+            }
+            DataType::LargeList(_) => {
+                let l = a.as_list::<i64>();
+                let o = l.offsets();
+                let mut s = Vec::with_capacity(n);
+                let mut k = Vec::with_capacity(n);
+                for w in o.windows(2) {
+                    s.push(usize::try_from(w[0]).map_err(|e| Error::eval(e.to_string()))?);
+                    k.push(usize::try_from(w[1] - w[0]).map_err(|e| Error::eval(e.to_string()))?);
+                }
+                (l.values().clone(), s, k)
+            }
+            DataType::FixedSizeList(_, size) => {
+                let l = a.as_fixed_size_list();
+                let size = usize::try_from(*size).map_err(|e| Error::eval(e.to_string()))?;
+                (
+                    l.values().clone(),
+                    (0..n)
+                        .map(|r| l.value_offset(r).unsigned_abs() as usize)
+                        .collect(),
+                    vec![size; n],
+                )
+            }
+            other => {
+                return Err(Error::eval(format!(
+                    "UNNEST of {other}, which isn't a list"
+                )));
+            }
+        };
+        for r in 0..n {
+            if a.is_null(r) {
+                lens[r] = 0;
+                starts[r] = 0;
+            }
+        }
+        Ok(Self {
+            values,
+            starts,
+            lens,
+        })
+    }
+}
+
+impl Unnest {
+    /// Flattens a batch of its input.
+    pub fn eval(&self, batch: &RecordBatch) -> Result<Unnested, Error> {
+        let n = batch.num_rows();
+        let mut lists = Vec::with_capacity(self.lists.len());
+        for &i in &self.lists {
+            let Some(a) = batch.columns().get(i) else {
+                return Err(Error::eval(format!(
+                    "UNNEST of column {i}, which the input lacks"
+                )));
+            };
+            lists.push((i, Elements::of(a)?));
+        }
+        let mut rows = Vec::with_capacity(n);
+        let mut ordinals = Vec::with_capacity(n);
+        for r in 0..n {
+            let most = lists.iter().map(|(_, l)| l.lens[r]).max().unwrap_or(0);
+            if most == 0 && self.outer {
+                rows.push(r);
+                ordinals.push(0);
+            }
+            for k in 0..most {
+                rows.push(r);
+                ordinals.push(k);
+            }
+        }
+        let take = |a: &dyn Array, indices: &UInt64Array| {
+            arrow_select::take::take(a, indices, None).map_err(|e| Error::eval(e.to_string()))
+        };
+        let repeated = UInt64Array::from_iter_values(rows.iter().map(|&r| r as u64));
+        let mut columns = Vec::with_capacity(self.sources.len());
+        for (j, &src) in self.sources.iter().enumerate() {
+            let column = match lists.iter().find(|(i, _)| *i == src) {
+                Some((_, l)) => {
+                    let indices: UInt64Array = rows
+                        .iter()
+                        .zip(&ordinals)
+                        .map(|(&r, &k)| (k < l.lens[r]).then(|| (l.starts[r] + k) as u64))
+                        .collect();
+                    take(l.values.as_ref(), &indices)?
+                }
+                None => {
+                    let Some(a) = batch.columns().get(src) else {
+                        return Err(Error::eval(format!(
+                            "UNNEST repeats column {src}, which the input lacks"
+                        )));
+                    };
+                    take(a.as_ref(), &repeated)?
+                }
+            };
+            let want = self.schema.field(j).data_type();
+            columns.push(match column.data_type() == want {
+                true => column,
+                false => {
+                    return Err(Error::eval(format!(
+                        "UNNEST gave {} for column {}, which is {want}",
+                        column.data_type(),
+                        self.schema.field(j).name()
+                    )));
+                }
+            });
+        }
+        let batch = batch_of(self.schema.clone(), columns, rows.len())?;
+        Ok(Unnested {
+            batch,
+            rows,
+            ordinals,
+        })
+    }
 }
 
 fn batch_of(

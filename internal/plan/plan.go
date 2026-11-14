@@ -374,7 +374,7 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 	case sql:
 		var delivered []string
 		for _, name := range names {
-			if lands(spec, answer, name) {
+			if Lands(spec, answer, name) {
 				delivered = append(delivered, name)
 			}
 		}
@@ -417,7 +417,7 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read), Spec: s.ps}
 			inputs = append(inputs, in)
 		}
-		if ownCode(spec) || sql && (answer == nil || !lands(spec, answer, name)) {
+		if ownCode(spec) || sql && (answer == nil || !Lands(spec, answer, name)) {
 			in := inputs[len(inputs)-1]
 			for _, err := range []error{ReadProblem(spec, name, read), InputProblem(spec, in)} {
 				if err != nil {
@@ -456,7 +456,7 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		}
 	}
 	if sql && answer != nil {
-		outs, reads := sqlOutputs(spec, caps, answer, inputs)
+		outs, reads := SQLOutputs(spec, caps, answer, inputs)
 		for i, o := range outs {
 			if err := OutputProblem(o, reads[i]); err != nil {
 				problems = append(problems, err)

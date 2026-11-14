@@ -84,7 +84,7 @@ func Transform(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer) 
 		})
 	}
 	for _, s := range selected(spec, cat) {
-		if lands(spec, a, s.cs.GetName()) {
+		if Lands(spec, a, s.cs.GetName()) {
 			out.PassedThrough = append(out.PassedThrough, s.cs.GetName())
 		} else {
 			out.Withheld = append(out.Withheld, s.cs.GetName())
@@ -93,9 +93,9 @@ func Transform(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer) 
 	return out
 }
 
-// lands reports whether the source's stream reaches the destination as it
+// Lands reports whether the source's stream reaches the destination as it
 // is: no statement writes its name, and passthrough isn't none.
-func lands(spec *apiv1.PipelineSpec, a *sqlplan.Answer, stream string) bool {
+func Lands(spec *apiv1.PipelineSpec, a *sqlplan.Answer, stream string) bool {
 	if spec.GetTransform().GetSql().GetPassthrough() == apiv1.Passthrough_PASSTHROUGH_NONE {
 		return false
 	}
@@ -122,13 +122,13 @@ func schemaColumns(fs []sqlplan.Field) []*apiv1.SchemaColumn {
 	return out
 }
 
-// sqlOutputs are the outputs of a SQL transform's statements. An output that
+// SQLOutputs are the outputs of a SQL transform's statements. An output that
 // replaces a source's stream takes that stream's require, as its table in
 // destination.tables. Without destination.write, it's overwritten when its
 // statement's inputs are all read with full_refresh, merged when it has a
 // primary key and an input is read with cdc, and appended to otherwise,
 // where the destination has the mode.
-func sqlOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlplan.Answer, inputs []Input) ([]Output, [][]Input) {
+func SQLOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlplan.Answer, inputs []Input) ([]Output, [][]Input) {
 	var outs []Output
 	var reads [][]Input
 	for _, st := range a.Statements {

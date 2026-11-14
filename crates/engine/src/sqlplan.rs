@@ -1,6 +1,7 @@
 //! `openetl-engine plan`: plans a transform's SQL for the control plane,
-//! which doesn't link the engine. It reads a request as JSON and writes the
-//! answer as JSON. No job runs, and nothing is read but the request.
+//! which doesn't link the engine, and for a runner before it starts a job.
+//! It reads a request as JSON and writes the answer as JSON. No job runs,
+//! and nothing is read but the request.
 //!
 //! The request:
 //!
@@ -17,6 +18,12 @@
 //! `extension<arrow.json>` for those logical types. Statements see every
 //! column as nullable, as the engine's first half types them, and a stream
 //! with `nanoseconds` keeps its timestamps in nanoseconds.
+//!
+//! A stream can have its columns as Arrow IPC streams holding only a
+//! schema, in base64, as a job's start has them: `declared_schema`, in place
+//! of `columns`, and `restored_schema`, the schema a sync recorded for it.
+//! The recorded columns are the stream's too, with the declared types over
+//! them.
 //!
 //! The answer has `statements`, `views`, `notes` and `errors`. Each
 //! statement has where its `INSERT` is (`at`, a line and column from 1), its
@@ -39,10 +46,11 @@ use std::sync::Arc;
 use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
 use base64::Engine as _;
 use openetl_normalize::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY};
+use openetl_proto::engine::v1::StreamPlan;
 use openetl_sql::{Catalog, ErrorKind, Operator, Position, Statement, Stream};
 use serde::{Deserialize, Serialize};
 
-use crate::ipc;
+use crate::{ipc, transform};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,6 +65,7 @@ pub struct Request {
 pub struct RequestStream {
     /// Its whole name, as the source's catalog lists it.
     pub name: String,
+    #[serde(default)]
     pub columns: Vec<RequestColumn>,
     /// The primary key's columns; empty if it has none.
     #[serde(default)]
@@ -67,6 +76,12 @@ pub struct RequestStream {
     /// Its timestamps keep nanoseconds.
     #[serde(default)]
     pub nanoseconds: bool,
+    /// The schema its source declares, in base64, in place of `columns`.
+    #[serde(default)]
+    pub declared_schema: Option<String>,
+    /// The schema a sync recorded for it, in base64.
+    #[serde(default)]
+    pub restored_schema: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,10 +221,42 @@ fn stream(s: &RequestStream) -> Result<Stream, String> {
                 .with_data_type(DataType::Timestamp(TimeUnit::Nanosecond, tz.clone())),
             _ => f,
         };
-        fields.push(f.with_nullable(true));
+        fields.push(f);
     }
+    let ipc_of = |what: &str, b: &Option<String>| -> Result<Vec<u8>, String> {
+        match b {
+            Some(b) => base64::engine::general_purpose::STANDARD
+                .decode(b)
+                .map_err(|e| format!("stream {}: its {what} schema: {e}", s.name)),
+            None => Ok(Vec::new()),
+        }
+    };
+    if s.declared_schema.is_some() && !fields.is_empty() {
+        return Err(format!(
+            "stream {} has both columns and a declared schema",
+            s.name
+        ));
+    }
+    // As a job's start reads it.
+    let plan = StreamPlan {
+        name: s.name.clone(),
+        arrow_schema: ipc_of("declared", &s.declared_schema)?,
+        restored_schema: ipc_of("restored", &s.restored_schema)?,
+        nanosecond_timestamps: s.nanoseconds,
+        ..StreamPlan::default()
+    };
+    let read = transform::Input::of(&plan).map_err(|e| e.message)?;
+    let declared = (!fields.is_empty()).then(|| Arc::new(Schema::new(fields)));
+    let schema =
+        transform::merged(read.schema, declared).unwrap_or_else(|| Arc::new(Schema::empty()));
     Ok(Stream {
-        schema: Arc::new(Schema::new(fields)),
+        schema: Arc::new(Schema::new(
+            schema
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone().with_nullable(true))
+                .collect::<Vec<_>>(),
+        )),
         key: s.key.clone(),
         changelog: s.changelog,
     })
@@ -594,6 +641,73 @@ mod tests {
                 nullable: true
             }
         );
+    }
+
+    /// A stream's recorded schema adds the columns a source no longer
+    /// declares, as when a job starts, and one recorded before the pipeline
+    /// had a transform reads under source names.
+    #[test]
+    fn a_recorded_schema_adds_its_columns() {
+        let recorded = Schema::new(vec![
+            Field::new("id", DataType::Utf8, true),
+            Field::new("old_email", DataType::Utf8, true),
+        ]);
+        let b64 = |s: &Schema| {
+            base64::engine::general_purpose::STANDARD
+                .encode(ipc::encode_schema(&Arc::new(s.clone())).unwrap())
+        };
+        let got = answer(json!({
+            "sql": "INSERT INTO t SELECT id, old_email FROM customers",
+            "streams": [{"name": "customers", "key": ["id"],
+                "columns": [{"name": "id", "type": "int64"}],
+                "restored_schema": b64(&recorded)}],
+        }));
+        assert_eq!(got["errors"], json!([]));
+        assert_eq!(
+            got["statements"][0]["columns"],
+            json!([
+                {"name": "id", "type": "int64", "nullable": true},
+                {"name": "old_email", "type": "utf8", "nullable": true},
+            ])
+        );
+
+        let shaped = Schema::new(vec![
+            Field::new("user_id", DataType::Int64, false),
+            Field::new("_openetl_id", DataType::FixedSizeBinary(16), false),
+        ])
+        .with_metadata(HashMap::from([
+            (
+                openetl_normalize::naming::SOURCE_NAMES_KEY.to_owned(),
+                r#"{"user_id":"UserId"}"#.to_owned(),
+            ),
+            (
+                openetl_normalize::naming::TABLE_KEY.to_owned(),
+                "users".to_owned(),
+            ),
+        ]));
+        let got = answer(json!({
+            "sql": "INSERT INTO t SELECT * FROM users",
+            "streams": [{"name": "users", "restored_schema": b64(&shaped)}],
+        }));
+        assert_eq!(
+            got["statements"][0]["columns"],
+            json!([{"name": "UserId", "type": "int64", "nullable": true}])
+        );
+        // A declared schema in place of columns, with a type they can't name.
+        let declared = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "s",
+                DataType::Struct(vec![Field::new("a", DataType::Int64, true)].into()),
+                true,
+            ),
+        ]);
+        let got = answer(json!({
+            "sql": "INSERT INTO t SELECT id, s['a'] AS a FROM events",
+            "streams": [{"name": "events", "declared_schema": b64(&declared)}],
+        }));
+        assert_eq!(got["errors"], json!([]));
+        assert_eq!(got["statements"][0]["columns"][1]["type"], "int64");
     }
 
     #[test]

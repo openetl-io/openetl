@@ -2,8 +2,10 @@ package runner
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -34,6 +36,36 @@ func TestLowered(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+// A stream a SQL transform passes through is delivered as it would be
+// without the transform: keyed, read with superset replay and appended to a
+// destination that dedupes at apply, it's exactly once, as the default
+// require needs. A statement's output over it isn't deduped.
+func TestAStreamPassedThroughKeepsItsGuarantee(t *testing.T) {
+	users := Stream{Name: "users", Replay: source.Superset, Mode: destination.Append, PrimaryKey: []string{"id"}}
+	for _, transformed := range []bool{false, true} {
+		out := users
+		out.From, out.Transformed = "users", transformed
+		j := Job{
+			Owner:       "a",
+			Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "o", "p"),
+			Source:      struct{ source.Reader }{},
+			Dataflow:    Passthrough{},
+			Streams:     []Stream{users},
+			Outputs:     []Stream{out},
+			SQL:         &SQLTransform{SQL: "INSERT INTO c SELECT id FROM users"},
+			Destination: capsDest{caps: destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}, DedupeAtApply: true}},
+			Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopeStream},
+		}
+		err := j.validate()
+		switch {
+		case !transformed && err != nil:
+			t.Errorf("passed through: %v", err)
+		case transformed && (err == nil || !strings.Contains(err.Error(), "at_least_once")):
+			t.Errorf("a statement's output: %v", err)
 		}
 	}
 }

@@ -29,5 +29,7 @@ mod types;
 pub use catalog::{Catalog, Stream};
 pub use error::{Error, ErrorKind, Errors, Note, Position};
 pub use expr::Expr;
-pub use plan::{Class, Column, Operator, Plan, Projection, RowWise, Statement, Step, Unnest, View};
+pub use plan::{
+    Class, Column, Operator, Plan, Projection, RowWise, Statement, Step, Unnest, Unnested, View,
+};
 pub use sql::{Sql, plan};

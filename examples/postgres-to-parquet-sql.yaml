@@ -1,0 +1,49 @@
+# The tables faker-to-postgres.yaml writes, through SQL, as Parquet files
+# under /tmp/openetl-parquet-sql, every hour. With `make deps-up` and
+# `make dev` running, and the faker pipeline synced once (faker-to-postgres.yaml
+# sets the local-postgres-dsn secret):
+#
+#   go run ./cmd/openetl apply -f examples/postgres-to-parquet-sql.yaml
+#
+# The first statement writes active_users, with its columns renamed, from the
+# users table's active rows. The second replaces purchases with its
+# currencies in upper case. With passthrough: none, users doesn't land as
+# well.
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: local-postgres-faker
+spec:
+  connector: postgres
+  config:
+    dsn: { secret: local-postgres-dsn }
+    schema: faker
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: local-parquet-sql
+spec:
+  connector: parquet
+  config:
+    url: file:///tmp/openetl-parquet-sql
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: postgres-to-parquet-sql
+spec:
+  schedule: { every: 1h }
+  source: { ref: local-postgres-faker }
+  destination: { ref: local-parquet-sql }
+  transform:
+    passthrough: none
+    sql: |
+      INSERT INTO active_users
+      SELECT id AS user_id, name, lower(email) AS email, age
+      FROM users
+      WHERE active;
+
+      INSERT INTO purchases
+      SELECT id, user_id, amount, upper(currency) AS currency
+      FROM purchases;

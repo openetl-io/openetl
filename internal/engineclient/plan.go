@@ -20,9 +20,10 @@ const (
 	planRefused   = 2
 )
 
-// Plan has the engine plan a SQL transform: `openetl-engine plan`, with the
-// request on stdin and the answer on stdout. SQL with errors is an answer,
-// and only a call that failed is an error.
+// Plan has the engine plan a SQL transform, for the control plane's plan
+// and for a runner's job: `openetl-engine plan`, with the request on stdin
+// and the answer on stdout. SQL with errors is an answer, and only a call
+// that failed is an error.
 func Plan(ctx context.Context, opts Options, req sqlplan.Request) (sqlplan.Answer, error) {
 	var answer sqlplan.Answer
 	bin, err := opts.binary()

@@ -19,6 +19,7 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
+arrow-select.workspace = true
 base64.workspace = true
 bytes.workspace = true
 mimalloc.workspace = true

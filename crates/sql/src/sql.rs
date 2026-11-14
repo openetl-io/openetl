@@ -12,7 +12,7 @@ use datafusion_sql::sqlparser::tokenizer::Span;
 
 use crate::catalog::written;
 use crate::functions::FUNCTIONS;
-use crate::plan::{Operator, Plan, Statement, View};
+use crate::plan::{Operator, Plan, Statement, Step, View};
 use crate::{Catalog, Class, Error, ErrorKind, Errors, Note, Position, bind, lower};
 
 /// A transform's SQL, parsed.
@@ -170,6 +170,20 @@ impl Sql {
                     if check.errors.is_empty() && check.views_planned() {
                         match check.lower(&query, *at) {
                             Ok((l, _)) => {
+                                if l.operator.changelog
+                                    && l.operator
+                                        .steps
+                                        .iter()
+                                        .any(|s| matches!(s, Step::Filter(_)))
+                                {
+                                    notes.push(Note {
+                                        at: *at,
+                                        message: format!(
+                                            "{} is a changelog: an update that passes the WHERE without a column an output column needs, as Postgres leaves out a large value that didn't change, is quarantined, since the row may have failed the WHERE before and the destination may not have the value",
+                                            l.operator.input
+                                        ),
+                                    });
+                                }
                                 if let Some((output, replaces)) = output {
                                     statements.push(Statement {
                                         at: *at,
@@ -1277,7 +1291,8 @@ impl<'a> Check<'a> {
         })
     }
 
-    /// Where the outermost SELECT drops or changes a changelog's key.
+    /// Where the outermost SELECT drops or changes a changelog's key, or
+    /// multiplies its rows.
     fn changelog_key(&self, lowered: &lower::Lowered) -> Error {
         let input = &lowered.operator.input;
         let key = self
@@ -1285,11 +1300,17 @@ impl<'a> Check<'a> {
             .get(input)
             .map(|s| s.key.join(", "))
             .unwrap_or_default();
+        let keyed = !key.is_empty();
         let mut at = self.at;
-        let mut how = "drops or changes";
+        let mut how = match keyed {
+            true => "drops or changes",
+            false => "multiplies the rows of",
+        };
         if let Some(top) = &self.top {
             at = top.at;
-            how = "drops";
+            if keyed {
+                how = "drops";
+            }
             let key = top.key.clone().unwrap_or_default();
             let names: Vec<String> = key.iter().map(|k| k.to_lowercase()).collect();
             let is_key = |i: &ast::Ident| names.contains(&fold(i).to_lowercase());
@@ -1331,12 +1352,14 @@ impl<'a> Check<'a> {
                 }
             }
         }
+        let rule = match keyed {
+            true => format!("keeps its key ({key}) unchanged, renamed or not"),
+            false => "gives one row for each of its rows".to_owned(),
+        };
         Error::at(
             ErrorKind::ChangelogKey,
             at,
-            format!(
-                "{input} is a changelog, so what reads it keeps its key ({key}) unchanged, renamed or not; this {how} it"
-            ),
+            format!("{input} is a changelog, so what reads it {rule}; this {how} it"),
         )
     }
 }

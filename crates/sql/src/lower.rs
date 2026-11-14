@@ -12,7 +12,8 @@ pub(crate) struct Lowered {
     pub(crate) schema: SchemaRef,
     /// The input's key where it passes through unchanged; empty otherwise.
     pub(crate) key: Vec<String>,
-    /// The input is a changelog with a key, and the statement loses it.
+    /// The input is a changelog, and the statement loses its key or
+    /// multiplies its rows.
     pub(crate) loses_changelog_key: bool,
 }
 
@@ -86,8 +87,10 @@ pub(crate) fn row_wise(
     } else {
         Vec::new()
     };
+    let unnests = steps.iter().any(|s| matches!(s, Step::Unnest(_)));
     Ok(Lowered {
-        loses_changelog_key: stream.changelog && !stream.key.is_empty() && key.is_empty(),
+        loses_changelog_key: stream.changelog
+            && (unnests || !stream.key.is_empty() && key.is_empty()),
         operator: RowWise {
             input,
             changelog: stream.changelog,

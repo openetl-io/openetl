@@ -36,6 +36,7 @@ import (
 	"github.com/openetl-io/openetl/internal/runner/worker"
 	"github.com/openetl-io/openetl/internal/secretstore"
 	"github.com/openetl-io/openetl/internal/spark"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/internal/staging"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
@@ -217,7 +218,13 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	env.Logger = log.With("component", "connector")
 	meter, size := worker.From(ctx).Meter, worker.From(ctx).Size
 	env.Meter, env.Size = meter, size
-	job, err := buildJob(ctx, spec, env)
+	planner := a.Engine
+	planner.Logger = log.With("component", "engine")
+	checkpoints := checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId())
+	plans := func(ctx context.Context, req sqlplan.Request) (sqlplan.Answer, error) {
+		return engineclient.Plan(ctx, planner, req)
+	}
+	job, err := buildJob(ctx, spec, env, withRestored(plans, checkpoints))
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
 	if err != nil {
@@ -227,7 +234,7 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	job.Sync = p.sync
 	job.Org = spec.GetOrgId()
 	job.Progress = runner.NewProgress(attribute.String("openetl.org", spec.GetOrgId()), attribute.String("openetl.pipeline", spec.GetPipelineId()))
-	job.Log = checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId())
+	job.Log = checkpoints
 	if a.Storage != "" {
 		if job.QuarantineURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.QuarantineDir); err != nil {
 			return out, errs.Wrap(errs.ConfigInvalid, err, "quarantine location")

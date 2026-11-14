@@ -7,9 +7,9 @@
 //! by default. Logs are JSON lines on stderr; `OPENETL_ENGINE_LOG` filters
 //! them. Traces go out over OTLP as the OTEL_* variables say.
 //!
-//! `plan` plans a transform's SQL for the control plane: a request as JSON
-//! on stdin, or in `--file`, and the answer as JSON on stdout (see
-//! [`sqlplan`]).
+//! `plan` plans a transform's SQL for the control plane, and for a runner
+//! before a job starts: a request as JSON on stdin, or in `--file`, and the
+//! answer as JSON on stdout (see [`sqlplan`]).
 
 mod dataflow;
 mod error;
@@ -25,6 +25,7 @@ mod stage;
 mod staging;
 mod store;
 mod telemetry;
+mod transform;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

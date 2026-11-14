@@ -2049,6 +2049,7 @@ dependencies = [
  "arrow-buffer",
  "arrow-ipc",
  "arrow-schema",
+ "arrow-select",
  "base64 0.22.1",
  "bytes",
  "mimalloc",

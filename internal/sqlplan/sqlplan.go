@@ -19,13 +19,19 @@ type Request struct {
 type Stream struct {
 	// Its whole name, as the source's catalog lists it.
 	Name    string   `json:"name"`
-	Columns []Column `json:"columns"`
+	Columns []Column `json:"columns,omitempty"`
 	// Its primary key's columns; empty if it has none.
 	Key []string `json:"key,omitempty"`
 	// Its rows are inserts, updates and deletes of their key, as CDC's are.
 	Changelog bool `json:"changelog,omitempty"`
 	// Its timestamps keep nanoseconds.
 	Nanoseconds bool `json:"nanoseconds,omitempty"`
+	// Arrow IPC streams holding only a schema, as a job's start has them:
+	// the one the source declares, in place of Columns, and the one a sync
+	// recorded for the stream, whose columns are the stream's too, with the
+	// declared types over them. Nil without one.
+	DeclaredSchema []byte `json:"declared_schema,omitempty"`
+	RestoredSchema []byte `json:"restored_schema,omitempty"`
 }
 
 // Column is a stream's column. Its type is Arrow's, named as the catalog

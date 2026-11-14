@@ -21,14 +21,12 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
-// buildJob binds and starts the connectors, and settles the settings. The
-// caller sets the attempt's owner, log and dataflow, and closes the
-// connectors, even after an error.
-func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env) (runner.Job, error) {
+// buildJob binds and starts the connectors, and settles the settings. A SQL
+// transform's statements are planned with planner. The caller sets the
+// attempt's owner, log and dataflow, and closes the connectors, even after
+// an error.
+func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env, planner planSQL) (runner.Job, error) {
 	p := spec.GetPipeline()
-	if p.GetTransform().GetSql() != nil {
-		return runner.Job{}, errs.New(errs.ConfigInvalid, "transform.sql: this runner can't run a SQL transform")
-	}
 	env.RateLimitScale = spec.GetRateLimitScale()
 	srcCfg, err := protojson.Marshal(spec.GetSource().GetConfig())
 	if err != nil {
@@ -169,7 +167,13 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		return job, errs.New(errs.ConfigInvalid, "every stream of the pipeline is paused; resume one, or pause the pipeline instead")
 	}
 	var outputs []runner.Stream
-	if transformed {
+	var sqlT *runner.SQLTransform
+	switch {
+	case p.GetTransform().GetSql() != nil:
+		if sqlT, outputs, err = sqlOutputs(ctx, p, caps, deletes, planner, streams, inputs); err != nil {
+			return job, err
+		}
+	case transformed:
 		changelog := slices.ContainsFunc(inputs, func(in plan.Input) bool { return in.Read == apiv1.SyncMode_SYNC_MODE_CDC })
 		for _, o := range plan.Outputs(p, caps, inputs) {
 			if err := plan.OutputProblem(o, inputs); err != nil {
@@ -200,6 +204,7 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 		Streams:            streams,
 		Paused:             pausedStreams,
 		Outputs:            outputs,
+		SQL:                sqlT,
 		Destination:        dst,
 		Namespace:          p.GetDestination().GetNamespace(),
 		Settings:           plan.Settings(p, dst.Capabilities()),

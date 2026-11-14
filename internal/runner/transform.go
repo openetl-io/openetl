@@ -70,6 +70,8 @@ type ExpectedOutput struct {
 	Schema *arrow.Schema
 	// Nil: it has none, and can only be appended.
 	PrimaryKey []string
+	// The stream the statement reads.
+	Input string
 }
 
 // Metadata columns the second dataflow computes again, so it drops an

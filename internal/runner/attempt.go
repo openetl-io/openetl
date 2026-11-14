@@ -58,8 +58,10 @@ type Stream struct {
 	// The destination may change a column's type itself when the stream's
 	// widens.
 	AllowTypeChanges bool
-	// One of a transform's outputs, whose Replay is exact when every input's
-	// is. Its Read is CDC when it's a changelog: merged, from a changelog.
+	// One of a transform's outputs that the user's code or a statement
+	// writes, whose Replay is exact when every input's is. Its Read is CDC
+	// when it's a changelog: merged, from a changelog. A stream a SQL
+	// transform passes through isn't.
 	Transformed bool
 	// Nil: the stream holds nothing back.
 	Holds *StreamHolds
@@ -67,6 +69,9 @@ type Stream struct {
 	SplitsByKey bool
 	// Its name in the destination, exactly; empty: from Name, by the naming.
 	Table string
+	// One of a SQL transform's outputs: the stream its statement reads, or
+	// the stream itself where it passes through.
+	From string
 }
 
 func (s Stream) delivery() delivery.Stream {
@@ -282,9 +287,10 @@ func (j *Job) settleLanes(ctx context.Context, splits map[string][]checkpoint.Sp
 }
 
 // laneLimit is the most lanes the attempt could use: its open splits, or 0
-// if its source splits running splits. Transforms run one lane.
+// if its source splits running splits. Spark and Flink transforms run one
+// lane.
 func (j *Job) laneLimit(ctx context.Context, splits map[string][]checkpoint.SplitState, done map[string]bool) int {
-	if j.transformed() {
+	if j.ownCode() {
 		return 1
 	}
 	open, inParts := 0, false
@@ -312,7 +318,11 @@ func (j *Job) writerLanes() int {
 func (j *Job) keyGroups() int { return cmp.Or(j.KeyGroups, checkpoint.KeyGroups) }
 
 // transformed: the user's code runs between the source and the destination.
-func (j *Job) transformed() bool { return j.Transform != nil || j.Flink != nil || j.SQL != nil }
+func (j *Job) transformed() bool { return j.ownCode() || j.SQL != nil }
+
+// ownCode: the user's Spark or Flink code runs between the source and the
+// destination.
+func (j *Job) ownCode() bool { return j.Transform != nil || j.Flink != nil }
 
 // sinkStreams are the destination's streams.
 func (j *Job) sinkStreams() []Stream {
@@ -919,10 +929,10 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		}
 		var splits []source.Split
 		var err error
-		// A transform's read isn't split, unless its last read was, which
-		// only the source knows how to go on from.
+		// A Spark or Flink transform's read isn't split, unless its last
+		// read was, which only the source knows how to go on from.
 		split := len(ended) > 1 || len(ended) == 1 && ended[0].ID != checkpoint.WholeStream
-		if splitter != nil && (!j.transformed() || split) {
+		if splitter != nil && (!j.ownCode() || split) {
 			splits, err = splitter.Splits(ctx, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField}, ended)
 		} else {
 			splits, err = source.Whole(ended)
@@ -1060,8 +1070,8 @@ func (j *Job) validate() error {
 		return errs.New(errs.ConfigInvalid, "runner: a pipeline has one transform, and this one has SQL and Spark or Flink")
 	case !j.transformed() && len(j.Outputs) > 0:
 		return errors.New("runner: outputs without a transform")
-	case j.lanes() > 1 && j.transformed():
-		return errs.New(errs.ConfigInvalid, "runner: a transform runs on one lane")
+	case j.lanes() > 1 && j.ownCode():
+		return errs.New(errs.ConfigInvalid, "runner: a Spark or Flink transform runs on one lane")
 	case j.KeyGroups < 0 || j.KeyGroups&(j.KeyGroups-1) != 0:
 		return errs.New(errs.ConfigInvalid, "runner: %d key groups, not a power of two", j.KeyGroups)
 	}
@@ -1088,7 +1098,7 @@ func (j *Job) validate() error {
 	}
 	clear(seen)
 	for _, o := range j.Outputs {
-		if seen[o.Name] || !o.Transformed {
+		if seen[o.Name] || !o.Transformed && o.From == "" {
 			return errs.New(errs.ConfigInvalid, "runner: output %q configured twice, or not as an output", o.Name)
 		}
 		seen[o.Name] = true
@@ -1096,8 +1106,11 @@ func (j *Job) validate() error {
 	streams := make([]delivery.Stream, 0, len(j.sinkStreams()))
 	for _, s := range j.sinkStreams() {
 		ds := s.delivery()
-		if j.Flink != nil {
+		switch {
+		case j.Flink != nil:
 			ds.Engine = "flink"
+		case j.SQL != nil:
+			ds.Engine = "sql"
 		}
 		streams = append(streams, ds)
 	}
@@ -1281,8 +1294,9 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		plan.HeldURL, plan.Holds = c.job.HeldURL, c.holdPlans
 	}
 	plan.Lanes, plan.WriterLanes, plan.KeyGroups = c.job.lanes(), c.job.writerLanes(), c.job.keyGroups()
-	for _, s := range c.job.Streams {
-		// A key's rows meet on one writer lane.
+	for _, s := range c.job.sinkStreams() {
+		// A key's rows meet on one writer lane. An output of a SQL
+		// transform has its stream's splits and read.
 		if len(s.PrimaryKey) > 0 && (!s.SplitsByKey || s.Read == source.CDC) && plan.WriterLanes > 1 {
 			if plan.KeyGrouped == nil {
 				plan.KeyGrouped = map[string]bool{}

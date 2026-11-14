@@ -141,7 +141,7 @@ openetl: the plan has problems, so apply would refuse it
 
 ### A SQL transform in the plan
 
-The control plane does not plan SQL itself. For a pipeline with `transform.sql`, it sends the statements and the schemas of the streams they name to a runner of the pipeline's data plane. The runner's `openetl-engine` plans them and returns the result. The schemas come from the source's catalog. If the catalog declares no columns for a stream, they come from the schemas that the pipeline's earlier syncs recorded.
+The control plane does not plan SQL itself. For a pipeline with `transform.sql`, it sends the statements and the schemas of the streams they name to a runner of the pipeline's data plane. The runner's `openetl-engine` plans them and returns the result. The schemas come from the source's catalog. If the catalog declares no columns for a stream, they come from the schemas that the pipeline's earlier syncs recorded. Each sync plans the statements again when it starts, in the same way, against the columns the source declares and those the pipeline's last checkpoint recorded.
 
 This pipeline reads a source named `shop` whose catalog declares the columns of `customers` and `orders`:
 
@@ -186,7 +186,7 @@ workspaces/default/pipelines/shop-to-parquet (version known after apply)
 
 The `transform.sql` section has:
 
-- **A line per statement:** where its `INSERT` is in the SQL, as line and column; the output it writes; its class; its output's primary key; whether its rows are exchanged between lanes; and the streams and views it reads. Only `row_wise` statements plan; a statement of another class is a problem. Runners do not run SQL transforms: a sync of the pipeline fails with `CONFIG_INVALID`, even when its plan has no problems. An output without a primary key cannot be written with `merge`.
+- **A line per statement:** where its `INSERT` is in the SQL, as line and column; the output it writes; its class; its output's primary key; whether its rows are exchanged between lanes; and the streams and views it reads. Only `row_wise` statements plan; a statement of another class is a problem. An output without a primary key cannot be written with `merge`.
 - **The columns of each output,** with their types.
 - **The streams that pass through:** the source's streams that no statement writes. They reach the destination as they would without a transform.
 - **The streams that are not delivered,** when `transform.passthrough` is `none`.
@@ -340,7 +340,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | Field | What it does |
 |---|---|
 | `postSync` | Steps that run, in order, after each sync's data is committed: `dbt` (a `DbtProject`, with `command` `build`, `run` or `test`, `select`, `exclude` and `schema`) or `spark` (your own Spark application). A step that fails fails the sync. Scheduled pipelines only; see [`examples/faker-to-postgres-dbt.yaml`](../../examples/faker-to-postgres-dbt.yaml) |
-| `transform` | What changes the data between the source and the destination: your own code, `spark` in a scheduled pipeline or `flink` in a continuous one; or `sql` statements, which runners do not run ([reference](../reference/specs/pipeline.md#transforms)) |
+| `transform` | What changes the data between the source and the destination: your own code, `spark` in a scheduled pipeline or `flink` in a continuous one; or `sql` statements, which the engine runs in each lane ([reference](../reference/specs/pipeline.md#transforms)) |
 | `sparkAccess`, `flinkAccess` | How the pipeline's Spark or Flink code reaches its part of the data plane's storage; unset, the cluster's own identity |
 
 [Integrate](../integrate/index.md) covers dbt, Spark and Flink.
