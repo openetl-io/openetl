@@ -364,10 +364,12 @@ On a changelog stream, such as one read with `cdc`:
 
 - A statement must keep the stream's primary key, and cannot use `UNNEST`.
 - A delete passes as a delete of its key.
-- An insert or update that fails the `WHERE` becomes a delete of its key. A merge applies the delete whether the table has the row or not, so a row that leaves the filter leaves the table.
-- If an update does not send a column, an output column that depends only on columns it did not send keeps the value it has, and the statement does not evaluate it. If a `WHERE`, or an output column, depends on such a column and on a column the update sent, the statement cannot evaluate the row.
+- An insert or update that fails the `WHERE` becomes a delete of its key, which a merge applies whether the table has the row or not. With `destination.deletes: soft`, the default, a row that leaves the filter stays in the table with `_openetl_deleted` true; with `hard`, it leaves the table.
+- If an update does not send a column, as Postgres does not send a large value that did not change, an output column that depends only on columns it did not send keeps the value it has, and the statement does not evaluate it.
+- The statement cannot evaluate such an update if an output column depends on a column it did not send and on one it sent, or if the `WHERE` reads any column it did not send.
+- If the statement has a `WHERE`, it also cannot evaluate such an update that passes the `WHERE` while an output column depends on a column it did not send: the row may have failed the `WHERE` before, and then the table does not have that column's value. Without a `WHERE`, or where the update fails it, the update is written as above.
 
-The engine quarantines a row that a statement cannot evaluate, such as a value that a cast cannot convert, as one of the output's records, as it quarantines a row whose value does not fit its type. It writes the rest of the batch.
+The engine quarantines a row that a statement cannot evaluate, such as a value that a cast cannot convert, as one of the output's records, under `_quarantine/_outputs/` next to the pipeline's checkpoints, as it quarantines a row whose value does not fit its type. It writes the rest of the batch.
 
 Each output row keeps the `_openetl_id` of the row it comes from. Each row that `UNNEST` gives gets an `_openetl_id` of its own.
 

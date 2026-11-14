@@ -367,6 +367,13 @@ impl Bound {
                 dead[r] = true;
                 failed.push((r, why));
             }
+            if let Some(why) = self.entering(unsent) {
+                for &r in &ran.rows {
+                    dead[r] = true;
+                    failed.push((r, why.clone()));
+                }
+                continue;
+            }
             for (i, &r) in ran.rows.iter().enumerate() {
                 passed[r] = Some((parts.len(), i));
             }
@@ -500,6 +507,29 @@ impl Bound {
             reads: unsent,
             unchanged: out,
         }))
+    }
+
+    /// Why an update that didn't send `unsent`, columns the statement reads
+    /// by index, can't be written where it passes the statement's filter:
+    /// it may have failed it before, and then the destination doesn't have
+    /// the values of the output columns that depend on them. None without a
+    /// filter, or where no output column depends on them.
+    fn entering(&self, unsent: &BTreeSet<usize>) -> Option<String> {
+        if !self.op.steps.iter().any(|s| matches!(s, Step::Filter(_))) {
+            return None;
+        }
+        let (c, deps) = self
+            .deps
+            .columns
+            .iter()
+            .enumerate()
+            .find(|(_, d)| !d.is_disjoint(unsent))?;
+        let i = deps.intersection(unsent).next()?;
+        Some(self.reason(&format!(
+            "the update didn't send column {}, which output column {} needs, and passes the statement's filter, which it may have failed before, so the destination may not have the column's value",
+            self.op.reads.field(*i).name(),
+            self.names[c]
+        )))
     }
 
     /// Each output column for deletes of `rows`' keys: the key's columns'
@@ -1139,6 +1169,53 @@ mod tests {
         assert!(lists[1].is_none());
         assert_eq!(strs(lists[2].as_ref().unwrap()), some(&["n"]));
         assert!(lists[3].is_none());
+    }
+
+    /// An update that didn't send a column an output column needs can't be
+    /// written where it passes a filter: it may have failed it before, and
+    /// left the destination without the column's value. Where it fails the
+    /// filter, it's a delete of its key, as any row that fails it is.
+    #[test]
+    fn an_update_that_didnt_send_what_an_output_needs_cant_enter_a_filter() {
+        let mut st = stage(
+            "INSERT INTO a SELECT id, name FROM a WHERE email = 'active'",
+            true,
+        );
+        let t = typed(
+            batch(&[
+                (1, Some("active"), None),
+                (2, Some("inactive"), None),
+                (3, Some("active"), Some("n3")),
+                (4, Some("active"), Some("n4")),
+            ]),
+            control(
+                &["update", "update", "update", "update"],
+                &[Some(&["name"]), Some(&["name"]), None, Some(&["at"])],
+            ),
+        );
+        let out = st.apply(&t, &[10, 11, 12, 13], None).unwrap();
+        assert_eq!(out.failed.len(), 1, "{:?}", out.failed);
+        assert_eq!(out.failed[0].0, 10);
+        assert!(
+            out.failed[0].1.contains("passes the statement's filter"),
+            "{}",
+            out.failed[0].1
+        );
+        let b = &out.typed.batch;
+        assert_eq!(ints(b, "id"), [Some(2), Some(3), Some(4)]);
+        assert_eq!(
+            strs(b.column(1)),
+            [None, Some("n3".into()), Some("n4".into())]
+        );
+        assert_eq!(
+            strs(out.typed.control.op.as_ref().unwrap()),
+            some(&["delete", "update", "update"])
+        );
+        assert_eq!(out.typed.rows, Some(vec![11, 12, 13]));
+
+        let mut st = stage("INSERT INTO a SELECT id, name FROM a", true);
+        let out = st.apply(&t, &[10, 11, 12, 13], None).unwrap();
+        assert!(out.failed.is_empty(), "{:?}", out.failed);
     }
 
     #[test]
