@@ -169,7 +169,7 @@ type flinkTransformYAML struct {
 		SHA256 string `yaml:"sha256"`
 		Class  string `yaml:"class"`
 	} `yaml:"code"`
-	Parallelism int32             `yaml:"parallelism"`
+	Parallelism int32             `yaml:"parallelism" min:"0"`
 	Conf        map[string]string `yaml:"conf"`
 	Outputs     []outputYAML      `yaml:"outputs"`
 }
@@ -186,8 +186,6 @@ func parseFlinkTransform(y *flinkTransformYAML) (*apiv1.FlinkTransform, error) {
 		return nil, fmt.Errorf("%s.code: %q isn't an s3:// or https:// URI, which the runner can read and check", field, c.Jar)
 	case !sha256Pattern.MatchString(c.SHA256):
 		return nil, fmt.Errorf("%s.code.sha256: the file's SHA-256, as 64 lowercase hex digits", field)
-	case y.Parallelism < 0:
-		return nil, fmt.Errorf("%s.parallelism must be positive", field)
 	}
 	for k := range y.Conf {
 		if err := flinkOption(field+".conf."+k, k); err != nil {

@@ -55,7 +55,7 @@ Orchestrators export the same placement view, refreshed every 10 seconds. Use `m
 | `openetl.placement.cpu.pending`, `openetl.placement.memory.pending` | vCPUs or bytes | Resources requested by attempts waiting for room. |
 | `openetl.placement.pending.age` | seconds | Age of the oldest attempt waiting for room. |
 
-Capacity is labeled by `data_plane` and `pool`. Demand also has `size` and `runs_on` (`runner` or `pod`). A job waiting for a pod should not drive a shared-runner scaling decision. The [KEDA guide](./kubernetes.md#runners-with-keda) has queries that account for those labels and duplicate orchestrator views.
+Capacity is labeled by `data_plane` and `pool`. Demand also has `size` and `runs_on` (`runner` or `pod`). A job waiting for a pod should not drive a shared-runner scaling decision. A job on [several pods](./kubernetes.md#jobs-on-several-pods) counts under `runs_on="pod"` and its workers' `size`, with its workers' and its coordinator's sizes added together. The [KEDA guide](./kubernetes.md#runners-with-keda) has queries that account for those labels and duplicate orchestrator views.
 
 ## Choose alerts
 

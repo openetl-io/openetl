@@ -256,8 +256,8 @@ type resourcesYAML struct {
 }
 
 type stateYAML struct {
-	Version uint32 `yaml:"version" json:"version"`
-	Reads   uint32 `yaml:"reads" json:"reads"`
+	Version uint32 `yaml:"version" json:"version" min:"1"`
+	Reads   uint32 `yaml:"reads" json:"reads" min:"1"`
 }
 
 type roleYAML struct {

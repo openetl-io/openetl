@@ -139,21 +139,9 @@ A sync reads and commits data in epochs. A commit is requested when any of these
 - The data read since the last commit reaches `delivery.commit.maxBytes`. The default is `256MB`.
 - The read ends.
 
-Uncommitted data is not visible in the destination. With `delivery.commit.scope: pipeline`, a commit makes all streams' rows visible together. This is the default when supported by the destination. With `stream`, each stream commits separately.
+Uncommitted data is not visible in the destination. With `delivery.commit.scope: pipeline`, a commit makes all streams' rows visible together. This is the default when supported by the destination. With `stream`, each stream commits separately. A job on several workers with a destination that has lane commits is different: each writer lane commits its part of an epoch on its own, so one lane's part can be visible before another's. [Run a job on several pods](./workers.md#when-a-pod-fails) describes how such a job recovers.
 
 A failed sync retains its committed data. The retry or next sync resumes from the last commit. Readers can therefore see part of a failed sync. For overwrite writes, the table is replaced only when the read ends. Until then, readers see the previous table.
-
-### Commits on several workers
-
-A job can run on several workers (`resources.workers`). Each worker writes its part of each epoch through writer lanes of its own. Some transactional destinations commit each writer lane in a transaction of its own. Their connector declares **lane commits**. With such a destination, readers can see one lane's part of an epoch before another lane's part.
-
-A worker or the coordinator can stop after a checkpoint and before every lane commits. The next attempt then finishes that epoch before it reads anything new. For each lane that did not commit, it does one of these:
-
-- It commits the copy that the lane kept, if the destination keeps one.
-- It reads that lane's part of the epoch again from the source, from the same positions, and commits it.
-
-> [!IMPORTANT]
-> Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records, with the same resume points, from a saved position. You make sure of this through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. If the source returns other records, OpenETL commits those records. If the source never returns to the saved position, the attempt fails with `POSITION_LOST`.
 
 A continuous pipeline commits every 10 seconds, unless the destination or `delivery.commit.interval` says otherwise. [The reference](../reference/specs/pipeline.md) has every `delivery` field.
 

@@ -129,18 +129,105 @@ A pod's spec comes from the PodTemplate `openetl-attempt-default`, to which the 
 
 ### Jobs on several pods
 
-A pipeline with `spec.resources.workers` above 1 can run each job on that many workers and a coordinator. The pool's launcher makes all the job's pods, or none of them:
-
-- one pod for each worker, of the job's size plus the reserve;
-- one pod for the coordinator, of size `xs` plus the reserve.
+A pipeline with `spec.resources.workers` above 1 runs each job on that many workers and a coordinator, each in a pod of its own. [Run a job on several pods](../pipelines/workers.md) covers this for the pipeline's author. The orchestrators send such a job only to a pod launcher of the pipeline's pool, whatever the job's size: `OPENETL_POD_MIN_SIZE` does not apply. The launcher makes all the job's pods, or none of them.
 
 A job runs on one pod instead in these cases:
 
 - The pipeline's plan says that the job runs on one pod, such as for a transform or for a stream that holds columns. [Pipeline](../reference/specs/pipeline.md#workers) lists these cases.
 - The job's coordinator finds one of these cases before the job starts, where the control plane could not check it. The job is then placed again on one pod.
-- No launcher of the pool reports, while other runners of the pool do.
+- No launcher of the pool reports, while other runners of the data plane do. The job then needs a runner of its own pool, like any job on one pod, and waits until one can take it. A runner of another pool does not run it.
 
-The workers connect to the coordinator's pod IP on TCP port 7720, over TLS with a certificate that the coordinator makes for each job. If your namespace has NetworkPolicies, allow traffic between the pods that have the label `app.kubernetes.io/component: attempt` on that port. The launcher deletes a job's workers' pods with the coordinator's pod.
+To check which case applies, run `openetl plan -f PIPELINE.yaml`. A warning that no pod launcher of the pool has reported means that the job runs on one pod. A note that no runner of the pool has reported means that the job also has nowhere to run until one does.
+
+#### What the launcher makes
+
+For each attempt, the launcher makes a pod for each worker, then the coordinator's pod, without waiting between them. Each worker's pod asks the API every second, for up to 10 minutes, where its coordinator is.
+
+| Pod | Name | Requests and limits | What the launcher adds |
+|---|---|---|---|
+| The coordinator | `openetl-attempt-HASH-PLACEMENT` | `xs` plus the reserve | `OPENETL_POD_IP`, from the pod's IP; `OPENETL_ATTEMPT_LISTEN` set to `:7720`; `OPENETL_ATTEMPT_ADVERTISE` set to `$(OPENETL_POD_IP)`; the container port `attempt`, 7720/TCP |
+| Worker `N`, from 1 | `openetl-attempt-HASH-PLACEMENT-wN` | The job's size plus the reserve | `OPENETL_WORKER` set to `N`; the annotation `openetl.io/worker: "N"` |
+
+`HASH` comes from the attempt's ID, and `PLACEMENT` counts the attempt's placements. Every pod also has what any job's pod has:
+
+- the labels `app.kubernetes.io/managed-by: openetl`, `app.kubernetes.io/component: attempt`, `openetl.io/data-plane`, `openetl.io/pool`, `openetl.io/job` (`batch` or `stream`) and `openetl.io/pipeline`, the pipeline's ID;
+- the annotations `openetl.io/attempt` and `openetl.io/placement`;
+- requests equal to its limits, and `OPENETL_POD_SCRATCH` of ephemeral storage, 10 GiB unless you set it.
+
+No label tells a coordinator's pod from a worker's pod. The reserve is the launcher's `OPENETL_RESERVE`, 0.5 vCPU and 512 MiB unless you set it. If you set `OPENETL_POD_MAX_SIZE`, it must allow both the job's size and `xs`.
+
+If the cluster refuses one of the pods, the launcher deletes the pods that it made for the attempt. If the cluster refuses for lack of room, such as a full ResourceQuota, the launcher tries again for about two minutes. Then the orchestrators place the attempt again. If the pod is invalid or the launcher may not make it, the attempt fails with the cluster's error. When the attempt ends, the launcher deletes all its pods.
+
+The launcher's Role in `launcher-default.yaml` needs nothing more for workers: `create`, `list` and `delete` on pods, and `get` on PodTemplates. Job pods do not call the Kubernetes API.
+
+Each pod needs what any job's pod needs: the API, the bucket, the connector registry, and your source and destination. This includes the coordinator. Before the workers start, the coordinator starts the source and destination connectors with their credentials. It sets them up and discovers the source's streams, then stops them. Each worker then runs its own connectors and its own engine.
+
+#### The route between pods
+
+Each worker connects to its coordinator's pod IP on TCP port 7720. No Service is involved. The connection uses TLS 1.3 with a certificate that the coordinator makes for the attempt, and the workers trust only that certificate. Each call carries a token that the coordinator makes for the attempt.
+
+The workers get the address, the certificate and the token from the API. The coordinator gives them to the API after it claims the pipeline. While the attempt runs, the API gives them to a caller with the data plane's runner token that asks for that attempt's workers. The control plane's database keeps them in the attempt's queue entry, which it deletes a day after the attempt ends.
+
+Each end sends a heartbeat every 2 seconds. If either end hears nothing from the other for 10 seconds, the attempt fails, and OpenETL retries it from the last checkpoint. Every worker must join within 5 minutes after the coordinator starts the attempt.
+
+#### Allow the route in a NetworkPolicy
+
+If NetworkPolicies in your namespace deny traffic by default, allow the route between job pods. This policy allows job pods to connect to each other on TCP port 7720, and nothing else:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openetl-attempt-workers
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: openetl
+      app.kubernetes.io/component: attempt
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: openetl
+              app.kubernetes.io/component: attempt
+      ports:
+        - protocol: TCP
+          port: 7720
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: openetl
+              app.kubernetes.io/component: attempt
+      ports:
+        - protocol: TCP
+          port: 7720
+```
+
+Only coordinators listen on port 7720, but no label tells them apart, so the policy opens the port on every job pod. Each attempt's certificate and token keep other pods out of it. To allow the route only within one pool, add `openetl.io/pool: POOL` to the three selectors, and make one such policy for each pool.
+
+> [!WARNING]
+> A NetworkPolicy that selects a pod blocks all the pod's traffic that no policy allows. Apply this policy only with the policies that already let job pods reach DNS, the API, the bucket, the connector registry and your data systems, and let Prometheus scrape them. Without those policies, every job pod loses that traffic, and its jobs fail.
+
+1. Save the policy as `network-policy.yaml` in your kustomization's directory.
+2. Add the file to `resources` in your `kustomization.yaml`:
+
+   ```yaml
+   resources:
+     - https://github.com/openetl-io/openetl//deploy/kubernetes?ref=v{{version}}
+     - network-policy.yaml
+   ```
+
+3. Apply the change with `kubectl apply -k .`.
+4. Check that the policy is there with `kubectl -n openetl get networkpolicy openetl-attempt-workers`.
+5. Sync a pipeline whose plan shows `workers:`. The sync's log says where the workers join, and the sync succeeds.
+
+To undo the change, remove `network-policy.yaml` from `resources`, and delete the policy:
+
+```sh
+kubectl -n openetl delete networkpolicy openetl-attempt-workers
+```
 
 #### Room for every pod
 
@@ -168,9 +255,28 @@ To let larger jobs run, raise the limits:
 
 To undo the change, remove the two keys from the patch, and run the commands of step 2 again.
 
+A ResourceQuota in the namespace needs room for every pod of the job at once, with the reserve and the scratch. For example, four workers of size `m` and their coordinator request 5 pods, 11 vCPUs, 19.5 GiB of memory and 50 GiB of ephemeral storage. The launcher's limits count only the sizes: 8.5 vCPUs for the same job.
+
+#### Logs of workers
+
+The sync's log, which `openetl logs` and the console show, has only the coordinator's lines. Each worker writes its log where its runner's logs go, which is the pod's log unless you set `OPENETL_LOG_OUTPUT`. List the job pods, and read a worker's log by its pod's name:
+
+```sh
+kubectl -n openetl get pods -l app.kubernetes.io/component=attempt
+kubectl -n openetl logs POD
+```
+
+The launcher deletes the pods when the attempt ends, and their logs with them. To keep workers' logs, collect pod logs with your cluster's log collector. A worker's lines about its part of the attempt carry the `pipeline` and `sync` IDs.
+
+#### The process launcher
+
+`OPENETL_LAUNCHER=process`, for development and tests, starts a process for each worker and one for the coordinator, on the launcher's own machine. Each coordinator listens on 127.0.0.1 at a free port, which only that machine reaches. Leave `OPENETL_ATTEMPT_LISTEN` unset on such a launcher: its processes take its settings, so every coordinator would listen at the same address. The processes also take the launcher's log settings, so by default their logs go to the launcher's standard error.
+
 ### Spot nodes
 
 Sync pods tolerate GKE and AKS spot taints and can run on spot nodes. On an interruption notice, they stop at a checkpoint and are placed again.
+
+A worker's pod of a [job on several pods](#jobs-on-several-pods) gets the same tolerations and preferences, but does not stop at a checkpoint. An interruption fails its attempt, and OpenETL retries it from the last checkpoint.
 
 Stream pods also tolerate spot taints but prefer non-spot nodes. They carry `karpenter.sh/do-not-disrupt` to prevent consolidation. An interrupted stream checkpoints within the notice period when possible. Otherwise, it resumes from its last checkpoint. Recovery preserves the stream's delivery guarantee.
 

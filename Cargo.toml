@@ -22,6 +22,8 @@ arrow-schema = "59.3.2"
 arrow-select = "59.3.2"
 base64 = "0.22.1"
 bytes = "1.12.1"
+chrono = { version = "0.4.45", default-features = false }
+chrono-tz = "0.10.4"
 # Only crates/sql uses DataFusion: its planner, optimizer, expressions and functions, not its execution.
 datafusion-common = { version = "55.2.0", default-features = false }
 datafusion-expr = { version = "55.2.0", default-features = false }

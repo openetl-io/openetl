@@ -52,6 +52,7 @@ spec:
 In `spec`:
 
 - A field the spec doesn't have is refused, and so is a value of the wrong type.
+- An integer field takes a whole number in its range, such as `4`, `4.0` or `0x10`. A number with a fraction, such as `1.9`, is refused, and so is one outside the range. The error names the field, the value and the range: `resources.workers: "1.9" isn't a whole number from 1 to 64`.
 - Enum values are lowercase, as in `merge`.
 - A duration is a Go duration, such as `90s`, `15m` or `1h30m`.
 - A byte count is an integer number of bytes or a number with a unit, such as `256MB` or `64MiB`. `KB`, `MB`, `GB` and `TB` use powers of 1,000. `KiB`, `MiB`, `GiB` and `TiB` use powers of 1,024.
@@ -90,12 +91,12 @@ When a job size is an object rather than a preset, both `cpu` and `memory` are r
 
 With `resources.workers` above 1, `openetl plan` shows `workers:` and the count after the job size. A job runs on one pod, and the plan's warnings say why, when:
 
-- the pipeline has a `transform`;
+- the pipeline has a `transform`: SQL, Spark or Flink;
 - a stream holds columns or cells, as a keyed stream does in a destination that takes holds;
-- the destination declares fewer writer lanes than workers, is transactional without lane commits, loads staged epochs, or is the built-in `parquet`;
-- no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners have.
+- the destination declares fewer writer lanes than workers (`maxWriterLanes`, one if unset), is a transactional stream without lane commits (`laneCommits`), loads staged epochs, or is the built-in `parquet`;
+- no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners of its data plane have.
 
-A transactional destination with lane commits commits each writer lane on its own. On workers, it recovers an epoch lane by lane, as [Commits on several workers](../../pipelines/delivery.md#commits-on-several-workers) describes. On one pod, it gets one writer lane.
+A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
 
 Each job's workers read the source's splits between them. Each of these streams is read on one worker, and the plan warns about each one:
 
@@ -103,7 +104,7 @@ Each job's workers read the source's splits between them. Each of these streams 
 - a keyed stream read with `cdc`;
 - a stream written with `overwrite`.
 
-When the control plane cannot check the destination's capabilities or the source's catalog, the plan says so in a note. Then the job's coordinator checks before each attempt, and runs the attempt on one pod if it must. The sync's attempts show how many workers each one ran on, and why one ran on one pod.
+When the control plane cannot check the destination's capabilities or the source's catalog, the plan says so in a note. Then the job's coordinator checks before each attempt, and runs the attempt on one pod if it must. The sync's attempts show how many workers each one ran on, and why one ran on one pod. [Run a job on several pods](../../pipelines/workers.md) explains the plan's messages and what happens when a pod fails.
 
 `resources.min` can't be larger than `resources.size` or `resources.max`, nor `resources.size` larger than `resources.max`. A job size is a preset or amounts:
 
