@@ -1,8 +1,19 @@
 package dbosbackend
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLostCreateRace(t *testing.T) {
@@ -43,6 +54,41 @@ func TestOpeningLock(t *testing.T) {
 	if _, _, err := openingLock("postgres://%zz"); err == nil {
 		t.Error("an unreadable URL gave a lock")
 	}
+	// A query value with a slash in it names no database.
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, selfSignedCA(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	system, err := SystemDatabaseURL("postgres://u:p@db.example:6543/openetl?sslmode=verify-full&application_name=openetl/it&sslrootcert=" + url.QueryEscape(ca))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, name, err = openingLock(system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database != "postgres" || cfg.Host != "db.example" || cfg.RuntimeParams["application_name"] != "openetl/it" || cfg.TLSConfig == nil || cfg.TLSConfig.RootCAs == nil ||
+		name != "openetl: opening DBOS system database openetl_dbos" {
+		t.Errorf("with a query: database %q on %s, params %v, TLS %v, lock %q", cfg.Database, cfg.Host, cfg.RuntimeParams, cfg.TLSConfig != nil, name)
+	}
+}
+
+func selfSignedCA(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 // A server that can't be reached gives an error, which Open passes over to

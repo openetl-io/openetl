@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -35,15 +36,25 @@ func open(t *testing.T) (*dbosbackend.Backend, dbosbackend.Options) {
 		t.Fatal(err)
 	}
 	name := "openetl_it_" + strings.ToLower(rand.Text())[:10]
-	system = strings.Replace(system, "openetl_dbos", name, 1)
 	t.Cleanup(func() { dropSystem(t, name) })
-	o := dbosbackend.Options{DatabaseURL: system, ExecutorID: "it"}
+	o := dbosbackend.Options{DatabaseURL: withDatabase(t, system, name), ExecutorID: "it"}
 	b, err := dbosbackend.Open(t.Context(), o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(b.Close)
 	return b, o
+}
+
+// withDatabase is the postgres:// URL u naming database name, its query kept.
+func withDatabase(t *testing.T, u, name string) string {
+	t.Helper()
+	p, err := url.Parse(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Path, p.RawPath = "/"+name, ""
+	return p.String()
 }
 
 // Servers and orchestrators starting together on a new install all create the
@@ -53,12 +64,12 @@ func TestOpeningTogether(t *testing.T) {
 	_, o := open(t)
 	for round := range 3 {
 		name := "openetl_it_" + strings.ToLower(rand.Text())[:10]
-		url := strings.Replace(o.DatabaseURL, o.DatabaseURL[strings.LastIndex(o.DatabaseURL, "/")+1:], name, 1)
+		system := withDatabase(t, o.DatabaseURL, name)
 		t.Cleanup(func() { dropSystem(t, name) })
 		var wg sync.WaitGroup
 		for range 8 {
 			wg.Go(func() {
-				b, err := dbosbackend.Open(t.Context(), dbosbackend.Options{DatabaseURL: url, ExecutorID: "it"})
+				b, err := dbosbackend.Open(t.Context(), dbosbackend.Options{DatabaseURL: system, ExecutorID: "it"})
 				if err != nil {
 					t.Errorf("round %d: %v", round, err)
 					return
