@@ -64,10 +64,20 @@ func RunWorker(ctx context.Context, job Job, t attempt.Target, opts attempt.Opti
 	if errors.Is(err, errFinished) {
 		err = nil
 	}
-	if err != nil {
+	if err = stopped(ctx, err); err != nil {
 		w.Fail(err)
 	}
 	_ = w.Close()
+	return err
+}
+
+// stopped is how a worker reports err, its part's failure or an answer's:
+// once its context is done, its pod is stopping, which fails the attempt as
+// transient without a checkpoint, whatever it failed with as it stopped.
+func stopped(ctx context.Context, err error) error {
+	if err != nil && ctx.Err() != nil {
+		return errs.Wrap(errs.Transient, err, "runner: the worker was stopped")
+	}
 	return err
 }
 
@@ -176,7 +186,7 @@ func (p *workerPart) call(ctx context.Context, c *attemptv1.Call) error {
 		err = errs.New(errs.Internal, "runner: a call of %T", c.GetCall())
 	}
 	if err != nil {
-		ans.Answer, ans.Error = nil, answerOf(err)
+		ans.Answer, ans.Error = nil, answerOf(stopped(ctx, err))
 	}
 	return p.w.Answer(ans)
 }
@@ -330,7 +340,7 @@ func (p *workerPart) commit(ctx context.Context, req *attemptv1.Commit) error {
 	}
 	if err != nil {
 		p.log.Warn("committing failed", "epoch", c.GetEpoch().GetN(), "err", err)
-		answer.Committed.Error = answerOf(err)
+		answer.Committed.Error = answerOf(stopped(ctx, err))
 	}
 	return p.w.Committed(answer)
 }

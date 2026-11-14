@@ -272,7 +272,7 @@ e2e: $(SUITE_BUILD) ## Full-stack scenarios against the compose deps; CONNECTOR_
 # openetld's image in the cluster (make image kind-load), for attempts' pods;
 # without it, their test skips.
 .PHONY: e2e-kube
-e2e-kube: connectors $(filter suite-engine,$(SUITE_BUILD)) ## Flink on the Kubernetes operator, PySpark on Spark on Kubernetes, attempts in pods, and deploy/kubernetes with KEDA, in kind
+e2e-kube: connectors $(filter suite-engine,$(SUITE_BUILD)) ## Flink on the Kubernetes operator, PySpark on Spark on Kubernetes, attempts in pods and on workers, and deploy/kubernetes with KEDA, in kind
 	OPENETL_ENGINE=$(SUITE_ENGINE_BIN) OPENETL_CONNECTORS=$(BIN)/connectors \
 	OPENETL_FLINK_LIB=$(CURDIR)/libs/openetl-flink/java/target \
 	OPENETL_E2E_KUBECONFIG=$(KIND_KUBECONFIG) OPENETL_E2E_KUBE_HOST=$(KIND_HOST) OPENETL_E2E_KUBE_IMAGE=$(KIND_IMAGE) \

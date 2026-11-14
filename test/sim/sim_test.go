@@ -11,10 +11,14 @@
 // is a model of what isn't built yet: a SQL transform on several workers
 // under a coordinator, with an exchange by key group (workers_test.go),
 // whose workers commit and recover the destination (workers_commit_test.go).
+// The pods kind places attempts on workers with the real placer, and models
+// the launchers that make their pods and the pods that run them
+// (pods_test.go).
 //
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace
 //	go test ./test/sim -run 'TestSimulation/workers' -broken=unaligned -seed=3 -v   # a broken variant
+//	go test ./test/sim -run 'TestSimulation/pods' -broken=stale-target -seed=3 -v   # one of the pods kind
 package sim
 
 import (
@@ -49,8 +53,9 @@ var (
 // it, whose outputs take their inputs' names and settings; flink is the
 // same with a Flink job, in a continuous pipeline. holds is the warehouse
 // taking holds, as Postgres does. workers is the model of workers and
-// exchanges, which runs no runner.
-var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark", "flink", "holds", "workers"}
+// exchanges, which runs no runner; pods, of the placement and pods of
+// attempts on workers.
+var sinkKinds = []string{"warehouse", "parquet", "kafka", "webhook", "staged", "spark", "flink", "holds", "workers", "pods"}
 
 // The sinks a transform goes before.
 var transformedKinds = sinkKinds[:5]
@@ -75,7 +80,7 @@ func TestSimulation(t *testing.T) {
 				}
 				if res.failure != "" {
 					rerun := fmt.Sprintf("go test ./test/sim -run 'TestSimulation/%s$' -seed=%d -v", kind, seed)
-					if kind == "workers" && *brokenFlag != "" {
+					if (kind == "workers" || kind == "pods") && *brokenFlag != "" {
 						rerun += " -broken=" + *brokenFlag
 					}
 					t.Fatalf("%s seed %d: %s\nrerun: %s", kind, seed, res.failure, rerun)
@@ -370,8 +375,11 @@ type seedResult struct {
 }
 
 func runSeed(kind string, seed uint64) (res seedResult) {
-	if kind == "workers" {
+	switch kind {
+	case "workers":
 		return runWorkers(seed, *brokenFlag)
+	case "pods":
+		return runPods(seed, *brokenFlag)
 	}
 	rng := rand.New(rand.NewPCG(seed, uint64(len(kind))))
 	cfg := randomConfig(rng, kind)

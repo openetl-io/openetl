@@ -141,6 +141,8 @@ type laneStore struct {
 	commits map[destination.Epoch]int
 	// Called before and after a commit applies; an error fails it.
 	before, after func(e destination.Epoch) error
+	// Called as a writer starts to recover; an error fails it.
+	recovering func(ctx context.Context) error
 }
 
 type stageKey struct {
@@ -242,8 +244,16 @@ func (s *laneStore) apply(e destination.Epoch, staged []destination.Staged) erro
 	return nil
 }
 
-func (w *stagingWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
+func (w *stagingWriter) Recover(ctx context.Context, gen uint64, e destination.Epoch, staged []destination.Staged) (destination.Recovery, error) {
 	s := w.s
+	s.mu.Lock()
+	recovering := s.recovering
+	s.mu.Unlock()
+	if recovering != nil {
+		if err := recovering(ctx); err != nil {
+			return 0, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fence = max(s.fence, gen)
@@ -499,6 +509,54 @@ func TestAWorkerLostMidEpoch(t *testing.T) {
 		t.Error("the second attempt restored nothing")
 	}
 	p.store.check(t, 120)
+}
+
+// A worker stopped mid-epoch, as a pod is on a node drain, fails the attempt
+// as transient, whatever its part failed with as it stopped: it's retried
+// like a worker lost.
+func TestAStoppedWorkerFailsTheAttemptAsTransient(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	gate := make(chan struct{})
+	defer close(gate)
+	p := newPool(t, func() *rangeSource {
+		s := ranges(6, 20, 5)()
+		s.gate = gate
+		return s
+	})
+	j := p.workers("a1", 3)
+	var once sync.Once
+	j.OnCommit = func(uint64) { once.Do(func() { p.kill("a1", 1) }) }
+	_, err := runner.RunAttempt(ctx, j)
+	if errs.CodeOf(err) != errs.Transient || !strings.Contains(fmt.Sprint(err), "worker 1") {
+		t.Fatalf("the attempt failed with %v (%s), want worker 1 transient", err, errs.CodeOf(err))
+	}
+	ended := p.wait("a1")
+	if !slices.ContainsFunc(ended, func(err error) bool {
+		return errs.CodeOf(err) == errs.Transient && strings.Contains(err.Error(), "stopped")
+	}) {
+		t.Errorf("the workers ended with %v, want the stopped one transient", ended)
+	}
+}
+
+// A worker stopped while it answers a call, here settling the restored
+// epoch, fails the attempt as transient too: its answer says it stopped.
+func TestAWorkerStoppedInACallFailsTheAttemptAsTransient(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	p := newPool(t, ranges(6, 20, 5))
+	p.store.mu.Lock()
+	p.store.recovering = func(ctx context.Context) error {
+		p.kill("a1", 0)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	p.store.mu.Unlock()
+	_, err := runner.RunAttempt(ctx, p.workers("a1", 2))
+	if errs.CodeOf(err) != errs.Transient || !strings.Contains(fmt.Sprint(err), "stopped") {
+		t.Fatalf("the attempt failed with %v (%s), want the stopped worker's transient", err, errs.CodeOf(err))
+	}
+	p.wait("a1")
 }
 
 // A worker lost between record N and its commit fails the attempt. The

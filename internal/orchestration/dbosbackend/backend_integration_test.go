@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -35,9 +36,8 @@ func open(t *testing.T) (*dbosbackend.Backend, dbosbackend.Options) {
 		t.Fatal(err)
 	}
 	name := "openetl_it_" + strings.ToLower(rand.Text())[:10]
-	system = strings.Replace(system, "openetl_dbos", name, 1)
 	t.Cleanup(func() { dropSystem(t, name) })
-	o := dbosbackend.Options{DatabaseURL: system, ExecutorID: "it"}
+	o := dbosbackend.Options{DatabaseURL: withDatabase(t, system, name), ExecutorID: "it"}
 	b, err := dbosbackend.Open(t.Context(), o)
 	if err != nil {
 		t.Fatal(err)
@@ -46,25 +46,39 @@ func open(t *testing.T) (*dbosbackend.Backend, dbosbackend.Options) {
 	return b, o
 }
 
-// A server and an orchestrator starting together on a new install both create
-// the system database.
+// withDatabase is the postgres:// URL u naming database name, its query kept.
+func withDatabase(t *testing.T, u, name string) string {
+	t.Helper()
+	p, err := url.Parse(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Path, p.RawPath = "/"+name, ""
+	return p.String()
+}
+
+// Servers and orchestrators starting together on a new install all create the
+// system database and run DBOS's migrations, in turn. Each round is a new
+// database, as the race is only on the first open.
 func TestOpeningTogether(t *testing.T) {
 	_, o := open(t)
-	name := "openetl_it_" + strings.ToLower(rand.Text())[:10]
-	url := strings.Replace(o.DatabaseURL, o.DatabaseURL[strings.LastIndex(o.DatabaseURL, "/")+1:], name, 1)
-	t.Cleanup(func() { dropSystem(t, name) })
-	var wg sync.WaitGroup
-	for range 4 {
-		wg.Go(func() {
-			b, err := dbosbackend.Open(t.Context(), dbosbackend.Options{DatabaseURL: url, ExecutorID: "it"})
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			b.Close()
-		})
+	for round := range 3 {
+		name := "openetl_it_" + strings.ToLower(rand.Text())[:10]
+		system := withDatabase(t, o.DatabaseURL, name)
+		t.Cleanup(func() { dropSystem(t, name) })
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(func() {
+				b, err := dbosbackend.Open(t.Context(), dbosbackend.Options{DatabaseURL: system, ExecutorID: "it"})
+				if err != nil {
+					t.Errorf("round %d: %v", round, err)
+					return
+				}
+				b.Close()
+			})
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 }
 
 func TestBackend(t *testing.T) {
