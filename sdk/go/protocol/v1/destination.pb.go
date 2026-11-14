@@ -414,10 +414,22 @@ type DestinationCapabilities struct {
 	Holds *HoldCapabilities `protobuf:"bytes,11,opt,name=holds,proto3" json:"holds,omitempty"`
 	// The most writer lanes an attempt may open, whose writes run
 	// concurrently. Zero: one. A destination that can't commit every lane's
-	// committables together takes one.
+	// committables together takes one, unless it has lane_commits.
 	MaxWriterLanes uint32 `protobuf:"varint,12,opt,name=max_writer_lanes,json=maxWriterLanes,proto3" json:"max_writer_lanes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Each writer lane commits its own part of an epoch, with a marker of its
+	// own, as a transaction its writer holds open does. Commit goes to every
+	// lane's stream with that lane's committable alone, and an attempt on one
+	// pod opens one writer lane. A recorded epoch whose committables say what
+	// they hold is settled committable by committable, each on a stream opened
+	// as the lane that staged it: recover, with the epoch and that committable
+	// alone, fences what the lane holds, and reports applied for a marker it
+	// finds, redone for staging it committed, or lost for neither. After lost,
+	// the platform reads the lane's part of the epoch again from the source,
+	// and sends it on that stream as the epoch's batches, pre-commit and
+	// commit.
+	LaneCommits   bool `protobuf:"varint,13,opt,name=lane_commits,json=laneCommits,proto3" json:"lane_commits,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DestinationCapabilities) Reset() {
@@ -532,6 +544,13 @@ func (x *DestinationCapabilities) GetMaxWriterLanes() uint32 {
 		return x.MaxWriterLanes
 	}
 	return 0
+}
+
+func (x *DestinationCapabilities) GetLaneCommits() bool {
+	if x != nil {
+		return x.LaneCommits
+	}
+	return false
 }
 
 // HoldCapabilities is what a destination does with columns and cells the
@@ -1060,7 +1079,8 @@ type WriteRecover struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	// The epoch's committables, one per writer lane of the attempt that
-	// staged it, whose lanes may have been others.
+	// staged it, whose lanes may have been others; with lane_commits, the one
+	// the stream settles.
 	Staged        [][]byte `protobuf:"bytes,2,rep,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1475,7 +1495,8 @@ func (x *WritePreCommit) GetEpoch() *Epoch {
 type WriteCommit struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Epoch *Epoch                 `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	// Every writer lane's committable, by lane.
+	// Every writer lane's committable, by lane; with lane_commits, the
+	// stream's lane's alone.
 	Staged        [][]byte `protobuf:"bytes,2,rep,name=staged,proto3" json:"staged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2210,7 +2231,7 @@ var File_openetl_connector_v1_destination_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\n" +
-	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\xf4\x05\n" +
+	"&openetl/connector/v1/destination.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a!openetl/connector/v1/errors.proto\"\x97\x06\n" +
 	"\x17DestinationCapabilities\x12>\n" +
 	"\n" +
 	"sink_class\x18\x01 \x01(\x0e2\x1f.openetl.connector.v1.SinkClassR\tsinkClass\x129\n" +
@@ -2226,7 +2247,8 @@ const file_openetl_connector_v1_destination_proto_rawDesc = "" +
 	"\bdelivery\x18\n" +
 	" \x01(\x0e2\x1e.openetl.connector.v1.DeliveryR\bdelivery\x12<\n" +
 	"\x05holds\x18\v \x01(\v2&.openetl.connector.v1.HoldCapabilitiesR\x05holds\x12(\n" +
-	"\x10max_writer_lanes\x18\f \x01(\rR\x0emaxWriterLanes\"l\n" +
+	"\x10max_writer_lanes\x18\f \x01(\rR\x0emaxWriterLanes\x12!\n" +
+	"\flane_commits\x18\r \x01(\bR\vlaneCommits\"l\n" +
 	"\x10HoldCapabilities\x12\x15\n" +
 	"\x06by_key\x18\x01 \x01(\bR\x05byKey\x12\x13\n" +
 	"\x05by_id\x18\x02 \x01(\bR\x04byId\x12\x12\n" +

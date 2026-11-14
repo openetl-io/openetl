@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
+	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -76,6 +77,26 @@ func TestStartRequestWithoutSQL(t *testing.T) {
 	a := req.GetStreams()[0]
 	if !a.GetSoftDeletes() || !a.GetHolds().GetCells() || a.GetTable() != "A" || a.GetRouting() != enginev1.Routing_ROUTING_KEY_GROUP || len(a.GetRestoredSchema()) == 0 {
 		t.Errorf("stream a lost the destination's settings: %v", a)
+	}
+	if a.GetKeyGroups() != nil {
+		t.Errorf("stream a keeps key groups %v", a.GetKeyGroups())
+	}
+}
+
+// A redo's plan keeps a stream's rows of a range of key groups.
+func TestStartRequestKeepsARangeOfKeyGroups(t *testing.T) {
+	p := plan("a", "b")
+	p.Streams[0].PrimaryKey = []string{"id"}
+	p.KeyGroupRanges = map[string]checkpoint.KeyGroupRange{"a": {First: 64, Last: 127}}
+	req, _, _, err := startRequest(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kg := req.GetStreams()[0].GetKeyGroups(); kg.GetFirst() != 64 || kg.GetLast() != 127 {
+		t.Errorf("stream a keeps %v", kg)
+	}
+	if kg := req.GetStreams()[1].GetKeyGroups(); kg != nil {
+		t.Errorf("stream b keeps %v", kg)
 	}
 }
 

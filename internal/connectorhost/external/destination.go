@@ -86,6 +86,7 @@ func Capabilities(spec *protocolv1.SpecResponse) destination.Capabilities {
 		NanosecondTimestamps:  pc.GetNanosecondTimestamps(),
 		Delivery:              destination.Delivery(pc.GetDelivery()),
 		WriterLanes:           int(pc.GetMaxWriterLanes()),
+		LaneCommits:           pc.GetLaneCommits(),
 	}
 	if h := pc.GetHolds(); h != nil {
 		c.Holds = destination.Holds{ByKey: h.GetByKey(), ByID: h.GetById(), Last: h.GetLast(), Guarded: h.GetGuarded()}

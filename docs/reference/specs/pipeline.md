@@ -93,8 +93,10 @@ With `resources.workers` above 1, `openetl plan` shows `workers:` and the count 
 
 - the pipeline has a `transform`: SQL, Spark or Flink;
 - a stream holds columns or cells, as a keyed stream does in a destination that takes holds;
-- the destination declares fewer writer lanes than workers (`maxWriterLanes`, one if unset), is a transactional stream that commits each writer lane's transaction on its own, loads staged epochs, or is the built-in `parquet`;
+- the destination declares fewer writer lanes than workers (`maxWriterLanes`, one if unset), is a transactional stream without lane commits (`laneCommits`), loads staged epochs, or is the built-in `parquet`;
 - no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners of its data plane have.
+
+A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
 
 Each job's workers read the source's splits between them. Each of these streams is read on one worker, and the plan warns about each one:
 

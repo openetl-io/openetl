@@ -19,15 +19,16 @@ option go_package = "github.com/openetl-io/openetl/gen/openetl/attempt/v1;attemp
 // A worker opens one call and sends Join; the coordinator's first heartbeat
 // says it's taken. The coordinator, which runs no connector and holds no
 // destination credentials, calls a worker for what needs them: settling the
-// restored epoch, a read's splits, applying schemas. The worker gets its
-// Assignment once every worker has joined and the restored epoch is
-// settled. Then the coordinator asks for barriers, the worker signals what
-// its read does and sends its share of each epoch, and the coordinator asks
-// workers to commit what a written record names and sends them the
-// committed record's positions. The coordinator owns each stream's schema:
-// a worker's engine proposes a change, and every worker gets the schema the
-// coordinator takes. Each end sends a Heartbeat every few seconds, and takes
-// the other as lost once it hears nothing for longer than a timeout.
+// restored epoch, or some of its committables, a read's splits, applying
+// schemas. The worker gets its Assignment once every worker has joined and
+// the restored epoch is settled. Then the coordinator asks for barriers, the
+// worker signals what its read does and sends its share of each epoch, and
+// the coordinator asks workers to commit what a written record names and
+// sends them the committed record's positions. The coordinator owns each
+// stream's schema: a worker's engine proposes a change, and every worker
+// gets the schema the coordinator takes. Each end sends a Heartbeat every few
+// seconds, and takes the other as lost once it hears nothing for longer than
+// a timeout.
 //
 // A call is never resumed: a broken call, a lost worker, a worker's Failure
 // or anything out of the protocol fails the attempt. The coordinator sends
@@ -208,6 +209,14 @@ message SplitRef {
   string split = 2;
   // The key groups of the split's rows it holds; unset: all of them.
   openetl.engine.v1.KeyGroupRange key_groups = 3;
+  // Where the split's part of the epoch began: its state at the barrier
+  // before, or as the split was added or its read started. Empty: its
+  // beginning.
+  bytes from = 4;
+  // The rows the split emitted in the epoch, to every writer lane.
+  uint64 rows = 5;
+  // With key_groups: the stream's primary key, whose groups they are.
+  repeated string key = 6;
 }
 
 // Commit asks the worker to commit what a record names, at the
@@ -246,7 +255,12 @@ message Positions {
   repeated SplitPosition splits = 2;
 }
 
-message Heartbeat {}
+message Heartbeat {
+  // The coordinator's: it waits for a worker's answer to a call, such as
+  // settling the restored epoch, which can take longer than a worker waits
+  // for its assignment. A worker without its assignment waits on.
+  bool calling = 1;
+}
 
 message End {
   // Why the attempt failed; unset: it finished.
@@ -263,6 +277,7 @@ message Call {
     Recover recover = 2;
     SplitRead split_read = 3;
     openetl.connector.v1.WriteApplySchema apply_schema = 4;
+    Settle settle = 5;
   }
 }
 
@@ -274,6 +289,7 @@ message Answer {
     openetl.connector.v1.WriteRecovered recovered = 3;
     ReadSplits read_splits = 4;
     openetl.connector.v1.WriteSchemaApplied schema_applied = 5;
+    Settled settled = 6;
   }
 }
 
@@ -281,13 +297,38 @@ message Answer {
 // settles the epoch the attempt restores, on the writer of the attempt's
 // first writer lane, which the worker opens for it and keeps: it makes
 // visible what the record's committables staged and isn't, as a single
-// runner's recovery does. Before the assignment, once.
+// runner's recovery does. Before the assignment, once. For a destination
+// whose writer lanes commit on their own (lane_commits), a record whose
+// committables say what they hold has them settled by Settle calls first,
+// and Recover only applies its schemas and raises the fence.
 message Recover {
   // The record HEAD points to, as the checkpoint log holds it; empty: none,
   // and only the fence is raised.
   bytes record = 1;
   // As Assignment.forced.
   repeated string forced = 2;
+}
+
+// Settle settles some of the restored record's committables, of a
+// destination whose writer lanes commit on their own, one after another,
+// each on a writer the worker opens as the lane that staged it, and closes:
+// from its marker, from its staging, or by reading its part of the epoch
+// again from the source, as the record's coverage names it, and committing
+// that. Committables that hold rows of one split go to one worker. Before
+// Recover and the assignment.
+message Settle {
+  // The record HEAD points to, as the checkpoint log holds it.
+  bytes record = 1;
+  // Indexes into its committables.
+  repeated uint32 committables = 2;
+  // As Assignment.forced.
+  repeated string forced = 3;
+}
+
+// Settled is how each committable of a Settle was settled, in its order:
+// applied, redone, or lost, which only one without coverage can be.
+message Settled {
+  repeated openetl.connector.v1.Recovery recoveries = 1;
 }
 
 // SplitRead asks for the splits of the streams whose read starts.

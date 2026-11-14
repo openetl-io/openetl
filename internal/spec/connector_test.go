@@ -45,6 +45,7 @@ spec:
     holds: {byKey: true, byId: true, last: true, guarded: true}
     delivery: streamed
     maxWriterLanes: 16
+    laneCommits: true
   config:
     type: object
     required: [dsn]
@@ -87,6 +88,7 @@ func TestParseDescriptor(t *testing.T) {
 			Holds:                 &protocolv1.HoldCapabilities{ByKey: true, ById: true, Last: true, Guarded: true},
 			Delivery:              protocolv1.Delivery_DELIVERY_STREAMED,
 			MaxWriterLanes:        16,
+			LaneCommits:           true,
 		},
 	}
 	if !proto.Equal(role.Spec, want) {

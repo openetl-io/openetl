@@ -282,7 +282,7 @@ func (w *wWorker) assign(msg wMsg) {
 		if spec.worker != w.idx {
 			continue
 		}
-		l := &wLane{w: w, idx: i, kg: spec.kg, outs: map[int]*wConn{}, at: map[uint64][]wSplit{},
+		l := &wLane{w: w, idx: i, kg: spec.kg, outs: map[int]*wConn{}, at: map[uint64][]wSplit{}, began: map[uint64]map[int]int{},
 			snaps: map[uint64][]checkpoint.Snapshot{}, buf: map[uint64]map[string][]row{}, staged: map[uint64][]byte{}}
 		for s, li := range w.lay.splits {
 			if li == i {
@@ -428,6 +428,7 @@ func (w *wWorker) share(d decision) {
 	}
 	for _, l := range w.lanes {
 		delete(l.at, e)
+		delete(l.began, e)
 		delete(l.staged, e)
 		delete(l.snaps, e)
 	}
@@ -479,7 +480,8 @@ type wLane struct {
 	kg       checkpoint.KeyGroupRange
 	restored bool
 	// Reading: the epoch it's in, the watermark it last sent, its frames out
-	// by receiving lane, and its splits at each barrier.
+	// by receiving lane, its splits at each barrier, and by epoch where each
+	// split's part of it began, which its committable names.
 	splits     []*wCursor
 	rr         int
 	cur        uint64
@@ -487,6 +489,7 @@ type wLane struct {
 	idleSent   bool
 	outs       map[int]*wConn
 	at         map[uint64][]wSplit
+	began      map[uint64]map[int]int
 	readerPast uint64
 	// The keyed operator: its senders' watermarks and its own, the least its
 	// own may be once every sender's is in after a restore, its state and
@@ -591,6 +594,7 @@ func (l *wLane) restore(d decision) {
 			return
 		}
 	}
+	l.began[l.cur] = l.positions()
 	l.restored = true
 	m.stats["lanes restored"]++
 	m.tracef("%s restored %v: %d key groups with state", l.name(), rec, len(l.state))
@@ -809,6 +813,16 @@ func (l *wLane) place(d decision) {
 	l.push(wFrame{kind: 'b', epoch: l.cur})
 	l.readerPast = l.cur
 	l.cur++
+	l.began[l.cur] = l.positions()
+}
+
+// positions are where the lane's splits are, by split.
+func (l *wLane) positions() map[int]int {
+	out := make(map[int]int, len(l.splits))
+	for _, c := range l.splits {
+		out[c.split] = c.pos
+	}
+	return out
 }
 
 // deliverable says whether the lane takes c's next frame: not past the

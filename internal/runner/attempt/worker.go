@@ -151,7 +151,7 @@ func start(st workerStream, hangUp func(), t Target, opts Options) *worker {
 }
 
 func (w *worker) send() {
-	err := w.out.run(w.st.Send, workerHeartbeat, w.opts.heartbeat(), w.stopSend)
+	err := w.out.run(w.st.Send, func() *attemptv1.AttendRequest { return workerHeartbeat }, w.opts.heartbeat(), w.stopSend)
 	if err == nil {
 		err = w.st.CloseSend()
 	}
@@ -179,12 +179,20 @@ func (w *worker) run() {
 				close(w.taken)
 			}
 			timer.Reset(w.opts.timeout())
+			// A coordinator waiting for a call's answer, this worker's or
+			// another's, holds the assignment up for as long as it takes.
+			if r.msg.GetHeartbeat().GetCalling() {
+				assign.Reset(w.opts.joinTimeout() + w.opts.timeout())
+			}
 			w.handle(r.msg)
 		case <-timer.C:
 			w.end(lost("the coordinator", fmt.Errorf("nothing from it for %s", w.opts.timeout())), false, true)
 			return
 		case <-assign.C:
-			if !w.isAssigned() {
+			switch assigned, answering := w.waiting(); {
+			case answering:
+				assign.Reset(w.opts.timeout())
+			case !assigned:
 				w.end(lost("the coordinator", fmt.Errorf("no assignment within %s", w.opts.joinTimeout()+w.opts.timeout())), false, true)
 				return
 			}
@@ -202,10 +210,12 @@ func (w *worker) run() {
 	}
 }
 
-func (w *worker) isAssigned() bool {
+// waiting says whether the worker has its assignment, and whether it's
+// answering a call.
+func (w *worker) waiting() (assigned, answering bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.assignment != nil
+	return w.assignment != nil, len(w.calls) > 0
 }
 
 // callEnded is why the call ended without End: before the coordinator took

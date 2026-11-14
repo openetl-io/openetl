@@ -265,13 +265,20 @@ type Rewound struct {
 // inTurn says a stream's frames can go to the lanes in turn: it has no key
 // to keep together, and its destination puts rows in tables, whose order
 // doesn't follow what a stream emits. A log keeps a split's order, as a
-// partition's or a shard's matters there.
+// partition's or a shard's matters there. A destination whose lanes commit
+// on their own has each split's rows on one, so a redo can find them.
 func (j *Job) inTurn(s Stream) bool {
-	return j.lanes() > 1 && len(s.PrimaryKey) == 0 && j.Destination.Capabilities().Class == destination.StageAndApply
+	caps := j.Destination.Capabilities()
+	return j.lanes() > 1 && len(s.PrimaryKey) == 0 && caps.Class == destination.StageAndApply && !caps.LaneCommits
 }
 
-// canResplit says the source splits a running split's remainder.
+// canResplit says the source splits a running split's remainder. Not where
+// the destination's lanes commit on their own: a redo reads a split again
+// as its epoch read it, which a split made since doesn't.
 func (j *Job) canResplit(ctx context.Context) bool {
+	if j.Destination.Capabilities().LaneCommits {
+		return false
+	}
 	rs, ok := j.Source.(source.Resplitter)
 	if !ok {
 		return false
@@ -318,11 +325,18 @@ func (j *Job) laneLimit(ctx context.Context, splits map[string][]checkpoint.Spli
 	return max(open, 1)
 }
 
+// writerLanes are the attempt's, or a worker's. On one pod, a destination
+// whose lanes commit on their own gets one, whose recovery rolls an epoch
+// back whole.
 func (j *Job) writerLanes() int {
-	if j.writers > 0 {
+	caps := j.Destination.Capabilities()
+	switch {
+	case j.writers > 0:
 		return j.writers
+	case caps.LaneCommits:
+		return 1
 	}
-	return min(j.lanes(), j.Destination.Capabilities().Lanes())
+	return min(j.lanes(), caps.Lanes())
 }
 
 func (j *Job) keyGroups() int { return cmp.Or(j.KeyGroups, checkpoint.KeyGroups) }
@@ -462,6 +476,30 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		return job.coordinate(ctx, rctx, span, sess, at, res, log)
 	}
 	canForce := job.canForce()
+	// After a rewind, the restored record's epoch is applied, and the
+	// destination may have dropped its markers since, so only the fence is
+	// raised.
+	recovering := head
+	if rewound != nil {
+		recovering = nil
+	}
+	// Where the destination's lanes commit on their own, each committable is
+	// settled on a writer of its own lane, before lane 0 opens.
+	byLane := settlesByLane(job.Destination.Capabilities(), recovering)
+	var settled destination.Recovery
+	if byLane {
+		every := make([]int, len(recovering.Committables))
+		for i := range every {
+			every[i] = i
+		}
+		rs, err := job.settleCommittables(rctx, res.Generation, recovering, every, forced, log)
+		if err != nil {
+			return res, err
+		}
+		if settled, err = settledAs(rs); err != nil {
+			return res, err
+		}
+	}
 	ws := make([]destination.Writer, 0, job.writerLanes())
 	defer func() {
 		for i, w := range ws {
@@ -480,35 +518,11 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	var staged []destination.Staged
 	applied := map[string]*arrow.Schema{}
 	var limits map[string]destination.TableLimits
-	// After a rewind, the restored record's epoch is applied, and the
-	// destination may have dropped its markers since, so only the fence is
-	// raised.
-	recovering := head
-	if rewound != nil {
-		recovering = nil
-	}
 	if recovering != nil {
-		e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, committables(head)
-		schemas := make(map[string][]byte, len(head.Streams))
-		for name, st := range head.Streams {
-			schemas[name] = st.Schema
-			if st.Delivered != nil {
-				schemas[name] = st.Delivered
-			}
+		if !byLane {
+			e, staged = destination.Epoch{Generation: head.Generation, N: head.Epoch}, committables(head)
 		}
-		if job.transformed() {
-			schemas = outputSchemas(head)
-			for name, o := range head.Outputs {
-				if o.Delivered != nil {
-					schemas[name] = o.Delivered
-				}
-			}
-		}
-		// A redone epoch needs its schemas in place, and can't change.
-		a, err := applySchemas(rctx, w, applied, schemas)
-		if err == nil && len(a.Refused) > 0 {
-			err = errs.Wrap(errs.SchemaDrift, &RefusedError{Columns: []RefusedColumn{{RefusedColumn: a.Refused[0]}}}, "runner: recovering a recorded epoch")
-		}
+		a, err := job.applyRecorded(rctx, w, applied, recovering)
 		if err != nil {
 			return res, err
 		}
@@ -521,6 +535,9 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	}
 	if res.Recovery, err = w.Recover(rctx, res.Generation, e, staged); err != nil {
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
+	}
+	if byLane {
+		res.Recovery = settled
 	}
 	if job.staged() && recovering != nil {
 		flush(rctx, job.Staging, e, log)
@@ -1210,8 +1227,8 @@ type event struct {
 	splits map[string][]checkpoint.SplitState
 	rows   map[string]uint64
 	// A worker's evPlaced: the lane of each split that emitted rows in the
-	// epoch, laneAll where its rows went to every lane.
-	splitLanes map[checkpoint.SplitRef]int
+	// epoch, laneAll where its rows went to every lane, and where it began.
+	splitLanes map[checkpoint.SplitRef]splitRead
 	staged     destination.Staged
 	ready      *Ready
 	active     bool

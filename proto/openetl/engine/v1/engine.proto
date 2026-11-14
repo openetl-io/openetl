@@ -189,6 +189,10 @@ message StreamPlan {
   // Its name in the destination, exactly as written. Empty: from its own
   // name, by the job's naming.
   string table = 13;
+  // Only rows whose key's group is in this range pass: a redo of one writer
+  // lane's part of an epoch. A destination's stream with a primary key.
+  // Unset: every row.
+  KeyGroupRange key_groups = 14;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and

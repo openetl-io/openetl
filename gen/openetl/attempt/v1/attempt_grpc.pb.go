@@ -36,15 +36,16 @@ const (
 // A worker opens one call and sends Join; the coordinator's first heartbeat
 // says it's taken. The coordinator, which runs no connector and holds no
 // destination credentials, calls a worker for what needs them: settling the
-// restored epoch, a read's splits, applying schemas. The worker gets its
-// Assignment once every worker has joined and the restored epoch is
-// settled. Then the coordinator asks for barriers, the worker signals what
-// its read does and sends its share of each epoch, and the coordinator asks
-// workers to commit what a written record names and sends them the
-// committed record's positions. The coordinator owns each stream's schema:
-// a worker's engine proposes a change, and every worker gets the schema the
-// coordinator takes. Each end sends a Heartbeat every few seconds, and takes
-// the other as lost once it hears nothing for longer than a timeout.
+// restored epoch, or some of its committables, a read's splits, applying
+// schemas. The worker gets its Assignment once every worker has joined and
+// the restored epoch is settled. Then the coordinator asks for barriers, the
+// worker signals what its read does and sends its share of each epoch, and
+// the coordinator asks workers to commit what a written record names and
+// sends them the committed record's positions. The coordinator owns each
+// stream's schema: a worker's engine proposes a change, and every worker
+// gets the schema the coordinator takes. Each end sends a Heartbeat every few
+// seconds, and takes the other as lost once it hears nothing for longer than
+// a timeout.
 //
 // A call is never resumed: a broken call, a lost worker, a worker's Failure
 // or anything out of the protocol fails the attempt. The coordinator sends
@@ -90,15 +91,16 @@ type AttemptService_AttendClient = grpc.BidiStreamingClient[AttendRequest, Atten
 // A worker opens one call and sends Join; the coordinator's first heartbeat
 // says it's taken. The coordinator, which runs no connector and holds no
 // destination credentials, calls a worker for what needs them: settling the
-// restored epoch, a read's splits, applying schemas. The worker gets its
-// Assignment once every worker has joined and the restored epoch is
-// settled. Then the coordinator asks for barriers, the worker signals what
-// its read does and sends its share of each epoch, and the coordinator asks
-// workers to commit what a written record names and sends them the
-// committed record's positions. The coordinator owns each stream's schema:
-// a worker's engine proposes a change, and every worker gets the schema the
-// coordinator takes. Each end sends a Heartbeat every few seconds, and takes
-// the other as lost once it hears nothing for longer than a timeout.
+// restored epoch, or some of its committables, a read's splits, applying
+// schemas. The worker gets its Assignment once every worker has joined and
+// the restored epoch is settled. Then the coordinator asks for barriers, the
+// worker signals what its read does and sends its share of each epoch, and
+// the coordinator asks workers to commit what a written record names and
+// sends them the committed record's positions. The coordinator owns each
+// stream's schema: a worker's engine proposes a change, and every worker
+// gets the schema the coordinator takes. Each end sends a Heartbeat every few
+// seconds, and takes the other as lost once it hears nothing for longer than
+// a timeout.
 //
 // A call is never resumed: a broken call, a lost worker, a worker's Failure
 // or anything out of the protocol fails the attempt. The coordinator sends

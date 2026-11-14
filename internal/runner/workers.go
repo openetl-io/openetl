@@ -103,10 +103,11 @@ type fleet struct {
 	job *Job
 	co  attempt.Coordinator
 	n   int
-	// The attempt's writer lanes, and each split's place in the
-	// assignment, which the record keeps.
-	writers int
-	order   map[checkpoint.SplitRef]int
+	// The attempt's writer lanes, the worker of each, and each split's
+	// place in the assignment, which the record keeps.
+	writers       int
+	writerWorkers []int
+	order         map[checkpoint.SplitRef]int
 	// The bytes an epoch reads before the coordinator asks for a barrier,
 	// each worker's share of it its threshold.
 	maxBytes atomic.Int64
@@ -378,7 +379,7 @@ func splitStateOf(p *attemptv1.SplitPosition) checkpoint.SplitState {
 func coverageOf(refs []*attemptv1.SplitRef) checkpoint.Coverage {
 	var c checkpoint.Coverage
 	for _, r := range refs {
-		cs := checkpoint.CoveredSplit{Stream: r.GetStream(), ID: r.GetSplit()}
+		cs := checkpoint.CoveredSplit{Stream: r.GetStream(), ID: r.GetSplit(), From: r.GetFrom(), Rows: r.GetRows(), Key: r.GetKey()}
 		if kg := r.GetKeyGroups(); kg != nil {
 			cs.KeyGroups = &checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}
 		}
@@ -441,7 +442,9 @@ func (o *schemaOwner) taken() map[string][]byte {
 }
 
 // remoteWriter is the attempt's first writer lane, on worker 0, as the
-// coordinator reaches it: it applies schemas and commits there.
+// coordinator reaches it: it applies schemas and commits there, or, where
+// the destination's lanes commit on their own, has each worker commit its
+// own.
 type remoteWriter struct{ f *fleet }
 
 var (
@@ -470,12 +473,47 @@ func (r remoteWriter) Commit(ctx context.Context, e destination.Epoch, staged []
 	for _, s := range staged {
 		req.Commit.Staged = append(req.Commit.Staged, s)
 	}
-	ans, err := r.f.co.Commit(ctx, 0, req)
-	if err != nil {
-		return destination.Committed{}, err
+	if !r.f.job.Destination.Capabilities().LaneCommits {
+		ans, err := r.f.co.Commit(ctx, 0, req)
+		if err != nil {
+			return destination.Committed{}, err
+		}
+		done := destination.Committed{Collapsed: ans.GetCollapsedRows()}
+		return done, answerErr(ans.GetError())
 	}
-	done := destination.Committed{Collapsed: ans.GetCollapsedRows()}
-	return done, answerErr(ans.GetError())
+	byWorker := make([][]uint32, r.f.n)
+	for w, worker := range r.f.writerWorkers {
+		byWorker[worker] = append(byWorker[worker], ints.Uint32(w))
+	}
+	// Each on its own: one that fails doesn't hold up the others.
+	var mu sync.Mutex
+	done := destination.Committed{}
+	failed := make([]error, r.f.n)
+	var wg sync.WaitGroup
+	for worker, lanes := range byWorker {
+		if len(lanes) == 0 {
+			continue
+		}
+		wg.Go(func() {
+			ans, err := r.f.co.Commit(ctx, worker, &attemptv1.Commit{Commit: req.GetCommit(), WriterLanes: lanes})
+			if err == nil {
+				mu.Lock()
+				for name, rows := range ans.GetCollapsedRows() {
+					if done.Collapsed == nil {
+						done.Collapsed = map[string]uint64{}
+					}
+					done.Collapsed[name] += rows
+				}
+				mu.Unlock()
+				err = answerErr(ans.GetError())
+			}
+			if err != nil {
+				failed[worker] = fmt.Errorf("worker %d's writer lanes %v: %w", worker, lanes, err)
+			}
+		})
+	}
+	wg.Wait()
+	return done, errors.Join(failed...)
 }
 
 func (r remoteWriter) ApplySchema(ctx context.Context, streams []destination.StreamSchema) (destination.SchemaApplied, error) {
@@ -588,6 +626,16 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 			return res, err
 		}
 	}
+	// Where the destination's lanes commit on their own, the workers settle
+	// the committables first, each on a writer of its own lane, before
+	// worker 0 opens the attempt's first.
+	byLane := settlesByLane(j.Destination.Capabilities(), recovering)
+	var settled destination.Recovery
+	if byLane {
+		if settled, err = settleOnWorkers(rctx, co, n, recovering, settle.GetRecord(), settle.GetForced()); err != nil {
+			return res, err
+		}
+	}
 	ans, err := co.Call(rctx, 0, &attemptv1.Call{Call: &attemptv1.Call_Recover{Recover: settle}})
 	if err != nil {
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
@@ -596,6 +644,9 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
 	}
 	res.Recovery = destination.Recovery(ans.GetRecovered().GetRecovery())
+	if byLane {
+		res.Recovery = settled
+	}
 	if recovering != nil {
 		// The worker applied them.
 		if _, err := changedRaw(applied, restoredSchemas(recovering)); err != nil {
@@ -633,6 +684,9 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	}
 	log.Debug("attempt laid out", "lanes", len(a.GetLanes()), "writer_lanes", len(a.GetWriterLanes()), "splits", layoutString(a))
 	f.writers, f.order = len(a.GetWriterLanes()), map[checkpoint.SplitRef]int{}
+	for _, l := range a.GetWriterLanes() {
+		f.writerWorkers = append(f.writerWorkers, int(l.GetWorker()))
+	}
 	for i, s := range a.GetSplits() {
 		f.order[checkpoint.SplitRef{Stream: s.GetSplit().GetStream(), ID: s.GetSplit().GetSplit().GetId()}] = i
 	}
@@ -659,6 +713,41 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}, fleet: f}
 	err = c.runFleet(ctx, restored, a)
 	return res, err
+}
+
+// settleOnWorkers has the workers settle rec's committables, raw as the
+// log holds it, those that hold rows of one split on one worker, and says
+// how: Redone if any was.
+func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *checkpoint.Record, raw []byte, forced []string) (destination.Recovery, error) {
+	groups := settleGroups(rec, n)
+	got := make([][]destination.Recovery, n)
+	g, gctx := errgroup.WithContext(ctx)
+	for w, which := range groups {
+		if len(which) == 0 {
+			continue
+		}
+		g.Go(func() error {
+			ans, err := co.Call(gctx, w, &attemptv1.Call{Call: &attemptv1.Call_Settle{Settle: &attemptv1.Settle{Record: raw, Committables: which, Forced: forced}}})
+			if err == nil {
+				err = answerErr(ans.GetError())
+			}
+			if err != nil {
+				return fmt.Errorf("runner: worker %d settling writer lanes %v of epoch %d: %w", w, which, rec.Epoch, err)
+			}
+			rs := ans.GetSettled().GetRecoveries()
+			if len(rs) != len(which) {
+				return errs.New(errs.Internal, "runner: worker %d settled %d of writer lanes %v", w, len(rs), which)
+			}
+			for _, r := range rs {
+				got[w] = append(got[w], destination.Recovery(r))
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return 0, err
+	}
+	return settledAs(slices.Concat(got...))
 }
 
 func trueKeys(m map[string]bool) map[string]bool {

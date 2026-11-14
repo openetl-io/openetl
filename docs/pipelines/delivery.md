@@ -139,7 +139,7 @@ A sync reads and commits data in epochs. A commit is requested when any of these
 - The data read since the last commit reaches `delivery.commit.maxBytes`. The default is `256MB`.
 - The read ends.
 
-Uncommitted data is not visible in the destination. With `delivery.commit.scope: pipeline`, a commit makes all streams' rows visible together. This is the default when supported by the destination. With `stream`, each stream commits separately.
+Uncommitted data is not visible in the destination. With `delivery.commit.scope: pipeline`, a commit makes all streams' rows visible together. This is the default when supported by the destination. With `stream`, each stream commits separately. A job on several workers with a destination that has lane commits is different: each writer lane commits its part of an epoch on its own, so one lane's part can be visible before another's. [Run a job on several pods](./workers.md#when-a-pod-fails) describes how such a job recovers.
 
 A failed sync retains its committed data. The retry or next sync resumes from the last commit. Readers can therefore see part of a failed sync. For overwrite writes, the table is replaced only when the read ends. Until then, readers see the previous table.
 

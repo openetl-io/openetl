@@ -42,10 +42,12 @@ type rangeSource struct {
 	// Set: a split that has read its rows keeps its read open until it's
 	// cancelled, instead of completing.
 	open bool
-	// What the worker acknowledged, and read.
+	// What the worker acknowledged, and read, and each split's read as
+	// "split@state" where it began.
 	mu    sync.Mutex
 	acked map[string]string
 	read  []string
+	from  []string
 }
 
 func (s *rangeSource) Splits(_ context.Context, _ source.ConfiguredStream, _ []source.Split) ([]source.Split, error) {
@@ -64,6 +66,7 @@ func (s *rangeSource) Read(ctx context.Context, req source.ReadRequest, out sour
 		}
 		s.mu.Lock()
 		s.read = append(s.read, sp.ID)
+		s.from = append(s.from, sp.ID+"@"+string(sp.State))
 		s.mu.Unlock()
 		next, end := i*s.rows+1, (i+1)*s.rows
 		if sp.State != nil {
@@ -296,6 +299,17 @@ type pool struct {
 	source func() *rangeSource
 	// The workers' dataflow; nil: Passthrough.
 	flow runner.Dataflow
+	// The destination, the coordinator's or a worker's; nil: store's.
+	dest func(coordinator bool) destination.Destination
+	// Changes each attempt's job, the coordinator's and its workers'.
+	change func(*runner.Job)
+}
+
+func (p *pool) destination(coordinator bool) destination.Destination {
+	if p.dest != nil {
+		return p.dest(coordinator)
+	}
+	return stagingDest{s: p.store, t: p.t, coordinator: coordinator}
 }
 
 func newPool(t *testing.T, source func() *rangeSource) *pool {
@@ -317,7 +331,7 @@ func listen(t *testing.T) *attempt.Server {
 
 // job is the pipeline's job for attempt owner, without workers.
 func (p *pool) job(owner string, src source.Reader, dest destination.Destination) runner.Job {
-	return runner.Job{
+	j := runner.Job{
 		Owner: owner, Sync: "sync", Pipeline: "p", Log: p.log, Source: src,
 		Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append}},
 		Destination: dest,
@@ -325,12 +339,16 @@ func (p *pool) job(owner string, src source.Reader, dest destination.Destination
 		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
 		Lanes:       2,
 	}
+	if p.change != nil {
+		p.change(&j)
+	}
+	return j
 }
 
 // workers is the pipeline's job for attempt owner on n workers, which
 // launch in this process.
 func (p *pool) workers(owner string, n int) runner.Job {
-	j := p.job(owner, noSource{p.t}, stagingDest{s: p.store, t: p.t, coordinator: true})
+	j := p.job(owner, noSource{p.t}, p.destination(true))
 	j.Workers = &runner.Workers{Count: n, Server: p.srv, Options: workerOpts, Launch: func(ctx context.Context, targets []attempt.Target) error {
 		done := make(chan error, len(targets))
 		p.mu.Lock()
@@ -340,7 +358,7 @@ func (p *pool) workers(owner string, n int) runner.Job {
 			wctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 			p.sources[owner] = append(p.sources[owner], src)
 			p.cancels[owner] = append(p.cancels[owner], cancel)
-			wj := p.job(owner, src, stagingDest{s: p.store, t: p.t})
+			wj := p.job(owner, src, p.destination(false))
 			wj.Log = nil
 			if p.flow != nil {
 				wj.Dataflow = p.flow

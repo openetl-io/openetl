@@ -47,6 +47,9 @@ pub struct Plan {
     /// Each stream's: rows go to the writer lane owning their key's group,
     /// not straight from their lane.
     pub routed: Vec<bool>,
+    /// Each stream's: only rows whose key's group is in this range, first to
+    /// last, pass, for a redo of one writer lane's part of an epoch.
+    pub keep: Vec<Option<(u32, u32)>>,
     /// Each stream's holds; None where it holds nothing.
     pub holds: Vec<Option<HoldConfig>>,
     /// Each stream's replay of released holds.
@@ -274,6 +277,18 @@ impl Plan {
                     "stream {} is routed by key group, and has no primary key",
                     s.name
                 )));
+            }
+            if let Some(r) = &s.key_groups {
+                let groups = match req.key_groups {
+                    0 => 256,
+                    n => n,
+                };
+                if s.primary_key.is_empty() || r.first > r.last || r.last >= groups {
+                    return Err(JobError::config(format!(
+                        "stream {} keeps key groups {} to {} of {groups}, which needs a primary key and a range within them",
+                        s.name, r.first, r.last
+                    )));
+                }
             }
             declared.push(if s.arrow_schema.is_empty() {
                 None
@@ -563,6 +578,10 @@ impl Plan {
             routed: sinks
                 .iter()
                 .map(|s| s.routing() == Routing::KeyGroup)
+                .collect(),
+            keep: sinks
+                .iter()
+                .map(|s| s.key_groups.as_ref().map(|r| (r.first, r.last)))
                 .collect(),
             holds: holds_,
             replays,

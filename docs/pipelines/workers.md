@@ -18,7 +18,7 @@ Workers give a job more CPU and memory than one pod can have. A job gains from t
 Some work does not spread:
 
 - A stream that one worker reads is no faster. [Streams that one worker reads](#streams-that-one-worker-reads) lists them.
-- The first worker commits each checkpoint for all the workers, so a job whose time goes to commits gains little.
+- The first worker commits each checkpoint for all the workers, so a job whose time goes to commits gains little. A destination with lane commits is different: each worker commits its own part.
 - Each attempt starts more pods. The coordinator also starts the source and destination connectors to set them up before the workers start.
 
 ## Before you start
@@ -78,7 +78,7 @@ The pipeline still applies, and its jobs run on one pod. These are the reasons, 
 | `a Spark or Flink transform runs on one pod` | Nothing today: a pipeline with a Spark or Flink transform runs on one pod. |
 | `the destination declares one writer lane` | Nothing: the destination takes one writer lane, so its jobs run on one pod. |
 | `the destination takes N writer lanes, fewer than M workers` | Set `resources.workers` to `N` or fewer. |
-| `a transactional destination's writer lanes commit on their own, which only one pod recovers` | Nothing today: a destination that commits a transaction for each writer lane runs on one pod. |
+| `a transactional destination runs on one pod unless its writer lanes commit on their own` | Nothing today: a transactional destination runs on workers only if its connector declares lane commits. Its documentation says whether it does. |
 | `a destination that loads staged epochs runs on one pod` | Nothing today: a destination that loads files that OpenETL stages runs on one pod. |
 | `a destination the engine writes runs on one pod` | Nothing today: the built-in `parquet` destination runs on one pod. |
 | `stream "NAME" holds columns, which runs on one pod` | Nothing today: a keyed stream in a destination that takes [holds](../get-started/concepts.md#schema-changes-and-holds) runs on one pod. |
@@ -118,6 +118,22 @@ A job on workers fails as a whole. OpenETL then retries it from the last checkpo
 - If the coordinator's pod is stopped, the coordinator stops the attempt at a checkpoint, as a job's pod does. OpenETL then places the job again.
 - Every worker must join its coordinator within 5 minutes after the coordinator starts the attempt. A worker that does not join in time fails the attempt.
 - If a worker runs out of memory, the retry runs at a larger size only when the pod launcher reports the worker's pod before the coordinator reports the attempt. Otherwise the retry runs at the same size. If workers run out of memory, set a larger `resources.size`.
+
+Some transactional destinations commit each writer lane in a transaction of its own. Their connector declares **lane commits**. With such a destination, a pod can fail after a checkpoint and before every lane commits. The next attempt finishes the epoch before it reads anything new. For each lane that did not commit, it does one of these:
+
+- It commits the copy that the lane kept, if the destination keeps one.
+- It reads that lane's part of the epoch again from the source, from the same positions, and commits it.
+
+> [!IMPORTANT]
+> Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records, with the same resume points, from a saved position. You make sure of this through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. OpenETL reads again without following the source, so the source ends the read once it has caught up. The attempt fails with `POSITION_LOST` in these cases:
+>
+> - The read ends before the saved position.
+> - The read returns fewer records up to the saved position than the epoch had, unless the epoch's checkpoint was placed on that part without a resume point. The restore reads the records after the last resume point again in that case.
+> - A part that ended its read in the epoch ends at another position.
+>
+> If the source returns other records in the same number, or more records, OpenETL commits them. For a keyed stream that the source does not split by key, or that is read with `cdc`, OpenETL commits only the records whose keys belong to the lane. If the source keeps the read open, the attempt waits until it is stopped.
+
+Do not change the primary key of a keyed stream while an epoch waits to be finished. Each lane's part of such a stream holds the rows of some of the key's values, so OpenETL cannot read it again under another key. The attempt then fails with `CONFIG_INVALID`, and names the key that the epoch used. Apply the pipeline with that key again, and change the key once the pipeline has committed again.
 
 ## Logs and usage
 

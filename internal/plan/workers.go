@@ -41,8 +41,8 @@ func OnePod(j WorkerJob) string {
 		return "the destination declares one writer lane"
 	case caps.Lanes() < j.Workers:
 		return fmt.Sprintf("the destination takes %d writer lanes, fewer than %d workers", caps.Lanes(), j.Workers)
-	case caps.Class == destination.TransactionalStream:
-		return "a transactional destination's writer lanes commit on their own, which only one pod recovers"
+	case caps.Class == destination.TransactionalStream && !caps.LaneCommits:
+		return "a transactional destination runs on one pod unless its writer lanes commit on their own"
 	case caps.Delivery == destination.DeliveryStaged:
 		return "a destination that loads staged epochs runs on one pod"
 	case j.EngineWritten:

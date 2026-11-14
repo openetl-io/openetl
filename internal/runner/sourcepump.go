@@ -48,7 +48,10 @@ type splitPos struct {
 	// their own; -1 before.
 	lane int
 	// state at the last resume point, or restored
-	resume   []byte
+	resume []byte
+	// Its state where the pending epoch began: at the barrier before, or as
+	// it joined.
+	from     []byte
 	rows     uint64 // emitted since it last placed a barrier
 	active   bool   // emitted since it last placed a barrier
 	dirty    bool   // emitted since the last resume point
@@ -193,7 +196,15 @@ type sourcePump struct {
 	// and the lanes of the splits each epoch got rows from.
 	worker     bool
 	emitTold   bool
-	splitLanes map[checkpoint.SplitRef]int
+	splitLanes map[checkpoint.SplitRef]splitRead
+}
+
+// splitRead is where a split's rows of an epoch went: the lane, or laneAll,
+// where its part of the epoch began, and how many rows it had.
+type splitRead struct {
+	lane int
+	from []byte
+	rows uint64
 }
 
 var (
@@ -234,7 +245,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, splits m
 		p.order = append(p.order, s.Name)
 		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes), adding: map[string]int{}, inTurn: job.inTurn(s)}
 		for _, sp := range splits[s.Name] {
-			pos := &splitPos{id: sp.ID, lane: st.firstLane(), resume: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced}
+			pos := &splitPos{id: sp.ID, lane: st.firstLane(), resume: sp.State, from: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced}
 			st.splits = append(st.splits, pos)
 			st.byID[sp.ID] = pos
 		}
@@ -562,7 +573,7 @@ func (p *sourcePump) add(name string, st *streamPos, splits []source.Split, late
 		if st.byID[s.ID] != nil {
 			return nil, fmt.Errorf("runner: source added %s, which the stream already has", splitName(name, s.ID))
 		}
-		pos := &splitPos{id: s.ID, lane: st.firstLane(), resume: s.State, placed: later, later: later}
+		pos := &splitPos{id: s.ID, lane: st.firstLane(), resume: s.State, from: s.State, placed: later, later: later}
 		st.splits = append(st.splits, pos)
 		st.byID[s.ID] = pos
 		delete(st.adding, s.ID)
@@ -605,7 +616,7 @@ func (p *sourcePump) request(n uint64) error {
 	p.rows = make(map[string]uint64, len(p.order))
 	p.bytes, p.thresholdSent = 0, false
 	if p.worker {
-		p.emitTold, p.splitLanes = false, map[checkpoint.SplitRef]int{}
+		p.emitTold, p.splitLanes = false, map[checkpoint.SplitRef]splitRead{}
 	}
 	for _, st := range p.streams {
 		for _, sp := range st.splits {
@@ -727,9 +738,9 @@ func (p *sourcePump) place(name string, sp *splitPos, forced bool) error {
 		if st.inTurn {
 			lane = laneAll
 		}
-		p.splitLanes[checkpoint.SplitRef{Stream: name, ID: sp.id}] = lane
+		p.splitLanes[checkpoint.SplitRef{Stream: name, ID: sp.id}] = splitRead{lane: lane, from: sp.from, rows: sp.rows}
 	}
-	sp.rows, sp.reread = 0, false
+	sp.rows, sp.reread, sp.from = 0, false, sp.resume
 	p.unplaced--
 	n := p.pending
 	// Before the last lane's barrier goes out, so the sink that sees it knows

@@ -41,15 +41,18 @@ import (
 // names before any worker is assigned work. For the staged destination one
 // worker raises the fence and applies what isn't. For the txn one each
 // committable of the record goes to a worker, whatever lanes the attempt
-// has, which fences its transactional ID first, and then:
+// has, those that name a split in common to one worker, as the runner has
+// it, which fences its transactional ID first, and then:
 //  1. finds its marker: done;
 //  2. or, if the writer staged, commits the staging in a transaction of its
 //     own;
-//  3. or redoes the lane's part of the epoch from the source: it reads, from
-//     the record before's positions to the record's, the splits and key
-//     groups the committable names, folds them into the key groups' state
-//     of the record before, closes the windows the record's watermarks
-//     close, and commits that.
+//  3. or redoes the lane's part of the epoch from the source: it reads the
+//     splits and key groups the committable names, each from where the
+//     committable says its part of the epoch began to the record's position,
+//     as the runner does; with the keyed operator, it also reads every other
+//     split from the record before's positions, folds them into the key
+//     groups' state of the record before, and closes the windows the
+//     record's watermarks close; and commits that.
 //
 // A single runner's recovery fences and finds the marker, or else rolls
 // back to the record before. On several writers that rule finds some lanes
@@ -121,7 +124,7 @@ var variantShapes = map[string]wShape{
 	"staging-unfenced":           {dest: "txn", staging: "all"},
 	"redo-by-new-layout":         {dest: "txn", staging: "none"},
 	"replay-own-watermarks":      {dest: "txn", staging: "none", exchange: "on"},
-	"prune-to-head":              {dest: "txn", staging: "none"},
+	"prune-to-head":              {dest: "txn", staging: "none", exchange: "on"},
 	"replay-not-exact":           {dest: "txn", staging: "none"},
 }
 
@@ -238,8 +241,9 @@ func newTxnBroker() *wBroker {
 
 // wTxnStaged is a txn writer lane's committable: its transaction and the
 // producer that holds it; what of the epoch it holds, the splits whose rows
-// it wrote and the key groups whose windows it did, in the layout that
-// wrote it; and whether the writer staged a copy, of which streams.
+// it wrote, with where each one's part of the epoch began, and the key
+// groups whose windows it did, in the layout that wrote it; and whether the
+// writer staged a copy, of which streams.
 type wTxnStaged struct {
 	Lane     int                      `json:"lane"`
 	Slot     int                      `json:"slot"`
@@ -248,6 +252,7 @@ type wTxnStaged struct {
 	Gen      uint64                   `json:"gen"`
 	N        uint64                   `json:"n"`
 	Splits   []int                    `json:"splits,omitempty"`
+	From     []int                    `json:"from,omitempty"`
 	KG       checkpoint.KeyGroupRange `json:"key_groups"`
 	Staged   bool                     `json:"staged,omitempty"`
 	Streams  []string                 `json:"streams,omitempty"`
@@ -439,18 +444,26 @@ func (m *wModel) redo(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout, id wT
 }
 
 // replay is a committable's part of rec's epoch, read again from the
-// source: the row-wise statement's output of its splits, and the windows of
-// its key groups that the epoch closed, from the state of the record
-// before and every split's rows since. Its rows are the epoch's, and carry
-// its generation.
+// source: the row-wise statement's output of its splits, from where the
+// committable says each one's part began, and the windows of its key groups
+// that the epoch closed, from the state of the record before and every
+// split's rows since. Its rows are the epoch's, and carry its generation.
+// Only the keyed operator's needs the record before.
 func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (map[string][]row, error) {
-	prev, err := m.readRecord(rec.Previous)
-	if err != nil {
-		if errors.Is(err, checkpoint.ErrNotFound) {
-			m.problem("restore", "%s can't redo %v: %v", w.name(), c.marker(), err)
-			return nil, fmt.Errorf("%w: %w", errRedo, err)
+	var prev *wRecord
+	if m.cfg.exchange || m.cfg.broken == "redo-by-new-layout" {
+		var err error
+		if prev, err = m.readRecord(rec.Previous); err != nil {
+			if errors.Is(err, checkpoint.ErrNotFound) {
+				m.problem("restore", "%s can't redo %v: %v", w.name(), c.marker(), err)
+				return nil, fmt.Errorf("%w: %w", errRedo, err)
+			}
+			return nil, err
 		}
-		return nil, err
+	}
+	began := map[int]int{}
+	for i, s := range c.Splits {
+		began[s] = c.From[i]
 	}
 	splits, kg := c.Splits, c.KG
 	if m.cfg.broken == "redo-by-new-layout" {
@@ -465,7 +478,11 @@ func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (ma
 		}
 	}
 	rng := func(s int) []wEvent {
-		from, to := prev.split(s).Pos, rec.split(s).Pos
+		from, ok := began[s]
+		if !ok || m.cfg.broken == "redo-by-new-layout" {
+			from = prev.split(s).Pos
+		}
+		to := rec.split(s).Pos
 		if m.trimmed[s] > from {
 			m.problem("exactly-once", "%s redoes %v from split %d at %d, but positions below %d were acknowledged", w.name(), c.marker(), s, from, m.trimmed[s])
 		}
@@ -634,7 +651,9 @@ func (c *wCoord) settleMsg(i int) wMsg {
 		msg.recover = i == int(c.restored.epoch()%uint64(c.lay.workers))
 		return msg
 	}
-	for j, s := range c.restored.txnCommittables() {
+	cs := c.restored.txnCommittables()
+	settler := settlers(cs, c.lay.workers)
+	for j, s := range cs {
 		if c.m.cfg.broken == "recovery-skips-uncommitted" {
 			// Each worker settles the lanes of the record it runs now.
 			if s.Lane < len(c.lay.lanes) && c.lay.lanes[s.Lane].worker == i {
@@ -642,11 +661,46 @@ func (c *wCoord) settleMsg(i int) wMsg {
 			}
 			continue
 		}
-		if j%c.lay.workers == i {
+		if settler[j] == i {
 			msg.tasks = append(msg.tasks, s)
 		}
 	}
 	return msg
+}
+
+// settlers is the worker of n that settles each committable: those that
+// name a split in common go to one, which reads the split again for each in
+// turn, and the others in turn.
+func settlers(cs []wTxnStaged, n int) []int {
+	parent := make([]int, len(cs))
+	var root func(int) int
+	root = func(j int) int {
+		if parent[j] != j {
+			parent[j] = root(parent[j])
+		}
+		return parent[j]
+	}
+	first := map[int]int{}
+	for j, c := range cs {
+		parent[j] = j
+		for _, s := range c.Splits {
+			if g, ok := first[s]; ok {
+				parent[root(j)] = root(g)
+			} else {
+				first[s] = j
+			}
+		}
+	}
+	out, worker := make([]int, len(cs)), map[int]int{}
+	for j := range cs {
+		w, ok := worker[root(j)]
+		if !ok {
+			w = len(worker) % n
+			worker[root(j)] = w
+		}
+		out[j] = w
+	}
+	return out
 }
 
 // takeSettled takes a worker's answer to its settling, and once every
@@ -854,7 +908,7 @@ func (l *wLane) stageTxn(d decision) {
 	id := w.ownID(l.idx, slot)
 	st := wTxnStaged{Lane: l.idx, Slot: slot, IDGen: id.Gen, Producer: w.producers[id], Gen: w.gen, N: e, KG: l.kg, Staged: m.stages(l.idx)}
 	for _, c := range l.splits {
-		st.Splits = append(st.Splits, c.split)
+		st.Splits, st.From = append(st.Splits, c.split), append(st.From, l.began[e][c.split])
 	}
 	rows := map[string][]row{}
 	for _, s := range wStreams {

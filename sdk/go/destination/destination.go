@@ -132,8 +132,21 @@ type Capabilities struct {
 	Holds Holds
 	// The most writer lanes an attempt may open: a Writer each,
 	// whose writes run concurrently. 0: one. A destination that can't commit
-	// every lane's committables together takes one.
+	// every lane's committables together takes one, unless it has
+	// LaneCommits.
 	WriterLanes int
+	// Each writer lane commits its own part of an epoch, with a marker of
+	// its own, as a transaction its writer holds open does. Commit then runs
+	// on every lane's writer with that lane's committable alone, and an
+	// attempt on one pod opens one writer lane. A recorded epoch whose
+	// committables say what they hold is settled committable by committable,
+	// each on a writer opened as the lane that staged it: Recover, with the
+	// epoch and that committable alone, fences what the lane holds and
+	// reports Applied for a marker it finds, Redone for staging it committed,
+	// or Lost for neither. After Lost, the platform reads the lane's part of
+	// the epoch again from the source, and writes it on that writer as the
+	// epoch's: Write, PreCommit and Commit with the new committable.
+	LaneCommits bool
 }
 
 // Lanes is how many writer lanes the destination takes.
@@ -224,7 +237,9 @@ type OpenConfig struct {
 	CommitInterval time.Duration
 	// The writer's lane. Lane 0's writer also applies schemas, recovers and
 	// commits, for every lane, and the others' open once it has recovered,
-	// when the attempt has settled how many it has.
+	// when the attempt has settled how many it has. With LaneCommits, a
+	// writer that settles a recorded committable is opened as the lane that
+	// staged it, before the attempt's writers.
 	Lane int
 }
 
@@ -240,7 +255,9 @@ type Destination interface {
 // before PreCommit(N). Lanes write concurrently. Commit runs on lane 0's
 // writer, on another goroutine, concurrently with later Writes and PreCommits
 // but never with another Commit. Other lanes' Commit and Recover are never
-// called.
+// called, but with LaneCommits: then each lane's Commit runs on its own
+// writer, and a writer that settles a committable gets Recover and, after
+// Lost, the epoch's Write, PreCommit and Commit (Capabilities.LaneCommits).
 type Writer interface {
 	// Write adds a batch to the lane's part of epoch e. The batch is released
 	// after Write returns; retain it to keep it longer.
@@ -251,7 +268,9 @@ type Writer interface {
 	// Commit runs after e's checkpoint record is in the log, with every
 	// lane's committable, by lane. It makes the epoch visible with an
 	// (e.Generation, e.N) marker per stream, behind the fence: in one
-	// transaction, or one per stream with ScopeStream. Idempotent.
+	// transaction, or one per stream with ScopeStream. Idempotent. With
+	// LaneCommits, staged is the writer's lane's alone, and the marker is the
+	// lane's.
 	Commit(ctx context.Context, e Epoch, staged []Staged) (Committed, error)
 	// Recover raises the fence to gen, then reports Applied, applies the
 	// streams whose marker is missing and reports Redone, or reports Lost.
@@ -260,7 +279,9 @@ type Writer interface {
 	// fence and reports Applied. Otherwise it may then drop whatever earlier
 	// generations staged, since none of it can be applied any more, and,
 	// unless e is lost, the markers of epochs before e.N, which no recovery
-	// checks again.
+	// checks again. With LaneCommits, staged may be one committable, which
+	// the writer settles alone (Capabilities.LaneCommits), while others
+	// settle the epoch's other committables: it drops nothing they staged.
 	Recover(ctx context.Context, gen uint64, e Epoch, staged []Staged) (Recovery, error)
 	Close(ctx context.Context) error
 }
@@ -358,7 +379,9 @@ type Teardowner interface {
 // or narrows them. It is idempotent, and isn't fenced.
 //
 // It runs on lane 0's writer, before Recover with the restored epoch's
-// schemas, and before each epoch whose schemas changed is recorded.
+// schemas, and before each epoch whose schemas changed is recorded. With
+// LaneCommits, it also runs with the recorded epoch's schemas on each
+// writer that settles a committable, before that writer's Recover.
 //
 // A destination that takes holds answers with the columns it didn't add or
 // change, having applied the rest, instead of failing, and with what each

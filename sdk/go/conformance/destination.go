@@ -178,6 +178,11 @@ func (r *destinationRun) staged() bool {
 	return r.spec.GetDestination().GetDelivery() == protocolv1.Delivery_DELIVERY_STAGED
 }
 
+// laneCommits: each writer lane commits its own part of an epoch.
+func (r *destinationRun) laneCommits() bool {
+	return r.spec.GetDestination().GetLaneCommits()
+}
+
 // area is where the kit stages a session's epochs for a staged
 // destination, served by its process's host services until the next
 // session's replaces it, as each pipeline has staging of its own.
@@ -226,6 +231,9 @@ type session struct {
 	mu      sync.Mutex
 	pending map[int]map[string][]arrow.RecordBatch
 	files   map[string]map[string][]*protocolv1.StagedFile
+	// For a destination whose lanes commit on their own: what each lane
+	// wrote of each epoch, by epoch, which a lane lost is written again from.
+	works map[string][]laneWork
 }
 
 func (r *destinationRun) session(t T, scope protocolv1.CommitScope, mode protocolv1.WriteMode) *session {

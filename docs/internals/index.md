@@ -85,14 +85,14 @@ Data is committed in **epochs**: the records between two checkpoints. For each o
 1. The coordinator requests barrier N. The source pump inserts it after each split's next resume point. This aligns the barrier with a position the source can resume from.
 2. The barrier travels through the engine to each writer lane. After all its streams cross the barrier, each lane calls `PreCommit(N)` and returns a committable. The lane's data is durable. Stage-and-apply and transactional destinations keep it invisible until commit; deliver-and-acknowledge destinations have already delivered it.
 3. The coordinator writes record N to the checkpoint log and moves `HEAD` to it. This is the commit point.
-4. Lane 0's writer calls `Commit(N)`. Stage-and-apply destinations make the epoch visible with stream markers protected by the destination fence. Commit is idempotent and can be retried. If retries fail, the next attempt's `Recover` applies the epoch from its recorded committables.
+4. Lane 0's writer calls `Commit(N)` with every lane's committable. Stage-and-apply destinations make the epoch visible with stream markers protected by the destination fence. Commit is idempotent and can be retried. If retries fail, the next attempt's `Recover` applies the epoch from its recorded committables. A destination with lane commits is different: each lane's writer commits its own committable, as [Attempts on workers](#attempts-on-workers) describes.
 5. The source receives the positions it can acknowledge upstream, such as event offsets or a replication position. This notification is one checkpoint behind.
 
 Commits run one at a time, in epoch order, while barriers for later epochs go on being placed.
 
 After claiming the pipeline, an attempt calls its writer's `Recover`. This raises the destination fence to the new generation, preventing zombie commits. It then checks the epoch referenced by `HEAD`.
 
-The epoch can be already applied, recoverable from its committables, or lost. If it is lost, the log returns to the preceding record. The attempt reads from the resume states in the selected record.
+The epoch can be already applied, recoverable from its committables, or lost. If it is lost, the log returns to the preceding record. The attempt reads from the resume states in the selected record. A record of a destination with lane commits, written on workers, is settled lane by lane instead, and is never rolled back; [Attempts on workers](#attempts-on-workers) describes how.
 
 A delayed split can use a forced barrier without a resume point only when replay preserves the required delivery guarantee. Recovery from that checkpoint reads some records again. The [`test/sim`](../../test/sim) simulation exercises the protocol.
 
@@ -100,23 +100,31 @@ A delayed split can use a forced barrier without a resume point only when replay
 
 An attempt can run on several runners: one runner coordinates it, and the others, its workers, run its lanes. They use the attempt protocol, `openetl.attempt.v1` ([`internal/runner/attempt`](../../internal/runner/attempt)). Each worker opens one call to the coordinator. The coordinator claims the pipeline, writes the records and decides when each epoch commits. It reads and writes no data. It starts the source and destination connectors, with their credentials, only to set them up and discover the streams. It then keeps the destination's capabilities and stops the connectors before the workers start, and the workers skip the connectors' setup. The attempt runs this way:
 
-- Before the coordinator assigns work, the first worker opens the attempt's first writer lane. It raises the destination fence and settles the epoch that `HEAD` points to, as the recovery of a single runner does. It also gets the splits of the reads that start.
+- Before the coordinator assigns work, the first worker opens the attempt's first writer lane. It raises the destination fence and settles the epoch that `HEAD` points to, as the recovery of a single runner does, unless the epoch is settled lane by lane, as described below. It also gets the splits of the reads that start.
 - Each worker reads its splits with its own source connector and runs its own engine. It writes its writer lanes with its own destination writers.
 - All the splits of these streams go to one worker:
   - a stream written with overwrite;
   - a stream that the attempt does not read;
   - a keyed stream whose splits do not keep a key's rows together.
-- A worker sends its share of each epoch when its part is durable. The share holds its splits' positions, its rows, its committables and what its engine reported. The coordinator merges the shares into one record, which also says what each committable holds.
-- After the record, the first worker applies schemas and commits at the coordinator's request. The coordinator then sends the record's positions to the workers. Each worker acknowledges only the positions of its own splits, one checkpoint behind.
+- A worker sends its share of each epoch when its part is durable. The share holds its splits' positions, its rows, its committables and what its engine reported. The coordinator merges the shares into one record. The record also has each committable's coverage: the splits whose rows it holds, where each split's part of the epoch began, how many rows the split had, and the key groups of those rows with the key that grouped them.
+- After the record, the first worker applies schemas and commits at the coordinator's request. A destination with lane commits (`DestinationCapabilities.lane_commits`) is different: each worker commits its own writer lanes, each with its own committable. The coordinator then sends the record's positions to the workers. Each worker acknowledges only the positions of its own splits, one checkpoint behind.
 - Each stream's schema has one owner, the coordinator. An engine whose lane changes a schema proposes the change from the version that it has. Integers past ±2^53 in a column are such a change too, because a later float then makes the column text. Every engine shapes by the versions that the coordinator accepts.
 - A lost worker or a lost coordinator fails the attempt. The next attempt restores every worker from the record, in a new layout.
+
+With lane commits, an epoch can be committed in part, so the next attempt settles the restored record committable by committable ([`internal/runner/redo.go`](../../internal/runner/redo.go)). The coordinator sends each worker a `Settle` call before it assigns any work. Committables whose coverage shares a split go to the same worker. While the coordinator waits for any call's answer, its heartbeats say so (`Heartbeat.calling`), and a worker without its assignment goes on waiting for it. For each committable, the worker opens a writer as the lane that staged it, and its `Recover` fences that lane. The committable then ends one of three ways:
+
+- The writer finds the lane's marker, so the lane is applied.
+- The writer commits the lane's staging, if the lane kept one.
+- The writer reports it lost. The worker then reads each covered split again, on a read of its own that does not follow the source, from where its part of the epoch began. The read stops at the resume point that the record has for the split, or at a completion at the state that the record has. It fails with `POSITION_LOST` if it ends first, ends elsewhere, or returns fewer rows than the coverage counts, unless the split's barrier was forced. The coverage also names the primary key of a stream split by key group; under another key, the redo fails with `CONFIG_INVALID`. The worker sends the rows through an engine that keeps only the committable's key groups, writes them as that epoch's on the writer, and commits them.
+
+A single runner settles such a record the same way. On one runner, a destination with lane commits gets one writer lane, and a record without coverage is recovered whole, as before. Resplitting is off for such a destination, because a split added during an epoch cannot be read again as it was.
 
 These jobs run on one pod:
 
 - a job with a transform;
 - a job whose streams hold columns;
 - a job whose destination loads staged epochs or is written by the engine;
-- a job whose destination commits each writer lane's transaction separately;
+- a job whose destination is transactional and does not have lane commits;
 - a job whose destination takes fewer writer lanes than there are workers.
 
 `plan.OnePod` ([`internal/plan`](../../internal/plan)) is the one check behind these cases, for the plan, for `EnqueueWork` and for `Job.OnWorkers`. `EnqueueWork` works out an attempt's workers when it sizes the attempt, so the workflows and their histories do not change. The placer sends an attempt on workers only to a pod launcher of its pool, all of its pods or none, and the launcher's `--max-pods` and `--max-pod-cpu` count every pod. The launcher ([`internal/runner/pods`](../../internal/runner/pods)) makes the workers' pods, then the coordinator's.

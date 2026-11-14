@@ -264,7 +264,7 @@ func (c *coordinator) serve(st coordinatorStream) error {
 	sent := make(chan error, 1)
 	go func() {
 		defer close(senderDone)
-		sent <- m.out.run(st.Send, coordinatorHeartbeat, c.opts.heartbeat(), stopSend)
+		sent <- m.out.run(st.Send, c.heartbeat, c.opts.heartbeat(), stopSend)
 	}()
 	timer := time.NewTimer(c.opts.timeout())
 	defer timer.Stop()
@@ -317,6 +317,18 @@ func (c *coordinator) serve(st coordinatorStream) error {
 			// End went out: the worker closes its side next.
 		}
 	}
+}
+
+// heartbeat is the coordinator's, which says whether it waits for an
+// answer to a call.
+func (c *coordinator) heartbeat() *attemptv1.AttendResponse {
+	c.mu.Lock()
+	calling := len(c.calls) > 0
+	c.mu.Unlock()
+	if !calling {
+		return coordinatorHeartbeat
+	}
+	return &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Heartbeat{Heartbeat: &attemptv1.Heartbeat{Calling: true}}}
 }
 
 func (c *coordinator) isOver() bool {
