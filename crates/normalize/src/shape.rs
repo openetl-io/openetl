@@ -365,9 +365,28 @@ impl Shaper {
         self
     }
 
+    /// Where the first half holds cells, the source columns whose cells it
+    /// can't hold; None where a value that doesn't fit rejects its row.
+    pub fn cell_holds(&self) -> Option<HashSet<String>> {
+        self.typer.hold_cells.clone()
+    }
+
+    /// The first half holds cells as [`Shaper::cell_holds`] gives them,
+    /// for a stream another shaper's second half takes.
+    pub fn with_cell_holds(mut self, holds: Option<HashSet<String>>) -> Self {
+        self.typer.hold_cells = holds;
+        self
+    }
+
     /// None until the stream has a column.
     pub fn schema(&self) -> Option<SchemaRef> {
         self.current.clone()
+    }
+
+    /// The stream's columns under their source names, at the types they
+    /// have.
+    pub fn live(&self) -> Schema {
+        self.evolver.live()
     }
 
     /// Takes the declared types of the stream's columns into its schema

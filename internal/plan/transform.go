@@ -32,6 +32,9 @@ type Output struct {
 	Exact bool
 	// spark, flink or sql.
 	Engine string
+	// A SQL transform's output that replaces a source's stream: the spec's
+	// settings for that stream, which it lands with. Nil otherwise.
+	Spec *apiv1.PipelineStream
 }
 
 func (o Output) Delivery() delivery.Stream {

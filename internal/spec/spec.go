@@ -636,8 +636,6 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, fmt.Errorf("source.streams[%d].timestamps: Spark keeps only microseconds, so a Spark transform's inputs can't keep nanoseconds", i)
 		case (spark || flink) && s.Collapse != nil:
 			return nil, fmt.Errorf("source.streams[%d].collapse: a transform's inputs aren't written to the destination, and its outputs aren't collapsed", i)
-		case sql && s.Collapse != nil:
-			return nil, fmt.Errorf("source.streams[%d].collapse: with a SQL transform, neither streams nor outputs are collapsed", i)
 		}
 		if st.Require, err = enum(apiv1.DeliveryLevel_value, "DELIVERY_LEVEL_", "require", s.Require, apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
@@ -652,11 +650,8 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		if st.TypeChanges, err = enum(apiv1.TypeChanges_value, "TYPE_CHANGES_", at+".typeChanges", s.TypeChanges, apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED); err != nil {
 			return nil, err
 		}
-		switch {
-		case (spark || flink) && st.TypeChanges != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED:
+		if (spark || flink) && st.TypeChanges != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED {
 			return nil, fmt.Errorf("%s.typeChanges: a transform's inputs aren't written to the destination; destination.typeChanges says what its outputs' columns may do", at)
-		case sql && st.TypeChanges != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED:
-			return nil, fmt.Errorf("%s.typeChanges: with a SQL transform, destination.typeChanges says what every stream's and output's columns may do", at)
 		}
 		if err := parseEventTime(at, s, sql, st); err != nil {
 			return nil, err
@@ -686,7 +681,7 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			}
 			st.Columns[name] = col
 		}
-		if holds && (spark || flink || sql) {
+		if holds && (spark || flink) {
 			return nil, fmt.Errorf("%s: a transform's inputs can't be held: no quarantine, held, heldValue or groups, here or in its columns", at)
 		}
 		p.Source.Streams = append(p.Source.Streams, st)

@@ -13,6 +13,7 @@ import (
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/sqlplan"
@@ -221,5 +222,73 @@ func TestBuildJobRefusesSQLThatDoesntPlan(t *testing.T) {
 	defer connectorhost.Close(job.Destination)
 	if errs.CodeOf(err) != errs.ConfigInvalid {
 		t.Errorf("without a planner: %v", err)
+	}
+}
+
+// A SQL transform's output lands with the settings of the stream of its
+// name, which it replaces or is: its holds, collapse and typeChanges. An
+// output of another name has the pipeline's. A setting with no output to
+// apply to is a problem.
+func TestSQLOutputsTakeTheirStreamsSettings(t *testing.T) {
+	caps := destination.Capabilities{WriteModes: []destination.WriteMode{destination.Append, destination.Merge},
+		Holds: destination.Holds{ByID: true, ByKey: true, Guarded: true}}
+	off := false
+	users := &apiv1.PipelineStream{Name: "users", Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL, TypeChanges: apiv1.TypeChanges_TYPE_CHANGES_ALLOW,
+		Groups: []*apiv1.ColumnGroup{{Columns: []string{"a", "b"}}}}
+	purchases := &apiv1.PipelineStream{Name: "purchases", Collapse: &off, Held: &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_VALUE, Value: "0"}}
+	spec := func(passthrough apiv1.Passthrough) *apiv1.PipelineSpec {
+		p := sqlSpec(t, emails, passthrough, nil).GetPipeline()
+		p.Source = &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{users, purchases}}
+		return p
+	}
+	streams := []runner.Stream{{Name: "users", PrimaryKey: []string{"id"}}, {Name: "purchases", PrimaryKey: []string{"id"}, Collapse: &off}}
+	inputs := []plan.Input{{Name: "users", PrimaryKey: []string{"id"}, Spec: users}, {Name: "purchases", PrimaryKey: []string{"id"}, Spec: purchases}}
+	replacing := func(output string, key ...string) sqlplan.Answer {
+		a := planned(t, output, key...)
+		a.Statements[0].Replaces = true
+		return a
+	}
+
+	_, outs, err := sqlOutputs(t.Context(), spec(0), caps, destination.SoftDelete, (&planner{answer: replacing("users", "uid")}).plan(), streams, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]runner.Stream{}
+	for _, o := range outs {
+		byName[o.Name] = o
+	}
+	if u := byName["users"]; u.Holds == nil || !u.Holds.Cells || len(u.Holds.Groups) != 1 || !u.AllowTypeChanges || !u.Transformed {
+		t.Errorf("users, which a statement replaces: %+v", u)
+	}
+	if pu := byName["purchases"]; pu.Holds == nil || pu.Holds.Held.Mode != runner.HeldValue || pu.Collapse == nil || *pu.Collapse || pu.AllowTypeChanges {
+		t.Errorf("purchases, passed through: %+v", pu)
+	}
+
+	// emails isn't a stream's, so it has the pipeline's settings.
+	_, outs, err = sqlOutputs(t.Context(), spec(0), caps, destination.SoftDelete, plannedEmails(t).plan(), streams, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := outs[0]; e.Name != "emails" || e.Holds == nil || e.Holds.Cells || e.AllowTypeChanges {
+		t.Errorf("emails: %+v", e)
+	}
+
+	for _, c := range []struct {
+		name        string
+		answer      sqlplan.Answer
+		passthrough apiv1.Passthrough
+		want        string
+	}{
+		{"collapse on a replaced stream", replacing("purchases", "uid"), 0, `stream "purchases" sets collapse, and a statement replaces it`},
+		{"holds on an output without a key", replacing("users"), 0, "gives its output no primary key"},
+		{"a stream that doesn't land", planned(t, "emails", "uid"), apiv1.Passthrough_PASSTHROUGH_NONE,
+			`stream "users" sets quarantine, groups, typeChanges, which apply to it as the destination gets it`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, err := sqlOutputs(t.Context(), spec(c.passthrough), caps, destination.SoftDelete, (&planner{answer: c.answer}).plan(), streams, inputs)
+			if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v, want %q", err, c.want)
+			}
+		})
 	}
 }

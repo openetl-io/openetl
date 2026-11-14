@@ -233,6 +233,19 @@ type OutputState struct {
 	Schema []byte `json:"schema,omitempty"`
 	// Rows the transform output in the epoch, quarantined ones included.
 	Rows uint64 `json:"rows,omitempty"`
+	// As StreamState's, for a SQL transform's output; the source's streams
+	// then hold nothing.
+	Delivered []byte `json:"delivered,omitempty"`
+	Holds     *Holds `json:"holds,omitempty"`
+}
+
+// HoldsOf are what the stream or output named holds at the record: an
+// output's, with a SQL transform, and otherwise the stream's.
+func (r *Record) HoldsOf(name string) *Holds {
+	if h := r.Outputs[name].Holds; h != nil {
+		return h
+	}
+	return r.Streams[name].Holds
 }
 
 // QuarantineFile holds the records of one stream the engine quarantined in

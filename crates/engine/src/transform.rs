@@ -174,9 +174,15 @@ impl Transform {
     }
 
     /// The statement planned again with the input it reads at `schema`, as
-    /// a lane that sees the stream at another schema needs it. Its output
-    /// and key stay the job's, or the job stops with SCHEMA_DRIFT.
-    pub fn again(&self, statement: usize, schema: SchemaRef) -> Result<Statement, JobError> {
+    /// a lane that sees the stream at another schema, from `was`, needs it.
+    /// Its output and key stay the job's, or the job stops with
+    /// SCHEMA_DRIFT.
+    pub fn again(
+        &self,
+        statement: usize,
+        was: &Schema,
+        schema: SchemaRef,
+    ) -> Result<Statement, JobError> {
         let st = &self.statements[statement];
         let drift = |what: String| {
             JobError::new(
@@ -187,12 +193,40 @@ impl Transform {
                 ),
             )
         };
+        // The columns it reads whose types changed, each with the cast that
+        // reads it as before.
+        let casts: Vec<String> = st
+            .op
+            .reads
+            .fields()
+            .iter()
+            .filter_map(|r| {
+                let old = was.field_with_name(r.name()).ok()?;
+                let new = schema.field_with_name(r.name()).ok()?;
+                if old.data_type() == new.data_type() {
+                    return None;
+                }
+                let t = openetl_sql::cast_type(old)?;
+                Some(format!(
+                    "{} changed from {} to {}: write CAST({} AS {t}) in its place to read it as before",
+                    r.name(),
+                    openetl_normalize::logical_type(old),
+                    openetl_normalize::logical_type(new),
+                    openetl_sql::ident(r.name())
+                ))
+            })
+            .collect();
         let mut planned = plan_statements(&self.sql, &self.inputs, Some((st.input, schema)))
             .map_err(|e| {
-                drift(format!(
+                let mut what = format!(
                     "the statement writing {} no longer plans: {}",
                     st.output, e.message
-                ))
+                );
+                if !casts.is_empty() {
+                    what.push_str("; column ");
+                    what.push_str(&casts.join("; column "));
+                }
+                drift(what)
             })?;
         if statement >= planned.len() {
             return Err(JobError::internal("planning again gave fewer statements"));
@@ -493,11 +527,67 @@ mod tests {
             Field::new("email", DataType::Utf8, true),
             Field::new("name", DataType::Utf8, true),
         ]));
-        let again = t.again(0, wider).unwrap();
+        let was = t.inputs[0].schema.clone().unwrap();
+        let again = t.again(0, &was, wider).unwrap();
         assert_eq!(again.key, ["id"]);
         let gone = Arc::new(Schema::new(vec![Field::new("email", DataType::Utf8, true)]));
-        let e = t.again(0, gone).unwrap_err();
+        let e = t.again(0, &was, gone).unwrap_err();
         assert_eq!(e.code, openetl_proto::connector::v1::ErrorCode::SchemaDrift);
+    }
+
+    /// A statement that no longer plans says which columns it reads
+    /// changed, and the cast that reads each as before.
+    #[test]
+    fn a_statement_that_no_longer_plans_gives_the_cast_to_write() {
+        let t = Transform::plan(
+            "INSERT INTO c SELECT id, lower(email) AS email FROM a",
+            vec![input("a", &["id"], false)],
+        )
+        .unwrap();
+        let was = t.inputs[0].schema.clone().unwrap();
+        let changed = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("email", DataType::Int64, true),
+        ]));
+        let e = t.again(0, &was, changed).unwrap_err();
+        assert_eq!(e.code, openetl_proto::connector::v1::ErrorCode::SchemaDrift);
+        assert!(
+            e.message.contains(
+                "column email changed from string to int64: write CAST(email AS VARCHAR) in its place"
+            ),
+            "{}",
+            e.message
+        );
+    }
+
+    /// A column whose name needs quotes gets them in the cast, which plans.
+    #[test]
+    fn the_cast_to_write_quotes_a_name_that_needs_it() {
+        let schema = |t: DataType| {
+            Some(Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("Email Address", t, true),
+            ])))
+        };
+        let a = |t: DataType| Input {
+            name: "a".into(),
+            schema: schema(t),
+            key: vec!["id".into()],
+            changelog: false,
+        };
+        let t = Transform::plan(
+            r#"INSERT INTO c SELECT id, lower("Email Address") AS e FROM a"#,
+            vec![a(DataType::Utf8)],
+        )
+        .unwrap();
+        let was = t.inputs[0].schema.clone().unwrap();
+        let e = t
+            .again(0, &was, schema(DataType::Int64).unwrap())
+            .unwrap_err();
+        let cast = r#"CAST("Email Address" AS VARCHAR)"#;
+        assert!(e.message.contains(cast), "{}", e.message);
+        let fixed = format!("INSERT INTO c SELECT id, lower({cast}) AS e FROM a");
+        Transform::plan(&fixed, vec![a(DataType::Int64)]).unwrap();
     }
 
     /// A schema a transform's input recorded is as statements read it, so

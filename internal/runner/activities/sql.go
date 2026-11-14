@@ -147,6 +147,9 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 	var outputs []runner.Stream
 	var expected []runner.ExpectedOutput
 	outs, reads := plan.SQLOutputs(p, caps, &a, inputs)
+	if err := errors.Join(plan.SQLSettingProblems(p, caps, &a, inputs, outs)...); err != nil {
+		return nil, nil, errs.Wrap(errs.ConfigInvalid, err, "runner")
+	}
 	for i, st := range a.Statements {
 		o := outs[i]
 		if len(st.Inputs) != 1 {
@@ -168,7 +171,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			return nil, nil, errs.Wrap(errs.Internal, err, fmt.Sprintf("runner: output %s's schema", o.Name))
 		}
 		expected = append(expected, runner.ExpectedOutput{Name: o.Name, Schema: schema, PrimaryKey: o.PrimaryKey, Input: s.Name})
-		outputs = append(outputs, runner.Stream{
+		out := runner.Stream{
 			Name:                 o.Name,
 			Replay:               s.Replay,
 			Read:                 s.Read,
@@ -177,12 +180,16 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			NanosecondTimestamps: s.NanosecondTimestamps,
 			Require:              o.Require,
 			Deletes:              deletes,
-			AllowTypeChanges:     plan.TypeChanges(p, nil),
+			AllowTypeChanges:     plan.TypeChanges(p, o.Spec),
 			Transformed:          true,
 			SplitsByKey:          s.SplitsByKey,
 			Table:                p.GetDestination().GetTables()[o.Name],
 			From:                 s.Name,
-		})
+		}
+		if plan.Holds(caps, o.Mode, len(o.PrimaryKey) > 0) {
+			out.Holds = streamHolds(o.Spec)
+		}
+		outputs = append(outputs, out)
 	}
 	for _, s := range streams {
 		if !plan.Lands(p, &a, s.Name) {
@@ -192,11 +199,12 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 		if err != nil {
 			return nil, nil, err
 		}
-		mode := plan.StreamMode(p, caps, in.Read, len(s.PrimaryKey) > 0)
-		if err := plan.SyncProblem(mode, s.Name, in.Read); err != nil {
+		keyed := len(s.PrimaryKey) > 0
+		mode := plan.StreamMode(p, caps, in.Read, keyed)
+		if err := errors.Join(plan.SyncProblem(mode, s.Name, in.Read), plan.HoldProblem(caps, mode, keyed, s.Name, in.Spec)); err != nil {
 			return nil, nil, errs.Wrap(errs.ConfigInvalid, err, "runner")
 		}
-		outputs = append(outputs, runner.Stream{
+		out := runner.Stream{
 			Name:                 s.Name,
 			Replay:               s.Replay,
 			Read:                 s.Read,
@@ -204,12 +212,17 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			PrimaryKey:           s.PrimaryKey,
 			NanosecondTimestamps: s.NanosecondTimestamps,
 			Require:              s.Require,
+			Collapse:             s.Collapse,
 			Deletes:              deletes,
-			AllowTypeChanges:     plan.TypeChanges(p, nil),
+			AllowTypeChanges:     plan.TypeChanges(p, in.Spec),
 			SplitsByKey:          s.SplitsByKey,
 			Table:                p.GetDestination().GetTables()[s.Name],
 			From:                 s.Name,
-		})
+		}
+		if plan.Holds(caps, mode, keyed) {
+			out.Holds = streamHolds(in.Spec)
+		}
+		outputs = append(outputs, out)
 	}
 	for _, name := range slices.Sorted(maps.Keys(p.GetDestination().GetTables())) {
 		if !slices.ContainsFunc(outputs, func(o runner.Stream) bool { return o.Name == name }) {

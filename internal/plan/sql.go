@@ -1,7 +1,9 @@
 package plan
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/sqlplan"
@@ -102,6 +104,69 @@ func Lands(spec *apiv1.PipelineSpec, a *sqlplan.Answer, stream string) bool {
 	return !slices.ContainsFunc(a.Statements, func(st sqlplan.Statement) bool { return st.Replaces && st.Output == stream })
 }
 
+// SQLSettingProblems fails the settings a SQL transform's streams set where
+// they have no meaning. A stream's holds, collapse and typeChanges are
+// those of the stream as the destination gets it: passed through, as
+// without a transform, or the output of the statement that replaces it,
+// which isn't collapsed, and holds only with a primary key. outs are the
+// statements' outputs, as SQLOutputs gives them. A stream passed through is
+// checked as one without a transform.
+func SQLSettingProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlplan.Answer, inputs []Input, outs []Output) []error {
+	var out []error
+	for _, in := range inputs {
+		ps := in.Spec
+		set := landingSettings(ps)
+		if len(set) == 0 || Lands(spec, a, in.Name) {
+			continue
+		}
+		i := slices.IndexFunc(outs, func(o Output) bool { return o.Name == in.Name && o.Spec == ps })
+		if i < 0 {
+			out = append(out, fmt.Errorf("stream %q sets %s, which apply to it as the destination gets it, and the destination doesn't: "+
+				"no statement writes %q, and transform.passthrough is none", in.Name, strings.Join(set, ", "), in.Name))
+			continue
+		}
+		o := outs[i]
+		if ps.Collapse != nil {
+			out = append(out, fmt.Errorf("stream %q sets collapse, and a statement replaces it, whose output isn't collapsed", in.Name))
+		}
+		if AsksHolds(ps) && len(o.PrimaryKey) == 0 {
+			out = append(out, fmt.Errorf("stream %q sets how it holds cells or columns, and the statement that replaces it gives its output no primary key; only a keyed output holds them", in.Name))
+		} else if err := HoldProblem(caps, o.Mode, len(o.PrimaryKey) > 0, in.Name, ps); err != nil {
+			out = append(out, err)
+		}
+	}
+	return out
+}
+
+// landingSettings names the settings ps sets that apply to the stream as
+// the destination gets it.
+func landingSettings(ps *apiv1.PipelineStream) []string {
+	if ps == nil {
+		return nil
+	}
+	var set []string
+	if ps.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL {
+		set = append(set, "quarantine")
+	}
+	held := ps.GetHeld() != nil
+	for _, c := range ps.GetColumns() {
+		held = held || c.GetHeld() != nil
+	}
+	if held {
+		set = append(set, "held")
+	}
+	if len(ps.GetGroups()) > 0 {
+		set = append(set, "groups")
+	}
+	if ps.Collapse != nil {
+		set = append(set, "collapse")
+	}
+	if ps.GetTypeChanges() != apiv1.TypeChanges_TYPE_CHANGES_UNSPECIFIED {
+		set = append(set, "typeChanges")
+	}
+	return set
+}
+
 // SQLPlan is what a pipeline version keeps of the answer.
 func SQLPlan(a *sqlplan.Answer) *apiv1.SqlPlan {
 	out := &apiv1.SqlPlan{}
@@ -146,7 +211,7 @@ func SQLOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlp
 			cdc = cdc || in.Read == apiv1.SyncMode_SYNC_MODE_CDC
 		}
 		if i := slices.IndexFunc(inputs, func(in Input) bool { return in.Name == st.Output }); st.Replaces && i >= 0 {
-			o.Require = Level(inputs[i].Spec.GetRequire())
+			o.Require, o.Spec = Level(inputs[i].Spec.GetRequire()), inputs[i].Spec
 		}
 		switch {
 		case WriteMode(spec) != 0:

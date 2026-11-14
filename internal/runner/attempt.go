@@ -399,7 +399,7 @@ func RunAttempt(ctx context.Context, job Job) (Result, error) {
 			if slices.ContainsFunc(job.refused, func(r RefusedColumn) bool { return r.Stream == c.Stream && r.Column == c.Column }) {
 				return res, errs.Wrap(errs.SchemaDrift, err, "runner: refused again after holding it")
 			}
-			if !slices.ContainsFunc(job.Streams, func(s Stream) bool { return s.Name == c.Stream && job.holdsOn(s) }) {
+			if !slices.ContainsFunc(job.sinkStreams(), func(s Stream) bool { return s.Name == c.Stream && job.holdsOn(s) }) {
 				return res, errs.Wrap(errs.SchemaDrift, err, "runner: the stream doesn't hold columns")
 			}
 		}
@@ -493,6 +493,11 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 		if job.transformed() {
 			schemas = outputSchemas(head)
+			for name, o := range head.Outputs {
+				if o.Delivered != nil {
+					schemas[name] = o.Delivered
+				}
+			}
 		}
 		// A redone epoch needs its schemas in place, and can't change.
 		a, err := applySchemas(rctx, w, applied, schemas)
@@ -1752,14 +1757,19 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	for name, h := range c.holds {
 		holds[name] = mergeHolds(h, st.flow.Holds[name], at, rec.CreatedAt)
 	}
+	// The destination's streams' holds: a transform's outputs', or else the
+	// streams'.
+	sinks := !c.job.transformed()
 	for _, name := range slices.Sorted(maps.Keys(st.splits)) {
-		rec.Streams[name] = checkpoint.StreamState{
+		s := checkpoint.StreamState{
 			Schema:    st.flow.Schemas[name],
 			ReadStart: c.readStarts[name],
 			Rows:      st.rows[name],
-			Delivered: st.flow.Delivered[name],
-			Holds:     holds[name],
 		}
+		if sinks {
+			s.Delivered, s.Holds = st.flow.Delivered[name], holds[name]
+		}
+		rec.Streams[name] = s
 		rec.SetSplits(name, st.splits[name])
 	}
 	for name, cs := range c.carried {
@@ -1769,7 +1779,10 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	if c.job.transformed() {
 		rec.Outputs = make(map[string]checkpoint.OutputState, len(c.job.Outputs))
 		for _, o := range c.job.Outputs {
-			rec.Outputs[o.Name] = checkpoint.OutputState{Schema: st.flow.OutputSchemas[o.Name], Rows: st.flow.OutputRows[o.Name]}
+			rec.Outputs[o.Name] = checkpoint.OutputState{
+				Schema: st.flow.OutputSchemas[o.Name], Rows: st.flow.OutputRows[o.Name],
+				Delivered: st.flow.Delivered[o.Name], Holds: holds[o.Name],
+			}
 		}
 	}
 	for i, d := range st.descs {
@@ -1796,10 +1809,10 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 // before n is recorded. A refusal is a RefusedError.
 func (c *coordinator) applySchemas(ctx context.Context, n uint64, st *epochState) error {
 	sinkSchemas := maps.Clone(st.flow.Schemas)
-	maps.Copy(sinkSchemas, st.flow.Delivered)
 	if c.job.transformed() {
-		sinkSchemas = st.flow.OutputSchemas
+		sinkSchemas = maps.Clone(st.flow.OutputSchemas)
 	}
+	maps.Copy(sinkSchemas, st.flow.Delivered)
 	before := maps.Clone(c.applied)
 	var a destination.SchemaApplied
 	err := retry(ctx, func() (err error) {
@@ -1936,7 +1949,14 @@ func (c *coordinator) measure(ctx context.Context, rec *checkpoint.Record, ready
 		if n := collapsed[name]; n > 0 {
 			rowsCollapsed.Add(ctx, ints.Int64Clamped(n), attrs)
 		}
-		c.measureHolds(ctx, name, st.Holds, ready.Holds[name], rec.CreatedAt)
+		if !c.job.transformed() {
+			c.measureHolds(ctx, name, st.Holds, ready.Holds[name], rec.CreatedAt)
+		}
+	}
+	if c.job.SQL != nil {
+		for name, o := range rec.Outputs {
+			c.measureHolds(ctx, name, o.Holds, ready.Holds[name], rec.CreatedAt)
+		}
 	}
 }
 

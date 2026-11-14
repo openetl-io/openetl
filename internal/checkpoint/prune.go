@@ -210,7 +210,7 @@ func (s *Session) PruneHeld(ctx context.Context, restored *Record) (deleted int,
 			continue
 		}
 		if restored != nil {
-			if h := restored.Streams[f.stream].Holds; h != nil && slices.ContainsFunc(h.Epochs, func(e HeldEpochs) bool { return e.holds(f.g, f.n) }) {
+			if h := restored.HoldsOf(f.stream); h != nil && slices.ContainsFunc(h.Epochs, func(e HeldEpochs) bool { return e.holds(f.g, f.n) }) {
 				continue
 			}
 		}

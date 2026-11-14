@@ -195,6 +195,8 @@ The `transform.sql` section has:
 
 A statement that writes a source stream's name replaces that stream: the output is written in its place. The output takes the stream's entry in `destination.tables` and its `require`. The `streams` section lists what the destination gets: the outputs, and the streams that pass through.
 
+The output also takes the stream's `quarantine`, `held`, `heldValue`, `groups` and `typeChanges`, and holds columns as the stream would without a transform. The `streams` section says `columns' types change in place` for each output whose `typeChanges` is `allow`. A setting that applies to nothing the destination gets is a problem, such as `collapse` on a stream that a statement replaces. [Settings and holds of outputs](../reference/specs/pipeline.md#settings-and-holds-of-outputs) lists these cases.
+
 Errors in the SQL are problems, with the line and column in the SQL text. A statement of a class that only a later tier runs, such as a group window, is a problem that names the tier:
 
 ```text
