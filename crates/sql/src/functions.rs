@@ -1,7 +1,8 @@
 //! The functions statements can call: a curated part of DataFusion's library,
-//! and of our own `now()`, `current_timestamp`, `current_date` and the JSON
-//! functions. Each is constructed by name here, so a binary links only these.
-//! `functions.txt` records the list, and a test fails when the two differ.
+//! and of our own `now()`, `current_timestamp`, `current_date`, `timezone`
+//! and the JSON functions. Each is constructed by name here, so a binary links
+//! only these. `functions.txt` records the list, and a test fails when the two
+//! differ.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -173,6 +174,7 @@ fn curated() -> Vec<Arc<ScalarUDF>> {
         datetime::to_unixtime(),
         now(),
         current_date(),
+        crate::zone::function(),
         // Hashes and encodings.
         crypto::digest(),
         crypto::md5(),

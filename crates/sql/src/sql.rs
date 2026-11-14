@@ -773,6 +773,9 @@ impl<'a> Check<'a> {
                 self.columns(s, &read.columns, alias.as_ref());
             }
         }
+        for (span, m) in crate::zone::rewrite(s) {
+            self.unsupported(span, m);
+        }
         let from = &read.nondeterministic;
 
         // Aggregates, windows and subqueries, wherever they are.

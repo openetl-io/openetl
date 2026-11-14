@@ -1,0 +1,256 @@
+# AT TIME ZONE and timezone(zone, ts), as Postgres and DuckDB both read
+# them: a timestamp without a time zone is a wall-clock time in the zone,
+# and gives that instant, with a time zone; a timestamp with a time zone
+# gives the wall-clock time in the zone, without one. A zone is an IANA
+# name, in any case, or UTC. The forms the two read differently are
+# refused, at the end.
+
+control sortmode rowsort
+
+# Rows 3 to 6 hold wall-clock times that daylight saving skips or repeats:
+# 02:30 on 2024-03-31 doesn't happen in Berlin and happens twice on
+# 2024-10-27, and 02:30 on 2024-03-10 and 01:30 on 2024-11-03 in New York
+# likewise. Their instants are just before, in and just after a change.
+statement ok
+CREATE TABLE z (id BIGINT NOT NULL, ts TIMESTAMP, tsz TIMESTAMPTZ, zone TEXT, PRIMARY KEY (id))
+
+statement ok
+INSERT INTO z VALUES (1, '2024-01-15 12:00:00', '2024-01-15 12:00:00+00:00', 'Europe/Berlin'), (2, '2024-07-15 12:00:00.123456', '2024-07-15 12:00:00.123456+00:00', 'America/New_York'), (3, '2024-03-31 02:30:00', '2024-03-31 00:59:59+00:00', 'Europe/Berlin'), (4, '2024-10-27 02:30:00', '2024-10-27 00:30:00+00:00', 'Europe/Berlin'), (5, '2024-03-10 02:30:00', '2024-10-27 01:30:00+00:00', 'America/New_York'), (6, '2024-11-03 01:30:00', '2024-11-03 05:30:00+00:00', 'Asia/Kolkata'), (7, NULL, NULL, 'UTC'), (8, '1969-12-31 23:59:59', '1969-12-31 23:59:59+00:00', NULL)
+
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id, ts AT TIME ZONE 'UTC' AS instant, tsz AT TIME ZONE 'UTC' AS wall_clock, timezone(zone, tsz) AS local FROM z
+----
+id Int64 not null key
+instant Timestamp(µs, "UTC") null
+wall_clock Timestamp(µs) null
+local Timestamp(µs) null
+
+query ITT
+SELECT id, ts AT TIME ZONE 'UTC' AS a, tsz AT TIME ZONE 'UTC' AS b FROM z
+----
+1 2024-01-15 12:00:00+00 2024-01-15 12:00:00
+2 2024-07-15 12:00:00.123456+00 2024-07-15 12:00:00.123456
+3 2024-03-31 02:30:00+00 2024-03-31 00:59:59
+4 2024-10-27 02:30:00+00 2024-10-27 00:30:00
+5 2024-03-10 02:30:00+00 2024-10-27 01:30:00
+6 2024-11-03 01:30:00+00 2024-11-03 05:30:00
+7 NULL NULL
+8 1969-12-31 23:59:59+00 1969-12-31 23:59:59
+
+# A skipped time is read with the offset before the change, and a repeated
+# one with the offset after it: the later instant, each time.
+query ITT
+SELECT id, ts AT TIME ZONE 'Europe/Berlin' AS berlin, ts AT TIME ZONE 'America/New_York' AS new_york FROM z
+----
+1 2024-01-15 11:00:00+00 2024-01-15 17:00:00+00
+2 2024-07-15 10:00:00.123456+00 2024-07-15 16:00:00.123456+00
+3 2024-03-31 01:30:00+00 2024-03-31 06:30:00+00
+4 2024-10-27 01:30:00+00 2024-10-27 06:30:00+00
+5 2024-03-10 01:30:00+00 2024-03-10 07:30:00+00
+6 2024-11-03 00:30:00+00 2024-11-03 06:30:00+00
+7 NULL NULL
+8 1969-12-31 22:59:59+00 1970-01-01 04:59:59+00
+
+query ITTT
+SELECT id, tsz AT TIME ZONE 'Europe/Berlin' AS berlin, tsz AT TIME ZONE 'America/New_York' AS new_york, tsz AT TIME ZONE 'Asia/Kolkata' AS kolkata FROM z
+----
+1 2024-01-15 13:00:00 2024-01-15 07:00:00 2024-01-15 17:30:00
+2 2024-07-15 14:00:00.123456 2024-07-15 08:00:00.123456 2024-07-15 17:30:00.123456
+3 2024-03-31 01:59:59 2024-03-30 20:59:59 2024-03-31 06:29:59
+4 2024-10-27 02:30:00 2024-10-26 20:30:00 2024-10-27 06:00:00
+5 2024-10-27 02:30:00 2024-10-26 21:30:00 2024-10-27 07:00:00
+6 2024-11-03 06:30:00 2024-11-03 01:30:00 2024-11-03 11:00:00
+7 NULL NULL NULL
+8 1970-01-01 00:59:59 1969-12-31 18:59:59 1970-01-01 05:29:59
+
+# A zone from a column, and a NULL zone.
+query ITTT
+SELECT id, ts AT TIME ZONE zone AS a, tsz AT TIME ZONE zone AS b, tsz AT TIME ZONE NULL AS c FROM z
+----
+1 2024-01-15 11:00:00+00 2024-01-15 13:00:00 NULL
+2 2024-07-15 16:00:00.123456+00 2024-07-15 08:00:00.123456 NULL
+3 2024-03-31 01:30:00+00 2024-03-31 01:59:59 NULL
+4 2024-10-27 01:30:00+00 2024-10-27 02:30:00 NULL
+5 2024-03-10 07:30:00+00 2024-10-26 21:30:00 NULL
+6 2024-11-02 20:00:00+00 2024-11-03 11:00:00 NULL
+7 NULL NULL NULL
+8 NULL NULL NULL
+
+# A name in any case, and an IANA name for a fixed offset: Etc/GMT+5 is
+# five hours behind UTC, as the IANA database names it.
+query ITTT
+SELECT id, tsz AT TIME ZONE 'europe/berlin' AS a, ts AT TIME ZONE 'utc' AS b, tsz AT TIME ZONE 'Etc/GMT+5' AS c FROM z
+----
+1 2024-01-15 13:00:00 2024-01-15 12:00:00+00 2024-01-15 07:00:00
+2 2024-07-15 14:00:00.123456 2024-07-15 12:00:00.123456+00 2024-07-15 07:00:00.123456
+3 2024-03-31 01:59:59 2024-03-31 02:30:00+00 2024-03-30 19:59:59
+4 2024-10-27 02:30:00 2024-10-27 02:30:00+00 2024-10-26 19:30:00
+5 2024-10-27 02:30:00 2024-03-10 02:30:00+00 2024-10-26 20:30:00
+6 2024-11-03 06:30:00 2024-11-03 01:30:00+00 2024-11-03 00:30:00
+7 NULL NULL NULL
+8 1970-01-01 00:59:59 1969-12-31 23:59:59+00 1969-12-31 18:59:59
+
+query ITT
+SELECT id, timezone('Europe/Berlin', ts) AS a, timezone(zone, tsz) AS b FROM z
+----
+1 2024-01-15 11:00:00+00 2024-01-15 13:00:00
+2 2024-07-15 10:00:00.123456+00 2024-07-15 08:00:00.123456
+3 2024-03-31 01:30:00+00 2024-03-31 01:59:59
+4 2024-10-27 01:30:00+00 2024-10-27 02:30:00
+5 2024-03-10 01:30:00+00 2024-10-26 21:30:00
+6 2024-11-03 00:30:00+00 2024-11-03 11:00:00
+7 NULL NULL
+8 1969-12-31 22:59:59+00 NULL
+
+# There and back gives the wall-clock time again, but for a skipped one.
+query IT
+SELECT id, (ts AT TIME ZONE 'Europe/Berlin') AT TIME ZONE 'Europe/Berlin' AS a FROM z
+----
+1 2024-01-15 12:00:00
+2 2024-07-15 12:00:00.123456
+3 2024-03-31 03:30:00
+4 2024-10-27 02:30:00
+5 2024-03-10 02:30:00
+6 2024-11-03 01:30:00
+7 NULL
+8 1969-12-31 23:59:59
+
+# AT TIME ZONE binds tighter than arithmetic and comparisons.
+query ITT
+SELECT id, CAST(tsz AT TIME ZONE 'Asia/Kolkata' AS DATE) AS local_day, date_trunc('day', tsz AT TIME ZONE 'America/New_York') AS new_york_day FROM z
+----
+1 2024-01-15 2024-01-15 00:00:00
+2 2024-07-15 2024-07-15 00:00:00
+3 2024-03-31 2024-03-30 00:00:00
+4 2024-10-27 2024-10-26 00:00:00
+5 2024-10-27 2024-10-26 00:00:00
+6 2024-11-03 2024-11-03 00:00:00
+7 NULL NULL
+8 1970-01-01 1969-12-31 00:00:00
+
+query IT
+SELECT id, ts AT TIME ZONE 'Europe/Berlin' + INTERVAL '1 hour' AS a FROM z
+----
+1 2024-01-15 12:00:00+00
+2 2024-07-15 11:00:00.123456+00
+3 2024-03-31 02:30:00+00
+4 2024-10-27 02:30:00+00
+5 2024-03-10 02:30:00+00
+6 2024-11-03 01:30:00+00
+7 NULL
+8 1969-12-31 23:59:59+00
+
+query I
+SELECT id FROM z WHERE tsz AT TIME ZONE 'America/New_York' < TIMESTAMP '2024-07-15 08:00:00'
+----
+1
+3
+8
+
+# A zone from a column that isn't a zone's name quarantines its row in
+# ours, as a row that fails does; DuckDB fails the query.
+onlyif openetl
+query IT
+SELECT id, tsz AT TIME ZONE CASE WHEN id = 1 THEN 'Mars/Olympus' ELSE zone END AS a FROM z
+----
+2 2024-07-15 08:00:00.123456
+3 2024-03-31 01:59:59
+4 2024-10-27 02:30:00
+5 2024-10-26 21:30:00
+6 2024-11-03 11:00:00
+7 NULL
+8 NULL
+quarantined row 1
+
+# The example in docs/reference/sql.md, as a transform's statement and as
+# a query DuckDB runs too.
+statement ok
+CREATE TABLE orders (id BIGINT NOT NULL, created_at TIMESTAMPTZ, local_time TIMESTAMP, store_zone TEXT, PRIMARY KEY (id))
+
+statement ok
+INSERT INTO orders VALUES (1, '2026-11-14 20:00:00+00:00', '2026-11-14 09:30:00', 'Europe/Berlin')
+
+onlyif openetl
+query ITTT
+INSERT INTO orders_local
+SELECT id,
+       created_at AT TIME ZONE 'America/New_York' AS created_local,
+       CAST(created_at AT TIME ZONE 'Asia/Kolkata' AS DATE) AS india_day,
+       local_time AT TIME ZONE store_zone AS happened_at
+FROM orders
+----
+1 2026-11-14 15:00:00 2026-11-15 2026-11-14 08:30:00+00
+
+query ITTT
+SELECT id,
+       created_at AT TIME ZONE 'America/New_York' AS created_local,
+       CAST(created_at AT TIME ZONE 'Asia/Kolkata' AS DATE) AS india_day,
+       local_time AT TIME ZONE store_zone AS happened_at
+FROM orders
+----
+1 2026-11-14 15:00:00 2026-11-15 2026-11-14 08:30:00+00
+
+# Refused: the forms Postgres and DuckDB read differently, or not at all.
+query error unsupported 1:28 '\+05:30' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'
+SELECT id, ts AT TIME ZONE '+05:30' AS a FROM z
+
+query error unsupported 1:29 'UTC\-3' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'
+SELECT id, tsz AT TIME ZONE 'UTC-3' AS a FROM z
+
+query error unsupported 1:29 'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, tsz AT TIME ZONE 'CET' AS a FROM z
+
+query error unsupported 1:21 'PST' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, timezone('PST', tsz) AS a FROM z
+
+query error unsupported 1:28 'Nowhere/Land' isn't a time zone transforms know: write an IANA name such as 'Europe/Berlin', or 'UTC'
+SELECT id, ts AT TIME ZONE 'Nowhere/Land' AS a FROM z
+
+query error bind 1:1 AT TIME ZONE takes a timestamp, not a date: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC
+SELECT id, CAST(ts AS DATE) AT TIME ZONE 'Europe/Berlin' AS a FROM z
+
+query error bind 1:1 AT TIME ZONE takes a timestamp, not text: write TIMESTAMP '…' for a wall\-clock time or TIMESTAMPTZ '…' for an instant, or CAST the text to one
+SELECT id, '2024-01-15 12:00:00' AT TIME ZONE 'Europe/Berlin' AS a FROM z
+
+query error bind 1:1 AT TIME ZONE takes a timestamp, not text: write TIMESTAMP '…' for a wall\-clock time or TIMESTAMPTZ '…' for an instant, or CAST the text to one
+SELECT id, zone AT TIME ZONE 'UTC' AS a FROM z
+
+query error bind 1:1 AT TIME ZONE takes a timestamp, and NULL has no type: write CAST\(NULL AS TIMESTAMP\) or CAST\(NULL AS TIMESTAMPTZ\)
+SELECT id, NULL AT TIME ZONE 'UTC' AS a FROM z
+
+query error bind 1:1 AT TIME ZONE takes a timestamp, and a time of day has no date to place it in a zone: add it to a date first
+SELECT id, CAST(ts AS TIME) AT TIME ZONE 'UTC' AS a FROM z
+
+query error bind 1:1 a time zone is text, such as 'Europe/Berlin', not Interval\(MonthDayNano\)
+SELECT id, ts AT TIME ZONE INTERVAL '1 hour' AS a FROM z
+
+# A zone in parentheses, or one that folds to a constant, is checked as a
+# literal is. Without parentheses, tsz AT TIME ZONE 'C' || 'ET' is
+# (tsz AT TIME ZONE 'C') || 'ET'.
+query error unsupported 1:29 'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, ts AT TIME ZONE ('CET') AS a FROM z
+
+query error unsupported 1:23 'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, timezone((('CET')), tsz) AS a FROM z
+
+query error unsupported 1:29 'C' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, tsz AT TIME ZONE 'C' || 'ET' AS a FROM z
+
+query error unsupported 1:12 'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, tsz AT TIME ZONE ('C' || 'ET') AS a FROM z
+
+query error unsupported 1:12 '\+05:30' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'
+SELECT id, tsz AT TIME ZONE CAST('+05:30' AS VARCHAR) AS a FROM z
+
+query error unsupported 1:1 'cet' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id FROM z WHERE timezone(lower('CET'), tsz) IS NULL
+
+query error unsupported 1:22 'Mars/Olympus' isn't a time zone transforms know: write an IANA name such as 'Europe/Berlin', or 'UTC'
+SELECT id, TIMESTAMP '2024-01-15 12:00:00' AT TIME ZONE ('Mars/' || 'Olympus') AS a FROM z
+
+query IT
+SELECT id, tsz AT TIME ZONE ('Europe/' || 'Berlin') AS a FROM z WHERE id < 3
+----
+1 2024-01-15 13:00:00
+2 2024-07-15 14:00:00.123456

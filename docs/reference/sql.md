@@ -134,7 +134,50 @@ The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the d
 | `TRIM([BOTH \| LEADING \| TRAILING] chars FROM s)` | `btrim`, `ltrim` or `rtrim` |
 | `OVERLAY(s PLACING r FROM start [FOR length])` | `overlay` |
 | `DATE '2026-01-01'`, `TIMESTAMP '2026-01-01 00:00:00'`, `INTERVAL '1 day'` | Literals of those types |
+| `ts AT TIME ZONE zone` | A timestamp in a time zone: see [Time zones](#time-zones) |
 | `->`, `->>`, `#>`, `#>>`, `?` | JSON paths: see [JSON](#json) |
+
+### Time zones
+
+`ts AT TIME ZONE zone`, and the function `timezone(zone, ts)`, convert between a timestamp with a time zone and the wall-clock time in a zone:
+
+| `ts` is | The result is |
+|---|---|
+| A timestamp without a time zone | The instant at which a clock in `zone` shows `ts`, as a timestamp with a time zone |
+| A timestamp with a time zone | The time that a clock in `zone` shows at the instant `ts`, as a timestamp without a time zone |
+
+A timestamp with a time zone and a timestamp without one are different types of output column. A destination writes each as its own column type, as it does for `CAST(ts AS TIMESTAMP)`.
+
+```sql
+INSERT INTO orders_local
+SELECT id,
+       created_at AT TIME ZONE 'America/New_York' AS created_local,
+       CAST(created_at AT TIME ZONE 'Asia/Kolkata' AS DATE) AS india_day,
+       local_time AT TIME ZONE store_zone AS happened_at
+FROM orders
+```
+
+- `zone` is the IANA name of a time zone, such as `'Europe/Berlin'`, in any case, or `'UTC'`. It can come from a column, so it can differ by row.
+- An offset such as `'+05:30'` or `'UTC-3'` is not a zone. Write a zone's name, such as `'Asia/Kolkata'`.
+- An abbreviation such as `'CET'` or `'PST'` is not a zone. Write a zone's name, such as `'Europe/Berlin'`.
+- A zone written as a literal, or as an expression of literals such as `'Europe/' || 'Berlin'`, is checked at plan time. If it is not a zone, the statement is refused.
+- A zone from a column is checked for each row. If it is not a zone, the row fails.
+- Daylight saving can skip a wall-clock time or repeat it. A skipped time is read with the offset before the change, and a repeated time with the offset after it. Each gives the later of the two instants. In Berlin, `TIMESTAMP '2024-03-31 02:30:00'` is `2024-03-31 01:30:00+00`, and `TIMESTAMP '2024-10-27 02:30:00'` is `2024-10-27 01:30:00+00`.
+- A null `ts` or `zone` gives null.
+- `AT TIME ZONE` binds more tightly than arithmetic: `ts AT TIME ZONE 'UTC' + INTERVAL '1 hour'` adds the hour to the result.
+
+These forms are refused at plan time. A zone from a column that is an offset, an abbreviation or an unknown name is not refused: each row with such a zone fails instead.
+
+| What | Message |
+|---|---|
+| A literal offset as the zone | `'+05:30' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'` |
+| A literal abbreviation as the zone | `'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'` |
+| A literal name that is not a time zone | `'Nowhere/Land' isn't a time zone transforms know: write an IANA name such as 'Europe/Berlin', or 'UTC'` |
+| A date | `AT TIME ZONE takes a timestamp, not a date: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC` |
+| A string, or a text column | `AT TIME ZONE takes a timestamp, not text: write TIMESTAMP '…' for a wall-clock time or TIMESTAMPTZ '…' for an instant, or CAST the text to one` |
+| An untyped `NULL` | `AT TIME ZONE takes a timestamp, and NULL has no type: write CAST(NULL AS TIMESTAMP) or CAST(NULL AS TIMESTAMPTZ)` |
+| A time of day | `AT TIME ZONE takes a timestamp, and a time of day has no date to place it in a zone: add it to a date first` |
+| A zone that is not text, such as an `INTERVAL` | `a time zone is text, such as 'Europe/Berlin', not Interval(MonthDayNano)` |
 
 ## Types
 
@@ -309,6 +352,7 @@ my_udf isn't a function transforms can call
 | `from_unixtime` | | Seconds since 1970-01-01 as a timestamp |
 | `make_date` | | `make_date(year, month, day)`: a date |
 | `now` | `current_timestamp` | Not deterministic. The time in UTC when the engine evaluates the batch. |
+| `timezone` | | `timezone(zone, ts)`: `ts AT TIME ZONE zone`. See [Time zones](#time-zones). |
 | `to_char` | `date_format` | `to_char(value, format)`: a date or time as a string, in a `strftime`-style format such as `'%Y-%m-%d'` |
 | `to_date` | | A string or number of days as a date, in the given formats or ISO 8601 |
 | `to_timestamp` | | A string or number of seconds as a timestamp in nanoseconds, in the given formats or RFC 3339 |

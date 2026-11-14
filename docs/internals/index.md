@@ -98,7 +98,7 @@ A delayed split can use a forced barrier without a resume point only when replay
 
 ## Attempts on workers
 
-An attempt can run on several runners: one runner coordinates it, and the others, its workers, run its lanes. They use the attempt protocol, `openetl.attempt.v1` ([`internal/runner/attempt`](../../internal/runner/attempt)). Each worker opens one call to the coordinator. The coordinator claims the pipeline, writes the records and decides when each epoch commits. It runs no connector and holds no destination credentials:
+An attempt can run on several runners: one runner coordinates it, and the others, its workers, run its lanes. They use the attempt protocol, `openetl.attempt.v1` ([`internal/runner/attempt`](../../internal/runner/attempt)). Each worker opens one call to the coordinator. The coordinator claims the pipeline, writes the records and decides when each epoch commits. It reads and writes no data. It starts the source and destination connectors, with their credentials, only to set them up and discover the streams. It then keeps the destination's capabilities and stops the connectors before the workers start, and the workers skip the connectors' setup. The attempt runs this way:
 
 - Before the coordinator assigns work, the first worker opens the attempt's first writer lane. It raises the destination fence and settles the epoch that `HEAD` points to, as the recovery of a single runner does. It also gets the splits of the reads that start.
 - Each worker reads its splits with its own source connector and runs its own engine. It writes its writer lanes with its own destination writers.
@@ -111,13 +111,17 @@ An attempt can run on several runners: one runner coordinates it, and the others
 - Each stream's schema has one owner, the coordinator. An engine whose lane changes a schema proposes the change from the version that it has. Integers past ±2^53 in a column are such a change too, because a later float then makes the column text. Every engine shapes by the versions that the coordinator accepts.
 - A lost worker or a lost coordinator fails the attempt. The next attempt restores every worker from the record, in a new layout.
 
-These jobs run on one runner:
+These jobs run on one pod:
 
 - a job with a transform;
 - a job whose streams hold columns;
 - a job whose destination loads staged epochs or is written by the engine;
 - a job whose destination commits each writer lane's transaction separately;
 - a job whose destination takes fewer writer lanes than there are workers.
+
+`plan.OnePod` ([`internal/plan`](../../internal/plan)) is the one check behind these cases, for the plan, for `EnqueueWork` and for `Job.OnWorkers`. `EnqueueWork` works out an attempt's workers when it sizes the attempt, so the workflows and their histories do not change. The placer sends an attempt on workers only to a pod launcher of its pool, all of its pods or none, and the launcher's `--max-pods` and `--max-pod-cpu` count every pod. The launcher ([`internal/runner/pods`](../../internal/runner/pods)) makes the workers' pods, then the coordinator's.
+
+The coordinator listens at `--attempt-listen` with a certificate that it makes, claims the pipeline, and makes a token for the attempt. `OpenWorkers` gives the API its address, certificate and token, which the dispatcher keeps in `dispatches.worker_target`. Each worker's pod calls `PollWork` with its index until the API has them, then joins with the token. Workers take no part in the attempt's lease or result. If the coordinator finds that the job cannot run on workers, it reports `one_pod`, and the dispatcher places the same attempt again on one pod.
 
 ## Delivery levels
 

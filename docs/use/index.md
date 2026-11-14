@@ -173,7 +173,7 @@ A pipeline with a transform has two lists. **Outputs** are the tables that the d
 
 ## A sync's page
 
-Open a sync from the strip or **Syncs** tab. The header shows its status, **Started** time, **Took** duration and **Rows**. For active syncs, **Running for** shows elapsed time. It also shows the pipeline **Version**, **Data plane**, **Size**, and CPU and memory **Used**. Stream row counts follow the header. Failed syncs include **Why it failed**.
+Open a sync from the strip or **Syncs** tab. The header shows its status, **Started** time, **Took** duration and **Rows**. For active syncs, **Running for** shows elapsed time. It also shows the pipeline **Version**, **Data plane**, **Size**, and CPU and memory **Used**. When a sync runs on several [workers](../get-started/concepts.md#where-it-runs), **Size** is each worker's size, and **Used** is what the largest worker used. Stream row counts follow the header. Failed syncs include **Why it failed**.
 
 A sync that needed more than one attempt lists them under **Attempts**, each with what it failed with.
 
