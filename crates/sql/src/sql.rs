@@ -131,7 +131,7 @@ impl Sql {
                     let at = pos(ident.span);
                     let mut check = Check::new(catalog, &views, &later, &output_names, at);
                     let mut query = query.clone();
-                    let lineage = check.query(&mut query, true);
+                    let lineage = check.query(&mut query, true).nondeterministic;
                     notes.append(&mut check.notes);
                     let mut defined = Defined {
                         name: name.clone(),
@@ -498,8 +498,23 @@ struct Defined {
 }
 
 /// The names of a query's output columns that a function that isn't
-/// deterministic feeds, as SQL folds them.
+/// deterministic feeds, in lower case.
 type Lineage = HashSet<String>;
+
+/// What a query or FROM gives a SELECT to read.
+#[derive(Debug, Default)]
+struct Read {
+    /// Its columns' names, spelled as they are.
+    columns: Vec<String>,
+    nondeterministic: Lineage,
+    /// Its key, where it's a stream or a view.
+    key: Option<Vec<String>>,
+}
+
+/// A name in lower case, to compare without regard to case.
+fn lower(i: &ast::Ident) -> String {
+    i.value.to_lowercase()
+}
 
 const WINDOWS: [&str; 3] = ["tumble", "hop", "session"];
 
@@ -647,13 +662,13 @@ impl<'a> Check<'a> {
         self.views.iter().all(|&v| self.defined[v].plan.is_some())
     }
 
-    fn query(&mut self, q: &mut ast::Query, top: bool) -> Lineage {
+    fn query(&mut self, q: &mut ast::Query, top: bool) -> Read {
         if let Some(w) = &q.with {
             self.unsupported(
                 w.with_token.0.span,
                 "WITH isn't supported: name the query with CREATE VIEW, before the statements that read it",
             );
-            return Lineage::new();
+            return Read::default();
         }
         if let Some(o) = &q.order_by {
             let span = match &o.kind {
@@ -689,21 +704,22 @@ impl<'a> Check<'a> {
             ast::SetExpr::Query(inner) => self.query(inner, top),
             ast::SetExpr::SetOperation { right, .. } => {
                 self.unsupported(right.span(), "UNION, INTERSECT and EXCEPT aren't supported");
-                Lineage::new()
+                Read::default()
             }
             ast::SetExpr::Values(v) => {
                 self.unsupported(v.span(), "a statement reads a stream or a view, not VALUES");
-                Lineage::new()
+                Read::default()
             }
             other => {
                 self.unsupported(other.span(), "a statement is a SELECT");
-                Lineage::new()
+                Read::default()
             }
         }
     }
 
-    fn select(&mut self, s: &mut ast::Select, top: bool) -> Lineage {
+    fn select(&mut self, s: &mut ast::Select, top: bool) -> Read {
         let select_span = s.select_token.0.span;
+        let as_written = s.projection.clone();
         if s.top.is_some()
             || s.into.is_some()
             || !s.lateral_views.is_empty()
@@ -716,8 +732,7 @@ impl<'a> Check<'a> {
             self.unsupported(select_span, "this SELECT has clauses transforms don't run");
         }
 
-        let mut from = Lineage::new();
-        let mut from_key = None;
+        let mut read = Read::default();
         match s.from.as_mut_slice() {
             [] => self.unsupported(
                 select_span,
@@ -730,15 +745,21 @@ impl<'a> Check<'a> {
                 if let Some(j) = first.joins.first() {
                     self.later_tier(Class::Join, j.relation.span(), "a join");
                 }
-                (from, from_key) = self.relation(&mut first.relation);
-                if let Some((written, alias)) = self.qualified_as.take() {
-                    for (span, m) in unqualify(s, &written, &alias) {
-                        let at = self.at(span);
-                        self.errors.push(Error::at(ErrorKind::Name, at, m));
+                read = self.relation(&mut first.relation);
+                let alias = match self.qualified_as.take() {
+                    Some((written, alias)) => {
+                        for (span, m) in unqualify(s, &written, &alias) {
+                            let at = self.at(span);
+                            self.errors.push(Error::at(ErrorKind::Name, at, m));
+                        }
+                        Some(alias)
                     }
-                }
+                    None => None,
+                };
+                self.columns(s, &read.columns, alias.as_ref());
             }
         }
+        let from = &read.nondeterministic;
 
         // Aggregates, windows and subqueries, wherever they are.
         let before = self.later_tiers.len();
@@ -792,14 +813,14 @@ impl<'a> Check<'a> {
         }
         for (_, w) in &over_specs {
             if let ast::WindowType::WindowSpec(spec) = w {
-                self.deterministic(&spec.partition_by, &from, "a window's partition");
+                self.deterministic(&spec.partition_by, from, "a window's partition");
                 let order: Vec<ast::Expr> = spec.order_by.iter().map(|o| o.expr.clone()).collect();
-                self.deterministic(&order, &from, "a window's order");
+                self.deterministic(&order, from, "a window's order");
             }
         }
         for w in &s.named_window {
             if let ast::NamedWindowExpr::WindowSpec(spec) = &w.1 {
-                self.deterministic(&spec.partition_by, &from, "a window's partition");
+                self.deterministic(&spec.partition_by, from, "a window's partition");
             }
         }
         match &s.group_by {
@@ -819,7 +840,7 @@ impl<'a> Check<'a> {
                     ),
                 }
                 let exprs = exprs.clone();
-                self.deterministic(&exprs, &from, "a group's key");
+                self.deterministic(&exprs, from, "a group's key");
             }
             ast::GroupByExpr::Expressions(..) => {
                 if let Some(span) = aggregate {
@@ -835,51 +856,71 @@ impl<'a> Check<'a> {
         let later = self.later_tiers.len() > before;
 
         let mut lineage = Lineage::new();
-        let mut named: Vec<String> = Vec::new();
+        let mut columns: Vec<String> = Vec::new();
+        // The output's names so far, in lower case. A wildcard's own columns
+        // aren't compared with each other: they're what FROM reads, as it
+        // reads them.
+        let mut earlier: HashSet<String> = HashSet::new();
         for item in &s.projection {
-            let name = match item {
-                ast::SelectItem::UnnamedExpr(ast::Expr::Identifier(i)) => Some(fold(i)),
+            let (given, wildcard) = match item {
+                ast::SelectItem::UnnamedExpr(ast::Expr::Identifier(i)) => (vec![fold(i)], false),
                 ast::SelectItem::UnnamedExpr(ast::Expr::CompoundIdentifier(p)) => {
-                    p.last().map(fold)
+                    (p.last().map(fold).into_iter().collect(), false)
                 }
-                ast::SelectItem::ExprWithAlias { alias, .. } => Some(fold(alias)),
-                _ => None,
+                ast::SelectItem::ExprWithAlias { alias, .. } => (vec![fold(alias)], false),
+                ast::SelectItem::Wildcard(_) | ast::SelectItem::QualifiedWildcard(..) => {
+                    (read.columns.clone(), true)
+                }
+                _ => (Vec::new(), false),
             };
-            if let Some(name) = name {
-                if named.contains(&name) {
+            let mut these = Vec::with_capacity(given.len());
+            for name in given {
+                let lowered = name.to_lowercase();
+                if earlier.contains(&lowered) {
                     let at = self.at(item.span());
-                    self.errors.push(Error::at(
-                        ErrorKind::Bind,
-                        at,
+                    let message = if wildcard {
+                        format!(
+                            "* gives a column {name}, and there's already one: name the other one differently with AS"
+                        )
+                    } else {
                         format!(
                             "there's already a column {name}: give this one another name with AS"
-                        ),
-                    ));
+                        )
+                    };
+                    self.errors.push(Error::at(ErrorKind::Bind, at, message));
                 }
-                named.push(name);
+                these.push(lowered);
+                columns.push(name);
             }
+            earlier.extend(these);
         }
-        for item in &s.projection {
+        for (n, item) in s.projection.iter().enumerate() {
             match item {
                 ast::SelectItem::UnnamedExpr(e) => match e {
                     ast::Expr::Identifier(i) => {
-                        if from.contains(&fold(i)) {
-                            lineage.insert(fold(i));
+                        if from.contains(&lower(i)) {
+                            lineage.insert(lower(i));
                         }
                     }
                     ast::Expr::CompoundIdentifier(parts) => {
                         if let Some(last) = parts.last()
-                            && from.contains(&fold(last))
+                            && from.contains(&lower(last))
                         {
-                            lineage.insert(fold(last));
+                            lineage.insert(lower(last));
                         }
                     }
                     _ if later => {}
-                    _ => self.unsupported(e.span(), format!("name this column: {e} AS name")),
+                    _ => {
+                        let e = match as_written.get(n) {
+                            Some(ast::SelectItem::UnnamedExpr(w)) => w,
+                            _ => e,
+                        };
+                        self.unsupported(e.span(), format!("name this column: {e} AS name"));
+                    }
                 },
                 ast::SelectItem::ExprWithAlias { expr, alias } => {
-                    if self.feeds_nondeterministic(expr, &from).is_some() {
-                        lineage.insert(fold(alias));
+                    if self.feeds_nondeterministic(expr, from).is_some() {
+                        lineage.insert(lower(alias));
                     }
                 }
                 ast::SelectItem::Wildcard(_) | ast::SelectItem::QualifiedWildcard(..) => {
@@ -892,10 +933,65 @@ impl<'a> Check<'a> {
             self.top = Some(Top {
                 at: self.at(select_span),
                 items: s.projection.clone(),
-                key: from_key,
+                key: read.key.clone(),
             });
         }
-        lineage
+        Read {
+            columns,
+            nondeterministic: lineage,
+            key: None,
+        }
+    }
+
+    /// Gives each unquoted column name in a SELECT's list and WHERE the
+    /// spelling of the one column of what FROM reads that it fits without
+    /// regard to case, quoted, so binding takes it as it is. A name that fits
+    /// none is left for binding to refuse; one that fits several is refused
+    /// here. A qualified name is taken where its qualifier is FROM's alias.
+    fn columns(&mut self, s: &mut ast::Select, columns: &[String], alias: Option<&ast::Ident>) {
+        let mut refused = Vec::new();
+        let mut resolve = |i: &mut ast::Ident| {
+            if i.quote_style.is_some() {
+                return;
+            }
+            let fits: Vec<&String> = columns.iter().filter(|c| same(c, &i.value)).collect();
+            match fits.as_slice() {
+                [] => {}
+                [one] => {
+                    i.value = (*one).clone();
+                    i.quote_style = Some('"');
+                }
+                several => refused.push((
+                    i.span,
+                    format!(
+                        "{i} fits the columns {}, which differ only by case: quote the name to pick one",
+                        several
+                            .iter()
+                            .map(|c| format!("\"{c}\""))
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    ),
+                )),
+            }
+        };
+        let mut visit = |e: &mut ast::Expr| {
+            match e {
+                ast::Expr::Identifier(i) => resolve(i),
+                ast::Expr::CompoundIdentifier(p)
+                    if p.len() == 2 && alias.is_some_and(|a| fold(a) == fold(&p[0])) =>
+                {
+                    resolve(&mut p[1]);
+                }
+                _ => {}
+            }
+            ControlFlow::<()>::Continue(())
+        };
+        let _ = ast::visit_expressions_mut(&mut s.projection, &mut visit);
+        let _ = ast::visit_expressions_mut(&mut s.selection, &mut visit);
+        for (span, m) in refused {
+            let at = self.at(span);
+            self.errors.push(Error::at(ErrorKind::Name, at, m));
+        }
     }
 
     /// Refuses a function that isn't deterministic in expressions that feed
@@ -922,9 +1018,9 @@ impl<'a> Check<'a> {
                 ast::Expr::Function(f) if !FUNCTIONS.deterministic(&function_name(f)) => {
                     Some(format!("{}()", function_name(f)))
                 }
-                ast::Expr::Identifier(i) if from.contains(&fold(i)) => Some(i.to_string()),
+                ast::Expr::Identifier(i) if from.contains(&lower(i)) => Some(i.to_string()),
                 ast::Expr::CompoundIdentifier(parts)
-                    if parts.last().is_some_and(|l| from.contains(&fold(l))) =>
+                    if parts.last().is_some_and(|l| from.contains(&lower(l))) =>
                 {
                     Some(written(parts))
                 }
@@ -941,9 +1037,8 @@ impl<'a> Check<'a> {
         found
     }
 
-    /// Resolves what FROM reads: what feeds its columns that isn't
-    /// deterministic, and its key if it's a stream or a view.
-    fn relation(&mut self, t: &mut ast::TableFactor) -> (Lineage, Option<Vec<String>>) {
+    /// Resolves what FROM reads.
+    fn relation(&mut self, t: &mut ast::TableFactor) -> Read {
         let span = t.span();
         match t {
             ast::TableFactor::Table {
@@ -960,7 +1055,7 @@ impl<'a> Check<'a> {
             } => {
                 if args.is_some() {
                     self.unsupported(span, "table functions aren't supported");
-                    return (Lineage::new(), None);
+                    return Read::default();
                 }
                 if !with_hints.is_empty()
                     || version.is_some()
@@ -971,25 +1066,35 @@ impl<'a> Check<'a> {
                     || !index_hints.is_empty()
                 {
                     self.unsupported(span, "FROM takes a stream's or a view's name, and an alias");
-                    return (Lineage::new(), None);
+                    return Read::default();
                 }
-                self.table(name, alias)
+                let mut read = self.table(name, alias);
+                renamed(&mut read, alias);
+                read
             }
             ast::TableFactor::Derived {
-                lateral, subquery, ..
+                lateral,
+                subquery,
+                alias,
+                ..
             } => {
                 if *lateral {
                     self.later_tier(Class::Join, span, "LATERAL");
-                    return (Lineage::new(), None);
+                    return Read::default();
                 }
-                (self.query(subquery, false), None)
+                let mut read = self.query(subquery, false);
+                renamed(&mut read, alias);
+                if let Some(a) = alias {
+                    self.qualified_as = Some((Vec::new(), a.name.clone()));
+                }
+                read
             }
             ast::TableFactor::NestedJoin {
                 table_with_joins, ..
             } => {
                 if let Some(j) = table_with_joins.joins.first() {
                     self.later_tier(Class::Join, j.relation.span(), "a join");
-                    return (Lineage::new(), None);
+                    return Read::default();
                 }
                 self.relation(&mut table_with_joins.relation)
             }
@@ -998,31 +1103,27 @@ impl<'a> Check<'a> {
                     span,
                     "UNNEST goes in the SELECT list: SELECT unnest(list) AS item FROM …",
                 );
-                (Lineage::new(), None)
+                Read::default()
             }
             _ => {
                 self.unsupported(span, "FROM takes a stream's or a view's name");
-                (Lineage::new(), None)
+                Read::default()
             }
         }
     }
 
-    fn table(
-        &mut self,
-        name: &mut ast::ObjectName,
-        alias: &mut Option<ast::TableAlias>,
-    ) -> (Lineage, Option<Vec<String>>) {
+    fn table(&mut self, name: &mut ast::ObjectName, alias: &mut Option<ast::TableAlias>) -> Read {
         let span = name.span();
         let at = self.at(span);
         let parts = match idents(name) {
             Ok(p) => p,
             Err(e) => {
                 self.errors.push(e);
-                return (Lineage::new(), None);
+                return Read::default();
             }
         };
         let Some(written_as) = parts.last().cloned() else {
-            return (Lineage::new(), None);
+            return Read::default();
         };
         let name_error = |m: String| Error::at(ErrorKind::Name, at, m);
         let rest = match qualifier(&parts) {
@@ -1035,7 +1136,7 @@ impl<'a> Check<'a> {
                     m.push_str(&format!(", or FROM \"{only}\" for the stream {only}"));
                 }
                 self.errors.push(name_error(m));
-                return (Lineage::new(), None);
+                return Read::default();
             }
             Some(_) => &parts[1..],
             None => &parts[..],
@@ -1055,14 +1156,27 @@ impl<'a> Check<'a> {
                 }
                 self.qualified_as = Some(qualifiers(&parts, alias, &written_as));
                 rewrite(name, alias, &d.name, &written_as);
-                let key = d.plan.is_some().then(|| d.key.clone());
-                return (d.nondeterministic.clone(), key);
+                return Read {
+                    columns: d
+                        .plan
+                        .as_ref()
+                        .map(|p| {
+                            p.schema()
+                                .fields()
+                                .iter()
+                                .map(|f| f.name().clone())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    nondeterministic: d.nondeterministic.clone(),
+                    key: d.plan.is_some().then(|| d.key.clone()),
+                };
             }
             if self.later.contains(&folded.as_str()) {
                 self.errors.push(name_error(format!(
                     "view {folded} is defined after this statement: define a view before the statements that read it"
                 )));
-                return (Lineage::new(), None);
+                return Read::default();
             }
         }
 
@@ -1085,8 +1199,14 @@ impl<'a> Check<'a> {
                 }
                 self.qualified_as = Some(qualifiers(&parts, alias, &written_as));
                 rewrite(name, alias, &stream, &written_as);
-                let key = self.catalog.get(&stream).map(|s| s.key.clone());
-                (Lineage::new(), key)
+                let s = self.catalog.get(&stream);
+                Read {
+                    columns: s
+                        .map(|s| s.schema.fields().iter().map(|f| f.name().clone()).collect())
+                        .unwrap_or_default(),
+                    nondeterministic: Lineage::new(),
+                    key: s.map(|s| s.key.clone()),
+                }
             }
             [] => {
                 let w = written(rest);
@@ -1107,12 +1227,12 @@ impl<'a> Check<'a> {
                     format!("there's no stream or view {w}")
                 };
                 self.errors.push(name_error(m));
-                (Lineage::new(), None)
+                Read::default()
             }
             several => {
                 let m = ambiguous(rest, several);
                 self.errors.push(name_error(m));
-                (Lineage::new(), None)
+                Read::default()
             }
         }
     }
@@ -1218,6 +1338,16 @@ impl<'a> Check<'a> {
                 "{input} is a changelog, so what reads it keeps its key ({key}) unchanged, renamed or not; this {how} it"
             ),
         )
+    }
+}
+
+/// Names what FROM reads by its alias's column list, where it has one.
+fn renamed(read: &mut Read, alias: &Option<ast::TableAlias>) {
+    if let Some(a) = alias
+        && !a.columns.is_empty()
+    {
+        read.columns = a.columns.iter().map(|c| fold(&c.name)).collect();
+        read.nondeterministic.clear();
     }
 }
 

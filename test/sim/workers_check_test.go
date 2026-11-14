@@ -108,6 +108,9 @@ func (m *wModel) landed(stream string, upTo uint64) []row {
 // rows before the record's positions that weren't late, each window in one
 // place.
 func (m *wModel) cut(rec *wRecord, kg checkpoint.KeyGroupRange, state map[int]map[wKey]*wAcc) []string {
+	if !m.cfg.exchange {
+		return nil
+	}
 	late := map[string]bool{}
 	for _, r := range m.landed("late", rec.epoch()) {
 		late[r.ID] = true
@@ -243,7 +246,17 @@ func (m *wModel) check() {
 		}
 	}
 	once("filtered", filtered)
-	once("agg and late", effects)
+	if !m.cfg.exchange {
+		// Without the keyed operator, only filtered is written.
+		want = nil
+		for _, s := range []string{"agg", "late"} {
+			if n := len(m.wh.tables[s]); n > 0 {
+				m.problem("aggregate", "%s has %d rows, with no keyed operator", s, n)
+			}
+		}
+	} else {
+		once("agg and late", effects)
+	}
 
 	got := map[wKey][]wEntry{}
 	for _, r := range m.wh.tables["agg"] {

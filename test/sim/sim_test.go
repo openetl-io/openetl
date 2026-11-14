@@ -9,7 +9,8 @@
 // flink kind runs a continuous pipeline with a fake Flink job before one of
 // them, and checks the records against what the job did. The workers kind
 // is a model of what isn't built yet: a SQL transform on several workers
-// under a coordinator, with an exchange by key group (workers_test.go).
+// under a coordinator, with an exchange by key group (workers_test.go),
+// whose workers commit and recover the destination (workers_commit_test.go).
 //
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace

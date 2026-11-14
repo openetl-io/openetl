@@ -230,6 +230,25 @@ fn statements_bind_again_when_a_schema_changes() {
 }
 
 #[test]
+fn a_wide_stream_plans() {
+    let fields: Vec<Field> = (0..2_000)
+        .map(|i| Field::new(format!("c{i}"), DataType::Int64, true))
+        .collect();
+    let mut c = Catalog::new();
+    c.insert(
+        "wide",
+        Stream {
+            schema: Arc::new(Schema::new(fields)),
+            key: Vec::new(),
+            changelog: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let s = plan_one("INSERT INTO x SELECT * FROM wide", &c);
+    assert_eq!(s.schema.fields().len(), 2_000);
+}
+
+#[test]
 fn the_catalog_refuses_a_name_twice_and_a_key_it_lacks() {
     let mut c = customers(fields());
     let stream = |key: &str| Stream {
