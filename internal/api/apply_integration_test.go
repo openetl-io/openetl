@@ -32,6 +32,8 @@ type applyEnv struct {
 	url     string
 	conn    *pgx.Conn
 	applier apiv1connect.ApplyServiceClient
+	// The server's.
+	api string
 }
 
 func newApplyEnv(t *testing.T) *applyEnv {
@@ -41,6 +43,13 @@ func newApplyEnv(t *testing.T) *applyEnv {
 
 // newApplyEnvWith is newApplyEnv with a server that knows connectors.
 func newApplyEnvWith(t *testing.T, connectors connectorhost.Env) *applyEnv {
+	t.Helper()
+	return newApplyEnvPlanning(t, connectors, nil)
+}
+
+// newApplyEnvPlanning is newApplyEnvWith with a server that plans SQL
+// transforms with planner.
+func newApplyEnvPlanning(t *testing.T, connectors connectorhost.Env, planner api.SQLPlanner) *applyEnv {
 	t.Helper()
 	ctx := t.Context()
 	url := storetest.NewDatabase(t)
@@ -61,14 +70,14 @@ func newApplyEnvWith(t *testing.T, connectors connectorhost.Env) *applyEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	srv := &api.Server{Store: s, Tenant: tenant, Schedules: &refreshes{}, DefaultDataPlane: "dp1", Authless: true, Logger: slog.New(slog.DiscardHandler), Connectors: connectors}
+	srv := &api.Server{Store: s, Tenant: tenant, Schedules: &refreshes{}, DefaultDataPlane: "dp1", Authless: true, Logger: slog.New(slog.DiscardHandler), Connectors: connectors, Planner: planner}
 	h, err := srv.Handler()
 	if err != nil {
 		t.Fatal(err)
 	}
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
-	return &applyEnv{tenant: tenant, url: url, conn: conn, applier: apiv1connect.NewApplyServiceClient(http.DefaultClient, ts.URL)}
+	return &applyEnv{tenant: tenant, url: url, conn: conn, applier: apiv1connect.NewApplyServiceClient(http.DefaultClient, ts.URL), api: ts.URL}
 }
 
 func fakerSource(name string, seed int) *apiv1.Document {

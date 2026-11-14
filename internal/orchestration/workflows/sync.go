@@ -44,6 +44,7 @@ func (w Workflows) All() []orchestration.Workflow {
 		orchestration.NewWorkflow(contract.CatalogRefreshWorkflow, w.CatalogRefresh),
 		orchestration.NewWorkflow(contract.ReadLogsWorkflow, w.ReadLogs),
 		orchestration.NewWorkflow(contract.RetentionProbeWorkflow, w.RetentionProbe),
+		orchestration.NewWorkflow(contract.PlanSQLWorkflow, w.PlanSQL),
 	}
 }
 

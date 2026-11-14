@@ -60,6 +60,19 @@ greatest
 initcap
 isnan
 iszero
+json_as_text
+json_contains
+json_from_scalar (scalar_to_json)
+json_get
+json_get_array
+json_get_bool
+json_get_float
+json_get_int
+json_get_json
+json_get_str
+json_length (json_len)
+json_object_keys (json_keys)
+json_union_to_text
 lcm
 least
 left

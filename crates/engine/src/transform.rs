@@ -8,7 +8,7 @@ use std::sync::Arc;
 use arrow_schema::{Field, Schema, SchemaRef};
 use openetl_normalize::VERSIONS_KEY;
 use openetl_normalize::naming::{METADATA_COLUMNS, TABLE_KEY, source_names};
-use openetl_proto::engine::v1::{ExpectedOutput, StreamPlan, Transform as TransformPlan};
+use openetl_proto::engine::v1::{StreamPlan, Transform as TransformPlan};
 use openetl_sql::{Catalog, Operator, Position, RowWise, Sql, Stream};
 
 use crate::error::JobError;
@@ -52,32 +52,39 @@ impl Input {
                 Some(as_read(&r))
             }
         };
-        let schema = match (restored, declared) {
-            (None, d) => d,
-            (Some(r), None) => Some(r),
-            (Some(r), Some(d)) => {
-                let mut fields: Vec<Field> = r
-                    .fields()
-                    .iter()
-                    .map(|f| match d.field_with_name(f.name()) {
-                        Ok(df) => df.clone(),
-                        Err(_) => f.as_ref().clone(),
-                    })
-                    .collect();
-                for f in d.fields() {
-                    if r.field_with_name(f.name()).is_err() {
-                        fields.push(f.as_ref().clone());
-                    }
-                }
-                Some(Arc::new(Schema::new(fields)))
-            }
-        };
         Ok(Self {
             name: s.name.clone(),
-            schema,
+            schema: merged(restored, declared),
             key: s.primary_key.clone(),
             changelog: s.changelog,
         })
+    }
+}
+
+/// A stream's schema as statements read it, from the one a sync recorded,
+/// as `as_read` gives it, and the one its source declares: the recorded
+/// columns with the declared types over them, then the declared columns it
+/// lacks. None if it has neither.
+pub fn merged(restored: Option<SchemaRef>, declared: Option<SchemaRef>) -> Option<SchemaRef> {
+    match (restored, declared) {
+        (None, d) => d,
+        (Some(r), None) => Some(r),
+        (Some(r), Some(d)) => {
+            let mut fields: Vec<Field> = r
+                .fields()
+                .iter()
+                .map(|f| match d.field_with_name(f.name()) {
+                    Ok(df) => df.clone(),
+                    Err(_) => f.as_ref().clone(),
+                })
+                .collect();
+            for f in d.fields() {
+                if r.field_with_name(f.name()).is_err() {
+                    fields.push(f.as_ref().clone());
+                }
+            }
+            Some(Arc::new(Schema::new(fields)))
+        }
     }
 }
 
@@ -289,22 +296,6 @@ impl Transform {
             }
         }
         Ok(())
-    }
-
-    /// What planning gave, as a pipeline version keeps it and StartJob
-    /// takes it.
-    pub fn expected(&self) -> Result<Vec<ExpectedOutput>, JobError> {
-        self.statements
-            .iter()
-            .map(|s| {
-                Ok(ExpectedOutput {
-                    name: s.output.clone(),
-                    arrow_schema: ipc::encode_schema(&s.schema)
-                        .map_err(|e| JobError::internal(format!("encode a schema: {e}")))?,
-                    primary_key: s.key.clone(),
-                })
-            })
-            .collect()
     }
 }
 

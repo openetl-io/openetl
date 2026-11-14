@@ -1,6 +1,7 @@
 //! Plans evaluated on batches, binding again when a schema changes, and the
 //! catalog's checks.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder};
@@ -229,6 +230,189 @@ fn statements_bind_again_when_a_schema_changes() {
     );
 }
 
+/// A stream of documents: `doc` a JSON column, `raw` the same text as a
+/// plain string, and `field` a key per row.
+fn events() -> (Catalog, RecordBatch) {
+    let json = HashMap::from([
+        ("ARROW:extension:name".to_owned(), "arrow.json".to_owned()),
+        ("ARROW:extension:metadata".to_owned(), String::new()),
+    ]);
+    let schema: SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("doc", DataType::Utf8, true).with_metadata(json),
+        Field::new("raw", DataType::Utf8, true),
+        Field::new("field", DataType::Utf8, true),
+    ]));
+    let docs = vec![
+        Some(
+            r#"{"name": "a", "n": 7.0, "status": "active", "deleted": null,
+                "user": {"email": "e@x.io", "tags": ["x", "y"]},
+                "big": 18446744073709551615, "amount": 12345678901234567.89}"#,
+        ),
+        Some(r#"{"name": null, "n": "8", "status": "gone", "user": [1, 2]}"#),
+        Some(r#"{"name": "c", "n": 9"#),
+        None,
+    ];
+    let mut c = Catalog::new();
+    c.insert(
+        "events",
+        Stream {
+            schema: schema.clone(),
+            key: vec!["id".into()],
+            changelog: false,
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])) as ArrayRef,
+            Arc::new(StringArray::from(docs.clone())),
+            Arc::new(StringArray::from(docs)),
+            Arc::new(StringArray::from(vec![
+                Some("name"),
+                Some("status"),
+                Some("name"),
+                None,
+            ])),
+        ],
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    (c, batch)
+}
+
+fn ints(b: &RecordBatch, column: &str) -> Vec<Option<i64>> {
+    let i = b
+        .schema()
+        .index_of(column)
+        .unwrap_or_else(|e| panic!("{e}"));
+    b.column(i).as_primitive::<Int64Type>().iter().collect()
+}
+
+fn is_json(s: &Schema, column: &str) -> bool {
+    s.field_with_name(column).is_ok_and(|f| {
+        f.metadata().get("ARROW:extension:name").map(String::as_str) == Some("arrow.json")
+    })
+}
+
+#[test]
+fn json_paths_read_json_columns_and_strings() {
+    let (c, batch) = events();
+    let s = plan_one(
+        "INSERT INTO x SELECT id,
+           doc->>'name' AS name,
+           doc->'user'->>'email' AS email,
+           (doc->'n')::bigint AS n,
+           doc->'user' AS user_json,
+           doc->'big' AS big,
+           doc->'amount' AS amount,
+           doc->'deleted' AS deleted,
+           json_get_json(doc, 'deleted') AS deleted_json,
+           json_get_str(raw, 'user', 'tags', -1) AS last_tag,
+           raw #>> ARRAY['user', 'tags', '0'] AS first_tag,
+           json_as_text(doc, field) AS by_field,
+           doc ? 'deleted' AS has_deleted,
+           json_length(raw, 'user') AS user_length
+         FROM events",
+        &c,
+    );
+    let out = run(row_wise(&s), &batch);
+    assert_eq!(out.schema(), s.schema);
+    let some = |v: &[Option<&str>]| -> Vec<Option<String>> {
+        v.iter().map(|s| s.map(str::to_owned)).collect()
+    };
+    // A JSON null is null in ->>'s text; a document that isn't JSON
+    // throughout has nothing in it, and a null one neither.
+    assert_eq!(strings(&out, "name"), some(&[Some("a"), None, None, None]));
+    assert_eq!(
+        strings(&out, "email"),
+        some(&[Some("e@x.io"), None, None, None])
+    );
+    assert_eq!(ints(&out, "n"), [Some(7), Some(8), None, None]);
+    // An output column holds -> as JSON text, as the document writes it.
+    for column in ["user_json", "big", "amount", "deleted", "deleted_json"] {
+        assert!(is_json(&s.schema, column), "{column}");
+    }
+    assert!(!is_json(&s.schema, "name"));
+    assert_eq!(
+        strings(&out, "user_json"),
+        some(&[
+            Some(r#"{"email": "e@x.io", "tags": ["x", "y"]}"#),
+            Some("[1, 2]"),
+            None,
+            None
+        ])
+    );
+    assert_eq!(
+        strings(&out, "big"),
+        some(&[Some("18446744073709551615"), None, None, None])
+    );
+    assert_eq!(
+        strings(&out, "amount"),
+        some(&[Some("12345678901234567.89"), None, None, None])
+    );
+    assert_eq!(strings(&out, "deleted"), some(&[None, None, None, None]));
+    assert_eq!(
+        strings(&out, "deleted_json"),
+        some(&[Some("null"), None, None, None])
+    );
+    assert_eq!(
+        strings(&out, "last_tag"),
+        some(&[Some("y"), None, None, None])
+    );
+    assert_eq!(
+        strings(&out, "first_tag"),
+        some(&[Some("x"), None, None, None])
+    );
+    assert_eq!(
+        strings(&out, "by_field"),
+        some(&[Some("a"), Some("gone"), None, None])
+    );
+    let has: Vec<Option<bool>> = out
+        .column(
+            s.schema
+                .index_of("has_deleted")
+                .unwrap_or_else(|e| panic!("{e}")),
+        )
+        .as_boolean()
+        .iter()
+        .collect();
+    assert_eq!(has, [Some(true), Some(false), Some(false), Some(false)]);
+    assert_eq!(ints(&out, "user_length"), [Some(2), Some(2), None, None]);
+}
+
+#[test]
+fn json_values_filter_and_pass_through_views() {
+    let (c, batch) = events();
+    let s = plan_one(
+        "INSERT INTO x SELECT id FROM events WHERE doc->'status' = 'active' OR doc ? 'user'",
+        &c,
+    );
+    let out = run(row_wise(&s), &batch);
+    assert_eq!(ints(&out, "id"), [Some(1), Some(2)]);
+    let s = plan_one(
+        "INSERT INTO x SELECT id FROM events WHERE doc->'name' IS NULL",
+        &c,
+    );
+    let out = run(row_wise(&s), &batch);
+    assert_eq!(ints(&out, "id"), [Some(2), Some(3), Some(4)]);
+    let plan = openetl_sql::plan(
+        "CREATE VIEW users AS SELECT id, doc->'user' AS u FROM events;
+         INSERT INTO x SELECT id, u->>'email' AS email, json_get_json(u, 'tags', 1) AS tag FROM users",
+        &c,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let out = run(row_wise(&plan.statements[0]), &batch);
+    assert_eq!(
+        strings(&out, "email"),
+        [Some("e@x.io".to_owned()), None, None, None]
+    );
+    assert_eq!(
+        strings(&out, "tag"),
+        [Some(r#""y""#.to_owned()), None, None, None]
+    );
+}
+
 #[test]
 fn a_wide_stream_plans() {
     let fields: Vec<Field> = (0..2_000)
@@ -281,7 +465,8 @@ fn errors_come_in_the_order_of_their_positions() {
     );
 }
 
-fn events() -> Catalog {
+/// A stream of lists: `tags` and `scores`.
+fn list_events() -> Catalog {
     let list = |t| DataType::List(Arc::new(Field::new_list_field(t, true)));
     let mut c = Catalog::new();
     c.insert(
@@ -340,17 +525,9 @@ fn event_batch(rows: &[Event]) -> RecordBatch {
     .unwrap_or_else(|e| panic!("{e}"))
 }
 
-fn ints(b: &RecordBatch, column: &str) -> Vec<Option<i64>> {
-    let i = b
-        .schema()
-        .index_of(column)
-        .unwrap_or_else(|e| panic!("{e}"));
-    b.column(i).as_primitive::<Int64Type>().iter().collect()
-}
-
 /// The UNNEST step of a statement's steps, run on the steps before it.
 fn unnested(sql: &str, batch: &RecordBatch) -> openetl_sql::Unnested {
-    let s = plan_one(sql, &events());
+    let s = plan_one(sql, &list_events());
     let op = row_wise(&s);
     let mut current = op.input(batch).unwrap_or_else(|e| panic!("{e}"));
     for step in &op.steps {

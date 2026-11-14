@@ -36,6 +36,7 @@ import (
 	"github.com/openetl-io/openetl/internal/runner/worker"
 	"github.com/openetl-io/openetl/internal/secretstore"
 	"github.com/openetl-io/openetl/internal/spark"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/internal/staging"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
@@ -220,7 +221,10 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	planner := a.Engine
 	planner.Logger = log.With("component", "engine")
 	checkpoints := checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId())
-	job, err := buildJob(ctx, spec, env, withRestored(&engineclient.Dataflow{Options: planner}, checkpoints))
+	plans := func(ctx context.Context, req sqlplan.Request) (sqlplan.Answer, error) {
+		return engineclient.Plan(ctx, planner, req)
+	}
+	job, err := buildJob(ctx, spec, env, withRestored(plans, checkpoints))
 	defer connectorhost.Close(job.Source)
 	defer connectorhost.Close(job.Destination)
 	if err != nil {

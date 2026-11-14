@@ -74,15 +74,6 @@ type ExpectedOutput struct {
 	Input string
 }
 
-// SQLPlanner plans a SQL transform's statements against the streams they
-// read, as the engine does when the job starts, and gives the outputs they
-// write, in the order they're written. restored has a stream's schema as
-// its checkpoint recorded it, where it has one. SQL the engine refuses
-// fails it with ConfigInvalid, with the positions in the SQL.
-type SQLPlanner interface {
-	PlanSQL(ctx context.Context, sql string, streams []Stream, restored map[string][]byte) ([]ExpectedOutput, error)
-}
-
 // Metadata columns the second dataflow computes again, so it drops an
 // output's.
 var recomputed = []string{"_openetl_id", "_openetl_synced_at", "_openetl_deleted"}

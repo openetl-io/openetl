@@ -6,6 +6,10 @@
 //! stdin closes. `--threads` sets how many threads run its tasks: one per core
 //! by default. Logs are JSON lines on stderr; `OPENETL_ENGINE_LOG` filters
 //! them. Traces go out over OTLP as the OTEL_* variables say.
+//!
+//! `plan` plans a transform's SQL for the control plane, and for a runner
+//! before a job starts: a request as JSON on stdin, or in `--file`, and the
+//! answer as JSON on stdout (see [`sqlplan`]).
 
 mod dataflow;
 mod error;
@@ -16,6 +20,7 @@ mod plan;
 mod quarantine;
 mod replay;
 mod service;
+mod sqlplan;
 mod stage;
 mod staging;
 mod store;
@@ -45,7 +50,8 @@ const VERSION: &str = match option_env!("OPENETL_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 const USAGE: &str = "usage: openetl-engine --version
-       openetl-engine serve --control PATH --data PATH [--watch-stdin] [--threads N]";
+       openetl-engine serve --control PATH --data PATH [--watch-stdin] [--threads N]
+       openetl-engine plan [--file PATH]";
 /// How long in-flight RPCs get to finish once shutdown starts.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
@@ -89,6 +95,11 @@ fn main() -> ExitCode {
             Some(a) => serve(a),
             None => usage(),
         },
+        Some("plan") => match &args[1..] {
+            [] => plan(None),
+            [flag, path] if flag == "--file" => plan(Some(Path::new(path))),
+            _ => usage(),
+        },
         _ => usage(),
     }
 }
@@ -96,6 +107,46 @@ fn main() -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!("{USAGE}");
     ExitCode::from(2)
+}
+
+/// Plans a request's SQL; see [`sqlplan`] for the exit codes.
+fn plan(file: Option<&Path>) -> ExitCode {
+    let read = match file {
+        Some(p) => std::fs::read(p),
+        None => {
+            let mut b = Vec::new();
+            std::io::stdin().read_to_end(&mut b).map(|_| b)
+        }
+    };
+    let answer = read
+        .map_err(|e| format!("reading the request: {e}"))
+        .and_then(|text| {
+            serde_json::from_slice::<sqlplan::Request>(&text)
+                .map_err(|e| format!("the request isn't one: {e}"))
+        })
+        .and_then(|req| sqlplan::plan(&req))
+        .and_then(|a| {
+            serde_json::to_vec(&a)
+                .map(|b| (a.errors.is_empty(), b))
+                .map_err(|e| e.to_string())
+        });
+    let (ok, body) = match answer {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("openetl-engine plan: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut out = std::io::stdout().lock();
+    if let Err(e) = out.write_all(&body).and_then(|()| out.flush()) {
+        eprintln!("openetl-engine plan: writing the answer: {e}");
+        return ExitCode::from(2);
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
 }
 
 fn serve(args: ServeArgs) -> ExitCode {

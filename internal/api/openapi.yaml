@@ -4756,6 +4756,13 @@ components:
                     description: |-
                         Heal's overrides the pipeline keeps. One whose field the version
                          changes is dropped, and a note says so.
+                transform:
+                    allOf:
+                        - $ref: '#/components/schemas/TransformPlan'
+                    description: |-
+                        What planning transform.sql gave; unset without it, when its statements
+                         have errors, which problems list, and when it couldn't be planned, which
+                         a note says.
             description: |-
                 PipelinePlan is how a pipeline version would sync, as far as the control
                  plane can tell from the source's latest catalog and the destination's
@@ -4982,6 +4989,12 @@ components:
                 current:
                     type: boolean
                     description: It's the pipeline's current version.
+                sqlPlan:
+                    allOf:
+                        - $ref: '#/components/schemas/SqlPlan'
+                    description: |-
+                        What planning its transform.sql gave when it was made; unset without
+                         transform.sql, or if it couldn't be planned then.
             description: |-
                 PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
                  that. Versions are content-addressed, so going back to an earlier spec
@@ -5493,6 +5506,43 @@ components:
             description: |-
                 SparkTransform runs the user's openetl-spark Transform on each epoch of a
                  sync, on a Spark cluster. Its outputs are the destination's streams.
+        SqlOutput:
+            type: object
+            properties:
+                name:
+                    type: string
+                columns:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SchemaColumn'
+                primaryKey:
+                    type: array
+                    items:
+                        type: string
+                    description: 'Empty: it has none, and can only be appended.'
+                arrowSchema:
+                    type: string
+                    description: |-
+                        An Arrow IPC stream holding only the schema: the statement's columns,
+                         with logical types.
+                    format: bytes
+        SqlPlan:
+            type: object
+            properties:
+                outputs:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SqlOutput'
+                    description: Each statement's output, in the order of the statements.
+                operators:
+                    type: array
+                    items:
+                        type: string
+                    description: The stateful operators' IDs, in the order of their statements.
+            description: |-
+                SqlPlan is what a pipeline version keeps of planning its transform.sql.
+                 Every attempt plans the statements again, and checks what it gets against
+                 this.
         SqlTransform:
             type: object
             properties:
@@ -5514,6 +5564,57 @@ components:
                  the source's streams and write outputs, which are the destination's
                  streams. A stream no statement writes passes through, unless passthrough
                  is none.
+        StatementPlan:
+            type: object
+            properties:
+                line:
+                    type: integer
+                    description: Where its INSERT is in transform.sql, counting from 1.
+                    format: uint32
+                column:
+                    type: integer
+                    format: uint32
+                output:
+                    type: string
+                    description: |-
+                        The stream it writes: a source's stream, which it replaces, or one of
+                         its own.
+                replaces:
+                    type: boolean
+                class:
+                    type: string
+                    description: row_wise, group_window, over, join or updating.
+                inputs:
+                    type: array
+                    items:
+                        type: string
+                    description: The source's streams it reads, directly or through views.
+                views:
+                    type: array
+                    items:
+                        type: string
+                    description: The views it reads, in the order they're defined.
+                columns:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SchemaColumn'
+                    description: The output's.
+                primaryKey:
+                    type: array
+                    items:
+                        type: string
+                    description: 'The output''s primary key. Empty: it has none, and can only be appended.'
+                exchange:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The columns its rows are exchanged by, by key group, before its
+                         operator. Empty: none, and it runs in the lane that read them.
+                operator:
+                    type: string
+                    description: Its stateful operator's ID; empty for a row-wise statement.
+            description: StatementPlan is one INSERT INTO … SELECT of a SQL transform.
         Status:
             type: object
             properties:
@@ -5803,6 +5904,36 @@ components:
             description: |-
                 TransformOutput is one of a transform's outputs. Unset settings take those
                  of the input stream with its name, if there is one.
+        TransformPlan:
+            type: object
+            properties:
+                statements:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/StatementPlan'
+                views:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ViewPlan'
+                passedThrough:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The source's streams no statement writes, which reach the destination
+                         as they would without a transform.
+                withheld:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The source's streams that don't reach the destination themselves: each
+                         one a statement replaces, and with passthrough none, each one no
+                         statement writes.
+            description: |-
+                TransformPlan is a SQL transform's statements, as a runner of the
+                 pipeline's data plane planned them, and which of the source's streams
+                 reach the destination.
         Types:
             type: object
             properties:
@@ -5845,6 +5976,34 @@ components:
                     description: How long it has been running.
                     format: double
             description: Usage is what an attempt has used so far.
+        ViewPlan:
+            type: object
+            properties:
+                name:
+                    type: string
+                line:
+                    type: integer
+                    description: Where its name is in transform.sql, counting from 1.
+                    format: uint32
+                column:
+                    type: integer
+                    format: uint32
+                inputs:
+                    type: array
+                    items:
+                        type: string
+                    description: The source's streams it reads, directly or through other views.
+                columns:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SchemaColumn'
+                primaryKey:
+                    type: array
+                    items:
+                        type: string
+            description: |-
+                ViewPlan is a CREATE VIEW of a SQL transform. Statements that read it run
+                 its SELECT themselves.
         Watermark:
             type: object
             properties:

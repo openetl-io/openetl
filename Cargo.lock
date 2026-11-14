@@ -2050,6 +2050,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "arrow-select",
+ "base64 0.22.1",
  "bytes",
  "mimalloc",
  "object_store 0.14.2",
@@ -2063,6 +2064,7 @@ dependencies = [
  "parquet",
  "prost",
  "prost-types",
+ "serde",
  "serde_json",
  "socket2",
  "tempfile",
@@ -2133,6 +2135,8 @@ dependencies = [
  "datafusion-optimizer",
  "datafusion-physical-expr",
  "datafusion-sql",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

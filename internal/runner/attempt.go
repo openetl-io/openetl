@@ -69,14 +69,13 @@ type Stream struct {
 	SplitsByKey bool
 	// Its name in the destination, exactly; empty: from Name, by the naming.
 	Table string
-	// One of a SQL transform's outputs: the stream its statement reads,
-	// whose settings it takes.
+	// One of a SQL transform's outputs: the stream its statement reads, or
+	// the stream itself where it passes through.
 	From string
 }
 
 func (s Stream) delivery() delivery.Stream {
-	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse, Transformed: s.Transformed,
-		From: s.From}
+	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse, Transformed: s.Transformed}
 }
 
 // columns names the columns of Schema; nil without one.
@@ -1107,8 +1106,11 @@ func (j *Job) validate() error {
 	streams := make([]delivery.Stream, 0, len(j.sinkStreams()))
 	for _, s := range j.sinkStreams() {
 		ds := s.delivery()
-		if j.Flink != nil {
+		switch {
+		case j.Flink != nil:
 			ds.Engine = "flink"
+		case j.SQL != nil:
+			ds.Engine = "sql"
 		}
 		streams = append(streams, ds)
 	}

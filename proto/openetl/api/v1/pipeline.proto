@@ -158,6 +158,29 @@ message PipelineVersion {
   google.protobuf.Timestamp create_time = 8;
   // It's the pipeline's current version.
   bool current = 9;
+  // What planning its transform.sql gave when it was made; unset without
+  // transform.sql, or if it couldn't be planned then.
+  SqlPlan sql_plan = 12;
+}
+
+// SqlPlan is what a pipeline version keeps of planning its transform.sql.
+// Every attempt plans the statements again, and checks what it gets against
+// this.
+message SqlPlan {
+  // Each statement's output, in the order of the statements.
+  repeated SqlOutput outputs = 1;
+  // The stateful operators' IDs, in the order of their statements.
+  repeated string operators = 2;
+}
+
+message SqlOutput {
+  string name = 1;
+  repeated SchemaColumn columns = 2;
+  // Empty: it has none, and can only be appended.
+  repeated string primary_key = 3;
+  // An Arrow IPC stream holding only the schema: the statement's columns,
+  // with logical types.
+  bytes arrow_schema = 4;
 }
 
 // PinnedConfig is a version of a source's or destination's config.
@@ -872,6 +895,64 @@ message PipelinePlan {
   // Heal's overrides the pipeline keeps. One whose field the version
   // changes is dropped, and a note says so.
   repeated PipelineOverride overrides = 9;
+  // What planning transform.sql gave; unset without it, when its statements
+  // have errors, which problems list, and when it couldn't be planned, which
+  // a note says.
+  TransformPlan transform = 10;
+}
+
+// TransformPlan is a SQL transform's statements, as a runner of the
+// pipeline's data plane planned them, and which of the source's streams
+// reach the destination.
+message TransformPlan {
+  repeated StatementPlan statements = 1;
+  repeated ViewPlan views = 2;
+  // The source's streams no statement writes, which reach the destination
+  // as they would without a transform.
+  repeated string passed_through = 3;
+  // The source's streams that don't reach the destination themselves: each
+  // one a statement replaces, and with passthrough none, each one no
+  // statement writes.
+  repeated string withheld = 4;
+}
+
+// StatementPlan is one INSERT INTO … SELECT of a SQL transform.
+message StatementPlan {
+  // Where its INSERT is in transform.sql, counting from 1.
+  uint32 line = 1;
+  uint32 column = 2;
+  // The stream it writes: a source's stream, which it replaces, or one of
+  // its own.
+  string output = 3;
+  bool replaces = 4;
+  // row_wise, group_window, over, join or updating.
+  string class = 5;
+  // The source's streams it reads, directly or through views.
+  repeated string inputs = 6;
+  // The views it reads, in the order they're defined.
+  repeated string views = 7;
+  // The output's.
+  repeated SchemaColumn columns = 8;
+  // The output's primary key. Empty: it has none, and can only be appended.
+  repeated string primary_key = 9;
+  // The columns its rows are exchanged by, by key group, before its
+  // operator. Empty: none, and it runs in the lane that read them.
+  repeated string exchange = 10;
+  // Its stateful operator's ID; empty for a row-wise statement.
+  string operator = 11;
+}
+
+// ViewPlan is a CREATE VIEW of a SQL transform. Statements that read it run
+// its SELECT themselves.
+message ViewPlan {
+  string name = 1;
+  // Where its name is in transform.sql, counting from 1.
+  uint32 line = 2;
+  uint32 column = 3;
+  // The source's streams it reads, directly or through other views.
+  repeated string inputs = 4;
+  repeated SchemaColumn columns = 5;
+  repeated string primary_key = 6;
 }
 
 message JobPlan {

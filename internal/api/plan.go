@@ -106,6 +106,9 @@ type planned struct {
 	v       *pinned
 	// Where the version came from.
 	provenance string
+	// What planning its transform.sql gave; nil without transform.sql, or if
+	// the plan couldn't give it.
+	sqlPlan *apiv1.SqlPlan
 }
 
 func (v *pinned) pins() plan.Version {
@@ -163,8 +166,22 @@ func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*a
 		return nil, err
 	}
 	out.Problems, out.Notes = unrunnable, notes
-	if p.v.spec.GetTransform().GetSql() != nil {
-		out.Notes = append(out.Notes, "the plan doesn't read transform.sql's statements, so it shows each stream as it lands without a transform")
+	src, dst := p.v.spec.GetSource().GetRef(), p.v.spec.GetDestination().GetRef()
+	var cat *apiv1.Catalog
+	row, err := q.GetLatestSourceCatalog(ctx, db.GetLatestSourceCatalogParams{OrgID: s.Tenant.Org, SourceID: p.v.src.ID})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return nil, err
+	default:
+		cat = &apiv1.Catalog{}
+		if err := protojson.Unmarshal(row.Catalog, cat); err != nil {
+			return nil, err
+		}
+	}
+	answer, err := s.planSQL(ctx, q, p, cat, out)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.planJob(ctx, q, p, out); err != nil {
 		return nil, err
@@ -182,7 +199,6 @@ func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*a
 				"%s %q names connector %s without a version, so applying it again may pin a newer one; %s@MAJOR keeps to one major version", c.kind, c.ref, name, name)})
 		}
 	}
-	src, dst := p.v.spec.GetSource().GetRef(), p.v.spec.GetDestination().GetRef()
 	caps, known, err := s.capabilities(ctx, q, p.v.dst)
 	if err != nil {
 		return nil, err
@@ -191,23 +207,13 @@ func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*a
 		out.Notes = append(out.Notes, fmt.Sprintf("the control plane doesn't know destination %q's capabilities, so only the runner checks delivery, before each sync", dst))
 		return out, nil
 	}
-	var cat *apiv1.Catalog
-	row, err := q.GetLatestSourceCatalog(ctx, db.GetLatestSourceCatalogParams{OrgID: s.Tenant.Org, SourceID: p.v.src.ID})
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	case cat == nil:
 		out.Notes = append(out.Notes, fmt.Sprintf("source %q hasn't been discovered, so the plan checks only the delivery settings (openetl discover %s)", src, src))
-	case err != nil:
-		return nil, err
-	default:
-		cat = &apiv1.Catalog{}
-		if err := protojson.Unmarshal(row.Catalog, cat); err != nil {
-			return nil, err
-		}
-		if row.SourceVersion != p.v.src.Version {
-			out.Notes = append(out.Notes, fmt.Sprintf("source %q was last discovered with another config, and the plan uses that catalog (openetl discover %s)", src, src))
-		}
+	case row.SourceVersion != p.v.src.Version:
+		out.Notes = append(out.Notes, fmt.Sprintf("source %q was last discovered with another config, and the plan uses that catalog (openetl discover %s)", src, src))
 	}
-	streams, problems, warnings := plan.Pipeline(p.v.spec, cat, caps)
+	streams, problems, warnings := plan.PipelineSQL(p.v.spec, cat, caps, answer)
 	out.Streams, out.Warnings = streams, append(out.Warnings, warnings...)
 	for _, e := range problems {
 		out.Problems = append(out.Problems, e.Error())

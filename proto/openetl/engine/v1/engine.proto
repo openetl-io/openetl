@@ -22,11 +22,6 @@ service EngineService {
   rpc Commit(CommitRequest) returns (CommitResponse);
   // Ends the job without draining, and the process exits.
   rpc Stop(StopRequest) returns (StopResponse);
-  // Plans a transform's SQL against the streams it reads, as StartJob
-  // does, and gives the outputs its statements write. SQL that StartJob
-  // would refuse fails it the same way. For an attempt, which opens the
-  // destination with its outputs before it starts the job.
-  rpc PlanOutputs(PlanOutputsRequest) returns (PlanOutputsResponse);
 }
 
 message StartJobRequest {
@@ -502,26 +497,6 @@ message CommitRequest {
 }
 
 message CommitResponse {}
-
-message PlanOutputsRequest {
-  // The streams the statements read, as StartJobRequest.streams has them.
-  // Planning reads each one's name, primary key, declared and restored
-  // schemas, timestamps, and whether it's a changelog.
-  repeated StreamPlan streams = 1;
-  // INSERT INTO output SELECT … statements.
-  string sql = 2;
-}
-
-message PlanOutputsResponse {
-  // In the order the statements are written.
-  repeated PlannedOutput outputs = 1;
-}
-
-message PlannedOutput {
-  ExpectedOutput output = 1;
-  // The stream its statement reads.
-  string input = 2;
-}
 
 message StopRequest {}
 

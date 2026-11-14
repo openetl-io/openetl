@@ -1,57 +1,55 @@
 package engineclient
 
 import (
+	"bytes"
 	"context"
-	"fmt"
-	"log/slog"
+	"encoding/json"
+	"errors"
+	"os/exec"
+	"strings"
 
-	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
-	"github.com/openetl-io/openetl/internal/runner"
-	"github.com/openetl-io/openetl/sdk/go/arrowipc"
-	"github.com/openetl-io/openetl/sdk/go/source"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 )
 
-var _ runner.SQLPlanner = (*Dataflow)(nil)
+// The plan subcommand's exit codes: the SQL has errors, which its answer
+// lists, or the request is one it can't plan, such as with a type it
+// doesn't know.
+const (
+	planSQLErrors = 1
+	planRefused   = 2
+)
 
-// PlanSQL plans a SQL transform's statements against the streams they read,
-// with their declared and restored schemas, in an engine of its own.
-func (d *Dataflow) PlanSQL(ctx context.Context, sql string, streams []runner.Stream, restored map[string][]byte) ([]runner.ExpectedOutput, error) {
-	opts := d.Options
-	if opts.Logger == nil {
-		opts.Logger = slog.New(slog.DiscardHandler)
-	}
-	req := &enginev1.PlanOutputsRequest{Sql: sql}
-	for _, s := range streams {
-		declared, err := encodeSchema(s.Declared())
-		if err != nil {
-			return nil, fmt.Errorf("engineclient: %s declared schema: %w", s.Name, err)
-		}
-		req.Streams = append(req.Streams, &enginev1.StreamPlan{
-			Name:                 s.Name,
-			PrimaryKey:           s.PrimaryKey,
-			ArrowSchema:          declared,
-			RestoredSchema:       restored[s.Name],
-			NanosecondTimestamps: s.NanosecondTimestamps,
-			Changelog:            s.Read == source.CDC,
-		})
-	}
-	p, err := start(ctx, opts)
+// Plan has the engine plan a SQL transform, for the control plane's plan
+// and for a runner's job: `openetl-engine plan`, with the request on stdin
+// and the answer on stdout. SQL with errors is an answer, and only a call
+// that failed is an error.
+func Plan(ctx context.Context, opts Options, req sqlplan.Request) (sqlplan.Answer, error) {
+	var answer sqlplan.Answer
+	bin, err := opts.binary()
 	if err != nil {
-		return nil, err
+		return answer, errs.Wrap(errs.Internal, err, "engineclient: find openetl-engine")
 	}
-	defer p.close()
-	resp, err := p.client.PlanOutputs(ctx, req)
+	in, err := json.Marshal(req)
 	if err != nil {
-		return nil, p.explain(ctx, err)
+		return answer, errs.Wrap(errs.Internal, err, "engineclient: the plan request")
 	}
-	out := make([]runner.ExpectedOutput, 0, len(resp.GetOutputs()))
-	for _, o := range resp.GetOutputs() {
-		e := o.GetOutput()
-		schema, err := arrowipc.DecodeSchema(e.GetArrowSchema())
-		if err != nil {
-			return nil, fmt.Errorf("engineclient: output %s's schema: %w", e.GetName(), err)
-		}
-		out = append(out, runner.ExpectedOutput{Name: e.GetName(), Schema: schema, PrimaryKey: e.GetPrimaryKey(), Input: o.GetInput()})
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, bin, "plan")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = bytes.NewReader(in), &stdout, &stderr
+	err = cmd.Run()
+	exit, _ := errors.AsType[*exec.ExitError](err)
+	switch {
+	case err == nil, exit != nil && exit.ExitCode() == planSQLErrors:
+	case ctx.Err() != nil:
+		return answer, ctx.Err()
+	case exit != nil && exit.ExitCode() == planRefused:
+		return answer, errs.New(errs.ConfigInvalid, "%s", strings.TrimSpace(stderr.String()))
+	default:
+		return answer, errs.Wrap(errs.Internal, err, "engineclient: openetl-engine plan: "+strings.TrimSpace(stderr.String()))
 	}
-	return out, nil
+	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
+		return answer, errs.Wrap(errs.Internal, err, "engineclient: openetl-engine plan's answer")
+	}
+	return answer, nil
 }
