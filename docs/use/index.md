@@ -161,6 +161,8 @@ If the statements have errors, the **Plan** side says so, and the errors are at 
 
 **Schemas** shows each stream's columns, **Type** and whether null values are allowed. Renamed columns also show their source names. Column changes create schema versions: `v1`, `v2` and later versions. Select a version to compare it with the previous one. Columns are marked **Added**, **Removed** or **Changed**.
 
+A pipeline with a transform has two lists. **Outputs** are the tables that the destination gets. **Inputs** are the source's streams as the transform reads them. An output and an input can have the same name, and each has its own versions.
+
 ### Checkpoints
 
 **Checkpoints** lists commits from the last 30 days, newest first. Each entry shows its time, total rows and rows per stream, including quarantined, held or collapsed data. Use this tab to check which records were committed and when.

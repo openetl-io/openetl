@@ -65,6 +65,16 @@ func TestParseSQLTransform(t *testing.T) {
 		"zero delay": {strings.Replace(continuous, "eventTime: at}", "eventTime: at, watermark: {delay: 0s}}", 1) + "  transform: {sql: 'SELECT 1'}\n", func(p *apiv1.PipelineSpec) bool {
 			return p.GetSource().GetStreams()[0].GetWatermark().GetDelay().AsDuration() == 0
 		}},
+		// The stream as the destination gets it holds, collapses and
+		// changes types as these say; the plan checks where it can.
+		"holds, collapse and typeChanges": {strings.Replace(continuous, "eventTime: at}",
+			"eventTime: at, quarantine: cell, held: last, groups: [[x, y]], collapse: false, typeChanges: allow, columns: {x: {held: null}}}", 1) +
+			"  transform: {sql: 'SELECT 1'}\n", func(p *apiv1.PipelineSpec) bool {
+			s := p.GetSource().GetStreams()[0]
+			return s.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL && s.GetHeld().GetMode() == apiv1.HeldMode_HELD_MODE_LAST &&
+				len(s.GetGroups()) == 1 && s.Collapse != nil && !*s.Collapse && s.GetTypeChanges() == apiv1.TypeChanges_TYPE_CHANGES_ALLOW &&
+				s.GetColumns()["x"].GetHeld().GetMode() == apiv1.HeldMode_HELD_MODE_NULL
+		}},
 	} {
 		d, err := Parse([]byte(c.doc))
 		if err != nil {
@@ -111,12 +121,6 @@ func TestParseSQLTransformErrors(t *testing.T) {
 		"negative delay":        {sql("{name: a, eventTime: at, watermark: {delay: -5s}}"), "source.streams[0].watermark.delay must be zero or more"},
 		"watermark field":       {sql("{name: a, eventTime: at, watermark: {lag: 5s}}"), "lag"},
 		"watermark text":        {sql("{name: a, eventTime: at, watermark: 5s}"), "watermark"},
-		"collapse":              {sql("{name: a, collapse: true}"), "source.streams[0].collapse"},
-		"typeChanges":           {sql("{name: a, typeChanges: allow}"), "source.streams[0].typeChanges"},
-		"held":                  {sql("{name: a, held: last}"), "source.streams[0]: a transform's inputs can't be held"},
-		"cells":                 {sql("{name: a, quarantine: cell}"), "source.streams[0]: a transform's inputs can't be held"},
-		"groups":                {sql("{name: a, groups: [[x, y]]}"), "source.streams[0]: a transform's inputs can't be held"},
-		"column held":           {sql("{name: a, columns: {x: {held: null}}}"), "source.streams[0]: a transform's inputs can't be held"},
 		"flinkAccess":           {sql("{name: a}") + "  flinkAccess: {emrRole: 'arn:aws:iam::123456789012:role/r'}\n", "flinkAccess"},
 		"sparkAccess":           {sql("{name: a}") + "  sparkAccess: {emrRole: 'arn:aws:iam::123456789012:role/r'}\n", "sparkAccess"},
 		"reserved table":        {strings.Replace(sql("{name: a}"), "{ref: d}", "{ref: d, tables: {out: _openetl}}", 1), "its own records"},

@@ -105,15 +105,24 @@ func (c RefusedColumn) cause() *checkpoint.HoldCause {
 	return &checkpoint.HoldCause{Kind: checkpoint.HoldRefused, Refusal: c.Reason, FromType: c.FromType, ToType: c.ToType, Fix: c.Fix}
 }
 
-// holdsOn reports whether stream s holds in this job.
+// holdsOn reports whether s, one of the destination's streams, holds in
+// this job. A SQL transform's outputs hold; the outputs of the user's Spark
+// or Flink code don't.
 func (j *Job) holdsOn(s Stream) bool {
-	return s.Holds != nil && j.HeldURL != "" && len(s.PrimaryKey) > 0 && !j.transformed() &&
+	return s.Holds != nil && j.HeldURL != "" && len(s.PrimaryKey) > 0 && !j.ownCode() &&
 		j.Destination.Capabilities().Holds.Takes(s.Mode)
 }
 
 func (j *Job) checkHolds() error {
 	caps := j.Destination.Capabilities().Holds
-	for _, s := range j.Streams {
+	if j.transformed() {
+		for _, s := range j.Streams {
+			if s.Holds != nil {
+				return fmt.Errorf("stream %q holds columns, and a transform's inputs can't be held", s.Name)
+			}
+		}
+	}
+	for _, s := range j.sinkStreams() {
 		if s.Holds == nil {
 			continue
 		}
@@ -124,8 +133,8 @@ func (j *Job) checkHolds() error {
 		switch {
 		case len(s.PrimaryKey) == 0:
 			return fmt.Errorf("stream %q holds columns, and only a keyed stream can", s.Name)
-		case j.transformed():
-			return fmt.Errorf("stream %q holds columns, and a transform's inputs can't be held", s.Name)
+		case j.ownCode():
+			return fmt.Errorf("stream %q holds columns, and a Spark or Flink transform's outputs can't be held", s.Name)
 		case !caps.Takes(s.Mode):
 			return fmt.Errorf("stream %q holds columns, and the destination doesn't patch its write mode", s.Name)
 		case last && (s.Mode != destination.Merge || !caps.Last):
@@ -143,13 +152,13 @@ func (j *Job) checkHolds() error {
 func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limits map[string]destination.TableLimits) (map[string]*checkpoint.Holds, map[string]*HoldPlan, error) {
 	holds := map[string]*checkpoint.Holds{}
 	plans := map[string]*HoldPlan{}
-	for _, s := range j.Streams {
+	for _, s := range j.sinkStreams() {
 		if !j.holdsOn(s) {
 			continue
 		}
 		h := &checkpoint.Holds{}
-		if restored != nil && restored.Streams[s.Name].Holds != nil {
-			h = cloneHolds(restored.Streams[s.Name].Holds)
+		if restored != nil && restored.HoldsOf(s.Name) != nil {
+			h = cloneHolds(restored.HoldsOf(s.Name))
 		}
 		var released []string
 		var taken, versioned []checkpoint.ColumnHold

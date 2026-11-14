@@ -145,7 +145,8 @@ func Deletes(p *apiv1.PipelineSpec) destination.DeleteMode {
 
 // TypeChanges reports whether the destination may change a column's type
 // itself when the stream's widens: the stream's typeChanges, or else the
-// destination's. A transform's outputs take the destination's.
+// destination's. A Spark or Flink transform's outputs take the
+// destination's, and a SQL transform's those of the stream they replace.
 func TypeChanges(p *apiv1.PipelineSpec, ps *apiv1.PipelineStream) bool {
 	return cmp.Or(ps.GetTypeChanges(), p.GetDestination().GetTypeChanges()) == apiv1.TypeChanges_TYPE_CHANGES_ALLOW
 }
@@ -155,7 +156,7 @@ func TypeChanges(p *apiv1.PipelineSpec, ps *apiv1.PipelineStream) bool {
 func typeChangeWarnings(p *apiv1.PipelineSpec) []*apiv1.PlanWarning {
 	allowed := TypeChanges(p, nil) && (p.GetTransform() != nil || len(p.GetSource().GetStreams()) == 0)
 	for _, ps := range p.GetSource().GetStreams() {
-		allowed = allowed || p.GetTransform() == nil && TypeChanges(p, ps)
+		allowed = allowed || !ownCode(p) && TypeChanges(p, ps)
 	}
 	if !allowed {
 		return nil
@@ -228,8 +229,9 @@ func SyncProblem(mode destination.WriteMode, stream string, read apiv1.SyncMode)
 }
 
 // Holds reports whether a stream holds columns instead of stopping on a
-// change, and cells if its spec asks: a keyed stream, not a
-// transform's input, into a destination that patches its write mode.
+// change, and cells if its spec asks: a keyed stream the destination gets,
+// so not a transform's input, into a destination that patches its write
+// mode.
 func Holds(caps destination.Capabilities, mode destination.WriteMode, keyed bool) bool {
 	return keyed && caps.Holds.Takes(mode)
 }
@@ -465,9 +467,10 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 			d := o.Delivery()
 			ds = append(ds, d)
 			p := delivery.PlanStream(caps, d, settings.Require)
-			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, nil),
+			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, o.Spec),
 				Table: spec.GetDestination().GetTables()[o.Name]})
 		}
+		problems = append(problems, SQLSettingProblems(spec, caps, answer, inputs, outs)...)
 	}
 	deletesIgnored(merges || len(streams) == 0 && WriteMode(spec) == destination.Merge)
 	problems = append(problems, delivery.Problems(caps, settings, ds)...)

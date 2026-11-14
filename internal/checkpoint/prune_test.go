@@ -200,9 +200,13 @@ func TestHeldFilesAreFoundByEpochsAndPrunedOutsideThem(t *testing.T) {
 	held(t, store, 1, 3, "users")
 	other := held(t, store, 1, 2, "a%2Fb")
 	orphan := held(t, store, 1, 5, "users")
+	// A SQL transform's output's held files are its own.
+	output := held(t, store, 1, 3, "emails")
 	rec := &checkpoint.Record{Epoch: 3, Streams: map[string]checkpoint.StreamState{
 		"users": {Holds: &checkpoint.Holds{Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 2, To: 3}}}},
 		"a/b":   {},
+	}, Outputs: map[string]checkpoint.OutputState{
+		"emails": {Holds: &checkpoint.Holds{Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 3, To: 3}}}},
 	}}
 	if err := a.Commit(ctx, rec); err != nil {
 		t.Fatal(err)
@@ -220,7 +224,7 @@ func TestHeldFilesAreFoundByEpochsAndPrunedOutsideThem(t *testing.T) {
 	if _, err := b.PruneHeld(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	for key, want := range map[string]bool{inRange: true, other: false, orphan: false, ownGen: true} {
+	for key, want := range map[string]bool{inRange: true, other: false, orphan: false, ownGen: true, output: true} {
 		if exists(t, store, key) != want {
 			t.Errorf("%s kept = %v, want %v", key, !want, want)
 		}
