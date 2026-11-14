@@ -302,6 +302,13 @@ func lookup[F any](m map[string]F, kind, connector string, env Env) (F, error) {
 
 // Builtin reports whether a connector of a kind, "source" or "destination",
 // is compiled into openetld: openetl/NAME, or NAME.
+// EngineWritten reports whether the engine writes the destination's data, as
+// it does the built-in Parquet sink's.
+func EngineWritten(d destination.Destination) bool {
+	_, ok := d.(*enginesink.Parquet)
+	return ok
+}
+
 func Builtin(kind, connector string) bool {
 	name := builtinName(connector)
 	if kind == "source" {

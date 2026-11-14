@@ -26,6 +26,13 @@ import (
 // attempt's owner, log and dataflow, and closes the connectors, even after
 // an error.
 func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env, planner planSQL) (runner.Job, error) {
+	return bindJob(ctx, spec, env, planner, true)
+}
+
+// bindJob is buildJob, but for setup: an attempt's workers leave the
+// connectors' setup to their coordinator, which has done it before they
+// write.
+func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env, planner planSQL, setup bool) (runner.Job, error) {
 	p := spec.GetPipeline()
 	env.RateLimitScale = spec.GetRateLimitScale()
 	srcCfg, err := protojson.Marshal(spec.GetSource().GetConfig())
@@ -51,8 +58,10 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 	if err := errors.Join(connectorhost.Start(ctx, src), connectorhost.Start(ctx, dst)); err != nil {
 		return job, err
 	}
-	if err := connectorhost.Setup(ctx, spec.GetPipelineId(), src, dst); err != nil {
-		return job, err
+	if setup {
+		if err := connectorhost.Setup(ctx, spec.GetPipelineId(), src, dst); err != nil {
+			return job, err
+		}
 	}
 	cat, err := src.Discover(ctx)
 	if err != nil {

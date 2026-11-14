@@ -52,6 +52,10 @@ service DataPlaneService {
   // The result of work PollWork returned. The API wakes the workflow waiting
   // for it. Sending a result again is harmless.
   rpc ReportResult(ReportResultRequest) returns (ReportResultResponse);
+  // Where an attempt's workers join it, from the runner that runs it as
+  // their coordinator, once it has claimed the pipeline. The workers' pods
+  // get it from PollWork. Sending it again replaces it.
+  rpc OpenWorkers(OpenWorkersRequest) returns (OpenWorkersResponse);
   // The Flink cluster a deleted pipeline's last version pinned, for the
   // teardown the API sent to the runner's data plane, which cancels the
   // pipeline's Flink jobs.
@@ -507,6 +511,11 @@ message PollWorkRequest {
   // A pod's attempt, which it takes without waiting if it's still the pod's
   // to run; then the runner takes nothing else.
   Launch attempt = 4;
+  // Set with attempt: the pod is that attempt's worker, counting from 0. It
+  // gets the attempt without waiting: with where it joins the coordinator
+  // once the coordinator has said, and without before; and nothing once the
+  // placement has moved on. A worker takes no part in the attempt's lease.
+  optional uint32 worker = 5;
 }
 
 message PollWorkResponse {
@@ -534,6 +543,49 @@ message Work {
   // Set when a pod launcher is to make a pod for the attempt, which runs it,
   // rather than run it itself: its placement.
   uint32 placement = 8;
+  // The workers the attempt runs on, each of its size, which the runner
+  // that takes it coordinates; a pod launcher makes their pods with the
+  // coordinator's. 0: it runs on one runner.
+  uint32 workers = 9;
+  // Set for a worker's pod: where it joins its coordinator.
+  WorkerTarget join = 10;
+  // With workers: what the coordinator's pod is made for.
+  Resources coordinator = 11;
+}
+
+// WorkerTarget is where a worker joins its attempt's coordinator, over the
+// attempt protocol (openetl.attempt.v1).
+message WorkerTarget {
+  // The coordinator's attempt server, as host:port.
+  string address = 1;
+  // Its certificate, PEM-encoded, which is all the worker trusts there.
+  bytes certificate = 2;
+  // The attempt's secret, which the worker presents.
+  string token = 3;
+  // The generation the coordinator claimed.
+  uint64 generation = 4;
+  // Which worker, counting from 0.
+  uint32 worker = 5;
+  // The attempt as its coordinator serves it: the owner it claimed the
+  // pipeline as.
+  string owner = 6;
+}
+
+message OpenWorkersRequest {
+  string runner = 1;
+  // The attempt, which must be running on the runner.
+  string id = 2;
+  // As WorkerTarget's, for every worker.
+  string address = 3;
+  bytes certificate = 4;
+  string token = 5;
+  uint64 generation = 6;
+  string owner = 7;
+}
+
+message OpenWorkersResponse {
+  // False if the attempt isn't the runner's to run any more.
+  bool accepted = 1;
 }
 
 message ReportResultRequest {
@@ -563,6 +615,10 @@ message ReportResultRequest {
   // Set by a pod launcher for an attempt it launched, whose pod couldn't be
   // made or ended without a result: that placement.
   uint32 placement = 14;
+  // Set by an attempt's coordinator that found the attempt can't run on
+  // workers: why. It's placed again, as the same attempt, on one pod, and
+  // this doesn't count as an attempt.
+  string one_pod = 15;
 }
 
 message ReportResultResponse {

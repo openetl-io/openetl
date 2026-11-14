@@ -1959,7 +1959,12 @@ type JobResources struct {
 	// sync's bytes need, at each lane's measured rate, to finish within it.
 	FinishWithin *durationpb.Duration `protobuf:"bytes,4,opt,name=finish_within,json=finishWithin,proto3" json:"finish_within,omitempty"`
 	// The runners that run its jobs. Unset: default.
-	Pool          string `protobuf:"bytes,5,opt,name=pool,proto3" json:"pool,omitempty"`
+	Pool string `protobuf:"bytes,5,opt,name=pool,proto3" json:"pool,omitempty"`
+	// How many pods each attempt runs on, as workers that a coordinator in a
+	// pod of its own leads, each of the job's size; 0 or 1: one pod. A pool's
+	// pod launcher starts them, all or none. A job that can't run on workers
+	// runs on one pod, and the plan says why.
+	Workers       uint32 `protobuf:"varint,6,opt,name=workers,proto3" json:"workers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2027,6 +2032,13 @@ func (x *JobResources) GetPool() string {
 		return x.Pool
 	}
 	return ""
+}
+
+func (x *JobResources) GetWorkers() uint32 {
+	if x != nil {
+		return x.Workers
+	}
+	return 0
 }
 
 // SparkAccess is how the pipeline's Spark applications reach its _spark/
@@ -5438,10 +5450,14 @@ func (x *ViewPlan) GetPrimaryKey() []string {
 }
 
 type JobPlan struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Size          *JobSize               `protobuf:"bytes,1,opt,name=size,proto3" json:"size,omitempty"`
-	Reason        JobSizeReason          `protobuf:"varint,2,opt,name=reason,proto3,enum=openetl.api.v1.JobSizeReason" json:"reason,omitempty"`
-	Pool          string                 `protobuf:"bytes,3,opt,name=pool,proto3" json:"pool,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Each worker's, when it runs on workers.
+	Size   *JobSize      `protobuf:"bytes,1,opt,name=size,proto3" json:"size,omitempty"`
+	Reason JobSizeReason `protobuf:"varint,2,opt,name=reason,proto3,enum=openetl.api.v1.JobSizeReason" json:"reason,omitempty"`
+	Pool   string        `protobuf:"bytes,3,opt,name=pool,proto3" json:"pool,omitempty"`
+	// The workers each attempt runs on, with their coordinator; 0: one pod.
+	// A warning says why a job that asks for workers runs on one pod.
+	Workers       uint32 `protobuf:"varint,4,opt,name=workers,proto3" json:"workers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5495,6 +5511,13 @@ func (x *JobPlan) GetPool() string {
 		return x.Pool
 	}
 	return ""
+}
+
+func (x *JobPlan) GetWorkers() uint32 {
+	if x != nil {
+		return x.Workers
+	}
+	return 0
 }
 
 type PlanWarning struct {
@@ -7222,13 +7245,14 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\ttransform\x18\v \x01(\v2\x19.openetl.api.v1.TransformR\ttransform\x12>\n" +
 	"\fspark_access\x18\f \x01(\v2\x1b.openetl.api.v1.SparkAccessR\vsparkAccess\x12>\n" +
 	"\fflink_access\x18\r \x01(\v2\x1b.openetl.api.v1.FlinkAccessR\vflinkAccess\x12:\n" +
-	"\tresources\x18\x0e \x01(\v2\x1c.openetl.api.v1.JobResourcesR\tresources\"\xe5\x01\n" +
+	"\tresources\x18\x0e \x01(\v2\x1c.openetl.api.v1.JobResourcesR\tresources\"\xff\x01\n" +
 	"\fJobResources\x12+\n" +
 	"\x04size\x18\x01 \x01(\v2\x17.openetl.api.v1.JobSizeR\x04size\x12)\n" +
 	"\x03min\x18\x02 \x01(\v2\x17.openetl.api.v1.JobSizeR\x03min\x12)\n" +
 	"\x03max\x18\x03 \x01(\v2\x17.openetl.api.v1.JobSizeR\x03max\x12>\n" +
 	"\rfinish_within\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\ffinishWithin\x12\x12\n" +
-	"\x04pool\x18\x05 \x01(\tR\x04pool\"U\n" +
+	"\x04pool\x18\x05 \x01(\tR\x04pool\x12\x18\n" +
+	"\aworkers\x18\x06 \x01(\rR\aworkers\"U\n" +
 	"\vSparkAccess\x12\x19\n" +
 	"\bemr_role\x18\x01 \x01(\tR\aemrRole\x12+\n" +
 	"\x04keys\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x04keys\"U\n" +
@@ -7465,11 +7489,12 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x06inputs\x18\x04 \x03(\tR\x06inputs\x126\n" +
 	"\acolumns\x18\x05 \x03(\v2\x1c.openetl.api.v1.SchemaColumnR\acolumns\x12\x1f\n" +
 	"\vprimary_key\x18\x06 \x03(\tR\n" +
-	"primaryKey\"\x81\x01\n" +
+	"primaryKey\"\x9b\x01\n" +
 	"\aJobPlan\x12+\n" +
 	"\x04size\x18\x01 \x01(\v2\x17.openetl.api.v1.JobSizeR\x04size\x125\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x1d.openetl.api.v1.JobSizeReasonR\x06reason\x12\x12\n" +
-	"\x04pool\x18\x03 \x01(\tR\x04pool\"?\n" +
+	"\x04pool\x18\x03 \x01(\tR\x04pool\x12\x18\n" +
+	"\aworkers\x18\x04 \x01(\rR\aworkers\"?\n" +
 	"\vPlanWarning\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"P\n" +

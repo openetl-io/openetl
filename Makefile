@@ -208,8 +208,8 @@ lint: tools $(BIN)/.cargo-deny-$(CARGO_DENY_VERSION) web/node_modules/.modules.y
 	$(BIN)/cargo/bin/cargo-deny check --hide-inclusion-graph
 	pnpm --dir web typecheck
 
-# The runner/engine tests in internal/engineclient need OPENETL_ENGINE and
-# skip without it.
+# The runner/engine tests in internal/engineclient and internal/runner need
+# OPENETL_ENGINE and skip without it.
 .PHONY: test
 test: tools web/node_modules/.modules.yaml ## Unit tests (fast, no Docker), including runner/engine tests
 	cargo build -p openetl-engine

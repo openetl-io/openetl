@@ -163,6 +163,9 @@ type Worker interface {
 	// Propose offers a change to a stream's schema, after the assignment.
 	// The coordinator's schemas come in Requests.
 	Propose(p *attemptv1.SchemaProposal) error
+	// Report tells the coordinator what the worker has used and moved so
+	// far, after the assignment.
+	Report(u *attemptv1.Usage) error
 	// Fail tells the coordinator the worker failed, which fails the
 	// attempt, and ends the worker's part in it.
 	Fail(err error)
@@ -175,11 +178,12 @@ type Worker interface {
 	Close() error
 }
 
-// From is a worker's signal or schema proposal; one is set.
+// From is a worker's signal, schema proposal or usage; one is set.
 type From struct {
 	Worker   int
 	Signal   *attemptv1.Signal
 	Proposal *attemptv1.SchemaProposal
+	Usage    *attemptv1.Usage
 }
 
 // Target is where a worker joins, and what as, from its pod's spec.

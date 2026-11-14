@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"golang.org/x/sync/errgroup"
@@ -19,6 +20,7 @@ import (
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -89,6 +91,16 @@ type workerPart struct {
 	mine    map[checkpoint.SplitRef]bool
 	unread  map[string]bool
 	schemas *schemaRelay
+	// Held from reading the meter to sending what it read, so the
+	// coordinator gets readings in order.
+	reporting sync.Mutex
+}
+
+// report tells the coordinator what m says now.
+func (p *workerPart) report(m *resources.Meter) error {
+	p.reporting.Lock()
+	defer p.reporting.Unlock()
+	return p.w.Report(usageOf(m))
 }
 
 func (p *workerPart) run(ctx context.Context) error {
@@ -410,7 +422,9 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 		sink := newSinkPump(w, k, gen, a.GetFirstEpoch(), plan.Sink != SinkPlan{}, nil, job.sinkStreams(), starts, sinkEnds, outs[k], events)
 		g.Go(func() error { return sink.run(gctx) })
 	}
+	// Only the streams with splits here: another worker reads the rest.
 	req := job.readRequest(splits, done)
+	req.Streams = slices.DeleteFunc(req.Streams, func(cs source.ConfiguredStream) bool { return splits[cs.Name] == nil })
 	g.Go(func() error {
 		if len(req.Streams) > 0 {
 			if err := job.Source.Read(gctx, req, pump); err != nil {
@@ -422,6 +436,10 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 	g.Go(pump.run)
 	g.Go(func() error { return job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
 	g.Go(func() error { return demux(gctx, fromFlow, outs) })
+	g.Go(func() error {
+		p.reportUsage(gctx, job.Meter)
+		return nil
+	})
 	bg := newFifo[*attemptv1.AttendResponse]()
 	bgDone := make(chan struct{})
 	g.Go(func() error {
@@ -441,6 +459,30 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 		return err
 	})
 	return g.Wait()
+}
+
+// usageEvery is how often a worker tells its coordinator what it has used
+// and moved, for the coordinator's reports.
+const usageEvery = 5 * time.Second
+
+// reportUsage tells the coordinator what m says, now and then, until ctx
+// ends.
+func (p *workerPart) reportUsage(ctx context.Context, m *resources.Meter) {
+	if m == nil {
+		return
+	}
+	t := time.NewTicker(usageEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			return
+		}
+		if err := p.report(m); err != nil {
+			return
+		}
+	}
 }
 
 // clampBytes is a byte threshold as the pump keeps it.
@@ -572,6 +614,11 @@ func (p *workerPart) loop(ctx context.Context, a *attemptv1.Assignment, plan Pla
 			// Shares go in epoch order, once the worker's part is durable:
 			// placed, pre-committed on every writer lane, and ready.
 			for e := epochs[next]; e != nil && e.placed && e.staged == len(p.ws) && e.ready != nil; e = epochs[next] {
+				if m := p.job.Meter; m != nil {
+					if err := p.report(m); err != nil {
+						return err
+					}
+				}
 				if err := p.w.Share(p.share(gen, next, e, plan)); err != nil {
 					return err
 				}

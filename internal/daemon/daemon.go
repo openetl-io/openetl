@@ -48,6 +48,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 	"github.com/openetl-io/openetl/internal/pkgcatalog"
 	"github.com/openetl-io/openetl/internal/platform/config"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/objectstore"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/platform/temporalx"
@@ -545,6 +546,8 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		Logs:        cps,
 		HTTP:        (&netguard.Policy{Allow: allow}).Client(),
 		AWSRoles:    roles,
+
+		AttemptListen: cfg.AttemptListen, AttemptAdvertise: cfg.AttemptAdvertise,
 	}
 	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Secrets: stores, Executable: cfg.Dbt, Logger: log, Logs: cps}
 	sparkSteps := &dpactivities.Spark{
@@ -603,11 +606,17 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		},
 	}
 	switch {
-	case cfg.Attempt != "":
-		if cfg.Placement <= 0 || cfg.Placement > math.MaxInt32 {
-			return errors.New("daemon: --attempt needs its --placement, which the launcher sets")
+	case cfg.Attempt != "" && (cfg.Placement <= 0 || cfg.Placement > math.MaxInt32):
+		return errors.New("daemon: --attempt needs its --placement, which the launcher sets")
+	case cfg.Attempt != "" && cfg.Worker > 0:
+		pod := &dpworker.Pod{
+			API: apiClient, ID: id, Attempt: dpworker.Attempt{ID: cfg.Attempt, Placement: ints.Int32(cfg.Placement)}, Worker: cfg.Worker - 1,
+			Run: sync.RunWorker, Logger: log,
 		}
-		w.Attempt = &dpworker.Attempt{ID: cfg.Attempt, Placement: int32(cfg.Placement)}
+		log.Info("runner running one worker of an attempt", "id", id, "attempt", cfg.Attempt, "placement", cfg.Placement, "worker", cfg.Worker-1)
+		return pod.Serve(ctx)
+	case cfg.Attempt != "":
+		w.Attempt = &dpworker.Attempt{ID: cfg.Attempt, Placement: ints.Int32(cfg.Placement)}
 		log.Info("runner running one attempt", "id", w.ID, "attempt", cfg.Attempt, "placement", cfg.Placement)
 		return w.Run(ctx)
 	case cfg.Launcher != "":

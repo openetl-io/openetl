@@ -1,13 +1,50 @@
 package api
 
 import (
+	"cmp"
 	"strings"
 	"testing"
 
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/spec"
 	"github.com/openetl-io/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
+
+// The plan says how many workers a job runs on, why one that asks for them
+// runs on one pod, and what it couldn't check.
+func TestPlanWorkers(t *testing.T) {
+	sp := &apiv1.PipelineSpec{Resources: &apiv1.JobResources{Workers: 3}}
+	lanes := destination.Capabilities{Class: destination.StageAndApply, WriterLanes: 4, WriteModes: []destination.WriteMode{destination.Append}}
+	cat := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{{Name: "orders", PrimaryKey: []string{"id"}}, {Name: "logs"}}}
+	for name, tc := range map[string]struct {
+		cat     *apiv1.Catalog
+		caps    destination.Capabilities
+		known   bool
+		workers int
+		has     string
+	}{
+		"unknown capabilities": {cat, lanes, false, 3, "doesn't know the destination's capabilities"},
+		"one writer lane":      {cat, destination.Capabilities{Class: destination.StageAndApply}, true, 0, "resources.workers asks for 3 workers, and the job runs on one pod: the destination declares one writer lane"},
+		"spread":               {cat, lanes, true, 3, "orders: each attempt reads it on one of its 3 workers"},
+		"no catalog":           {nil, lanes, true, 3, "the source hasn't been discovered"},
+	} {
+		out := &apiv1.PipelinePlan{}
+		got := planWorkers(sp, tc.cat, tc.caps, tc.known, false, out)
+		var said []string
+		for _, w := range out.GetWarnings() {
+			said = append(said, cmp.Or(w.GetStream()+": ", "")+w.GetMessage())
+		}
+		said = append(said, out.GetNotes()...)
+		if got != tc.workers || !strings.Contains(strings.Join(said, "\n"), tc.has) {
+			t.Errorf("%s: %d workers, and said %q; want %d, and %q", name, got, said, tc.workers, tc.has)
+		}
+	}
+	if got := planWorkers(&apiv1.PipelineSpec{}, cat, lanes, true, false, &apiv1.PipelinePlan{}); got != 0 {
+		t.Errorf("%d workers for a job that asks for none", got)
+	}
+}
 
 func TestCanRun(t *testing.T) {
 	runner := db.Runner{ID: "r1", Release: "0.2.0", Protocol: "v1", Features: []string{"a"}, Launchers: []string{"subprocess"}, Platform: "linux/amd64"}

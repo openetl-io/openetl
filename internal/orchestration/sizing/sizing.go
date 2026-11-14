@@ -56,6 +56,10 @@ type Spec struct {
 // DefaultPool is the pool of a pipeline that names none.
 const DefaultPool = "default"
 
+// Coordinator is what an attempt on workers places its coordinator at,
+// whatever its workers' size: it runs no lanes and no connector.
+var Coordinator = resources.XS
+
 // SpecOf reads a pipeline's spec.resources, which spec.Parse has checked.
 func SpecOf(r *apiv1.JobResources) Spec {
 	return Spec{Size: Of(r.GetSize()), Min: Of(r.GetMin()), Max: Of(r.GetMax()), Pool: cmp.Or(r.GetPool(), DefaultPool)}

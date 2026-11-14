@@ -39,7 +39,8 @@ const (
 type ListenConfig struct {
 	// host:port.
 	Address string
-	// Where workers reach it, as host:port; empty: the listener's address.
+	// Where workers reach it, as host:port, or a host, which takes the
+	// listener's port; empty: the listener's address.
 	Advertise string
 	// The server's TLS; nil: a certificate made now, which Certificate
 	// returns for workers to trust.
@@ -73,6 +74,10 @@ func Listen(ctx context.Context, cfg ListenConfig) (*Server, error) {
 		return nil, fmt.Errorf("attempt: listen: %w", err)
 	}
 	advertise := cfg.Advertise
+	if _, _, err := net.SplitHostPort(advertise); advertise != "" && err != nil {
+		_, port, _ := net.SplitHostPort(lis.Addr().String())
+		advertise = net.JoinHostPort(advertise, port)
+	}
 	if advertise == "" {
 		advertise = lis.Addr().String()
 	}

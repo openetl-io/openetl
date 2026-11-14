@@ -16,7 +16,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/heal"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/sizing"
@@ -124,11 +126,20 @@ func (d *Dispatcher) Enqueue(ctx context.Context, in contract.WorkInput, needs [
 		return fmt.Errorf("dispatch: %s's priority %d isn't one of contract's", in.ID, in.Priority)
 	}
 	priority := int16(in.Priority)
+	workers, err := workersOf(in.Workers)
+	if err != nil {
+		return err
+	}
+	coordinator := in.Coordinator
+	if workers == 0 {
+		coordinator = resources.Size{}
+	}
 	err = d.Store.Tx(ctx, func(q *db.Queries) error {
 		_, err := q.EnqueueDispatch(ctx, db.EnqueueDispatchParams{
 			OrgID: org, ID: in.ID, DataPlaneID: in.DataPlane, WorkflowID: in.WorkflowID, Kind: in.Kind, Input: input,
 			Light: in.Light, Pool: cmp.Or(in.Pool, defaultPool), SizeCpu: in.Size.CPU, SizeMemory: in.Size.Memory, Priority: priority,
 			Needs: needed, Trace: trace, HeartbeatMs: in.Heartbeat.Milliseconds(), StartTimeoutMs: start.Milliseconds(), TimeoutMs: in.Timeout.Milliseconds(),
+			Workers: workers, CoordinatorCpu: coordinator.CPU, CoordinatorMemory: coordinator.Memory,
 		})
 		if err != nil {
 			return err
@@ -144,7 +155,7 @@ func (d *Dispatcher) Enqueue(ctx context.Context, in contract.WorkInput, needs [
 			}
 			err = q.InsertAttempt(ctx, db.InsertAttemptParams{
 				OrgID: org, ID: in.ID, PipelineID: pipeline, SyncID: sync, Attempt: in.Attempt,
-				SizeCpu: in.Size.CPU, SizeMemory: in.Size.Memory, SizeReason: in.SizeReason,
+				SizeCpu: in.Size.CPU, SizeMemory: in.Size.Memory, SizeReason: in.SizeReason, Workers: workers, OnePod: in.OnePod,
 			})
 			if err != nil {
 				return err
@@ -166,6 +177,14 @@ func (d *Dispatcher) Enqueue(ctx context.Context, in contract.WorkInput, needs [
 
 const defaultPool = sizing.DefaultPool
 
+// workersOf is an attempt's workers as the store keeps them.
+func workersOf(n int) (int32, error) {
+	if n < 0 || n > math.MaxInt32 {
+		return 0, fmt.Errorf("dispatch: %d workers", n)
+	}
+	return int32(n), nil
+}
+
 // Capacities are the capacities of the pool's runners reporting now, that
 // aren't stopping.
 func (d *Dispatcher) Capacities(ctx context.Context, org uuid.UUID, dataPlane, pool string) ([]resources.Size, error) {
@@ -184,6 +203,28 @@ func (d *Dispatcher) Capacities(ctx context.Context, org uuid.UUID, dataPlane, p
 		}
 	}
 	return out, nil
+}
+
+// Launchers are the pool's pod launchers reporting now, that aren't
+// stopping, and whether any runner of the data plane reports now.
+func (d *Dispatcher) Launchers(ctx context.Context, org uuid.UUID, dataPlane, pool string) ([]*Pods, bool, error) {
+	rows, err := d.Store.PlacementRunners(ctx, db.PlacementRunnersParams{OrgID: org, DataPlaneID: dataPlane, LapseMs: d.lapse().Milliseconds()})
+	if err != nil {
+		return nil, false, err
+	}
+	var out []*Pods
+	for _, r := range rows {
+		if r.Launcher && r.Pool == pool && !r.Draining {
+			out = append(out, podsOf(r))
+		}
+	}
+	return out, len(rows) > 0, nil
+}
+
+// AllowsWorkers reports whether the launcher could ever take an attempt on
+// workers, each of size, with a coordinator of coordinator.
+func (p *Pods) AllowsWorkers(workers int, size, coordinator resources.Size) bool {
+	return fitsEver(&Runner{Pods: p}, Request{Size: size, Workers: workers, Coordinator: coordinator})
 }
 
 // runnersOf is the runners as the placer sees them, and the CPU placed on
@@ -492,6 +533,57 @@ func (d *Dispatcher) LaunchResult(ctx context.Context, org uuid.UUID, dataPlane,
 	return true, nil
 }
 
+// OpenWorkers records where the workers of an attempt running on the runner
+// join their coordinator, target's worker aside. It returns false if the
+// attempt isn't the runner's, or doesn't run on workers.
+func (d *Dispatcher) OpenWorkers(ctx context.Context, org uuid.UUID, dataPlane, runner, id string, target *dataplanev1.WorkerTarget) (bool, error) {
+	b, err := protojson.Marshal(target)
+	if err != nil {
+		return false, err
+	}
+	n, err := d.Store.OpenWorkers(ctx, db.OpenWorkersParams{WorkerTarget: b, OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: &runner})
+	return n > 0, err
+}
+
+// WorkerAttempt is a worker pod's attempt while that placement is live, and
+// where the worker joins its coordinator once the coordinator has said; nil
+// once the placement has moved on.
+func (d *Dispatcher) WorkerAttempt(ctx context.Context, org uuid.UUID, dataPlane, id string, placement int32, worker int32) (*db.Dispatch, *dataplanev1.WorkerTarget, error) {
+	rows, err := d.Store.WorkerAttempt(ctx, db.WorkerAttemptParams{OrgID: org, DataPlaneID: dataPlane, ID: id, Placement: placement, Worker: worker})
+	if err != nil || len(rows) == 0 {
+		return nil, nil, err
+	}
+	w := rows[0]
+	if w.State != "running" || len(w.WorkerTarget) == 0 {
+		return &w, nil, nil
+	}
+	var t dataplanev1.WorkerTarget
+	if err := protojson.Unmarshal(w.WorkerTarget, &t); err != nil {
+		return nil, nil, fmt.Errorf("dispatch: %s's workers' target: %w", id, err)
+	}
+	t.Worker = uint32(max(0, worker))
+	return &w, &t, nil
+}
+
+// OnePod places an attempt again, as the same attempt, on one pod: its
+// coordinator found it can't run on workers, for why. It returns false if
+// the attempt isn't the runner's, or doesn't run on workers.
+func (d *Dispatcher) OnePod(ctx context.Context, org uuid.UUID, dataPlane, runner, id, why string) (bool, error) {
+	var n int64
+	err := d.Store.Tx(ctx, func(q *db.Queries) error {
+		var err error
+		n, err = q.ReturnOnePod(ctx, db.ReturnOnePodParams{Cancelled: cancelled(), OrgID: org, DataPlaneID: dataPlane, ID: id, Runner: &runner})
+		if err != nil || n == 0 {
+			return err
+		}
+		return q.SetAttemptOnePod(ctx, db.SetAttemptOnePodParams{OrgID: org, ID: id, OnePod: why})
+	})
+	if err != nil || n == 0 {
+		return false, err
+	}
+	return true, d.pass(ctx, org, dataPlane)
+}
+
 // Launch is an attempt's placement on a pod launcher, as its pod says.
 type Launch struct {
 	Attempt   string
@@ -603,6 +695,7 @@ func (d *Dispatcher) pass(ctx context.Context, org uuid.UUID, dataPlane string) 
 			requests[i] = Request{
 				ID: p.ID, Org: org.String(), Pool: p.Pool, Size: resources.Size{CPU: p.SizeCpu, Memory: p.SizeMemory},
 				Priority: int(p.Priority), Waited: time.Duration(p.WaitedMs) * time.Millisecond, Needs: needs,
+				Workers: int(p.Workers), Coordinator: resources.Size{CPU: p.CoordinatorCpu, Memory: p.CoordinatorMemory},
 			}
 		}
 		decisions := Plan(runners, requests, map[string]int64{org.String(): reserved}, d.reserveAfter())

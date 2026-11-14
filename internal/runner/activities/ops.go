@@ -336,7 +336,7 @@ var replays = map[source.Replay]apiv1.Replay{source.Exact: apiv1.Replay_REPLAY_E
 func catalogProto(cat source.Catalog) *apiv1.Catalog {
 	out := &apiv1.Catalog{}
 	for _, cs := range cat.Streams {
-		s := &apiv1.CatalogStream{Name: cs.Name, PrimaryKey: cs.PrimaryKey, CursorField: cs.CursorField, Replay: replays[cs.Replay]}
+		s := &apiv1.CatalogStream{Name: cs.Name, PrimaryKey: cs.PrimaryKey, CursorField: cs.CursorField, Replay: replays[cs.Replay], SplitsByKey: cs.SplitsByKey}
 		for _, m := range cs.SyncModes {
 			s.SyncModes = append(s.SyncModes, ints.Enum[apiv1.SyncMode](m))
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -654,8 +655,10 @@ func (f *fakeLauncher) Launch(_ context.Context, l pods.Launch) error {
 	if f.pods == nil {
 		f.pods = map[string]*pods.Pod{}
 	}
-	name := pods.Name(l.Attempt, l.Placement)
-	f.pods[name] = &pods.Pod{Name: name, Attempt: l.Attempt, Placement: l.Placement}
+	for w := range l.Workers + 1 {
+		name := pods.WorkerName(l.Attempt, l.Placement, w)
+		f.pods[name] = &pods.Pod{Name: name, Attempt: l.Attempt, Placement: l.Placement, Worker: w}
+	}
 	return nil
 }
 
@@ -844,6 +847,133 @@ func TestPodRunsItsAttempt(t *testing.T) {
 	}
 	if len(api.reports) == 0 || api.reports[0].GetAttempt() != "sync/1/1" {
 		t.Errorf("reports %v, want them to name the attempt", api.reports)
+	}
+}
+
+// A launcher makes an attempt's workers' pods with its own, reports their
+// placement once, leaves the outcome of a worker that ended well to its
+// coordinator, and deletes them all with the attempt's.
+func TestLauncherMakesWorkersPods(t *testing.T) {
+	l := &fakeLauncher{}
+	api, _ := startLauncher(t, l)
+	launch := work("sync/1/1", contract.RunSyncAttempt, small, nil)
+	launch.Placement, launch.Workers, launch.Coordinator = 3, 2, &dataplanev1.Resources{CpuMillis: 500, MemoryBytes: 1 << 30}
+	api.give(launch)
+	eventually(t, "the pods", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return len(l.pods) == 3
+	})
+	if got := l.launched[0]; got.Workers != 2 || got.Coordinator != (resources.Size{CPU: 500, Memory: 1 << 30}) || got.Size != (resources.Size{CPU: 1000, Memory: 1 << 30}) {
+		t.Errorf("launched %+v", got)
+	}
+	eventually(t, "a report of the pods", func() bool {
+		r := api.lastReport()
+		return r != nil && len(r.GetLaunched()) == 1 && r.GetLaunched()[0].GetPlacement() == 3
+	})
+	l.end(pods.WorkerName("sync/1/1", 3, 1), nil)
+	time.Sleep(50 * time.Millisecond)
+	if rs := api.launchResults(3); len(rs) != 0 {
+		t.Fatalf("results %v for a worker that ended well", rs)
+	}
+	l.end(pods.WorkerName("sync/1/1", 3, 2), errs.New(errs.ResourceExhausted, "its pod went over its memory limit"))
+	eventually(t, "the launcher's result", func() bool { return len(api.launchResults(3)) == 1 })
+	if r := api.launchResults(3)[0]; r.GetCode() != "RESOURCE_EXHAUSTED" {
+		t.Errorf("result %v", r)
+	}
+	api.mu.Lock()
+	api.reap = []*dataplanev1.Launch{{Attempt: "sync/1/1", Placement: 3}}
+	api.mu.Unlock()
+	eventually(t, "every pod deleted", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return len(l.pods) == 0 && len(l.deleted) == 3
+	})
+}
+
+// An attempt that can't run on workers says why in its result, which places
+// it again on one pod.
+func TestOnePod(t *testing.T) {
+	api, _, _ := start(t, map[string]Kind{"run": {Handler: func(context.Context, []byte) (any, error) {
+		return nil, fmt.Errorf("activities: %w", &OnePod{Why: "a SQL transform runs on one pod"})
+	}}}, resources.XL)
+	w := work("sync/1/1", "run", small, nil)
+	w.Workers = 2
+	api.give(w)
+	eventually(t, "the result", func() bool { return api.result("sync/1/1") != nil })
+	if r := api.result("sync/1/1"); r.GetOnePod() != "a SQL transform runs on one pod" || r.GetCode() != "" || r.GetCancelled() {
+		t.Errorf("result %v", r)
+	}
+}
+
+// workerAPI answers a worker pod's polls: its attempt without where to join
+// for the first few, then with it.
+type workerAPI struct {
+	dataplanev1connect.UnimplementedDataPlaneServiceHandler
+	mu    sync.Mutex
+	polls []*dataplanev1.PollWorkRequest
+	wait  int
+}
+
+func (f *workerAPI) PollWork(_ context.Context, req *connect.Request[dataplanev1.PollWorkRequest]) (*connect.Response[dataplanev1.PollWorkResponse], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.polls = append(f.polls, req.Msg)
+	if req.Msg.GetAttempt().GetAttempt() != "sync/1/1" {
+		return connect.NewResponse(&dataplanev1.PollWorkResponse{}), nil
+	}
+	w := work("sync/1/1", contract.RunSyncAttempt, small, nil)
+	if len(f.polls) > f.wait {
+		w.Join = &dataplanev1.WorkerTarget{Address: "10.0.0.7:7720", Token: "t", Generation: 4, Worker: req.Msg.GetWorker(), Owner: "r1/abc"}
+	}
+	return connect.NewResponse(&dataplanev1.PollWorkResponse{Work: []*dataplanev1.Work{w}}), nil
+}
+
+// A worker's pod waits for its coordinator to say where it joins, runs its
+// part, and stops; or stops at once if the attempt has moved on.
+func TestPod(t *testing.T) {
+	api := &workerAPI{wait: 3}
+	mux := http.NewServeMux()
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	var ran *dataplanev1.Work
+	pod := &Pod{
+		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), ID: "w1", Attempt: Attempt{ID: "sync/1/1", Placement: 2}, Worker: 1,
+		Every: 5 * time.Millisecond,
+		Run: func(_ context.Context, w *dataplanev1.Work) error {
+			ran = w
+			return errors.New("the coordinator went away")
+		},
+	}
+	if err := pod.Serve(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	p := api.polls[0]
+	switch {
+	case len(api.polls) != 4:
+		t.Errorf("%d polls, want 4", len(api.polls))
+	case p.GetAttempt().GetAttempt() != "sync/1/1" || p.GetAttempt().GetPlacement() != 2 || p.Worker == nil || p.GetWorker() != 1:
+		t.Errorf("poll %v", p)
+	case ran.GetJoin().GetOwner() != "r1/abc" || ran.GetJoin().GetWorker() != 1:
+		t.Errorf("ran %v", ran)
+	}
+
+	gone := &Pod{API: pod.API, ID: "w2", Attempt: Attempt{ID: "gone", Placement: 1}, Every: 5 * time.Millisecond,
+		Run: func(context.Context, *dataplanev1.Work) error {
+			t.Error("ran a part of an attempt that moved on")
+			return nil
+		}}
+	if err := gone.Serve(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	late := &Pod{API: pod.API, ID: "w3", Attempt: Attempt{ID: "sync/1/1", Placement: 2}, Every: 5 * time.Millisecond, Wait: time.Nanosecond,
+		Run: func(context.Context, *dataplanev1.Work) error { t.Error("ran without where to join"); return nil }}
+	api.mu.Lock()
+	api.polls, api.wait = nil, 100
+	api.mu.Unlock()
+	if err := late.Serve(t.Context()); err != nil {
+		t.Fatalf("a worker whose coordinator never says: %v, want nil", err)
 	}
 }
 

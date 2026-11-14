@@ -923,6 +923,22 @@ func TestTheCoordinatorKeepsTheProtocol(t *testing.T) {
 				t.Fatalf("a commit %s", name)
 			}
 		}
+		// A commit given up on is still asked for. Before the epoch's
+		// positions, the worker hands it to its caller, so nothing answers it
+		// before the call gives up; after them, its side answers by itself,
+		// and an answer could come back first.
+		gone, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := c.Commit(gone, 0, commit); !errors.Is(err, context.Canceled) {
+			t.Fatalf("a commit given up on: %v", err)
+		}
+		if got := request(t, ws[0]).GetCommit(); !proto.Equal(got, commit) {
+			t.Fatalf("worker 0 was asked for %v, want the commit given up on", got)
+		}
+		if err := ws[0].Committed(committedOf(commit, nil)); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
 		for name, e := range map[string]*protocolv1.Epoch{
 			"of a later generation":                   epochOf(testGen+1, 1),
 			"of an epoch not gathered":                epoch(testFirst + 1),
@@ -937,12 +953,6 @@ func TestTheCoordinatorKeepsTheProtocol(t *testing.T) {
 		}
 		if err := c.Acknowledge(&attemptv1.Positions{Epoch: epochOf(testGen-1, testFirst-1)}); err == nil {
 			t.Fatal("positions going back")
-		}
-		// A commit given up on is still asked for.
-		gone, cancel := context.WithCancel(ctx)
-		cancel()
-		if _, err := c.Commit(gone, 0, commit); !errors.Is(err, context.Canceled) {
-			t.Fatalf("a commit given up on: %v", err)
 		}
 		synctest.Wait()
 		if isDone(c.Done()) {

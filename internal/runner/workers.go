@@ -23,8 +23,10 @@ import (
 
 	attemptv1 "github.com/openetl-io/openetl/gen/openetl/attempt/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
+	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -59,31 +61,33 @@ const endTimeout = 30 * time.Second
 // needs rows of one key to meet across workers, or one writer, stays on one
 // pod.
 func (j *Job) OnWorkers(workers int) error {
-	caps := j.Destination.Capabilities()
-	_, engineSink := j.Destination.(EngineSink)
-	switch {
-	case workers < 1:
+	if workers < 1 {
 		return errs.New(errs.ConfigInvalid, "runner: %d workers", workers)
+	}
+	_, engineSink := j.Destination.(EngineSink)
+	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink}
+	switch {
 	case j.ownCode():
-		return errs.New(errs.ConfigInvalid, "runner: a Spark or Flink transform runs on one pod")
+		facts.Transform = plan.TransformOwnCode
 	case j.SQL != nil:
-		return errs.New(errs.ConfigInvalid, "runner: a SQL transform runs on one pod")
-	case caps.Lanes() < workers:
-		return errs.New(errs.ConfigInvalid, "runner: the destination takes %d writer lanes, fewer than %d workers", caps.Lanes(), workers)
-	case caps.Class == destination.TransactionalStream:
-		return errs.New(errs.ConfigInvalid, "runner: a transactional destination's writer lanes commit on their own, which only one pod recovers")
-	case j.staged():
-		return errs.New(errs.ConfigInvalid, "runner: a destination that loads staged epochs runs on one pod")
-	case engineSink:
-		return errs.New(errs.ConfigInvalid, "runner: a destination the engine writes runs on one pod")
+		facts.Transform = plan.TransformSQL
 	}
 	for _, s := range j.sinkStreams() {
 		if j.holdsOn(s) {
-			return errs.New(errs.ConfigInvalid, "runner: stream %q holds columns, which runs on one pod", s.Name)
+			facts.Holding = s.Name
+			break
 		}
+	}
+	if why := plan.OnePod(facts); why != "" {
+		return errs.Wrap(errs.ConfigInvalid, &OnePodError{Why: why}, "")
 	}
 	return nil
 }
+
+// OnePodError is why a job can't run on workers, and runs on one pod.
+type OnePodError struct{ Why string }
+
+func (e *OnePodError) Error() string { return "runner: " + e.Why }
 
 // checkWorkers says why the job can't run on its Workers, before the
 // attempt claims anything.
@@ -206,6 +210,10 @@ func (f *fleet) inbox(ctx context.Context) error {
 			if err := f.schemas.propose(from.Worker, p); err != nil {
 				return err
 			}
+			continue
+		}
+		if u := from.Usage; u != nil {
+			f.job.Meter.SetRemote(from.Worker, remoteOf(u))
 			continue
 		}
 		s := from.Signal
@@ -333,6 +341,30 @@ func mergeReady(r *Ready, s *attemptv1.Share) error {
 		}
 	}
 	return nil
+}
+
+// remoteOf is a worker's usage as the coordinator's meter takes it.
+func remoteOf(u *attemptv1.Usage) resources.Remote {
+	return resources.Remote{
+		Usage: resources.Usage{CPU: u.GetCpuSeconds(), Memory: u.GetPeakMemoryBytes(), RunnerCPU: u.GetRunnerCpuSeconds(), RunnerMemory: u.GetRunnerMemoryBytes()},
+		Lanes: resources.Lanes{
+			Count: int(u.GetLanes()), Limit: int(u.GetLaneLimit()), Busy: u.GetBusySeconds(), Backpressured: u.GetBackpressuredSeconds(),
+			Idle: u.GetIdleSeconds(), Rows: ints.Int64Clamped(u.GetLaneRows()),
+		},
+		Rows: ints.Int64Clamped(u.GetRows()), Bytes: ints.Int64Clamped(u.GetBytes()),
+	}
+}
+
+// usageOf is what a worker's meter says, as its coordinator gets it.
+func usageOf(m *resources.Meter) *attemptv1.Usage {
+	u, l := m.Usage(), m.Lanes()
+	rows, bytes := m.Progress()
+	return &attemptv1.Usage{
+		CpuSeconds: u.CPU, PeakMemoryBytes: u.Memory, RunnerCpuSeconds: u.RunnerCPU, RunnerMemoryBytes: u.RunnerMemory,
+		Rows: ints.Uint64(max(rows, 0)), Bytes: ints.Uint64(max(bytes, 0)),
+		Lanes: ints.Uint32(l.Count), LaneLimit: ints.Uint32(l.Limit), BusySeconds: l.Busy, BackpressuredSeconds: l.Backpressured, IdleSeconds: l.Idle,
+		LaneRows: ints.Uint64(max(l.Rows, 0)),
+	}
 }
 
 func positionOf(stream string, sp checkpoint.SplitState) *attemptv1.SplitPosition {

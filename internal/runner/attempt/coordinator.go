@@ -381,6 +381,12 @@ func (c *coordinator) handle(m *member, msg *attemptv1.AttendRequest) error {
 		}
 		c.post(From{Worker: m.index, Proposal: x.SchemaProposal})
 		return nil
+	case *attemptv1.AttendRequest_Usage:
+		if c.assignment == nil {
+			return outOfProtocol("%s reported its usage before its assignment", who)
+		}
+		c.post(From{Worker: m.index, Usage: x.Usage})
+		return nil
 	case *attemptv1.AttendRequest_Join:
 		return outOfProtocol("%s joined again", who)
 	default:

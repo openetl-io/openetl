@@ -231,7 +231,7 @@ func (q *Queries) GetPipelineVersionPins(ctx context.Context, arg GetPipelineVer
 }
 
 const getSyncSpec = `-- name: GetSyncSpec :one
-SELECT v.version, v.data_plane_id, v.spec AS pipeline_spec, v.key_groups, v.sql_plan, v.dbt, v.spark_clusters, v.flink_clusters, v.source_version, v.destination_version,
+SELECT v.version, v.data_plane_id, v.source_id, v.spec AS pipeline_spec, v.key_groups, v.sql_plan, v.dbt, v.spark_clusters, v.flink_clusters, v.source_version, v.destination_version,
     sv.spec AS source_spec, dv.spec AS destination_spec,
     sv.connector_digest AS source_connector, dv.connector_digest AS destination_connector,
     sv.secrets AS source_secrets, dv.secrets AS destination_secrets, v.secrets AS access_secrets,
@@ -255,6 +255,7 @@ type GetSyncSpecParams struct {
 type GetSyncSpecRow struct {
 	Version              string
 	DataPlaneID          string
+	SourceID             uuid.UUID
 	PipelineSpec         []byte
 	KeyGroups            int32
 	SqlPlan              []byte
@@ -283,6 +284,7 @@ func (q *Queries) GetSyncSpec(ctx context.Context, arg GetSyncSpecParams) (GetSy
 	err := row.Scan(
 		&i.Version,
 		&i.DataPlaneID,
+		&i.SourceID,
 		&i.PipelineSpec,
 		&i.KeyGroups,
 		&i.SqlPlan,

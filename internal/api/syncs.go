@@ -168,7 +168,10 @@ func (s *Server) syncsOut(ctx context.Context, pipeline string, rows []db.GetSyn
 func attemptOut(a db.Attempt) *apiv1.SyncAttempt {
 	out := &apiv1.SyncAttempt{
 		Attempt: a.Attempt, Size: sizing.Out(resources.Size{CPU: a.SizeCpu, Memory: a.SizeMemory}), SizeReason: sizing.Reason(a.SizeReason).API(),
-		Rows: uint64(max(0, a.Rows)), Bytes: uint64(max(0, a.Bytes)), Code: a.Code,
+		Rows: uint64(max(0, a.Rows)), Bytes: uint64(max(0, a.Bytes)), Code: a.Code, OnePod: a.OnePod,
+	}
+	if a.Workers > 0 {
+		out.Workers = uint32(a.Workers)
 	}
 	if a.Seconds > 0 {
 		out.Usage = &apiv1.Usage{

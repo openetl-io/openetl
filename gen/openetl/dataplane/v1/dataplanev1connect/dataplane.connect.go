@@ -66,6 +66,9 @@ const (
 	// DataPlaneServiceReportResultProcedure is the fully-qualified name of the DataPlaneService's
 	// ReportResult RPC.
 	DataPlaneServiceReportResultProcedure = "/openetl.dataplane.v1.DataPlaneService/ReportResult"
+	// DataPlaneServiceOpenWorkersProcedure is the fully-qualified name of the DataPlaneService's
+	// OpenWorkers RPC.
+	DataPlaneServiceOpenWorkersProcedure = "/openetl.dataplane.v1.DataPlaneService/OpenWorkers"
 	// DataPlaneServiceGetFlinkTeardownProcedure is the fully-qualified name of the DataPlaneService's
 	// GetFlinkTeardown RPC.
 	DataPlaneServiceGetFlinkTeardownProcedure = "/openetl.dataplane.v1.DataPlaneService/GetFlinkTeardown"
@@ -115,6 +118,10 @@ type DataPlaneServiceClient interface {
 	// The result of work PollWork returned. The API wakes the workflow waiting
 	// for it. Sending a result again is harmless.
 	ReportResult(context.Context, *connect.Request[v1.ReportResultRequest]) (*connect.Response[v1.ReportResultResponse], error)
+	// Where an attempt's workers join it, from the runner that runs it as
+	// their coordinator, once it has claimed the pipeline. The workers' pods
+	// get it from PollWork. Sending it again replaces it.
+	OpenWorkers(context.Context, *connect.Request[v1.OpenWorkersRequest]) (*connect.Response[v1.OpenWorkersResponse], error)
 	// The Flink cluster a deleted pipeline's last version pinned, for the
 	// teardown the API sent to the runner's data plane, which cancels the
 	// pipeline's Flink jobs.
@@ -204,6 +211,12 @@ func NewDataPlaneServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(dataPlaneServiceMethods.ByName("ReportResult")),
 			connect.WithClientOptions(opts...),
 		),
+		openWorkers: connect.NewClient[v1.OpenWorkersRequest, v1.OpenWorkersResponse](
+			httpClient,
+			baseURL+DataPlaneServiceOpenWorkersProcedure,
+			connect.WithSchema(dataPlaneServiceMethods.ByName("OpenWorkers")),
+			connect.WithClientOptions(opts...),
+		),
 		getFlinkTeardown: connect.NewClient[v1.GetFlinkTeardownRequest, v1.GetFlinkTeardownResponse](
 			httpClient,
 			baseURL+DataPlaneServiceGetFlinkTeardownProcedure,
@@ -238,6 +251,7 @@ type dataPlaneServiceClient struct {
 	reportRunner         *connect.Client[v1.ReportRunnerRequest, v1.ReportRunnerResponse]
 	pollWork             *connect.Client[v1.PollWorkRequest, v1.PollWorkResponse]
 	reportResult         *connect.Client[v1.ReportResultRequest, v1.ReportResultResponse]
+	openWorkers          *connect.Client[v1.OpenWorkersRequest, v1.OpenWorkersResponse]
 	getFlinkTeardown     *connect.Client[v1.GetFlinkTeardownRequest, v1.GetFlinkTeardownResponse]
 	reportRewind         *connect.Client[v1.ReportRewindRequest, v1.ReportRewindResponse]
 	reportRetention      *connect.Client[v1.ReportRetentionRequest, v1.ReportRetentionResponse]
@@ -298,6 +312,11 @@ func (c *dataPlaneServiceClient) ReportResult(ctx context.Context, req *connect.
 	return c.reportResult.CallUnary(ctx, req)
 }
 
+// OpenWorkers calls openetl.dataplane.v1.DataPlaneService.OpenWorkers.
+func (c *dataPlaneServiceClient) OpenWorkers(ctx context.Context, req *connect.Request[v1.OpenWorkersRequest]) (*connect.Response[v1.OpenWorkersResponse], error) {
+	return c.openWorkers.CallUnary(ctx, req)
+}
+
 // GetFlinkTeardown calls openetl.dataplane.v1.DataPlaneService.GetFlinkTeardown.
 func (c *dataPlaneServiceClient) GetFlinkTeardown(ctx context.Context, req *connect.Request[v1.GetFlinkTeardownRequest]) (*connect.Response[v1.GetFlinkTeardownResponse], error) {
 	return c.getFlinkTeardown.CallUnary(ctx, req)
@@ -352,6 +371,10 @@ type DataPlaneServiceHandler interface {
 	// The result of work PollWork returned. The API wakes the workflow waiting
 	// for it. Sending a result again is harmless.
 	ReportResult(context.Context, *connect.Request[v1.ReportResultRequest]) (*connect.Response[v1.ReportResultResponse], error)
+	// Where an attempt's workers join it, from the runner that runs it as
+	// their coordinator, once it has claimed the pipeline. The workers' pods
+	// get it from PollWork. Sending it again replaces it.
+	OpenWorkers(context.Context, *connect.Request[v1.OpenWorkersRequest]) (*connect.Response[v1.OpenWorkersResponse], error)
 	// The Flink cluster a deleted pipeline's last version pinned, for the
 	// teardown the API sent to the runner's data plane, which cancels the
 	// pipeline's Flink jobs.
@@ -437,6 +460,12 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 		connect.WithSchema(dataPlaneServiceMethods.ByName("ReportResult")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dataPlaneServiceOpenWorkersHandler := connect.NewUnaryHandler(
+		DataPlaneServiceOpenWorkersProcedure,
+		svc.OpenWorkers,
+		connect.WithSchema(dataPlaneServiceMethods.ByName("OpenWorkers")),
+		connect.WithHandlerOptions(opts...),
+	)
 	dataPlaneServiceGetFlinkTeardownHandler := connect.NewUnaryHandler(
 		DataPlaneServiceGetFlinkTeardownProcedure,
 		svc.GetFlinkTeardown,
@@ -479,6 +508,8 @@ func NewDataPlaneServiceHandler(svc DataPlaneServiceHandler, opts ...connect.Han
 			dataPlaneServicePollWorkHandler.ServeHTTP(w, r)
 		case DataPlaneServiceReportResultProcedure:
 			dataPlaneServiceReportResultHandler.ServeHTTP(w, r)
+		case DataPlaneServiceOpenWorkersProcedure:
+			dataPlaneServiceOpenWorkersHandler.ServeHTTP(w, r)
 		case DataPlaneServiceGetFlinkTeardownProcedure:
 			dataPlaneServiceGetFlinkTeardownHandler.ServeHTTP(w, r)
 		case DataPlaneServiceReportRewindProcedure:
@@ -536,6 +567,10 @@ func (UnimplementedDataPlaneServiceHandler) PollWork(context.Context, *connect.R
 
 func (UnimplementedDataPlaneServiceHandler) ReportResult(context.Context, *connect.Request[v1.ReportResultRequest]) (*connect.Response[v1.ReportResultResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.ReportResult is not implemented"))
+}
+
+func (UnimplementedDataPlaneServiceHandler) OpenWorkers(context.Context, *connect.Request[v1.OpenWorkersRequest]) (*connect.Response[v1.OpenWorkersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.dataplane.v1.DataPlaneService.OpenWorkers is not implemented"))
 }
 
 func (UnimplementedDataPlaneServiceHandler) GetFlinkTeardown(context.Context, *connect.Request[v1.GetFlinkTeardownRequest]) (*connect.Response[v1.GetFlinkTeardownResponse], error) {

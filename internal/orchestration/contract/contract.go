@@ -85,6 +85,13 @@ type WorkInput struct {
 	Size resources.Size `json:",omitzero"`
 	// What set the size.
 	SizeReason string `json:",omitempty"`
+	// Set: the attempt runs on this many workers, each of Size, which a
+	// coordinator of Coordinator leads. EnqueueWork works them out, as it
+	// does the size.
+	Workers     int            `json:",omitempty"`
+	Coordinator resources.Size `json:",omitzero"`
+	// Why it runs on one pod although its pipeline asks for workers.
+	OnePod string `json:",omitempty"`
 	// The runners that may take an attempt. Empty: the default pool.
 	Pool string `json:",omitempty"`
 	// How long it may go unreported.

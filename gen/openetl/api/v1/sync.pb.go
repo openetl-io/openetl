@@ -351,7 +351,12 @@ type SyncAttempt struct {
 	Code string `protobuf:"bytes,7,opt,name=code,proto3" json:"code,omitempty"`
 	// Its lanes and where their time went, as its runner last reported. Unset
 	// until it does, and for an attempt without lanes.
-	Lanes         *LaneUsage `protobuf:"bytes,8,opt,name=lanes,proto3" json:"lanes,omitempty"`
+	Lanes *LaneUsage `protobuf:"bytes,8,opt,name=lanes,proto3" json:"lanes,omitempty"`
+	// The workers it ran on, with their coordinator; 0: one pod. Its size is
+	// each worker's, and its use the largest worker's.
+	Workers uint32 `protobuf:"varint,9,opt,name=workers,proto3" json:"workers,omitempty"`
+	// Why it ran on one pod although the pipeline asks for workers.
+	OnePod        string `protobuf:"bytes,10,opt,name=one_pod,json=onePod,proto3" json:"one_pod,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -440,6 +445,20 @@ func (x *SyncAttempt) GetLanes() *LaneUsage {
 		return x.Lanes
 	}
 	return nil
+}
+
+func (x *SyncAttempt) GetWorkers() uint32 {
+	if x != nil {
+		return x.Workers
+	}
+	return 0
+}
+
+func (x *SyncAttempt) GetOnePod() string {
+	if x != nil {
+		return x.OnePod
+	}
+	return ""
 }
 
 // LaneUsage is how an attempt's lanes spent their time.
@@ -1291,7 +1310,7 @@ const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\x0ffailed_attempts\x18\f \x01(\x05R\x0efailedAttempts\x12,\n" +
 	"\x12last_attempt_error\x18\r \x01(\tR\x10lastAttemptError\x12F\n" +
 	"\x11last_attempt_time\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x0flastAttemptTime\x127\n" +
-	"\battempts\x18\x0f \x03(\v2\x1b.openetl.api.v1.SyncAttemptR\battempts\"\xb0\x02\n" +
+	"\battempts\x18\x0f \x03(\v2\x1b.openetl.api.v1.SyncAttemptR\battempts\"\xe3\x02\n" +
 	"\vSyncAttempt\x12\x18\n" +
 	"\aattempt\x18\x01 \x01(\x05R\aattempt\x12+\n" +
 	"\x04size\x18\x02 \x01(\v2\x17.openetl.api.v1.JobSizeR\x04size\x12>\n" +
@@ -1301,7 +1320,10 @@ const file_openetl_api_v1_sync_proto_rawDesc = "" +
 	"\x04rows\x18\x05 \x01(\x04R\x04rows\x12\x14\n" +
 	"\x05bytes\x18\x06 \x01(\x04R\x05bytes\x12\x12\n" +
 	"\x04code\x18\a \x01(\tR\x04code\x12/\n" +
-	"\x05lanes\x18\b \x01(\v2\x19.openetl.api.v1.LaneUsageR\x05lanes\"\xc6\x01\n" +
+	"\x05lanes\x18\b \x01(\v2\x19.openetl.api.v1.LaneUsageR\x05lanes\x12\x18\n" +
+	"\aworkers\x18\t \x01(\rR\aworkers\x12\x17\n" +
+	"\aone_pod\x18\n" +
+	" \x01(\tR\x06onePod\"\xc6\x01\n" +
 	"\tLaneUsage\x12\x14\n" +
 	"\x05lanes\x18\x01 \x01(\rR\x05lanes\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\x12!\n" +

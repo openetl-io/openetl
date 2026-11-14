@@ -127,6 +127,47 @@ Jobs wait until capacity is available. Before stopping, a runner finishes jobs a
 
 A pod's spec comes from the PodTemplate `openetl-attempt-default`, to which the launcher adds the job, labels, resources and node constraints. To change it, add a patch for the PodTemplate to your kustomization. The launcher reads the template when it starts, so restart it after you apply the change (`kubectl -n openetl rollout restart deploy/openetl-launcher-default`).
 
+### Jobs on several pods
+
+A pipeline with `spec.resources.workers` above 1 can run each job on that many workers and a coordinator. The pool's launcher makes all the job's pods, or none of them:
+
+- one pod for each worker, of the job's size plus the reserve;
+- one pod for the coordinator, of size `xs` plus the reserve.
+
+A job runs on one pod instead in these cases:
+
+- The pipeline's plan says that the job runs on one pod, such as for a transform or for a stream that holds columns. [Pipeline](../reference/specs/pipeline.md#workers) lists these cases.
+- The job's coordinator finds one of these cases before the job starts, where the control plane could not check it. The job is then placed again on one pod.
+- No launcher of the pool reports, while other runners of the pool do.
+
+The workers connect to the coordinator's pod IP on TCP port 7720, over TLS with a certificate that the coordinator makes for each job. If your namespace has NetworkPolicies, allow traffic between the pods that have the label `app.kubernetes.io/component: attempt` on that port. The launcher deletes a job's workers' pods with the coordinator's pod.
+
+#### Room for every pod
+
+`OPENETL_MAX_PODS` (default 20) and `OPENETL_MAX_POD_CPU` (default 64 vCPUs) count every pod of a job: its workers and its coordinator. A job waits until all of them fit. A job that needs more than the limits allow never fits, even on an empty launcher. For example, 20 workers need 21 pods. Such a job fails after it has waited 2 minutes, and its message names the limit.
+
+To let larger jobs run, raise the limits:
+
+1. Add the limits to the `data` of the ConfigMap patch in your `kustomization.yaml`. Set `OPENETL_MAX_PODS` to at least the workers plus one. Set `OPENETL_MAX_POD_CPU` to at least the workers times the job's vCPUs, plus 0.5 vCPU for the coordinator:
+
+   ```yaml
+   data:
+     OPENETL_CHECKPOINTS: BUCKET
+     OPENETL_MAX_PODS: "40"
+     OPENETL_MAX_POD_CPU: "128"
+   ```
+
+2. Apply the change, and restart the launcher, which reads its settings when it starts:
+
+   ```sh
+   kubectl apply -k .
+   kubectl -n openetl rollout restart deploy/openetl-launcher-default
+   ```
+
+3. Check the pipeline with `openetl plan -f PIPELINE.yaml`. The plan shows `workers:` after the job size. It no longer reports that the job's workers and their coordinator need more pods than any pod launcher of the pool takes.
+
+To undo the change, remove the two keys from the patch, and run the commands of step 2 again.
+
 ### Spot nodes
 
 Sync pods tolerate GKE and AKS spot taints and can run on spot nodes. On an interruption notice, they stop at a checkpoint and are placed again.
@@ -173,7 +214,7 @@ The queries, for scaling with something else:
 + (sum(max by (size) (openetl_placement_cpu_pending{data_plane="default", pool="default", runs_on="runner"})) or vector(0))
 ```
 
-and the same over `openetl_placement_memory_reserved_bytes` and `openetl_placement_memory_pending_bytes`. Every orchestrator exports the same values, so `max by (size)` counts them once. `runs_on="pod"` is what the launcher's pods have or wait for, and `openetl_placement_pending_age_seconds` how long the oldest job has waited.
+and the same over `openetl_placement_memory_reserved_bytes` and `openetl_placement_memory_pending_bytes`. Every orchestrator exports the same values, so `max by (size)` counts them once. `runs_on="pod"` is what the launcher's pods have or wait for, and `openetl_placement_pending_age_seconds` how long the oldest job has waited. A job on workers counts under `runs_on="pod"` and its workers' size, with its workers and its coordinator together.
 
 KEDA keeps at least one shared runner. Without one, a pool with a launcher sends every job to a separate pod. Scale-down starts after ten minutes of lower demand and removes one runner per minute. A removed runner can have active jobs; they move after a checkpoint.
 
