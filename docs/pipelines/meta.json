@@ -11,6 +11,7 @@
     "positions",
     "schema-changes",
     "sql-transforms",
+    "workers",
     "troubleshooting"
   ]
 }
