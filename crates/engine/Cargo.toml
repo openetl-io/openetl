@@ -44,6 +44,8 @@ tracing-subscriber.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+arrow-cast.workspace = true
+sqllogictest.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -20,6 +20,8 @@ mod plan;
 mod quarantine;
 mod replay;
 mod service;
+#[cfg(test)]
+mod slt;
 mod sqlplan;
 mod stage;
 mod staging;

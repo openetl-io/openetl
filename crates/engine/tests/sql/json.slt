@@ -1,0 +1,212 @@
+# JSON: our functions and operators, on JSON columns and on strings. Where
+# DuckDB's JSON differs on purpose, both results are here.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE docs (id BIGINT NOT NULL, doc JSON, raw TEXT, field TEXT, PRIMARY KEY (id))
+
+statement ok
+INSERT INTO docs VALUES (1, '{"name": "a", "n": 7, "ok": true, "f": 1.5, "deleted": null, "user": {"email": "e@x.io", "tags": ["x", "y"]}}', '{"name": "a", "n": 7}', 'name'), (2, '{"name": null, "n": "8", "ok": "false", "user": [1, 2], "big": 18446744073709551615}', '{"name": "c", "n": 9', 'ok'), (3, '[10, "twenty", {"k": "v"}]', 'not json', NULL), (4, NULL, NULL, 'n'), (5, '{"a": 1, "a": 2}', '"just a string"', 'a')
+
+# ->> gives text, and null for a JSON null or a path that isn't there.
+query ITTT
+SELECT id, doc->>'name' AS name, doc->'user'->>'email' AS email, doc->>'missing' AS missing FROM docs
+----
+1 a e@x.io NULL
+2 NULL NULL NULL
+3 NULL NULL NULL
+4 NULL NULL NULL
+5 NULL NULL NULL
+
+query IT
+SELECT id, doc->>1 AS second FROM docs
+----
+1 NULL
+2 NULL
+3 twenty
+4 NULL
+5 NULL
+
+query II
+SELECT id, (doc->>'n')::BIGINT AS n FROM docs WHERE id <> 3
+----
+1 7
+2 8
+4 NULL
+5 NULL
+
+# -> gives JSON: in ours, the document's own text of the value, as it's
+# written; DuckDB writes it again, without spaces.
+onlyif openetl
+query IT
+SELECT id, doc->'user' AS u FROM docs
+----
+1 {"email": "e@x.io", "tags": ["x", "y"]}
+2 [1, 2]
+3 NULL
+4 NULL
+5 NULL
+
+onlyif duckdb
+query IT
+SELECT id, doc->'user' AS u FROM docs
+----
+1 {"email":"e@x.io","tags":["x","y"]}
+2 [1,2]
+3 NULL
+4 NULL
+5 NULL
+
+# Where an object has a key twice, ours takes the last, as Postgres does;
+# DuckDB the first.
+onlyif openetl
+query II
+SELECT id, (doc->>'a')::BIGINT AS a FROM docs WHERE id = 5
+----
+5 2
+
+onlyif duckdb
+query II
+SELECT id, (doc->>'a')::BIGINT AS a FROM docs WHERE id = 5
+----
+5 1
+
+query I
+SELECT id FROM docs WHERE doc->>'name' = 'a'
+----
+1
+
+# Our getters, which DuckDB doesn't have: each gives its type, or null
+# where the value is another.
+onlyif openetl
+query ITIRTT
+SELECT id, json_get_str(doc, 'name') AS s, json_get_int(doc, 'n') AS i, json_get_float(doc, 'f') AS f, json_get_bool(doc, 'ok') AS b, json_get_json(doc, 'user') AS j FROM docs
+----
+1 a 7 1.5 true {"email": "e@x.io", "tags": ["x", "y"]}
+2 NULL 8 NULL false [1, 2]
+3 NULL NULL NULL NULL NULL
+4 NULL NULL NULL NULL NULL
+5 NULL NULL NULL NULL NULL
+
+# A path of keys and indexes; a negative index counts from the end.
+onlyif openetl
+query ITTT
+SELECT id, json_get_str(doc, 'user', 'tags', 0) AS first, json_get_str(doc, 'user', 'tags', -1) AS last, json_get_str(doc, 2, 'k') AS k FROM docs
+----
+1 x y NULL
+2 NULL NULL NULL
+3 NULL NULL v
+4 NULL NULL NULL
+5 NULL NULL NULL
+
+# A JSON column, or text that holds JSON, is read the same; text that
+# isn't JSON throughout has nothing in it.
+onlyif openetl
+query ITTI
+SELECT id, raw->>'name' AS name, json_get_json(raw, 'n') AS n, json_length(raw) AS len FROM docs
+----
+1 a 7 2
+2 NULL NULL NULL
+3 NULL NULL NULL
+4 NULL NULL NULL
+5 NULL NULL NULL
+
+# The key to read can come from a column.
+onlyif openetl
+query IT
+SELECT id, json_as_text(doc, field) AS v FROM docs
+----
+1 a
+2 false
+3 NULL
+4 NULL
+5 2
+
+# ? asks whether the path is there, as datafusion-functions-json's does,
+# not whether a key is at the top, as jsonb's does.
+onlyif openetl
+query ITTT
+SELECT id, doc ? 'name' AS has_name, json_contains(doc, 'user', 'email') AS has_email, doc ? 'deleted' AS has_deleted FROM docs
+----
+1 true true true
+2 true false false
+3 false false false
+4 false false false
+5 false false false
+
+# #> and #>> take the path as a list.
+onlyif openetl
+query ITT
+SELECT id, doc #> ARRAY['user', 'tags'] AS tags, doc #>> ARRAY['user', 'tags', '1'] AS tag FROM docs
+----
+1 ["x", "y"] y
+2 NULL NULL
+3 NULL NULL
+4 NULL NULL
+5 NULL NULL
+
+# A list, a length and keys: DuckDB has these under other names.
+onlyif openetl
+query ITIT
+SELECT id, json_get_array(doc, 'user', 'tags') AS tags, json_len(doc, 'user') AS n, json_keys(doc) AS keys FROM docs
+----
+1 ["x", "y"] 2 [name, n, ok, f, deleted, user]
+2 NULL 2 [name, n, ok, user, big]
+3 NULL NULL NULL
+4 NULL NULL NULL
+5 NULL NULL [a, a]
+
+# A path's keys, and a document's length.
+onlyif openetl
+query ITT
+SELECT id, json_object_keys(doc, 'user') AS keys, json_length(doc) AS n FROM docs WHERE id < 3
+----
+1 [email, tags] 6
+2 NULL 5
+
+# json_get gives a value of any type, which a cast or json_union_to_text
+# reads.
+onlyif openetl
+query IIT
+SELECT id, json_get(doc, 'n')::BIGINT AS n, json_union_to_text(json_get(doc, 'name')) AS name FROM docs
+----
+1 7 "a"
+2 8 NULL
+3 NULL NULL
+4 NULL NULL
+5 NULL NULL
+
+# A scalar as JSON.
+onlyif openetl
+query ITTT
+SELECT id, json_from_scalar(id) AS a, scalar_to_json(field) AS b, json_from_scalar(id > 2) AS c FROM docs
+----
+1 1 "name" false
+2 2 "ok" false
+3 3 NULL true
+4 4 "n" true
+5 5 "a" true
+
+# Through a view, a JSON value is still JSON.
+statement ok
+CREATE VIEW users AS SELECT id, doc->'user' AS u FROM docs
+
+query IT
+SELECT id, u->>'email' AS email FROM users
+----
+1 e@x.io
+2 NULL
+3 NULL
+4 NULL
+5 NULL
+
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id, doc, doc->'user' AS u, doc->>'name' AS name, json_get_json(raw, 'n') AS n FROM docs
+----
+id Int64 not null key
+doc Utf8 json null
+u Utf8 json null
+name Utf8 null
+n Utf8 json null

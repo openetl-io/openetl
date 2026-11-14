@@ -1,0 +1,80 @@
+# UNNEST: a row per element of a list, which drops the input's key.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE events (id BIGINT NOT NULL, tags TEXT[], scores BIGINT[], PRIMARY KEY (id))
+
+statement ok
+INSERT INTO events VALUES (1, ['a', 'b'], [10]), (2, [], [20, 21]), (3, NULL, NULL), (4, ['c', NULL], [])
+
+query IT
+SELECT id, unnest(tags) AS tag FROM events
+----
+1 a
+1 b
+4 NULL
+4 c
+
+# Several lists give as many rows as the longest, with nulls past the
+# shorter ones.
+query ITI
+SELECT id, unnest(tags) AS tag, unnest(scores) AS score FROM events
+----
+1 a 10
+1 b NULL
+2 NULL 20
+2 NULL 21
+4 NULL NULL
+4 c NULL
+
+query IT
+SELECT id, unnest(string_to_array('x,y', ',')) AS part FROM events WHERE id = 1
+----
+1 x
+1 y
+
+query II
+SELECT id, unnest(scores) + 1 AS next FROM events
+----
+1 11
+2 21
+2 22
+
+# A filter runs before UNNEST.
+query IT
+SELECT id, unnest(tags) AS tag FROM events WHERE id > 1
+----
+4 NULL
+4 c
+
+# unnest_outer keeps a row of nulls for an empty or null list; DuckDB has
+# no unnest_outer.
+onlyif openetl
+query IT
+SELECT id, unnest_outer(tags) AS tag FROM events
+----
+1 a
+1 b
+2 NULL
+3 NULL
+4 NULL
+4 c
+
+# Through a view, filtered on an element.
+statement ok
+CREATE VIEW tagged AS SELECT id, unnest(tags) AS tag FROM events
+
+query IT
+SELECT id, upper(tag) AS tag FROM tagged WHERE tag IS NOT NULL
+----
+1 A
+1 B
+4 C
+
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id, unnest(tags) AS tag FROM events
+----
+id Int64 not null
+tag Utf8 null

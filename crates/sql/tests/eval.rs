@@ -183,6 +183,135 @@ fn an_output_column_is_cast_to_a_logical_type() {
     );
 }
 
+/// Integer arithmetic that overflows fails, as in Postgres, rather than
+/// wrapping to a wrong value.
+#[test]
+fn arithmetic_that_overflows_fails() {
+    let c = customers(fields());
+    let at_edges = batch(&[i64::MAX, i64::MIN], &[None, None]);
+    for sql in [
+        "INSERT INTO x SELECT id + 1 AS n FROM customers",
+        "INSERT INTO x SELECT id - 1 AS n FROM customers",
+        "INSERT INTO x SELECT id * 2 AS n FROM customers",
+        "INSERT INTO x SELECT -id AS n FROM customers",
+    ] {
+        let s = plan_one(sql, &c);
+        let op = row_wise(&s);
+        let Some(Step::Project(p)) = op.steps.last() else {
+            panic!("{:?}", op.steps)
+        };
+        let input = op.input(&at_edges).unwrap_or_else(|e| panic!("{e}"));
+        let e = p.eval(&input).err();
+        assert_eq!(e.map(|e| e.kind), Some(ErrorKind::Eval), "{sql}");
+        let one = op
+            .input(&batch(&[7], &[None]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(p.eval(&one).is_ok(), "{sql}");
+    }
+}
+
+/// Constant arithmetic that overflows is refused where it's written, rather
+/// than folded to a wrapped value; what fits plans and folds.
+#[test]
+fn constant_arithmetic_that_overflows_is_refused() {
+    let c = customers(fields());
+    for (sql, at) in [
+        (
+            "INSERT INTO x SELECT id, CAST(9223372036854775807 AS BIGINT) + CAST(1 AS BIGINT) AS n FROM customers",
+            (1, 31),
+        ),
+        (
+            "INSERT INTO x SELECT id, CAST(-9223372036854775808 AS BIGINT) - 1 AS n FROM customers",
+            (1, 32),
+        ),
+        (
+            "INSERT INTO x SELECT id, 9223372036854775807 * 2 AS n FROM customers",
+            (1, 26),
+        ),
+        (
+            "INSERT INTO x SELECT id, id + (9223372036854775807 + 1) AS n FROM customers",
+            (1, 26),
+        ),
+        (
+            "INSERT INTO x SELECT id FROM customers\nWHERE id < 9223372036854775807 + 1",
+            (1, 1),
+        ),
+    ] {
+        let e = openetl_sql::plan(sql, &c).err();
+        let e = e.as_ref().and_then(|e| e.iter().next());
+        assert_eq!(e.map(|e| e.kind), Some(ErrorKind::Bind), "{sql}");
+        let pos = e.and_then(|e| e.at).map(|p| (p.line, p.column));
+        assert_eq!(pos, Some(at), "{sql}: {e:?}");
+        assert!(
+            e.is_some_and(|e| e.message.contains("overflows its type")),
+            "{sql}: {e:?}"
+        );
+    }
+    let s = plan_one(
+        "INSERT INTO x SELECT id, CAST(9223372036854775806 AS BIGINT) + 1 AS n, -CAST(5 AS BIGINT) AS m FROM customers",
+        &c,
+    );
+    let out = run(row_wise(&s), &batch(&[1], &[None]));
+    assert_eq!(ints(&out, "n"), [Some(i64::MAX)]);
+    assert_eq!(ints(&out, "m"), [Some(-5)]);
+    // A constant that fails either way, as the negative of the smallest
+    // BIGINT does, isn't folded: it fails each row as it's evaluated.
+    for sql in [
+        "INSERT INTO x SELECT id, -CAST(-9223372036854775808 AS BIGINT) AS n FROM customers",
+        "INSERT INTO x SELECT id, 1 / 0 AS n FROM customers",
+    ] {
+        let s = plan_one(sql, &c);
+        let op = row_wise(&s);
+        let Some(Step::Project(p)) = op.steps.last() else {
+            panic!("{:?}", op.steps)
+        };
+        let input = op
+            .input(&batch(&[1], &[None]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            p.eval(&input).err().map(|e| e.kind),
+            Some(ErrorKind::Eval),
+            "{sql}"
+        );
+    }
+}
+
+/// As in Postgres, AND and OR bind looser than IS DISTINCT FROM, whose
+/// side in parentheses stays whole.
+#[test]
+#[ignore = "sqlparser 0.62 takes all that follows IS [NOT] DISTINCT FROM, AND and OR too, as its right side"]
+fn is_distinct_from_binds_tighter_than_and_and_or() {
+    let c = customers(fields());
+    let rows = batch(&[1, 2, 3], &[None, Some("b"), Some("c")]);
+    let ids = |sql: &str| -> Vec<i64> {
+        let s = plan_one(sql, &c);
+        let out = run(row_wise(&s), &rows);
+        out.column(0)
+            .as_primitive::<Int64Type>()
+            .iter()
+            .flatten()
+            .collect()
+    };
+    assert_eq!(
+        ids(
+            "INSERT INTO x SELECT id FROM customers WHERE email IS NOT DISTINCT FROM NULL OR id = 2"
+        ),
+        [1, 2]
+    );
+    assert_eq!(
+        ids(
+            "INSERT INTO x SELECT id FROM customers WHERE id = 3 AND email IS DISTINCT FROM 'b' OR id = 1 AND email IS DISTINCT FROM 'c' AND id > 0"
+        ),
+        [1, 3]
+    );
+    assert_eq!(
+        ids(
+            "INSERT INTO x SELECT id FROM customers WHERE (email = 'c') IS DISTINCT FROM (id = 2 OR id = 3)"
+        ),
+        [1, 2]
+    );
+}
+
 #[test]
 fn a_batch_without_a_column_read_or_with_another_type_is_refused() {
     let c = customers(fields());

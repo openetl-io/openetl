@@ -32,16 +32,20 @@ type chaosDest struct {
 	// The destination's namespace, and the schema checks read.
 	out    string
 	tables []string
+	// The column that holds v: v, or a SQL run's name for it.
+	value string
 	// What plants did to the copies, done again after each refresh.
 	planted []string
 }
 
-// The columns a copy keeps.
-var copyColumns = []string{"id", "v", "_openetl_op", "_openetl_deleted"}
+// columns are the ones a copy keeps.
+func (d *chaosDest) columns() []string {
+	return []string{"id", d.value, "_openetl_op", "_openetl_deleted"}
+}
 
 func newChaosDest(t *testing.T, kind, out string, tables []string) *chaosDest {
 	t.Helper()
-	d := &chaosDest{kind: kind, out: out, tables: tables, spec: `{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`}
+	d := &chaosDest{kind: kind, out: out, tables: tables, value: "v", spec: `{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`}
 	switch kind {
 	case "iceberg":
 		d.spec = icebergDest(t, out)
@@ -83,10 +87,10 @@ func (d *chaosDest) refresh(ctx context.Context) error {
 			if _, err := tx.Exec(ctx, "DROP TABLE IF EXISTS "+ident.Sanitize()); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, "CREATE TABLE "+ident.Sanitize()+" (id bigint, v bigint, _openetl_op text, _openetl_deleted boolean)"); err != nil {
+			if _, err := tx.Exec(ctx, "CREATE TABLE "+ident.Sanitize()+" (id bigint, "+pgx.Identifier{d.value}.Sanitize()+" bigint, _openetl_op text, _openetl_deleted boolean)"); err != nil {
 				return err
 			}
-			if _, err := tx.CopyFrom(ctx, ident, copyColumns, pgx.CopyFromRows(rows[tbl])); err != nil {
+			if _, err := tx.CopyFrom(ctx, ident, d.columns(), pgx.CopyFromRows(rows[tbl])); err != nil {
 				return err
 			}
 		}
@@ -124,8 +128,9 @@ func (d *chaosDest) icebergRows(ctx context.Context, name string) ([][]any, erro
 	if err != nil {
 		return nil, err
 	}
+	columns := d.columns()
 	var fields []string
-	for _, c := range copyColumns {
+	for _, c := range columns {
 		if _, ok := tbl.Schema().FindFieldByName(c); ok {
 			fields = append(fields, c)
 		}
@@ -139,14 +144,14 @@ func (d *chaosDest) icebergRows(ctx context.Context, name string) ([][]any, erro
 		if err != nil {
 			return nil, err
 		}
-		cols := make([]arrow.Array, len(copyColumns))
-		for i, c := range copyColumns {
+		cols := make([]arrow.Array, len(columns))
+		for i, c := range columns {
 			if idx := b.Schema().FieldIndices(c); len(idx) == 1 {
 				cols[i] = b.Column(idx[0])
 			}
 		}
 		for r := range int(b.NumRows()) {
-			row := make([]any, len(copyColumns))
+			row := make([]any, len(columns))
 			for i, col := range cols {
 				if col != nil {
 					row[i] = arrowValue(col, r)
@@ -225,7 +230,7 @@ func (d *chaosDest) kafkaRows(ctx context.Context, topic string) ([][]any, error
 			if r.Attrs.IsControl() {
 				continue
 			}
-			row, err := kafkaRow(r.Value)
+			row, err := kafkaRow(r.Value, d.columns())
 			if err != nil {
 				return nil, fmt.Errorf("offset %d/%d: %w", r.Partition, r.Offset, err)
 			}
@@ -235,15 +240,16 @@ func (d *chaosDest) kafkaRows(ctx context.Context, topic string) ([][]any, error
 	return out, nil
 }
 
-func kafkaRow(value []byte) ([]any, error) {
+// kafkaRow is a record's columns, the first two numbers.
+func kafkaRow(value []byte, columns []string) ([]any, error) {
 	var v map[string]any
 	dec := json.NewDecoder(bytes.NewReader(value))
 	dec.UseNumber()
 	if err := dec.Decode(&v); err != nil {
 		return nil, fmt.Errorf("value %q: %w", value, err)
 	}
-	row := make([]any, len(copyColumns))
-	for i, c := range copyColumns {
+	row := make([]any, len(columns))
+	for i, c := range columns {
 		switch x := v[c].(type) {
 		case json.Number:
 			n, err := x.Int64()
@@ -252,7 +258,7 @@ func kafkaRow(value []byte) ([]any, error) {
 			}
 			row[i] = n
 		case string:
-			if c == "id" || c == "v" {
+			if i < 2 {
 				n, err := strconv.ParseInt(x, 10, 64)
 				if err != nil {
 					return nil, fmt.Errorf("%s: %w", c, err)

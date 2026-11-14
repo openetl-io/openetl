@@ -3,13 +3,14 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
-use arrow_schema::DataType;
-use datafusion_common::DFSchema;
-use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
+use arrow_schema::{DataType, Schema};
+use datafusion_common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion_common::{DFSchema, ScalarValue};
 use datafusion_expr::execution_props::ExecutionProps;
 use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
-use datafusion_expr::{Expr as DfExpr, Volatility};
+use datafusion_expr::{Expr as DfExpr, Operator, Volatility};
 use datafusion_physical_expr::PhysicalExpr;
+use datafusion_physical_expr::expressions::{BinaryExpr, Literal, NegativeExpr};
 
 use crate::{Error, ErrorKind, Position};
 
@@ -67,6 +68,7 @@ impl Expr {
             &PhysicalPlanningContext::default(),
         )
         .map_err(bind)?;
+        let physical = checked(physical, input.as_arrow()).map_err(bind)?;
         let data_type = physical.data_type(input.as_arrow()).map_err(bind)?;
         Ok(Expr {
             display: inner.to_string(),
@@ -120,4 +122,36 @@ impl Expr {
             None => b.clone(),
         })
     }
+}
+
+/// Arithmetic that fails where its result overflows its type, as in
+/// Postgres, so the row is quarantined rather than written wrong. DataFusion
+/// wraps `+`, `-`, `*` and negation unless asked not to.
+pub(crate) fn checked(
+    e: Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    e.transform_up(|e| {
+        if let Some(b) = e.downcast_ref::<BinaryExpr>()
+            && matches!(
+                b.op(),
+                Operator::Plus | Operator::Minus | Operator::Multiply
+            )
+        {
+            let c = BinaryExpr::new(b.left().clone(), *b.op(), b.right().clone())
+                .with_fail_on_overflow(true);
+            return Ok(Transformed::yes(Arc::new(c) as Arc<dyn PhysicalExpr>));
+        }
+        if let Some(n) = e.downcast_ref::<NegativeExpr>() {
+            let t = n.arg().data_type(schema)?;
+            if t.is_signed_integer() {
+                let zero = Arc::new(Literal::new(ScalarValue::new_zero(&t)?));
+                let c = BinaryExpr::new(zero, Operator::Minus, n.arg().clone())
+                    .with_fail_on_overflow(true);
+                return Ok(Transformed::yes(Arc::new(c) as Arc<dyn PhysicalExpr>));
+            }
+        }
+        Ok(Transformed::no(e))
+    })
+    .map(|t| t.data)
 }

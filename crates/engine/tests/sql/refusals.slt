@@ -1,0 +1,313 @@
+# What transforms refuse, each with its kind and where it's written: later
+# tiers' statements, functions that aren't deterministic in a key, a
+# changelog's key, SQL transforms don't run, names, binding and syntax.
+
+statement ok
+CREATE TABLE orders (id BIGINT NOT NULL, region TEXT, amount DECIMAL(12, 2), created_at TIMESTAMPTZ, PRIMARY KEY (id))
+
+statement ok
+CREATE TABLE customers (id BIGINT NOT NULL, email TEXT, PRIMARY KEY (id))
+
+statement ok
+CREATE TABLE cdc (id BIGINT NOT NULL, name TEXT, tags TEXT[], PRIMARY KEY (id)) WITH (changelog)
+
+statement ok
+CREATE TABLE cdc2 (tenant TEXT NOT NULL, id BIGINT NOT NULL, name TEXT, PRIMARY KEY (tenant, id)) WITH (changelog)
+
+statement ok
+CREATE TABLE log (id BIGINT, tags TEXT[]) WITH (changelog)
+
+# Group windows: tier 2.
+query error
+SELECT window_start, region, sum(amount) AS revenue
+FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), region
+----
+later_tier group_window 3:10 a group window: transforms don't run group windows yet (tier 2)
+
+
+query error
+SELECT count(*) AS n FROM orders GROUP BY hop(created_at, INTERVAL '1 minute', INTERVAL '5 minutes')
+----
+later_tier group_window 1:43 a group window: transforms don't run group windows yet (tier 2)
+
+
+# Window functions: tier 3.
+query error
+SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total FROM orders
+----
+later_tier over 1:12 OVER: transforms don't run window functions yet (tier 3)
+
+
+query error
+SELECT id, row_number() OVER (PARTITION BY region ORDER BY created_at) AS n FROM orders
+----
+later_tier over 1:12 OVER: transforms don't run window functions yet (tier 3)
+
+
+query error
+SELECT id, rank() AS r FROM orders
+----
+later_tier over 1:12 a window function: transforms don't run window functions yet (tier 3)
+
+
+# Joins and subqueries: tier 4.
+query error
+SELECT o.id, c.email FROM orders o JOIN customers c ON o.id = c.id
+----
+later_tier join 1:41 a join: transforms don't run joins yet (tier 4)
+
+
+query error
+SELECT id FROM orders, customers
+----
+later_tier join 1:24 reading two relations: transforms don't run joins yet (tier 4)
+
+
+query error
+SELECT id FROM orders WHERE id IN (SELECT id FROM customers)
+----
+later_tier join 1:29 a subquery: transforms don't run joins yet (tier 4)
+
+
+query error
+SELECT u FROM orders, UNNEST(ARRAY[1, 2]) AS u
+----
+later_tier join 1:36 reading two relations: transforms don't run joins yet (tier 4)
+
+
+# Aggregates without a window, and DISTINCT: tier 5.
+query error
+SELECT region, count(*) AS n FROM orders GROUP BY region
+----
+later_tier updating 1:51 GROUP BY without a window: transforms don't run updating statements yet (tier 5)
+
+
+query error
+SELECT count(*) AS n FROM orders
+----
+later_tier updating 1:8 an aggregate without a window: transforms don't run updating statements yet (tier 5)
+
+
+query error
+SELECT DISTINCT region FROM orders
+----
+later_tier updating 1:1 DISTINCT: transforms don't run updating statements yet (tier 5)
+
+
+# Several in one statement: one error each.
+query error
+SELECT o.region, count(*) AS n FROM orders o JOIN customers c ON o.id = c.id
+GROUP BY o.region
+----
+later_tier join 1:51 a join: transforms don't run joins yet (tier 4)
+later_tier updating 2:10 GROUP BY without a window: transforms don't run updating statements yet (tier 5)
+
+
+# A function that isn't deterministic can't feed a key or a window.
+query error
+SELECT count(*) AS n FROM orders GROUP BY tumble(now(), INTERVAL '1 minute')
+----
+later_tier group_window 1:43 a group window: transforms don't run group windows yet (tier 2)
+not_deterministic 1:50 now() isn't deterministic, so it can't feed a group's key
+
+
+query error
+SELECT count(*) AS n FROM orders GROUP BY random() > 0.5
+----
+later_tier updating 1:43 GROUP BY without a window: transforms don't run updating statements yet (tier 5)
+not_deterministic 1:43 random() isn't deterministic, so it can't feed a group's key
+
+
+query error
+SELECT id, sum(amount) OVER (PARTITION BY uuid()) AS total FROM orders
+----
+later_tier over 1:12 OVER: transforms don't run window functions yet (tier 3)
+not_deterministic 1:43 uuid() isn't deterministic, so it can't feed a window's partition
+
+
+statement ok
+CREATE VIEW stamped AS SELECT id, region, now() AS seen_at FROM orders
+
+query error
+SELECT count(*) AS n FROM stamped GROUP BY tumble(seen_at, INTERVAL '1 minute')
+----
+later_tier group_window 1:44 a group window: transforms don't run group windows yet (tier 2)
+not_deterministic 1:51 seen_at isn't deterministic, so it can't feed a group's key
+
+
+# Clauses a stream has no use for.
+query error
+SELECT id FROM orders ORDER BY id
+----
+unsupported 1:32 a stream has no order, so ORDER BY is refused
+
+
+query error
+SELECT id FROM orders LIMIT 10
+----
+unsupported 1:29 a stream has no end, so LIMIT and OFFSET are refused
+
+
+query error
+SELECT id FROM orders UNION ALL SELECT id FROM customers
+----
+unsupported 1:33 UNION, INTERSECT and EXCEPT aren't supported
+
+
+query error
+WITH o AS (SELECT id FROM orders) SELECT id FROM o
+----
+unsupported 1:1 WITH isn't supported: name the query with CREATE VIEW, before the statements that read it
+
+
+query error
+SELECT 1 AS one
+----
+unsupported 1:1 a SELECT reads a stream or a view: it needs a FROM
+
+
+statement error
+INSERT INTO x (id) SELECT id FROM orders
+----
+unsupported 1:1 INSERT INTO takes an output's name and a SELECT, without a list of columns: the SELECT names the output's columns
+
+
+statement error
+INSERT INTO x SELECT id FROM orders ON CONFLICT DO NOTHING
+----
+unsupported 1:1 INSERT INTO takes an output's name and a SELECT, without ON CONFLICT
+
+
+statement error
+DELETE FROM orders WHERE id = 1
+----
+unsupported 1:1 a transform's statements are INSERT INTO … SELECT and CREATE VIEW … AS SELECT, not DELETE FROM
+
+
+# A computed column needs a name, and a name is an output's once.
+query error
+SELECT id, lower(region) FROM orders
+----
+unsupported 1:12 name this column: lower(region) AS name
+
+
+query error
+SELECT id, amount + 1 FROM orders
+----
+unsupported 1:12 name this column: amount + 1 AS name
+
+
+query error
+SELECT id, id AS id FROM orders
+----
+bind 1:12 there's already a column id: give this one another name with AS
+
+
+# Text that isn't SQL.
+query error
+SELEKT id FROM orders
+----
+syntax 1:1 Expected: an SQL statement, found: SELEKT
+
+
+query error
+SELECT id FROM orders WHERE
+----
+syntax Expected: an expression, found: EOF
+
+
+# Binding: columns, functions and types.
+query error
+SELECT id,
+  nope FROM orders
+----
+bind 2:3 there's no column nope; there are id, region, amount, created_at
+
+
+query error
+SELECT id, no_such_function(region) AS r FROM orders
+----
+bind 1:12 no_such_function isn't a function transforms can call
+
+
+query error
+SELECT id, region + 1 AS r FROM orders
+----
+bind 1:12 expressions have incompatible types (has type Utf8; has type Int64)
+
+
+query error
+SELECT id, arrow_typeof(id) AS t FROM orders
+----
+bind 1:12 arrow_typeof isn't a function transforms can call
+
+
+query error
+SELECT id, make_map('a', id) AS m FROM orders
+----
+bind 1:1 map isn't a function transforms can call
+
+
+# Constant arithmetic that overflows its type, which would give every row
+# the same wrong value.
+query error
+SELECT id, 9223372036854775807 + 1 AS n FROM orders
+----
+bind 1:12 Int64(9223372036854775807) + Int64(1) overflows its type (Arithmetic overflow: Overflow happened on: 9223372036854775807 + 1)
+
+
+query error
+SELECT id FROM orders WHERE amount > CAST(-9223372036854775808 AS BIGINT) * 2
+----
+bind 1:1 CAST(CAST(Int64(-9223372036854775808) AS Int64) * Int64(2) AS Decimal128(22, 2)) overflows its type (Arithmetic overflow: Overflow happened on: -9223372036854775808 * 2)
+
+
+# A changelog's key passes through unchanged, renamed or not: a statement
+# that drops it, changes it or multiplies its rows is refused.
+query error
+SELECT name FROM cdc
+----
+changelog_key 1:1 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it
+
+
+query error
+SELECT id + 1 AS id, name FROM cdc
+----
+changelog_key 1:8 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this changes it
+
+
+query error
+SELECT CAST(id AS VARCHAR) AS id, name FROM cdc
+----
+changelog_key 1:13 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this changes it
+
+
+query error
+SELECT id, unnest(tags) AS tag FROM cdc
+----
+changelog_key 1:12 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this multiplies the rows of it
+
+
+query error
+SELECT id, unnest(tags) AS tag FROM log
+----
+changelog_key 1:12 log is a changelog, so what reads it gives one row for each of its rows; this multiplies the rows of it
+
+
+query error
+SELECT tenant, name FROM cdc2
+----
+changelog_key 1:1 cdc2 is a changelog, so what reads it keeps its key (tenant, id) unchanged, renamed or not; this drops it
+
+
+query error
+SELECT * FROM (SELECT name FROM cdc) AS s
+----
+changelog_key 1:1 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it
+
+
+statement error
+CREATE VIEW names AS SELECT name FROM cdc
+----
+changelog_key 1:22 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it
