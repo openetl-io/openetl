@@ -53,6 +53,13 @@ func dropBucket(t *testing.T, c *s3.Client, bucket string) {
 // test without destination-s3.
 func s3Dest(t *testing.T) (string, *blob.Bucket) {
 	t.Helper()
+	return s3DestAt(t, s3Endpoint())
+}
+
+// s3DestAt is s3Dest for a destination that reaches the S3 store at
+// endpoint, as pods in a cluster do.
+func s3DestAt(t *testing.T, endpoint string) (string, *blob.Bucket) {
+	t.Helper()
 	if _, err := os.Stat(filepath.Join(env.connectors, "destination-s3")); err != nil {
 		t.Skip("OPENETL_CONNECTORS has no destination-s3")
 	}
@@ -81,7 +88,7 @@ func s3Dest(t *testing.T) (string, *blob.Bucket) {
 	})
 	key := setSecret(t, "openetl")
 	return fmt.Sprintf(`{"connector": "s3", "config": {"url": %q, "endpoint": %q, "region": "us-east-1",
-		"accessKeyId": {"secret": %q}, "secretAccessKey": {"secret": %q}}}`, "s3://s3-destination/"+prefix, s3Endpoint(), key, key), b
+		"accessKeyId": {"secret": %q}, "secretAccessKey": {"secret": %q}}}`, "s3://s3-destination/"+prefix, endpoint, key, key), b
 }
 
 func s3Docs(name, src, dst string) []string {

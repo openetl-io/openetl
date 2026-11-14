@@ -121,12 +121,12 @@ spec:
 }
 
 // launcher starts a pod launcher for the data plane on this host, which
-// makes every job's pod in the cluster.
-func (p *podsOnKube) launcher(t *testing.T) *runner {
+// makes every job's pod in the cluster. extra flags override the usual ones.
+func (p *podsOnKube) launcher(t *testing.T, extra ...string) *runner {
 	t.Helper()
-	return startRunnerWith(t, p.token, env.apiURL, "--data-plane", p.plane, "--checkpoints", p.store, "--launcher", "kubernetes",
+	return startRunnerWith(t, p.token, env.apiURL, append([]string{"--data-plane", p.plane, "--checkpoints", p.store, "--launcher", "kubernetes",
 		"--kubeconfig", os.Getenv("OPENETL_E2E_KUBECONFIG"), "--pod-namespace", p.k.namespace, "--pod-template", p.template,
-		"--pod-min-size", "0,0", "--pod-scratch", "1Gi", "--reserve", "0.1,256Mi")
+		"--pod-min-size", "0,0", "--pod-scratch", "1Gi", "--reserve", "0.1,256Mi"}, extra...)...)
 }
 
 // all are the pipeline's pods, whatever their phase.
