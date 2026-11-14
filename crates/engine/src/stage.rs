@@ -608,9 +608,16 @@ impl Bound {
         let kept_ids = take(&(Arc::new(some_ids) as ArrayRef), &ok)?
             .as_fixed_size_binary()
             .clone();
-        let mut ran = self
-            .run(kept, kept_ids, unsent)
-            .map_err(|e| JobError::new(ErrorCode::DataInvalid, self.reason(&e.message)))?;
+        // Without the evaluation's message, which can hold a row's values.
+        let mut ran = self.run(kept, kept_ids, unsent).map_err(|e| {
+            JobError::new(
+                ErrorCode::DataInvalid,
+                self.reason(&format!(
+                    "rows that it evaluates one at a time fail together ({})",
+                    e.kind.code()
+                )),
+            )
+        })?;
         ran.rows = ran.rows.iter().map(|&r| rows[ok[r]]).collect();
         Ok((ran, failed))
     }

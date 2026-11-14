@@ -186,7 +186,7 @@ The destination changes an existing column's type only when `typeChanges` permit
 
 A transform sits between the source and the destination. The source's streams are its inputs, and its outputs are what the destination gets. A pipeline has at most one transform: SQL statements, or your own code, which is Spark in a scheduled pipeline and Flink in a continuous one. The [Spark](../../integrate/spark.md) and [Flink](../../integrate/flink.md) guides cover writing and running your own code.
 
-[A SQL transform](#a-sql-transform) says which statements run, and what they do to keys, changelogs and errors. `openetl plan` and `openetl apply` plan the statements on a runner of the pipeline's data plane. Errors in the SQL are problems in the plan, with their line and column, and `apply` refuses them. [A SQL transform in the plan](../../pipelines/index.md#a-sql-transform-in-the-plan) shows the output.
+[A SQL transform](#a-sql-transform) says which statements run, and what they do to keys, changelogs and errors. `openetl plan` and `openetl apply` plan the statements on a runner of the pipeline's data plane. Errors in the SQL are problems in the plan, with their line and column, and `apply` refuses them. When no runner takes the statements, or a stream's columns aren't known yet, the plan doesn't plan them and can't report their errors: a note says why, and a sync reports them when it starts. [A SQL transform in the plan](../../pipelines/index.md#a-sql-transform-in-the-plan) shows the output and those cases.
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
