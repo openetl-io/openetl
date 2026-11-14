@@ -1,4 +1,4 @@
-import { create } from "@bufbuild/protobuf";
+import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import {
   CheckpointSchema,
@@ -9,6 +9,7 @@ import {
   PipelinePlanSchema,
   PipelineVersionSchema,
   StreamSchemaSchema,
+  TransformPlanSchema,
   WriteMode,
   type Checkpoint,
   type Hold,
@@ -29,9 +30,50 @@ const ms = (t?: { seconds: bigint; nanos: number }) => (t ? Number(t.seconds) * 
 
 const find = (name: string) => pipelines.find((p) => p.name === name);
 
+const cols = (spec: string) =>
+  spec.split("; ").map((c) => {
+    const [name, ...type] = c.split(" ");
+    return { name: name!, type: type.join(" "), nullable: true };
+  });
+
+/** What planning a fixture's SQL gives, as a runner of its data plane would answer. */
+function sqlPlan(p: Pipeline): MessageInitShape<typeof PipelinePlanSchema> {
+  if (p.name.endsWith("/invoices-cleaned")) {
+    return {
+      problems: ["transform.sql:9:10: GROUP BY without a window: transforms don't run updating statements yet (tier 5)"],
+    };
+  }
+  const ts = "timestamp[us, tz=UTC]";
+  return {
+    transform: create(TransformPlanSchema, {
+      views: [{ name: "paid_orders", line: 1, column: 13, inputs: ["public.orders"], primaryKey: ["id"],
+        columns: cols(`id int64; customer_id int64; amount decimal(12, 2); details extension<arrow.json>; tags list<item: utf8, nullable>; created_at ${ts}`) }],
+      statements: [
+        { line: 6, column: 1, output: "order_facts", class: "row_wise", inputs: ["public.orders"], views: ["paid_orders"], primaryKey: ["order_id"],
+          columns: cols(`order_id int64; customer_id int64; amount decimal(12, 2); coupon utf8; created_at ${ts}`) },
+        { line: 11, column: 1, output: "order_tags", class: "row_wise", inputs: ["public.orders"], views: ["paid_orders"], columns: cols("order_id int64; tag utf8") },
+        { line: 15, column: 1, output: "public.customers", replaces: true, class: "row_wise", inputs: ["public.customers"], primaryKey: ["id"],
+          columns: cols(`id int64; email utf8; country utf8; updated_at ${ts}`) },
+      ],
+      passedThrough: ["public.orders"],
+      withheld: ["public.customers"],
+    }),
+    streams: ["public.orders", "order_facts", "order_tags", "public.customers"].map((s) => ({
+      name: s,
+      level: DeliveryLevel.AT_LEAST_ONCE,
+      write: WriteMode.APPEND,
+      reason: s === "public.orders" ? "superset replay, and the destination can't dedupe" : "a transform's output over superset inputs, which isn't deduped unless written with merge",
+    })),
+    notes: [
+      "transform.sql:15:1: public.customers is a changelog: a row that an update brings into the WHERE without sending a column an output column needs, as Postgres leaves out a large value that didn't change, lands without that column's current value",
+    ],
+  };
+}
+
 export function plan(name: string): PipelinePlan | undefined {
   const p = find(name);
   if (!p) return undefined;
+  if (p.spec?.transform?.engine.case === "sql") return create(PipelinePlanSchema, { pipeline: name, version: p.version, ...sqlPlan(p) });
   const dst = p.spec?.destination?.ref ?? "";
   if (!destinations.find((d) => d.name.endsWith(`/destinations/${dst}`))?.connector) {
     return create(PipelinePlanSchema, {

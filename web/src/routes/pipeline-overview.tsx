@@ -2,9 +2,10 @@ import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import { useQuery } from "@connectrpc/connect-query";
 import { Link } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Info, TriangleAlert } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Callout } from "@/components/callout";
 import { connectorLabel } from "@/components/connector";
 import { DataTable } from "@/components/data-table/data-table";
 import { useDataTable } from "@/components/data-table/use-data-table";
@@ -51,22 +52,6 @@ type Row = GraphStream & {
   schemaKey?: string;
   paused?: boolean;
 };
-
-const calloutTone = {
-  problem: "flex gap-2 text-failed",
-  warning: "flex gap-2 text-degraded",
-  note: "flex gap-2 text-muted-foreground",
-};
-
-function Callout({ tone, children }: { tone: keyof typeof calloutTone; children: React.ReactNode }) {
-  const Icon = tone === "note" ? Info : TriangleAlert;
-  return (
-    <p className={calloutTone[tone]}>
-      <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
-      <span>{children}</span>
-    </p>
-  );
-}
 
 type ConnectorRef = { ref?: string; version?: ConnectorVersion };
 

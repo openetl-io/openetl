@@ -1,7 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import { DestinationSchema, SourceSchema, SyncMode, type Destination, type Source } from "@/gen/openetl/api/v1/connection_pb";
-import { PausedStreamSchema, PipelineMode, PipelineOverrideSchema, PipelineSchema, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
+import { Passthrough, PausedStreamSchema, PipelineMode, PipelineOverrideSchema, PipelineSchema, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { JobSizeReason, SyncAttemptSchema, SyncSchema, SyncState, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 
 // A workspace with a pipeline in every state the UI shows, for working on the
@@ -76,6 +76,41 @@ type Def = {
   transform?: { engine: "spark" | "flink"; cluster: string; code: string };
   /** A Spark step after each sync: its cluster and its code. */
   sparkStep?: { cluster: string; file: string };
+  /** A SQL transform's statements, and whether streams no statement writes are left out. */
+  sql?: { text: string; none?: boolean };
+};
+
+/** The SQL of the pipelines with a SQL transform, which detail.ts plans. */
+export const sqlTexts = {
+  shop: `CREATE VIEW paid_orders AS
+SELECT id, customer_id, amount, details, tags, created_at
+FROM public.orders
+WHERE status = 'paid';
+
+INSERT INTO order_facts
+SELECT id AS order_id, customer_id, amount,
+  details->>'coupon' AS coupon, created_at
+FROM paid_orders;
+
+INSERT INTO order_tags
+SELECT id AS order_id, unnest(tags) AS tag
+FROM paid_orders;
+
+INSERT INTO public.customers
+SELECT id, lower(email) AS email, country, updated_at
+FROM public.customers
+WHERE country IS NOT NULL;
+`,
+  revenue: `INSERT INTO invoices_clean
+SELECT id, customer_id, upper(currency) AS currency, total
+FROM public.invoices
+WHERE total > 0;
+
+INSERT INTO revenue_by_currency
+SELECT currency, sum(total) AS revenue
+FROM public.invoices
+GROUP BY currency;
+`,
 };
 
 const defs: Def[] = [
@@ -92,6 +127,8 @@ const defs: Def[] = [
   { name: "products-to-warehouse", source: "inventory-db", destination: "warehouse", every: 60, outcome: "failed", failing: 1, incidents: 2, rows: 0, streams: ["public.products", "public.categories"] },
   { name: "audit-log-archive", source: "billing-db", destination: "lake-glue", cron: "30 1 * * *", outcome: "succeeded", rows: 214_903, streams: ["audit.entries"] },
   { name: "shipments-to-warehouse", source: "inventory-db", destination: "warehouse", every: 15, outcome: "succeeded", rows: 52_887, streams: ["public.shipments", "public.carriers"] },
+  { name: "shop-to-lake", source: "orders-db", destination: "lake", every: 60, outcome: "succeeded", rows: 402_118, streams: ["public.orders", "public.customers"], sql: { text: sqlTexts.shop } },
+  { name: "invoices-cleaned", source: "billing-db", destination: "warehouse", every: 60, outcome: "failed", failing: 2, rows: 0, streams: ["public.invoices"], sql: { text: sqlTexts.revenue, none: true } },
   { name: "refunds-to-warehouse", source: "billing-db", destination: "warehouse", every: 60, outcome: "succeeded", rows: 4_410, streams: ["public.refunds"] },
 ];
 
@@ -222,12 +259,14 @@ export const pipelines: Pipeline[] = defs.map((d) => {
       dataPlane: "default",
       source: { ref: d.source, streams: d.streams.map((s) => ({ name: s, sync: d.continuous ? SyncMode.INCREMENTAL : SyncMode.FULL_REFRESH })) },
       destination: { ref: d.destination },
-      transform: d.transform && {
-        engine:
-          d.transform.engine === "spark"
-            ? { case: "spark", value: { cluster: d.transform.cluster, code: { file: { case: "python", value: d.transform.code } } } }
-            : { case: "flink", value: { cluster: d.transform.cluster, code: { jar: d.transform.code } } },
-      },
+      transform: d.sql
+        ? { engine: { case: "sql", value: { sql: d.sql.text, passthrough: d.sql.none ? Passthrough.NONE : Passthrough.UNSPECIFIED } } }
+        : d.transform && {
+            engine:
+              d.transform.engine === "spark"
+                ? { case: "spark", value: { cluster: d.transform.cluster, code: { file: { case: "python", value: d.transform.code } } } }
+                : { case: "flink", value: { cluster: d.transform.cluster, code: { jar: d.transform.code } } },
+          },
       postSync: d.sparkStep ? [{ step: { case: "spark", value: { cluster: d.sparkStep.cluster, code: { file: { case: "python", value: d.sparkStep.file } } } } }] : [],
     },
     status: { lastSync: h[0], lastSuccessTime: lastSuccess?.endTime, openIncidents: d.incidents ?? 0 },

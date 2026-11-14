@@ -38,6 +38,8 @@ A stream's **write mode** specifies how to write it:
 - **Overwrite** replaces the destination's existing data with the data read during the sync.
 - **Merge** uses the primary key to insert or update each row. The destination keeps the latest version of each row.
 
+A pipeline can have a **transform**, which changes rows between the source and the destination. A **SQL transform** is SQL statements that the engine runs as it copies. Each `INSERT INTO` statement reads streams and writes an **output**, which the destination gets as a stream.
+
 ## Syncs, schedules and continuous pipelines
 
 A **scheduled** pipeline copies data in **syncs**. A sync reads the selected data, writes it and stops. The pipeline's **schedule** specifies an interval or cron expression for starting syncs. You can also select **Sync now** in the console to start a sync manually.

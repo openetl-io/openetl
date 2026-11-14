@@ -125,6 +125,34 @@ If the pipeline holds values, **Holds** lists each affected column. Entries iden
 
 **To clear it** lists the available recovery choices in recommended order. These include a destination repair, where applicable, and commands to release or discard the hold.
 
+### SQL
+
+A pipeline with a SQL transform has a **SQL** tab. A SQL transform is SQL statements that change rows on their way to the destination. Each `INSERT INTO` statement writes an **output**, which the destination gets as a stream.
+
+- **Messages** at the top are the plan's problems and notes about the SQL that do not belong to one statement. A problem is something a sync fails on. Each message starts with its place in the SQL, as line and column, such as `9:10`.
+- **Statements** shows the SQL as the pipeline's current version has it, with line numbers. Lines with a problem are marked in red, and lines with a note in blue. A line under it says what happens to streams that no statement writes: they pass through to the destination unchanged, or they are not delivered.
+- **Plan** shows how the statements plan against the source's latest list of streams and columns. There is a card for each statement and each view, in the order they are written.
+
+Each statement's card shows:
+
+| Part | What it shows |
+|---|---|
+| **INSERT INTO** | The output it writes, and the destination table it goes to if the pipeline names one |
+| Its place | The line and column where the statement starts |
+| **Row-wise** | The kind of statement. Only row-wise statements run. |
+| **Replaces stream** | The output takes the place of the source's stream of the same name. |
+| **Primary key** | The output's key. **None, so append only** means rows are only added, never merged. |
+| **Reads** | The source's streams it reads, and the views it reads them through |
+| **Exchange** | Whether rows move between lanes before the statement. **None** means they do not. |
+| Notes and problems | The plan's messages about this statement |
+| **Column**, **Type**, **Nulls** | The output's columns |
+
+A **CREATE VIEW** card shows a view: a named part of the SQL that statements read. It writes nothing itself.
+
+Below the cards, **Passed through** lists the source's streams that no statement writes, and **Not delivered** the ones left out.
+
+If the statements have errors, the **Plan** side says so, and the errors are at the top, each with its place. If the statements could not be planned, for example because no runner answered, a note at the top says why.
+
 ### Syncs
 
 **Syncs** lists syncs from newest to oldest. Each row shows **Status**, **Started**, **Took**, **Rows**, **Version** and any **Error**. Select **Load older syncs** to view earlier results.
@@ -239,6 +267,7 @@ The `openetl` command shows most of what the console does, and does what the con
 openetl syncs PIPELINE                   # its syncs, newest first
 openetl logs PIPELINE                    # its latest sync's log; -f follows a running one
 openetl versions PIPELINE                # its versions, newest first
+openetl plan -f FILE                     # SQL: the plan of the pipelines in FILE
 openetl sync PIPELINE                    # Sync now
 openetl pause PIPELINE                   # Pause
 openetl resume PIPELINE                  # Resume

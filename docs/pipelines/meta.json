@@ -10,6 +10,7 @@
     "schedules",
     "positions",
     "schema-changes",
+    "sql-transforms",
     "troubleshooting"
   ]
 }

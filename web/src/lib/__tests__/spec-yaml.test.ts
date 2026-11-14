@@ -7,6 +7,7 @@ import {
   ScheduleSchema,
   WriteMode,
   PipelineMode,
+  Passthrough,
 } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncMode } from "@/gen/openetl/api/v1/connection_pb";
 import { goDuration, pipelineYAML } from "../spec-yaml";
@@ -31,6 +32,15 @@ describe("pipelineYAML", () => {
     const y = pipelineYAML("shop", "default", spec);
     expect(y).toContain("sync: full_refresh");
     expect(y).toContain("orders: fct_orders");
+  });
+
+  it("writes transform.sql as text, with passthrough beside it", () => {
+    const sql = "INSERT INTO contacts\nSELECT id, lower(email) AS email FROM customers;\n";
+    const spec = create(PipelineSpecSchema, { transform: { engine: { case: "sql", value: { sql, passthrough: Passthrough.NONE } } } });
+    const y = pipelineYAML("shop", "default", spec);
+    expect(y).toContain("transform:\n    sql: |\n      INSERT INTO contacts\n      SELECT id, lower(email) AS email FROM customers;\n    passthrough: none\n");
+    const all = pipelineYAML("shop", "default", create(PipelineSpecSchema, { transform: { engine: { case: "sql", value: { sql } } } }));
+    expect(all).not.toContain("passthrough");
   });
 
   it("formats durations", () => {

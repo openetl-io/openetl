@@ -2,5 +2,5 @@
   "title": "Reference",
   "description": "Specs, commands, settings, events and schemas",
   "icon": "BookOpen",
-  "pages": ["index", "specs", "pipeline-cli", "openetld", "connector-file", "connector-descriptor", "manifest", "events", "built-in-connectors"]
+  "pages": ["index", "specs", "sql", "pipeline-cli", "openetld", "connector-file", "connector-descriptor", "manifest", "events", "built-in-connectors"]
 }
