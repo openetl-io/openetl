@@ -3,6 +3,8 @@ package spec
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"math"
 	"math/big"
 	"reflect"
 	"slices"
@@ -313,7 +315,7 @@ func TestIntegerExtremes(t *testing.T) {
 	for _, v := range []string{
 		"!!float 1.1e-9223372036854775808", "!!float 1.1e9223372036854775807", "!!float 1e-9223372036854775809",
 		"!!float 1e99999999999999999999999", "1.1e-9223372036854775808", "0.1e9223372036854775807",
-		"1." + long, long, "-" + long, "1e" + long, "1e-" + long, "+1_0.5", "!!int 2.0", "! 1.9", "!!str 4", "!!float .5_0e1",
+		"1." + long, long, "-" + long, "1e" + long, "1e-" + long, "+1_0.5", "!!int 2.0", "! 1.9", "!!str 4", "!!float ._5e1",
 	} {
 		done := make(chan error, 1)
 		go func() {
@@ -332,47 +334,64 @@ func TestIntegerExtremes(t *testing.T) {
 	for v, want := range map[string]string{
 		"0e-9223372036854775808": "0", "-0.000e9223372036854775807": "0", "0." + strings.Repeat("0", 1000) + "e9223372036854775807": "0",
 		"0." + strings.Repeat("0", 1000) + "4e1004": "4000", "4" + strings.Repeat("0", 1000) + "e-1000": "4",
-		"-12_3.4_5e2": "-12345", "0x_1F": "31", "-0b101": "-5", "0o17": "15", "1e9223372036854775807": "10000000000000000000000000000000000000000",
+		"-12_3.4_5e2": "-12345", "0x_1F": "31", "-0b101": "-5", "0o17": "15", ".5_0e1": "5", "0o+5": "5", "0b-101": "-5", "-0o-1": "", "1" + strings.Repeat("0", 40): "10000000000000000000000000000000000000000",
+		// yaml.v3 reads these as strings: ParseFloat refuses them.
+		"1e9223372036854775807": "", "1e400": "", ".1e400": "", "._5e1": "",
 	} {
-		x, ok := number(v, false)
-		if !ok || x.String() != want {
-			t.Errorf("number(%.40s) = %v, %v, want %s", v, x, ok, want)
+		x, ok := number(v, "!!float")
+		if ok != (want != "") || ok && x.String() != want {
+			t.Errorf("number(%.40s) = %v, %v, want %q", v, x, ok, want)
 		}
 	}
 }
 
-// FuzzNumber checks number against big.Rat on the text yaml.v3 reads as a
-// float, and that it never panics.
+// FuzzNumber checks number against yaml.v3, which decides whether the text
+// is a number, and big.Rat, which gives its value; it never panics.
 func FuzzNumber(f *testing.F) {
 	for _, s := range []string{"1", "1.0", "1e1", "1.9", "-1", "0x10", "1_0", ".5", "5.", "+.5e1", "1.1e-9223372036854775808",
-		"1e9223372036854775807", "-1e-9223372036854775808", "0.1e2", "-0e-5", "123456789012345678901234567890", "1.0000000000000001", "9e40", "1e-40"} {
+		"1e9223372036854775807", "-1e-9223372036854775808", "0.1e2", "-0e-5", "123456789012345678901234567890", "1.0000000000000001",
+		"9e40", "1e-40", ".5_0e1", "._5e1", "0b101", "0o17", "010", "09", "1e400", "10000000000000000000", "_00", "0o+0", "0b-101", "-0o17", "0b1_0", "0o777777777777777777777"} {
 		f.Add(s)
 	}
 	limit := new(big.Int).Exp(big.NewInt(10), big.NewInt(40), nil)
 	f.Fuzz(func(t *testing.T, s string) {
-		if len(s) > 1000 {
+		if s == "" || len(s) > 1000 || strings.Trim(s, "0123456789abcdefABCDEFxXoO_.+-") != "" {
 			return
 		}
-		x, ok := number(s, false)
-		plain := s
-		if !strings.HasPrefix(s, ".") {
-			plain = strings.ReplaceAll(s, "_", "")
+		var y struct {
+			V any `yaml:"v"`
 		}
-		if _, err := strconv.ParseInt(plain, 0, 64); err == nil {
-			return
+		xi, ok := number(s, "!!int")
+		if err := yaml.Unmarshal([]byte("v: !!int "+s+"\n"), &y); (err == nil) != ok || ok && fmt.Sprint(y.V) != xi.String() {
+			t.Errorf("number(%q) as an !!int = %v, %v, and yaml.v3 reads %#v, %v", s, xi, ok, y.V, err)
 		}
-		if _, err := strconv.ParseUint(plain, 0, 64); err == nil {
-			return
-		}
-		if !yamlFloat.MatchString(plain) {
+		y.V = nil
+		x, ok := number(s, "!!float")
+		if err := yaml.Unmarshal([]byte("v: !!float "+s+"\n"), &y); err != nil {
 			if ok {
-				t.Errorf("number(%q) = %v, which isn't a YAML number", s, x)
+				t.Errorf("number(%q) = %v, and yaml.v3 refuses it: %v", s, x, err)
+			}
+			return
+		}
+		fv, isFloat := y.V.(float64)
+		if !isFloat {
+			t.Fatalf("yaml.v3 reads !!float %q as %#v", s, y.V)
+		}
+		plain := strings.ReplaceAll(s, "_", "")
+		_, intErr := strconv.ParseInt(plain, 0, 64)
+		if intErr == nil || !yamlFloat.MatchString(plain) {
+			// An integer's text: yaml.v3's float is exact below 2^53.
+			if !ok || math.Abs(fv) < 1<<53 && x.Cmp(big.NewInt(int64(fv))) != 0 {
+				t.Errorf("number(%q) = %v, %v, want %v", s, x, ok, fv)
 			}
 			return
 		}
 		// big.Rat would build 10^e; past 100 only the size is checked.
 		if _, exp, _ := strings.Cut(strings.ToLower(plain), "e"); exp != "" {
 			if e, err := strconv.Atoi(exp); err != nil || e > 100 || e < -100 {
+				if ok && x.Sign() != 0 && new(big.Int).Abs(x).Cmp(limit) < 0 {
+					t.Errorf("number(%q) = %v, want 0, a fraction or at least 10^40", s, x)
+				}
 				return
 			}
 		}
@@ -395,4 +414,40 @@ func FuzzNumber(f *testing.F) {
 			t.Errorf("number(%q) = %v, want ±10^40 or beyond", s, x)
 		}
 	})
+}
+
+// Underscores in a float: the check takes what yaml.v3 decodes, into a
+// uint32 and into any, and refuses what it doesn't, as for a float that
+// starts with a dot, which strconv.ParseFloat reads underscores and all.
+func TestIntegerUnderscores(t *testing.T) {
+	type doc struct {
+		V uint32 `yaml:"v"`
+	}
+	for text, want := range map[string]struct {
+		decodes bool
+		v       uint32
+		asAny   any
+	}{
+		".5_0e1":         {true, 5, 5.0},
+		"0.5_0e1":        {true, 5, 5.0},
+		"5_0":            {true, 50, 50},
+		"!!float .5_0e1": {true, 5, nil},
+		"._5e1":          {false, 0, "._5e1"},
+		".5__0e1":        {false, 0, ".5__0e1"},
+		"!!float ._5e1":  {false, 0, nil},
+	} {
+		content := []byte("v: " + text + "\n")
+		var d doc
+		err := yaml.Unmarshal(content, &d)
+		if (err == nil) != want.decodes || d.V != want.v {
+			t.Errorf("%s: yaml.v3 decodes it into a uint32 as %d, %v", text, d.V, err)
+		}
+		var a map[string]any
+		if err := yaml.Unmarshal(content, &a); want.asAny != nil && (err != nil || a["v"] != want.asAny) {
+			t.Errorf("%s: yaml.v3 decodes it into any as %#v, %v", text, a["v"], err)
+		}
+		if err := CheckIntegers(content, &d); (err == nil) != want.decodes {
+			t.Errorf("%s: the check says %v, and yaml.v3 decodes it: %v", text, err, want.decodes)
+		}
+	}
 }

@@ -274,7 +274,7 @@ func integer(n *yaml.Node, t reflect.Type, path string, b bounds) error {
 	default:
 		return refuse()
 	}
-	x, ok := number(n.Value, tag == "!!int")
+	x, ok := number(n.Value, tag)
 	if !ok {
 		return refuse()
 	}
@@ -284,26 +284,71 @@ func integer(n *yaml.Node, t reflect.Type, path string, b bounds) error {
 	return nil
 }
 
-// yamlFloat is the text yaml.v3 reads as a float.
+// yamlFloat is a decimal float's text, without underscores, as yaml.v3
+// matches it.
 var yamlFloat = regexp.MustCompile(`^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$`)
 
-// number is s, the text of a YAML integer or, unless intOnly, a float, as
-// an integer, decided from its digits rather than from a float64, which
-// would round 1.0000000000000001 to 1. ok is false if it has a fraction, or
-// isn't such a number. A number with more digits than any field holds comes
-// back as ±10^40 or beyond, out of every range.
-func number(s string, intOnly bool) (x *big.Int, ok bool) {
-	if !strings.HasPrefix(s, ".") {
-		// yaml.v3 drops underscores but from a float that starts with a dot.
-		s = strings.ReplaceAll(s, "_", "")
+// number is s, the text of a scalar tagged tag, !!int or !!float, as an
+// integer, decided from its digits rather than from a float64, which would
+// round 1.0000000000000001 to 1. ok is false if it has a fraction, or if
+// yaml.v3 doesn't read it as a number of that tag. A number with more digits
+// than any field holds comes back as ±10^40 or beyond, out of every range.
+//
+// It follows yaml.v3's resolve: text that starts with a dot is a float if
+// strconv.ParseFloat takes it, underscores and all. Other text that starts
+// with a digit or a sign, without its underscores, is an int64, a uint64, a
+// float that ParseFloat takes, or a 0b or 0o integer. A uint64 can't be a
+// !!float, nor a float an !!int. Anything else is a string.
+func number(s, tag string) (*big.Int, bool) {
+	if s == "" || !strings.ContainsRune("0123456789+-.", rune(s[0])) {
+		return nil, false
 	}
-	if i, err := strconv.ParseInt(s, 0, 64); err == nil {
+	plain := strings.ReplaceAll(s, "_", "")
+	if s[0] == '.' {
+		if _, err := strconv.ParseFloat(s, 64); err != nil || tag != "!!float" {
+			return nil, false
+		}
+		return decimal(plain)
+	}
+	if i, err := strconv.ParseInt(plain, 0, 64); err == nil {
 		return big.NewInt(i), true
 	}
-	if u, err := strconv.ParseUint(s, 0, 64); err == nil {
-		return new(big.Int).SetUint64(u), true
+	if u, err := strconv.ParseUint(plain, 0, 64); err == nil {
+		return new(big.Int).SetUint64(u), tag == "!!int"
 	}
-	if intOnly || !yamlFloat.MatchString(s) {
+	if yamlFloat.MatchString(plain) {
+		if _, err := strconv.ParseFloat(plain, 64); err == nil {
+			if tag != "!!float" {
+				return nil, false
+			}
+			return decimal(plain)
+		}
+	}
+	for _, b := range []struct {
+		prefix string
+		base   int
+	}{{"0b", 2}, {"0o", 8}} {
+		switch {
+		case strings.HasPrefix(plain, b.prefix):
+			if i, err := strconv.ParseInt(plain[2:], b.base, 64); err == nil {
+				return big.NewInt(i), true
+			}
+			if u, err := strconv.ParseUint(plain[2:], b.base, 64); err == nil {
+				return new(big.Int).SetUint64(u), tag == "!!int"
+			}
+		case strings.HasPrefix(plain, "-"+b.prefix):
+			if i, err := strconv.ParseInt("-"+plain[3:], b.base, 64); err == nil {
+				return big.NewInt(i), true
+			}
+		}
+	}
+	return nil, false
+}
+
+// decimal is s, a decimal float's text without underscores, as an integer;
+// false if it has a fraction or isn't such a text.
+func decimal(s string) (x *big.Int, ok bool) {
+	if !yamlFloat.MatchString(s) {
 		return nil, false
 	}
 	neg := s[0] == '-'
