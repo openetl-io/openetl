@@ -46,9 +46,22 @@ type coordinator struct {
 	shares map[uint64][]*attemptv1.Share
 	// Closed, and replaced, when a worker joins or a share arrives.
 	changed chan struct{}
-	over    bool
-	err     error
-	done    chan struct{}
+	// Calls not yet answered, by ID.
+	calls    map[uint64]*pendingCall
+	lastCall uint64
+	// Signals and proposals not yet taken from Inbox.
+	inbox     []From
+	inboxWake chan struct{}
+	inboxOut  chan From
+	over      bool
+	err       error
+	done      chan struct{}
+}
+
+type pendingCall struct {
+	worker int
+	done   chan struct{}
+	answer *attemptv1.Answer
 }
 
 type member struct {
@@ -83,12 +96,51 @@ func newCoordinator(a Attempt, opts Options, unregister func()) *coordinator {
 		a: a, opts: opts, unregister: unregister,
 		members: make([]*member, a.Workers), allJoined: make(chan struct{}),
 		shares: map[uint64][]*attemptv1.Share{}, changed: make(chan struct{}), done: make(chan struct{}),
+		calls: map[uint64]*pendingCall{}, inboxWake: make(chan struct{}, 1), inboxOut: make(chan From),
 	}
 	// joinDeadline takes c.mu, so it can't see joinTimer unset.
 	c.mu.Lock()
 	c.joinTimer = time.AfterFunc(opts.joinTimeout(), c.joinDeadline)
 	c.mu.Unlock()
+	go c.deliverInbox()
 	return c
+}
+
+// post queues a worker's signal or proposal for Inbox; c.mu is held.
+func (c *coordinator) post(f From) {
+	c.inbox = append(c.inbox, f)
+	select {
+	case c.inboxWake <- struct{}{}:
+	default:
+	}
+}
+
+// deliverInbox hands on what post queued, in order, until the attempt is
+// over.
+func (c *coordinator) deliverInbox() {
+	defer close(c.inboxOut)
+	for {
+		c.mu.Lock()
+		var next From
+		ok := len(c.inbox) > 0
+		if ok {
+			next, c.inbox = c.inbox[0], c.inbox[1:]
+		}
+		c.mu.Unlock()
+		if !ok {
+			select {
+			case <-c.inboxWake:
+				continue
+			case <-c.done:
+				return
+			}
+		}
+		select {
+		case c.inboxOut <- next:
+		case <-c.done:
+			return
+		}
+	}
 }
 
 func (c *coordinator) joinDeadline() {
@@ -303,6 +355,32 @@ func (c *coordinator) handle(m *member, msg *attemptv1.AttendRequest) error {
 	case *attemptv1.AttendRequest_Failure:
 		cause := reported(x.Failure)
 		return classedAs(cause, fmt.Errorf("attempt: %s failed: %w", who, cause))
+	case *attemptv1.AttendRequest_Answer:
+		p := c.calls[x.Answer.GetId()]
+		if p == nil || p.worker != m.index {
+			return outOfProtocol("%s answered call %d, which it wasn't asked or answered already", who, x.Answer.GetId())
+		}
+		delete(c.calls, x.Answer.GetId())
+		p.answer = x.Answer
+		close(p.done)
+		return nil
+	case *attemptv1.AttendRequest_Signal:
+		switch s := x.Signal; {
+		case c.assignment == nil:
+			return outOfProtocol("%s signalled before its assignment", who)
+		case s.GetSignal() == nil:
+			return outOfProtocol("%s sent an empty signal", who)
+		case s.GetAfter() < c.assignment.GetFirstEpoch()-1 || s.GetAfter() > c.requested:
+			return outOfProtocol("%s signalled after barrier %d, with barrier %d requested", who, s.GetAfter(), c.requested)
+		}
+		c.post(From{Worker: m.index, Signal: x.Signal})
+		return nil
+	case *attemptv1.AttendRequest_SchemaProposal:
+		if c.assignment == nil {
+			return outOfProtocol("%s proposed a schema before its assignment", who)
+		}
+		c.post(From{Worker: m.index, Proposal: x.SchemaProposal})
+		return nil
 	case *attemptv1.AttendRequest_Join:
 		return outOfProtocol("%s joined again", who)
 	default:
@@ -434,7 +512,7 @@ func (c *coordinator) Assign(ctx context.Context, a *attemptv1.Assignment) error
 	return nil
 }
 
-func (c *coordinator) Barrier(n uint64) error {
+func (c *coordinator) Barrier(n, maxBytes uint64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch {
@@ -446,7 +524,7 @@ func (c *coordinator) Barrier(n uint64) error {
 		return fmt.Errorf("attempt: barrier %d requested after %d", n, c.requested)
 	}
 	c.requested = n
-	msg := &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Barrier{Barrier: &attemptv1.Barrier{Epoch: epochOf(c.a.Generation, n)}}}
+	msg := &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Barrier{Barrier: &attemptv1.Barrier{Epoch: epochOf(c.a.Generation, n), MaxBytes: maxBytes}}}
 	for _, m := range c.members {
 		m.out.push(msg)
 	}
@@ -578,6 +656,63 @@ func (c *coordinator) Commit(ctx context.Context, worker int, req *attemptv1.Com
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func (c *coordinator) Call(ctx context.Context, worker int, call *attemptv1.Call) (*attemptv1.Answer, error) {
+	if worker < 0 || worker >= len(c.members) {
+		return nil, fmt.Errorf("attempt: a call for worker %d, of %d", worker, len(c.members))
+	}
+	if call.GetCall() == nil {
+		return nil, errors.New("attempt: an empty call")
+	}
+	m, err := c.member(ctx, worker)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.over {
+		err := c.overErrLocked()
+		c.mu.Unlock()
+		return nil, err
+	}
+	c.lastCall++
+	call = proto.CloneOf(call)
+	call.Id = c.lastCall
+	// Kept if ctx ends first: its answer then answers nobody.
+	p := &pendingCall{worker: worker, done: make(chan struct{})}
+	c.calls[call.Id] = p
+	m.out.push(&attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Call{Call: call}})
+	c.mu.Unlock()
+	select {
+	case <-p.done:
+		return p.answer, nil
+	case <-c.done:
+		return nil, c.overErr()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (c *coordinator) Inbox() <-chan From { return c.inboxOut }
+
+func (c *coordinator) Schema(worker int, s *attemptv1.StreamSchema) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case c.over:
+		return c.overErrLocked()
+	case c.assignment == nil:
+		return errors.New("attempt: a schema before the assignment")
+	case worker < -1 || worker >= len(c.members):
+		return fmt.Errorf("attempt: a schema for worker %d, of %d", worker, len(c.members))
+	}
+	msg := &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Schema{Schema: s}}
+	for _, m := range c.members {
+		if worker < 0 || m.index == worker {
+			m.out.push(msg)
+		}
+	}
+	return nil
 }
 
 // member waits for a worker to join.

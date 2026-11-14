@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -211,8 +212,14 @@ type Job struct {
 	// The pipeline's key groups; 0: checkpoint.KeyGroups. A restore from a
 	// record with another count fails.
 	KeyGroups int
+	// Set: the attempt runs on workers, and this runner coordinates it
+	// (OnWorkers says which jobs can). Nil: it runs here.
+	Workers *Workers
 	// Columns the destination refused in an earlier attempt of this call.
 	refused []RefusedColumn
+	// A worker's writer lanes, as its assignment gives them; 0: as many as
+	// the lanes and the destination allow.
+	writers int
 }
 
 func (j *Job) lanes() int { return max(j.Lanes, 1) }
@@ -312,6 +319,9 @@ func (j *Job) laneLimit(ctx context.Context, splits map[string][]checkpoint.Spli
 }
 
 func (j *Job) writerLanes() int {
+	if j.writers > 0 {
+		return j.writers
+	}
 	return min(j.lanes(), j.Destination.Capabilities().Lanes())
 }
 
@@ -404,6 +414,11 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if err := job.validate(); err != nil {
 		return res, err
 	}
+	if job.Workers != nil {
+		if err := job.checkWorkers(); err != nil {
+			return res, err
+		}
+	}
 	if job.Flink != nil {
 		return runFlink(ctx, job)
 	}
@@ -438,48 +453,13 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	res.Generation = sess.Generation()
 	log = log.With("generation", res.Generation)
 
-	head, err := sess.Load(rctx)
-	var rewound *Rewound
-	if errors.Is(err, checkpoint.ErrUnreadable) {
-		head, rewound, err = job.rewind(rctx, sess, err)
-	}
+	at, err := job.load(rctx, sess, log)
 	if err != nil {
 		return res, err
 	}
-	if head != nil && head.KeyGroupCount() != job.keyGroups() {
-		return res, errs.New(errs.ConfigInvalid, "runner: the pipeline has %d key groups, and its checkpoint %d-g%d has %d", job.keyGroups(), head.Epoch, head.Generation, head.KeyGroupCount())
-	}
-	// The previous record is needed if the sink reports HEAD's epoch lost.
-	// One that can't be read fails the attempt only then.
-	var prev *checkpoint.Record
-	var prevErr error
-	if head != nil && head.Previous != nil {
-		if prev, err = job.Log.Record(rctx, *head.Previous); errors.Is(err, checkpoint.ErrUnreadable) {
-			prev, prevErr = nil, err
-		} else if err != nil {
-			return res, err
-		}
-	}
-
-	// Either record may become the restore point, so dedupe conservatively.
-	forced := make(map[string]bool)
-	for _, r := range []*checkpoint.Record{head, prev} {
-		if r != nil {
-			for _, s := range r.Forced {
-				forced[s] = true
-			}
-		}
-	}
-	if rewound != nil {
-		// The unreadable record's epoch was delivered, and is read again.
-		for _, s := range job.Streams {
-			forced[s.Name] = true
-		}
-		markForced(head, job.Streams)
-		if job.OnRewind != nil {
-			job.OnRewind(*rewound)
-		}
-		log.Warn("restarted from the checkpoint before the one HEAD pointed to, which can't be read", "unreadable", rewound.Unreadable, "reason", rewound.Reason)
+	head, prev, prevErr, rewound, forced := at.head, at.prev, at.prevErr, at.rewound, at.forced
+	if job.Workers != nil {
+		return job.coordinate(ctx, rctx, span, sess, at, res, log)
 	}
 	canForce := job.canForce()
 	ws := make([]destination.Writer, 0, job.writerLanes())
@@ -612,6 +592,66 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 	}
 	return res, c.run(ctx, restored, canForce, splits, done)
+}
+
+// loaded is where an attempt starts.
+type loaded struct {
+	// The record HEAD points to, or the one before it after a rewind; nil
+	// for none.
+	head *checkpoint.Record
+	// The record before head, needed if the destination reports head's epoch
+	// lost; nil with prevErr if it can't be read, which fails the attempt
+	// only then.
+	prev    *checkpoint.Record
+	prevErr error
+	rewound *Rewound
+	// The streams a record that may be restored was forced on.
+	forced map[string]bool
+}
+
+// load reads where the claimed attempt starts.
+func (j *Job) load(ctx context.Context, sess *checkpoint.Session, log *slog.Logger) (loaded, error) {
+	var at loaded
+	head, err := sess.Load(ctx)
+	if errors.Is(err, checkpoint.ErrUnreadable) {
+		head, at.rewound, err = j.rewind(ctx, sess, err)
+	}
+	if err != nil {
+		return at, err
+	}
+	if head != nil && head.KeyGroupCount() != j.keyGroups() {
+		return at, errs.New(errs.ConfigInvalid, "runner: the pipeline has %d key groups, and its checkpoint %d-g%d has %d", j.keyGroups(), head.Epoch, head.Generation, head.KeyGroupCount())
+	}
+	at.head = head
+	if head != nil && head.Previous != nil {
+		if at.prev, err = j.Log.Record(ctx, *head.Previous); errors.Is(err, checkpoint.ErrUnreadable) {
+			at.prev, at.prevErr = nil, err
+		} else if err != nil {
+			return at, err
+		}
+	}
+
+	// Either record may become the restore point, so dedupe conservatively.
+	at.forced = make(map[string]bool)
+	for _, r := range []*checkpoint.Record{head, at.prev} {
+		if r != nil {
+			for _, s := range r.Forced {
+				at.forced[s] = true
+			}
+		}
+	}
+	if rw := at.rewound; rw != nil {
+		// The unreadable record's epoch was delivered, and is read again.
+		for _, s := range j.Streams {
+			at.forced[s.Name] = true
+		}
+		markForced(head, j.Streams)
+		if j.OnRewind != nil {
+			j.OnRewind(*rw)
+		}
+		log.Warn("restarted from the checkpoint before the one HEAD pointed to, which can't be read", "unreadable", rw.Unreadable, "reason", rw.Reason)
+	}
+	return at, nil
 }
 
 // rewind restarts from the record before HEAD's, which can't be read (cause),
@@ -912,16 +952,9 @@ func flush(ctx context.Context, staging Staging, e destination.Epoch, log *slog.
 // last one's ended.
 func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done map[string]bool) (map[string][]checkpoint.SplitState, error) {
 	out := make(map[string][]checkpoint.SplitState, len(j.Streams))
-	splitter, _ := j.Source.(source.Splitter)
 	for _, s := range j.Streams {
-		var prev []checkpoint.SplitState
-		if restored != nil {
-			prev = restored.Splits(s.Name)
-		}
-		// A continuous read follows every split, so one that a bounded read
-		// completed means a new read.
-		ongoing := prev != nil && !restored.Streams[s.Name].Complete && !(j.Continuous && slices.ContainsFunc(prev, func(sp checkpoint.SplitState) bool { return sp.Complete }))
-		if done[s.Name] || ongoing {
+		prev, starts := j.startsRead(restored, done, s)
+		if !starts {
 			out[s.Name] = prev
 			continue
 		}
@@ -932,32 +965,63 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		if prev == nil {
 			ended = nil
 		}
-		var splits []source.Split
-		var err error
-		// A Spark or Flink transform's read isn't split, unless its last
-		// read was, which only the source knows how to go on from.
-		split := len(ended) > 1 || len(ended) == 1 && ended[0].ID != checkpoint.WholeStream
-		if splitter != nil && (!j.ownCode() || split) {
-			splits, err = splitter.Splits(ctx, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField}, ended)
-		} else {
-			splits, err = source.Whole(ended)
-		}
+		splits, err := j.newSplits(ctx, s, ended)
 		if err != nil {
-			return nil, fmt.Errorf("runner: the splits of stream %q: %w", s.Name, err)
+			return nil, err
 		}
-		if len(splits) == 0 {
-			return nil, errs.New(errs.Internal, "runner: the source gave stream %q no splits", s.Name)
-		}
-		seen := map[string]bool{}
 		for _, sp := range splits {
-			if seen[sp.ID] {
-				return nil, errs.New(errs.Internal, "runner: the source gave stream %q split %q twice", s.Name, sp.ID)
-			}
-			seen[sp.ID] = true
 			out[s.Name] = append(out[s.Name], checkpoint.SplitState{ID: sp.ID, State: sp.State})
 		}
 	}
 	return out, nil
+}
+
+// startsRead returns a stream's splits in restored, and whether its read
+// starts in the attempt: it doesn't continue one, nor did it complete
+// earlier in the sync (done).
+func (j *Job) startsRead(restored *checkpoint.Record, done map[string]bool, s Stream) ([]checkpoint.SplitState, bool) {
+	var prev []checkpoint.SplitState
+	if restored != nil {
+		prev = restored.Splits(s.Name)
+	}
+	// A continuous read follows every split, so one that a bounded read
+	// completed means a new read.
+	ongoing := prev != nil && !restored.Streams[s.Name].Complete && !(j.Continuous && slices.ContainsFunc(prev, func(sp checkpoint.SplitState) bool { return sp.Complete }))
+	return prev, !done[s.Name] && !ongoing
+}
+
+// newSplits are the splits of a read of s that starts from where the last
+// one's ended, nil if it never was.
+func (j *Job) newSplits(ctx context.Context, s Stream, ended []source.Split) ([]source.Split, error) {
+	splitter, _ := j.Source.(source.Splitter)
+	var splits []source.Split
+	var err error
+	// A Spark or Flink transform's read isn't split, unless its last
+	// read was, which only the source knows how to go on from.
+	split := len(ended) > 1 || len(ended) == 1 && ended[0].ID != checkpoint.WholeStream
+	if splitter != nil && (!j.ownCode() || split) {
+		splits, err = splitter.Splits(ctx, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField}, ended)
+	} else {
+		splits, err = source.Whole(ended)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("runner: the splits of stream %q: %w", s.Name, err)
+	}
+	return splits, checkSplits(s.Name, splits)
+}
+
+func checkSplits(stream string, splits []source.Split) error {
+	if len(splits) == 0 {
+		return errs.New(errs.Internal, "runner: the source gave stream %q no splits", stream)
+	}
+	seen := map[string]bool{}
+	for _, sp := range splits {
+		if seen[sp.ID] {
+			return errs.New(errs.Internal, "runner: the source gave stream %q split %q twice", stream, sp.ID)
+		}
+		seen[sp.ID] = true
+	}
+	return nil
 }
 
 // readRequest reads the splits of every stream not done that haven't
@@ -1047,11 +1111,14 @@ func recordFiles(m map[string][]destination.StagedFile) map[string][]checkpoint.
 	return out
 }
 
-func (j *Job) validate() error {
+func (j *Job) validate() error { return j.validateRun(true) }
+
+// validateRun checks the job; a worker's needs no log.
+func (j *Job) validateRun(log bool) error {
 	switch {
 	case j.Owner == "":
 		return errors.New("runner: job has no owner")
-	case j.Log == nil || j.Source == nil || j.Destination == nil || j.Dataflow == nil:
+	case log && j.Log == nil || j.Source == nil || j.Destination == nil || j.Dataflow == nil:
 		return errors.New("runner: job is missing its log, source, destination or dataflow")
 	case len(j.Streams) == 0:
 		return errors.New("runner: job has no streams")
@@ -1131,19 +1198,28 @@ const (
 	evThreshold                      // CommitMaxBytes was reached
 	evReadDone                       // Read returned; active says whether anything emitted after barrier epoch is uncommitted
 	evCommitted                      // epoch is visible in the destination
+	evEmitted                        // the source emitted after barrier epoch was requested; a worker's
+	evShared                         // every worker shared epoch, merged in shared
 )
 
 type event struct {
 	kind  eventKind
 	epoch uint64
-	lane  int // evStaged's writer lane
+	lane  int // evStaged's writer lane; with workers, evReadDone's worker
 	// evPlaced's: each stream's splits at the barrier.
 	splits map[string][]checkpoint.SplitState
 	rows   map[string]uint64
-	staged destination.Staged
-	ready  *Ready
-	active bool
+	// A worker's evPlaced: the lane of each split that emitted rows in the
+	// epoch, laneAll where its rows went to every lane.
+	splitLanes map[checkpoint.SplitRef]int
+	staged     destination.Staged
+	ready      *Ready
+	active     bool
+	shared     *shared
 }
+
+// laneAll is the lane of a split whose rows go to the lanes in turn.
+const laneAll = -2
 
 type epochState struct {
 	requested time.Time
@@ -1159,6 +1235,8 @@ type epochState struct {
 	flow     *Ready
 	// In a Flink pipeline, the Flink checkpoint the epoch ends at.
 	flink *checkpoint.FlinkCheckpoint
+	// With workers, what each committable holds.
+	coverage []checkpoint.Coverage
 }
 
 type commitReq struct {
@@ -1219,9 +1297,156 @@ type coordinator struct {
 	holdPlans map[string]*HoldPlan
 	// A release is being patched in, so barriers go on after the read ends.
 	replaying bool
+	// Nil: the attempt has no workers, and its lanes run here. Set: w is the
+	// workers' first writer lane, through them.
+	fleet *fleet
+}
+
+func (c *coordinator) writerLanes() int {
+	if c.fleet != nil {
+		return c.fleet.writers
+	}
+	return len(c.ws)
 }
 
 func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canForce map[string]bool, splits map[string][]checkpoint.SplitState, done map[string]bool) error {
+	schemas := c.begin(restored)
+	g, gctx := errgroup.WithContext(ctx)
+	toFlow := make(chan Frame, 16)
+	fromFlow := make(chan Frame, 16)
+	c.events = make(chan event, 64)
+	c.commits = make(chan commitReq, 1)
+	ends := newReadEnds()
+	c.pump = newSourcePump(gctx, c.job, c.committed, splits, canForce, done, ends, toFlow, c.events)
+	plan := c.job.plan(c.sess.Generation(), c.next, restored, c.readStarts, schemas, c.outputSchemas, c.holdPlans)
+	var staging Staging
+	if c.job.staged() {
+		staging = c.job.Staging
+		plan.Sink = SinkPlan{StagedURL: staging.URL()}
+	}
+	starts, sinkEnds := c.job.sinkStarts(c.readStarts, done, ends)
+	lanes := make([]chan Frame, len(c.ws))
+	sinks := make([]*sinkPump, len(c.ws))
+	for i, w := range c.ws {
+		lanes[i] = make(chan Frame, 16)
+		sinks[i] = newSinkPump(w, i, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, staging, c.job.sinkStreams(), starts, sinkEnds, lanes[i], c.events)
+	}
+
+	req := c.job.readRequest(splits, done)
+	g.Go(func() error {
+		if len(req.Streams) > 0 {
+			if err := c.job.Source.Read(gctx, req, c.pump); err != nil {
+				return fmt.Errorf("runner: read: %w", err)
+			}
+		}
+		return c.pump.readDone()
+	})
+	g.Go(c.pump.run)
+	if c.job.Transform != nil {
+		c.runTransform(gctx, g, plan, toFlow, fromFlow)
+	} else {
+		g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
+	}
+	g.Go(func() error { return demux(gctx, fromFlow, lanes) })
+	for _, sink := range sinks {
+		g.Go(func() error { return sink.run(gctx) })
+	}
+	g.Go(func() error { return c.committer(gctx) })
+	g.Go(func() error {
+		defer close(c.commits)
+		return c.loop(gctx)
+	})
+	return g.Wait()
+}
+
+// plan is the dataflow's plan of an attempt of generation gen whose first
+// barrier is first, restored from restored.
+func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts map[string]int64, schemas, outputSchemas map[string][]byte, holdPlans map[string]*HoldPlan) Plan {
+	plan := Plan{
+		Org:        j.Org,
+		Pipeline:   j.Pipeline,
+		Owner:      j.Owner,
+		Generation: gen,
+		FirstEpoch: first,
+		Streams:    j.Streams,
+		Naming: Naming{
+			KeepSource: j.KeepSourceNames,
+			MaxLength:  j.Destination.Capabilities().MaxIdentifierLength,
+		},
+		Policy:             j.SchemaPolicy,
+		QuarantineURL:      j.QuarantineURL,
+		QuarantineInfinity: j.QuarantineInfinity,
+		ReadStarts:         readStarts,
+		Schemas:            schemas,
+	}
+	if j.SQL != nil {
+		plan.SQL, plan.Outputs, plan.OutputSchemas = j.SQL, j.Outputs, outputSchemas
+	}
+	if len(holdPlans) > 0 {
+		plan.HeldURL, plan.Holds = j.HeldURL, holdPlans
+	}
+	plan.Lanes, plan.WriterLanes, plan.KeyGroups = j.lanes(), j.writerLanes(), j.keyGroups()
+	for _, s := range j.sinkStreams() {
+		// A key's rows meet on one writer lane. An output of a SQL
+		// transform has its stream's splits and read.
+		if j.keyGrouped(s) && plan.WriterLanes > 1 {
+			if plan.KeyGrouped == nil {
+				plan.KeyGrouped = map[string]bool{}
+			}
+			plan.KeyGrouped[s.Name] = true
+		}
+	}
+	if restored != nil {
+		plan.Snapshots = restored.Snapshots
+	}
+	if es, ok := j.Destination.(EngineSink); ok {
+		plan.Sink = es.EngineSink()
+	}
+	return plan
+}
+
+// keyGrouped says a stream's rows are routed to writer lanes by their key's
+// group, since its splits don't keep a key's rows together.
+func (j *Job) keyGrouped(s Stream) bool {
+	return len(s.PrimaryKey) > 0 && (!s.SplitsByKey || s.Read == source.CDC)
+}
+
+// sinkStarts are the starts of the reads of the destination's streams that
+// the attempt reads, and where their reads end.
+func (j *Job) sinkStarts(readStarts map[string]int64, done map[string]bool, ends *readEnds) (map[string]time.Time, readEnder) {
+	starts := map[string]time.Time{}
+	for _, s := range j.Streams {
+		if !done[s.Name] {
+			starts[s.Name] = time.UnixMicro(readStarts[s.Name]).UTC()
+		}
+	}
+	if !j.transformed() {
+		return starts, ends
+	}
+	// An output's read starts with its inputs' first, and ends with
+	// their last.
+	var first time.Time
+	var reading []string
+	for _, s := range j.Streams {
+		if t, ok := starts[s.Name]; ok {
+			reading = append(reading, s.Name)
+			if first.IsZero() || t.Before(first) {
+				first = t
+			}
+		}
+	}
+	starts = map[string]time.Time{}
+	for _, o := range j.Outputs {
+		if len(reading) > 0 {
+			starts[o.Name] = first
+		}
+	}
+	return starts, lastEnd{ends: ends, inputs: reading}
+}
+
+// begin sets the coordinator up from the restored record, and returns the
+// schemas the dataflow starts with.
+func (c *coordinator) begin(restored *checkpoint.Record) map[string][]byte {
 	schemas := map[string][]byte{}
 	now := time.Now().UnixMicro()
 	c.readStarts = make(map[string]int64, len(c.job.Streams))
@@ -1267,119 +1492,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	if c.job.Sync != "" {
 		c.syncStart, c.syncRows = syncSoFar(restored, c.job.Sync)
 	}
-
-	g, gctx := errgroup.WithContext(ctx)
-	toFlow := make(chan Frame, 16)
-	fromFlow := make(chan Frame, 16)
-	c.events = make(chan event, 64)
-	c.commits = make(chan commitReq, 1)
-	ends := newReadEnds()
-	c.pump = newSourcePump(gctx, c.job, c.committed, splits, canForce, done, ends, toFlow, c.events)
-	plan := Plan{
-		Org:        c.job.Org,
-		Pipeline:   c.job.Pipeline,
-		Owner:      c.job.Owner,
-		Generation: c.sess.Generation(),
-		FirstEpoch: c.next,
-		Streams:    c.job.Streams,
-		Naming: Naming{
-			KeepSource: c.job.KeepSourceNames,
-			MaxLength:  c.job.Destination.Capabilities().MaxIdentifierLength,
-		},
-		Policy:             c.job.SchemaPolicy,
-		QuarantineURL:      c.job.QuarantineURL,
-		QuarantineInfinity: c.job.QuarantineInfinity,
-		ReadStarts:         c.readStarts,
-		Schemas:            schemas,
-	}
-	if c.job.SQL != nil {
-		plan.SQL, plan.Outputs, plan.OutputSchemas = c.job.SQL, c.job.Outputs, c.outputSchemas
-	}
-	if len(c.holdPlans) > 0 {
-		plan.HeldURL, plan.Holds = c.job.HeldURL, c.holdPlans
-	}
-	plan.Lanes, plan.WriterLanes, plan.KeyGroups = c.job.lanes(), c.job.writerLanes(), c.job.keyGroups()
-	for _, s := range c.job.sinkStreams() {
-		// A key's rows meet on one writer lane. An output of a SQL
-		// transform has its stream's splits and read.
-		if len(s.PrimaryKey) > 0 && (!s.SplitsByKey || s.Read == source.CDC) && plan.WriterLanes > 1 {
-			if plan.KeyGrouped == nil {
-				plan.KeyGrouped = map[string]bool{}
-			}
-			plan.KeyGrouped[s.Name] = true
-		}
-	}
-	if restored != nil {
-		plan.Snapshots = restored.Snapshots
-	}
-	if es, ok := c.job.Destination.(EngineSink); ok {
-		plan.Sink = es.EngineSink()
-	}
-	var staging Staging
-	if c.job.staged() {
-		staging = c.job.Staging
-		plan.Sink = SinkPlan{StagedURL: staging.URL()}
-	}
-	starts := map[string]time.Time{}
-	for _, s := range c.job.Streams {
-		if !done[s.Name] {
-			starts[s.Name] = time.UnixMicro(c.readStarts[s.Name]).UTC()
-		}
-	}
-	var sinkEnds readEnder = ends
-	if c.job.transformed() {
-		// An output's read starts with its inputs' first, and ends with
-		// their last.
-		var first time.Time
-		var reading []string
-		for _, s := range c.job.Streams {
-			if t, ok := starts[s.Name]; ok {
-				reading = append(reading, s.Name)
-				if first.IsZero() || t.Before(first) {
-					first = t
-				}
-			}
-		}
-		starts = map[string]time.Time{}
-		for _, o := range c.job.Outputs {
-			if len(reading) > 0 {
-				starts[o.Name] = first
-			}
-		}
-		sinkEnds = lastEnd{ends: ends, inputs: reading}
-	}
-	lanes := make([]chan Frame, len(c.ws))
-	sinks := make([]*sinkPump, len(c.ws))
-	for i, w := range c.ws {
-		lanes[i] = make(chan Frame, 16)
-		sinks[i] = newSinkPump(w, i, c.sess.Generation(), c.next, plan.Sink != SinkPlan{}, staging, c.job.sinkStreams(), starts, sinkEnds, lanes[i], c.events)
-	}
-
-	req := c.job.readRequest(splits, done)
-	g.Go(func() error {
-		if len(req.Streams) > 0 {
-			if err := c.job.Source.Read(gctx, req, c.pump); err != nil {
-				return fmt.Errorf("runner: read: %w", err)
-			}
-		}
-		return c.pump.readDone()
-	})
-	g.Go(c.pump.run)
-	if c.job.Transform != nil {
-		c.runTransform(gctx, g, plan, toFlow, fromFlow)
-	} else {
-		g.Go(func() error { return c.job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
-	}
-	g.Go(func() error { return demux(gctx, fromFlow, lanes) })
-	for _, sink := range sinks {
-		g.Go(func() error { return sink.run(gctx) })
-	}
-	g.Go(func() error { return c.committer(gctx) })
-	g.Go(func() error {
-		defer close(c.commits)
-		return c.loop(gctx)
-	})
-	return g.Wait()
+	return schemas
 }
 
 func (c *coordinator) loop(ctx context.Context) error {
@@ -1401,7 +1514,9 @@ func (c *coordinator) loop(ctx context.Context) error {
 		default:
 		}
 		if c.finished() {
-			c.pump.stop()
+			if c.fleet == nil {
+				c.pump.stop()
+			}
 			return nil
 		}
 		if c.drained() {
@@ -1410,7 +1525,13 @@ func (c *coordinator) loop(ctx context.Context) error {
 		}
 		if c.shouldRequest() {
 			c.outstanding, c.want = true, false
-			c.active = c.active && !c.readDone // after Read, this barrier covers everything
+			// After Read, this barrier covers everything.
+			if c.fleet != nil {
+				c.fleet.coverReadEnds()
+				c.active = c.fleet.active()
+			} else {
+				c.active = c.active && !c.readDone
+			}
 			n := c.next
 			c.next++
 			if c.draining && c.drainEpoch == 0 {
@@ -1419,6 +1540,12 @@ func (c *coordinator) loop(ctx context.Context) error {
 			now := time.Now()
 			c.pending[n] = &epochState{requested: now, began: c.lastBarrier}
 			c.lastBarrier = now
+			if c.fleet != nil {
+				if err := c.fleet.barrier(ctx, n); err != nil {
+					return err
+				}
+				continue
+			}
 			c.seen = c.pump.emitted.Load()
 			if err := c.pump.requestBarrier(n); err != nil {
 				return err
@@ -1433,7 +1560,11 @@ func (c *coordinator) loop(ctx context.Context) error {
 		case <-tick:
 			// An idle source's epoch would hold nothing, unless it carries
 			// patches.
-			c.want = c.want || c.pump.emitted.Load() != c.seen || c.replaying
+			if c.fleet != nil {
+				c.want = c.want || c.fleet.emitted
+			} else {
+				c.want = c.want || c.pump.emitted.Load() != c.seen || c.replaying
+			}
 		case <-drain:
 			drain = nil
 			c.draining, c.want = true, true
@@ -1485,15 +1616,34 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 	case evReadDone:
 		// A barrier requested after the pump's last one is placed after Read
 		// ended, so it covers everything.
+		if c.fleet != nil {
+			c.readDone = c.fleet.readEnded(ev.lane, ev.active && ev.epoch == c.next-1)
+			c.active = c.fleet.active()
+			return nil
+		}
 		c.readDone, c.active = true, ev.active && ev.epoch == c.next-1
+		return nil
+	case evEmitted:
+		c.fleet.emitted = c.fleet.emitted || ev.epoch == c.next-1
 		return nil
 	case evPlaced:
 		st := c.pending[ev.epoch]
 		if st == nil || st.placed {
 			return fmt.Errorf("runner: unexpected placement of epoch %d", ev.epoch)
 		}
-		st.placed, st.splits, st.rows = true, ev.splits, ev.rows
+		st.placed = true
+		if c.fleet == nil {
+			st.splits, st.rows = ev.splits, ev.rows
+		}
 		c.outstanding = false
+	case evShared:
+		st := c.pending[ev.epoch]
+		if st == nil || st.ready {
+			return fmt.Errorf("runner: unexpected shares of epoch %d", ev.epoch)
+		}
+		sh := ev.shared
+		st.splits, st.rows, st.descs, st.coverage, st.flow = sh.splits, sh.rows, sh.descs, sh.coverage, sh.flow
+		st.staged, st.ready = len(sh.descs), true
 	case evStaged:
 		st := c.pending[ev.epoch]
 		if st != nil && st.descs == nil {
@@ -1531,7 +1681,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 	}
 	n := c.committed + 1
 	st := c.pending[n]
-	if c.committing || st == nil || !st.placed || st.staged < len(c.ws) || !st.ready {
+	if c.committing || st == nil || !st.placed || st.staged < c.writerLanes() || !st.ready {
 		return nil
 	}
 	c.committing = true
@@ -1643,6 +1793,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	for i, d := range st.descs {
 		rec.Committables[i] = d
 	}
+	rec.Coverage = st.coverage
 	if err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced); err != nil {
 		return nil, fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}
@@ -1730,7 +1881,11 @@ func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *
 // then.
 func (c *coordinator) acknowledge(ctx context.Context, st *epochState, rec *checkpoint.Record) {
 	// Trail by one checkpoint, so recovery can fall back one record.
-	if ack, ok := c.job.Source.(source.Acknowledger); ok && c.ackStates != nil {
+	if c.fleet != nil {
+		if err := c.fleet.acknowledge(c.ackStates, rec); err != nil {
+			c.log.Warn("sending the workers the positions to acknowledge failed", "epoch", rec.Epoch, "err", err)
+		}
+	} else if ack, ok := c.job.Source.(source.Acknowledger); ok && c.ackStates != nil {
 		states, splits := acknowledged(c.ackStates)
 		if err := ack.Committed(ctx, states, splits); err != nil {
 			c.log.Warn("upstream acknowledgement failed; the next commit retries it", "epoch", rec.Epoch-1, "err", err)
@@ -1769,8 +1924,14 @@ func (c *coordinator) growEpochs(commit, epoch time.Duration) {
 	if c.job.Settings.CommitMaxBytesSet || commit*4 <= epoch {
 		return
 	}
-	if b := c.pump.maxBytes.Load(); b > 0 && b < maxEpochBytes {
-		c.pump.maxBytes.Store(min(b*2, maxEpochBytes))
+	var maxBytes *atomic.Int64
+	if c.fleet != nil {
+		maxBytes = &c.fleet.maxBytes
+	} else {
+		maxBytes = &c.pump.maxBytes
+	}
+	if b := maxBytes.Load(); b > 0 && b < maxEpochBytes {
+		maxBytes.Store(min(b*2, maxEpochBytes))
 		c.log.Debug("epochs grow", "bytes", min(b*2, maxEpochBytes), "commit", commit, "epoch", epoch)
 	}
 }

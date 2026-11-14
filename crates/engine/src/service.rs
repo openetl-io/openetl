@@ -7,7 +7,8 @@ use std::time::Duration;
 use openetl_proto::engine::v1::engine_service_server::EngineService;
 use openetl_proto::engine::v1::{
     CommitRequest, CommitResponse, EventsRequest, EventsResponse, FrameKind, Hello, RecoverRequest,
-    RecoverResponse, StartJobRequest, StartJobResponse, StopRequest, StopResponse,
+    RecoverResponse, SchemasRequest, SchemasResponse, StartJobRequest, StartJobResponse,
+    StopRequest, StopResponse,
 };
 use prost::Message;
 use tokio::io::BufReader;
@@ -16,7 +17,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, Streaming};
 use tracing::{Instrument as _, info, info_span, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -24,6 +25,7 @@ use crate::dataflow::{self, Events};
 use crate::error::JobError;
 use crate::frame;
 use crate::plan::{Plan, Sink};
+use crate::remote::Remote;
 use crate::telemetry;
 
 /// How long the runner has to connect every edge after StartJob.
@@ -44,6 +46,8 @@ struct Job {
     /// Edges waiting for their connection.
     edges: HashMap<String, oneshot::Sender<Edge>>,
     events: Option<mpsc::Receiver<Result<EventsResponse, Status>>>,
+    /// Set where the job's schemas are decided outside the engine.
+    remote: Option<Arc<Remote>>,
 }
 
 pub struct Engine {
@@ -76,6 +80,7 @@ impl Engine {
         let (events_tx, events_rx) = mpsc::channel(64);
         let mut job = Job {
             events: Some(events_rx),
+            remote: plan.remote.clone(),
             ..Job::default()
         };
         let mut inbound = Vec::new();
@@ -267,5 +272,49 @@ impl EngineService for Control {
         info!("stop requested");
         self.0.shutdown.cancel();
         Ok(Response::new(StopResponse {}))
+    }
+
+    type SchemasStream = ReceiverStream<Result<SchemasResponse, Status>>;
+
+    async fn schemas(
+        &self,
+        req: Request<Streaming<SchemasRequest>>,
+    ) -> Result<Response<Self::SchemasStream>, Status> {
+        let remote = self
+            .0
+            .job()
+            .as_ref()
+            .and_then(|j| j.remote.clone())
+            .ok_or_else(|| Status::failed_precondition("no job, or its schemas aren't remote"))?;
+        let proposals = remote
+            .take_proposals()
+            .ok_or_else(|| Status::failed_precondition("the job's schemas are open already"))?;
+        let mut updates = req.into_inner();
+        // Once the call ends, a lane that waits for a schema, or shapes next,
+        // fails the job.
+        tokio::spawn(async move {
+            let failure = loop {
+                match updates.message().await {
+                    Ok(Some(u)) => {
+                        if let Err(e) = remote.update(&u) {
+                            break JobError::internal(format!(
+                                "the runner sent a schema the engine can't take: {}",
+                                e.message()
+                            ));
+                        }
+                    }
+                    Ok(None) => break JobError::runner_gone("the runner ended the schemas call"),
+                    Err(e) => {
+                        break JobError::runner_gone(format!(
+                            "the schemas call broke: {}",
+                            e.message()
+                        ));
+                    }
+                }
+            };
+            info!(reason = %failure, "the job's schemas call ended");
+            remote.fail(failure);
+        });
+        Ok(Response::new(ReceiverStream::new(proposals)))
     }
 }

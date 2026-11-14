@@ -165,6 +165,31 @@ type Plan struct {
 	Lanes, WriterLanes int
 	KeyGroups          int
 	KeyGrouped         map[string]bool
+	// A worker's: where its streams' schemas are decided, for an engine
+	// that runs the attempt with others'; nil: the dataflow decides.
+	SchemaOwner SchemaOwner
+	// A worker's: the attempt's index of its first lane, which names its
+	// lanes' quarantine files.
+	FirstLane int
+}
+
+// SchemaOwner decides the schemas of the destination's streams for the
+// dataflows of the workers of one attempt. A dataflow that changes a
+// stream's schema proposes it from the version it had, the restored schema
+// being version 0, and goes on with it once an update gives it the next
+// version with that schema; otherwise it shapes by the newer one.
+type SchemaOwner interface {
+	Propose(stream string, base uint64, schema []byte) error
+	// Each stream's versions, in order: answers to proposals, and changes
+	// other workers made.
+	Updates() <-chan SchemaUpdate
+}
+
+type SchemaUpdate struct {
+	Stream  string
+	Version uint64
+	// An Arrow IPC stream holding only the schema.
+	Schema []byte
 }
 
 func (p Plan) lanes() int       { return max(p.Lanes, 1) }

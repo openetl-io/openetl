@@ -83,7 +83,7 @@ func TestAnAttemptOverTLS(t *testing.T) {
 		ws = append(ws, j.w)
 	}
 
-	if err := c.Barrier(testFirst); err != nil {
+	if err := c.Barrier(testFirst, 0); err != nil {
 		t.Fatal(err)
 	}
 	for i, w := range ws {

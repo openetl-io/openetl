@@ -24,6 +24,7 @@ const (
 	EngineService_Events_FullMethodName   = "/openetl.engine.v1.EngineService/Events"
 	EngineService_Commit_FullMethodName   = "/openetl.engine.v1.EngineService/Commit"
 	EngineService_Stop_FullMethodName     = "/openetl.engine.v1.EngineService/Stop"
+	EngineService_Schemas_FullMethodName  = "/openetl.engine.v1.EngineService/Schemas"
 )
 
 // EngineServiceClient is the client API for EngineService service.
@@ -46,6 +47,9 @@ type EngineServiceClient interface {
 	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
 	// Ends the job without draining, and the process exits.
 	Stop(ctx context.Context, in *StopRequest, opts ...grpc.CallOption) (*StopResponse, error)
+	// A job with remote_schemas: the runner opens it once, after StartJob and
+	// before it connects the edges.
+	Schemas(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[SchemasRequest, SchemasResponse], error)
 }
 
 type engineServiceClient struct {
@@ -115,6 +119,19 @@ func (c *engineServiceClient) Stop(ctx context.Context, in *StopRequest, opts ..
 	return out, nil
 }
 
+func (c *engineServiceClient) Schemas(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[SchemasRequest, SchemasResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &EngineService_ServiceDesc.Streams[1], EngineService_Schemas_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SchemasRequest, SchemasResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type EngineService_SchemasClient = grpc.BidiStreamingClient[SchemasRequest, SchemasResponse]
+
 // EngineServiceServer is the server API for EngineService service.
 // All implementations must embed UnimplementedEngineServiceServer
 // for forward compatibility.
@@ -135,6 +152,9 @@ type EngineServiceServer interface {
 	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
 	// Ends the job without draining, and the process exits.
 	Stop(context.Context, *StopRequest) (*StopResponse, error)
+	// A job with remote_schemas: the runner opens it once, after StartJob and
+	// before it connects the edges.
+	Schemas(grpc.BidiStreamingServer[SchemasRequest, SchemasResponse]) error
 	mustEmbedUnimplementedEngineServiceServer()
 }
 
@@ -159,6 +179,9 @@ func (UnimplementedEngineServiceServer) Commit(context.Context, *CommitRequest) 
 }
 func (UnimplementedEngineServiceServer) Stop(context.Context, *StopRequest) (*StopResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Stop not implemented")
+}
+func (UnimplementedEngineServiceServer) Schemas(grpc.BidiStreamingServer[SchemasRequest, SchemasResponse]) error {
+	return status.Error(codes.Unimplemented, "method Schemas not implemented")
 }
 func (UnimplementedEngineServiceServer) mustEmbedUnimplementedEngineServiceServer() {}
 func (UnimplementedEngineServiceServer) testEmbeddedByValue()                       {}
@@ -264,6 +287,13 @@ func _EngineService_Stop_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EngineService_Schemas_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(EngineServiceServer).Schemas(&grpc.GenericServerStream[SchemasRequest, SchemasResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type EngineService_SchemasServer = grpc.BidiStreamingServer[SchemasRequest, SchemasResponse]
+
 // EngineService_ServiceDesc is the grpc.ServiceDesc for EngineService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -293,6 +323,12 @@ var EngineService_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "Events",
 			Handler:       _EngineService_Events_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "Schemas",
+			Handler:       _EngineService_Schemas_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "openetl/engine/v1/engine.proto",

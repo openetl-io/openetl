@@ -113,6 +113,8 @@ type worker struct {
 	// The commits asked for, by commitKey: waiting for Committed, or
 	// answered as committed.
 	commits map[string]*workerCommit
+	// Calls not yet answered, and every call's ID taken.
+	calls, called map[uint64]bool
 	// Requests not yet taken.
 	queue []*attemptv1.AttendResponse
 	over  bool
@@ -136,6 +138,7 @@ func start(st workerStream, hangUp func(), t Target, opts Options) *worker {
 		sent: make(chan error, 1), stopSend: make(chan struct{}), taken: make(chan struct{}),
 		requests: make(chan *attemptv1.AttendResponse), queued: make(chan struct{}, 1), finished: make(chan struct{}),
 		writerLanes: map[uint32]bool{}, commits: map[string]*workerCommit{}, done: make(chan struct{}),
+		calls: map[uint64]bool{}, called: map[uint64]bool{},
 	}
 	w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Join{Join: &attemptv1.Join{
 		Attempt: t.Attempt, Generation: t.Generation, Worker: ints.Uint32(t.Worker), Address: t.Exchange,
@@ -273,6 +276,19 @@ func (w *worker) take(msg *attemptv1.AttendResponse) error {
 		}
 	case *attemptv1.AttendResponse_Commit:
 		return w.askedToCommit(msg, x.Commit)
+	case *attemptv1.AttendResponse_Call:
+		id := x.Call.GetId()
+		switch {
+		case x.Call.GetCall() == nil:
+			return outOfProtocol("the coordinator sent an empty call")
+		case w.called[id]:
+			return outOfProtocol("the coordinator sent call %d again", id)
+		}
+		w.called[id], w.calls[id] = true, true
+	case *attemptv1.AttendResponse_Schema:
+		if w.assignment == nil {
+			return outOfProtocol("the coordinator sent a schema before the assignment")
+		}
 	case *attemptv1.AttendResponse_Barrier:
 		e := x.Barrier.GetEpoch()
 		switch {
@@ -474,6 +490,50 @@ func (w *worker) Committed(c *attemptv1.Committed) error {
 		pending.answer = c
 	}
 	w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Committed{Committed: c}})
+	return nil
+}
+
+func (w *worker) Answer(a *attemptv1.Answer) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.over {
+		return w.overErrLocked()
+	}
+	if !w.calls[a.GetId()] {
+		return fmt.Errorf("attempt: no call %d waits for an answer", a.GetId())
+	}
+	delete(w.calls, a.GetId())
+	w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Answer{Answer: a}})
+	return nil
+}
+
+func (w *worker) Signal(s *attemptv1.Signal) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch {
+	case w.over:
+		return w.overErrLocked()
+	case w.assignment == nil:
+		return errors.New("attempt: a signal before the assignment")
+	case s.GetSignal() == nil:
+		return errors.New("attempt: an empty signal")
+	case s.GetAfter() < w.assignment.GetFirstEpoch()-1 || s.GetAfter() > w.requested:
+		return fmt.Errorf("attempt: a signal after barrier %d, with barrier %d requested", s.GetAfter(), w.requested)
+	}
+	w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Signal{Signal: s}})
+	return nil
+}
+
+func (w *worker) Propose(p *attemptv1.SchemaProposal) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch {
+	case w.over:
+		return w.overErrLocked()
+	case w.assignment == nil:
+		return errors.New("attempt: a schema proposal before the assignment")
+	}
+	w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_SchemaProposal{SchemaProposal: p}})
 	return nil
 }
 

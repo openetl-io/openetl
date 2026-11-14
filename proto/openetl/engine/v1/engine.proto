@@ -22,6 +22,9 @@ service EngineService {
   rpc Commit(CommitRequest) returns (CommitResponse);
   // Ends the job without draining, and the process exits.
   rpc Stop(StopRequest) returns (StopResponse);
+  // A job with remote_schemas: the runner opens it once, after StartJob and
+  // before it connects the edges.
+  rpc Schemas(stream SchemasRequest) returns (stream SchemasResponse);
 }
 
 message StartJobRequest {
@@ -72,6 +75,17 @@ message StartJobRequest {
   repeated StreamPlan outputs = 19;
   // Unset: none, and outputs is empty.
   Transform transform = 20;
+  // Several engines run the attempt, and each stream's schema has one owner
+  // outside them, reached through Schemas. A lane that changes a stream's
+  // schema proposes it from the owner's version it had, and goes on with
+  // it once the owner takes it; otherwise it shapes its batch again by the
+  // owner's. Every stream starts at the owner's version 0, its restored
+  // schema. Not with a transform or holds.
+  bool remote_schemas = 21;
+  // The attempt's index of the engine's first lane, where several engines
+  // run the attempt: a lane's quarantine files are named by its index in
+  // the attempt.
+  uint32 first_lane = 22;
 }
 
 // Transform is SQL between the normalizer's two halves. Its statements read
@@ -501,3 +515,25 @@ message CommitResponse {}
 message StopRequest {}
 
 message StopResponse {}
+
+// SchemasRequest is the owner's schema of one of the job's streams: in
+// answer to a proposal of the engine's, taken or not, or another engine's
+// change. Versions of a stream come in order, and the engine shapes by the
+// newest.
+message SchemasRequest {
+  // An index into StartJobRequest.streams.
+  uint32 stream = 1;
+  uint64 version = 2;
+  // An Arrow IPC stream holding only the schema, as EpochReady.schemas.
+  bytes arrow_schema = 3;
+}
+
+// SchemasResponse proposes a lane's change to a stream's schema, made from
+// the owner's version base. The engine sends one proposal of a stream at a
+// time, and waits for a newer version.
+message SchemasResponse {
+  uint32 stream = 1;
+  uint64 base = 2;
+  // As SchemasRequest's.
+  bytes arrow_schema = 3;
+}

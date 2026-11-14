@@ -92,6 +92,15 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	if err != nil {
 		return p.explain(ctx, err)
 	}
+	// Opened before the edges; the job's group relays it, and ends it.
+	var schemas enginev1.EngineService_SchemasClient
+	schemasCtx, schemasCancel := context.WithCancel(ctx)
+	defer schemasCancel()
+	if plan.SchemaOwner != nil {
+		if schemas, err = p.client.Schemas(schemasCtx); err != nil {
+			return p.explain(ctx, err)
+		}
+	}
 	engineSink := plan.Sink != runner.SinkPlan{}
 	onReady := func(r *enginev1.EpochReady) error {
 		ready, err := readyOf(r, plan)
@@ -174,7 +183,20 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 			return nil
 		}
 	})
+	// Set before g.Wait returns: the relay failed, which ends the job, and
+	// what the engine says of that end isn't why.
+	var relayErr error
+	if schemas != nil {
+		g.Go(func() error {
+			defer schemasCancel()
+			relayErr = relaySchemas(gctx, schemas, plan.SchemaOwner, names, evDone)
+			return relayErr
+		})
+	}
 	dataErr := g.Wait()
+	if relayErr != nil {
+		return relayErr
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -197,6 +219,75 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		return xerr
 	}
 	return dataErr
+}
+
+// relaySchemas relays the engine's proposals on st to owner, and owner's
+// versions to the engine, by the job's stream index. It returns nil once
+// ctx ends or the engine's job does (done), whatever the call does then,
+// and otherwise why the relay failed, which fails the job. The caller ends
+// st once it returns.
+func relaySchemas(ctx context.Context, st enginev1.EngineService_SchemasClient, owner runner.SchemaOwner, names []string, done <-chan struct{}) error {
+	index := make(map[string]uint32, len(names))
+	for i, n := range names {
+		index[n] = ints.Uint32(i)
+	}
+	failed := make(chan error, 2)
+	go func() {
+		for {
+			p, err := st.Recv()
+			switch {
+			case errors.Is(err, io.EOF):
+				// The engine's job ended, and with it its proposals.
+				return
+			case err != nil:
+				failed <- errs.Wrap(errs.Internal, err, "engineclient: the engine's schemas call broke")
+				return
+			case int(p.GetStream()) >= len(names):
+				failed <- errs.New(errs.Internal, "engineclient: the engine proposed a schema of stream %d, of %d", p.GetStream(), len(names))
+				return
+			}
+			if err := owner.Propose(names[p.GetStream()], p.GetBase(), p.GetArrowSchema()); err != nil {
+				failed <- fmt.Errorf("engineclient: proposing a schema of %s: %w", names[p.GetStream()], err)
+				return
+			}
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case u := <-owner.Updates():
+				i, ok := index[u.Stream]
+				if !ok {
+					continue
+				}
+				if err := st.Send(&enginev1.SchemasRequest{Stream: i, Version: u.Version, ArrowSchema: u.Schema}); err != nil {
+					failed <- errs.Wrap(errs.Internal, err, "engineclient: the engine's schemas call broke")
+					return
+				}
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			}
+		}
+	}()
+	select {
+	case err := <-failed:
+		// Ending the job, or ctx, ends the call: that isn't why.
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 // explain turns a failed control call into the engine's error, or its exit.
@@ -232,6 +323,8 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 		Lanes:              ints.Uint32(plan.Lanes),
 		WriterLanes:        ints.Uint32(plan.WriterLanes),
 		KeyGroups:          ints.Uint32(plan.KeyGroups),
+		RemoteSchemas:      plan.SchemaOwner != nil,
+		FirstLane:          ints.Uint32(plan.FirstLane),
 	}
 	sql := plan.SQL != nil
 	for i, s := range plan.Streams {

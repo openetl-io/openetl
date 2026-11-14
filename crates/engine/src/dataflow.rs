@@ -163,15 +163,20 @@ struct At {
 /// A stream's one schema, whatever its lanes. Each lane shapes
 /// with a copy of the owner's shaper. A lane that changes its copy publishes
 /// it if nobody has since it copied; otherwise it copies the latest and shapes
-/// its batch again.
+/// its batch again. Where the plan's schemas are remote, the owner follows
+/// the remote owner's newest version, and a lane's change to the schema is
+/// proposed there.
 struct Owner {
     version: AtomicU64,
+    /// The remote owner's version the shaper is; 0 where there's none.
+    remote_version: AtomicU64,
     state: Mutex<OwnerState>,
 }
 
 struct OwnerState {
     shaper: Shaper,
     version: u64,
+    remote_version: u64,
     /// By epoch, until it's ready.
     crossings: BTreeMap<u64, Crossing>,
     /// Lanes that ended the stream.
@@ -190,21 +195,27 @@ struct Crossing {
     at: Option<At>,
 }
 
+/// Stream s's shaper, restored from restored.
+fn shaper(plan: &Plan, s: usize, restored: Option<SchemaRef>) -> Result<Shaper, JobError> {
+    let bad = |e: NormalizeError| JobError::config(format!("stream {}: {e}", plan.streams[s]));
+    Ok(Shaper::new(
+        plan.naming,
+        plan.tables[s].clone(),
+        plan.identities[s].clone(),
+        plan.policy,
+        restored,
+        plan.declared[s].clone(),
+        plan.types[s],
+    )
+    .map_err(bad)?
+    .with_soft_deletes(plan.soft_deletes[s])
+    .with_changelog(plan.changelog[s]))
+}
+
 impl Owner {
     fn new(plan: &Plan, s: usize) -> Result<Self, JobError> {
         let bad = |e: NormalizeError| JobError::config(format!("stream {}: {e}", plan.streams[s]));
-        let mut shaper = Shaper::new(
-            plan.naming,
-            plan.tables[s].clone(),
-            plan.identities[s].clone(),
-            plan.policy,
-            plan.restored[s].clone(),
-            plan.declared[s].clone(),
-            plan.types[s],
-        )
-        .map_err(bad)?
-        .with_soft_deletes(plan.soft_deletes[s])
-        .with_changelog(plan.changelog[s]);
+        let mut shaper = shaper(plan, s, plan.restored[s].clone())?;
         if let Some(h) = &plan.holds[s] {
             shaper = shaper.with_holds(h.clone()).map_err(bad)?;
         }
@@ -218,9 +229,11 @@ impl Owner {
         shaper.take_changed();
         Ok(Self {
             version: AtomicU64::new(0),
+            remote_version: AtomicU64::new(0),
             state: Mutex::new(OwnerState {
                 shaper,
                 version: 0,
+                remote_version: 0,
                 crossings: BTreeMap::new(),
                 ended: 0,
                 at_end: At::default(),
@@ -230,6 +243,35 @@ impl Owner {
 
     fn lock(&self) -> MutexGuard<'_, OwnerState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Takes the remote owner's newest schema of stream s, if the plan's
+    /// schemas are remote and it's newer than the shaper's: lanes then shape
+    /// by it. The schema policy applies as it did.
+    fn follow(&self, plan: &Plan, s: usize) -> Result<(), JobError> {
+        let Some(r) = plan.remote.as_ref().and_then(|r| r.stream(s)) else {
+            return Ok(());
+        };
+        r.check()?;
+        if r.newest() <= self.remote_version.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut o = self.lock();
+        let (v, schema) = r.latest();
+        if v <= o.remote_version {
+            return Ok(());
+        }
+        let mut sh = shaper(plan, s, schema)?;
+        if !o.shaper.sealed() {
+            sh.unseal();
+        }
+        sh.take_changed();
+        o.shaper = sh;
+        o.remote_version = v;
+        self.remote_version.store(v, Ordering::Release);
+        o.version += 1;
+        self.version.store(o.version, Ordering::Release);
+        Ok(())
     }
 
     /// A lane passed the stream's barrier n. The last to pass it fixes the
@@ -665,6 +707,70 @@ impl LaneStream {
             return out;
         }
     }
+
+    /// As shape, where the plan's schemas may be remote: a change to the
+    /// schema is proposed to the remote owner from the version the owner
+    /// follows, and once a newer version comes, the batch is shaped again by
+    /// it. So is a change to what the schema's metadata knows of the
+    /// values, such as a column that held integers past ±2^53, which a later
+    /// float in it, here or in another engine, turns to text. A change that
+    /// leaves the schema as it is is published here.
+    async fn shape_own(
+        &mut self,
+        plan: &Plan,
+        owner: &Owner,
+        f: impl Fn(&mut Shaper) -> Result<Typed, NormalizeError>,
+    ) -> Result<Shaped, JobError> {
+        let name = &plan.streams[self.stream];
+        let Some(remote) = plan.remote.as_ref().and_then(|r| r.stream(self.stream)) else {
+            return self.shape(owner, f).map_err(|e| shape_error(name, e));
+        };
+        loop {
+            owner.follow(plan, self.stream)?;
+            self.catch_up(owner);
+            let before = self.shaper.schema();
+            let out = f(&mut self.shaper).and_then(|t| self.shaper.shape(t));
+            let changed = self.shaper.take_changed();
+            if out.is_err() {
+                // The owner may have taken a version since follow, which the
+                // batch fits: it's shaped again by that.
+                let behind = remote.newest() > owner.remote_version.load(Ordering::Acquire);
+                if owner.version.load(Ordering::Acquire) == self.version && !behind {
+                    return out.map_err(|e| shape_error(name, e));
+                }
+                continue;
+            }
+            let schema = self.shaper.schema();
+            // The shaper gives a new schema only when something in it changed.
+            let renewed = match (&before, &schema) {
+                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                (a, b) => a.is_some() != b.is_some(),
+            };
+            if !changed && !renewed {
+                return out.map_err(|e| shape_error(name, e));
+            }
+            let base = {
+                let mut o = owner.lock();
+                if o.version != self.version {
+                    continue;
+                }
+                if o.shaper.schema() == schema {
+                    if changed {
+                        o.version += 1;
+                        self.version = o.version;
+                        o.shaper = self.shaper.fork();
+                        owner.version.store(o.version, Ordering::Release);
+                    }
+                    return out.map_err(|e| shape_error(name, e));
+                }
+                o.remote_version
+            };
+            drop(out);
+            if let Some(schema) = schema {
+                remote.propose(base, &schema).await?;
+            }
+        }
+    }
 }
 
 /// One lane's copy of a stream it reads.
@@ -866,13 +972,12 @@ where
                 match &mut li.kind {
                     Kind::Own(ls) => {
                         let owner = &flow.owners[input];
-                        let n = span
-                            .in_scope(|| {
-                                ls.shape(owner, |sh| {
-                                    sh.type_rows(rows.rows.iter().map(Vec::as_slice))
-                                })
+                        let n = ls
+                            .shape_own(plan, owner, |sh| {
+                                sh.type_rows(rows.rows.iter().map(Vec::as_slice))
                             })
-                            .map_err(|e| shape_error(name, e))?;
+                            .instrument(span)
+                            .await?;
                         hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
                         shaped(&lane, ls, n, c).await?;
                     }
@@ -902,9 +1007,10 @@ where
                 match &mut li.kind {
                     Kind::Own(ls) => {
                         let owner = &flow.owners[input];
-                        let n = span
-                            .in_scope(|| ls.shape(owner, |sh| sh.type_batch(&batch)))
-                            .map_err(|e| shape_error(name, e))?;
+                        let n = ls
+                            .shape_own(plan, owner, |sh| sh.type_batch(&batch))
+                            .instrument(span)
+                            .await?;
                         hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
                         shaped(&lane, ls, n, c).await?;
                     }
@@ -1068,7 +1174,13 @@ async fn quarantine_file(
         return Ok(None);
     };
     let url = q
-        .put(epoch.generation, epoch.n, stream, lane.lane, lines)
+        .put(
+            epoch.generation,
+            epoch.n,
+            stream,
+            lane.flow.plan.first_lane + lane.lane,
+            lines,
+        )
         .await?;
     Ok(Some(QuarantineFile {
         stream: stream.to_owned(),
@@ -2461,6 +2573,291 @@ mod tests {
                 owner.version.load(Ordering::Acquire)
             );
         }
+    }
+
+    /// The next batch of outbound stream index s, its columns' names.
+    async fn next_columns(r: &mut BufReader<DuplexStream>, s: u32) -> Vec<String> {
+        loop {
+            let f = frame::read(r).await.unwrap().unwrap();
+            if f.kind == FrameKind::Batch && f.stream == s {
+                let b = ipc::decode_batch(f.payload).unwrap();
+                return b
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .filter(|n| !n.starts_with("_openetl"))
+                    .collect();
+            }
+        }
+    }
+
+    /// A job on streams a and b whose schemas a test owns, as the owner
+    /// outside the engine.
+    struct RemoteHarness {
+        plan: Arc<Plan>,
+        remote: Arc<crate::remote::Remote>,
+        proposals: crate::remote::Proposals,
+        w: DuplexStream,
+        out: BufReader<DuplexStream>,
+        job: tokio::task::JoinHandle<Result<(), JobError>>,
+    }
+
+    fn start_remote() -> RemoteHarness {
+        let mut req = request(&["a", "b"]);
+        req.remote_schemas = true;
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let remote = plan.remote.clone().unwrap();
+        let proposals = remote.take_proposals().unwrap();
+        let (to_engine, engine_in) = duplex(1 << 16);
+        let (engine_out, from_engine) = duplex(1 << 16);
+        let (tx, _events) = mpsc::channel(64);
+        let job = tokio::spawn(run(
+            plan.clone(),
+            vec![BufReader::new(engine_in)],
+            vec![engine_out],
+            tx,
+        ));
+        RemoteHarness {
+            plan,
+            remote,
+            proposals,
+            w: to_engine,
+            out: BufReader::new(from_engine),
+            job,
+        }
+    }
+
+    /// Stream a's version, as the owner sends it.
+    fn take(version: u64, schema: Vec<u8>) -> openetl_proto::engine::v1::SchemasRequest {
+        openetl_proto::engine::v1::SchemasRequest {
+            stream: 0,
+            version,
+            arrow_schema: schema,
+        }
+    }
+
+    /// The next batch of outbound stream index s, its column's type.
+    async fn column_type(r: &mut BufReader<DuplexStream>, s: u32, name: &str) -> DataType {
+        loop {
+            let f = frame::read(r).await.unwrap().unwrap();
+            if f.kind == FrameKind::Batch && f.stream == s {
+                let b = ipc::decode_batch(f.payload).unwrap();
+                return b
+                    .schema()
+                    .field_with_name(name)
+                    .unwrap()
+                    .data_type()
+                    .clone();
+            }
+        }
+    }
+
+    // A column that held integers past ±2^53 changes no type, but the owner
+    // learns of it, so a float in it from another engine makes it text, as
+    // in one engine.
+    #[tokio::test]
+    async fn a_remote_owner_learns_of_big_integers() {
+        let RemoteHarness {
+            plan,
+            remote,
+            mut proposals,
+            mut w,
+            mut out,
+            job,
+        } = start_remote();
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        remote.update(&take(1, p.arrow_schema)).unwrap();
+        assert_eq!(column_type(&mut out, 1, "x").await, DataType::Int64);
+
+        put(
+            &mut w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"x": 9007199254740993}"#]),
+        )
+        .await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        assert_eq!(p.base, 1);
+        let big = ipc::decode_schema(&p.arrow_schema).unwrap();
+        assert_eq!(
+            big.field_with_name("x").unwrap().data_type(),
+            &DataType::Int64
+        );
+        assert_eq!(
+            big.metadata()
+                .get(openetl_normalize::BIG_INTS_KEY)
+                .map(String::as_str),
+            Some(r#"["x"]"#)
+        );
+        remote.update(&take(2, p.arrow_schema)).unwrap();
+        assert_eq!(column_type(&mut out, 1, "x").await, DataType::Int64);
+
+        // Another engine, at version 2, gets a float in x.
+        let mut other = shaper(&plan, 0, Some(big)).unwrap();
+        other.rows([br#"{"x": 1.5}"#.as_slice()]).unwrap();
+        let text = other.schema().unwrap();
+        assert_eq!(
+            text.field_with_name("x").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        remote
+            .update(&take(3, ipc::encode_schema(&text).unwrap()))
+            .unwrap();
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 2}"#])).await;
+        assert_eq!(column_type(&mut out, 1, "x").await, DataType::Utf8);
+        assert!(proposals.try_recv().is_err());
+
+        for s in 0..2 {
+            put(&mut w, FrameKind::EndOfStream, s, vec![]).await;
+        }
+        w.shutdown().await.unwrap();
+        drain(&mut out).await;
+        job.await.unwrap().unwrap();
+    }
+
+    // A schemas call that fails releases the lane waiting for its proposal's
+    // answer, which fails the job with why.
+    #[tokio::test]
+    async fn a_failed_schemas_call_fails_the_job() {
+        let RemoteHarness {
+            remote,
+            mut proposals,
+            mut w,
+            mut out,
+            job,
+            ..
+        } = start_remote();
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        proposals.recv().await.unwrap().unwrap();
+        remote.fail(JobError::internal("the owner is gone"));
+        let err = tokio::time::timeout(Duration::from_secs(10), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.message, "the owner is gone");
+        drop(w);
+        drain(&mut out).await;
+    }
+
+    // Under block, a batch with a new column fails against the version a
+    // lane followed, but not when the owner took a version with the column
+    // after that: the batch is shaped again by it.
+    #[tokio::test]
+    async fn a_batch_is_shaped_by_a_version_that_comes_while_it_is_shaped() {
+        use openetl_proto::engine::v1::SchemaPolicy;
+        use std::sync::atomic::AtomicBool;
+
+        let mut req = request(&["a", "b"]);
+        req.remote_schemas = true;
+        req.schema_policy = SchemaPolicy::Block as i32;
+        // Version 0, restored: a has x.
+        let fresh = Plan::from_request(req.clone()).unwrap();
+        let mut first = shaper(&fresh, 0, None).unwrap();
+        first.rows([br#"{"x": 1}"#.as_slice()]).unwrap();
+        let v0 = first.schema().unwrap();
+        req.streams[0].restored_schema = ipc::encode_schema(&v0).unwrap();
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let remote = plan.remote.clone().unwrap();
+        let mut proposals = remote.take_proposals().unwrap();
+        // Version 1, another engine's, from before its stream was sealed:
+        // a has x and y.
+        let mut other = shaper(&plan, 0, Some(v0)).unwrap();
+        other.unseal();
+        other.rows([br#"{"x": 2, "y": 3}"#.as_slice()]).unwrap();
+        let v1 = ipc::encode_schema(&other.schema().unwrap()).unwrap();
+
+        let owner = Owner::new(&plan, 0).unwrap();
+        let mut ls = {
+            let o = owner.lock();
+            LaneStream {
+                stream: 0,
+                shaper: o.shaper.fork(),
+                version: o.version,
+                quarantined: (Vec::new(), 0),
+                cells: BTreeMap::new(),
+                replay: None,
+            }
+        };
+        let rows = [br#"{"x": 4, "y": 5}"#.as_slice()];
+        // Without version 1, y fails the batch.
+        let mut alone = ls.shaper.fork();
+        assert!(alone.rows(rows).is_err());
+        // Version 1 lands after the lane followed the owner, as it types the
+        // batch.
+        let landed = AtomicBool::new(false);
+        let shaped = ls
+            .shape_own(&plan, &owner, |sh| {
+                if !landed.swap(true, Ordering::SeqCst) {
+                    remote.update(&take(1, v1.clone())).unwrap();
+                }
+                sh.type_rows(rows)
+            })
+            .await
+            .unwrap();
+        assert!(shaped.batch.schema().field_with_name("y").is_ok());
+        assert!(proposals.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_remote_owner_decides_a_streams_schema() {
+        let RemoteHarness {
+            plan,
+            remote,
+            mut proposals,
+            mut w,
+            mut out,
+            job,
+        } = start_remote();
+
+        // The lane's change is proposed from version 0, and taken.
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        assert_eq!((p.stream, p.base), (0, 0));
+        remote.update(&take(1, p.arrow_schema.clone())).unwrap();
+        assert_eq!(next_columns(&mut out, 1).await, ["x"]);
+        let mut owner =
+            shaper(&plan, 0, Some(ipc::decode_schema(&p.arrow_schema).unwrap())).unwrap();
+
+        // Another engine adds z: the lane shapes by it, proposing nothing.
+        owner.rows([br#"{"x": 2, "z": "q"}"#.as_slice()]).unwrap();
+        let v2 = ipc::encode_schema(&owner.schema().unwrap()).unwrap();
+        remote.update(&take(2, v2)).unwrap();
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 3}"#])).await;
+        assert_eq!(next_columns(&mut out, 1).await, ["x", "z"]);
+
+        // The lane adds w from version 2, as another engine adds v, which the
+        // owner takes first: the lane proposes w again from version 3.
+        put(
+            &mut w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"x": 4, "w": true}"#]),
+        )
+        .await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        assert_eq!(p.base, 2);
+        owner.rows([br#"{"x": 5, "v": 1.5}"#.as_slice()]).unwrap();
+        remote
+            .update(&take(
+                3,
+                ipc::encode_schema(&owner.schema().unwrap()).unwrap(),
+            ))
+            .unwrap();
+        let p = proposals.recv().await.unwrap().unwrap();
+        assert_eq!(p.base, 3);
+        remote.update(&take(4, p.arrow_schema)).unwrap();
+        assert_eq!(next_columns(&mut out, 1).await, ["x", "z", "v", "w"]);
+        assert!(proposals.try_recv().is_err());
+
+        for s in 0..2 {
+            put(&mut w, FrameKind::EndOfStream, s, vec![]).await;
+        }
+        w.shutdown().await.unwrap();
+        drain(&mut out).await;
+        job.await.unwrap().unwrap();
     }
 
     #[tokio::test]

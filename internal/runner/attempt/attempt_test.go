@@ -88,7 +88,7 @@ func TestAnEpochFromBarrierToPositions(t *testing.T) {
 			t.Fatalf("a quiet attempt ended: %v, %v, %v", c.Err(), ws[0].Err(), ws[1].Err())
 		}
 
-		if err := c.Barrier(testFirst); err != nil {
+		if err := c.Barrier(testFirst, 0); err != nil {
 			t.Fatal(err)
 		}
 		for i, w := range ws {
@@ -186,7 +186,7 @@ func TestAnEpochFromBarrierToPositions(t *testing.T) {
 			}
 			_ = w.Close()
 		}
-		if err := c.Barrier(testFirst + 1); !errors.Is(err, ErrOver) {
+		if err := c.Barrier(testFirst+1, 0); !errors.Is(err, ErrOver) {
 			t.Fatalf("a barrier after the end: %v", err)
 		}
 	})
@@ -196,7 +196,7 @@ func TestOneWorkerAppliesEveryWorkersCommittables(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
 		c, ws := start2(t, Options{})
-		if err := c.Barrier(testFirst); err != nil {
+		if err := c.Barrier(testFirst, 0); err != nil {
 			t.Fatal(err)
 		}
 		var sent []*attemptv1.Share
@@ -426,7 +426,7 @@ func TestAWorkerLostMidEpochFailsTheAttempt(t *testing.T) {
 			}
 			r1.next(t)
 			request(t, w0)
-			if err := c.Barrier(testFirst); err != nil {
+			if err := c.Barrier(testFirst, 0); err != nil {
 				t.Fatal(err)
 			}
 			request(t, w0)
@@ -469,7 +469,7 @@ func TestAWorkerLostMidEpochFailsTheAttempt(t *testing.T) {
 	t.Run("call broken", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			c, ws := start2(t, Options{})
-			if err := c.Barrier(testFirst); err != nil {
+			if err := c.Barrier(testFirst, 0); err != nil {
 				t.Fatal(err)
 			}
 			ws[1].hangUp()
@@ -486,7 +486,7 @@ func TestAWorkerLostMidEpochFailsTheAttempt(t *testing.T) {
 	t.Run("before its commit", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			c, ws := start2(t, Options{})
-			if err := c.Barrier(testFirst); err != nil {
+			if err := c.Barrier(testFirst, 0); err != nil {
 				t.Fatal(err)
 			}
 			for i, w := range ws {
@@ -552,7 +552,7 @@ func TestAShareOutOfTheProtocolFailsTheAttempt(t *testing.T) {
 					t.Fatal(err)
 				}
 				r.next(t)
-				if err := c.Barrier(testFirst); err != nil {
+				if err := c.Barrier(testFirst, 0); err != nil {
 					t.Fatal(err)
 				}
 				r.next(t)
@@ -580,7 +580,7 @@ func TestADuplicateShareFailsTheAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.next(t)
-		if err := c.Barrier(testFirst); err != nil {
+		if err := c.Barrier(testFirst, 0); err != nil {
 			t.Fatal(err)
 		}
 		r.next(t)
@@ -861,7 +861,7 @@ func TestTheCoordinatorKeepsTheProtocol(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
 		c := coordinatorFor(t, testAttemptOf(2), Options{})
-		if err := c.Barrier(testFirst); err == nil {
+		if err := c.Barrier(testFirst, 0); err == nil {
 			t.Fatal("a barrier before the assignment")
 		}
 		bad := layout(2)
@@ -880,14 +880,14 @@ func TestTheCoordinatorKeepsTheProtocol(t *testing.T) {
 			request(t, w)
 		}
 		for _, n := range []uint64{testFirst - 1, testFirst + 1} {
-			if err := c.Barrier(n); err == nil {
+			if err := c.Barrier(n, 0); err == nil {
 				t.Fatalf("barrier %d first", n)
 			}
 		}
 		if _, err := c.Shares(ctx, testFirst); err == nil {
 			t.Fatal("shares before their barrier")
 		}
-		if err := c.Barrier(testFirst); err != nil {
+		if err := c.Barrier(testFirst, 0); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := c.Shares(ctx, testFirst+1); err == nil {
@@ -1002,7 +1002,7 @@ func TestACommitAskedAgainAfterItsPositions(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
 		c, ws := start2(t, Options{})
-		if err := c.Barrier(testFirst); err != nil {
+		if err := c.Barrier(testFirst, 0); err != nil {
 			t.Fatal(err)
 		}
 		for i, w := range ws {

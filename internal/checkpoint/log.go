@@ -295,6 +295,9 @@ type Record struct {
 	// What the destination's writer lanes staged for the epoch, one each,
 	// which commit and recovery get. Records from before them hold one.
 	Committables [][]byte `json:"committables"`
+	// What each committable holds, by its index, in the layout of the
+	// attempt that wrote it; nil from an attempt without workers.
+	Coverage []Coverage `json:"coverage,omitempty"`
 	// The files the dataflow staged for a destination that loads them, by
 	// the destination's stream.
 	Files     map[string][]StagedFile `json:"files,omitempty"`
@@ -336,6 +339,24 @@ type FlinkCheckpoint struct {
 	Savepoint string `json:"savepoint,omitempty"`
 	// The path Job was deployed from; empty for none.
 	From string `json:"from,omitempty"`
+}
+
+// Coverage is what one committable holds: rows of its splits.
+type Coverage struct {
+	Splits []CoveredSplit `json:"splits,omitempty"`
+}
+
+// CoveredSplit is a split whose rows in KeyGroups a committable holds.
+type CoveredSplit struct {
+	Stream string `json:"stream"`
+	ID     string `json:"id,omitempty"`
+	// Nil: all of them.
+	KeyGroups *KeyGroupRange `json:"key_groups,omitempty"`
+}
+
+// SplitRef names one of a stream's splits.
+type SplitRef struct {
+	Stream, ID string
 }
 
 // StagedFile is one of an epoch's staged Parquet files, its path below the
