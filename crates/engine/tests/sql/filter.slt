@@ -45,9 +45,6 @@ SELECT id FROM orders WHERE region IS NULL
 ----
 3
 
-# Ignored in ours: sqlparser 0.62 takes all that follows IS NOT DISTINCT
-# FROM, the OR too, as its right side.
-skipif openetl
 query I
 SELECT id FROM orders WHERE region IS NOT DISTINCT FROM NULL OR qty = 0
 ----
@@ -59,6 +56,181 @@ SELECT id FROM orders WHERE (region IS NOT DISTINCT FROM NULL) OR qty = 0
 ----
 3
 4
+
+# Precedence, as in Postgres and DuckDB: OR, then AND, then NOT, then IS,
+# then comparisons, then BETWEEN, IN, LIKE and SIMILAR TO, then the other
+# operators. The right side of IS DISTINCT FROM ends where an operator that
+# binds as loosely as IS starts.
+query I
+SELECT id FROM orders WHERE region IS DISTINCT FROM 'eu' AND paid
+----
+4
+
+query I
+SELECT id FROM orders WHERE id = 3 AND region IS DISTINCT FROM 'us' OR id = 1 AND region IS DISTINCT FROM 'eu' AND id > 0
+----
+3
+
+query I
+SELECT id FROM orders WHERE paid IS DISTINCT FROM qty > 2
+----
+4
+5
+
+query I
+SELECT id FROM orders WHERE qty > 2 IS DISTINCT FROM paid
+----
+4
+5
+
+query I
+SELECT id FROM orders WHERE (region = 'eu') IS DISTINCT FROM (qty = 0 OR qty = 1)
+----
+1
+2
+4
+
+query I
+SELECT id FROM orders WHERE NOT region IS DISTINCT FROM 'eu' OR qty = 1
+----
+1
+2
+
+query I
+SELECT id FROM orders WHERE qty IS DISTINCT FROM 1 + 2 AND paid IS NOT NULL
+----
+2
+4
+5
+
+query I
+SELECT id FROM orders WHERE paid IS NOT DISTINCT FROM note LIKE 'gift%' OR qty = 1
+----
+1
+2
+
+query I
+SELECT id FROM orders WHERE paid IS DISTINCT FROM qty BETWEEN 1 AND 3 AND region IS NOT NULL
+----
+2
+4
+
+query I
+SELECT id FROM orders WHERE region IS NULL OR qty = 0
+----
+3
+4
+
+query I
+SELECT id FROM orders WHERE NOT region IS NULL AND qty > 2
+----
+1
+5
+
+query I
+SELECT id FROM orders WHERE NOT paid IS TRUE
+----
+2
+3
+5
+
+query I
+SELECT id FROM orders WHERE amount > 50 IS NOT FALSE OR qty = 0
+----
+1
+3
+4
+5
+
+query I
+SELECT id FROM orders WHERE paid IS UNKNOWN OR qty = 1
+----
+2
+3
+
+query I
+SELECT id FROM orders WHERE qty BETWEEN 1 AND 3 AND paid
+----
+1
+
+query I
+SELECT id FROM orders WHERE qty NOT BETWEEN 1 AND 3 OR region = 'us'
+----
+2
+4
+5
+
+query I
+SELECT id FROM orders WHERE qty BETWEEN 0 AND 1 = paid
+----
+4
+5
+
+query I
+SELECT id FROM orders WHERE qty BETWEEN 1 AND 1 + 2
+----
+1
+2
+
+query I
+SELECT id FROM orders WHERE region IN ('eu', 'us') = paid
+----
+1
+5
+
+query I
+SELECT id FROM orders WHERE region NOT IN ('eu') AND qty > 0
+----
+2
+5
+
+query I
+SELECT id FROM orders WHERE note LIKE 'gift%' = paid
+----
+1
+
+query I
+SELECT id FROM orders WHERE paid = note LIKE 'gift%'
+----
+1
+
+query I
+SELECT id FROM orders WHERE note LIKE 'gift' || '%'
+----
+1
+5
+
+query I
+SELECT id FROM orders WHERE note NOT LIKE 'gift%' OR qty = 3
+----
+1
+3
+4
+
+query I
+SELECT id FROM orders WHERE note SIMILAR TO 'gift.*' OR qty = 0
+----
+1
+4
+5
+
+query IT
+SELECT id, CASE WHEN region IS DISTINCT FROM 'eu' AND paid THEN 'y' ELSE 'n' END AS c FROM orders
+----
+1 n
+2 n
+3 n
+4 y
+5 n
+
+query IT
+SELECT id, coalesce(region IS NOT DISTINCT FROM 'eu' OR qty = 0, false) AS c FROM orders
+----
+1 true
+2 false
+3 false
+4 true
+5 false
 
 query I
 SELECT id FROM orders WHERE paid

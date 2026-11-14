@@ -279,7 +279,6 @@ fn constant_arithmetic_that_overflows_is_refused() {
 /// As in Postgres, AND and OR bind looser than IS DISTINCT FROM, whose
 /// side in parentheses stays whole.
 #[test]
-#[ignore = "sqlparser 0.62 takes all that follows IS [NOT] DISTINCT FROM, AND and OR too, as its right side"]
 fn is_distinct_from_binds_tighter_than_and_and_or() {
     let c = customers(fields());
     let rows = batch(&[1, 2, 3], &[None, Some("b"), Some("c")]);
