@@ -350,7 +350,7 @@ func TestIntegerExtremes(t *testing.T) {
 func FuzzNumber(f *testing.F) {
 	for _, s := range []string{"1", "1.0", "1e1", "1.9", "-1", "0x10", "1_0", ".5", "5.", "+.5e1", "1.1e-9223372036854775808",
 		"1e9223372036854775807", "-1e-9223372036854775808", "0.1e2", "-0e-5", "123456789012345678901234567890", "1.0000000000000001",
-		"9e40", "1e-40", ".5_0e1", "._5e1", "0b101", "0o17", "010", "09", "1e400", "10000000000000000000", "_00", "0o+0", "0b-101", "-0o17", "0b1_0", "0o777777777777777777777"} {
+		"9e40", "1e-40", ".5_0e1", "._5e1", "0b101", "0o17", "010", "09", "1e400", "10000000000000000000", "_00", "0o+0", "0b-101", "-0o17", "0b1_0", "0o777777777777777777777", "1" + strings.Repeat("0", 101) + "e-101"} {
 		f.Add(s)
 	}
 	limit := new(big.Int).Exp(big.NewInt(10), big.NewInt(40), nil)
@@ -386,9 +386,11 @@ func FuzzNumber(f *testing.F) {
 			}
 			return
 		}
-		// big.Rat would build 10^e; past 100 only the size is checked.
+		// big.Rat builds 10^e, cheap up to a few thousand. Beyond the
+		// text's length plus 64, a nonzero value is above 10^64 or below 1
+		// whatever its digits, so only that is checked.
 		if _, exp, _ := strings.Cut(strings.ToLower(plain), "e"); exp != "" {
-			if e, err := strconv.Atoi(exp); err != nil || e > 100 || e < -100 {
+			if e, err := strconv.Atoi(exp); err != nil || e > len(plain)+64 || e < -len(plain)-64 {
 				if ok && x.Sign() != 0 && new(big.Int).Abs(x).Cmp(limit) < 0 {
 					t.Errorf("number(%q) = %v, want 0, a fraction or at least 10^40", s, x)
 				}
