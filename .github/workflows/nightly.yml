@@ -171,7 +171,7 @@ jobs:
           engine: ${{ runner.temp }}/engine/openetl-engine
 
   # Flink on the Kubernetes operator, PySpark on Spark on Kubernetes, and
-  # attempts in pods, in kind.
+  # attempts in pods, one pod's and workers', in kind.
   kind:
     needs: [plan, engine]
     if: needs.plan.outputs.kind == 'true'
@@ -238,7 +238,7 @@ jobs:
       - name: Load openetld's image into kind
         run: make kind-load IMAGE=openetl:e2e
       # Pods reach the host at the kind network's gateway.
-      - name: Flink on the operator, with JobManager and runner kills; PySpark after and inside a sync; attempts in pods
+      - name: Flink on the operator, with JobManager and runner kills; PySpark after and inside a sync; attempts in pods and on workers
         run: |
           host=$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' | tr ' ' '\n' | grep -m1 '\.')
           make e2e-kube CONNECTORS_SRC=openetl-connectors SUITE_ENGINE="$RUNNER_TEMP/engine/openetl-engine" KIND_HOST="$host" KIND_IMAGE=openetl:e2e

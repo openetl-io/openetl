@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,6 +74,15 @@ type slot struct {
 	// the process group of each launcher it has run.
 	engines, pods map[string]int
 	groups        []int
+	// For each pipeline, the worker pods of the latest attempt on workers.
+	workers map[string]*workerPods
+}
+
+// workerPods are an attempt's workers' pods: its placement, and each
+// worker's PID, by its index from 0.
+type workerPods struct {
+	attempt string
+	pids    map[int]int
 }
 
 func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, book *faultBook) *chaosPool {
@@ -82,7 +93,8 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 		t.Fatal(err)
 	}
 	for i := range cfg.runners {
-		s := &slot{i: cfg.first + i, pool: p, launcher: i < cfg.launchers, engines: map[string]int{}, pods: map[string]int{}, results: startAPIFilter(t, env.apiURL)}
+		s := &slot{i: cfg.first + i, pool: p, launcher: i < cfg.launchers, engines: map[string]int{}, pods: map[string]int{}, workers: map[string]*workerPods{},
+			results: startAPIFilter(t, env.apiURL)}
 		s.api = startProxy(t, strings.TrimPrefix(s.results.url(), "http://"))
 		if cfg.bucket != "" {
 			s.s3 = startS3Proxy(t, s, target)
@@ -225,6 +237,17 @@ func (s *slot) follow(r *runner, logs *os.File) {
 			s.pods[m[2]] = pid
 			s.mu.Unlock()
 		}
+		if m := workerStarted.FindStringSubmatch(line); m != nil {
+			pid, _ := strconv.Atoi(m[1])
+			n, _ := strconv.Atoi(m[5])
+			placement, pipeline := m[2]+" "+m[4], m[3]
+			s.mu.Lock()
+			if w := s.workers[pipeline]; w == nil || w.attempt != placement {
+				s.workers[pipeline] = &workerPods{attempt: placement, pids: map[int]int{}}
+			}
+			s.workers[pipeline].pids[n] = pid
+			s.mu.Unlock()
+		}
 		if err != nil {
 			s.save(r)
 			return
@@ -293,6 +316,59 @@ func (s *slot) stop(pipeline string, sig syscall.Signal) bool {
 	return true
 }
 
+// workerPIDs are the PIDs of the pipeline's latest workers' pods on this
+// slot's launcher that still run, by their index.
+func (s *slot) workerPIDs(pipeline string) []int {
+	s.mu.Lock()
+	var pids map[int]int
+	if w := s.workers[pipeline]; w != nil {
+		pids = maps.Clone(w.pids)
+	}
+	s.mu.Unlock()
+	var out []int
+	for _, n := range slices.Sorted(maps.Keys(pids)) {
+		if openetld(pids[n]) {
+			out = append(out, pids[n])
+		}
+	}
+	return out
+}
+
+// stopWorker kills a worker's pod of the pipeline, and waits for it to die.
+func (s *slot) stopWorker(pipeline string, pid int) bool {
+	s.pool.book.podDied(pipeline)
+	if syscall.Kill(pid, syscall.SIGKILL) != nil {
+		return false
+	}
+	for deadline := time.Now().Add(2 * time.Second); syscall.Kill(pid, 0) == nil && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	return true
+}
+
+// crashWorker kills the pipeline's worker that commits, worker 0.
+func (s *slot) crashWorker(pipeline string) {
+	s.mu.Lock()
+	pid := 0
+	if w := s.workers[pipeline]; w != nil {
+		pid = w.pids[0]
+	}
+	s.mu.Unlock()
+	if !openetld(pid) || !s.stopWorker(pipeline, pid) {
+		s.pool.book.count(pipeline, "crash with no worker to kill")
+	}
+}
+
+// openetld reports whether pid is an openetld process: the name guards
+// against a reused PID.
+func openetld(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	name, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && filepath.Base(strings.TrimSpace(string(name))) == "openetld"
+}
+
 // crash kills what's writing the pipeline's checkpoints through this slot.
 func (s *slot) crash(pipeline string) {
 	if !s.stop(pipeline, syscall.SIGKILL) {
@@ -319,11 +395,7 @@ func (s *slot) pod(pipeline string) int {
 	s.mu.Lock()
 	pod := s.pods[pipeline]
 	s.mu.Unlock()
-	if pod <= 0 {
-		return 0
-	}
-	name, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pod)).Output()
-	if err != nil || filepath.Base(strings.TrimSpace(string(name))) != "openetld" {
+	if !openetld(pod) {
 		return 0
 	}
 	return pod
@@ -332,6 +404,8 @@ func (s *slot) pod(pipeline string) int {
 var (
 	engineReady = regexp.MustCompile(`msg="engine ready" .*pipeline=(\S+) .* pid=(\d+)`)
 	podStarted  = regexp.MustCompile(`msg="runner running one attempt" .*id=\S+:(\d+) attempt=(?:sync|stream)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
+	// Its PID, attempt, pipeline, placement and index.
+	workerStarted = regexp.MustCompile(`msg="runner running one worker of an attempt" .*id=\S+:(\d+) attempt=((?:sync|stream)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\S*) placement=(\d+) worker=(\d+)`)
 )
 
 // engine is the PID of the engine the slot's runner, or one of its launcher's
@@ -462,12 +536,16 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.slot.pool.book.wrote(p.slot.i, pipeline, kind)
 	}
 	switch {
+	case act.kind == actKillAfter && ok && act.worker:
+		p.slot.crashWorker(pipeline)
 	case act.kind == actKillAfter && ok:
 		p.slot.crash(pipeline)
 		panic(http.ErrAbortHandler)
 	case act.kind == actDrop:
 		_, _ = io.Copy(io.Discard, res.Body)
 		panic(http.ErrAbortHandler)
+	case act.kind == actKillLater && ok && act.worker:
+		time.AfterFunc(act.later, func() { p.slot.crashWorker(pipeline) })
 	case act.kind == actKillLater && ok:
 		time.AfterFunc(act.later, func() { p.slot.crash(pipeline) })
 	}

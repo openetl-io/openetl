@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"maps"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -24,10 +25,23 @@ const (
 
 var crashPoints = []string{crashStaged, crashRecorded, crashHead, crashCommit}
 
+// Crash points of an attempt on workers, where the worker that commits dies
+// rather than the coordinator, which writes the checkpoints.
+const (
+	// HEAD points to the record; the worker hasn't been asked to commit.
+	crashWorkerHead = "worker head"
+	// Up to 300 ms after HEAD's swap: while the worker commits, or just
+	// after.
+	crashWorkerCommit = "worker commit"
+)
+
 // What an object-store proxy does with a request.
 type action struct {
-	kind  int
-	delay time.Duration
+	kind int
+	// A kill is of the worker that commits the attempt's epochs, which
+	// sees the response go to its coordinator, rather than of what wrote.
+	worker bool
+	delay  time.Duration
 	// actKillLater's delay after the response.
 	later  time.Duration
 	status int
@@ -119,6 +133,16 @@ func (b *faultBook) quiet(pipeline string) {
 	}
 }
 
+// counts is what the pipeline's run has injected so far.
+func (b *faultBook) counts(pipeline string) map[string]int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if f := b.pipes[pipeline]; f != nil {
+		return maps.Clone(f.counts)
+	}
+	return nil
+}
+
 func (b *faultBook) count(pipeline, what string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -157,6 +181,10 @@ func (b *faultBook) decide(slot int, pipeline string, kind int) action {
 		return fire(action{kind: actKillAfter})
 	case armed == crashCommit && kind == reqHead && f.recorded[slot]:
 		return fire(action{kind: actKillLater, later: upTo(b.rng, 300*time.Millisecond)})
+	case armed == crashWorkerHead && kind == reqHead && f.recorded[slot]:
+		return fire(action{kind: actKillAfter, worker: true})
+	case armed == crashWorkerCommit && kind == reqHead && f.recorded[slot]:
+		return fire(action{kind: actKillLater, worker: true, later: upTo(b.rng, 300*time.Millisecond)})
 	}
 	if f.noise == 0 || b.rng.Float64() >= f.noise {
 		return action{}

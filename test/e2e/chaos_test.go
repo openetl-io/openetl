@@ -9,7 +9,9 @@ package e2e
 // column mid-run, which block holds, and release it at random times. Some
 // runs are rescaled through the API, up and down, at random times. Some run
 // their attempts in pods, started as processes by pod launchers, where these
-// faults reach the pod, and launchers die while their pods go on.
+// faults reach the pod, and launchers die while their pods go on. Some of
+// those run each attempt on workers, each in a pod of its own, which die
+// mid-epoch and between a record and its commit, as their coordinator does.
 //
 //	make chaos CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'
 //	go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/0042-' -chaos.seed=7   # one run again
@@ -85,6 +87,11 @@ type chaosConfig struct {
 	rescales int
 	// It goes to the data plane of pod launchers.
 	pods bool
+	// spec.resources.workers, for a run in pods; 0: one pod.
+	workers int
+	// A test's own run, which fails unless each of its faults reached what
+	// it kills, and, if it can, it ran on workers.
+	strict bool
 }
 
 // The faults a run can draw besides crash points.
@@ -101,6 +108,9 @@ const (
 	faultJobManager  = "kill Flink JobManager"
 	faultRescale     = "rescale"
 	faultLauncher    = "kill launcher"
+	// One of the attempt's workers, mid-epoch. On workers, "kill runner"
+	// and the crash points kill the attempt's coordinator.
+	faultWorker = "kill worker"
 )
 
 // What the report calls faults that reached a pod rather than a runner.
@@ -204,7 +214,29 @@ func drawConfig(seed uint64, i int) chaosConfig {
 			c.faults = append(c.faults, faultLauncher)
 		}
 	}
+	// Half the runs in pods run each attempt on workers. A keyed stream into
+	// a destination that holds columns runs on one pod, as do Kafka's
+	// transactions, so most of them read Kafka into Postgres or Iceberg,
+	// whose streams have no key; the rest show the one pod they fall back
+	// to.
+	if c.pods && rng.IntN(2) == 0 {
+		c.workers = 2 + rng.IntN(2)
+		if rng.IntN(4) != 0 {
+			c.source, c.write, c.holds = "kafka", "append", false
+			if c.dest == "kafka" {
+				c.dest = pick("postgres", "iceberg")
+			}
+		}
+		for range 1 + rng.IntN(2) {
+			c.faults = append(c.faults, pick(faultWorker, faultWorker, "crash "+crashWorkerHead, "crash "+crashWorkerCommit))
+		}
+	}
 	return c
+}
+
+// onWorkers reports whether the run's job can run on workers.
+func (c chaosConfig) onWorkers() bool {
+	return c.workers > 0 && c.source == "kafka" && c.dest != "kafka"
 }
 
 // lanes reports whether the run's job runs as many lanes as its size: a
@@ -225,6 +257,9 @@ func (c chaosConfig) name() string {
 	}
 	if c.pods {
 		name += "-pods"
+	}
+	if c.workers > 0 {
+		name += "-workers"
 	}
 	return name
 }
@@ -255,6 +290,9 @@ func (c chaosConfig) String() string {
 	}
 	if c.rescales > 0 {
 		commit += fmt.Sprintf(" rescales=%d", c.rescales)
+	}
+	if c.workers > 0 {
+		commit += fmt.Sprintf(" workers=%d", c.workers)
 	}
 	return fmt.Sprintf("%s %s noise=%v faults=[%s]", c.name(), commit, c.noise, strings.Join(c.faults, ", "))
 }
@@ -289,7 +327,11 @@ func (c chaosConfig) pipelineDoc(name, pipeSource, pipeDest string, transform ma
 		spec["dataPlane"] = dataPlane
 	}
 	if c.size != "" {
-		spec["resources"] = map[string]string{"size": c.size}
+		res := map[string]any{"size": c.size}
+		if c.workers > 0 {
+			res["workers"] = c.workers
+		}
+		spec["resources"] = res
 	}
 	return mustJSON(map[string]any{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": map[string]string{"name": name}, "spec": spec})
 }
@@ -343,8 +385,8 @@ type runResult struct {
 	resumes []time.Duration
 	settle  time.Duration
 	changes int
-	// Its attempts that ran in pods.
-	inPods int
+	// Its attempts that ran in pods, and on workers.
+	inPods, onWorkers int
 }
 
 func TestChaos(t *testing.T) {
@@ -404,7 +446,8 @@ func TestChaosChecks(t *testing.T) {
 	kinds = append(kinds,
 		chaosConfig{source: "cdc", continuous: true, write: "append", dest: "postgres", holds: true},
 		chaosConfig{source: "incremental", write: "merge", dest: "postgres", holds: true})
-	kinds = append(kinds, chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", size: "m", pods: true})
+	kinds = append(kinds, chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", size: "m", pods: true},
+		chaosConfig{source: "kafka", write: "append", dest: "postgres", size: "m", pods: true, workers: 2})
 	// Runs whose SQL transform renames v and filters rows.
 	kinds = append(kinds,
 		chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", transform: "sql"},
@@ -599,9 +642,25 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	if c.pods {
 		s.pg.do(func() { res.inPods = attemptsInPods(t, name) })
 	}
+	if c.workers > 0 {
+		s.pg.do(func() { res.onWorkers = attemptsOnWorkers(t, name) })
+	}
+	if c.strict {
+		if c.onWorkers() && res.onWorkers == 0 {
+			t.Errorf("no attempt of %s ran on workers", name)
+		}
+		for what, n := range s.book.counts(pipeline) {
+			if strings.HasPrefix(what, "missed ") || strings.HasSuffix(what, " to kill") {
+				t.Errorf("%s: %d", what, n)
+			}
+		}
+	}
 	if c.plant != "" {
 		if c.pods && res.inPods == 0 {
 			t.Errorf("no attempt of %s ran in a pod", name)
+		}
+		if c.onWorkers() && res.onWorkers == 0 {
+			t.Errorf("no attempt of %s ran on workers", name)
 		}
 		if extra > 0 || missing > 0 {
 			t.Fatalf("before the plant: %d missing, %d extra: %s", missing, extra, detail)
@@ -627,6 +686,17 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	if res.failed != "" {
 		t.Errorf("%s\nconfig: %s\nrerun: go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/%04d-' -chaos.seed=%d", res.failed, c, c.i, c.seed)
 	}
+}
+
+// attemptsOnWorkers is how many of the pipeline's attempts ran on workers.
+func attemptsOnWorkers(t *testing.T, pipeline string) int {
+	t.Helper()
+	n, err := query[int](t, `SELECT count(*) FROM attempts a JOIN pipelines p ON p.org_id = a.org_id AND p.id = a.pipeline_id
+		WHERE p.name = $1 AND a.workers > 0`, pipeline)
+	if err != nil {
+		t.Logf("counting %s's attempts on workers: %v", pipeline, err)
+	}
+	return n
 }
 
 // attemptsInPods is how many of the pipeline's attempts were placed on a pod
@@ -726,6 +796,9 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 			done = kill(engine)
 		case faultLauncher:
 			done = sl.killLauncher()
+		case faultWorker:
+			pids := sl.workerPIDs(pipeline)
+			done = len(pids) > 0 && sl.stopWorker(pipeline, pids[rng.IntN(len(pids))])
 		case faultSource, faultDestination:
 			pids := sl.children(pipeline, strings.TrimPrefix(e.fault, "kill ")+"-")
 			done = len(pids) > 0 && kill(pids[rng.IntN(len(pids))])
@@ -952,12 +1025,16 @@ func (s *chaosSuite) report(t *testing.T, seed uint64) {
 	faults := map[string]int{}
 	var resumes, settles []time.Duration
 	var failed []string
-	changes, podRuns, inPods := 0, 0, 0
+	changes, podRuns, inPods, workerRuns, onWorkers := 0, 0, 0, 0, 0
 	for _, r := range s.results {
 		changes += r.changes
 		if r.c.pods {
 			podRuns++
 			inPods += r.inPods
+		}
+		if r.c.onWorkers() {
+			workerRuns++
+			onWorkers += r.onWorkers
 		}
 		n := byName[r.c.name()]
 		n[0]++
@@ -996,6 +1073,10 @@ func (s *chaosSuite) report(t *testing.T, seed uint64) {
 	// One run can miss its pods, if both launchers are down when it's placed.
 	if podRuns > 0 && inPods == 0 {
 		t.Errorf("none of the %d runs for pods had an attempt in a pod", podRuns)
+	}
+	fmt.Fprintf(&b, "attempts on workers: %d across %d runs that can run on them\n", onWorkers, workerRuns)
+	if workerRuns > 0 && onWorkers == 0 {
+		t.Errorf("none of the %d runs for workers had an attempt on them", workerRuns)
 	}
 	fmt.Fprintf(&b, "continuous jobs resuming after their runner was killed: %s\n", quantiles(resumes))
 	fmt.Fprintf(&b, "settling after the writes stopped: %s\n", quantiles(settles))
