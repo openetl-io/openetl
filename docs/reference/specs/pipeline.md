@@ -356,7 +356,9 @@ The engine plans the statements each time a sync or a continuous pipeline's job 
 - A statement reads only streams whose columns are known when the sync starts: the source declares them, as a database source does, or an earlier sync of the pipeline recorded them. If a statement reads a stream whose columns the source infers from its rows, such as `faker`'s, and no sync has recorded them, the sync fails with `CONFIG_INVALID`. Such a stream can still pass through. A column that an earlier sync recorded and the source no longer sends is null.
 - `openetl plan` does not read the statements: it shows each stream as it would be without a transform.
 
-An output's primary key is its stream's, if each key column passes through unchanged, renamed or not. Otherwise the output has no primary key, and is appended or overwritten. If `destination.write` is `merge`, each statement must keep its stream's primary key.
+An output's primary key is its stream's, if each key column passes through unchanged, renamed or not, and the statement does not use `UNNEST`, which can give several rows for one. Otherwise the output has no primary key, and is appended or overwritten. If `destination.write` is `merge`, each statement must keep its stream's primary key.
+
+A stream that passes through is delivered as it would be without the transform. A statement's output is not deduped when it is applied, so where its stream's reads may repeat rows, it is effectively once if written with `merge`, and at least once otherwise. Both are below the default `delivery.require`, and the sync fails with `CONFIG_INVALID` unless `delivery.require`, or the stream's `source.streams[].require`, allows them.
 
 On a changelog stream, such as one read with `cdc`:
 

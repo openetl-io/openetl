@@ -58,8 +58,10 @@ type Stream struct {
 	// The destination may change a column's type itself when the stream's
 	// widens.
 	AllowTypeChanges bool
-	// One of a transform's outputs, whose Replay is exact when every input's
-	// is. Its Read is CDC when it's a changelog: merged, from a changelog.
+	// One of a transform's outputs that the user's code or a statement
+	// writes, whose Replay is exact when every input's is. Its Read is CDC
+	// when it's a changelog: merged, from a changelog. A stream a SQL
+	// transform passes through isn't.
 	Transformed bool
 	// Nil: the stream holds nothing back.
 	Holds *StreamHolds
@@ -1097,7 +1099,7 @@ func (j *Job) validate() error {
 	}
 	clear(seen)
 	for _, o := range j.Outputs {
-		if seen[o.Name] || !o.Transformed {
+		if seen[o.Name] || !o.Transformed && o.From == "" {
 			return errs.New(errs.ConfigInvalid, "runner: output %q configured twice, or not as an output", o.Name)
 		}
 		seen[o.Name] = true

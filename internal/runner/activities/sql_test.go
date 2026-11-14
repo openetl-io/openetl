@@ -99,7 +99,8 @@ func plannedEmails() *planner {
 }
 
 // A SQL job's outputs are its statements', then the streams no statement
-// writes; each is written as a stream read like its input, with its key.
+// writes; each is written as a stream read like its input, with its key,
+// and only a statement's is transformed.
 func TestBuildJobPlansSQL(t *testing.T) {
 	pl := plannedEmails()
 	job, err := buildJob(t.Context(), sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_UNSPECIFIED,
@@ -118,7 +119,7 @@ func TestBuildJobPlansSQL(t *testing.T) {
 	var names []string
 	for _, o := range job.Outputs {
 		names = append(names, o.Name)
-		if !o.Transformed || o.Mode == 0 {
+		if o.Transformed != (o.Name == "emails") || o.Mode == 0 || o.From == "" {
 			t.Errorf("output %s: %+v", o.Name, o)
 		}
 	}

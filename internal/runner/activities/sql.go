@@ -45,7 +45,8 @@ func withRestored(p runner.SQLPlanner, log *checkpoint.Log) planSQL {
 // read, and gives the destination's streams: each statement's output, in
 // the order they're written, then each stream no statement writes, unless
 // passthrough is none. An output is written as a stream would be that is
-// read as its stream is and has its key.
+// read as its stream is and has its key; one passed through is that stream,
+// and is delivered as it would be without the transform.
 func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Capabilities, deletes destination.DeleteMode,
 	planner planSQL, streams []runner.Stream, inputs []plan.Input) (*runner.SQLTransform, []runner.Stream, error) {
 	t := p.GetTransform().GetSql()
@@ -56,7 +57,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 	if err != nil {
 		return nil, nil, err
 	}
-	output := func(name string, key []string, from string) (runner.Stream, error) {
+	output := func(name string, key []string, from string, statement bool) (runner.Stream, error) {
 		si := slices.IndexFunc(streams, func(s runner.Stream) bool { return s.Name == from })
 		ii := slices.IndexFunc(inputs, func(in plan.Input) bool { return in.Name == from })
 		if si < 0 || ii < 0 {
@@ -81,7 +82,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			Require:              s.Require,
 			Deletes:              deletes,
 			AllowTypeChanges:     plan.TypeChanges(p, nil),
-			Transformed:          true,
+			Transformed:          statement,
 			SplitsByKey:          s.SplitsByKey,
 			Table:                p.GetDestination().GetTables()[name],
 			From:                 from,
@@ -89,7 +90,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 	}
 	var outputs []runner.Stream
 	for _, e := range planned {
-		o, err := output(e.Name, e.PrimaryKey, e.Input)
+		o, err := output(e.Name, e.PrimaryKey, e.Input, true)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -100,7 +101,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			if slices.ContainsFunc(planned, func(e runner.ExpectedOutput) bool { return e.Name == s.Name }) {
 				continue
 			}
-			o, err := output(s.Name, s.PrimaryKey, s.Name)
+			o, err := output(s.Name, s.PrimaryKey, s.Name, false)
 			if err != nil {
 				return nil, nil, err
 			}
