@@ -26,6 +26,7 @@ mod lower;
 mod plan;
 mod sql;
 mod types;
+mod zone;
 
 pub use catalog::{Catalog, Stream};
 pub use error::{Error, ErrorKind, Errors, Note, Position};

@@ -128,6 +128,7 @@ substr (substring)
 substr_index (substring_index)
 tan
 tanh
+timezone
 to_char (date_format)
 to_date
 to_hex
