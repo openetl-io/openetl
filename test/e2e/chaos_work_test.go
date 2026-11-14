@@ -282,12 +282,14 @@ func (w *pgWork) check(t *testing.T) (missing, extra int, detail string) {
 		// holds it is missing, and isn't extra.
 		cols, outCols, notHeld, held := "id, v", "id, v", "true", "0"
 		// A SQL run's destination has v under another name, and the rows
-		// its filter keeps: a change it drops is a delete of the key.
+		// its filter keeps: a change it drops is a delete of the key alone.
+		// A delete keeps its v, which REPLICA IDENTITY FULL sends.
 		keeps := "true"
 		if w.c.transform == "sql" {
 			keeps, outCols = sqlKeeps("v"), "id, "+sqlValue
-			truth = "(SELECT id, CASE WHEN op <> 'delete' AND " + keeps + " THEN v END AS v, " +
-				"CASE WHEN op <> 'delete' AND " + keeps + " THEN op ELSE 'delete' END AS op FROM " + truth + ") c"
+			passes := "(op = 'delete' OR " + keeps + ")"
+			truth = "(SELECT id, CASE WHEN " + passes + " THEN v END AS v, " +
+				"CASE WHEN " + passes + " THEN op ELSE 'delete' END AS op FROM " + truth + ") c"
 		}
 		if w.c.holds && hasColumn(t, in, "w") {
 			cols, outCols = "id, v, w", "id, v, NULL::bigint AS w"

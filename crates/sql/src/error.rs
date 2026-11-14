@@ -47,7 +47,7 @@ pub enum ErrorKind {
     /// A function that isn't deterministic feeds a key or a window.
     NotDeterministic,
     /// A statement or view on a changelog stream drops or changes a column of
-    /// its key.
+    /// its key, multiplies its rows, or filters a changelog without a key.
     ChangelogKey,
     /// The catalog itself is wrong: a stream named twice, or a key column
     /// its schema doesn't have.

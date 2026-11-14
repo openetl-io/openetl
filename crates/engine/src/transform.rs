@@ -363,7 +363,7 @@ fn plan_statements(
         };
         let stream = match schema {
             // Every column is nullable: a batch may lack one, and a
-            // delete has only its key.
+            // delete may have only its key.
             Some(schema) => Stream {
                 schema: Arc::new(Schema::new(
                     schema

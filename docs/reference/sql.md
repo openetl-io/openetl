@@ -104,8 +104,9 @@ A changelog stream is one whose rows are inserts, updates and deletes of their k
 
 - Keeps the stream's primary key, unchanged and renamed or not. A statement that drops or changes a key column is refused.
 - Does not use `unnest`.
-- Passes each delete as a delete of its key.
-- Turns an insert or update that fails its `WHERE` into a delete of its key.
+- Has no `WHERE` if the stream has no primary key. Such a statement is refused.
+- Passes each delete without its `WHERE`. A delete keeps the values the source sent with it: the statement's `SELECT` list gives the delete's columns. If the statement cannot evaluate a delete, the delete passes with its key alone.
+- Turns an insert or update that fails its `WHERE` into a delete of its key alone. The delete's other columns are null.
 
 The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the destination applies these deletes, and what happens to an update that does not send every column.
 
@@ -524,6 +525,7 @@ A view of one of these kinds is refused too, where the view is defined.
 | A statement that drops a key column | `cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it` |
 | A statement that changes a key column, such as `id + 1` or a cast | `… keeps its key (id) unchanged, renamed or not; this changes it` |
 | `unnest` | `… keeps its key (id) unchanged, renamed or not; this multiplies the rows of it` |
+| `WHERE` on a changelog stream without a primary key | `log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline` |
 
 ### When rows run
 

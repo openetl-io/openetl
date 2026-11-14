@@ -3783,8 +3783,8 @@ mod tests {
         ipc::encode_batch(&b).unwrap()
     }
 
-    /// On a changelog, deletes pass with their key, and an update the
-    /// filter drops becomes a delete of its key.
+    /// On a changelog, deletes pass projected, and an update the filter
+    /// drops becomes a delete of its key alone.
     #[tokio::test]
     async fn a_changelogs_deletes_pass_and_filtered_rows_become_deletes() {
         let mut req = sql_request(
@@ -3802,7 +3802,7 @@ mod tests {
             changelog_batch(&[
                 (1, Some("new"), "insert"),
                 (2, Some("void"), "update"),
-                (3, None, "delete"),
+                (3, Some("gone"), "delete"),
             ]),
         )
         .await;
@@ -3825,7 +3825,7 @@ mod tests {
         );
         assert_eq!(
             column_strings(&a[0], "email"),
-            [Some("NEW".into()), None, None]
+            [Some("NEW".into()), None, Some("GONE".into())]
         );
         assert_eq!(
             column_ints(&a[0], "_openetl_seq"),

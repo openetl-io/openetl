@@ -122,7 +122,7 @@ pub enum Operator {
 }
 
 /// Steps on one source stream's batches, one batch at a time. On a
-/// changelog stream, deletes pass without running them.
+/// changelog stream, deletes pass without the filters.
 #[derive(Debug)]
 pub struct RowWise {
     /// The source stream it reads.

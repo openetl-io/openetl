@@ -609,6 +609,8 @@ struct Check<'a> {
     views: BTreeSet<usize>,
     /// The outermost SELECT, to say where it gives a column or loses a key.
     top: Option<Top>,
+    /// Where the first WHERE written in the query is.
+    filter_at: Option<Position>,
     /// The stream or view FROM read: the name it was written with where it
     /// has no alias of its own (empty otherwise), and what qualifies its
     /// columns, for the SELECT that reads it.
@@ -642,6 +644,7 @@ impl<'a> Check<'a> {
             inputs: Vec::new(),
             views: BTreeSet::new(),
             top: None,
+            filter_at: None,
             qualified_as: None,
         }
     }
@@ -772,6 +775,10 @@ impl<'a> Check<'a> {
                 };
                 self.columns(s, &read.columns, alias.as_ref());
             }
+        }
+        if let Some(w) = &s.selection {
+            let at = self.at(w.span());
+            self.filter_at = Some(self.filter_at.map_or(at, |f| f.min(at)));
         }
         for (span, m) in crate::zone::rewrite(s) {
             self.unsupported(span, m);
@@ -1255,7 +1262,8 @@ impl<'a> Check<'a> {
     }
 
     /// Binds the query with the views it reads inlined, lowers it, and
-    /// refuses it if it loses a changelog's key.
+    /// refuses it if it loses a changelog's key, or filters a changelog
+    /// without one.
     fn lower(
         &mut self,
         query: &ast::Query,
@@ -1274,6 +1282,20 @@ impl<'a> Check<'a> {
         let lowered = lower::row_wise(&plan, self.catalog, at)?;
         if lowered.loses_changelog_key {
             return Err(self.changelog_key(&lowered));
+        }
+        if lowered.filters_keyless_changelog {
+            let at = self
+                .filter_at
+                .or(self.top.as_ref().map(|t| t.at))
+                .unwrap_or(self.at);
+            return Err(Error::at(
+                ErrorKind::ChangelogKey,
+                at,
+                format!(
+                    "{} is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline",
+                    lowered.operator.input
+                ),
+            ));
         }
         Ok((lowered, plan))
     }
