@@ -334,8 +334,16 @@ fn plan_statements(
             _ => input.schema.clone(),
         };
         let stream = match schema {
+            // Every column is nullable: a batch may lack one, and a
+            // delete has only its key.
             Some(schema) => Stream {
-                schema,
+                schema: Arc::new(Schema::new(
+                    schema
+                        .fields()
+                        .iter()
+                        .map(|f| f.as_ref().clone().with_nullable(true))
+                        .collect::<Vec<_>>(),
+                )),
                 key: input.key.clone(),
                 changelog: input.changelog,
             },

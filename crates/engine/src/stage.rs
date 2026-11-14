@@ -1015,6 +1015,34 @@ mod tests {
         assert_eq!(e.code, ErrorCode::SchemaDrift, "{}", e.message);
     }
 
+    /// A column declared not null is null where a batch lacks it.
+    #[test]
+    fn a_column_declared_not_null_that_the_batch_lacks_is_null() {
+        let mut declared = input(false);
+        declared.schema = Some(Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("email", DataType::Utf8, false),
+        ])));
+        let t = Arc::new(
+            Transform::plan(
+                "INSERT INTO c SELECT id, email AS address FROM a",
+                vec![declared],
+            )
+            .unwrap(),
+        );
+        let mut st = Stage::statement(&t, 0);
+        let b = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)])),
+            vec![Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef],
+        )
+        .unwrap();
+        let out = st
+            .apply(&typed(b, Control::default()), &[0, 1], None)
+            .unwrap();
+        assert!(out.failed.is_empty(), "{:?}", out.failed);
+        assert_eq!(out.typed.batch.column(1).null_count(), 2);
+    }
+
     #[test]
     fn a_column_the_batch_lacks_is_null() {
         let mut st = stage("INSERT INTO c SELECT id, name FROM a", false);
