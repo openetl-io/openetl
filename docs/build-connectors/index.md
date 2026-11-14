@@ -112,7 +112,7 @@ OpenETL holds the affected column where supported, or stops the stream. It shows
 
 A pipeline can run each job on several workers, each a runner in a pod of its own, as [Run a job on several pods](../pipelines/workers.md) explains. Each worker starts its own source and destination. What your connector declares decides how much of a job the workers share:
 
-- **Setup.** A coordinator starts the connectors first, calls `Setup` and discovers the streams, then stops them. The workers call `Discover` but not `Setup`.
+- **Setup.** A coordinator starts the connectors first, calls `Setup` on each one that declares `setup`, discovers the streams, then stops them. The workers call `Discover`, and never `Setup`.
 - **Splits.** Workers share a stream only through its splits, so implement `Splits`. For a keyed stream, set `SplitsByKey` in its `source.CatalogStream` when every record of a key is in one split. Otherwise one worker reads all of that stream's splits. One worker also reads a keyed stream in `cdc` mode, and a stream written with `overwrite`.
 - **Positions.** Each worker's source gets `Committed` only for the positions of its own splits.
 - **Writer lanes.** Each worker opens at least one writer lane, so a job runs on workers only if `maxWriterLanes` is at least the number of workers. Writer lane 0 is on the first worker.

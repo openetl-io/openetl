@@ -135,7 +135,9 @@ A job runs on one pod instead in these cases:
 
 - The pipeline's plan says that the job runs on one pod, such as for a transform or for a stream that holds columns. [Pipeline](../reference/specs/pipeline.md#workers) lists these cases.
 - The job's coordinator finds one of these cases before the job starts, where the control plane could not check it. The job is then placed again on one pod.
-- No launcher of the pool reports, while other runners of the data plane do.
+- No launcher of the pool reports, while other runners of the data plane do. The job then needs a runner of its own pool, like any job on one pod, and waits until one can take it. A runner of another pool does not run it.
+
+To check which case applies, run `openetl plan -f PIPELINE.yaml`. A warning that no pod launcher of the pool has reported means that the job runs on one pod. A note that no runner of the pool has reported means that the job also has nowhere to run until one does.
 
 #### What the launcher makes
 

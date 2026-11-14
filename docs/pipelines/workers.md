@@ -107,7 +107,7 @@ The plan warns about each one, in this form:
 STREAM: each attempt reads it on one of its 4 workers: REASON
 ```
 
-The other workers still read the other streams. If every stream is one of these, extra workers add pods and do no work.
+Each such stream is no faster than on one pod, but different such streams can go to different workers, which read them at the same time. A worker with no stream or split to read has no work. For example, a job with only two such streams leaves two of four workers with nothing to read.
 
 ## When a pod fails
 
