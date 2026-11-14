@@ -101,7 +101,7 @@ The workers read the source's splits between them. Each attempt reads all the sp
 - a keyed stream read with `cdc`;
 - a stream written with `overwrite`.
 
-The first two are the streams with an exchange in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). An exchange moves rows between the lanes of one worker only.
+The first two are the streams with an exchange in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). A destination with one writer lane needs no exchange, but its jobs run on one pod, so a job on workers always has an exchange for such a stream. An exchange moves rows between the lanes of one worker only.
 
 The plan warns about each one, in this form:
 
