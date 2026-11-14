@@ -45,6 +45,8 @@ spec:
 
 [Choose and manage connectors](../pipelines/connectors.md) covers package installation and version selection. [Connector source](./specs/connector-source.md) lists the fields for adding a public or private package catalog.
 
+[SQL transforms](./sql.md) lists what a pipeline's `transform.sql` can say: its statements, names, types, operators and functions, and what the engine refuses.
+
 [Webhook](./specs/webhook.md), [dbt project](./specs/dbt-project.md), [Spark cluster](./specs/spark-cluster.md) and [Flink cluster](./specs/flink-cluster.md) complete the resource references. Each field table separates required fields, conditional requirements and defaults.
 
 ## The openetl CLI

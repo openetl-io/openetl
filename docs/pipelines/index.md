@@ -191,6 +191,8 @@ The `transform.sql` section has:
 - **The streams that pass through:** the source's streams that no statement writes. They reach the destination as they would without a transform.
 - **The streams that are not delivered,** when `transform.passthrough` is `none`.
 
+[Write a SQL transform](./sql-transforms.md) walks through a transform from its statements to what the destination gets.
+
 A statement that writes a source stream's name replaces that stream: the output is written in its place. The output takes the stream's entry in `destination.tables` and its `require`. The `streams` section lists what the destination gets: the outputs, and the streams that pass through.
 
 Errors in the SQL are problems, with the line and column in the SQL text. A statement of a class that only a later tier runs, such as a group window, is a problem that names the tier:
@@ -340,7 +342,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | Field | What it does |
 |---|---|
 | `postSync` | Steps that run, in order, after each sync's data is committed: `dbt` (a `DbtProject`, with `command` `build`, `run` or `test`, `select`, `exclude` and `schema`) or `spark` (your own Spark application). A step that fails fails the sync. Scheduled pipelines only; see [`examples/faker-to-postgres-dbt.yaml`](../../examples/faker-to-postgres-dbt.yaml) |
-| `transform` | What changes the data between the source and the destination: your own code, `spark` in a scheduled pipeline or `flink` in a continuous one; or `sql` statements, which the engine runs in each lane ([reference](../reference/specs/pipeline.md#transforms)) |
+| `transform` | What changes the data between the source and the destination: your own code, `spark` in a scheduled pipeline or `flink` in a continuous one; or `sql` statements, which the engine runs in each lane ([reference](../reference/specs/pipeline.md#transforms), [guide](./sql-transforms.md)) |
 | `sparkAccess`, `flinkAccess` | How the pipeline's Spark or Flink code reaches its part of the data plane's storage; unset, the cluster's own identity |
 
 [Integrate](../integrate/index.md) covers dbt, Spark and Flink.

@@ -321,7 +321,7 @@ spec:
 
 ## A SQL transform
 
-A SQL transform runs in the engine, after each stream's rows are typed and before they are written. Its statements read each stream under its source column names, with logical types. Each output gets destination names and metadata columns, as a stream does without a transform. The fields of a SQL transform go in `transform` and in each stream's settings. [`examples/postgres-to-parquet-sql.yaml`](../../../examples/postgres-to-parquet-sql.yaml) is a complete pipeline.
+A SQL transform runs in the engine, after each stream's rows are typed and before they are written. Its statements read each stream under its source column names, with logical types. Each output gets destination names and metadata columns, as a stream does without a transform. The fields of a SQL transform go in `transform` and in each stream's settings. [`examples/postgres-to-parquet-sql.yaml`](../../../examples/postgres-to-parquet-sql.yaml) is a complete pipeline. [SQL transforms](../sql.md) lists the statements, operators and functions the SQL can use, and [Write a SQL transform](../../pipelines/sql-transforms.md) shows how to write one.
 
 ```yaml
 apiVersion: openetl.io/v1alpha1

@@ -30,10 +30,12 @@ import { SyncsTab } from "./pipeline-syncs";
 import { SchemasTab } from "./pipeline-schemas";
 import { CheckpointsTab } from "./pipeline-checkpoints";
 import { VersionsTab } from "./pipeline-versions";
+import { SqlTab } from "./pipeline-sql";
 import { tabs, type Tab } from "./tabs";
 
 const tabLabel: Record<Tab, string> = {
   overview: "Overview",
+  sql: "SQL",
   syncs: "Syncs",
   schemas: "Schemas",
   checkpoints: "Checkpoints",
@@ -159,7 +161,7 @@ export function PipelinePage() {
 
       <Tabs value={tab} onValueChange={(t) => navigate({ search: { tab: t === "overview" ? undefined : (t as Tab) } })}>
         <TabsList variant="line" className="w-full justify-start overflow-x-auto contain-inline-size">
-          {tabs.map((t) => (
+          {tabs.filter((t) => t !== "sql" || spec?.transform?.engine.case === "sql").map((t) => (
             <TabsTrigger key={t} value={t} className="flex-none">
               {tabLabel[t]}
             </TabsTrigger>
@@ -177,6 +179,9 @@ export function PipelinePage() {
               }}
             />
           )}
+        </TabsContent>
+        <TabsContent value="sql" className="pt-4">
+          {pl && <SqlTab pipeline={pl} />}
         </TabsContent>
         <TabsContent value="syncs" className="pt-4">
           <SyncsTab workspace={workspace} pipeline={pipeline} running={running} />

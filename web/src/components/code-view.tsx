@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { EditorState } from "@codemirror/state";
-import { EditorView, lineNumbers } from "@codemirror/view";
+import { EditorState, RangeSetBuilder } from "@codemirror/state";
+import { Decoration, EditorView, lineNumbers } from "@codemirror/view";
 import { yaml } from "@codemirror/lang-yaml";
 import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
@@ -20,20 +20,45 @@ const theme = EditorView.theme({
   ".cm-lineNumbers .cm-gutterElement": { padding: "0 12px 0 16px" },
   "&.cm-focused": { outline: "none" },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "var(--signal-soft) !important" },
+  ".cm-line.cm-problem": { backgroundColor: "color-mix(in oklch, var(--status-failed) 14%, transparent)" },
+  ".cm-line.cm-note": { backgroundColor: "color-mix(in oklch, var(--signal) 10%, transparent)" },
 });
 
-/** A read-only YAML view. */
-export default function CodeView({ value, label }: { value: string; label: string }) {
+/** Lines to mark, from 1, and how: a problem or a note. */
+export type Marks = Map<number, "problem" | "note">;
+
+function marked(doc: EditorState["doc"], marks: Marks) {
+  const b = new RangeSetBuilder<Decoration>();
+  for (const [n, tone] of [...marks].sort((a, c) => a[0] - c[0])) {
+    if (n < 1 || n > doc.lines) continue;
+    b.add(doc.line(n).from, doc.line(n).from, Decoration.line({ class: `cm-${tone}` }));
+  }
+  return EditorView.decorations.of(b.finish());
+}
+
+/** A read-only view of YAML, or of SQL as plain text, with line numbers and lines marked. */
+export default function CodeView({
+  value,
+  label,
+  language = "yaml",
+  marks,
+}: {
+  value: string;
+  label: string;
+  language?: "yaml" | "sql";
+  marks?: Marks;
+}) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const doc = EditorState.create({ doc: value }).doc;
     const view = new EditorView({
       parent: host.current!,
       state: EditorState.create({
-        doc: value,
+        doc,
         extensions: [
           lineNumbers(),
-          yaml(),
-          syntaxHighlighting(highlight),
+          language === "yaml" ? [yaml(), syntaxHighlighting(highlight)] : [],
+          marks?.size ? marked(doc, marks) : [],
           theme,
           EditorView.cspNonce.of(cspNonce),
           EditorState.readOnly.of(true),
@@ -43,6 +68,6 @@ export default function CodeView({ value, label }: { value: string; label: strin
       }),
     });
     return () => view.destroy();
-  }, [value, label]);
+  }, [value, label, language, marks]);
   return <div ref={host} className="overflow-auto" />;
 }

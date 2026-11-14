@@ -35,11 +35,20 @@ function tidy(v: JsonValue, key?: string): JsonValue {
   return v;
 }
 
+/** transform.sql as the spec writes it: the SQL as text, and passthrough beside it. */
+function sqlTransform(spec: JsonValue): JsonValue {
+  const t = spec && typeof spec === "object" && !Array.isArray(spec) ? spec.transform : undefined;
+  const sql = t && typeof t === "object" && !Array.isArray(t) ? t.sql : undefined;
+  if (!sql || typeof sql !== "object" || Array.isArray(sql)) return spec;
+  const { sql: text, passthrough } = sql;
+  return { ...(spec as Record<string, JsonValue>), transform: passthrough ? { sql: text ?? "", passthrough } : { sql: text ?? "" } };
+}
+
 export function pipelineYAML(name: string, workspace: string, spec: PipelineSpec) {
   return stringify({
     apiVersion: "openetl.io/v1alpha1",
     kind: "Pipeline",
     metadata: workspace === "default" ? { name } : { name, workspace },
-    spec: tidy(toJson(PipelineSpecSchema, spec)),
+    spec: sqlTransform(tidy(toJson(PipelineSpecSchema, spec))),
   });
 }
