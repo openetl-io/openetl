@@ -25,6 +25,35 @@ use super::rows::{self, Kind, Lit, Table, Tok};
 use crate::stage::Stage;
 use crate::transform::{Input, Transform};
 
+/// What a query gave: its rows, each value written by [`rows::cell`], and
+/// the rows a lane quarantines, apart from them.
+#[derive(Default)]
+pub(crate) struct Ran {
+    types: Vec<DefaultColumnType>,
+    pub rows: Vec<Vec<String>>,
+    /// The output, where the record writes several, and the row of its
+    /// table, counted from 1.
+    pub quarantined: Vec<(Option<String>, usize)>,
+}
+
+impl Ran {
+    /// As a record's result: the rows, then `quarantined row N` for each
+    /// row quarantined.
+    fn output(self) -> Output {
+        let mut rows = self.rows;
+        for (output, r) in self.quarantined {
+            let mut row: Vec<String> = output.into_iter().collect();
+            row.push("quarantined".into());
+            row.push(format!("row {r}"));
+            rows.push(row);
+        }
+        DBOutput::Rows {
+            types: self.types,
+            rows,
+        }
+    }
+}
+
 /// What a statement the test runs as a query writes.
 const RESULT: &str = "slt_result";
 
@@ -96,8 +125,8 @@ impl sqllogictest::DB for Ours {
                 self.views.push(sql.to_owned());
                 Ok(DBOutput::StatementComplete(0))
             }
-            Kind::Query => self.query(sql, true),
-            Kind::Transform => self.query(sql, false),
+            Kind::Query => self.query(sql, true).map(Ran::output),
+            Kind::Transform => self.query(sql, false).map(Ran::output),
             Kind::Describe => {
                 let body = sql
                     .trim_start()
@@ -286,7 +315,9 @@ impl Ours {
         })
     }
 
-    fn query(&self, body: &str, wrap: bool) -> Result<Output, Failure> {
+    /// Runs a query, or a transform's statements as written, on the tables'
+    /// rows.
+    pub(crate) fn query(&self, body: &str, wrap: bool) -> Result<Ran, Failure> {
         let (_, text, _) = self.plan(body, wrap)?;
         let inputs: Vec<Input> = self
             .tables
@@ -303,8 +334,7 @@ impl Ours {
                 .map_err(|e| Failure(format!("internal {}", e.message)))?,
         );
         let several = t.statements.len() > 1;
-        let mut out = Vec::new();
-        let mut types = Vec::new();
+        let mut ran = Ran::default();
         for (i, st) in t.statements.iter().enumerate() {
             let data = &self.tables[st.input];
             let typed = data.typed()?;
@@ -326,8 +356,8 @@ impl Ours {
                 Some(u) => u.as_list::<i32>().iter().collect(),
                 None => vec![None; n],
             };
-            if types.is_empty() {
-                types = b
+            if ran.types.is_empty() {
+                ran.types = b
                     .schema()
                     .fields()
                     .iter()
@@ -347,19 +377,14 @@ impl Ours {
                     let names: Vec<&str> = names.as_string::<i32>().iter().flatten().collect();
                     row.push(format!("unchanged:{}", names.join(",")));
                 }
-                out.push(row);
+                ran.rows.push(row);
             }
             for (r, _) in &applied.failed {
-                let mut row = Vec::new();
-                if several {
-                    row.push(st.output.clone());
-                }
-                row.push("quarantined".into());
-                row.push(format!("row {}", r + 1));
-                out.push(row);
+                ran.quarantined
+                    .push((several.then(|| st.output.clone()), r + 1));
             }
         }
-        Ok(DBOutput::Rows { types, rows: out })
+        Ok(ran)
     }
 }
 

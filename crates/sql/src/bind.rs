@@ -5,10 +5,13 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use arrow_schema::{DataType, SchemaRef};
+use arrow_array::{RecordBatch, RecordBatchOptions};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion_common::{Result, TableReference, plan_err};
+use datafusion_common::{DFSchema, Result, TableReference, plan_err};
+use datafusion_expr::execution_props::ExecutionProps;
+use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion_expr::planner::{ContextProvider, ExprPlanner};
 use datafusion_expr::{
     AggregateUDF, Cast, Expr, HigherOrderUDF, LogicalPlan, LogicalPlanBuilder, ScalarUDF,
@@ -17,6 +20,7 @@ use datafusion_expr::{
 use datafusion_optimizer::optimize_projections::OptimizeProjections;
 use datafusion_optimizer::simplify_expressions::SimplifyExpressions;
 use datafusion_optimizer::{Analyzer, Optimizer, OptimizerContext, OptimizerRule};
+use datafusion_physical_expr::create_physical_expr;
 use datafusion_sql::planner::SqlToRel;
 use datafusion_sql::sqlparser::ast;
 
@@ -152,6 +156,7 @@ pub(crate) fn plan(
         .map_err(bind)?;
     unexposed(&plan, at)?;
     let plan = logical(plan, at, column)?;
+    overflows(&plan, at, column)?;
     let rules: Vec<Arc<dyn OptimizerRule + Send + Sync>> = vec![
         Arc::new(SimplifyExpressions::new()),
         Arc::new(OptimizeProjections::new()),
@@ -206,6 +211,109 @@ fn logical(
         .project(exprs)
         .and_then(LogicalPlanBuilder::build)
         .map_err(|e| Error::datafusion(ErrorKind::Bind, at, &e))
+}
+
+/// Refuses constant arithmetic whose result overflows its type.
+/// SimplifyExpressions folds a constant with DataFusion's arithmetic, which
+/// wraps, and every row would be written with the wrapped value; checked, as
+/// the operator evaluates it, the same expression fails. Each largest
+/// constant part of an expression is evaluated both ways, and refused where
+/// only the checked one fails.
+fn overflows(
+    plan: &LogicalPlan,
+    at: Position,
+    column: &dyn Fn(&str) -> Position,
+) -> Result<(), Error> {
+    let mut found = None;
+    let _ = plan.apply(|node| {
+        let projection = matches!(node, LogicalPlan::Projection(_));
+        node.apply_expressions(|e| {
+            let at = match e {
+                Expr::Alias(a) if projection => column(&a.name),
+                _ => at,
+            };
+            e.apply(|part| {
+                if !constant_arithmetic(part) {
+                    return Ok(TreeNodeRecursion::Continue);
+                }
+                if let Some(why) = overflow(part) {
+                    let part = match part {
+                        Expr::Alias(a) => a.expr.as_ref(),
+                        p => p,
+                    };
+                    found = Some(Error::at(
+                        ErrorKind::Bind,
+                        at,
+                        format!("{part} overflows its type ({why})"),
+                    ));
+                    return Ok(TreeNodeRecursion::Stop);
+                }
+                Ok(TreeNodeRecursion::Jump)
+            })
+        })
+    });
+    match found {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Whether an expression reads nothing but constants, the same each time,
+/// and does arithmetic that can overflow.
+fn constant_arithmetic(e: &Expr) -> bool {
+    use datafusion_expr::Operator as Op;
+    let mut arithmetic = false;
+    let mut variable = false;
+    let _ = e.apply(|x| {
+        match x {
+            Expr::Column(_)
+            | Expr::OuterReferenceColumn(..)
+            | Expr::ScalarSubquery(_)
+            | Expr::Exists(_)
+            | Expr::InSubquery(_)
+            | Expr::Placeholder(_)
+            | Expr::AggregateFunction(_)
+            | Expr::WindowFunction(_)
+            | Expr::Unnest(_) => variable = true,
+            x if x.is_volatile_node() => variable = true,
+            Expr::BinaryExpr(b) if matches!(b.op, Op::Plus | Op::Minus | Op::Multiply) => {
+                arithmetic = true
+            }
+            Expr::Negative(_) => arithmetic = true,
+            _ => {}
+        }
+        Ok(match variable {
+            true => TreeNodeRecursion::Stop,
+            false => TreeNodeRecursion::Continue,
+        })
+    });
+    arithmetic && !variable
+}
+
+/// Why a constant overflows: its checked value fails where DataFusion's
+/// doesn't. None where both give a value, or both fail, as for 1 / 0, which
+/// then fails each row as it's evaluated.
+fn overflow(e: &Expr) -> Option<String> {
+    let schema = DFSchema::empty();
+    let physical = create_physical_expr(
+        e,
+        &schema,
+        &ExecutionProps::new(),
+        &PhysicalPlanningContext::default(),
+    )
+    .ok()?;
+    let batch = RecordBatch::try_new_with_options(
+        Arc::new(Schema::empty()),
+        Vec::new(),
+        &RecordBatchOptions::new().with_row_count(Some(1)),
+    )
+    .ok()?;
+    physical.evaluate(&batch).ok()?;
+    let checked = crate::expr::checked(physical, schema.as_arrow()).ok()?;
+    checked
+        .evaluate(&batch)
+        .err()
+        .map(|e| e.message().into_owned())
 }
 
 /// Refuses a function that syntax planned but that isn't one we expose, such

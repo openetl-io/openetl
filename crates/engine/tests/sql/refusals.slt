@@ -249,6 +249,20 @@ SELECT id, make_map('a', id) AS m FROM orders
 bind 1:1 map isn't a function transforms can call
 
 
+# Constant arithmetic that overflows its type, which would give every row
+# the same wrong value.
+query error
+SELECT id, 9223372036854775807 + 1 AS n FROM orders
+----
+bind 1:12 Int64(9223372036854775807) + Int64(1) overflows its type (Arithmetic overflow: Overflow happened on: 9223372036854775807 + 1)
+
+
+query error
+SELECT id FROM orders WHERE amount > CAST(-9223372036854775808 AS BIGINT) * 2
+----
+bind 1:1 CAST(CAST(Int64(-9223372036854775808) AS Int64) * Int64(2) AS Decimal128(22, 2)) overflows its type (Arithmetic overflow: Overflow happened on: -9223372036854775808 * 2)
+
+
 # A changelog's key passes through unchanged, renamed or not: a statement
 # that drops it, changes it or multiplies its rows is refused.
 query error

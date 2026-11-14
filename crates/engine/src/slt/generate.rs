@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use sqllogictest::{DB as _, DBOutput, QueryExpect, Record, StatementExpect};
+use sqllogictest::{DB as _, QueryExpect, Record, StatementExpect};
 
 use super::duckdb::DuckDb;
 use super::ours::{Ours, statement};
@@ -80,11 +80,11 @@ impl Rng {
     }
 }
 
-/// What one query gave in one engine: its rows as sorted lines, how many
-/// rows it quarantined, or its error.
+/// What one query gave in one engine: its rows, sorted, how many rows it
+/// quarantined, or its error.
 #[derive(Debug, PartialEq)]
 enum Got {
-    Rows(Vec<String>, usize),
+    Rows(Vec<Vec<String>>, usize),
     Failed(String),
 }
 
@@ -102,7 +102,12 @@ impl Got {
     fn shown(&self) -> String {
         match self {
             Got::Rows(r, q) => {
-                let mut s = r.iter().take(8).cloned().collect::<Vec<_>>().join("\n    ");
+                let mut s = r
+                    .iter()
+                    .take(8)
+                    .map(|row| row.join(" | "))
+                    .collect::<Vec<_>>()
+                    .join("\n    ");
                 if r.len() > 8 {
                     s.push_str(&format!("\n    … {} rows", r.len()));
                 }
@@ -116,13 +121,19 @@ impl Got {
     }
 }
 
-fn lines(rows: Vec<Vec<String>>) -> Vec<String> {
-    let mut l: Vec<String> = rows
+/// Rows sorted, each cell's runs of whitespace made one space, as the
+/// suites' text compares them.
+fn sorted(rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = rows
         .into_iter()
-        .map(|r| r.join(" ").split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|r| {
+            r.into_iter()
+                .map(|c| c.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect()
+        })
         .collect();
-    l.sort();
-    l
+    rows.sort();
+    rows
 }
 
 /// A query both engines run, with where it's written.
@@ -207,7 +218,7 @@ pub(super) fn compare(
                         chunk
                             .iter()
                             .map(|q| match duck.query(&q.sql) {
-                                Ok(rows) => Got::Rows(lines(rows), 0),
+                                Ok(rows) => Got::Rows(sorted(rows), 0),
                                 Err(e) => Got::Failed(e),
                             })
                             .collect::<Vec<_>>()
@@ -220,14 +231,8 @@ pub(super) fn compare(
                 .collect()
         });
         for (q, duck) in queries.iter().zip(theirs) {
-            let ours = match ours.run(&q.sql) {
-                Ok(DBOutput::Rows { rows, .. }) => {
-                    let (failed, rows): (Vec<_>, Vec<_>) = rows
-                        .into_iter()
-                        .partition(|r| r.first().is_some_and(|c| c == "quarantined"));
-                    Got::Rows(lines(rows), failed.len())
-                }
-                Ok(_) => Got::Rows(Vec::new(), 0),
+            let ours = match ours.query(&q.sql, true) {
+                Ok(ran) => Got::Rows(sorted(ran.rows), ran.quarantined.len()),
                 Err(e) => Got::Failed(e.0),
             };
             if ours.agrees(&duck) {
@@ -447,5 +452,42 @@ fn value(t: &arrow_schema::DataType, json: bool, rng: &mut Rng, words: &[String]
             format!("[{}]", items.join(", "))
         }
         _ => "NULL".into(),
+    }
+}
+
+mod tests {
+    use super::*;
+
+    fn row(cells: &[&str]) -> Vec<String> {
+        cells.iter().map(|c| (*c).to_owned()).collect()
+    }
+
+    #[test]
+    fn rows_compare_cell_by_cell() {
+        let a = Got::Rows(sorted(vec![row(&["a b", "c"])]), 0);
+        let b = Got::Rows(sorted(vec![row(&["a", "b c"])]), 0);
+        assert!(!a.agrees(&b));
+        let spaced = Got::Rows(sorted(vec![row(&["a  b", "c"])]), 0);
+        assert!(a.agrees(&spaced));
+    }
+
+    #[test]
+    fn a_value_that_reads_quarantined_is_a_value() {
+        let mut ours = Ours::default();
+        for sql in [
+            "CREATE TABLE t (id BIGINT NOT NULL, n TEXT, PRIMARY KEY (id))",
+            "INSERT INTO t VALUES (1, 'quarantined'), (2, 'x')",
+        ] {
+            ours.run(sql).unwrap_or_else(|e| panic!("{e}"));
+        }
+        let ran = ours
+            .query("SELECT n, CAST(id AS TEXT) AS id FROM t", true)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(ran.rows.len(), 2);
+        assert!(ran.quarantined.is_empty());
+        let ran = ours
+            .query("SELECT id, CAST(n AS BIGINT) AS n FROM t", true)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(ran.quarantined, [(None, 1), (None, 2)]);
     }
 }

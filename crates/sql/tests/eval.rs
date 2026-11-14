@@ -210,6 +210,72 @@ fn arithmetic_that_overflows_fails() {
     }
 }
 
+/// Constant arithmetic that overflows is refused where it's written, rather
+/// than folded to a wrapped value; what fits plans and folds.
+#[test]
+fn constant_arithmetic_that_overflows_is_refused() {
+    let c = customers(fields());
+    for (sql, at) in [
+        (
+            "INSERT INTO x SELECT id, CAST(9223372036854775807 AS BIGINT) + CAST(1 AS BIGINT) AS n FROM customers",
+            (1, 31),
+        ),
+        (
+            "INSERT INTO x SELECT id, CAST(-9223372036854775808 AS BIGINT) - 1 AS n FROM customers",
+            (1, 32),
+        ),
+        (
+            "INSERT INTO x SELECT id, 9223372036854775807 * 2 AS n FROM customers",
+            (1, 26),
+        ),
+        (
+            "INSERT INTO x SELECT id, id + (9223372036854775807 + 1) AS n FROM customers",
+            (1, 26),
+        ),
+        (
+            "INSERT INTO x SELECT id FROM customers\nWHERE id < 9223372036854775807 + 1",
+            (1, 1),
+        ),
+    ] {
+        let e = openetl_sql::plan(sql, &c).err();
+        let e = e.as_ref().and_then(|e| e.iter().next());
+        assert_eq!(e.map(|e| e.kind), Some(ErrorKind::Bind), "{sql}");
+        let pos = e.and_then(|e| e.at).map(|p| (p.line, p.column));
+        assert_eq!(pos, Some(at), "{sql}: {e:?}");
+        assert!(
+            e.is_some_and(|e| e.message.contains("overflows its type")),
+            "{sql}: {e:?}"
+        );
+    }
+    let s = plan_one(
+        "INSERT INTO x SELECT id, CAST(9223372036854775806 AS BIGINT) + 1 AS n, -CAST(5 AS BIGINT) AS m FROM customers",
+        &c,
+    );
+    let out = run(row_wise(&s), &batch(&[1], &[None]));
+    assert_eq!(ints(&out, "n"), [Some(i64::MAX)]);
+    assert_eq!(ints(&out, "m"), [Some(-5)]);
+    // A constant that fails either way, as the negative of the smallest
+    // BIGINT does, isn't folded: it fails each row as it's evaluated.
+    for sql in [
+        "INSERT INTO x SELECT id, -CAST(-9223372036854775808 AS BIGINT) AS n FROM customers",
+        "INSERT INTO x SELECT id, 1 / 0 AS n FROM customers",
+    ] {
+        let s = plan_one(sql, &c);
+        let op = row_wise(&s);
+        let Some(Step::Project(p)) = op.steps.last() else {
+            panic!("{:?}", op.steps)
+        };
+        let input = op
+            .input(&batch(&[1], &[None]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            p.eval(&input).err().map(|e| e.kind),
+            Some(ErrorKind::Eval),
+            "{sql}"
+        );
+    }
+}
+
 /// As in Postgres, AND and OR bind looser than IS DISTINCT FROM, whose
 /// side in parentheses stays whole.
 #[test]

@@ -127,7 +127,7 @@ impl Expr {
 /// Arithmetic that fails where its result overflows its type, as in
 /// Postgres, so the row is quarantined rather than written wrong. DataFusion
 /// wraps `+`, `-`, `*` and negation unless asked not to.
-fn checked(
+pub(crate) fn checked(
     e: Arc<dyn PhysicalExpr>,
     schema: &Schema,
 ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {

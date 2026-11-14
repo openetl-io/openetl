@@ -217,33 +217,34 @@ fn expects_error(r: &Record<DefaultColumnType>) -> bool {
 }
 
 /// Each function in `crates/sql/functions.txt`, by its name or an alias, is
-/// called in a suite.
+/// called in the SQL of a record that runs: a name followed by `(`, or one
+/// of SQL's keywords that call a function without parentheses.
 #[test]
 fn every_function_is_called_in_a_suite() {
     let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("../sql/functions.txt");
     let list = std::fs::read_to_string(&list).unwrap_or_else(|e| panic!("{}: {e}", list.display()));
-    let suites: String = files()
-        .iter()
-        .map(|p| {
-            std::fs::read_to_string(p)
-                .unwrap_or_default()
-                .to_lowercase()
-        })
-        .collect();
-    // Called as SQL's keywords are, without parentheses.
     let bare = ["current_date", "current_timestamp"];
-    let called = |name: &str| {
-        let call = match bare.contains(&name) {
-            true => name.to_owned(),
-            false => format!("{name}("),
-        };
-        suites.match_indices(&call).any(|(i, _)| {
-            !suites[..i]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_')
-        })
-    };
+    let mut called = std::collections::HashSet::new();
+    for p in files() {
+        let records: Vec<Record<DefaultColumnType>> =
+            sqllogictest::parse_file(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        for r in &records {
+            let sql = match r {
+                Record::Statement { sql, .. } | Record::Query { sql, .. } if !expects_error(r) => {
+                    sql
+                }
+                _ => continue,
+            };
+            let tokens = rows::tokens(sql).unwrap_or_else(|e| panic!("{}: {e}", file_name(&p)));
+            for (i, t) in tokens.iter().enumerate() {
+                let rows::Tok::Word(w) = t else { continue };
+                let w = w.to_lowercase();
+                if tokens.get(i + 1) == Some(&rows::Tok::Punct('(')) || bare.contains(&w.as_str()) {
+                    called.insert(w);
+                }
+            }
+        }
+    }
     let mut missing = Vec::new();
     for line in list
         .lines()
@@ -253,7 +254,7 @@ fn every_function_is_called_in_a_suite() {
             .split([' ', '(', ')', ','])
             .filter(|w| !w.is_empty() && *w != "not" && *w != "deterministic")
             .collect();
-        if !names.iter().any(|n| called(n)) {
+        if !names.iter().any(|n| called.contains(*n)) {
             missing.push(names[0]);
         }
     }
