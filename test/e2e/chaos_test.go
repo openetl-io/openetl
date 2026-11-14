@@ -123,6 +123,14 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	case "spark":
 		c.transform, c.continuous = "spark", false
 	}
+	// Every fourth run has a SQL transform, which renames and filters a CDC
+	// stream, so a row an update takes out of the filter leaves the table.
+	if i%4 == 3 {
+		c.transform, c.parallelism = "sql", 0
+		if c.source != "cdc" {
+			c.source, c.continuous = "cdc", rng.IntN(2) == 0
+		}
+	}
 	// Kafka only appends, and neither Kafka nor Iceberg dedupes, so a
 	// superset stream is merged into Iceberg.
 	if c.source == "incremental" && c.dest == "kafka" {
@@ -135,8 +143,8 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	if c.source == "incremental" && (c.dest == "iceberg" || c.transform == "spark") {
 		c.write = "merge"
 	}
-	// A transform runs on one lane, whatever its size.
-	if c.transform == "" {
+	// Spark's and Flink's transforms run on one lane, whatever its size.
+	if c.lanes() {
 		c.size = pick("", "", "m", "l")
 	}
 	c.scope = pick("pipeline", "stream")
@@ -180,8 +188,8 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	}
 	// Postgres takes holds, on streams no transform reads.
 	c.holds = c.source != "kafka" && c.dest == "postgres" && c.transform == "" && rng.IntN(3) == 0
-	// A transform runs one lane, whatever its size.
-	if c.transform == "" && rng.IntN(3) == 0 {
+	// Spark's and Flink's transforms run one lane, whatever its size.
+	if c.lanes() && rng.IntN(3) == 0 {
 		c.rescales = 1 + rng.IntN(2)
 	}
 	// Half the runs without a transform are large enough for pods. A pod takes
@@ -198,6 +206,10 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	}
 	return c
 }
+
+// lanes reports whether the run's job runs as many lanes as its size: a
+// SQL transform runs in each of them.
+func (c chaosConfig) lanes() bool { return c.transform == "" || c.transform == "sql" }
 
 func (c chaosConfig) name() string {
 	mode := "scheduled"
@@ -217,13 +229,14 @@ func (c chaosConfig) name() string {
 	return name
 }
 
-// writing is how long the run changes its source. A transform's first sync
-// takes a while, and the run writes nothing until it has landed.
+// writing is how long the run changes its source. A Spark or Flink
+// transform's first sync takes a while, and the run writes nothing until it
+// has landed.
 func (c chaosConfig) writing() time.Duration {
 	if c.writeFor > 0 {
 		return c.writeFor
 	}
-	if c.transform != "" {
+	if c.transform == "spark" || c.transform == "flink" {
 		return 2 * *chaosWrite
 	}
 	return *chaosWrite
@@ -392,6 +405,11 @@ func TestChaosChecks(t *testing.T) {
 		chaosConfig{source: "cdc", continuous: true, write: "append", dest: "postgres", holds: true},
 		chaosConfig{source: "incremental", write: "merge", dest: "postgres", holds: true})
 	kinds = append(kinds, chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", size: "m", pods: true})
+	// Runs whose SQL transform renames v and filters rows.
+	kinds = append(kinds,
+		chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", transform: "sql"},
+		chaosConfig{source: "cdc", continuous: true, write: "append", dest: "postgres", transform: "sql"},
+		chaosConfig{source: "cdc", write: "append", dest: "kafka", transform: "sql"})
 	for i, c := range kinds {
 		plants := []string{plantLoss, plantExtra}
 		if c.holds {

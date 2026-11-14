@@ -1,0 +1,335 @@
+# Projections: columns, renames, literals, expressions, *, qualifiers, and
+# columns named without regard to case. Nulls throughout.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE customers (id BIGINT NOT NULL, email TEXT, name TEXT, country TEXT, score INTEGER, balance DECIMAL(12, 2), active BOOLEAN, PRIMARY KEY (id))
+
+statement ok
+INSERT INTO customers VALUES (1, 'A@X.io', 'Ann', 'EU', 10, 12.50, true), (2, NULL, 'Bo', 'US', -3, 0.00, false), (3, 'c@y.io', NULL, NULL, NULL, NULL, NULL), (4, '', 'Di', 'eu', 0, -7.25, true)
+
+query ITTTIRT
+SELECT * FROM customers
+----
+1 A@X.io Ann EU 10 12.5 true
+2 NULL Bo US -3 0 false
+3 c@y.io NULL NULL NULL NULL NULL
+4 (empty) Di eu 0 -7.25 true
+
+query IT
+SELECT id AS customer_id, email AS address FROM customers
+----
+1 A@X.io
+2 NULL
+3 c@y.io
+4 (empty)
+
+query TI
+SELECT name, id FROM customers
+----
+Ann 1
+Bo 2
+Di 4
+NULL 3
+
+query II
+SELECT id, id AS again FROM customers
+----
+1 1
+2 2
+3 3
+4 4
+
+# Literals of each kind.
+query ITIRTT
+SELECT id, 'eu' AS region, 7 AS seven, 1.5 AS half, TRUE AS yes, CAST(NULL AS TEXT) AS nothing FROM customers
+----
+1 eu 7 1.5 true NULL
+2 eu 7 1.5 true NULL
+3 eu 7 1.5 true NULL
+4 eu 7 1.5 true NULL
+
+# Arithmetic, with a null in, null out. A row whose value overflows its
+# type is quarantined, where DuckDB fails the query.
+query IIIIIR
+SELECT id, score + score AS a, score - score * 3 AS b, score * score AS c, -score AS d, balance * 100 AS e FROM customers
+----
+1 20 -20 100 -10 1250
+2 -6 6 9 3 0
+3 NULL NULL NULL NULL NULL
+4 0 0 0 0 -725
+
+query II
+SELECT id, id * 1000 + id AS n FROM customers
+----
+1 1001
+2 2002
+3 3003
+4 4004
+
+# An integer literal is BIGINT, as DataFusion types it, so an INTEGER plus
+# one is a BIGINT, which holds what DuckDB, as Postgres, overflows.
+query II
+SELECT id, score + 1 AS next FROM customers
+----
+1 11
+2 -2
+3 NULL
+4 1
+
+query II
+SELECT id, score % 3 AS m FROM customers
+----
+1 1
+2 0
+3 NULL
+4 0
+
+# Ours, as Postgres, divides integers to an integer; DuckDB's / gives a
+# double.
+onlyif openetl
+query II
+SELECT id, score / 2 AS half FROM customers
+----
+1 5
+2 -1
+3 NULL
+4 0
+
+# DuckDB's integer division is //, which ours doesn't parse.
+onlyif duckdb
+query II
+SELECT id, score // 2 AS half FROM customers
+----
+1 5
+2 -1
+3 NULL
+4 0
+
+query IR
+SELECT id, balance / 4 AS quarter FROM customers
+----
+1 3.125
+2 0
+3 NULL
+4 -1.8125
+
+query IR
+SELECT id, score * 1.5 AS weighted FROM customers
+----
+1 15
+2 -4.5
+3 NULL
+4 0
+
+# || with a null gives null; concat leaves nulls out.
+query ITT
+SELECT id, name || '/' || country AS joined, concat(name, '/', country) AS kept FROM customers
+----
+1 Ann/EU Ann/EU
+2 Bo/US Bo/US
+3 NULL /
+4 Di/eu Di/eu
+
+query IT
+SELECT id, CASE WHEN score > 5 THEN 'high' WHEN score > 0 THEN 'low' ELSE 'none' END AS band FROM customers
+----
+1 high
+2 none
+3 none
+4 none
+
+query IT
+SELECT id, CASE country WHEN 'EU' THEN 'europe' WHEN 'US' THEN 'america' END AS area FROM customers
+----
+1 europe
+2 america
+3 NULL
+4 NULL
+
+query ITI
+SELECT id, coalesce(name, email, 'unknown') AS label, nullif(score, 0) AS score FROM customers
+----
+1 Ann 10
+2 Bo -3
+3 c@y.io NULL
+4 Di NULL
+
+# Comparisons and logic give booleans, null where a side is null.
+query ITTT
+SELECT id, score > 0 AS positive, active AND score > 0 AS both, active OR score > 0 AS either FROM customers
+----
+1 true true true
+2 false false false
+3 NULL NULL NULL
+4 false false true
+
+query ITT
+SELECT id, NOT active AS inactive, active IS NULL AS unknown FROM customers
+----
+1 false false
+2 true false
+3 NULL true
+4 false false
+
+query ITTT
+SELECT id, country IS DISTINCT FROM 'EU' AS other, country IN ('EU', 'eu') AS europe, score BETWEEN 0 AND 10 AS small FROM customers
+----
+1 false true true
+2 true false false
+3 true NULL NULL
+4 true true true
+
+query ITTT
+SELECT id, email LIKE '%.io' AS io, email ILIKE 'a%' AS a, name NOT LIKE 'B%' AS not_b FROM customers
+----
+1 true true true
+2 NULL NULL false
+3 true false NULL
+4 false false true
+
+# Qualifiers: the stream's name, an alias, and both on *.
+query IT
+SELECT customers.id, customers.email FROM customers
+----
+1 A@X.io
+2 NULL
+3 c@y.io
+4 (empty)
+
+query IT
+SELECT c.id, c.name FROM customers AS c
+----
+1 Ann
+2 Bo
+3 NULL
+4 Di
+
+query IT
+SELECT c.id, c.name FROM customers c WHERE c.score > 0
+----
+1 Ann
+
+query ITTTIRTT
+SELECT c.*, upper(c.name) AS shout FROM customers c
+----
+1 A@X.io Ann EU 10 12.5 true ANN
+2 NULL Bo US -3 0 false BO
+3 c@y.io NULL NULL NULL NULL NULL NULL
+4 (empty) Di eu 0 -7.25 true DI
+
+query ITTTIRTT
+SELECT *, lower(country) AS area FROM customers
+----
+1 A@X.io Ann EU 10 12.5 true eu
+2 NULL Bo US -3 0 false us
+3 c@y.io NULL NULL NULL NULL NULL NULL
+4 (empty) Di eu 0 -7.25 true eu
+
+# Columns match without regard to case unless quoted.
+query IT
+SELECT ID, Email FROM customers
+----
+1 A@X.io
+2 NULL
+3 c@y.io
+4 (empty)
+
+query IT
+SELECT "id", "email" FROM customers
+----
+1 A@X.io
+2 NULL
+3 c@y.io
+4 (empty)
+
+query IT
+SELECT C.ID, C.NAME FROM customers c
+----
+1 Ann
+2 Bo
+3 NULL
+4 Di
+
+# An alias hides the stream's name, as in Postgres.
+query error
+SELECT customers.id FROM customers c
+----
+bind 1:8 there's no column customers.id; there's c.id
+
+
+# What an output's columns are, and its key: the input's where each of its
+# columns passes through, renamed or not.
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id AS customer_id, email FROM customers
+----
+customer_id Int64 not null key
+email Utf8 null
+
+# An expression over a key column drops the key.
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id + 1 AS id, email FROM customers
+----
+id Int64 not null
+email Utf8 null
+
+# So does leaving it out.
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT email, name FROM customers
+----
+email Utf8 null
+name Utf8 null
+
+# An unquoted alias folds to lower case; a quoted one keeps its case; a
+# column passed through keeps the stream's spelling.
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT ID, email AS Address, name AS "FullName" FROM customers
+----
+id Int64 not null key
+address Utf8 null
+FullName Utf8 null
+
+# Literals and expressions aren't null where they can't be.
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id, 'eu' AS region, 7 AS seven, 1.5 AS half, TRUE AS yes, CAST(NULL AS TEXT) AS nothing, score + 1 AS next, balance * 100 AS cents FROM customers
+----
+id Int64 not null key
+region Utf8 not null
+seven Int64 not null
+half Float64 not null
+yes Boolean not null
+nothing Utf8 null
+next Int64 null
+cents Decimal128(33, 2) null
+
+statement ok
+CREATE TABLE "Mixed" ("Id" BIGINT NOT NULL, "Email" TEXT, PRIMARY KEY ("Id"))
+
+statement ok
+INSERT INTO "Mixed" VALUES (1, 'x@y.z'), (2, NULL)
+
+query IT
+SELECT id, email FROM mixed
+----
+1 x@y.z
+2 NULL
+
+query IT
+SELECT "Id", "Email" FROM "Mixed"
+----
+1 x@y.z
+2 NULL
+
+# A pass-through keeps the stream's spelling, and so does its key.
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id, email FROM mixed
+----
+Id Int64 not null key
+Email Utf8 null

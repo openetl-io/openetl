@@ -96,6 +96,9 @@ func newPGWork(t *testing.T, c chaosConfig, name string, gate *pgGate) *pgWork {
 	}
 	run(t, qs...)
 	w.dest = newChaosDest(t, c.dest, w.out, chaosTables)
+	if c.transform == "sql" {
+		w.dest.value = sqlValue
+	}
 	return w
 }
 
@@ -278,6 +281,14 @@ func (w *pgWork) check(t *testing.T) (missing, extra int, detail string) {
 		// With holds, w too, once the source has it: a row that still
 		// holds it is missing, and isn't extra.
 		cols, outCols, notHeld, held := "id, v", "id, v", "true", "0"
+		// A SQL run's destination has v under another name, and the rows
+		// its filter keeps: a change it drops is a delete of the key.
+		keeps := "true"
+		if w.c.transform == "sql" {
+			keeps, outCols = sqlKeeps("v"), "id, "+sqlValue
+			truth = "(SELECT id, CASE WHEN op <> 'delete' AND " + keeps + " THEN v END AS v, " +
+				"CASE WHEN op <> 'delete' AND " + keeps + " THEN op ELSE 'delete' END AS op FROM " + truth + ") c"
+		}
 		if w.c.holds && hasColumn(t, in, "w") {
 			cols, outCols = "id, v, w", "id, v, NULL::bigint AS w"
 			if hasColumn(t, out, "w") {
@@ -294,8 +305,8 @@ func (w *pgWork) check(t *testing.T) (missing, extra int, detail string) {
 			// Rows that differ either way, which a later commit can still
 			// fix, and keys twice, which it can't.
 			q = `SELECT
-				(SELECT count(*) FROM (SELECT ` + cols + ` FROM ` + in + ` EXCEPT SELECT ` + outCols + ` FROM ` + out + ` WHERE ` + w.notDeleted + `) x)
-					+ (SELECT count(*) FROM (SELECT ` + outCols + ` FROM ` + out + ` WHERE ` + w.notDeleted + ` EXCEPT SELECT ` + cols + ` FROM ` + in + `) x)
+				(SELECT count(*) FROM (SELECT ` + cols + ` FROM ` + in + ` WHERE ` + keeps + ` EXCEPT SELECT ` + outCols + ` FROM ` + out + ` WHERE ` + w.notDeleted + `) x)
+					+ (SELECT count(*) FROM (SELECT ` + outCols + ` FROM ` + out + ` WHERE ` + w.notDeleted + ` EXCEPT SELECT ` + cols + ` FROM ` + in + ` WHERE ` + keeps + `) x)
 					+ ` + held + `,
 				(SELECT count(*) - count(DISTINCT id) FROM ` + out + `)`
 		case w.incr:

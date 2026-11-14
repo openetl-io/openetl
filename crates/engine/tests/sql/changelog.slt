@@ -1,0 +1,149 @@
+# A changelog's rows are inserts, updates and deletes of their key, in
+# order. A query gives each row's op first. What a statement does with
+# them: a delete passes as a delete of its key; an insert or update that
+# fails the WHERE becomes a delete of its key, so a row that leaves the
+# filter leaves the table; an update that didn't send a column is written
+# with that column unchanged, unless the WHERE reads it, or an output
+# column needs it with columns it did send, and then it's quarantined.
+
+statement ok
+CREATE TABLE users (id BIGINT NOT NULL, email TEXT, name TEXT, plan TEXT, PRIMARY KEY (id)) WITH (changelog)
+
+statement ok
+INSERT INTO users (_op, id, email, name, plan) VALUES ('insert', 1, 'A@x.io', 'Ann', 'pro'), ('insert', 2, 'b@x.io', 'Bo', 'free'), ('update', 1, 'A@x.io', 'Ann', 'free'), ('update', 2, 'b@x.io', 'Bo', 'pro'), ('delete', 1, NULL, NULL, NULL), ('insert', 3, NULL, 'Cy', 'pro')
+
+# Without a WHERE, each row passes with its op, and a delete carries only
+# its key.
+query TITT nosort
+SELECT id AS user_id, lower(email) AS email, plan FROM users
+----
+insert 1 a@x.io pro
+insert 2 b@x.io free
+update 1 a@x.io free
+update 2 b@x.io pro
+delete 1 NULL NULL
+insert 3 NULL pro
+
+# A row that fails the WHERE is a delete of its key: user 1 leaves when
+# its plan changes to free, and user 2 comes back as an update.
+query TIT nosort
+SELECT id, plan FROM users WHERE plan = 'pro'
+----
+insert 1 pro
+delete 2 NULL
+delete 1 NULL
+update 2 pro
+delete 1 NULL
+insert 3 pro
+
+# Null is false here too: user 3's insert, without an email, is a delete.
+query TIT nosort
+SELECT id, upper(email) AS email FROM users WHERE email LIKE '%@x.io'
+----
+insert 1 A@X.IO
+insert 2 B@X.IO
+update 1 A@X.IO
+update 2 B@X.IO
+delete 1 NULL
+delete 3 NULL
+
+# Its key, renamed or not, is the output's.
+query TTT nosort
+DESCRIBE SELECT id AS user_id, plan FROM users WHERE plan = 'pro'
+----
+user_id Int64 not null key
+plan Utf8 null
+note 1:1 users is a changelog: a row that an update brings into the WHERE without sending a column an output column needs, as Postgres leaves out a large value that didn't change, lands without that column's current value
+
+# An output that replaces the stream.
+query TITTT nosort
+INSERT INTO users SELECT id, email, upper(name) AS name, plan FROM users WHERE name <> 'Bo'
+----
+insert 1 A@x.io ANN pro
+delete 2 NULL NULL NULL
+update 1 A@x.io ANN free
+delete 2 NULL NULL NULL
+delete 1 NULL NULL NULL
+insert 3 NULL CY pro
+
+# Updates that didn't send a column, as Postgres leaves out a large value
+# that didn't change.
+statement ok
+CREATE TABLE docs (id BIGINT NOT NULL, title TEXT, body TEXT, status TEXT, PRIMARY KEY (id)) WITH (changelog)
+
+statement ok
+INSERT INTO docs (_op, _unsent, id, title, body, status) VALUES ('insert', NULL, 1, 'One', 'long text', 'live'), ('update', ['body'], 1, 'One!', NULL, 'live'), ('update', ['body'], 1, 'One', NULL, 'draft'), ('update', NULL, 2, 'Two', 'more', 'live'), ('delete', NULL, 2, NULL, NULL, NULL), ('update', ['title', 'body'], 3, NULL, NULL, 'live')
+
+# An output column that reads only unsent columns is left unchanged, and
+# not evaluated; the rest are written.
+query TITTT nosort
+SELECT id, title, upper(body) AS shout, status FROM docs
+----
+insert 1 One LONG TEXT live
+update 1 One! NULL live unchanged:shout
+update 1 One NULL draft unchanged:shout
+update 2 Two MORE live
+delete 2 NULL NULL NULL
+update 3 NULL NULL live unchanged:title,shout
+
+# A WHERE that reads only sent columns: the update is written, with the
+# unsent column unchanged, whether or not the row was in the filter
+# before; one that fails it is a delete.
+query TITT nosort
+SELECT id, body, status FROM docs WHERE status = 'live'
+----
+insert 1 long text live
+update 1 NULL live unchanged:body
+delete 1 NULL NULL
+update 2 more live
+delete 2 NULL NULL
+update 3 NULL live unchanged:body
+
+# A WHERE that reads an unsent column can't decide: the update is
+# quarantined.
+query TIT nosort
+SELECT id, title FROM docs WHERE body IS NOT NULL
+----
+insert 1 One
+update 2 Two
+delete 2 NULL
+quarantined row 2
+quarantined row 3
+quarantined row 6
+
+# So is an update where an output column needs an unsent column with one
+# it sent.
+query TIT nosort
+SELECT id, title || ': ' || body AS line FROM docs
+----
+insert 1 One: long text
+update 2 Two: more
+delete 2 NULL
+update 3 NULL unchanged:line
+quarantined row 2
+quarantined row 3
+
+# The plan notes what an update without a column a WHERE's output needs
+# does.
+query TTT nosort
+DESCRIBE SELECT id, body FROM docs WHERE status = 'live'
+----
+id Int64 not null key
+body Utf8 null
+note 1:1 docs is a changelog: a row that an update brings into the WHERE without sending a column an output column needs, as Postgres leaves out a large value that didn't change, lands without that column's current value
+
+# A row the statement can't evaluate is quarantined, and the rest go on in
+# order.
+statement ok
+CREATE TABLE counts (id BIGINT NOT NULL, n TEXT, PRIMARY KEY (id)) WITH (changelog)
+
+statement ok
+INSERT INTO counts (_op, id, n) VALUES ('insert', 1, '10'), ('insert', 2, 'ten'), ('update', 1, '11'), ('delete', 2, NULL)
+
+query TII nosort
+SELECT id, CAST(n AS BIGINT) AS n FROM counts
+----
+insert 1 10
+update 1 11
+delete 2 NULL
+quarantined row 2

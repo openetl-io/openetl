@@ -1,0 +1,155 @@
+# Each type a stream's column can have, passed through and cast, and the
+# types outputs take: the engine's logical types.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE t (id BIGINT NOT NULL, i16 SMALLINT, i32 INTEGER, i64 BIGINT, f32 REAL, f64 DOUBLE, d DECIMAL(10, 3), s TEXT, b BOOLEAN, day DATE, ts TIMESTAMP, tsz TIMESTAMPTZ, tm TIME, bin BLOB, tags TEXT[], nums BIGINT[], PRIMARY KEY (id))
+
+statement ok
+INSERT INTO t VALUES (1, -32768, 2147483647, -9223372036854775808, 1.5, 0.1, 1234567.891, 'héllo', true, '2024-02-29', '2024-02-29 12:30:45.123456', '2024-02-29 12:30:45+00:00', '23:59:59.5', 'abc', ['a', NULL, 'c'], [1, 2]), (2, 32767, -2147483648, 9223372036854775807, -0.25, 1e100, -0.001, '', false, '1970-01-01', '1970-01-01 00:00:00', '1999-12-31 23:59:59.999999+00:00', '00:00:00', '', [], NULL), (3, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, [NULL])
+
+query IIIIRRRTTTTTTTTT
+SELECT * FROM t
+----
+1 -32768 2147483647 -9223372036854775808 1.5 0.1 1234567.891 héllo true 2024-02-29 2024-02-29 12:30:45.123456 2024-02-29 12:30:45+00 23:59:59.500 616263 [a, NULL, c] [1, 2]
+2 32767 -2147483648 9223372036854775807 -0.25 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 -0.001 (empty) false 1970-01-01 1970-01-01 00:00:00 1999-12-31 23:59:59.999999+00 00:00:00 (empty) [] NULL
+3 NULL NULL NULL NULL NULL NULL NULL NULL NULL NULL NULL NULL NULL NULL [NULL]
+
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT * FROM t
+----
+id Int64 not null key
+i16 Int16 null
+i32 Int32 null
+i64 Int64 null
+f32 Float32 null
+f64 Float64 null
+d Decimal128(10, 3) null
+s Utf8 null
+b Boolean null
+day Date32 null
+ts Timestamp(µs) null
+tsz Timestamp(µs, "UTC") null
+tm Time64(µs) null
+bin Binary null
+tags List(Utf8) null
+nums List(Int64) null
+
+query IIIIRT
+SELECT id, CAST(i16 AS INTEGER) AS a, CAST(i32 AS BIGINT) AS b, CAST(s AS TEXT) AS c, CAST(f32 AS DOUBLE) AS e, CAST(i64 AS TEXT) AS f FROM t
+----
+1 -32768 2147483647 héllo 1.5 -9223372036854775808
+2 32767 -2147483648 (empty) -0.25 9223372036854775807
+3 NULL NULL NULL NULL NULL
+
+query ITTTT
+SELECT id, CAST(d AS TEXT) AS a, CAST(b AS TEXT) AS b, CAST(day AS TEXT) AS c, CAST(ts AS DATE) AS e, CAST(tsz AS TIMESTAMP) AS f FROM t
+----
+1 1234567.891 true 2024-02-29 2024-02-29 2024-02-29 12:30:45
+2 -0.001 false 1970-01-01 1970-01-01 1999-12-31 23:59:59.999999
+3 NULL NULL NULL NULL NULL
+
+query IRRRR
+SELECT id, CAST(d AS DOUBLE) AS a, CAST(d AS DECIMAL(12, 1)) AS b, CAST(i32 AS DECIMAL(20, 2)) AS c FROM t
+----
+1 1234567.891 1234567.9 2147483647
+2 -0.001 0 -2147483648
+3 NULL NULL NULL
+
+# A DOUBLE that REAL can't hold is infinite in ours, as Arrow casts it;
+# DuckDB, as Postgres, fails.
+onlyif openetl
+query IR
+SELECT id, CAST(f64 AS REAL) AS e FROM t
+----
+1 0.1
+2 Infinity
+3 NULL
+
+query IT
+SELECT id, i64::TEXT AS s FROM t
+----
+1 -9223372036854775808
+2 9223372036854775807
+3 NULL
+
+# Text that spells a value casts to it.
+query IIRTTT
+SELECT id, CAST('42' AS BIGINT) AS a, CAST('-1.25' AS DECIMAL(5, 2)) AS b, CAST('true' AS BOOLEAN) AS c, CAST('2026-11-14' AS DATE) AS e, CAST('2026-11-14 08:00:00' AS TIMESTAMP) AS f FROM t
+----
+1 42 -1.25 true 2026-11-14 2026-11-14 08:00:00
+2 42 -1.25 true 2026-11-14 2026-11-14 08:00:00
+3 42 -1.25 true 2026-11-14 2026-11-14 08:00:00
+
+# A cast that can't be done fails the row, which a lane quarantines;
+# DuckDB fails the query.
+onlyif openetl
+query IT
+SELECT id, CAST(s AS BIGINT) AS n FROM t
+----
+3 NULL
+quarantined row 1
+quarantined row 2
+
+# Arithmetic past a type's range fails the row too, rather than wrapping.
+onlyif openetl
+query II
+SELECT id, i64 + 1 AS n FROM t
+----
+1 -9223372036854775807
+3 NULL
+quarantined row 2
+
+# INTEGER + INTEGER is an INTEGER; the smallest BIGINT has no negative.
+onlyif openetl
+query III
+SELECT id, i32 + i32 AS a, -i64 AS b FROM t
+----
+3 NULL NULL
+quarantined row 1
+quarantined row 2
+
+# TRY_CAST gives null instead.
+query IT
+SELECT id, TRY_CAST(s AS BIGINT) AS n FROM t
+----
+1 NULL
+2 NULL
+3 NULL
+
+# Narrowing that doesn't fit fails the row too.
+onlyif openetl
+query II
+SELECT id, CAST(i32 AS SMALLINT) AS n FROM t
+----
+3 NULL
+quarantined row 1
+quarantined row 2
+
+# Types outputs can't hold are refused, and the ones they can't take as
+# they are become the logical type that holds their values.
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id, CAST(i16 AS TINYINT) AS tiny, CAST(i32 AS INT UNSIGNED) AS u32, CAST(i64 AS BIGINT UNSIGNED) AS u64, CAST(f32 AS FLOAT) AS f, length(s) AS len, CAST(tsz AS TIMESTAMP) AS naive, now() AS seen FROM t
+----
+id Int64 not null key
+tiny Int16 null
+u32 Int64 null
+u64 Int64 null
+f Float32 null
+len Int32 null
+naive Timestamp(ns) null
+seen Timestamp(µs, "UTC") null
+
+statement error
+SELECT id, NULL AS nothing FROM t
+----
+bind 1:12 column nothing is Null, which an output can't hold: CAST it to a type it can
+
+
+statement error
+SELECT id, named_struct('a', id) AS s FROM t
+----
+bind 1:12 column s is Struct("a": Int64), which an output can't hold: CAST it to a type it can

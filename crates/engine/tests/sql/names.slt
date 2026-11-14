@@ -1,0 +1,205 @@
+# A stream's name is its whole name: a dotted path is joined and matched
+# against it, unquoted parts without regard to case and quoted ones
+# exactly. source. and destination. are optional qualifiers.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE "public.orders" (id BIGINT NOT NULL, status TEXT, PRIMARY KEY (id))
+
+statement ok
+INSERT INTO "public.orders" VALUES (1, 'new'), (2, 'paid')
+
+statement ok
+CREATE TABLE "HR.EMPLOYEES" ("EMPLOYEE_ID" BIGINT NOT NULL, "LAST_NAME" TEXT, PRIMARY KEY ("EMPLOYEE_ID"))
+
+statement ok
+INSERT INTO "HR.EMPLOYEES" VALUES (7, 'Lovelace'), (8, 'Hopper')
+
+query IT
+SELECT id, upper(status) AS status FROM public.orders
+----
+1 NEW
+2 PAID
+
+query I
+SELECT id FROM source.public.orders
+----
+1
+2
+
+query I
+SELECT id FROM "public.orders"
+----
+1
+2
+
+query I
+SELECT id FROM source."public.orders"
+----
+1
+2
+
+query I
+SELECT id FROM PUBLIC.Orders
+----
+1
+2
+
+query I
+SELECT o.id FROM public.orders o
+----
+1
+2
+
+query I
+SELECT orders.id FROM public.orders
+----
+1
+2
+
+query I
+SELECT public.orders.id FROM public.orders
+----
+1
+2
+
+query error
+SELECT id FROM "Public".orders
+----
+name 1:16 there's no stream or view "Public".orders
+
+
+# Columns fold to lower case unless quoted, as in Postgres, and match a
+# stream's without regard to case.
+query IT
+SELECT "EMPLOYEE_ID" AS id, "LAST_NAME" AS name FROM hr.employees
+----
+7 Lovelace
+8 Hopper
+
+query IT
+SELECT employee_id, last_name FROM HR.EMPLOYEES
+----
+7 Lovelace
+8 Hopper
+
+query error
+SELECT "employee_id" FROM hr.employees
+----
+bind 1:8 there's no column "employee_id": a quoted name matches exactly, so write "EMPLOYEE_ID", or the name unquoted
+
+
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT employee_id AS id, last_name FROM hr.employees
+----
+id Int64 not null key
+LAST_NAME Utf8 null
+
+# An output that has a stream's name replaces it, written as a dotted path,
+# quoted, or with destination.
+query IT
+INSERT INTO public.orders SELECT id, status FROM public.orders WHERE id > 1
+----
+2 paid
+
+query IT
+INSERT INTO destination."public.orders" SELECT id, status FROM source.public.orders
+----
+1 new
+2 paid
+
+query IT
+INSERT INTO "NewOutput" SELECT id, status FROM public.orders
+----
+1 new
+2 paid
+
+statement error
+INSERT INTO a.b SELECT id FROM public.orders
+----
+name 1:13 a.b isn't a source's stream, and a new output's name is one identifier: quote it, as "a.b", if it has dots
+
+
+statement error
+INSERT INTO source.orders SELECT id FROM public.orders
+----
+name 1:13 source. names a source's stream, which INSERT INTO doesn't write: write INSERT INTO orders or INSERT INTO destination.orders
+
+
+query error
+SELECT id FROM destination.public.orders
+----
+name 1:16 destination. names an output, and FROM reads a source's stream or a view: write FROM public.orders
+
+
+statement error
+INSERT INTO cleaned SELECT id FROM public.orders;
+INSERT INTO x SELECT id FROM cleaned
+----
+name 2:30 cleaned is an output, and FROM reads a source's stream or a view: name the SELECT that writes it with CREATE VIEW, and read that
+
+
+statement error
+INSERT INTO x SELECT id FROM public.orders;
+INSERT INTO X SELECT id FROM public.orders
+----
+name 2:13 x is written by an earlier statement: one statement writes each output
+
+
+# Two streams that differ only by case need quotes.
+statement ok
+CREATE TABLE "Items" (sku TEXT)
+
+statement ok
+CREATE TABLE "items" (sku TEXT)
+
+statement ok
+INSERT INTO "Items" VALUES ('Upper')
+
+query error
+SELECT sku FROM items
+----
+name 1:17 items fits the streams Items and items, which differ only by case: quote the name to pick one
+
+
+query T
+SELECT sku FROM "Items"
+----
+Upper
+
+# A source schema called source: the qualifier wins, and the plan says so.
+statement ok
+CREATE TABLE "source.status" (code TEXT)
+
+statement ok
+CREATE TABLE "status" (code TEXT)
+
+statement ok
+INSERT INTO "source.status" VALUES ('qualified')
+
+statement ok
+INSERT INTO "status" VALUES ('plain')
+
+query T
+SELECT code FROM source.status
+----
+plain
+
+query T
+SELECT code FROM "source.status"
+----
+qualified
+
+query T
+SELECT code FROM source.source.status
+----
+qualified
+
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT code FROM source.status
+----
+code Utf8 null
+note 1:18 source. is a qualifier here, so this reads the stream status; the stream source.status is read as FROM "source.status"

@@ -27,6 +27,8 @@ make deps-down         # stop what deps-up started
 
 `make help` lists the rest. `make deps-up` and `make dev` start every dependency unless `DEPS` names some, such as `DEPS="postgres s3"`.
 
+SQL transforms have suites in `crates/engine/tests/sql`, in sqllogictest's format. `make test` runs them through the planner and the engine's row-wise operator, and, where a `duckdb` CLI is on the path or `OPENETL_DUCKDB` names one, through DuckDB too: the files' queries over their rows and over generated ones. `OPENETL_SQL_REWRITE=1 cargo test -p openetl-engine slt` writes what the engine gives into the files.
+
 `make dev` keeps its store in the folder `.openetl/checkpoints`, which compose's Spark and Flink containers can't read. To run Spark steps and Flink transforms on them, use `make dev STORE=s3`: the store goes in the bucket `openetl-dev` on compose's S3, which both can read, Spark gets Hadoop's S3A jars (a one-time download of about 280 MB, into `.openetl/spark/s3a`), and the runner gets `deploy/compose/spark-submit` and a bridge for Flink. Your clusters are `spark://spark-master:7077`, with the UI at `http://127.0.0.1:8090`, and `http://localhost:8091`. A pipeline's checkpoints stay in the store it ran on. To carry them over when you change store, stop `openetld` and copy the folder with `aws s3 sync`, leaving out `*.lock`, `*.attrs` and `.tmp-*`, which only the folder store has.
 
 `openetld dev` runs the server, an orchestrator and a runner in one process, and asks no one to sign in while it listens only on a loopback address. `openetld server` writes the owner's API key to `.openetl/admin.key` when it creates the org, and `openetl principal password-link` gives a user a link to set a password for the UI.
@@ -143,7 +145,7 @@ A push to `main` or a release branch that changes what the site reads (`docs/`, 
 `ci` runs on every pull request, and on every push to `main` or a release branch. It runs the checks for the paths the change touches:
 
 - Go: generated code that's up to date, buf, golangci-lint and workflowcheck; the unit tests; and the commit-protocol simulation's fixed seeds.
-- Rust: rustfmt, clippy and the tests; the runner/engine contract, against the engine; and cargo-deny, when dependencies change.
+- Rust: rustfmt, clippy and the tests, with the SQL suites compared with DuckDB's CLI; the runner/engine contract, against the engine; and cargo-deny, when dependencies change.
 - The connector protocol: `buf breaking` on `proto/openetl/connector` fails, unless the change adds the protocol's next version, a new `proto/openetl/connector/vN`.
 - The UI, the Spark and Flink libraries, and `go test ./test/docs ./test/install`.
 - One end-to-end test, a scheduled sync into Postgres through the whole stack.

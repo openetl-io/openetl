@@ -121,9 +121,28 @@ func (s *chaosSuite) transformSpec(c chaosConfig) (map[string]any, string) {
 	case "spark":
 		return map[string]any{"spark": map[string]any{"cluster": s.spark.cluster, "conf": map[string]string{"spark.jars": "file://" + s.spark.lib},
 			"code": map[string]string{"jar": s.spark.code, "sha256": s.spark.digest, "class": "io.openetl.spark.e2e.EnrichCheck"}}}, s.spark.dataPlane
+	case "sql":
+		return map[string]any{"sql": chaosSQL}, ""
 	}
 	return nil, ""
 }
+
+// chaosSQL is a SQL run's transform: each table replaced by its rows whose
+// v isn't a multiple of 3, with v renamed. Each update adds one to v, so a
+// row leaves the filter, and comes back, as it changes.
+var chaosSQL = func() string {
+	var b strings.Builder
+	for _, tbl := range chaosTables {
+		fmt.Fprintf(&b, "INSERT INTO %s SELECT id, v AS %s, pad AS note FROM %s WHERE %s;\n", tbl, sqlValue, tbl, sqlKeeps("v"))
+	}
+	return b.String()
+}()
+
+// sqlValue is v's name in a SQL run's destination.
+const sqlValue = "version"
+
+// sqlKeeps is the SQL runs' filter, of a column that holds v.
+func sqlKeeps(v string) string { return v + " % 3 <> 0" }
 
 // composeContainer is the ID of the compose service's container, running
 // or not.

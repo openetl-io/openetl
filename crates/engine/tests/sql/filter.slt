@@ -1,0 +1,162 @@
+# WHERE: a row passes where the predicate is true, and not where it's false
+# or null.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE orders (id BIGINT NOT NULL, region TEXT, amount DECIMAL(12, 2), qty INTEGER, paid BOOLEAN, note TEXT, PRIMARY KEY (id))
+
+statement ok
+INSERT INTO orders VALUES (1, 'eu', 120.00, 3, true, 'gift'), (2, 'us', 9.99, 1, false, NULL), (3, NULL, NULL, NULL, NULL, 'rush order'), (4, 'EU', 45.50, 0, true, ''), (5, 'apac', 1000.01, 12, false, 'gift wrap')
+
+query I
+SELECT id FROM orders WHERE amount > 50
+----
+1
+5
+
+query I
+SELECT id FROM orders WHERE amount > 50 AND paid
+----
+1
+
+query I
+SELECT id FROM orders WHERE amount > 50 OR region = 'us'
+----
+1
+2
+5
+
+# Null is false: neither side of a comparison with null passes.
+query I
+SELECT id FROM orders WHERE region = 'eu'
+----
+1
+
+query I
+SELECT id FROM orders WHERE NOT (region = 'eu')
+----
+2
+4
+5
+
+query I
+SELECT id FROM orders WHERE region IS NULL
+----
+3
+
+# Ignored in ours: sqlparser 0.62 takes all that follows IS NOT DISTINCT
+# FROM, the OR too, as its right side.
+skipif openetl
+query I
+SELECT id FROM orders WHERE region IS NOT DISTINCT FROM NULL OR qty = 0
+----
+3
+4
+
+query I
+SELECT id FROM orders WHERE (region IS NOT DISTINCT FROM NULL) OR qty = 0
+----
+3
+4
+
+query I
+SELECT id FROM orders WHERE paid
+----
+1
+4
+
+query I
+SELECT id FROM orders WHERE NOT paid
+----
+2
+5
+
+query I
+SELECT id FROM orders WHERE paid IS NOT TRUE
+----
+2
+3
+5
+
+query I
+SELECT id FROM orders WHERE region IN ('eu', 'EU', 'apac')
+----
+1
+4
+5
+
+query I
+SELECT id FROM orders WHERE region NOT IN ('eu', 'us')
+----
+4
+5
+
+query I
+SELECT id FROM orders WHERE qty BETWEEN 1 AND 3
+----
+1
+2
+
+query I
+SELECT id FROM orders WHERE note LIKE 'gift%'
+----
+1
+5
+
+query I
+SELECT id FROM orders WHERE note ILIKE '%ORDER'
+----
+3
+
+query I
+SELECT id FROM orders WHERE note = ''
+----
+4
+
+query I
+SELECT id FROM orders WHERE lower(region) = 'eu' AND amount * qty > 100
+----
+1
+
+query I
+SELECT id FROM orders WHERE coalesce(paid, false) = false
+----
+2
+3
+5
+
+query I
+SELECT id FROM orders WHERE TRUE
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT id FROM orders WHERE FALSE
+----
+
+# The filter reads columns the output leaves out.
+query IT
+SELECT id, note FROM orders WHERE amount < 100 AND region IS NOT NULL
+----
+2 NULL
+4 (empty)
+
+# A filter on an output column's name reads the stream's column of that
+# name, not the expression's.
+query IT
+SELECT id, upper(region) AS region FROM orders WHERE region = 'eu'
+----
+1 EU
+
+# A filter that keeps every row, and one that keeps none, keep the key.
+onlyif openetl
+query TTT nosort
+DESCRIBE SELECT id AS order_id, amount FROM orders WHERE amount > 50
+----
+order_id Int64 not null key
+amount Decimal128(12, 2) null

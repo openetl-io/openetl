@@ -1,0 +1,535 @@
+# Every function of crates/sql/functions.txt, but the JSON ones, which
+# json.slt calls: each at least once, by its name or an alias.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE f (id BIGINT NOT NULL, x DOUBLE, n BIGINT, s TEXT, t TEXT, ts TIMESTAMPTZ, d DATE, tags TEXT[], nums BIGINT[], PRIMARY KEY (id))
+
+statement ok
+INSERT INTO f VALUES (1, 0.5, 12, 'Hello World', 'b,a,c', '2024-02-29 12:34:56.789+00:00', '2024-02-29', ['b', 'a', 'b'], [3, 1, 2]), (2, -2.25, -7, 'ünï cödé', '', '1970-01-01 00:00:00+00:00', '1970-01-01', [], [5]), (3, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+
+# Math.
+query IRRRRRR
+SELECT id, abs(x) AS a, ceil(x) AS b, floor(x) AS c, round(x) AS e, round(x, 1) AS g, trunc(x) AS h FROM f
+----
+1 0.5 1 0 1 0.5 0
+2 2.25 -2 -3 -2 -2.3 -2
+3 NULL NULL NULL NULL NULL NULL
+
+query IRR
+SELECT id, sqrt(abs(x)) AS a, cbrt(x) AS b FROM f
+----
+1 0.707106781187 0.793700525984
+2 1.5 -1.3103706971
+3 NULL NULL
+
+query IR
+SELECT id, exp(x) AS c FROM f
+----
+1 1.6487212707
+2 0.105399224562
+3 NULL
+
+# Logarithms of zero.
+query IRRRR
+SELECT id, ln(abs(x)) AS e, log10(abs(x)) AS g, log2(abs(x)) AS a, log(abs(x)) AS b FROM f
+----
+1 -0.69314718056 -0.301029995664 -1 -0.301029995664
+2 0.810930216216 0.352182518111 1.16992500144 0.352182518111
+3 NULL NULL NULL NULL
+
+query IRR
+SELECT id, power(x, 2) AS c, pow(2, n) AS e FROM f
+----
+1 0.25 4096
+2 5.0625 0.0078125
+3 NULL NULL
+
+query IRRRR
+SELECT id, sin(x) AS a, cos(x) AS b, tan(x) AS c, atan(x) AS h FROM f
+----
+1 0.479425538604 0.87758256189 0.546302489844 0.463647609001
+2 -0.778073196888 -0.628173622723 1.23862761622 -1.15257199722
+3 NULL NULL NULL NULL
+
+# Outside their domain.
+query IRRR
+SELECT id, asin(x / 4) AS e, acos(x / 4) AS g, atanh(x / 4) AS b FROM f
+----
+1 0.125327831168 1.44546849563 0.12565721414
+2 -0.597406416645 2.16820274344 -0.636482837906
+3 NULL NULL NULL
+
+query IRRRRR
+SELECT id, sinh(x) AS a, cosh(x) AS b, tanh(x) AS c, asinh(x) AS e, atan2(x, 1) AS g FROM f
+----
+1 0.521095305494 1.12762596521 0.46211715726 0.48121182506 0.463647609001
+2 -4.6911683059 4.79656753046 -0.978026114739 -1.55015795687 -1.15257199722
+3 NULL NULL NULL NULL NULL
+
+query IR
+SELECT id, acosh(abs(x) + 1) AS a FROM f
+----
+1 0.962423650119
+2 1.84724608571
+3 NULL
+
+query IR
+SELECT id, cot(x) AS c FROM f
+----
+1 1.83048772171
+2 0.807345151119
+3 NULL
+
+query IRRR
+SELECT id, degrees(x) AS a, radians(x) AS b, pi() AS c FROM f
+----
+1 28.6478897565 0.00872664625997 3.14159265359
+2 -128.915503904 -0.0392699081699 3.14159265359
+3 NULL NULL 3.14159265359
+
+query IIII
+SELECT id, gcd(n, 18) AS a, lcm(n, 4) AS b, factorial(CAST(abs(n) % 6 AS INTEGER)) AS c FROM f
+----
+1 6 12 1
+2 1 28 1
+3 NULL NULL NULL
+
+# DuckDB calls it sign.
+onlyif openetl
+query IR
+SELECT id, signum(x) AS s FROM f
+----
+1 1
+2 -1
+3 NULL
+
+# DuckDB has no nanvl, nor iszero.
+onlyif openetl
+query IRTT
+SELECT id, nanvl(x, 0) AS a, iszero(x) AS b, isnan(x) AS c FROM f
+----
+1 0.5 false false
+2 -2.25 false false
+3 NULL NULL NULL
+
+# random() is from 0 up to 1.
+query IT
+SELECT id, random() >= 0 AND random() < 1 AS r FROM f
+----
+1 true
+2 true
+3 true
+
+# Strings.
+query ITTII
+SELECT id, upper(s) AS a, lower(s) AS b, length(s) AS c, char_length(s) AS e FROM f
+----
+1 HELLO WORLD hello world 11 11
+2 ÜNÏ CÖDÉ ünï cödé 8 8
+3 NULL NULL NULL NULL
+
+query III
+SELECT id, character_length(s) AS a, ascii(s) AS e FROM f
+----
+1 11 72
+2 8 252
+3 NULL NULL
+
+# DuckDB counts bytes with strlen: its octet_length and bit_length take a
+# BLOB and a BIT.
+onlyif openetl
+query III
+SELECT id, octet_length(s) AS b, bit_length(s) AS c FROM f
+----
+1 11 88
+2 12 96
+3 NULL NULL
+
+query ITTT
+SELECT id, trim('  x  ') AS a, trim(s, 'Hd') AS b, ltrim(s, 'He') AS c, rtrim(s, 'dl') AS e FROM f
+----
+1 x ello Worl llo World Hello Wor
+2 x ünï cödé ünï cödé ünï cödé
+3 x NULL NULL NULL
+
+query ITTTT
+SELECT id, left(s, 3) AS a, right(s, 3) AS b, lpad(s, 13, '*') AS c, rpad(s, 13, '*') AS e FROM f
+----
+1 Hel rld **Hello World Hello World**
+2 ünï ödé *****ünï cödé ünï cödé*****
+3 NULL NULL NULL NULL
+
+query ITTT
+SELECT id, substr(s, 2, 3) AS a, substring(s, 7) AS b, repeat(t, 2) AS c FROM f
+----
+1 ell World b,a,cb,a,c
+2 nï  dé (empty)
+3 NULL NULL NULL
+
+query ITTT
+SELECT id, replace(s, 'l', 'L') AS a, reverse(s) AS b, translate(s, 'lo', 'LO') AS c FROM f
+----
+1 HeLLo WorLd dlroW olleH HeLLO WOrLd
+2 ünï cödé édöc ïnü ünï cödé
+3 NULL NULL NULL
+
+query IIII
+SELECT id, strpos(s, 'o') AS a, instr(s, 'o') AS b, position('o' IN s) AS c FROM f
+----
+1 5 5 5
+2 0 0 0
+3 NULL NULL NULL
+
+# levenshtein counts characters in ours, as in Postgres; DuckDB counts
+# bytes.
+onlyif openetl
+query II
+SELECT id, levenshtein(s, 'Hello') AS e FROM f
+----
+1 6
+2 8
+3 NULL
+
+onlyif duckdb
+query II
+SELECT id, levenshtein(s, 'Hello') AS e FROM f
+----
+1 6
+2 12
+3 NULL
+
+query ITTT
+SELECT id, starts_with(s, 'Hell') AS a, ends_with(s, 'ld') AS b, contains(s, 'lo W') AS c FROM f
+----
+1 true true true
+2 false false false
+3 NULL NULL NULL
+
+query ITT
+SELECT id, split_part(t, ',', 2) AS a, concat_ws('-', s, t, 'z') AS b FROM f
+----
+1 a Hello World-b,a,c-z
+2 (empty) ünï cödé--z
+3 NULL z
+
+query IT
+SELECT id, chr(CAST(n + 60 AS INTEGER)) AS c FROM f WHERE n > 0
+----
+1 H
+
+# to_hex writes lower case in ours, as in Postgres; DuckDB upper.
+onlyif openetl
+query IT
+SELECT id, to_hex(n) AS h FROM f WHERE n > 0
+----
+1 c
+
+onlyif duckdb
+query IT
+SELECT id, to_hex(n) AS h FROM f WHERE n > 0
+----
+1 C
+
+# An empty string has no parts in ours, as in Postgres; DuckDB gives one
+# empty part.
+onlyif openetl
+query IT
+SELECT id, string_to_array(t, ',') AS parts FROM f
+----
+1 [b, a, c]
+2 []
+3 NULL
+
+onlyif duckdb
+query IT
+SELECT id, string_to_array(t, ',') AS parts FROM f
+----
+1 [b, a, c]
+2 [(empty)]
+3 NULL
+
+# DuckDB has no overlay.
+onlyif openetl
+query IT
+SELECT id, overlay(s PLACING 'XY' FROM 2 FOR 3) AS o FROM f
+----
+1 HXYo World
+2 üXYcödé
+3 NULL
+
+query IT
+SELECT id, regexp_replace(s, 'o', '0', 'g') AS a FROM f
+----
+1 Hell0 W0rld
+2 ünï cödé
+3 NULL
+
+# DuckDB's is regexp_extract.
+onlyif openetl
+query IT
+SELECT id, regexp_match(s, '(l+)') AS b FROM f
+----
+1 [ll]
+2 NULL
+3 NULL
+
+# DuckDB has no initcap.
+onlyif openetl
+query IT
+SELECT id, initcap(lower(s)) AS i FROM f
+----
+1 Hello World
+2 Ünï Cödé
+3 NULL
+
+# DuckDB has no find_in_set, substr_index nor regexp_count.
+onlyif openetl
+query IIIT
+SELECT id, find_in_set('a', t) AS a, regexp_count(s, 'l') AS b, regexp_instr(s, 'o') AS c, substr_index(t, ',', 2) AS e FROM f
+----
+1 2 3 5 b,a
+2 0 0 0 (empty)
+3 NULL NULL NULL NULL
+
+# DuckDB's is regexp_matches.
+onlyif openetl
+query IT
+SELECT id, regexp_like(s, '^H') AS r FROM f
+----
+1 true
+2 false
+3 NULL
+
+# Hashes and encodings.
+query ITT
+SELECT id, md5(s) AS a, sha256(s) AS b FROM f
+----
+1 b10a8db164e0754105b7a99be72e3fe5 a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e
+2 64e0c8cb413815c38aab9ed213da8ce1 642174ef3d893ee600023feaa854b71032c0b68afa01766dcadbe23e3d32d8e2
+3 NULL NULL
+
+# DuckDB has neither sha224, sha384 nor sha512, nor digest.
+onlyif openetl
+query ITTTT
+SELECT id, sha224(s) AS a, sha384(s) AS b, sha512(s) AS c, digest(s, 'sha256') AS e FROM f
+----
+1 c4890faffdb0105d991a461e668e276685401b02eab1ef4372795047 99514329186b2f6ae4a1329e7ee6c610a729636335174ac6b740f9028396fcc803d0e93863a7c3d90f86beee782f4f3f 2c74fd17edafd80e8447b0d46741ee243b7eb74dd2149a0ab1b9246fb30382f27e853d8585719e0e67cbda0daa8f51671064615d645ae27acb15bfb1447f459b a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e
+2 ba852dce4d558214d39558ba4cabd1331ba42b8d0cb394846d91543e a9cdc3f3630057eb4bf88a7e25142df33feb60d797fea06b674d7aca1d87a940bbcaf7c7ad267bd3e21102127c0771d3 da1900e93f0f2a2c7cda664548ba825435dd79cce2552d2a9e0a4ee3219b2cb0e7c5e6bd4d1c8ef013013bd0d2d8a730de7fb14707e188e35132a13997b33ee8 642174ef3d893ee600023feaa854b71032c0b68afa01766dcadbe23e3d32d8e2
+3 NULL NULL NULL NULL
+
+# base64 has no padding, as DataFusion writes it. DuckDB encodes to a BLOB,
+# and its base64 is to_base64.
+onlyif openetl
+query ITTT
+SELECT id, encode(s, 'hex') AS a, encode(s, 'base64') AS b, decode(encode(s, 'base64'), 'base64') AS c FROM f
+----
+1 48656c6c6f20576f726c64 SGVsbG8gV29ybGQ 48656c6c6f20576f726c64
+2 c3bc6ec3af2063c3b664c3a9 w7xuw68gY8O2ZMOp c3bc6ec3af2063c3b664c3a9
+3 NULL NULL NULL
+
+query IT
+SELECT id, length(CAST(uuid() AS TEXT)) = 36 AS ok FROM f
+----
+1 true
+2 true
+3 true
+
+# Conditionals.
+query IIIII
+SELECT id, coalesce(n, 0) AS a, nullif(n, 12) AS b, greatest(n, 0, -1) AS c, least(n, 0) AS e FROM f
+----
+1 12 NULL 12 0
+2 -7 -7 0 -7
+3 0 NULL 0 0
+
+# DuckDB has no nvl nor nvl2; ifnull it has.
+onlyif openetl
+query IIII
+SELECT id, nvl(n, -1) AS a, ifnull(n, -1) AS b, nvl2(n, 1, 0) AS c FROM f
+----
+1 12 12 1
+2 -7 -7 1
+3 -1 -1 0
+
+# Time. The engine's clock gives now() and current_date.
+query ITT
+SELECT id, now() IS NOT NULL AS a, current_date >= DATE '2026-01-01' AS b FROM f
+----
+1 true true
+2 true true
+3 true true
+
+query ITT
+SELECT id, date_trunc('hour', ts) AS a, date_trunc('month', d) AS b FROM f
+----
+1 2024-02-29 12:00:00+00 2024-02-01 00:00:00
+2 1970-01-01 00:00:00+00 1970-01-01 00:00:00
+3 NULL NULL
+
+query IIIII
+SELECT id, date_part('year', ts) AS a, date_part('month', d) AS b, extract(day FROM ts) AS c, extract(hour FROM ts) AS e FROM f
+----
+1 2024 2 29 12
+2 1970 1 1 0
+3 NULL NULL NULL NULL
+
+query IT
+SELECT id, make_date(2024, 2, 29) AS d FROM f
+----
+1 2024-02-29
+2 2024-02-29
+3 2024-02-29
+
+# to_timestamp gives a timestamp without a time zone, in UTC, as
+# DataFusion's does; DuckDB's, as Postgres's, has one.
+onlyif openetl
+query IT
+SELECT id, to_timestamp(1700000000) AS t FROM f
+----
+1 2023-11-14 22:13:20
+2 2023-11-14 22:13:20
+3 2023-11-14 22:13:20
+
+onlyif duckdb
+query IT
+SELECT id, to_timestamp(1700000000) AS t FROM f
+----
+1 2023-11-14 22:13:20+00
+2 2023-11-14 22:13:20+00
+3 2023-11-14 22:13:20+00
+
+# DuckDB has no date_bin, from_unixtime, to_unixtime, to_date with one
+# argument, nor the to_timestamp of each unit.
+onlyif openetl
+query ITTIT
+SELECT id, date_bin(INTERVAL '15 minutes', ts, TIMESTAMP '2000-01-01 00:00:00') AS a, from_unixtime(n * 86400) AS b, to_unixtime(ts) AS c, to_date('2024-03-01') AS e FROM f
+----
+1 2024-02-29 12:30:00+00 1970-01-13 00:00:00 1709210096 2024-03-01
+2 1970-01-01 00:00:00+00 1969-12-25 00:00:00 0 2024-03-01
+3 NULL NULL NULL 2024-03-01
+
+# Nor these.
+onlyif openetl
+query ITTTT
+SELECT id, to_timestamp_seconds(n) AS a, to_timestamp_millis(n) AS b, to_timestamp_micros(n) AS c, to_timestamp_nanos(n) AS e FROM f
+----
+1 1970-01-01 00:00:12 1970-01-01 00:00:00.012 1970-01-01 00:00:00.000012 1970-01-01 00:00:00.000000012
+2 1969-12-31 23:59:53 1969-12-31 23:59:59.993 1969-12-31 23:59:59.999993 1969-12-31 23:59:59.999999993
+3 NULL NULL NULL NULL
+
+# to_char takes strftime's patterns, as DataFusion's does, not Postgres's.
+# DuckDB spells it strftime.
+onlyif openetl
+query ITT
+SELECT id, to_char(ts, '%Y/%m/%d %H:%M') AS a, date_format(d, '%d.%m.%Y') AS b FROM f
+----
+1 2024/02/29 12:34 29.02.2024
+2 1970/01/01 00:00 01.01.1970
+3 NULL NULL
+
+# Lists.
+query ITTT
+SELECT id, array_append(nums, 9) AS a, array_prepend(0, nums) AS b, array_concat(nums, [7, 8]) AS c FROM f
+----
+1 [3, 1, 2, 9] [0, 3, 1, 2] [3, 1, 2, 7, 8]
+2 [5, 9] [0, 5] [5, 7, 8]
+3 [9] [0] [7, 8]
+
+query ITTI
+SELECT id, array_has(tags, 'a') AS a, array_contains(tags, 'z') AS b, array_position(tags, 'b') AS c FROM f
+----
+1 true false 1
+2 false false NULL
+3 NULL NULL NULL
+
+query IIIT
+SELECT id, array_length(nums) AS a, array_extract(nums, 1) AS c, array_reverse(nums) AS e FROM f
+----
+1 3 3 [2, 1, 3]
+2 1 5 [5]
+3 NULL NULL NULL
+
+# DuckDB's cardinality takes a MAP.
+onlyif openetl
+query II
+SELECT id, cardinality(tags) AS b FROM f
+----
+1 3
+2 0
+3 NULL
+
+query IT
+SELECT id, array_slice(nums, 1, 2) AS a FROM f
+----
+1 [3, 1]
+2 [5]
+3 NULL
+
+# Nulls sort first.
+query IT
+SELECT id, array_sort(nums) AS b FROM f
+----
+1 [1, 2, 3]
+2 [5]
+3 NULL
+
+# A list of nulls joins to an empty string.
+query IT
+SELECT id, array_to_string(tags, '|') AS c FROM f
+----
+1 b|a|b
+2 (empty)
+3 NULL
+
+query ITT
+SELECT id, array_has_all(tags, ['a', 'b']) AS a, array_has_any(tags, ['z', 'a']) AS b FROM f
+----
+1 true true
+2 false false
+3 NULL NULL
+
+query IT
+SELECT id, flatten([nums, [0]]) AS b FROM f
+----
+1 [3, 1, 2, 0]
+2 [5, 0]
+3 [0]
+
+# DuckDB's is list_value.
+onlyif openetl
+query IT
+SELECT id, make_array(n, 1, 2) AS a FROM f
+----
+1 [12, 1, 2]
+2 [-7, 1, 2]
+3 [NULL, 1, 2]
+
+# array_remove takes out the first match, as DataFusion's does; Postgres's
+# takes out each. DuckDB has no array_remove, and its array_distinct keeps
+# no order.
+onlyif openetl
+query ITT
+SELECT id, array_remove(tags, 'b') AS a, array_distinct(tags) AS b FROM f
+----
+1 [a, b] [b, a]
+2 [] []
+3 NULL NULL
+
+query II
+SELECT id, nums[1] AS first FROM f
+----
+1 3
+2 5
+3 NULL
+
+# Structs, read back to a value an output holds. DuckDB's are struct_pack
+# and struct_extract.
+onlyif openetl
+query ITI
+SELECT id, get_field(named_struct('a', n, 'b', s), 'b') AS a, get_field(struct(n, s), 'c0') AS b FROM f
+----
+1 Hello World 12
+2 ünï cödé -7
+3 NULL NULL
