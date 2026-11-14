@@ -130,7 +130,7 @@ A transactional destination can declare **lane commits**: `laneCommits` in its p
 
 Keeping a copy of each lane's part, so that Recover can commit it, is the destination's choice. Without one, recovery reads the source again, which is exact only for a source that returns the same records from the same position.
 
-That read gives each split, or the whole stream, the state it starts from and an `until`: the state the source sent where the epoch's part ended, at a resume point or at the split's completion. A source that can stop there sends no record past that position. It sends a resume point with the `until` state, and completes the split with it. A source that ignores `until` makes the read exact only if it sends the same resume points as the first read did. A source that batches records by what it fetched, such as one reading a log, can rarely do that.
+That read gives each split, or the whole stream, the state it starts from. If the epoch's part ended at a resume point, the read also gives an `until`: the state of that resume point. A source can assume that `until` is the state of a resume point it sent before. It is never the state of a completion, which can be a cursor floor rather than where the read ended. A source that can stop at `until` sends no record past that position. It sends a resume point with the `until` state, and completes the split with it. A source that ignores `until` makes the read exact only if it sends the same resume points as the first read did. A source that batches records by what it fetched, such as one reading a log, can rarely do that. A part that ended at the split's completion has no `until`: OpenETL reads it to its completion, which must be at the state the first read completed at.
 
 ## Write a source in Go
 

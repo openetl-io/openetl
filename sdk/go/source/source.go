@@ -88,8 +88,8 @@ type Split struct {
 	ID string
 	// Nil: from its beginning.
 	State []byte
-	// In a read that isn't continuous, where the split's read ends: a state
-	// the source emitted for it before, at a resume point or at its
+	// In a read that isn't continuous, where the split's read ends: the
+	// state of a resume point the source emitted for it before, never of a
 	// completion. A source that can stop there emits nothing past that
 	// position, then a resume point with this state, and completes the
 	// split with it. The platform sets it to read part of an epoch again. A

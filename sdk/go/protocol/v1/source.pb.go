@@ -645,13 +645,13 @@ type Split struct {
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Unset: from its beginning.
 	State []byte `protobuf:"bytes,2,opt,name=state,proto3,oneof" json:"state,omitempty"`
-	// In a read that isn't continuous, where the split's read ends: a state
-	// the source sent for it before, at a resume point or at its completion.
-	// A source that can stop there sends nothing past that position, then a
-	// resume point with this state, and completes the split with it. The
-	// platform sets it to read part of an epoch again. A source that ignores
-	// it must send the same resume points as before for that read to be
-	// exact. Unset: where the read would end.
+	// In a read that isn't continuous, where the split's read ends: the state
+	// of a resume point the source sent for it before, never of a
+	// completion. A source that can stop there sends nothing past that
+	// position, then a resume point with this state, and completes the split
+	// with it. The platform sets it to read part of an epoch again. A source
+	// that ignores it must send the same resume points as before for that
+	// read to be exact. Unset: where the read would end.
 	Until         []byte `protobuf:"bytes,3,opt,name=until,proto3,oneof" json:"until,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
