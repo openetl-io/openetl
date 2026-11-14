@@ -26,7 +26,7 @@ use chrono::{LocalResult, NaiveDateTime, Offset, TimeDelta, TimeZone};
 use chrono_tz::{TZ_VARIANTS, Tz};
 use datafusion_common::{Result, ScalarValue, exec_err, plan_err};
 use datafusion_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion_sql::sqlparser::ast::{self, Spanned};
 use datafusion_sql::sqlparser::tokenizer::Span;
@@ -41,7 +41,9 @@ pub(crate) fn function() -> Arc<ScalarUDF> {
 
 /// Rewrites each `ts AT TIME ZONE zone` in a SELECT's list and WHERE as
 /// `timezone(zone, ts)`, and gives where a literal zone, there or in a call
-/// of `timezone`, isn't one, with why.
+/// of `timezone`, in parentheses or not, isn't one, with why. A zone that
+/// folds to a constant otherwise, such as `'C' || 'ET'`, is [`constant`]'s
+/// to refuse, after binding.
 pub(crate) fn rewrite(s: &mut ast::Select) -> Vec<(Span, String)> {
     let mut refused = Vec::new();
     let mut visit = |e: &mut ast::Expr| {
@@ -58,7 +60,7 @@ pub(crate) fn rewrite(s: &mut ast::Select) -> Vec<(Span, String)> {
         }
         if let ast::Expr::Function(f) = e
             && let Some(zone) = zone_argument(f)
-            && let ast::Expr::Value(v) = zone
+            && let ast::Expr::Value(v) = unnested(zone)
             && let Some(name) = v.value.clone().into_string()
             && find(&name).is_none()
         {
@@ -91,6 +93,34 @@ fn call(span: Span, zone: ast::Expr, ts: ast::Expr) -> ast::Expr {
         over: None,
         within_group: Vec::new(),
     })
+}
+
+fn unnested(mut e: &ast::Expr) -> &ast::Expr {
+    while let ast::Expr::Nested(inner) = e {
+        e = inner;
+    }
+    e
+}
+
+/// Why a bound expression calls `timezone` with a constant zone that isn't
+/// one, as simplifying leaves it: a literal.
+pub(crate) fn constant(e: &Expr) -> Option<String> {
+    let Expr::ScalarFunction(f) = e else {
+        return None;
+    };
+    if f.func.name() != NAME {
+        return None;
+    }
+    let Some(Expr::Literal(
+        ScalarValue::Utf8(Some(name))
+        | ScalarValue::Utf8View(Some(name))
+        | ScalarValue::LargeUtf8(Some(name)),
+        _,
+    )) = f.args.first()
+    else {
+        return None;
+    };
+    find(name).is_none().then(|| not_a_zone(name))
 }
 
 /// The zone of a call of `timezone` with two arguments.
@@ -137,11 +167,11 @@ fn not_a_zone(name: &str) -> String {
         });
     if offset {
         format!(
-            "'{name}' is an offset, which Postgres reads with its sign reversed and DuckDB refuses: write a time zone's IANA name, such as 'Asia/Kolkata'"
+            "'{name}' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'"
         )
     } else if !name.contains('/') {
         format!(
-            "'{name}' isn't a time zone's IANA name, and an abbreviation is a fixed offset in Postgres but a zone with daylight saving in DuckDB: write a name such as 'Europe/Berlin', or 'UTC'"
+            "'{name}' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'"
         )
     } else {
         format!(
@@ -183,7 +213,7 @@ impl ScalarUDFImpl for Timezone {
             [T::Utf8, T::Timestamp(unit, None)] => Ok(T::Timestamp(*unit, Some("UTC".into()))),
             [T::Utf8, T::Timestamp(unit, Some(_))] => Ok(T::Timestamp(*unit, None)),
             [T::Utf8, T::Date32 | T::Date64] => plan_err!(
-                "AT TIME ZONE on a date is midnight in the zone in DuckDB but midnight UTC's wall-clock time in the zone in Postgres: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC"
+                "AT TIME ZONE takes a timestamp, not a date: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC"
             ),
             [T::Utf8, T::Utf8 | T::Utf8View | T::LargeUtf8] => plan_err!(
                 "AT TIME ZONE takes a timestamp, not text: write TIMESTAMP '…' for a wall-clock time or TIMESTAMPTZ '…' for an instant, or CAST the text to one"

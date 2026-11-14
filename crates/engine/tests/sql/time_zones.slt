@@ -192,22 +192,22 @@ FROM orders
 1 2026-11-14 15:00:00 2026-11-15 2026-11-14 08:30:00+00
 
 # Refused: the forms Postgres and DuckDB read differently, or not at all.
-query error unsupported 1:28 '\+05:30' is an offset, which Postgres reads with its sign reversed and DuckDB refuses: write a time zone's IANA name, such as 'Asia/Kolkata'
+query error unsupported 1:28 '\+05:30' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'
 SELECT id, ts AT TIME ZONE '+05:30' AS a FROM z
 
-query error unsupported 1:29 'UTC\-3' is an offset, which Postgres reads with its sign reversed and DuckDB refuses: write a time zone's IANA name, such as 'Asia/Kolkata'
+query error unsupported 1:29 'UTC\-3' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'
 SELECT id, tsz AT TIME ZONE 'UTC-3' AS a FROM z
 
-query error unsupported 1:29 'CET' isn't a time zone's IANA name, and an abbreviation is a fixed offset in Postgres but a zone with daylight saving in DuckDB: write a name such as 'Europe/Berlin', or 'UTC'
+query error unsupported 1:29 'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
 SELECT id, tsz AT TIME ZONE 'CET' AS a FROM z
 
-query error unsupported 1:21 'PST' isn't a time zone's IANA name, and an abbreviation is a fixed offset in Postgres but a zone with daylight saving in DuckDB: write a name such as 'Europe/Berlin', or 'UTC'
+query error unsupported 1:21 'PST' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
 SELECT id, timezone('PST', tsz) AS a FROM z
 
 query error unsupported 1:28 'Nowhere/Land' isn't a time zone transforms know: write an IANA name such as 'Europe/Berlin', or 'UTC'
 SELECT id, ts AT TIME ZONE 'Nowhere/Land' AS a FROM z
 
-query error bind 1:1 AT TIME ZONE on a date is midnight in the zone in DuckDB but midnight UTC's wall\-clock time in the zone in Postgres: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC
+query error bind 1:1 AT TIME ZONE takes a timestamp, not a date: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC
 SELECT id, CAST(ts AS DATE) AT TIME ZONE 'Europe/Berlin' AS a FROM z
 
 query error bind 1:1 AT TIME ZONE takes a timestamp, not text: write TIMESTAMP '…' for a wall\-clock time or TIMESTAMPTZ '…' for an instant, or CAST the text to one
@@ -224,3 +224,33 @@ SELECT id, CAST(ts AS TIME) AT TIME ZONE 'UTC' AS a FROM z
 
 query error bind 1:1 a time zone is text, such as 'Europe/Berlin', not Interval\(MonthDayNano\)
 SELECT id, ts AT TIME ZONE INTERVAL '1 hour' AS a FROM z
+
+# A zone in parentheses, or one that folds to a constant, is checked as a
+# literal is. Without parentheses, tsz AT TIME ZONE 'C' || 'ET' is
+# (tsz AT TIME ZONE 'C') || 'ET'.
+query error unsupported 1:29 'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, ts AT TIME ZONE ('CET') AS a FROM z
+
+query error unsupported 1:23 'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, timezone((('CET')), tsz) AS a FROM z
+
+query error unsupported 1:29 'C' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, tsz AT TIME ZONE 'C' || 'ET' AS a FROM z
+
+query error unsupported 1:12 'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id, tsz AT TIME ZONE ('C' || 'ET') AS a FROM z
+
+query error unsupported 1:12 '\+05:30' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'
+SELECT id, tsz AT TIME ZONE CAST('+05:30' AS VARCHAR) AS a FROM z
+
+query error unsupported 1:1 'cet' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'
+SELECT id FROM z WHERE timezone(lower('CET'), tsz) IS NULL
+
+query error unsupported 1:22 'Mars/Olympus' isn't a time zone transforms know: write an IANA name such as 'Europe/Berlin', or 'UTC'
+SELECT id, TIMESTAMP '2024-01-15 12:00:00' AT TIME ZONE ('Mars/' || 'Olympus') AS a FROM z
+
+query IT
+SELECT id, tsz AT TIME ZONE ('Europe/' || 'Berlin') AS a FROM z WHERE id < 3
+----
+1 2024-01-15 13:00:00
+2 2024-07-15 14:00:00.123456

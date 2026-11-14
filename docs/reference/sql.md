@@ -139,7 +139,7 @@ The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the d
 
 ### Time zones
 
-`ts AT TIME ZONE zone`, and the function `timezone(zone, ts)`, convert between a timestamp with a time zone and the wall-clock time in a zone. They give what Postgres and DuckDB give:
+`ts AT TIME ZONE zone`, and the function `timezone(zone, ts)`, convert between a timestamp with a time zone and the wall-clock time in a zone:
 
 | `ts` is | The result is |
 |---|---|
@@ -158,21 +158,22 @@ FROM orders
 ```
 
 - `zone` is the IANA name of a time zone, such as `'Europe/Berlin'`, in any case, or `'UTC'`. It can come from a column, so it can differ by row.
-- A literal zone that is not such a name is refused, with what to write instead. A zone from a column that is not such a name fails its row.
-- An offset such as `'+05:30'` or `'UTC-3'` is refused, because Postgres reads its sign reversed and DuckDB refuses it. Write a zone's name, such as `'Asia/Kolkata'`.
-- An abbreviation such as `'CET'` or `'PST'` is refused, because Postgres reads it as a fixed offset and DuckDB reads it as a zone with daylight saving.
+- An offset such as `'+05:30'` or `'UTC-3'` is not a zone. Write a zone's name, such as `'Asia/Kolkata'`.
+- An abbreviation such as `'CET'` or `'PST'` is not a zone. Write a zone's name, such as `'Europe/Berlin'`.
+- A zone written as a literal, or as an expression of literals such as `'Europe/' || 'Berlin'`, is checked at plan time. If it is not a zone, the statement is refused.
+- A zone from a column is checked for each row. If it is not a zone, the row fails.
 - Daylight saving can skip a wall-clock time or repeat it. A skipped time is read with the offset before the change, and a repeated time with the offset after it. Each gives the later of the two instants. In Berlin, `TIMESTAMP '2024-03-31 02:30:00'` is `2024-03-31 01:30:00+00`, and `TIMESTAMP '2024-10-27 02:30:00'` is `2024-10-27 01:30:00+00`.
 - A null `ts` or `zone` gives null.
 - `AT TIME ZONE` binds more tightly than arithmetic: `ts AT TIME ZONE 'UTC' + INTERVAL '1 hour'` adds the hour to the result.
 
-These forms are refused at plan time:
+These forms are refused at plan time. A zone from a column that is an offset, an abbreviation or an unknown name is not refused: each row with such a zone fails instead.
 
 | What | Message |
 |---|---|
-| An offset as the zone | `'+05:30' is an offset, which Postgres reads with its sign reversed and DuckDB refuses: write a time zone's IANA name, such as 'Asia/Kolkata'` |
-| An abbreviation as the zone | `'CET' isn't a time zone's IANA name, and an abbreviation is a fixed offset in Postgres but a zone with daylight saving in DuckDB: write a name such as 'Europe/Berlin', or 'UTC'` |
-| A name that is not a time zone | `'Nowhere/Land' isn't a time zone transforms know: write an IANA name such as 'Europe/Berlin', or 'UTC'` |
-| A date | `AT TIME ZONE on a date is midnight in the zone in DuckDB but midnight UTC's wall-clock time in the zone in Postgres: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC` |
+| A literal offset as the zone | `'+05:30' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'` |
+| A literal abbreviation as the zone | `'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'` |
+| A literal name that is not a time zone | `'Nowhere/Land' isn't a time zone transforms know: write an IANA name such as 'Europe/Berlin', or 'UTC'` |
+| A date | `AT TIME ZONE takes a timestamp, not a date: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC` |
 | A string, or a text column | `AT TIME ZONE takes a timestamp, not text: write TIMESTAMP '…' for a wall-clock time or TIMESTAMPTZ '…' for an instant, or CAST the text to one` |
 | An untyped `NULL` | `AT TIME ZONE takes a timestamp, and NULL has no type: write CAST(NULL AS TIMESTAMP) or CAST(NULL AS TIMESTAMPTZ)` |
 | A time of day | `AT TIME ZONE takes a timestamp, and a time of day has no date to place it in a zone: add it to a date first` |

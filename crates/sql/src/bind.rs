@@ -163,9 +163,37 @@ pub(crate) fn plan(
     ];
     let ctx = OptimizerContext::new_with_config_options(Arc::new(p.options))
         .without_query_execution_start_time();
-    Optimizer::with_rules(rules)
+    let plan = Optimizer::with_rules(rules)
         .optimize(plan, &ctx, |_, _| {})
-        .map_err(bind)
+        .map_err(bind)?;
+    zones(&plan, at, column)?;
+    Ok(plan)
+}
+
+/// Refuses a time zone that simplifying folded to a constant that isn't
+/// one, where the SQL doesn't write it as a literal, as `'C' || 'ET'`.
+fn zones(plan: &LogicalPlan, at: Position, column: &dyn Fn(&str) -> Position) -> Result<(), Error> {
+    let mut found = None;
+    let _ = plan.apply(|node| {
+        let projection = matches!(node, LogicalPlan::Projection(_));
+        node.apply_expressions(|e| {
+            let at = match e {
+                Expr::Alias(a) if projection => column(&a.name),
+                _ => at,
+            };
+            e.apply(|part| match crate::zone::constant(part) {
+                Some(why) => {
+                    found = Some(Error::at(ErrorKind::Unsupported, at, why));
+                    Ok(TreeNodeRecursion::Stop)
+                }
+                None => Ok(TreeNodeRecursion::Continue),
+            })
+        })
+    });
+    match found {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Casts the plan's columns to logical types where they aren't, and refuses
