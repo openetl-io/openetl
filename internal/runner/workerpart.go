@@ -64,6 +64,11 @@ func RunWorker(ctx context.Context, job Job, t attempt.Target, opts attempt.Opti
 	if errors.Is(err, errFinished) {
 		err = nil
 	}
+	if err != nil && ctx.Err() != nil {
+		// Its pod is stopping, which fails the attempt as transient without
+		// a checkpoint, whatever the part failed with as it stopped.
+		err = errs.Wrap(errs.Transient, err, "runner: the worker was stopped")
+	}
 	if err != nil {
 		w.Fail(err)
 	}

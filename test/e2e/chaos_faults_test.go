@@ -38,6 +38,9 @@ const (
 // What an object-store proxy does with a request.
 type action struct {
 	kind int
+	// A kill's crash point. It's counted when it fires, and again, as
+	// "killed at crash POINT", once it has killed.
+	point string
 	// A kill is of the worker that commits the attempt's epochs, which
 	// sees the response go to its coordinator, rather than of what wrote.
 	worker bool
@@ -166,7 +169,7 @@ func (b *faultBook) decide(slot int, pipeline string, kind int) action {
 	// not have written for it yet; died times the others.
 	fire := func(a action) action {
 		f.counts["crash "+armed]++
-		f.armed = f.armed[1:]
+		f.armed, a.point = f.armed[1:], armed
 		if a.kind == actKillBefore {
 			f.killed = time.Now()
 		}

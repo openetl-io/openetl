@@ -346,8 +346,9 @@ func (s *slot) stopWorker(pipeline string, pid int) bool {
 	return true
 }
 
-// crashWorker kills the pipeline's worker that commits, worker 0.
-func (s *slot) crashWorker(pipeline string) {
+// crashWorker kills the pipeline's worker that commits, worker 0, and
+// reports whether there was one.
+func (s *slot) crashWorker(pipeline string) bool {
 	s.mu.Lock()
 	pid := 0
 	if w := s.workers[pipeline]; w != nil {
@@ -356,7 +357,9 @@ func (s *slot) crashWorker(pipeline string) {
 	s.mu.Unlock()
 	if !openetld(pid) || !s.stopWorker(pipeline, pid) {
 		s.pool.book.count(pipeline, "crash with no worker to kill")
+		return false
 	}
+	return true
 }
 
 // openetld reports whether pid is an openetld process: the name guards
@@ -369,11 +372,14 @@ func openetld(pid int) bool {
 	return err == nil && filepath.Base(strings.TrimSpace(string(name))) == "openetld"
 }
 
-// crash kills what's writing the pipeline's checkpoints through this slot.
-func (s *slot) crash(pipeline string) {
+// crash kills what's writing the pipeline's checkpoints through this slot,
+// and reports whether there was something to kill.
+func (s *slot) crash(pipeline string) bool {
 	if !s.stop(pipeline, syscall.SIGKILL) {
 		s.pool.book.count(pipeline, "crash with nothing to kill")
+		return false
 	}
+	return true
 }
 
 // killLauncher kills the slot's launcher and leaves its pods running, as when
@@ -517,7 +523,7 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch act.kind {
 	case actKillBefore:
-		p.slot.crash(pipeline)
+		p.kill(pipeline, act)
 		panic(http.ErrAbortHandler)
 	case actStatus:
 		w.Header().Set("Content-Type", "application/xml")
@@ -525,8 +531,12 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>%s</Code><Message>injected</Message></Error>`, act.code)
 		return
 	}
+	killAfter := act.kind == actKillAfter || act.kind == actKillLater
 	res, err := p.forward(r)
 	if err != nil {
+		if killAfter {
+			p.slot.pool.book.count(pipeline, "missed crash "+act.point+": the write failed")
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -534,26 +544,41 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ok := res.StatusCode/100 == 2
 	if ok {
 		p.slot.pool.book.wrote(p.slot.i, pipeline, kind)
+	} else if killAfter {
+		p.slot.pool.book.count(pipeline, "missed crash "+act.point+": the write failed")
 	}
 	switch {
 	case act.kind == actKillAfter && ok && act.worker:
-		p.slot.crashWorker(pipeline)
+		p.kill(pipeline, act)
 	case act.kind == actKillAfter && ok:
-		p.slot.crash(pipeline)
+		p.kill(pipeline, act)
 		panic(http.ErrAbortHandler)
 	case act.kind == actDrop:
 		_, _ = io.Copy(io.Discard, res.Body)
 		panic(http.ErrAbortHandler)
-	case act.kind == actKillLater && ok && act.worker:
-		time.AfterFunc(act.later, func() { p.slot.crashWorker(pipeline) })
 	case act.kind == actKillLater && ok:
-		time.AfterFunc(act.later, func() { p.slot.crash(pipeline) })
+		time.AfterFunc(act.later, func() { p.kill(pipeline, act) })
 	}
 	for k, vs := range res.Header {
 		w.Header()[k] = vs
 	}
 	w.WriteHeader(res.StatusCode)
 	_, _ = io.Copy(w, res.Body)
+}
+
+// kill carries out the crash point act fired for, and counts it once it has
+// killed: the coordinator or the pod or runner that wrote, or the worker
+// that commits.
+func (p *s3Proxy) kill(pipeline string, act action) {
+	killed := false
+	if act.worker {
+		killed = p.slot.crashWorker(pipeline)
+	} else {
+		killed = p.slot.crash(pipeline)
+	}
+	if killed {
+		p.slot.pool.book.count(pipeline, "killed at crash "+act.point)
+	}
 }
 
 func (p *s3Proxy) forward(r *http.Request) (*http.Response, error) {

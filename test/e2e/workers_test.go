@@ -13,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
 	"gocloud.dev/blob"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
@@ -80,6 +82,25 @@ func lastAttempt(t *testing.T, name string) *apiv1.SyncAttempt {
 		t.Fatalf("%s's latest sync has no attempts", name)
 	}
 	return last
+}
+
+// discover discovers the source on a runner of the data plane, so that the
+// plan and the placer know its streams.
+func discover(t *testing.T, name, plane string) {
+	t.Helper()
+	if _, err := apiv1connect.NewSourceServiceClient(env.http, env.apiURL).DiscoverSource(t.Context(), connect.NewRequest(&apiv1.DiscoverSourceRequest{
+		Name: "workspaces/default/sources/" + name, DataPlane: plane,
+	})); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// lastPlacements is how many times the pipeline's latest attempt was
+// placed.
+func lastPlacements(t *testing.T, name string) int {
+	t.Helper()
+	return mustQuery[int](t, `SELECT d.placements FROM dispatches d JOIN attempts a ON a.org_id = d.org_id AND a.id = d.id
+		JOIN pipelines p ON p.org_id = a.org_id AND p.id = a.pipeline_id WHERE p.name = $1 ORDER BY a.create_time DESC LIMIT 1`, name)
 }
 
 // workersJoined are the workers, by index, that joined the coordinator of
@@ -168,8 +189,11 @@ func checkS3Times(t *testing.T, b *blob.Bucket, table string, rows, times int) {
 // every row lands once a sync, as the job is rescaled from one pod to three
 // workers and back, each sync restoring from the record the one before
 // wrote. A Postgres snapshot into Iceberg runs on workers too, each table
-// read on one of them, as the plan says. A job that can't run on workers
-// runs on one pod, and the plan and the attempt say why.
+// read on one of them, as the plan says once the source is discovered. A
+// job that can't run on workers runs on one pod, and the attempt says why:
+// before the source is discovered, its coordinator finds out, and the same
+// attempt is placed again; after, the plan says why too, and the control
+// plane places the attempt on one pod at once.
 func TestWorkersInPods(t *testing.T) {
 	plane, token := placementPlane(t)
 	launcher := startPodLauncher(t, plane, token)
@@ -235,7 +259,22 @@ func TestWorkersInPods(t *testing.T) {
 		dst := icebergDest(t, schema(name)+"_out")
 		tables := []string{"a", "b", "c"}
 		workerTables(t, name, 5000, tables...)
-		apply(t, workersDocs(name, plane, dst, "", 3)...)
+		// Discovered, the source's streams are in the plan, which says which
+		// worker reads each table.
+		d := workersDocs(name, plane, dst, "", 3)
+		apply(t, d[0])
+		discover(t, name, plane)
+		plan := applyAll(t, false, d...).GetPlans()[0]
+		for _, tbl := range tables {
+			if !slices.ContainsFunc(plan.GetWarnings(), func(w *apiv1.PlanWarning) bool {
+				return w.GetStream() == tbl && strings.Contains(w.GetMessage(), "each attempt reads it on one of its 3 workers: an overwrite's read ends on one worker")
+			}) {
+				t.Errorf("no warning that %s is read on one worker: %v", tbl, plan.GetWarnings())
+			}
+		}
+		if plan.GetJob().GetWorkers() != 3 {
+			t.Errorf("the plan runs the snapshot on %d workers, want 3", plan.GetJob().GetWorkers())
+		}
 		status, stats := waitSync(t, name, 3*time.Minute)
 		if status != "succeeded" {
 			t.Fatalf("sync %s: %s", status, stats)
@@ -243,21 +282,6 @@ func TestWorkersInPods(t *testing.T) {
 		checkIceberg(t, schema(name)+"_out", 5000, tables...)
 		if a := lastAttempt(t, name); a.GetWorkers() != 3 {
 			t.Errorf("the snapshot ran on %d workers (%q), want 3", a.GetWorkers(), a.GetOnePod())
-		}
-		// Once the source's catalog is known, the plan says which worker
-		// reads each table.
-		readAlone := func(plan *apiv1.PipelinePlan, table string) bool {
-			return slices.ContainsFunc(plan.GetWarnings(), func(w *apiv1.PlanWarning) bool {
-				return w.GetStream() == table && strings.Contains(w.GetMessage(), "on one of its 3 workers: an overwrite's read ends on one worker")
-			})
-		}
-		var plan *apiv1.PipelinePlan
-		eventually(t, 30*time.Second, "the plan to say each table is read on one worker", func() bool {
-			plan = planOf(t, workersDocs(name, plane, dst, "", 3)...)
-			return readAlone(plan, "a") && readAlone(plan, "b") && readAlone(plan, "c")
-		})
-		if plan.GetJob().GetWorkers() != 3 {
-			t.Errorf("the plan runs the snapshot on %d workers, want 3", plan.GetJob().GetWorkers())
 		}
 	})
 
@@ -273,19 +297,33 @@ func TestWorkersInPods(t *testing.T) {
 		}
 		checkRows(t, schema(name)+"_out", 5000, "items")
 		const why = `stream "items" holds columns, which runs on one pod`
+		// Undiscovered, the source's streams are the coordinator's to check:
+		// it finds the job can't run on workers, and the same attempt is
+		// placed again on one pod.
 		if a := lastAttempt(t, name); a.GetWorkers() != 0 || !strings.Contains(a.GetOnePod(), why) {
 			t.Errorf("the attempt ran on %d workers, and says %q; want one pod, because %s", a.GetWorkers(), a.GetOnePod(), why)
 		}
-		// Once the source's catalog is known, the plan says why too.
-		var plan *apiv1.PipelinePlan
-		eventually(t, 30*time.Second, "the plan to say why the job runs on one pod", func() bool {
-			plan = planOf(t, workersDocs(name, plane, dst, destination, 3)...)
-			return slices.ContainsFunc(plan.GetWarnings(), func(w *apiv1.PlanWarning) bool {
-				return strings.Contains(w.GetMessage(), "resources.workers asks for 3 workers, and the job runs on one pod: "+why)
-			})
-		})
-		if plan.GetJob().GetWorkers() != 0 {
-			t.Errorf("the plan runs the job on %d workers, want one pod", plan.GetJob().GetWorkers())
+		if n := lastPlacements(t, name); n != 2 {
+			t.Errorf("the attempt was placed %d times, want on workers, then on one pod", n)
+		}
+
+		// Discovered, the plan says why, and the control plane places the
+		// next sync's attempt on one pod at once.
+		discover(t, name, plane)
+		plan := planOf(t, workersDocs(name, plane, dst, destination, 3)...)
+		if plan.GetJob().GetWorkers() != 0 || !slices.ContainsFunc(plan.GetWarnings(), func(w *apiv1.PlanWarning) bool {
+			return strings.Contains(w.GetMessage(), "resources.workers asks for 3 workers, and the job runs on one pod: "+why)
+		}) {
+			t.Errorf("the plan runs the job on %d workers, and warns %v; want one pod, because %s", plan.GetJob().GetWorkers(), plan.GetWarnings(), why)
+		}
+		if status, stats := syncNow(t, name); status != "succeeded" {
+			t.Fatalf("second sync %s: %s", status, stats)
+		}
+		if a := lastAttempt(t, name); a.GetWorkers() != 0 || !strings.Contains(a.GetOnePod(), why) {
+			t.Errorf("the second sync's attempt ran on %d workers, and says %q; want one pod, because %s", a.GetWorkers(), a.GetOnePod(), why)
+		}
+		if n := lastPlacements(t, name); n != 1 {
+			t.Errorf("the second sync's attempt was placed %d times, want once, on one pod", n)
 		}
 	})
 

@@ -649,7 +649,21 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		if c.onWorkers() && res.onWorkers == 0 {
 			t.Errorf("no attempt of %s ran on workers", name)
 		}
-		for what, n := range s.book.counts(pipeline) {
+		// A fault is counted once it has killed: a crash point as "killed at
+		// crash POINT", the others under their names, or a pod's.
+		counts := s.book.counts(pipeline)
+		for _, f := range c.faults {
+			done := f
+			if strings.HasPrefix(f, "crash ") {
+				done = "killed at " + f
+			} else if pod, ok := podFaults[f]; ok && c.pods {
+				done = pod
+			}
+			if counts[done] == 0 {
+				t.Errorf("%s never killed anything; faults: %v", f, counts)
+			}
+		}
+		for what, n := range counts {
 			if strings.HasPrefix(what, "missed ") || strings.HasSuffix(what, " to kill") {
 				t.Errorf("%s: %d", what, n)
 			}

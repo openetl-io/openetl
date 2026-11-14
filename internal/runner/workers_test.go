@@ -483,6 +483,34 @@ func TestAWorkerLostMidEpoch(t *testing.T) {
 	p.store.check(t, 120)
 }
 
+// A worker stopped mid-epoch, as a pod is on a node drain, fails the attempt
+// as transient, whatever its part failed with as it stopped: it's retried
+// like a worker lost.
+func TestAStoppedWorkerFailsTheAttemptAsTransient(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	gate := make(chan struct{})
+	defer close(gate)
+	p := newPool(t, func() *rangeSource {
+		s := ranges(6, 20, 5)()
+		s.gate = gate
+		return s
+	})
+	j := p.workers("a1", 3)
+	var once sync.Once
+	j.OnCommit = func(uint64) { once.Do(func() { p.kill("a1", 1) }) }
+	_, err := runner.RunAttempt(ctx, j)
+	if errs.CodeOf(err) != errs.Transient || !strings.Contains(fmt.Sprint(err), "worker 1") {
+		t.Fatalf("the attempt failed with %v (%s), want worker 1 transient", err, errs.CodeOf(err))
+	}
+	ended := p.wait("a1")
+	if !slices.ContainsFunc(ended, func(err error) bool {
+		return errs.CodeOf(err) == errs.Transient && strings.Contains(err.Error(), "stopped")
+	}) {
+		t.Errorf("the workers ended with %v, want the stopped one transient", ended)
+	}
+}
+
 // A worker lost between record N and its commit fails the attempt. The
 // next one's workers settle epoch N from its staging, or find its marker
 // if the commit happened, before anything is assigned.

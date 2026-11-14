@@ -35,7 +35,8 @@ import (
 //   - caps: the attempts placed on a launcher hold no more pods or CPU,
 //     counting each worker and the coordinator, than it takes;
 //   - gang: a launch makes all of a placement's pods, or leaves none;
-//   - join: a worker joins only its own placement's coordinator;
+//   - join: a worker is told to join only its own placement's
+//     coordinator, and joins no other;
 //   - liveness: every sync ends, and succeeds unless no launcher could ever
 //     take its attempt, which then fails for that;
 //   - reaped: once every sync has ended, no pod is left.
@@ -292,6 +293,9 @@ func (m *pModel) finish(d *pDispatch, outcome string) {
 }
 
 // held is what an attempt holds of its launcher as the placer counts it.
+// As the dispatcher's placement query does, only placed and running
+// attempts count: a finished placement's pods that still run until the
+// launcher's next report reaps them hold nothing, in the product too.
 func (m *pModel) held(d *pDispatch) (pods int, total resources.Size) {
 	if d.workers == 0 || m.broken == "gang-as-one-pod" {
 		return 1, d.pipe.size
@@ -588,12 +592,17 @@ func (m *pModel) work(p *pPod) {
 		}
 		return
 	}
+	// Told another placement's coordinator, the worker dials it: one that
+	// has gone, or whatever took its address since.
 	if t.placement != p.placement || t.co.d != d {
-		m.problem("join", "%s joins %s", p.name(), t.co.name())
+		m.problem("join", "%s is told to join %s", p.name(), t.co.name())
 	}
 	if t.co.ended || !t.co.running || t.co.phase != pcJoin {
 		m.end(p, "its coordinator isn't taking workers")
 		return
+	}
+	if t.co.placement != p.placement || t.co.d != d {
+		m.problem("join", "%s joins %s", p.name(), t.co.name())
 	}
 	t.co.joined[p.worker], t.co.beats[p.worker] = true, m.tick
 	p.co = t.co
