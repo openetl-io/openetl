@@ -15,7 +15,7 @@ The statements are row-wise: they rename, compute, filter and unnest columns, on
 
 ## A worked example
 
-This example uses a database source named `shop-db`. Its catalog declares two tables, with these columns:
+This example uses a database source named `shop-db`. Its catalog declares two tables, with these columns. The source splits each table by its primary key:
 
 | Stream | Columns |
 |---|---|
@@ -110,6 +110,11 @@ workspaces/default/pipelines/shop-to-lake (version known after apply)
     order_facts  append  at_least_once  a transform's output over superset inputs, which isn't deduped unless written with merge
     order_tags   append  at_least_once  a transform's output over superset inputs, which isn't deduped unless written with merge
     customers    append  at_least_once  a transform's output over superset inputs, which isn't deduped unless written with merge
+  partitioning:
+    orders       split by id -> writer, needs id
+    order_facts  split by id -> statement 6:1 -> split by order_id -> writer, needs order_id
+    order_tags   split by id -> statement 11:1 -> split by order_id -> writer
+    customers    split by id -> statement 15:1 -> writer, needs id
 ```
 
 Read the `transform.sql` section:
@@ -121,6 +126,8 @@ Read the `transform.sql` section:
 - `passed through` lists the streams that no statement writes.
 
 The `streams` section lists what the destination gets: the outputs, and `orders`.
+
+The `partitioning` section shows that no rows move between lanes. The source splits both tables by `id`, and each statement passes `id` through, so each output's rows stay split by its key. `order_tags` has no key, so its writer needs nothing. [Partitioning in the plan](./index.md#partitioning-in-the-plan) explains the section.
 
 ### Apply and sync
 

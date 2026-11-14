@@ -12,6 +12,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -257,7 +258,7 @@ func (d *laneDest) Open(context.Context, destination.OpenConfig) (destination.Wr
 func laneJob(src source.Source, flow runner.Dataflow, lanes int, key []string) runner.Job {
 	return runner.Job{
 		Owner: "o", Sync: "s", Pipeline: "p", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), Source: src,
-		Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: key, SplitsByKey: true}},
+		Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: key, Partitioning: plan.SourcePartitioning(key, true, false)}},
 		Destination: &laneDest{},
 		Dataflow:    flow,
 		Lanes:       lanes,

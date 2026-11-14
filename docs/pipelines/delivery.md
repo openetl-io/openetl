@@ -88,6 +88,8 @@ workspaces/default/pipelines/shop-orders (version 3714e5de146d)
   job size: s (1 vCPU, 2 GiB), the default, in pool default
   streams:
     orders  merge  effectively_once  superset replay, written with merge
+  partitioning:
+    orders  split by id -> writer, needs id
   problems:
     delivery.require: stream "orders" gets effectively_once (superset replay, written with merge), below exactly_once
 openetl: the plan has problems, so apply would refuse it
@@ -189,6 +191,9 @@ workspaces/default/pipelines/shop-orders (version b88880ab7505)
   streams:
     orders      append  exactly_once   superset replay, deduped at apply
     page_views  append  at_least_once  superset replay, no primary key, and not collapsed
+  partitioning:
+    orders      split by id -> writer, needs id
+    page_views  unpartitioned -> writer
   warnings:
     page_views: it has no primary key and doesn't collapse, so every row lands: both copies of a row the source holds twice, and repeats, such as the lookback window each sync reads again. Readers can dedupe on _openetl_id. collapse: true collapses rows with the same content within each epoch, and with require: exactly_once against the target too, so repeats never land.
 ```
