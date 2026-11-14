@@ -408,7 +408,8 @@ impl InputOwner {
                 at: Some(schema),
                 ..
             }) => (schema, quarantine),
-            _ => (st.at_end.clone(), Vec::new()),
+            // It ended, or feeds no output and keeps its restored schema.
+            _ => (st.at_end.clone().or(st.schema.clone()), Vec::new()),
         }
     }
 }
@@ -868,6 +869,8 @@ where
                         hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
                         shaped(&lane, ls, n, c).await?;
                     }
+                    // A stream that feeds no output is read, and dropped.
+                    Kind::Transformed(t) if t.outputs.is_empty() => {}
                     Kind::Transformed(t) => {
                         let typed = span
                             .in_scope(|| t.typer.type_rows(rows.rows.iter().map(Vec::as_slice)))
@@ -898,6 +901,7 @@ where
                         hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
                         shaped(&lane, ls, n, c).await?;
                     }
+                    Kind::Transformed(t) if t.outputs.is_empty() => {}
                     Kind::Transformed(t) => {
                         let typed = span
                             .in_scope(|| t.typer.type_batch(&batch))
@@ -945,6 +949,9 @@ where
                             replay(&lane, ls).await?;
                         }
                     }
+                    // It has no part in an epoch: what's ready waits only
+                    // on the outputs.
+                    Kind::Transformed(t) if t.outputs.is_empty() => {}
                     Kind::Transformed(t) => {
                         let q = quarantine_file(
                             plan.quarantine.as_deref(),
@@ -1014,6 +1021,7 @@ where
                         flow.owners[input].end(plan, input)?;
                         lane.all(input, || Out::End(input)).await?;
                     }
+                    Kind::Transformed(t) if t.outputs.is_empty() => {}
                     Kind::Transformed(t) => {
                         flow.inputs[input].end(plan.inbound.len());
                         let outputs: Vec<usize> =
@@ -3392,6 +3400,31 @@ mod tests {
             "{}",
             status.message()
         );
+    }
+
+    /// A stream no statement reads and that doesn't pass through isn't
+    /// typed: its rows can't fail the job, and its epochs wait on nothing.
+    #[tokio::test]
+    async fn a_stream_that_feeds_no_output_is_read_and_dropped() {
+        let mut h = start_with(sql_request(
+            "INSERT INTO c SELECT id FROM a",
+            &[("c", &["id"])],
+        ));
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Rows, 0, rows(&[r#"{"id": 1, "email": "a"}"#])).await;
+        put(w, FrameKind::Rows, 1, rows(&["[1]"])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        assert_eq!(column_ints(&batches(&frames, 0)[0], "id"), [Some(1)]);
+        let ready = ready(&mut h.events).await;
+        assert_eq!(ready.len(), 1);
+        assert!(ready[0].quarantine.is_empty());
+        assert!(!ready[0].schemas.contains_key("b"));
     }
 
     /// A column the stream gains mid-run reaches an output through `*`.

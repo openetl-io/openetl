@@ -192,7 +192,7 @@ A transform sits between the source and the destination. The source's streams ar
 |---|---|---|---|---|
 | `transform` | object | No | None | One of `sql`, `spark` and `flink` |
 | `transform.sql` | string, or `{ file: PATH }` | One of `sql`, `spark` or `flink`, when `transform` is set | None | The transform's SQL statements, as text. Each `INSERT INTO OUTPUT SELECT …` statement writes an output, and the statements read the source's streams as tables. With `{ file: PATH }`, `openetl apply` and `openetl plan` read the file, at a path relative to the file that names it, and send its text in place of the path. Other clients, such as the API, send the text. A pipeline version holds the text. Scheduled and continuous pipelines. |
-| `transform.passthrough` | `all` or `none` | No | `all` | Which of the streams that no statement writes reach the destination: `all` of them, as without a transform, or `none`. Only with `sql`. |
+| `transform.passthrough` | `all` or `none` | No | `all` | Which of the streams that no statement writes reach the destination: `all` of them, as without a transform, or `none`. With `none`, the rows of a stream that no statement reads are dropped unchecked, and no sync records its columns. Only with `sql`. |
 | `transform.spark` | object | One of `sql`, `spark` or `flink`, when `transform` is set | None | Runs your openetl-spark `Transform` on each epoch of a sync, on a Spark cluster. Scheduled pipelines only. |
 | `transform.spark.cluster` | name | Yes | — | A `SparkCluster` in the same workspace |
 | `transform.spark.code` | object | Yes | — | The code: one of `jar` and `python`, and its `sha256`. The runner checks the file and gives the cluster its own copy. |
