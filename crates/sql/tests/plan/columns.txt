@@ -32,6 +32,7 @@ statement 1:1 employees row_wise
   reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME, Hire_Date
   filter employees.LAST_NAME IS NOT NULL
   project id := employees.EMPLOYEE_ID, surname := employees.LAST_NAME, HiredOn := employees.Hire_Date
+note 1:1 HR.EMPLOYEES is a changelog: an update that passes the WHERE without a column an output column needs, as Postgres leaves out a large value that didn't change, is quarantined, since the row may have failed the WHERE before and the destination may not have the value
 
 plan
 INSERT INTO employees SELECT "EMPLOYEE_ID", "LAST_NAME" FROM hr.employees
@@ -132,6 +133,7 @@ statement 2:1 x row_wise
   reads HR.EMPLOYEES changelog: EMPLOYEE_ID, LAST_NAME
   project EMPLOYEE_ID, surname := employees.LAST_NAME
   filter staff.surname != Utf8("")
+note 2:1 HR.EMPLOYEES is a changelog: an update that passes the WHERE without a column an output column needs, as Postgres leaves out a large value that didn't change, is quarantined, since the row may have failed the WHERE before and the destination may not have the value
 
 plan
 INSERT INTO x SELECT EMPLOYEE_ID, LAST FROM (SELECT employee_id, last_name AS last FROM hr.employees) AS t

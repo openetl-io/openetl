@@ -12,7 +12,7 @@ use datafusion_sql::sqlparser::tokenizer::Span;
 
 use crate::catalog::written;
 use crate::functions::FUNCTIONS;
-use crate::plan::{Operator, Plan, Statement, View};
+use crate::plan::{Operator, Plan, Statement, Step, View};
 use crate::{Catalog, Class, Error, ErrorKind, Errors, Note, Position, bind, lower};
 
 /// A transform's SQL, parsed.
@@ -170,6 +170,20 @@ impl Sql {
                     if check.errors.is_empty() && check.views_planned() {
                         match check.lower(&query, *at) {
                             Ok((l, _)) => {
+                                if l.operator.changelog
+                                    && l.operator
+                                        .steps
+                                        .iter()
+                                        .any(|s| matches!(s, Step::Filter(_)))
+                                {
+                                    notes.push(Note {
+                                        at: *at,
+                                        message: format!(
+                                            "{} is a changelog: an update that passes the WHERE without a column an output column needs, as Postgres leaves out a large value that didn't change, is quarantined, since the row may have failed the WHERE before and the destination may not have the value",
+                                            l.operator.input
+                                        ),
+                                    });
+                                }
                                 if let Some((output, replaces)) = output {
                                     statements.push(Statement {
                                         at: *at,
