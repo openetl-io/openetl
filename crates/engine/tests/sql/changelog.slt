@@ -203,3 +203,17 @@ query error
 SELECT id, kind FROM events WHERE kind = 'click'
 ----
 changelog_key 1:35 events is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+
+# A delete that came with its key alone has nulls in the other columns
+# before the projection, and a constant keeps its value.
+statement ok
+INSERT INTO events (_op, id, kind) VALUES ('delete', 2, NULL)
+
+query TIIT nosort
+SELECT id, 1 AS version, upper(kind) AS kind FROM events
+----
+insert 1 1 CLICK
+update 1 1 VIEW
+delete 1 1 VIEW
+delete 2 1 NULL

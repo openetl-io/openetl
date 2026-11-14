@@ -21,7 +21,7 @@ use arrow_array::{
     new_null_array,
 };
 use arrow_schema::{Field, Schema, SchemaRef};
-use openetl_normalize::{Control, Typed, element_ids};
+use openetl_normalize::{Control, Rejected, Typed, element_ids};
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_sql::{RowWise, Step};
 
@@ -99,6 +99,40 @@ impl Stage {
             }),
             Stage::Statement(b) => b.apply(typed, pushed, cursor),
         }
+    }
+
+    /// Of `rejected`, the rows of `out`, as `apply` gave it, that the
+    /// output's conformance left out: the rest, and the deletes among them
+    /// as deletes of their key alone, to conform again. A statement's delete
+    /// isn't quarantined for its values.
+    pub fn deletes_by_key(
+        &self,
+        out: &Typed,
+        rejected: Vec<Rejected>,
+    ) -> Result<(Vec<Rejected>, Option<Typed>), JobError> {
+        let (Stage::Statement(b), Some(ops), Some(rows)) = (self, &out.control.op, &out.rows)
+        else {
+            return Ok((rejected, None));
+        };
+        let deletes: BTreeMap<usize, usize> = rows
+            .iter()
+            .zip(ops.as_string::<i32>().iter())
+            .enumerate()
+            .filter(|(_, (_, op))| *op == Some("delete"))
+            .map(|(i, (&r, _))| (r, i))
+            .collect();
+        let mut rest = Vec::with_capacity(rejected.len());
+        let mut keys = Vec::new();
+        for r in rejected {
+            match deletes.get(&r.row) {
+                Some(&i) => keys.push(i),
+                None => rest.push(r),
+            }
+        }
+        if keys.is_empty() {
+            return Ok((rest, None));
+        }
+        Ok((rest, Some(b.key_only(out, &keys)?)))
     }
 }
 
@@ -551,6 +585,40 @@ impl Bound {
             reads: unsent,
             unchanged: out,
         }))
+    }
+
+    /// `rows` of `out`, an output this gave, with nulls but in the key's
+    /// columns.
+    fn key_only(&self, out: &Typed, rows: &[usize]) -> Result<Typed, JobError> {
+        let key = &self.st().key;
+        let batch = take_batch(&out.batch, rows)?;
+        let schema = batch.schema();
+        let columns = schema
+            .fields()
+            .iter()
+            .zip(batch.columns())
+            .map(|(f, c)| match key.contains(f.name()) {
+                true => c.clone(),
+                false => new_null_array(f.data_type(), rows.len()),
+            })
+            .collect();
+        let some = |a: &Option<ArrayRef>| a.as_ref().map(|a| take(a, rows)).transpose();
+        let ids = take(&(Arc::new(out.ids.clone()) as ArrayRef), rows)?;
+        Ok(Typed {
+            batch: batch_of(schema, columns, rows.len())?,
+            ids: ids.as_fixed_size_binary().clone(),
+            control: Control {
+                op: some(&out.control.op)?,
+                seq: some(&out.control.seq)?,
+                unchanged: some(&out.control.unchanged)?,
+            },
+            cells: Vec::new(),
+            rejected: Vec::new(),
+            rows: out
+                .rows
+                .as_ref()
+                .map(|r| rows.iter().map(|&i| r[i]).collect()),
+        })
     }
 
     /// Each output column for deletes of `rows`' keys: the key's columns'

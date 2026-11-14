@@ -309,6 +309,16 @@ INSERT INTO x SELECT id, tags FROM log WHERE id > 0
 error changelog_key 1:46 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
 
 plan
+INSERT INTO x SELECT id FROM log WHERE log.id > 0
+----
+error changelog_key 1:40 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+plan
+INSERT INTO x SELECT l.id FROM log AS l WHERE l.id > 0
+----
+error changelog_key 1:47 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+plan
 INSERT INTO x SELECT * FROM (SELECT id FROM log WHERE id > 0) AS s
 ----
 error changelog_key 1:55 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
@@ -328,6 +338,16 @@ error changelog_key 2:38 log is a changelog without a primary key, so WHERE is r
 # Without a WHERE, it plans: each row passes with its op.
 plan
 INSERT INTO x SELECT id, tags FROM log
+----
+statement 1:1 x row_wise
+  inputs log
+  key 
+  schema id Int64, tags List(Utf8)
+  reads log changelog: id, tags
+
+# So does a WHERE that simplifies to true, which leaves no filter.
+plan
+INSERT INTO x SELECT id, tags FROM log WHERE TRUE
 ----
 statement 1:1 x row_wise
   inputs log

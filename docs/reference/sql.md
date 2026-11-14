@@ -104,8 +104,9 @@ A changelog stream is one whose rows are inserts, updates and deletes of their k
 
 - Keeps the stream's primary key, unchanged and renamed or not. A statement that drops or changes a key column is refused.
 - Does not use `unnest`.
-- Has no `WHERE` if the stream has no primary key. Such a statement is refused.
-- Passes each delete without its `WHERE`. A delete keeps the values the source sent with it: the statement's `SELECT` list gives the delete's columns. If the statement cannot evaluate a delete, the delete passes with its key alone.
+- Has no `WHERE` if the stream has no primary key. Such a statement is refused, unless planning simplifies its `WHERE` to true, as with `WHERE TRUE`, which leaves no filter.
+- Passes each delete without its `WHERE`. The statement's `SELECT` list runs on the values the source sent with the delete, and gives the delete's columns. A column that the source did not send is null before the `SELECT` list runs, so an expression such as `1 AS version` still gives its value.
+- Passes a delete with its key alone if the statement cannot evaluate the delete, or if the values it gives do not fit the output's column types. The delete's other columns are then null. A delete is not quarantined.
 - Turns an insert or update that fails its `WHERE` into a delete of its key alone. The delete's other columns are null.
 
 The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the destination applies these deletes, and what happens to an update that does not send every column.

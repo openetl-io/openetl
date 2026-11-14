@@ -385,8 +385,9 @@ A stream that passes through is delivered as it would be without the transform. 
 On a changelog stream, such as one read with `cdc`:
 
 - A statement must keep the stream's primary key, and cannot use `UNNEST`.
-- If the stream has no primary key, a statement cannot have a `WHERE`. The plan has a problem, and the sync fails with `CONFIG_INVALID`.
-- A delete passes without the `WHERE`, with the values the source sent with it, as the statement's `SELECT` list gives them. A source that sends only the key gives nulls in the other columns. If the statement cannot evaluate a delete, the delete passes with its key alone, and is not quarantined.
+- If the stream has no primary key, a statement cannot have a `WHERE` that filters it. The plan has a problem, and the sync fails with `CONFIG_INVALID`. A `WHERE` that planning simplifies to true, such as `WHERE TRUE`, leaves no filter, and is accepted.
+- A delete passes without the `WHERE`. The statement's `SELECT` list runs on the values that the source sent with the delete. A column that the source did not send is null before the `SELECT` list runs, so a constant such as `1 AS version` still gives its value.
+- If the statement cannot evaluate a delete, or the values it gives do not fit the output's column types, the delete passes with its key alone and its other columns null. A delete is not quarantined. With cell holds, a value that does not fit is held, as it is on a stream that passes through, and the delete passes.
 - An insert or update that fails the `WHERE` becomes a delete of its key alone, with its other columns null, which a merge applies whether the table has the row or not. With `destination.deletes: soft`, the default, a row that leaves the filter stays in the table with `_openetl_deleted` true; with `hard`, it leaves the table.
 - If an update does not send a column, as Postgres does not send a large value that did not change, an output column that depends only on columns it did not send keeps the value it has, and the statement does not evaluate it.
 - The statement cannot evaluate such an update if an output column depends on a column it did not send and on one it sent, or if the `WHERE` reads any column it did not send.

@@ -749,6 +749,11 @@ impl<'a> Check<'a> {
             self.unsupported(select_span, "this SELECT has clauses transforms don't run");
         }
 
+        // Before qualified names are rewritten, which moves their spans.
+        if let Some(w) = &s.selection {
+            let at = self.at(w.span());
+            self.filter_at = Some(self.filter_at.map_or(at, |f| f.min(at)));
+        }
         let mut read = Read::default();
         match s.from.as_mut_slice() {
             [] => self.unsupported(
@@ -775,10 +780,6 @@ impl<'a> Check<'a> {
                 };
                 self.columns(s, &read.columns, alias.as_ref());
             }
-        }
-        if let Some(w) = &s.selection {
-            let at = self.at(w.span());
-            self.filter_at = Some(self.filter_at.map_or(at, |f| f.min(at)));
         }
         for (span, m) in crate::zone::rewrite(s) {
             self.unsupported(span, m);

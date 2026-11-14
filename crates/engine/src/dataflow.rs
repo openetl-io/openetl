@@ -1247,7 +1247,7 @@ async fn transform(
             .map(|(row, reason)| Rejected { row, reason })
             .collect();
         hold(plan, name, &failed, record, &mut ls.quarantined, oc)?;
-        let n = ls.shape(&flow.owners[s], |_| Ok(copy(&out))).map_err(|e| {
+        let mut n = ls.shape(&flow.owners[s], |_| Ok(copy(&out))).map_err(|e| {
             let drift = matches!(e, NormalizeError::Drift(_));
             let err = shape_error(name, e);
             match stage.planned() {
@@ -1257,8 +1257,18 @@ async fn transform(
                 _ => err,
             }
         })?;
-        hold(plan, name, &n.rejected, record, &mut ls.quarantined, oc)?;
+        // A delete whose values don't fit the output goes again with its
+        // key alone, after the batch: its seq orders it among its key's.
+        let (rejected, keys) = stage.deletes_by_key(&out, std::mem::take(&mut n.rejected))?;
+        hold(plan, name, &rejected, record, &mut ls.quarantined, oc)?;
         shaped(lane, ls, n, oc).await?;
+        if let Some(keys) = keys {
+            let n = ls
+                .shape(&flow.owners[s], |_| Ok(copy(&keys)))
+                .map_err(|e| shape_error(name, e))?;
+            hold(plan, name, &n.rejected, record, &mut ls.quarantined, oc)?;
+            shaped(lane, ls, n, oc).await?;
+        }
     }
     Ok(())
 }
@@ -3832,6 +3842,122 @@ mod tests {
             [Some(0), Some(1), Some(2)]
         );
         assert!(a[0].column_by_name("_openetl_unchanged").is_some());
+    }
+
+    /// A changelog's batch of id and n, with ops and seqs.
+    fn changelog_n(n: arrow_array::ArrayRef, ops: &[&str], seq: i64) -> Vec<u8> {
+        use arrow_array::{Int64Array, StringArray};
+        let control = |kind: &str| {
+            HashMap::from([(openetl_normalize::CONTROL_KEY.to_owned(), kind.to_owned())])
+        };
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int64, false),
+            arrow_schema::Field::new("n", n.data_type().clone(), true),
+            arrow_schema::Field::new("op", DataType::Utf8, false).with_metadata(control("op")),
+            arrow_schema::Field::new("seq", DataType::Int64, false).with_metadata(control("seq")),
+        ]));
+        let rows = ops.len();
+        let b = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1; rows])),
+                n,
+                Arc::new(StringArray::from(ops.to_vec())),
+                Arc::new(Int64Array::from_iter_values(
+                    (0..rows).map(|i| seq + i64::try_from(i).unwrap()),
+                )),
+            ],
+        )
+        .unwrap();
+        ipc::encode_batch(&b).unwrap()
+    }
+
+    /// Under ignore_new, a statement over a changelog, then an insert, and
+    /// an update and a delete whose n doesn't fit the type the insert gave
+    /// the output.
+    async fn a_delete_whose_n_doesnt_fit(
+        holds: bool,
+        dir: &std::path::Path,
+    ) -> (Vec<frame::Frame>, Vec<EpochReady>) {
+        use arrow_array::{Float64Array, Int64Array};
+        let mut req = sql_request("INSERT INTO a SELECT * FROM a", &[("a", &["id"])]);
+        req.streams[0].changelog = true;
+        req.outputs[0].changelog = true;
+        req.schema_policy = openetl_proto::engine::v1::SchemaPolicy::IgnoreNew as i32;
+        req.quarantine_url = format!("file://{}/q", dir.display());
+        if holds {
+            req.held_url = format!("file://{}/held", dir.display());
+            req.outputs[0].holds = Some(openetl_proto::engine::v1::HoldPlan {
+                cells: true,
+                ..Default::default()
+            });
+        }
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        let ints = Arc::new(Int64Array::from(vec![1]));
+        put(w, FrameKind::Batch, 0, changelog_n(ints, &["insert"], 0)).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        let floats = Arc::new(Float64Array::from(vec![2.5, 2.5]));
+        put(
+            w,
+            FrameKind::Batch,
+            0,
+            changelog_n(floats, &["update", "delete"], 1),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(w, FrameKind::Barrier, 1, barrier(2)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        (frames, ready(&mut h.events).await)
+    }
+
+    /// With cell holds, the delete passes with n held, as a passed-through
+    /// stream's would.
+    #[tokio::test]
+    async fn a_delete_whose_values_dont_fit_the_output_passes_with_them_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let (frames, ready) = a_delete_whose_n_doesnt_fit(true, dir.path()).await;
+        let a = batches(&frames, 0);
+        let ops: Vec<Option<String>> = a
+            .iter()
+            .flat_map(|b| column_strings(b, "_openetl_op"))
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                Some("insert".into()),
+                Some("update".into()),
+                Some("delete".into())
+            ]
+        );
+        assert!(ready[1].quarantine.is_empty(), "{:?}", ready[1].quarantine);
+        assert_eq!(ready[1].holds["a"].cells["n"].cells, 2);
+    }
+
+    /// Without holds, a delete whose projected values don't fit the
+    /// output's established types passes as a delete of its key, where an
+    /// update is quarantined.
+    #[tokio::test]
+    async fn a_delete_whose_values_dont_fit_the_output_passes_with_its_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (frames, ready) = a_delete_whose_n_doesnt_fit(false, dir.path()).await;
+        let a = batches(&frames, 0);
+        let ops: Vec<Option<String>> = a
+            .iter()
+            .flat_map(|b| column_strings(b, "_openetl_op"))
+            .collect();
+        assert_eq!(ops, [Some("insert".into()), Some("delete".into())]);
+        let last = a.last().unwrap();
+        assert_eq!(column_ints(last, "id"), [Some(1)]);
+        assert_eq!(column_ints(last, "n"), [None]);
+        assert_eq!(column_ints(last, "_openetl_seq"), [Some(2)]);
+        let q = &ready[1].quarantine;
+        assert_eq!((q.len(), q[0].rows), (1, 1), "{q:?}");
     }
 
     /// A row a statement can't evaluate is quarantined under the output's
