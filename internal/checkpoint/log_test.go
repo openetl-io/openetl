@@ -372,6 +372,41 @@ func TestUnreadableRecords(t *testing.T) {
 	}
 }
 
+// Restorable is HEAD's record, or the one before it where HEAD's can't be
+// read.
+func TestRestorable(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	if r, err := l.Restorable(t.Context()); r != nil || err != nil {
+		t.Fatalf("before the first checkpoint: %v, %v", r, err)
+	}
+	drop := func(r *checkpoint.Record) {
+		t.Helper()
+		if err := store.Delete(t.Context(), "org/pipe/_checkpoints/"+pad(r.Epoch)+"-g"+pad(r.Generation)+".json"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := claim(t, l, "a")
+	r1 := commit(t, s, 1)
+	drop(r1)
+	if r, err := l.Restorable(t.Context()); r != nil || err != nil {
+		t.Fatalf("with the first record gone, Restorable = %v, %v; want none", r, err)
+	}
+	r2 := commit(t, s, 2)
+	r3 := commit(t, s, 3)
+	if r, err := l.Restorable(t.Context()); err != nil || r.Epoch != 3 {
+		t.Fatalf("Restorable = %v, %v; want epoch 3", r, err)
+	}
+	drop(r3)
+	if r, err := l.Restorable(t.Context()); err != nil || r.Epoch != 2 {
+		t.Fatalf("with HEAD's record gone, Restorable = %v, %v; want epoch 2", r, err)
+	}
+	drop(r2)
+	if _, err := l.Restorable(t.Context()); !errors.Is(err, checkpoint.ErrUnreadable) {
+		t.Fatalf("with both gone, Restorable: %v, want ErrUnreadable", err)
+	}
+}
+
 func pad(n uint64) string {
 	s := strconv.FormatUint(n, 10)
 	return strings.Repeat("0", 20-len(s)) + s

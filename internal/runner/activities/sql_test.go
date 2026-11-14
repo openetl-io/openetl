@@ -44,25 +44,31 @@ func (p *planner) plan() planSQL {
 }
 
 // A resumed pipeline's planning reads the streams' schemas HEAD's record
-// has, without claiming the pipeline.
+// has, without claiming the pipeline, or where it can't be read, those the
+// record before it has, which the attempt rewinds to.
 func TestPlanningReadsTheRecordedSchemas(t *testing.T) {
-	store := checkpoint.NewMemStore()
-	put := func(key, data string) {
-		if _, err := store.Create(t.Context(), "org/p/_checkpoints/"+key, []byte(data)); err != nil {
+	for _, head := range []string{
+		`{"format":1,"generation":1,"owner":"old","record":{"epoch":2,"generation":1},"first":true}`,
+		`{"format":1,"generation":1,"owner":"old","record":{"epoch":3,"generation":1},"previous":{"epoch":2,"generation":1}}`,
+	} {
+		store := checkpoint.NewMemStore()
+		put := func(key, data string) {
+			if _, err := store.Create(t.Context(), "org/p/_checkpoints/"+key, []byte(data)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		put("HEAD", head)
+		put("00000000000000000002-g00000000000000000001.json",
+			`{"epoch":2,"generation":1,"streams":{"users":{"schema":"c2NoZW1h","rows":1},"purchases":{"rows":1}},"key_groups":256,"committables":[null],"created_at":"2026-11-01T00:00:00Z"}`)
+		pl := plannedEmails()
+		if _, err := withRestored(pl, checkpoint.NewLog(store, "org", "p"))(t.Context(), emails, nil); err != nil {
 			t.Fatal(err)
 		}
+		if len(pl.restored) != 1 || string(pl.restored["users"]) != "schema" {
+			t.Errorf("HEAD %s: restored: %q", head, pl.restored)
+		}
 	}
-	put("HEAD", `{"format":1,"generation":1,"owner":"old","record":{"epoch":2,"generation":1},"first":true}`)
-	put("00000000000000000002-g00000000000000000001.json",
-		`{"epoch":2,"generation":1,"streams":{"users":{"schema":"c2NoZW1h","rows":1},"purchases":{"rows":1}},"key_groups":256,"committables":[null],"created_at":"2026-11-01T00:00:00Z"}`)
 	pl := plannedEmails()
-	if _, err := withRestored(pl, checkpoint.NewLog(store, "org", "p"))(t.Context(), emails, nil); err != nil {
-		t.Fatal(err)
-	}
-	if len(pl.restored) != 1 || string(pl.restored["users"]) != "schema" {
-		t.Errorf("restored: %q", pl.restored)
-	}
-	pl = plannedEmails()
 	if _, err := pl.plan()(t.Context(), emails, nil); err != nil || pl.restored != nil {
 		t.Errorf("without a checkpoint: %v, %q", err, pl.restored)
 	}

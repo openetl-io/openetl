@@ -446,6 +446,34 @@ func (l *Log) Latest(ctx context.Context) (*Record, error) {
 	return l.Record(ctx, *h.Record)
 }
 
+// Restorable is the record an attempt would restore, without claiming the
+// pipeline: HEAD's, or where that can't be read, the one before it, which
+// an attempt rewinds to if its job lets it. Nil before the first checkpoint,
+// and where the unreadable record is the log's first. It fails with
+// ErrUnreadable if HEAD doesn't name the record before its own, or that one
+// can't be read either.
+func (l *Log) Restorable(ctx context.Context) (*Record, error) {
+	h, _, err := l.readHead(ctx)
+	if errors.Is(err, ErrNotFound) || (err == nil && h.Record == nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r, err := l.Record(ctx, *h.Record)
+	if !errors.Is(err, ErrUnreadable) {
+		return r, err
+	}
+	before, known := h.Before()
+	if !known {
+		return nil, err
+	}
+	if before == nil {
+		return nil, nil
+	}
+	return l.Record(ctx, *before)
+}
+
 // Record reads a record. One that's missing, can't be decoded or is of
 // another epoch or generation fails with ErrUnreadable.
 func (l *Log) Record(ctx context.Context, ref RecordRef) (*Record, error) {

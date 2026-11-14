@@ -18,12 +18,13 @@ import (
 type planSQL func(ctx context.Context, sql string, streams []runner.Stream) ([]runner.ExpectedOutput, error)
 
 // withRestored plans with p against each stream's declared schema and the
-// one HEAD's record has, without claiming the pipeline: a column the source
-// no longer declares is still in the stream, as nulls. A record that can't
-// be read is the attempt's to rewind from or fail on.
+// one the record the attempt would restore has, without claiming the
+// pipeline: a column the source no longer declares is still in the stream,
+// as nulls. Where HEAD's record can't be read, that's the one before it. A
+// log that has neither is the attempt's to fail on.
 func withRestored(p runner.SQLPlanner, log *checkpoint.Log) planSQL {
 	return func(ctx context.Context, sql string, streams []runner.Stream) ([]runner.ExpectedOutput, error) {
-		rec, err := log.Latest(ctx)
+		rec, err := log.Restorable(ctx)
 		if err != nil && !errors.Is(err, checkpoint.ErrUnreadable) {
 			return nil, err
 		}
