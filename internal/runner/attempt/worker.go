@@ -187,11 +187,14 @@ func (w *worker) run() {
 			}
 		case err := <-sent:
 			sent = nil
-			if err != nil {
+			// io.EOF: the coordinator ended the call, and Recv returns how,
+			// a refusal among them.
+			if err != nil && !errors.Is(err, io.EOF) {
 				w.end(lost("the coordinator", err), false, true)
 				return
 			}
-			// The worker closed its side; the coordinator ends the call.
+			// Otherwise the worker closed its side; the coordinator ends the
+			// call.
 		}
 	}
 }
