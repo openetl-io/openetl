@@ -22,6 +22,10 @@ stream cdc2 key(tenant, id) changelog
   id int64 not null
   name utf8
 
+stream log changelog
+  id int64
+  tags list<utf8>
+
 # Group windows: tier 2.
 plan
 INSERT INTO revenue_by_minute
@@ -290,6 +294,21 @@ plan
 INSERT INTO x SELECT id, unnest(tags) AS tag FROM cdc
 ----
 error changelog_key 1:26 cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this multiplies the rows of it
+
+plan
+INSERT INTO x SELECT id, unnest(tags) AS tag FROM log
+----
+error changelog_key 1:26 log is a changelog, so what reads it gives one row for each of its rows; this multiplies the rows of it
+
+plan
+INSERT INTO x SELECT id, tags FROM log WHERE id > 0
+----
+statement 1:1 x row_wise
+  inputs log
+  key 
+  schema id Int64, tags List(Utf8)
+  reads log changelog: id, tags
+  filter log.id > Int64(0)
 
 plan
 INSERT INTO x SELECT tenant, name FROM cdc2

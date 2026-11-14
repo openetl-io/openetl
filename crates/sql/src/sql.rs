@@ -1277,7 +1277,8 @@ impl<'a> Check<'a> {
         })
     }
 
-    /// Where the outermost SELECT drops or changes a changelog's key.
+    /// Where the outermost SELECT drops or changes a changelog's key, or
+    /// multiplies its rows.
     fn changelog_key(&self, lowered: &lower::Lowered) -> Error {
         let input = &lowered.operator.input;
         let key = self
@@ -1285,11 +1286,17 @@ impl<'a> Check<'a> {
             .get(input)
             .map(|s| s.key.join(", "))
             .unwrap_or_default();
+        let keyed = !key.is_empty();
         let mut at = self.at;
-        let mut how = "drops or changes";
+        let mut how = match keyed {
+            true => "drops or changes",
+            false => "multiplies the rows of",
+        };
         if let Some(top) = &self.top {
             at = top.at;
-            how = "drops";
+            if keyed {
+                how = "drops";
+            }
             let key = top.key.clone().unwrap_or_default();
             let names: Vec<String> = key.iter().map(|k| k.to_lowercase()).collect();
             let is_key = |i: &ast::Ident| names.contains(&fold(i).to_lowercase());
@@ -1331,12 +1338,14 @@ impl<'a> Check<'a> {
                 }
             }
         }
+        let rule = match keyed {
+            true => format!("keeps its key ({key}) unchanged, renamed or not"),
+            false => "gives one row for each of its rows".to_owned(),
+        };
         Error::at(
             ErrorKind::ChangelogKey,
             at,
-            format!(
-                "{input} is a changelog, so what reads it keeps its key ({key}) unchanged, renamed or not; this {how} it"
-            ),
+            format!("{input} is a changelog, so what reads it {rule}; this {how} it"),
         )
     }
 }
