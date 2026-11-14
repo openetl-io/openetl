@@ -61,8 +61,14 @@ pub struct Plan {
     /// Where each stream's schema is decided, when several engines run the
     /// attempt; None: here.
     pub remote: Option<std::sync::Arc<Remote>>,
-    /// The attempt's index of the first lane, which names quarantine files.
+    /// The attempt's index of the first lane, which names quarantine files;
+    /// the engine whose first lane is the attempt's first replays released
+    /// holds.
     pub first_lane: usize,
+    /// The attempt's index of the first writer lane, and its writer lanes,
+    /// which name held files.
+    pub first_writer_lane: usize,
+    pub attempt_writer_lanes: usize,
 }
 
 /// A job's SQL transform: the streams it reads, which the inbound edges
@@ -129,30 +135,7 @@ fn holds(s: &StreamPlan) -> Result<(Option<HoldConfig>, Option<ReplayPlan>), Job
     if s.primary_key.is_empty() {
         return Err(bad("only a keyed stream holds columns".into()));
     }
-    let column_holds = |cs: &[openetl_proto::engine::v1::ColumnHold]| {
-        let mut out = Vec::with_capacity(cs.len());
-        for c in cs {
-            let delivered = match c.delivered.is_empty() {
-                true => None,
-                false => {
-                    let schema = ipc::decode_schema(&c.delivered)
-                        .map_err(|e| bad(format!("column {}: {e}", c.column)))?;
-                    let [f] = schema.fields().iter().collect::<Vec<_>>()[..] else {
-                        return Err(bad(format!("column {}: not one field", c.column)));
-                    };
-                    Some(f.as_ref().clone())
-                }
-            };
-            out.push(ColumnHold {
-                column: c.column.clone(),
-                delivered,
-                reason: c.reason.clone(),
-                why: why(c.cause.as_ref()),
-                source: String::new(),
-            });
-        }
-        Ok(out)
-    };
+    let column_holds = |cs: &[openetl_proto::engine::v1::ColumnHold]| column_holds(&s.name, cs);
     let holding = column_holds(&h.holding)?;
     let limits = h.limits.as_ref().map_or_else(Limits::default, |l| Limits {
         not_null: l.not_null.iter().cloned().collect(),
@@ -544,17 +527,23 @@ impl Plan {
                 return Err(JobError::config("only a runner sink takes holds"));
             }
         }
-        if req.remote_schemas && (transform.is_some() || held_url.is_some()) {
-            return Err(JobError::config(
-                "a job whose schemas are decided outside the engine has no transform and holds nothing",
-            ));
+        let first_writer_lane = req.first_writer_lane as usize;
+        let attempt_writer_lanes = (req.attempt_writer_lanes as usize).max(writer_lanes);
+        if first_writer_lane + writer_lanes > attempt_writer_lanes {
+            return Err(JobError::config(format!(
+                "writer lanes {first_writer_lane} to {} of the attempt's {attempt_writer_lanes}",
+                first_writer_lane + writer_lanes - 1
+            )));
         }
+        let inputs = transform.as_ref().map_or(0, |_| req.streams.len());
 
-        Ok(Plan {
+        let plan = Plan {
             remote: req
                 .remote_schemas
-                .then(|| std::sync::Arc::new(Remote::new(names.len()))),
+                .then(|| std::sync::Arc::new(Remote::new(names.len(), inputs))),
             first_lane: req.first_lane as usize,
+            first_writer_lane,
+            attempt_writer_lanes,
             generation: req.generation,
             first_epoch: req.first_epoch,
             streams: names,
@@ -602,7 +591,22 @@ impl Plan {
                 _ => None,
             },
             quarantine,
-        })
+        };
+        // Version 0 of every stream is its restored schema.
+        if let Some(r) = &plan.remote {
+            for (s, restored) in plan.restored.iter().enumerate() {
+                r.start(false, s, restored.clone());
+            }
+            for (s, input) in plan
+                .transform
+                .iter()
+                .flat_map(|t| t.inputs.iter())
+                .enumerate()
+            {
+                r.start(true, s, input.restored.clone());
+            }
+        }
+        Ok(plan)
     }
 }
 
@@ -720,6 +724,36 @@ fn check_transform(req: &StartJobRequest) -> Result<Option<Transform>, JobError>
     Ok(Some(planned))
 }
 
+/// Columns a stream holds whole, as the protocol carries them.
+pub fn column_holds(
+    stream: &str,
+    cs: &[openetl_proto::engine::v1::ColumnHold],
+) -> Result<Vec<ColumnHold>, JobError> {
+    let bad = |what: String| JobError::config(format!("stream {stream}: holds: {what}"));
+    let mut out = Vec::with_capacity(cs.len());
+    for c in cs {
+        let delivered = match c.delivered.is_empty() {
+            true => None,
+            false => {
+                let schema = ipc::decode_schema(&c.delivered)
+                    .map_err(|e| bad(format!("column {}: {e}", c.column)))?;
+                let [f] = schema.fields().iter().collect::<Vec<_>>()[..] else {
+                    return Err(bad(format!("column {}: not one field", c.column)));
+                };
+                Some(f.as_ref().clone())
+            }
+        };
+        out.push(ColumnHold {
+            column: c.column.clone(),
+            delivered,
+            reason: c.reason.clone(),
+            why: why(c.cause.as_ref()),
+            source: String::new(),
+        });
+    }
+    Ok(out)
+}
+
 fn why(c: Option<&openetl_proto::engine::v1::HoldCause>) -> Why {
     use openetl_proto::engine::v1::hold_cause::Kind;
     let Some(c) = c else { return Why::Unknown };
@@ -791,6 +825,8 @@ pub(crate) mod tests {
             transform: None,
             remote_schemas: false,
             first_lane: 0,
+            first_writer_lane: 0,
+            attempt_writer_lanes: 0,
         }
     }
 

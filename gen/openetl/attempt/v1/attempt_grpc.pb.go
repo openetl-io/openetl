@@ -42,8 +42,9 @@ const (
 // worker signals what its read does and sends its share of each epoch, and
 // the coordinator asks workers to commit what a written record names and
 // sends them the committed record's positions. The coordinator owns each
-// stream's schema: a worker's engine proposes a change, and every worker
-// gets the schema the coordinator takes. Each end sends a Heartbeat every few
+// stream's schema, with the columns it holds whole, and each schema a SQL
+// transform reads: a worker's engine proposes a change, and every worker
+// gets the one the coordinator takes. Each end sends a Heartbeat every few
 // seconds, and takes the other as lost once it hears nothing for longer than
 // a timeout.
 //
@@ -97,8 +98,9 @@ type AttemptService_AttendClient = grpc.BidiStreamingClient[AttendRequest, Atten
 // worker signals what its read does and sends its share of each epoch, and
 // the coordinator asks workers to commit what a written record names and
 // sends them the committed record's positions. The coordinator owns each
-// stream's schema: a worker's engine proposes a change, and every worker
-// gets the schema the coordinator takes. Each end sends a Heartbeat every few
+// stream's schema, with the columns it holds whole, and each schema a SQL
+// transform reads: a worker's engine proposes a change, and every worker
+// gets the one the coordinator takes. Each end sends a Heartbeat every few
 // seconds, and takes the other as lost once it hears nothing for longer than
 // a timeout.
 //

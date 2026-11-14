@@ -525,7 +525,13 @@ type Assignment struct {
 	Done []string `protobuf:"bytes,10,rep,name=done,proto3" json:"done,omitempty"`
 	// The bytes a worker's sources emit in an epoch before it signals it's
 	// full; 0: no threshold.
-	MaxBytes      uint64 `protobuf:"varint,11,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	MaxBytes uint64 `protobuf:"varint,11,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	// How each of the destination's streams that holds starts the attempt:
+	// the restored record's holds, with the job's releases applied and the
+	// columns the destination refused held, as JSON of the runner's hold
+	// plans, which a coordinator and its workers share since they run one
+	// image; empty: none holds. Only worker 0 patches in what's released.
+	Holds         []byte `protobuf:"bytes,12,opt,name=holds,proto3" json:"holds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -635,6 +641,13 @@ func (x *Assignment) GetMaxBytes() uint64 {
 		return x.MaxBytes
 	}
 	return 0
+}
+
+func (x *Assignment) GetHolds() []byte {
+	if x != nil {
+		return x.Holds
+	}
+	return nil
 }
 
 type Lane struct {
@@ -1601,7 +1614,7 @@ func (x *Answer) GetAnswer() isAnswer_Answer {
 	return nil
 }
 
-func (x *Answer) GetRecovered() *v1.WriteRecovered {
+func (x *Answer) GetRecovered() *Recovered {
 	if x != nil {
 		if x, ok := x.Answer.(*Answer_Recovered); ok {
 			return x.Recovered
@@ -1642,7 +1655,7 @@ type isAnswer_Answer interface {
 }
 
 type Answer_Recovered struct {
-	Recovered *v1.WriteRecovered `protobuf:"bytes,3,opt,name=recovered,proto3,oneof"`
+	Recovered *Recovered `protobuf:"bytes,3,opt,name=recovered,proto3,oneof"`
 }
 
 type Answer_ReadSplits struct {
@@ -1728,6 +1741,61 @@ func (x *Recover) GetForced() []string {
 	return nil
 }
 
+// Recovered answers Recover.
+type Recovered struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Recovery v1.Recovery            `protobuf:"varint,1,opt,name=recovery,proto3,enum=openetl.connector.v1.Recovery" json:"recovery,omitempty"`
+	// What each of the destination's tables can't take, by stream, as it
+	// said when the record's schemas were applied; empty without a record.
+	Limits        map[string]*v1.TableLimits `protobuf:"bytes,2,rep,name=limits,proto3" json:"limits,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Recovered) Reset() {
+	*x = Recovered{}
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Recovered) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Recovered) ProtoMessage() {}
+
+func (x *Recovered) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Recovered.ProtoReflect.Descriptor instead.
+func (*Recovered) Descriptor() ([]byte, []int) {
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *Recovered) GetRecovery() v1.Recovery {
+	if x != nil {
+		return x.Recovery
+	}
+	return v1.Recovery(0)
+}
+
+func (x *Recovered) GetLimits() map[string]*v1.TableLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
 // Settle settles some of the restored record's committables, of a
 // destination whose writer lanes commit on their own, one after another,
 // each on a writer the worker opens as the lane that staged it, and closes:
@@ -1749,7 +1817,7 @@ type Settle struct {
 
 func (x *Settle) Reset() {
 	*x = Settle{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[19]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1761,7 +1829,7 @@ func (x *Settle) String() string {
 func (*Settle) ProtoMessage() {}
 
 func (x *Settle) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[19]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1774,7 +1842,7 @@ func (x *Settle) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Settle.ProtoReflect.Descriptor instead.
 func (*Settle) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{19}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Settle) GetRecord() []byte {
@@ -1809,7 +1877,7 @@ type Settled struct {
 
 func (x *Settled) Reset() {
 	*x = Settled{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[20]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1821,7 +1889,7 @@ func (x *Settled) String() string {
 func (*Settled) ProtoMessage() {}
 
 func (x *Settled) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[20]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1834,7 +1902,7 @@ func (x *Settled) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Settled.ProtoReflect.Descriptor instead.
 func (*Settled) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{20}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Settled) GetRecoveries() []v1.Recovery {
@@ -1854,7 +1922,7 @@ type SplitRead struct {
 
 func (x *SplitRead) Reset() {
 	*x = SplitRead{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[21]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1866,7 +1934,7 @@ func (x *SplitRead) String() string {
 func (*SplitRead) ProtoMessage() {}
 
 func (x *SplitRead) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[21]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1879,7 +1947,7 @@ func (x *SplitRead) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SplitRead.ProtoReflect.Descriptor instead.
 func (*SplitRead) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{21}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SplitRead) GetStreams() []*EndedRead {
@@ -1901,7 +1969,7 @@ type EndedRead struct {
 
 func (x *EndedRead) Reset() {
 	*x = EndedRead{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[22]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1913,7 +1981,7 @@ func (x *EndedRead) String() string {
 func (*EndedRead) ProtoMessage() {}
 
 func (x *EndedRead) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[22]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1926,7 +1994,7 @@ func (x *EndedRead) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndedRead.ProtoReflect.Descriptor instead.
 func (*EndedRead) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{22}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *EndedRead) GetStream() string {
@@ -1955,7 +2023,7 @@ type ReadSplits struct {
 
 func (x *ReadSplits) Reset() {
 	*x = ReadSplits{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[23]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1967,7 +2035,7 @@ func (x *ReadSplits) String() string {
 func (*ReadSplits) ProtoMessage() {}
 
 func (x *ReadSplits) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[23]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1980,7 +2048,7 @@ func (x *ReadSplits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadSplits.ProtoReflect.Descriptor instead.
 func (*ReadSplits) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{23}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ReadSplits) GetSplits() map[string]*v1.Splits {
@@ -2015,7 +2083,7 @@ type Signal struct {
 
 func (x *Signal) Reset() {
 	*x = Signal{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[24]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2027,7 +2095,7 @@ func (x *Signal) String() string {
 func (*Signal) ProtoMessage() {}
 
 func (x *Signal) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[24]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2040,7 +2108,7 @@ func (x *Signal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Signal.ProtoReflect.Descriptor instead.
 func (*Signal) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{24}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *Signal) GetAfter() uint64 {
@@ -2133,7 +2201,7 @@ type Placed struct {
 
 func (x *Placed) Reset() {
 	*x = Placed{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[25]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2145,7 +2213,7 @@ func (x *Placed) String() string {
 func (*Placed) ProtoMessage() {}
 
 func (x *Placed) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[25]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2158,7 +2226,7 @@ func (x *Placed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Placed.ProtoReflect.Descriptor instead.
 func (*Placed) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{25}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{26}
 }
 
 type Emitted struct {
@@ -2169,7 +2237,7 @@ type Emitted struct {
 
 func (x *Emitted) Reset() {
 	*x = Emitted{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[26]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2181,7 +2249,7 @@ func (x *Emitted) String() string {
 func (*Emitted) ProtoMessage() {}
 
 func (x *Emitted) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[26]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2194,7 +2262,7 @@ func (x *Emitted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Emitted.ProtoReflect.Descriptor instead.
 func (*Emitted) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{26}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{27}
 }
 
 type Full struct {
@@ -2205,7 +2273,7 @@ type Full struct {
 
 func (x *Full) Reset() {
 	*x = Full{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[27]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2217,7 +2285,7 @@ func (x *Full) String() string {
 func (*Full) ProtoMessage() {}
 
 func (x *Full) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[27]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2230,7 +2298,7 @@ func (x *Full) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Full.ProtoReflect.Descriptor instead.
 func (*Full) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{27}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{28}
 }
 
 type ReadDone struct {
@@ -2243,7 +2311,7 @@ type ReadDone struct {
 
 func (x *ReadDone) Reset() {
 	*x = ReadDone{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[28]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2255,7 +2323,7 @@ func (x *ReadDone) String() string {
 func (*ReadDone) ProtoMessage() {}
 
 func (x *ReadDone) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[28]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2268,7 +2336,7 @@ func (x *ReadDone) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadDone.ProtoReflect.Descriptor instead.
 func (*ReadDone) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{28}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ReadDone) GetActive() bool {
@@ -2279,22 +2347,33 @@ func (x *ReadDone) GetActive() bool {
 }
 
 // SchemaProposal is a change one of the worker's engine's lanes made to one
-// of the destination's streams' schema, from version `base` of it. The
-// coordinator takes it if it holds version base, and sends every worker the
-// stream's new schema; otherwise it sends the proposer the one it holds.
+// of the destination's streams' schema, or to the columns it holds whole,
+// or to the schema of a stream a SQL transform reads, from version `base`
+// of it. The coordinator takes it if it holds version base, and sends every
+// worker the stream's new schema; otherwise it sends the proposer the one
+// it holds. So every worker holds what one decided.
 type SchemaProposal struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Stream string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
 	Base   uint64                 `protobuf:"varint,2,opt,name=base,proto3" json:"base,omitempty"`
 	// An Arrow IPC stream holding only the schema.
-	ArrowSchema   []byte `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	ArrowSchema []byte `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	// A stream a SQL transform reads, whose versions are apart from those of
+	// the destination's stream of the same name.
+	Input bool `protobuf:"varint,4,opt,name=input,proto3" json:"input,omitempty"`
+	// One of the destination's streams that holds: the columns it holds
+	// whole.
+	Holding []*v11.ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
+	// Where columns are held whole, the schema the destination gets, as
+	// arrow_schema; empty where it's arrow_schema.
+	Delivered     []byte `protobuf:"bytes,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SchemaProposal) Reset() {
 	*x = SchemaProposal{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[29]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2306,7 +2385,7 @@ func (x *SchemaProposal) String() string {
 func (*SchemaProposal) ProtoMessage() {}
 
 func (x *SchemaProposal) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[29]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2319,7 +2398,7 @@ func (x *SchemaProposal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchemaProposal.ProtoReflect.Descriptor instead.
 func (*SchemaProposal) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{29}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SchemaProposal) GetStream() string {
@@ -2339,6 +2418,27 @@ func (x *SchemaProposal) GetBase() uint64 {
 func (x *SchemaProposal) GetArrowSchema() []byte {
 	if x != nil {
 		return x.ArrowSchema
+	}
+	return nil
+}
+
+func (x *SchemaProposal) GetInput() bool {
+	if x != nil {
+		return x.Input
+	}
+	return false
+}
+
+func (x *SchemaProposal) GetHolding() []*v11.ColumnHold {
+	if x != nil {
+		return x.Holding
+	}
+	return nil
+}
+
+func (x *SchemaProposal) GetDelivered() []byte {
+	if x != nil {
+		return x.Delivered
 	}
 	return nil
 }
@@ -2372,7 +2472,7 @@ type Usage struct {
 
 func (x *Usage) Reset() {
 	*x = Usage{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[30]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2384,7 +2484,7 @@ func (x *Usage) String() string {
 func (*Usage) ProtoMessage() {}
 
 func (x *Usage) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[30]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2397,7 +2497,7 @@ func (x *Usage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usage.ProtoReflect.Descriptor instead.
 func (*Usage) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{30}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *Usage) GetCpuSeconds() float64 {
@@ -2491,14 +2591,16 @@ type StreamSchema struct {
 	Stream  string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
 	Version uint64                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
 	// As SchemaProposal's.
-	ArrowSchema   []byte `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	ArrowSchema   []byte            `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	Input         bool              `protobuf:"varint,4,opt,name=input,proto3" json:"input,omitempty"`
+	Holding       []*v11.ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StreamSchema) Reset() {
 	*x = StreamSchema{}
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[31]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2510,7 +2612,7 @@ func (x *StreamSchema) String() string {
 func (*StreamSchema) ProtoMessage() {}
 
 func (x *StreamSchema) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[31]
+	mi := &file_openetl_attempt_v1_attempt_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2523,7 +2625,7 @@ func (x *StreamSchema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamSchema.ProtoReflect.Descriptor instead.
 func (*StreamSchema) Descriptor() ([]byte, []int) {
-	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{31}
+	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *StreamSchema) GetStream() string {
@@ -2543,6 +2645,20 @@ func (x *StreamSchema) GetVersion() uint64 {
 func (x *StreamSchema) GetArrowSchema() []byte {
 	if x != nil {
 		return x.ArrowSchema
+	}
+	return nil
+}
+
+func (x *StreamSchema) GetInput() bool {
+	if x != nil {
+		return x.Input
+	}
+	return false
+}
+
+func (x *StreamSchema) GetHolding() []*v11.ColumnHold {
+	if x != nil {
+		return x.Holding
 	}
 	return nil
 }
@@ -2581,7 +2697,7 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"generation\x18\x02 \x01(\x04R\n" +
 	"generation\x12\x16\n" +
 	"\x06worker\x18\x03 \x01(\rR\x06worker\x12\x18\n" +
-	"\aaddress\x18\x04 \x01(\tR\aaddress\"\x85\x04\n" +
+	"\aaddress\x18\x04 \x01(\tR\aaddress\"\x9b\x04\n" +
 	"\n" +
 	"Assignment\x12\x1f\n" +
 	"\vfirst_epoch\x18\x01 \x01(\x04R\n" +
@@ -2598,7 +2714,8 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"readStarts\x12\x12\n" +
 	"\x04done\x18\n" +
 	" \x03(\tR\x04done\x12\x1b\n" +
-	"\tmax_bytes\x18\v \x01(\x04R\bmaxBytes\x1a=\n" +
+	"\tmax_bytes\x18\v \x01(\x04R\bmaxBytes\x12\x14\n" +
+	"\x05holds\x18\f \x01(\fR\x05holds\x1a=\n" +
 	"\x0fReadStartsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"_\n" +
@@ -2664,11 +2781,11 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"split_read\x18\x03 \x01(\v2\x1d.openetl.attempt.v1.SplitReadH\x00R\tsplitRead\x12K\n" +
 	"\fapply_schema\x18\x04 \x01(\v2&.openetl.connector.v1.WriteApplySchemaH\x00R\vapplySchema\x124\n" +
 	"\x06settle\x18\x05 \x01(\v2\x1a.openetl.attempt.v1.SettleH\x00R\x06settleB\x06\n" +
-	"\x04call\"\xea\x02\n" +
+	"\x04call\"\xe3\x02\n" +
 	"\x06Answer\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x121\n" +
-	"\x05error\x18\x02 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\x12D\n" +
-	"\trecovered\x18\x03 \x01(\v2$.openetl.connector.v1.WriteRecoveredH\x00R\trecovered\x12A\n" +
+	"\x05error\x18\x02 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\x12=\n" +
+	"\trecovered\x18\x03 \x01(\v2\x1d.openetl.attempt.v1.RecoveredH\x00R\trecovered\x12A\n" +
 	"\vread_splits\x18\x04 \x01(\v2\x1e.openetl.attempt.v1.ReadSplitsH\x00R\n" +
 	"readSplits\x12Q\n" +
 	"\x0eschema_applied\x18\x05 \x01(\v2(.openetl.connector.v1.WriteSchemaAppliedH\x00R\rschemaApplied\x127\n" +
@@ -2676,7 +2793,13 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\x06answer\"9\n" +
 	"\aRecover\x12\x16\n" +
 	"\x06record\x18\x01 \x01(\fR\x06record\x12\x16\n" +
-	"\x06forced\x18\x02 \x03(\tR\x06forced\"\\\n" +
+	"\x06forced\x18\x02 \x03(\tR\x06forced\"\xe8\x01\n" +
+	"\tRecovered\x12:\n" +
+	"\brecovery\x18\x01 \x01(\x0e2\x1e.openetl.connector.v1.RecoveryR\brecovery\x12A\n" +
+	"\x06limits\x18\x02 \x03(\v2).openetl.attempt.v1.Recovered.LimitsEntryR\x06limits\x1a\\\n" +
+	"\vLimitsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x127\n" +
+	"\x05value\x18\x02 \x01(\v2!.openetl.connector.v1.TableLimitsR\x05value:\x028\x01\"\\\n" +
 	"\x06Settle\x12\x16\n" +
 	"\x06record\x18\x01 \x01(\fR\x06record\x12\"\n" +
 	"\fcommittables\x18\x02 \x03(\rR\fcommittables\x12\x16\n" +
@@ -2709,11 +2832,14 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\aEmitted\"\x06\n" +
 	"\x04Full\"\"\n" +
 	"\bReadDone\x12\x16\n" +
-	"\x06active\x18\x01 \x01(\bR\x06active\"_\n" +
+	"\x06active\x18\x01 \x01(\bR\x06active\"\xcc\x01\n" +
 	"\x0eSchemaProposal\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x12\n" +
 	"\x04base\x18\x02 \x01(\x04R\x04base\x12!\n" +
-	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\"\xa9\x03\n" +
+	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
+	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
+	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\x12\x1c\n" +
+	"\tdelivered\x18\x06 \x01(\fR\tdelivered\"\xa9\x03\n" +
 	"\x05Usage\x12\x1f\n" +
 	"\vcpu_seconds\x18\x01 \x01(\x01R\n" +
 	"cpuSeconds\x12*\n" +
@@ -2729,11 +2855,13 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\x15backpressured_seconds\x18\n" +
 	" \x01(\x01R\x14backpressuredSeconds\x12!\n" +
 	"\fidle_seconds\x18\v \x01(\x01R\vidleSeconds\x12\x1b\n" +
-	"\tlane_rows\x18\f \x01(\x04R\blaneRows\"c\n" +
+	"\tlane_rows\x18\f \x01(\x04R\blaneRows\"\xb2\x01\n" +
 	"\fStreamSchema\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x04R\aversion\x12!\n" +
-	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema2e\n" +
+	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
+	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
+	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding2e\n" +
 	"\x0eAttemptService\x12S\n" +
 	"\x06Attend\x12!.openetl.attempt.v1.AttendRequest\x1a\".openetl.attempt.v1.AttendResponse(\x010\x01B@Z>github.com/openetl-io/openetl/gen/openetl/attempt/v1;attemptv1b\x06proto3"
 
@@ -2749,7 +2877,7 @@ func file_openetl_attempt_v1_attempt_proto_rawDescGZIP() []byte {
 	return file_openetl_attempt_v1_attempt_proto_rawDescData
 }
 
-var file_openetl_attempt_v1_attempt_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_openetl_attempt_v1_attempt_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_openetl_attempt_v1_attempt_proto_goTypes = []any{
 	(*AttendRequest)(nil),         // 0: openetl.attempt.v1.AttendRequest
 	(*AttendResponse)(nil),        // 1: openetl.attempt.v1.AttendResponse
@@ -2770,45 +2898,48 @@ var file_openetl_attempt_v1_attempt_proto_goTypes = []any{
 	(*Call)(nil),                  // 16: openetl.attempt.v1.Call
 	(*Answer)(nil),                // 17: openetl.attempt.v1.Answer
 	(*Recover)(nil),               // 18: openetl.attempt.v1.Recover
-	(*Settle)(nil),                // 19: openetl.attempt.v1.Settle
-	(*Settled)(nil),               // 20: openetl.attempt.v1.Settled
-	(*SplitRead)(nil),             // 21: openetl.attempt.v1.SplitRead
-	(*EndedRead)(nil),             // 22: openetl.attempt.v1.EndedRead
-	(*ReadSplits)(nil),            // 23: openetl.attempt.v1.ReadSplits
-	(*Signal)(nil),                // 24: openetl.attempt.v1.Signal
-	(*Placed)(nil),                // 25: openetl.attempt.v1.Placed
-	(*Emitted)(nil),               // 26: openetl.attempt.v1.Emitted
-	(*Full)(nil),                  // 27: openetl.attempt.v1.Full
-	(*ReadDone)(nil),              // 28: openetl.attempt.v1.ReadDone
-	(*SchemaProposal)(nil),        // 29: openetl.attempt.v1.SchemaProposal
-	(*Usage)(nil),                 // 30: openetl.attempt.v1.Usage
-	(*StreamSchema)(nil),          // 31: openetl.attempt.v1.StreamSchema
-	nil,                           // 32: openetl.attempt.v1.Assignment.ReadStartsEntry
-	nil,                           // 33: openetl.attempt.v1.Share.RowsEntry
-	nil,                           // 34: openetl.attempt.v1.ReadSplits.SplitsEntry
-	(*v1.Error)(nil),              // 35: openetl.connector.v1.Error
-	(*v11.KeyGroupRange)(nil),     // 36: openetl.engine.v1.KeyGroupRange
-	(*v1.Split)(nil),              // 37: openetl.connector.v1.Split
-	(*v1.Epoch)(nil),              // 38: openetl.connector.v1.Epoch
-	(*v11.EpochReady)(nil),        // 39: openetl.engine.v1.EpochReady
-	(*v1.WriteCommit)(nil),        // 40: openetl.connector.v1.WriteCommit
-	(*v1.WriteCommitted)(nil),     // 41: openetl.connector.v1.WriteCommitted
-	(*v1.WriteApplySchema)(nil),   // 42: openetl.connector.v1.WriteApplySchema
-	(*v1.WriteRecovered)(nil),     // 43: openetl.connector.v1.WriteRecovered
-	(*v1.WriteSchemaApplied)(nil), // 44: openetl.connector.v1.WriteSchemaApplied
-	(v1.Recovery)(0),              // 45: openetl.connector.v1.Recovery
-	(*v1.Splits)(nil),             // 46: openetl.connector.v1.Splits
+	(*Recovered)(nil),             // 19: openetl.attempt.v1.Recovered
+	(*Settle)(nil),                // 20: openetl.attempt.v1.Settle
+	(*Settled)(nil),               // 21: openetl.attempt.v1.Settled
+	(*SplitRead)(nil),             // 22: openetl.attempt.v1.SplitRead
+	(*EndedRead)(nil),             // 23: openetl.attempt.v1.EndedRead
+	(*ReadSplits)(nil),            // 24: openetl.attempt.v1.ReadSplits
+	(*Signal)(nil),                // 25: openetl.attempt.v1.Signal
+	(*Placed)(nil),                // 26: openetl.attempt.v1.Placed
+	(*Emitted)(nil),               // 27: openetl.attempt.v1.Emitted
+	(*Full)(nil),                  // 28: openetl.attempt.v1.Full
+	(*ReadDone)(nil),              // 29: openetl.attempt.v1.ReadDone
+	(*SchemaProposal)(nil),        // 30: openetl.attempt.v1.SchemaProposal
+	(*Usage)(nil),                 // 31: openetl.attempt.v1.Usage
+	(*StreamSchema)(nil),          // 32: openetl.attempt.v1.StreamSchema
+	nil,                           // 33: openetl.attempt.v1.Assignment.ReadStartsEntry
+	nil,                           // 34: openetl.attempt.v1.Share.RowsEntry
+	nil,                           // 35: openetl.attempt.v1.Recovered.LimitsEntry
+	nil,                           // 36: openetl.attempt.v1.ReadSplits.SplitsEntry
+	(*v1.Error)(nil),              // 37: openetl.connector.v1.Error
+	(*v11.KeyGroupRange)(nil),     // 38: openetl.engine.v1.KeyGroupRange
+	(*v1.Split)(nil),              // 39: openetl.connector.v1.Split
+	(*v1.Epoch)(nil),              // 40: openetl.connector.v1.Epoch
+	(*v11.EpochReady)(nil),        // 41: openetl.engine.v1.EpochReady
+	(*v1.WriteCommit)(nil),        // 42: openetl.connector.v1.WriteCommit
+	(*v1.WriteCommitted)(nil),     // 43: openetl.connector.v1.WriteCommitted
+	(*v1.WriteApplySchema)(nil),   // 44: openetl.connector.v1.WriteApplySchema
+	(*v1.WriteSchemaApplied)(nil), // 45: openetl.connector.v1.WriteSchemaApplied
+	(v1.Recovery)(0),              // 46: openetl.connector.v1.Recovery
+	(*v1.Splits)(nil),             // 47: openetl.connector.v1.Splits
+	(*v11.ColumnHold)(nil),        // 48: openetl.engine.v1.ColumnHold
+	(*v1.TableLimits)(nil),        // 49: openetl.connector.v1.TableLimits
 }
 var file_openetl_attempt_v1_attempt_proto_depIdxs = []int32{
 	2,  // 0: openetl.attempt.v1.AttendRequest.join:type_name -> openetl.attempt.v1.Join
 	8,  // 1: openetl.attempt.v1.AttendRequest.share:type_name -> openetl.attempt.v1.Share
 	12, // 2: openetl.attempt.v1.AttendRequest.committed:type_name -> openetl.attempt.v1.Committed
 	14, // 3: openetl.attempt.v1.AttendRequest.heartbeat:type_name -> openetl.attempt.v1.Heartbeat
-	35, // 4: openetl.attempt.v1.AttendRequest.failure:type_name -> openetl.connector.v1.Error
+	37, // 4: openetl.attempt.v1.AttendRequest.failure:type_name -> openetl.connector.v1.Error
 	17, // 5: openetl.attempt.v1.AttendRequest.answer:type_name -> openetl.attempt.v1.Answer
-	24, // 6: openetl.attempt.v1.AttendRequest.signal:type_name -> openetl.attempt.v1.Signal
-	29, // 7: openetl.attempt.v1.AttendRequest.schema_proposal:type_name -> openetl.attempt.v1.SchemaProposal
-	30, // 8: openetl.attempt.v1.AttendRequest.usage:type_name -> openetl.attempt.v1.Usage
+	25, // 6: openetl.attempt.v1.AttendRequest.signal:type_name -> openetl.attempt.v1.Signal
+	30, // 7: openetl.attempt.v1.AttendRequest.schema_proposal:type_name -> openetl.attempt.v1.SchemaProposal
+	31, // 8: openetl.attempt.v1.AttendRequest.usage:type_name -> openetl.attempt.v1.Usage
 	3,  // 9: openetl.attempt.v1.AttendResponse.assignment:type_name -> openetl.attempt.v1.Assignment
 	7,  // 10: openetl.attempt.v1.AttendResponse.barrier:type_name -> openetl.attempt.v1.Barrier
 	13, // 11: openetl.attempt.v1.AttendResponse.positions:type_name -> openetl.attempt.v1.Positions
@@ -2816,52 +2947,57 @@ var file_openetl_attempt_v1_attempt_proto_depIdxs = []int32{
 	14, // 13: openetl.attempt.v1.AttendResponse.heartbeat:type_name -> openetl.attempt.v1.Heartbeat
 	15, // 14: openetl.attempt.v1.AttendResponse.end:type_name -> openetl.attempt.v1.End
 	16, // 15: openetl.attempt.v1.AttendResponse.call:type_name -> openetl.attempt.v1.Call
-	31, // 16: openetl.attempt.v1.AttendResponse.schema:type_name -> openetl.attempt.v1.StreamSchema
+	32, // 16: openetl.attempt.v1.AttendResponse.schema:type_name -> openetl.attempt.v1.StreamSchema
 	4,  // 17: openetl.attempt.v1.Assignment.lanes:type_name -> openetl.attempt.v1.Lane
 	4,  // 18: openetl.attempt.v1.Assignment.writer_lanes:type_name -> openetl.attempt.v1.Lane
 	5,  // 19: openetl.attempt.v1.Assignment.splits:type_name -> openetl.attempt.v1.SplitAssignment
-	32, // 20: openetl.attempt.v1.Assignment.read_starts:type_name -> openetl.attempt.v1.Assignment.ReadStartsEntry
-	36, // 21: openetl.attempt.v1.Lane.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	33, // 20: openetl.attempt.v1.Assignment.read_starts:type_name -> openetl.attempt.v1.Assignment.ReadStartsEntry
+	38, // 21: openetl.attempt.v1.Lane.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
 	6,  // 22: openetl.attempt.v1.SplitAssignment.split:type_name -> openetl.attempt.v1.SplitPosition
-	37, // 23: openetl.attempt.v1.SplitPosition.split:type_name -> openetl.connector.v1.Split
-	38, // 24: openetl.attempt.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
-	38, // 25: openetl.attempt.v1.Share.epoch:type_name -> openetl.connector.v1.Epoch
+	39, // 23: openetl.attempt.v1.SplitPosition.split:type_name -> openetl.connector.v1.Split
+	40, // 24: openetl.attempt.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
+	40, // 25: openetl.attempt.v1.Share.epoch:type_name -> openetl.connector.v1.Epoch
 	6,  // 26: openetl.attempt.v1.Share.positions:type_name -> openetl.attempt.v1.SplitPosition
-	33, // 27: openetl.attempt.v1.Share.rows:type_name -> openetl.attempt.v1.Share.RowsEntry
+	34, // 27: openetl.attempt.v1.Share.rows:type_name -> openetl.attempt.v1.Share.RowsEntry
 	9,  // 28: openetl.attempt.v1.Share.committables:type_name -> openetl.attempt.v1.Committable
-	39, // 29: openetl.attempt.v1.Share.ready:type_name -> openetl.engine.v1.EpochReady
+	41, // 29: openetl.attempt.v1.Share.ready:type_name -> openetl.engine.v1.EpochReady
 	10, // 30: openetl.attempt.v1.Committable.splits:type_name -> openetl.attempt.v1.SplitRef
-	36, // 31: openetl.attempt.v1.SplitRef.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
-	40, // 32: openetl.attempt.v1.Commit.commit:type_name -> openetl.connector.v1.WriteCommit
-	41, // 33: openetl.attempt.v1.Committed.committed:type_name -> openetl.connector.v1.WriteCommitted
-	38, // 34: openetl.attempt.v1.Positions.epoch:type_name -> openetl.connector.v1.Epoch
+	38, // 31: openetl.attempt.v1.SplitRef.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	42, // 32: openetl.attempt.v1.Commit.commit:type_name -> openetl.connector.v1.WriteCommit
+	43, // 33: openetl.attempt.v1.Committed.committed:type_name -> openetl.connector.v1.WriteCommitted
+	40, // 34: openetl.attempt.v1.Positions.epoch:type_name -> openetl.connector.v1.Epoch
 	6,  // 35: openetl.attempt.v1.Positions.splits:type_name -> openetl.attempt.v1.SplitPosition
-	35, // 36: openetl.attempt.v1.End.error:type_name -> openetl.connector.v1.Error
+	37, // 36: openetl.attempt.v1.End.error:type_name -> openetl.connector.v1.Error
 	18, // 37: openetl.attempt.v1.Call.recover:type_name -> openetl.attempt.v1.Recover
-	21, // 38: openetl.attempt.v1.Call.split_read:type_name -> openetl.attempt.v1.SplitRead
-	42, // 39: openetl.attempt.v1.Call.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
-	19, // 40: openetl.attempt.v1.Call.settle:type_name -> openetl.attempt.v1.Settle
-	35, // 41: openetl.attempt.v1.Answer.error:type_name -> openetl.connector.v1.Error
-	43, // 42: openetl.attempt.v1.Answer.recovered:type_name -> openetl.connector.v1.WriteRecovered
-	23, // 43: openetl.attempt.v1.Answer.read_splits:type_name -> openetl.attempt.v1.ReadSplits
-	44, // 44: openetl.attempt.v1.Answer.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
-	20, // 45: openetl.attempt.v1.Answer.settled:type_name -> openetl.attempt.v1.Settled
-	45, // 46: openetl.attempt.v1.Settled.recoveries:type_name -> openetl.connector.v1.Recovery
-	22, // 47: openetl.attempt.v1.SplitRead.streams:type_name -> openetl.attempt.v1.EndedRead
-	46, // 48: openetl.attempt.v1.EndedRead.ended:type_name -> openetl.connector.v1.Splits
-	34, // 49: openetl.attempt.v1.ReadSplits.splits:type_name -> openetl.attempt.v1.ReadSplits.SplitsEntry
-	25, // 50: openetl.attempt.v1.Signal.placed:type_name -> openetl.attempt.v1.Placed
-	26, // 51: openetl.attempt.v1.Signal.emitted:type_name -> openetl.attempt.v1.Emitted
-	27, // 52: openetl.attempt.v1.Signal.full:type_name -> openetl.attempt.v1.Full
-	28, // 53: openetl.attempt.v1.Signal.read_done:type_name -> openetl.attempt.v1.ReadDone
-	46, // 54: openetl.attempt.v1.ReadSplits.SplitsEntry.value:type_name -> openetl.connector.v1.Splits
-	0,  // 55: openetl.attempt.v1.AttemptService.Attend:input_type -> openetl.attempt.v1.AttendRequest
-	1,  // 56: openetl.attempt.v1.AttemptService.Attend:output_type -> openetl.attempt.v1.AttendResponse
-	56, // [56:57] is the sub-list for method output_type
-	55, // [55:56] is the sub-list for method input_type
-	55, // [55:55] is the sub-list for extension type_name
-	55, // [55:55] is the sub-list for extension extendee
-	0,  // [0:55] is the sub-list for field type_name
+	22, // 38: openetl.attempt.v1.Call.split_read:type_name -> openetl.attempt.v1.SplitRead
+	44, // 39: openetl.attempt.v1.Call.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
+	20, // 40: openetl.attempt.v1.Call.settle:type_name -> openetl.attempt.v1.Settle
+	37, // 41: openetl.attempt.v1.Answer.error:type_name -> openetl.connector.v1.Error
+	19, // 42: openetl.attempt.v1.Answer.recovered:type_name -> openetl.attempt.v1.Recovered
+	24, // 43: openetl.attempt.v1.Answer.read_splits:type_name -> openetl.attempt.v1.ReadSplits
+	45, // 44: openetl.attempt.v1.Answer.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
+	21, // 45: openetl.attempt.v1.Answer.settled:type_name -> openetl.attempt.v1.Settled
+	46, // 46: openetl.attempt.v1.Recovered.recovery:type_name -> openetl.connector.v1.Recovery
+	35, // 47: openetl.attempt.v1.Recovered.limits:type_name -> openetl.attempt.v1.Recovered.LimitsEntry
+	46, // 48: openetl.attempt.v1.Settled.recoveries:type_name -> openetl.connector.v1.Recovery
+	23, // 49: openetl.attempt.v1.SplitRead.streams:type_name -> openetl.attempt.v1.EndedRead
+	47, // 50: openetl.attempt.v1.EndedRead.ended:type_name -> openetl.connector.v1.Splits
+	36, // 51: openetl.attempt.v1.ReadSplits.splits:type_name -> openetl.attempt.v1.ReadSplits.SplitsEntry
+	26, // 52: openetl.attempt.v1.Signal.placed:type_name -> openetl.attempt.v1.Placed
+	27, // 53: openetl.attempt.v1.Signal.emitted:type_name -> openetl.attempt.v1.Emitted
+	28, // 54: openetl.attempt.v1.Signal.full:type_name -> openetl.attempt.v1.Full
+	29, // 55: openetl.attempt.v1.Signal.read_done:type_name -> openetl.attempt.v1.ReadDone
+	48, // 56: openetl.attempt.v1.SchemaProposal.holding:type_name -> openetl.engine.v1.ColumnHold
+	48, // 57: openetl.attempt.v1.StreamSchema.holding:type_name -> openetl.engine.v1.ColumnHold
+	49, // 58: openetl.attempt.v1.Recovered.LimitsEntry.value:type_name -> openetl.connector.v1.TableLimits
+	47, // 59: openetl.attempt.v1.ReadSplits.SplitsEntry.value:type_name -> openetl.connector.v1.Splits
+	0,  // 60: openetl.attempt.v1.AttemptService.Attend:input_type -> openetl.attempt.v1.AttendRequest
+	1,  // 61: openetl.attempt.v1.AttemptService.Attend:output_type -> openetl.attempt.v1.AttendResponse
+	61, // [61:62] is the sub-list for method output_type
+	60, // [60:61] is the sub-list for method input_type
+	60, // [60:60] is the sub-list for extension type_name
+	60, // [60:60] is the sub-list for extension extendee
+	0,  // [0:60] is the sub-list for field type_name
 }
 
 func init() { file_openetl_attempt_v1_attempt_proto_init() }
@@ -2903,8 +3039,8 @@ func file_openetl_attempt_v1_attempt_proto_init() {
 		(*Answer_SchemaApplied)(nil),
 		(*Answer_Settled)(nil),
 	}
-	file_openetl_attempt_v1_attempt_proto_msgTypes[22].OneofWrappers = []any{}
-	file_openetl_attempt_v1_attempt_proto_msgTypes[24].OneofWrappers = []any{
+	file_openetl_attempt_v1_attempt_proto_msgTypes[23].OneofWrappers = []any{}
+	file_openetl_attempt_v1_attempt_proto_msgTypes[25].OneofWrappers = []any{
 		(*Signal_Placed)(nil),
 		(*Signal_Emitted)(nil),
 		(*Signal_Full)(nil),
@@ -2916,7 +3052,7 @@ func file_openetl_attempt_v1_attempt_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_attempt_v1_attempt_proto_rawDesc), len(file_openetl_attempt_v1_attempt_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   35,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

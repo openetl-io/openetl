@@ -91,12 +91,11 @@ When a job size is an object rather than a preset, both `cpu` and `memory` are r
 
 With `resources.workers` above 1, `openetl plan` shows `workers:` and the count after the job size. A job runs on one pod, and the plan's warnings say why, when:
 
-- the pipeline has a `transform`: SQL, Spark or Flink;
-- a stream holds columns or cells, as a keyed stream does in a destination that takes holds;
+- the pipeline has a Spark or Flink `transform`;
 - the destination declares fewer writer lanes than workers (`maxWriterLanes`, one if unset), is a transactional stream without lane commits (`laneCommits`), loads staged epochs, or is the built-in `parquet`;
 - no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners of its data plane have.
 
-A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
+A pipeline with `transform.sql` runs on workers, and so do streams that hold columns or cells. The coordinator decides each stream's schema and what it holds, so every worker writes the same columns and holds the same ones. Only the first worker patches in released holds. A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
 
 Each job's workers read the source's splits between them. Each of these streams is read on one worker, and the plan warns about each one:
 
@@ -104,7 +103,9 @@ Each job's workers read the source's splits between them. Each of these streams 
 - a keyed stream read with `cdc`;
 - a stream written with `overwrite`.
 
-When the control plane cannot check the destination's capabilities or the source's catalog, the plan says so in a note. Then the job's coordinator checks before each attempt, and runs the attempt on one pod if it must. The sync's attempts show how many workers each one ran on, and why one ran on one pod. [Run a job on several pods](../../pipelines/workers.md) explains the plan's messages and what happens when a pod fails.
+With `transform.sql`, these rules apply to each stream that a statement reads, as its output keeps the stream's key or has none.
+
+When the control plane cannot check the destination's capabilities or the source's catalog, the plan says so in a note. Then the job's coordinator checks the capabilities before each attempt, and runs the attempt on one pod if it must. The sync's attempts show how many workers each one ran on, and why one ran on one pod. [Run a job on several pods](../../pipelines/workers.md) explains the plan's messages and what happens when a pod fails.
 
 `resources.min` can't be larger than `resources.size` or `resources.max`, nor `resources.size` larger than `resources.max`. A job size is a preset or amounts:
 

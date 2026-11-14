@@ -60,11 +60,18 @@ func TestWorkers(t *testing.T) {
 		{name: "staged", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.StageAndApply, WriterLanes: 4, Delivery: destination.DeliveryStaged},
 			onePod: "a destination that loads staged epochs runs on one pod"},
 		{name: "engine written", spec: spec(2, nil), cat: cat, caps: lanes, engine: true, onePod: "a destination the engine writes runs on one pod"},
-		{name: "holds", spec: spec(2, nil), cat: cat, caps: held, onePod: `stream "changes" holds columns, which runs on one pod`},
+		{name: "holds", spec: spec(2, nil), cat: cat, caps: held, workers: 2, oneWorker: []string{
+			`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
+			`changes: each attempt reads it on one of its 2 workers: the changes to each key must reach one writer lane in order`,
+			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
+		}},
 		{name: "sql", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
-		}), cat: cat, caps: lanes,
-			onePod: "a SQL transform runs on one pod"},
+		}), cat: cat, caps: held, workers: 2, oneWorker: []string{
+			`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
+			`changes: each attempt reads it on one of its 2 workers: the changes to each key must reach one writer lane in order`,
+			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
+		}},
 		{name: "spark", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Spark{Spark: &apiv1.SparkTransform{}}}
 		}), cat: cat, caps: lanes,

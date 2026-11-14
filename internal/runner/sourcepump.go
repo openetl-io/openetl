@@ -149,6 +149,19 @@ func (l lastEnd) endsAt(_ string, epoch uint64) bool {
 	return len(l.inputs) > 0 && last == epoch
 }
 
+// fromEnd ends each of a SQL transform's outputs' reads in the epoch where
+// the read of the stream it's from ends.
+type fromEnd struct {
+	ends *readEnds
+	// By output.
+	from map[string]string
+}
+
+func (f fromEnd) endsAt(output string, epoch uint64) bool {
+	in, ok := f.from[output]
+	return ok && f.ends.endsAt(in, epoch)
+}
+
 // sourcePump is the connector's Emitter. It places each requested barrier on
 // every split right after that split's next resume point, and forwards a
 // stream's barrier on a lane once every split of the stream on the lane has

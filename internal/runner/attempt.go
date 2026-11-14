@@ -1440,6 +1440,19 @@ func (j *Job) sinkStarts(readStarts map[string]int64, done map[string]bool, ends
 	if !j.transformed() {
 		return starts, ends
 	}
+	if j.SQL != nil {
+		// An output's read is the one stream its statement reads, or that
+		// it passes through.
+		from := map[string]string{}
+		out := map[string]time.Time{}
+		for _, o := range j.Outputs {
+			from[o.Name] = o.From
+			if t, ok := starts[o.From]; ok {
+				out[o.Name] = t
+			}
+		}
+		return out, fromEnd{ends: ends, from: from}
+	}
 	// An output's read starts with its inputs' first, and ends with
 	// their last.
 	var first time.Time
@@ -1661,6 +1674,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 		sh := ev.shared
 		st.splits, st.rows, st.descs, st.coverage, st.flow = sh.splits, sh.rows, sh.descs, sh.coverage, sh.flow
 		st.staged, st.ready = len(sh.descs), true
+		c.replayed(sh.flow)
 	case evStaged:
 		st := c.pending[ev.epoch]
 		if st != nil && st.descs == nil {
@@ -1677,12 +1691,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 			return fmt.Errorf("runner: unexpected readiness of epoch %d", ev.epoch)
 		}
 		st.ready, st.flow = true, ev.ready
-		if len(c.holdPlans) > 0 {
-			c.replaying = false
-			for _, h := range ev.ready.Holds {
-				c.replaying = c.replaying || h.Replayed != nil && !h.Replayed.Done
-			}
-		}
+		c.replayed(ev.ready)
 	case evCommitted:
 		if !c.committing || ev.epoch != c.committed+1 {
 			return fmt.Errorf("runner: unexpected commit of epoch %d", ev.epoch)
@@ -1707,6 +1716,18 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// replayed notes from an epoch ready whether a release is still being
+// patched in.
+func (c *coordinator) replayed(r *Ready) {
+	if len(c.holdPlans) == 0 {
+		return
+	}
+	c.replaying = false
+	for _, h := range r.Holds {
+		c.replaying = c.replaying || h.Replayed != nil && !h.Replayed.Done
 	}
 }
 

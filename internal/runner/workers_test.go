@@ -419,8 +419,17 @@ func ranges(splits, rows, page int) func() *rangeSource {
 func TestWorkersFanOut(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	p := newPool(t, ranges(6, 20, 5))
+	// Each split's pages past its first wait for the first commit, so the
+	// rows take several epochs however fast they're read.
+	gate := make(chan struct{})
+	p := newPool(t, func() *rangeSource {
+		s := ranges(6, 20, 5)()
+		s.gate = gate
+		return s
+	})
 	j := p.workers("a1", 3)
+	var once sync.Once
+	j.OnCommit = func(uint64) { once.Do(func() { close(gate) }) }
 	// Each epoch's rows, by split, and the splits its committables hold.
 	rows, held := map[string]uint64{}, map[string]bool{}
 	var checkpoints []*checkpoint.Record
@@ -761,7 +770,7 @@ func (f proposingFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runn
 	}
 	var base uint64
 	for taken := false; !taken; {
-		if err := o.Propose("s", base, mine); err != nil {
+		if err := o.Propose(runner.SchemaProposal{Stream: "s", Base: base, Schema: mine}); err != nil {
 			return err
 		}
 		for {
@@ -815,6 +824,152 @@ func TestOneSchemaOwnerAcrossWorkers(t *testing.T) {
 	}
 }
 
+// holdingFlow plays the engine of each worker of an attempt whose stream s
+// holds. Unless s holds x already, worker 1 starts holding it, proposing the
+// change to the coordinator, and every worker waits until it hears that x
+// is held before it passes rows through. Each reports a held cell and a
+// held file at every barrier, and the first worker, where a release is
+// patched in, the replay's end.
+type holdingFlow struct {
+	mu *sync.Mutex
+	// Each worker's hold plan, and whether it heard x is held, by its first
+	// lane.
+	plans map[int]*runner.HoldPlan
+	heard map[int]bool
+}
+
+var heldX = func() checkpoint.ColumnHold {
+	kept, err := arrowipc.EncodeSchema(arrow.NewSchema([]arrow.Field{{Name: "x", Type: arrow.PrimitiveTypes.Int64, Nullable: true}}, nil))
+	if err != nil {
+		panic(err)
+	}
+	return checkpoint.ColumnHold{Column: "x", Delivered: kept, Reason: "held", Cause: &checkpoint.HoldCause{Kind: checkpoint.HoldPolicy, Policy: "block"}}
+}()
+
+func xSchema(t arrow.DataType) []byte {
+	b, err := arrowipc.EncodeSchema(arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}, {Name: "x", Type: t, Nullable: true}}, nil))
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func (f holdingFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+	hp, o := plan.Holds["s"], plan.SchemaOwner
+	if hp == nil || plan.HeldURL == "" || o == nil {
+		return fmt.Errorf("worker %d: holds %v at %q, owner %v", plan.FirstLane, hp, plan.HeldURL, o)
+	}
+	f.mu.Lock()
+	f.plans[plan.FirstLane] = hp
+	f.mu.Unlock()
+	if !slices.ContainsFunc(hp.Holding, func(c checkpoint.ColumnHold) bool { return c.Column == "x" }) && hp.Replay == nil {
+		if plan.FirstLane > 0 {
+			if err := o.Propose(runner.SchemaProposal{Stream: "s", Schema: xSchema(arrow.BinaryTypes.String), Holding: []checkpoint.ColumnHold{heldX}, Delivered: xSchema(arrow.PrimitiveTypes.Int64)}); err != nil {
+				return err
+			}
+		}
+		for heard := false; !heard; {
+			select {
+			case u := <-o.Updates():
+				heard = !u.Input && u.Stream == "s" && slices.ContainsFunc(u.Holding, func(c checkpoint.ColumnHold) bool { return c.Column == "x" })
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		f.mu.Lock()
+		f.heard[plan.FirstLane] = true
+		f.mu.Unlock()
+	}
+	mid := make(chan runner.Frame)
+	done := make(chan error, 1)
+	go func() { done <- runner.Passthrough{Convert: idRows}.Run(ctx, plan, in, mid) }()
+	defer close(out)
+	for fr := range mid {
+		if fr.Kind == runner.FrameReady {
+			h := &runner.ReadyHolds{
+				Cells: map[string]checkpoint.CellHold{"y": {Cells: 1, Reason: "range"}},
+				Files: []destination.StagedFile{{Path: fmt.Sprintf("lane%d/%d", plan.FirstLane, fr.Epoch), Rows: 1}},
+			}
+			if hp.Replay != nil && plan.FirstLane == 0 {
+				h.Replayed = &runner.ReplayProgress{Done: true}
+			}
+			fr.Ready.Holds = map[string]*runner.ReadyHolds{"s": h}
+		}
+		select {
+		case out <- fr:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return <-done
+}
+
+// Holds run on workers: the coordinator gives every worker the holds the
+// attempt starts with, and owns what each stream holds. A column one worker
+// holds is held on all, and the record keeps it once, with the schema the
+// destination gets, and every worker's held cells and files. Released, the
+// hold ends once the first worker has patched it in.
+func TestHoldsOnWorkers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	p := newPool(t, ranges(4, 20, 5))
+	p.dest = func(coordinator bool) destination.Destination {
+		return holdingStagingDest{stagingDest{s: p.store, t: t, coordinator: coordinator}}
+	}
+	p.change = func(j *runner.Job) {
+		j.HeldURL = "file:///held"
+		j.Streams[0].PrimaryKey, j.Streams[0].SplitsByKey, j.Streams[0].Holds = []string{"id"}, true, &runner.StreamHolds{}
+	}
+	flow := holdingFlow{mu: &sync.Mutex{}, plans: map[int]*runner.HoldPlan{}, heard: map[int]bool{}}
+	p.flow = flow
+	shares := 0
+	j := p.workers("a1", 2)
+	j.OnCheckpoint = func(*checkpoint.Record, map[string]uint64) { shares += 2 }
+	if _, err := runner.RunAttempt(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	for i, err := range p.wait("a1") {
+		if err != nil {
+			t.Errorf("worker %d: %v", i, err)
+		}
+	}
+	p.store.check(t, 80)
+	if len(flow.plans) != 2 || len(flow.heard) != 2 {
+		t.Fatalf("hold plans %v, heard x held %v, of 2 workers", flow.plans, flow.heard)
+	}
+	head := p.head()
+	h, st := head.Streams["s"].Holds, head.Streams["s"]
+	switch {
+	case h == nil || len(h.Columns) != 1 || h.Columns[0].Column != "x" || !slices.Equal(h.Columns[0].Delivered, heldX.Delivered):
+		t.Fatalf("holds %+v", h)
+	case !slices.Equal(st.Schema, xSchema(arrow.BinaryTypes.String)) || !slices.Equal(st.Delivered, xSchema(arrow.PrimitiveTypes.Int64)):
+		t.Fatal("the record's schemas aren't the owner's")
+	case h.Cells["y"].Cells != uint64(shares) || len(h.Epochs) == 0:
+		t.Fatalf("held cells %+v in epochs %v, want %d", h.Cells, h.Epochs, shares)
+	}
+
+	// Released: every worker gets the replay, and the hold ends.
+	p.source = ranges(4, 20, 5)
+	clear(flow.plans)
+	p.change = func(j *runner.Job) {
+		j.HeldURL = "file:///held"
+		j.Streams[0].PrimaryKey, j.Streams[0].SplitsByKey, j.Streams[0].Holds = []string{"id"}, true, &runner.StreamHolds{}
+		j.Releases = []runner.Release{{Stream: "s", Column: "x", Since: h.Columns[0].Since}}
+	}
+	if _, err := runner.RunAttempt(ctx, p.workers("a2", 2)); err != nil {
+		t.Fatal(err)
+	}
+	p.wait("a2")
+	for lane, hp := range flow.plans {
+		if hp.Replay == nil || slices.ContainsFunc(hp.Holding, func(c checkpoint.ColumnHold) bool { return c.Column == "x" }) {
+			t.Errorf("the worker of lane %d starts with %+v", lane, hp)
+		}
+	}
+	if h := p.head().Streams["s"].Holds; h != nil && (len(h.Columns) > 0 || h.Replay != nil) {
+		t.Errorf("the hold didn't end: %+v", h)
+	}
+}
+
 // Workers without a server to join or a way to launch them are refused
 // before the attempt claims the pipeline.
 func TestWorkersNeedAServerAndALaunch(t *testing.T) {
@@ -863,28 +1018,45 @@ func TestAFlinkJobIsRefusedWorkers(t *testing.T) {
 	}
 }
 
-// What only one pod runs is refused workers.
+// What only one pod runs is refused workers; a SQL transform and holds
+// aren't.
 func TestWhatRunsOnOnePod(t *testing.T) {
 	p := newPool(t, ranges(1, 1, 1))
 	for name, c := range map[string]struct {
 		workers int
 		change  func(*runner.Job)
+		onePod  bool
 	}{
-		"more workers than writer lanes": {17, func(*runner.Job) {}},
-		"one writer lane":                {2, func(j *runner.Job) { j.Destination = &countingDest{} }},
+		"more workers than writer lanes": {17, func(*runner.Job) {}, true},
+		"one writer lane":                {2, func(j *runner.Job) { j.Destination = &countingDest{} }, true},
 		"a SQL transform": {2, func(j *runner.Job) {
 			j.SQL = &runner.SQLTransform{}
 			j.Outputs = j.Streams
-		}},
+		}, false},
+		"holds": {2, func(j *runner.Job) {
+			j.Destination = holdingStagingDest{stagingDest{s: p.store, t: t}}
+			j.HeldURL = "file:///held"
+			j.Streams[0].PrimaryKey, j.Streams[0].Holds = []string{"id"}, &runner.StreamHolds{Cells: true}
+		}, false},
 	} {
 		j := p.job("a1", p.source(), stagingDest{s: p.store, t: t})
 		c.change(&j)
-		if err := j.OnWorkers(c.workers); err == nil {
-			t.Errorf("%s: runs on %d workers", name, c.workers)
+		if err := j.OnWorkers(c.workers); (err != nil) != c.onePod {
+			t.Errorf("%s on %d workers: %v", name, c.workers, err)
 		}
 	}
 	j := p.job("a1", p.source(), stagingDest{s: p.store, t: t})
 	if err := j.OnWorkers(16); err != nil {
 		t.Error(err)
 	}
+}
+
+// holdingStagingDest is stagingDest taking holds.
+type holdingStagingDest struct{ stagingDest }
+
+func (d holdingStagingDest) Capabilities() destination.Capabilities {
+	c := d.stagingDest.Capabilities()
+	c.WriteModes = []destination.WriteMode{destination.Append, destination.Merge}
+	c.Holds = destination.Holds{ByID: true, ByKey: true, Guarded: true}
+	return c
 }

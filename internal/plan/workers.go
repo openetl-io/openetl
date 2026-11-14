@@ -7,36 +7,25 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
-// Transform kinds, as WorkerJob names them.
-const (
-	TransformOwnCode = "own code"
-	TransformSQL     = "sql"
-)
-
 // WorkerJob is what decides whether a job runs on workers.
 type WorkerJob struct {
 	Workers int
-	// TransformOwnCode for a Spark or Flink transform, TransformSQL, or
-	// empty for none.
-	Transform string
-	Caps      destination.Capabilities
+	// A Spark or Flink transform.
+	OwnCode bool
+	Caps    destination.Capabilities
 	// The engine writes the destination's data.
 	EngineWritten bool
-	// One of the destination's streams that holds columns or cells; empty if
-	// none does.
-	Holding string
 }
 
 // OnePod says why a job that asks for workers runs on one pod; empty if it
-// can run on them. What needs rows of one key to meet across workers, or one
-// writer, stays on one pod.
+// can run on them. What needs one writer, or what only one pod runs, stays
+// on one pod. A SQL transform runs on workers, and so do holds: the
+// attempt's coordinator owns each stream's schema and what it holds.
 func OnePod(j WorkerJob) string {
 	caps := j.Caps
 	switch {
-	case j.Transform == TransformOwnCode:
+	case j.OwnCode:
 		return "a Spark or Flink transform runs on one pod"
-	case j.Transform == TransformSQL:
-		return "a SQL transform runs on one pod"
 	case caps.Lanes() == 1 && j.Workers > 1:
 		return "the destination declares one writer lane"
 	case caps.Lanes() < j.Workers:
@@ -47,14 +36,13 @@ func OnePod(j WorkerJob) string {
 		return "a destination that loads staged epochs runs on one pod"
 	case j.EngineWritten:
 		return "a destination the engine writes runs on one pod"
-	case j.Holding != "":
-		return fmt.Sprintf("stream %q holds columns, which runs on one pod", j.Holding)
 	}
 	return ""
 }
 
 // OneWorker says why an attempt on workers reads all of a stream's splits on
-// one worker; empty if it spreads them.
+// one worker; empty if it spreads them. With a SQL transform, it's said of
+// each stream a statement reads, whose output keeps its key or has none.
 func OneWorker(mode destination.WriteMode, keyed, splitsByKey bool, read apiv1.SyncMode) string {
 	switch {
 	case mode == destination.Overwrite:
@@ -69,37 +57,26 @@ func OneWorker(mode destination.WriteMode, keyed, splitsByKey bool, read apiv1.S
 
 // Workers plans a job's workers: how many each attempt runs on (0: one pod),
 // why it runs on one pod although its spec asks for more, and a warning for
-// each of the destination's streams an attempt reads on one worker. Without
-// a catalog, it can't tell which streams hold columns or stay on one worker.
+// each stream an attempt reads on one worker. Without a catalog, it can't
+// tell which streams stay on one worker.
 func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, engineWritten bool) (int, string, []*apiv1.PlanWarning) {
 	asked := int(spec.GetResources().GetWorkers())
 	if asked <= 1 {
 		return 0, "", nil
 	}
-	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten}
-	switch {
-	case ownCode(spec):
-		j.Transform = TransformOwnCode
-	case spec.GetTransform().GetSql() != nil:
-		j.Transform = TransformSQL
-	}
-	var oneWorker []*apiv1.PlanWarning
-	if j.Transform == "" {
-		for _, s := range selected(spec, cat) {
-			keyed := len(s.cs.GetPrimaryKey()) > 0
-			read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
-			mode := StreamMode(spec, caps, read, keyed)
-			if j.Holding == "" && Holds(caps, mode, keyed) {
-				j.Holding = s.cs.GetName()
-			}
-			if why := OneWorker(mode, keyed, s.cs.GetSplitsByKey(), read); why != "" {
-				oneWorker = append(oneWorker, &apiv1.PlanWarning{Stream: s.cs.GetName(), Message: fmt.Sprintf(
-					"each attempt reads it on one of its %d workers: %s", asked, why)})
-			}
-		}
-	}
+	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec)}
 	if why := OnePod(j); why != "" {
 		return 0, why, nil
+	}
+	var oneWorker []*apiv1.PlanWarning
+	for _, s := range selected(spec, cat) {
+		keyed := len(s.cs.GetPrimaryKey()) > 0
+		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
+		mode := StreamMode(spec, caps, read, keyed)
+		if why := OneWorker(mode, keyed, s.cs.GetSplitsByKey(), read); why != "" {
+			oneWorker = append(oneWorker, &apiv1.PlanWarning{Stream: s.cs.GetName(), Message: fmt.Sprintf(
+				"each attempt reads it on one of its %d workers: %s", asked, why)})
+		}
 	}
 	return asked, "", oneWorker
 }

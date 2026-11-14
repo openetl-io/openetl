@@ -21,13 +21,27 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
-// sharedOwner is one stream's schema owner for several engines, each of
-// which reaches it through a view.
+// sharedOwner is the schema owner of a job's streams for several engines,
+// each of which reaches it through a view. version and schema are stream
+// s's, of the destination's.
 type sharedOwner struct {
 	mu      sync.Mutex
 	version uint64
 	schema  []byte
+	streams map[ownedStream]*ownedVersion
 	views   []*ownerView
+}
+
+type ownedStream struct {
+	name  string
+	input bool
+}
+
+type ownedVersion struct {
+	version   uint64
+	schema    []byte
+	holding   []checkpoint.ColumnHold
+	delivered []byte
 }
 
 type ownerView struct {
@@ -47,18 +61,30 @@ func (o *sharedOwner) newest() uint64 {
 	return o.version
 }
 
-func (v *ownerView) Propose(stream string, base uint64, schema []byte) error {
+func (v *ownerView) Propose(p runner.SchemaProposal) error {
 	o := v.o
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.streams == nil {
+		o.streams = map[ownedStream]*ownedVersion{}
+	}
+	k := ownedStream{p.Stream, p.Input}
+	s := o.streams[k]
+	if s == nil {
+		s = &ownedVersion{}
+		o.streams[k] = s
+	}
 	to := []*ownerView{v}
-	if base == o.version {
-		o.version++
-		o.schema = schema
+	if p.Base == s.version {
+		s.version++
+		s.schema, s.holding, s.delivered = p.Schema, p.Holding, p.Delivered
 		to = o.views
 	}
+	if k == (ownedStream{name: "s"}) {
+		o.version, o.schema = s.version, s.schema
+	}
 	for _, w := range to {
-		w.updates <- runner.SchemaUpdate{Stream: stream, Version: o.version, Schema: o.schema}
+		w.updates <- runner.SchemaUpdate{Stream: p.Stream, Input: p.Input, Version: s.version, Schema: s.schema, Holding: s.holding}
 	}
 	return nil
 }
@@ -212,7 +238,7 @@ type refusingFlow struct{ df runner.Dataflow }
 
 type refusingOwner struct{ runner.SchemaOwner }
 
-func (refusingOwner) Propose(string, uint64, []byte) error {
+func (refusingOwner) Propose(runner.SchemaProposal) error {
 	return errors.New("the owner refused")
 }
 

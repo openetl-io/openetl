@@ -133,7 +133,7 @@ A pipeline with `spec.resources.workers` above 1 runs each job on that many work
 
 A job runs on one pod instead in these cases:
 
-- The pipeline's plan says that the job runs on one pod, such as for a transform or for a stream that holds columns. [Pipeline](../reference/specs/pipeline.md#workers) lists these cases.
+- The pipeline's plan says that the job runs on one pod, such as for a Spark or Flink transform or for a destination that takes fewer writer lanes than workers. [Pipeline](../reference/specs/pipeline.md#workers) lists these cases.
 - The job's coordinator finds one of these cases before the job starts, where the control plane could not check it. The job is then placed again on one pod.
 - No launcher of the pool reports, while other runners of the data plane do. The job then needs a runner of its own pool, like any job on one pod, and waits until one can take it. A runner of another pool does not run it.
 

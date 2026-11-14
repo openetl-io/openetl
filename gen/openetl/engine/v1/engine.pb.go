@@ -406,18 +406,27 @@ type StartJobRequest struct {
 	// Unset: none, and outputs is empty.
 	Transform *Transform `protobuf:"bytes,20,opt,name=transform,proto3" json:"transform,omitempty"`
 	// Several engines run the attempt, and each stream's schema has one owner
-	// outside them, reached through Schemas. A lane that changes a stream's
-	// schema proposes it from the owner's version it had, and goes on with
-	// it once the owner takes it; otherwise it shapes its batch again by the
-	// owner's. Every stream starts at the owner's version 0, its restored
-	// schema. Not with a transform or holds.
+	// outside them, reached through Schemas: each of the destination's
+	// streams', with the columns it holds whole, and each stream a transform
+	// reads. A lane that changes a stream's schema, or what it holds, proposes
+	// it from the owner's version it had, and goes on with it once the owner
+	// takes it; otherwise it shapes its batch again by the owner's. Every
+	// stream starts at the owner's version 0: its restored schema, and the
+	// holds its HoldPlan starts with. Only the engine whose first_lane is 0
+	// patches in released holds.
 	RemoteSchemas bool `protobuf:"varint,21,opt,name=remote_schemas,json=remoteSchemas,proto3" json:"remote_schemas,omitempty"`
 	// The attempt's index of the engine's first lane, where several engines
 	// run the attempt: a lane's quarantine files are named by its index in
 	// the attempt.
-	FirstLane     uint32 `protobuf:"varint,22,opt,name=first_lane,json=firstLane,proto3" json:"first_lane,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FirstLane uint32 `protobuf:"varint,22,opt,name=first_lane,json=firstLane,proto3" json:"first_lane,omitempty"`
+	// Where several engines run the attempt, the attempt's index of the
+	// engine's first writer lane, and the attempt's writer lanes, 0 being
+	// writer_lanes: held files are named by a writer lane's index in the
+	// attempt.
+	FirstWriterLane    uint32 `protobuf:"varint,23,opt,name=first_writer_lane,json=firstWriterLane,proto3" json:"first_writer_lane,omitempty"`
+	AttemptWriterLanes uint32 `protobuf:"varint,24,opt,name=attempt_writer_lanes,json=attemptWriterLanes,proto3" json:"attempt_writer_lanes,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *StartJobRequest) Reset() {
@@ -600,6 +609,20 @@ func (x *StartJobRequest) GetRemoteSchemas() bool {
 func (x *StartJobRequest) GetFirstLane() uint32 {
 	if x != nil {
 		return x.FirstLane
+	}
+	return 0
+}
+
+func (x *StartJobRequest) GetFirstWriterLane() uint32 {
+	if x != nil {
+		return x.FirstWriterLane
+	}
+	return 0
+}
+
+func (x *StartJobRequest) GetAttemptWriterLanes() uint32 {
+	if x != nil {
+		return x.AttemptWriterLanes
 	}
 	return 0
 }
@@ -3061,11 +3084,18 @@ func (*StopResponse) Descriptor() ([]byte, []int) {
 // newest.
 type SchemasRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// An index into StartJobRequest.streams.
+	// An index into the destination's streams: StartJobRequest.outputs with
+	// a transform, and its streams without; with input, into its streams, a
+	// transform's inputs, whose versions are apart.
 	Stream  uint32 `protobuf:"varint,1,opt,name=stream,proto3" json:"stream,omitempty"`
 	Version uint64 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
-	// An Arrow IPC stream holding only the schema, as EpochReady.schemas.
-	ArrowSchema   []byte `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	// An Arrow IPC stream holding only the schema, as EpochReady.schemas, or
+	// a transform's input's as it reads it.
+	ArrowSchema []byte `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	Input       bool   `protobuf:"varint,4,opt,name=input,proto3" json:"input,omitempty"`
+	// One of the destination's streams that holds: the columns it holds
+	// whole, as StreamHolds.holding.
+	Holding       []*ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3121,15 +3151,34 @@ func (x *SchemasRequest) GetArrowSchema() []byte {
 	return nil
 }
 
-// SchemasResponse proposes a lane's change to a stream's schema, made from
-// the owner's version base. The engine sends one proposal of a stream at a
-// time, and waits for a newer version.
+func (x *SchemasRequest) GetInput() bool {
+	if x != nil {
+		return x.Input
+	}
+	return false
+}
+
+func (x *SchemasRequest) GetHolding() []*ColumnHold {
+	if x != nil {
+		return x.Holding
+	}
+	return nil
+}
+
+// SchemasResponse proposes a lane's change to a stream's schema, or to what
+// it holds, made from the owner's version base. The engine sends one
+// proposal of a stream at a time, and waits for a newer version.
 type SchemasResponse struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Stream uint32                 `protobuf:"varint,1,opt,name=stream,proto3" json:"stream,omitempty"`
-	Base   uint64                 `protobuf:"varint,2,opt,name=base,proto3" json:"base,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// As SchemasRequest's.
-	ArrowSchema   []byte `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	Stream      uint32        `protobuf:"varint,1,opt,name=stream,proto3" json:"stream,omitempty"`
+	Base        uint64        `protobuf:"varint,2,opt,name=base,proto3" json:"base,omitempty"`
+	ArrowSchema []byte        `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	Input       bool          `protobuf:"varint,4,opt,name=input,proto3" json:"input,omitempty"`
+	Holding     []*ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
+	// Where columns are held whole, the schema the destination gets, as
+	// EpochReady.delivered; empty where it's arrow_schema.
+	Delivered     []byte `protobuf:"bytes,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3185,11 +3234,32 @@ func (x *SchemasResponse) GetArrowSchema() []byte {
 	return nil
 }
 
+func (x *SchemasResponse) GetInput() bool {
+	if x != nil {
+		return x.Input
+	}
+	return false
+}
+
+func (x *SchemasResponse) GetHolding() []*ColumnHold {
+	if x != nil {
+		return x.Holding
+	}
+	return nil
+}
+
+func (x *SchemasResponse) GetDelivered() []byte {
+	if x != nil {
+		return x.Delivered
+	}
+	return nil
+}
+
 var File_openetl_engine_v1_engine_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xbe\a\n" +
+	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\x9c\b\n" +
 	"\x0fStartJobRequest\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x10\n" +
 	"\x03job\x18\x02 \x01(\tR\x03job\x12\x1e\n" +
@@ -3218,7 +3288,9 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\ttransform\x18\x14 \x01(\v2\x1c.openetl.engine.v1.TransformR\ttransform\x12%\n" +
 	"\x0eremote_schemas\x18\x15 \x01(\bR\rremoteSchemas\x12\x1d\n" +
 	"\n" +
-	"first_lane\x18\x16 \x01(\rR\tfirstLane\"\x89\x01\n" +
+	"first_lane\x18\x16 \x01(\rR\tfirstLane\x12*\n" +
+	"\x11first_writer_lane\x18\x17 \x01(\rR\x0ffirstWriterLane\x120\n" +
+	"\x14attempt_writer_lanes\x18\x18 \x01(\rR\x12attemptWriterLanes\"\x89\x01\n" +
 	"\tTransform\x12\x10\n" +
 	"\x03sql\x18\x01 \x01(\tR\x03sql\x12L\n" +
 	"\x10expected_outputs\x18\x02 \x03(\v2!.openetl.engine.v1.ExpectedOutputR\x0fexpectedOutputs\x12\x1c\n" +
@@ -3417,15 +3489,20 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06staged\x18\x02 \x03(\fR\x06staged\"\x10\n" +
 	"\x0eCommitResponse\"\r\n" +
 	"\vStopRequest\"\x0e\n" +
-	"\fStopResponse\"e\n" +
+	"\fStopResponse\"\xb4\x01\n" +
 	"\x0eSchemasRequest\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\rR\x06stream\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x04R\aversion\x12!\n" +
-	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\"`\n" +
+	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
+	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
+	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\"\xcd\x01\n" +
 	"\x0fSchemasResponse\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\rR\x06stream\x12\x12\n" +
 	"\x04base\x18\x02 \x01(\x04R\x04base\x12!\n" +
-	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema*O\n" +
+	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
+	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
+	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\x12\x1c\n" +
+	"\tdelivered\x18\x06 \x01(\fR\tdelivered*O\n" +
 	"\aRouting\x12\x17\n" +
 	"\x13ROUTING_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ROUTING_STRAIGHT\x10\x01\x12\x15\n" +
@@ -3582,26 +3659,28 @@ var file_openetl_engine_v1_engine_proto_depIdxs = []int32{
 	39, // 48: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
 	38, // 49: openetl.engine.v1.Metrics.lanes:type_name -> openetl.engine.v1.LaneMetrics
 	53, // 50: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
-	12, // 51: openetl.engine.v1.HoldPlan.ColumnsEntry.value:type_name -> openetl.engine.v1.Held
-	31, // 52: openetl.engine.v1.EpochReady.HoldsEntry.value:type_name -> openetl.engine.v1.StreamHolds
-	32, // 53: openetl.engine.v1.StreamHolds.CellsEntry.value:type_name -> openetl.engine.v1.CellHolds
-	6,  // 54: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
-	26, // 55: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
-	28, // 56: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
-	40, // 57: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
-	42, // 58: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
-	44, // 59: openetl.engine.v1.EngineService.Schemas:input_type -> openetl.engine.v1.SchemasRequest
-	25, // 60: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
-	27, // 61: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
-	29, // 62: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
-	41, // 63: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
-	43, // 64: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
-	45, // 65: openetl.engine.v1.EngineService.Schemas:output_type -> openetl.engine.v1.SchemasResponse
-	60, // [60:66] is the sub-list for method output_type
-	54, // [54:60] is the sub-list for method input_type
-	54, // [54:54] is the sub-list for extension type_name
-	54, // [54:54] is the sub-list for extension extendee
-	0,  // [0:54] is the sub-list for field type_name
+	14, // 51: openetl.engine.v1.SchemasRequest.holding:type_name -> openetl.engine.v1.ColumnHold
+	14, // 52: openetl.engine.v1.SchemasResponse.holding:type_name -> openetl.engine.v1.ColumnHold
+	12, // 53: openetl.engine.v1.HoldPlan.ColumnsEntry.value:type_name -> openetl.engine.v1.Held
+	31, // 54: openetl.engine.v1.EpochReady.HoldsEntry.value:type_name -> openetl.engine.v1.StreamHolds
+	32, // 55: openetl.engine.v1.StreamHolds.CellsEntry.value:type_name -> openetl.engine.v1.CellHolds
+	6,  // 56: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
+	26, // 57: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
+	28, // 58: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
+	40, // 59: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
+	42, // 60: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
+	44, // 61: openetl.engine.v1.EngineService.Schemas:input_type -> openetl.engine.v1.SchemasRequest
+	25, // 62: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
+	27, // 63: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
+	29, // 64: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
+	41, // 65: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
+	43, // 66: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
+	45, // 67: openetl.engine.v1.EngineService.Schemas:output_type -> openetl.engine.v1.SchemasResponse
+	62, // [62:68] is the sub-list for method output_type
+	56, // [56:62] is the sub-list for method input_type
+	56, // [56:56] is the sub-list for extension type_name
+	56, // [56:56] is the sub-list for extension extendee
+	0,  // [0:56] is the sub-list for field type_name
 }
 
 func init() { file_openetl_engine_v1_engine_proto_init() }
