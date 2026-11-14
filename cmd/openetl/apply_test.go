@@ -316,3 +316,45 @@ func TestCheckPipeline(t *testing.T) {
 		t.Error("a plan with problems passed")
 	}
 }
+
+// openetl plan shows a SQL transform's statements: each one's class, output,
+// key and exchange, its output's columns, and which streams reach the
+// destination as they are.
+func TestPlanShowsSQLTransform(t *testing.T) {
+	var out bytes.Buffer
+	printPlan(&out, &apiv1.PipelinePlan{
+		Pipeline: "workspaces/default/pipelines/shop", Version: "0123456789abcdef",
+		Transform: &apiv1.TransformPlan{
+			Statements: []*apiv1.StatementPlan{
+				{Line: 1, Column: 1, Output: "customers", Replaces: true, Class: "row_wise", Inputs: []string{"customers"}, PrimaryKey: []string{"id"},
+					Columns: []*apiv1.SchemaColumn{{Name: "id", Type: "int64", Nullable: true}, {Name: "email", Type: "utf8", Nullable: true}}},
+				{Line: 5, Column: 1, Output: "contact_emails", Class: "row_wise", Inputs: []string{"customers"}, Views: []string{"cleaned"},
+					Columns: []*apiv1.SchemaColumn{{Name: "email", Type: "utf8", Nullable: true}}},
+			},
+			Views:         []*apiv1.ViewPlan{{Name: "cleaned", Line: 4, Column: 13, Inputs: []string{"customers"}}},
+			PassedThrough: []string{"orders"},
+			Withheld:      []string{"customers", "events"},
+		},
+		Streams: []*apiv1.StreamPlan{
+			{Name: "orders", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, Reason: "exact replay", Write: apiv1.WriteMode_WRITE_MODE_MERGE},
+			{Name: "customers", Level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, Reason: "a transform's output over exact inputs", Write: apiv1.WriteMode_WRITE_MODE_MERGE, Table: "dim_customers"},
+		},
+	})
+	want := `
+workspaces/default/pipelines/shop (version 0123456789ab)
+  transform.sql:
+    1:1  INSERT INTO customers       row_wise  key id                  no exchange  reads customers; replaces stream customers
+    5:1  INSERT INTO contact_emails  row_wise  no key, so append only  no exchange  reads customers through view cleaned
+    view cleaned, at 4:13, reads customers
+    output customers: id int64, email utf8
+    output contact_emails: email utf8
+    passed through: orders
+    not delivered, as passthrough is none: events
+  streams:
+    orders                      merge  exactly_once  exact replay
+    customers -> dim_customers  merge  exactly_once  a transform's output over exact inputs
+`
+	if out.String() != want {
+		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
+	}
+}

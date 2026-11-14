@@ -29,3 +29,23 @@ LIMIT @max_rows;
 -- name: StreamSchemaVersions :many
 SELECT stream, digest, version FROM stream_schemas
 WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND NOT output;
+
+-- Each of the pipeline's source streams' schema in its newest mirrored
+-- checkpoint, or its newest version where that checkpoint doesn't name it. A
+-- schema the history has is never added again, so the newest version isn't
+-- always the one the stream has.
+-- name: LatestStreamSchemas :many
+WITH latest AS (
+    SELECT e->>'name' AS stream, e->>'schema_digest' AS digest
+    FROM (
+        SELECT c.streams FROM checkpoint_mirror c
+        WHERE c.org_id = @org_id AND c.pipeline_id = @pipeline_id
+        ORDER BY c.epoch DESC, c.generation DESC
+        LIMIT 1
+    ) m, jsonb_array_elements(m.streams) e
+)
+SELECT DISTINCT ON (s.stream) s.stream, s.columns
+FROM stream_schemas s
+LEFT JOIN latest l ON l.stream = s.stream AND l.digest = s.digest
+WHERE s.org_id = @org_id AND s.pipeline_id = @pipeline_id AND NOT s.output
+ORDER BY s.stream, l.digest IS NULL, s.version DESC;

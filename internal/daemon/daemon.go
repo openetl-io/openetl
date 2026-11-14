@@ -181,7 +181,7 @@ func Run(ctx context.Context, o Options) error {
 			return fmt.Errorf("daemon: --lagging-after %q isn't a positive duration", cfg.LaggingAfter)
 		}
 		srv := &api.Server{
-			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Backend: backend}, Ops: &ops.Ops{Backend: backend}, Logs: &ops.Ops{Backend: backend}, Dispatch: work,
+			Store: st, Tenant: tenant, Schedules: &schedules.Schedules{Backend: backend}, Ops: &ops.Ops{Backend: backend}, Logs: &ops.Ops{Backend: backend}, Planner: &ops.Ops{Backend: backend}, Dispatch: work,
 			DefaultDataPlane: cfg.DataPlane, Connectors: connectorhost.Env{Connectors: connectorsDir(cfg)},
 			Downloads:    (&netguard.Policy{Allow: allow}).Client(),
 			Packages:     packageOptions(cfg),
@@ -599,6 +599,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			contract.TeardownFlink:       {Handler: dpworker.Handle(connectorOps.TeardownFlink)},
 			contract.ProbeRetention:      {Handler: dpworker.Handle(connectorOps.ProbeRetention)},
 			contract.ReadLogs:            {Handler: dpworker.Handle((&dpactivities.Logs{Store: cps}).ReadLogs)},
+			contract.PlanSQL:             {Handler: dpworker.Handle((&dpactivities.Plans{Engine: sync.Engine}).PlanSQL)},
 		},
 	}
 	switch {

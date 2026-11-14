@@ -1,5 +1,6 @@
-// Package ops runs connector operations through ConnectorOpWorkflow, and
-// reads syncs' logs through ReadLogsWorkflow.
+// Package ops runs connector operations through ConnectorOpWorkflow, reads
+// syncs' logs through ReadLogsWorkflow, and plans SQL transforms through
+// PlanSQLWorkflow.
 package ops
 
 import (
@@ -12,6 +13,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/orchestration"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 )
 
 type Ops struct {
@@ -60,6 +62,23 @@ func (o *Ops) ReadLogs(ctx context.Context, in contract.ReadLogsInput) (contract
 	})
 	if err != nil {
 		return res, fmt.Errorf("ops: read a log: %w", err)
+	}
+	return res, run.Get(ctx, &res)
+}
+
+// PlanSQL plans a SQL transform on a runner of its data plane, and waits for
+// it.
+func (o *Ops) PlanSQL(ctx context.Context, in contract.PlanSQLInput) (sqlplan.Answer, error) {
+	var res sqlplan.Answer
+	run, err := o.Backend.Start(ctx, orchestration.StartOptions{
+		ID:         contract.PlanWorkflowID(uuid.NewString()),
+		Workflow:   contract.PlanSQLWorkflow,
+		Input:      in,
+		Timeout:    contract.PlanTimeout,
+		Attributes: orchestration.Attributes{Org: in.OrgID, DataPlane: in.DataPlane},
+	})
+	if err != nil {
+		return res, fmt.Errorf("ops: plan SQL: %w", err)
 	}
 	return res, run.Get(ctx, &res)
 }

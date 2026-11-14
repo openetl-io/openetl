@@ -114,6 +114,7 @@ The plan has two parts:
 - **A section per pipeline**, which can have:
   - `changes`: each field that changes, as `field: before -> after`.
   - `job size`: how much CPU and memory its jobs get, what set that, and the pool of runners it runs in.
+  - `transform.sql`: for a pipeline with a SQL transform, each statement and its output. [A SQL transform in the plan](#a-sql-transform-in-the-plan) explains it.
   - `streams`: each stream's write mode, its [delivery guarantee](../get-started/concepts.md#delivery-guarantees), and the reason for that guarantee.
   - `problems`: what stops the pipeline from running. `plan` exits with an error, and `apply` refuses the whole file.
   - `warnings`: what's allowed but worth a second look.
@@ -137,6 +138,76 @@ workspaces/default/pipelines/faker-to-parquet (version known after apply)
     stream "purchases" is read with full_refresh, whose reads end, and a continuous pipeline needs streams read with cdc or stream
 openetl: the plan has problems, so apply would refuse it
 ```
+
+### A SQL transform in the plan
+
+The control plane does not plan SQL itself. For a pipeline with `transform.sql`, it sends the statements and the schemas of the streams they name to a runner of the pipeline's data plane. The runner's `openetl-engine` plans them and returns the result. The schemas come from the source's catalog. If the catalog declares no columns for a stream, they come from the schemas that the pipeline's earlier syncs recorded.
+
+This pipeline reads a source named `shop` whose catalog declares the columns of `customers` and `orders`:
+
+```yaml
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: shop-to-parquet
+spec:
+  schedule: { every: 1h }
+  source: { ref: shop }
+  destination:
+    ref: local-parquet
+    tables: { contacts: customer_contacts }
+  transform:
+    sql: |
+      INSERT INTO customers
+      SELECT id, lower(email) AS email, created_at
+      FROM customers;
+
+      INSERT INTO contacts
+      SELECT id AS customer_id, email AS contact_email
+      FROM customers
+      WHERE email IS NOT NULL;
+```
+
+Its plan, without the job size:
+
+```text
+workspaces/default/pipelines/shop-to-parquet (version known after apply)
+  transform.sql:
+    1:1  INSERT INTO customers  row_wise  key id           no exchange  reads customers; replaces stream customers
+    5:1  INSERT INTO contacts   row_wise  key customer_id  no exchange  reads customers
+    output customers: id int64, email utf8, created_at timestamp[us, tz=UTC]
+    output contacts: customer_id int64, contact_email utf8
+    passed through: orders
+  streams:
+    orders                         append  exactly_once  exact replay
+    customers                      append  exactly_once  a transform's output over exact inputs
+    contacts -> customer_contacts  append  exactly_once  a transform's output over exact inputs
+```
+
+The `transform.sql` section has:
+
+- **A line per statement:** where its `INSERT` is in the SQL, as line and column; the output it writes; its class; its output's primary key; whether its rows are exchanged between lanes; and the streams and views it reads. Only `row_wise` statements plan; a statement of another class is a problem. Runners do not run SQL transforms: a sync of the pipeline fails with `CONFIG_INVALID`, even when its plan has no problems. An output without a primary key cannot be written with `merge`.
+- **The columns of each output,** with their types.
+- **The streams that pass through:** the source's streams that no statement writes. They reach the destination as they would without a transform.
+- **The streams that are not delivered,** when `transform.passthrough` is `none`.
+
+A statement that writes a source stream's name replaces that stream: the output is written in its place. The output takes the stream's entry in `destination.tables` and its `require`. The `streams` section lists what the destination gets: the outputs, and the streams that pass through.
+
+Errors in the SQL are problems, with the line and column in the SQL text. A statement of a class that only a later tier runs, such as a group window, is a problem that names the tier:
+
+```text
+workspaces/default/pipelines/shop-to-parquet (version known after apply)
+  problems:
+    transform.sql:8:10: a group window: transforms don't run group windows yet (tier 2)
+    transform.sql:11:27: there's no column mail; there are id, email, name, created_at
+openetl: the plan has problems, so apply would refuse it
+```
+
+If the statements cannot be planned, a note that starts with `transform.sql wasn't planned` says why, and the `streams` section is empty. This happens when:
+
+- No runner of the pipeline's data plane takes the request within 30 seconds.
+- The source has not been discovered.
+- The catalog declares no columns for a stream that the SQL names, and no sync has recorded its schema yet.
 
 When the plan is what you want, apply the same files:
 
@@ -165,6 +236,8 @@ VERSION                                                           CURRENT  CREAT
 edab40da6d76c1aba235c7cd81c5618db8af2206c759539c5baea80a584560b3           2026-11-08 12:30:15  cli:examples/faker-to-postgres.yaml#3
 9e052e7e6881672dbdcfcc4356f04f592bdfbd9777622e2d2a877eb1530db134  *        2026-11-08 12:28:23  cli:examples/faker-to-postgres.yaml#3
 ```
+
+A version of a pipeline with `transform.sql` also keeps what planning its statements gave when the version was made: each output's columns and primary key. The API returns it as the version's `sql_plan`.
 
 Provenance identifies the origin of a version. Here, it is the third document in a file applied with the CLI. Versions are identified by content. To restore an earlier pipeline definition, revert its git commit and apply the file. This does not undo changes already written to the destination.
 

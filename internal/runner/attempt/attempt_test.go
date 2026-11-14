@@ -339,6 +339,24 @@ func TestAnotherAttemptOrGenerationIsRefused(t *testing.T) {
 	})
 }
 
+// A call refused before the join goes out fails the join's Send with io.EOF
+// as Recv returns the refusal; the worker reads it as a refusal, not a lost
+// coordinator, whichever it sees first.
+func TestARefusalThatEndsTheCallBeforeTheJoin(t *testing.T) {
+	for range 32 {
+		synctest.Test(t, func(t *testing.T) {
+			p := newPipe()
+			p.end(status.Error(codes.Unauthenticated, "attempt: no token"))
+			w := start(workerEnd{p}, p.hangUp, target(0), Options{})
+			within(t, w.Done(), time.Hour, "the refusal")
+			if err := w.Err(); !errors.Is(err, ErrRefused) || errs.CodeOf(err) != errs.Fenced {
+				t.Fatalf("worker: %v", err)
+			}
+			_ = w.Close()
+		})
+	}
+}
+
 func TestAWorkerThatJoinsTwiceFailsTheAttempt(t *testing.T) {
 	for _, again := range []int{0, 2} {
 		t.Run(fmt.Sprintf("as worker %d", again), func(t *testing.T) {

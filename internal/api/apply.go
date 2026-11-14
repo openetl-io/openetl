@@ -181,6 +181,9 @@ func (s *Server) Apply(ctx context.Context, req *connect.Request[apiv1.ApplyRequ
 			if err != nil {
 				return fmt.Errorf("%s: plan: %w", p.name, err)
 			}
+			if err := s.storeSQLPlan(ctx, q, p); err != nil {
+				return err
+			}
 			res.Plans = append(res.Plans, pl)
 		}
 		if req.Msg.GetValidateOnly() {

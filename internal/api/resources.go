@@ -612,6 +612,9 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if err := protojson.Unmarshal(row.PipelineSpec, res.Pipeline); err != nil {
 		return nil, err
 	}
+	if res.SqlPlan, err = sqlPlanOf(row.SqlPlan); err != nil {
+		return nil, err
+	}
 	if err := protojson.Unmarshal(row.SourceSpec, res.Source); err != nil {
 		return nil, err
 	}

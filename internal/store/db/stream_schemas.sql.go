@@ -92,6 +92,57 @@ func (q *Queries) GetStreamSchemaColumns(ctx context.Context, arg GetStreamSchem
 	return columns, err
 }
 
+const latestStreamSchemas = `-- name: LatestStreamSchemas :many
+WITH latest AS (
+    SELECT e->>'name' AS stream, e->>'schema_digest' AS digest
+    FROM (
+        SELECT c.streams FROM checkpoint_mirror c
+        WHERE c.org_id = $1 AND c.pipeline_id = $2
+        ORDER BY c.epoch DESC, c.generation DESC
+        LIMIT 1
+    ) m, jsonb_array_elements(m.streams) e
+)
+SELECT DISTINCT ON (s.stream) s.stream, s.columns
+FROM stream_schemas s
+LEFT JOIN latest l ON l.stream = s.stream AND l.digest = s.digest
+WHERE s.org_id = $1 AND s.pipeline_id = $2 AND NOT s.output
+ORDER BY s.stream, l.digest IS NULL, s.version DESC
+`
+
+type LatestStreamSchemasParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+type LatestStreamSchemasRow struct {
+	Stream  string
+	Columns []byte
+}
+
+// Each of the pipeline's source streams' schema in its newest mirrored
+// checkpoint, or its newest version where that checkpoint doesn't name it. A
+// schema the history has is never added again, so the newest version isn't
+// always the one the stream has.
+func (q *Queries) LatestStreamSchemas(ctx context.Context, arg LatestStreamSchemasParams) ([]LatestStreamSchemasRow, error) {
+	rows, err := q.db.Query(ctx, latestStreamSchemas, arg.OrgID, arg.PipelineID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LatestStreamSchemasRow
+	for rows.Next() {
+		var i LatestStreamSchemasRow
+		if err := rows.Scan(&i.Stream, &i.Columns); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStreamSchemas = `-- name: ListStreamSchemas :many
 SELECT output, stream, version, digest, "table", columns, generation, epoch, create_time
 FROM stream_schemas
