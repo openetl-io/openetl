@@ -193,7 +193,18 @@ func (echo) Discover(context.Context) (source.Catalog, error) {
 
 func (echo) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
 	for _, cs := range req.Streams {
-		b, err := json.Marshal(map[string]any{"mode": cs.SyncMode, "cursor": cs.Cursor, "state": string(cs.State), "columns": cs.Columns})
+		m := map[string]any{"mode": cs.SyncMode, "cursor": cs.Cursor, "state": string(cs.State), "columns": cs.Columns}
+		if cs.Until != nil {
+			m["until"] = string(cs.Until)
+		}
+		if len(cs.Splits) > 0 {
+			var splits []string
+			for _, sp := range cs.Splits {
+				splits = append(splits, sp.ID+"@"+string(sp.State)+".."+string(sp.Until))
+			}
+			m["splits"] = splits
+		}
+		b, err := json.Marshal(m)
 		if err != nil {
 			return err
 		}

@@ -439,6 +439,24 @@ func TestConfiguredStreams(t *testing.T) {
 	}
 }
 
+// Where a read of a whole stream or of a split is to end reaches the
+// connector.
+func TestReadsUntil(t *testing.T) {
+	src := NewSource(exe("source-echo"), nil, Options{})
+	defer func() { _ = src.Close() }()
+	var out collect
+	req := source.ReadRequest{Streams: []source.ConfiguredStream{
+		{Name: "echo", State: []byte("1"), Until: []byte("9")},
+		{Name: "echo", Splits: []source.Split{{ID: "p0", State: []byte("2"), Until: []byte("8")}, {ID: "p1"}}},
+	}}
+	if err := src.Read(t.Context(), req, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.raw) != 2 || !strings.Contains(string(out.raw[0]), `"until":"9"`) || !strings.Contains(string(out.raw[1]), `"splits":["p0@2..8","p1@.."]`) {
+		t.Errorf("the connector saw %s", out.raw)
+	}
+}
+
 // Setup and Teardown reach a connector whose spec sets setup, and only one.
 func TestSetupAndTeardown(t *testing.T) {
 	for name, calls := range map[string]bool{"source-prepared": true, "source-unprepared": false} {

@@ -285,8 +285,8 @@ func (j *Job) replay(ctx context.Context, n uint64, reads []redoRead, out chan<-
 // replaySplit reads one split again from where its part of epoch n began,
 // on a read of its own, which ends once the split emits the resume point
 // the record has for it, or completes where the record has it complete.
-// Only that split's emits go on: a split it adds is read on a read of its
-// own, if the committable holds it.
+// The read asks the source to end there. Only that split's emits go on: a
+// split it adds is read on a read of its own, if the committable holds it.
 func (j *Job) replaySplit(ctx context.Context, n uint64, r redoRead, out chan<- Frame) error {
 	k := slices.IndexFunc(j.Streams, func(s Stream) bool { return s.Name == r.stream })
 	s := j.Streams[k]
@@ -295,9 +295,9 @@ func (j *Job) replaySplit(ctx context.Context, n uint64, r redoRead, out chan<- 
 	em := &redoEmitter{ctx: rctx, stop: stop, read: r, out: out}
 	cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Columns: s.columns()}
 	if r.id == checkpoint.WholeStream {
-		cs.State = r.from
+		cs.State, cs.Until = r.from, r.to.State
 	} else {
-		cs.Splits = []source.Split{{ID: r.id, State: r.from}}
+		cs.Splits = []source.Split{{ID: r.id, State: r.from, Until: r.to.State}}
 	}
 	// Never continuous: the source ends the read once it has caught up with
 	// where it was when the read started, which is past the position.

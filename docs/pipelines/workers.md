@@ -125,7 +125,7 @@ Some transactional destinations commit each writer lane in a transaction of its 
 - It reads that lane's part of the epoch again from the source, from the same positions, and commits it.
 
 > [!IMPORTANT]
-> Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records, with the same resume points, from a saved position. You make sure of this through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. OpenETL reads again without following the source, so the source ends the read once it has caught up. The attempt fails with `POSITION_LOST` in these cases:
+> Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records from a saved position, and either stops where OpenETL asks or returns the same resume points. The source's documentation says whether it stops where OpenETL asks. You make sure that the records are the same through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. OpenETL reads again without following the source, so the source ends the read where OpenETL asks, or once it has caught up. The attempt fails with `POSITION_LOST` in these cases:
 >
 > - The read ends before the saved position.
 > - The read returns fewer records up to the saved position than the epoch had, unless the epoch's checkpoint was placed on that part without a resume point. The restore reads the records after the last resume point again in that case.

@@ -696,6 +696,37 @@ func TestARedoShortOfItsPosition(t *testing.T) {
 	}
 }
 
+// A source whose read from a position doesn't meet the resume points of
+// the read before it can still be read again exactly: the redo asks it to
+// end at the epoch's position. One that ignores that fails the redo with
+// POSITION_LOST.
+func TestARedoAsksTheSourceWhereToEnd(t *testing.T) {
+	for _, until := range []bool{true, false} {
+		t.Run(fmt.Sprintf("until=%v", until), func(t *testing.T) {
+			s := newTxnStore(t)
+			p := txnPool(t, s, ranges(6, 100, 5))
+			head := p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+			p.source = func() *rangeSource {
+				src := ranges(6, 100, 5)()
+				src.shift, src.until = true, until
+				return src
+			}
+			if until {
+				p.settle(t, s, "a2", 2, head)
+				s.check(t, 600)
+				return
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			_, err := runner.RunAttempt(ctx, p.workers("a2", 2))
+			p.wait("a2")
+			if errs.CodeOf(err) != errs.PositionLost {
+				t.Fatalf("the attempt ended with %v", err)
+			}
+		})
+	}
+}
+
 // A worker stopped while it settles a committable, or redoes one, fails the
 // attempt as transient, as one stopped in any other call does.
 func TestAWorkerStoppedWhileItSettlesFailsTheAttemptAsTransient(t *testing.T) {

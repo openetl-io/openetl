@@ -130,6 +130,8 @@ A transactional destination can declare **lane commits**: `laneCommits` in its p
 
 Keeping a copy of each lane's part, so that Recover can commit it, is the destination's choice. Without one, recovery reads the source again, which is exact only for a source that returns the same records from the same position.
 
+That read gives each split, or the whole stream, the state it starts from and an `until`: the state the source sent where the epoch's part ended, at a resume point or at the split's completion. A source that can stop there sends no record past that position. It sends a resume point with the `until` state, and completes the split with it. A source that ignores `until` makes the read exact only if it sends the same resume points as the first read did. A source that batches records by what it fetched, such as one reading a log, can rarely do that.
+
 ## Write a source in Go
 
 The SDK's `sdk.Source` declares a source from streams and the functions that read them. Here is a source with one stream, `greetings`, that makes up as many rows as its config asks for.

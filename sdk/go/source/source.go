@@ -71,6 +71,9 @@ type ConfiguredStream struct {
 	// one; the next attempt discovers and declares it. Nil: the request
 	// doesn't say.
 	Columns []string
+	// Where the whole stream's read ends, where Splits is nil, as a Split's
+	// Until says.
+	Until []byte
 }
 
 // WholeStream is the ID of the split that is the whole stream.
@@ -85,6 +88,14 @@ type Split struct {
 	ID string
 	// Nil: from its beginning.
 	State []byte
+	// In a read that isn't continuous, where the split's read ends: a state
+	// the source emitted for it before, at a resume point or at its
+	// completion. A source that can stop there emits nothing past that
+	// position, then a resume point with this state, and completes the
+	// split with it. The platform sets it to read part of an epoch again. A
+	// source that ignores it must emit the same resume points as before for
+	// that read to be exact. Nil: where the read would end.
+	Until []byte
 }
 
 type ReadRequest struct {
