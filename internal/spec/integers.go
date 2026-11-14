@@ -2,10 +2,11 @@ package spec
 
 import (
 	"fmt"
-	"math"
 	"math/big"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,30 +83,17 @@ func (c *integerCheck) check(n *yaml.Node, t reflect.Type, path string, b bounds
 		}
 		return nil
 	case reflect.Map:
-		if n.Kind != yaml.MappingNode {
-			return nil
-		}
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			if err := c.check(n.Content[i+1], t.Elem(), join(path, n.Content[i].Value), bounds{}); err != nil {
+		for _, e := range entries(n) {
+			if err := c.check(e.v, t.Elem(), join(path, e.k.Value), bounds{}); err != nil {
 				return err
 			}
 		}
-		return nil
-	}
-	if n.Kind != yaml.MappingNode {
 		return nil
 	}
 	fields := map[string]reflect.StructField{}
 	structFields(t, fields)
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		k, v := n.Content[i], n.Content[i+1]
-		if k.ShortTag() == "!!merge" {
-			if err := c.merge(v, t, path); err != nil {
-				return err
-			}
-			continue
-		}
-		f, ok := fields[k.Value]
+	for _, e := range entries(n) {
+		f, ok := fields[e.k.Value]
 		if !ok {
 			continue
 		}
@@ -113,28 +101,69 @@ func (c *integerCheck) check(n *yaml.Node, t reflect.Type, path string, b bounds
 		if err != nil {
 			return err
 		}
-		if err := c.check(v, f.Type, join(path, k.Value), fb); err != nil {
+		if err := c.check(e.v, f.Type, join(path, e.k.Value), fb); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// merge checks a merge key's value, a mapping or a list of them, as part of
-// the mapping that holds it.
-func (c *integerCheck) merge(v *yaml.Node, t reflect.Type, path string) error {
-	if v.Kind == yaml.AliasNode && v.Alias != nil {
-		v = v.Alias
+type entry struct{ k, v *yaml.Node }
+
+// entries are the keys and values yaml.v3 decodes of n, a mapping: its own,
+// then those of the mappings its merge key names that no earlier one set,
+// as a merge list's earlier mappings win over its later ones. Only n's last
+// merge key counts, as in yaml.v3.
+func entries(n *yaml.Node) []entry {
+	var out []entry
+	mergeEntries(n, nil, map[*yaml.Node]bool{}, &out)
+	return out
+}
+
+// mergeEntries adds n's entries that set doesn't hold to out; a nil set
+// takes every key of n. A mapping already seen adds nothing new.
+func mergeEntries(n *yaml.Node, set map[string]bool, seen map[*yaml.Node]bool, out *[]entry) {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
 	}
-	if v.Kind != yaml.SequenceNode {
-		return c.check(v, t, path, bounds{})
+	if n.Kind != yaml.MappingNode || seen[n] {
+		return
 	}
-	for _, e := range v.Content {
-		if err := c.check(e, t, path, bounds{}); err != nil {
-			return err
+	seen[n] = true
+	var merge *yaml.Node
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.Kind == yaml.ScalarNode && k.Value == "<<" && k.ShortTag() == "!!merge" {
+			merge = v
+			continue
+		}
+		if set != nil {
+			if set[k.Value] {
+				continue
+			}
+			set[k.Value] = true
+		}
+		*out = append(*out, entry{k, v})
+	}
+	if merge == nil {
+		return
+	}
+	if set == nil {
+		set = map[string]bool{}
+		for i := 0; i < len(n.Content); i += 2 {
+			set[n.Content[i].Value] = true
 		}
 	}
-	return nil
+	if merge.Kind == yaml.AliasNode && merge.Alias != nil {
+		merge = merge.Alias
+	}
+	if merge.Kind != yaml.SequenceNode {
+		mergeEntries(merge, set, seen, out)
+		return
+	}
+	for _, m := range merge.Content {
+		mergeEntries(m, set, seen, out)
+	}
 }
 
 // structFields are the fields yaml.v3 reads of t, by key, inline ones
@@ -202,30 +231,69 @@ func integer(n *yaml.Node, t reflect.Type, path string, b bounds) error {
 	default:
 		return refuse()
 	}
-	var v any
-	if err := n.Decode(&v); err != nil {
-		return refuse()
-	}
-	var x *big.Int
-	switch v := v.(type) {
-	case int:
-		x = big.NewInt(int64(v))
-	case int64:
-		x = big.NewInt(v)
-	case uint64:
-		x = new(big.Int).SetUint64(v)
-	case float64:
-		if math.IsInf(v, 0) || math.IsNaN(v) || v != math.Trunc(v) {
-			return refuse()
-		}
-		x, _ = big.NewFloat(v).Int(nil)
-	default:
+	x, ok := number(n.Value)
+	if !ok {
 		return refuse()
 	}
 	if x.Cmp(lo) < 0 || x.Cmp(hi) > 0 {
 		return refuse()
 	}
 	return nil
+}
+
+// yamlFloat is the text yaml.v3 reads as a float, once it drops underscores.
+var yamlFloat = regexp.MustCompile(`^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$`)
+
+// number is s, the text of a YAML integer or float, as an integer, decided
+// from its digits rather than from a float64, which would round
+// 1.0000000000000001 to 1. ok is false if it has a fraction, or isn't a
+// number. A number with more digits than any field holds comes back as
+// ±10^40, out of every range.
+func number(s string) (x *big.Int, ok bool) {
+	s = strings.ReplaceAll(s, "_", "")
+	if i, err := strconv.ParseInt(s, 0, 64); err == nil {
+		return big.NewInt(i), true
+	}
+	if u, err := strconv.ParseUint(s, 0, 64); err == nil {
+		return new(big.Int).SetUint64(u), true
+	}
+	if !yamlFloat.MatchString(s) {
+		return nil, false
+	}
+	neg := s[0] == '-'
+	s = strings.TrimLeft(s, "+-")
+	mantissa, exp, _ := strings.Cut(strings.ToLower(s), "e")
+	whole, frac, _ := strings.Cut(mantissa, ".")
+	e := 0
+	if exp != "" {
+		var err error
+		if e, err = strconv.Atoi(exp); err != nil {
+			// Beyond an int: far beyond any field, or far below 1.
+			e = 1 << 30
+			if exp[0] == '-' {
+				e = -e
+			}
+		}
+	}
+	digits := strings.TrimLeft(whole+frac, "0")
+	if digits == "" {
+		return big.NewInt(0), true
+	}
+	scale := e - len(frac)
+	trimmed := strings.TrimRight(digits, "0")
+	scale += len(digits) - len(trimmed)
+	switch {
+	case scale < 0:
+		return nil, false
+	case len(trimmed)+scale > 40:
+		x = new(big.Int).Exp(big.NewInt(10), big.NewInt(40), nil)
+	default:
+		x, _ = new(big.Int).SetString(trimmed+strings.Repeat("0", scale), 10)
+	}
+	if neg {
+		x.Neg(x)
+	}
+	return x, true
 }
 
 func typeRange(t reflect.Type) (lo, hi *big.Int) {

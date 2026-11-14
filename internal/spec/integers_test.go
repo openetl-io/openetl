@@ -218,3 +218,66 @@ func TestIntegerAliases(t *testing.T) {
 		t.Errorf("workers null: %v, %v", doc, err)
 	}
 }
+
+// A merge key in a map, such as a descriptor's roles, is checked too.
+func TestIntegerMapMerge(t *testing.T) {
+	doc := only("    <<: {source: {requires: {protocol: v1}, runtime: {binaries: {linux/amd64: {url: https://example.com/x}}}, state: {version: 1.9, reads: 1}, egress: {tier: raw}, config: {}}}\n")
+	if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), `roles.source.state.version: "1.9" isn't`) {
+		t.Errorf("a merged role's version 1.9: %v, want it refused", err)
+	}
+}
+
+// Only the values yaml.v3 decodes are checked: a key of the mapping itself
+// wins over a merged one, and an earlier mapping of a merge list over a
+// later one, so a value they hide isn't refused.
+func TestIntegerMergePrecedence(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source: {ref: s}\n  destination: {ref: d}\n"
+	for resources, want := range map[string]uint32{
+		"{<<: {workers: 65}, workers: 4}":                  4,
+		"{workers: 4, <<: {workers: 1.9}}":                 4,
+		"{<<: [{workers: 4}, {workers: 65}]}":              4,
+		"{<<: [{pool: a}, {<<: {workers: 3}}]}":            3,
+		"{<<: {workers: 5, <<: {workers: 1.9}}}":           5,
+		"{<<: [{workers: 6, <<: {pool: 1.9}}, {pool: b}]}": 6,
+	} {
+		doc, err := Parse([]byte(header + "  resources: " + resources + "\n"))
+		if err != nil {
+			t.Errorf("%s: %v", resources, err)
+			continue
+		}
+		if got := doc.Pipeline.GetResources().GetWorkers(); got != want {
+			t.Errorf("%s: workers %d, want %d", resources, got, want)
+		}
+	}
+	for _, resources := range []string{"{<<: [{workers: 65}, {workers: 4}]}", "{<<: [{pool: a}, {workers: 1.9}], pool: b}"} {
+		if _, err := Parse([]byte(header + "  resources: " + resources + "\n")); err == nil || !strings.Contains(err.Error(), "resources.workers: ") {
+			t.Errorf("%s: %v, want workers refused", resources, err)
+		}
+	}
+}
+
+// Whether a number is whole, and in range, is decided from its text, so a
+// fraction float64 rounds away is still refused.
+func TestIntegerText(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source: {ref: s}\n  destination: {ref: d}\n"
+	for v, want := range map[string]uint32{"1.0": 1, "1e1": 10, "0x10": 16, "10.0e-1": 1, "+2.": 2, "0.064e3": 64, "1_0": 10, "!!float 3": 3, "64.000000000000000000000": 64} {
+		doc, err := Parse([]byte(header + "  resources: {workers: " + v + "}\n"))
+		if err != nil {
+			t.Errorf("%s: %v", v, err)
+			continue
+		}
+		if got := doc.Pipeline.GetResources().GetWorkers(); got != want {
+			t.Errorf("%s: workers %d, want %d", v, got, want)
+		}
+	}
+	for _, v := range []string{"1.0000000000000001", "64.00000000000001", "4.0000000000000000001", "1e-400", "0.1e1000000000000000000", "1e1000000000000000000", "64.1e0", "-0.5e1"} {
+		if _, err := Parse([]byte(header + "  resources: {workers: " + v + "}\n")); err == nil || !strings.Contains(err.Error(), `resources.workers: "`) {
+			t.Errorf("%s: %v, want it refused", v, err)
+		}
+	}
+	for _, v := range []string{"0e1000000000000000000", "0.0"} {
+		if _, err := Parse([]byte(header + "  transform: {flink: {cluster: fl, code: {jar: 's3://j/a.jar', sha256: " + strings.Repeat("cd", 32) + "}, parallelism: " + v + "}}\n")); err != nil && strings.Contains(err.Error(), "parallelism") {
+			t.Errorf("parallelism %s: %v, want 0 taken", v, err)
+		}
+	}
+}
