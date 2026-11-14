@@ -128,10 +128,10 @@ Some transactional destinations commit each writer lane in a transaction of its 
 > Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records, with the same resume points, from a saved position. You make sure of this through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. OpenETL reads again without following the source, so the source ends the read once it has caught up. The attempt fails with `POSITION_LOST` in these cases:
 >
 > - The read ends before the saved position.
-> - The read returns fewer records up to the saved position than the epoch had.
+> - The read returns fewer records up to the saved position than the epoch had, unless the epoch's checkpoint was placed on that part without a resume point. The restore reads the records after the last resume point again in that case.
 > - A part that ended its read in the epoch ends at another position.
 >
-> If the source returns other records in the same number, or more records, OpenETL commits them. If the source keeps the read open, the attempt waits until it is stopped.
+> If the source returns other records in the same number, or more records, OpenETL commits them. For a keyed stream that the source does not split by key, or that is read with `cdc`, OpenETL commits only the records whose keys belong to the lane. If the source keeps the read open, the attempt waits until it is stopped.
 
 Do not change the primary key of a keyed stream while an epoch waits to be finished. Each lane's part of such a stream holds the rows of some of the key's values, so OpenETL cannot read it again under another key. The attempt then fails with `CONFIG_INVALID`, and names the key that the epoch used. Apply the pipeline with that key again, and change the key once the pipeline has committed again.
 

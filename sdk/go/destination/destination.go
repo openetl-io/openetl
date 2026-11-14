@@ -379,7 +379,9 @@ type Teardowner interface {
 // or narrows them. It is idempotent, and isn't fenced.
 //
 // It runs on lane 0's writer, before Recover with the restored epoch's
-// schemas, and before each epoch whose schemas changed is recorded.
+// schemas, and before each epoch whose schemas changed is recorded. With
+// LaneCommits, it also runs with the recorded epoch's schemas on each
+// writer that settles a committable, before that writer's Recover.
 //
 // A destination that takes holds answers with the columns it didn't add or
 // change, having applied the rest, instead of failing, and with what each
