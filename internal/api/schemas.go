@@ -162,9 +162,19 @@ func (s *Server) recordSchemaChange(ctx context.Context, q *db.Queries, pipeline
 	}
 	_, err = events.Record(ctx, q, s.Tenant.Org, events.Event{
 		Workspace: names.WorkspaceID, Type: events.SchemaChanged, Pipeline: names.Name, Data: data,
-		Key: events.SchemaChanged + "/" + pipeline.String() + "/" + d.stream + "/" + strconv.Itoa(int(version)),
+		Key: schemaEventKey(pipeline, d, version),
 	})
 	return err
+}
+
+// schemaEventKey records a version's event once. An output's versions are
+// its own, apart from those of the stream that shares its name.
+func schemaEventKey(pipeline uuid.UUID, d streamSchema, version int32) string {
+	stream := d.stream
+	if d.output {
+		stream = "output/" + stream
+	}
+	return events.SchemaChanged + "/" + pipeline.String() + "/" + stream + "/" + strconv.Itoa(int(version))
 }
 
 func (s *Server) ListStreamSchemas(ctx context.Context, req *connect.Request[apiv1.ListStreamSchemasRequest]) (*connect.Response[apiv1.ListStreamSchemasResponse], error) {

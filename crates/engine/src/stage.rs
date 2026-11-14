@@ -66,6 +66,14 @@ impl Stage {
         }))
     }
 
+    /// The statement the stage runs; None where batches pass as they are.
+    pub fn planned(&self) -> Option<&crate::transform::Statement> {
+        match self {
+            Stage::Identity => None,
+            Stage::Statement(b) => Some(b.st()),
+        }
+    }
+
     /// `typed` is a batch of the stream, and `pushed` each of its rows' row
     /// among those it was typed from. `cursor` is the stream's cursor
     /// column, whose values order an append-only output's versions.
@@ -222,7 +230,9 @@ impl Bound {
             }
         }
         let planned = Arc::new(Schema::new(fields));
-        let again = self.transform.again(self.statement, planned.clone())?;
+        let again = self
+            .transform
+            .again(self.statement, &self.planned, planned.clone())?;
         self.deps = Deps::of(&again.op);
         self.names = again
             .schema
@@ -269,9 +279,20 @@ impl Bound {
     ) -> Result<Applied, JobError> {
         self.plan_for(&typed.batch.schema())?;
         let input = self.input(&typed.batch)?;
+        // A row whose stream held a cell, as it passes through too, has no
+        // value there for the statement to evaluate.
+        let mut held = BTreeMap::new();
+        for c in &typed.cells {
+            held.entry(c.row).or_insert_with(|| {
+                self.reason(&format!(
+                    "column {} has a value that doesn't fit its type, which the stream holds: {}",
+                    c.column, c.reason
+                ))
+            });
+        }
         match self.op.changelog {
-            true => self.changelog(typed, input, pushed),
-            false => self.append(typed, input, pushed, cursor),
+            true => self.changelog(typed, input, pushed, held),
+            false => self.append(typed, input, pushed, cursor, held),
         }
     }
 
@@ -281,9 +302,14 @@ impl Bound {
         input: RecordBatch,
         pushed: &[usize],
         cursor: Option<&str>,
+        held: BTreeMap<usize, String>,
     ) -> Result<Applied, JobError> {
-        let all: Vec<usize> = (0..input.num_rows()).collect();
-        let (ran, failed) = self.run_rows(&input, &typed.ids, &all, &BTreeSet::new())?;
+        let all: Vec<usize> = (0..input.num_rows())
+            .filter(|r| !held.contains_key(r))
+            .collect();
+        let (ran, mut failed) = self.run_rows(&input, &typed.ids, &all, &BTreeSet::new())?;
+        failed.extend(held);
+        failed.sort_by_key(|(r, _)| *r);
         let seq = match (
             &typed.control.seq,
             cursor.and_then(|c| typed.batch.column_by_name(c)),
@@ -320,6 +346,7 @@ impl Bound {
         typed: &Typed,
         input: RecordBatch,
         pushed: &[usize],
+        mut held: BTreeMap<usize, String>,
     ) -> Result<Applied, JobError> {
         let n = input.num_rows();
         let ops: Vec<Option<&str>> = match &typed.control.op {
@@ -339,6 +366,11 @@ impl Bound {
         let mut dead = vec![false; n];
         for (r, u) in unchanged.iter_mut().enumerate() {
             if op(r) == Some("delete") {
+                continue;
+            }
+            if let Some(why) = held.remove(&r) {
+                failed.push((r, why));
+                dead[r] = true;
                 continue;
             }
             let names = lists

@@ -296,6 +296,91 @@ func TestSQLNeedsOutputsAndNoOtherTransform(t *testing.T) {
 	}
 }
 
+// holdingSQLDest is transformDest holding by ID, and keeping the schemas
+// applied to it.
+type holdingSQLDest struct {
+	*transformDest
+	applied map[string]*arrow.Schema
+}
+
+func (d *holdingSQLDest) Capabilities() destination.Capabilities {
+	c := d.transformDest.Capabilities()
+	c.Holds = destination.Holds{ByID: true, Guarded: true}
+	return c
+}
+
+func (d *holdingSQLDest) Open(ctx context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
+	if _, err := d.transformDest.Open(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+func (d *holdingSQLDest) ApplySchema(_ context.Context, schemas []destination.StreamSchema) (destination.SchemaApplied, error) {
+	for _, s := range schemas {
+		d.applied[s.Name] = s.Schema
+	}
+	return destination.SchemaApplied{}, nil
+}
+
+// An output of a SQL transform holds: the engine gets its holds, the
+// destination the schema it delivers, and the record keeps both under the
+// output, and nothing under the stream of its name.
+func TestASQLOutputHolds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		delivered := sideSchema(t, "delivered", "a")
+		inner := &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}
+		var plans []runner.Plan
+		flow := dataflowFunc(func(ctx context.Context, p runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+			plans = append(plans, p)
+			mid := make(chan runner.Frame, 16)
+			g, gctx := errgroup.WithContext(ctx)
+			g.Go(func() error { return inner.Run(gctx, p, in, mid) })
+			g.Go(func() error {
+				defer close(out)
+				for fr := range mid {
+					if fr.Kind == runner.FrameReady {
+						fr.Ready.Holds = map[string]*runner.ReadyHolds{"a": {Holding: []checkpoint.ColumnHold{{Column: "n", Reason: "held"}}}}
+						fr.Ready.Delivered = map[string][]byte{"a": delivered}
+					}
+					out <- fr
+				}
+				return nil
+			})
+			return g.Wait()
+		})
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		dst := &holdingSQLDest{transformDest: &transformDest{}, applied: map[string]*arrow.Schema{}}
+		j := sqlJob(log, "a1", nil, dst.transformDest, map[string]int{"a": 2, "b": 1})
+		j.Dataflow, j.Destination, j.HeldURL = flow, dst, "file:///held"
+		j.Outputs[0].PrimaryKey, j.Outputs[0].Holds = []string{"n"}, &runner.StreamHolds{}
+		var recs []*checkpoint.Record
+		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) { recs = append(recs, rec) }
+		if _, err := runner.RunAttempt(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		if p := plans[0]; p.HeldURL != "file:///held" || len(p.Holds) != 1 || p.Holds["a"] == nil {
+			t.Errorf("the plan's holds %v", p.Holds)
+		}
+		if got := dst.applied["a"].Metadata().Values(); !slices.Contains(got, "delivered a") {
+			t.Errorf("the destination got a as %v", got)
+		}
+		last := recs[len(recs)-1]
+		o := last.Outputs["a"]
+		if o.Holds == nil || len(o.Holds.Columns) != 1 || o.Holds.Columns[0].Column != "n" || decoded(t, o.Delivered) != "delivered a" {
+			t.Errorf("output a: holds %+v, delivered %s", o.Holds, decoded(t, o.Delivered))
+		}
+		if st := last.Streams["a"]; st.Holds != nil || st.Delivered != nil {
+			t.Errorf("stream a: %+v", st)
+		}
+		if last.HoldsOf("a") != o.Holds || last.HoldsOf("c") != nil {
+			t.Errorf("holds of a %+v, of c %+v", last.HoldsOf("a"), last.HoldsOf("c"))
+		}
+	})
+}
+
 // A SQL transform runs on as many lanes as a pipeline without one, unlike
 // Spark's and Flink's.
 func TestSQLRunsOnSeveralLanes(t *testing.T) {

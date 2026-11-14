@@ -51,9 +51,84 @@ pub(crate) fn output(t: &DataType) -> Option<DataType> {
     })
 }
 
+/// The type to write in `CAST(… AS type)` for a statement to give an output
+/// column `f`'s logical type; `None` for one no cast gives, such as JSON's,
+/// a UUID's or a timestamp with a time zone.
+pub fn cast_type(f: &Field) -> Option<String> {
+    use DataType as T;
+    if f.metadata().contains_key("ARROW:extension:name") {
+        return None;
+    }
+    Some(match f.data_type() {
+        T::Boolean => "BOOLEAN".into(),
+        T::Int16 => "SMALLINT".into(),
+        T::Int32 => "INTEGER".into(),
+        T::Int64 => "BIGINT".into(),
+        T::Float32 => "REAL".into(),
+        T::Float64 => "DOUBLE".into(),
+        T::Utf8 => "VARCHAR".into(),
+        T::Binary => "BYTEA".into(),
+        T::Date32 => "DATE".into(),
+        T::Timestamp(TimeUnit::Microsecond, None) => "TIMESTAMP(6)".into(),
+        T::Timestamp(TimeUnit::Nanosecond, None) => "TIMESTAMP(9)".into(),
+        T::Decimal128(p, s) => format!("DECIMAL({p}, {s})"),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each type cast_type names gives the output column the type it was
+    /// asked for.
+    #[test]
+    fn casts_give_the_type_they_name() {
+        let ts = |u, tz: Option<&str>| DataType::Timestamp(u, tz.map(Into::into));
+        let types = [
+            DataType::Boolean,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Int64,
+            DataType::Float32,
+            DataType::Float64,
+            DataType::Utf8,
+            DataType::Binary,
+            DataType::Date32,
+            ts(TimeUnit::Microsecond, None),
+            ts(TimeUnit::Nanosecond, None),
+            DataType::Decimal128(12, 2),
+        ];
+        let mut catalog = crate::Catalog::new();
+        let schema = arrow_schema::Schema::new(vec![Field::new("x", DataType::Utf8, true)]);
+        let stream = crate::Stream {
+            schema: Arc::new(schema),
+            key: Vec::new(),
+            changelog: false,
+        };
+        catalog
+            .insert("s", stream)
+            .unwrap_or_else(|e| panic!("{e}"));
+        for t in types {
+            let name = cast_type(&Field::new("x", t.clone(), true))
+                .unwrap_or_else(|| panic!("{t} has no cast"));
+            let sql = format!("INSERT INTO o SELECT CAST(x AS {name}) AS x FROM s");
+            let plan = crate::plan(&sql, &catalog).unwrap_or_else(|e| panic!("{sql}: {e}"));
+            let got = plan.statements[0].schema.field(0).data_type().clone();
+            assert_eq!(got, t, "{sql}");
+        }
+        let json = Field::new("j", DataType::Utf8, true)
+            .with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into());
+        assert_eq!(cast_type(&json), None);
+        assert_eq!(
+            cast_type(&Field::new(
+                "t",
+                ts(TimeUnit::Microsecond, Some("UTC")),
+                true
+            )),
+            None
+        );
+    }
 
     #[test]
     fn types_map_to_logical_ones_or_none() {

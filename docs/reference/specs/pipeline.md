@@ -113,7 +113,7 @@ When a job size is an object rather than a preset, both `cpu` and `memory` are r
 | `source.streams[].held` | `null`, `value` or `last` | No | `null`, or `value` when `heldValue` is set | What a held cell shows, in the columns that `columns` doesn't set it for: `null`; `value`, the value in `heldValue`; or `last`, the value the destination already has, which needs merge. |
 | `source.streams[].heldValue` | any value | Yes with `held: value` | None | With `held: value`, what held cells show; with `held: last`, what they show in rows the destination doesn't have yet. A value of the column's delivered type. Set alone, it means `held: value`. `held: null` takes none. |
 | `source.streams[].groups` | list of lists of column names | No | None | Columns held together, by their source names: holding one holds the rest. Each group has two columns or more. |
-| `source.streams[].typeChanges` | `refuse` or `allow` | No | `destination.typeChanges` | `destination.typeChanges` for this stream alone |
+| `source.streams[].typeChanges` | `refuse` or `allow` | No | `destination.typeChanges` | `destination.typeChanges` for this stream alone. With a SQL transform, for the stream as the destination gets it ([Settings and holds of outputs](#settings-and-holds-of-outputs)). |
 | `source.streams[].eventTime` | column name | No | None: a row's time is when the engine reads it | The column that holds a row's event time, for a SQL transform's statements. It needs `transform.sql`. A column that the source's latest catalog doesn't list for the stream is a problem in the plan. |
 | `source.streams[].watermark` | object | No | `delay: 0s` | How far behind the latest event time the stream's watermark stays. It needs `eventTime`. |
 | `source.streams[].watermark.delay` | duration, 0 or more | No | `0s` | The watermark trails the latest event time read from the stream by this much. |
@@ -127,7 +127,8 @@ The plan checks hold requirements:
 
 - Cell quarantine and the `held`, `heldValue` and `groups` settings require a primary key. The destination must support patching for the selected write mode. These requirements also apply to column-level settings.
 - `held: last` additionally requires merge writes and destination support for preserving the last value.
-- The streams of a pipeline with a transform cannot set `quarantine`, `held`, `heldValue`, `groups`, `collapse` or `typeChanges`, and their columns cannot set `held` or `heldValue`.
+- The streams of a pipeline with a Spark or Flink transform cannot set `quarantine`, `held`, `heldValue`, `groups`, `collapse` or `typeChanges`, and their columns cannot set `held` or `heldValue`.
+- With a SQL transform, these settings apply to the stream as the destination gets it. [Settings and holds of outputs](#settings-and-holds-of-outputs) explains what that is, and what the plan refuses.
 
 ## Destination
 
@@ -373,4 +374,31 @@ The engine quarantines a row that a statement cannot evaluate, such as a value t
 
 Each output row keeps the `_openetl_id` of the row it comes from. Each row that `UNNEST` gives gets an `_openetl_id` of its own.
 
-If a stream's schema changes during a sync, the engine plans the statements that read it again. A new column reaches an output only through `*`. An output's schema changes under `schemaPolicy`, as a stream's does. A change that a statement cannot take, or one that would change an output's primary key, fails the sync with `SCHEMA_DRIFT`. Outputs do not hold columns.
+### Settings and holds of outputs
+
+A stream's `quarantine`, `held`, `heldValue`, `groups`, `collapse`, `typeChanges` and its columns' `held` and `heldValue` apply to the stream as the destination gets it:
+
+- A stream that passes through takes them as it would without a transform.
+- The output of a statement that writes a stream's name takes that stream's settings. `groups` and the columns' settings name the output's columns.
+- An output of another name takes the defaults and `destination.typeChanges`.
+
+The plan has a problem, and a sync fails with `CONFIG_INVALID`, for each of these cases:
+
+- A stream sets one of these settings, no statement writes its name, and `transform.passthrough` is `none`. The destination does not get the stream.
+- A stream sets `collapse`, and a statement writes its name. The engine does not collapse a statement's output.
+- A stream sets `quarantine: cell`, `held`, `heldValue` or `groups`, and the statement that writes its name gives its output no primary key. The hold requirements above apply to the output, with its write mode.
+
+An output holds as a stream without a transform does. It needs a primary key and a destination that patches its write mode. If a column's type changes and `schemaPolicy` or the destination does not take the change, the engine holds the column. The output's other columns are still written, and new columns are still added. `openetl holds` lists the hold under the output's name, with the ways to clear it, and `openetl holds release NAME OUTPUT COLUMN` releases it.
+
+With `quarantine: cell`, a value that does not fit its type holds its cell, both where the stream is typed and where `schemaPolicy: ignore_new` casts an output's values to its columns' types. A statement cannot evaluate a row whose stream holds a cell. The engine quarantines that row as one of the statement output's records.
+
+### Schema changes
+
+If a stream's schema changes during a sync, the engine plans the statements that read it again. A new column reaches an output only through `*`. An output's schema changes under `schemaPolicy`, as a stream's does.
+
+These changes fail the sync with `SCHEMA_DRIFT`:
+
+- A change that a statement cannot take, such as a column whose new type a function does not accept. The message names each column the statement reads whose type changed, and the cast that reads it as before, such as `CAST(email AS VARCHAR)`.
+- A change that would change an output's primary key.
+- A change to an output column's type that `schemaPolicy` does not take, where the output cannot hold the column. The message names the statement that writes the output, and the cast that keeps the column's type, such as `CAST(… AS BIGINT) AS amount`.
+- A change that the destination refuses, where the output cannot hold the column. The message gives the statement to run on the destination, as for a stream without a transform.

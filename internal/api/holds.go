@@ -187,13 +187,32 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 	return out, nil
 }
 
+// holder is a stream the destination gets at a checkpoint, with its holds:
+// one of the source's, or a SQL transform's output.
+type holder struct {
+	name  string
+	holds []*dataplanev1.CheckpointHold
+}
+
+// holders are a checkpoint's streams, then its outputs that hold.
+func holders(m *dataplanev1.ReportCheckpointRequest) []holder {
+	out := make([]holder, 0, len(m.GetStreams())+len(m.GetOutputs()))
+	for _, st := range m.GetStreams() {
+		out = append(out, holder{st.GetName(), st.GetHolds()})
+	}
+	for _, o := range m.GetOutputs() {
+		out = append(out, holder{o.GetName(), o.GetHolds()})
+	}
+	return out
+}
+
 // holdRows are a checkpoint's holds as the pipeline's rows.
 func (s *Server) holdRows(pipeline uuid.UUID, m *dataplanev1.ReportCheckpointRequest, b *bigints) ([]db.InsertHoldParams, error) {
 	var rows []db.InsertHoldParams
-	for _, st := range m.GetStreams() {
-		for _, h := range st.GetHolds() {
+	for _, st := range holders(m) {
+		for _, h := range st.holds {
 			arg := db.InsertHoldParams{
-				OrgID: s.Tenant.Org, PipelineID: pipeline, Stream: st.GetName(), ColumnName: h.GetColumn(), Whole: h.GetWhole(),
+				OrgID: s.Tenant.Org, PipelineID: pipeline, Stream: st.name, ColumnName: h.GetColumn(), Whole: h.GetWhole(),
 				Reason: h.GetReason(), SinceGeneration: b.of("hold since.generation", h.GetSince().GetGeneration()), SinceEpoch: b.of("hold since.epoch", h.GetSince().GetEpoch()),
 				Cells: b.of("hold cells", h.GetCells()), Discarded: h.GetDiscarded(), Releasing: h.GetReleasing(),
 				Refusal: h.GetRefused().GetReason(),
@@ -254,12 +273,21 @@ func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Syn
 	}
 	now := m.GetCreateTime().AsTime()
 	return s.Store.Tx(ctx, func(q *db.Queries) error {
-		for _, st := range m.GetStreams() {
+		// A SQL transform's output may share a stream's name; it holds and
+		// the stream doesn't.
+		outputs := map[string]bool{}
+		for _, o := range m.GetOutputs() {
+			outputs[o.GetName()] = true
+		}
+		for i, st := range holders(m) {
+			if i < len(m.GetStreams()) && outputs[st.name] {
+				continue
+			}
 			var held []string
 			var holds []*apiv1.Hold
 			whole, cells := 0, uint64(0)
 			oldest := now
-			for _, h := range st.GetHolds() {
+			for _, h := range st.holds {
 				if h.GetDiscarded() {
 					continue
 				}
@@ -272,7 +300,7 @@ func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Syn
 					cells += h.GetCells()
 				}
 				ah := &apiv1.Hold{
-					Stream: st.GetName(), Column: h.GetColumn(), Whole: h.GetWhole(), Reason: h.GetReason(), Cells: h.GetCells(),
+					Stream: st.name, Column: h.GetColumn(), Whole: h.GetWhole(), Reason: h.GetReason(), Cells: h.GetCells(),
 					Releasing: h.GetReleasing(), Cause: h.GetCause(), Refused: h.GetRefused(),
 				}
 				explain(ah)
@@ -280,8 +308,8 @@ func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Syn
 				held = append(held, ah.GetReason())
 			}
 			if len(held) == 0 {
-				if opened[st.GetName()] {
-					stream := st.GetName()
+				if opened[st.name] {
+					stream := st.name
 					if _, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, []string{string(heal.Held)}, &stream, "the stream holds nothing"); err != nil {
 						return err
 					}
@@ -296,7 +324,7 @@ func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Syn
 				parts = append(parts, plural(int(cells), "cell"))
 			}
 			o := heal.Observation{
-				Pipeline: pipeline, Version: sync.Version, Stream: st.GetName(), Class: heal.Held, Severity: heal.Warning,
+				Pipeline: pipeline, Version: sync.Version, Stream: st.name, Class: heal.Held, Severity: heal.Warning,
 				Message: "The stream holds back " + strings.Join(parts, " and ") + ": " + strings.Join(held, " "),
 				Holds:   holds,
 				Details: map[string]string{

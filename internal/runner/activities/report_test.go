@@ -112,3 +112,33 @@ func TestMirroredHolds(t *testing.T) {
 		t.Error("holds for a stream that holds nothing")
 	}
 }
+
+// A SQL transform's outputs hold, and the source's streams don't: the
+// mirror has an output's holds apart, though it shares a stream's name.
+func TestMirroredOutputHolds(t *testing.T) {
+	since := checkpoint.RecordRef{Generation: 1, Epoch: 2}
+	rec := func(cells uint64) *checkpoint.Record {
+		h := &checkpoint.Holds{
+			Columns: []checkpoint.ColumnHold{{Column: "n", Reason: "changed", Since: since}},
+			Cells:   map[string]checkpoint.CellHold{"x": {Cells: cells, Reason: "nan", Since: since}},
+		}
+		return &checkpoint.Record{
+			Streams: map[string]checkpoint.StreamState{"s": {Rows: 4}, "t": {}},
+			Outputs: map[string]checkpoint.OutputState{"s": {Holds: h}, "out": {}},
+		}
+	}
+	r := &reporter{}
+	if got := r.heldCells(rec(3)); got["s"] != 3 {
+		t.Errorf("held cells %v", got)
+	}
+	req := r.mirrored(rec(5), nil, r.heldCells(rec(5)), nil)
+	for _, st := range req.GetStreams() {
+		if len(st.GetHolds()) > 0 || st.GetHeldCells() > 0 {
+			t.Errorf("stream %s holds %v", st.GetName(), st.GetHolds())
+		}
+	}
+	outs := req.GetOutputs()
+	if len(outs) != 1 || outs[0].GetName() != "s" || len(outs[0].GetHolds()) != 2 || outs[0].GetHeldCells() != 2 {
+		t.Errorf("outputs %v", outs)
+	}
+}

@@ -106,17 +106,23 @@ func (r *reporter) checkpoint(rec *checkpoint.Record, collapsed map[string]uint6
 	}})
 }
 
-// heldCells are the cells each stream held in rec's epoch: what its cell
-// holds grew by since the last record.
+// heldCells are the cells each stream, or a SQL transform's output, held in
+// rec's epoch: what its cell holds grew by since the last record.
 func (r *reporter) heldCells(rec *checkpoint.Record) map[string]uint64 {
 	if r.cells == nil {
 		r.cells = map[string]map[string]uint64{}
 	}
 	out := map[string]uint64{}
-	for name, st := range rec.Streams {
+	names := slices.Collect(maps.Keys(rec.Streams))
+	for name := range rec.Outputs {
+		if _, ok := rec.Streams[name]; !ok {
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
 		now := map[string]uint64{}
-		if st.Holds != nil {
-			for col, c := range st.Holds.Cells {
+		if h := rec.HoldsOf(name); h != nil {
+			for col, c := range h.Cells {
 				now[col] = c.Cells
 				if c.Cells > r.cells[name][col] {
 					out[name] += c.Cells - r.cells[name][col]
@@ -156,11 +162,18 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 			}
 		}
 		cs.Read, cs.Paused = r.reads[name], r.paused[name]
-		cs.Holds, cs.HeldCells = mirroredHolds(st.Holds), held[name]
+		if st.Holds != nil {
+			cs.Holds, cs.HeldCells = mirroredHolds(st.Holds), held[name]
+		}
 		if l, ok := r.lowered[name]; ok && slices.Contains(rec.Reread, name) {
 			cs.Level, cs.PlannedLevel = plan.APILevel(l.Level), plan.APILevel(l.Planned)
 		}
 		req.Streams = append(req.Streams, cs)
+	}
+	for _, name := range slices.Sorted(maps.Keys(rec.Outputs)) {
+		if h := rec.Outputs[name].Holds; h != nil {
+			req.Outputs = append(req.Outputs, &dataplanev1.CheckpointOutput{Name: name, Holds: mirroredHolds(h), HeldCells: held[name]})
+		}
 	}
 	return req
 }

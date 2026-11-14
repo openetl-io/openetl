@@ -296,10 +296,18 @@ impl Plan {
         let mut identities: Vec<Identity> = sinks.iter().map(identity).collect();
         // An output's rows keep their stream's sequence: its cursor's values
         // where it passes through, the stage's control columns where a
-        // statement writes it, or the stream's read start.
+        // statement writes it, or the stream's read start. One passed
+        // through has its stream's declared types, which its held values
+        // and a release's patches take.
         for (i, rs) in routes.iter().flatten().enumerate() {
             for &(o, route) in rs {
                 let input = identity(&req.streams[i]);
+                if route == Route::Pass && !req.streams[i].arrow_schema.is_empty() {
+                    let schema = ipc::decode_schema(&req.streams[i].arrow_schema).map_err(|e| {
+                        JobError::config(format!("stream {}: declared schema: {e}", names[o]))
+                    })?;
+                    declared[o] = Some(schema);
+                }
                 identities[o] = match route {
                     Route::Pass => input,
                     Route::Statement(_) => Identity {
@@ -500,12 +508,6 @@ impl Plan {
         let mut holds_ = Vec::with_capacity(sinks.len());
         let mut replays = Vec::with_capacity(sinks.len());
         for st in sinks {
-            if transform.is_some() && st.holds.is_some() {
-                return Err(JobError::config(format!(
-                    "output {} holds columns, and a transform's outputs don't",
-                    st.name
-                )));
-            }
             let (h, r) = holds(st)?;
             holds_.push(h);
             replays.push(r);
@@ -1073,7 +1075,23 @@ pub(crate) mod tests {
         assert_eq!(p.identities[1].cursor.as_deref(), Some("id"));
         assert_eq!(p.identities[2].cursor, None);
         assert_eq!(p.identities[2].read_start, 7);
-        assert!(p.declared.iter().all(Option::is_none));
+        // Only b, passed through, has its stream's declared types.
+        let declared: Vec<bool> = p.declared.iter().map(Option::is_some).collect();
+        assert_eq!(declared, [false, true, false]);
+    }
+
+    /// An output holds as a stream without a transform does.
+    #[test]
+    fn a_transforms_output_holds() {
+        let mut req = transform_request();
+        req.held_url = "file:///tmp/held".into();
+        req.outputs[0].holds = Some(openetl_proto::engine::v1::HoldPlan {
+            cells: true,
+            ..Default::default()
+        });
+        let p = Plan::from_request(req).unwrap();
+        assert!(p.holds[0].as_ref().is_some_and(|h| h.cells));
+        assert!(p.holds[1].is_none() && p.holds[2].is_none());
     }
 
     #[test]
@@ -1173,9 +1191,20 @@ pub(crate) mod tests {
                 Box::new(|r| r.streams[1].arrow_schema.clear()),
             ),
             (
-                "outputs don't",
+                "the job has no held_url",
+                Box::new(|r| {
+                    r.outputs[0].holds = Some(openetl_proto::engine::v1::HoldPlan::default());
+                }),
+            ),
+            (
+                "only a keyed stream holds columns",
                 Box::new(|r| {
                     r.held_url = "file:///tmp/held".into();
+                    r.transform.as_mut().unwrap().expected_outputs.clear();
+                    r.outputs[0].primary_key.clear();
+                    r.transform.as_mut().unwrap().sql =
+                        "INSERT INTO a SELECT lower(email) AS email FROM a; INSERT INTO c SELECT id FROM b"
+                            .into();
                     r.outputs[0].holds = Some(openetl_proto::engine::v1::HoldPlan::default());
                 }),
             ),

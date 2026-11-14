@@ -10,7 +10,7 @@
 //! Parquet or staged sink, which stages each epoch and reports it in
 //! EpochReady.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -322,7 +322,9 @@ struct InputCrossing {
 }
 
 impl InputOwner {
-    fn new(input: &InputPlan) -> Result<Self, JobError> {
+    /// `cells` are the cell holds of the output the stream passes through
+    /// as, if it holds cells: its rows are typed holding them.
+    fn new(input: &InputPlan, cells: Option<HashSet<String>>) -> Result<Self, JobError> {
         let shaper = Shaper::new(
             Naming {
                 keep_source: true,
@@ -336,7 +338,8 @@ impl InputOwner {
             input.types,
         )
         .map_err(|e| JobError::config(format!("stream {}: {e}", input.name)))?
-        .with_changelog(input.changelog);
+        .with_changelog(input.changelog)
+        .with_cell_holds(cells);
         Ok(Self {
             shaper,
             state: Mutex::new(InputState {
@@ -503,8 +506,14 @@ where
     let inputs: Result<Vec<_>, _> = plan
         .transform
         .iter()
-        .flat_map(|t| t.inputs.iter())
-        .map(InputOwner::new)
+        .flat_map(|t| t.inputs.iter().zip(&t.routes))
+        .map(|(input, routes)| {
+            let cells = routes
+                .iter()
+                .find(|(_, r)| *r == Route::Pass)
+                .and_then(|&(o, _)| owners[o].lock().shaper.cell_holds());
+            InputOwner::new(input, cells)
+        })
         .collect();
     let inputs = match inputs {
         Ok(i) => i,
@@ -758,28 +767,26 @@ where
     let flow = lane.flow.clone();
     let plan = &flow.plan;
     let id = &plan.inbound[lane.lane].id;
-    let lane_stream = |s: usize| {
+    // Lane 0 replays a stream's released holds.
+    let lane_stream = |s: usize| -> Result<LaneStream, JobError> {
+        let replay = match (lane.lane, &plan.replays[s], &plan.held_url) {
+            (0, Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
+            _ => None,
+        };
         let o = flow.owners[s].lock();
-        LaneStream {
+        Ok(LaneStream {
             stream: s,
             shaper: o.shaper.fork(),
             version: o.version,
             quarantined: (Vec::new(), 0),
             cells: BTreeMap::new(),
-            replay: None,
-        }
+            replay,
+        })
     };
     let mut streams = Vec::with_capacity(plan.inbound[lane.lane].streams.len());
     for &s in &plan.inbound[lane.lane].streams {
         let kind = match &plan.transform {
-            None => {
-                let mut ls = lane_stream(s);
-                ls.replay = match (lane.lane, &plan.replays[s], &plan.held_url) {
-                    (0, Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
-                    _ => None,
-                };
-                Kind::Own(Box::new(ls))
-            }
+            None => Kind::Own(Box::new(lane_stream(s)?)),
             Some(t) => Kind::Transformed(Box::new(Transformed {
                 input: s,
                 typer: flow.inputs[s].shaper.fork(),
@@ -792,9 +799,9 @@ where
                             Route::Pass => Stage::Identity,
                             Route::Statement(i) => Stage::statement(&t.sql, i),
                         };
-                        (stage, lane_stream(o))
+                        Ok((stage, lane_stream(o)?))
                     })
-                    .collect(),
+                    .collect::<Result<_, JobError>>()?,
             })),
         };
         streams.push(LaneInput {
@@ -978,15 +985,21 @@ where
                                 true,
                             )
                             .await?;
-                            flow.owners[s].cross(
+                            let replayed = ls.replay.as_ref().map(Replayer::progress);
+                            let owner = &flow.owners[s];
+                            owner.cross(
                                 plan,
                                 s,
                                 epoch.n,
                                 q,
                                 std::mem::take(&mut ls.cells),
-                                None,
+                                replayed,
                             )?;
                             lane.all(s, || Out::Barrier(s, epoch)).await?;
+                            if ls.replay.is_some() {
+                                ls.catch_up(owner);
+                                replay(&lane, ls).await?;
+                            }
                         }
                     }
                 }
@@ -1111,13 +1124,51 @@ async fn transform(
             .map(|(row, reason)| Rejected { row, reason })
             .collect();
         hold(plan, name, &failed, record, &mut ls.quarantined, oc)?;
-        let n = ls
-            .shape(&flow.owners[s], |_| Ok(copy(&out)))
-            .map_err(|e| shape_error(name, e))?;
+        let n = ls.shape(&flow.owners[s], |_| Ok(copy(&out))).map_err(|e| {
+            let drift = matches!(e, NormalizeError::Drift(_));
+            let err = shape_error(name, e);
+            match stage.planned() {
+                Some(st) if drift => {
+                    statement_drift(st, &ls.shaper.live(), &out.batch.schema(), err)
+                }
+                _ => err,
+            }
+        })?;
         hold(plan, name, &n.rejected, record, &mut ls.quarantined, oc)?;
         shaped(lane, ls, n, oc).await?;
     }
     Ok(())
+}
+
+/// A change to an output a statement writes that the schema policy doesn't
+/// take: `err`, with the statement, and for each output column whose type
+/// changed from one `live` has, the cast that keeps it.
+fn statement_drift(
+    st: &crate::transform::Statement,
+    live: &arrow_schema::Schema,
+    now: &arrow_schema::Schema,
+    err: JobError,
+) -> JobError {
+    let casts: Vec<String> = now
+        .fields()
+        .iter()
+        .filter_map(|f| {
+            let was = live.field_with_name(f.name()).ok()?;
+            if was.data_type() == f.data_type() {
+                return None;
+            }
+            let t = openetl_sql::cast_type(was)?;
+            Some(format!("CAST(… AS {t}) AS {}", f.name()))
+        })
+        .collect();
+    let mut msg = format!("{}; transform.sql {} writes it", err.message, st.at);
+    if !casts.is_empty() {
+        msg.push_str(&format!(
+            ": to keep the type the output has, write {} there",
+            casts.join(", ")
+        ));
+    }
+    JobError::new(err.code, msg)
 }
 
 fn copy(t: &Typed) -> Typed {
@@ -3504,5 +3555,185 @@ mod tests {
         uids.sort();
         assert_eq!(uids, [Some(0), Some(2), Some(10), Some(12)]);
         assert_eq!(ready.len(), 1);
+    }
+
+    /// Stream b gains n, an integer, then n's values widen to doubles.
+    async fn widen_n(w: &mut DuplexStream) {
+        let row = |id: i64, n: &str| format!(r#"{{"id": {id}, "email": "e", "n": {n}}}"#);
+        put(w, FrameKind::Rows, 1, rows(&[&row(1, "1")])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::Rows, 1, rows(&[&row(2, "1.5")])).await;
+    }
+
+    /// An output a statement writes holds a column whose type changes
+    /// under a schema policy that doesn't take it, as a stream does.
+    #[tokio::test]
+    async fn an_output_holds_a_column_whose_type_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = sql_request(
+            "INSERT INTO b SELECT * FROM b",
+            &[("b", &["id"]), ("a", &["id"])],
+        );
+        req.schema_policy = openetl_proto::engine::v1::SchemaPolicy::Block as i32;
+        req.held_url = format!("file://{}/held", dir.path().display());
+        req.outputs[0].holds = Some(Default::default());
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        widen_n(w).await;
+        put(w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(w, FrameKind::Barrier, 1, barrier(2)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+
+        let ready = ready(&mut h.events).await;
+        assert!(ready[0].holds["b"].holding.is_empty());
+        let holds = &ready[1].holds["b"];
+        assert_eq!(holds.holding.len(), 1);
+        assert_eq!(holds.holding[0].column, "n");
+        let cause = holds.holding[0].cause.clone().unwrap();
+        assert_eq!(
+            (cause.kind(), cause.from.as_str(), cause.to.as_str()),
+            (
+                openetl_proto::engine::v1::hold_cause::Kind::Policy,
+                "int64",
+                "float64"
+            )
+        );
+        assert_eq!(holds.files.len(), 1);
+        let delivered = ipc::decode_schema(&ready[1].delivered["b"]).unwrap();
+        assert_eq!(
+            delivered.field_with_name("n").unwrap().data_type(),
+            &DataType::Int64,
+            "the destination keeps n as it was"
+        );
+        assert!(!ready[1].holds.contains_key("a"));
+    }
+
+    /// Where the output can't hold the column, the job stops with
+    /// SCHEMA_DRIFT, naming the statement and the cast that keeps the type.
+    #[tokio::test]
+    async fn an_outputs_type_change_it_cant_hold_gives_the_cast_that_keeps_it() {
+        let mut req = sql_request("INSERT INTO b SELECT * FROM b", &[("b", &["id"])]);
+        req.schema_policy = openetl_proto::engine::v1::SchemaPolicy::Block as i32;
+        let mut h = start_with(req);
+        widen_n(&mut h.to_engine).await;
+        let (err, _) = failure(h).await;
+        assert_eq!(err.code, ErrorCode::SchemaDrift, "{}", err.message);
+        assert!(
+            err.message.ends_with(
+                "; transform.sql 1:1 writes it: to keep the type the output has, write CAST(… AS BIGINT) AS n there"
+            ),
+            "{}",
+            err.message
+        );
+    }
+
+    /// The SQL request for a stream a whose price is declared a decimal of
+    /// `precision` digits: a passes through, holding cells, and c reads it.
+    fn priced_sql(
+        dir: &std::path::Path,
+        precision: u8,
+    ) -> openetl_proto::engine::v1::StartJobRequest {
+        use arrow_schema::{Field, Schema};
+        let mut req = sql_request(
+            "INSERT INTO c SELECT id, price FROM a",
+            &[("c", &["id"]), ("a", &["id"])],
+        );
+        let declared = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("price", DataType::Decimal128(precision, 2), true),
+        ]);
+        req.streams[0].arrow_schema = ipc::encode_schema(&Arc::new(declared)).unwrap();
+        req.held_url = format!("file://{}/held", dir.display());
+        req.quarantine_url = format!("file://{}/q", dir.display());
+        req.outputs[1].holds = Some(openetl_proto::engine::v1::HoldPlan {
+            cells: true,
+            ..Default::default()
+        });
+        req
+    }
+
+    /// A stream that passes through holding cells holds them as without a
+    /// transform, and a statement reading it quarantines their rows, which
+    /// have no value there to evaluate. A release patches the output's held
+    /// cells in.
+    #[tokio::test]
+    async fn a_stream_passed_through_holds_cells_and_releases_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = start_with(priced_sql(dir.path(), 10));
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Batch, 0, priced(&["1.5", "12345678901.5"])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+
+        let a = batches(&frames, 1);
+        assert_eq!(a[0].num_rows(), 2, "the row with a held cell is delivered");
+        assert!(a[0].schema().index_of("_openetl_held").is_ok());
+        assert_eq!(column_ints(&batches(&frames, 0)[0], "id"), [Some(1)]);
+        let first = ready(&mut h.events).await;
+        let held = &first[0].holds["a"];
+        assert_eq!(held.cells["price"].cells, 1);
+        assert_eq!(held.files.len(), 1);
+        let file = held.files[0].path.clone();
+        let q = &first[0].quarantine;
+        assert_eq!(q.len(), 1);
+        assert_eq!(
+            (q[0].stream.as_str(), q[0].rows, q[0].output),
+            ("c", 1, true)
+        );
+        let text = std::fs::read_to_string(dir.path().join("q/_outputs/1/1/c.jsonl")).unwrap();
+        let line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert!(
+            line["reason"].as_str().unwrap().contains(
+                "column price has a value that doesn't fit its type, which the stream holds"
+            ),
+            "{}",
+            line["reason"]
+        );
+
+        let mut req = priced_sql(dir.path(), 20);
+        req.generation = 2;
+        req.first_epoch = 2;
+        req.outputs[1].restored_schema = first[0].output_schemas["a"].clone();
+        req.outputs[1].holds.as_mut().unwrap().replay = Some(openetl_proto::engine::v1::Replay {
+            files: vec![file],
+            columns: vec!["price".into()],
+            ..Default::default()
+        });
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        let barrier2 = Barrier {
+            epoch: Some(Epoch {
+                generation: 2,
+                n: 2,
+            }),
+        }
+        .encode_to_vec();
+        put(w, FrameKind::Barrier, 0, barrier2.clone()).await;
+        put(w, FrameKind::Barrier, 1, barrier2).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let patch = frames
+            .iter()
+            .find(|f| f.kind == FrameKind::Patch && f.stream == 1);
+        let Some(p) = patch else {
+            panic!("a's held cell isn't patched in");
+        };
+        let p = ipc::decode_batch(p.payload.clone()).unwrap();
+        assert_eq!(p.num_rows(), 1);
+        let second = ready(&mut h.events).await;
+        assert!(second[0].holds["a"].replayed.is_some());
     }
 }

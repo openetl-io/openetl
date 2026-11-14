@@ -216,6 +216,17 @@ message ReportCheckpointRequest {
   openetl.api.v1.Usage usage = 9;
   // The newest reset the checkpoint has taken, as GetSyncSpec gave it.
   string last_reset = 10;
+  // A SQL transform's outputs that hold columns or cells. The destination
+  // gets the outputs, so they hold, and the source's streams don't.
+  repeated CheckpointOutput outputs = 11;
+}
+
+// One of a transform's outputs at a checkpoint.
+message CheckpointOutput {
+  string name = 1;
+  // As CheckpointStream's.
+  repeated CheckpointHold holds = 2;
+  uint64 held_cells = 3;
 }
 
 message CheckpointRef {

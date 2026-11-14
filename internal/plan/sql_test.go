@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/sqlplan"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 var sqlCatalog = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
@@ -137,6 +138,64 @@ func TestPipelineSQL(t *testing.T) {
 	if len(msgs) != 2 || !strings.Contains(all, `destination.write: merge needs a primary key, and stream "shifted" has none`) ||
 		!strings.Contains(all, `source.streams[customers].require: stream "customers" gets effectively_once`) {
 		t.Errorf("problems %q", msgs)
+	}
+}
+
+// A stream's holds, collapse and typeChanges apply to it as the destination
+// gets it: passed through, or as the output of the statement that replaces
+// it. Where it has no such output, or the output can't take one, it's a
+// problem.
+func TestPipelineSQLSettings(t *testing.T) {
+	holding := warehouse
+	holding.Holds = destination.Holds{ByKey: true, ByID: true, Guarded: true}
+	off := false
+	customers := &apiv1.PipelineStream{Name: "customers", Held: &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_NULL}, TypeChanges: apiv1.TypeChanges_TYPE_CHANGES_ALLOW}
+	orders := &apiv1.PipelineStream{Name: "orders", Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL, TypeChanges: apiv1.TypeChanges_TYPE_CHANGES_ALLOW}
+	plans, problems, warnings := PipelineSQL(sqlSpec(twoStatements, 0, nil, customers, orders), sqlCatalog, holding, twoAnswers())
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	changes := map[string]bool{}
+	for _, p := range plans {
+		changes[p.GetName()] = p.GetTypeChanges()
+	}
+	if !changes["orders"] || !changes["customers"] || changes["contacts"] {
+		t.Errorf("type changes %v: customers' output and orders, passed through, take theirs; contacts the destination's", changes)
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[0].GetMessage(), "typeChanges: allow lets the destination change") {
+		t.Errorf("warnings %v", warnings)
+	}
+
+	problemsOf := func(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlplan.Answer) string {
+		_, problems, _ := PipelineSQL(spec, sqlCatalog, caps, a)
+		var msgs []string
+		for _, p := range problems {
+			msgs = append(msgs, p.Error())
+		}
+		return strings.Join(msgs, "\n")
+	}
+	for _, c := range []struct {
+		name string
+		spec *apiv1.PipelineSpec
+		caps destination.Capabilities
+		a    *sqlplan.Answer
+		want string
+	}{
+		{"collapse on a replaced stream", sqlSpec(twoStatements, 0, nil, &apiv1.PipelineStream{Name: "customers", Collapse: &off}), holding, twoAnswers(),
+			`stream "customers" sets collapse, and a statement replaces it, whose output isn't collapsed`},
+		{"a stream withheld", sqlSpec(twoStatements, apiv1.Passthrough_PASSTHROUGH_NONE, nil, customers, orders), holding, twoAnswers(),
+			`stream "orders" sets quarantine, typeChanges, which apply to it as the destination gets it, and the destination doesn't`},
+		{"an output without a key", sqlSpec("INSERT INTO shifted SELECT id + 1 AS id FROM customers;\nINSERT INTO customers SELECT id FROM orders", 0, nil,
+			&apiv1.PipelineStream{Name: "customers", Groups: []*apiv1.ColumnGroup{{Columns: []string{"a", "b"}}}}, &apiv1.PipelineStream{Name: "orders"}), holding,
+			func() *sqlplan.Answer { a := otherAnswers(); a.Statements[1].Key = nil; return a }(), "gives its output no primary key"},
+		{"a destination that doesn't patch", sqlSpec(twoStatements, 0, nil, customers), warehouse, twoAnswers(),
+			`stream "customers" sets how it holds cells or columns, and the destination doesn't patch merge streams`},
+		{"a stream passed through", sqlSpec(twoStatements, 0, nil, &apiv1.PipelineStream{Name: "events", Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL}), holding, twoAnswers(),
+			`stream "events" sets how it holds cells or columns, and only a keyed stream holds them`},
+	} {
+		if got := problemsOf(c.spec, c.caps, c.a); !strings.Contains(got, c.want) {
+			t.Errorf("%s: problems %q, want %q", c.name, got, c.want)
+		}
 	}
 }
 

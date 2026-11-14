@@ -3,6 +3,7 @@ package runner
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,6 +183,60 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 		t.Errorf("columns %+v", holds["s"].Columns)
 	}
 }
+
+// A SQL transform's outputs hold, as the destination's streams, and its
+// inputs don't; the user's Spark or Flink code's outputs don't hold. An
+// output's holds restore from the record's outputs, released under its
+// name.
+func TestASQLTransformsOutputsHold(t *testing.T) {
+	since := checkpoint.RecordRef{Generation: 1, Epoch: 2}
+	held := &checkpoint.Holds{Columns: []checkpoint.ColumnHold{{Column: "n", Since: since}}, Cells: map[string]checkpoint.CellHold{"x": {Cells: 1, Since: since}}}
+	restored := &checkpoint.Record{
+		Streams: map[string]checkpoint.StreamState{"a": {}},
+		Outputs: map[string]checkpoint.OutputState{"a": {Holds: held}},
+	}
+	output := func(name string, key ...string) Stream {
+		return Stream{Name: name, Replay: source.Exact, Mode: destination.Append, PrimaryKey: key, Holds: &StreamHolds{}, Transformed: true}
+	}
+	j := &Job{
+		HeldURL:     "file:///held",
+		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"),
+		Destination: holdingDest{},
+		Streams:     []Stream{{Name: "a", Replay: source.Exact, PrimaryKey: []string{"id"}}},
+		Outputs:     []Stream{output("a", "id"), output("c")},
+		SQL:         &SQLTransform{SQL: "INSERT INTO a SELECT * FROM a; INSERT INTO c SELECT * FROM a"},
+		Releases:    []Release{{Stream: "a", Column: "x", Since: since}},
+	}
+	if err := j.checkHolds(); err == nil || !strings.Contains(err.Error(), `stream "c" holds columns, and only a keyed stream can`) {
+		t.Errorf("an output without a key: %v", err)
+	}
+	j.Outputs[1].Holds = nil
+	if err := j.checkHolds(); err != nil {
+		t.Error(err)
+	}
+	holds, plans, err := j.startHolds(t.Context(), restored, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := holds["a"]; len(holds) != 1 || len(h.Columns) != 1 || h.Replay == nil || !reflect.DeepEqual(h.Replay.Columns, []string{"x"}) {
+		t.Errorf("holds %+v", holds)
+	}
+	if p := plans["a"]; p == nil || len(p.Holding) != 1 {
+		t.Errorf("plans %+v", plans)
+	}
+
+	j.Streams[0].Holds = &StreamHolds{}
+	if err := j.checkHolds(); err == nil || !strings.Contains(err.Error(), "a transform's inputs can't be held") {
+		t.Errorf("an input that holds: %v", err)
+	}
+	j.Streams[0].Holds, j.SQL, j.Transform = nil, nil, sparkCode{}
+	if j.holdsOn(j.Outputs[0]) {
+		t.Error("a Spark transform's output holds")
+	}
+}
+
+// sparkCode stands for the user's Spark code.
+type sparkCode struct{ Transform }
 
 type holdingDest struct{ destination.Destination }
 
