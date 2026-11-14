@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use arrow_schema::{Field, Schema, SchemaRef};
 use openetl_normalize::VERSIONS_KEY;
-use openetl_normalize::naming::{METADATA_COLUMNS, source_names};
+use openetl_normalize::naming::{METADATA_COLUMNS, TABLE_KEY, source_names};
 use openetl_proto::engine::v1::{ExpectedOutput, StreamPlan, Transform as TransformPlan};
 use openetl_sql::{Catalog, Operator, Position, RowWise, Sql, Stream};
 
@@ -82,10 +82,13 @@ impl Input {
 }
 
 /// A stream's recorded schema as statements read it. One recorded before
-/// the pipeline had a transform is as the destination got it: its columns
-/// go back to their source names and current versions, and the metadata
-/// columns go.
+/// the pipeline had a transform is as the destination got it, with its
+/// table in its metadata: its columns go back to their source names and
+/// current versions, and the metadata columns go.
 pub fn as_read(schema: &Schema) -> SchemaRef {
+    if !schema.metadata().contains_key(TABLE_KEY) {
+        return Arc::new(schema.clone());
+    }
     let names = source_names(schema).unwrap_or_default();
     let versions: BTreeMap<String, u32> = schema
         .metadata()
@@ -506,6 +509,19 @@ mod tests {
         assert_eq!(e.code, openetl_proto::connector::v1::ErrorCode::SchemaDrift);
     }
 
+    /// A schema a transform's input recorded is as statements read it, so
+    /// a source column with a metadata column's name stays.
+    #[test]
+    fn a_recorded_input_schema_keeps_its_columns() {
+        let typed = Schema::new(vec![
+            Field::new("_openetl_id", DataType::Utf8, true),
+            Field::new("id", DataType::Int64, true),
+        ]);
+        let read = as_read(&typed);
+        let names: Vec<&str> = read.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["_openetl_id", "id"]);
+    }
+
     /// A schema recorded before the pipeline had a transform is as the
     /// destination got it.
     #[test]
@@ -523,6 +539,10 @@ mod tests {
                 r#"{"user_id":"UserId"}"#.to_owned(),
             ),
             (VERSIONS_KEY.to_owned(), r#"{"x":2}"#.to_owned()),
+            (
+                openetl_normalize::naming::TABLE_KEY.to_owned(),
+                "users".to_owned(),
+            ),
         ]));
         let read = as_read(&shaped);
         let fields: Vec<(&str, &DataType)> = read
