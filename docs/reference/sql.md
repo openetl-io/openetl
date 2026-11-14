@@ -385,7 +385,7 @@ The JSON functions read a document from a JSON column or from any string.
 | `json_object_keys` | `json_keys` | An object's keys, as a list |
 | `json_union_to_text` | | A value of `json_get` as JSON text, and null for a JSON null |
 
-Each function takes the document, then a path: keys and array indexes, as further arguments or as one list. A value of another type than the function gives is null: `json_get_str` of a number is null.
+Each function but `json_from_scalar` takes the document, then a path: keys and array indexes, as further arguments or as one list. `json_from_scalar` takes one boolean, number or string, and no path. A value of another type than the function gives is null: `json_get_str` of a number is null.
 
 - A key is a string, and matches exactly. An index is an integer, from 0. A negative index counts from the end: `-1` is the last element.
 - A key that reaches an array is an index if it spells one: `'1'` is the second element.

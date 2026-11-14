@@ -127,7 +127,7 @@ If the pipeline holds values, **Holds** lists each affected column. Entries iden
 
 ### SQL
 
-A pipeline with a SQL transform has a **SQL** tab. A SQL transform is SQL statements that change rows on their way to the destination. Each statement writes an **output**, which the destination gets as a stream.
+A pipeline with a SQL transform has a **SQL** tab. A SQL transform is SQL statements that change rows on their way to the destination. Each `INSERT INTO` statement writes an **output**, which the destination gets as a stream.
 
 - **Messages** at the top are the plan's problems and notes about the SQL that do not belong to one statement. A problem is something a sync fails on. Each message starts with its place in the SQL, as line and column, such as `9:10`.
 - **Statements** shows the SQL as the pipeline's current version has it, with line numbers. Lines with a problem are marked in red, and lines with a note in blue. A line under it says what happens to streams that no statement writes: they pass through to the destination unchanged, or they are not delivered.

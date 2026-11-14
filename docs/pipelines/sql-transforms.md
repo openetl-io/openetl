@@ -116,7 +116,7 @@ Read the `transform.sql` section:
 
 - Each statement's line starts with its position in the SQL, as line and column.
 - `order_facts` keeps the primary key of `orders`, renamed to `order_id`, because `id` passes through unchanged.
-- `order_tags` has no primary key, because `unnest` gives several rows for one order. It can only be appended.
+- `order_tags` has no primary key, because `unnest` gives several rows for one order. It can be appended or overwritten, never merged.
 - The `output` lines give each output's columns and types.
 - `passed through` lists the streams that no statement writes.
 
