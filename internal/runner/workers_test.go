@@ -739,6 +739,28 @@ func TestOneSchemaOwnerAcrossWorkers(t *testing.T) {
 	}
 }
 
+// Workers without a server to join or a way to launch them are refused
+// before the attempt claims the pipeline.
+func TestWorkersNeedAServerAndALaunch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	for name, w := range map[string]*runner.Workers{
+		"no launch": {Count: 2, Server: listen(t), Options: workerOpts},
+		"no server": {Count: 2, Options: workerOpts, Launch: func(context.Context, []attempt.Target) error { return nil }},
+	} {
+		store := checkpoint.NewMemStore()
+		p := newPool(t, ranges(2, 1, 1))
+		j := p.job("a1", noSource{t}, stagingDest{s: p.store, t: t, coordinator: true})
+		j.Log, j.Workers = checkpoint.NewLog(store, "org", "p"), w
+		if _, err := runner.RunAttempt(ctx, j); errs.CodeOf(err) != errs.ConfigInvalid {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if keys, err := store.List(ctx, ""); err != nil || len(keys) > 0 {
+			t.Fatalf("%s: the attempt wrote %v (%v)", name, keys, err)
+		}
+	}
+}
+
 // A Flink job given workers is refused before its own path starts it.
 func TestAFlinkJobIsRefusedWorkers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)

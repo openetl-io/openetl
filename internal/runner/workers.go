@@ -85,6 +85,15 @@ func (j *Job) OnWorkers(workers int) error {
 	return nil
 }
 
+// checkWorkers says why the job can't run on its Workers, before the
+// attempt claims anything.
+func (j *Job) checkWorkers() error {
+	if w := j.Workers; w.Server == nil || w.Launch == nil {
+		return errs.New(errs.ConfigInvalid, "runner: an attempt on workers needs a server they join and a way to launch them")
+	}
+	return j.OnWorkers(j.Workers.Count)
+}
+
 // fleet is a coordinator's workers.
 type fleet struct {
 	job *Job

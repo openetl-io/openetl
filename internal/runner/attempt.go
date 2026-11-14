@@ -415,7 +415,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		return res, err
 	}
 	if job.Workers != nil {
-		if err := job.OnWorkers(job.Workers.Count); err != nil {
+		if err := job.checkWorkers(); err != nil {
 			return res, err
 		}
 	}

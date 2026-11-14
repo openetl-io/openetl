@@ -732,7 +732,10 @@ impl LaneStream {
             let out = f(&mut self.shaper).and_then(|t| self.shaper.shape(t));
             let changed = self.shaper.take_changed();
             if out.is_err() {
-                if owner.version.load(Ordering::Acquire) == self.version {
+                // The owner may have taken a version since follow, which the
+                // batch fits: it's shaped again by that.
+                let behind = remote.newest() > owner.remote_version.load(Ordering::Acquire);
+                if owner.version.load(Ordering::Acquire) == self.version && !behind {
                     return out.map_err(|e| shape_error(name, e));
                 }
                 continue;
@@ -2737,6 +2740,65 @@ mod tests {
         assert_eq!(err.message, "the owner is gone");
         drop(w);
         drain(&mut out).await;
+    }
+
+    // Under block, a batch with a new column fails against the version a
+    // lane followed, but not when the owner took a version with the column
+    // after that: the batch is shaped again by it.
+    #[tokio::test]
+    async fn a_batch_is_shaped_by_a_version_that_comes_while_it_is_shaped() {
+        use openetl_proto::engine::v1::SchemaPolicy;
+        use std::sync::atomic::AtomicBool;
+
+        let mut req = request(&["a", "b"]);
+        req.remote_schemas = true;
+        req.schema_policy = SchemaPolicy::Block as i32;
+        // Version 0, restored: a has x.
+        let fresh = Plan::from_request(req.clone()).unwrap();
+        let mut first = shaper(&fresh, 0, None).unwrap();
+        first.rows([br#"{"x": 1}"#.as_slice()]).unwrap();
+        let v0 = first.schema().unwrap();
+        req.streams[0].restored_schema = ipc::encode_schema(&v0).unwrap();
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let remote = plan.remote.clone().unwrap();
+        let mut proposals = remote.take_proposals().unwrap();
+        // Version 1, another engine's, from before its stream was sealed:
+        // a has x and y.
+        let mut other = shaper(&plan, 0, Some(v0)).unwrap();
+        other.unseal();
+        other.rows([br#"{"x": 2, "y": 3}"#.as_slice()]).unwrap();
+        let v1 = ipc::encode_schema(&other.schema().unwrap()).unwrap();
+
+        let owner = Owner::new(&plan, 0).unwrap();
+        let mut ls = {
+            let o = owner.lock();
+            LaneStream {
+                stream: 0,
+                shaper: o.shaper.fork(),
+                version: o.version,
+                quarantined: (Vec::new(), 0),
+                cells: BTreeMap::new(),
+                replay: None,
+            }
+        };
+        let rows = [br#"{"x": 4, "y": 5}"#.as_slice()];
+        // Without version 1, y fails the batch.
+        let mut alone = ls.shaper.fork();
+        assert!(alone.rows(rows).is_err());
+        // Version 1 lands after the lane followed the owner, as it types the
+        // batch.
+        let landed = AtomicBool::new(false);
+        let shaped = ls
+            .shape_own(&plan, &owner, |sh| {
+                if !landed.swap(true, Ordering::SeqCst) {
+                    remote.update(&take(1, v1.clone())).unwrap();
+                }
+                sh.type_rows(rows)
+            })
+            .await
+            .unwrap();
+        assert!(shaped.batch.schema().field_with_name("y").is_ok());
+        assert!(proposals.try_recv().is_err());
     }
 
     #[tokio::test]
