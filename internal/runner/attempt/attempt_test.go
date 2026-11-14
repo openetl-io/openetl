@@ -708,6 +708,84 @@ func TestACoordinatorLost(t *testing.T) {
 			<-beating
 		})
 	})
+	t.Run("assigns after another worker's long call", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			opts := Options{JoinTimeout: time.Minute}
+			c := coordinatorFor(t, testAttemptOf(2), opts)
+			ws := []*worker{joinPipe(t, c, target(0), opts), joinPipe(t, c, target(1), opts)}
+			settle := &attemptv1.Call{Call: &attemptv1.Call_Settle{Settle: &attemptv1.Settle{}}}
+			answered := make([]chan error, 2)
+			for i := range ws {
+				answered[i] = make(chan error, 1)
+				go func() {
+					a, err := c.Call(t.Context(), i, settle)
+					if err == nil && a.GetSettled() == nil {
+						err = errors.New("no settled answer")
+					}
+					answered[i] <- err
+				}()
+			}
+			calls := make([]*attemptv1.Call, 2)
+			for i, w := range ws {
+				if calls[i] = request(t, w).GetCall(); calls[i] == nil {
+					t.Fatalf("worker %d got no call", i)
+				}
+			}
+			// Worker 1 settles at once; worker 0 takes longer than a worker
+			// waits for its assignment.
+			if err := ws[1].Answer(&attemptv1.Answer{Id: calls[1].GetId(), Answer: &attemptv1.Answer_Settled{Settled: &attemptv1.Settled{}}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := within(t, answered[1], time.Hour, "worker 1's answer"); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(3 * time.Minute)
+			synctest.Wait()
+			for i, w := range ws {
+				if isDone(w.Done()) {
+					t.Fatalf("worker %d ended while another settled: %v", i, w.Err())
+				}
+			}
+			if err := ws[0].Answer(&attemptv1.Answer{Id: calls[0].GetId(), Answer: &attemptv1.Answer_Settled{Settled: &attemptv1.Settled{}}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := within(t, answered[0], time.Hour, "worker 0's answer"); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Assign(t.Context(), layout(2)); err != nil {
+				t.Fatal(err)
+			}
+			for i, w := range ws {
+				if request(t, w).GetAssignment() == nil {
+					t.Fatalf("worker %d got no assignment", i)
+				}
+			}
+		})
+	})
+	t.Run("never assigns once the calls are answered", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			opts := Options{JoinTimeout: time.Minute}
+			c := coordinatorFor(t, testAttemptOf(1), opts)
+			w := joinPipe(t, c, target(0), opts)
+			done := make(chan error, 1)
+			go func() {
+				_, err := c.Call(t.Context(), 0, &attemptv1.Call{Call: &attemptv1.Call_Settle{Settle: &attemptv1.Settle{}}})
+				done <- err
+			}()
+			call := request(t, w).GetCall()
+			time.Sleep(3 * time.Minute)
+			if err := w.Answer(&attemptv1.Answer{Id: call.GetId(), Answer: &attemptv1.Answer_Settled{Settled: &attemptv1.Settled{}}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := within(t, done, time.Hour, "the answer"); err != nil {
+				t.Fatal(err)
+			}
+			within(t, w.Done(), time.Hour, "the worker's end")
+			if err := w.Err(); !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "no assignment within") {
+				t.Fatalf("worker: %v", err)
+			}
+		})
+	})
 	t.Run("assigns after a long call", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			opts := Options{JoinTimeout: time.Minute}

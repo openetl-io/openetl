@@ -14,6 +14,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
@@ -564,6 +565,39 @@ func TestARedoOnAnyLayout(t *testing.T) {
 				p.readAgain(t, "a2", head, c.lanes)
 			}
 			s.check(t, 600)
+		})
+	}
+}
+
+// A source whose read ends before the position the record has fails the
+// redo, and the attempt, with POSITION_LOST, and commits nothing of the
+// lane.
+func TestARedoShortOfItsPosition(t *testing.T) {
+	for _, n := range []int{0, 2} {
+		t.Run(fmt.Sprintf("workers=%d", n), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			s := newTxnStore(t)
+			p := txnPool(t, s, ranges(6, 100, 5))
+			head := p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+			// The source now holds fewer rows than the epoch read.
+			p.source = ranges(6, 1, 5)
+			j := p.job("a2", p.source(), txnDest{s: s})
+			if n > 0 {
+				j = p.workers("a2", n)
+			}
+			_, err := runner.RunAttempt(ctx, j)
+			if n > 0 {
+				p.wait("a2")
+			}
+			if errs.CodeOf(err) != errs.PositionLost {
+				t.Fatalf("the attempt ended with %v", err)
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.marked[laneMark{head.Generation, head.Epoch, 0}] {
+				t.Error("lane 0 was committed")
+			}
 		})
 	}
 }

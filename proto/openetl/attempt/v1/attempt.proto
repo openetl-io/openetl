@@ -251,7 +251,12 @@ message Positions {
   repeated SplitPosition splits = 2;
 }
 
-message Heartbeat {}
+message Heartbeat {
+  // The coordinator's: it waits for a worker's answer to a call, such as
+  // settling the restored epoch, which can take longer than a worker waits
+  // for its assignment. A worker without its assignment waits on.
+  bool calling = 1;
+}
 
 message End {
   // Why the attempt failed; unset: it finished.

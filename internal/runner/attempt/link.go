@@ -50,7 +50,7 @@ func (o *outbox[M]) poke() {
 
 // run sends until the outbox is closed and empty, a send fails, or stop is
 // closed.
-func (o *outbox[M]) run(send func(M) error, heartbeat M, every time.Duration, stop <-chan struct{}) error {
+func (o *outbox[M]) run(send func(M) error, heartbeat func() M, every time.Duration, stop <-chan struct{}) error {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
@@ -74,7 +74,7 @@ func (o *outbox[M]) run(send func(M) error, heartbeat M, every time.Duration, st
 		select {
 		case <-o.wake:
 		case <-tick.C:
-			if err := send(heartbeat); err != nil {
+			if err := send(heartbeat()); err != nil {
 				return err
 			}
 		case <-stop:

@@ -1299,7 +1299,11 @@ func (x *Positions) GetSplits() []*SplitPosition {
 }
 
 type Heartbeat struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The coordinator's: it waits for a worker's answer to a call, such as
+	// settling the restored epoch, which can take longer than a worker waits
+	// for its assignment. A worker without its assignment waits on.
+	Calling       bool `protobuf:"varint,1,opt,name=calling,proto3" json:"calling,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1332,6 +1336,13 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
 	return file_openetl_attempt_v1_attempt_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *Heartbeat) GetCalling() bool {
+	if x != nil {
+		return x.Calling
+	}
+	return false
 }
 
 type End struct {
@@ -2621,8 +2632,9 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\fwriter_lanes\x18\x02 \x03(\rR\vwriterLanes\"y\n" +
 	"\tPositions\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x129\n" +
-	"\x06splits\x18\x02 \x03(\v2!.openetl.attempt.v1.SplitPositionR\x06splits\"\v\n" +
-	"\tHeartbeat\"8\n" +
+	"\x06splits\x18\x02 \x03(\v2!.openetl.attempt.v1.SplitPositionR\x06splits\"%\n" +
+	"\tHeartbeat\x12\x18\n" +
+	"\acalling\x18\x01 \x01(\bR\acalling\"8\n" +
 	"\x03End\x121\n" +
 	"\x05error\x18\x01 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\"\x9a\x02\n" +
 	"\x04Call\x12\x0e\n" +

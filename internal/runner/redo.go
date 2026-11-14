@@ -282,7 +282,10 @@ func (j *Job) replaySplit(ctx context.Context, n uint64, r redoRead, out chan<- 
 	} else {
 		cs.Splits = []source.Split{{ID: r.id, State: r.from}}
 	}
-	err := j.Source.Read(rctx, source.ReadRequest{Pipeline: j.Pipeline, Streams: []source.ConfiguredStream{cs}, Lanes: 1}, em)
+	// Never continuous: the source ends the read once it has caught up with
+	// where it was when the read started, which is past the position.
+	req := source.ReadRequest{Pipeline: j.Pipeline, Streams: []source.ConfiguredStream{cs}, Lanes: 1, Continuous: false}
+	err := j.Source.Read(rctx, req, em)
 	reached, eerr := em.result()
 	switch {
 	case reached:
