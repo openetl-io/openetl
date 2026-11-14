@@ -242,6 +242,7 @@ func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapa
 		MaxIdentifierLength:  ints.Uint32(c.MaxIdentifierLength),
 		Delivery:             ints.Enum[protocolv1.Delivery](c.Delivery),
 		MaxWriterLanes:       ints.Uint32(c.WriterLanes),
+		LaneCommits:          c.LaneCommits,
 	}
 	if h := c.Holds; h != (destination.Holds{}) {
 		p.Holds = &protocolv1.HoldCapabilities{ByKey: h.ByKey, ById: h.ByID, Last: h.Last, Guarded: h.Guarded}

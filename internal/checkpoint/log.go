@@ -352,6 +352,10 @@ type CoveredSplit struct {
 	ID     string `json:"id,omitempty"`
 	// Nil: all of them.
 	KeyGroups *KeyGroupRange `json:"key_groups,omitempty"`
+	// Where the split's part of the epoch began: its state at the barrier
+	// before, or as it joined the stream or its read started. Nil: its
+	// beginning. The record's state of the split is where it ended.
+	From []byte `json:"from,omitempty"`
 }
 
 // SplitRef names one of a stream's splits.

@@ -51,7 +51,12 @@ func TestWorkers(t *testing.T) {
 			onePod: "the destination declares one writer lane"},
 		{name: "fewer writer lanes", spec: spec(16, nil), cat: cat, caps: lanes, onePod: "the destination takes 8 writer lanes, fewer than 16 workers"},
 		{name: "transactional", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.TransactionalStream, WriterLanes: 4},
-			onePod: "a transactional destination's writer lanes commit on their own, which only one pod recovers"},
+			onePod: "a transactional destination runs on one pod unless its writer lanes commit on their own"},
+		{name: "lane commits", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.TransactionalStream, WriterLanes: 4, LaneCommits: true},
+			workers: 2, oneWorker: []string{
+				`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
+				`changes: each attempt reads it on one of its 2 workers: the changes to each key must reach one writer lane in order`,
+			}},
 		{name: "staged", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.StageAndApply, WriterLanes: 4, Delivery: destination.DeliveryStaged},
 			onePod: "a destination that loads staged epochs runs on one pod"},
 		{name: "engine written", spec: spec(2, nil), cat: cat, caps: lanes, engine: true, onePod: "a destination the engine writes runs on one pod"},

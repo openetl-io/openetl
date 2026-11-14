@@ -168,6 +168,10 @@ func (p *workerPart) call(ctx context.Context, c *attemptv1.Call) error {
 		var a destination.SchemaApplied
 		a, err = p.applySchema(ctx, x.ApplySchema)
 		ans.Answer = &attemptv1.Answer_SchemaApplied{SchemaApplied: schemaAppliedToProto(a)}
+	case *attemptv1.Call_Settle:
+		var s *attemptv1.Settled
+		s, err = p.settle(ctx, x.Settle)
+		ans.Answer = &attemptv1.Answer_Settled{Settled: s}
 	default:
 		err = errs.New(errs.Internal, "runner: a call of %T", c.GetCall())
 	}
@@ -179,7 +183,8 @@ func (p *workerPart) call(ctx context.Context, c *attemptv1.Call) error {
 
 // recover opens the writer of the attempt's first writer lane, raises the
 // destination's fence and settles the epoch of the record HEAD points to,
-// as a single runner's lane 0 does.
+// as a single runner's lane 0 does; or, where Settle calls settled its
+// committables, only applies its schemas and raises the fence.
 func (p *workerPart) recover(ctx context.Context, r *attemptv1.Recover) (destination.Recovery, error) {
 	if p.first != nil {
 		return 0, errs.New(errs.Internal, "runner: asked to recover again")
@@ -200,13 +205,10 @@ func (p *workerPart) recover(ctx context.Context, r *attemptv1.Recover) (destina
 		if err := json.Unmarshal(r.GetRecord(), &rec); err != nil {
 			return 0, errs.Wrap(errs.Internal, err, "runner: the record to recover")
 		}
-		e, staged = destination.Epoch{Generation: rec.Generation, N: rec.Epoch}, committables(&rec)
-		// A redone epoch needs its schemas in place, and can't change.
-		a, err := applySchemas(ctx, w, map[string]*arrow.Schema{}, restoredSchemas(&rec))
-		if err == nil && len(a.Refused) > 0 {
-			err = errs.Wrap(errs.SchemaDrift, &RefusedError{Columns: []RefusedColumn{{RefusedColumn: a.Refused[0]}}}, "runner: recovering a recorded epoch")
+		if !settlesByLane(p.job.Destination.Capabilities(), &rec) {
+			e, staged = destination.Epoch{Generation: rec.Generation, N: rec.Epoch}, committables(&rec)
 		}
-		if err != nil {
+		if _, err := p.job.applyRecorded(ctx, w, map[string]*arrow.Schema{}, &rec); err != nil {
 			return 0, err
 		}
 	}
@@ -215,6 +217,39 @@ func (p *workerPart) recover(ctx context.Context, r *attemptv1.Recover) (destina
 		return 0, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
 	}
 	return rec, nil
+}
+
+// settle settles some of the restored record's committables, in turn, each
+// on a writer of its own lane: before recover opens the attempt's first,
+// whose lane's producers it would otherwise fence.
+func (p *workerPart) settle(ctx context.Context, s *attemptv1.Settle) (*attemptv1.Settled, error) {
+	if p.first != nil {
+		return nil, errs.New(errs.Internal, "runner: asked to settle committables after recovering")
+	}
+	var rec checkpoint.Record
+	if err := json.Unmarshal(s.GetRecord(), &rec); err != nil {
+		return nil, errs.Wrap(errs.Internal, err, "runner: the record to settle")
+	}
+	if !settlesByLane(p.job.Destination.Capabilities(), &rec) {
+		return nil, errs.New(errs.Internal, "runner: asked to settle epoch %d's committables one by one, which its destination or record doesn't allow", rec.Epoch)
+	}
+	forced := map[string]bool{}
+	for _, f := range s.GetForced() {
+		forced[f] = true
+	}
+	which := make([]int, len(s.GetCommittables()))
+	for i, c := range s.GetCommittables() {
+		which[i] = int(c)
+	}
+	rs, err := p.job.settleCommittables(ctx, p.t.Generation, &rec, which, forced, p.log)
+	if err != nil {
+		return nil, err
+	}
+	out := &attemptv1.Settled{}
+	for _, r := range rs {
+		out.Recoveries = append(out.Recoveries, ints.Enum[protocolv1.Recovery](r))
+	}
+	return out, nil
 }
 
 // splitRead splits the reads that start.
@@ -269,12 +304,17 @@ func (p *workerPart) applySchema(ctx context.Context, m *protocolv1.WriteApplySc
 }
 
 // commit commits what a record names, on the attempt's first writer lane,
-// and answers once it has, or failed.
+// or where the destination's lanes commit on their own, each lane named on
+// its own writer, and answers once it has, or failed.
 func (p *workerPart) commit(ctx context.Context, req *attemptv1.Commit) error {
 	c := req.GetCommit()
 	answer := &attemptv1.Committed{Committed: &protocolv1.WriteCommitted{Epoch: c.GetEpoch()}, WriterLanes: req.GetWriterLanes()}
 	var err error
 	switch {
+	case p.job.Destination.Capabilities().LaneCommits && len(req.GetWriterLanes()) > 0:
+		var done destination.Committed
+		done, err = p.commitLanes(ctx, c, req.GetWriterLanes())
+		answer.Committed.CollapsedRows = done.Collapsed
 	case p.first == nil:
 		err = errs.New(errs.Internal, "runner: worker %d hasn't the attempt's first writer lane, which commits", p.t.Worker)
 	case len(req.GetWriterLanes()) > 0 && len(req.GetWriterLanes()) != len(c.GetStaged()):
@@ -293,6 +333,30 @@ func (p *workerPart) commit(ctx context.Context, req *attemptv1.Commit) error {
 		answer.Committed.Error = answerOf(err)
 	}
 	return p.w.Committed(answer)
+}
+
+// commitLanes commits each of lanes, the worker's, on its own writer, with
+// its committable alone.
+func (p *workerPart) commitLanes(ctx context.Context, c *protocolv1.WriteCommit, lanes []uint32) (destination.Committed, error) {
+	e := destination.Epoch{Generation: c.GetEpoch().GetGeneration(), N: c.GetEpoch().GetN()}
+	var done destination.Committed
+	for _, l := range lanes {
+		k := slices.Index(p.global, int(l))
+		if k < 0 || int(l) >= len(c.GetStaged()) {
+			return done, errs.New(errs.Internal, "runner: a commit of writer lane %d, which worker %d hasn't", l, p.t.Worker)
+		}
+		got, err := p.ws[k].Commit(ctx, e, []destination.Staged{c.GetStaged()[l]})
+		for name, rows := range got.Collapsed {
+			if done.Collapsed == nil {
+				done.Collapsed = map[string]uint64{}
+			}
+			done.Collapsed[name] += rows
+		}
+		if err != nil {
+			return done, fmt.Errorf("writer lane %d: %w", l, err)
+		}
+	}
+	return done, nil
 }
 
 // acknowledge acknowledges to the source the positions of a committed
@@ -412,7 +476,7 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 	toFlow, fromFlow := make(chan Frame, 16), make(chan Frame, 16)
 	ends := newReadEnds()
 	pump := newSourcePump(gctx, &job, a.GetFirstEpoch()-1, splits, job.canForce(), done, ends, toFlow, events)
-	pump.worker, pump.splitLanes = true, map[checkpoint.SplitRef]int{}
+	pump.worker, pump.splitLanes = true, map[checkpoint.SplitRef]splitRead{}
 	pump.maxBytes.Store(clampBytes(a.GetMaxBytes()))
 	starts, sinkEnds := job.sinkStarts(readStarts, done, ends)
 	sinkEnds = spreadEnds{readEnder: sinkEnds, spread: spread}
@@ -531,7 +595,7 @@ type workerEpoch struct {
 	placed     bool
 	splits     map[string][]checkpoint.SplitState
 	rows       map[string]uint64
-	splitLanes map[checkpoint.SplitRef]int
+	splitLanes map[checkpoint.SplitRef]splitRead
 	descs      []destination.Staged
 	stagedOn   []bool
 	staged     int
@@ -643,12 +707,13 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 	refs := slices.SortedFunc(maps.Keys(e.splitLanes), func(a, b checkpoint.SplitRef) int {
 		return cmpRefs(a, b)
 	})
-	writers := len(p.ws)
+	writers, local := len(p.ws), p.job.Destination.Capabilities().LaneCommits
 	for k, gw := range p.global {
-		c := &attemptv1.Committable{WriterLane: ints.Uint32(gw), Staged: e.descs[k]}
+		c := &attemptv1.Committable{WriterLane: ints.Uint32(gw), Staged: e.descs[k], Local: local}
 		for _, ref := range refs {
-			lane := e.splitLanes[ref]
-			r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID}
+			read := e.splitLanes[ref]
+			lane := read.lane
+			r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from}
 			switch {
 			case plan.KeyGrouped[ref.Stream]:
 				first, last := writerKeyGroups(plan, k)

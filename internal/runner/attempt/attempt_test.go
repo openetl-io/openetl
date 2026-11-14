@@ -708,6 +708,39 @@ func TestACoordinatorLost(t *testing.T) {
 			<-beating
 		})
 	})
+	t.Run("assigns after a long call", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			opts := Options{JoinTimeout: time.Minute}
+			r, w := rawStart(t, target(0), opts)
+			r.next(t)
+			beat := &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Heartbeat{Heartbeat: &attemptv1.Heartbeat{}}}
+			r.send(t, beat)
+			call := &attemptv1.Call{Id: 1, Call: &attemptv1.Call_Settle{Settle: &attemptv1.Settle{}}}
+			r.send(t, &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Call{Call: call}})
+			if request(t, w).GetCall() == nil {
+				t.Fatal("no call")
+			}
+			// Settling takes longer than an assignment may.
+			for range 3 * time.Minute / DefaultHeartbeat {
+				time.Sleep(DefaultHeartbeat)
+				r.send(t, beat)
+			}
+			synctest.Wait()
+			if isDone(w.Done()) {
+				t.Fatalf("ended while answering a call: %v", w.Err())
+			}
+			if err := w.Answer(&attemptv1.Answer{Id: 1, Answer: &attemptv1.Answer_Settled{Settled: &attemptv1.Settled{}}}); err != nil {
+				t.Fatal(err)
+			}
+			a := layout(1)
+			a.Workers = []string{"w0:7720"}
+			r.send(t, &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Assignment{Assignment: a}})
+			if request(t, w).GetAssignment() == nil {
+				t.Fatal("no assignment")
+			}
+			_ = w.Close()
+		})
+	})
 }
 
 func TestACoordinatorOutOfTheProtocol(t *testing.T) {

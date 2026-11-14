@@ -391,6 +391,9 @@ func streamPlan(plan runner.Plan, s runner.Stream, restored []byte, sink bool) *
 		if plan.KeyGrouped[s.Name] {
 			sp.Routing = enginev1.Routing_ROUTING_KEY_GROUP
 		}
+		if r, ok := plan.KeyGroupRanges[s.Name]; ok {
+			sp.KeyGroups = &enginev1.KeyGroupRange{First: ints.Uint32(r.First), Last: ints.Uint32(r.Last)}
+		}
 	}
 	return sp
 }

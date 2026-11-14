@@ -94,6 +94,19 @@ A writer's calls are the commit protocol:
 
 A reply to **PreCommit** or **Commit** names the epoch of the request it answers, and each request gets one reply. OpenETL fails the attempt on a reply for another epoch, or one it didn't ask for. `sdk.Serve` does this for you.
 
+#### Writer lanes and lane commits
+
+A destination that declares several writer lanes (`maxWriterLanes`) gets a writer for each lane of an attempt, and the lanes write concurrently. Lane 0's writer commits and recovers the committables of every lane together. A destination that cannot apply them in one step declares one writer lane.
+
+A transactional destination can instead declare **lane commits**: `laneCommits` in its package, `LaneCommits` in Go. Each lane's part of an epoch is then a transaction that the lane's writer holds open, such as one in a producer with a transactional ID of the lane. With lane commits:
+
+- **Commit** runs on each lane's writer, with that lane's committable alone. It writes a marker of the epoch and the lane.
+- An attempt on one pod opens one writer lane. An attempt on several workers opens a writer lane or more on each worker.
+- To settle a recorded epoch, OpenETL opens a writer for each committable, as the lane that staged it, before it opens the attempt's lanes. It applies the recorded schemas there, then calls **Recover** with that committable alone. Recover fences what the lane holds, for example by initializing the lane's transactional IDs. It reports applied if it finds the lane's marker, redone if it committed a copy the lane kept, or lost. It must not drop what other lanes staged, since other writers settle them at the same time.
+- After lost, OpenETL reads the lane's part of the epoch again from the source. It sends the rows to the same writer as the recorded epoch: **Write**, then **PreCommit**, then **Commit** with the new committable. The writer checks its fence by its own generation, not by the epoch's.
+
+Keeping a copy of each lane's part, so that Recover can commit it, is the destination's choice. Without one, recovery reads the source again, which is exact only for a source that returns the same records from the same position.
+
 The commit is the destination's own: its staging, markers, fence and catalog live in its writer, not in OpenETL.
 
 ### Setup and teardown
@@ -246,7 +259,7 @@ Connectors run as trusted code: `egress` says what yours means to reach, and Ope
 
 ## Test it with the conformance kit
 
-The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications, connection checks, discovery, reads and resumption. Destination checks cover commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes.
+The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications, connection checks, discovery, reads and resumption. Destination checks cover commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
 
 Run it from the CLI:
 

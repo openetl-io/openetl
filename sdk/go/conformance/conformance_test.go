@@ -429,6 +429,10 @@ type memDestination struct {
 	st    *store
 	bug   string
 	lanes int
+	// Each lane commits its own part of an epoch, as a transaction its
+	// writer holds: opening a lane aborts what its earlier writers staged
+	// and didn't commit.
+	laneCommits bool
 }
 
 var memCapabilities = destination.Capabilities{
@@ -438,8 +442,18 @@ var memCapabilities = destination.Capabilities{
 	Holds:      destination.Holds{ByKey: true, Guarded: true},
 }
 
+// memLaneCommits is the memory destination with lane commits.
+var memLaneCommits = destination.Capabilities{
+	Class:       destination.TransactionalStream,
+	Scopes:      []destination.Scope{destination.ScopePipeline},
+	LaneCommits: true,
+}
+
 func (d *memDestination) Capabilities() destination.Capabilities {
 	c := memCapabilities
+	if d.laneCommits {
+		c = memLaneCommits
+	}
 	c.WriterLanes = d.lanes
 	return c
 }
@@ -449,6 +463,17 @@ func (d *memDestination) Open(_ context.Context, cfg destination.OpenConfig) (de
 	modes := map[string]destination.WriteMode{}
 	for _, s := range cfg.Streams {
 		modes[s.Name] = s.Mode
+	}
+	if d.laneCommits {
+		st := d.st
+		st.mu.Lock()
+		suffix := fmt.Sprintf("/%d", cfg.Lane)
+		for key := range st.staging {
+			if strings.HasPrefix(key, cfg.Pipeline+"/") && strings.HasSuffix(key, suffix) {
+				delete(st.staging, key)
+			}
+		}
+		st.mu.Unlock()
 	}
 	return &memWriter{d: d, cfg: cfg, modes: modes, ended: map[string]bool{}, seen: map[string]*arrow.Schema{}}, nil
 }
@@ -471,6 +496,23 @@ type memStaged struct {
 	Key    string
 	Ended  []string
 	Starts map[string]int64
+	// With lane commits: the streams it has rows of.
+	Streams []string `json:",omitempty"`
+}
+
+// laneMarker is the marker of a stream's part of an epoch on one lane, for
+// lane commits.
+func laneMarker(l memStaged, stream string) string { return l.Key + "/" + stream }
+
+// laneMarked says every stream of a lane's part of an epoch is committed;
+// st.mu is held.
+func (st *store) laneMarked(l memStaged) bool {
+	for _, stream := range slices.Concat(l.Streams, l.Ended) {
+		if !st.markers[laneMarker(l, stream)] {
+			return false
+		}
+	}
+	return true
 }
 
 func memLanes(committables []destination.Staged) ([]memStaged, error) {
@@ -606,6 +648,9 @@ func (w *memWriter) PreCommit(_ context.Context, e destination.Epoch) (destinati
 		return nil, errors.New("the lane staged nothing")
 	}
 	lane := memStaged{Key: w.key(e), Ended: slices.Sorted(maps.Keys(w.ended)), Starts: w.starts}
+	if w.d.laneCommits {
+		lane.Streams = slices.Sorted(maps.Keys(st.staging[w.key(e)]))
+	}
 	clear(w.ended)
 	if w.d.bug == "visible-at-precommit" {
 		w.apply(e, []memStaged{lane}, false)
@@ -626,6 +671,14 @@ func (w *memWriter) Commit(_ context.Context, e destination.Epoch, committables 
 			return destination.Committed{}, errors.New("a newer generation owns the pipeline")
 		}
 		return destination.Committed{}, destination.ErrFenced
+	}
+	if w.d.laneCommits {
+		if len(lanes) != 1 || !strings.HasSuffix(lanes[0].Key, fmt.Sprintf("/%d", w.cfg.Lane)) {
+			return destination.Committed{}, fmt.Errorf("lane %d asked to commit %d committables", w.cfg.Lane, len(lanes))
+		}
+		if _, open := st.staging[lanes[0].Key]; !open && len(lanes[0].Streams) > 0 && !st.laneMarked(lanes[0]) {
+			return destination.Committed{}, fmt.Errorf("lane %d has no open transaction of epoch %d", w.cfg.Lane, e.N)
+		}
 	}
 	switch w.d.bug {
 	case "commit-lane-0":
@@ -659,6 +712,9 @@ func (w *memWriter) apply(e destination.Epoch, lanes []memStaged, marked bool) {
 	}
 	for stream, rows := range staged {
 		marker := w.marker(stream, e)
+		if w.d.laneCommits {
+			marker = laneMarker(lanes[0], stream)
+		}
 		if marked && st.markers[marker] {
 			continue
 		}
@@ -747,6 +803,16 @@ func (w *memWriter) Recover(_ context.Context, gen uint64, e destination.Epoch, 
 	if err != nil {
 		return 0, err
 	}
+	if w.d.laneCommits {
+		// What the lane staged went with its transaction when it opened.
+		switch {
+		case len(lanes) != 1:
+			return 0, fmt.Errorf("lane %d asked to settle %d committables", w.cfg.Lane, len(lanes))
+		case st.laneMarked(lanes[0]) || w.d.bug == "lost-lane-applied":
+			return destination.Applied, nil
+		}
+		return destination.Lost, nil
+	}
 	if w.d.bug == "recover-lane-0" {
 		lanes = lanes[:1]
 	}
@@ -831,15 +897,22 @@ func (w *memWriter) Close(context.Context) error { return nil }
 func destinationSuite(bug string) conformance.DestinationSuite { return lanesSuite(bug, 0) }
 
 func lanesSuite(bug string, lanes int) conformance.DestinationSuite {
+	return memSuiteOf(bug, lanes, false)
+}
+
+func memSuiteOf(bug string, lanes int, laneCommits bool) conformance.DestinationSuite {
 	st := newStore()
 	caps := memCapabilities
+	if laneCommits {
+		caps = memLaneCommits
+	}
 	caps.WriterLanes = lanes
 	return conformance.DestinationSuite{
 		Launch: conformance.InProcess(sdk.Connector{
 			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw},
 			Destination: func(config []byte, _ host.Host) (destination.Destination, error) {
 				c, err := bind(config)
-				return &memDestination{c: c, st: st, bug: bug, lanes: lanes}, err
+				return &memDestination{c: c, st: st, bug: bug, lanes: lanes, laneCommits: laneCommits}, err
 			},
 			Capabilities: caps,
 		}),
@@ -869,6 +942,23 @@ func TestDestinationPasses(t *testing.T) {
 func TestDestinationOnLanesPasses(t *testing.T) {
 	for _, lanes := range []int{2, 3, 16} {
 		t.Run(fmt.Sprint(lanes), func(t *testing.T) { lanesSuite("", lanes).Test(t) })
+	}
+}
+
+// A destination whose lanes commit on their own commits each lane's part on
+// its lane, and has the kit write a lane it reports lost again.
+func TestDestinationWithLaneCommitsPasses(t *testing.T) {
+	memSuiteOf("", 3, true).Test(t)
+}
+
+func TestDestinationWithLaneCommitsBugsFail(t *testing.T) {
+	failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) {
+		memSuiteOf("lost-lane-applied", 3, true).Run(ctx, report)
+	})
+	for _, c := range []string{"lanes/crash-after-record", "lanes/fence"} {
+		if !slices.Contains(failed, c) {
+			t.Errorf("failed checks %v, without %s", failed, c)
+		}
 	}
 }
 

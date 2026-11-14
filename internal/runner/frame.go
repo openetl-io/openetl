@@ -165,6 +165,10 @@ type Plan struct {
 	Lanes, WriterLanes int
 	KeyGroups          int
 	KeyGrouped         map[string]bool
+	// A redo's: of the destination's streams named, only the rows whose
+	// key's group is in the range, by the hash KeyGrouped routes by; others
+	// pass whole.
+	KeyGroupRanges map[string]checkpoint.KeyGroupRange
 	// A worker's: where its streams' schemas are decided, for an engine
 	// that runs the attempt with others'; nil: the dataflow decides.
 	SchemaOwner SchemaOwner
@@ -441,6 +445,17 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 			}
 			f = Frame{Kind: FrameBatch, Stream: f.Stream, Batch: batch}
 		}
+		if r, ok := plan.KeyGroupRanges[s.Name]; ok && f.Kind == FrameBatch {
+			kept, err := inKeyGroups(plan, s.PrimaryKey, f.Batch, r)
+			f.Batch.Release()
+			if err != nil {
+				return fmt.Errorf("runner: keep %s's key groups: %w", f.Stream, err)
+			}
+			if kept == nil {
+				continue
+			}
+			f.Batch = kept
+		}
 		to := map[int]Frame{}
 		switch {
 		case f.Kind == FrameBarrier:
@@ -476,9 +491,9 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 	}
 }
 
-// byWriterLane splits a batch's rows by the writer lane owning their key's
-// group.
-func byWriterLane(plan Plan, key []string, b arrow.RecordBatch) (map[int]arrow.RecordBatch, error) {
+// keyGroupsOf is the key group of each of a batch's rows, by Passthrough's
+// hash.
+func keyGroupsOf(plan Plan, key []string, b arrow.RecordBatch) ([]int, error) {
 	cols := make([]arrow.Array, len(key))
 	for i, k := range key {
 		idx := b.Schema().FieldIndices(k)
@@ -488,8 +503,8 @@ func byWriterLane(plan Plan, key []string, b arrow.RecordBatch) (map[int]arrow.R
 		cols[i] = b.Column(idx[0])
 	}
 	groups := uint64(max(cmp.Or(plan.KeyGroups, checkpoint.KeyGroups), 1))
-	rows := map[int][]int{}
-	for r := range int(b.NumRows()) {
+	out := make([]int, b.NumRows())
+	for r := range out {
 		h := fnv.New64a()
 		for _, c := range cols {
 			_, _ = h.Write([]byte(c.ValueStr(r)))
@@ -497,34 +512,79 @@ func byWriterLane(plan Plan, key []string, b arrow.RecordBatch) (map[int]arrow.R
 		}
 		// Below groups, so it fits.
 		g, _ := ints.Int64(h.Sum64() % groups)
-		w := plan.WriterLane(int(g))
+		out[r] = int(g)
+	}
+	return out, nil
+}
+
+// byWriterLane splits a batch's rows by the writer lane owning their key's
+// group.
+func byWriterLane(plan Plan, key []string, b arrow.RecordBatch) (map[int]arrow.RecordBatch, error) {
+	groups, err := keyGroupsOf(plan, key, b)
+	if err != nil {
+		return nil, err
+	}
+	rows := map[int][]int{}
+	for r, g := range groups {
+		w := plan.WriterLane(g)
 		rows[w] = append(rows[w], r)
 	}
 	out := make(map[int]arrow.RecordBatch, len(rows))
 	for w, rs := range rows {
-		parts := make([]arrow.RecordBatch, len(rs))
-		for i, r := range rs {
-			parts[i] = b.NewSlice(int64(r), int64(r)+1)
-		}
-		cols := make([]arrow.Array, b.NumCols())
-		for c := range cols {
-			arrs := make([]arrow.Array, len(parts))
-			for i, p := range parts {
-				arrs[i] = p.Column(c)
-			}
-			a, err := array.Concatenate(arrs, memory.DefaultAllocator)
-			if err != nil {
-				return nil, err
-			}
-			cols[c] = a
-		}
-		for _, p := range parts {
-			p.Release()
-		}
-		out[w] = array.NewRecordBatch(b.Schema(), cols, int64(len(rs)))
-		for _, a := range cols {
-			a.Release()
+		if out[w], err = takeRows(b, rs); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
+}
+
+// inKeyGroups is a batch's rows whose key's group is in r; nil if none is.
+func inKeyGroups(plan Plan, key []string, b arrow.RecordBatch, r checkpoint.KeyGroupRange) (arrow.RecordBatch, error) {
+	groups, err := keyGroupsOf(plan, key, b)
+	if err != nil {
+		return nil, err
+	}
+	var rows []int
+	for i, g := range groups {
+		if g >= r.First && g <= r.Last {
+			rows = append(rows, i)
+		}
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return takeRows(b, rows)
+}
+
+// takeRows is a batch of b's rows rs, in that order.
+func takeRows(b arrow.RecordBatch, rs []int) (arrow.RecordBatch, error) {
+	parts := make([]arrow.RecordBatch, len(rs))
+	for i, r := range rs {
+		parts[i] = b.NewSlice(int64(r), int64(r)+1)
+	}
+	defer func() {
+		for _, p := range parts {
+			p.Release()
+		}
+	}()
+	cols := make([]arrow.Array, b.NumCols())
+	defer func() {
+		for _, a := range cols {
+			if a != nil {
+				a.Release()
+			}
+		}
+	}()
+	for c := range cols {
+		arrs := make([]arrow.Array, len(parts))
+		for i, p := range parts {
+			arrs[i] = p.Column(c)
+		}
+		a, err := array.Concatenate(arrs, memory.DefaultAllocator)
+		if err != nil {
+			return nil, err
+		}
+		cols[c] = a
+	}
+	return array.NewRecordBatch(b.Schema(), cols, int64(len(rs))), nil
 }

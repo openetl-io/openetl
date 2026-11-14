@@ -194,6 +194,7 @@
             "writeModes": { "description": "None: append only.", "type": "array", "items": { "enum": ["append", "overwrite", "merge"] } },
             "delivery": { "description": "How epochs reach it: streamed as batches, or staged as Parquet files the platform hands over. None: streamed.", "enum": ["streamed", "staged"] },
             "maxWriterLanes": { "description": "The most writer lanes an attempt may open, writing concurrently. None: one.", "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "laneCommits": { "description": "Each writer lane commits its own part of an epoch, with a marker of its own, as a transaction its writer holds open does. An attempt on one pod opens one writer lane. Recovery settles each lane's part of an epoch on its own: from its marker, from its staging, or by writing it again from the source.", "type": "boolean" },
             "holds": {
               "description": "What the destination does with held columns and cells. None: it takes no holds.",
               "type": "object",

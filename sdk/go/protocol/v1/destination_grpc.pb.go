@@ -36,6 +36,11 @@ type DestinationServiceClient interface {
 	// committables. The connector answers open, recover, each pre-commit, each
 	// schema and each commit.
 	//
+	// With lane_commits, every lane's stream gets the commits of its own
+	// committable. A stream opened to settle one committable of a recorded
+	// epoch gets schemas, then recover, and after a lost recovery that epoch's
+	// batches, pre-commit and commit, before the attempt's lanes open.
+	//
 	// Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
 	// run concurrently with later batches and pre-commits, but never with each
 	// other. A failed schema or commit is answered with its error; any other
@@ -77,6 +82,11 @@ type DestinationServiceServer interface {
 	// recover, schemas or commits: lane 0 commits and recovers every lane's
 	// committables. The connector answers open, recover, each pre-commit, each
 	// schema and each commit.
+	//
+	// With lane_commits, every lane's stream gets the commits of its own
+	// committable. A stream opened to settle one committable of a recorded
+	// epoch gets schemas, then recover, and after a lost recovery that epoch's
+	// batches, pre-commit and commit, before the attempt's lanes open.
 	//
 	// Batches for epoch N+1 can arrive before pre-commit N. Schemas and commits
 	// run concurrently with later batches and pre-commits, but never with each

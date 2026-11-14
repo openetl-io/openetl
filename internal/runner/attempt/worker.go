@@ -184,7 +184,12 @@ func (w *worker) run() {
 			w.end(lost("the coordinator", fmt.Errorf("nothing from it for %s", w.opts.timeout())), false, true)
 			return
 		case <-assign.C:
-			if !w.isAssigned() {
+			// A call being answered, such as settling, holds the assignment
+			// up for as long as it takes.
+			switch assigned, answering := w.waiting(); {
+			case answering:
+				assign.Reset(w.opts.timeout())
+			case !assigned:
 				w.end(lost("the coordinator", fmt.Errorf("no assignment within %s", w.opts.joinTimeout()+w.opts.timeout())), false, true)
 				return
 			}
@@ -202,10 +207,12 @@ func (w *worker) run() {
 	}
 }
 
-func (w *worker) isAssigned() bool {
+// waiting says whether the worker has its assignment, and whether it's
+// answering a call.
+func (w *worker) waiting() (assigned, answering bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.assignment != nil
+	return w.assignment != nil, len(w.calls) > 0
 }
 
 // callEnded is why the call ended without End: before the coordinator took

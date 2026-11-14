@@ -45,8 +45,15 @@ type attempt struct {
 
 // recovered opens generation gen on n lanes as an attempt does: lane 0 first,
 // which recovers e with its committables, and the others behind its fence.
+// Where lanes commit on their own, each committable is settled first, on a
+// writer of its own lane, and lane 0 only raises the fence.
 func (s *session) recovered(gen uint64, n int, e *protocolv1.Epoch, staged [][]byte) (*attempt, protocolv1.Recovery) {
 	s.t.Helper()
+	var settled protocolv1.Recovery
+	byLane := s.r.laneCommits() && e != nil && len(staged) > 0
+	if byLane {
+		settled = s.settleLanes(gen, e, staged)
+	}
 	w := s.openLane(gen, 0, n)
 	if e != nil {
 		if err := s.applySchemas(w); err != nil {
@@ -54,15 +61,63 @@ func (s *session) recovered(gen uint64, n int, e *protocolv1.Epoch, staged [][]b
 		}
 		s.handOver(w, e)
 	}
-	rec, err := w.recoverLanes(e, staged)
+	re, rstaged := e, staged
+	if byLane {
+		re, rstaged = nil, nil
+	}
+	rec, err := w.recoverLanes(re, rstaged)
 	if err != nil {
 		s.t.Fatalf("%s generation %d's recover of %s on %d committables: %s: %v", s.where(), gen, epochString(e), len(staged), codeOf(err), err)
+	}
+	if byLane {
+		rec = settled
 	}
 	a := &attempt{s: s, lanes: []*writer{w}}
 	for lane := 1; lane < n; lane++ {
 		a.lanes = append(a.lanes, s.openLane(gen, lane, n))
 	}
 	return a, rec
+}
+
+// settleLanes settles each of e's committables, as generation gen, on a
+// writer opened as the lane that staged it: Recover with that committable
+// alone, and after lost, the lane's work of e written again and committed.
+// It answers redone if any lane was.
+func (s *session) settleLanes(gen uint64, e *protocolv1.Epoch, staged [][]byte) protocolv1.Recovery {
+	s.t.Helper()
+	out := protocolv1.Recovery_RECOVERY_APPLIED
+	for i, c := range staged {
+		w := s.openLane(gen, i, len(staged))
+		if err := s.applySchemas(w); err != nil {
+			s.t.Fatalf("%s generation %d's apply_schema on lane %d: %s: %v", s.where(), gen, i, codeOf(err), err)
+		}
+		rec, err := w.recoverLanes(e, [][]byte{c})
+		if err != nil {
+			s.t.Fatalf("%s generation %d's recover of lane %d of %s: %s: %v", s.where(), gen, i, epochString(e), codeOf(err), err)
+		}
+		if rec == protocolv1.Recovery_RECOVERY_LOST {
+			s.mu.Lock()
+			works := s.works[epochString(e)]
+			s.mu.Unlock()
+			var work laneWork
+			if i < len(works) {
+				work = works[i]
+			}
+			again, err := s.stageLane(w, e, work)
+			if err == nil {
+				err = w.commitLanes(e, [][]byte{again})
+			}
+			if err != nil {
+				s.t.Fatalf("%s generation %d writing lane %d of %s again: %s: %v", s.where(), gen, i, epochString(e), codeOf(err), err)
+			}
+			rec = protocolv1.Recovery_RECOVERY_REDONE
+		}
+		if rec != protocolv1.Recovery_RECOVERY_APPLIED {
+			out = protocolv1.Recovery_RECOVERY_REDONE
+		}
+		s.close(w)
+	}
+	return out
 }
 
 // attempt is recovered, with every stream read from the session's start.
@@ -156,6 +211,14 @@ func (a *attempt) stage(e *protocolv1.Epoch, works ...laneWork) [][]byte {
 func (a *attempt) tryStage(e *protocolv1.Epoch, works []laneWork) ([][]byte, []error) {
 	staged := make([][]byte, len(a.lanes))
 	errs := make([]error, len(a.lanes))
+	if a.s.r.laneCommits() {
+		a.s.mu.Lock()
+		if a.s.works == nil {
+			a.s.works = map[string][]laneWork{}
+		}
+		a.s.works[epochString(e)] = works
+		a.s.mu.Unlock()
+	}
 	var wg sync.WaitGroup
 	for i, w := range a.lanes {
 		var work laneWork
@@ -194,7 +257,8 @@ func (s *session) stageLane(w *writer, e *protocolv1.Epoch, work laneWork) ([]by
 }
 
 // commit applies the schemas on lane 0, and commits e there with every
-// lane's committable.
+// lane's committable; or, where lanes commit on their own, each lane's on
+// its lane.
 func (a *attempt) commit(e *protocolv1.Epoch, staged [][]byte) {
 	a.s.t.Helper()
 	if err := a.tryCommit(e, staged); err != nil {
@@ -206,7 +270,15 @@ func (a *attempt) tryCommit(e *protocolv1.Epoch, staged [][]byte) error {
 	if err := a.s.applySchemas(a.lanes[0]); err != nil {
 		return fmt.Errorf("apply_schema: %w", err)
 	}
-	return a.lanes[0].commitLanes(e, staged)
+	if !a.s.r.laneCommits() {
+		return a.lanes[0].commitLanes(e, staged)
+	}
+	for i, w := range a.lanes {
+		if err := w.commitLanes(e, staged[i:i+1]); err != nil {
+			return fmt.Errorf("lane %d: %w", i, err)
+		}
+	}
+	return nil
 }
 
 func (a *attempt) crash() {
@@ -461,6 +533,8 @@ func (r *destinationRun) checkLanesCrashAfterRecord(_ T, s *session, n int) {
 
 // Lanes: crash during commit: a runner died while lane 0 committed. The epoch
 // lands once, whichever of its streams and lanes the commit had applied.
+// Where lanes commit on their own, lane 0 commits its own alone, and the
+// other lanes are settled lost.
 func (r *destinationRun) checkLanesCrashDuringCommit(t T, s *session, n int) {
 	a, _ := s.attempt(1, n, nil, nil)
 	e1 := map[string][]record{"alpha": records(0, 9, "a"), "beta": records(0, 6, "b")}
@@ -468,7 +542,11 @@ func (r *destinationRun) checkLanesCrashDuringCommit(t T, s *session, n int) {
 	if err := s.applySchemas(a.lanes[0]); err != nil {
 		t.Fatalf("%s apply_schema: %s: %v", s.where(), codeOf(err), err)
 	}
-	if err := a.lanes[0].send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: epoch(1, 1), Staged: staged}}}); err != nil {
+	committing := staged
+	if r.laneCommits() {
+		committing = staged[:1]
+	}
+	if err := a.lanes[0].send(&protocolv1.WriteRequest{Msg: &protocolv1.WriteRequest_Commit{Commit: &protocolv1.WriteCommit{Epoch: epoch(1, 1), Staged: committing}}}); err != nil {
 		t.Fatalf("%s sending the commit: %v", s.where(), err)
 	}
 	time.Sleep(time.Millisecond)

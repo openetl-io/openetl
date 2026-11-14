@@ -299,6 +299,7 @@ type capabilitiesYAML struct {
 	Delivery string `yaml:"delivery,omitempty" json:"delivery,omitempty"`
 	// Zero: one.
 	MaxWriterLanes uint32 `yaml:"maxWriterLanes,omitempty" json:"maxWriterLanes,omitempty"`
+	LaneCommits    bool   `yaml:"laneCommits,omitempty" json:"laneCommits,omitempty"`
 }
 
 type holdsYAML struct {
@@ -537,7 +538,7 @@ func parseCapabilities(y *capabilitiesYAML) (*protocolv1.DestinationCapabilities
 	}
 	c := &protocolv1.DestinationCapabilities{
 		DedupeAtApply: y.DedupeAtApply, NanosecondTimestamps: y.NanosecondTimestamps, MaxIdentifierLength: y.MaxIdentifierLength,
-		MaxWriterLanes: y.MaxWriterLanes,
+		MaxWriterLanes: y.MaxWriterLanes, LaneCommits: y.LaneCommits,
 	}
 	var err error
 	if c.Delivery, err = enum(protocolv1.Delivery_value, "DELIVERY_", "delivery", y.Delivery, protocolv1.Delivery_DELIVERY_UNSPECIFIED); err != nil {
@@ -629,7 +630,7 @@ func specToYAML(s *protocolv1.SpecResponse) (specYAML, error) {
 		y.Capabilities = &capabilitiesYAML{
 			Class: lower(c.GetSinkClass().String(), "SINK_CLASS_"), DedupeAtApply: c.GetDedupeAtApply(),
 			NanosecondTimestamps: c.GetNanosecondTimestamps(), MaxIdentifierLength: c.GetMaxIdentifierLength(),
-			MaxWriterLanes: c.GetMaxWriterLanes(),
+			MaxWriterLanes: c.GetMaxWriterLanes(), LaneCommits: c.GetLaneCommits(),
 		}
 		if d := c.GetDelivery(); d != protocolv1.Delivery_DELIVERY_UNSPECIFIED {
 			y.Capabilities.Delivery = lower(d.String(), "DELIVERY_")

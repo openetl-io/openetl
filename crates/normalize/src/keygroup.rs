@@ -100,6 +100,27 @@ pub fn by_key_group(
         .collect()
 }
 
+/// `batch`'s rows whose key's group, of `groups`, is in `keep`, in order;
+/// None if none is.
+pub fn in_key_groups(
+    batch: &RecordBatch,
+    key: &[String],
+    groups: u32,
+    keep: std::ops::RangeInclusive<u32>,
+) -> Result<Option<RecordBatch>, ArrowError> {
+    let rows: Vec<u32> = key_groups(batch, key, groups)?
+        .into_iter()
+        .enumerate()
+        .filter(|(_, g)| keep.contains(g))
+        .map(|(row, _)| row as u32)
+        .collect();
+    match rows.len() {
+        0 => Ok(None),
+        n if n == batch.num_rows() => Ok(Some(batch.clone())),
+        _ => take_record_batch(batch, &UInt32Array::from(rows)).map(Some),
+    }
+}
+
 fn hashable(dt: &DataType) -> bool {
     use DataType as D;
     matches!(
@@ -337,6 +358,24 @@ mod tests {
             assert!(ids.values().windows(2).all(|w| w[0] < w[1]));
         }
         assert_eq!(seen, 1000);
+    }
+
+    #[test]
+    fn a_range_keeps_its_part() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let ids: Vec<i64> = (0..1000).collect();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(ids))]).unwrap();
+        let key = ["id".to_string()];
+        let parts = by_key_group(&batch, &key, 256, 4).unwrap();
+        let kept = in_key_groups(&batch, &key, 256, 64..=127).unwrap().unwrap();
+        assert_eq!(&kept, parts[1].as_ref().unwrap());
+        assert_eq!(
+            in_key_groups(&batch, &key, 256, 0..=255)
+                .unwrap()
+                .unwrap()
+                .num_rows(),
+            1000
+        );
     }
 
     fn groups(cols: &[(&str, ArrayRef)], n: u32) -> Vec<u32> {

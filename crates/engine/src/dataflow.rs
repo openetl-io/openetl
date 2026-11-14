@@ -22,8 +22,8 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use openetl_formats::ParquetStaging;
 use openetl_normalize::{
-    Error as NormalizeError, Policy, Rejected, Shaped, Shaper, Typed, by_key_group, logical_type,
-    naming::Naming, widens,
+    Error as NormalizeError, Policy, Rejected, Shaped, Shaper, Typed, by_key_group, in_key_groups,
+    logical_type, naming::Naming, widens,
 };
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
@@ -833,13 +833,24 @@ impl Lane {
         self.flow.plan.routed[stream] && self.tx.len() > 1
     }
 
-    /// Sends a batch's rows to their writer lanes.
+    /// Sends a batch's rows to their writer lanes: those the stream keeps.
     async fn rows(
         &self,
         stream: usize,
         key: &[String],
         batch: RecordBatch,
     ) -> Result<(), JobError> {
+        let batch = match self.flow.plan.keep[stream] {
+            None => batch,
+            Some((first, last)) => {
+                match in_key_groups(&batch, key, self.flow.plan.key_groups, first..=last).map_err(
+                    |e| shape_error(&self.flow.plan.streams[stream], NormalizeError::Arrow(e)),
+                )? {
+                    Some(b) => b,
+                    None => return Ok(()),
+                }
+            }
+        };
         if !self.routed(stream) {
             return self.send(Out::Batch(stream, batch)).await;
         }
@@ -1358,7 +1369,7 @@ async fn shaped(lane: &Lane, ls: &mut LaneStream, n: Shaped, c: &Counters) -> Re
         lane.send(Out::Held(stream, b)).await?;
     }
     if n.batch.num_rows() > 0 {
-        let key = match lane.routed(stream) {
+        let key = match lane.routed(stream) || lane.flow.plan.keep[stream].is_some() {
             true => ls.shaper.key_columns(),
             false => Vec::new(),
         };
@@ -2422,6 +2433,48 @@ mod tests {
             assert!(!seen[1].contains(id), "{id} reached both writer lanes");
         }
         assert_eq!(ready.len(), 1);
+    }
+
+    /// A redo of writer lane 1 of two, on one lane: the rows of its key
+    /// groups pass, as routing by key group gives them to it.
+    #[tokio::test]
+    async fn a_kept_range_of_key_groups_passes_alone() {
+        async fn ids(keep: Option<(u32, u32)>, writers: u32) -> Vec<Vec<i64>> {
+            let all: Vec<String> = (0..200).map(|i| format!(r#"{{"id": {i}}}"#)).collect();
+            let all: Vec<&str> = all.iter().map(String::as_str).collect();
+            let mut req = crate::plan::tests::lanes_request(&["a"], writers, writers);
+            req.streams[0].primary_key = vec!["id".into()];
+            if writers > 1 {
+                req.streams[0].routing = openetl_proto::engine::v1::Routing::KeyGroup as i32;
+            }
+            req.streams[0].key_groups =
+                keep.map(|(first, last)| openetl_proto::engine::v1::KeyGroupRange { first, last });
+            let mut h = start_lanes(req);
+            put(&mut h.ins[0], FrameKind::Rows, 0, rows(&all)).await;
+            for w in &mut h.ins {
+                put(w, FrameKind::Barrier, 0, barrier(1)).await;
+            }
+            h.end_all(1).await;
+            let (out, _) = h.finish().await;
+            let mut ids: Vec<Vec<i64>> = out
+                .iter()
+                .map(|frames| {
+                    frames
+                        .iter()
+                        .filter(|f| f.kind == FrameKind::Batch)
+                        .flat_map(|f| int_column(f, "id"))
+                        .collect()
+                })
+                .collect();
+            for w in &mut ids {
+                w.sort_unstable();
+            }
+            ids
+        }
+        let routed = ids(None, 2).await;
+        let kept = ids(Some((128, 255)), 1).await;
+        assert!(!routed[1].is_empty() && routed[1].len() < 200);
+        assert_eq!(kept, [routed[1].clone()]);
     }
 
     #[tokio::test]

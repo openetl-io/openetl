@@ -106,17 +106,25 @@ An attempt can run on several runners: one runner coordinates it, and the others
   - a stream written with overwrite;
   - a stream that the attempt does not read;
   - a keyed stream whose splits do not keep a key's rows together.
-- A worker sends its share of each epoch when its part is durable. The share holds its splits' positions, its rows, its committables and what its engine reported. The coordinator merges the shares into one record, which also says what each committable holds.
-- After the record, the first worker applies schemas and commits at the coordinator's request. The coordinator then sends the record's positions to the workers. Each worker acknowledges only the positions of its own splits, one checkpoint behind.
+- A worker sends its share of each epoch when its part is durable. The share holds its splits' positions, its rows, its committables and what its engine reported. The coordinator merges the shares into one record. The record also has each committable's coverage: the splits whose rows it holds, the key groups of those rows, and where each split's part of the epoch began.
+- After the record, the first worker applies schemas and commits at the coordinator's request. A destination with lane commits (`DestinationCapabilities.lane_commits`) is different: each worker commits its own writer lanes, each with its own committable. The coordinator then sends the record's positions to the workers. Each worker acknowledges only the positions of its own splits, one checkpoint behind.
 - Each stream's schema has one owner, the coordinator. An engine whose lane changes a schema proposes the change from the version that it has. Integers past ±2^53 in a column are such a change too, because a later float then makes the column text. Every engine shapes by the versions that the coordinator accepts.
 - A lost worker or a lost coordinator fails the attempt. The next attempt restores every worker from the record, in a new layout.
+
+With lane commits, an epoch can be committed in part, so the next attempt settles the restored record committable by committable ([`internal/runner/redo.go`](../../internal/runner/redo.go)). The coordinator sends each worker a `Settle` call before it assigns any work. Committables whose coverage shares a split go to the same worker. For each committable, the worker opens a writer as the lane that staged it, and its `Recover` fences that lane. The committable then ends one of three ways:
+
+- The writer finds the lane's marker, so the lane is applied.
+- The writer commits the lane's staging, if the lane kept one.
+- The writer reports it lost. The worker then reads each covered split again, on a read of its own, from where its part of the epoch began. The read stops at the resume point that the record has for the split. The worker sends the rows through an engine that keeps only the committable's key groups, writes them as that epoch's on the writer, and commits them.
+
+A single runner settles such a record the same way. On one runner, a destination with lane commits gets one writer lane, and a record without coverage is recovered whole, as before. Resplitting is off for such a destination, because a split added during an epoch cannot be read again as it was.
 
 These jobs run on one runner:
 
 - a job with a transform;
 - a job whose streams hold columns;
 - a job whose destination loads staged epochs or is written by the engine;
-- a job whose destination commits each writer lane's transaction separately;
+- a job whose destination is transactional and does not have lane commits;
 - a job whose destination takes fewer writer lanes than there are workers.
 
 ## Delivery levels

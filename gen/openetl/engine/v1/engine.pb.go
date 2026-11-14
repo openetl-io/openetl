@@ -831,7 +831,11 @@ type StreamPlan struct {
 	Routing Routing   `protobuf:"varint,12,opt,name=routing,proto3,enum=openetl.engine.v1.Routing" json:"routing,omitempty"`
 	// Its name in the destination, exactly as written. Empty: from its own
 	// name, by the job's naming.
-	Table         string `protobuf:"bytes,13,opt,name=table,proto3" json:"table,omitempty"`
+	Table string `protobuf:"bytes,13,opt,name=table,proto3" json:"table,omitempty"`
+	// Only rows whose key's group is in this range pass: a redo of one writer
+	// lane's part of an epoch. A destination's stream with a primary key.
+	// Unset: every row.
+	KeyGroups     *KeyGroupRange `protobuf:"bytes,14,opt,name=key_groups,json=keyGroups,proto3" json:"key_groups,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -955,6 +959,13 @@ func (x *StreamPlan) GetTable() string {
 		return x.Table
 	}
 	return ""
+}
+
+func (x *StreamPlan) GetKeyGroups() *KeyGroupRange {
+	if x != nil {
+		return x.KeyGroups
+	}
+	return nil
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
@@ -3220,7 +3231,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
-	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xfe\x03\n" +
+	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xbf\x04\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
@@ -3237,7 +3248,9 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	" \x01(\bR\tchangelog\x121\n" +
 	"\x05holds\x18\v \x01(\v2\x1b.openetl.engine.v1.HoldPlanR\x05holds\x124\n" +
 	"\arouting\x18\f \x01(\x0e2\x1a.openetl.engine.v1.RoutingR\arouting\x12\x14\n" +
-	"\x05table\x18\r \x01(\tR\x05table\"\xe3\x03\n" +
+	"\x05table\x18\r \x01(\tR\x05table\x12?\n" +
+	"\n" +
+	"key_groups\x18\x0e \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\"\xe3\x03\n" +
 	"\bHoldPlan\x12\x14\n" +
 	"\x05cells\x18\x01 \x01(\bR\x05cells\x12+\n" +
 	"\x04held\x18\x02 \x01(\v2\x17.openetl.engine.v1.HeldR\x04held\x12B\n" +
@@ -3531,63 +3544,64 @@ var file_openetl_engine_v1_engine_proto_depIdxs = []int32{
 	3,  // 10: openetl.engine.v1.StreamPlan.lane:type_name -> openetl.engine.v1.Lane
 	11, // 11: openetl.engine.v1.StreamPlan.holds:type_name -> openetl.engine.v1.HoldPlan
 	0,  // 12: openetl.engine.v1.StreamPlan.routing:type_name -> openetl.engine.v1.Routing
-	12, // 13: openetl.engine.v1.HoldPlan.held:type_name -> openetl.engine.v1.Held
-	46, // 14: openetl.engine.v1.HoldPlan.columns:type_name -> openetl.engine.v1.HoldPlan.ColumnsEntry
-	13, // 15: openetl.engine.v1.HoldPlan.groups:type_name -> openetl.engine.v1.ColumnGroup
-	14, // 16: openetl.engine.v1.HoldPlan.holding:type_name -> openetl.engine.v1.ColumnHold
-	52, // 17: openetl.engine.v1.HoldPlan.limits:type_name -> openetl.connector.v1.TableLimits
-	16, // 18: openetl.engine.v1.HoldPlan.replay:type_name -> openetl.engine.v1.Replay
-	2,  // 19: openetl.engine.v1.Held.mode:type_name -> openetl.engine.v1.HeldMode
-	15, // 20: openetl.engine.v1.ColumnHold.cause:type_name -> openetl.engine.v1.HoldCause
-	5,  // 21: openetl.engine.v1.HoldCause.kind:type_name -> openetl.engine.v1.HoldCause.Kind
-	17, // 22: openetl.engine.v1.Replay.from:type_name -> openetl.engine.v1.ReplayProgress
-	14, // 23: openetl.engine.v1.Replay.versioned:type_name -> openetl.engine.v1.ColumnHold
-	4,  // 24: openetl.engine.v1.Edge.direction:type_name -> openetl.engine.v1.EdgeDirection
-	20, // 25: openetl.engine.v1.SinkPlan.runner:type_name -> openetl.engine.v1.RunnerSink
-	21, // 26: openetl.engine.v1.SinkPlan.parquet:type_name -> openetl.engine.v1.ParquetSink
-	23, // 27: openetl.engine.v1.SinkPlan.discard:type_name -> openetl.engine.v1.DiscardSink
-	22, // 28: openetl.engine.v1.SinkPlan.staged:type_name -> openetl.engine.v1.StagedSink
-	53, // 29: openetl.engine.v1.RecoverRequest.epoch:type_name -> openetl.connector.v1.Epoch
-	54, // 30: openetl.engine.v1.RecoverResponse.recovery:type_name -> openetl.connector.v1.Recovery
-	30, // 31: openetl.engine.v1.EventsResponse.epoch_ready:type_name -> openetl.engine.v1.EpochReady
-	37, // 32: openetl.engine.v1.EventsResponse.metrics:type_name -> openetl.engine.v1.Metrics
-	53, // 33: openetl.engine.v1.EpochReady.epoch:type_name -> openetl.connector.v1.Epoch
-	35, // 34: openetl.engine.v1.EpochReady.snapshots:type_name -> openetl.engine.v1.StateSnapshot
-	47, // 35: openetl.engine.v1.EpochReady.schemas:type_name -> openetl.engine.v1.EpochReady.SchemasEntry
-	34, // 36: openetl.engine.v1.EpochReady.quarantine:type_name -> openetl.engine.v1.QuarantineFile
-	33, // 37: openetl.engine.v1.EpochReady.files:type_name -> openetl.engine.v1.StagedStream
-	48, // 38: openetl.engine.v1.EpochReady.holds:type_name -> openetl.engine.v1.EpochReady.HoldsEntry
-	49, // 39: openetl.engine.v1.EpochReady.delivered:type_name -> openetl.engine.v1.EpochReady.DeliveredEntry
-	50, // 40: openetl.engine.v1.EpochReady.output_schemas:type_name -> openetl.engine.v1.EpochReady.OutputSchemasEntry
-	14, // 41: openetl.engine.v1.StreamHolds.holding:type_name -> openetl.engine.v1.ColumnHold
-	51, // 42: openetl.engine.v1.StreamHolds.cells:type_name -> openetl.engine.v1.StreamHolds.CellsEntry
-	55, // 43: openetl.engine.v1.StreamHolds.files:type_name -> openetl.connector.v1.StagedFile
-	17, // 44: openetl.engine.v1.StreamHolds.replayed:type_name -> openetl.engine.v1.ReplayProgress
-	55, // 45: openetl.engine.v1.StagedStream.files:type_name -> openetl.connector.v1.StagedFile
-	36, // 46: openetl.engine.v1.StateSnapshot.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
-	39, // 47: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
-	38, // 48: openetl.engine.v1.Metrics.lanes:type_name -> openetl.engine.v1.LaneMetrics
-	53, // 49: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
-	12, // 50: openetl.engine.v1.HoldPlan.ColumnsEntry.value:type_name -> openetl.engine.v1.Held
-	31, // 51: openetl.engine.v1.EpochReady.HoldsEntry.value:type_name -> openetl.engine.v1.StreamHolds
-	32, // 52: openetl.engine.v1.StreamHolds.CellsEntry.value:type_name -> openetl.engine.v1.CellHolds
-	6,  // 53: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
-	26, // 54: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
-	28, // 55: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
-	40, // 56: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
-	42, // 57: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
-	44, // 58: openetl.engine.v1.EngineService.Schemas:input_type -> openetl.engine.v1.SchemasRequest
-	25, // 59: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
-	27, // 60: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
-	29, // 61: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
-	41, // 62: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
-	43, // 63: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
-	45, // 64: openetl.engine.v1.EngineService.Schemas:output_type -> openetl.engine.v1.SchemasResponse
-	59, // [59:65] is the sub-list for method output_type
-	53, // [53:59] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	36, // 13: openetl.engine.v1.StreamPlan.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	12, // 14: openetl.engine.v1.HoldPlan.held:type_name -> openetl.engine.v1.Held
+	46, // 15: openetl.engine.v1.HoldPlan.columns:type_name -> openetl.engine.v1.HoldPlan.ColumnsEntry
+	13, // 16: openetl.engine.v1.HoldPlan.groups:type_name -> openetl.engine.v1.ColumnGroup
+	14, // 17: openetl.engine.v1.HoldPlan.holding:type_name -> openetl.engine.v1.ColumnHold
+	52, // 18: openetl.engine.v1.HoldPlan.limits:type_name -> openetl.connector.v1.TableLimits
+	16, // 19: openetl.engine.v1.HoldPlan.replay:type_name -> openetl.engine.v1.Replay
+	2,  // 20: openetl.engine.v1.Held.mode:type_name -> openetl.engine.v1.HeldMode
+	15, // 21: openetl.engine.v1.ColumnHold.cause:type_name -> openetl.engine.v1.HoldCause
+	5,  // 22: openetl.engine.v1.HoldCause.kind:type_name -> openetl.engine.v1.HoldCause.Kind
+	17, // 23: openetl.engine.v1.Replay.from:type_name -> openetl.engine.v1.ReplayProgress
+	14, // 24: openetl.engine.v1.Replay.versioned:type_name -> openetl.engine.v1.ColumnHold
+	4,  // 25: openetl.engine.v1.Edge.direction:type_name -> openetl.engine.v1.EdgeDirection
+	20, // 26: openetl.engine.v1.SinkPlan.runner:type_name -> openetl.engine.v1.RunnerSink
+	21, // 27: openetl.engine.v1.SinkPlan.parquet:type_name -> openetl.engine.v1.ParquetSink
+	23, // 28: openetl.engine.v1.SinkPlan.discard:type_name -> openetl.engine.v1.DiscardSink
+	22, // 29: openetl.engine.v1.SinkPlan.staged:type_name -> openetl.engine.v1.StagedSink
+	53, // 30: openetl.engine.v1.RecoverRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	54, // 31: openetl.engine.v1.RecoverResponse.recovery:type_name -> openetl.connector.v1.Recovery
+	30, // 32: openetl.engine.v1.EventsResponse.epoch_ready:type_name -> openetl.engine.v1.EpochReady
+	37, // 33: openetl.engine.v1.EventsResponse.metrics:type_name -> openetl.engine.v1.Metrics
+	53, // 34: openetl.engine.v1.EpochReady.epoch:type_name -> openetl.connector.v1.Epoch
+	35, // 35: openetl.engine.v1.EpochReady.snapshots:type_name -> openetl.engine.v1.StateSnapshot
+	47, // 36: openetl.engine.v1.EpochReady.schemas:type_name -> openetl.engine.v1.EpochReady.SchemasEntry
+	34, // 37: openetl.engine.v1.EpochReady.quarantine:type_name -> openetl.engine.v1.QuarantineFile
+	33, // 38: openetl.engine.v1.EpochReady.files:type_name -> openetl.engine.v1.StagedStream
+	48, // 39: openetl.engine.v1.EpochReady.holds:type_name -> openetl.engine.v1.EpochReady.HoldsEntry
+	49, // 40: openetl.engine.v1.EpochReady.delivered:type_name -> openetl.engine.v1.EpochReady.DeliveredEntry
+	50, // 41: openetl.engine.v1.EpochReady.output_schemas:type_name -> openetl.engine.v1.EpochReady.OutputSchemasEntry
+	14, // 42: openetl.engine.v1.StreamHolds.holding:type_name -> openetl.engine.v1.ColumnHold
+	51, // 43: openetl.engine.v1.StreamHolds.cells:type_name -> openetl.engine.v1.StreamHolds.CellsEntry
+	55, // 44: openetl.engine.v1.StreamHolds.files:type_name -> openetl.connector.v1.StagedFile
+	17, // 45: openetl.engine.v1.StreamHolds.replayed:type_name -> openetl.engine.v1.ReplayProgress
+	55, // 46: openetl.engine.v1.StagedStream.files:type_name -> openetl.connector.v1.StagedFile
+	36, // 47: openetl.engine.v1.StateSnapshot.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	39, // 48: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
+	38, // 49: openetl.engine.v1.Metrics.lanes:type_name -> openetl.engine.v1.LaneMetrics
+	53, // 50: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	12, // 51: openetl.engine.v1.HoldPlan.ColumnsEntry.value:type_name -> openetl.engine.v1.Held
+	31, // 52: openetl.engine.v1.EpochReady.HoldsEntry.value:type_name -> openetl.engine.v1.StreamHolds
+	32, // 53: openetl.engine.v1.StreamHolds.CellsEntry.value:type_name -> openetl.engine.v1.CellHolds
+	6,  // 54: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
+	26, // 55: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
+	28, // 56: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
+	40, // 57: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
+	42, // 58: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
+	44, // 59: openetl.engine.v1.EngineService.Schemas:input_type -> openetl.engine.v1.SchemasRequest
+	25, // 60: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
+	27, // 61: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
+	29, // 62: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
+	41, // 63: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
+	43, // 64: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
+	45, // 65: openetl.engine.v1.EngineService.Schemas:output_type -> openetl.engine.v1.SchemasResponse
+	60, // [60:66] is the sub-list for method output_type
+	54, // [54:60] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_openetl_engine_v1_engine_proto_init() }

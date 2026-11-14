@@ -179,6 +179,7 @@ A destination's.
 | `writeModes` | array of string | No | None: append only. Each item is one of `append`, `overwrite` or `merge`. |
 | `delivery` | string | No | How epochs reach it: streamed as batches, or staged as Parquet files the platform hands over. None: streamed. Is one of `streamed` or `staged`. |
 | `maxWriterLanes` | integer | No | The most writer lanes an attempt may open, writing concurrently. None: one. Is from 0 to 4294967295. |
+| `laneCommits` | boolean | No | Each writer lane commits its own part of an epoch, with a marker of its own, as a transaction its writer holds open does. An attempt on one pod opens one writer lane. Recovery settles each lane's part of an epoch on its own: from its marker, from its staging, or by writing it again from the source. |
 | `holds` | [object](#specrolesrolecapabilitiesholds) | No | What the destination does with held columns and cells. None: it takes no holds. |
 
 ## `spec.roles.ROLE.capabilities.holds`

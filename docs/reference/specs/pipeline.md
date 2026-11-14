@@ -92,8 +92,10 @@ With `resources.workers` above 1, `openetl plan` shows `workers:` and the count 
 
 - the pipeline has a `transform`;
 - a stream holds columns or cells, as a keyed stream does in a destination that takes holds;
-- the destination declares fewer writer lanes than workers, commits each writer lane's transaction on its own, loads staged epochs, or is the built-in `parquet`;
+- the destination declares fewer writer lanes than workers, is transactional without lane commits, loads staged epochs, or is the built-in `parquet`;
 - no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners have.
+
+A transactional destination with lane commits commits each writer lane on its own. On workers, it recovers an epoch lane by lane, as [Commits on several workers](../../pipelines/delivery.md#commits-on-several-workers) describes. On one pod, it gets one writer lane.
 
 Each job's workers read the source's splits between them. Each of these streams is read on one worker, and the plan warns about each one:
 
