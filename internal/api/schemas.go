@@ -168,13 +168,15 @@ func (s *Server) recordSchemaChange(ctx context.Context, q *db.Queries, pipeline
 }
 
 // schemaEventKey records a version's event once. An output's versions are
-// its own, apart from those of the stream that shares its name.
+// its own, apart from those of the stream that shares its name: whether
+// it's an input or an output is a segment of its own, before the stream's
+// name, which may hold slashes, and the version is the last.
 func schemaEventKey(pipeline uuid.UUID, d streamSchema, version int32) string {
-	stream := d.stream
+	kind := "input"
 	if d.output {
-		stream = "output/" + stream
+		kind = "output"
 	}
-	return events.SchemaChanged + "/" + pipeline.String() + "/" + stream + "/" + strconv.Itoa(int(version))
+	return events.SchemaChanged + "/" + pipeline.String() + "/" + kind + "/" + d.stream + "/" + strconv.Itoa(int(version))
 }
 
 func (s *Server) ListStreamSchemas(ctx context.Context, req *connect.Request[apiv1.ListStreamSchemasRequest]) (*connect.Response[apiv1.ListStreamSchemasResponse], error) {

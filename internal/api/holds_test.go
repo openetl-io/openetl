@@ -9,13 +9,27 @@ import (
 )
 
 // An output's schema versions are its own: each is recorded once, apart
-// from those of the stream that shares its name.
+// from those of the stream that shares its name, and of a stream whose
+// name looks like an output's key.
 func TestSchemaEventKeysKeepOutputsApart(t *testing.T) {
 	p := uuid.New()
-	in := schemaEventKey(p, streamSchema{stream: "customers"}, 2)
-	out := schemaEventKey(p, streamSchema{stream: "customers", output: true}, 2)
-	if in == out || in != "schema.changed/"+p.String()+"/customers/2" {
-		t.Errorf("keys %q and %q", in, out)
+	key := func(stream string, output bool, version int32) string {
+		return schemaEventKey(p, streamSchema{stream: stream, output: output}, version)
+	}
+	out := key("customers", true, 2)
+	if out != "schema.changed/"+p.String()+"/output/customers/2" {
+		t.Errorf("output key %q", out)
+	}
+	for _, other := range []string{
+		key("customers", false, 2),
+		key("output/customers", false, 2),
+		key("input/output/customers", false, 2),
+		key("output/customers", true, 2),
+		key("customers/2", true, 2),
+	} {
+		if other == out {
+			t.Errorf("%q is also an output's key", other)
+		}
 	}
 }
 

@@ -76,9 +76,57 @@ pub fn cast_type(f: &Field) -> Option<String> {
     })
 }
 
+/// A column's name as a statement writes it: as it is where it's a plain
+/// lower-case identifier that isn't a keyword, and otherwise in double
+/// quotes, with each one inside doubled.
+pub fn ident(name: &str) -> String {
+    let mut chars = name.chars();
+    let plain = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && datafusion_sql::sqlparser::keywords::ALL_KEYWORDS
+            .binary_search(&name.to_ascii_uppercase().as_str())
+            .is_err();
+    match plain {
+        true => name.to_owned(),
+        false => format!("\"{}\"", name.replace('"', "\"\"")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name ident writes reads back as the column it names.
+    #[test]
+    fn idents_name_their_columns() {
+        assert_eq!(ident("email"), "email");
+        assert_eq!(ident("select"), "\"select\"");
+        let names = ["email", "Email Address", "select", "a\"b", "9lives", "Ünï"];
+        let mut catalog = crate::Catalog::new();
+        let fields: Vec<Field> = names
+            .iter()
+            .map(|n| Field::new(*n, DataType::Utf8, true))
+            .collect();
+        let stream = crate::Stream {
+            schema: Arc::new(arrow_schema::Schema::new(fields)),
+            key: Vec::new(),
+            changelog: false,
+        };
+        catalog
+            .insert("s", stream)
+            .unwrap_or_else(|e| panic!("{e}"));
+        for n in names {
+            let sql = format!(
+                "INSERT INTO o SELECT CAST({} AS VARCHAR) AS {} FROM s",
+                ident(n),
+                ident(n)
+            );
+            let plan = crate::plan(&sql, &catalog).unwrap_or_else(|e| panic!("{sql}: {e}"));
+            assert_eq!(plan.statements[0].schema.field(0).name(), n, "{sql}");
+        }
+    }
 
     /// Each type cast_type names gives the output column the type it was
     /// asked for.

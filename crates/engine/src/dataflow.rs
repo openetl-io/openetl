@@ -1158,7 +1158,10 @@ fn statement_drift(
                 return None;
             }
             let t = openetl_sql::cast_type(was)?;
-            Some(format!("CAST(… AS {t}) AS {}", f.name()))
+            Some(format!(
+                "CAST(… AS {t}) AS {}",
+                openetl_sql::ident(f.name())
+            ))
         })
         .collect();
     let mut msg = format!("{}; transform.sql {} writes it", err.message, st.at);
@@ -3629,6 +3632,45 @@ mod tests {
             ),
             "{}",
             err.message
+        );
+    }
+
+    /// The alias that keeps an output column's type quotes a name that
+    /// needs it, and the statement it gives plans.
+    #[test]
+    fn the_cast_that_keeps_a_type_quotes_a_name_that_needs_it() {
+        use arrow_schema::{Field, Schema};
+        let input = |t: DataType| crate::transform::Input {
+            name: "a".into(),
+            schema: Some(Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("Email Address", t, true),
+            ]))),
+            key: vec!["id".into()],
+            changelog: false,
+        };
+        let t = crate::transform::Transform::plan(
+            "INSERT INTO c SELECT * FROM a",
+            vec![input(DataType::Int64)],
+        )
+        .unwrap();
+        let live = Schema::new(vec![Field::new("Email Address", DataType::Int64, true)]);
+        let now = Schema::new(vec![Field::new("Email Address", DataType::Float64, true)]);
+        let err = statement_drift(
+            &t.statements[0],
+            &live,
+            &now,
+            JobError::new(ErrorCode::SchemaDrift, "drift"),
+        );
+        let alias = r#"CAST(… AS BIGINT) AS "Email Address""#;
+        assert!(err.message.contains(alias), "{}", err.message);
+        let fixed =
+            r#"INSERT INTO c SELECT id, CAST("Email Address" AS BIGINT) AS "Email Address" FROM a"#;
+        let planned =
+            crate::transform::Transform::plan(fixed, vec![input(DataType::Float64)]).unwrap();
+        assert_eq!(
+            planned.statements[0].schema.field(1).data_type(),
+            &DataType::Int64
         );
     }
 

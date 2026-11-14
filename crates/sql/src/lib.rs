@@ -33,4 +33,4 @@ pub use plan::{
     Class, Column, Operator, Plan, Projection, RowWise, Statement, Step, Unnest, Unnested, View,
 };
 pub use sql::{Sql, plan};
-pub use types::cast_type;
+pub use types::{cast_type, ident};

@@ -212,7 +212,7 @@ impl Transform {
                     r.name(),
                     openetl_normalize::logical_type(old),
                     openetl_normalize::logical_type(new),
-                    r.name()
+                    openetl_sql::ident(r.name())
                 ))
             })
             .collect();
@@ -558,6 +558,36 @@ mod tests {
             "{}",
             e.message
         );
+    }
+
+    /// A column whose name needs quotes gets them in the cast, which plans.
+    #[test]
+    fn the_cast_to_write_quotes_a_name_that_needs_it() {
+        let schema = |t: DataType| {
+            Some(Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("Email Address", t, true),
+            ])))
+        };
+        let a = |t: DataType| Input {
+            name: "a".into(),
+            schema: schema(t),
+            key: vec!["id".into()],
+            changelog: false,
+        };
+        let t = Transform::plan(
+            r#"INSERT INTO c SELECT id, lower("Email Address") AS e FROM a"#,
+            vec![a(DataType::Utf8)],
+        )
+        .unwrap();
+        let was = t.inputs[0].schema.clone().unwrap();
+        let e = t
+            .again(0, &was, schema(DataType::Int64).unwrap())
+            .unwrap_err();
+        let cast = r#"CAST("Email Address" AS VARCHAR)"#;
+        assert!(e.message.contains(cast), "{}", e.message);
+        let fixed = format!("INSERT INTO c SELECT id, lower({cast}) AS e FROM a");
+        Transform::plan(&fixed, vec![a(DataType::Int64)]).unwrap();
     }
 
     /// A schema a transform's input recorded is as statements read it, so
