@@ -101,13 +101,23 @@ A delayed split can use a forced barrier without a resume point only when replay
 An attempt can run on several runners: one runner coordinates it, and the others, its workers, run its lanes. They use the attempt protocol, `openetl.attempt.v1` ([`internal/runner/attempt`](../../internal/runner/attempt)). Each worker opens one call to the coordinator. The coordinator claims the pipeline, writes the records and decides when each epoch commits. It runs no connector and holds no destination credentials:
 
 - Before the coordinator assigns work, the first worker opens the attempt's first writer lane. It raises the destination fence and settles the epoch that `HEAD` points to, as the recovery of a single runner does. It also gets the splits of the reads that start.
-- Each worker reads its splits with its own source connector and runs its own engine. It writes its writer lanes with its own destination writers. All splits of an overwrite, of a stream the attempt does not read, and of a keyed stream whose splits do not keep a key's rows together go to one worker.
+- Each worker reads its splits with its own source connector and runs its own engine. It writes its writer lanes with its own destination writers.
+- All the splits of these streams go to one worker:
+  - a stream written with overwrite;
+  - a stream that the attempt does not read;
+  - a keyed stream whose splits do not keep a key's rows together.
 - A worker sends its share of each epoch when its part is durable. The share holds its splits' positions, its rows, its committables and what its engine reported. The coordinator merges the shares into one record, which also says what each committable holds.
 - After the record, the first worker applies schemas and commits at the coordinator's request. The coordinator then sends the record's positions to the workers. Each worker acknowledges only the positions of its own splits, one checkpoint behind.
-- Each stream's schema has one owner, the coordinator. An engine whose lane changes a schema proposes the change from the version that it has. Every engine shapes by the versions that the coordinator accepts.
+- Each stream's schema has one owner, the coordinator. An engine whose lane changes a schema proposes the change from the version that it has. Integers past ±2^53 in a column are such a change too, because a later float then makes the column text. Every engine shapes by the versions that the coordinator accepts.
 - A lost worker or a lost coordinator fails the attempt. The next attempt restores every worker from the record, in a new layout.
 
-These jobs run on one runner: a job with a transform or holds, and a job whose destination loads staged epochs, is written by the engine, commits each writer lane's transaction separately, or takes fewer writer lanes than there are workers.
+These jobs run on one runner:
+
+- a job with a transform;
+- a job whose streams hold columns;
+- a job whose destination loads staged epochs or is written by the engine;
+- a job whose destination commits each writer lane's transaction separately;
+- a job whose destination takes fewer writer lanes than there are workers.
 
 ## Delivery levels
 

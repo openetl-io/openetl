@@ -252,6 +252,7 @@ impl Owner {
         let Some(r) = plan.remote.as_ref().and_then(|r| r.stream(s)) else {
             return Ok(());
         };
+        r.check()?;
         if r.newest() <= self.remote_version.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -710,7 +711,10 @@ impl LaneStream {
     /// As shape, where the plan's schemas may be remote: a change to the
     /// schema is proposed to the remote owner from the version the owner
     /// follows, and once a newer version comes, the batch is shaped again by
-    /// it. A change that leaves the schema as it is is published here.
+    /// it. So is a change to what the schema's metadata knows of the
+    /// values, such as a column that held integers past ±2^53, which a later
+    /// float in it, here or in another engine, turns to text. A change that
+    /// leaves the schema as it is is published here.
     async fn shape_own(
         &mut self,
         plan: &Plan,
@@ -724,6 +728,7 @@ impl LaneStream {
         loop {
             owner.follow(plan, self.stream)?;
             self.catch_up(owner);
+            let before = self.shaper.schema();
             let out = f(&mut self.shaper).and_then(|t| self.shaper.shape(t));
             let changed = self.shaper.take_changed();
             if out.is_err() {
@@ -732,20 +737,27 @@ impl LaneStream {
                 }
                 continue;
             }
-            if !changed {
+            let schema = self.shaper.schema();
+            // The shaper gives a new schema only when something in it changed.
+            let renewed = match (&before, &schema) {
+                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                (a, b) => a.is_some() != b.is_some(),
+            };
+            if !changed && !renewed {
                 return out.map_err(|e| shape_error(name, e));
             }
-            let schema = self.shaper.schema();
             let base = {
                 let mut o = owner.lock();
                 if o.version != self.version {
                     continue;
                 }
                 if o.shaper.schema() == schema {
-                    o.version += 1;
-                    self.version = o.version;
-                    o.shaper = self.shaper.fork();
-                    owner.version.store(o.version, Ordering::Release);
+                    if changed {
+                        o.version += 1;
+                        self.version = o.version;
+                        o.shaper = self.shaper.fork();
+                        owner.version.store(o.version, Ordering::Release);
+                    }
                     return out.map_err(|e| shape_error(name, e));
                 }
                 o.remote_version
@@ -2577,14 +2589,23 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_remote_owner_decides_a_streams_schema() {
-        use openetl_proto::engine::v1::SchemasRequest;
+    /// A job on streams a and b whose schemas a test owns, as the owner
+    /// outside the engine.
+    struct RemoteHarness {
+        plan: Arc<Plan>,
+        remote: Arc<crate::remote::Remote>,
+        proposals: crate::remote::Proposals,
+        w: DuplexStream,
+        out: BufReader<DuplexStream>,
+        job: tokio::task::JoinHandle<Result<(), JobError>>,
+    }
+
+    fn start_remote() -> RemoteHarness {
         let mut req = request(&["a", "b"]);
         req.remote_schemas = true;
         let plan = Arc::new(Plan::from_request(req).unwrap());
         let remote = plan.remote.clone().unwrap();
-        let mut proposals = remote.take_proposals().unwrap();
+        let proposals = remote.take_proposals().unwrap();
         let (to_engine, engine_in) = duplex(1 << 16);
         let (engine_out, from_engine) = duplex(1 << 16);
         let (tx, _events) = mpsc::channel(64);
@@ -2594,12 +2615,140 @@ mod tests {
             vec![engine_out],
             tx,
         ));
-        let (mut w, mut out) = (to_engine, BufReader::new(from_engine));
-        let take = |version: u64, schema: Vec<u8>| SchemasRequest {
+        RemoteHarness {
+            plan,
+            remote,
+            proposals,
+            w: to_engine,
+            out: BufReader::new(from_engine),
+            job,
+        }
+    }
+
+    /// Stream a's version, as the owner sends it.
+    fn take(version: u64, schema: Vec<u8>) -> openetl_proto::engine::v1::SchemasRequest {
+        openetl_proto::engine::v1::SchemasRequest {
             stream: 0,
             version,
             arrow_schema: schema,
-        };
+        }
+    }
+
+    /// The next batch of outbound stream index s, its column's type.
+    async fn column_type(r: &mut BufReader<DuplexStream>, s: u32, name: &str) -> DataType {
+        loop {
+            let f = frame::read(r).await.unwrap().unwrap();
+            if f.kind == FrameKind::Batch && f.stream == s {
+                let b = ipc::decode_batch(f.payload).unwrap();
+                return b
+                    .schema()
+                    .field_with_name(name)
+                    .unwrap()
+                    .data_type()
+                    .clone();
+            }
+        }
+    }
+
+    // A column that held integers past ±2^53 changes no type, but the owner
+    // learns of it, so a float in it from another engine makes it text, as
+    // in one engine.
+    #[tokio::test]
+    async fn a_remote_owner_learns_of_big_integers() {
+        let RemoteHarness {
+            plan,
+            remote,
+            mut proposals,
+            mut w,
+            mut out,
+            job,
+        } = start_remote();
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        remote.update(&take(1, p.arrow_schema)).unwrap();
+        assert_eq!(column_type(&mut out, 1, "x").await, DataType::Int64);
+
+        put(
+            &mut w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"x": 9007199254740993}"#]),
+        )
+        .await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        assert_eq!(p.base, 1);
+        let big = ipc::decode_schema(&p.arrow_schema).unwrap();
+        assert_eq!(
+            big.field_with_name("x").unwrap().data_type(),
+            &DataType::Int64
+        );
+        assert_eq!(
+            big.metadata()
+                .get(openetl_normalize::BIG_INTS_KEY)
+                .map(String::as_str),
+            Some(r#"["x"]"#)
+        );
+        remote.update(&take(2, p.arrow_schema)).unwrap();
+        assert_eq!(column_type(&mut out, 1, "x").await, DataType::Int64);
+
+        // Another engine, at version 2, gets a float in x.
+        let mut other = shaper(&plan, 0, Some(big)).unwrap();
+        other.rows([br#"{"x": 1.5}"#.as_slice()]).unwrap();
+        let text = other.schema().unwrap();
+        assert_eq!(
+            text.field_with_name("x").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        remote
+            .update(&take(3, ipc::encode_schema(&text).unwrap()))
+            .unwrap();
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 2}"#])).await;
+        assert_eq!(column_type(&mut out, 1, "x").await, DataType::Utf8);
+        assert!(proposals.try_recv().is_err());
+
+        for s in 0..2 {
+            put(&mut w, FrameKind::EndOfStream, s, vec![]).await;
+        }
+        w.shutdown().await.unwrap();
+        drain(&mut out).await;
+        job.await.unwrap().unwrap();
+    }
+
+    // A schemas call that fails releases the lane waiting for its proposal's
+    // answer, which fails the job with why.
+    #[tokio::test]
+    async fn a_failed_schemas_call_fails_the_job() {
+        let RemoteHarness {
+            remote,
+            mut proposals,
+            mut w,
+            mut out,
+            job,
+            ..
+        } = start_remote();
+        put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;
+        proposals.recv().await.unwrap().unwrap();
+        remote.fail(JobError::internal("the owner is gone"));
+        let err = tokio::time::timeout(Duration::from_secs(10), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.message, "the owner is gone");
+        drop(w);
+        drain(&mut out).await;
+    }
+
+    #[tokio::test]
+    async fn a_remote_owner_decides_a_streams_schema() {
+        let RemoteHarness {
+            plan,
+            remote,
+            mut proposals,
+            mut w,
+            mut out,
+            job,
+        } = start_remote();
 
         // The lane's change is proposed from version 0, and taken.
         put(&mut w, FrameKind::Rows, 0, rows(&[r#"{"x": 1}"#])).await;

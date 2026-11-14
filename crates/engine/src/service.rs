@@ -290,22 +290,30 @@ impl EngineService for Control {
             .take_proposals()
             .ok_or_else(|| Status::failed_precondition("the job's schemas are open already"))?;
         let mut updates = req.into_inner();
+        // Once the call ends, a lane that waits for a schema, or shapes next,
+        // fails the job.
         tokio::spawn(async move {
-            loop {
+            let failure = loop {
                 match updates.message().await {
                     Ok(Some(u)) => {
                         if let Err(e) = remote.update(&u) {
-                            warn!(error = %e, "refused a schema from the runner");
-                            return;
+                            break JobError::internal(format!(
+                                "the runner sent a schema the engine can't take: {}",
+                                e.message()
+                            ));
                         }
                     }
-                    Ok(None) => return,
+                    Ok(None) => break JobError::runner_gone("the runner ended the schemas call"),
                     Err(e) => {
-                        warn!(error = %e, "the schemas call broke");
-                        return;
+                        break JobError::runner_gone(format!(
+                            "the schemas call broke: {}",
+                            e.message()
+                        ));
                     }
                 }
-            }
+            };
+            info!(reason = %failure, "the job's schemas call ended");
+            remote.fail(failure);
         });
         Ok(Response::new(ReceiverStream::new(proposals)))
     }

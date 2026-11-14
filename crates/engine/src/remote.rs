@@ -2,9 +2,11 @@
 //! outside them decides it, and the runner reaches it through the Schemas
 //! call. A lane that changes a stream's schema proposes it from the owner's
 //! version its engine follows, one proposal of a stream at a time, and waits
-//! for a newer version; its engine then shapes by the newest.
+//! for a newer version; its engine then shapes by the newest. Once the call
+//! fails, every proposal waiting and every lane that shapes next fails the
+//! job with why.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use arrow_schema::SchemaRef;
 use openetl_proto::engine::v1::{SchemasRequest, SchemasResponse};
@@ -20,6 +22,7 @@ pub struct Remote {
     streams: Vec<RemoteStream>,
     /// Taken by the Schemas call.
     proposals: Mutex<Option<Proposals>>,
+    failure: Arc<watch::Sender<Option<JobError>>>,
 }
 
 pub struct RemoteStream {
@@ -30,6 +33,8 @@ pub struct RemoteStream {
     latest: Mutex<(u64, Option<SchemaRef>)>,
     /// Held while a proposal of the stream waits for its answer.
     turn: tokio::sync::Mutex<()>,
+    /// Why the Schemas call failed; None while it works.
+    failure: Arc<watch::Sender<Option<JobError>>>,
 }
 
 impl std::fmt::Debug for Remote {
@@ -43,6 +48,7 @@ impl std::fmt::Debug for Remote {
 impl Remote {
     pub fn new(streams: usize) -> Self {
         let (tx, rx) = mpsc::channel(streams.max(1));
+        let failure = Arc::new(watch::Sender::new(None));
         Self {
             streams: (0..streams)
                 .map(|s| RemoteStream {
@@ -51,10 +57,23 @@ impl Remote {
                     newest: watch::Sender::new(0),
                     latest: Mutex::new((0, None)),
                     turn: tokio::sync::Mutex::new(()),
+                    failure: failure.clone(),
                 })
                 .collect(),
             proposals: Mutex::new(Some(rx)),
+            failure,
         }
+    }
+
+    /// The Schemas call failed with e, unless it had already.
+    pub fn fail(&self, e: JobError) {
+        self.failure.send_if_modified(|f| {
+            if f.is_some() {
+                return false;
+            }
+            *f = Some(e);
+            true
+        });
     }
 
     pub fn stream(&self, s: usize) -> Option<&RemoteStream> {
@@ -99,10 +118,20 @@ impl RemoteStream {
             .clone()
     }
 
+    /// Why the Schemas call failed, if it has.
+    pub fn check(&self) -> Result<(), JobError> {
+        match &*self.failure.borrow() {
+            Some(e) => Err(e.clone()),
+            None => Ok(()),
+        }
+    }
+
     /// Proposes schema, made from version base, unless the owner has moved
-    /// on from it since, and returns once the owner has a newer version.
+    /// on from it since, and returns once the owner has a newer version, or
+    /// the Schemas call fails.
     pub async fn propose(&self, base: u64, schema: &SchemaRef) -> Result<(), JobError> {
         let _turn = self.turn.lock().await;
+        self.check()?;
         if self.newest() > base {
             return Ok(());
         }
@@ -117,12 +146,14 @@ impl RemoteStream {
             .send(Ok(proposal))
             .await
             .map_err(|_| JobError::runner_gone("the runner closed the schemas call"))?;
-        self.newest
-            .subscribe()
-            .wait_for(|v| *v > base)
-            .await
-            .map(|_| ())
-            .map_err(|_| JobError::runner_gone("the schemas call ended"))
+        let mut newer = self.newest.subscribe();
+        let mut failed = self.failure.subscribe();
+        tokio::select! {
+            r = newer.wait_for(|v| *v > base) => {
+                r.map(|_| ()).map_err(|_| JobError::runner_gone("the schemas call ended"))
+            }
+            _ = failed.wait_for(Option::is_some) => self.check(),
+        }
     }
 }
 
@@ -177,5 +208,26 @@ mod tests {
         r.stream(1).unwrap().propose(0, &s).await.unwrap();
         assert!(proposals.try_recv().is_err());
         assert!(r.update(&update(2, 1, &s)).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_failed_call_releases_proposals_with_why() {
+        let r = Arc::new(Remote::new(1));
+        let mut proposals = r.take_proposals().unwrap();
+        let s = schema(&["a"]);
+        let waiting = {
+            let (r, s) = (r.clone(), s.clone());
+            tokio::spawn(async move { r.stream(0).unwrap().propose(0, &s).await })
+        };
+        proposals.recv().await.unwrap().unwrap();
+        r.fail(JobError::internal("the owner is gone"));
+        r.fail(JobError::internal("a later failure"));
+        let err = waiting.await.unwrap().unwrap_err();
+        assert_eq!(err.message, "the owner is gone");
+        // Later proposals fail at once, and aren't sent.
+        let err = r.stream(0).unwrap().propose(0, &s).await.unwrap_err();
+        assert_eq!(err.message, "the owner is gone");
+        assert!(r.stream(0).unwrap().check().is_err());
+        assert!(proposals.try_recv().is_err());
     }
 }

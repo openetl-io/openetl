@@ -18,8 +18,10 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/attempt"
+	"github.com/openetl-io/openetl/internal/runner/flinktest"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -37,6 +39,9 @@ type rangeSource struct {
 	gate <-chan struct{}
 	// Between pages.
 	pause time.Duration
+	// Set: a split that has read its rows keeps its read open until it's
+	// cancelled, instead of completing.
+	open bool
 	// What the worker acknowledged, and read.
 	mu    sync.Mutex
 	acked map[string]string
@@ -91,6 +96,10 @@ func (s *rangeSource) Read(ctx context.Context, req source.ReadRequest, out sour
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		}
+		if s.open {
+			<-ctx.Done()
+			return ctx.Err()
 		}
 		return e.Complete([]byte(strconv.Itoa(end)))
 	})
@@ -613,11 +622,16 @@ func drains(j *runner.Job) {
 }
 
 // Attempts on one runner, three workers and one restore from each other's
-// records, whatever the layout that wrote them.
+// records, whatever the layout that wrote them. Each but the last keeps its
+// read open, so it ends only by draining.
 func TestRescalingBetweenAttempts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	p := newPool(t, ranges(6, 100, 5))
+	p := newPool(t, func() *rangeSource {
+		s := ranges(6, 100, 5)()
+		s.open = true
+		return s
+	})
 	single := p.job("a1", p.source(), stagingDest{s: p.store, t: t})
 	drains(&single)
 	last, err := runner.RunAttempt(ctx, single)
@@ -638,6 +652,7 @@ func TestRescalingBetweenAttempts(t *testing.T) {
 		}
 		last = res
 	}
+	p.source = ranges(6, 100, 5)
 	res, err := runner.RunAttempt(ctx, p.job("a2", p.source(), stagingDest{s: p.store, t: t}))
 	if err != nil {
 		t.Fatal(err)
@@ -721,6 +736,32 @@ func TestOneSchemaOwnerAcrossWorkers(t *testing.T) {
 		if v == 3 && (schema.NumFields() != 2 || schema.Field(1).Name != fmt.Sprintf("lane%d", lane)) {
 			t.Fatalf("the record's schema is %v, not version 3, lane %d's", schema, lane)
 		}
+	}
+}
+
+// A Flink job given workers is refused before its own path starts it.
+func TestAFlinkJobIsRefusedWorkers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	bridge := flinktest.NewBridge()
+	launched := false
+	_, err := runner.RunAttempt(ctx, runner.Job{
+		Owner: "a1", Pipeline: "p", Continuous: true, Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"),
+		Source:      countingSource{streams: []string{"s"}, rows: 1, page: 1},
+		Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Read: source.Incremental, Mode: destination.Append, Schema: idSchema}},
+		Outputs:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, Transformed: true}},
+		Destination: stagingDest{s: newLaneStore(), t: t},
+		Dataflow:    runner.Passthrough{Convert: idRows},
+		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline, CommitInterval: 10 * time.Millisecond},
+		Flink:       flinktest.NewCluster(bridge),
+		Bridge:      bridge,
+		Workers: &runner.Workers{Count: 2, Server: listen(t), Options: workerOpts, Launch: func(context.Context, []attempt.Target) error {
+			launched = true
+			return nil
+		}},
+	})
+	if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "Spark or Flink") || launched {
+		t.Fatalf("a Flink job on workers: %v, launched %v", err, launched)
 	}
 }
 

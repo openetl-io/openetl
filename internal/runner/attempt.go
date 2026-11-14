@@ -414,6 +414,11 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	if err := job.validate(); err != nil {
 		return res, err
 	}
+	if job.Workers != nil {
+		if err := job.OnWorkers(job.Workers.Count); err != nil {
+			return res, err
+		}
+	}
 	if job.Flink != nil {
 		return runFlink(ctx, job)
 	}

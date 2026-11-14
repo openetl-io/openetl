@@ -77,7 +77,7 @@ func (j *Job) OnWorkers(workers int) error {
 	case engineSink:
 		return errs.New(errs.ConfigInvalid, "runner: a destination the engine writes runs on one pod")
 	}
-	for _, s := range j.Streams {
+	for _, s := range j.sinkStreams() {
 		if j.holdsOn(s) {
 			return errs.New(errs.ConfigInvalid, "runner: stream %q holds columns, which runs on one pod", s.Name)
 		}
@@ -504,9 +504,6 @@ func schemaAppliedToProto(a destination.SchemaApplied) *protocolv1.WriteSchemaAp
 
 // coordinate runs the claimed attempt on its workers.
 func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *checkpoint.Session, at loaded, res Result, log *slog.Logger) (_ Result, err error) {
-	if err := j.OnWorkers(j.Workers.Count); err != nil {
-		return res, err
-	}
 	srv, n := j.Workers.Server, j.Workers.Count
 	token := rand.Text()
 	co, err := srv.Open(attempt.Attempt{ID: j.Owner, Generation: res.Generation, Workers: n, Token: token}, j.Workers.Options)
