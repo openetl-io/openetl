@@ -3,6 +3,8 @@ package attempt
 import (
 	"context"
 	"errors"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +22,31 @@ func listen(t *testing.T) *Server {
 	}
 	t.Cleanup(s.Close)
 	return s
+}
+
+// A server advertises where workers reach it: its listener's address, a
+// host:port it's given, or a host with its listener's port.
+func TestAdvertise(t *testing.T) {
+	for _, c := range []struct{ advertise, want string }{
+		{"", "127.0.0.1:"},
+		{"10.0.0.7:7720", "10.0.0.7:7720"},
+		{"10.0.0.7", "10.0.0.7:"},
+		{"fd00::7", "[fd00::7]:"},
+	} {
+		s, err := Listen(t.Context(), ListenConfig{Address: "127.0.0.1:0", Advertise: c.advertise})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, port, _ := net.SplitHostPort(s.lis.Addr().String())
+		want := c.want
+		if strings.HasSuffix(want, ":") {
+			want += port
+		}
+		if got := s.Address(); got != want {
+			t.Errorf("advertise %q: got %q, want %q", c.advertise, got, want)
+		}
+		s.Close()
+	}
 }
 
 type joined struct {

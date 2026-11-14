@@ -313,6 +313,11 @@ message JobResources {
   google.protobuf.Duration finish_within = 4;
   // The runners that run its jobs. Unset: default.
   string pool = 5;
+  // How many pods each attempt runs on, as workers that a coordinator in a
+  // pod of its own leads, each of the job's size; 0 or 1: one pod. A pool's
+  // pod launcher starts them, all or none. A job that can't run on workers
+  // runs on one pod, and the plan says why.
+  uint32 workers = 6;
 }
 
 // SparkAccess is how the pipeline's Spark applications reach its _spark/
@@ -956,9 +961,13 @@ message ViewPlan {
 }
 
 message JobPlan {
+  // Each worker's, when it runs on workers.
   JobSize size = 1;
   JobSizeReason reason = 2;
   string pool = 3;
+  // The workers each attempt runs on, with their coordinator; 0: one pod.
+  // A warning says why a job that asks for workers runs on one pod.
+  uint32 workers = 4;
 }
 
 message PlanWarning {

@@ -293,6 +293,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | `resources.min`, `resources.max` | The smallest and largest size `auto` may choose; `max` is also what a retry after running out of memory may grow to | `max`: `xl` for `auto`, otherwise the size itself |
 | `resources.finishWithin` | Scheduled, with an automatic size: run as many lanes as the last sync's volume needs to finish within this long | |
 | `resources.pool` | Which pool of runners runs the jobs | `default` |
+| `resources.workers` | How many pods each job runs on, each of the job's size, from 1 to 64; the pool needs a pod launcher. [Workers](../reference/specs/pipeline.md#workers) lists the jobs that stay on one pod | `1` |
 | `dataPlane` | Which data plane's runners run the jobs | The server's, `default` |
 | `heal.mode` | What OpenETL does about the pipeline's incidents: `off` opens them and does nothing else; `suggest` also proposes actions, such as pausing the pipeline or a stream, or syncing less often; `auto_safe` takes them; `auto` does the same as `auto_safe` | `auto_safe` |
 

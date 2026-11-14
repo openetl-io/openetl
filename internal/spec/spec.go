@@ -457,7 +457,11 @@ type jobResourcesYAML struct {
 	Max          yaml.Node `yaml:"max"`
 	FinishWithin string    `yaml:"finishWithin"`
 	Pool         string    `yaml:"pool"`
+	Workers      *int      `yaml:"workers"`
 }
+
+// MaxWorkers is the most workers resources.workers may ask for.
+const MaxWorkers = 64
 
 var poolPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
@@ -484,6 +488,12 @@ func parseJobResources(y *jobResourcesYAML, continuous bool) (*apiv1.JobResource
 		return nil, fmt.Errorf("resources.min, %s, is larger than resources.size, %s", lo, size)
 	case r.Size != nil && r.Max != nil && !size.Fits(hi):
 		return nil, fmt.Errorf("resources.size, %s, is larger than resources.max, %s", size, hi)
+	}
+	if w := y.Workers; w != nil {
+		if *w < 1 || *w > MaxWorkers {
+			return nil, fmt.Errorf("resources.workers: %d isn't from 1 to %d", *w, MaxWorkers)
+		}
+		r.Workers = uint32(*w)
 	}
 	if y.FinishWithin != "" {
 		if continuous {

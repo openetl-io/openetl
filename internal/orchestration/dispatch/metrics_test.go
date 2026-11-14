@@ -55,6 +55,18 @@ func TestDemandByWhereItRuns(t *testing.T) {
 		t.Errorf("runs on %q and %q", got[1].runsOn(), got[0].runsOn())
 	}
 
+	// An attempt on workers goes to pods, and counts its workers and its
+	// coordinator.
+	gang := demandRow("b", resources.S, "pending", false, 2, 3)
+	gang.Workers, gang.CoordinatorCpu, gang.CoordinatorMemory = 3, resources.XS.CPU, resources.XS.Memory
+	got, err = sumDemand([]db.PlacementDemandRow{gang}, func(string) ([]Runner, error) { return planes["b"], nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got[0].pod || got[0].attempts != 2 || got[0].total() != resources.S.Times(3).Add(resources.XS) {
+		t.Fatalf("got %+v, want 2 attempts on pods, each holding 3.5 vCPUs", got)
+	}
+
 	failed := errors.New("no")
 	if _, err := sumDemand([]db.PlacementDemandRow{demandRow("a", resources.S, "pending", false, 1, 1)}, func(string) ([]Runner, error) { return nil, failed }); !errors.Is(err, failed) {
 		t.Fatalf("err %v", err)

@@ -49,6 +49,9 @@ func (s Size) Fits(room Size) bool { return s.CPU <= room.CPU && s.Memory <= roo
 
 func (s Size) Add(o Size) Size { return Size{CPU: s.CPU + o.CPU, Memory: s.Memory + o.Memory} }
 
+// Times is n of s.
+func (s Size) Times(n int) Size { return Size{CPU: s.CPU * int64(n), Memory: s.Memory * int64(n)} }
+
 // Below is the most of s and limit in each of CPU and memory.
 func (s Size) Below(limit Size) Size {
 	return Size{CPU: min(s.CPU, limit.CPU), Memory: min(s.Memory, limit.Memory)}

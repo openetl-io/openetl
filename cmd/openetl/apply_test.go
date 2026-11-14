@@ -317,6 +317,19 @@ func TestCheckPipeline(t *testing.T) {
 	}
 }
 
+// openetl plan says how many workers a job runs on; the plan's warnings say
+// why one that asks for them doesn't.
+func TestPlanShowsWorkers(t *testing.T) {
+	var out bytes.Buffer
+	printPlan(&out, &apiv1.PipelinePlan{
+		Pipeline: "workspaces/default/pipelines/shop", Version: "0123456789abcdef",
+		Job: &apiv1.JobPlan{Size: &apiv1.JobSize{Preset: "m", CpuMillis: 2000, MemoryBytes: 4 << 30}, Reason: apiv1.JobSizeReason_JOB_SIZE_REASON_SPEC, Pool: "default", Workers: 4},
+	})
+	if want := "  workers: 4, each of the job's size, and their coordinator\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("printed\n%s\nwant a line %q", out.String(), want)
+	}
+}
+
 // openetl plan shows a SQL transform's statements: each one's class, output,
 // key and exchange, its output's columns, and which streams reach the
 // destination as they are.

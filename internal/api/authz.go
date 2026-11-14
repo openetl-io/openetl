@@ -225,6 +225,7 @@ var rules = map[string]rule{
 	dataplanev1connect.DataPlaneServiceReportRunnerProcedure:         runner,
 	dataplanev1connect.DataPlaneServicePollWorkProcedure:             runner,
 	dataplanev1connect.DataPlaneServiceReportResultProcedure:         runner,
+	dataplanev1connect.DataPlaneServiceOpenWorkersProcedure:          runner,
 	dataplanev1connect.DataPlaneServiceReportRewindProcedure:         runner,
 	dataplanev1connect.DataPlaneServiceReportRetentionProcedure:      runner,
 }

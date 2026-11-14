@@ -296,8 +296,13 @@ func (w *Worker) reportPods(ctx context.Context, req *dataplanev1.ReportRunnerRe
 		w.log().Warn("listing the launcher's pods failed", "err", err)
 		return nil
 	}
+	// Once for an attempt's placement and its workers' pods.
+	seen := map[string]bool{}
 	for _, p := range launched {
-		req.Launched = append(req.Launched, &dataplanev1.Launch{Attempt: p.Attempt, Placement: uint32(max(0, p.Placement))})
+		if key := pods.Name(p.Attempt, p.Placement); !seen[key] {
+			seen[key] = true
+			req.Launched = append(req.Launched, &dataplanev1.Launch{Attempt: p.Attempt, Placement: uint32(max(0, p.Placement))})
+		}
 	}
 	return launched
 }
@@ -305,12 +310,17 @@ func (w *Worker) reportPods(ctx context.Context, req *dataplanev1.ReportRunnerRe
 // tend deletes a launcher's pods whose placements have ended, and says how
 // the others that ended did, as their runners couldn't.
 func (w *Worker) tend(ctx context.Context, launched []pods.Pod, reap []*dataplanev1.Launch) {
-	gone := map[string]bool{}
+	type placement struct {
+		attempt string
+		n       int32
+	}
+	gone := map[placement]bool{}
 	for _, l := range reap {
-		gone[pods.Name(l.GetAttempt(), int32(min(l.GetPlacement(), math.MaxInt32)))] = true
+		gone[placement{l.GetAttempt(), int32(min(l.GetPlacement(), math.MaxInt32))}] = true
 	}
 	for _, p := range launched {
-		if gone[p.Name] {
+		// An attempt's workers' pods go with its own.
+		if gone[placement{p.Attempt, p.Placement}] {
 			if err := w.Launcher.Delete(ctx, p); err != nil {
 				w.log().Warn("deleting an attempt's pod failed; the next report tries again", "pod", p.Name, "err", err)
 				continue
@@ -326,8 +336,11 @@ func (w *Worker) tend(ctx context.Context, launched []pods.Pod, reap []*dataplan
 		w.mu.Unlock()
 		switch {
 		case told:
+		// A worker that ended well left the attempt's outcome to its
+		// coordinator.
+		case p.Ended && p.Worker > 0 && p.Failure == nil:
 		case p.Ended:
-			w.log().Warn("an attempt's pod ended without its result", "pod", p.Name, "attempt", p.Attempt, "err", p.Failure)
+			w.log().Warn("an attempt's pod ended without its result", "pod", p.Name, "attempt", p.Attempt, "worker", p.Worker, "err", p.Failure)
 			w.send(context.WithoutCancel(ctx), launchFailure(w.ID, p.Attempt, p.Placement, p.Failure))
 		case p.Stuck != "":
 			w.log().Warn("an attempt's pod hasn't started, and is placed again if it doesn't start in time", "pod", p.Name, "attempt", p.Attempt, "why", p.Stuck)
@@ -463,6 +476,8 @@ func (w *Worker) launch(base, results context.Context, m *dataplanev1.Work) {
 		Size:        resources.Size{CPU: m.GetSize().GetCpuMillis(), Memory: m.GetSize().GetMemoryBytes()},
 		Pipeline:    pipelineOf(m.GetInput()),
 		StopTimeout: int64(cmp.Or(w.Kinds[m.GetKind()].StopTimeout, 2*time.Minute) / time.Second),
+		Workers:     workersOf(m),
+		Coordinator: resources.Size{CPU: m.GetCoordinator().GetCpuMillis(), Memory: m.GetCoordinator().GetMemoryBytes()},
 	}
 	w.handlers.Go(func() {
 		wait := time.Second
@@ -471,7 +486,7 @@ func (w *Worker) launch(base, results context.Context, m *dataplanev1.Work) {
 			err := w.Launcher.Launch(ctx, l)
 			cancel()
 			if err == nil {
-				w.log().Info("launched a pod for an attempt", "attempt", l.Attempt, "placement", l.Placement, "size", l.Size, "pod", pods.Name(l.Attempt, l.Placement))
+				w.log().Info("launched a pod for an attempt", "attempt", l.Attempt, "placement", l.Placement, "size", l.Size, "pod", pods.Name(l.Attempt, l.Placement), "workers", l.Workers)
 				return
 			}
 			if errs.CodeOf(err) == errs.ConfigInvalid {
@@ -505,6 +520,7 @@ func pipelineOf(input []byte) string {
 
 func (w *Worker) start(base, results context.Context, m *dataplanev1.Work) {
 	wk := newWork(m, w.drain)
+	wk.Runner = w.ID
 	kind, known := w.Kinds[wk.Kind]
 	light := m.GetSize() == nil
 	w.mu.Lock()
@@ -671,6 +687,7 @@ func outcome(runner string, wk *Work, res any, err error) *dataplanev1.ReportRes
 	out := &dataplanev1.ReportResultRequest{Runner: runner, Id: wk.ID, Lanes: APILanes(wk.Meter.Lanes())}
 	out.Usage, out.Rows, out.Bytes = wk.usage()
 	var failure *contract.Failure
+	var onePod *OnePod
 	switch {
 	case err == nil:
 		b, merr := json.Marshal(res)
@@ -678,6 +695,8 @@ func outcome(runner string, wk *Work, res any, err error) *dataplanev1.ReportRes
 			return outcome(runner, wk, nil, errs.Wrap(errs.Internal, merr, "the work's result"))
 		}
 		out.Result = b
+	case errors.As(err, &onePod):
+		out.OnePod = onePod.Why
 	case errors.Is(err, ErrCancelled):
 		out.Cancelled = true
 	case errors.As(err, &failure):
@@ -724,9 +743,23 @@ func (w *Worker) send(ctx context.Context, req *dataplanev1.ReportResultRequest)
 	})
 }
 
+// OnePod is what an attempt's coordinator returns when the attempt can't run
+// on workers: it's placed again on one pod.
+type OnePod struct{ Why string }
+
+func (e *OnePod) Error() string { return "the attempt runs on one pod: " + e.Why }
+
+// workersOf is the workers the API says an attempt runs on.
+func workersOf(m *dataplanev1.Work) int { return int(min(m.GetWorkers(), math.MaxInt32)) }
+
 // Spec is what the API says of a piece of work.
 type Spec struct {
 	ID, Kind string
+	// The runner it's on.
+	Runner string
+	// The workers it runs on, each of Size, which this runner coordinates; 0:
+	// it runs here.
+	Workers int
 	// How long it may go unreported.
 	HeartbeatTimeout time.Duration
 	Timeout          time.Duration
@@ -761,7 +794,7 @@ func newWork(m *dataplanev1.Work, drain <-chan struct{}) *Work {
 	wk := NewWork(Spec{
 		ID: m.GetId(), Kind: m.GetKind(), HeartbeatTimeout: m.GetHeartbeatTimeout().AsDuration(), Timeout: m.GetTimeout().AsDuration(),
 		Size:     resources.Size{CPU: m.GetSize().GetCpuMillis(), Memory: m.GetSize().GetMemoryBytes()},
-		Received: time.Now().Round(0),
+		Received: time.Now().Round(0), Workers: workersOf(m),
 	}, drain)
 	if m.GetSize() != nil {
 		wk.Meter = resources.NewMeter()

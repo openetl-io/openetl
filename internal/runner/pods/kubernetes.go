@@ -34,6 +34,9 @@ const (
 	labelPipeline  = "openetl.io/pipeline"
 	annoAttempt    = "openetl.io/attempt"
 	annoPlacement  = "openetl.io/placement"
+	// Which of the attempt's workers the pod runs, from 1; none on the
+	// attempt's own pod.
+	annoWorker = "openetl.io/worker"
 	// Karpenter doesn't move a pod with it to consolidate nodes.
 	annoDoNotDisrupt = "karpenter.sh/do-not-disrupt"
 )
@@ -172,22 +175,42 @@ func checkTemplate(p *corev1.Pod) error {
 	return nil
 }
 
+// Launch makes l's pods: its workers', if it has any, and then its own. If
+// one can't be made, it deletes those it made.
 func (k *Kubernetes) Launch(ctx context.Context, l Launch) error {
-	_, err := k.Client.CoreV1().Pods(k.Namespace).Create(ctx, k.Pod(l), metav1.CreateOptions{})
-	switch {
-	case err == nil, apierrors.IsAlreadyExists(err):
-		return nil
-	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err), apierrors.IsNotFound(err),
-		apierrors.IsForbidden(err) && !strings.Contains(err.Error(), "exceeded quota"):
-		return errs.Wrap(errs.ConfigInvalid, err, "pods: make the attempt's pod in namespace "+k.Namespace)
+	var made []string
+	for _, worker := range l.pods() {
+		p := k.WorkerPod(l, worker)
+		_, err := k.Client.CoreV1().Pods(k.Namespace).Create(ctx, p, metav1.CreateOptions{})
+		if err == nil || apierrors.IsAlreadyExists(err) {
+			made = append(made, p.Name)
+			continue
+		}
+		for _, name := range made {
+			if derr := k.Client.CoreV1().Pods(k.Namespace).Delete(ctx, name, metav1.DeleteOptions{}); derr != nil && !apierrors.IsNotFound(derr) {
+				err = errors.Join(err, derr)
+			}
+		}
+		switch {
+		case apierrors.IsInvalid(err), apierrors.IsBadRequest(err), apierrors.IsNotFound(err),
+			apierrors.IsForbidden(err) && !strings.Contains(err.Error(), "exceeded quota"):
+			return errs.Wrap(errs.ConfigInvalid, err, "pods: make the attempt's pod in namespace "+k.Namespace)
+		}
+		return errs.Wrap(errs.Transient, err, "pods: make the attempt's pod in namespace "+k.Namespace)
 	}
-	return errs.Wrap(errs.Transient, err, "pods: make the attempt's pod in namespace "+k.Namespace)
+	return nil
 }
 
-// Pod is l's pod.
-func (k *Kubernetes) Pod(l Launch) *corev1.Pod {
+// Pod is l's own pod, whose runner runs the attempt, and coordinates its
+// workers if it has any.
+func (k *Kubernetes) Pod(l Launch) *corev1.Pod { return k.WorkerPod(l, 0) }
+
+// WorkerPod is the pod of l's worker, counting from 1; 0 is l's own. A
+// coordinator's serves its workers the attempt protocol on AttemptPort, at
+// its pod's IP.
+func (k *Kubernetes) WorkerPod(l Launch, worker int) *corev1.Pod {
 	p := k.Template.DeepCopy()
-	p.Name, p.GenerateName, p.Namespace = Name(l.Attempt, l.Placement), "", k.Namespace
+	p.Name, p.GenerateName, p.Namespace = WorkerName(l.Attempt, l.Placement, worker), "", k.Namespace
 	job := "batch"
 	if l.Kind == contract.RunStreamJob {
 		job = "stream"
@@ -197,6 +220,9 @@ func (k *Kubernetes) Pod(l Launch) *corev1.Pod {
 		labelPool: labelValue(k.Pool), labelJob: job, labelPipeline: labelValue(l.Pipeline),
 	})
 	p.Annotations = with(p.Annotations, map[string]string{annoAttempt: l.Attempt, annoPlacement: strconv.Itoa(int(l.Placement))})
+	if worker > 0 {
+		p.Annotations[annoWorker] = strconv.Itoa(worker)
+	}
 	s := &p.Spec
 	s.RestartPolicy = corev1.RestartPolicyNever
 	grace := l.StopTimeout + 30
@@ -220,11 +246,21 @@ func (k *Kubernetes) Pod(l Launch) *corev1.Pod {
 			c = &s.Containers[i]
 		}
 	}
-	for _, v := range Env(l, k.Pool) {
+	for _, v := range Env(l, k.Pool, worker) {
 		name, value, _ := strings.Cut(v, "=")
 		c.Env = append(c.Env, corev1.EnvVar{Name: name, Value: value})
 	}
-	size := l.Size.Add(k.Reserve)
+	size := l.Size
+	if l.Workers > 0 && worker == 0 {
+		size = l.Coordinator
+		c.Env = append(c.Env,
+			corev1.EnvVar{Name: "OPENETL_POD_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}},
+			corev1.EnvVar{Name: "OPENETL_ATTEMPT_LISTEN", Value: fmt.Sprintf(":%d", AttemptPort)},
+			corev1.EnvVar{Name: "OPENETL_ATTEMPT_ADVERTISE", Value: "$(OPENETL_POD_IP)"},
+		)
+		c.Ports = append(c.Ports, corev1.ContainerPort{Name: "attempt", ContainerPort: AttemptPort, Protocol: corev1.ProtocolTCP})
+	}
+	size = size.Add(k.Reserve)
 	amounts := corev1.ResourceList{
 		corev1.ResourceCPU:    *resource.NewMilliQuantity(size.CPU, resource.DecimalSI),
 		corev1.ResourceMemory: *resource.NewQuantity(size.Memory, resource.BinarySI),
@@ -323,10 +359,15 @@ func (k *Kubernetes) Pods(ctx context.Context) ([]Pod, error) {
 			continue
 		}
 		pod := Pod{Name: p.Name, Attempt: p.Annotations[annoAttempt], Placement: int32(n)}
-		switch p.Status.Phase {
-		case corev1.PodSucceeded:
+		if w, err := strconv.Atoi(p.Annotations[annoWorker]); err == nil && w > 0 {
+			pod.Worker = w
+		}
+		switch phase := p.Status.Phase; {
+		case phase == corev1.PodSucceeded && pod.Worker > 0:
+			pod.Ended = true
+		case phase == corev1.PodSucceeded:
 			pod.Ended, pod.Failure = true, errs.New(errs.Transient, "its pod %s ended without the attempt's result", p.Name)
-		case corev1.PodFailed:
+		case phase == corev1.PodFailed:
 			pod.Ended, pod.Failure = true, failure(p)
 		default:
 			pod.Stuck = stuck(p)

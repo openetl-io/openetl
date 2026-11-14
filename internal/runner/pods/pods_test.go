@@ -2,7 +2,10 @@ package pods
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -317,5 +320,172 @@ func TestProcesses(t *testing.T) {
 			t.Fatalf("pods %+v, want b's ended", pods)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func onWorkers() Launch {
+	l := batch()
+	l.Workers, l.Coordinator = 3, resources.XS
+	return l
+}
+
+// An attempt on workers is a pod for each worker, of the attempt's size, and
+// the coordinator's, of its own, which serves the attempt protocol at its
+// pod's IP.
+func TestWorkerPods(t *testing.T) {
+	k, _ := launcher(t)
+	l := onWorkers()
+	co := k.Pod(l)
+	c := &co.Spec.Containers[1]
+	e := env(c)
+	if co.Name != Name(l.Attempt, 2) || co.Annotations[annoWorker] != "" || e["OPENETL_WORKER"] != "" {
+		t.Errorf("the coordinator's pod %q, annotations %v, env %v", co.Name, co.Annotations, e)
+	}
+	if e["OPENETL_ATTEMPT_LISTEN"] != ":7720" || e["OPENETL_ATTEMPT_ADVERTISE"] != "$(OPENETL_POD_IP)" || e["OPENETL_CAPACITY"] != resources.XS.Flag() {
+		t.Errorf("the coordinator's env %v", e)
+	}
+	var podIP *corev1.EnvVar
+	for i := range c.Env {
+		if c.Env[i].Name == "OPENETL_POD_IP" {
+			podIP = &c.Env[i]
+		}
+	}
+	// $(OPENETL_POD_IP) expands only to a variable defined before it.
+	if podIP == nil || podIP.ValueFrom.FieldRef.FieldPath != "status.podIP" || slices.IndexFunc(c.Env, func(v corev1.EnvVar) bool { return v.Name == "OPENETL_POD_IP" }) >
+		slices.IndexFunc(c.Env, func(v corev1.EnvVar) bool { return v.Name == "OPENETL_ATTEMPT_ADVERTISE" }) {
+		t.Errorf("the coordinator's pod IP %+v in %v", podIP, c.Env)
+	}
+	if !slices.ContainsFunc(c.Ports, func(p corev1.ContainerPort) bool { return p.Name == "attempt" && p.ContainerPort == AttemptPort }) {
+		t.Errorf("the coordinator's ports %v", c.Ports)
+	}
+	if cpu := c.Resources.Limits.Cpu().MilliValue(); cpu != 1000 {
+		t.Errorf("the coordinator's CPU %dm, want xs and the reserve", cpu)
+	}
+	for w := 1; w <= 3; w++ {
+		p := k.WorkerPod(l, w)
+		c := &p.Spec.Containers[1]
+		e := env(c)
+		if p.Name != WorkerName(l.Attempt, 2, w) || len(p.Name) > 63 || p.Annotations[annoWorker] != strconv.Itoa(w) || p.Annotations[annoAttempt] != l.Attempt {
+			t.Errorf("worker %d's pod %q, annotations %v", w, p.Name, p.Annotations)
+		}
+		if e["OPENETL_WORKER"] != strconv.Itoa(w) || e["OPENETL_CAPACITY"] != resources.M.Flag() || e["OPENETL_ATTEMPT_LISTEN"] != "" || len(c.Ports) != 0 {
+			t.Errorf("worker %d's env %v and ports %v", w, e, c.Ports)
+		}
+		if cpu := c.Resources.Limits.Cpu().MilliValue(); cpu != 2500 {
+			t.Errorf("worker %d's CPU %dm, want m and the reserve", w, cpu)
+		}
+	}
+}
+
+// A launcher makes an attempt's pods all or none: one it can't make deletes
+// those it made. Its workers' pods end and go with the attempt's.
+func TestLaunchWorkersAllOrNone(t *testing.T) {
+	k, c := launcher(t)
+	l := onWorkers()
+	if err := k.Launch(t.Context(), l); err != nil {
+		t.Fatal(err)
+	}
+	got, err := k.Pods(t.Context())
+	if err != nil || len(got) != 4 {
+		t.Fatalf("got %d pods (%v), want a coordinator and 3 workers", len(got), err)
+	}
+	for _, p := range got {
+		if p.Attempt != l.Attempt || p.Placement != 2 || p.Name != WorkerName(l.Attempt, 2, p.Worker) {
+			t.Errorf("pod %+v", p)
+		}
+	}
+
+	l.Placement = 3
+	made := 0
+	c.PrependReactor("create", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if made++; made == 3 {
+			return true, nil, apierrors.NewServiceUnavailable("down")
+		}
+		return false, nil, nil
+	})
+	if err := k.Launch(t.Context(), l); errs.CodeOf(err) != errs.Transient {
+		t.Fatalf("got %v, want a transient failure", err)
+	}
+	got, _ = k.Pods(t.Context())
+	for _, p := range got {
+		if p.Placement == 3 {
+			t.Errorf("pod %s of a launch that failed is left", p.Name)
+		}
+	}
+
+	// A worker's pod that ended well has no failure; one that failed has.
+	for _, tc := range []struct {
+		worker int
+		st     corev1.PodStatus
+	}{
+		{1, status(corev1.PodSucceeded)},
+		{2, status(corev1.PodFailed, corev1.ContainerStatus{Name: "runner", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}})},
+	} {
+		p, err := c.CoreV1().Pods("etl").Get(t.Context(), WorkerName(l.Attempt, 2, tc.worker), metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Status = tc.st
+		if _, err := c.CoreV1().Pods("etl").UpdateStatus(t.Context(), p, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ = k.Pods(t.Context())
+	for _, p := range got {
+		switch p.Worker {
+		case 1:
+			if !p.Ended || p.Failure != nil {
+				t.Errorf("worker 1 ended well: %+v", p)
+			}
+		case 2:
+			if !p.Ended || errs.CodeOf(p.Failure) != errs.ResourceExhausted {
+				t.Errorf("worker 2 went over its memory: %+v", p)
+			}
+		}
+	}
+}
+
+// The process launcher starts a process for each worker, with which one it
+// is in its environment, and the attempt's own; if one can't start, it stops
+// the others.
+func TestProcessesForWorkers(t *testing.T) {
+	dir := t.TempDir()
+	p := &Processes{Command: []string{"/bin/sh", "-c", `echo "$OPENETL_CAPACITY" > "` + dir + `/w$OPENETL_WORKER"; exec sleep 30`}, Pool: "big"}
+	t.Cleanup(p.Close)
+	l := Launch{Attempt: "a/1", Placement: 1, Kind: contract.RunSyncAttempt, Size: resources.S, Workers: 2, Coordinator: resources.XS}
+	if err := p.Launch(t.Context(), l); err != nil {
+		t.Fatal(err)
+	}
+	pods, _ := p.Pods(t.Context())
+	if len(pods) != 3 {
+		t.Fatalf("pods %+v, want the attempt's and its 2 workers'", pods)
+	}
+	want := map[string]string{"w": resources.XS.Flag(), "w1": resources.S.Flag(), "w2": resources.S.Flag()}
+	deadline := time.Now().Add(10 * time.Second)
+	for name, size := range want {
+		for {
+			b, err := os.ReadFile(filepath.Join(dir, name))
+			if err == nil && strings.TrimSpace(string(b)) == size {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: %q (%v), want %s", name, b, err, size)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	for _, pod := range pods {
+		if err := p.Delete(t.Context(), pod); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	broken := &Processes{Command: []string{filepath.Join(dir, "missing")}}
+	t.Cleanup(broken.Close)
+	if err := broken.Launch(t.Context(), l); errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Fatalf("got %v, want the processes not to start", err)
+	}
+	if pods, _ := broken.Pods(t.Context()); len(pods) != 0 {
+		t.Fatalf("pods %+v of a launch that failed", pods)
 	}
 }

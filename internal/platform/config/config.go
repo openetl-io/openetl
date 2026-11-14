@@ -44,6 +44,10 @@ type Config struct {
 	// can't run Flink pipelines.
 	BridgeListen    string
 	BridgeAdvertise string
+	// Where a runner that coordinates an attempt's workers serves them, and
+	// the host, or host:port, they reach it at.
+	AttemptListen    string
+	AttemptAdvertise string
 	// CIDR prefixes, comma-separated, that connectors, registries and
 	// webhooks may reach besides public addresses.
 	EgressAllow string
@@ -107,9 +111,11 @@ type Config struct {
 	PodScratch string
 	// Whether stream pods avoid spot nodes or only prefer to.
 	PodStreamSpot string
-	// The one attempt a pod's runner runs, and its placement.
+	// The one attempt a pod's runner runs, and its placement, and which of
+	// its workers, from 1; 0: the attempt itself.
 	Attempt   string
 	Placement int
+	Worker    int
 	// A file holding the runner's token. Empty: OPENETL_RUNNER_TOKEN.
 	TokenFile string
 	// From OPENETL_RUNNER_TOKEN only, so it isn't in a process listing.
@@ -159,6 +165,8 @@ var options = []option{
 	{"spark-submit", "OPENETL_SPARK_SUBMIT", "", "Spark 3.5's spark-submit, for pipelines' Spark steps on self-managed clusters (default: spark-submit on PATH)", func(c *Config) *string { return &c.SparkSubmit }},
 	{"bridge-listen", "OPENETL_BRIDGE_LISTEN", "", "where the runner serves the bridge to pipelines' Flink jobs, such as :7710; empty: the runner doesn't run Flink pipelines", func(c *Config) *string { return &c.BridgeListen }},
 	{"bridge-advertise", "OPENETL_BRIDGE_ADVERTISE", "", "the host:port Flink jobs reach this runner's bridge at, which must reach this runner and not a load balancer (default: the listen address)", func(c *Config) *string { return &c.BridgeAdvertise }},
+	{"attempt-listen", "OPENETL_ATTEMPT_LISTEN", "", "where a runner that coordinates an attempt on workers serves them, such as :7720 (default: 127.0.0.1 and a free port, which only workers on this machine reach); the kubernetes launcher sets it in a coordinator's pod", func(c *Config) *string { return &c.AttemptListen }},
+	{"attempt-advertise", "OPENETL_ATTEMPT_ADVERTISE", "", "the host, or host:port, an attempt's workers reach their coordinator at; a host alone takes --attempt-listen's port (default: the listen address); the kubernetes launcher sets it to the coordinator pod's IP", func(c *Config) *string { return &c.AttemptAdvertise }},
 	{"pool", "OPENETL_POOL", "default", "the pool this runner serves", func(c *Config) *string { return &c.Pool }},
 	{"capacity", "OPENETL_CAPACITY", "", "what this runner places on itself, as CPU,MEMORY such as 4,8Gi (default: its cgroup's or host's, less --reserve)", func(c *Config) *string { return &c.Capacity }},
 	{"reserve", "OPENETL_RESERVE", "0.5,512Mi", "what this runner keeps for itself, as CPU,MEMORY", func(c *Config) *string { return &c.Reserve }},
@@ -213,6 +221,7 @@ type intOption struct {
 var intOptions = []intOption{
 	{"max-pods", "OPENETL_MAX_PODS", 20, "how many pods a launcher has at once; 0: no limit", func(c *Config) *int { return &c.MaxPods }},
 	{"placement", "OPENETL_PLACEMENT", 0, "which placement of --attempt this pod is for; set by the launcher", func(c *Config) *int { return &c.Placement }},
+	{"worker", "OPENETL_WORKER", 0, "which of --attempt's workers this pod runs, counting from 1; 0: the attempt itself, which coordinates its workers if it has any; set by the launcher", func(c *Config) *int { return &c.Worker }},
 	{"log-max-size", "OPENETL_LOG_MAX_SIZE", 100, "megabytes a log file reaches before it's rotated", func(c *Config) *int { return &c.LogMaxSize }},
 	{"log-max-files", "OPENETL_LOG_MAX_FILES", 5, "rotated log files kept", func(c *Config) *int { return &c.LogMaxFiles }},
 	{"sign-in-rate", "OPENETL_SIGN_IN_RATE", 20, "sign-ins a minute each client address may make; behind a proxy, every user shares its address", func(c *Config) *int { return &c.SignInRate }},

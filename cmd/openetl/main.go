@@ -398,6 +398,9 @@ func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
 	}
 	if j := p.GetJob(); j != nil {
 		fmt.Fprintf(out, "  job size: %s, %s, in pool %s\n", sizeText(j.GetSize()), reasonText(j.GetReason()), j.GetPool())
+		if w := j.GetWorkers(); w > 0 {
+			fmt.Fprintf(out, "  workers: %d, each of the job's size, and their coordinator\n", w)
+		}
 	}
 	if t := p.GetTransform(); t != nil {
 		printTransform(out, t)

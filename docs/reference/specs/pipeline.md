@@ -82,8 +82,26 @@ In `spec`:
 | `resources.max` | job size | No | `xl` with `auto`, and otherwise `resources.size` itself | The largest size a job grows to: `auto`'s choice, and a retry after the job runs out of memory |
 | `resources.finishWithin` | duration, positive | No | None | Scheduled only, with an automatic size: run as many lanes as the last sync's bytes need, at each lane's measured rate, to finish within this long. |
 | `resources.pool` | pool name | No | `default` | The pool of runners that runs the jobs: at most 64 letters, digits, dots, hyphens and underscores, starting with a letter or digit |
+| `resources.workers` | integer, 1 to 64 | No | `1` | How many pods each job runs on. Above 1, each job runs on that many workers, each of the job's size, and a coordinator of size `xs`, in pods that the pool's pod launcher makes, all or none. A job that can't run on workers runs on one pod. |
 
 When a job size is an object rather than a preset, both `cpu` and `memory` are required; neither has a default.
+
+### Workers
+
+With `resources.workers` above 1, `openetl plan` shows `workers:` and the count after the job size. A job runs on one pod, and the plan's warnings say why, when:
+
+- the pipeline has a `transform`;
+- a stream holds columns or cells, as a keyed stream does in a destination that takes holds;
+- the destination declares fewer writer lanes than workers, commits each writer lane's transaction on its own, loads staged epochs, or is the built-in `parquet`;
+- no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners have.
+
+Each job's workers read the source's splits between them. Each of these streams is read on one worker, and the plan warns about each one:
+
+- a keyed stream whose splits don't partition it by key;
+- a keyed stream read with `cdc`;
+- a stream written with `overwrite`.
+
+When the control plane cannot check the destination's capabilities or the source's catalog, the plan says so in a note. Then the job's coordinator checks before each attempt, and runs the attempt on one pod if it must. The sync's attempts show how many workers each one ran on, and why one ran on one pod.
 
 `resources.min` can't be larger than `resources.size` or `resources.max`, nor `resources.size` larger than `resources.max`. A job size is a preset or amounts:
 

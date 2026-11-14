@@ -39,6 +39,7 @@ jobs:
     outputs:
       go: ${{ steps.paths.outputs.go }}
       rust: ${{ steps.paths.outputs.rust }}
+      contract: ${{ steps.paths.outputs.contract }}
       deny: ${{ steps.paths.outputs.deny }}
       web: ${{ steps.paths.outputs.web }}
       docs: ${{ steps.paths.outputs.docs }}
@@ -69,6 +70,7 @@ jobs:
           }
           area go '^(cmd|connectors|examples|gen|internal|proto|sdk/go|test|tools)/|^(go\.(mod|sum|work|work\.sum)|buf\.[a-z.]+|\.golangci\.yml|Makefile|web/package\.json|web/pnpm-lock\.yaml|docs/reference/.*)$'
           area rust '^(crates|proto|internal/engineclient)/|^(Cargo\.(toml|lock)|rust-toolchain\.toml|clippy\.toml)$'
+          area contract '^(crates|proto|internal/(engineclient|runner))/|^(Cargo\.(toml|lock)|rust-toolchain\.toml|clippy\.toml)$'
           area deny '(^|/)Cargo\.(toml|lock)$|^deny\.toml$'
           area web '^web/'
           area docs '^(docs|test/docs|test/install|deploy|examples)/|^(README\.md|CONTRIBUTING\.md|AGENTS\.md|install\.sh)$'
@@ -252,7 +254,7 @@ jobs:
   engine:
     needs: changes
     if: >-
-      needs.changes.outputs.rust == 'true' || needs.changes.outputs.e2e == 'true' ||
+      needs.changes.outputs.rust == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.e2e == 'true' ||
       (needs.changes.outputs.image == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push')
     runs-on: ubuntu-latest
     strategy:
@@ -271,10 +273,12 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The runner/engine contract, against this change's engine.
+  # The runner/engine contract, against this change's engine: the engine's
+  # client, and the runner's tests that run engines, such as an attempt on
+  # worker processes.
   contract:
     needs: [changes, engine]
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.contract == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -296,7 +300,7 @@ jobs:
       - name: Runner/engine contract tests
         run: |
           chmod 755 "$RUNNER_TEMP/engine/openetl-engine"
-          OPENETL_ENGINE="$RUNNER_TEMP/engine/openetl-engine" go test -race -count=1 ./internal/engineclient/...
+          OPENETL_ENGINE="$RUNNER_TEMP/engine/openetl-engine" go test -race -count=1 ./internal/engineclient/... ./internal/runner/...
 
   # One scheduled sync, from the built-in faker into Postgres through the
   # official Postgres connector, built from openetl-connectors' main. The

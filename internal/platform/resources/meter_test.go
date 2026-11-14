@@ -68,6 +68,31 @@ func TestMeterSharesAddUp(t *testing.T) {
 	}
 }
 
+// An attempt on workers uses what its largest worker does, and moves what
+// they all do.
+func TestMeterOfWorkers(t *testing.T) {
+	m := NewMeter()
+	m.Share(9, 900)
+	m.SetLanes(8, 0)
+	m.SetRemote(0, Remote{Usage: Usage{CPU: 3, Memory: 100, RunnerCPU: 1, RunnerMemory: 10}, Lanes: Lanes{Count: 2, Limit: 2, Busy: 1, Rows: 5}, Rows: 5, Bytes: 50})
+	m.SetRemote(1, Remote{Usage: Usage{CPU: 2, Memory: 300, RunnerCPU: 2, RunnerMemory: 5}, Lanes: Lanes{Count: 3, Limit: 3, Idle: 2, Rows: 7}, Rows: 7, Bytes: 70})
+	m.SetRemote(0, Remote{Usage: Usage{CPU: 4, Memory: 100, RunnerCPU: 1, RunnerMemory: 10}, Lanes: Lanes{Count: 2, Limit: 2, Busy: 2, Rows: 6}, Rows: 6, Bytes: 60})
+	u := m.Usage()
+	if u.CPU != 4 || u.Memory != 300 || u.RunnerCPU != 2 || u.RunnerMemory != 10 {
+		t.Errorf("usage = %+v, want each figure's largest worker's", u)
+	}
+	if rows, bytes := m.Progress(); rows != 13 || bytes != 130 {
+		t.Errorf("progress = %d rows, %d bytes, want 13 and 130", rows, bytes)
+	}
+	if l := m.Lanes(); l != (Lanes{Count: 5, Limit: 5, Busy: 2, Idle: 2, Rows: 13}) {
+		t.Errorf("lanes = %+v", l)
+	}
+	m.SetRemote(2, Remote{Lanes: Lanes{Count: 1}})
+	if l := m.Lanes(); l.Count != 6 || l.Limit != 0 {
+		t.Errorf("lanes = %+v, want no limit once a worker has none", l)
+	}
+}
+
 func TestResidentAndKill(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("needs /proc")

@@ -253,6 +253,9 @@ message CatalogStream {
   // How the source can read the stream, the way it reads it first; empty if
   // it doesn't say.
   repeated SyncMode sync_modes = 6;
+  // Where the source splits the stream, every record of a key is in one
+  // split, so an attempt on workers can spread its splits.
+  bool splits_by_key = 7;
 }
 
 enum SyncMode {

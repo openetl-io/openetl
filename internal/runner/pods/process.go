@@ -36,39 +36,59 @@ type process struct {
 	grace time.Duration
 }
 
+// Launch starts l's processes: its workers', if it has any, and its own.
+// If one can't start, it stops those it started.
 func (p *Processes) Launch(_ context.Context, l Launch) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	name := Name(l.Attempt, l.Placement)
-	if _, ok := p.procs[name]; ok {
-		return nil
-	}
 	if p.procs == nil {
 		p.procs = map[string]*process{}
 	}
+	var started []*process
+	for _, worker := range l.pods() {
+		name := WorkerName(l.Attempt, l.Placement, worker)
+		if _, ok := p.procs[name]; ok {
+			continue
+		}
+		pr, err := p.start(l, worker, name)
+		if err != nil {
+			for _, s := range started {
+				delete(p.procs, s.pod.Name)
+				go stop(s)
+			}
+			return err
+		}
+		started = append(started, pr)
+	}
+	return nil
+}
+
+// start starts one process of l; p.mu is held.
+func (p *Processes) start(l Launch, worker int, name string) (*process, error) {
 	// Not the launch's context: the process outlives the call.
 	cmd := &exec.Cmd{
-		Path: p.Command[0], Args: p.Command, Env: append(slices.Clone(p.Environ), Env(l, p.Pool)...),
+		Path: p.Command[0], Args: p.Command, Env: append(slices.Clone(p.Environ), Env(l, p.Pool, worker)...),
 		Stdout: os.Stderr, Stderr: os.Stderr,
 	}
 	if err := cmd.Start(); err != nil {
-		return errs.Wrap(errs.ConfigInvalid, err, "pods: start the attempt's process")
+		return nil, errs.Wrap(errs.ConfigInvalid, err, "pods: start the attempt's process")
 	}
-	pr := &process{pod: Pod{Name: name, Attempt: l.Attempt, Placement: l.Placement}, cmd: cmd, done: make(chan struct{}), grace: time.Duration(l.StopTimeout+30) * time.Second}
+	pr := &process{pod: Pod{Name: name, Attempt: l.Attempt, Placement: l.Placement, Worker: worker}, cmd: cmd, done: make(chan struct{}), grace: time.Duration(l.StopTimeout+30) * time.Second}
 	p.procs[name] = pr
 	go func() {
 		err := cmd.Wait()
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		pr.pod.Ended = true
-		if err != nil {
+		switch {
+		case err != nil:
 			pr.pod.Failure = errs.Wrap(errs.Transient, err, "pods: its process "+name+" failed")
-		} else {
+		case worker == 0:
 			pr.pod.Failure = errs.New(errs.Transient, "its process %s ended without the attempt's result", name)
 		}
 		close(pr.done)
 	}()
-	return nil
+	return pr, nil
 }
 
 func (p *Processes) Pods(context.Context) ([]Pod, error) {

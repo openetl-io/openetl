@@ -127,6 +127,17 @@ Jobs wait until capacity is available. Before stopping, a runner finishes jobs a
 
 A pod's spec comes from the PodTemplate `openetl-attempt-default`, to which the launcher adds the job, labels, resources and node constraints. To change it, add a patch for the PodTemplate to your kustomization. The launcher reads the template when it starts, so restart it after you apply the change (`kubectl -n openetl rollout restart deploy/openetl-launcher-default`).
 
+### Jobs on several pods
+
+A pipeline with `spec.resources.workers` above 1 runs each job on that many workers and a coordinator. The pool's launcher makes all of the job's pods, or none of them:
+
+- one pod for each worker, of the job's size plus the reserve;
+- one pod for the coordinator, of size `xs` plus the reserve.
+
+`OPENETL_MAX_PODS` and `OPENETL_MAX_POD_CPU` count every one of these pods. A job waits until all of them fit. A pool without a launcher runs such a job on one pod.
+
+The workers connect to the coordinator's pod IP on TCP port 7720, over TLS with a certificate that the coordinator makes for each job. If your namespace has NetworkPolicies, allow traffic between the pods that have the label `app.kubernetes.io/component: attempt` on that port. The launcher deletes a job's workers' pods with the coordinator's pod. [Pipeline](../reference/specs/pipeline.md#workers) lists the jobs that run on one pod.
+
 ### Spot nodes
 
 Sync pods tolerate GKE and AKS spot taints and can run on spot nodes. On an interruption notice, they stop at a checkpoint and are placed again.
@@ -173,7 +184,7 @@ The queries, for scaling with something else:
 + (sum(max by (size) (openetl_placement_cpu_pending{data_plane="default", pool="default", runs_on="runner"})) or vector(0))
 ```
 
-and the same over `openetl_placement_memory_reserved_bytes` and `openetl_placement_memory_pending_bytes`. Every orchestrator exports the same values, so `max by (size)` counts them once. `runs_on="pod"` is what the launcher's pods have or wait for, and `openetl_placement_pending_age_seconds` how long the oldest job has waited.
+and the same over `openetl_placement_memory_reserved_bytes` and `openetl_placement_memory_pending_bytes`. Every orchestrator exports the same values, so `max by (size)` counts them once. `runs_on="pod"` is what the launcher's pods have or wait for, and `openetl_placement_pending_age_seconds` how long the oldest job has waited. A job on workers counts under `runs_on="pod"` and its workers' size, with its workers and its coordinator together.
 
 KEDA keeps at least one shared runner. Without one, a pool with a launcher sends every job to a separate pod. Scale-down starts after ten minutes of lower demand and removes one runner per minute. A removed runner can have active jobs; they move after a checkpoint.
 

@@ -53,6 +53,8 @@ type Attempt struct {
 	BackpressuredSeconds float64
 	IdleSeconds          float64
 	LaneRows             int64
+	Workers              int32
+	OnePod               string
 }
 
 type AuditLog struct {
@@ -214,37 +216,41 @@ type DestinationVersion struct {
 }
 
 type Dispatch struct {
-	OrgID          uuid.UUID
-	ID             string
-	DataPlaneID    string
-	WorkflowID     string
-	Kind           string
-	Input          []byte
-	Light          string
-	Pool           string
-	SizeCpu        int64
-	SizeMemory     int64
-	Priority       int16
-	Needs          []byte
-	Trace          []byte
-	State          string
-	Runner         *string
-	HeartbeatMs    int64
-	StartTimeoutMs int64
-	TimeoutMs      int64
-	EnqueueTime    time.Time
-	StartDeadline  *time.Time
-	RunDeadline    *time.Time
-	LeaseDeadline  *time.Time
-	Cancel         bool
-	Epoch          int64
-	Outcome        []byte
-	FinishTime     *time.Time
-	Woken          bool
-	Drain          bool
-	Launcher       *string
-	Placements     int32
-	Launched       bool
+	OrgID             uuid.UUID
+	ID                string
+	DataPlaneID       string
+	WorkflowID        string
+	Kind              string
+	Input             []byte
+	Light             string
+	Pool              string
+	SizeCpu           int64
+	SizeMemory        int64
+	Priority          int16
+	Needs             []byte
+	Trace             []byte
+	State             string
+	Runner            *string
+	HeartbeatMs       int64
+	StartTimeoutMs    int64
+	TimeoutMs         int64
+	EnqueueTime       time.Time
+	StartDeadline     *time.Time
+	RunDeadline       *time.Time
+	LeaseDeadline     *time.Time
+	Cancel            bool
+	Epoch             int64
+	Outcome           []byte
+	FinishTime        *time.Time
+	Woken             bool
+	Drain             bool
+	Launcher          *string
+	Placements        int32
+	Launched          bool
+	Workers           int32
+	CoordinatorCpu    int64
+	CoordinatorMemory int64
+	WorkerTarget      []byte
 }
 
 type FlinkCluster struct {

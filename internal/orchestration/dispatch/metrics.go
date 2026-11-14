@@ -80,7 +80,8 @@ func (d *Dispatcher) RegisterMetrics() (metric.Registration, error) {
 		for _, de := range demands {
 			attrs := metric.WithAttributes(attribute.String("data_plane", de.dataPlane), attribute.String("pool", de.pool),
 				attribute.String("size", de.size.Name()), attribute.String("runs_on", de.runsOn()))
-			cpu, mem := float64(de.attempts*de.size.CPU)/1000, float64(de.attempts*de.size.Memory)
+			total := de.total()
+			cpu, mem := float64(de.attempts*total.CPU)/1000, float64(de.attempts*total.Memory)
 			if de.pending {
 				o.ObserveFloat64(cpuPending, cpu, attrs)
 				o.ObserveFloat64(memPending, mem, attrs)
@@ -126,7 +127,19 @@ func (d *Dispatcher) readMetrics(ctx context.Context) ([]db.PlacementCapacityRow
 type demandKey struct {
 	dataPlane, pool string
 	size            resources.Size
-	pending, pod    bool
+	// An attempt on workers: how many, each of size, and its coordinator's.
+	workers      int
+	coordinator  resources.Size
+	pending, pod bool
+}
+
+// total is what each attempt holds: its workers' and its coordinator's, or
+// its size.
+func (k demandKey) total() resources.Size {
+	if k.workers <= 0 {
+		return k.size
+	}
+	return k.size.Times(k.workers).Add(k.coordinator)
 }
 
 // demand is the attempts of a data plane, pool and size that are placed or
@@ -147,14 +160,18 @@ func (d demand) runsOn() string {
 
 // sumDemand adds rows up by where their attempts run, so an autoscaler of
 // runners sees their demand alone. An attempt waiting for room goes where the
-// placer would send it among the data plane's runners now.
+// placer would send it among the data plane's runners now: one on workers
+// goes to pods.
 func sumDemand(rows []db.PlacementDemandRow, runners func(dataPlane string) ([]Runner, error)) ([]demand, error) {
 	planes := map[string][]Runner{}
 	at := map[demandKey]int{}
 	var out []demand
 	for _, r := range rows {
-		k := demandKey{dataPlane: r.DataPlaneID, pool: r.Pool, size: resources.Size{CPU: r.SizeCpu, Memory: r.SizeMemory}, pending: r.State == "pending", pod: r.Pod}
-		if k.pending {
+		k := demandKey{dataPlane: r.DataPlaneID, pool: r.Pool, size: resources.Size{CPU: r.SizeCpu, Memory: r.SizeMemory}, pending: r.State == "pending", pod: r.Pod,
+			workers: int(r.Workers), coordinator: resources.Size{CPU: r.CoordinatorCpu, Memory: r.CoordinatorMemory}}
+		if k.pending && k.workers > 0 {
+			k.pod = true
+		} else if k.pending {
 			rs, ok := planes[k.dataPlane]
 			if !ok {
 				var err error

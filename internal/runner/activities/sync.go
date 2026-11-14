@@ -70,6 +70,10 @@ type Sync struct {
 	// Assumes the aws roles that sources and destinations name. Nil: none
 	// can be.
 	AWSRoles *awsroles.Broker
+	// Where an attempt on workers serves them the attempt protocol, as
+	// host:port, and where they reach it; empty: 127.0.0.1:0, and the
+	// listener's address.
+	AttemptListen, AttemptAdvertise string
 }
 
 // RunSyncAttempt runs one attempt of a sync. When it's asked to stop, or the
@@ -95,6 +99,10 @@ func (a *Sync) RunSyncAttempt(ctx context.Context, in contract.AttemptInput) (co
 		org: in.OrgID, pipeline: in.PipelineID, version: in.Version,
 		sync: in.RunKey, drain: work.Stopping(), onCommit: work.SetEpoch,
 	}, log)
+	if onePod := (*worker.OnePod)(nil); errors.As(err, &onePod) {
+		log.Info("the sync attempt can't run on workers, so it's placed again on one pod", "why", onePod.Why)
+		return res, err
+	}
 	countAttempt(ctx, in.OrgID, in.PipelineID, "sync", attempt, work.Cancelled(), err)
 	var failed *spark.Failed
 	switch {
@@ -144,6 +152,10 @@ func (a *Sync) RunStreamJob(ctx context.Context, in contract.StreamJobInput) (co
 		org: in.OrgID, pipeline: in.PipelineID, version: in.Version,
 		sync: in.RunKey, drain: work.Stopping(), onCommit: work.SetEpoch,
 	}, log)
+	if onePod := (*worker.OnePod)(nil); errors.As(err, &onePod) {
+		log.Info("the stream job can't run on workers, so it's placed again on one pod", "why", onePod.Why)
+		return res, err
+	}
 	cancelled := work.Cancelled()
 	countAttempt(ctx, in.OrgID, in.PipelineID, "stream", attempt, cancelled, err)
 	switch {
@@ -243,6 +255,13 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 		if job.HeldURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.HeldDir); err != nil {
 			return out, errs.Wrap(errs.ConfigInvalid, err, "held values' location")
 		}
+	}
+	if workers := worker.From(ctx).Workers; workers > 0 {
+		srv, err := a.coordinate(ctx, &job, workers, log)
+		if err != nil {
+			return out, err
+		}
+		defer srv.Close()
 	}
 	if job.Destination.Capabilities().Delivery == destination.DeliveryStaged {
 		area, err := openStaging(ctx, a.Storage, job, log)

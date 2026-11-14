@@ -56,6 +56,8 @@ message AttendRequest {
     Signal signal = 7;
     // After the assignment.
     SchemaProposal schema_proposal = 8;
+    // What the worker has used and moved so far, now and then.
+    Usage usage = 9;
   }
 }
 
@@ -343,6 +345,30 @@ message SchemaProposal {
   uint64 base = 2;
   // An Arrow IPC stream holding only the schema.
   bytes arrow_schema = 3;
+}
+
+// Usage is what a worker's part of the attempt has used and moved so far,
+// for the coordinator's reports. Each figure only grows.
+message Usage {
+  // CPU seconds of its engine and connector processes, and the most they
+  // held at once, in resident bytes.
+  double cpu_seconds = 1;
+  int64 peak_memory_bytes = 2;
+  // Its share of its runner's own work.
+  double runner_cpu_seconds = 3;
+  int64 runner_memory_bytes = 4;
+  // What its sources emitted.
+  uint64 rows = 5;
+  uint64 bytes = 6;
+  // Its lanes, the most it could use (0: more can always be used), and,
+  // summed over them in seconds, working, waiting for what's downstream,
+  // and waiting for rows; and the rows they took in.
+  uint32 lanes = 7;
+  uint32 lane_limit = 8;
+  double busy_seconds = 9;
+  double backpressured_seconds = 10;
+  double idle_seconds = 11;
+  uint64 lane_rows = 12;
 }
 
 // StreamSchema is the schema the coordinator holds for a stream, version 0
