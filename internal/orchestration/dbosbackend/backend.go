@@ -155,9 +155,20 @@ func Open(ctx context.Context, o Options) (*Backend, error) {
 
 // createSystemDatabase makes the database and DBOS's tables, as a context does
 // and a client doesn't. On a new install, a server and an orchestrator starting
-// together race to create the database and its schema, and the one that loses
-// tries again.
+// together race to create the database and its schema: DBOS runs each migration
+// without a lock, so two processes can both run one. The processes take turns,
+// under an advisory lock; one that can't take it, and loses a race, tries again.
 func createSystemDatabase(ctx context.Context, url string, log *slog.Logger) error {
+	unlock, err := lockOpening(ctx, url)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// DBOS reports what's wrong with the server better, if anything is.
+		log.Warn("opening the system database without taking turns", "err", err)
+		unlock = func() {}
+	}
+	defer unlock()
 	for try := 1; ; try++ {
 		c, err := dbos.NewContext(ctx, dbos.Config{AppName: appName, DatabaseURL: url, Logger: log})
 		if err == nil {
@@ -177,13 +188,63 @@ func createSystemDatabase(ctx context.Context, url string, log *slog.Logger) err
 	}
 }
 
+// lockOpening takes the advisory lock under which processes create and migrate
+// one system database in turn, on a connection to the server's postgres
+// database, which DBOS connects to as well to create it. unlock ends that
+// connection, which lets the lock go.
+func lockOpening(ctx context.Context, url string) (unlock func(), err error) {
+	cfg, name, err := openingLock(url)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	unlock = func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = conn.Close(ctx)
+	}
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtextextended($1, 0))", name); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
+// openingLock is the connection lockOpening takes its lock on, and the lock's
+// name, which is the system database's: opening others doesn't wait.
+func openingLock(url string) (*pgx.ConnConfig, string, error) {
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		return nil, "", err
+	}
+	if cfg.Database == "" {
+		return nil, "", errors.New("the system database's URL names no database")
+	}
+	name := "openetl: opening DBOS system database " + cfg.Database
+	cfg.Database = "postgres"
+	return cfg, name, nil
+}
+
 // lostCreateRace is whether err is what losing that race looks like: CREATE
-// ... IF NOT EXISTS run at once can fail with a unique violation (23505), and
-// migrations run at once can deadlock (40P01). DBOS keeps only the text of its
-// migrations' errors, so the codes are looked for there.
+// ... IF NOT EXISTS run at once can fail with a unique violation (23505),
+// migrations run at once can deadlock (40P01), and a migration another process
+// has just run fails on what it made: a column (42701), a table or an index
+// (42P07), or a constraint (42710) that already exists. DBOS keeps only the
+// text of its migrations' errors, so the codes are looked for there.
 func lostCreateRace(err error) bool {
 	msg := err.Error()
-	return strings.Contains(msg, "failed to create database") || strings.Contains(msg, "SQLSTATE 23505") || strings.Contains(msg, "SQLSTATE 40P01")
+	if strings.Contains(msg, "failed to create database") {
+		return true
+	}
+	for _, code := range []string{"23505", "40P01", "42701", "42P07", "42710"} {
+		if strings.Contains(msg, "SQLSTATE "+code) {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Backend) Close() {
