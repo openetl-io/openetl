@@ -1218,6 +1218,33 @@ mod tests {
         assert!(out.failed.is_empty(), "{:?}", out.failed);
     }
 
+    /// JSON path functions and operators run on a lane as any other
+    /// expression does.
+    #[test]
+    fn json_paths_run_in_a_statement() {
+        let mut st = stage(
+            "INSERT INTO c SELECT id, email->>'a' AS a, json_get_int(email, 'n') AS n, \
+             json_get_str(email, 'tags', -1) AS last_tag FROM a WHERE email ? 'a'",
+            false,
+        );
+        let t = typed(
+            batch(&[
+                (1, Some(r#"{"a": "x", "n": 7, "tags": ["p", "q"]}"#), None),
+                (2, Some(r#"{"b": 1}"#), None),
+                (3, Some("not json"), None),
+                (4, Some(r#"{"a": null}"#), None),
+            ]),
+            Control::default(),
+        );
+        let out = st.apply(&t, &[0, 1, 2, 3], None).unwrap();
+        assert!(out.failed.is_empty(), "{:?}", out.failed);
+        let b = &out.typed.batch;
+        assert_eq!(ints(b, "id"), [Some(1), Some(4)]);
+        assert_eq!(strs(b.column(1)), [Some("x".into()), None]);
+        assert_eq!(ints(b, "n"), [Some(7), None]);
+        assert_eq!(strs(b.column(3)), [Some("q".into()), None]);
+    }
+
     #[test]
     fn a_column_the_batch_lacks_is_null() {
         let mut st = stage("INSERT INTO c SELECT id, name FROM a", false);
