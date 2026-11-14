@@ -1,0 +1,33 @@
+[package]
+name = "openetl-state"
+description = "Keyed state for the engine's operators: memory, runs on object storage, and a disk cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["slatedb"]
+# The SlateDB store, measured against runs of our own.
+slatedb = ["dep:slatedb", "dep:uuid"]
+
+[dependencies]
+bytes.workspace = true
+object_store.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+twox-hash.workspace = true
+async-trait = "0.1.89"
+futures = "0.3.31"
+uuid = { version = "1.18.1", optional = true }
+slatedb = { version = "0.18.1", default-features = false, features = ["wal_disable", "compaction_filters", "moka"], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[example]]
+name = "spike"
+required-features = ["slatedb"]
