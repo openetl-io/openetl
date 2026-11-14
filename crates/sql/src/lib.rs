@@ -17,6 +17,7 @@
 
 mod bind;
 mod catalog;
+mod dialect;
 mod error;
 mod expr;
 mod functions;

@@ -6,11 +6,11 @@ use std::ops::ControlFlow;
 
 use datafusion_expr::LogicalPlan;
 use datafusion_sql::sqlparser::ast::{self, Spanned};
-use datafusion_sql::sqlparser::dialect::PostgreSqlDialect;
 use datafusion_sql::sqlparser::parser::Parser;
 use datafusion_sql::sqlparser::tokenizer::Span;
 
 use crate::catalog::written;
+use crate::dialect::Postgres;
 use crate::functions::FUNCTIONS;
 use crate::plan::{Operator, Plan, Statement, Step, View};
 use crate::{Catalog, Class, Error, ErrorKind, Errors, Note, Position, bind, lower};
@@ -46,7 +46,7 @@ impl Sql {
     /// statements, separated by semicolons. Names aren't resolved until
     /// [`Sql::plan`].
     pub fn parse(text: &str) -> Result<Self, Errors> {
-        let parsed = Parser::parse_sql(&PostgreSqlDialect {}, text).map_err(syntax)?;
+        let parsed = Parser::parse_sql(&Postgres, text).map_err(syntax)?;
         let mut items = Vec::with_capacity(parsed.len());
         let mut errors = Vec::new();
         for s in parsed {
