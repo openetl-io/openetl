@@ -179,7 +179,7 @@ impl Sql {
                                     notes.push(Note {
                                         at: *at,
                                         message: format!(
-                                            "{} is a changelog: an update that passes the WHERE without a column an output column needs, as Postgres leaves out a large value that didn't change, is quarantined, since the row may have failed the WHERE before and the destination may not have the value",
+                                            "{} is a changelog: a row that an update brings into the WHERE without sending a column an output column needs, as Postgres leaves out a large value that didn't change, lands without that column's current value",
                                             l.operator.input
                                         ),
                                     });

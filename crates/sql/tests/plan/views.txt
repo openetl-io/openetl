@@ -234,7 +234,7 @@ statement 2:1 open row_wise
   filter orders.status != Utf8("closed")
   project order_id := orders.id, status
   project order_id, status := upper(open_orders.status)
-note 2:1 orders is a changelog: an update that passes the WHERE without a column an output column needs, as Postgres leaves out a large value that didn't change, is quarantined, since the row may have failed the WHERE before and the destination may not have the value
+note 2:1 orders is a changelog: a row that an update brings into the WHERE without sending a column an output column needs, as Postgres leaves out a large value that didn't change, lands without that column's current value
 
 plan
 CREATE VIEW o AS SELECT id, status FROM orders;
@@ -266,7 +266,7 @@ statement 2:1 x row_wise
   project a := orders.id, b := orders.id, status
   filter twice.a > Int64(0)
   project id := twice.b, status
-note 2:1 orders is a changelog: an update that passes the WHERE without a column an output column needs, as Postgres leaves out a large value that didn't change, is quarantined, since the row may have failed the WHERE before and the destination may not have the value
+note 2:1 orders is a changelog: a row that an update brings into the WHERE without sending a column an output column needs, as Postgres leaves out a large value that didn't change, lands without that column's current value
 
 # Readers see a view's columns with the types the view gives.
 stream events
