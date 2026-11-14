@@ -46,25 +46,28 @@ func open(t *testing.T) (*dbosbackend.Backend, dbosbackend.Options) {
 	return b, o
 }
 
-// A server and an orchestrator starting together on a new install both create
-// the system database.
+// Servers and orchestrators starting together on a new install all create the
+// system database and run DBOS's migrations, in turn. Each round is a new
+// database, as the race is only on the first open.
 func TestOpeningTogether(t *testing.T) {
 	_, o := open(t)
-	name := "openetl_it_" + strings.ToLower(rand.Text())[:10]
-	url := strings.Replace(o.DatabaseURL, o.DatabaseURL[strings.LastIndex(o.DatabaseURL, "/")+1:], name, 1)
-	t.Cleanup(func() { dropSystem(t, name) })
-	var wg sync.WaitGroup
-	for range 4 {
-		wg.Go(func() {
-			b, err := dbosbackend.Open(t.Context(), dbosbackend.Options{DatabaseURL: url, ExecutorID: "it"})
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			b.Close()
-		})
+	for round := range 3 {
+		name := "openetl_it_" + strings.ToLower(rand.Text())[:10]
+		url := strings.Replace(o.DatabaseURL, o.DatabaseURL[strings.LastIndex(o.DatabaseURL, "/")+1:], name, 1)
+		t.Cleanup(func() { dropSystem(t, name) })
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(func() {
+				b, err := dbosbackend.Open(t.Context(), dbosbackend.Options{DatabaseURL: url, ExecutorID: "it"})
+				if err != nil {
+					t.Errorf("round %d: %v", round, err)
+					return
+				}
+				b.Close()
+			})
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 }
 
 func TestBackend(t *testing.T) {
