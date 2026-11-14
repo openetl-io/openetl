@@ -229,12 +229,22 @@ fn every_function_is_called_in_a_suite() {
         let records: Vec<Record<DefaultColumnType>> =
             sqllogictest::parse_file(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         for r in &records {
-            let sql = match r {
-                Record::Statement { sql, .. } | Record::Query { sql, .. } if !expects_error(r) => {
-                    sql
+            let (conditions, sql) = match r {
+                Record::Statement {
+                    conditions, sql, ..
                 }
+                | Record::Query {
+                    conditions, sql, ..
+                } if !expects_error(r) => (conditions, sql),
                 _ => continue,
             };
+            let ours = conditions.iter().all(|c| match c {
+                Condition::OnlyIf { label } => label == "openetl",
+                Condition::SkipIf { label } => label != "openetl",
+            });
+            if !ours {
+                continue;
+            }
             let tokens = rows::tokens(sql).unwrap_or_else(|e| panic!("{}: {e}", file_name(&p)));
             for (i, t) in tokens.iter().enumerate() {
                 let rows::Tok::Word(w) = t else { continue };
